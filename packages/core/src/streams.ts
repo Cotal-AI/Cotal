@@ -51,8 +51,9 @@ import type { KV } from "@nats-io/kv";
 import { idFromCreds } from "./identity.js";
 import { requireBrokerFloor } from "./broker-floor.js";
 import { isConsumerNotFound } from "./jetstream-missing.js";
+import { isCasLoss } from "./endpoint-records.js";
 import { createEndpointStreams } from "./endpoint-binding.js";
-import { openAclRegistry, deleteAcl } from "./acls.js";
+import { openAclRegistry, deleteAcl, fenceAcl } from "./acls.js";
 import { openMembersRegistry, deleteMember } from "./members.js";
 import {
   BACKUP_MAX_MSGS_PER_SUBJECT,
@@ -851,6 +852,36 @@ export class DeprovisionError extends Error {
   }
 }
 
+/** Fence a retiring LIFECYCLE before its membership inventory is read: narrow its read-ACL row to no
+ *  reads ({@link fenceAcl}, a compare-and-set update that never creates the row). The delivery daemon
+ *  re-reads that exact row around every membership row a join creates, so after this returns no join
+ *  of the lifecycle keeps a row the inventory does not list. Pass a `deprovisioner` credential pinned to
+ *  this lifecycle: its exact-key ACL grants cover the read and the update, and it needs no member
+ *  channels. Reads the row through that exact-key direct get, so on a clustered broker a stale read
+ *  only loses the compare-and-set and retries. */
+export async function fenceLifecycleAcl(opts: {
+  servers: string;
+  space: string;
+  targetId: string;
+  lifecycleUid: string;
+  creds?: string;
+}): Promise<"fenced" | "absent"> {
+  const nc = await dialerFor(opts.servers)({
+    servers: opts.servers,
+    ...standaloneConnectOpts({ creds: opts.creds, tls: false }),
+    // A teardown step: fail fast, as deprovisionAgent does.
+    maxReconnectAttempts: 0,
+    timeout: 5_000,
+  });
+  try {
+    const t = deprovisionTargetPrincipal({ principal: opts.targetId, lifecycleUid: opts.lifecycleUid });
+    const kv = await new Kvm(nc).open(aclBucket(opts.space), { allow_direct: true });
+    return await fenceAcl(kv, principalKey(t.owner, t.actor).key, t.lifecycleUid);
+  } finally {
+    await nc.drain();
+  }
+}
+
 /** Delete a departed agent LIFECYCLE's provisioning footprint (#159 Part B) — the teardown counterpart
  *  to {@link provisionAgent}. Removes exactly what the provisioner minted for THIS incarnation: its two
  *  bind-only durables (`dm_<o>-<a>-<uid>`, `dlv_<o>-<a>-<uid>`) and its lifecycle-keyed read-ACL row.
@@ -1048,8 +1079,7 @@ async function purgeKvKeyWithAccounting(
     await kv.purge(key, { previousSeq: before.seq });
     return before.live ? { outcome: "deleted", status: "won" } : { outcome: "absent", status: "already-tombstoned" };
   } catch (err: unknown) {
-    const m = (err as Error)?.message ?? "";
-    if ((err as { code?: number }).code === 10071 || m.includes("10071") || m.includes("wrong last sequence")) {
+    if (isCasLoss(err)) {
       const after = await observe();
       if (after.live) throw new Error(`CAS loss left a live ${bucket}/${key}`, { cause: err });
       return { outcome: before.live ? "disappeared" : "absent", status: "raced-loss" };

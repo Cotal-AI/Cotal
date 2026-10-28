@@ -183,7 +183,7 @@ if (mode === "plain" || mode === "stdio") {
     const moded = await none.setChannelMode("review", "quiet");
     check("a session opened on no channel refuses a send, a join and a channel mode as permission denials",
       [sent, joined, moded].every((r) => r.outcome === "refused" && r.code === "PERMISSION_DENIED"), [sent, joined, moded]);
-    check("...says it was opened on no channel and names the session's reopen command", sent.outcome === "refused" && /opened on no channel/.test(sent.message) && sent.message.includes("run cotal chat review --stdio to open"), sent);
+    check("...says it was opened on no channel and names the session's reopen command", sent.outcome === "refused" && /opened on no channel/.test(sent.message) && sent.message.includes("run `cotal chat review --stdio` to open"), sent);
     check("...and never called the endpoint", calls.length === 0, calls);
     const general = session(["general"], ["general"]);
     const other = await general.join("other");

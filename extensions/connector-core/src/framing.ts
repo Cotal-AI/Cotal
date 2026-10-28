@@ -15,7 +15,7 @@
  * core's peer label, so the hook relay can reach it without pulling a tool surface in behind it, and
  * so neither surface can drift into a second convention.
  */
-import { peerLabel } from "@cotal-ai/core/peer-label";
+import { LINE_BREAK, peerLabel } from "@cotal-ai/core/peer-label";
 import type { InboxItem, InboxSnapshot } from "./agent.js";
 
 export interface RenderedInboxPreview {
@@ -52,18 +52,6 @@ export function renderInboxPreview(snapshot: InboxSnapshot, maxRowCodePoints = 2
 }
 
 /**
- * What counts as a line break, which is more than what JavaScript splits on.
- *
- * Measured through the host frame a model is handed (an MCP text content part, stringified and
- * parsed back): U+2028, U+2029 and U+0085 survive JSON transport intact, so a message carrying one
- * of them put an unindented attribution line into the bytes the model receives. A JavaScript split
- * on a newline does not see a line there and neither does `wc -l`, but a Unicode-aware splitter
- * does, and the rule this serves is stated absolutely. The class is therefore every code point a
- * line splitter may honour, not the two this repo used to know.
- */
-const LINE_BREAK = /\r\n?|[\n\v\f\u0085\u2028\u2029]/g;
-
-/**
  * A PEER NAMES ITSELF, so its name is data and never framing.
  *
  * Attribution is rendered inside brackets, and every surface that carries it puts it on a line of
@@ -94,15 +82,14 @@ export function fmtFrom(i: InboxItem): string {
  * attributed to another named peer, in a frame with nothing to tell the forgery from the frame.
  */
 export function fmtBody(text: string): string {
-  return text.replace(LINE_BREAK, "\n  ");
+  return text.split(LINE_BREAK).join("\n  ");
 }
 
 /**
  * One message as one line: the attribution in brackets, then the body.
  *
- * The sender is not the only peer-controlled field inside these brackets. `toService` is written by
- * the publisher and is not checked against the subject it arrived on, and a channel label is
- * rewritten by the subject token on the official paths but not on every path that can reach a
+ * The sender is not the only peer-controlled field inside these brackets. A role or channel label
+ * is rewritten by the subject token on the official paths but not on every path that can reach a
  * renderer. Both are neutralized HERE so the rule holds without depending on which upstream path
  * validated what.
  */

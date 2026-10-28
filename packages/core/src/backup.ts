@@ -5,7 +5,7 @@ import {
   type ConsumerConfig,
   type ConsumerInfo,
 } from "@nats-io/jetstream";
-import { nanos, type Msg, type NatsConnection } from "@nats-io/transport-node";
+import { type Msg, type NatsConnection } from "@nats-io/transport-node";
 import {
   canonicalBackupStreamConfig,
   spaceBackupInventory,
@@ -548,8 +548,17 @@ export type RestorePermissionScope =
   | { operation: "checkpoint"; checkpoint: PersistentConsumerCheckpoint }
   | { operation: "journal" };
 
-/** Exact snapshot permission set. It has no stream read/admin verbs beyond one snapshot API; chunk
- * ACK authority is created dynamically for the exact reply received, never granted as a wildcard. */
+/** The publish grant that ACKs one stream's snapshot chunks and nothing else. The broker sends each
+ * ACKable chunk with a reply under `$JS.SNAPSHOT.ACK.<stream>.<nuid>`, to which current servers
+ * append the chunk's length and index, so the grant covers every token after the stream. A
+ * response permission would instead let the holder answer any reply subject a message to its
+ * inbox carries, a JetStream API subject included. */
+export function snapshotAckGrant(stream: string): string {
+  return `$JS.SNAPSHOT.ACK.${stream}.>`;
+}
+
+/** Exact snapshot permission set. It has no stream read/admin verbs beyond one snapshot API, and
+ * its chunk ACKs reach only this stream's snapshot ACK subjects ({@link snapshotAckGrant}). */
 export function backupProfilePermissions(
   space: string,
   connId: string,
@@ -581,11 +590,8 @@ export function backupProfilePermissions(
   if (!scope.deliverSubject.startsWith(`_INBOX_${connId}.`))
     throw new Error("backup deliverSubject must be inside the credential's private inbox");
   return {
-    pub: { allow: [`$JS.API.STREAM.SNAPSHOT.${scope.stream}`] },
+    pub: { allow: [`$JS.API.STREAM.SNAPSHOT.${scope.stream}`, snapshotAckGrant(scope.stream)] },
     sub: { allow: [inbox, scope.deliverSubject] },
-    // Each received chunk creates a one-use, short-lived permission for its exact server-generated
-    // reply subject. A guessed or wrong snapshot ACK id remains denied.
-    resp: { max: 1, ttl: nanos(60_000) },
   };
 }
 

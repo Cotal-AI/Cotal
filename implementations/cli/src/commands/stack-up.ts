@@ -19,6 +19,7 @@ import {
   accountInventory,
   authDir,
   canonicalRoot,
+  codeSpan,
   deliveryCredsKey,
   findMesh,
   findPreparedSpace,
@@ -41,7 +42,6 @@ import {
   spaceNameTooLong,
   stackHomeRemedy,
   stackRunsUnderOtherHome,
-  terminalWidth,
   workspaceSecretStore,
   writeResult,
   MIN_FILE_STORE,
@@ -61,6 +61,7 @@ import { addressHolder, brokerListenAddress, listenerBindError } from "../lib/br
 import { brokerStoreWrite, jetStreamDisabled, jetStreamDisabledRefusal, readStoredBytes, storeDamageNotice, storeFull } from "../lib/broker-store-health.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { seedDefaultPersona } from "../lib/default-persona.js";
+import { noManagerCredentialWarning } from "../lib/daemon-credential-warning.js";
 import { definitionListeners, exposedPlaintext, listenerRow, type StackListener } from "../lib/stack-listeners.js";
 import { definitionRootMatch, serviceDefinitionStore, validateServiceDefinition, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
 import { instanceProjection, observeServiceProcess, serviceInstances, serviceInstanceStore, serviceRecordsWriteProblem, type ServiceInstance, type ServiceInstanceSnapshot } from "../lib/service-instances.js";
@@ -78,14 +79,16 @@ import { assertUserStackTransport, confirmUserAuthEndpoints, preflightUserStack,
 export interface StackUpNative {
   /** `userAuth` asks the native `authSetup` user arm (`prepareServer`) and must return its private
    *  `user` material; any other mode must return none. */
-  prepareBroker(opts: { transport: BrokerTransport; server: string; space: string; open: boolean; userAuth?: { idpUrl?: string }; host?: string; storeDir?: string; existingStore?: ExistingStorePin; maxFileStore?: number; authTimeout?: number; channels?: string; seed?: unknown }): Promise<{ root: string; server: string; space: string; storeDir: string; transport: BrokerTransport; setup?: { creds: string; wsPort: number }; user?: StackUserPrepared; confPath: string; bin: string; source: "path" | "bundled"; version: string | null; seedFile?: unknown; authTimeout?: number }>;
-  initializeStreams(server: string, space: string, setup: { creds: string } | undefined, seedFile: unknown): Promise<void>;
+  prepareBroker(opts: { transport: BrokerTransport; server: string; space: string; open: boolean; userAuth?: { idpUrl?: string }; host?: string; storeDir?: string; existingStore?: ExistingStorePin; maxFileStore?: number; authTimeout?: number; maxPayload?: number; channels?: string; seed?: unknown }): Promise<{ root: string; server: string; space: string; storeDir: string; transport: BrokerTransport; setup?: { creds: string; wsPort: number }; user?: StackUserPrepared; confPath: string; bin: string; source: "path" | "bundled"; version: string | null; seedFile?: unknown; authTimeout?: number; maxPayload?: number }>;
+  /** `recreateIssuedStores` is the `--recreate-issued-stores` backup directory, for a fresh broker only. */
+  initializeStreams(server: string, space: string, setup: { creds: string } | undefined, seedFile: unknown, recreateIssuedStores?: string): Promise<void>;
   /** On a broker the stack reuses, create the space's streams again when every one of them is gone,
    *  as after `cotal space delete`, and say whether it did. */
   recreateDeletedStreams(opts: { root: string; space: string; server: string; mode: StackMode; channels?: string; seed?: unknown }): Promise<boolean>;
   recordMesh(entry: { space: string; server: string; root: string; mode: StackMode; tlsRequired: boolean; storeDir: string; userAuth?: UserAuthInfo; maxSessions?: number; attachHost?: string; maxFileStore?: number }): void;
-  /** Record the transport and the auth callout timeout the prepared configuration rendered. */
-  commitTransport(root: string, transport: BrokerTransport, authTimeout?: number): void;
+  /** Record the transport, and the auth callout timeout and payload limit the prepared
+   *  configuration rendered. */
+  commitTransport(root: string, transport: BrokerTransport, limits?: { authTimeout?: number; maxPayload?: number }): void;
 }
 
 /** The identity of an existing broker store that a start must reuse and never create. */
@@ -140,6 +143,8 @@ export interface StackUpRequest {
   maxFileStore?: number;
   /** The auth callout timeout in seconds (`--auth-timeout`), user stacks only. Absent: the recorded one. */
   authTimeout?: number;
+  /** The broker's payload limit in bytes (`--max-payload`). Absent: the recorded one. */
+  maxPayload?: number;
   maxSessions?: number;
   channels?: string;
   foreground: boolean;
@@ -165,6 +170,10 @@ export interface StackUpRequest {
    *  the broker is prepared, so the broker this start launches loads the successor. Only a stopped
    *  static-auth or user-auth stack takes it. */
   rotateSys?: boolean;
+  /** `--recreate-issued-stores`: the new backup directory the fresh broker's stream setup backs up
+   *  the space's pre-retention issued-authority stores into before it creates them again. Only a
+   *  stopped stack takes it, since the step must run before any issuer of the space. */
+  recreateIssuedStores?: string;
 }
 
 /** The domain outcome of a successful whole-stack start, for a caller that renders its own receipt.
@@ -229,8 +238,8 @@ function controllerUnsupported(root: string, options: readonly string[], prepare
   return new CommandFailure("refused", "UNSUPPORTED", `${prepared ? "this root is prepared for a controller-owned stack" : "this root's stack is owned by the service controller"}, which has no route for ${named}; nothing was started through the legacy launcher`, {
     target: { root, options },
     remedy: manifest && options.some((name) => TLS_INPUTS.includes(name))
-      ? `run cotal up without ${named} to serve plaintext, or serve TLS from a manifest whose broker.servers names a tls:// address, with cotal up -f <cotal.yaml> --tls-cert <cert.pem> --tls-key <key.pem>`
-      : manifest ? `run cotal up without ${named}, or start the space from a manifest with cotal up -f <cotal.yaml>, which takes ${flags.length === 1 ? "it" : "them"}` : `run cotal up without ${named}${rotation}`,
+      ? `run \`cotal up\` without ${named} to serve plaintext, or serve TLS from a manifest whose broker.servers names a tls:// address, with \`cotal up -f <cotal.yaml> --tls-cert <cert.pem> --tls-key <key.pem>\``
+      : manifest ? `run \`cotal up\` without ${named}, or start the space from a manifest with \`cotal up -f <cotal.yaml>\`, which takes ${flags.length === 1 ? "it" : "them"}` : `run \`cotal up\` without ${named}${rotation}`,
   });
 }
 
@@ -247,7 +256,7 @@ const MODE_NAME: Record<StackMode, string> = { auth: "static auth", open: "open"
  *  records it. So the step keeps that mode, or starts the requested one in another folder. */
 function pinnedModeRemedy(recorded: StackMode, requested: StackMode): string {
   const flag = requested === "open" ? " --open" : requested === "user" ? " --user-auth" : "";
-  return `run bare cotal up to keep ${MODE_NAME[recorded]} here, or for ${MODE_NAME[requested]} run cotal space create <space>, then cotal up${flag}, in another folder`;
+  return `run bare \`cotal up\` to keep ${MODE_NAME[recorded]} here, or for ${MODE_NAME[requested]} run \`cotal space create <space>\`, then \`cotal up${flag}\`, in another folder`;
 }
 
 /** The mode an invocation explicitly asks for, or none for a bare `up`. */
@@ -336,7 +345,7 @@ function stackPreflight(root: string, space: string, recorded: StackJournal | un
   if (ledgers.valid.length || ledgers.refused.length || retained.length || additive.refused.length || boots.refused.length || summaries.refused.length || unsettledBoots.length) {
     const ids = [...new Set([...retained.map((attempt) => attempt.deploymentId), ...ledgers.valid.map(({ ledger }) => ledger.runId), ...unsettledBoots.map((attempt) => attempt.deploymentId)])];
     throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "team deployments or unsettled boot records remain under this root; the controller stack did not adopt their resources", { target: { root, space, deployments: ids },
-      remedy: ids.length ? `inspect each with ${ids.map((id) => `cotal team show ${id}`).join(", ")}; nothing was started` : `list the records with cotal team in ${root}; nothing was started` });
+      remedy: ids.length ? `inspect each with ${ids.map((id) => `\`cotal team show ${id}\``).join(", ")}; nothing was started` : `list the records with \`cotal team\` in ${root}; nothing was started` });
   }
   return maintenance.admittedRestore;
 }
@@ -365,8 +374,8 @@ function ensureDefinition(space: string, role: StackRole, input: ServiceDefiniti
     if (launch.type !== "adapter" || wanted.type !== "adapter" || launch.adapter !== STACK_ADAPTER[role] || launch.options.root !== root) {
       const other = launch.type === "adapter" && launch.adapter === STACK_ADAPTER[role] && typeof launch.options.root === "string" ? launch.options.root : undefined;
       if (other) throw new CommandFailure("refused", "CONFLICT", `the saved ${name} definition belongs to the stack at ${other}; it was not replaced`, { target: { space, definition: name, root: other },
-        remedy: `if ${other} no longer runs ${space}, remove the stack definitions saved for it (${stackDefinitionsAt(space, other).map((row) => row.name).join(", ")}) with cotal service remove <name> --space ${space} --yes` });
-      throw new CommandFailure("refused", "CONFLICT", "a saved definition under a stack name belongs to another adapter or root; it was not replaced", { target: { space, definition: name }, remedy: `inspect cotal service show ${name} --space ${space}` });
+        remedy: `if ${other} no longer runs ${space}, remove the stack definitions saved for it (${stackDefinitionsAt(space, other).map((row) => row.name).join(", ")}) with \`cotal service remove <name> --space ${space} --yes\`` });
+      throw new CommandFailure("refused", "CONFLICT", "a saved definition under a stack name belongs to another adapter or root; it was not replaced", { target: { space, definition: name }, remedy: `inspect \`cotal service show ${name} --space ${space}\`` });
     }
     if (JSON.stringify(launch.options) === JSON.stringify(wanted.options)) return existing;
     // A running member keeps the definition it was launched from; it is reused, never redefined.
@@ -465,6 +474,7 @@ export async function stackUp(request: StackUpRequest, native: StackUpNative): P
     warnings.push({ code: "PERSONA_NOT_WRITTEN", target: { root, space }, message: `the default persona was not written in ${root}: ${(error as Error).message}` });
   }
   if (mode !== "open") {
+    if (request.noManager) warnings.push(await noManagerCredentialWarning(root, space));
     const unparsable = await unparsableDaemonCreds(root, space);
     if (unparsable.length) warnings.push({ code: "DAEMON_CREDENTIAL_UNPARSABLE", target: { root, space, credentials: unparsable }, message: unparsableDaemonCredsNotice(unparsable) });
   }
@@ -550,7 +560,7 @@ async function storeFullAfterStart(root: string, space: string): Promise<ReturnT
  *  manager's own process is ended first where it runs, as a full store refuses its stop. */
 function fullStoreUpRemedy(root: string, space: string): string {
   const pid = serviceInstances(space, STACK_DEFINITION.manager).map((row) => row.record.value).find((value) => observeServiceProcess(value) === "running")?.process?.pid;
-  return `from ${root}, make room with cotal history clear --yes, which purges all of this space's channel history, then run cotal up again; to keep that history, ${pid !== undefined ? `end the manager on this host with kill -TERM ${pid}, which stops its agents by its default policy, then ` : ""}run cotal down --yes and cotal up --max-file-store <bytes> with a larger cap`;
+  return `from ${root}, make room with \`cotal history clear --yes\`, which purges all of this space's channel history, then run \`cotal up\` again; to keep that history, ${pid !== undefined ? `end the manager on this host with kill -TERM ${pid}, which stops its agents by its default policy, then ` : ""}run \`cotal down --yes\` and \`cotal up --max-file-store <bytes>\` with a larger cap`;
 }
 
 /** The running broker of an unregistered space: what an up stopped before registration leaves. */
@@ -566,11 +576,11 @@ function strandedBroker(space: string): ServiceInstance | undefined {
 export function stackUpInterruptNotice(root: string, space: string, noManager = false): string {
   const up = `cotal up${noManager ? " --no-manager" : ""}`;
   const stranded = strandedBroker(space);
-  if (stranded) return `Interrupted before the space was registered; its broker keeps running as pid ${stranded.process?.pid}. Run cotal down --yes, then ${up}.`;
+  if (stranded) return `Interrupted before the space was registered; its broker keeps running as pid ${stranded.process?.pid}. Run \`cotal down --yes\`, then \`${up}\`.`;
   const running = runningStackRoles(space);
   return running.length
-    ? `Interrupted while starting the stack in ${root}; ${running.join(", ")} ${running.length === 1 ? "keeps" : "keep"} running. Run ${up} to finish the start, or cotal down --yes to stop ${running.length === 1 ? "it" : "them"}.`
-    : `Interrupted before any member of the stack in ${root} started. Run ${up} to start it.`;
+    ? `Interrupted while starting the stack in ${root}; ${running.join(", ")} ${running.length === 1 ? "keeps" : "keep"} running. Run \`${up}\` to finish the start, or \`cotal down --yes\` to stop ${running.length === 1 ? "it" : "them"}.`
+    : `Interrupted before any member of the stack in ${root} started. Run \`${up}\` to start it.`;
 }
 
 /** Whether a broker bound to `host` is reached at `server`'s address: a wildcard bind is reached at
@@ -591,11 +601,11 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
   // A space an earlier release prepared under a longer name refuses here, before its journal or any
   // member's file is written, instead of failing on the first file name that does not fit.
   const tooLong = spaceNameTooLong(space);
-  if (tooLong) throw new CommandFailure("refused", "USAGE_INVALID", `${tooLong}; nothing was started or written`, { target: { root, space }, remedy: `forget it with cotal space forget ${space}, then create one with a name of at most ${SPACE_NAME_MAX} characters with cotal space create <name>` });
+  if (tooLong) throw new CommandFailure("refused", "USAGE_INVALID", `${tooLong}; nothing was started or written`, { target: { root, space }, remedy: `forget it with \`cotal space forget ${space}\`, then create one with a name of at most ${SPACE_NAME_MAX} characters with \`cotal space create <name>\`` });
   // Each member's start is recorded under the space's service records. A folder there this account
   // cannot write refuses here, naming it, instead of an unknown outcome after a member started.
   const unwritable = serviceRecordsWriteProblem(space, ["definitions", "instances"]);
-  if (unwritable) throw new CommandFailure("refused", "PERMISSION_DENIED", `this account cannot write ${unwritable}, where up records the stack's services; nothing was started or written`, { target: { root, space, path: unwritable }, remedy: `make it writable with chmod u+w ${unwritable}, then run cotal up again` });
+  if (unwritable) throw new CommandFailure("refused", "PERMISSION_DENIED", `this account cannot write ${unwritable}, where up records the stack's services; nothing was started or written`, { target: { root, space, path: unwritable }, remedy: `make it writable with chmod u+w ${unwritable}, then run \`cotal up\` again` });
   const recorded = readStackJournal(root);
   if (request.expectPriorDown && (!recorded || recorded.sha256 !== request.expectPriorDown.journalSha256 || recorded.journal.operation.id !== request.expectPriorDown.operationId))
     throw new CommandFailure("refused", "CONFLICT", "the stopped stack changed after the team boot checked it; nothing was started", { target: { root, space, expected: request.expectPriorDown.operationId } });
@@ -618,7 +628,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
     if (request.host === undefined || !bindReaches(request.host, previous!.journal.server) || brokerRuns)
       throw new CommandFailure("refused", "CONFLICT", `this stack's broker binds ${strayHost}${recordedInputs!.host === undefined ? ", as no bind host was recorded," : ","} which does not serve its recorded address ${previous!.journal.server}, so its clients cannot reach it; nothing was started`, {
         target: { root, space, recorded: recordedInputs },
-        remedy: `${brokerRuns ? `stop its broker with cotal down --yes from ${root}, then ` : ""}run cotal up --host ${new URL(previous!.journal.server).hostname} from ${root}`,
+        remedy: `${brokerRuns ? `stop its broker with \`cotal down --yes\` from ${root}, then ` : ""}run \`cotal up --host ${new URL(previous!.journal.server).hostname}\` from ${root}`,
       });
   }
   // The cap is fixed while the broker runs. A stopped broker starts again with an explicit new cap,
@@ -632,7 +642,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
     request.host !== undefined && request.host !== recordedBroker.host ? `--host ${request.host} (recorded: ${recordedBroker.host ?? "none"})` : undefined,
   ].filter((input) => input !== undefined) : [];
   if (changedInputs.length)
-    throw new CommandFailure("refused", "CONFLICT", `${changedInputs.join(", ")} ${changedInputs.length === 1 ? "differs" : "differ"} from this stack's recorded broker inputs; nothing was prepared`, { target: { root, space, recorded: recordedBroker }, remedy: `run bare cotal up from ${root} to start it with its recorded inputs${newCap ? `; a new --max-file-store applies once the broker is stopped with cotal down --yes` : ""}` });
+    throw new CommandFailure("refused", "CONFLICT", `${changedInputs.join(", ")} ${changedInputs.length === 1 ? "differs" : "differ"} from this stack's recorded broker inputs; nothing was prepared`, { target: { root, space, recorded: recordedBroker }, remedy: `run bare \`cotal up\` from ${root} to start it with its recorded inputs${newCap ? `; a new --max-file-store applies once the broker is stopped with \`cotal down --yes\`` : ""}` });
   // A journal written before broker inputs were recorded cannot tell which store, cap or bind host
   // its stopped broker used: `cotal down` removed the registration that held them, and broker
   // preparation would otherwise fall back to the default `.cotal/nats` store with no cap. Such a
@@ -641,7 +651,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
   const brokerRows0 = previous && !recordedBroker ? serviceInstances(space, STACK_DEFINITION.broker) : [];
   const legacyStopped = previous !== undefined && !recordedBroker && !(brokerRows0.length === 1 && observeServiceProcess(brokerRows0[0]!.record.value) === "running");
   if (legacyStopped && request.storeDir === undefined)
-    throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "this stopped stack was recorded before its broker store, cap and bind host were kept; the broker is not prepared from a default store", { target: { root, space, operation: previous!.journal.operation.id }, remedy: `name the stack's original store explicitly: cotal up --store-dir <original store dir> [--max-file-store <bytes>] [--host <host>] --space ${space}; omit --max-file-store and --host only if the original start set neither` });
+    throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "this stopped stack was recorded before its broker store, cap and bind host were kept; the broker is not prepared from a default store", { target: { root, space, operation: previous!.journal.operation.id }, remedy: `name the stack's original store explicitly: \`cotal up --store-dir <original store dir> [--max-file-store <bytes>] [--host <host>] --space ${space}\`; omit --max-file-store and --host only if the original start set neither` });
   // The named store must already exist as a real directory: preparation would otherwise create
   // an empty store at a mistyped path and start the stack on it. Its identity is pinned here and
   // checked again by preparation, which never creates a pinned store, and just before the broker starts.
@@ -663,24 +673,33 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
     throw new CommandFailure("refused", "CONFLICT", "this root holds a broker account; an open stack does not bypass its recorded authorization", { target: { root, space } });
   if (mode === "user") assertUserStackTransport(previous?.journal.server ?? request.server, request.transport.kind === "tls-required");
   else if (request.idp !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "--idp belongs to a user-auth stack; nothing was prepared", { target: { root, space } });
+  const brokerIsRunning = () => serviceInstances(space, STACK_DEFINITION.broker).some((row) => observeServiceProcess(row.record.value) === "running");
   if (request.authTimeout !== undefined) {
     if (mode !== "user") throw new CommandFailure("refused", "USAGE_INVALID", "--auth-timeout sets the auth callout's timeout, which only a user-auth stack has; nothing was prepared", { target: { root, space }, remedy: "drop --auth-timeout" });
     // A running broker keeps the timeout it was started with, which the broker policy records.
     const recordedTimeout = readBrokerPolicy(root)?.authTimeout;
-    if (request.authTimeout !== recordedTimeout && serviceInstances(space, STACK_DEFINITION.broker).some((row) => observeServiceProcess(row.record.value) === "running"))
-      throw new CommandFailure("refused", "CONFLICT", `--auth-timeout ${request.authTimeout} differs from the running broker's (${recordedTimeout === undefined ? "nats-server's default" : `${recordedTimeout} seconds`}), which is fixed at its start; nothing was prepared`, { target: { root, space }, remedy: `stop the stack with cotal down --yes from ${root}, then run cotal up --auth-timeout ${request.authTimeout}` });
+    if (request.authTimeout !== recordedTimeout && brokerIsRunning())
+      throw new CommandFailure("refused", "CONFLICT", `--auth-timeout ${request.authTimeout} differs from the running broker's (${recordedTimeout === undefined ? "nats-server's default" : `${recordedTimeout} seconds`}), which is fixed at its start; nothing was prepared`, { target: { root, space }, remedy: `stop the stack with \`cotal down --yes\` from ${root}, then run \`cotal up --auth-timeout ${request.authTimeout}\`` });
+  }
+  if (request.maxPayload !== undefined) {
+    // An open stack renders the open broker configuration, which carries no payload limit.
+    if (mode === "open") throw new CommandFailure("refused", "USAGE_INVALID", "--max-payload sets the broker's message size limit, which the open broker configuration does not render; nothing was prepared", { target: { root, space }, remedy: "drop --max-payload" });
+    // A running broker keeps the limit it was started with, which the same record carries.
+    const recordedPayload = readBrokerPolicy(root)?.maxPayload;
+    if (request.maxPayload !== recordedPayload && brokerIsRunning())
+      throw new CommandFailure("refused", "CONFLICT", `--max-payload ${request.maxPayload} differs from the running broker's (${recordedPayload === undefined ? "nats-server's default" : `${recordedPayload} bytes`}), which is fixed at its start; nothing was prepared`, { target: { root, space }, remedy: `stop the stack with \`cotal down --yes\` from ${root}, then run \`cotal up --max-payload ${request.maxPayload}\`` });
   }
   const admittedRestore = stackPreflight(root, space, previous?.journal, request.manifest?.deploymentId);
   // A recorded stack keeps its space and broker address. The refusal names what is recorded and the
   // bare up that starts it there.
   const recordedTarget = { root, space, recorded: { space: previous?.journal.space, server: previous?.journal.server }, requested: { space, server: request.server } };
   if (previous && previous.journal.space !== space)
-    throw new CommandFailure("refused", "CONFLICT", `this root's controller stack is recorded for space ${previous.journal.space}, and this up asked for ${space}; it was not rebound`, { target: recordedTarget, remedy: `run bare cotal up from ${root} to start ${previous.journal.space}` });
+    throw new CommandFailure("refused", "CONFLICT", `this root's controller stack is recorded for space ${previous.journal.space}, and this up asked for ${space}; it was not rebound`, { target: recordedTarget, remedy: `run bare \`cotal up\` from ${root} to start ${previous.journal.space}` });
   // No command moves a stack that ran to another address. While another program holds the recorded
   // one, bare up refuses too, so the refusal names that holder rather than sending the operator there.
   if (previous && canonicalServer(previous.journal.server) !== canonicalServer(request.server)) {
     const held = await recordedAddressHeld(space, previous.journal.server);
-    throw new CommandFailure("refused", "CONFLICT", `this root's controller stack is recorded at ${previous.journal.server}, and this up asked for ${request.server}; a recorded stack is not moved to another address${held ? `, and ${held.says}` : ""}`, { target: recordedTarget, remedy: held ? `${held.frees}, then run bare cotal up from ${root}; no command moves a stack that ran to another address, so it starts only at ${previous.journal.server}` : `run bare cotal up from ${root} to start it at ${previous.journal.server}` });
+    throw new CommandFailure("refused", "CONFLICT", `this root's controller stack is recorded at ${previous.journal.server}, and this up asked for ${request.server}; a recorded stack is not moved to another address${held ? `, and ${held.says}` : ""}`, { target: recordedTarget, remedy: held ? `${held.frees}, then run bare \`cotal up\` from ${root}; no command moves a stack that ran to another address, so it starts only at ${previous.journal.server}` : `run bare \`cotal up\` from ${root} to start it at ${previous.journal.server}` });
   }
   // The broker service's own address rules run before anything is written, so an address it would
   // refuse never becomes this root's recorded broker address.
@@ -690,9 +709,9 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
   // so the refusal leaves the folder as it was.
   const registration = findMesh(space), preparedSpace = findPreparedSpace(space);
   if (registration && (registration.origin !== "up" || canonicalRoot(registration.root) !== root || registration.server !== (previous?.journal.server ?? request.server)))
-    throw new CommandFailure("refused", "CONFLICT", "the space is registered to another root, broker address or external origin; nothing was prepared or started", { target: { root, space }, remedy: `inspect it with cotal space show ${space}` });
+    throw new CommandFailure("refused", "CONFLICT", "the space is registered to another root, broker address or external origin; nothing was prepared or started", { target: { root, space }, remedy: `inspect it with \`cotal space show ${space}\`` });
   if (!registration && (!preparedSpace || canonicalRoot(preparedSpace.root) !== root))
-    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the space has no prepared or locally started registration at this root; nothing was prepared or started", { target: { root, space }, remedy: `prepare it with cotal space create ${space} --root ${shellWord(root)}, then run cotal up` });
+    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the space has no prepared or locally started registration at this root; nothing was prepared or started", { target: { root, space }, remedy: `prepare it with ${codeSpan(`cotal space create ${space} --root ${shellWord(root)}`)}, then run \`cotal up\`` });
   // A store folder belongs to one space. A --store-dir no record of this stack names refuses while
   // another space uses it; the recorded or default store starts, and the receipt warns.
   const storePath = brokerStore !== undefined ? resolve(brokerStore) : join(root, ".cotal", "nats");
@@ -703,33 +722,37 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
   // prepared again under a running broker. This start refuses before any write and names the stop.
   const stranded = registration ? undefined : strandedBroker(space);
   if (stranded)
-    throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `the stack's broker runs as pid ${stranded.process?.pid}, but the cotal up that started it stopped before it registered the space, so this up cannot finish that start; nothing was changed`, { target: { root, space, broker: stranded.instanceId, pid: stranded.process?.pid }, remedy: "stop that broker with cotal down --yes, then run cotal up again" });
+    throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `the stack's broker runs as pid ${stranded.process?.pid}, but the \`cotal up\` that started it stopped before it registered the space, so this up cannot finish that start; nothing was changed`, { target: { root, space, broker: stranded.instanceId, pid: stranded.process?.pid }, remedy: "stop that broker with `cotal down --yes`, then run `cotal up` again" });
   // A broker stopped by a signal accepts connections and never answers, so every step through it would
   // wait out its budget, and its readiness check would record a listener that serves nothing. This
   // start refuses before any write and names the signal that resumes it.
   const brokerPid = serviceInstances(space, STACK_DEFINITION.broker).map((row) => row.record.value).find((value) => observeServiceProcess(value) === "running")?.process?.pid;
   if (brokerPid !== undefined && processStopped(brokerPid))
-    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `the stack's broker, pid ${brokerPid}, is stopped, so it accepts connections at ${previous?.journal.server ?? request.server} and never answers; nothing was started or written`, { target: { root, space, pid: brokerPid }, remedy: `resume it with kill -CONT ${brokerPid} and run cotal up again` });
+    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `the stack's broker, pid ${brokerPid}, is stopped, so it accepts connections at ${previous?.journal.server ?? request.server} and never answers; nothing was started or written`, { target: { root, space, pid: brokerPid }, remedy: `resume it with kill -CONT ${brokerPid} and run \`cotal up\` again` });
   // An earlier up or down that never recorded its outcome is settled from its members' process
   // evidence under the held maintenance lock. Only a preserve or resume can remain unsettled here.
   // A member stop an earlier down could not confirm in time is settled from its own receipt first.
   if (previous) await settleRetainedStackStops(previous.journal);
   const { snapshot: current, settled } = previous ? settleStackOperation(request.maintenanceLock, previous) : { snapshot: undefined, settled: undefined };
   if (current && stackOperationUnsettled(current.journal))
-    throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "an earlier preserve or resume on this root has no settled outcome; it is decided by its own maintenance attempt and no member was started", { target: { root, space, operation: current.journal.operation }, remedy: `inspect the root's maintenance attempt and the stack's members with cotal service --space ${space} before another whole-stack operation` });
+    throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "an earlier preserve or resume on this root has no settled outcome; it is decided by its own maintenance attempt and no member was started", { target: { root, space, operation: current.journal.operation }, remedy: `inspect the root's maintenance attempt and the stack's members with \`cotal service --space ${space}\` before another whole-stack operation` });
   const server = previous?.journal.server ?? request.server;
   if (request.noManager) {
     const running = serviceInstances(space, STACK_DEFINITION.manager).filter((row) => observeServiceProcess(row.record.value) === "running");
-    if (running.length) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "--no-manager cannot keep an already-running controller manager; no member was started or stopped", { target: { root, space, instances: running.map((row) => row.name) }, remedy: `stop the recorded manager with cotal service stop ${STACK_DEFINITION.manager} --space ${space} --yes before requesting --no-manager` });
+    if (running.length) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "--no-manager cannot keep an already-running controller manager; no member was started or stopped", { target: { root, space, instances: running.map((row) => row.name) }, remedy: `stop the recorded manager with \`cotal service stop ${STACK_DEFINITION.manager} --space ${space} --yes\` before requesting --no-manager` });
   }
   // A rotation is a stopped, fresh boot. A member that still runs would keep the retired system
   // account, so every member must be stopped before anything is rotated or started.
   if (request.rotateSys) {
-    if (mode === "open") throw new CommandFailure("refused", "UNSUPPORTED", "an open stack has no system account or $SYS credentials to rotate; nothing was started", { target: { root, space }, remedy: `run bare cotal up from ${root} to start it` });
+    if (mode === "open") throw new CommandFailure("refused", "UNSUPPORTED", "an open stack has no system account or $SYS credentials to rotate; nothing was started", { target: { root, space }, remedy: `run bare \`cotal up\` from ${root} to start it` });
     const running = STACK_ROLES.flatMap((role) => serviceInstances(space, STACK_DEFINITION[role])).filter((row) => observeServiceProcess(row.record.value) === "running");
-    if (running.length) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "this stack has running members, and a running broker keeps serving the retired system account; nothing was rotated or started", { target: { root, space, instances: running.map((row) => row.name) }, remedy: "stop the stack with cotal down --yes, then run cotal up --rotate-sys" });
+    if (running.length) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "this stack has running members, and a running broker keeps serving the retired system account; nothing was rotated or started", { target: { root, space, instances: running.map((row) => row.name) }, remedy: "stop the stack with `cotal down --yes`, then run `cotal up --rotate-sys`" });
     const trust = await getSpaceAuth(workspaceSecretStore(root), space);
-    if (!trust?.operator.seed) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", trust ? "this root holds the space's trust without the broker operator seed, so it cannot rotate the system account; nothing was started" : "this stack has no system account yet, so nothing was rotated or started", { target: { root, space }, remedy: trust ? "run the rotation where the broker trust record lives" : `run bare cotal up from ${root}; a first start mints the $SYS creds` });
+    if (!trust?.operator.seed) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", trust ? "this root holds the space's trust without the broker operator seed, so it cannot rotate the system account; nothing was started" : "this stack has no system account yet, so nothing was rotated or started", { target: { root, space }, remedy: trust ? "run the rotation where the broker trust record lives" : `run bare \`cotal up\` from ${root}; a first start mints the $SYS creds` });
+  }
+  if (request.recreateIssuedStores !== undefined) {
+    const running = STACK_ROLES.flatMap((role) => serviceInstances(space, STACK_DEFINITION[role])).filter((row) => observeServiceProcess(row.record.value) === "running");
+    if (running.length) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "this stack has running members, and the issued-authority stores are recreated only on a fresh broker start, before any issuer runs; nothing was changed", { target: { root, space, instances: running.map((row) => row.name) }, remedy: `stop the stack with \`cotal down --yes\` from ${root}, then run \`cotal up --recreate-issued-stores <backup-dir>\` again` });
   }
   // Check provider inputs before preparation or a journal write. A supplied IdP is always checked,
   // including a live refresh; only an unpinned first enable probes JWKS. Preparation checks again.
@@ -801,13 +824,13 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
       // address; a stack that ran keeps its recorded one, so whatever answers there must stop first.
       const holder = loadMeshes().find((mesh) => mesh.space !== space && mesh.server === server);
       const local = holder && (holder.origin === undefined || holder.origin === "up");
-      const stopHolder = holder ? local ? `stop space ${holder.space} with cotal down from ${holder.root}` : `stop the broker of space ${holder.space}` : `stop what answers at ${server}`;
+      const stopHolder = holder ? local ? `stop space ${holder.space} with \`cotal down\` from ${holder.root}` : `stop the broker of space ${holder.space}` : `stop what answers at ${server}`;
       const address = new URL(server);
       throw new CommandFailure("refused", "CONFLICT", `something already answers at the stack's broker address ${server}${holder ? `, where space ${holder.space} is registered` : ""}, without this stack's broker instance; it was not adopted or stopped`, {
         target: { root, space, server, ...(holder ? { registered: { space: holder.space, root: holder.root } } : {}) },
         remedy: previous === undefined
-          ? `start this stack at another address with cotal up --server ${address.protocol}//${address.hostname}:<port> from ${root}, or ${stopHolder} and run cotal up again`
-          : `${stopHolder}, then run bare cotal up from ${root}; this stack keeps its recorded address`,
+          ? `start this stack at another address with \`cotal up --server ${address.protocol}//${address.hostname}:<port>\` from ${root}, or ${stopHolder} and run \`cotal up\` again`
+          : `${stopHolder}, then run bare \`cotal up\` from ${root}; this stack keeps its recorded address`,
       });
     }
     // A program that holds the address without answering NATS, such as a web server, is refused here
@@ -819,8 +842,8 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
       throw new CommandFailure("refused", "CONFLICT", `${says} (bind failed: address already in use); no broker was launched`, {
         target: { root, space, server, bindError: bindError.code },
         remedy: previous === undefined
-          ? `start this stack at another address with cotal up --server ${address.protocol}//${address.hostname}:<port> from ${root}, or ${frees} and run cotal up again`
-          : `${frees}, then run bare cotal up from ${root}; this stack keeps its recorded address`,
+          ? `start this stack at another address with \`cotal up --server ${address.protocol}//${address.hostname}:<port>\` from ${root}, or ${frees} and run \`cotal up\` again`
+          : `${frees}, then run bare \`cotal up\` from ${root}; this stack keeps its recorded address`,
       });
     }
     let prepared: Awaited<ReturnType<StackUpNative["prepareBroker"]>> | undefined;
@@ -837,12 +860,12 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
         }
         failedRole = undefined;
       }
-      prepared = await native.prepareBroker({ transport: request.transport, server, space, open: mode === "open", ...(mode === "user" ? { userAuth: request.idp !== undefined ? { idpUrl: request.idp } : {} } : {}), ...(brokerHost ? { host: brokerHost } : {}), ...(brokerStore ? { storeDir: brokerStore } : {}), ...(storePin ? { existingStore: storePin } : {}), ...(brokerCap !== undefined ? { maxFileStore: brokerCap } : {}), ...(request.authTimeout !== undefined ? { authTimeout: request.authTimeout } : {}), ...(request.manifest ? { seed: request.manifest.seed } : request.channels ? { channels: request.channels } : {}) });
+      prepared = await native.prepareBroker({ transport: request.transport, server, space, open: mode === "open", ...(mode === "user" ? { userAuth: request.idp !== undefined ? { idpUrl: request.idp } : {} } : {}), ...(brokerHost ? { host: brokerHost } : {}), ...(brokerStore ? { storeDir: brokerStore } : {}), ...(storePin ? { existingStore: storePin } : {}), ...(brokerCap !== undefined ? { maxFileStore: brokerCap } : {}), ...(request.authTimeout !== undefined ? { authTimeout: request.authTimeout } : {}), ...(request.maxPayload !== undefined ? { maxPayload: request.maxPayload } : {}), ...(request.manifest ? { seed: request.manifest.seed } : request.channels ? { channels: request.channels } : {}) });
       if (canonicalRoot(prepared.root) !== root || prepared.space !== space || prepared.server !== server || (prepared.setup === undefined) !== (mode === "open") || (prepared.user === undefined) !== (mode !== "user")) throw new CommandFailure("refused", "CONFLICT", "the prepared broker configuration names another root, space, address or auth mode; the stack did not continue");
       if (mode === "user") assertUserStackTransport(server, prepared.transport.kind === "tls-required");
       // The validated transport decision is recorded before the broker child starts, so its
       // listener-report check compares against the transport this configuration actually serves.
-      native.commitTransport(root, prepared.transport, prepared.authTimeout);
+      native.commitTransport(root, prepared.transport, { authTimeout: prepared.authTimeout, maxPayload: prepared.maxPayload });
       journal = { ...journal, broker: { storeDir: resolve(prepared.storeDir), ...(brokerCap !== undefined ? { maxFileStore: brokerCap } : {}), ...(brokerHost ? { host: brokerHost } : {}) }, updatedAt: new Date().toISOString() };
       snapshot = writeStackJournal(root, snapshot, journal);
     }
@@ -860,7 +883,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
       // The broker's own stream and registry setup, on the native space path, after it serves.
       failedRole = "broker";
       failedStage = "broker-streams";
-      await native.initializeStreams(server, space, prepared.setup, prepared.seedFile);
+      await native.initializeStreams(server, space, prepared.setup, prepared.seedFile, request.recreateIssuedStores);
       failedStage = "broker-registration";
       // A user registration is recorded here, before its auth service exists, because the native
       // auth-service child resolves a registered user target. It carries only the prepared trust
@@ -881,7 +904,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
     if (mode === "user") {
       const authRows = serviceInstances(space, STACK_DEFINITION.auth);
       const authRunning = authRows.length === 1 && observeServiceProcess(authRows[0]!.record.value) === "running";
-      if (!prepared?.user && !authRunning) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "the user stack's auth service is stopped while its broker still runs; its native preparation runs only with a broker start, so it was not started from other material", { target: { root, space }, remedy: "stop the stack with bare cotal down, then run bare cotal up" });
+      if (!prepared?.user && !authRunning) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "the user stack's auth service is stopped while its broker still runs; its native preparation runs only with a broker start, so it was not started from other material", { target: { root, space }, remedy: "stop the stack with bare `cotal down`, then run bare `cotal up`" });
       // The callout's deadline is the timeout this broker configuration rendered, never a second setting.
       const authOptions = { root, server, ...(prepared?.authTimeout !== undefined ? { "auth-timeout": String(prepared.authTimeout) } : {}) };
       const authService = ensureDefinition(space, "auth", adapterDefinition(space, STACK_ADAPTER.auth, authOptions, 60000), root, replace("auth"));
@@ -917,15 +940,15 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
             deadHolder: deliveryLeaseHolderFor(previous), ttlMs: LEASE_TTL_MS,
             onWait: (ms) => { if (request.presentation !== "json") process.stderr.write(`${STACK_DEFINITION.delivery}: shard 0 is still leased to this folder's previous delivery daemon, which is not running; waiting ${Math.ceil(ms / 1000)}s for the lease to expire\n`); },
           });
-          if (waited === "rewritten") throw new CommandFailure("refused", "CONFLICT", "shard 0 of the delivery lease names this folder's previous delivery daemon and was written again while up waited for it to expire, so a live daemon holds it; no second daemon was started", { target: { root, space }, remedy: `find the process running delivery for space ${space} and stop it or keep it; cotal down does not reach a daemon this folder has no record of` });
+          if (waited === "rewritten") throw new CommandFailure("refused", "CONFLICT", "shard 0 of the delivery lease names this folder's previous delivery daemon and was written again while up waited for it to expire, so a live daemon holds it; no second daemon was started", { target: { root, space }, remedy: `find the process running delivery for space ${space} and stop it or keep it; \`cotal down\` does not reach a daemon this folder has no record of` });
         }
         await store.put(credsKey, creds);
       }
       const delivery = ensureDefinition(space, "delivery", adapterDefinition(space, STACK_ADAPTER.delivery, { root, creds: credsPath, server }, 40000), root, replace("delivery"));
       await start("delivery", delivery);
     }
-    // A user stack's manager is read and stopped as the invoking user's existing login. Without a
-    // signed-in, granted login it is not attempted; nothing is launched for it.
+    // A user stack's manager is read as the invoking user's existing login. Without a signed-in,
+    // granted login it is not attempted; nothing is launched for it.
     if (!request.noManager && mode === "user") {
       const login = await userLoginState(root, space);
       if (login.state !== "ready") loginBlock = userLoginRequired(space, login);
@@ -954,12 +977,21 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
     // A reused broker that lost some of the space's streams, but not all of them as `cotal space delete`
     // leaves it, gets none back here; a broker start creates the missing ones.
     const error = brokerReused && isJetStreamMissing(caught, JetStreamApiCodes.StreamNotFound)
-      ? new CommandFailure("refused", "TARGET_NOT_FOUND", "the running broker is missing some of this space's streams, and up creates them on a running broker only when every one is gone, as after cotal space delete", { remedy: "restart the stack with cotal down --yes, then cotal up, which creates the missing ones" })
+      ? new CommandFailure("refused", "TARGET_NOT_FOUND", "the running broker is missing some of this space's streams, and up creates them on a running broker only when every one is gone, as after `cotal space delete`", { remedy: "restart the stack with `cotal down --yes`, then `cotal up`, which creates the missing ones" })
       : reusedWithoutJetStream(caught, brokerReused, root, space) ?? caught;
     // A broker this call started that could not create the space's streams serves no stack, and a
     // later up would reuse it and fail the same way. It is stopped again here, so the next up starts
     // a fresh broker, and the run is a failure whose cause its log names.
     const unserved = failedStage === "broker-streams" && startedBroker ? await stopUnservedBroker(space, startedBroker.definition, startedBroker.id) : undefined;
+    // A refusal from the stream setup, such as issued-authority stores created before bounded
+    // retention, stays a refusal: the broker it ran on is stopped again and nothing else started.
+    const refusal = unserved && isCommandFailure(error) && error.outcome === "refused" ? error : undefined;
+    if (unserved && refusal) {
+      mark("broker", { state: "stopped", code: refusal.code });
+      for (const row of journal.members.filter((member) => member.state === "planned")) mark(row.role, { state: "not-attempted" });
+      settle("refused");
+      throw new CommandFailure("refused", refusal.code, refusal.message, { target: { root, space, operation: journal.operation.id, members: journal.members }, changed: [instanceProjection(unserved.stopped)], ...(refusal.remedy ? { remedy: refusal.remedy } : {}) });
+    }
     if (unserved) {
       mark("broker", { state: "stopped", code: "OPERATION_FAILED" });
       for (const row of journal.members.filter((member) => member.state === "planned")) mark(row.role, { state: "not-attempted" });
@@ -974,12 +1006,12 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
         changed: [instanceProjection(unserved.stopped)],
         ...(nativeCause ? { native: nativeCause } : {}),
         remedy: unserved.outOfFiles
-          ? `raise the open-file limit (ulimit -n) of the shell that runs cotal up, then run cotal up again from ${root}`
+          ? `raise the open-file limit (ulimit -n) of the shell that runs \`cotal up\`, then run \`cotal up\` again from ${root}`
           : noStorage
             ? brokerCap !== undefined
-              ? `run cotal up --max-file-store <bytes> from ${root} ${storeRemedy}`
-              : `free space on the filesystem that holds ${brokerStore ?? join(root, ".cotal", "nats")}, or run cotal up --max-file-store <bytes> from ${root} ${storeRemedy}`
-            : `fix what the broker's log${unserved.log ? ` at ${unserved.log}` : ""} names, then run cotal up again from ${root}`,
+              ? `run \`cotal up --max-file-store <bytes>\` from ${root} ${storeRemedy}`
+              : `free space on the filesystem that holds ${brokerStore ?? join(root, ".cotal", "nats")}, or run \`cotal up --max-file-store <bytes>\` from ${root} ${storeRemedy}`
+            : `fix what the broker's log${unserved.log ? ` at ${unserved.log}` : ""} names, then run \`cotal up\` again from ${root}`,
       });
     }
     const failure = isCommandFailure(error) ? error : undefined;
@@ -1004,7 +1036,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
     const cause = pending && failure ? ` (${pending.role}: ${failure.message}${starved !== undefined ? `; the broker's log${starved ? ` at ${starved}` : ""} records that it ran out of open files` : full ? `; the broker's JetStream store ${full.path} is full at its --max-file-store cap of ${full.cap} bytes, so it refuses every write` : ""})` : "";
     // A refusal or failure with no member started or reused leaves nothing of the stack running.
     const none = !uncertain && !journal.members.some((row) => row.state === "started" || row.state === "reused");
-    throw new CommandFailure(outcome, uncertain ? "OPERATION_UNKNOWN" : changed.length ? "OPERATION_PARTIAL" : failure!.code, none ? `the controller stack started no member${cause}; nothing was retried` : `the controller stack did not start every planned member${cause}; started members were kept and nothing was retried`, { target: { root, space, operation: journal.operation.id, members: journal.members, ...(failedStage ? { stage: failedStage } : {}) }, changed, ...(nativeCause ? { native: nativeCause } : {}), remedy: starved !== undefined ? `stop the stack with cotal down --yes from ${root}, raise the open-file limit (ulimit -n) of the shell that runs cotal up, then run cotal up there again` : full ? fullStoreUpRemedy(root, space) : !uncertain && failure?.remedy ? failure.remedy : `inspect the stack's members with cotal service --space ${shellWord(space)} before another cotal up; a later bare cotal down stops only the recorded members` });
+    throw new CommandFailure(outcome, uncertain ? "OPERATION_UNKNOWN" : changed.length ? "OPERATION_PARTIAL" : failure!.code, none ? `the controller stack started no member${cause}; nothing was retried` : `the controller stack did not start every planned member${cause}; started members were kept and nothing was retried`, { target: { root, space, operation: journal.operation.id, members: journal.members, ...(failedStage ? { stage: failedStage } : {}) }, changed, ...(nativeCause ? { native: nativeCause } : {}), remedy: starved !== undefined ? `stop the stack with \`cotal down --yes\` from ${root}, raise the open-file limit (ulimit -n) of the shell that runs \`cotal up\`, then run \`cotal up\` there again` : full ? fullStoreUpRemedy(root, space) : !uncertain && failure?.remedy ? failure.remedy : `inspect the stack's members with ${codeSpan(`cotal service --space ${shellWord(space)}`)} before another \`cotal up\`; a later bare \`cotal down\` stops only the recorded members` });
   }
   if (loginBlock) {
     mark("manager", { state: "not-attempted", code: "AUTH_REQUIRED" });
@@ -1063,7 +1095,7 @@ export function stackMembersView(journal: StackJournal, title: string): Report {
 export function stackUpForegroundNotice(presentation: ReturnType<typeof presentationOf>, space: string, takeover = false): void {
   if (presentation === "json") return;
   const holds = takeover
-    ? "This stack is already running, and this terminal now takes over its lifetime. Ctrl-C or SIGTERM here stops the whole stack, though another command started it, with the same guarded whole-stack stop as bare cotal down, including its manager impact review."
-    : "This terminal holds the stack's lifetime. Ctrl-C or SIGTERM runs the same guarded whole-stack stop as bare cotal down, including its manager impact review.";
-  console.log(renderReport({ space, sections: [{ title: "Foreground stack lifetime", blocks: [{ kind: "lines", lines: [`${holds} Terminal loss or an external kill is not a confirmed stop.`] }] }] }, presentation, terminalWidth(process.stdout)));
+    ? "This stack is already running, and this terminal now takes over its lifetime. Ctrl-C or SIGTERM here stops the whole stack, though another command started it, with the same guarded whole-stack stop as bare `cotal down`, including its manager impact review."
+    : "This terminal holds the stack's lifetime. Ctrl-C or SIGTERM runs the same guarded whole-stack stop as bare `cotal down`, including its manager impact review.";
+  console.log(renderReport({ space, sections: [{ title: "Foreground stack lifetime", blocks: [{ kind: "lines", lines: [`${holds} Terminal loss or an external kill is not a confirmed stop.`] }] }] }, presentation, process.stdout));
 }

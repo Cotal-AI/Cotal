@@ -15,7 +15,7 @@ import { createSuite } from "@cotal-ai/smoke-kit";
 
 const { check, finish } = createSuite();
 const space = "runanswer", endpoint = "manager";
-const caller: IssuedCaller = { owner: "alice", actor: "cli", uid: mintLifecycleUid(), generation: mintGeneration() };
+const caller: IssuedCaller = { owner: "alice", actor: "cli", uid: mintLifecycleUid(), generation: mintGeneration(Math.floor(Date.now() / 1000) + 172_800) };
 const subject = parseEpSubject(epRequestSubject(space, {
   route: { mode: "one" }, endpoint, command: "run-answer", caller, nonce: randomBytes(16).toString("base64url"),
 }));

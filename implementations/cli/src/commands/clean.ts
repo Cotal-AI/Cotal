@@ -15,6 +15,7 @@ import {
   assertSingleSpaceBroker,
   authDir,
   cleanupRestoreFallback,
+  codeSpan,
   deleteSpaceAuth,
   localProcessPath,
   foreignStoreEntries,
@@ -65,7 +66,7 @@ const USER_AUTH_TRUST = "(IdP trust and actor ledger)";
 
 /** What removing a user-auth space's IdP trust and actor ledger leaves the next start to do. */
 export function userAuthTrustNote(done: boolean): string {
-  return `${done ? "Removed" : "Removes"} the IdP trust and the actor ledger of this user-auth space, so every actor grant is lost. A later up needs cotal up --user-auth --idp <auth base URL>, and each actor needs cotal actor grant again.`;
+  return `${done ? "Removed" : "Removes"} the IdP trust and the actor ledger of this user-auth space, so every actor grant is lost. A later up needs \`cotal up --user-auth --idp <auth base URL>\`, and each actor needs \`cotal actor grant\` again.`;
 }
 type Target = (typeof TARGETS)[number];
 
@@ -105,12 +106,12 @@ export async function clean(args: ParsedArgs): Promise<void> {
   // on the root of the folder it runs in, which no flag selects, so they are refused there before any read.
   const meshFlags = (["space", "server", "creds"] as const).filter((flag) => values[flag] !== undefined).map((flag) => `--${flag}`);
   if (meshFlags.length && target !== "history")
-    throw new CommandFailure("refused", "USAGE_INVALID", `${meshFlags.join(", ")} ${meshFlags.length === 1 ? "picks" : "pick"} the mesh for clean history only; clean ${target} acts on the root of the folder it runs in, so nothing was removed`, { remedy: `run cotal clean ${target} in the project folder of the root to clean, without ${meshFlags.join(" or ")}` });
+    throw new CommandFailure("refused", "USAGE_INVALID", `${meshFlags.join(", ")} ${meshFlags.length === 1 ? "picks" : "pick"} the mesh for clean history only; clean ${target} acts on the root of the folder it runs in, so nothing was removed`, { remedy: `run \`cotal clean ${target}\` in the project folder of the root to clean, without ${meshFlags.join(" or ")}` });
   if (!values.force && !dryRun) {
     // The restore verbs act on one attempt, so the command to run names it, as given or as a placeholder.
     const attempt = target === "restore-attempt" || target === "restore-fallback" ? ` --attempt ${values.attempt || "<id>"}` : "";
     const discard = target === "restore-fallback" && values["discard-history"] ? " --discard-history" : "";
-    throw new CommandFailure("refused", "USAGE_INVALID", `clean ${target} deletes without prompting, so it requires --force`, { remedy: `cotal clean ${target}${attempt} --force${discard}` });
+    throw new CommandFailure("refused", "USAGE_INVALID", `clean ${target} deletes without prompting, so it requires --force`, { remedy: `cotal clean ${target}${attempt} --force${discard}`, remedyIsCommand: true });
   }
   if (target === "history") return purgeHistory(values);
 
@@ -172,9 +173,9 @@ export async function clean(args: ParsedArgs): Promise<void> {
       const onlyCopy = leftOut ? active?.restore.previousSource?.identity.path : undefined;
       const oldStore = active?.restore.previousSource?.identity.path;
       const foreign = oldStoreForeignEntries(oldStore);
-      if (foreign.length) throw foreignEntriesRefusal(oldStore!, foreign, "the previous store", "nothing was deleted", `cotal clean restore-fallback --attempt ${values.attempt} --force${values["discard-history"] ? " --discard-history" : ""}`, { root, attemptId: values.attempt });
+      if (foreign.length) throw foreignEntriesRefusal(oldStore!, foreign, "the previous store", "nothing was deleted", `\`cotal clean restore-fallback --attempt ${values.attempt} --force${values["discard-history"] ? " --discard-history" : ""}\``, { root, attemptId: values.attempt });
       if (onlyCopy && !values["discard-history"])
-        throw new MissingFlags(`${values.attempt}: ${restoreLeftOutReason(active!)}, so the previous store at ${onlyCopy} holds the only copy of the ${leftOut} it left out; nothing was deleted`, `keep that store, or delete it and the ${leftOut} it holds with cotal clean restore-fallback --attempt ${values.attempt} --force --discard-history`);
+        throw new MissingFlags(`${values.attempt}: ${restoreLeftOutReason(active!)}, so the previous store at ${onlyCopy} holds the only copy of the ${leftOut} it left out; nothing was deleted`, `keep that store, or delete it and the ${leftOut} it holds with \`cotal clean restore-fallback --attempt ${values.attempt} --force --discard-history\``);
       const record = cleanupRestoreFallback(lock, values.attempt, { discardHistory: values["discard-history"] === true });
       console.log(c.green(record.restore.method === "disaster" ? `✓ retired restore ${record.restore.attemptId}; it replaced a missing source, so no old store was removed` : `✓ removed retained source for restore ${record.restore.attemptId}`));
     } finally {
@@ -201,8 +202,8 @@ export async function clean(args: ParsedArgs): Promise<void> {
   let lock: ReturnType<typeof acquireMaintenanceLock> | undefined;
   const progress: string[] = [];
   const stopReporting = dryRun ? undefined : reportOnInterrupt(presentationOf(args.values), "clean", () => progress.length
-    ? new CommandFailure("unknown", "OPERATION_UNKNOWN", `clean ${target} was interrupted after it removed ${progress.join(", ")}; the rest may remain`, { target: { root }, changed: progress, remedy: `see what remains with cotal clean ${target} --dry-run, then run cotal clean ${target} --force again` })
-    : new CommandFailure("failed", "OPERATION_FAILED", `clean ${target} was interrupted before it removed anything`, { target: { root }, remedy: `run cotal clean ${target} --force again` }),
+    ? new CommandFailure("unknown", "OPERATION_UNKNOWN", `clean ${target} was interrupted after it removed ${progress.join(", ")}; the rest may remain`, { target: { root }, changed: progress, remedy: `see what remains with \`cotal clean ${target} --dry-run\`, then run \`cotal clean ${target} --force\` again` })
+    : new CommandFailure("failed", "OPERATION_FAILED", `clean ${target} was interrupted before it removed anything`, { target: { root }, remedy: `run \`cotal clean ${target} --force\` again` }),
   () => { if (lock) releaseMaintenanceLock(lock); });
   let removed: string[];
   try {
@@ -212,7 +213,7 @@ export async function clean(args: ParsedArgs): Promise<void> {
       // The store holds the attempt's preserved or restored data, so the step that moves the attempt
       // on is the one `cotal status` shows for it.
       const { attemptId, next } = maintenanceNextStep(root, maintenance);
-      throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `clean ${target} is refused while this root holds maintenance attempt ${attemptId} (state ${maintenance.state}); nothing was removed`, { target: { root, attemptId, state: maintenance.state }, remedy: `${next ?? "cotal status shows this root's maintenance state"}; once the root holds no maintenance state and its mesh is stopped, run ${displayCmd()} clean ${target} --force again` });
+      throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `clean ${target} is refused while this root holds maintenance attempt ${attemptId} (state ${maintenance.state}); nothing was removed`, { target: { root, attemptId, state: maintenance.state }, remedy: `${next ?? "cotal status shows this root's maintenance state"}; once the root holds no maintenance state and its mesh is stopped, run \`${displayCmd()} clean ${target} --force\` again` });
     }
     const running = liveMeshProcess(root, undefined, true);
     if (running) {
@@ -252,14 +253,14 @@ export async function clean(args: ParsedArgs): Promise<void> {
   const userAuthRemoved = removed.some((path) => path.endsWith(USER_AUTH_TRUST));
   if (dryRun) {
     for (const path of removed) console.log(`would remove ${path}`);
-    console.log(c.dim(`dry run - nothing was removed; cotal clean ${target}${values["store-dir"] ? ` --store-dir ${shellWord(values["store-dir"])}` : ""} --force removes these`));
-    if (userAuthRemoved) console.error(c.yellow("! this clean would remove the IdP trust and the actor ledger of this user-auth space, so every actor grant would be lost. A later up would need cotal up --user-auth --idp <auth base URL>, and each actor cotal actor grant again"));
+    console.log(c.dim(`dry run - nothing was removed; ${codeSpan(`cotal clean ${target}${values["store-dir"] ? ` --store-dir ${shellWord(values["store-dir"])}` : ""} --force`)} removes these`));
+    if (userAuthRemoved) console.error(c.yellow("! this clean would remove the IdP trust and the actor ledger of this user-auth space, so every actor grant would be lost. A later up would need `cotal up --user-auth --idp <auth base URL>`, and each actor `cotal actor grant` again"));
     if (trustRemoved) console.error(c.yellow("! full backups taken before this clean would no longer restore into this root: each is bound to the space trust it removes. Only their registry would restore, with backup restore <dir> --only registry, and chat and DM history would start empty"));
     return;
   }
   for (const path of removed) console.log(c.green(`✓ removed ${path}`));
   if (target === "all") console.log(c.dim(`a fresh space identity is minted on the next \`cotal up${userAuthRemoved ? " --user-auth --idp <auth base URL>" : ""}\``));
-  if (userAuthRemoved) console.error(c.yellow("! this clean removed the IdP trust and the actor ledger of this user-auth space, so every actor grant is lost. A later up needs cotal up --user-auth --idp <auth base URL>, and each actor needs cotal actor grant again"));
+  if (userAuthRemoved) console.error(c.yellow("! this clean removed the IdP trust and the actor ledger of this user-auth space, so every actor grant is lost. A later up needs `cotal up --user-auth --idp <auth base URL>`, and each actor needs `cotal actor grant` again"));
   if (trustRemoved) console.error(c.yellow("! full backups taken before this clean no longer restore into this root: each is bound to the space trust it removed. Only their registry restores, with backup restore <dir> --only registry, and chat and DM history start empty. Take a new full backup after the next `cotal up`"));
 }
 
@@ -601,7 +602,7 @@ export function safeStoreCleanupPath(root: string, override: string | undefined)
   // so no cleanup removes the folder; its store entries are named for removal by hand.
   if (pathContains(target, canonicalRoot)) {
     const entries = STORE_ENTRY_NAMES.filter((entry) => existsSync(join(target, entry)));
-    throw new CommandFailure("refused", "CONFLICT", `refusing unsafe store cleanup target: ${target} holds this project${target === canonicalRoot ? "'s .cotal" : ` folder ${canonicalRoot}`}; nothing was removed`, { target: { storeDir: target, root: canonicalRoot }, ...(entries.length ? { remedy: `stop the space with cotal down, then remove the store's own entries by hand: rm -r ${entries.map((entry) => shellWord(join(target, entry))).join(" ")}` } : {}) });
+    throw new CommandFailure("refused", "CONFLICT", `refusing unsafe store cleanup target: ${target} holds this project${target === canonicalRoot ? "'s .cotal" : ` folder ${canonicalRoot}`}; nothing was removed`, { target: { storeDir: target, root: canonicalRoot }, ...(entries.length ? { remedy: `stop the space with \`cotal down\`, then remove the store's own entries by hand: rm -r ${entries.map((entry) => shellWord(join(target, entry))).join(" ")}` } : {}) });
   }
   if (override) {
     const generation = join(target, ".cotal-store-id");

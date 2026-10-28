@@ -21,7 +21,7 @@ export async function historyClear(values: Values): Promise<void> {
     writeResult(presentation, { command: "history", target: { space: selected.space, broker: brokerLabel(selected.server) }, result: { kind: "history-clear-preview", dryRun: true, streams, includeDms: values.dms === true, authorization: "not-checked", retainedCounts: "not-checked", purged: false } }, (result): Report => ({ sections: [{ title: "History clear preview", blocks: [{ kind: "fields", rows: [["Space", selected.space], ["Broker", brokerLabel(selected.server)], ["Scope", "all retained channel history"], ["DM history", result.includeDms ? "included" : "not included"], ["Streams", result.streams.join(", ")], ["Authorization and counts", "not checked"]] }, { kind: "lines", lines: ["Offline target preview only. No connection, purge, agent stop, identity reset or caller issuance was attempted."] }] }] }));
     return;
   }
-  if (!values.yes && (!canPrompt() || presentation === "json")) throw new ConfirmationRequired(yesRequired("history clear", presentation === "json"), { remedy: `preview the space-wide scope with cotal history clear${values.dms ? " --dms" : ""} --dry-run, then confirm it with cotal history clear${values.dms ? " --dms" : ""} --yes` });
+  if (!values.yes && (!canPrompt() || presentation === "json")) throw new ConfirmationRequired(yesRequired("history clear", presentation === "json"), { remedy: `preview the space-wide scope with \`cotal history clear${values.dms ? " --dms" : ""} --dry-run\`, then confirm it with \`cotal history clear${values.dms ? " --dms" : ""} --yes\`` });
   const acknowledged: PurgeReceipt[] = [];
   let submitted: string | undefined;
   // A signal from the confirmed clear on ends it where it is, and says what was purged.

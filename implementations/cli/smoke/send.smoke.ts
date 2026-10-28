@@ -272,8 +272,9 @@ try {
     { operatorSend, before: consumersAfterList, after: consumersAfterOperator },
   );
   check(
-    "an agent credential passed with --creds, which holds no Direct Get row, watches presence and its channel send is stored",
-    agentSend.code === 0 && got.some((m) => m.route === "#general" && m.text === agentReadText) && consumersAfterAgent.presence > consumersAfterOperator.presence,
+    "an agent credential passed with --creds holds both batched reads, so it reads once, leaves no consumer, and its channel send is stored (#4091)",
+    agentSend.code === 0 && got.some((m) => m.route === "#general" && m.text === agentReadText) &&
+      consumersAfterAgent.presence === consumersAfterOperator.presence && consumersAfterAgent.channels === consumersAfterOperator.channels,
     { agentSend, before: consumersAfterOperator, after: consumersAfterAgent },
   );
   check(
@@ -452,18 +453,18 @@ try {
   // quoted body used to be told to choose one body, with a remedy for another destination.
   const dash = await run(["send", "-c", "general", "-", "--json"]);
   check("`cotal send -c general -` is refused, names --stdin and --file -, and suggests the same channel",
-    dash.code === 1 && dash.stdout.includes('"code":"USAGE_INVALID"') && dash.stdout.includes('a lone \\"-\\" is not read as stdin; send stdin with --stdin or --file -') && dash.stdout.includes("run cotal send -c general --stdin"), dash);
+    dash.code === 1 && dash.stdout.includes('"code":"USAGE_INVALID"') && dash.stdout.includes('a lone \\"-\\" is not read as stdin; send stdin with --stdin or --file -') && dash.stdout.includes("run `cotal send -c general --stdin`"), dash);
   const empty = await run(["send", "-c", "general", "", "--json"]);
   check("an empty quoted body says the message is empty and suggests the same channel",
-    empty.code === 1 && empty.stdout.includes('"message":"the message is empty"') && empty.stdout.includes('run cotal send -c general \\"<message>\\"'), empty);
+    empty.code === 1 && empty.stdout.includes('"message":"the message is empty"') && empty.stdout.includes('run `cotal send -c general \\"<message>\\"`'), empty);
   // An empty recipient used to be told to choose one body, with a `-t` remedy whatever flag was given.
   const blanks = await Promise.all([["-t", ""], ["--to=", null], ["-r", ""], ["-c", "#"]].map(([option, value]) => run(["send", option!, ...(value === null ? [] : [value!]), "x", "--json"])));
   check("an empty --to, --role or --channel value is refused for that flag, with a remedy that keeps it",
     blanks.every((r) => r.code === 1 && r.stdout.includes('"code":"USAGE_INVALID"') && !r.stdout.includes("exactly one body"))
-      && blanks[0]!.stdout.includes('"message":"--to/-t is empty; name one agent or full instance id"') && blanks[0]!.stdout.includes('run cotal send -t <agent> \\"<message>\\"')
+      && blanks[0]!.stdout.includes('"message":"--to/-t is empty; name one agent or full instance id"') && blanks[0]!.stdout.includes('run `cotal send -t <agent> \\"<message>\\"`')
       && blanks[1]!.stdout.includes('"message":"--to/-t is empty;')
-      && blanks[2]!.stdout.includes('"message":"--role/-r is empty; name one role"') && blanks[2]!.stdout.includes('run cotal send -r <role> \\"<message>\\"')
-      && blanks[3]!.stdout.includes('"message":"--channel/-c is empty; name one channel"') && blanks[3]!.stdout.includes('run cotal send -c <channel> \\"<message>\\"'), blanks);
+      && blanks[2]!.stdout.includes('"message":"--role/-r is empty; name one role"') && blanks[2]!.stdout.includes('run `cotal send -r <role> \\"<message>\\"`')
+      && blanks[3]!.stdout.includes('"message":"--channel/-c is empty; name one channel"') && blanks[3]!.stdout.includes('run `cotal send -c <channel> \\"<message>\\"`'), blanks);
   // A channel or role name the subject rules refuse gets their reason; only a wildcard gets the wildcard one.
   const unsafe = await run(["send", "-c", "kanäle", "x", "--json"]);
   check("`cotal send -c` with a name that is not NATS-safe is USAGE_INVALID, exit 1, naming the segment",
@@ -499,9 +500,9 @@ try {
   const [noFile, dirBody, badBody] = await Promise.all([absentFile, dirFile, notUtf8].map((file) => run(["send", "-c", "general", "--file", file])));
   // Each block begins with the mesh and ends with a Next that keeps the destination, as a refusal after connecting does.
   check("a missing, directory or non-UTF-8 --file is each refused in one classified block naming the path and the mesh, with a Next and without the usage block",
-    noFile.code === 2 && /Code: +TARGET_NOT_FOUND/.test(noFile.stderr) && noFile.stderr.includes(`"${absentFile}" does not exist`) && noFile.stderr.includes('check the path, or run cotal send -c general "<message>"')
-      && dirBody.code === 1 && /Code: +USAGE_INVALID/.test(dirBody.stderr) && dirBody.stderr.includes(`"${dirFile}" is a directory; --file reads one file`) && dirBody.stderr.includes('give --file one file in it, or run cotal send -c general "<message>"')
-      && badBody.code === 1 && /Code: +USAGE_INVALID/.test(badBody.stderr) && badBody.stderr.includes(`"${notUtf8}" is not valid UTF-8`) && badBody.stderr.includes('save it as UTF-8 text, or run cotal send -c general "<message>"')
+    noFile.code === 2 && /Code: +TARGET_NOT_FOUND/.test(noFile.stderr) && noFile.stderr.includes(`"${absentFile}" does not exist`) && noFile.stderr.includes('check the path, or run `cotal send -c general "<message>"`')
+      && dirBody.code === 1 && /Code: +USAGE_INVALID/.test(dirBody.stderr) && dirBody.stderr.includes(`"${dirFile}" is a directory; --file reads one file`) && dirBody.stderr.includes('give --file one file in it, or run `cotal send -c general "<message>"`')
+      && badBody.code === 1 && /Code: +USAGE_INVALID/.test(badBody.stderr) && badBody.stderr.includes(`"${notUtf8}" is not valid UTF-8`) && badBody.stderr.includes('save it as UTF-8 text, or run `cotal send -c general "<message>"`')
       && [noFile, dirBody, badBody].every((r) => r.stderr.startsWith(`Mesh: ${space}\n`) && r.stderr.includes("Request refused") && /\nNext\n/.test(r.stderr) && !r.stderr.includes("Usage")), { noFile, dirBody, badBody });
 
   // The broker's default limit is 1 MiB. A body over it used to report a possibly stored message.

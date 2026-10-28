@@ -211,14 +211,14 @@ try {
   const stuck = () => "unknown" as const;
 
   writeFileSync(mgrPid, `${process.pid}\n`); // a LIVE holder, the dual review proved was overwritten
-  check("managerLiveness surfaces UNKNOWN rather than folding it to a boolean", managerLiveness(stuck) === "unknown");
+  check("managerLiveness surfaces UNKNOWN rather than folding it to a boolean", managerLiveness(undefined, root, { probe: stuck }) === "unknown");
   // An `unknown` liveness is never attributed: there is no process established to look at. This
   // pins that the command read is not what produces the verdict here — a reader that ran anyway
   // would resolve this record (a live pid, not a manager) to `foreign` and lose the refusal below.
   const before = readFileSync(mgrPid, "utf8");
   let refused: string | undefined;
   try {
-    await ensureManager({}, stuck);
+    await ensureManager({}, { probe: stuck });
   } catch (e) {
     refused = (e as Error).message;
   }

@@ -30,13 +30,13 @@
 import { strict as assert } from "node:assert";
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  assertRecordIdentity, darwinProcessStartToken, defaultStartToken, formatRecord, identityPinPath, identityStartToken, parsePid, parseRecord,
-  parseWin32CreationToken, startTokenReaderFor, verifyIdentityPin, win32ProcessCreationToken, writeIdentityPin, writePidPair, type RecordReplaceIo,
+  assertRecordIdentity, darwinProcessStartToken, defaultStartToken, formatRecord, identityPinPath, identityStartToken, identityUncertaintyRefusal, parsePid, parseRecord,
+  parseWin32CreationToken, removePidPair, startTokenReaderFor, verifyIdentityPin, win32ProcessCreationToken, writeIdentityPin, writePidPair, type PinVerdict, type RecordReplaceIo,
 } from "../src/pid.js";
 import { processStartToken as lstartReader } from "../src/advisory-lock.js";
 import { requestLocalStop } from "../src/local-stop.js";
@@ -137,6 +137,42 @@ try {
     let thrown: unknown;
     try { verifyIdentityPin(unreadable); } catch (e) { thrown = e; }
     check("N4 a pidfile that cannot be read throws, naming it", thrown instanceof Error && thrown.message.includes(unreadable), String(thrown));
+  }
+
+  // ── U. A PIN THAT EXISTS BUT CANNOT BE READ proves nothing about a live pid (#3136), and a
+  //      directory at the pin path is refused by name rather than removed (#3750). ───────────────
+  if (process.getuid?.() !== 0) {
+    const pinned = join(root, ".cotal", "unreadable-pin.pid");
+    writeFileSync(pinned, String(process.pid));
+    writeFileSync(identityPinPath(pinned), formatRecord({ pid: process.pid, token: defaultStartToken(process.pid)! }));
+    chmodSync(identityPinPath(pinned), 0o000);
+    const verdict = verifyIdentityPin(pinned);
+    check("U1 an unreadable pin on a live pid is the unreadable-pin verdict, never legacy", verdict.kind === "unreadable-pin" && (verdict as { why?: string }).why === "EACCES", verdict);
+    const refusal = identityUncertaintyRefusal("probe", pinned, verdict as Extract<PinVerdict, { kind: "unreadable-pin" }>);
+    check("U2 …and the shared refusal names the pin, the reason and the record's preservation",
+      refusal.message.includes(identityPinPath(pinned)) && refusal.message.includes("EACCES") && refusal.message.includes("preserved"), refusal.message);
+    chmodSync(identityPinPath(pinned), 0o600);
+    const dead = join(root, ".cotal", "unreadable-pin-dead.pid");
+    writeFileSync(dead, "999999");
+    writeFileSync(identityPinPath(dead), formatRecord({ pid: 999999, token: "t" }));
+    chmodSync(identityPinPath(dead), 0o000);
+    check("U3 an unreadable pin on a dead pid still reads gone, so the stale record clears", verifyIdentityPin(dead).kind === "gone");
+    chmodSync(identityPinPath(dead), 0o600);
+  } else {
+    console.log("  (U1-U3 skipped: root reads a mode-000 file)");
+  }
+  {
+    const dirPin = join(root, ".cotal", "dir-pin.pid");
+    writeFileSync(dirPin, "4321\n");
+    mkdirSync(identityPinPath(dirPin));
+    writeFileSync(join(identityPinPath(dirPin), "keep"), "not ours");
+    let thrown: unknown;
+    try { removePidPair(dirPin, "4321"); } catch (e) { thrown = e; }
+    // Node's own EISDIR also names the path, so the cell demands the module's refusal, not the raw error.
+    check("U4 a directory at the pin path refuses the removal by name, as the module's own refusal",
+      thrown instanceof Error && thrown.message.startsWith("refusing to remove the record at ") && thrown.message.includes(identityPinPath(dirPin)) && thrown.message.includes("is a directory"), String(thrown));
+    check("U5 …and keeps the record, the directory and what it holds",
+      existsSync(dirPin) && existsSync(join(identityPinPath(dirPin), "keep")));
   }
 
   // ── A. THE MISMATCH REFUSAL on the delivery daemon's own stop path (#969 acceptance 1) ─────

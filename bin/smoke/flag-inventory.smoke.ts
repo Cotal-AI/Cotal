@@ -92,11 +92,18 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
       // `--auth-timeout` (2026-10): the broker's auth callout timeout, threaded to the auth-service
       // daemon as its callout deadline; every auth-service inventory carries it.
       "auth-timeout:string",
+      // `--max-payload` (2026-10): the broker's own `max_payload`, which service endpoint caller
+      // grants need at or above the caller floor. The auth-service daemon does not take it: the
+      // broker configuration renders it and the auth host observes it.
+      "max-payload:string",
       // `--no-manager` (2026-09): broker-only boot, the broker and in auth mode the delivery daemon (#1856).
       "no-manager:boolean",
       // `--service-endpoints` (2026-10, #4396): hosts the service endpoint authority door and host
       // route, threaded to the auth-service daemon; every auth-service inventory carries it.
       "service-endpoints:boolean",
+      // `--recreate-issued-stores` (2026-10): on a fresh broker start, back up the space's pre-0.111.0
+      // issued-authority stores into a new directory, delete them and create them again.
+      "recreate-issued-stores:string",
       "store-dir:string", "tls-cert:string", "tls-key:string", "user-auth:boolean",
     ],
     positionals: false,
@@ -223,8 +230,9 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   // auth service's host route, plus the reads behind them.
   "service-endpoint": {
     flags: [
-      "caller-ceiling:string", "claim:string", "json:boolean:j", "owner:string", "plain:boolean",
-      "request-id:string", "space:string:s",
+      "caller-ceiling:string", "claim:string", "commands:string", "cursor:string", "json:boolean:j",
+      "lifecycle:string", "owner:string", "plain:boolean", "request-id:string", "space:string:s",
+      "to:string",
     ],
     positionals: true,
   },
@@ -310,14 +318,14 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     // `--root` (2026-10): name the workspace root instead of inheriting it from the cwd walk.
     flags: [
       "creds:string", "dev-mint:boolean", "durable:string", "json:boolean", "limit:string",
-      "root:string", "server:string", "shard:string", "shards:string", "space:string", "tls:boolean",
+      "root:string", "server:string", "shard:string", "shards:string", "space:string", "spaces:string", "tls:boolean",
     ],
     positionals: true,
   },
   "__daemon-deliver": {
     flags: [
       "creds:string", "dev-mint:boolean", "durable:string", "json:boolean", "limit:string",
-      "root:string", "server:string", "shard:string", "shards:string", "space:string", "tls:boolean",
+      "root:string", "server:string", "shard:string", "shards:string", "space:string", "spaces:string", "tls:boolean",
     ],
     positionals: true,
   },

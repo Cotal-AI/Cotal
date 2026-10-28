@@ -50,7 +50,7 @@ export function standaloneCallerIntent(input: unknown): StandaloneCallerIntent {
   const output = text(value.output, 4096), space = text(value.space, 200), endpoint = text(value.endpoint, 253);
   // The record keeps the dotted endpoint name that describe and invoke compare and grant against.
   try { endpointToken(endpoint); }
-  catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "the local caller intent does not name an endpoint; no caller was read from it", { remedy: "issue a new caller with cotal auth mint <name> --endpoint <endpoint> --out <new-private-file>" }); }
+  catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "the local caller intent does not name an endpoint; no caller was read from it", { remedy: "issue a new caller with `cotal auth mint <name> --endpoint <endpoint> --out <new-private-file>`" }); }
   if (!isAbsolute(output) || !Array.isArray(value.channels) || value.channels.length > 8192 || !(value.expiresInSeconds === null || Number.isSafeInteger(value.expiresInSeconds) && Number(value.expiresInSeconds) > 0)) throw new CommandFailure("refused", "SCHEMA_INVALID", "the local caller path, channels or requested expiry is invalid");
   const channels = value.channels.map((channel) => assertValidChannel(text(channel, 1024)));
   const identity = text(value.identity, 64), lifecycleUid = assertLifecycleToken(text(value.lifecycleUid, 200));

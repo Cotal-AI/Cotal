@@ -46,7 +46,7 @@ export function maintenanceAdmits(root: string, server: string, context: Service
 async function prepareStop(context: ServiceAdapterStopContext): Promise<ServiceAdapterStopPlan> {
   if (context.preserved && context.withAgents) throw new CommandFailure("refused", "USAGE_INVALID", "a preserved-exit stop retains agents; --with-agents cannot be combined with it");
   let observation: Awaited<ReturnType<typeof observeManagerService>>;
-  try { observation = await observeManagerService(context); }
+  try { observation = await observeManagerService(context, { stop: true }); }
   catch (error) {
     // A manager that does not answer cannot report its stop impact, so no stop is submitted. Its
     // process is the operator's to end, and a stop run after that finds it gone.

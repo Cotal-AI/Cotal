@@ -137,7 +137,7 @@ try {
   check("with the manager gone, status leads its Next with up --root, the folder quoted so it pastes as one word", shellWords(hint) === `${root}\n`, { hint, out: status.out });
   const ps = cli("ps");
   check("ps refuses: no manager is running for this space", ps.status === 2 && ps.out.includes("no manager is running for this space"), ps.out);
-  check("...and its Next names bare cotal up", ps.out.includes("start the stack's manager with bare cotal up"), ps.out);
+  check("...and its Next names bare cotal up", ps.out.includes("start the stack's manager with bare `cotal up`"), ps.out);
   // The crashed manager is still registered, so chat waits out its describe and then refuses, since
   // no session was asked for.
   const crashedChat = cli("chat", "general", "--plain");
@@ -164,7 +164,7 @@ try {
   const chat = cli("chat", "general", "--plain");
   const chatMs = Date.now() - chatFrom;
   check("chat refuses at once: no manager is running to admit a chat session", chat.status === 2 && chat.out.includes("no manager is running for this space to admit a chat session") && chatMs < 8_000, { ms: chatMs, out: chat.out });
-  check("...and its Next names bare cotal up", chat.out.includes("start the stack's manager with bare cotal up"), chat.out);
+  check("...and its Next names bare cotal up", chat.out.includes("start the stack's manager with bare `cotal up`"), chat.out);
   const afterTerm = cli("up");
   check("up starts the manager after its SIGTERM stop", afterTerm.status === 0, afterTerm.out);
   check("...and ps is answered", cli("ps").status === 0);
@@ -187,7 +187,7 @@ try {
   check("down refuses a manager that does not answer, naming its pid", refused.status === 2 && refused.out.includes("LIFECYCLE_BLOCKED") && refused.out.includes(`the manager process ${hung} is running but did not answer its endpoint`) && refused.out.includes("no stop was submitted"), refused.out);
   check("...and its Next ends that process", refused.out.includes(`end that process with kill -KILL ${hung}; the same command then finds it gone and goes on`), refused.out);
   const silentPs = cli("ps");
-  check("ps names the running manager that did not answer, by pid, with the way out", silentPs.status === 2 && silentPs.out.includes("TARGET_UNAVAILABLE") && silentPs.out.includes(`this space's stack manager (pid ${hung}) is running but did not answer`) && silentPs.out.includes(`end that process with kill -KILL ${hung}; then bare cotal up starts the manager again`), silentPs.out);
+  check("ps names the running manager that did not answer, by pid, with the way out", silentPs.status === 2 && silentPs.out.includes("TARGET_UNAVAILABLE") && silentPs.out.includes(`this space's stack manager (pid ${hung}) is running but did not answer`) && silentPs.out.includes(`end that process with kill -KILL ${hung}; then bare \`cotal up\` starts the manager again`), silentPs.out);
   const silentRun = cli("run", "ps");
   check("run ps refuses TARGET_UNAVAILABLE, exit 2, and points to status", silentRun.status === 2 && silentRun.out.includes("TARGET_UNAVAILABLE") && silentRun.out.includes("cotal status shows whether this space's manager answers"), silentRun.out);
   if (hung !== undefined) process.kill(hung, "SIGKILL");

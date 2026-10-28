@@ -645,7 +645,9 @@ resolve refuses the spawn and starts nothing, and the other seats keep the runti
 members to a real channel as durable membership rows: the channel derives from the step's own
 request id when the program names none (a program-named channel is borrowed, never torn down, and
 a membership that predates the conclave survives its close), each member handle resolves to its
-principal through the seat's own presence row (an absent member is catchable as L4002), and a
+principal through the seat's own presence row (an absent member is catchable as L4002), each
+member's row is written under that lifecycle's exact read ACL (read just before the write and again
+after it, so a member retiring meanwhile gets no row and keeps none), and a
 conclave cancelled on a losing branch is released by the same cancellation sweep. `ask` parks one
 checkpoint-plane pause per attempt, answered through `cotal run answer` as a checkpoint is, and
 tells the agent through the same relay `turn` uses: one relay per attempt under the attempt's own
@@ -689,7 +691,8 @@ a monitored agent, and refuses one the run never performed `monitor` on. It read
 same witness a conclave join resolves members through: the value carries the handle, the reason
 (`lapsed` when nothing live holds the name any more, `superseded` when a live row holds it under
 a different incarnation) and the time of observation. Presence liveness skips any value without a
-string `card.id` and `card.name`, so a participant that publishes a malformed row under its own key
+string `card.id` equal to its key, a string `card.name`, a known `status` and a finite `ts`, so a
+participant that publishes a malformed row under its own key
 cannot fail another run's wait, turn or conclave join. A superseded incarnation is down at once. A
 lapsed one is down only after its presence row has stayed gone for 30 seconds, because a seat whose
 connector stalls past the row's 6-second TTL, under host load or across a reconnect, renews it under
@@ -712,8 +715,9 @@ pulls when a notice arrives, when it first connects, and after a reconnect while
 so an idle seat sends no requests ([SPEC §14.3](../SPEC.md#143-the-run-record)). The payload the seat reads names the run and the
 step and carries the rendered run context, plus any pending notices addressed to it, which the
 turn consumes. The seat yields through `cotal_yield` (`done`, `blocked`, or `handoff` with an
-addressee), and ending its host turn yields `done` for every turn it was shown. A `handoff` names
-another seat the same run spawned: the next `turn` in the same scope to that seat records the
+addressee), and ending its host turn yields `done` for every turn it was shown. A
+`cotal_status` call changes presence only, including when it sets `idle`. It does not yield a turn.
+A `handoff` names another seat the same run spawned: the next `turn` in the same scope to that seat records the
 link, a handoff to a name the run never spawned is the catchable L4005, and one to a seat bound
 to a different worktree is L4004. The deadline elapsing before any yield is the catchable L4003:
 the acceptance names the instant, the manager's goal-bound hold denies at it, and the run arms its

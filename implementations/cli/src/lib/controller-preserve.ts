@@ -112,7 +112,7 @@ async function provePreservedExitCapability(journal: StackJournal, manager: Memb
     if (!auth) epoch = await openReceiptEpoch(context, value.process!, binding.native, unsupported);
     else {
       const caller = auth.bearer !== undefined && auth.managerInstanceId !== undefined ? await issuedUserCaller(nc, journal.space, String(options.name), auth.epCaller!) : auth.epCaller!;
-      const service = await resolveService(nc, journal.space, MANAGER_ENDPOINT, caller, { instanceId: value.instanceId, deadlineMs: 5000 });
+      const service = await resolveService(nc, journal.space, MANAGER_ENDPOINT, caller, { instanceId: value.instanceId, deadlineMs: 5000, commands: ["status"] });
       if (service.responder.instanceId !== binding.native.instanceId || service.owner !== binding.native.principal.owner) return unsupported("its attributed instance differs");
       if (service.commands.get("status")?.contract.output.closureDigest !== statusRow.outputDigest)
         refuse("CONFLICT", "the instance's described status contract differs from its served-contract file; nothing was changed", { space: journal.space, instanceId: value.instanceId });
@@ -201,7 +201,7 @@ export async function preserveControllerStack(rootInput: string, storeOverride: 
     // A completed restore keeps its journal, and a new cut begins only after that journal is retired.
     if (existing?.state === "active")
       refuse("LIFECYCLE_BLOCKED", "a completed restore still holds this root's maintenance journal; a new preserve begins only after it is retired, so nothing was stopped", { root, space, attemptId: existing.restore.attemptId },
-        existing.restore.previousSource ? `review it with cotal backup cleanup-fallback ${existing.restore.attemptId} --dry-run, then run it without --dry-run to remove only the retained old store and retire the journal` : undefined);
+        existing.restore.previousSource ? `review it with \`cotal backup cleanup-fallback ${existing.restore.attemptId} --dry-run\`, then run it without --dry-run to remove only the retained old store and retire the journal` : undefined);
     if (existing && (!existingCut || existingCut.stackOperationId !== journal0.operation.id || !["cut-intent", "cut-committed", "ready"].includes(existing.state)))
       refuse("LIFECYCLE_BLOCKED", "this root retains another maintenance attempt; the controller preserve did not continue it", { root, space, state: existing.state });
     if (existing?.state === "ready") {
@@ -210,16 +210,16 @@ export async function preserveControllerStack(rootInput: string, storeOverride: 
     }
     // A retry checks the stack's scope again before any further stop.
     if (existing?.state === "cut-committed") {
-      stackScopeRefusals(journal0, "cotal down --preserve-state");
+      stackScopeRefusals(journal0, "`cotal down --preserve-state`");
       return await finishCommittedCut(lock, root, space, journal0, sessionStores);
     }
     if (existing?.state === "cut-intent")
       hold("a controller cut intent is retained without its recorded commit; it was not aborted or continued", { root, space, attemptId: existing.cut.attemptId }, "inspect the manager's preservation state and the maintenance journal before any action");
     if (["planned", "applying", "unknown"].includes(journal0.operation.phase))
-      hold("an earlier whole-stack operation on this root has no settled outcome; it was not retried", { root, space, operation: journal0.operation }, "inspect each member with cotal service status");
+      hold("an earlier whole-stack operation on this root has no settled outcome; it was not retried", { root, space, operation: journal0.operation }, "inspect each member with `cotal service status`");
     const members = cutMembers(journal0);
     // A read: what the broker's stop would cut off refuses before any effect.
-    stackScopeRefusals(journal0, "cotal down --preserve-state");
+    stackScopeRefusals(journal0, "`cotal down --preserve-state`");
     const manager = members.find((row) => row.role === "manager")!;
     // A read. A refusal here has written nothing and stopped nothing.
     const capability = await provePreservedExitCapability(journal0, manager);
@@ -236,7 +236,7 @@ export async function preserveControllerStack(rootInput: string, storeOverride: 
     if (delivery) {
       const definition = serviceDefinitionStore(space).read(delivery.instance.record.value.definition)!;
       const stopped = await stopProcessService(definition, delivery.instance);
-      if (!stopped.instance.record.value.processStop) hold("the delivery fence recorded no exit receipt of its own; preservation did not continue", { root, space }, `inspect cotal service status ${STACK_DEFINITION.delivery} --instance ${delivery.instance.name} --space ${space}`);
+      if (!stopped.instance.record.value.processStop) hold("the delivery fence recorded no exit receipt of its own; preservation did not continue", { root, space }, `inspect \`cotal service status ${STACK_DEFINITION.delivery} --instance ${delivery.instance.name} --space ${space}\``);
     }
     let inventory: unknown;
     try {

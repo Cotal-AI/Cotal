@@ -168,7 +168,7 @@ export function commitPersona(path: string, expected: PersonaSource | undefined,
       throw new CommandFailure("refused", "CONFLICT", `persona ${current === undefined ? "was removed" : "changed"} while the operation was open: ${path}`, { remedy: current === undefined ? "list the catalog with `cotal persona` and retry" : "read the current definition and retry" });
     const twin = current === undefined && bytes !== undefined ? caseTwin(path) : undefined;
     if (twin !== undefined)
-      throw new CommandFailure("refused", "CONFLICT", `persona '${basename(path, ".md")}' differs from the existing '${twin}' only in case; nothing was written`, { remedy: `choose another name, or change the existing one with cotal persona edit ${twin}` });
+      throw new CommandFailure("refused", "CONFLICT", `persona '${basename(path, ".md")}' differs from the existing '${twin}' only in case; nothing was written`, { remedy: `choose another name, or change the existing one with \`cotal persona edit ${twin}\`` });
     if (bytes === undefined) unlinkSync(path);
     else writeSecretFileAtomic(path, bytes);
   } finally { lock.release(); }
@@ -313,14 +313,14 @@ export async function editPersona(path: string, name: string, catalog: PersonaCa
     }
     const edited = requirePersonaSource(draft).bytes;
     if (edited.equals(source.bytes)) return { action: "unchanged" };
-    const oversized = tooLarge(edited, `your edit is kept in ${draft}; shorten it to 1 MiB or less, run cotal persona edit ${name} again and paste it in, then remove ${dirname(draft)}`);
+    const oversized = tooLarge(edited, `your edit is kept in ${draft}; shorten it to 1 MiB or less, run \`cotal persona edit ${name}\` again and paste it in, then remove ${dirname(draft)}`);
     if (oversized) { keep = true; throw oversized; }
     try { validatePersona(edited, draft); }
     catch (error) {
       if (!isCommandFailure(error)) throw error;
       keep = true;
       throw new CommandFailure("refused", "SCHEMA_INVALID", `${error.message} - not saved`, {
-        remedy: `your edit is kept in ${draft}; correct it, run cotal persona edit ${name} again and paste it in, then remove ${dirname(draft)}`,
+        remedy: `your edit is kept in ${draft}; correct it, run \`cotal persona edit ${name}\` again and paste it in, then remove ${dirname(draft)}`,
       });
     }
     try { commitPersona(path, source, edited); }

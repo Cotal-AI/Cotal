@@ -15,24 +15,50 @@
  * `backup create` included, which crashed with Node's stack trace. Help there says the folder no
  * longer exists.
  *
+ * Every command and subcommand `cotal help` lists shows one to three examples, each a whole command
+ * with a note on what it does, which parses under the options its help lists. They come right after
+ * Usage and Shorthands, before Commands and Options; they used to come last, after the options, as
+ * bare command lines, and most commands had none.
+ *
+ * `cotal <command> --help` prints the same help as `cotal help <command>` for every command and
+ * subcommand `cotal help` lists. `manager <verb> --help` showed the service command's summary while
+ * `help manager <verb>` listed only --json and --plain under Options, and `ext seed --help` printed
+ * the `ext` help.
+ *
+ * The `persona create` example runs as written against a fresh Cotal home; it lacked the
+ * `--subscribe ""` a persona body needs. A usage refusal shows the help `--help` prints for the same
+ * words, so a refused `persona create` shows its own help; it showed the `persona` help.
+ *
  * A usage that declares several forms, one per line, as `linear` does, shows each form on its own
  * lines; help printed them joined by an escaped `\u000a`. A flag a `linear` operation does not take
  * is refused naming it and that operation's flags and usage, without the help: `serve --json` says
  * serve has no --json or --plain output.
  *
+ * On an 80-column pty a command wider than the line keeps one line: the exec-endpoint `next:` of
+ * `cotal service` and the remedy of its `service add` refusal, which each broke onto a second line.
+ * A span in backticks that is no command is one word too: the Next of `daemon install --dry-run`
+ * where no user manager answers split `systemctl --user show-environment` after `--user`.
+ *
  * Driven through the built binary in a sandboxed HOME, XDG_CONFIG_HOME and COTAL_HOME, with the
- * built `@cotal-ai/linear` extension imported for its cells. Nothing is started or deleted.
+ * built `@cotal-ai/linear` extension imported for its cells. The examples census renders each help
+ * in this process from the built surfaces the binary composes, and runs both help forms of each
+ * through the binary. Nothing is started or deleted.
  *
  * Run: pnpm smoke:usage-format
  */
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { findCommand, findSubcommand, parseCommandArgs, registry, type Command, type ParsedArgs, type Subcommand } from "@cotal-ai/core";
 import { assertSmokeSandboxDown, createSuite, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
+import { displayWidth } from "@cotal-ai/workspace";
+import ts from "typescript";
+import { clean, nodePty } from "./_console-pty.js";
 
-const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
+const REPO = join(import.meta.dirname, "..", "..", "..");
+const BIN = join(REPO, "bin", "dist", "cotal.js");
 if (!existsSync(BIN)) {
   console.error(`✗ ${BIN} missing - build first: pnpm --filter cotal-ai... build`);
   process.exit(1);
@@ -134,6 +160,244 @@ for (const [args, usage, foreign] of [
   check(`${args.join(" ")} prints the usage ${usage.trim()} and no other subcommand's options`, r.status === 0 && r.stdout.includes(`Usage\n  ${usage}`) && !foreign?.test(r.stdout), shown(r));
 }
 
+// On an 80-column terminal a command wider than the line keeps one line: the exec-endpoint `next:`
+// of `cotal service` broke before `--handler <file>`, and the remedy of its `service add` refusal
+// before `<file>`, in the refusal line and under `--plain` in its Next.
+{
+  const root = join(home, "wide-next");
+  mkdirSync(root);
+  const created = run(["space", "create", "widenext", "--root", root]);
+  const at80 = async (args: string[], ptyEnv: Record<string, string> = env as Record<string, string>): Promise<string[]> => {
+    let out = "";
+    const pty = nodePty([BIN, ...args], { cwd: neutral, env: ptyEnv, cols: 80, rows: 200 });
+    pty.onData((data) => { out += data; });
+    await new Promise<void>((resolve) => pty.onExit(() => resolve()));
+    return clean(out).split(/\r?\n/);
+  };
+  const command = "cotal service add <name> --preset exec-endpoint --contract <file> --handler <file>";
+  const listed = await at80(["service", "--space", "widenext"]);
+  check(`cotal service on 80 columns keeps the ${command.length}-column exec-endpoint next: command on one line`, created.status === 0 && listed.some((line) => line.trim() === command), { created: shown(created), listed });
+  for (const flags of [[], ["--plain"]]) {
+    const refused = await at80(["service", "add", "myep", "--preset", "exec-endpoint", "--space", "widenext", ...flags]);
+    check(`the service add refusal on 80 columns${flags.length ? " under --plain" : ""} keeps its remedy command on one line`, refused.some((line) => line.trim() === command.replace("<name>", "myep")), refused.slice(0, 16));
+  }
+  // A logged-in user with a private runtime directory and no session bus reaches no user manager, so
+  // the dry run refuses before it renders a unit. Its Next split the span after `--user`.
+  if (process.platform === "linux") {
+    const runtime = join(home, "no-user-manager");
+    mkdirSync(runtime, { mode: 0o700 });
+    const { DBUS_SESSION_BUS_ADDRESS: _bus, ...noBus } = env as Record<string, string>;
+    const span = "`systemctl --user show-environment`";
+    for (const flags of [[], ["--plain"]]) {
+      const refused = await at80(["daemon", "install", "--dry-run", ...flags], { ...noBus, USER: userInfo().username, LOGNAME: userInfo().username, XDG_RUNTIME_DIR: runtime });
+      const next = refused.slice(refused.indexOf("Next") + 1);
+      check(`the daemon install --dry-run refusal on 80 columns${flags.length ? " under --plain" : ""} keeps ${span} whole in its Next`,
+        refused.includes("Next") && next.some((line) => line.includes(`${span} answers`)) && refused.every((line) => displayWidth(line) <= 80), refused.slice(0, 16));
+    }
+  }
+}
+
+// Every command and subcommand `cotal help` lists shows one to three examples, the most common use
+// first, each a whole command with a note on what it does. Each example parses under the options its
+// help lists and selects that subcommand. Examples follow Usage and Shorthands, before Commands and
+// Options, and on 80 columns each command is one line that fits, with its note beside it or under it.
+{
+  const built = (path: string): Promise<unknown> => import(pathToFileURL(join(REPO, path)).href);
+  // The surfaces the composition root imports (bin/run.ts); each registers its commands.
+  for (const surface of ["implementations/cli/dist/index.js", "implementations/manager/dist/index.js", "implementations/delivery/dist/index.js", "implementations/runtime/dist/index.js", "implementations/auth/dist/index.js", "bin/dist/docs.js", "bin/dist/daemon/command.js"]) await built(surface);
+  const { printHelpPath } = (await built("implementations/cli/dist/help.js")) as typeof import("../src/help.js");
+  const { servicePresetCommand } = (await built("implementations/cli/dist/lib/service-presets.js")) as typeof import("../src/lib/service-presets.js");
+  const { managerServiceCommand } = (await built("implementations/cli/dist/commands/manager-service.js")) as typeof import("../src/commands/manager-service.js");
+  const commands = registry.all<Command>("command").filter((cmd) => !cmd.name.startsWith("__") && !cmd.hidden);
+  const listing = run(["help"]).stdout;
+  const listed = listing.slice(listing.indexOf("Help does not check services.")).split("\n").flatMap((line) => /^ {2}([a-z][\w-]*)[, ]/.exec(line)?.[1] ?? []);
+  check("the examples census walks every command cotal help lists", listed.length > 30 && JSON.stringify([...listed].sort()) === JSON.stringify(commands.map((cmd) => cmd.name).sort()), { listed, walked: commands.map((cmd) => cmd.name) });
+  const words = (line: string): string[] => [...line.matchAll(/"([^"]*)"|'([^']*)'|(\S+)/g)].map((match) => match[1] ?? match[2] ?? match[3]!);
+  // How an example's words reach a parser, as the dispatcher reads them: a service takes its preset's
+  // flags, and `manager <verb>` is `service <verb> manager`.
+  const problemsOf = (cmd: Command, path: readonly string[], command: string): string[] => {
+    const [program, word, ...rest] = words(command);
+    if (program !== "cotal" || findCommand([cmd], word) !== cmd) return [`${command}: does not run cotal ${cmd.name}`];
+    const lifecycle = managerServiceCommand(cmd, rest);
+    const target = lifecycle?.cmd ?? servicePresetCommand(cmd, rest);
+    let parsed: ParsedArgs;
+    try { parsed = parseCommandArgs(target, lifecycle?.argv ?? rest); } catch (error) { return [`${command}: ${(error as Error).message}`]; }
+    let selected: Command | Subcommand = target;
+    const chosen: string[] = [];
+    for (const positional of parsed.positionals) {
+      const sub = findSubcommand(selected, positional);
+      if (!sub || sub.hidden) break;
+      chosen.push(sub.name);
+      selected = sub;
+    }
+    const problems: string[] = [];
+    if (path.some((name, i) => chosen[i] !== name)) problems.push(`${command}: selects ${chosen.join(" ") || "no subcommand"}, not ${path.join(" ")}`);
+    const unlisted = Object.keys(parsed.values).filter((name) => selected.flagNames && !selected.flagNames.includes(name));
+    if (unlisted.length) problems.push(`${command}: --${unlisted.join(", --")} is not among the options its help lists`);
+    return problems;
+  };
+  const paths: string[][] = [];
+  const census = (cmd: Command, path: readonly string[], node: Command | Subcommand): void => {
+    paths.push([cmd.name, ...path]);
+    const examples = node.examples ?? [];
+    const problems: string[] = [];
+    if (examples.length < 1 || examples.length > 3) problems.push(`declares ${examples.length} examples`);
+    const lines: string[] = [];
+    printHelpPath(cmd, path, (line) => lines.push(...line.replace(/\x1b\[[0-9;]*m/g, "").split("\n")), 80);
+    const at = lines.indexOf("Examples");
+    const end = lines.indexOf("", at);
+    const section = lines.slice(at + 1, end === -1 ? undefined : end);
+    if (at === -1 || at < Math.max(lines.indexOf("Usage"), lines.indexOf("Shorthands")) || ["Commands", "Options"].some((title) => lines.includes(title) && lines.indexOf(title) < at)) problems.push(`Examples is not between Usage and Commands or Options: ${lines.join(" | ").slice(0, 300)}`);
+    for (const example of examples) {
+      if (typeof example === "string") { problems.push(`${example}: has no note`); continue; }
+      const { command, note } = example;
+      if (!note || note.length > 60 || note.endsWith(".")) problems.push(`${command}: its note "${note}" is empty, over 60 characters or ends with a period`);
+      if (!section.some((line) => line.startsWith(`  ${command}`) && displayWidth(line) <= 80) || !section.join(" ").replace(/\s+/g, " ").includes(`${command} ${note}`)) problems.push(`${command}: is not one line that fits 80 columns with its note: ${section.join(" | ")}`);
+      problems.push(...problemsOf(cmd, path, command));
+    }
+    check(`${["cotal", cmd.name, ...path].join(" ")} shows one to three examples after its usage, each one line with a note, parsing under its own options`, problems.length === 0, problems);
+    for (const sub of node.subcommands ?? []) if (!sub.hidden) census(cmd, [...path, sub.name], sub);
+  };
+  for (const cmd of commands) census(cmd, [], cmd);
+  console.log(`  examples census: ${paths.length} commands and subcommands`);
+
+  // At 60 columns an option's description wraps without splitting a `--flag <value>` unit or a
+  // command it names. Up's -d named cotal down bare and spawn's --allow-stale cotal team deploy
+  // <file>, and both split after `cotal`.
+  for (const [name, named] of [["up", "`cotal down`"], ["spawn", "`cotal team deploy <file>`"]] as const) {
+    const help = (width: number): string[] => {
+      const lines: string[] = [];
+      printHelpPath(registry.resolve<Command>("command", name), [], (line) => lines.push(...line.replace(/\x1b\[[0-9;]*m/g, "").split("\n")), width);
+      return lines;
+    };
+    const narrow = help(60), whole = help(Number.POSITIVE_INFINITY).join("\n");
+    const count = (text: string, unit: string): number => text.split(unit).length - 1;
+    const units = [...new Set([...whole.matchAll(/(?<![\w-])--?[a-zA-Z][\w-]* (?:<[^>]+>|"[^"]*")|`cotal [^`]+`/g)].map((match) => match[0]))];
+    const split = units.filter((unit) => narrow.reduce((sum, line) => sum + count(line, unit), 0) !== count(whole, unit));
+    check(`cotal ${name} --help at 60 columns keeps every --flag <value> unit and every command it names, ${named} included, on one line`,
+      units.length > 10 && units.includes(named) && split.length === 0 && narrow.every((line) => displayWidth(line) <= 60), { split, narrow });
+  }
+  // At 40 columns run's --on names `cotal ps` in backticks on one line, in run's help and its hosted
+  // verbs'. It named it bare.
+  for (const path of [[], ["start"], ["show"], ["answer"], ["amend"]]) {
+    const lines: string[] = [];
+    printHelpPath(registry.resolve<Command>("command", "run"), path, (line) => lines.push(...line.replace(/\x1b\[[0-9;]*m/g, "").split("\n")), 40);
+    const text = lines.join("\n");
+    check(`cotal ${["run", ...path].join(" ")} --help at 40 columns names \`cotal ps\` under --on in backticks on one line`,
+      lines.some((line) => line.includes("`cotal ps`") && displayWidth(line) <= 40) && text.split("cotal ps").length === text.split("`cotal ps`").length, lines);
+  }
+
+  // Every string literal in the shipped sources, under implementations/*/src, packages/*/src,
+  // extensions/*/src and bin, that names a command after other words, as a remedy, a Next, a hint or
+  // a message does, writes it in backticks, so the renderer keeps it whole and --json carries the same
+  // text, and so does every option description a registered command declares, which its help prints.
+  // A command is `cotal` and a registered command name, `linear` included, or an interpolated one;
+  // `displayCmd()`, or a const bound to it, prints as `cotal`. Comments are not string literals, and a
+  // usage line or a literal that starts with its command is not a sentence naming one, unless that
+  // command is interpolated and words follow it: such a literal is a clause another sentence holds, as
+  // a last operation's "cotal up, with no recorded outcome" was. The smoke-kit helpers ship nowhere,
+  // and this file is not under the sources it reads.
+  {
+    await built("implementations/linear/dist/index.js");
+    const names = new Set(registry.all<Command>("command").flatMap((cmd) => [cmd.name, ...(cmd.aliases ?? [])]));
+    // Literals that are code, a data value or a usage form, or name cotal itself or its config file:
+    // a file and the literal's text.
+    const exempt: readonly (readonly [string, RegExp])[] = [
+      ["implementations/cli/src/lib/completion-scripts.ts", /(?:)/], // shell completion scripts
+      ["implementations/cli/src/lib/completion-install.ts", /^# (>>>|<<<) cotal completion (>>>|<<<)$/], // the startup-file markers
+      ["implementations/cli/src/lib/setup-log.ts", /^\n=== cotal setup - /], // the setup log's header
+      ["implementations/cli/src/seed/paths.ts", /can take an installed cotal down\.|cannot determine the cotal version: /], // cotal, the program
+      ["implementations/cli/src/seed/reconcile.ts", /and this cotal \$\{\} does not move it back/],
+      ["implementations/cli/src/commands/status.ts", /^cotal \$\{\} {2}· {2}Node \$\{\}/], // cotal, the program, and its version
+      ["implementations/cli/src/lib/nearest-word.ts", /^cotal \$\{\} has no subcommand /], // a refusal that starts with its command
+      ["implementations/cli/src/commands/service-registry.ts", /^cotal up or cotal supervise$/], // startedBy, a data value
+      ["packages/core/src/connector-config.ts", /^modelPolicy\.\$\{\} in the cotal config$/], // the config file
+      ["extensions/connector-claude-code/src/setup.ts", /remove the heavy ones from the cotal config or spawn/],
+      ["implementations/auth/src/commands.ts", /^cotal \$\{\} grant <actor> --sub <IdP subject> --full {3}\(|^cotal \$\{\} revoke <actor> --sub <IdP subject>\|--owner <u_…>$/], // usage forms with alternatives
+      ["implementations/manager/src/commands.ts", /^use cotal endpoint deregister <class> <full-instance-id> \[--space <space>\] \[--yes\|--dry-run\], /],
+    ];
+    // Where `text` names a command after other words, or leads with an interpolated one that words
+    // follow, outside backticks.
+    const bare = (text: string): number[] => [...text.matchAll(/(?:^|(?<=[ ("']))cotal (\S+)/g)].flatMap((match) => {
+      // Environment assignments before a command, as in ZDOTDIR=<dir> cotal completion, are part of it.
+      const before = text.slice(0, match.index), line = before.slice(before.lastIndexOf("\n") + 1).replace(/^(?:[A-Z_][A-Z0-9_]*=\S* )+/, "");
+      const word = match[1]!.replace(/[,;:.)"']+$/, "");
+      const command = names.has(word) || names.has(word.replace(/\$\{\}.*$/, "")) || word.startsWith("${}");
+      const clause = word.startsWith("${}") && /[A-Za-z]/.test(text.slice(match.index + match[0].length).split("\n")[0]!.replace(/\$\{\}|--?[\w-]+|<[^>]*>|\[[^\]]*\]/g, ""));
+      return !command || !(/[A-Za-z]/.test(line) || clause) || /(usage: |\| )$/.test(before) || (before.match(/`/g) ?? []).length % 2 === 1 ? [] : [match.index];
+    });
+    const roots = ["implementations/*/src", "packages/*/src", "extensions/*/src", "bin"];
+    const sources = spawnSync("git", ["ls-files", "--", ...roots.flatMap((root) => [`${root}/*.ts`, `${root}/*.tsx`]), ":(exclude)bin/smoke", ":(exclude)packages/smoke-kit"], { cwd: REPO, encoding: "utf8" }).stdout.split("\n").filter(Boolean);
+    const offenders: string[] = [];
+    for (const file of sources) {
+      const source = readFileSync(join(REPO, file), "utf8");
+      const tree = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
+      const display = new Set(["displayCmd()"]);
+      const bind = (node: ts.Node): void => {
+        if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer?.getText(tree) === "displayCmd()") display.add(node.name.text);
+        ts.forEachChild(node, bind);
+      };
+      bind(tree);
+      const visit = (node: ts.Node): void => {
+        const text = ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node) ? node.text
+          : ts.isTemplateExpression(node) ? node.head.text + node.templateSpans.map((span) => (display.has(span.expression.getText(tree)) ? "cotal" : "${}") + span.literal.text).join("") : undefined;
+        if (text !== undefined && !exempt.some(([path, literal]) => path === file && literal.test(text)))
+          for (const at of bare(text)) offenders.push(`${file}:${tree.getLineAndCharacterOfPosition(node.getStart(tree)).line + 1}: ${JSON.stringify(text.slice(Math.max(0, at - 40), at + 40))}`);
+        ts.forEachChild(node, visit);
+      };
+      visit(tree);
+    }
+    const options = registry.all<Command>("command").flatMap((cmd) => (cmd.flags ?? []).map((flag) => [`cotal ${cmd.name} --${flag.name}`, flag.description ?? ""] as const));
+    for (const [option, description] of options) for (const at of bare(description)) offenders.push(`${option}: ${JSON.stringify(description.slice(Math.max(0, at - 40), at + 40))}`);
+    check(`every shipped source string literal and option description that names a command after other words writes it in backticks (${sources.length} files, ${options.length} options)`,
+      roots.every((root) => sources.some((file) => file.startsWith(`${root.split("/")[0]}/`))) && sources.length > 800 && options.length > 300 && offenders.length === 0, offenders);
+  }
+
+  // `cotal <path> --help` and `cotal help <path>` reach the help through two routes, the dispatcher's
+  // and the help command's, and print one help. Run a few at a time; each is a process of its own.
+  const binary = (args: string[]) => new Promise<ReturnType<typeof run>>((resolve) => {
+    const child = spawn(process.execPath, [BIN, ...args], { cwd: neutral, env, timeout: 120_000 });
+    let stdout = "", stderr = "";
+    child.stdout.setEncoding("utf8").on("data", (chunk: string) => { stdout += chunk; });
+    child.stderr.setEncoding("utf8").on("data", (chunk: string) => { stderr += chunk; });
+    child.on("close", (status) => resolve({ status, stdout, stderr }));
+  });
+  const helps: [ReturnType<typeof run>, ReturnType<typeof run>][] = [];
+  let next = 0;
+  await Promise.all(Array.from({ length: 6 }, async () => {
+    for (let i = next++; i < paths.length; i = next++) helps[i] = await Promise.all([binary([...paths[i]!, "--help"]), binary(["help", ...paths[i]!])]);
+  }));
+  paths.forEach((path, i) => {
+    const [flag, word] = helps[i]!;
+    check(`cotal ${path.join(" ")} --help prints the same help as cotal help ${path.join(" ")}`, flag.status === word.status && flag.stdout === word.stdout && flag.stderr === word.stderr, { "--help": shown(flag), help: shown(word) });
+  });
+
+  // The binary prints the same order, and `manager <verb> --help`, which reads the service command,
+  // shows the manager's own examples.
+  const spawnHelp = run(["spawn", "--help"]);
+  const order = ["Usage", "Shorthands", "Examples", "Options"].map((title) => spawnHelp.stdout.indexOf(`\n${title}\n`));
+  check("cotal spawn --help shows Usage, Shorthands, Examples, then Options", spawnHelp.status === 0 && order.every((index, i) => index !== -1 && (i === 0 || index > order[i - 1]!)), shown(spawnHelp));
+  const managerStart = run(["manager", "start", "--help"]);
+  const declared = registry.resolve<Command>("command", "manager").subcommands?.find((sub) => sub.name === "start")?.examples ?? [];
+  check("cotal manager start --help shows the manager start examples", managerStart.status === 0 && declared.length > 0 && declared.every((example) => typeof example !== "string" && managerStart.stdout.includes(`  ${example.command}`)), shown(managerStart));
+
+  // The persona create example, its placeholders filled in, run as written against a fresh Cotal home
+  // in the folder of a space prepared there, which needs no stack. Without --subscribe the refusal
+  // shows the persona create help.
+  const fresh = { COTAL_HOME: join(home, "persona-home") };
+  const project = join(home, "persona-project");
+  mkdirSync(project, { mode: 0o700 });
+  const prepared = run(["space", "create", "personas", "--root", project], fresh);
+  const [example] = registry.resolve<Command>("command", "persona").subcommands?.find((sub) => sub.name === "create")?.examples ?? [];
+  const written = typeof example === "string" ? example : example?.command ?? "";
+  const created = run(words(written.replace("<name>", "reviewer").replace("<text>", "review the diff")).slice(1), fresh, project);
+  const saved = run(["persona", "show", "reviewer", "--json"], fresh, project);
+  check(`${written} runs as written and saves a persona that reads no channels`, prepared.status === 0 && created.status === 0 && saved.status === 0 && JSON.stringify(JSON.parse(saved.stdout).result.definition.subscribe) === "[]", { prepared: shown(prepared), created: shown(created), saved: shown(saved) });
+  const noReadSet = run(["persona", "create", "other", "--prompt", "review the diff"], fresh, project);
+  check("persona create without --subscribe is refused with the persona create help, not the persona help",
+    usageShape(noReadSet, /provide --subscribe <a,b> or --subscribe "" for none/) && noReadSet.stderr.includes("\nUsage\n  cotal persona create <name> ") && !/^Commands$/m.test(noReadSet.stderr), shown(noReadSet));
+}
+
 // No mark at all: the report names the outcome in words, and `!` stays the warning mark.
 const reportShape = (r: ReturnType<typeof run>, message: RegExp) =>
   r.status === 1 && r.stdout === "" && /^Request refused$/m.test(r.stderr) && /Code: +USAGE_INVALID/.test(r.stderr) && message.test(r.stderr) && /Usage/.test(r.stderr) && !/[✗↳]|^! /m.test(r.stderr);
@@ -156,11 +420,11 @@ writeFileSync(join(project, ".cotal", "agents", "p1.md"), "---\nname: p1\n---\nh
 const confirmShape = (r: ReturnType<typeof run>, message: RegExp, remedy: string) =>
   r.status === 1 && r.stdout === "" && /^✗ /m.test(r.stderr) && message.test(r.stderr) && r.stderr.includes(remedy) && !/Usage|Options/.test(r.stderr);
 for (const [args, message, remedy] of [
-  [["persona", "remove", "p1"], /removing 'p1' .* requires --yes/, "confirm with cotal persona remove p1 --yes"],
-  [["history", "clear", "--dms"], /history clear requires --yes/, "then confirm it with cotal history clear --dms --yes"],
-  [["space", "delete", "nosuch"], /live space deletion requires a terminal/, "then run cotal space delete nosuch --yes"],
-  [["reset", "store", "nosuch"], /reset store needs a terminal confirmation/, "then run cotal reset store nosuch --yes"],
-  [["reset", "space", "nosuch"], /reset space needs a terminal confirmation/, "then run cotal reset space nosuch --yes"],
+  [["persona", "remove", "p1"], /removing 'p1' .* requires --yes/, "confirm with `cotal persona remove p1 --yes`"],
+  [["history", "clear", "--dms"], /history clear requires --yes/, "then confirm it with `cotal history clear --dms --yes`"],
+  [["space", "delete", "nosuch"], /live space deletion requires a terminal/, "then run `cotal space delete nosuch --yes`"],
+  [["reset", "store", "nosuch"], /reset store needs a terminal confirmation/, "then run `cotal reset store nosuch --yes`"],
+  [["reset", "space", "nosuch"], /reset space needs a terminal confirmation/, "then run `cotal reset space nosuch --yes`"],
 ] as const) {
   const r = run([...args], {}, project);
   check(`${args.join(" ")} without --yes prints its refusal and remedy without the help`, confirmShape(r, message, remedy), shown(r));

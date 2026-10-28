@@ -11,6 +11,7 @@
  * See .internal/plans/peer-addressing.md.
  */
 import type { Presence, PresenceStatus } from "./types.js";
+import { LINE_BREAK } from "./peer-label.js";
 import { peerLabel } from "./peer-label.js";
 
 export { peerLabel };
@@ -127,6 +128,9 @@ function isWellFormedUtf16(s: string): boolean {
  */
 export const MAX_NAME_LENGTH = 128;
 
+export { LINE_BREAK } from "./peer-label.js";
+
+
 /**
  * Validate a display name. A name must be non-empty, single-line, and free of surrounding
  * whitespace; `/` is reserved as the future `owner/name` separator (and already means "a path"
@@ -141,7 +145,7 @@ export function assertValidName(name: string): void {
       `invalid name ${JSON.stringify(name.slice(0, 32))}…: ${name.length} characters exceeds the ` +
         `${MAX_NAME_LENGTH}-character limit (the CONNECT line budget that carries it)`,
     );
-  if (/[\r\n]/.test(name))
+  if (LINE_BREAK.test(name))
     throw new Error(`invalid name ${JSON.stringify(name)}: must be a single line`);
   if (name.includes("/"))
     throw new Error(`invalid name ${JSON.stringify(name)}: "/" is reserved (the owner/name separator)`);

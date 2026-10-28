@@ -103,7 +103,7 @@ export async function serveLinearUserAuth(opts: {
     if (answer.state === "approval-required") {
       // The approval names the Linear capability as its caller ceiling, or no caller could be granted.
       // A remote id that is not one plain word is named, not printed into a command to paste.
-      const approve = /^[\w.-]+$/.test(answer.proposalId) ? ` with cotal service-endpoint approve ${answer.proposalId} --caller-ceiling ${LINEAR_CAPABILITY} --space ${space}` : "";
+      const approve = /^[\w.-]+$/.test(answer.proposalId) ? ` with \`cotal service-endpoint approve ${answer.proposalId} --caller-ceiling ${LINEAR_CAPABILITY} --space ${space}\`` : "";
       throw new CommandFailure("refused", "PERMISSION_DENIED", "the space owner must approve this Linear service and bind its endpoint name before it can serve", {
         target: { space, endpoint, instanceId: record.request.instanceId, proposalId: answer.proposalId },
         remedy: `approve proposal ${approve ? answer.proposalId : JSON.stringify(answer.proposalId)}${approve}, then repeat the same serve command; its request identity is retained`,

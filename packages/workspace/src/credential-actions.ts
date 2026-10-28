@@ -71,7 +71,7 @@ export function validateCredentialMintArguments(args: ParsedArgs): void {
   presentationOf(args.values);
   if (args.positionals.length !== 1) throw new CommandFailure("refused", "USAGE_INVALID", "auth mint needs one credential label");
   const values = args.values;
-  if (values.signer !== undefined || values.force !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "signing material and its replacement flag belong to auth signer", { remedy: "use cotal auth signer --out <private-file> [--force]" });
+  if (values.signer !== undefined || values.force !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "signing material and its replacement flag belong to auth signer", { remedy: "use `cotal auth signer --out <private-file> [--force]`" });
   const allowed = new Set(credentialMintFlags.map((flag) => flag.name));
   if (Object.keys(values).some((key) => !allowed.has(key as typeof credentialMintFlags[number]["name"]))) throw new CommandFailure("refused", "USAGE_INVALID", "a flag does not belong to credential minting");
   const label = args.positionals[0]!;

@@ -149,15 +149,22 @@ export function parseRemoteManagerAuthorityRequest(raw: unknown, opts: { allowPl
     const r = o.run as Record<string, unknown> | undefined;
     if (!r || Object.keys(r).sort().join(",") !== "driverId,epoch,fencingToken,holder,mediatorId,runId,takeoverId")
       requestError("renewRunDriver requires exactly runId, holder, takeoverId, epoch, fencingToken, driverId, mediatorId");
-    if (typeof r.runId !== "string" || !/^run-[0-9a-f]{32}$/.test(r.runId) ||
-        typeof r.holder !== "string" || !/^[A-Za-z0-9_.-]{1,256}$/.test(r.holder) ||
-        typeof r.takeoverId !== "string" || !/^[0-9a-f]{16}$/.test(r.takeoverId) ||
-        typeof r.epoch !== "number" || !Number.isSafeInteger(r.epoch) || r.epoch < 1 ||
-        typeof r.fencingToken !== "number" || !Number.isSafeInteger(r.fencingToken) || r.fencingToken < 1 ||
-        !isUserNkey(r.driverId) || !isUserNkey(r.mediatorId) || r.driverId === r.mediatorId ||
-        !r.holder.endsWith(`.${r.takeoverId}`))
+    const runId = r.runId;
+    const holder = r.holder;
+    const takeoverId = r.takeoverId;
+    const epoch = r.epoch;
+    const fencingToken = r.fencingToken;
+    const driverId = r.driverId;
+    const mediatorId = r.mediatorId;
+    if (typeof runId !== "string" || !/^run-[0-9a-f]{32}$/.test(runId) ||
+        typeof holder !== "string" || !/^[A-Za-z0-9_.-]{1,256}$/.test(holder) ||
+        typeof takeoverId !== "string" || !/^[0-9a-f]{16}$/.test(takeoverId) ||
+        typeof epoch !== "number" || !Number.isSafeInteger(epoch) || epoch < 1 ||
+        typeof fencingToken !== "number" || !Number.isSafeInteger(fencingToken) || fencingToken < 1 ||
+        !isUserNkey(driverId) || !isUserNkey(mediatorId) || driverId === mediatorId ||
+        !holder.endsWith(`.${takeoverId}`))
       requestError("renewRunDriver requires valid runId, holder, takeoverId, epoch, fencingToken, and distinct driverId/mediatorId");
-    run = r as unknown as NonNullable<RemoteManagerAuthorityRequest["run"]>;
+    run = { runId, holder, takeoverId, epoch, fencingToken, driverId, mediatorId };
   } else if (o.run !== undefined) requestError(`${o.operation} must not carry run`);
   let session: RemoteManagerAuthorityRequest["session"];
   if (o.operation === "session") {

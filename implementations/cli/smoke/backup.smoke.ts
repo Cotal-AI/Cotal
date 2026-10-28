@@ -472,7 +472,7 @@ try {
       for (const target of ["store", "all"])
         await assert.rejects(clean({ positionals: [target], values: { force: true }, raw: [] }), (error: unknown) =>
           isCommandFailure(error) && error.code === "LIFECYCLE_BLOCKED" && error.message === `clean ${target} is refused while this root holds maintenance attempt preserve-clean (state ready); nothing was removed`
-            && / or resume with bare .*up; once the root holds no maintenance state and its mesh is stopped, run .*clean (store|all) --force again$/.test(error.remedy ?? ""),
+            && / or resume with bare .*up`; once the root holds no maintenance state and its mesh is stopped, run .*clean (store|all) --force` again$/.test(error.remedy ?? ""),
         `clean ${target} on a preserved cut names the step status shows for it`);
       assert.ok(existsSync(cleanStore) && readMaintenanceJournal(cleanRoot)?.state === "ready", "the refused clean removed nothing and kept the cut");
     } finally { process.chdir(previousCwd); }
@@ -488,8 +488,8 @@ try {
     const moved = preservedSourceState(after, source);
     assert.ok(moved.state === "moved" && moved.recordedRoot === recordedRoot && moved.store === realpathSync(join(after, ".cotal", "nats")), "a store that moved with its folder names the folder it was recorded in");
     if (moved.state === "moved") {
-      const refusal = movedFolderRefusal(after, "demo", source.path, moved, "run cotal up");
-      assert.ok(refusal.code === "CONFLICT" && refusal.message.includes(`moved from ${recordedRoot}`) && refusal.remedy === `move this folder back to ${recordedRoot}, then run cotal up there`, "the moved refusal names the old folder and the step that works there");
+      const refusal = movedFolderRefusal(after, "demo", source.path, moved, "run `cotal up`");
+      assert.ok(refusal.code === "CONFLICT" && refusal.message.includes(`moved from ${recordedRoot}`) && refusal.remedy === `move this folder back to ${recordedRoot}, then run \`cotal up\` there`, "the moved refusal names the old folder and the step that works there");
     }
     rmSync(join(after, ".cotal", "nats"), { recursive: true });
     mkdirSync(join(after, ".cotal", "nats"));

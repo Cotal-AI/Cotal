@@ -59,7 +59,7 @@
     {
       "name": "R6 the private retirement route accepts a caller without the operator capability",
       "file": "implementations/auth/src/service.ts",
-      "find": "  if (req.headers.authorization !== `Bearer ${ctx.cap}`)\n    return send(res, 401, { error: \"missing/invalid exchange capability - interactive lifecycle retirement is a loopback operator action\", ...before });",
+      "find": "  if (req.headers.authorization !== `Bearer ${ctx.cap}`)\n    return refuseCapability(res, ctx, \"missing/invalid exchange capability - interactive lifecycle retirement is a loopback operator action\", { ...before });",
       "replace": "",
       "expectRed": "interactive lifecycle retirement refuses a missing operator capability",
       "afterRestore": "pnpm --filter @cotal-ai/auth build"

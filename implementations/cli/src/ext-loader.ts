@@ -180,9 +180,9 @@ export function overlayExtensions(reg: Registry): Command[] {
 /** An obsolete first-party descriptor is diagnostic only. Preserve normal collision ownership,
  *  but never import its old command, repair the installation, or suggest removing the dashboard. */
 function obsoleteWebCommand(): Command {
-  const refuse = (): never => { throw new CommandFailure("refused", "CONFLICT", "this installed dashboard still declares the retired web command; no package was loaded, removed or reinstalled", { remedy: "run cotal update to refresh the matching @cotal-ai/web service preset; then use cotal service add web --preset web with its explicit options" }); };
+  const refuse = (): never => { throw new CommandFailure("refused", "CONFLICT", "this installed dashboard still declares the retired web command; no package was loaded, removed or reinstalled", { remedy: "run `cotal update` to refresh the matching @cotal-ai/web service preset; then use `cotal service add web --preset web` with its explicit options" }); };
   return { kind: "command", name: "web", hidden: true, rawArgs: true,
-    summary: "outdated dashboard descriptor; refresh it with cotal update",
+    summary: "outdated dashboard descriptor; refresh it with `cotal update`",
     flags: [jsonFlag, plainFlag], outputs: ["json", "plain"], prepareMeshTarget: false,
     validate: refuse, run: refuse,
   };

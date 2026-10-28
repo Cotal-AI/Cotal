@@ -315,7 +315,7 @@ the subject-token sanitizer. Endpoint names still use the separate DNS-label gra
 | `createSpaceAuth(space)` | the one-space convenience: broker trust + one account in a single composed bundle. |
 | `setupSpaceStreams({ servers, space, creds })` | create the space's JetStream streams. |
 | `ensureDefaultDeliveryClass({ servers, space, creds?, deliveryClass })` | write the space's default delivery class at creation so it is wire-discoverable (SPEC section 4). |
-| `serverConfig(broker, spaces, { storeDir, maxFileStore?, authTimeout?, extraAccounts?, port?, host? })` | render the broker config: one operator, N space accounts. `storeDir` is required, `maxFileStore` caps JetStream file storage in bytes (omitted, nats-server's dynamic default applies), `authTimeout` renders `authorization { timeout }` in whole seconds for the auth callout (omitted, no block and nats-server's default), and `extraAccounts` preloads the auth-callout account. |
+| `serverConfig(broker, spaces, { storeDir, maxFileStore?, maxPayload?, authTimeout?, extraAccounts?, port?, host? })` | render the broker config: one operator, N space accounts. `storeDir` is required, `maxFileStore` caps JetStream file storage in bytes (omitted, nats-server's dynamic default applies), `maxPayload` sets the broker's `max_payload` in bytes (omitted, nats-server's 1 MiB default), `authTimeout` renders `authorization { timeout }` in whole seconds for the auth callout (omitted, no block and nats-server's default), and `extraAccounts` preloads the auth-callout account. |
 | `mintCreds(auth, identity, profile, opts?)` | mint a scoped cred for any `Profile`. |
 | `mintMembershipObserverCreds`, `mintConnectionEvictorCreds` | mint the membership/eviction scoped creds. |
 | `provisionAgent`, `provisionAgentDurables` | create a principal's bind-only durables. |
@@ -459,7 +459,9 @@ embedder whose host issues each conversation its own grant may pass `options.too
 Registering a tool offers it to no connection by itself: a connection calls only the tools its
 host lists in `GatewayConnection.tools`, default `GATEWAY_TOOLS`, and only those its credential's
 capabilities allow. With `options.selection`, `cotal_connect` takes channels, a role and capabilities,
-builds a canonical proposal with core's `conversationSelection`, and hands it to `open`. Only the
+builds a canonical proposal with core's `conversationSelection`, and hands it to `open`. Its
+description tells the agent to ask in that first call for the channels, role and capabilities it
+already knows it needs, so the person approves one request. Only the
 person's decision in the authority's authenticated UI is consent. The approved selection may differ
 from the proposal and must stay within their current authority. The empty approved selection still
 includes direct-message send and receive and own activity publication; disclose these before
@@ -484,11 +486,11 @@ when its connection closes, also while the broker is unreachable; it listens for
 since the last read, and a wait that starts after one returns it at once. Every other routed tool
 except `cotal_inbox` adds a line to its result when wake-worthy messages are waiting.
 
-`handleGatewayRequest(host, { req, res, body?, auth?, source?, instructions?, approvalResume?, waitSeconds? })`
+`handleGatewayRequest(host, { req, res, body?, auth?, source?, instructions?, approvalResume?, selection?, waitSeconds? })`
 serves one HTTP request to the endpoint with the package's own MCP server, so the embedding service
 never imports an MCP SDK or a zod version of its own. The service authenticates the request, answers
 401 itself when that fails, and passes the result as `auth`. A framework that already parsed the JSON body passes it
-as `body`. The endpoint is stateless: each POST gets a fresh server and a JSON response, and every
+as `body`. `selection` turns on the permission request described above for a hosted endpoint. The endpoint is stateless: each POST gets a fresh server and a JSON response, and every
 other method answers 405. A `cotal_wait` call holds its POST open for up to `waitSeconds`.
 `GATEWAY_INSTRUCTIONS` is the server instructions text sent when `instructions` is omitted.
 
@@ -827,9 +829,9 @@ signing seed lands on the hosted disk. What remains is signer **isolation**. The
 in-process at the manager's uid. That issue needs an OS sandbox or remote signer; it is no longer a
 custody problem. The other knobs are `workspaceRoot` and the process-global `COTAL_HOME`.
 
-A store, runtime or extension the manager calls may reject with any value, including `null`. The
-manager logs or refuses with that value's `message`, or with the value itself as text when it has
-none, and keeps serving. A value it cannot read reports as `an unreadable rejection`.
+A store, runtime, extension or host callback the manager calls may reject with any value, including
+`null`. The manager logs or refuses with that value's `message`, or with the value itself as text
+when it has none, and keeps serving. A value it cannot read reports as `an unreadable rejection`.
 
 > Scope note: the **static-auth** operator paths (`cotal spawn`/`join`/`status`/`web`, via
 > `mesh-target` → `connect`/`preflight`) still read the signer from the local split records (sync
@@ -866,7 +868,7 @@ the host call converge on one barrier.
 | `retired` at this uid | `200 { retired: true, lifecycleUid, alreadyRetired: true }` |
 | `active`/`retiring` at this uid | the barrier runs, then `200 { retired: true, lifecycleUid }` |
 
-Deprovisioning durables stays with `deprovisionAgent` and a `deprovisioner` credential. Pass `memberChannels` to both to also purge the retired lifecycle's durable membership rows on those concrete channels. The manager fills that list from the launch's concrete read channels and the delivery daemon's read-only `lifecycleMemberships` admin verb. When that verb cannot answer, rows on other channels stay retained, the teardown logs the inventory as incomplete, and retirement remains held pending retry rather than releasing the alias. Each teardown examines two exact consumers, one ACL key and the named member keys. KV deletion uses a native revision condition; a lost condition with a live replacement refuses rather than claiming absence. Consumer INFO checks before and after DELETE distinguish verified prior absence from disappearance. `acknowledged` counts native DELETE success replies. `disappeared` counts observed live-to-absent consumers and live KV rows whose conditional purge lost to a competing deletion. These KV rows were present at the first read, so they never count as prior `absent` or as this caller's `deleted`. The ACL and membership subtotals preserve that distinction. Neither establishes which concurrent caller uniquely removed a consumer, so `consumers.deleted` and the total `deleted` are `null` when a consumer disappears without a winner token. A repeat after verified absence reports zero, not an invented deletion. `refused` counts slots whose cleanup or state remains uncertain. A partial failure raises `DeprovisionError` carrying these bounded observations. The Manager's static sweep preserves unknown uniqueness rather than adding acknowledged requests as physical removals; its slot totals remain separate.
+Deprovisioning durables stays with `deprovisionAgent` and a `deprovisioner` credential. Pass `memberChannels` to both to also purge the retired lifecycle's durable membership rows on those concrete channels. The manager fills that list from the launch's concrete read channels and the delivery daemon's read-only `lifecycleMemberships` admin verb. Before it reads that verb, it calls `fenceLifecycleAcl` under a deprovisioner credential for the same lifecycle with no member channels. That narrows the lifecycle's read-ACL row to no reads, and a durable join the inventory does not see then removes its own row. When that verb cannot answer, rows on other channels stay retained, the teardown logs the inventory as incomplete, and retirement remains held pending retry rather than releasing the alias. Each teardown examines two exact consumers, one ACL key and the named member keys. KV deletion uses a native revision condition; a lost condition with a live replacement refuses rather than claiming absence. Consumer INFO checks before and after DELETE distinguish verified prior absence from disappearance. `acknowledged` counts native DELETE success replies. `disappeared` counts observed live-to-absent consumers and live KV rows whose conditional purge lost to a competing deletion. These KV rows were present at the first read, so they never count as prior `absent` or as this caller's `deleted`. The ACL and membership subtotals preserve that distinction. Neither establishes which concurrent caller uniquely removed a consumer, so `consumers.deleted` and the total `deleted` are `null` when a consumer disappears without a winner token. A repeat after verified absence reports zero, not an invented deletion. `refused` counts slots whose cleanup or state remains uncertain. A partial failure raises `DeprovisionError` carrying these bounded observations. The Manager's static sweep preserves unknown uniqueness rather than adding acknowledged requests as physical removals; its slot totals remain separate.
 
 A host that resumes retained managed actors also implements
 `remoteAuthority.validateRetainedAgent`. The participant sends back the actor token and sentinel it
@@ -1161,6 +1163,35 @@ on a multi-space root rather than scoping to one tenant, and the per-space lifec
 remaining multi-space operator layer. See
 [Known gaps](#hosted-composition-gaps).
 
+## Issued-authority stores from before 0.111.0
+
+A space whose `KV_cotal_issued_<space>` and `KV_cotal_accepted_<space>` were created before
+0.111.0 is refused by every issuer and resolver that binds them. `cotal up
+--recreate-issued-stores` fixes the spaces `cotal up` starts. For a space your own composition
+provisions, stop its issuers and resolvers (auth service, callout replicas, managers) and run the
+same step yourself:
+
+```ts
+import { connect } from "@nats-io/transport-node";
+import { mintCreds, newIdentity, removeIssuedStoresBeforeRetention, setupSpaceStreams, standaloneConnectOpts } from "@cotal-ai/core";
+const identity = newIdentity();
+const inboxPrefix = `_INBOX_${identity.id}`;           // the one inbox the credential may receive on
+const creds = await mintCreds(auth, identity, "issued-store-recreate"); // one-shot, 30 minutes
+const nc = await connect({ servers: brokerUrl, ...standaloneConnectOpts({ creds, tls: false }), inboxPrefix });
+try {
+  // backupDir must not exist yet; it is created 0700 with a `nats stream backup` layout per stream
+  await removeIssuedStoresBeforeRetention(nc, { space, backupDir, inboxPrefix });
+} finally { await nc.drain(); }
+await setupSpaceStreams({ servers: brokerUrl, space, creds: provisionerCreds }); // creates both again
+```
+
+The credential can read, snapshot and delete those two streams and nothing else. The step backs
+up every store that predates bounded retention, checks each backup against its stream's message
+count and last sequence, and deletes nothing unless every check passes. It throws
+`IssuedStoreRecreateRefusal` before writing anything when neither store predates bounded
+retention. The order, the refusals and what a rollback can do are in
+[Upgrading](UPGRADING.md#issued-authority-stores-after-01110).
+
 ## Hazardous provisioning primitives
 
 `mintCreds`, the full `Profile`/`CredentialKind` matrix, `createSpaceAuth`, and `stripSpaceAuth` are
@@ -1413,7 +1444,8 @@ are public.
 
 `openAuthAuthorityPlane` and `startAuthService` take `serviceEndpoints: { startup: { kind: "normal" } }`
 to host these operations; it is off by default. `cotal up --user-auth --service-endpoints` sets it
-on the stock auth service. With it, the plane and the
+on the stock auth service, and a lane of `auth-service --spaces` sets it when its manifest entry has
+`"serviceEndpoints": true`. With it, the plane and the
 hosted handle gain `serviceEndpointHost(request)`, which answers `decide`, `revoke`, `name-bind`, the
 four caller-policy operations and the three reads (`proposal-read`, `operation-read` and
 `name-read`) in process. A hosted context rejects it as
@@ -1445,6 +1477,22 @@ close stays owned past its call: close closes it again first, and rejects with t
 while it stays open, so you can retry close. Until a retry succeeds or the process exits, discovery,
 the administrative rail, both scanners and the remaining clients stay live, so no successor can
 take over the claim.
+
+On a multi-space host the setting is per space. The manifest entry's `serviceEndpoints` is the only
+place it is set, and `--service-endpoints` refuses beside `--spaces`
+([server daemons](cli.md#server-daemons)). Check a manifest you write with
+`parseAuthHostManifest(text)` from `@cotal-ai/auth` before you rename it into place: it is the parser
+the host applies. A callout replica cannot issue a service-endpoint connection, so it refuses a space
+whose admission is open: a single-space replica refuses to start, and a callout host names the space
+and retries it every 5 seconds while it answers for the others. The first open with service endpoints
+opens the admission and nothing closes it, so keep every space that has ever run with service
+endpoints off replica manifests, also after its entry drops the field. `admitsServiceEndpoints({ space,
+server, secrets })` from `@cotal-ai/auth` tells you which: it resolves `true` for the spaces a
+callout lane refuses for their admission, with the read the lane makes on the lane's own store grant,
+and throws when the space's service keys are missing or its stores cannot be read. Nothing turns a
+`true` answer back to `false`. To turn service endpoints on for a space a replica lists, remove it from
+every replica manifest and wait for each `<manifest>.applied` first: a lane checks at open, so a lane
+already open keeps answering and denies the service connects the broker hands it.
 
 With `serviceEndpoints`, both faces also serve `/service-endpoint-authority`, and without it that
 route answers 404. `GET` returns the receiver's account and space, the exact `iss` its service
@@ -1523,7 +1571,9 @@ and rechecks them before append. An admin scope never substitutes for endpoint c
 capability must name that instance with `instanceOnly: true`, carry no journal access and no `any` or
 `ledger` target, and sit within the approval's caller ceiling. The answer is `granted` with the grant
 as stored. Ordinary user-auth agent connects now derive their endpoint rows from this policy through
-core's native grant builder, including reserved Describe for each authorized exact instance. The
+core's native grant builder, including reserved Describe for each authorized exact instance. An unpinned
+`invokeService` or `invokeCommand` whose class publish the broker refuses is re-sent once on the rail of
+the instance that answered its describe, so a granted caller reaches the service without naming the instance. The
 callout rechecks grantee lifecycle, named ancestor grants, current name, assignment, root, activation,
 approval and ceiling, then checks the policy evidence again after signing and native-key recording.
 The original connection expiry is at most 60 seconds from issuance, and capped by root and approval
@@ -1538,10 +1588,13 @@ cutoff marker. It never answers `revoked`, and the result parser refuses that ar
 `caller-policy-read` gives an owner its own grantees, and another owner's grantee only filtered to a
 service it holds; `caller-policy-list` needs a service selector.
 
-Caller grants need `max_payload >= 2098176` (2 MiB plus 1 KiB), `max_control_line >= 4096`,
-and an auth stream with `max_msg_size: -1`. Broker generation accepts an explicit
-`serverConfig(broker, accounts, { ...options, maxPayload: 2098176 })`; omission leaves the native
-1 MiB default unchanged. No startup path raises limits automatically.
+Caller grants need `max_payload >= 2098176` (`SERVICE_CALLER_PAYLOAD_FLOOR`: 2 MiB plus 1 KiB),
+`max_control_line >= 4096`, and an auth stream with `max_msg_size: -1`. Broker generation accepts an
+explicit `serverConfig(broker, accounts, { ...options, maxPayload: SERVICE_CALLER_PAYLOAD_FLOOR })`;
+omission leaves the native 1 MiB default unchanged. No startup path raises limits automatically. The
+stock root sets it with [`cotal up --max-payload <bytes>`](cli.md#up), which records the value in
+`.cotal/broker-policy.json`; a renderer outside `up` reads it back with
+`readBrokerPolicy(root)?.maxPayload` so every render of that broker carries the same limit.
 
 For a **standalone broker only**, pass `serviceEndpoints.callerPayload.observerCreds` to
 `startAuthService` (or the corresponding authority-plane option). The callback returns fresh
@@ -1564,8 +1617,13 @@ leaf links refuse, regardless of connected peer count. This is not multi-broker 
 1 MiB broker fails startup with the required byte limit and creates no assertion.
 
 Positive caller issuance repeats the observation and checks the exact assertion revision, complete
-plane hold and effective authority again before native JWT release. Withdrawal, config changes or
-claim loss refuse new issuance. Reopening needs an explicit bootstrap to reassert for the new claim;
+plane hold and effective authority again before native JWT release. Withdrawal or claim loss refuse
+new issuance. A broker RELOAD, which keeps the same incarnation serving and moves its
+`config_digest`, does not: when the fresh observation proves the same incarnation, the same auth
+store, and every limit above again, the record is re-asserted under the held claim by CAS on the
+exact prior row and issuance continues. A reload that breaks any of those, a `max_payload` below the
+floor included, still refuses, and a withdrawn record is never overwritten. A RESTART is a new
+incarnation and refuses. Reopening needs an explicit bootstrap to reassert for the new claim;
 a prior-plane broker-bound assertion cannot authorize another append. Legacy assertion syntax still
 parses for existing trusted storage fixtures but alone never enables production caller issuance.
 Shutdown drains in-flight observations and closes their owned connections before releasing the claim.

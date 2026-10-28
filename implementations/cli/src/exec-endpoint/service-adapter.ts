@@ -49,7 +49,7 @@ function assertEarlierLaunchesSettled(context: ServiceAdapterContext): void {
     } catch { return refuse(); }
   }
   if (ended) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `the host process of an earlier launch of this instance (pid ${ended.pid}) ended without recording that its native registration ${ended.endpoint} ${ended.instanceId} was removed, so this instance does not launch again`, {
-    remedy: `remove that registration with cotal endpoint deregister ${ended.endpoint} ${ended.instanceId} --yes, then start a fresh instance with cotal service start ${oneLine(context.definition)} --new-instance --space ${oneLine(context.space)}`,
+    remedy: `remove that registration with \`cotal endpoint deregister ${ended.endpoint} ${ended.instanceId} --yes\`, then start a fresh instance with \`cotal service start ${oneLine(context.definition)} --new-instance --space ${oneLine(context.space)}\``,
   });
 }
 

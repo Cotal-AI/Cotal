@@ -63,7 +63,7 @@ export function printSparedAgents(rows: SpareSeatRow[], seats: ManagerSpareSeats
   if (!left.length) return;
   console.log(c.dim(`left ${left.length} managed agent${left.length === 1 ? "" : "s"} running (no longer managed):`));
   for (const row of left) console.log(line(row, row.status));
-  console.log(c.dim("to stop managed agents with the stack: cotal down --with-agents"));
+  console.log(c.dim("to stop managed agents with the stack: `cotal down --with-agents`"));
 }
 
 export function printLegacyManagerSpareUncertainty(): void {

@@ -1,0 +1,3 @@
+# The machine daemon's lifetime lock, stale-socket recovery after a crash, and its systemd
+# user-service install surface, over real unix sockets and real SIGKILLs.
+smoke:daemon-lifetime

@@ -955,9 +955,9 @@ try {
   const brokerDenied = (r: { plain: string; status: number | null; timedOut: boolean }) =>
     !r.timedOut && r.status === 2 && /Code:\s+PERMISSION_DENIED/.test(r.plain) && /Native code:\s+permission-denied/.test(r.plain) &&
       /Native outcome:\s+not-executed/.test(r.plain) && !/Answering instance:/.test(r.plain);
-  const deniedRead = await cliResult(["invoke", "manager", "ps", "--space", SPACE, "--timeout", "1000"]);
+  const deniedRead = await cliResult(["invoke", "manager", "ps", "--space", SPACE]);
   check("the shipped CLI leaves manager.read denied to a spawn-scoped user bearer", brokerDenied(deniedRead), deniedRead);
-  const deniedAdmin = await cliResult(["invoke", "manager", "purge", "--args", "{}", "--space", SPACE, "--timeout", "1000"]);
+  const deniedAdmin = await cliResult(["invoke", "manager", "purge", "--args", "{}", "--space", SPACE]);
   check("the shipped CLI leaves manager.admin denied to a spawn-scoped user bearer", brokerDenied(deniedAdmin), deniedAdmin);
   // `who` asks the same denied manager.read for the managed column. The roster is still this bearer's
   // to read, so the denial labels that column rather than failing or partialling the run.

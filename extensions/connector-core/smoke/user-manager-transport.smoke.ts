@@ -399,7 +399,10 @@ try {
     storeDir: jsDir,
     extraAccounts: prepared.extraAccounts,
   }));
-  broker = spawn("nats-server", ["-c", join(serverRoot, "server.conf")], { stdio: "ignore", env: cleanEnv });
+  // The broker's own log is the one witness of a refused request: a cell below counts the accepted-row
+  // reads it refused for a legacy-rail bearer.
+  const brokerLog = join(serverRoot, "nats.log");
+  broker = spawn("nats-server", ["-c", join(serverRoot, "server.conf"), "-l", brokerLog], { stdio: "ignore", env: cleanEnv });
   teardownOnSignal(broker);
 
   let up = false;
@@ -995,6 +998,15 @@ try {
   check("actual child stop over wire succeeded for worker 1", despawn1.ok === true, despawn1);
 
   const despawn2 = await realAgent.despawn("producer_worker_2", { graceful: false });
+  // #5040: four manager calls (two spawns, two despawns) on one legacy-rail credential. The broker
+  // refused the accepted-row read once; the seat remembered the verdict for the credential and did
+  // not ask again on the other three dials.
+  {
+    const refusedReads = readFileSync(brokerLog, "utf8").split("\n")
+      .filter((l) => l.includes("Publish Violation") && l.includes("KV_cotal_accepted") && l.includes(`-${AGENT_ACTOR}"`)).length;
+    check("a legacy-rail seat asks the broker for its accepted row once per credential, not once per manager call (4 calls, 1 refused read)",
+      refusedReads === 1, `refused accepted-row reads for ${AGENT_ACTOR}: ${refusedReads}`);
+  }
   check("actual child stop over wire succeeded for worker 2", despawn2.ok === true, despawn2);
 
   await realAgent.stop();
@@ -1012,10 +1024,10 @@ try {
   }
 }
 
-const EXPECTED_CHECKS = 50;
+const EXPECTED_CHECKS = 51;
 check("all smoke checks passed", pass + fail === EXPECTED_CHECKS, { pass, fail, expected: EXPECTED_CHECKS });
 
-const ACTUAL_COUNT_GUARD = 51;
+const ACTUAL_COUNT_GUARD = 52;
 emitSentinel({ passed: pass, failed: fail, cells: pass + fail });
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"} — ${pass} passed, ${fail} failed`);
 console.log("USER-MANAGER-TRANSPORT SMOKE COMPLETE");

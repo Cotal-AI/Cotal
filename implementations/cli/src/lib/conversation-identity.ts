@@ -61,7 +61,7 @@ export async function signedInSpace(target: Pick<MeshTarget, "space" | "userAuth
     if (!url) throw new Error("its hosted connector is not version 1 with a canonical HTTPS URL");
     return { space, hostedConnector: url.href };
   } catch (error) {
-    return { space, unread: (error as Error).message.replace(/^✗ /, "") };
+    return { space, unread: (error as Error).message };
   }
 }
 

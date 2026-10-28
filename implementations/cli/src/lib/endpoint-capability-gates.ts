@@ -42,7 +42,7 @@ export function endpointCapabilityGate(args: ParsedArgs): never {
   validateEndpointCapabilityArguments(args);
   throw new CommandFailure("refused", "UNSUPPORTED", "this author CLI has no verified native declaration adapter for the requested endpoint watch, interactive-session or work-pool capability; no subscription, cursor, session, lease or commit was created", {
     target: { capability: args.positionals[0], ...(args.positionals[0] === "work" ? { operation: args.positionals[1] } : {}) },
-    remedy: "read cotal endpoint describe <target> --json for its current command surface; this refusal does not claim that the endpoint itself lacks the capability, and no generic subject or remote-execution fallback was used",
+    remedy: "read `cotal endpoint describe <target> --json` for its current command surface; this refusal does not claim that the endpoint itself lacks the capability, and no generic subject or remote-execution fallback was used",
   });
 }
 

@@ -19,6 +19,7 @@ import {
   loadMeshes,
   manifestExtensionNames,
   meshFile,
+  paintFor,
   personaDir,
   plainFlag,
   preferenceSpaceProblem,
@@ -533,7 +534,7 @@ async function planSetup(inputs: SetupInputs, runtimes: readonly RuntimeChoice[]
     await resolveNatsServer();
   } catch (e) {
     if (e instanceof CommandFailure) throw e;
-    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", (e as Error).message.split("\n")[0]!, { target, remedy: "install nats-server and put it on PATH, or reinstall cotal-ai under Node 22 or newer" });
+    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", (e as Error).message.split("\n")[0]!, { target, remedy: "install nats-server and put it on PATH, or reinstall cotal-ai under Node 22.10 or newer" });
   }
   return { inputs, runtimes, candidate, space: { kind: "local", state } };
 }
@@ -668,7 +669,7 @@ async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: bool
           startup.joinedAt = new Date().toISOString();
           startup.state = "joined";
           warnings.push(...notices);
-          if (opts.interactive && !opts.detach) console.error(renderReport({ space: inputs.space, sections: [{ title: "Agent joined", blocks: [{ kind: "fields", rows: [["Agent", agent.name], ["Identity", agent.id], ["Manager", agent.managerInstanceId]] }, { kind: "lines", lines: [{ text: "Opening the allocated incarnation's terminal. Leaving the view sends no stop request.", tone: "hint" }] }] }] }, "rich"));
+          if (opts.interactive && !opts.detach) console.error(paintFor(process.stderr, () => renderReport({ space: inputs.space, sections: [{ title: "Agent joined", blocks: [{ kind: "fields", rows: [["Agent", agent.name], ["Identity", agent.id], ["Manager", agent.managerInstanceId]] }, { kind: "lines", lines: [{ text: "Opening the allocated incarnation's terminal. Leaving the view sends no stop request.", tone: "hint" }] }] }] }, "rich")));
         },
       });
       if (!startup.agent) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "setup received no native joined receipt; no readiness was inferred");

@@ -140,7 +140,7 @@ try {
   // material exists, and the caller carries the generation so its requests ride `ep.v1`. The
   // evidence names no lifecycle source (this credential has no ledger family), so its liveness
   // is the credential's own expiry.
-  const issued = { generation: mintGeneration(), acceptedToken: mintAcceptedToken() };
+  const issued = { generation: mintGeneration(Math.floor(Date.now() / 1000) + 172_800), acceptedToken: mintAcceptedToken() };
   const caller: EpCallerT = { owner: DEV_OWNER, actor: id.id, uid, generation: issued.generation } as EpCallerT;
   const creds = await withIssuerSession({ servers: brokerA.servers, space: spaceA, auth, tls: false }, (s) =>
     mintCreds(auth, id, "agent", { lifecycleUid: uid, capabilities: ["run"], expiresInSeconds: 3600, issued, issuance: { mode: "issue", store: s.store, accepted: s.accepted, sources: [] } }));
@@ -380,7 +380,7 @@ try {
       await seat.start();
       await (seat as unknown as { pollTurns(): Promise<void> }).pollTurns();
       const surfaced = await until(async () => seat.peekPendingTurns(), 10_000);
-      const line = surfaced?.text.split("\n").find((s) => s.startsWith("Answer with: "))?.slice("Answer with: ".length);
+      const line = surfaced?.text.split("\n").find((s) => s.startsWith("Answer with: `") && s.endsWith("`"))?.slice("Answer with: `".length, -1);
       const command = line?.replace("'<json record>'", "'{\"estimate\":4}'");
       if (command !== undefined) {
         const parts = command.match(/(?:[^\s']+|'[^']*')+/g)?.map((p) => p.startsWith("'") ? p.slice(1, -1) : p) ?? [];

@@ -17,7 +17,7 @@ export function renderDetachedSummary(status: DetachedStatus): string {
   if (status.authService) components.push("user-auth service");
   if (status.manager) components.push("manager");
   // The home stack's only stop is --preserve-state, which takes its inventory from a manager.
-  const stop = !status.machineHome ? "cotal down" : status.manager ? "cotal down --preserve-state" : "cotal up to start its manager, then cotal down --preserve-state";
+  const stop = !status.machineHome ? "`cotal down`" : status.manager ? "`cotal down --preserve-state`" : "`cotal up` to start its manager, then `cotal down --preserve-state`";
   return `✓ running in the background: ${components.join(", ")} - ${status.root ? `from ${oneLine(status.root)}, stop with: ${stop}` : `stop with: ${stop}`}`;
 }
 
@@ -29,6 +29,6 @@ export function detachedNext(status: Pick<DetachedStatus, "root" | "machineHome"
   const where = status.root ? ` from ${oneLine(status.root)}` : "";
   if (!status.machineHome) items.push({ command: "cotal down", description: `Stop the stack${where}` });
   else if (status.manager) items.push({ command: "cotal down --preserve-state", description: `Stop the stack${where}` });
-  else items.push({ command: "cotal up", description: "Start its manager, which cotal down --preserve-state needs" });
+  else items.push({ command: "cotal up", description: "Start its manager, which `cotal down --preserve-state` needs" });
   return items;
 }

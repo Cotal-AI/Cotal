@@ -1,15 +1,17 @@
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
-import type { FlagSpec, ParsedArgs } from "@cotal-ai/core";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { globalConfigDir, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
 import {
-  CommandFailure, jsonFlag, plainFlag, presentationOf, renderReport, terminalWidth, writeResult, type OutputWarning,
+  CommandFailure, jsonFlag, plainFlag, presentationOf, protectedLocalDirectory, renderReport, writeResult, type OutputWarning,
   cmdSpawnSpec,
   beginGlobalUpdateChild,
+  bindExtensionPeers,
   claimGlobalNpmUpdateLock,
   launcherInstallRoot,
   loadExtensionsManifest,
+  provenance,
   SEEDED_EXTENSIONS,
   type InstalledExtension,
   targetFlags,
@@ -20,6 +22,7 @@ import { selfArgv } from "../lib/self-exec.js";
 import { repairInstallModes, withInstallUmask } from "../lib/install-umask.js";
 import { cliVersion } from "../lib/version.js";
 import { runSeed, compareSemver } from "../seed/reconcile.js";
+import { operatorInstallDiffers } from "../seed/verify.js";
 import { seedWriterKind } from "../seed/paths.js";
 import { refreshConnectorInstalls } from "./setup.js";
 import { c } from "../ui.js";
@@ -40,7 +43,7 @@ import {
   type MeshTargetErrorDetails,
 } from "@cotal-ai/workspace";
 import { refreshOwnedCompletions } from "../lib/completion-install.js";
-import { legacyManagerReport } from "../lib/legacy-manager-report.js";
+import { legacyManagerReport, type LegacyManagerReport } from "../lib/legacy-manager-report.js";
 
 const UPDATE_TARGET_ENV = "COTAL_UPDATE_TARGET_VERSION";
 const UPDATE_PARENT_ENV = "COTAL_UPDATE_PARENT";
@@ -70,6 +73,8 @@ export interface UpdateRuntime {
   refreshConnectors(): Promise<readonly string[]>;
   reportRunningManager(target: Record<string, unknown>): Promise<"none" | "legacy">;
   extensions(): readonly InstalledExtension[];
+  /** Why a first-party extension still needs its reinstall at `generation`, or undefined once it is kept. */
+  verifyExtension(entry: InstalledExtension, generation: string): string | undefined;
   claimUpdatePass(): () => void;
   claimGlobalUpdate(root: string): () => void;
   selfArgv(): string[];
@@ -106,12 +111,13 @@ const runtime: UpdateRuntime = {
     if (completion.changed.length || completion.preserved.length) process.stdout.write(`${renderReport({ sections: [
       { title: "Owned shell completion", blocks: [
         { kind: "fields", rows: [["Changed files", String(completion.changed.length)], ["Preserved integrations", String(completion.preserved.length)]] },
-        { kind: "lines", lines: [...completion.preserved.map((entry) => ({ text: `${entry.shell}: ${entry.reason}`, tone: "waiting" as const })), { text: "Startup files were not rewritten. Run cotal completion to inspect local integration.", tone: "hint" }] },
+        { kind: "lines", lines: [...completion.preserved.map((entry) => ({ text: `${entry.shell}: ${entry.reason}`, tone: "waiting" as const })), { text: "Startup files were not rewritten. Run `cotal completion` to inspect local integration.", tone: "hint" }] },
       ] },
-    ] }, "rich", terminalWidth(process.stdout))}\n`);
+    ] }, "rich", process.stdout)}\n`);
   },
   reportRunningManager: (target) => reportRunningManagers(target),
   extensions: () => loadExtensionsManifest().extensions,
+  verifyExtension: verifyCurrentExtension,
   claimUpdatePass: () => claimExtensionUpdatePass(),
   claimGlobalUpdate: (root) => claimGlobalNpmUpdateLock(root),
   selfArgv,
@@ -129,11 +135,23 @@ const runtime: UpdateRuntime = {
 export async function update(args: ParsedArgs, rt: UpdateRuntime = runtime): Promise<void> {
   validateUpdateArguments(args);
   if (args.values.check === true) return checkUpdate(args, rt);
-  // The installer's own tree changes nothing a running manager reads, so its modes are repaired
-  // before the continuity check rather than only when the reconcile is allowed to run.
+  // A folder above the config folder is not one this command repairs. Refuse it before the mode
+  // repair and before seeding, so a refusal writes nothing and does not replace the binary.
+  try {
+    assertConfigAncestorProtected();
+  } catch (e) {
+    rt.err(c.red(`✗ config folder protection: ${protectionFailure(e)}`));
+    process.exitCode = 1;
+    return;
+  }
+  // Removing group and other write from Cotal's install and config folder changes nothing a running
+  // manager reads, so their modes are repaired before the continuity check rather than only when the
+  // reconcile is allowed to run.
   const install = launcherInstallRoot();
-  const repaired = install ? repairInstallModes(install) : 0;
-  if (repaired) rt.out(c.green(`✓ removed group and other write from ${repaired} ${repaired === 1 ? "entry" : "entries"} in Cotal's install at ${install}`));
+  for (const { what, root } of [...(install ? [{ what: "install", root: install }] : []), { what: "config", root: globalConfigDir() }]) {
+    const repaired = repairInstallModes(root);
+    if (repaired) rt.out(c.green(`✓ removed group and other write from ${repaired} ${repaired === 1 ? "entry" : "entries"} in Cotal's ${what} at ${root}`));
+  }
   const code = await executeUpdate(Boolean(args.values.self), rt, args.values);
   if (code !== 0) process.exitCode = code;
 }
@@ -281,6 +299,19 @@ async function reconcileCurrent(
         rt.out(c.dim(`${entry.pkg}@${entry.version} - not auto-updated in v1 (recorded spec: ${entry.spec})`));
         continue;
       }
+      let differs: string | undefined;
+      try {
+        differs = rt.verifyExtension(entry, current);
+      } catch (e) {
+        rt.err(c.red(`✗ ${entry.pkg}: ${message(e)}`));
+        ok = false;
+        continue;
+      }
+      if (differs === undefined) {
+        rt.out(c.green(`✓ verified ${entry.pkg}@${current}`) + c.dim(` - current generation (recorded spec: ${entry.spec})`));
+        continue;
+      }
+      rt.err(c.dim(`${entry.pkg}: ${differs}; reinstalling`));
       const spec = `${entry.pkg}@${current}`;
       const [bin, ...argv] = rt.selfArgv();
       const env: NodeJS.ProcessEnv = {
@@ -312,6 +343,17 @@ async function reconcileCurrent(
     if (result.stderr) rt.stderr(result.stderr);
     if (result.stdout) rt.stdout(result.stdout);
   }
+}
+
+/** Keep a first-party extension that npm's record in the prefix proves installed at `generation`,
+ *  rebinding its shared peers to this binary's copies as its reinstall would; otherwise say why it
+ *  still needs that reinstall. The update pass calls it under its own claim, so it needs no child. */
+export function verifyCurrentExtension(entry: InstalledExtension, generation: string): string | undefined {
+  const differs = operatorInstallDiffers(entry, generation);
+  if (differs !== undefined) return differs;
+  for (const link of bindExtensionPeers([entry.pkg], entry.pkg))
+    provenance.wrote(`${link.peer} link (${link.owner} → this CLI's copy)`, link.destination);
+  return undefined;
 }
 
 /** The "no mesh running" target refusal: no recorded mesh on this machine, or every recorded mesh
@@ -358,7 +400,7 @@ async function stoppedController(d: MeshTargetErrorDetails): Promise<boolean> {
   if (journal.members.some((member) => member.instanceId !== null &&
       !instances.some((row) => row.name === member.instanceId && row.record.value.definition === member.definition))) return false;
   if (instances.some((row) => !["stopped", "failed"].includes(row.record.value.state) || !processGone(observeServiceProcess(row.record.value)))) return false;
-  stackScopeRefusals(journal, `cotal update --space ${d.space}`);
+  stackScopeRefusals(journal, `\`cotal update --space ${d.space}\``);
   if (supervisorMayServe(d.space)) return false;
   return assertEndpointUnreachable(journal.server).then(() => true, () => false);
 }
@@ -373,6 +415,14 @@ function refusal(e: unknown): string {
   return isWorkspaceTargetError(e)
     ? renderWorkspaceError({ kind: "target", error: e }).replace(/^✗ /, "")
     : message(e);
+}
+
+/** The protection error plus its remedy. `refusal` keeps the sentence; the Next step is the
+ *  chmod the operator runs, and dropping it leaves the refusal without a way to fix the folder. */
+function protectionFailure(e: unknown): string {
+  const text = refusal(e);
+  const remedy = e instanceof CommandFailure ? e.remedy : undefined;
+  return remedy === undefined ? text : `${text}\n\nNext\n  ${remedy}`;
 }
 
 /** The running meshes an `ambiguous-target` named, or undefined when this refusal names none to act
@@ -499,10 +549,18 @@ export async function readManagerContinuity(flags: Record<string, unknown>): Pro
       : [],
   );
   if (!report) return "none";
-  console.log(c.yellow("! legacy manager custody: PTY continuity is impossible; this update is not a hot update"));
-  for (const seat of report.seats)
-    console.log(c.dim(`  ${seat.name}: ${seat.continuity}`));
+  printLegacyReport(report, target.space);
   return "legacy";
+}
+
+/** What a `legacy` verdict prints: the verdict, each seat's continuity class, and the cold path past
+ *  it as the next step. The verdict alone left the operator with no way on (#5027): the update exits
+ *  nonzero, and the path the docs name, `cotal down` then `cotal update`, was nowhere on the screen. */
+export function printLegacyReport(report: LegacyManagerReport, space: string, out: (line: string) => void = console.log): void {
+  out(c.yellow("! legacy manager custody: PTY continuity is impossible; this update is not a hot update"));
+  for (const seat of report.seats)
+    out(c.dim(`  ${seat.name}: ${seat.continuity}`));
+  out(`  Next: stop that mesh with \`cotal down --space ${space}\`, then run this update again; the stop ends the seats above, and the update after it is a cold one`);
 }
 
 /** The registry's latest tag, read through a throwaway npm cache with npm's log files and update
@@ -522,6 +580,25 @@ function latestVersion(rt: UpdateRuntime): { ok: true; version: string } | { ok:
   }
 }
 
+
+/** The nearest existing directory of the config folder. Seeding creates the folder itself, but a
+ *  group-writable ancestor above it is outside the folders update repairs. */
+function assertConfigAncestorProtected(): void {
+  let path = globalConfigDir();
+  // The config folder itself is repaired below. Only a folder above it is outside that repair.
+  if (existsSync(path)) path = dirname(path);
+  while (!existsSync(path)) {
+    const parent = dirname(path);
+    if (parent === path) return;
+    path = parent;
+  }
+  // The seed resolves the physical directory before protectedLocalDirectory. Follow that so an
+  // owned private folder reached through a symlink is not refused for being a link.
+  try { path = realpathSync(path); } catch { /* the path that exists is checked below */ }
+  if (!statSync(path).isDirectory()) return;
+  protectedLocalDirectory(path, "the Cotal config folder");
+}
+
 async function upgradeAndReconcile(targetVersion: string, current: string, rt: UpdateRuntime, target: Record<string, unknown>): Promise<number> {
   try {
     if (await rt.reportRunningManager(target) === "legacy") return 1;
@@ -538,6 +615,16 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
   const root = rootResult.stdout.trim();
   if (!root || /[\r\n]/.test(root)) {
     rt.err(c.red(`✗ npm returned an invalid global root: ${JSON.stringify(rootResult.stdout)}`));
+    return 1;
+  }
+
+  // Seeding writes under the config folder after this install. An ancestor outside that folder,
+  // such as a group-writable XDG config parent, is not repaired and still refuses. Check it now,
+  // before npm replaces the binary, so a refusal leaves the installed generation unchanged.
+  try {
+    assertConfigAncestorProtected();
+  } catch (e) {
+    rt.err(c.red(`✗ config folder protection: ${protectionFailure(e)}`));
     return 1;
   }
 
@@ -624,7 +711,7 @@ function reportVersion(current: string, latest: string, rt: UpdateRuntime): void
   rt.out(renderReport({ sections: [
     { title: "CLI version", blocks: [{ kind: "fields", rows: [["This process", current], ["Registry latest", latest], ["Update", available ? { text: "available", tone: "waiting" } : "no newer latest tag"]] }, { kind: "lines", lines: [{ text: "Running processes keep the generation they loaded. This version report does not prove every live service was upgraded.", tone: "hint" }] }] },
     { title: "Next", blocks: [{ kind: "commands", items: [{ command: available ? "cotal update --self" : "cotal status", description: !available ? "Inspect the machine and selected space" : rt.checkout() ? "Install the validated CLI as a separate global copy and reconcile through it; this checkout does not change" : "Install the validated CLI and reconcile its matching extensions" }] }] },
-  ] }, "rich", terminalWidth(process.stdout)));
+  ] }, "rich", process.stdout));
 }
 
 function childBinding(rt: UpdateRuntime):

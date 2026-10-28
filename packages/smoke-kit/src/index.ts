@@ -17,6 +17,7 @@ export { SMOKE_BROKER_PREFIX, SMOKE_BROKER_TOKEN, awaitBrokerReady, killAndAwait
 export { EXEMPT_MARKER, enumerateSpawnSites, inScope, isAdopted, type SpawnSite } from "./spawn-sites.js";
 export {
   assertSmokeSandboxDown,
+  assertSmokeSandboxLinkedDown,
   assertSmokeSandboxTargetDown,
   recordSmokeSandbox,
   type SmokeCommandOptions,

@@ -161,7 +161,7 @@ try {
   check(
     "neither hosting nor registered gets the exact host-or-join recovery",
     neither.status !== 0 &&
-      neitherOutput.includes(`neither hosting '${absent}' (no cotal up root here) nor registered to it (no meshes entry)`) &&
+      neitherOutput.includes(`neither hosting '${absent}' (no \`cotal up\` root here) nor registered to it (no meshes entry)`) &&
       neitherOutput.includes("`cotal up` to host, or `cotal meshes add` to join"),
     neitherOutput.slice(-1200),
   );

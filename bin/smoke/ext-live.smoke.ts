@@ -21,7 +21,8 @@
  * Run: pnpm smoke:ext:live   (needs npm on PATH)
  */
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { recordMesh } from "@cotal-ai/workspace";
@@ -397,6 +398,50 @@ registry.register({
   ok("a removed extension's alias is unknown again", gone.status === 1 && /unknown command: ax/.test(gone.stderr), gone.stderr.slice(0, 200));
 }
 
+
+// -- E4: a refused NEW package is staged, so the live prefix is never replaced ------------------
+{
+  const live = fixture("cotal-ext-live-link", GOOD.replace('name: "hello-ext"', 'name: "live-link"'));
+  const added = cotal(["ext", "add", live]);
+  ok("a package is installed before the refused new add", added.status === 0, added.stderr.slice(-300));
+  const link = join(extDir, "node_modules", "cotal-ext-live-link");
+  const files = ["package.json", "package-lock.json", "extensions.json"].map((name) => join(extDir, name));
+  const linkBefore = { ino: statSync(link).ino, dev: statSync(link).dev, target: realpathSync(link) };
+  const links = (dir: string): { path: string; ino: number; dev: number; target: string }[] =>
+    readdirSync(dir).flatMap((name) => {
+      const path = join(dir, name);
+      const stat = lstatSync(path);
+      if (stat.isSymbolicLink()) return [{ path, ino: stat.ino, dev: stat.dev, target: realpathSync(path) }];
+      return stat.isDirectory() ? links(path) : [];
+    });
+  const linksBefore = links(join(extDir, "node_modules"));
+  ok("the refusal identity census includes pre-existing peer links", linksBefore.length > 0);
+  const filesBefore = files.map((path) => ({ path, ino: statSync(path).ino, dev: statSync(path).dev, sha: createHash("sha256").update(readFileSync(path)).digest("hex") }));
+  const refused = fixture("cotal-ext-refused-new", GOOD, { peerDependencies: undefined });
+  const add = cotal(["ext", "add", refused]);
+
+  ok(
+    "a new package without the core peer exits 1 with that reason",
+    add.status === 1 && /cotal-ext-refused-new does not declare @cotal-ai\/core as a peerDependency/.test(add.stderr),
+    add.stderr.slice(-400),
+  );
+  const linkAfter = statSync(link);
+  ok("the refused new add leaves the live package inode and target", linkBefore.ino === linkAfter.ino && linkBefore.dev === linkAfter.dev && linkBefore.target === realpathSync(link));
+  ok("the refused new add preserves every pre-existing link inode and target", linksBefore.every((before) => {
+    const after = lstatSync(before.path);
+    return after.isSymbolicLink() && before.ino === after.ino && before.dev === after.dev && before.target === realpathSync(before.path);
+  }), { links: linksBefore.length });
+  for (const file of filesBefore) {
+    const after = statSync(file.path);
+    const sha = createHash("sha256").update(readFileSync(file.path)).digest("hex");
+    ok("refused new add leaves " + file.path.split("/").pop() + " inode and bytes", file.ino === after.ino && file.dev === after.dev && file.sha === sha, { before: file.ino, after: after.ino, shaSame: file.sha === sha });
+  }
+  const leftovers = readdirSync(join(configDir, "cotal")).filter((name) => name.startsWith(".extensions.stage-") || name.startsWith(".extensions.rollback-"));
+  ok("the refused new add leaves no stage or rollback directory", leftovers.length === 0, leftovers);
+  const removed = cotal(["ext", "remove", "cotal-ext-live-link"]);
+  ok("the pre-existing package still removes after the refusal", removed.status === 0, removed.stderr.slice(-200));
+}
+
 // -- E2: a multi-peer extension — the linked workspace peer is importable at run time -------------
 {
   const GOODWS = `import { registry } from "@cotal-ai/core";
@@ -488,8 +533,9 @@ registry.register(
   writeFileSync(join(sandbox, ".cotal", "fixture.secret"), "keep");
   for (const name of ["fixture-worker", "manager", "nats", "managre"]) {
     const named = cotal(["down", name]);
-    ok(`named down ${name} refuses as an unknown saved service and signals nothing`,
-      named.status === 2 && /no saved service definition resolves this name/.test(named.stderr) && alive(fixturePid) && existsSync(join(sandbox, ".cotal", "fixture.secret")),
+    const reason = name === "manager" ? /no manager has been started/ : /no saved service definition resolves this name/;
+    ok(`named down ${name} refuses without an owned service and signals nothing`,
+      named.status === 2 && reason.test(named.stderr) && alive(fixturePid) && existsSync(join(sandbox, ".cotal", "fixture.secret")),
       named.stdout + named.stderr);
   }
 

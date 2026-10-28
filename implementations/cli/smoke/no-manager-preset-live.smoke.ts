@@ -77,7 +77,7 @@ try {
   const text = cotal("status");
   check("status names it on the Manager row and does not say the stack has none",
     text.status === 0 && text.stdout.split("\n").some((line) => /^\s+Manager:\s+/.test(line) && line.trimEnd().endsWith(`● the mgr service · instance ${id} · outside this stack, which was started with --no-manager`))
-      && !text.stdout.includes("bare cotal up adds it"), shown(text));
+      && !text.stdout.includes("bare `cotal up` adds it"), shown(text));
 
   const refused = cotal("up", "--json");
   check("bare up refuses LIFECYCLE_BLOCKED, exit 2, naming the service, its instance and its exact stop",

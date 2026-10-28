@@ -40,8 +40,8 @@ type Values = FlagValues<typeof chatFlags>;
 /** Declared flags no admission supports yet, each with the reason it refuses. */
 const NOT_YET: readonly (readonly [keyof Values & string, string])[] = [
   ["role", "a role puts the session on that role's work queue, the chat view cannot yet answer a task's sender, and the static and user-mode admissions take no role"],
-  ["link", "no admission opens a chat session from a join link; select the space with --space or cotal use"],
-  ["token", "no admission opens a chat session from a join token; select the space with --space or cotal use"],
+  ["link", "no admission opens a chat session from a join link; select the space with --space or `cotal use`"],
+  ["token", "no admission opens a chat session from a join token; select the space with --space or `cotal use`"],
   ["creds", "a chat session gets its own identity from the space, and no admission accepts an explicit credential"],
   ["lifecycle-uid", "it pairs with --creds, which no chat admission accepts"],
 ];
@@ -59,7 +59,7 @@ export interface ChatInput {
 /** Check the grammar and choose the front end, before any target, connector or connection. */
 export function chatArguments(args: ParsedArgs): ChatInput {
   const values = args.values as Values;
-  if (args.positionals.length > 1) throw new CommandFailure("refused", "USAGE_INVALID", "chat takes at most one channel", { remedy: "run cotal chat [<channel>]" });
+  if (args.positionals.length > 1) throw new CommandFailure("refused", "USAGE_INVALID", "chat takes at most one channel", { remedy: "run `cotal chat [<channel>]`" });
   const raw = args.positionals[0];
   const channel = raw?.replace(/^#/, "");
   // A name the channel rules refuse gets their reason, which names the segment at fault.
@@ -71,9 +71,9 @@ export function chatArguments(args: ParsedArgs): ChatInput {
   if (values.kind !== undefined && values.kind !== "endpoint")
     throw new CommandFailure("refused", "USAGE_INVALID",
       values.kind === "agent" ? "--kind agent is refused because a chat session never presents as an agent" : "--kind accepts only endpoint",
-      { remedy: "run cotal chat without --kind" });
+      { remedy: "run `cotal chat` without --kind" });
   for (const [flag, reason] of NOT_YET)
-    if (values[flag] !== undefined) throw new CommandFailure("refused", "UNSUPPORTED", `--${flag} is not available for chat yet: ${reason}`, { remedy: `run cotal chat without --${flag}` });
+    if (values[flag] !== undefined) throw new CommandFailure("refused", "UNSUPPORTED", `--${flag} is not available for chat yet: ${reason}`, { remedy: `run \`cotal chat\` without --${flag}` });
   const picked = selectFrontEnd({ stdio: values.stdio, plain: values.plain });
   if (!picked.ok) throw new CommandFailure("refused", "USAGE_INVALID", picked.message);
   return { ...(channel === undefined ? {} : { channel }), ...(values.name === undefined ? {} : { label: values.name }), frontEnd: picked.frontEnd };

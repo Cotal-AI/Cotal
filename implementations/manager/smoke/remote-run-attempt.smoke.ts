@@ -46,10 +46,10 @@ try {
   const gate = { state: "open" as const, principal: `${OWNER}.${remoteManagerActors(instanceId).serve}`, processEpoch: 3, registrationRevision: 7 };
   const base = { v: 1, kind: "manager-run-attempt", space: SPACE, actor: "cli", instanceId, managerLifecycleUid: mintLifecycleUid(), accountPublicKey: ACCOUNT, processEpoch: 3, identities } as const;
   const proof = remoteManagerCurrentRegistrationProof(SECRET, OWNER, base, gate);
-  const newRun = () => `run-${Buffer.from(mintGeneration().slice(0, 16)).toString("hex")}`;
+  const newRun = () => `run-${Buffer.from(mintGeneration(Math.floor(Date.now() / 1000) + 172_800).slice(8, 24)).toString("hex")}`;
   const admit = async (runId: string, inst = instanceId) => createRunAdmission(admissions, {
     version: 1, space: SPACE, endpoint: "manager", runId, instanceId: inst,
-    caller: { owner: "alice_o", actor: "alice", uid: mintLifecycleUid(), generation: mintGeneration() } as never,
+    caller: { owner: "alice_o", actor: "alice", uid: mintLifecycleUid(), generation: mintGeneration(Math.floor(Date.now() / 1000) + 172_800) } as never,
     ceiling: { publish: { allow: { mode: "none" }, deny: [] }, subscribe: { allow: { mode: "none" }, deny: [] } },
     provenance: { kind: "operator", by: "suite", reason: "fixture" }, admittedAt: Date.now(),
   });

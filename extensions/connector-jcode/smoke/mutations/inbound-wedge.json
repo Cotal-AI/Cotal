@@ -68,8 +68,8 @@
     {
       "name": "M6 shutdown does not end a pending live wait",
       "file": "extensions/connector-jcode/src/host.ts",
-      "find": "    stopping = true;\n    eventWaitStop.abort();\n",
-      "replace": "    stopping = true;\n",
+      "find": "    heldReservations.clear();\n    eventWaitStop.abort();\n",
+      "replace": "    heldReservations.clear();\n",
       "expectRed": "a seat stopped while its mesh connection is down exits instead of waiting for the broker (#1868)",
       "cell": "a seat stopped while its mesh connection is down exits instead of waiting for the broker (#1868)"
     }

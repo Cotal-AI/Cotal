@@ -40,7 +40,7 @@
     {
       "name": "connector-core loses its test declaration and pnpm can silently succeed again",
       "file": "extensions/connector-core/package.json",
-      "find": "    \"test\": \"tsx smoke/spawn-args.smoke.ts && tsx smoke/inline-delivery.smoke.ts\",\n",
+      "find": "    \"test\": \"tsx smoke/spawn-args.smoke.ts && tsx smoke/inline-delivery.smoke.ts && tsx smoke/persona-outcome.smoke.ts\",\n",
       "replace": "",
       "expectRed": "✗ FAIL: @cotal-ai/connector-core: declares a non-empty test script",
       "cell": "✗ FAIL: @cotal-ai/connector-core: declares a non-empty test script"

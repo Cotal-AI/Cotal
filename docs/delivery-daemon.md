@@ -35,7 +35,11 @@ read checks it must apply. A conformant deployment may realize the backstop diff
   reader acks such an entry only after the delete succeeds. A failed delete leaves the entry pending,
   so it is retried and given up after ten redeliveries, and an entry the stream no longer holds counts
   as removed. A daemon that stops serving while the delete is in flight neither acks nor gives up the
-  entry, so the daemon that serves next retries it. An entry whose owner has no ACL row at all is
+  entry, so the daemon that serves next retries it. When the entry came from a durable channel, the
+  reader also removes the retired lifecycle's member row for that channel, when one exists: a daemon
+  that died between creating a row and its post-write ACL read leaves one, and until it goes every
+  later message on the channel is copied into the retired inbox and dropped again. The removal is
+  best effort; a failure is a warning, and the next entry retries it. An entry whose owner has no ACL row at all is
   retried, then given up after ten redeliveries, and kept, because a missing row does not prove the
   owner is gone.
 - **Membership registry.** A privileged-written record of who is a durable member of each
@@ -68,6 +72,14 @@ credential** co-located with the broker: never an allow-all cred, and it never h
 signing key. One daemon serves a space (a single-flight lease guards against a second binding the
 same durables).
 
+One process can also serve every space on a host: `cotal deliver --spaces <manifest> --server <url>`
+holds one lane per space the manifest names ([server daemons](cli.md#server-daemons)). A lane is
+that space's daemon. It reads the space's own credential from the root, dials on its own
+connections, which authenticate into that space's account, and holds its own lease, broker
+watchdog, timer writer and membership feed, so a second daemon for the space is refused by the lease
+as before. A lane that loses the broker, its credential or its lease closes alone and the host
+reopens it; the other lanes keep serving.
+
 The manager needs this daemon while it starts. Its SecretStore challenge, its boot repair of a frozen
 registration gate, and the verified eviction a restart performs all go over the daemon's
 `ctl.delivery-admin` rail. Agents' durable join, leave and membership-list requests go over its
@@ -80,6 +92,22 @@ so a daemon that binds in its last seconds is still asked. The wait ends on time
 is still connecting, and nothing is sent after it. A daemon that answers fails the start at once if
 it refuses or its reply cannot be read. One that stays silent for the whole wait fails it, and the
 manager log names the rail.
+
+The daemon answers `ctl.delivery-admin` requests one at a time, in the order they arrive, with one
+exception: the `lifecycleMemberships` inventory a retirement reads before it deletes the retired
+agent's membership rows. That request is answered without waiting for the others, so a manager stop
+that retires many seats does not queue each inventory behind the other seats' evictions. Inventories
+that arrive together share one read of the members bucket, and each one's read begins after it
+arrived. Before the manager asks for a lifecycle's inventory, it narrows that lifecycle's read-ACL
+row to no reads. A durable join reads that row again just before it writes its membership row, and
+once more after. When the channel is no longer allowed, the join writes nothing, or removes the row it
+just wrote, and is refused. A leave or an activation only updates a row that still exists. A row of the
+retiring lifecycle is then either in the inventory or gone, whichever daemon process wrote it. The
+daemon also fences on its own, for a manager that does not narrow the row: when the inventory request
+arrives with the lifecycle's ACL row still allowing reads, it refuses every durable join and leave of
+that lifecycle from that moment, on that daemon process. A request whose row is already narrowed, or
+retired, leaves no such mark, since the row refuses those writes by itself. Either way the read starts
+only after the writes already running have finished.
 
 A reply on the `ctl.delivery` or `ctl.delivery-admin` rail that is larger than the broker's
 `max_payload` cannot be published. The daemon answers that request with a refusal giving the reply's
@@ -181,7 +209,9 @@ record whose pid now belongs to another program is cleared without a signal. If 
 while that stop is running, `up` waits for the stop to finish before it exits.
 
 The daemon **records itself** in `.cotal/delivery.<key>.pid`, whichever way it was started, and
-removes that record when it exits cleanly. The launcher is not the only route to a running daemon: a
+removes that record when it exits cleanly. A lane of `cotal deliver --spaces` is the exception: it
+writes no record, because the record is what `cotal down` signals for one space and the host serves
+several. The launcher is not the only route to a running daemon: a
 container entrypoint, a systemd unit, or `cotal deliver --space <space>` typed by hand all reach one
 too, and a record written only by the launcher goes stale the moment any of those restarts it.
 `cotal deliver` is a deprecated entry kept for existing units and scripts; new setups use the
@@ -211,7 +241,8 @@ connection under the same delivery credential. That connection presents the cred
 holds now and reconnects onto each renewed one the daemon adopts, so the broker never closes it for
 an expired credential and it never dials with one. Without a running writer no workflow pause on the
 space ever expires. The writer restarts itself with backoff and logs while it is down; a fault
-there never takes delivery down.
+there never takes delivery down. Stopping the daemon ends the writer's pending fetch at once and
+wakes a retry backoff it is sleeping through, so a close never waits for a retry it will not make.
 
 **Open dev mode has no delivery daemon.** Open mode is deliberately **live-only**: there is no
 trusted reader, so there is no durable backstop. Run an auth mesh if you need durable channels.

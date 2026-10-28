@@ -55,7 +55,7 @@ export async function downManifest(file: string, flags: DownManifestFlags): Prom
     ledger = found.ledger; // loadLedger already validated the WHOLE ledger as untrusted input
   } catch (e) {
     stderrLine("✗ ", `${(e as Error).message}`, c.red);
-    if (isCommandFailure(e) && e.remedy) stderrLine("  ↳ ", e.remedy, c.dim);
+    if (isCommandFailure(e) && e.remedy) stderrLine("  ↳ ", e.remedy, c.dim, e.remedyIsCommand);
     process.exit(1);
   }
 
@@ -279,7 +279,7 @@ export async function downManifest(file: string, flags: DownManifestFlags): Prom
         c.dim(` - ${remainAgents.length} agent(s) + ${unresolvedChannels.length} channel(s) still owned; ledger kept`),
     );
     if (unresolvedCredIds.size) console.log(c.dim(`  local credential cleanup incomplete for ${unresolvedCredIds.size} agent(s) - ledger kept for retry`));
-    console.log(c.dim(`  finish later (broker up / members gone): cotal down -f ${ledger.manifestPath} --run ${ledger.runId}`));
+    console.log(c.dim(`  finish later (broker up / members gone): \`cotal down -f ${ledger.manifestPath} --run ${ledger.runId}\``));
     process.exitCode = 1; // not a full success
   }
 }

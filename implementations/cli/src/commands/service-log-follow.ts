@@ -104,7 +104,7 @@ export async function followRecordedLog(path: string, pid: number | null, target
   const write = async (text: string) => { if (!brokenOutput && !process.stdout.write(text)) await once(process.stdout, "drain", { signal: stopped.signal }); };
   const record = async (type: RecordType, data: unknown) => write(presentation === "json" ? `${JSON.stringify(streamRecord("logs", type, target, data))}\n` : followText(type, data, String(target.name)));
   try {
-    await record("snapshot", { pid, path, scope: "the log cotal up opened for this process; no saved service", tail, maximumReadBytes: 1_048_576, maximumChunkBytes: 16_384, encoding: "utf8-with-replacement", serviceControl: "none" });
+    await record("snapshot", { pid, path, scope: "the log `cotal up` opened for this process; no saved service", tail, maximumReadBytes: 1_048_576, maximumChunkBytes: 16_384, encoding: "utf8-with-replacement", serviceControl: "none" });
     while (!stopped.signal.aborted) {
       const slice = ownedLogSlice(path, position, tail);
       if (!slice) {

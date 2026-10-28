@@ -36,9 +36,9 @@ const awaitExit = (p: ChildProcess, ms = 5000): Promise<void> =>
 const home = mkdtempSync(join(tmpdir(), "cotal-detach-home-"));
 process.env.COTAL_HOME = home;
 
-const { parseCommandArgs, probeConnect, registry, CotalEndpoint, openSessionRail } = await import("@cotal-ai/core");
+const { parseCommandArgs, probeConnect, registry, CotalEndpoint, openSessionRail, EpEnvelopeError } = await import("@cotal-ai/core");
 const { connect } = await import("@nats-io/transport-node");
-const { recordMesh, isCommandFailure, exitCode } = await import("@cotal-ai/workspace");
+const { recordMesh, isCommandFailure, exitCode, commandFailureReport, renderReport } = await import("@cotal-ai/workspace");
 await import("@cotal-ai/cli"); // registers the CLI commands (spawn/stop/ps/attach) into the registry
 const { Manager } = await import("@cotal-ai/manager");
 import type { AgentHandle, Command, Connector, ControlReply, LaunchOpts, LaunchSpec, RuntimeProvider, SessionGrant } from "@cotal-ai/core";
@@ -160,6 +160,30 @@ const noStream: RuntimeProvider = {
   }),
 };
 registry.register(noStream);
+// A runtime that declares a terminal but cannot open one: an attach that should work and fails, so
+// its refusal is a real attach failure rather than the no-terminal answer.
+const brokenStream: RuntimeProvider = {
+  kind: "runtime",
+  name: "e2e-brokenstream",
+  available: () => true,
+  create: () => ({
+    kind: "e2e-brokenstream",
+    streamsTerminal: true,
+    spawn: (name: string, spec: LaunchSpec, cwd: string): AgentHandle => {
+      const child = spawnProc(spec.command, spec.args, { cwd, env: spec.env, stdio: "ignore" });
+      kids.push(child);
+      return {
+        name, kind: "e2e-brokenstream",
+        status: () => (child.exitCode === null && child.signalCode === null ? "running" : "exited"),
+        stop: () => { child.kill("SIGKILL"); },
+        waitForExit: () => awaitExit(child),
+        interrupt: () => {},
+        attach: () => { throw new Error(`e2e-brokenstream runtime: the terminal of "${name}" could not be opened`); },
+      };
+    },
+  }),
+};
+registry.register(brokenStream);
 
 const cmd = (name: string): Command => {
   const c = registry.all<Command>("command").find((c) => c.name === name);
@@ -496,6 +520,100 @@ try {
       for (const name of ["pane", "pane2", "ptyseat"]) await capture(() => run("stop", ["--name", name, "--space", SPACE]));
     } finally {
       await mgr2.stop().catch(() => {});
+    }
+  }
+
+  // K — a foreground launch on a manager from before 0.104.2, which does not report whether its
+  // runtime streams a terminal, so the CLI finds out by attaching. The stand-in is this manager with
+  // that release's two differences: its launch reply carries no `streamsTerminal`, and once `oldDoor`
+  // is set its attach door refuses a runtime whose attach() throws as a lifecycle precondition, with
+  // the runtime's own text and no marker. Each launch below used to end OPERATION_PARTIAL with no
+  // reason and a Next to "reattach".
+  {
+    const root3 = mkdtempSync(join(tmpdir(), "cotal-detach-ws3-"));
+    mkdirSync(join(root3, ".cotal", "agents"), { recursive: true });
+    writeFileSync(join(root3, ".cotal", "agents", "poet.md"), "---\nname: poet\nrole: writer\n---\nYou write verse.\n");
+    const mgr3 = new Manager({ space: SPACE, servers: SERVER, runtime: "e2e-nostream", workspaceRoot: root3 });
+    const startAgent = mgr3.startAgent.bind(mgr3);
+    mgr3.startAgent = (opts, spawner, hooks, caller) => startAgent(opts, spawner, hooks && {
+      ...hooks,
+      onOutcome: (o) => {
+        if (o.kind !== "succeeded") return hooks.onOutcome?.(o);
+        const { streamsTerminal: _unreported, ...data } = o.data as Record<string, unknown>;
+        return hooks.onOutcome?.({ ...o, data });
+      },
+    }, caller);
+    let oldDoor = false;
+    const door = mgr3 as unknown as { attachAuthorized: (a: { handle: AgentHandle }, caller: unknown) => Promise<ControlReply> };
+    const attachAuthorized = door.attachAuthorized.bind(mgr3);
+    door.attachAuthorized = async (a, caller) => {
+      if (!oldDoor) return attachAuthorized(a, caller);
+      try { a.handle.attach(); } catch (e) { throw new EpEnvelopeError("failed-precondition", (e as Error).message, undefined, "not-executed"); }
+      throw new Error("the stand-in serves no terminal");
+    };
+    await mgr3.start();
+    const on3 = (mgr3 as unknown as { managerInstanceId: string }).managerInstanceId;
+    const tty = { in: process.stdin.isTTY, out: process.stdout.isTTY };
+    const exitBefore = process.exitCode;
+    /** Run `fn` at a forced terminal, returning stdout, stderr and the failure it threw, if any.
+     *  These launches do attach, and the attach's detach-key reader puts the terminal in raw mode,
+     *  which a stdin that is not really a terminal cannot do: the forced one takes it as a no-op. */
+    const foreground = async (fn: () => Promise<void>): Promise<{ out: string; err: string; failure: unknown }> => {
+      let err = "", failure: unknown;
+      const realError = console.error;
+      const rawMode = Object.getOwnPropertyDescriptor(process.stdin, "setRawMode");
+      console.error = (...a: unknown[]) => void (err += a.join(" ") + "\n");
+      Object.assign(process.stdin, { isTTY: true, setRawMode: () => process.stdin });
+      Object.assign(process.stdout, { isTTY: true });
+      try {
+        const out = await capture(() => fn().catch((e: unknown) => { failure = e; }));
+        return { out: plain(out), err: plain(err), failure };
+      } finally {
+        console.error = realError;
+        if (rawMode) Object.defineProperty(process.stdin, "setRawMode", rawMode);
+        else delete (process.stdin as { setRawMode?: unknown }).setRawMode;
+        Object.assign(process.stdin, { isTTY: tty.in });
+        Object.assign(process.stdout, { isTTY: tty.out });
+      }
+    };
+    try {
+      const reportJson = await capture(() => run("spawn", ["poet", "--detach", "--no-events", "--agent", "e2e", "--space", SPACE, "--name", "oldpane0", "--on", on3, "--json"]));
+      ok("the stand-in reports no terminal answer, so the CLI reads null", (JSON.parse(reportJson) as { result: { streamsTerminal: unknown } }).result.streamsTerminal === null, reportJson);
+
+      // Its refusal carries the marker: the seat's runtime streams no terminal.
+      process.exitCode = undefined;
+      const marked = await foreground(() => run("spawn", ["poet", "--no-events", "--agent", "e2e", "--space", SPACE, "--name", "oldpane1", "--on", on3]));
+      ok("a marked no-terminal refusal ends the launch with the agent joined and exit 0", marked.failure === undefined && joinedAs(marked.out, "oldpane1") && (process.exitCode ?? 0) === 0, { ...marked, exitCode: process.exitCode });
+      ok("and says once that the named runtime has no terminal to attach", /the e2e-nostream runtime has no terminal to attach, so none was opened; the agent runs in the manager's e2e-nostream session/.test(marked.err) && !/Partly completed|OPERATION_PARTIAL/.test(marked.out + marked.err), marked);
+
+      // The unmarked refusal of a manager before 0.104.2, on a runtime this CLI's registry declares
+      // streams no terminal. The launch still asks once; the manager's own attaches are the baseline.
+      oldDoor = true;
+      const beforeDetached = attachCalls;
+      await capture(() => run("spawn", ["poet", "--detach", "--no-events", "--agent", "e2e", "--space", SPACE, "--name", "oldpane2", "--on", on3]));
+      const managerOwn = attachCalls - beforeDetached;
+      const before = attachCalls;
+      process.exitCode = undefined;
+      const unmarked = await foreground(() => run("spawn", ["poet", "--no-events", "--agent", "e2e", "--space", SPACE, "--name", "oldpane3", "--on", on3]));
+      ok("an old manager's unmarked refusal on a no-terminal runtime ends the launch, exit 0", unmarked.failure === undefined && joinedAs(unmarked.out, "oldpane3") && (process.exitCode ?? 0) === 0, { ...unmarked, exitCode: process.exitCode });
+      ok("it names the runtime and is not partial", /the e2e-nostream runtime has no terminal to attach/.test(unmarked.err) && !/Partly completed|OPERATION_PARTIAL/.test(unmarked.out + unmarked.err), unmarked);
+      ok("and it found out by asking the manager once", attachCalls - before === managerOwn + 1, { foreground: attachCalls - before, detached: managerOwn });
+
+      // A real attach failure on a runtime that declares a terminal stays partial, and says why.
+      const broken = await foreground(() => run("spawn", ["poet", "--no-events", "--agent", "e2e", "--space", SPACE, "--name", "brokenseat", "--on", on3, "--runtime", "e2e-brokenstream"]));
+      const failure = broken.failure;
+      ok("a real attach failure after the launch is OPERATION_PARTIAL, exit 4", isCommandFailure(failure) && failure.code === "OPERATION_PARTIAL" && exitCode(failure.outcome, failure.code) === 4 && joinedAs(broken.out, "brokenseat"), { out: broken.out, failure: String(failure) });
+      if (!isCommandFailure(failure)) throw new Error("unreachable");
+      const reason = 'e2e-brokenstream runtime: the terminal of "brokenseat" could not be opened';
+      ok("its envelope carries the manager's reason as error.cause.detail", failure.detail().cause?.detail === reason, failure.detail());
+      const report = renderReport(commandFailureReport(failure), "plain", 400);
+      ok("and its report prints that reason as a Native detail row", report.split("\n").some((line) => /^\s*Native detail:\s/.test(line) && line.includes(reason)), report);
+      ok("its Next names ps and attach with the real space and manager instance, never a bare reattach",
+        failure.remedy?.includes(`ps --space ${SPACE} --on ${on3}`) === true && failure.remedy.includes(`attach brokenseat --space ${SPACE} --on ${on3}`) && !/reattach/.test(failure.remedy), failure.remedy);
+      for (const name of ["oldpane0", "oldpane1", "oldpane2", "oldpane3", "brokenseat"]) await capture(() => run("stop", ["--name", name, "--space", SPACE]));
+    } finally {
+      process.exitCode = exitBefore;
+      await mgr3.stop().catch(() => {});
     }
   }
 

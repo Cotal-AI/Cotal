@@ -44,7 +44,7 @@ import { EpEnvelopeError } from "./endpoint-envelope.js";
 import { GOAL_TERMINAL_STATES, assertClosedKeys, assertGoalResultFactShape, goalOutcomeDigestMismatch } from "./goal-result-fact.js";
 import { withDeadline } from "./deadline.js";
 import { epfSubject, assertIdToken, endpointToken, type EpCaller, type ParsedEpRequest } from "./endpoint-subjects.js";
-import { RECORD_KINDS, recordSpecKey, recordStatusKey, recordAtomicKey, createRecordEntry, updateRecordEntry, assertStatusValue, openRecordsBucket, readRecordLeader, decodeEntry } from "./endpoint-records.js";
+import { RECORD_KINDS, recordSpecKey, recordStatusKey, recordAtomicKey, createRecordEntry, updateRecordEntry, assertStatusValue, openRecordsBucket, readRecordLeader, decodeEntry, decodeRecordJson, isCasLoss } from "./endpoint-records.js";
 import { epfStreamName, epfGoalBindSubject, readLastFact, parseDecisionFact } from "./endpoint-journal.js";
 import { readCheckpointSpec, readCheckpointSettle } from "./endpoint-checkpoint.js";
 import {
@@ -248,8 +248,7 @@ async function publishCreateOnly(js: JetStreamClient, subject: string, bytes: Ui
     await js.publish(subject, bytes, { headers: h });
     return { won: true };
   } catch (e) {
-    const code = (e as { code?: unknown })?.code;
-    if (code === 10071 || code === 10164) return { won: false };
+    if (isCasLoss(e)) return { won: false };
     throw e;
   }
 }
@@ -480,7 +479,7 @@ export async function readGoalStatus(ctx: ActionContext, ref: GoalRef): Promise<
   if (!entry) return undefined;
   if (entry.operation !== "PUT")
     throw new EpEnvelopeError("failed-precondition", `the goal status ${key} carries a ${entry.operation} marker; a deletion never erases a goal's projection - reconcile the store (SPEC 13.4)`);
-  return { value: parseStatus(JSON.parse(new TextDecoder().decode(entry.value)), key), revision: entry.revision };
+  return { value: parseStatus(decodeRecordJson(entry.value, key), key), revision: entry.revision };
 }
 
 /** LEADER-SERVED goal reads for the FENCING paths (the H2 epoch-CAS gap): the status read that
@@ -1304,7 +1303,8 @@ export function parseGoalIndexEntry(raw: unknown, key: string): GoalIndexEntry {
  *  of a crash — a crash AFTER this write and BEFORE the bind leaves an index entry whose goal
  *  status is absent (the sweep treats it as a no-goal and clears it); a crash BEFORE it leaves no
  *  entry, so the acceptance was never durable. `iid` is the accepting incarnation's instanceId.
- *  Idempotent for an adopted or concurrent same-goalId retry (a byte-identical pointer). */
+ *  Idempotent for an adopted or concurrent same-goalId retry (a byte-identical pointer). A goal
+ *  whose entry {@link clearGoalIndex} already deleted is refused `failed-precondition`. */
 export async function recordGoalIndex(
   ctx: ActionContext, ref: GoalRef, iid: string, allocated?: GoalIndexEntry["allocated"], note?: string,
 ): Promise<{ recorded: true } | { recorded: false; existing: GoalIndexEntry }> {
@@ -1316,11 +1316,14 @@ export async function recordGoalIndex(
     return { recorded: true };
   } catch (e) {
     if (!(e instanceof EpEnvelopeError && e.code === "conflict")) throw e;
-    // A non-PUT marker is corruption, never reusable absence.
     const existing = await ctx.kv.get(key);
+    // DEL is the normal end clearGoalIndex gives a settled or withdrawn goal's entry. Nothing in core
+    // purges a records key or leaves a lost CAS reading absent, so those two are store corruption.
+    if (existing?.operation === "DEL")
+      throw new EpEnvelopeError("failed-precondition", `goal-index entry ${key} was cleared when its goal settled or its acceptance was withdrawn; a cleared entry is never recorded again (SPEC 13.6)`);
     if (!existing || existing.operation !== "PUT")
-      throw new EpEnvelopeError("internal", `goal-index entry ${key} lost its create-only CAS but is absent/deleted; reconcile the store (SPEC 13.6)`);
-    const entry = parseGoalIndexEntry(JSON.parse(new TextDecoder().decode(existing.value)), key);
+      throw new EpEnvelopeError("internal", `goal-index entry ${key} lost its create-only CAS but is absent or purged; reconcile the store (SPEC 13.6)`);
+    const entry = parseGoalIndexEntry(decodeRecordJson(existing.value, key), key);
     // H2: the loss is only an IDEMPOTENT RETRY when the winner is the same incarnation. A FOREIGN
     // `iid` means another instance accepted this goalId, which this function must not silently
     // absorb: the caller was proceeding on the belief that the index points at ITS acceptance, and
@@ -1346,7 +1349,7 @@ export async function readGoalIndex(ctx: ActionContext, ref: GoalRef): Promise<G
   const key = goalIndexKey(snapshotRef(ref));
   const e = await ctx.kv.get(key);
   if (!e || e.operation !== "PUT") return undefined;
-  return parseGoalIndexEntry(JSON.parse(new TextDecoder().decode(e.value)), key);
+  return parseGoalIndexEntry(decodeRecordJson(e.value, key), key);
 }
 
 /** Enumerate the endpoint's in-flight reconcile index over a RAW records KV: a successor's boot
@@ -1360,7 +1363,7 @@ export async function listGoalIndex(kv: KV, endpoint: string): Promise<{ ref: Go
   for await (const key of await kv.keys(filter)) {
     const e = await kv.get(key);
     if (!e || e.operation !== "PUT") continue; // deleted/absent since the key listed: terminal already cleared
-    const v = parseGoalIndexEntry(JSON.parse(new TextDecoder().decode(e.value)), key);
+    const v = parseGoalIndexEntry(decodeRecordJson(e.value, key), key);
     out.push({
       ref: { endpoint: v.endpoint, caller: { owner: v.owner, actor: v.actor, uid: v.uid }, goalId: v.goalId },
       iid: v.iid,

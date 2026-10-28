@@ -6,6 +6,7 @@ import {
   ROOT,
   accountRevocations,
   assertLifecycleToken,
+  credentialLifetime,
   credsClaims,
   credsProblem,
   inspectCredHealth,
@@ -33,7 +34,7 @@ import {
   type SpaceAuth,
 } from "@cotal-ai/core";
 import { brokerAddressForDisplay } from "./broker-display.js";
-import { c } from "./colors.js";
+import { c, paintFor } from "./colors.js";
 import { findCotalRoot, getSpaceAuth, hasUserAuthState, userAuthStateDir } from "./auth-paths.js";
 import { agentGrants, grantMintFlags } from "./agent-grants.js";
 import { workspaceSecretStore } from "./secret-store-fs.js";
@@ -259,7 +260,7 @@ export async function userViewAuthOrExit(conn: Connection, view: string): Promis
   try {
     return await userViewAuth(conn, view);
   } catch (e) {
-    console.error(c.red(`✗ ${e instanceof Error ? e.message : String(e)}`));
+    console.error(paintFor(process.stderr, () => c.red(`✗ ${e instanceof Error ? e.message : String(e)}`)));
     process.exit(1);
   }
 }
@@ -482,8 +483,10 @@ function credentialCode(e: unknown): RefusalCode {
  *  the command. Anything that is not a {@link ConnectRefusal} is a real fault and rethrows. */
 function exitOnRefusal(e: unknown): never {
   if (!(e instanceof ConnectRefusal)) throw e;
-  console.error(c.red(e.rendered));
-  if (e.hint) console.error(c.dim(e.hint));
+  paintFor(process.stderr, () => {
+    console.error(c.red(e.rendered));
+    if (e.hint) console.error(c.dim(e.hint));
+  });
   process.exit(1);
 }
 
@@ -491,7 +494,7 @@ function exitOnRefusal(e: unknown): never {
  * Mint one control-caller instrument for a target the caller already resolved. It is an ISSUANCE
  * (SPEC 13.15): its rails carry a fresh generation, and its ceiling is recorded before the material
  * exists. It depends on no lifecycle gate, so its evidence carries the credential's own five-minute
- * expiry as its liveness. Nothing here reads the registry or the `use` selection, so a caller that
+ * expiry as its liveness, and that expiry is the generation's horizon. Nothing here reads the registry or the `use` selection, so a caller that
  * pinned its target keeps minting against that target after either one changes.
  *
  * `instanceId` pins THIS one-shot instrument to that manager instance, so it is issued the exact
@@ -507,11 +510,15 @@ export async function mintControlInstrument(
 ): Promise<{ creds: string; epCaller: IssuedCaller }> {
   const identity = newIdentity();
   const uid = mintLifecycleUid();
-  const issued = { generation: mintGeneration(), acceptedToken: mintAcceptedToken() };
+  const profile = tier === "admin" ? "control-caller-admin" : "control-caller-privileged";
+  // The instrument's expiry is its generation's horizon, so it is fixed before either exists.
+  const expiresAt = Math.floor(Date.now() / 1000) + credentialLifetime(profile).defaultTtlSeconds!;
+  const issued = { generation: mintGeneration(expiresAt), acceptedToken: mintAcceptedToken() };
   const pinned = instanceId !== undefined ? instancePinnedInstrumentCapabilities(tier, instanceId) : undefined;
   const creds = await withIssuerSession({ servers: target.server, space: target.space, auth: target.auth, tls: target.tlsRequired }, (s) =>
-    mintCreds(target.auth, identity, tier === "admin" ? "control-caller-admin" : "control-caller-privileged", {
+    mintCreds(target.auth, identity, profile, {
       lifecycleUid: uid,
+      expiresAt,
       ...(pinned ? { endpointCapabilities: pinned } : {}),
       issued,
       issuance: { mode: "issue", store: s.store, accepted: s.accepted, sources: [] },
@@ -594,8 +601,8 @@ export async function connectOrThrow(flags: ConnectFlags, role: Profile, opts: C
           // The account here records the revocation, so the refusal says so instead of "check your creds".
           const claims = credsClaims(creds);
           const message = `credentials rejected at ${at}: the key ${claims.sub} in ${flags.creds} was revoked at ${new Date(revokedAt * 1000).toISOString()} with auth revoke-credential`;
-          const mint = claims.name === "agent" ? `mint a new key with the grants it held: cotal auth mint <label>${grantMintFlags(agentGrants(claims.nats ?? {}, space))}` : `mint a new key: cotal auth mint <label>${typeof claims.name === "string" ? ` --profile ${claims.name}` : ""}`;
-          const remedy = `a revoked key is not signed again; ${mint} --out <new file>`;
+          const mint = claims.name === "agent" ? `mint a new key with the grants it held: \`cotal auth mint <label>${grantMintFlags(agentGrants(claims.nats ?? {}, space))} --out <new file>\`` : `mint a new key: \`cotal auth mint <label>${typeof claims.name === "string" ? ` --profile ${claims.name}` : ""} --out <new file>\``;
+          const remedy = `a revoked key is not signed again; ${mint}`;
           throw new ConnectRefusal(`✗ ${message}`, `  ${remedy}`, { cause: e, code: "PERMISSION_DENIED", parts: { message, remedy }, target: { space, path: flags.creds } });
         }
         const message = `credentials rejected at ${at}: ${flags.creds} is a credential for space "${owner}", which is registered here at ${elsewhere}, not ${at}`;
@@ -753,38 +760,35 @@ export async function connectTargetOrThrow(target: MeshTarget, role: Profile, op
  * and wrong the day this path starts consulting it.
  *
  * If this function is ever changed to accept or consult a {@link Profile}, every caller is wrong.
+ *
+ * A caller that must record a refusal before it fails, such as `up`'s same-principal resume, which
+ * degrades its maintenance journal with the reason, calls {@link connectUserControlOrThrow}. This
+ * form only supplies the exiting disposition.
  */
 export async function connectUserControlOrExit(flags: ConnectFlags): Promise<Connection> {
-  if (flags.creds) {
-    console.error(
-      c.red(
-        "✗ connectUserControlOrExit is the user-mode control path - it does not take --creds (that is the static/raw instrument path via connectOrExit)",
-      ),
-    );
-    process.exit(1);
-  }
-  const target = await resolveTargetOrExit({ server: flags.server, space: flags.space, offline: flags.offline });
-  if (target.mode !== "user") {
-    console.error(
-      c.red(
-        `✗ connectUserControlOrExit requires a user-auth mesh (resolved mode is "${target.mode}") - use connectOrExit with an instrument profile on static/open meshes`,
-      ),
-    );
-    process.exit(1);
-  }
   try {
-    return await userConnectOrThrow(target);
+    return await connectUserControlOrThrow(flags);
   } catch (e) {
     exitOnRefusal(e);
   }
 }
 
-/** {@link connectUserControlOrExit} for a caller that must record a refusal before it fails, such
- *  as `up`'s same-principal resume, which degrades its maintenance journal with the reason. */
-export async function connectUserControlOrThrow(flags: ResolveFlags): Promise<Connection> {
+/** {@link connectUserControlOrExit} for a caller that must record a refusal before it fails.
+ *  Both refusals are decided here, so the exiting form cannot say something else. */
+export async function connectUserControlOrThrow(flags: ConnectFlags): Promise<Connection> {
+  if (flags.creds)
+    throw new ConnectRefusal(
+      "✗ the user-mode control path does not take --creds (that is the static/raw instrument path via connectOrExit)",
+      undefined,
+      { code: "UNSUPPORTED" },
+    );
   const target = await resolveTargetOrThrow(flags);
   if (target.mode !== "user")
-    throw new ConnectRefusal(`✗ connectUserControlOrThrow requires a user-auth mesh (resolved mode is "${target.mode}")`, undefined, { code: "UNSUPPORTED" });
+    throw new ConnectRefusal(
+      `✗ the user-mode control path requires a user-auth mesh (resolved mode is "${target.mode}") - use connectOrExit with an instrument profile on static/open meshes`,
+      undefined,
+      { code: "UNSUPPORTED" },
+    );
   return userConnectOrThrow(target);
 }
 
@@ -999,8 +1003,8 @@ export async function preflightOrThrow(target: MeshTarget, probeCreds?: string, 
   // user target is the user connect / bearer chain itself.
   if (target.mode === "user") {
     if (await isReachable(target.server)) return;
-    const parts = { message: `no mesh running at ${target.server}; mesh "${target.space}" is recorded at ${target.root} but not running`, remedy: "run `cotal up` there to restart" };
-    throw new ConnectRefusal(`✗ ${parts.message} - ${parts.remedy}`, undefined, { kind: "transient", code: "TARGET_UNAVAILABLE", parts });
+    // Liveness only. The refusal is the shared unreachable one, which branches on origin.
+    throw workspaceRefusal({ kind: "preflight", failure: "unreachable", target, pruned: false }, { kind: "transient", code: "TARGET_UNAVAILABLE" });
   }
   const r = await preflightTarget(target, probeCreds);
   if (r.ok) return;

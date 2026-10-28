@@ -34,9 +34,6 @@ export interface StopLocalProcessOptions {
    * confirmed stop. It undoes what `beforeSignal` published: done after the reservation is released,
    * the undo could remove what the next stop to take the reservation published. */
   afterFailedSignal?: () => void;
-  /** Whether a live process's command line is this component's. Consulted only for a record with no
-   *  identity pin, where the command line is the only evidence of what the pid now runs. */
-  owns?: (command: string) => boolean;
   /** The pid the caller decided to stop. A record naming another pid, an absent record or an empty
    *  husk cannot confirm that target stopped. Leave those records and artifacts untouched and return false. */
   pid?: number;
@@ -136,27 +133,21 @@ export async function stopLocalProcess(
         `${component.label} has an unattributable pidfile at ${pidPath} (${JSON.stringify(rawPid)}) - it may still front a running process; refusing to remove it or report a clean stop. Stop that process and remove the file manually.`,
       );
     }
-    // Attribution before the pin (#1528): it also catches a reused pid behind a legacy record, which
-    // the pin would let through to the signal. A command that cannot be read proves nothing.
-    if (component.isOwnCommand) {
-      const command = readProcessCommand(pid);
-      if (command.kind === "command" && !component.isOwnCommand(command.command)) {
-        console.error(`! recorded ${component.label} pid ${pid} is alive but is running \`${command.command}\`, which is not a ${component.label} - not signalling it; removing the stale record instead.`);
-        stopped = true;
-        return true;
-      }
-    }
     // #969 OPEN-VERIFY-TERMINATE: identity before signal. This is the path every manager, delivery
     // and user-auth stop takes, and the one `cotal down` uses for the BROKER, the web dashboard and
-    // every extension component, so all of them share one identity rule.
+    // every extension component, so all of them share one identity rule. A pin that names another
+    // start refuses before anything else is read: the recorded process is gone and the live one is
+    // not signalled, whichever component the record belongs to.
     const identity = verifyIdentityPin(pidPath);
     if (identity.kind === "mismatch") throw identityRefusal(component.label, pidPath, identity.record, identity.liveToken);
-    if (identity.kind === "legacy" && options.owns) {
-      // A readable command that is not this component's means the record outlived its process and
-      // the pid was reused. Signalling it would kill an unrelated process; the stale record goes.
-      const cmd = readProcessCommand(pid);
-      if (cmd.kind === "command" && !options.owns(cmd.command)) {
-        console.error(`! ${component.label} pid ${pid} is alive but is running \`${cmd.command}\`, which is not the ${component.label} - not signalling it; removing the stale record instead.`);
+    // One attribution, from the descriptor, and only where the pin has nothing to say (#1528, #3701).
+    // A readable command that is not this component's means a legacy record outlived its process and
+    // the pid was reused. Signalling it would kill an unrelated process; the stale record goes. A
+    // command that cannot be read proves nothing.
+    if (identity.kind === "legacy" && component.isOwnCommand) {
+      const command = readProcessCommand(pid);
+      if (command.kind === "command" && !component.isOwnCommand(command.command)) {
+        console.error(`! ${component.label} pid ${pid} is alive but is running \`${command.command}\`, which is not the ${component.label} - not signalling it; removing the stale record instead.`);
         stopped = true;
         return true;
       }
@@ -164,6 +155,11 @@ export async function stopLocalProcess(
     if (identity.kind === "legacy") {
       if (cooperative) throw new Error(`${component.label} has no creation identity for cooperative shutdown; stop it with its original supervisor`);
       console.error(identityLegacyWarning(component.label, pidPath));
+    } else if (identity.kind === "no-pid") {
+      // verifyIdentityPin rereads the pidfile. A record removed, emptied or replaced after the first
+      // read is no longer the pid this stop parsed, so that cached pid is not signalled and the
+      // record that remains is kept for the next attempt.
+      throw new Error(`${component.label} pidfile at ${pidPath} no longer holds the pid this stop read - refusing to signal it or remove the record. Rerun this command.`);
     } else if (identity.kind !== "match" && identity.kind !== "gone") throw identityUncertaintyRefusal(component.label, pidPath, identity);
     // The beforeSignal hook authorizes an action against a LIVE exact process. A pinned record whose
     // process is already ESRCH-gone needs no spare capability or destructive intent because no signal

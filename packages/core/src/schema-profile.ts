@@ -434,8 +434,8 @@ function widestClosurePropertyCount(bundle: SchemaBundle): number {
 
 function compileWithinBudget(bundle: SchemaBundle): ValidateFunction {
   // NOTHING HERE REFUSES A SCHEMA FOR BEING EXPENSIVE, and that is deliberate rather than
-  // overlooked. The timing below is an OBSERVATION and refuses nothing; the node ceiling that was
-  // briefly going to carry the refusal is gone, for the reasons recorded at `SCHEMA_PROFILE`.
+  // overlooked. This function does not time the compile either; the node ceiling that was briefly
+  // going to carry the refusal is gone, for the reasons recorded at `SCHEMA_PROFILE`.
   //
   // SO SAY PLAINLY WHAT IS ADMITTED NOW. A document of ~1000 patterned properties is ~90KB, depth
   // 2, ref-chain 0, every pattern inside `maxPatternChars` — it passes every remaining bound and
@@ -467,13 +467,11 @@ function compileWithinBudget(bundle: SchemaBundle): ValidateFunction {
   // compile work, and the same contract compiled fine in four sibling jobs on the same runner
   // image. The number was very nearly all instrument, and it made the required gate unmergeable.
   //
-  // SPEC 2458 gives 100ms as a REFERENCE budget, not a normative constant, so reporting rather than
-  // refusing on it needs no spec amendment. What §13.8 must be amended to say is that the profile
-  // enforces its registration bounds structurally — bytes, depth, ref-chain, pattern length,
-  // vocabulary — and treats the time budget as an observation, because no instrument available on
-  // the supported Node floor measures the quantity the budget names.
-  const startedCpu = process.cpuUsage();
-  const started = Date.now();
+  // SPEC 2458 gives 100ms as a REFERENCE budget, not a normative constant. The profile enforces its
+  // registration bounds structurally — bytes, depth, ref-chain, pattern length, vocabulary — and
+  // does not time the compile. A process-wide CPU sample cannot name the compile's own cost (the
+  // paragraph above), so printing it on the embedder's stderr reported an instrument, not a fact
+  // the operator could act on, and every caller of this library received it unasked.
   // Compile with deterministic local resolution only. Members register under their cotal: URI
   // so in-document `$ref: "cotal:sha256:…"` resolves from the bundle, never the network.
   const ajv = new Ajv2020(AJV_PROFILE_OPTIONS);
@@ -503,15 +501,6 @@ function compileWithinBudget(bundle: SchemaBundle): ValidateFunction {
     }
     throw new ContractInvalidError(`schema does not compile under the 2020-12 profile: ${(e as Error).message}`);
   }
-  const cpu = process.cpuUsage(startedCpu);
-  const cpuMs = Math.round((cpu.user + cpu.system) / 1000);
-  if (cpuMs > SCHEMA_PROFILE.compileBudgetMs)
-    console.error(
-      `! schema: compile took ~${cpuMs}ms of process CPU (SPEC 2458 reference budget ${SCHEMA_PROFILE.compileBudgetMs}ms; ` +
-      `${Date.now() - started}ms elapsed). Approximate - process-wide CPU includes JIT/Worker threads. ` +
-      `Not a refusal, and no schema-size ceiling stands behind it: registration is bounded structurally ` +
-      `(document/closure bytes, depth, ref-chain, pattern length, admitted vocabulary).`,
-    );
   return validate;
 }
 

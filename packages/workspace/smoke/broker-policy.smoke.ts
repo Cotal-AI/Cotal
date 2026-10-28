@@ -132,5 +132,20 @@ function refuses(fn: () => unknown, match: RegExp, what: string): void {
   }
 }
 
-console.log("broker-policy smoke: OK - plaintext and TLS round-trip with and without an auth timeout, .cotal is 0700, and every unusable policy REFUSES rather than degrading to plaintext or a default (missing cert, missing key, corrupt JSON, unknown transport, future version, half pair, bad auth timeout)");
+// 11. The broker's payload limit round-trips beside the timeout, and a value that is not a positive
+//     whole number of bytes refuses. `cotal up --max-payload` records it here and a renderer outside
+//     `up` reads it back, so a value this reader guessed at would render a broker with another limit.
+{
+  const d = fresh();
+  writeBrokerPolicy(d, { version: 1, transport: { kind: "plaintext" }, maxPayload: 2098176 });
+  assert.deepEqual(readBrokerPolicy(d), { version: 1, transport: { kind: "plaintext" }, maxPayload: 2098176 });
+  writeBrokerPolicy(d, { version: 1, transport: { kind: "tls-required", certFile, keyFile }, authTimeout: 7, maxPayload: 2098176 });
+  assert.deepEqual(readBrokerPolicy(d), { version: 1, transport: { kind: "tls-required", certFile, keyFile }, authTimeout: 7, maxPayload: 2098176 });
+  for (const bad of [0, -1, 1.5, "2098176", null]) {
+    writeFileSync(brokerPolicyPath(d), JSON.stringify({ version: 1, transport: { kind: "plaintext" }, maxPayload: bad }));
+    refuses(() => readBrokerPolicy(d), /payload limit that is not a positive whole number of bytes/, `payload limit ${JSON.stringify(bad)}`);
+  }
+}
+
+console.log("broker-policy smoke: OK - plaintext and TLS round-trip with and without an auth timeout and a payload limit, .cotal is 0700, and every unusable policy REFUSES rather than degrading to plaintext or a default (missing cert, missing key, corrupt JSON, unknown transport, future version, half pair, bad auth timeout, bad payload limit)");
 emitSentinel({ passed: cells(), failed: 0 });

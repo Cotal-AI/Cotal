@@ -30,11 +30,11 @@ export async function resolveConnect(values: ConnectValues): Promise<Connection>
 }
 
 /** Whether this connection may read a KV bucket with one batched Direct Get, whose request subject
- *  is the bare stream. An open mesh may, and a user bearer holds no such row. A static credential may
- *  when its own grant allows that subject: the operator credential this machine mints does, and an
- *  agent credential from `cotal auth mint` does not. */
+ *  is the bare stream. An open mesh may. A user bearer may: the auth service mints its connection
+ *  with the agent profile, which carries that read on the presence bucket and the channel registry.
+ *  A static credential may when its own grant allows that subject: the operator credential this
+ *  machine mints and an agent credential from `cotal auth mint` do. */
 export function batchedRead(conn: Connection, bucket: string): boolean {
-  if (conn.bearer !== undefined) return false;
   if (conn.creds === undefined) return true;
   const subject = `$JS.API.DIRECT.GET.KV_${bucket}`;
   const pub = credsClaims(conn.creds).nats?.pub;
@@ -77,9 +77,9 @@ function jetStreamUnanswered(conn: Connection): CommandFailure {
   if (failed?.state === "write-failed")
     return new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the broker of ${conn.space} has answered no JetStream request since it logged a store write failure at ${failed.at}: ${failed.cause}${failed.path ? ` (${failed.path})` : ""}; nats-server stops JetStream after such a write and keeps the streams and their history in its store`, {
       target: { space: conn.space },
-      remedy: `${storeWriteRepair(failed, conn.root, conn.space)}, then restart the broker with cotal down --yes and cotal up in ${conn.root}, which keeps the history`,
+      remedy: `${storeWriteRepair(failed, conn.root, conn.space)}, then restart the broker with \`cotal down --yes\` and \`cotal up\` in ${conn.root}, which keeps the history`,
     });
-  return new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the broker of ${conn.space} answered no JetStream read, and the space's streams were not found missing`, { target: { space: conn.space }, remedy: "run cotal status, which names a store write failure its broker logged on this machine" });
+  return new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the broker of ${conn.space} answered no JetStream read, and the space's streams were not found missing`, { target: { space: conn.space }, remedy: "run `cotal status`, which names a store write failure its broker logged on this machine" });
 }
 
 /** Open a transient endpoint: it holds the roster and channel registry on return but never registers
@@ -87,7 +87,8 @@ function jetStreamUnanswered(conn: Connection): CommandFailure {
  *  both buckets with a batched Direct Get ({@link batchedRead}) reads them once, leaving no watch
  *  consumer behind. Any other, such as a user bearer or an agent credential passed with `--creds`,
  *  watches them and waits for the presence replay; the consumer lasts until the broker's inactive
- *  threshold. `watch` keeps both watches for every
+ *  threshold. `presenceOnly` holds the roster alone and opens no channel registry, so only the
+ *  presence bucket's grant decides whether it is read once. `watch` keeps both watches for every
  *  credential, for a caller that reports the watch's own state (`cotal who`); that caller waits for
  *  the presence replay itself, on its own bound. `throwOnRefusal` hands connection refusals to the
  *  command kernel, and `report` takes endpoint errors and warnings instead of printing them. A
@@ -95,10 +96,11 @@ function jetStreamUnanswered(conn: Connection): CommandFailure {
 export async function openTransient(
   values: ConnectValues,
   name: string,
-  opts: { throwOnRefusal?: boolean; watch?: boolean; report?: (level: "error" | "warning", e: Error) => void } = {},
+  opts: { throwOnRefusal?: boolean; watch?: boolean; presenceOnly?: boolean; report?: (level: "error" | "warning", e: Error) => void } = {},
 ): Promise<{ ep: CotalEndpoint; space: string; connection: Connection }> {
   const conn = opts.throwOnRefusal ? await connectOrThrow(values, "operator") : await resolveConnect(values);
   const readOnce = batchedRead(conn, presenceBucket(conn.space)) && batchedRead(conn, channelBucket(conn.space));
+  const once = !opts.watch && (opts.presenceOnly ? batchedRead(conn, presenceBucket(conn.space)) : readOnce);
   const report = opts.report ?? ((level, e) => console.error(level === "error" ? c.red("! " + e.message) : c.yellow("! " + e.message)));
   // A connect the broker refuses or does not complete in time sends nothing, so it is tried again
   // with a new endpoint. What a failed attempt reported is dropped with it; a failure after the
@@ -116,7 +118,8 @@ export async function openTransient(
         consume: false,
         registerPresence: false,
         watchPresence: true,
-        readOnce: readOnce && !opts.watch,
+        watchChannels: !opts.presenceOnly,
+        readOnce: once,
         transportConnectTimeoutMs: DIAL_TIMEOUT_MS,
         onConnection: () => { opened = true; },
         // Display name only. The wire principal comes from the resolved static credential or user
@@ -128,7 +131,7 @@ export async function openTransient(
       attempt.on("warning", (e: Error) => { if (opened) report("warning", e); else held.push(["warning", e]); });
       try {
         await attempt.start();
-        if (!readOnce && !opts.watch) await attempt.waitForPresenceSnapshot();
+        if (!once && !opts.watch) await attempt.waitForPresenceSnapshot();
       } catch (e) {
         await attempt.stop().catch(() => {});
         throw opened ? new AfterOpen(e) : e;
@@ -144,10 +147,17 @@ export async function openTransient(
         target: { space: conn.space },
         remedy: values.creds === undefined ? `use a credential that may read both in ${conn.space}` : `run it without --creds to use the credential this machine records for ${conn.space}, or use one that may read both`,
       });
+    // The user's connection is minted by the space's auth service. One that refuses the batched read
+    // predates the agent profile row that grants it; the command never falls back to a watch.
+    if (conn.bearer !== undefined && once && isPublishPermissionDenied(e))
+      throw new CommandFailure("refused", "PERMISSION_DENIED", `the connection the auth service of ${conn.space} minted for your user may not read ${opts.presenceOnly ? "the presence bucket" : "the presence bucket or the channel registry"} with one batched read: ${(e as Error).message}`, {
+        target: { space: conn.space },
+        remedy: `update the auth service of ${conn.space} to a release whose agent profile grants $JS.API.DIRECT.GET.KV_${(opts.presenceOnly ? presenceBucket : channelBucket)(conn.space)}`,
+      });
     // A one-time read is a Direct Get, which nothing answers when the bucket's stream is gone, and
     // nothing answers either while the broker's JetStream is stopped, as nats-server stops it after a
     // store write it could not make. Only the chat stream's own not-found says the streams are gone.
-    if (readOnce && !opts.watch && noResponders(e)) throw await chatStreamGoneAt(conn) ? streamsAbsent(conn) : jetStreamUnanswered(conn);
+    if (once && noResponders(e)) throw await chatStreamGoneAt(conn) ? streamsAbsent(conn) : jetStreamUnanswered(conn);
     throw e;
   }
   return { ep, space: conn.space, connection: conn };

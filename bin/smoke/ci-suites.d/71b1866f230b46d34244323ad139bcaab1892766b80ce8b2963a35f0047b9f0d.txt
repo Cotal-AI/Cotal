@@ -1,0 +1,2 @@
+# Provenance lines wrap to a terminal like the other notices and stay one line to a pipe.
+smoke:provenance

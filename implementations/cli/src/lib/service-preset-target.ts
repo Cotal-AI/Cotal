@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { registry, type ParsedArgs } from "@cotal-ai/core";
-import { CommandFailure, canonicalRoot, hasUserAuthState, localProcessPath, localProcessVisible, oneLine, parsePid, probeLiveness, readPidfile, type LocalProcess, type ServiceDefinitionInput, type ServicePreset } from "@cotal-ai/workspace";
+import { CommandFailure, canonicalRoot, hasUserAuthState, loadManagerInstanceIdentity, localProcessPath, localProcessVisible, oneLine, parsePid, probeLiveness, readPidfile, type LocalProcess, type ServiceDefinitionInput, type ServicePreset } from "@cotal-ai/workspace";
 import { serviceDefinitionStore, validateServiceDefinition, type ServiceDefinitionSnapshot } from "./service-definitions.js";
 import { observeServiceProcess, serviceInstances } from "./service-instances.js";
 import { resolveServiceAdapter } from "./service-adapters.js";
@@ -48,14 +48,19 @@ export function recordedPresetProcess(space: string, root: string, preset: Servi
 }
 
 /** A log read of the manager `up` started and recorded by PID alone, once that manager has stopped:
- *  the log it left. With no such log nothing was started here, and the refusal names the file. */
+ *  the log it left. With no such log the refusal names the file. It says the log is gone when a
+ *  pid record of a dead manager, or the instance identity a manager keeps in `root` once it started,
+ *  shows one ran here, and that no manager has been started only when neither does. */
 function stoppedManagerLog(space: string, root: string, requested: string, preset: ServicePreset): PresetServiceTarget {
-  const path = managerLogPath(space, root);
-  if (!existsSync(path)) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no manager has been started in space ${oneLine(space)}: there is no manager log at ${path}; nothing was read`, {
-    target: { space, name: requested, path },
-    remedy: "start the stack with cotal up, or the manager alone with cotal manager start",
-  });
-  const record = presetPidRecord(space, root, preset);
+  const path = managerLogPath(space, root), record = presetPidRecord(space, root, preset);
+  if (!existsSync(path)) {
+    const target = { space, name: requested, path };
+    if (record?.liveness === "dead" || loadManagerInstanceIdentity(root, space)) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the manager log at ${path} is no longer there; nothing was read`, { target, remedy: "start the stack again with `cotal up`" });
+    throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no manager has been started in space ${oneLine(space)}: there is no manager log at ${path}; nothing was read`, {
+      target,
+      remedy: "start the stack with `cotal up`, or the manager alone with `cotal manager start`",
+    });
+  }
   return { requested, name: requested, preset: preset.name, saved: null, stopped: { pid: record?.liveness === "dead" ? record.pid : null, label: record?.label ?? preset.name } };
 }
 
@@ -103,7 +108,7 @@ export function resolvePresetService(space: string, root: string, requested: str
     // A definition that is not this preset's takes no preset options on its start line.
     if (!options.length) return undefined;
     const launch = exact.record.value.launch;
-    if (launch.type !== "adapter" || launch.adapter !== preset!.adapter) throw new CommandFailure("refused", "USAGE_INVALID", `${requested} is a saved service of your own, not the ${requested} preset; its options are fixed when it is added`, { target: { space, name: requested }, remedy: `cotal service start ${requested}` });
+    if (launch.type !== "adapter" || launch.adapter !== preset!.adapter) throw new CommandFailure("refused", "USAGE_INVALID", `${requested} is a saved service of your own, not the ${requested} preset; its options are fixed when it is added`, { target: { space, name: requested }, remedy: `cotal service start ${requested}`, remedyIsCommand: true });
     return redefine(space, root, preset!, exact, requested, options, values);
   }
   if (!preset) {
@@ -124,7 +129,7 @@ export function resolvePresetService(space: string, root: string, requested: str
   if (mode === "install") throw adapterInstallRefusal(space, requested, preset.adapter, {}, requested === "manager" ? "manager" : undefined, { space, name: requested });
   if (mode !== "start") throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no ${requested} has been started in space ${oneLine(space)}; nothing was ${mode === "status" || mode === "logs" ? "read" : "changed"}`, {
     target: { space, name: requested },
-    remedy: requested === "manager" ? "start it with cotal manager start" : `start it with cotal service start ${requested}`,
+    remedy: requested === "manager" ? "start it with `cotal manager start`" : `start it with \`cotal service start ${requested}\``,
   });
   if (values["dry-run"]) return { requested, name: requested, preset: preset.name, saved: null };
   const definition: ServiceDefinitionInput = { ...servicePresetDefinition(preset, space, values, root, "start"), root };
@@ -142,8 +147,8 @@ function redefine(space: string, root: string, preset: ServicePreset, row: Servi
   const changed = options.filter((name) => JSON.stringify(fresh.options[name]) !== JSON.stringify(launch.options[name]));
   if (!changed.length) return { requested, name: row.name, preset: preset.name, saved: null };
   const shown = changed.map((name) => `--${name}`).join(", ");
-  if (isStackDefinition(row.name)) throw new CommandFailure("refused", "CONFLICT", `${requested} here is ${row.name}, which cotal up saved with its own ${shown}; nothing was changed`, { target: { space, name: row.name }, remedy: `start it as cotal up saved it with cotal service start ${row.name}, or pass ${shown} to cotal up` });
-  if (running(space, row.name)) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${row.name} is running with another ${shown}; nothing was changed`, { target: { space, name: row.name }, remedy: `stop it first with ${requested === "manager" ? "cotal manager stop" : `cotal service stop ${row.name}`}, then start it again with the new ${shown}` });
+  if (isStackDefinition(row.name)) throw new CommandFailure("refused", "CONFLICT", `${requested} here is ${row.name}, which \`cotal up\` saved with its own ${shown}; nothing was changed`, { target: { space, name: row.name }, remedy: `start it as \`cotal up\` saved it with \`cotal service start ${row.name}\`, or pass ${shown} to \`cotal up\`` });
+  if (running(space, row.name)) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${row.name} is running with another ${shown}; nothing was changed`, { target: { space, name: row.name }, remedy: `stop it first with \`${requested === "manager" ? "cotal manager stop" : `cotal service stop ${row.name}`}\`, then start it again with the new ${shown}` });
   removableServiceInstances(space, row.name);
   const next: ServiceDefinitionInput = { ...row.record.value, launch: { ...launch, options: Object.fromEntries(Object.entries({ ...launch.options, ...Object.fromEntries(changed.map((name) => [name, fresh.options[name]])) }).filter(([, value]) => value !== undefined)) } };
   const checked = validateServiceDefinition(next, space);
@@ -178,7 +183,7 @@ export function adapterInstallRefusal(space: string, name: string, adapter: stri
   return new CommandFailure("refused", "UNSUPPORTED", `${command === "manager" ? "cotal manager install" : `cotal service install ${name}`} is not supported yet: a Cotal-written unit runs only a direct-process service, and ${name} runs through the ${adapter} adapter, whose stop is ${declaration.stop === "native" ? "a native request" : "its own"}; nothing was installed or allocated`, {
     target,
     remedy: declaration.capabilities.foreground
-      ? `run it from your own systemd user unit with ExecStart=${entry} ${foreground} --space ${space} and KillMode=mixed${command === "manager" ? ", or keep an existing unit on cotal supervise for now" : ""}`
-      : `start it with cotal service start ${name}`,
+      ? `run it from your own systemd user unit with ExecStart=${entry} ${foreground} --space ${space} and KillMode=mixed${command === "manager" ? ", or keep an existing unit on `cotal supervise` for now" : ""}`
+      : `start it with \`cotal service start ${name}\``,
   });
 }

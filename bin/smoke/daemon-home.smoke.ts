@@ -8,12 +8,12 @@
  * - With `--daemon-home D` the daemon keeps login, connect-check, register and service state under D.
  * - It binds a socket derived from D under `$XDG_RUNTIME_DIR/cotal/`, distinct from the legacy
  *   `$XDG_RUNTIME_DIR/cotal/daemon.sock`.
- * - It holds the stock lifetime lock `D/daemon.lock` while serving.
+ * - It holds the kernel-held lifetime lock `D/daemon.lock` while serving.
  * - Clients refuse a peer that is not that lock's live owner.
  * - It reads the shared mesh registry (`$COTAL_HOME/meshes`) and never writes it.
  * - It never copies or moves legacy identity, session or approval.
- * - With no flag, behaviour is today's exactly.
- * - Nothing removes a stale socket automatically. No restart policy is claimed.
+ * - With no flag, behaviour is today's exactly, which now includes its own lifetime lock.
+ * - A start removes the socket its own dead predecessor published, and no other.
  *
  * Cells (each asserts counts or exact codes, never just "no error"):
  *  H0 control, no flag: legacy `serve` binds the fixed legacy socket, and `status` answers with
@@ -34,14 +34,15 @@
  *     - a relative home: USAGE_INVALID naming "absolute";
  *     - the Cotal home itself: USAGE_INVALID naming the Cotal home, and no lock in it;
  *     - in every case 0 new runtime entries and no lock file;
- *  H4 lifetime lock and no stale-socket cleanup:
+ *  H4 lifetime lock and stale-socket recovery:
  *     - a second managed serve on D refuses CONFLICT / LOCK_HELD naming the live holder's pid, and
  *       the first's socket keeps its inode;
- *     - after SIGKILL of the first, its socket stays. A new serve refuses CONFLICT /
- *       ALREADY_RUNNING with the inode unchanged, so 0 removals;
- *     - after the operator removes it, serve binds the SAME derived path (deterministic);
+ *     - after SIGKILL of the first, its socket stays and the kernel has released its lock;
+ *     - a new serve needs no operator step: with the dead inode pinned under a second name, it
+ *       leaves the pin as that inode's only link, binds another inode at the SAME derived path,
+ *       and answers its own pid;
  *  H5 peer must be the lock owner:
- *     - the smoke process holds `D/daemon.lock` through stock `acquireLock`;
+ *     - the smoke process holds `D/daemon.lock` through the same kernel `flock` the daemon takes;
  *     - a different same-uid process listens at the derived path;
  *     - `status --daemon-home D` refuses PERMISSION_DENIED / PEER_NOT_LOCK_OWNER, exit 2, and the
  *       listener receives 0 bytes.
@@ -54,13 +55,13 @@
  */
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
+import { chmodSync, closeSync, constants, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { skipSuite } from "@cotal-ai/smoke-kit";
-import { acquireLock, liveLockOwnerPid } from "@cotal-ai/core";
+import { flockExclusiveNb } from "@cotal-ai/seat";
 import { saveIdpSession } from "@cotal-ai/auth";
 import { recordMesh, userAuthStateDir, type MeshEntry } from "@cotal-ai/workspace";
 import { daemonPaths } from "../daemon/endpoint.js";
@@ -95,6 +96,25 @@ process.env.COTAL_HOME = home;
 const legacy = daemonPaths({ XDG_RUNTIME_DIR: rt });
 const runtimeDir = join(rt, "cotal");
 const lockFile = (d: string) => join(d, "daemon.lock");
+/** The pid the lock record names, or undefined when there is no readable record. */
+const lockRecordPid = (d: string): number | undefined => {
+  try {
+    const text = readFileSync(lockFile(d), "utf8");
+    const o = text.trim() ? JSON.parse(text) as { pid?: unknown } : undefined;
+    return typeof o?.pid === "number" ? o.pid : undefined;
+  } catch { return undefined; }
+};
+/** Take the daemon's own kernel lock on D, or report that the kernel holds it for someone. */
+const takeLock = (d: string): { fd: number; held: boolean } => {
+  const fd = openSync(lockFile(d), constants.O_RDWR | constants.O_CREAT, 0o600);
+  return { fd, held: flockExclusiveNb(fd) };
+};
+/** True when no process holds D's lock: the probe takes it and gives it straight back. */
+const lockFree = (d: string): boolean => {
+  const { fd, held } = takeLock(d);
+  closeSync(fd);
+  return held;
+};
 // Every per-user location the CLI could read or write points into this sandbox, never the real user's.
 const childEnv = {
   ...process.env, HOME: user, XDG_CONFIG_HOME: join(user, "config"), XDG_STATE_HOME: join(user, "state"), XDG_CACHE_HOME: join(user, "cache"),
@@ -205,7 +225,7 @@ try {
     check("H1 no-flag status still answers the legacy pid", lst.status === 0 && lst.doc.result?.pid === legacyServe?.child.pid, { status: lst.status, doc: lst.doc });
     const legacyAfter = fileState(legacy.socket);
     check("H1 the legacy socket keeps its inode and mtime", legacyAfter.ino === legacyBefore.ino && legacyAfter.mtimeMs === legacyBefore.mtimeMs, { legacyBefore, legacyAfter });
-    check("H1 D/daemon.lock is held by the managed serve's live pid (stock lock)", liveLockOwnerPid(lockFile(managed)) === managedServe.child.pid, { owner: liveLockOwnerPid(lockFile(managed)), pid: managedServe.child.pid });
+    check("H1 D/daemon.lock is held by the managed serve, whose record names its pid", !lockFree(managed) && lockRecordPid(managed) === managedServe.child.pid, { free: lockFree(managed), recorded: lockRecordPid(managed), pid: managedServe.child.pid });
     check("H1 no lock was created in the legacy home", !existsSync(lockFile(home)));
   });
 
@@ -247,42 +267,48 @@ try {
     check("H3 the four refusals created 0 runtime entries", JSON.stringify(runtimeEntries()) === JSON.stringify(before), { before, after: runtimeEntries() });
   });
 
-  await cell("H4 the lifetime lock is singleton and a stale socket is never removed", async () => {
+  await cell("H4 the lifetime lock is singleton, and a killed daemon's successor recovers its socket", async () => {
     check("H4 instrument: the H1 managed serve is live with a derived socket", live(managedServe) && typeof derived === "string");
     if (!live(managedServe) || typeof derived !== "string") return;
     const ino = lstatSync(derived).ino;
+    const killedPid = managedServe!.child.pid;
     const second = await cli(["serve", "--daemon-home", managed, "--json"]);
-    check("H4 a second managed serve refuses CONFLICT / LOCK_HELD, exit 2, naming the live holder's pid", second.status === 2 && second.doc.error?.code === "CONFLICT" && second.doc.error?.cause?.code === "LOCK_HELD" && new RegExp(`held by a live process \\(pid ${managedServe!.child.pid}\\)`).test(second.doc.error?.message ?? ""), { status: second.status, doc: second.doc, err: second.err.slice(0, 300) });
-    check("H4 the first serve's socket keeps its inode and still answers", lstatSync(derived).ino === ino && (await cli(["status", "--daemon-home", managed, "--json"])).doc.result?.pid === managedServe!.child.pid);
+    check("H4 a second managed serve refuses CONFLICT / LOCK_HELD, exit 2, naming the live holder's pid", second.status === 2 && second.doc.error?.code === "CONFLICT" && second.doc.error?.cause?.code === "LOCK_HELD" && new RegExp(`held by a live process \\(pid ${killedPid},`).test(second.doc.error?.message ?? ""), { status: second.status, doc: second.doc, err: second.err.slice(0, 300) });
+    check("H4 the first serve's socket keeps its inode and still answers", lstatSync(derived).ino === ino && (await cli(["status", "--daemon-home", managed, "--json"])).doc.result?.pid === killedPid);
     await stop(managedServe, "SIGKILL");
-    check("H4 instrument: after SIGKILL the socket is left behind and the lock has no live owner", existsSync(derived) && lstatSync(derived).ino === ino && liveLockOwnerPid(lockFile(managed)) === undefined);
-    const stale = await cli(["serve", "--daemon-home", managed, "--json"]);
-    check("H4 a new serve over the stale socket refuses CONFLICT / ALREADY_RUNNING, exit 2", stale.status === 2 && stale.doc.error?.code === "CONFLICT" && stale.doc.error?.cause?.code === "ALREADY_RUNNING", { status: stale.status, doc: stale.doc });
-    check("H4 the stale socket is untouched (same inode: 0 removals)", existsSync(derived) && lstatSync(derived).ino === ino);
-    unlinkSync(derived); // the operator's manual recovery
+    check("H4 instrument: after SIGKILL the socket is left behind, and the kernel has released the lock while its record still names the dead pid", existsSync(derived) && lstatSync(derived).ino === ino && lockFree(managed) && lockRecordPid(managed) === killedPid, { free: lockFree(managed), recorded: lockRecordPid(managed), killedPid });
+    // No operator step: the successor removes exactly the socket the record names and binds its own.
+    // A second name keeps the dead inode allocated through the restart, so the successor's socket
+    // cannot be given its number, which some filesystems hand straight back once it is freed. Its
+    // link count then shows whether the successor removed the public name.
+    const pin = join(dirname(derived), "stale-pin");
+    linkSync(derived, pin);
     managedServe = await serve(["--daemon-home", managed]);
-    check("H4 after manual removal, serve binds the SAME derived path", live(managedServe) && managedServe.socket === derived, { socket: managedServe.socket, derived });
+    check("H4 the successor serves with no manual removal, on the SAME derived path", live(managedServe) && managedServe.socket === derived, { socket: managedServe?.socket, derived });
+    check("H4 it removed the dead socket and bound a new one: the pinned dead inode has lost its public name and the path holds another inode", existsSync(derived) && lstatSync(pin).nlink === 1 && lstatSync(derived).ino !== ino, { pinLinks: lstatSync(pin).nlink, now: existsSync(derived) ? lstatSync(derived).ino : null, stale: ino });
+    rmSync(pin);
+    check("H4 status answers the successor's pid", (await cli(["status", "--daemon-home", managed, "--json"])).doc.result?.pid === managedServe!.child.pid);
   });
 
   await cell("H5 a client refuses a peer that is not the lock's live owner", async () => {
     check("H5 instrument: a derived socket path is known", typeof derived === "string");
     if (typeof derived !== "string") return;
     await stop(managedServe);
-    check("H5 instrument: the clean stop removed its socket and released the lock", !existsSync(derived) && liveLockOwnerPid(lockFile(managed)) === undefined);
-    const held = acquireLock(lockFile(managed), { waitMs: 0, label: "daemon-home smoke" });
+    check("H5 instrument: the clean stop removed its socket and released the lock", !existsSync(derived) && lockFree(managed));
+    const held = takeLock(managed);
     const listener = track(spawn(process.execPath, ["-e", `const s=require("net").createServer(c=>c.on("data",()=>process.stdout.write("GOT-BYTES\\n")));s.listen(${JSON.stringify(derived)},()=>{require("fs").chmodSync(${JSON.stringify(derived)},0o600);process.stdout.write("LISTENING\\n")});`], { stdio: ["ignore", "pipe", "ignore"] }));
     let out = "";
     listener.stdout!.on("data", (b) => { out += String(b); });
     try {
       for (let i = 0; i < 100 && !out.includes("LISTENING"); i++) await sleep(50);
-      check("H5 instrument: a different same-uid process listens at the derived path while this process holds the lock", out.includes("LISTENING") && liveLockOwnerPid(lockFile(managed)) === process.pid && listener.pid !== process.pid);
+      check("H5 instrument: a different same-uid process listens at the derived path while this process holds the lock", out.includes("LISTENING") && held.held && listener.pid !== process.pid);
       const r = await cli(["status", "--daemon-home", managed, "--json"]);
       await sleep(200);
       check("H5 status refuses PERMISSION_DENIED / PEER_NOT_LOCK_OWNER, exit 2", r.status === 2 && r.doc.error?.code === "PERMISSION_DENIED" && r.doc.error?.cause?.code === "PEER_NOT_LOCK_OWNER", { status: r.status, doc: r.doc });
       check("H5 the impostor listener received 0 bytes", !out.includes("GOT-BYTES"), out);
     } finally {
       await kill(listener);
-      held.release();
+      closeSync(held.fd);
     }
   });
 } catch (e) {

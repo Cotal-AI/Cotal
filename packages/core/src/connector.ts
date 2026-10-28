@@ -223,6 +223,11 @@ export interface ModelCatalog {
 
 export interface ModelCatalogOpts {
   refresh?: boolean;
+  /** Absolute harness paths the manager resolved at boot, keyed by the connector's `requires` names.
+   *  The same record a managed launch receives as {@link LaunchOpts.resolvedBinaries}. A catalog reads
+   *  these files rather than resolving the bare name again, so it runs the binary a spawn will run.
+   *  Absent when no manager boot inventory exists, as for a standalone call. */
+  resolvedBinaries?: Readonly<Record<string, string>>;
 }
 
 /** Manager-facing wrapper for one connector's catalog lookup. */

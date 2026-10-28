@@ -340,6 +340,15 @@ const AGENT_ROW_SCHEMA = {
     status: { type: "string" },
     uptimeMs: { type: "integer", minimum: 0 },
     mesh: { type: "string" },
+    // A bounded launch wait elapsed without the exact incarnation joining. Process status stays
+    // separate, and a later observed join clears this optional diagnostic.
+    joinHealth: {
+      type: "object", additionalProperties: false, required: ["state", "reason"],
+      properties: {
+        state: { type: "string", const: "degraded" },
+        reason: { type: "string" },
+      },
+    },
     // The roster's harness-reported condition beside `mesh` (SPEC §6), its four fields projected. Optional:
     // absent when the connector reported none, and on rows from managers that predate it.
     condition: {
@@ -1358,7 +1367,10 @@ export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: Compile
  *  38 = `run-status` accepts a journal page request and answers with `journalTotal`.
  *
  *  39 = `run-status` adds the recorded program's `programHash`, or `programUnreadable` when that
- *  record cannot be read. The status output schema is closed, so a revision-38 contract rejects it. */
+ *  record cannot be read. The status output schema is closed, so a revision-38 contract rejects it.
+ *
+ *  40 = `ps`/`inspect` add optional joinHealth for a launch whose bounded wait elapsed without
+ *  a join. Process liveness remains separate, and an exact-incarnation late join clears it. */
 export function managerClusterDocument(): {
   urn: string;
   revision: number;
@@ -1376,7 +1388,7 @@ export function managerClusterDocument(): {
 } {
   return {
     urn: MANAGER_CLUSTER_URN,
-    revision: 39,
+    revision: 40,
     attributes: [],
     events: [],
     commands: ROWS.map((r) => ({

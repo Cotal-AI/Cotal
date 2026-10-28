@@ -46,7 +46,7 @@ export function feedLine(entry: FeedEntry & { omittedCodeUnits?: number }): stri
     } catch { /* A non-JSON event remains attributed text. */ }
   }
   const notShown = body.omittedCodeUnits + (entry.omittedCodeUnits ?? 0);
-  const whole = entry.channel && !entry.events ? `; cotal history ${entry.channel} shows it whole` : entry.delivery === "unicast" ? "; cotal history --dms shows it whole" : "";
+  const whole = entry.channel && !entry.events ? `; \`cotal history ${entry.channel}\` shows it whole` : entry.delivery === "unicast" ? "; `cotal history --dms` shows it whole" : "";
   return scriptLine(entry.ts, sender, destination, `${body.text}${notShown ? ` [${notShown} text code units not shown${whole}]` : ""}`);
 }
 

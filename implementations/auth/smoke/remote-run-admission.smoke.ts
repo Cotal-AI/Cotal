@@ -53,7 +53,7 @@ try {
   const liveKeys = new Set<string>(["gate-a"]);
   const source: IssuedSourceRef = { space: SPACE, bucket: "cotal_lifecycle_admit", key: "gate-a" };
   async function issue(actor: string, publish: "run-start" | "none", sources: IssuedSourceRef[] = [source], uid = mintLifecycleUid()) {
-    const ref = { space: SPACE, owner: OWNER, actor, uid, generation: mintGeneration() };
+    const ref = { space: SPACE, owner: OWNER, actor, uid, generation: mintGeneration(Math.floor(Date.now() / 1000) + 172_800) };
     const allow = publish === "none" ? { mode: "none" } as const : { mode: "patterns", patterns: [`cotal.${SPACE}.ep.v1.inst.manager.*.run-start.${OWNER}.${actor}.>`] } as const;
     const prepared = await issued.stage({ version: 1, ref, sources, permissions: { publish: { allow, deny: [] }, subscribe: { allow: { mode: "none" }, deny: [] } }, ...(sources.length ? {} : { expiresAt: Math.floor(Date.now() / 1000) + 600 }) });
     await issued.release(prepared, async () => {});
@@ -61,7 +61,7 @@ try {
   }
   const subjectFor = (caller: { owner: string; actor: string; uid: string; generation?: string }, over: { space?: string; command?: string; instance?: string } = {}) =>
     epRequestSubject(over.space ?? SPACE, { route: { mode: "inst", instanceId: over.instance ?? instanceId }, endpoint: "manager", command: over.command ?? "run-start", caller: caller as never, nonce: "n".repeat(24) });
-  const runId = () => `run-${Buffer.from(mintGeneration().slice(0, 16)).toString("hex").slice(0, 32)}`;
+  const runId = () => `run-${Buffer.from(mintGeneration(Math.floor(Date.now() / 1000) + 172_800).slice(8, 24)).toString("hex").slice(0, 32)}`;
   // These cells call the host function directly, as if every forwarded subject was published;
   // the HTTP section below publishes each one the host observes.
   const takeObserved = async () => ({ operation: { command: "run-start" as const }, envelope: { class: "ephemeral" as const, op: { endpoint: "manager", command: "run-start" } } });
@@ -102,7 +102,7 @@ try {
     regen.includes("already admitted for another caller") && (await readRunAdmission(jsm, SPACE, "manager", okRun)).admission.provenance.kind === "issued", regen);
   // Forged generation: never issued.
   const forged = runId();
-  const f = await outcome(admit({ runId: forged, subject: subjectFor({ ...alice, generation: mintGeneration() }) }));
+  const f = await outcome(admit({ runId: forged, subject: subjectFor({ ...alice, generation: mintGeneration(Math.floor(Date.now() / 1000) + 172_800) }) }));
   c("a forged (never issued) generation refuses and writes nothing", f.startsWith("refused") && await absent(forged), f);
   // Legacy subject: no generation.
   const legacy = runId();
@@ -180,7 +180,7 @@ try {
   const httpStaleSource: IssuedSourceRef = { space: SPACE, bucket: epAuthBucket(SPACE), key: `cred.${retiredUid}` };
 
   async function issueHttp(actor: string, publish: "run-start" | "none", sources: IssuedSourceRef[] = [httpSource], uid = mintLifecycleUid()) {
-    const ref = { space: SPACE, owner: httpOwner, actor, uid, generation: mintGeneration() };
+    const ref = { space: SPACE, owner: httpOwner, actor, uid, generation: mintGeneration(Math.floor(Date.now() / 1000) + 172_800) };
     const allow = publish === "none" ? { mode: "none" } as const : { mode: "patterns", patterns: [`cotal.${SPACE}.ep.v1.inst.manager.*.run-start.${httpOwner}.${actor}.>`] } as const;
     const prepared = await issued.stage({ version: 1, ref, sources, permissions: { publish: { allow, deny: [] }, subscribe: { allow: { mode: "none" }, deny: [] } }, ...(sources.length ? {} : { expiresAt: Math.floor(Date.now() / 1000) + 600 }) });
     await issued.release(prepared, async () => {});
@@ -287,7 +287,7 @@ try {
 
   // Negative HTTP: forged generation
   const forgedHttpRun = runId();
-  const forgedCaller = { ...httpAlice, generation: mintGeneration() };
+  const forgedCaller = { ...httpAlice, generation: mintGeneration(Math.floor(Date.now() / 1000) + 172_800) };
   await publishRunStart(forgedCaller);
   const forgedHttpRes = await postHttp({ ...httpBaseReq, requestId: `req-${forgedHttpRun}`, registrationProof: httpProof, run: { runId: forgedHttpRun, subject: httpSubjectFor(forgedCaller) } });
   c("HTTP route: a forged generation refuses (403)",

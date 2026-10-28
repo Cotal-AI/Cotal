@@ -11,7 +11,7 @@ import { serviceEndpointHostCall, type ServiceEndpointValues } from "./service-h
  */
 import * as prompts from "@clack/prompts";
 import { assertDerivedOwnerToken, assertLifecycleToken, assertValidChannel, assertValidOwnerToken, assertValidRole, registry, resolveAuthProvider, resolveSpaceCatalogConsumer, type Command, type FlagSpec, type ParsedArgs, type SecretStore } from "@cotal-ai/core";
-import { CommandFailure, STORE_CONTENTS, storeContentsText, credentialMintFlags, validateCredentialMintArguments, validateCredentialRevokeArguments, exportSpaceSigner, signerExportFlags, validateSignerExportInput, inputDisabledByFlag, isWorkspaceTargetError, resolveMeshTarget, targetErrorCode, spaceFlag, isCommandFailure, oneLine, boundedValue, SHOWN_VALUE_MAX, jsonFlag, plainFlag, presentationOf, renderReport, terminalWidth, writeResult, CLI_USER_ACTOR, findCotalRoot, getSpaceAuth, homeCotalDir, loadMeshes, removeCatalogMeshes, untilInputEnds, userAuthStateDir, deprecatedDaemonEntry, workspaceErrorParts, workspaceSecretStore, type CredentialAction, type MeshEntry, type MeshTarget, type RefusalCode } from "@cotal-ai/workspace";
+import { CommandFailure, STORE_CONTENTS, storeContentsText, credentialMintFlags, validateCredentialMintArguments, validateCredentialRevokeArguments, exportSpaceSigner, signerExportFlags, validateSignerExportInput, inputDisabledByFlag, isWorkspaceTargetError, resolveMeshTarget, targetErrorCode, spaceFlag, isCommandFailure, oneLine, boundedValue, SHOWN_VALUE_MAX, jsonFlag, plainFlag, presentationOf, renderReport, writeResult, CLI_USER_ACTOR, findCotalRoot, getSpaceAuth, homeCotalDir, loadMeshes, removeCatalogMeshes, untilInputEnds, userAuthStateDir, deprecatedDaemonEntry, workspaceErrorParts, workspaceSecretStore, type CredentialAction, type MeshEntry, type MeshTarget, type RefusalCode } from "@cotal-ai/workspace";
 import {
   deleteIdpSession,
   deleteIdpSpaceCatalog,
@@ -162,7 +162,7 @@ async function runLogin(args: ParsedArgs): Promise<void> {
         console.error(renderReport({ sections: [{ title: "Approve sign-in", blocks: [
           { kind: "fields", rows: [["Provider", idp], ["Open", p.verificationUriComplete], ["Or open", p.verificationUri], ["Approval code", p.userCode], ["Expires", `in ${Math.ceil(p.expiresInSec / 60)} minutes`]] },
           { kind: "lines", lines: [{ text: "Waiting for the provider's approval. Ctrl-C aborts this request. Do not share the approval link or code.", tone: "hint" }] },
-        ] }] }, presentation === "plain" ? "plain" : "rich", terminalWidth(process.stderr)));
+        ] }] }, presentation === "plain" ? "plain" : "rich", process.stderr));
       },
     }).catch((error: unknown) => {
       if (error instanceof IdpUnreachableError)
@@ -190,7 +190,7 @@ async function runLogin(args: ParsedArgs): Promise<void> {
       { title: "Next", blocks: [{ kind: "commands", items: discovered.length
         ? [{ command: "cotal use <name>", description: "Select one of your spaces for the commands that follow" }, { command: "cotal space", description: "See every registered space" }]
         : [{ command: "cotal space", description: "See registered spaces and choose one" }, { command: "cotal sync", description: "Refresh spaces the provider makes available to this account" }] }] },
-    ] }, presentation === "plain" ? "plain" : "rich", terminalWidth(process.stdout)));
+    ] }, presentation === "plain" ? "plain" : "rich", process.stdout));
   });
 }
 
@@ -214,7 +214,7 @@ async function runLogout(args: ParsedArgs): Promise<void> {
   const local = args.values.local === true;
   if (!local) {
     try { await revokeIdpSession(idp, session.token); }
-    catch { throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "server-side session revocation was not confirmed; the local login is kept so it can be retried", { target: { idp }, remedy: `retry logout for this provider, or revoke the session at the provider; to forget the login on this machine only, run cotal logout --idp ${idp} --local` }); }
+    catch { throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "server-side session revocation was not confirmed; the local login is kept so it can be retried", { target: { idp }, remedy: `retry logout for this provider, or revoke the session at the provider; to forget the login on this machine only, run \`cotal logout --idp ${idp} --local\`` }); }
   }
   let localCleared = false;
   let removed: string[] = [];
@@ -340,7 +340,7 @@ async function runServiceEndpoint(args: ParsedArgs, target: AuthTarget): Promise
       sections: [{ title: `Service endpoint ${result.request}`, blocks: [
         { kind: "fields" as const, rows: [["Space", space], ["Subject", result.subject], ["State", String((result.answer as { state: string }).state)],
           ...(result.requestId !== undefined ? [["Request id", result.requestId]] : [])] as [string, string][] },
-        { kind: "lines" as const, lines: [{ text: JSON.stringify(result.answer), tone: "hint" as const }] },
+        { kind: "lines" as const, lines: [...(result.note !== undefined ? [result.note] : []), { text: JSON.stringify(result.answer), tone: "hint" as const }] },
       ] }],
     }));
   });
@@ -437,7 +437,7 @@ async function runActor(args: ParsedArgs, target: AuthTarget, command: "auth" | 
       const { earlier, row } = withManagedGrantTransaction(dir, (tx) => {
         const read = tx.read(owner, actor!);
         if (read === undefined)
-          throw new CommandFailure("refused", "TARGET_NOT_FOUND", `"${owner}/${actor}" has no grant in this ledger; no label was written`, { target, remedy: `see the rows with cotal actor list --space ${space}` });
+          throw new CommandFailure("refused", "TARGET_NOT_FOUND", `"${owner}/${actor}" has no grant in this ledger; no label was written`, { target, remedy: `see the rows with \`cotal actor list --space ${space}\`` });
         if (read.kind !== "interactive")
           throw new CommandFailure("refused", "UNSUPPORTED", `"${owner}/${actor}" is a managed agent, and its row belongs to its spawn lifecycle; no label was written`, { target, remedy: "label the interactive row it was spawned from" });
         return { earlier: read.label ?? null, row: tx.relabelInteractive(owner, actor!, label)! };
@@ -493,7 +493,7 @@ const authCommands: Command[] = [
     name: "__daemon-auth-service",
     hidden: true,
     group: "Manager",
-    summary: "run the user-auth service daemon - NATS auth callout + token exchange/JWKS --space <s> --server <url> [--port <n>] [--callout-only [--spaces <manifest>]]",
+    summary: "run the user-auth service daemon - NATS auth callout + token exchange/JWKS --space <s> --server <url> [--port <n>] [--callout-only], or --spaces <manifest> for several spaces in one process",
     flags: [...authServiceFlags, authCalloutOnlyFlag, authSpacesFlag],
     prepareMeshTarget: false,
     run: (args) => legibly(() => runAuthService(args)),
@@ -537,9 +537,10 @@ const authCommands: Command[] = [
     kind: "command",
     name: "service-endpoint",
     group: "Identity",
-    summary: "decide and inspect service endpoint registrations on this space's auth service - approve or refuse a proposal as its owner; bind a name as the operator",
-    usage: "cotal service-endpoint <approve <proposalId> | refuse <proposalId> | proposal <proposalId> | operation <operationId> | name <endpoint> | name-bind <endpoint> --owner <u_…> --claim <ref>> [--caller-ceiling a,b] [--request-id <hex32>] [--space <s>] [--json|--plain]",
-    positionals: "<approve <proposalId> | refuse <proposalId> | proposal <proposalId> | operation <operationId> | name <endpoint> | name-bind <endpoint>>",
+    summary: "decide and inspect service endpoint registrations on this space's auth service - approve or refuse a proposal as its owner, grant and revoke its callers; bind a name as the operator",
+    examples: [{ command: "cotal service-endpoint proposal <proposalId>", note: "read a request before deciding" }, { command: "cotal service-endpoint approve <proposalId>", note: "approve a service's registration" }, { command: "cotal service-endpoint callers <proposalId>", note: "list who may call it, before a grant or revoke" }],
+    usage: "cotal service-endpoint <approve <proposalId> | refuse <proposalId> | proposal <proposalId> | operation <operationId> | name <endpoint> | name-bind <endpoint> --owner <u_…> --claim <ref> | callers <proposalId> | grant <proposalId> --to <owner.actor> --lifecycle <uid> --commands <a,b> | revoke <grantId> --to <owner.actor> --lifecycle <uid>> [--caller-ceiling a,b] [--request-id <hex32>] [--cursor <c>] [--space <s>] [--json|--plain]",
+    positionals: "<approve <proposalId> | refuse <proposalId> | proposal <proposalId> | operation <operationId> | name <endpoint> | name-bind <endpoint> | callers <proposalId> | grant <proposalId> | revoke <grantId>>",
     outputs: ["json", "plain"],
     flags: [
       jsonFlag, plainFlag, spaceFlag,
@@ -547,6 +548,10 @@ const authCommands: Command[] = [
       { name: "claim", type: "string", value: "<ref>", description: "name-bind: your claim reference for the namespace (the host verifies no domain control)" },
       { name: "caller-ceiling", type: "string", value: "<a,b>", description: "approve: capabilities the proposed commands declare, such as read; callers may be granted every command that declares one (default: none)" },
       { name: "request-id", type: "string", value: "<hex32>", description: "approve, refuse, name-bind: send the request an earlier run here recorded under this id again, as it was; the host replays its answer" },
+      { name: "to", type: "string", value: "<owner.actor>", description: "grant, revoke: the caller, as owner token and actor name" },
+      { name: "lifecycle", type: "string", value: "<uid>", description: "grant, revoke: the caller's exact lifecycle; a respawned agent is a new lifecycle and needs its own grant" },
+      { name: "commands", type: "string", value: "<a,b>", description: "grant: the commands the caller may invoke, within the approval's caller ceiling" },
+      { name: "cursor", type: "string", value: "<c>", description: "callers: the next page, as the previous page's nextCursor" },
     ],
     run: (args) => runServiceEndpoint(args, localAuthTarget(args.values as { space?: string })),
   },
@@ -555,6 +560,7 @@ const authCommands: Command[] = [
     name: "login",
     group: "Identity",
     summary: "sign in to a space's IdP (device code) and cache the session --idp <auth base URL> [--client-id <id>]",
+    examples: [{ command: "cotal login", note: "choose a provider and approve sign-in" }, { command: "cotal login --idp <url>", note: "sign in to one provider" }],
     usage: "cotal login [--idp <auth base URL>] [--client-id <id>] [--plain]",
     prepareMeshTarget: false,
     outputs: ["plain"],
@@ -571,6 +577,7 @@ const authCommands: Command[] = [
     name: "logout",
     group: "Identity",
     summary: "revoke the IdP session and clear the cached login --idp <auth base URL> [--local]",
+    examples: [{ command: "cotal logout --idp <url>", note: "sign out and revoke the session" }, { command: "cotal logout --idp <url> --local", note: "forget the login on this machine only" }],
     usage: "cotal logout [--idp <auth base URL>] [--local] [--json|--plain]",
     prepareMeshTarget: false,
     outputs: ["json", "plain"],
@@ -650,7 +657,7 @@ function validateGrantUsage(command: "auth" | "actor", mode: string | undefined,
   const allowed = [...GRANT_COMMON_FLAGS, ...(mode === list ? ["sub"] : ["sub", "owner"]), ...(mode === "grant" ? ["scope", "allow-subscribe", "allow-publish", "role", "label", "parent", "full"] : [])];
   if (Object.keys(flags).some((key) => !allowed.includes(key))) throw new CommandFailure("refused", "USAGE_INVALID", `a flag does not belong to this ${command} action`);
   if (mode === list) {
-    if (flags.sub === "") throw new CommandFailure("refused", "USAGE_INVALID", `${command} ${list} --sub is empty, so no subject's rows can be listed`, { remedy: `name the IdP subject \`cotal login\` prints: cotal ${command} ${list} --sub <IdP subject>`, selfContained: true });
+    if (flags.sub === "") throw new CommandFailure("refused", "USAGE_INVALID", `${command} ${list} --sub is empty, so no subject's rows can be listed`, { remedy: `name the IdP subject \`cotal login\` prints: \`cotal ${command} ${list} --sub <IdP subject>\``, selfContained: true });
     return;
   }
   // A static or open space has no ledger on any machine, so it refuses before this asks for a subject
@@ -767,7 +774,7 @@ async function authGroup(args: ParsedArgs): Promise<void> {
     // Revoking the one credential keeps the store; rotating the space identity is the wider lever.
     throw new CommandFailure("refused", "UNSUPPORTED", "this CLI cannot retire a lifecycle: the registered auth endpoint accepts retirement only from the caller's own current serve identity and gate, so no request was sent", {
       target: { space: target.space, lifecycleUid: args.positionals[1] },
-      remedy: `to stop one minted credential and keep the space's store: cotal down, then cotal auth revoke-credential <its creds file or public key> --yes, then cotal up. To stop every credential the space issued, rotate its identity: cotal down, then cotal reset space ${target.space} (or cotal clean all --force from the root when down left no registration), then cotal up. That reset also removes the space's store, with its ${storeContentsText(STORE_CONTENTS)}; cotal reset space ${target.space} --dry-run shows them first`,
+      remedy: `to stop one minted credential and keep the space's store: \`cotal down\`, then \`cotal auth revoke-credential <its creds file or public key> --yes\`, then \`cotal up\`. To stop every credential the space issued, rotate its identity: \`cotal down\`, then \`cotal reset space ${target.space}\` (or \`cotal clean all --force\` from the root when down left no registration), then \`cotal up\`. That reset also removes the space's store, with its ${storeContentsText(STORE_CONTENTS)}; \`cotal reset space ${target.space} --dry-run\` shows them first`,
     });
   }
   if (mode === "redeem") {
@@ -837,19 +844,20 @@ const authCommand: Command = {
   kind: "command", name: "auth", group: "Identity",
   positionals: "[grants | grant <actor> | revoke <actor> | signer | mint <name> | revoke-credential <key | file> | handle inspect <file> | redeem <file> | retire <lifecycle-uid>]",
   summary: "inspect account metadata, manage actor grants and export a protected account signer",
+  examples: [{ command: "cotal auth", note: "list the accounts this machine is signed in to" }, { command: "cotal auth grants", note: "list who may use this space" }, { command: "cotal auth grant <actor> --sub <subject> --full", note: "grant a person the wide default access" }],
   usage: "cotal auth [grants | grant <actor> | revoke <actor> | signer --out <private-file> | mint <name> | revoke-credential <key | file> | handle inspect <file> | redeem <file> | retire <lifecycle-uid>] [--space <s>] [--json|--plain]",
   flagNames: ["space", "json", "plain"],
   flags: authFlags, outputs: ["json", "plain"], reads: true, prepareMeshTarget: false,
   subcommands: ([
-    { name: "mint", flagNames: credentialMintFlags.map((flag) => flag.name), summary: "write a fixed-profile or supported endpoint caller credential privately", usage: "cotal auth mint <name> [--profile agent|observer|admin] [--out <private-file>] | <name> --endpoint <class> --out <private-file> [--channels <a,b>]", prepareMeshTarget: false },
-    { name: "revoke-credential", flagNames: ["space", "yes", "json", "plain"], summary: "stop one static credential by its public key or creds file on a stopped stack; the broker refuses it from the next up", usage: "cotal auth revoke-credential <public-key | creds-file> [--space <space>] [--yes]", prepareMeshTarget: false },
-    { name: "handle", flagNames: ["space", "json", "plain"], summary: "inspect protected claims or static-registry signatures without conferring authority", usage: "cotal auth handle inspect <private-file> [--space <space>] [--json|--plain]", reads: true, prepareMeshTarget: false, subcommands: [{ name: "inspect", flagNames: ["space", "json", "plain"], summary: "offline metadata; --space checks native static signer/revocation records", usage: "cotal auth handle inspect <private-file> [--space <space>] [--json|--plain]", reads: true, prepareMeshTarget: false, outputs: ["json", "plain"] }] },
-    { name: "retire", flagNames: ["space", "yes", "json", "plain"], summary: "not available from this CLI; revoke-credential stops one minted credential, and rotating the space identity with reset space stops all of them and removes its store", usage: "cotal auth retire <full-lifecycle-uid> [--space <space>] [--yes]", prepareMeshTarget: false },
-    { name: "redeem", flagNames: ["space", "json", "plain"], summary: "conferring-handle redemption requires a supported native auth path", usage: "cotal auth redeem <private-handle-file> [--space <space>]", prepareMeshTarget: false },
-    { name: "signer", flagNames: ["space", "out", "force", "json", "plain"], summary: "export existing account-signing material to a protected private file", usage: "cotal auth signer --out <private-file> [--force]", prepareMeshTarget: false },
-    { name: "grants", flagNames: ["space", "sub", "json", "plain"], summary: "read the authoritative local actor grants, not cached sign-in claims", usage: "cotal auth grants [--sub <IdP subject>] [--space <space>] [--json|--plain]", reads: true, prepareMeshTarget: false },
-    { name: "grant", flagNames: ["space", "sub", "owner", "scope", "allow-subscribe", "allow-publish", "role", "label", "parent", "full", "json", "plain"], summary: "store a deliberate operator grant through the existing authority path", usage: "cotal auth grant <actor>", prepareMeshTarget: false },
-    { name: "revoke", flagNames: ["space", "sub", "owner", "json", "plain"], summary: "retire and revoke an interactive actor grant under its existing authority", usage: "cotal auth revoke <actor>", prepareMeshTarget: false },
+    { name: "mint", flagNames: credentialMintFlags.map((flag) => flag.name), summary: "write a fixed-profile or supported endpoint caller credential privately", examples: [{ command: "cotal auth mint <name>", note: "issue an agent credential" }, { command: "cotal auth mint <name> --out <private-file>", note: "write it to a private file" }], usage: "cotal auth mint <name> [--profile agent|observer|admin] [--out <private-file>] | <name> --endpoint <class> --out <private-file> [--channels <a,b>]", prepareMeshTarget: false },
+    { name: "revoke-credential", flagNames: ["space", "yes", "json", "plain"], summary: "stop one static credential by its public key or creds file on a stopped stack; the broker refuses it from the next up", examples: [{ command: "cotal auth revoke-credential <creds-file>", note: "revoke one issued credential" }], usage: "cotal auth revoke-credential <public-key | creds-file> [--space <space>] [--yes]", prepareMeshTarget: false },
+    { name: "handle", flagNames: ["space", "json", "plain"], summary: "inspect protected claims or static-registry signatures without conferring authority", examples: [{ command: "cotal auth handle inspect <private-file>", note: "read what a handle file claims" }], usage: "cotal auth handle inspect <private-file> [--space <space>] [--json|--plain]", reads: true, prepareMeshTarget: false, subcommands: [{ name: "inspect", flagNames: ["space", "json", "plain"], summary: "offline metadata; --space checks native static signer/revocation records", examples: [{ command: "cotal auth handle inspect <private-file>", note: "read what a handle file claims, offline" }, { command: "cotal auth handle inspect <private-file> --space <space>", note: "also check it against a space's records" }], usage: "cotal auth handle inspect <private-file> [--space <space>] [--json|--plain]", reads: true, prepareMeshTarget: false, outputs: ["json", "plain"] }] },
+    { name: "retire", flagNames: ["space", "yes", "json", "plain"], summary: "not available from this CLI; revoke-credential stops one minted credential, and rotating the space identity with reset space stops all of them and removes its store", examples: [{ command: "cotal auth retire <full-lifecycle-uid>", note: "learn which command to use instead" }], usage: "cotal auth retire <full-lifecycle-uid> [--space <space>] [--yes]", prepareMeshTarget: false },
+    { name: "redeem", flagNames: ["space", "json", "plain"], summary: "conferring-handle redemption requires a supported native auth path", examples: [{ command: "cotal auth redeem <private-handle-file>", note: "redeem a capability handle file" }], usage: "cotal auth redeem <private-handle-file> [--space <space>]", prepareMeshTarget: false },
+    { name: "signer", flagNames: ["space", "out", "force", "json", "plain"], summary: "export existing account-signing material to a protected private file", examples: [{ command: "cotal auth signer --out <private-file>", note: "export the signer to a private file" }], usage: "cotal auth signer --out <private-file> [--force]", prepareMeshTarget: false },
+    { name: "grants", flagNames: ["space", "sub", "json", "plain"], summary: "read the authoritative local actor grants, not cached sign-in claims", examples: [{ command: "cotal auth grants", note: "list who may use this space" }, { command: "cotal auth grants --sub <subject>", note: "list one person's grants" }], usage: "cotal auth grants [--sub <IdP subject>] [--space <space>] [--json|--plain]", reads: true, prepareMeshTarget: false },
+    { name: "grant", flagNames: ["space", "sub", "owner", "scope", "allow-subscribe", "allow-publish", "role", "label", "parent", "full", "json", "plain"], summary: "store a deliberate operator grant through the existing authority path", examples: [{ command: "cotal auth grant <actor> --sub <subject> --full", note: "grant a person the wide default access" }], usage: "cotal auth grant <actor>", prepareMeshTarget: false },
+    { name: "revoke", flagNames: ["space", "sub", "owner", "json", "plain"], summary: "retire and revoke an interactive actor grant under its existing authority", examples: [{ command: "cotal auth revoke <actor> --sub <subject>", note: "remove a person's access" }], usage: "cotal auth revoke <actor>", prepareMeshTarget: false },
   ] as const).map((sub) => ({ ...sub, outputs: ["json", "plain"] as const })),
   validate: validateAuthArguments, run: authGroup,
 };

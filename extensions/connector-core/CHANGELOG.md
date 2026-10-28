@@ -1,5 +1,244 @@
 # @cotal-ai/connector-core
 
+## 0.120.1
+
+### Patch Changes
+
+- a49bee6: Report a bound session as degraded when consecutive presence writes fail, even if core NATS remains connected. Include the observed bucket write failure in connection status and clear it when writes recover.
+
+## 0.120.0
+
+No changes in this release.
+
+## 0.119.5
+
+No changes in this release.
+
+## 0.119.4
+
+### Patch Changes
+
+- ed5c23f: Remedies, hints and messages from `run`, `actor` and `auth`, `logout`, `supervise` and `manager`, `deliver`, `docs`, `daemon`, `linear`, the web dashboard, the console, the Claude Code connector, a run's checkpoint prompt and the endpoint issuance gate now name the commands they suggest in backticks, so a terminal keeps each one whole and `--json` carries the same text. They named them bare after other words, as in "list the recorded runs with cotal run", which split inside the command when the line wrapped.
+
+## 0.119.3
+
+### Patch Changes
+
+- 8866e1e: Endpoint calls now resolve only the command contracts they need instead of fetching the endpoint's complete visible surface. Manager operations that used to read 124 contract-store artifacts for a 40-command surface now read six artifacts for one command, while `describe` still resolves every visible command.
+
+## 0.119.2
+
+No changes in this release.
+
+## 0.119.1
+
+### Patch Changes
+
+- 9f32677: Clarify that a timed-out channel publish has an unknown outcome and that a disconnected send or yield refused before submission was not sent. Keep the Jcode user-auth tool catalog aligned with the host's capability gates without exposing credentials.
+- 3431be6: `cotal up --max-payload <bytes>` sets the broker's own message size limit, a positive integer up to 67108864. `up` renders it as `max_payload: <bytes>` in the broker config and records it in `.cotal/broker-policy.json`, which `readBrokerPolicy` reads back, so a later `cotal up` on the root renders it again without the flag, after `cotal down` or a preserved resume included. A running broker refuses a different value, and `--open`, `-f` and `--restore` refuse the flag. Service endpoint caller grants need at least 2098176 bytes, so a smaller value beside `--service-endpoints` refuses before anything starts. `SERVICE_CALLER_PAYLOAD_FLOOR` and `SERVICE_CALLER_PAYLOAD_OVERHEAD` now come from `@cotal-ai/core`, so the flag's validation and the auth host's assertion read one number. Before, `serverConfig` took a `maxPayload` that no `up` ever passed and no record kept, so a limit written into `server.conf` by hand was lost the next time `up` wrote the file.
+  
+  Caller issuance now survives a broker configuration reload. A reload keeps the same incarnation serving and moves VARZ `config_digest`, and issuance was bound to the digest the bootstrap observed, so every reload refused every later caller issuance until the auth plane was reopened. On a multi-tenant broker that is every tenant sign-up. The verifier now treats a moved digest as a trigger to re-measure: when the fresh observation proves the same broker incarnation and auth store, and proves the standalone topology, the payload floor, the control line, the system account and an uncapped auth stream again, it re-asserts the payload record under the held plane claim by CAS on the exact prior row and continues. A reload that breaks any of those still refuses, a `max_payload` below the floor included, a restart is a new incarnation and still refuses, and a withdrawn record is never overwritten.
+
+## 0.119.0
+
+No changes in this release.
+
+## 0.118.3
+
+### Patch Changes
+
+- e9b85f5: Recover a Unix control socket left by a crashed connector when the host restarts its MCP server with the same launch environment. Probe before retrying so a live listener still refuses the replacement.
+
+## 0.118.2
+
+No changes in this release.
+
+## 0.118.1
+
+### Patch Changes
+
+- 6a634a6: `handleGatewayRequest` accepts `selection`, so a hosted gateway's `cotal_connect` can take the channels, role and capabilities an agent asks for. The `cotal_connect` description now tells the agent to ask for what it already knows it needs in that first call.
+
+## 0.118.0
+
+No changes in this release.
+
+## 0.117.1
+
+No changes in this release.
+
+## 0.117.0
+
+### Patch Changes
+
+- c93dded: A conversation selection may now name channel patterns. `team.*` and `team.>` in a requested or approved selection grant every channel they match, including channels created after the approval, and the issued grant carries the pattern as it is.
+  
+  Before this, `checkConversationSelection` refused any non-concrete channel. A hosted approval page that let a person grant `team.>` produced an approval every stock client then rejected, so the connection failed after the person had approved it. The grammar check is unchanged: a malformed pattern such as `team.>.x` is still refused, as are more than 32 channels. Whether the person may grant a pattern is still decided by the authority, against that person's own row.
+
+## 0.116.5
+
+No changes in this release.
+
+## 0.116.4
+
+No changes in this release.
+
+## 0.116.3
+
+### Patch Changes
+
+- 1819877: Retain a published spawn request's goal id when the caller deadline ends before acceptance is observed. Report the submission as unknown with same-caller goal-result readback instead of a plain failed spawn, without resubmitting or changing persona numbering.
+
+## 0.116.2
+
+### Patch Changes
+
+- 6309047: Report an unanswered persona definition as an unknown write outcome, with same-manager readback guidance, instead of a failed definition that invites an unsafe retry. Preserve concrete refusals and pre-submission failures.
+
+## 0.116.1
+
+No changes in this release.
+
+## 0.116.0
+
+### Minor Changes
+
+- 50ee624: Cut what an idle seat costs its host, with stock build and runtime mechanisms.
+  
+  Every connector bundle that loads into a long-running process now ships as one-byte text. V8 holds a
+  string at one byte per character only while every character is Latin-1, and a single character above
+  U+00FF made each 5 MB bundle two-byte for the life of the process. The characters were em dashes and
+  arrows in comments, so the bundles are built with esbuild's `--minify-whitespace`, which drops
+  comments and the parentheses around a single arrow parameter, and keeps every identifier. Anything
+  matching text in a built bundle sees the second part: `(e) => f(e)` now reads `e=>f(e)`. `pnpm smoke:connector-bundle-text` reads the 19 built bundles
+  and fails on any character above U+00FF. Stack-trace frames keep their function names and their line
+  and column numbers move, because the bundle is now fewer, longer lines.
+  
+  The Claude Code connector's seat is launched through a new entry, `dist/seat.cjs`, which enables
+  Node's module compile cache in `~/.cotal/compile-cache` and then loads `dist/mcp.cjs`. Node's cache
+  covers modules compiled after it is enabled, so the entry has to sit in front of the bundle. The
+  directory is created 0700 like the rest of `~/.cotal`, whatever the launching umask was. A cache
+  that cannot be opened prints one line and the seat serves without it,
+  `NODE_DISABLE_COMPILE_CACHE=1` turns it off, and `NODE_COMPILE_CACHE` takes precedence and is left
+  alone. `dist/mcp.cjs` remains the library entry (`@cotal-ai/connector-claude-code/mcp`) and still
+  serves when run directly.
+  
+  The declared Node floor rises from 22 to 22.10, which is where `module.flushCompileCache()` lands,
+  and every package's `engines.node` now says so. The `cotal` binary checks it at its front door and
+  refuses an older runtime with the floor, the running version and the repair for how it was
+  installed; the seat entry refuses before its first cache call, so an old Node gets one sentence
+  rather than a `TypeError`; and the installer compares the minor version, so a host whose own Node is
+  22.9 gets the pinned Node downloaded and verified instead. `node dist/mcp.cjs` still serves on an
+  older runtime. Operators moving a host read
+  [the upgrade note](https://github.com/Cotal-AI/Cotal/blob/main/docs/UPGRADING.md).
+  
+  Measured on one idle seat per arm, Node v22.23.2, paired and read at 160 s and 600 s: 41.9 MiB USS
+  on the stock bundle, 35.2 with one-byte text, 26.3 with the seat entry's compile cache as well.
+
+### Patch Changes
+
+- c19eaf9: Keep open managed-seat persona operations, spawns and generic manager self reads on their launching manager without changing authenticated routing or grants.
+- c8072d6: A managed seat on a legacy-rail bearer no longer asks the broker for its accepted row on every manager call. The read is attempted once per credential and rechecked hourly; a refusal is remembered, so a seat that pulls its turns every 15 s stops putting one refused `DIRECT.GET` request in the broker's log each time (100k to 340k lines a day on one hosted mesh). Issued views are unaffected: their read succeeds and nothing is remembered. `managerCallerBinding` now also returns the bearer's `credentialId` when the issuer stamped one.
+- cf3218f: `assertValidName` now refuses a name holding any line break a Unicode-aware splitter honours: VT, FF, NEL (U+0085), LINE SEPARATOR (U+2028) and PARAGRAPH SEPARATOR (U+2029), as well as CR and LF. Before, it tested only CR and LF, so `new CotalEndpoint`, agent-file loading, the gateway connect request and the manager's launch spec accepted such a name and published presence under it, although the validator states a single-line rule. The class is now exported from `@cotal-ai/core` as `LINE_BREAK`, and the connector's message framing uses the same definition.
+- 3a68499: `packUnits` refuses a unit that cannot fit in one frame as a unit. The message names the byte sizes, the event count and the run, and no longer calls the unit a source observation cut mid-record. A close hands the same function a terminal the emitter authored, which consumes no source record, and that refusal was telling the operator to look for a record the close never read. The reason a unit is never split stays in the function's doc comment.
+
+## 0.115.4
+
+No changes in this release.
+
+## 0.115.3
+
+No changes in this release.
+
+## 0.115.2
+
+No changes in this release.
+
+## 0.115.1
+
+### Patch Changes
+
+- 05eed2f: Route nameless self-despawn on open meshes to the seat's launching manager so a sibling manager cannot receive the stop. Preserve static credential grants and user-auth manager selection.
+
+## 0.115.0
+
+No changes in this release.
+
+## 0.114.1
+
+No changes in this release.
+
+## 0.114.0
+
+No changes in this release.
+
+## 0.113.3
+
+No changes in this release.
+
+## 0.113.2
+
+No changes in this release.
+
+## 0.113.1
+
+No changes in this release.
+
+## 0.113.0
+
+No changes in this release.
+
+## 0.112.0
+
+No changes in this release.
+
+## 0.111.1
+
+No changes in this release.
+
+## 0.111.0
+
+No changes in this release.
+
+## 0.110.0
+
+No changes in this release.
+
+## 0.109.25
+
+No changes in this release.
+
+## 0.109.24
+
+No changes in this release.
+
+## 0.109.23
+
+No changes in this release.
+
+## 0.109.22
+
+### Patch Changes
+
+- d3a29f8: `cotal_spawn` with a `model` pin no longer reports a running seat as a failed spawn when only the pin read fails. The read opens its own manager connection after the launch with a 10 second budget, so a slow auth callout or a manager that does not answer in time ended it with a bare `timeout`, and the result read "Couldn't spawn" while the seat was up; the caller's retry then started a second seat on the same work. The result is now a partial outcome: the seat joined, with its name, id, manager instance and runtime, its model pin could not be audited (or was not reported by this manager, which is known at once), do not spawn it again, and `cotal ps --on <manager>` as the next step. The Claude Code tool result carries the same facts as structured content. A recorded pin that differs from the request, or no recorded pin, is still refused, and a launch the manager refused keeps its refusal.
+- 1622722: Keep workflow turns active across presence-only status updates and finish the previous Jcode turn boundary before accepting another goal, preserving explicit yield outcomes and notes.
+
+## 0.109.21
+
+No changes in this release.
+
+## 0.109.20
+
+No changes in this release.
+
+## 0.109.19
+
+No changes in this release.
+
+## 0.109.18
+
+No changes in this release.
+
 ## 0.109.17
 
 No changes in this release.

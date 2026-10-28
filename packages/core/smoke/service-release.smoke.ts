@@ -10,7 +10,7 @@ import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, countedAssert, emitSentinel, freePort, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import {
-  authorizeServeGrant, contractDigest, createEndpointStreams, epAuthBucket, epcredRowKey, epgateKey,
+  authorizeServeGrant, contractDigest, createEndpointStreams, credentialIdOf, epAuthBucket, epcredRowKey, epgateKey,
   endpointRegistrationBarrier, finalizeServeIssuance, isReachable, mintLifecycleUid, mintServiceCalloutJwt, openRecordsBucket, principalKey,
   parseEndpointGate, parseLedgerRow, reconcileEndpointGate, registerServiceInstance, recordSpecKey, RECORD_KINDS,
   serveIssuanceGateKv, type EndpointGateRow, type EpIssuanceGate, type ServiceGateAuthority,
@@ -146,6 +146,7 @@ try {
   const mintArgs = { serve: grant, gate: native, principal: { owner, actor }, connection: serviceConnection,
     inboxNonce, admittedAt, accessExpiresAt, expiresAt: accessExpiresAt };
   const minted = await mintServiceCalloutJwt(mintAuth, mintArgs), claims = decode(minted.jwt);
+  assert.equal(minted.credentialId, credentialIdOf(minted.jwt));
   assert.equal(claims.name, principalKey(owner, actor).name, "callout authorized_user identifies the actual serving principal");
   assert.equal(claims.sub, serviceConnection.userNkey);
   assert.equal(claims.exp, accessExpiresAt);

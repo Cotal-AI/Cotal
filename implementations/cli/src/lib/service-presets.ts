@@ -35,7 +35,7 @@ export function findServicePreset(name: string): ServicePreset | undefined {
 export function resolveServicePreset(name: string): ServicePreset {
   if (!/^[a-z][a-z0-9-]{0,63}$/.test(name)) throw new CommandFailure("refused", "USAGE_INVALID", "--preset needs one declared lower-case preset name");
   const row = servicePresets().find((row) => row.preset.name === name);
-  if (!row) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `no registered or installed service preset is named "${name}"; install its provider explicitly or use a supported --file definition`, { remedy: name === "web" ? "bare cotal svc lists the installed presets; add the dashboard provider with cotal ext add @cotal-ai/web" : "bare cotal svc lists the installed presets; add the extension that provides this one with cotal ext add <package>" });
+  if (!row) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `no registered or installed service preset is named "${name}"; install its provider explicitly or use a supported --file definition`, { remedy: name === "web" ? "bare `cotal svc` lists the installed presets; add the dashboard provider with `cotal ext add @cotal-ai/web`" : "bare `cotal svc` lists the installed presets; add the extension that provides this one with `cotal ext add <package>`" });
   if (row.package !== null) {
     const owner = loadExtensionsManifest().extensions.find((extension) => extension.pkg === row.package);
     const checked = owner && verifiedExtensionServicePresets(owner).find((preset) => preset.name === name);
@@ -113,7 +113,7 @@ export function presetDefaultOptions(preset: ServicePreset, space: string, root:
     if (fallback.space === "root") { filled[name] = root; continue; }
     if (fallback.space !== "material") {
       const server = findMesh(space)?.server;
-      if (!server) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `space ${oneLine(space)} has no registered broker for the ${preset.name} preset's --${name}`, { target: { space }, remedy: `pass --${name} <url>, or register the space with cotal up or cotal space add` });
+      if (!server) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `space ${oneLine(space)} has no registered broker for the ${preset.name} preset's --${name}`, { target: { space }, remedy: `pass --${name} <url>, or register the space with \`cotal up\` or \`cotal space add\`` });
       filled[name] = server;
       continue;
     }
@@ -130,7 +130,7 @@ export function servicePresetDefinition(preset: ServicePreset, space: string, gi
   servicePresetFlags(preset);
   const missing = presetMissingOptions(preset, given);
   const line = verb === "start" ? `cotal service start ${preset.name}` : `cotal service ${verb} --preset ${preset.name}`;
-  if (missing.length) throw new CommandFailure("refused", "USAGE_INVALID", `the ${preset.name} preset needs ${missing.map((name) => `--${name}`).join(", ")}, which ${missing.length === 1 ? "has" : "have"} no default; nothing was saved or started`, { remedy: `${line} ${missing.map((name) => `--${name} ${placeholder(resolveServiceAdapter(preset.adapter, {}, false).declaration.paths?.[name], properties[name]?.type)}`).join(" ")}`, selfContained: true });
+  if (missing.length) throw new CommandFailure("refused", "USAGE_INVALID", `the ${preset.name} preset needs ${missing.map((name) => `--${name}`).join(", ")}, which ${missing.length === 1 ? "has" : "have"} no default; nothing was saved or started`, { remedy: `${line} ${missing.map((name) => `--${name} ${placeholder(resolveServiceAdapter(preset.adapter, {}, false).declaration.paths?.[name], properties[name]?.type)}`).join(" ")}`, selfContained: true, remedyIsCommand: true });
   const values: ParsedArgs["values"] = { ...presetDefaultOptions(preset, space, root, given, migrate), ...given };
   for (const [name, schema] of Object.entries(properties)) {
     const value = values[name], negative = values[`no-${name}`];

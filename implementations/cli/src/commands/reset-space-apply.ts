@@ -6,7 +6,7 @@ import { accountFromCreds, isLoopbackLiteral, type ParsedArgs } from "@cotal-ai/
 import {
   ConfirmationRequired,
   acquireMaintenanceLock, canonicalRoot, CommandFailure, isCommandFailure, findMesh, localMeshesForRoot, oneLine, presentationOf,
-  releaseMaintenanceLock, removeMeshesByRoot, renderReport, STORE_CONTENTS, terminalWidth, writeResult, type Report,
+  releaseMaintenanceLock, removeMeshesByRoot, renderReport, STORE_CONTENTS, writeResult, type Report,
 } from "@cotal-ai/workspace";
 import { protectedCredentialReference } from "../lib/protected-records.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
@@ -34,7 +34,7 @@ function credentialRefsIssuedBy(space: string, accountPub: string): ServiceDefin
  * an IdP account. Native secret deprovisioning remains ahead of raw identity/trust removal. */
 export async function resetSpaceApply(space: string, args: ParsedArgs): Promise<void> {
   const presentation = presentationOf(args.values), dryRun = args.values["dry-run"] === true, yes = args.values.yes === true;
-  if (!dryRun && !yes && (!canPrompt() || presentation === "json")) throw new ConfirmationRequired("reset space needs a terminal confirmation or --yes with the exact space name", { target: { space }, remedy: `review cotal reset space ${space} --dry-run first, then run cotal reset space ${space} --yes` });
+  if (!dryRun && !yes && (!canPrompt() || presentation === "json")) throw new ConfirmationRequired("reset space needs a terminal confirmation or --yes with the exact space name", { target: { space }, remedy: `review \`cotal reset space ${space} --dry-run\` first, then run \`cotal reset space ${space} --yes\`` });
   const selected = selectResetTarget(space, "reset space");
   const root = selected.root, target = { space, root };
   if (process.platform !== "linux") throw new CommandFailure("refused", "UNSUPPORTED", "this guarded identity reset currently needs Linux process-custody observations; no other platform was treated as stopped", { target });
@@ -55,8 +55,8 @@ export async function resetSpaceApply(space: string, args: ParsedArgs): Promise<
   const removed: string[] = [];
   let submitted = false, cleanupReturned = false, registrationRemoved = false, refsCleared = 0;
   const stopReporting = dryRun ? undefined : reportOnInterrupt(presentation, "reset", () => submitted
-    ? new CommandFailure("unknown", "OPERATION_UNKNOWN", `reset space was interrupted after it removed ${removed.length} ${removed.length === 1 ? "path" : "paths"}${registrationRemoved ? " and the registration" : ""}; the rest may remain`, { target, changed: removed, remedy: `see what remains with cotal reset space ${space} --dry-run before you run it again` })
-    : new CommandFailure("failed", "OPERATION_FAILED", "reset space was interrupted before it removed anything; the store and local identity are as they were", { target, remedy: `run cotal reset space ${space} --yes again` }),
+    ? new CommandFailure("unknown", "OPERATION_UNKNOWN", `reset space was interrupted after it removed ${removed.length} ${removed.length === 1 ? "path" : "paths"}${registrationRemoved ? " and the registration" : ""}; the rest may remain`, { target, changed: removed, remedy: `see what remains with \`cotal reset space ${space} --dry-run\` before you run it again` })
+    : new CommandFailure("failed", "OPERATION_FAILED", "reset space was interrupted before it removed anything; the store and local identity are as they were", { target, remedy: `run \`cotal reset space ${space} --yes\` again` }),
   () => { if (lock) releaseMaintenanceLock(lock); });
   const expected = await eligible();
   const plan = await planResetSpaceIdentity(root, space, selected.mode);
@@ -84,7 +84,7 @@ export async function resetSpaceApply(space: string, args: ParsedArgs): Promise<
     return;
   }
   if (!yes) {
-    console.error(renderReport({ ...impactView(), space }, presentation === "plain" ? "plain" : "rich", terminalWidth(process.stderr)));
+    console.error(renderReport({ ...impactView(), space }, presentation === "plain" ? "plain" : "rich", process.stderr));
     const answer = await prompts.confirm({ message: `Remove the reviewed stopped store and local identity for ${oneLine(space)}?`, initialValue: false });
     if (prompts.isCancel(answer) || !answer) {
       stopReporting?.();
@@ -131,7 +131,7 @@ export async function resetSpaceApply(space: string, args: ParsedArgs): Promise<
       const { credentialRef, ...value } = row.record.value;
       try { serviceDefinitionStore(space).commit(row.name, row, value); }
       catch (error) {
-        throw new CommandFailure("partial", "OPERATION_PARTIAL", `the local identity was reset, but service ${row.name} still names ${credentialRef!.path}, a credential the next identity rejects (${error instanceof Error ? error.message : String(error)})`, { target, changed: removed, remedy: `forget it with cotal service remove ${row.name} --space ${space} --yes, then add it again without that credentialRef` });
+        throw new CommandFailure("partial", "OPERATION_PARTIAL", `the local identity was reset, but service ${row.name} still names ${credentialRef!.path}, a credential the next identity rejects (${error instanceof Error ? error.message : String(error)})`, { target, changed: removed, remedy: `forget it with \`cotal service remove ${row.name} --space ${space} --yes\`, then add it again without that credentialRef` });
       }
       refsCleared += 1;
     }
@@ -148,6 +148,6 @@ export async function resetSpaceApply(space: string, args: ParsedArgs): Promise<
     { kind: "fields", rows: [["Space", data.space], ["Store", data.storePath], ["Local identity", data.localIdentityRemoved ? "removed and checked absent" : "not confirmed removed"], ["Local registration", data.registrationRemoved ? "removed" : selected.source === "stopped-stack" ? "none recorded; the prepared record and stack journal stay" : "not confirmed removed"], ["Remote revocation", "not performed"]] },
     { kind: "lines", lines: data.removedPaths.slice(0, 100) },
     { kind: "lines", lines: [...(data.removedPaths.length > 100 ? ["Additional returned deletion receipts are in JSON."] : []), "Personas, service definitions, installed packages and account login sessions were kept. This resets local files, not Cloud data or a remote broker's authority.", failure ? "Inspect the retained original paths and registration before any new startup or reset." : userAuth ? userAuthTrustNote(true) : "A later up creates a new local identity."] },
-    ...(data.clearedCredentialRefs.length ? [{ kind: "lines" as const, lines: [...refLines(true).slice(0, data.clearedCredentialRefs.length), { text: "To give a service a credential again, mint one after up with cotal auth mint <label> --out <file>, then remove the service and add it again with that credentialRef.", tone: "hint" as const }] }] : []),
+    ...(data.clearedCredentialRefs.length ? [{ kind: "lines" as const, lines: [...refLines(true).slice(0, data.clearedCredentialRefs.length), { text: "To give a service a credential again, mint one after up with `cotal auth mint <label> --out <file>`, then remove the service and add it again with that credentialRef.", tone: "hint" as const }] }] : []),
   ] }] }));
 }

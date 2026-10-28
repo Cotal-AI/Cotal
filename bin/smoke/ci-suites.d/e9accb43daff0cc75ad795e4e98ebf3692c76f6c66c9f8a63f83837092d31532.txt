@@ -1,0 +1,3 @@
+# A manager stop retires at most 8 seats at a time, orders each seat's inventory after its own
+# eviction, and leaves no membership row of a retired lifecycle on the broker (#4965).
+smoke:manager-mass-stop

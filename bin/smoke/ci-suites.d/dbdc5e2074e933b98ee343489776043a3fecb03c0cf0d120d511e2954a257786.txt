@@ -1,0 +1,3 @@
+# The delivery daemon answers a retirement's membership inventory without queuing it behind other
+# admin commands, and concurrent inventories share one read of the members bucket (#4965).
+smoke:lifecycle-inventory-concurrency

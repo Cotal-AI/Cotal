@@ -66,7 +66,7 @@ export function renderUpPlan(p: PreparedManifest, server: string): string {
   const m = p.manifest;
   const auth = m.broker?.auth === false ? "open" : m.broker?.auth === "user" ? `user auth${m.broker?.idp ? ` (idp ${m.broker.idp})` : ""}` : "static auth";
   const head = [
-    c.bold("Plan - cotal up -f (fresh mesh)"),
+    c.bold("Plan - `cotal up -f` (fresh mesh)"),
     c.bold("Will create:"),
     `  ${c.green("+")} broker + space ${c.cyan(`"${m.space}"`)} at ${server} ${c.dim(`(${auth})`)}`,
     `  ${c.green("+")} ${m.channels.length} channel(s): ${m.channels.map((ch) => c.cyan("#" + ch.name)).join(", ")}`,

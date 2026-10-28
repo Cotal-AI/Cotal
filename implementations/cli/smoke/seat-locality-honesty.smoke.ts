@@ -24,6 +24,7 @@
  */
 import { locateSeatIn, seatMissRefusal, type SeatLocation } from "../src/commands/agents.js";
 import type { ScatterInstanceReply } from "../src/lib/control.js";
+import { AgentManagerUnsettled, managerChoiceFailure, managersByInstance } from "../src/lib/manager-choice.js";
 
 let pass = 0, fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown): void => {
@@ -52,6 +53,14 @@ console.log("1. the positive control: a complete search still finds, and still r
     both.kind === "absent" && both.checked === 2 && both.instances.join() === [A, B].join(), both);
   check("a single answering manager stays unpinned (no ambiguity to resolve)",
     locateSeatIn([answered(A)], "seat").kind === "unpinned");
+  // A name two answering managers both run picks neither, rather than the first one asked.
+  const twice = locateSeatIn([answered(B, "seat"), answered(A, "seat")], "seat");
+  check("a name on BOTH of two answering managers is several, naming each, never a pin",
+    twice.kind === "several" && twice.instances.join() === [A, B].join(), twice);
+  // A silent manager does not stop a seat found on one that answered from being pinned.
+  const beside = locateSeatIn([answered(A), answered(B, "seat"), silent("c".repeat(26))], "seat");
+  check("a seat on one answering manager pins to it while another manager is silent",
+    beside.kind === "pin" && beside.instanceId === B, beside);
 }
 
 console.log("\n2. THE DEFECT: an instance that did not answer FOR ITSELF cannot license absence");
@@ -98,11 +107,25 @@ console.log("\n3. what the operator is TOLD, which is where the damage landed");
   check("a refusal is reported as a refusal, with the instance and its reason",
     !/no managed agent/.test(refusedMsg) && refusedMsg.includes(B) && refusedMsg.includes("the contract-store read failed"), refusedMsg);
   check("and the remedy names the verb it was called for", refusedMsg.includes("cotal input --on <instance>"), refusedMsg);
+  const severalMsg = seatMissRefusal("seat", "cotal attach", { kind: "several", instances: [A, B] });
+  check("a name held on several managers says so and names each of them, with the verb's --on",
+    severalMsg.startsWith('"seat" is held on each of 2 manager instances') && severalMsg.includes(`(${A}, ${B})`) && severalMsg.includes("cotal attach --on <instance>"), severalMsg);
+}
+
+console.log("\n4. a name held on several managers is a choice among those managers only");
+{
+  // Neither mesh mode lets two managers start the same name, so this is graded from the rows: the
+  // refusal a command without a terminal prints, restated with the command again on each holder.
+  const several = { kind: "several" as const, instances: [A, B] };
+  const held = new AgentManagerUnsettled('"seat" is held on each of these 2 managers. Which one should run this?', managersByInstance(several.instances), "TARGET_AMBIGUOUS", seatMissRefusal("seat", "cotal stop", several), { agent: "seat" });
+  const restated = await managerChoiceFailure(held, async () => { throw new Error("the roster is not read for this refusal"); }, ["stop", "seat", "--json"]);
+  check("without a terminal it stays a TARGET_AMBIGUOUS refusal whose Next gives the command again with --on for each holder only",
+    restated?.code === "TARGET_AMBIGUOUS" && restated.outcome === "refused" && [A, B].every((id) => restated.remedy?.includes(`stop seat --json --on ${id}`)) && restated.remedy?.split(" or ").length === 2, restated);
 }
 
 // DECLARED, not implied: a suite that ends early reddens no line, and `fail === 0` with a zero exit
 // reads as a pass in every one of those ways out. The count is checked however the process leaves.
-const EXPECTED_CELLS = 19;
+const EXPECTED_CELLS = 23;
 process.on("exit", () => {
   const ran = pass + fail;
   if (ran !== EXPECTED_CELLS) {
