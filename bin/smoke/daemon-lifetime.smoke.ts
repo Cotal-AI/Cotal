@@ -34,7 +34,13 @@
  *     the rendered unit carries `Restart=always`, `WantedBy=default.target`, an absolute pinned
  *     PATH and a `daemon serve` ExecStart under this entry;
  *  L7 refusals with no effect: `uninstall` with no recorded unit refuses TARGET_NOT_FOUND, and
- *     `uninstall` outside a terminal without `--yes` refuses USAGE_INVALID.
+ *     `uninstall` outside a terminal without `--yes` refuses USAGE_INVALID;
+ *  L8 `setup` validates before it touches anything: a missing `--space`, a non-loopback HTTP
+ *     `--idp` and an out-of-range `--wait` each refuse USAGE_INVALID with no unit written; and with
+ *     a daemon already answering while no unit is recorded it refuses CONFLICT /
+ *     RUNNING_WITHOUT_UNIT rather than installing a second one its lifetime lock would refuse.
+ *     `setup` reaching connected is proven against a real space in
+ *     `bin/smoke/daemon-service-connect.smoke.ts`.
  *
  * L6 and L7's dry-run cells need a systemd user manager to answer its own config directory. Where
  * there is none they are skipped by name and counted, never reported as passed.
@@ -313,6 +319,29 @@ try {
     check("L7 no unit receipt was created", !existsSync(join(home, "daemon", "service-unit.json")));
     const noYes = await cli("uninstall", "--json");
     check("L7 outside a terminal without --yes it refuses USAGE_INVALID, exit 1", noYes.status === 1 && noYes.doc.error?.code === "USAGE_INVALID", { status: noYes.status, out: noYes.out.slice(0, 300) });
+  });
+  await cell("L8 setup validates before it changes anything", async () => {
+    const receipt = join(home, "daemon", "service-unit.json");
+    const noSpace = await cli("setup", "--json");
+    check("L8 a missing --space refuses USAGE_INVALID naming it, exit 1", noSpace.status === 1 && noSpace.doc.error?.code === "USAGE_INVALID" && String(noSpace.doc.error?.message).includes("--space"), { status: noSpace.status, out: noSpace.out.slice(0, 250) });
+    const badIdp = await cli("setup", "--space", "demo", "--idp", "http://example.com/api/auth", "--json");
+    check("L8 a non-loopback HTTP --idp refuses USAGE_INVALID, exit 1", badIdp.status === 1 && badIdp.doc.error?.code === "USAGE_INVALID", { status: badIdp.status, out: badIdp.out.slice(0, 250) });
+    for (const [value, what] of [["-1", "negative"], ["90000", "past a day"], ["5.5", "fractional"]] as const) {
+      const r = await cli("setup", "--space", "demo", "--wait", value, "--json");
+      check(`L8 a ${what} --wait refuses USAGE_INVALID, exit 1`, r.status === 1 && r.doc.error?.code === "USAGE_INVALID", { value, status: r.status, out: r.out.slice(0, 200) });
+    }
+    check("L8 none of those refusals wrote a unit receipt", !existsSync(receipt));
+
+    // A daemon running with nothing recorded for it: installing now would start a second one.
+    const running = await serveChild();
+    try {
+      const r = await cli("setup", "--space", "demo", "--json");
+      check("L8 setup refuses CONFLICT / RUNNING_WITHOUT_UNIT, exit 2", r.status === 2 && r.doc.error?.code === "CONFLICT" && r.doc.error?.cause?.code === "RUNNING_WITHOUT_UNIT", { status: r.status, out: r.out.slice(0, 300) });
+      check("L8 it installed nothing: no unit receipt", !existsSync(receipt));
+      check("L8 the running daemon is untouched and still answers its own pid", (await cli("status", "--json")).doc.result?.pid === running.pid);
+    } finally {
+      await kill(running.proc, "SIGTERM");
+    }
   });
 } catch (e) {
   fail++;

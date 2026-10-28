@@ -408,7 +408,7 @@ interrupted. Ctrl-C ends it at once with exit 130, as it ends the commands above
 | Manager | [`run`](#run) | Operate durable workflow runs: start, resume, list, inspect, answer a checkpoint, check an edited program with migrate |
 | Manager | [`agent-bearer`](#plumbing) | Hidden from `cotal help`: plumbing that prints a fresh bearer for a spawned user-auth agent; you never run it directly |
 | Manager | [`auth-service`](#server-daemons) | Deprecated and hidden from `cotal help`: run a user-auth space's auth service by hand; use the `auth-service` service preset |
-| Manager | [`daemon`](#daemon) | Linux: install the local machine daemon as a user service, serve its control endpoint, read its status, sign it in, check and request its own registration with a space |
+| Manager | [`daemon`](#daemon) | Linux: connect this machine to a space with one command, install the local machine daemon as a user service, serve its control endpoint, read its status, sign it in, check and request its own registration with a space |
 | Services | [`service`](#service) | Run Cotal's built-in services and your own programs: list, add, start, stop, status, logs |
 | Services | [`manager`](#manager) | Start, stop and check the manager that runs your agents, and its maintenance |
 | Identity | [`mint`](#auth-mint) | Moved: credential minting is `cotal auth mint` |
@@ -5152,6 +5152,7 @@ condition.
 ## daemon
 
 ```bash
+cotal daemon setup --space <s> [--idp <auth base URL>] [--client-id <id>] [--wait <seconds>] [--daemon-home <dir>] [--json|--plain]
 cotal daemon install [--daemon-home <dir>] [--dry-run] [--json|--plain]
 cotal daemon uninstall [--daemon-home <dir>] [--yes|--dry-run] [--json|--plain]
 cotal daemon serve [--daemon-home <dir>] [--json|--plain]
@@ -5169,6 +5170,28 @@ and the daemon's own service connection, and installs itself as a systemd user s
 start a Manager, serve any command on its service, or connect to Cloud. It supports Linux only. On other
 platforms, an unset `XDG_RUNTIME_DIR` produces
 `TARGET_UNAVAILABLE` (`NO_RUNTIME_DIR`); with it set, the platform check refuses `UNSUPPORTED`.
+
+`setup` connects a machine with no browser on it, in one command. It installs the user service,
+waits for the daemon to answer, signs it in by device code when it is not signed in already, asks
+the space to register it, and connects it once the space owner approves. It prints one plain line
+per stage to stderr as it goes, so `--json` still writes one document on stdout. Pausing, renaming
+and disconnecting stay their own commands.
+
+Every stage is skipped when it is already done, so running `setup` again after an interruption
+continues from where it stopped. That matters because the owner's approval in the middle belongs to
+a person. `--wait <seconds>` bounds how long it waits for that approval, 900 by default; `--wait 0`
+reports what it reached and stops. A wait that runs out is `partial` (`OPERATION_PARTIAL`) with
+`APPROVAL_PENDING` as the native code: the service is installed and the registration is sent, and
+the message says so, so nothing is lost by running it again. An answer that cannot improve is a
+refusal carrying the space's own reason, such as `PERMISSION_DENIED` (`PROPOSAL_REFUSED`), and the
+connection stage is never reached. Only a connected machine exits 0.
+
+`--idp` is needed only when this machine is not signed in. Without it, a machine that needs a
+sign-in refuses `AUTH_REQUIRED` (`NOT_SIGNED_IN`) and names the flag, before any registration.
+A daemon that is already answering while no installed unit is recorded for it refuses `CONFLICT`
+(`RUNNING_WITHOUT_UNIT`): installing then would start a second daemon that the lifetime lock
+refuses, and the running one is not a persistent service. Stop it and run `setup` again, or keep it
+and use `register` and `service-connect` by hand.
 
 `install` runs the daemon as a systemd user service. It writes one unit to the user manager's own
 configuration directory, enables it, and starts it. The unit starts at login, restarts the daemon

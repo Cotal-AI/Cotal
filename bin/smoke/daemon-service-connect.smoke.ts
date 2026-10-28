@@ -52,6 +52,7 @@ import { join, dirname } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { createHash } from "node:crypto";
 import { peerCredentials } from "@cotal-ai/seat";
 import {
   CotalEndpoint, EpEnvelopeError, SERVICE_AUTHORITY_MAX_BYTES, VOID_SCHEMA, compileContract, epCall, unansweredRequest, composeSpaceAuth, createBrokerAuth, createSpaceAccountAuth, isReachable, mintCreds, mintLifecycleUid, mkSecretDir, newIdentity, serverConfig, setupSpaceStreams,
@@ -65,6 +66,7 @@ import { recordMesh, userAuthStateDir, workspaceSecretStore, type MeshEntry } fr
 import { freePort, killAndAwaitExit, skipSuite, teardownOnSignal, SMOKE_BROKER_TOKEN } from "@cotal-ai/smoke-kit";
 import { daemonPaths } from "../daemon/endpoint.js";
 import { daemonConnectIntentFile } from "../daemon/service.js";
+import { runSetup } from "../daemon/setup.js";
 import { serveDaemon } from "../daemon/server.js";
 
 if (process.platform !== "linux") skipSuite(`daemon-service-connect smoke: Linux only; skipped on ${process.platform}`);
@@ -87,6 +89,7 @@ type Jose = {
 };
 const { SignJWT, exportJWK, generateKeyPair } = await import(pathToFileURL(authRequire.resolve("jose")).href) as Jose;
 const peerUid = (s: Socket) => peerCredentials(s).uid;
+const peerPid = (s: Socket) => peerCredentials(s).pid;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 let pass = 0, fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -271,6 +274,18 @@ try {
   /** Where a space's resume intent is recorded, read the way the daemon derives it. */
   const intentFile = (space: string) => daemonConnectIntentFile(space, home);
   const filesUnder = (dir: string) => existsSync(dir) ? readdirSync(dir, { recursive: true }).map(String) : [];
+  /** Put this machine in the state `cotal daemon install` leaves: a real unit file plus the receipt
+   *  naming it, in the product's own format, which `planUninstall` reads exactly as `uninstall`
+   *  does. Only `applyInstall` is left out, because it writes into the operator's own
+   *  `~/.config/systemd/user`; a container covers that half. */
+  const seedUnitReceipt = (): string => {
+    const unitPath = join(root, "cotal-daemon.service");
+    const unitBytes = "[Unit]\nDescription=Cotal machine daemon\n\n[Service]\nType=simple\nRestart=always\n\n[Install]\nWantedBy=default.target\n";
+    writeFileSync(unitPath, unitBytes, { mode: 0o600 });
+    mkdirSync(join(home, "daemon"), { recursive: true, mode: 0o700 });
+    writeFileSync(join(home, "daemon", "service-unit.json"), `${JSON.stringify({ v: 1, unit: "cotal-daemon.service", unitPath, unitSha256: createHash("sha256").update(unitBytes).digest("hex"), installedAt: new Date().toISOString() })}\n`, { mode: 0o600 });
+    return "cotal-daemon.service";
+  };
   const identityOf = (space: string) => {
     const f = filesUnder(daemonDir).find((p) => p.includes(Buffer.from(space).toString("hex")) && p.endsWith("service-identity.json"));
     return f ? JSON.parse(readFileSync(join(daemonDir, f), "utf8")) as { instanceId: string; endpoint: string; accountPublicKey: string } : undefined;
@@ -349,6 +364,24 @@ try {
       check("C1 approval-pending", r.ok === true && stateOf(r) === "approval-pending", r);
       check("C1 no renewal record written for this space", !filesUnder(daemonDir).some((p) => p.includes("service-renewal")), filesUnder(daemonDir));
       check("C1 the space reports no ready status", (await instanceStatus(ON)) !== "ready");
+    });
+
+    await cell("C1b setup before the owner approves ends partial and says what is already done", async () => {
+      // The headless case an operator meets first: the machine is registered and waiting on a
+      // person. `--wait 0` reports what it reached instead of sitting there.
+      seedUnitReceipt();
+      const lines: string[] = [];
+      let failure: Record<string, any> | undefined;
+      try {
+        await runSetup({ paths, daemonHome: undefined, space: ON, peerUid, peerPid, waitSeconds: 0,
+          report: (l) => lines.push(l), onPrompt: () => { throw new Error("setup asked for a sign-in it did not need"); } });
+      } catch (e) { failure = e as Record<string, any>; }
+      check("C1b it ends partial, not a success and not a plain failure", failure?.outcome === "partial", failure && { outcome: failure.outcome, code: failure.code });
+      check("C1b it reports the approval as what is blocking", failure?.code === "OPERATION_PARTIAL" && (failure?.detail?.native?.code ?? failure?.native?.code) === "APPROVAL_PENDING", { code: failure?.code, native: failure?.detail?.native ?? failure?.native });
+      check("C1b it says the registration is already sent, so a rerun continues", String(failure?.message ?? "").includes("registration request is sent"), failure?.message);
+      check("C1b its remedy names the owner's approval and the command to rerun", /approve this machine/.test(String((failure?.detail?.remedy ?? failure?.remedy) ?? "")) && /cotal daemon setup --space/.test(String((failure?.detail?.remedy ?? failure?.remedy) ?? "")), failure?.detail?.remedy ?? failure?.remedy);
+      check("C1b nothing is connected and no resume intent was recorded", stateOf(await statusS(ON)) !== "connected" && !existsSync(intentFile(ON)));
+      check("C1b it still printed its progress, one line per stage reached", lines.length >= 4 && lines.every((l) => /^(service|sign-in|register|connect): /.test(l)), lines);
     });
 
     await cell("C2 after approval: connected only with a broker connection and the space's ready", async () => {
@@ -468,6 +501,42 @@ try {
       } finally { relayDown.delete(ON); }
       const back = await connectS(ON);
       check("C7 once the door is back, connected again", stateOf(back) === "connected", back);
+    });
+
+    await cell("C17 `cotal daemon setup` reaches connected in one call", async () => {
+      seedUnitReceipt();
+      // Start from not connected, so reaching connected is this call's own work.
+      await disconnectS(ON);
+      check("C17 instrument: not connected, and no resume record, before setup runs", stateOf(await statusS(ON)) === "disconnected" && !existsSync(intentFile(ON)));
+      const lines: string[] = [];
+      const r = await runSetup({ paths, daemonHome: undefined, space: ON, peerUid, peerPid, waitSeconds: 60,
+        report: (l) => lines.push(l), onPrompt: () => { throw new Error("setup asked for a sign-in it did not need"); } });
+      check("C17 it reaches connected", r.state === "connected", r);
+      check("C17 it ran four steps, in order", r.steps.map((x) => x.step).join(",") === "install,sign-in,register,connect", r.steps);
+      check("C17 it skipped the install, because a unit was already recorded", r.steps[0]!.outcome === "already-installed", r.steps[0]);
+      check("C17 it skipped the sign-in, because this machine is signed in", r.steps[1]!.outcome === "already-signed-in", r.steps[1]);
+      check("C17 it reported the registration the space holds", ["registered", "pending", "approval-required"].includes(r.steps[2]!.outcome), r.steps[2]);
+      check("C17 it names the unit and the instance", r.unit === "cotal-daemon.service" && r.instanceId === identityOf(ON)?.instanceId, { unit: r.unit, instanceId: r.instanceId });
+      check("C17 it printed one plain progress line per stage", lines.length >= 4 && lines.every((l) => /^(service|sign-in|register|connect): /.test(l)), lines);
+      check("C17 the connection it made is recorded for resume", existsSync(intentFile(ON)));
+      check("C17 the space reads this instance ready", stateOf(await statusS(ON)) === "connected");
+      check("C17 nothing secret reached its progress lines", !lines.some((l) => [SESSION, ...jwtsIssued].some((t) => l.includes(t))) && !lines.some((l) => /eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\./.test(l)));
+    });
+
+    await cell("C17b setup stops at the space's own refusal and connects nothing", async () => {
+      // A refused proposal is not a wait: nothing is pending, so this is a refusal at the register
+      // step and the connect step never runs.
+      const lines: string[] = [];
+      let failure: Record<string, any> | undefined;
+      try {
+        await runSetup({ paths, daemonHome: undefined, space: DENY, peerUid, peerPid, waitSeconds: 60,
+          report: (l) => lines.push(l), onPrompt: () => { throw new Error("setup asked for a sign-in it did not need"); } });
+      } catch (e) { failure = e as Record<string, any>; }
+      check("C17b it refuses rather than claiming a connection", failure?.outcome === "refused" && failure?.code === "PERMISSION_DENIED", failure && { outcome: failure.outcome, code: failure.code });
+      check("C17b it carries the space's own reason as the native code", (failure?.detail?.native?.code ?? failure?.native?.code) === "PROPOSAL_REFUSED", { native: failure?.detail?.native ?? failure?.native });
+      check("C17b it stopped before the connect step, so it printed no connect line", !lines.some((l) => l.startsWith("connect: ")), lines);
+      check("C17b it recorded no resume intent for a space it never connected", !existsSync(intentFile(DENY)));
+      check("C17b the space it did connect is untouched", stateOf(await statusS(ON)) === "connected");
     });
 
     await cell("C16 an authority without issuer identity cannot start a serving daemon", async () => {
