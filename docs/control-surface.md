@@ -338,6 +338,13 @@ readiness budget does not depend on the short-lived control credential. The foll
 progress subscription with the broker before submitting on the separate connection. A caller still
 checks the resolved instance and epoch, and never retries an ambiguous mutation outcome.
 
+The reference `cotal_spawn` tool retains the published request id when its submission wait
+ends before acceptance is observed. That id is the manager's goal id if the submission is
+accepted later. The tool reports an unknown outcome with the id and a same-caller
+`goal-result` read, without claiming that acceptance occurred. Do not repeat the spawn.
+An unanswered describe or a broker-attested no-responder refusal does not create a goal
+handle. A missing readback is inconclusive while the original submission may still arrive.
+
 The manager's `goal-result` command accepts `{goalId}` and returns `{goalId, result?}`. It reads
 only the authenticated caller's owner, actor and lifecycle through the manager's separate trusted
 goal-writer connection. The caller receives an attributed reply, never a raw JetStream reader

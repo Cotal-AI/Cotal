@@ -192,12 +192,24 @@ export async function submitAndFollowGoalWith(
     if (stopped) throw phaseError("unavailable");
     submitted = true;
     let attributed: EpAttributedReply;
-    try { attributed = await bounded(() => submit(work.signal), deadline); }
+    let submission: Promise<EpAttributedReply> | undefined;
+    try { attributed = await bounded(() => submission = submit(work.signal), deadline); }
     catch (err) {
-      if (stopped) throw phaseError("unavailable");
-      if (err instanceof EpEnvelopeError && err.outcome === "not-executed") throw err;
-      throw new EpEnvelopeError(err instanceof EpEnvelopeError ? err.code : "unavailable",
-        `${err instanceof Error ? err.message : String(err)}; the submission outcome is unknown. It may have been accepted or executed; do NOT retry without inspecting 'ps'/'inspect' first (SPEC 13.6)`, undefined, "unknown");
+      // The outer deadline/stop can beat epCall's own timer. Abort its observation and let a
+      // cooperative submit settle before the next turn, retaining its published request id.
+      // A borrowed submit that ignores cancellation must still remain bounded.
+      work.abort();
+      let turn: ReturnType<typeof setTimeout> | undefined;
+      const cause = submission ? await Promise.race([
+        submission.then(() => err, (failure: unknown) => failure),
+        new Promise<unknown>(resolve => { turn = setTimeout(() => resolve(err), 0); }),
+      ]).finally(() => clearTimeout(turn)) : err;
+      if (cause instanceof EpEnvelopeError && cause.outcome === "not-executed") throw cause;
+      const failure = stopped ? phaseError("unavailable") : err;
+      const message = failure instanceof Error ? failure.message : String(failure);
+      throw new EpEnvelopeError(failure instanceof EpEnvelopeError ? failure.code : "unavailable",
+        failure instanceof EpEnvelopeError && failure.outcome === "unknown" && message.includes("do NOT retry") ? message
+          : `${message}; the submission outcome is unknown. It may have been accepted or executed; do NOT retry without inspecting 'ps'/'inspect' first (SPEC 13.6)`, cause instanceof EpEnvelopeError ? cause.details : undefined, "unknown");
     }
     if (attributed.reply.ok !== true) return attributed;
     const acceptance = attributed.reply.data as { goalId?: unknown; fingerprint?: unknown; readinessDeadlineMs?: unknown } | undefined;

@@ -2193,6 +2193,9 @@ export class MeshAgent extends EventEmitter {
     // P2 item 2 (2b): spawn is an ACTION — follow the acceptance to the terminal so cotal_spawn
     // stays synchronous (the MCP reply carries the live outcome, not the pre-launch acceptance).
     const reply = await this.managerInvoke("spawn", args, { deadlineMs: SPAWN_TIMEOUT_MS, follow: true, ...(instance !== undefined ? { instanceId: instance } : {}) });
+    // There is no allocated name to inspect before acceptance. Preserve the submission's goal
+    // rather than auditing the requested persona alias and discarding the unknown result.
+    if ((reply.data as { submissionUnknown?: boolean } | undefined)?.submissionUnknown) return reply;
     if (!requested) return reply;
     // A requested pin that the manager did not record is the silent-drop failure (#972): the spawn
     // looks successful, the seat comes up on the harness default, and nothing in the spawn result
@@ -2353,10 +2356,18 @@ export class MeshAgent extends EventEmitter {
       // duplicates a spawn. Only the marker distinguishes them, and core sets it exactly where it
       // observed silence.
       dropBearer?.();
-      if (e instanceof EpEnvelopeError)
+      if (e instanceof EpEnvelopeError) {
+        const submitted = command === "spawn" && e.outcome === "unknown"
+          ? e.details?.find(d => d.kind === EP_UNANSWERED && d.endpoint === BASELINE_LIFECYCLE_ENDPOINT && d.command === command && typeof d.requestId === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(d.requestId))
+          : undefined;
+        if (submitted) return {
+          ...controlReplyFromThrown(e, `${e.code}: ${e.message}`),
+          data: { goalId: submitted.requestId, submissionUnknown: true },
+        };
         return controlReplyFromThrown(e, unansweredRequest(e)
           ? `${e.message} (no responder answered - a manager may be down, or this credential holds no "${command}" capability and the broker denied the request)`
           : `${e.code}: ${e.message}`);
+      }
       return { ok: false, error: (e as Error).message };
     }
     if (r.reply.ok !== true) dropBearer?.();

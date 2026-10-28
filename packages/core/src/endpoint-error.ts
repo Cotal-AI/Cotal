@@ -78,6 +78,8 @@ export interface EpUnansweredDetail extends EpErrorDetail {
   kind: typeof EP_UNANSWERED;
   endpoint: string;
   command: string;
+  /** The published request's envelope id, when no reply was observed. Not proof of acceptance. */
+  requestId?: string;
   /** The plane the request was published on: the legacy plane or the versioned plane (issued, SPEC 13.15). */
   rail?: string;
 }
