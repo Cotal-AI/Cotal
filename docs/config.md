@@ -266,6 +266,12 @@ the session. They are not operator knobs; listed so you recognize them in a proc
 | `OPENCODE_CONFIG_CONTENT` | Inline OpenCode config (the injected cotal plugin, highest merge layer) |
 | `OPENCODE_DB` / `COTAL_OPENCODE_*` | OpenCode server plumbing (the per-agent DB, and the connector's home, port and server URL) |
 
+On an open mesh, nameless `cotal_despawn` addresses `COTAL_MANAGER_INSTANCE` so both resolve and
+stop reach the launching manager. It still uses self authorization and accepts no instance override.
+An unbound open session keeps the class route. Static credentials keep their class-only baseline
+grants, so this direct routing does not apply to static-auth sessions. User-auth calls keep the
+issuer-authorized selection described above.
+
 A spawned agent receives a fixed OS execution allow-list (PATH, HOME, TERM, locale, and
 XDG/Windows config directories), the machine-wide `COTAL_*` operator knobs (`COTAL_HOME`, the
 feedback set, the default-agent pair, the `*_BIN` overrides, the timing knobs), the provider inputs

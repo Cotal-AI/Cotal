@@ -146,7 +146,36 @@ check("user spawn delegates follow to its standing endpoint before executing the
   followedOnMain && spawned.ok && (spawned.data as { name?: string })?.name === "followed" &&
   (spawning as unknown as { ep: unknown }).ep === standing);
 
-const EXPECTED_CELLS = 21;
+// Dispatch checks only. The native two-manager replay supplies the process-exit proof.
+const selfCalls: Array<{ command: string; args: unknown; opts: { instanceId?: string; target?: unknown } }> = [];
+function selfAgent(config: AgentConfig): MeshAgent {
+  const agent = new MeshAgent(config);
+  (agent as unknown as { ep: unknown }).ep = {
+    principal: { owner: "local", actor: "caller" },
+    invokeService: async (_endpoint: string, command: string, args: unknown, opts: { instanceId?: string; target?: unknown }) => {
+      selfCalls.push({ command, args, opts });
+      return { reply: { ok: true, data: { stopped: true } } };
+    },
+  };
+  (agent as unknown as { _connected: boolean })._connected = true;
+  return agent;
+}
+const openSelf = selfAgent({ ...cfg, managerInstanceId: instanceId });
+await openSelf.despawn(undefined, { graceful: false });
+check("open managed self-stop pins the launching manager", selfCalls.at(-1)?.opts.instanceId === instanceId);
+check("self-stop retains its self authorization mode", selfCalls.at(-1)?.command === "stop" && JSON.stringify(selfCalls.at(-1)?.opts.target) === '{"mode":"self"}');
+check("self-stop preserves explicit hard-stop selection", JSON.stringify(selfCalls.at(-1)?.args) === '{"graceful":false}');
+await selfAgent(cfg).despawn();
+check("an unbound open caller retains the class route", selfCalls.at(-1)?.opts.instanceId === undefined);
+await selfAgent({ ...cfg, id: "caller", managerInstanceId: instanceId, creds: async () => "not-used" }).despawn();
+check("static self-stop preserves its class-only credential grants", selfCalls.at(-1)?.opts.instanceId === undefined);
+const beforeRefusals = selfCalls.length;
+const conversation = await selfAgent({ ...cfg, managerInstanceId: instanceId, turnRelay: false }).despawn();
+check("conversation self-stop refuses without dispatch", !conversation.ok && selfCalls.length === beforeRefusals);
+const overrideSelf = await openSelf.despawn(undefined, { instance: "b".repeat(26) });
+check("a self-stop instance override still refuses without dispatch", !overrideSelf.ok && selfCalls.length === beforeRefusals);
+
+const EXPECTED_CELLS = 28;
 const ran = pass + fail;
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"} — ${pass} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {
