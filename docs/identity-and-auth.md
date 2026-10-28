@@ -274,8 +274,9 @@ The catalog request carries the opaque cached session as its bearer and returns 
 ```
 
 The client checks every `registration` with `checkBundleDocument`, the object check behind the
-`checkUserBundle` validator used by `cotal meshes add`. The row is already a value, so a missing
-registration is refused as a bundle that names no space. One invalid entry refuses the whole
+`checkUserBundle` validator used by `cotal meshes add`. The row is already a value. An absent
+registration is not an object, so it is refused as a bundle that must be a JSON object. An empty
+registration object is refused as a bundle that names no space. One invalid entry refuses the whole
 candidate snapshot. Conditional refresh uses the
 catalog's `ETag`; a transport error, non-success response, or invalid candidate leaves the prior
 snapshot intact and reports the failure. Only a 401 response for the saved session recommends signing
