@@ -15,6 +15,7 @@ import {
   resolvePeer,
   standaloneConnectOpts,
   unicastSubject,
+  type EndpointRef,
   type ParsedArgs,
   type Presence,
 } from "@cotal-ai/core";
@@ -171,8 +172,10 @@ export async function runPending(args: ParsedArgs): Promise<void> {
           let seen = 0;
           try {
             for await (const m of iter) {
-              const body = JSON.parse(new TextDecoder().decode(m.data)) as { id: string; from: string; ts: number };
-              console.log(`  ${body.id}  from=${body.from}  ts=${body.ts}`);
+              const body = JSON.parse(new TextDecoder().decode(m.data)) as { id: string; from: EndpointRef; ts: number };
+              // Keep the legacy --json output unchanged, including its candidate lines.
+              const from = values.json ? String(body.from) : `${body.from.name} (${body.from.id})`;
+              console.log(`  ${body.id}  from=${from}  ts=${body.ts}`);
               seen++;
               if (seen >= pendingCandidates) break;
             }
