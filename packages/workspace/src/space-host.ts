@@ -25,6 +25,11 @@ import { basename, dirname, resolve } from "node:path";
  *  backoff, and the log line that reports the failure names it. */
 const REOPEN_WAIT_SECONDS = 5;
 
+/** How long a pass waits for one space's open. The lane opens of a pass run together, and an open
+ *  that has not settled by then no longer holds the pass: the others are served, the ready line and
+ *  the acknowledgment are written, and the lane is taken or closed when that open settles. */
+const OPEN_DEADLINE_SECONDS = 30;
+
 /** The backstop reconcile. A lost lane and a changed manifest each reconcile at once, so this only
  *  catches a change no watch reported. */
 const BACKSTOP_INTERVAL_SECONDS = 60;
@@ -79,6 +84,9 @@ export interface SpaceHostOptions<S = undefined> {
    *  `servable` starts with the spaces that open, reports each one that does not, and retries it as
    *  reconcile does after startup. A manifest that does not read whole refuses either way. */
   startup?: "every" | "servable";
+  /** How many seconds a pass waits for one space's open before serving the others without it.
+   *  Default 30. */
+  openDeadlineSeconds?: number;
   /** Names the host in its log lines, such as `auth callout host`. */
   label: string;
   /** Names the command in a startup refusal, such as `auth-service --callout-only --spaces`. */
@@ -94,6 +102,8 @@ export interface SpaceHostOptions<S = undefined> {
 /** A started host. `ended` resolves with the exit code once a signal has closed every lane. */
 export interface SpaceHost {
   readonly lanes: ReadonlyMap<string, SpaceLane>;
+  /** Spaces whose open outlived a pass's deadline and is still running. */
+  readonly opening: ReadonlySet<string>;
   /** The spaces the manifest named at startup, in manifest order. */
   readonly named: readonly string[];
   readonly ended: Promise<number>;
@@ -205,28 +215,71 @@ export async function runSpaceHost<S = undefined>(options: SpaceHostOptions<S>):
     });
   };
 
-  const open = async (space: string, settings: S): Promise<SpaceLane> => {
-    const lane = await options.open(space, settings);
-    lanes.set(space, lane);
-    opened.set(space, JSON.stringify(settings) ?? "");
+  /** Opens that outlived their pass's deadline and have not settled. No second open starts for a
+   *  space here: the one pending is taken, or closed, when it settles. */
+  const opening = new Set<string>();
+  const openDeadline = options.openDeadlineSeconds ?? OPEN_DEADLINE_SECONDS;
+
+  const take = (lane: SpaceLane, settings: S): void => {
+    lanes.set(lane.space, lane);
+    opened.set(lane.space, JSON.stringify(settings) ?? "");
     watchLane(lane);
-    return lane;
   };
 
-  /** Open every wanted space without a lane. Each failure is reported and retried after the fixed
-   *  wait; the others still open. */
+  /** Wait for an open until the deadline. `pending` says it is still running. */
+  const within = async (attempt: Promise<SpaceLane>): Promise<{ outcome: "opened"; lane: SpaceLane } | { outcome: "failed"; why: string } | { outcome: "pending" }> => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        attempt.then(
+          (lane) => ({ outcome: "opened" as const, lane }),
+          (e: unknown) => ({ outcome: "failed" as const, why: e instanceof Error ? e.message : String(e) })),
+        new Promise<{ outcome: "pending" }>((r) => { timer = setTimeout(() => r({ outcome: "pending" }), openDeadline * 1000); }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
+  /** Open one space's lane, waiting at most the deadline. `opened` took the lane; `failed` was
+   *  reported and is the pass's to retry; `pending` means the open is still running past the
+   *  deadline, so the pass goes on without it and the open settles into {@link opening}'s rule. */
+  const openWithin = async (space: string, settings: S): Promise<"opened" | "failed" | "pending"> => {
+    const attempt = options.open(space, settings);
+    const settled = await within(attempt);
+    if (settled.outcome === "opened") { take(settled.lane, settings); return "opened"; }
+    if (settled.outcome === "failed") {
+      log(`✗ ${label}: space "${space}" could not be served (${settled.why}) - retrying in ${REOPEN_WAIT_SECONDS}s`);
+      return "failed";
+    }
+    opening.add(space);
+    log(`✗ ${label}: space "${space}" did not open within ${openDeadline}s - serving the others without it; its open is still running and is not started again`);
+    void attempt.then((lane) => {
+      opening.delete(space);
+      // A host that is stopping takes nothing; otherwise the lane is taken as opened and the next
+      // pass closes it again if the manifest dropped or changed the space meanwhile.
+      if (stopping) { void lane.close().catch(() => {}); return; }
+      take(lane, settings);
+      log(`${label}: space "${space}" opened after its deadline - ${lanes.size} lane(s) up`);
+      schedule(0);
+    }, (e: unknown) => {
+      opening.delete(space);
+      log(`✗ ${label}: space "${space}" could not be served (${e instanceof Error ? e.message : String(e)}) after its deadline - retrying in ${REOPEN_WAIT_SECONDS}s`);
+      schedule(REOPEN_WAIT_SECONDS);
+    });
+    return "pending";
+  };
+
+  /** Open every wanted space without a lane, all at once. Each failure is reported and retried after
+   *  the fixed wait; an open past the deadline is left running; the others still open. */
   const openWanted = async (wanted: SpaceManifest | SpaceSettingsManifest<S>): Promise<void> => {
     let failed = false;
-    for (const space of wanted.spaces) {
-      if (lanes.has(space) || unclosed.has(space) || stopping) continue;
-      try {
-        await open(space, settingsOf(wanted, space));
-        log(`${label}: space "${space}" opened - ${lanes.size} lane(s) up`);
-      } catch (e) {
-        failed = true;
-        log(`✗ ${label}: space "${space}" could not be served (${e instanceof Error ? e.message : String(e)}) - retrying in ${REOPEN_WAIT_SECONDS}s`);
-      }
-    }
+    await Promise.all(wanted.spaces.map(async (space) => {
+      if (lanes.has(space) || unclosed.has(space) || opening.has(space) || stopping) return;
+      const outcome = await openWithin(space, settingsOf(wanted, space));
+      if (outcome === "opened") log(`${label}: space "${space}" opened - ${lanes.size} lane(s) up`);
+      if (outcome === "failed") failed = true;
+    }));
     if (failed) schedule(REOPEN_WAIT_SECONDS);
   };
 
@@ -350,13 +403,18 @@ export async function runSpaceHost<S = undefined>(options: SpaceHostOptions<S>):
     reconciling = true;
     try { await openWanted(initial.manifest); } finally { reconciling = false; }
   } else {
+    // One space at a time, and the first that does not open refuses the host. An open still running
+    // past the deadline closes its lane when it settles: the host is stopping by then.
     for (const space of initial.manifest.spaces) {
-      try {
-        await open(space, settingsOf(initial.manifest, space));
-      } catch (e) {
-        await closeAll();
-        throw new Error(`${options.entry}: space "${space}" could not be served (${e instanceof Error ? e.message : String(e)}) - no lane was left running`);
-      }
+      const attempt = options.open(space, settingsOf(initial.manifest, space));
+      const settled = await within(attempt);
+      if (settled.outcome === "opened") { take(settled.lane, settingsOf(initial.manifest, space)); continue; }
+      stopping = true;
+      if (settled.outcome === "pending") void attempt.then((lane) => lane.close().catch(() => {}), () => {});
+      await closeAll();
+      throw new Error(settled.outcome === "failed"
+        ? `${options.entry}: space "${space}" could not be served (${settled.why}) - no lane was left running`
+        : `${options.entry}: space "${space}" did not open within ${openDeadline}s - no lane was left running`);
     }
   }
 
@@ -400,5 +458,5 @@ export async function runSpaceHost<S = undefined>(options: SpaceHostOptions<S>):
     process.on("SIGTERM", stop("SIGTERM"));
     process.on("SIGHUP", () => schedule(0));
   });
-  return { lanes, named: initial.manifest.spaces, ended };
+  return { lanes, opening, named: initial.manifest.spaces, ended };
 }

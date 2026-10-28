@@ -34,6 +34,28 @@ What this page does not promise is a rolling upgrade. Nothing in the current lin
 authority versions, so where broker and manager run separately there is a window in which the mesh
 is down. The sections below give that window's shape so it can be scheduled rather than endured.
 
+## Multi-space host lane opens after 0.115.2
+
+Every multi-space host (`auth-service --spaces`, `auth-service --callout-only --spaces`,
+`deliver --spaces`) now opens its spaces' lanes together and waits at most 30 seconds for any one of
+them. Up to 0.115.2 the lanes opened one after another, so one space whose open hung (a broker
+connect or JetStream request that never answered) held back every later space in the manifest, the
+ready line, and the acknowledgment a provisioning writer waits on to remove a space.
+
+A space whose open outlives the deadline is reported, its open keeps running and is not started
+again, and its lane is taken when that open settles, or closed if the space left the manifest
+meanwhile. The ready line names such spaces apart from the ones being retried:
+
+```
+✓ delivery host up (2 space(s): <s>, <s>; still opening <s>; retrying <s>) - one delivery lane per space on <server>
+✗ delivery host: space "<s>" did not open within 30s - serving the others without it; its open is still running and is not started again
+```
+
+The default startup (`every`) refuses a space that does not open within the deadline as it refuses
+one that fails to open: `space "<s>" did not open within 30s - no lane was left running`. Nothing
+has to change before the upgrade; a supervisor that waited more than 30 seconds for a ready line
+now sees it sooner.
+
 ## Multi-space callout host startup after 0.115.0
 
 `cotal auth-service --callout-only --spaces <manifest>` now starts with the spaces it can serve. It
