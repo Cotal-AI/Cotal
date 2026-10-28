@@ -533,6 +533,7 @@
     "smoke:issued-store-recreate": "tsx packages/core/smoke/issued-store-recreate.smoke.ts",
     "smoke:failed-bind-cleanup": "tsx packages/core/smoke/failed-bind-cleanup.smoke.ts",
     "smoke:cas-publish": "tsx packages/core/smoke/cas-publish.smoke.ts",
+    "smoke:cas-loss-one-rule": "tsx packages/core/smoke/cas-loss-one-rule.smoke.ts",
     "smoke:cas-preflight-cluster": "tsx packages/core/smoke/cas-preflight-cluster.smoke.ts",
     "smoke:frame-size": "tsx packages/core/smoke/frame-size.smoke.ts",
     "smoke:valid-name": "tsx packages/core/smoke/valid-name.smoke.ts",

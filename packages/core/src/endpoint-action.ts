@@ -44,7 +44,7 @@ import { EpEnvelopeError } from "./endpoint-envelope.js";
 import { GOAL_TERMINAL_STATES, assertClosedKeys, assertGoalResultFactShape, goalOutcomeDigestMismatch } from "./goal-result-fact.js";
 import { withDeadline } from "./deadline.js";
 import { epfSubject, assertIdToken, endpointToken, type EpCaller, type ParsedEpRequest } from "./endpoint-subjects.js";
-import { RECORD_KINDS, recordSpecKey, recordStatusKey, recordAtomicKey, createRecordEntry, updateRecordEntry, assertStatusValue, openRecordsBucket, readRecordLeader, decodeEntry, decodeRecordJson } from "./endpoint-records.js";
+import { RECORD_KINDS, recordSpecKey, recordStatusKey, recordAtomicKey, createRecordEntry, updateRecordEntry, assertStatusValue, openRecordsBucket, readRecordLeader, decodeEntry, decodeRecordJson, isCasLoss } from "./endpoint-records.js";
 import { epfStreamName, epfGoalBindSubject, readLastFact, parseDecisionFact } from "./endpoint-journal.js";
 import { readCheckpointSpec, readCheckpointSettle } from "./endpoint-checkpoint.js";
 import {
@@ -248,8 +248,7 @@ async function publishCreateOnly(js: JetStreamClient, subject: string, bytes: Ui
     await js.publish(subject, bytes, { headers: h });
     return { won: true };
   } catch (e) {
-    const code = (e as { code?: unknown })?.code;
-    if (code === 10071 || code === 10164) return { won: false };
+    if (isCasLoss(e)) return { won: false };
     throw e;
   }
 }
