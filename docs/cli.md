@@ -226,8 +226,9 @@ A command without a JSON output refuses `--json` as an unknown option.
 
 A subcommand's help has its own `structured output` line, and only the forms that show one write a
 document. Bare `cotal ext` and `cotal ext list` do. `ext add`, `ext remove`, `ext root` and
-`ext seed` report as text, refuse `--json` and `--plain` with a usage error, and exit 1 on any
-failure.
+`ext seed` report as text and refuse `--json` and `--plain` with a usage error. A failed add,
+remove or seed exits 1. An add interrupted by SIGINT or SIGTERM rolls back, releases its lock,
+and exits 130 or 143.
 
 A command whose `structured output` line also names `plain` takes `--plain`, which writes the same
 report as plain lines: no color, ASCII labels, and no marks other than the `!` that begins a warning
