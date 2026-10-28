@@ -368,7 +368,29 @@ try {
       { listing, acl: acl?.record.allowSubscribe, members: accounting.members });
     check("SKEW: a late join on the same daemon process is refused by the lifecycle's in-memory mark", /is retiring/.test(lateOutcome), lateOutcome);
     check("SKEW: 0 rows of the retired lifecycle remain", left.length === 0, left);
+    const marks = (daemon.ep as unknown as { retiringLifecycles: Map<string, Set<string>> }).retiringLifecycles;
+    check("SKEW: the daemon keeps its mark for the lifecycle the unfenced inventory named (#4996)", marks.get(g.principal)?.has(g.uid) === true, [...marks.entries()].map(([p, s]) => [p, [...s]]));
     console.log(`SKEW_WITNESS narrowed=false inventoryListed=${channels.length} lateJoinAccepted=${lateOutcome === "accepted"} retainedRows=${left.length} ms=${Date.now() - t0}`);
+  }
+  // FENCED (#4996): a manager that narrows the ACL row before its inventory needs no mark on the
+  // daemon: the row every join re-reads around its write refuses the late join by itself. Without
+  // this, each retired alias that never retires again kept one entry per space lane until the daemon
+  // restarted.
+  {
+    const t0 = Date.now();
+    const f = await seat("fenced-f");
+    await f.ep.durableJoinChannel("lane.a");
+    const marks = (daemon.ep as unknown as { retiringLifecycles: Map<string, Set<string>> }).retiringLifecycles;
+    const accounting = await retire(f);
+    const marked = marks.get(f.principal)?.has(f.uid) === true;
+    const lateOutcome = await outcome(f.ep.durableJoinChannel("lane.late"));
+    const left = await rows(f);
+    retained += left.length;
+    check("FENCED: the retirement fenced the ACL row before its inventory, which listed the 1 row", listedOnly(f, ["lane.a"]) && accounting.members.deleted === 1, { listing: listings.get(f.uid), members: accounting.members });
+    check("FENCED: the daemon keeps no mark for a lifecycle whose inventory came fenced", !marked, [...marks.entries()].map(([p, s]) => [p, [...s]]));
+    check("FENCED: a late join on the same daemon process is refused by the ACL row, not by a mark", /no read ACL on record|no longer within the read ACL|narrowed or retired/.test(lateOutcome) && !/is retiring/.test(lateOutcome), lateOutcome);
+    check("FENCED: 0 rows of the retired lifecycle remain", left.length === 0, left);
+    console.log(`FENCED_WITNESS marked=${marked} lateJoinAccepted=${lateOutcome === "accepted"} retainedRows=${left.length} ms=${Date.now() - t0}`);
   }
   // READFAIL: a predecessor's post-write ACL read fails and its removal of the row it wrote is held.
   // A successor takes a retry of the same join for the still-authorized lifecycle and activates that

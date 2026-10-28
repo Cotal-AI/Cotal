@@ -5512,6 +5512,18 @@ export class CotalEndpoint extends EventEmitter {
     catch (e) { return { ok: false, error: (e as Error).message }; }
   }
 
+  /** Whether `lifecycleUid`'s exact ACL row still allows reads, so an inventory of it came from a
+   *  caller that did not fence. A row narrowed to no reads, or retired or absent, is fenced. A read
+   *  that fails answers true: the caller keeps its in-memory mark, which only ever refuses. */
+  private async lifecycleAclUnfenced(principal: string, lifecycleUid: string): Promise<boolean> {
+    try {
+      const row = await readAcl(await this.aclRegistry(), principal, lifecycleUid);
+      return row !== undefined && row.record.allowSubscribe.length > 0;
+    } catch {
+      return true;
+    }
+  }
+
   /** Run one durable join or leave that writes `principal`'s rows of `lifecycleUid`, refused once that
    *  lifecycle's inventory has been asked for ({@link retiringLifecycles}). The check and the
    *  registration have no await between them, so an inventory either finds this write running and
@@ -6084,7 +6096,11 @@ export class CotalEndpoint extends EventEmitter {
       // more, so its mark goes. A failed read keeps the mark, which only ever refuses.
       for (const earlier of [...marked])
         if (earlier !== uid && await aclRetired(await this.aclRegistry(), principal, earlier).catch(() => false)) marked.delete(earlier);
-      marked.add(uid);
+      // A mark is kept only for an inventory whose caller did not fence (#4996): a lifecycle whose ACL
+      // row is narrowed to no reads, or already retired, needs none, since every join re-reads that
+      // row around its write. A read that fails proves nothing, so the mark is kept, which only refuses.
+      if (await this.lifecycleAclUnfenced(principal, uid)) marked.add(uid);
+      else if (marked.size === 0) this.retiringLifecycles.delete(principal);
       await Promise.allSettled(this.membershipWrites.get(`${principal}/${uid}`) ?? []);
       try {
         const channels = await listLifecycleMemberChannels(await this.membersRegistry(), principal, uid);
