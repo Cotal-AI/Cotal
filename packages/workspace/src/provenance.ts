@@ -1,4 +1,5 @@
 import { oneLine } from "@cotal-ai/core";
+import { terminalWidth, wrapWords } from "./text-wrap.js";
 
 /**
  * One consistent voice for CLI provenance, on stderr: which on-disk source a command RESOLVED
@@ -10,7 +11,9 @@ import { oneLine } from "@cotal-ai/core";
  * One call is one line whatever its arguments hold. A path can carry a newline, and written raw it
  * would let one call announce a second act the command never made, or a carriage return overwrite
  * the act it did make. So every control character and Unicode line separator in the line is shown
- * as a `\uXXXX` escape instead.
+ * as a `\uXXXX` escape instead. On a terminal a long line wraps at spaces like the CLI's other
+ * notices, each continuation line under the text after the arrow, and a word wider than the rest of
+ * the line, such as a path, keeps a line of its own. To a pipe or a file it stays one line.
  *
  * Failure policy: a line reports an act that already happened, so a fault on stderr must neither
  * fail that act nor drop the line unsaid. When the stderr write throws or fails (EPIPE, ENOSPC,
@@ -29,17 +32,17 @@ import { oneLine } from "@cotal-ai/core";
 export const provenance = {
   /** `→ using <what>: <source>` — the source that WON resolution (say which layer/path). */
   read(what: string, source: string): void {
-    say(`→ using ${what}: ${source}`);
+    say(`using ${what}: ${source}`);
   },
   /** `→ wrote <what>: <dest>` — announce every file the command created or replaced. */
   wrote(what: string, dest: string): void {
-    say(`→ wrote ${what}: ${dest}`);
+    say(`wrote ${what}: ${dest}`);
   },
   /** `→ removed <what>: <dest>`: announce every file or directory the command DELETED. A silent
    *  delete is worse than a silent write, because the write at least leaves the thing it made while
    *  the delete leaves nothing to notice. Destructive steps get the one line the additive ones get. */
   removed(what: string, dest: string): void {
-    say(`→ removed ${what}: ${dest}`);
+    say(`removed ${what}: ${dest}`);
   },
 };
 
@@ -50,13 +53,20 @@ const waiting = new Set<{ stream: NodeJS.WriteStream }>();
 /** Streams whose `error` event is absorbed: without a listener Node exits 1 on it. */
 const absorbed = new Set<NodeJS.WriteStream>();
 
-/** Write one provenance line under the failure policy above: on stderr, else on stdout with the
- *  stderr error named, else counted as unsaid. The failure name is escaped with the rest, since a
- *  thrown value's message can carry a newline too. */
-function say(line: string): void {
-  send(process.stderr, `${oneLine(line)}\n`, (failure) => {
-    send(process.stdout, `${oneLine(`${line} (stderr failed: ${nameOf(failure)})`)}\n`, lost);
+/** Write one provenance line, the arrow and `text`, under the failure policy above: on stderr, else
+ *  on stdout with the stderr error named, else counted as unsaid. The failure name is escaped with
+ *  the rest, since a thrown value's message can carry a newline too. */
+function say(text: string): void {
+  send(process.stderr, shown(text, process.stderr), (failure) => {
+    send(process.stdout, shown(`${text} (stderr failed: ${nameOf(failure)})`, process.stdout), lost);
   });
+}
+
+/** `text` after the arrow with its control characters escaped, wrapped to `stream`'s terminal and
+ *  each continuation line under the text, as one write. */
+function shown(text: string, stream: NodeJS.WriteStream): string {
+  const lines = wrapWords(oneLine(text), terminalWidth(stream) - 2);
+  return `${lines.map((line, i) => `${i === 0 ? "→" : " "} ${line}`).join("\n")}\n`;
 }
 
 /** A thrown value need not be an Error (`throw null`), and naming one must not throw, since that
