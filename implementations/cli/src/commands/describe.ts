@@ -141,10 +141,15 @@ export async function invokeCmd(args: ParsedArgs, commandName = "invoke"): Promi
       return left;
     };
     // A contract read that was answered and then ran out of time spent this deadline. An unanswered
-    // read stays the TARGET_UNAVAILABLE refusal, and `endpointFailure` adds the target to both.
+    // read stays the TARGET_UNAVAILABLE refusal; under a `--timeout` the user set it names the flag,
+    // which may be what ran out. `endpointFailure` adds the target to all three.
     const service = await resolveService(nc, space, endpoint, auth.epCaller!, { deadlineMs: budgetMs, ...(instanceId === undefined ? {} : { instanceId }) }).catch((error: unknown) => {
-      if (!(error instanceof EpEnvelopeError) || error.code !== "deadline-exceeded" || unansweredRequest(error)) throw error;
+      if (!(error instanceof EpEnvelopeError) || error.code !== "deadline-exceeded" || unansweredRequest(error) && values.timeout === undefined) throw error;
       const longer = budgetMs < 10_000 ? 10_000 : Math.min(budgetMs * 2, 2_147_483_647);
+      if (unansweredRequest(error)) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `no instance of ${endpoint} answered its contract read within the ${budgetMs}ms --timeout, so nothing is serving it, none could be reached, or the deadline was too short`, {
+        native: { code: error.code, outcome: error.outcome }, cause: error,
+        remedy: `start the service that serves ${endpoint}, then run the command again, or rerun it with a longer --timeout such as \`cotal ${commandName === "endpoint" ? "endpoint invoke" : "invoke"} ${shellWord(selector)} ${shellWord(command)} --timeout ${longer}\`; \`cotal service --space ${shellWord(selection.space)}\` lists this space's services`,
+      });
       throw new CommandFailure("failed", "OPERATION_FAILED", `the ${budgetMs}ms ${values.timeout === undefined ? "deadline" : "--timeout"} ran out during the endpoint contract read; no command was published`, {
         native: { code: error.code, outcome: error.outcome }, cause: error,
         remedy: `rerun it with a longer --timeout and the same other flags, such as ${codeSpan(`cotal ${commandName === "endpoint" ? "endpoint invoke" : "invoke"} ${shellWord(selector)} ${shellWord(command)} --timeout ${longer}`)}`,

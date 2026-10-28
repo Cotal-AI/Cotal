@@ -57,7 +57,8 @@
  * Cell 12 adds a second manager whose catalog lacks a persona the first one has, and grades the
  * refusal of a spawn pinned to it: the manager, host and file it names, and the manager its Next pins.
  * Cell 13 invokes an endpoint nothing serves with `--timeout 1000` and grades that the refusal comes
- * within that deadline, with the same code, message and `--json` envelope.
+ * within that deadline, with the same code and `--json` keys, a message naming that `--timeout` and a
+ * Next offering a longer one, and that the same invoke without the flag keeps its message and Next.
  * Cell 14 invokes the manager with a `--timeout` its contract read outruns and grades the failure
  * that names the flag and the read, with a Next naming a longer `--timeout`.
  *
@@ -701,16 +702,24 @@ try {
   // `--timeout` is one deadline for the call, the contract read included. Nothing serves `nosuch`, so
   // its contract read is never answered and the refusal comes when the flag's 1000ms run out. The
   // resolver used to wait a fixed 10s here whatever the flag said. The 5s bound leaves room for load.
+  // A served endpoint whose describe is slower than the flag meets the same silence, so the refusal
+  // names the flag and offers a longer one. Without the flag it keeps its message and Next.
   console.log("\n13. invoke --timeout bounds the contract read of an endpoint nothing serves");
-  const unservedMessage = "no instance of nosuch answered its contract read, so nothing is serving it or none could be reached";
+  const unservedMessage = "no instance of nosuch answered its contract read within the 1000ms --timeout, so nothing is serving it, none could be reached, or the deadline was too short";
+  const unservedRemedy = `start the service that serves nosuch, then run the command again, or rerun it with a longer --timeout such as \`cotal invoke nosuch ping --timeout 10000\`; \`cotal service --space ${space}\` lists this space's services`;
   let startedAt = performance.now();
   const unserved = await cotal(["invoke", "nosuch", "ping", "--timeout", "1000", "--space", space], root1);
   const unservedMs = Math.round(performance.now() - startedAt);
   mustHaveRun(unserved, "an invoke of an endpoint nothing serves");
   const unservedOut = strip(unserved.out);
-  check("invoke nosuch ping --timeout 1000 is refused TARGET_UNAVAILABLE, exit 2, within 5s and with the same message",
+  const nextOf = (out: string): string => /^Next\n\s+(.+)$/m.exec(out)?.[1] ?? "";
+  const unservedNext = nextOf(unservedOut);
+  check("invoke nosuch ping --timeout 1000 is refused TARGET_UNAVAILABLE, exit 2, within 5s, naming the 1000ms --timeout",
     unserved.status === 2 && unservedMs < 5000 && /Code:\s+TARGET_UNAVAILABLE/.test(unservedOut) && unservedOut.includes(unservedMessage),
     { status: unserved.status, elapsedMs: unservedMs, out: unservedOut.slice(-900) });
+  check("...and its Next says to start the service that serves nosuch or rerun with a longer --timeout",
+    unservedNext.includes("start the service that serves nosuch") && unservedNext.includes("--timeout"),
+    { next: unservedNext });
   startedAt = performance.now();
   const unservedJson = await cotal(["invoke", "nosuch", "ping", "--timeout", "1000", "--space", space, "--json"], root1);
   const unservedJsonMs = Math.round(performance.now() - startedAt);
@@ -720,12 +729,20 @@ try {
   const expectedEnv = {
     schemaVersion: 1, command: "invoke", target: { space, endpoint: "nosuch", command: "ping", requestedInstanceId: null, requestId: "<id>", accepted: null },
     outcome: "refused", completeness: "not-checked", result: null, warnings: [],
-    error: { code: "TARGET_UNAVAILABLE", message: unservedMessage, remedy: `start the service that serves nosuch, then run the command again; \`cotal service --space ${space}\` lists this space's services`, cause: { code: "deadline-exceeded" } },
+    error: { code: "TARGET_UNAVAILABLE", message: unservedMessage, remedy: unservedRemedy, cause: { code: "deadline-exceeded" } },
   };
   check("...and its --json envelope keeps its shape, within 5s",
     unservedJson.status === 2 && unservedJsonMs < 5000 && typeof unservedEnv?.target?.requestId === "string" &&
       JSON.stringify({ ...unservedEnv, target: { ...unservedEnv.target, requestId: "<id>" } }) === JSON.stringify(expectedEnv),
     { status: unservedJson.status, elapsedMs: unservedJsonMs, stdout: unservedJson.stdout.slice(-900) });
+  const flagless = await cotal(["invoke", "nosuch", "ping", "--space", space], root1);
+  mustHaveRun(flagless, "an invoke without --timeout of an endpoint nothing serves");
+  const flaglessOut = strip(flagless.out);
+  check("invoke nosuch ping without --timeout keeps the refusal's message and Next",
+    flagless.status === 2 && /Code:\s+TARGET_UNAVAILABLE/.test(flaglessOut) &&
+      flaglessOut.includes("no instance of nosuch answered its contract read, so nothing is serving it or none could be reached") &&
+      nextOf(flaglessOut) === `start the service that serves nosuch, then run the command again; \`cotal service --space ${space}\` lists this space's services`,
+    { status: flagless.status, out: flaglessOut.slice(-900) });
 
   // The manager serves, so a contract read that runs out of `--timeout` after its describe was
   // answered is the flag's deadline, not a missing service. A budget that short can also end before
@@ -733,12 +750,11 @@ try {
   // until the describe was answered. `invoke` and `endpoint invoke` share this path and name
   // themselves in the Next.
   console.log("\n14. invoke --timeout says it ran out during the contract read of an endpoint that is served");
-  const unanswered = "no instance of manager answered its contract read, so nothing is serving it or none could be reached";
   const ranOut = async (argv: string[]): Promise<{ ms: number; run: Run }> => {
     for (let ms = 1; ; ms *= 2) {
       const run = await cotal([...argv, "--timeout", String(ms), "--space", space], root1);
       mustHaveRun(run, `\`${argv.join(" ")} --timeout ${ms}\``);
-      if (ms === 1024 || run.status !== 2 || !strip(run.out).includes(unanswered)) return { ms, run };
+      if (ms === 1024 || run.status !== 2 || !strip(run.out).includes(`no instance of manager answered its contract read within the ${ms}ms --timeout`)) return { ms, run };
     }
   };
   const short = await ranOut(["invoke", "manager", "ps"]);

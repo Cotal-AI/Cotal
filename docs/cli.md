@@ -8989,7 +8989,9 @@ Both read the endpoint's contract first, and so do `describe`, `invoke` and `aut
 for the whole call. `endpoint describe`, `describe` and `auth mint --endpoint` have no `--timeout`
 and give it 10 seconds. When no instance answers that read within its deadline, the command refuses
 with `TARGET_UNAVAILABLE`: nothing is serving the endpoint, or nothing could reach this caller. Its
-Next says to start the service that serves the endpoint. Nothing was invoked or issued.
+Next says to start the service that serves the endpoint. When you set `--timeout`, the refusal
+names it, because a deadline that short can also end before a served endpoint answers, and its Next
+adds a rerun with a longer `--timeout`. Nothing was invoked or issued.
 
 A reference's file credential uses the [paired native caller adapter](#endpoint-caller-credentials).
 It must match the selected registered static root, space, endpoint and signed native scope. A
