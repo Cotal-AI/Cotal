@@ -38,7 +38,7 @@ import {
   isReachable, createSpaceAuth, mintCreds, serverConfig, newIdentity, EpEnvelopeError,
   serveEndpoint, compileContract, contractDigest, registerServiceInstance, authorizeServeGrant,
   completeFrozenRegistrationFromSpec,
-  finalizeServeIssuance,
+  finalizeServeIssuance, credentialIdOf,
   epRequestSubject, epCallerReplyFilter, epServeFilter, epClassQueueGroup, spacePrefix,
   type EpCaller, type EndpointReply, type EpCommandDef,
   type DescribeAnswer, type ServiceNameAuthority, type EpServeGrant,
@@ -280,7 +280,7 @@ try {
   c("the mint STAGED its credential-ledger row and WON the gate CAS (one active row)",
     gate.active() === 1 && gate.revoked() === 0);
   c("the staged ledger row carries the NORMATIVE §13.1 fields (per-JWT credentialId + nkey credentialKey, holderPrincipal, lifecycleUid, ['root'] lineage, state, exp)",
-    (() => { const r = [...gate.rows.values()][0]; return typeof r.credentialId === "string" && r.credentialId.startsWith("sha256-")
+    (() => { const r = [...gate.rows.values()][0]; return r.credentialId === credentialIdOf(serveCreds)
       && typeof r.credentialKey === "string" && r.credentialKey !== r.credentialId
       && r.holderPrincipal === "u_op.mgr" && r.lifecycleUid === IID
       && Array.isArray(r.sourceChain) && r.sourceChain.length === 1 && r.sourceChain[0] === "root" && r.state === "active" && typeof r.exp === "number"
