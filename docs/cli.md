@@ -5029,9 +5029,11 @@ hosts or is registered for, else the one `cotal use` selected, else the space th
 hosts. A space the folder only holds, such as a prepared or stopped one or one a `cotal up` in a
 folder above it left, does not take the run from the selection. With nothing selected, a prepared or
 stopped space is refused as not started, and the refusal names the `cotal up` that starts it. A
-folder that holds no space, with nothing selected, is refused `TARGET_NOT_FOUND`, and Next names
-`cotal supervise --space <name>` or `cotal use <name>` for a space hosted elsewhere, and `cotal up`
-to host one here. A registered or selected space runs its manager
+folder that holds no space, with nothing selected, is refused `TARGET_NOT_FOUND` in the words
+`cotal manager start` uses there. Next leads with `cotal manager start --space <name>` or
+`cotal use <name>`, which start the manager of a space a folder on this machine hosts from any
+folder. It keeps `cotal supervise --space <name>` for a space no folder here hosts, and names
+`cotal up` to host one here. A registered or selected space runs its manager
 in the folder that space is registered at, with that folder's records and signer, so a start from
 any folder is the same manager, with the same instance and name. With `--space` or `COTAL_SPACE`
 the manager runs in this folder. For a static or user-auth space that another folder hosts, a
@@ -5253,7 +5255,9 @@ local control listener is bound and verified, not that a mesh or Cloud connectio
 The endpoint is `$XDG_RUNTIME_DIR/cotal/daemon.sock`. Without `XDG_RUNTIME_DIR` both forms refuse
 `TARGET_UNAVAILABLE` (`NO_RUNTIME_DIR`). Both refuse `PERMISSION_DENIED` for a runtime directory
 that is a symlink, not a directory, not owned by you, or not mode `0700`. `status` also refuses
-`PERMISSION_DENIED` for an endpoint entry that is not a socket, not yours, or not mode `0600`.
+`PERMISSION_DENIED` for an endpoint entry that is not a socket, not yours, or not mode `0600`. For
+a socket of another mode (`SOCKET_WRONG_MODE`), Next says to find the process listening there with
+`ss -xlp` and stop it, then start the daemon with `cotal daemon serve`.
 The daemon drops connections from other users. The kernel separates users, not processes of one
 user: any process running as you can use the local controls, including sign-in and cancellation.
 
@@ -5269,9 +5273,11 @@ one at that path while it holds it. It removes the one socket its own record nam
 to it is refused, and binds its own. A filesystem can give a new file the inode number of one it
 freed, so a socket with the recorded numbers that a process answers on belongs to someone else. A
 `serve` whose state directory is unreadable, or which finds a socket its record does not name or a
-process answers on, removes nothing and refuses `CONFLICT` (`ALREADY_RUNNING`), naming the path. A
-clean shutdown clears the record, so a socket that appears at the path afterwards is refused the
-same way. A non-socket entry there refuses `PERMISSION_DENIED` (`SOCKET_NOT_SOCKET`) and is left
+process answers on, removes nothing and refuses `CONFLICT` (`ALREADY_RUNNING`), naming the path.
+When a process answers, the refusal says another process is listening at that path and `serve` does
+not start until it releases it, and Next names `ss -xlp` and `fuser <path>` to find that process. A
+clean shutdown clears the record, and so does a refused `serve`, so a socket at the path afterwards
+is refused the same way, and the reason says the record names no socket. A non-socket entry there refuses `PERMISSION_DENIED` (`SOCKET_NOT_SOCKET`) and is left
 alone.
 
 `--daemon-home <dir>` runs or reaches a separate daemon whose own state lives in `<dir>`: its
@@ -5292,7 +5298,9 @@ socket is the live owner (same pid and process start) of its daemon's lock: `<di
 with `--daemon-home`, and `<COTAL_HOME>/daemon/daemon.lock` in the client's own Cotal home without
 it. Otherwise it refuses `PERMISSION_DENIED` (`PEER_NOT_LOCK_OWNER`). So a client whose
 `COTAL_HOME` is not the one the default daemon runs with is refused, because that daemon keeps
-another Cotal home's state.
+another Cotal home's state. Next says to find the process listening at the socket with `ss -xlp`,
+to run the command with that daemon's `COTAL_HOME` when it is a daemon started with another Cotal
+home, and otherwise to stop it and start the daemon with `cotal daemon serve`.
 
 This daemon is a different machine identity. Nothing is copied from the default daemon: it needs
 its own `login`, its own `register`, and the space owner's approval of its own instance. Without

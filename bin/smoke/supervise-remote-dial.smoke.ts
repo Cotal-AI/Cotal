@@ -772,9 +772,10 @@ try {
   ok("O: neither folder, the parent's .cotal nor the hosting root changed", JSON.stringify(namedAfter) === JSON.stringify(namedBefore), { namedBefore, namedAfter });
 
   // P: in an empty folder with nothing selected and no `.cotal` above it, a bare `cotal supervise` is
-  // refused because the folder holds no space, with the commands that name a space hosted elsewhere or
-  // host one here. It names no `main` and prints no log line. `supervise` takes no `--json`, so that run
-  // is refused as an unknown option. Neither run writes anything in the folder.
+  // refused because the folder holds no space, in the words `cotal manager start` uses there, with the
+  // commands that start a hosted space's manager from any folder or host one here. It names no `main`
+  // and prints no log line. `supervise` takes no `--json`, so that run is refused as an unknown option.
+  // Neither run writes anything in the folder, and neither does the `cotal manager start` there.
   const nothingHome = scratch("nothing-home"), nothingCwd = scratch("nothing-cwd");
   const nothingSelected = await homeCli(nothingHome, nothingCwd, "use");
   must("P: nothing is selected, and no folder above the empty one holds a .cotal",
@@ -782,13 +783,42 @@ try {
   const nothingBefore = listing(nothingCwd);
   const nothing = await homeCli(nothingHome, nothingCwd, "supervise");
   ok("P: a bare supervise there is refused TARGET_NOT_FOUND, exit 2, saying the folder holds no space, with the commands that name or host one",
-    nothing.code === 2 && /Code:\s+TARGET_NOT_FOUND/.test(nothing.out) && nothing.out.includes("this folder holds no space and none is selected, so no manager started")
-      && nothing.out.includes("for a space hosted elsewhere, run `cotal supervise --space <name>` or select it with `cotal use <name>`; to host one here, run `cotal up`")
+    nothing.code === 2 && /Code:\s+TARGET_NOT_FOUND/.test(nothing.out) && nothing.out.includes("no space is selected, and this folder is not a space's project, so no manager started")
+      && nothing.out.includes("for a space a folder on this machine hosts, run `cotal manager start --space <name>` or select it with `cotal use <name>`; for a space no folder here hosts, run `cotal supervise --space <name>`; to host one here, run `cotal up`")
       && !/'main'|"main"|\d{4}-\d\d-\d\dT\d\d:\d\d/.test(nothing.out), nothing.out.slice(-900));
   const nothingJson = await homeCli(nothingHome, nothingCwd, "supervise", "--json");
   ok("P: supervise takes no --json, so that run is refused as an unknown option, exit 1",
     nothingJson.code === 1 && nothingJson.out.includes("Unknown option '--json'") && !/manager up|neither hosting/.test(nothingJson.out), nothingJson.out.slice(-900));
   ok("P: neither run wrote anything in the folder", listing(nothingCwd) === nothingBefore && nothingBefore === "[]", { nothingBefore, after: listing(nothingCwd) });
+  const nothingStart = await homeCli(nothingHome, nothingCwd, "manager", "start");
+  ok("P: cotal manager start there is refused TARGET_NOT_FOUND, exit 2, in the words the bare supervise used, and writes nothing in the folder",
+    nothingStart.code === 2 && /Code:\s+TARGET_NOT_FOUND/.test(nothingStart.out) && nothingStart.out.includes("no space is selected, and this folder is not a space's project")
+      && nothing.out.includes("no space is selected, and this folder is not a space's project") && listing(nothingCwd) === nothingBefore, nothingStart.out.slice(-900));
+
+  // Q: with nothing selected, a space this home hosts in another root, and an empty folder, a bare
+  // `cotal supervise` there is refused, and the first command its Next names, run from that folder with
+  // the space's name, starts the manager in the hosting root and writes nothing in the folder. Like M,
+  // the root is fresh, so this start is its instance's first registration.
+  const nextRoot = scratch("next-root"), nextHome = scratch("next-home"), nextCwd = scratch("next-cwd");
+  saveSpaceAuth(authDir(nextRoot), auth);
+  const priorHome = process.env.COTAL_HOME;
+  process.env.COTAL_HOME = nextHome;
+  try { recordMesh({ space, server: tcpServer, root: nextRoot, mode: "auth", ts: new Date().toISOString() }); }
+  finally { process.env.COTAL_HOME = priorHome; }
+  const nextUse = await homeCli(nextHome, nextCwd, "use");
+  must("Q: nothing is selected, the space is registered at its hosting root, and no folder above the empty one holds a .cotal",
+    /no space is selected/.test(nextUse.out) && findCotalRoot(nextCwd) === resolve(nextCwd), { use: nextUse.out, root: findCotalRoot(nextCwd) });
+  const nextBefore = listing(nextCwd);
+  const bareNext = await homeCli(nextHome, nextCwd, "supervise");
+  const firstStep = /\nNext\n\s+[^`]*`(cotal [^`]+)`/.exec(bareNext.out)?.[1];
+  ok("Q: a bare supervise there is refused TARGET_NOT_FOUND, exit 2, and its Next leads with `cotal manager start --space <name>`",
+    bareNext.code === 2 && /Code:\s+TARGET_NOT_FOUND/.test(bareNext.out) && firstStep === "cotal manager start --space <name>", { firstStep, out: bareNext.out.slice(-900) });
+  const firstRun = await homeCli(nextHome, nextCwd, ...(firstStep ?? "cotal").replaceAll("<name>", space).split(" ").slice(1));
+  ok("Q: that first command, run from the same folder with the space's name, starts the manager in the root that hosts the space",
+    firstRun.code === 0 && /Readiness observation:\s+endpoint-serving/.test(firstRun.out) && loadManagerInstanceIdentity(nextRoot, space) !== undefined, firstRun.out.slice(-900));
+  const nextStop = await homeCli(nextHome, nextCwd, "manager", "stop", "--space", space, "--yes");
+  ok("Q: that manager stops, and the folder it was started from is unchanged",
+    nextStop.code === 0 && /Recorded state:\s+stopped/.test(nextStop.out) && listing(nextCwd) === nextBefore && nextBefore === "[]", { stop: nextStop.out.slice(-600), nextBefore, after: listing(nextCwd) });
 
   // K: a managed spawn the host refuses at enrollment is refused, not unknown. The caller's grant no
   // longer carries admin, so the envelope walk applies, and the persona's role is not in its scope.

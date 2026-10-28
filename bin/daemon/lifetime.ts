@@ -30,6 +30,7 @@ import { constants } from "node:fs";
 import { createConnection } from "node:net";
 import { processStartToken } from "@cotal-ai/core";
 import { flockExclusiveNb } from "@cotal-ai/seat";
+import { codeSpan, shellPath } from "@cotal-ai/workspace";
 import { EndpointRefusal } from "./endpoint.js";
 
 /** The socket a holder published, identified by the inode it is, not by its path alone. */
@@ -176,13 +177,23 @@ export async function claimSocketPath(path: string, previous: SocketGeneration |
     // refuses a connect; a socket anything still answers on belongs to a live process.
     const outcome = await connectOutcome(path);
     if (outcome === "ECONNREFUSED") return "recover";
+    if (outcome === "answered")
+      throw new EndpointRefusal(
+        "ALREADY_RUNNING",
+        `${path} has the device and inode numbers this daemon home's last daemon published, but a connect to it was answered: another process is listening at that path, and serve does not start until that process releases it; nothing was removed`,
+        `find that process with \`ss -xlp\` or ${codeSpan(`fuser ${shellPath(path)}`)}, and stop it; then run \`cotal daemon serve\` again`,
+      );
     throw new EndpointRefusal(
       "ALREADY_RUNNING",
-      `${path} has the device and inode numbers this daemon home's last daemon published, but a connect to it ${outcome === "answered" ? "was answered" : `failed with ${outcome}`}, so it is not that daemon's dead socket; nothing was removed`,
+      `${path} has the device and inode numbers this daemon home's last daemon published, but a connect to it failed with ${outcome}, so it is not that daemon's dead socket; nothing was removed`,
     );
   }
+  // A refused start clears the record as a clean stop does, so a socket that one refused is not
+  // compared with anything the next time.
   throw new EndpointRefusal(
     "ALREADY_RUNNING",
-    `${path} already exists (uid ${st.uid}) and is not the socket this daemon home's last daemon published; nothing was removed`,
+    previous
+      ? `${path} already exists (uid ${st.uid}) and is not the socket this daemon home's last daemon published; nothing was removed`
+      : `${path} already exists (uid ${st.uid}), and this daemon home's lock record names no socket to compare it with: a clean stop clears that record, and so does a refused serve; nothing was removed`,
   );
 }
