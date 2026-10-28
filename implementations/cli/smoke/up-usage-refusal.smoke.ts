@@ -456,6 +456,47 @@ try {
         && /cotal team deploy cotal\.yaml/.test(beside.stderr) && /cotal team boot cotal\.yaml/.test(beside.stderr) && !started(journalRoot), shown(beside));
   }
 
+  // `up -f` and `team boot` bind a single local broker address, so a comma-separated broker.servers or
+  // --server list is refused before `.cotal` is created or any URL is parsed (#3888).
+  {
+    const listParent = join(home, "Desktop", "serverlist");
+    const listRoot = join(listParent, "child");
+    mkdirSync(join(listParent, ".cotal"), { recursive: true, mode: 0o700 });
+    mkdirSync(listRoot, { recursive: true, mode: 0o700 });
+    const second = await freePort();
+    const pair = `nats://127.0.0.1:${held},nats://127.0.0.1:${second}`;
+    writeFileSync(join(listRoot, "two.yaml"), `apiVersion: cotal/v1\nkind: Mesh\nspace: uplist\nbroker: { servers: "${pair}", auth: false }\nchannels: { general: {} }\n`);
+    writeFileSync(join(listRoot, "host-two.yaml"), `apiVersion: cotal/v1\nkind: Mesh\nspace: uplist\nbroker: { host: 127.0.0.1, servers: "${pair}", auth: false }\nchannels: { general: {} }\n`);
+    writeFileSync(join(listRoot, "one.yaml"), `apiVersion: cotal/v1\nkind: Mesh\nspace: uplist\nbroker: { servers: "nats://127.0.0.1:${held}", auth: false }\nchannels: { general: {} }\n`);
+    const entries = () => readdirSync(listRoot).sort().join(",");
+    for (const [args, source] of [
+      [["up", "-f", "two.yaml", "--dry-run"], "broker.servers"],
+      [["up", "-f", "two.yaml"], "broker.servers"],
+      [["up", "-f", "host-two.yaml", "--dry-run"], "broker.servers"],
+      [["up", "-f", "one.yaml", "--server", pair, "--dry-run"], "--server"],
+      [["up", "-f", "one.yaml", "--server", pair], "--server"],
+    ] satisfies [string[], string][]) {
+      const r = run(args, listRoot);
+      check(`cotal ${args.join(" ")} refuses a multi-entry ${source}, exit 1, without Invalid URL or writing .cotal`,
+        r.status === 1 && r.stderr.includes(`✗ ${source} names 2 broker URLs, and \`cotal up -f\` binds a single broker address`) && !r.stderr.includes("Invalid URL") && entries() === "host-two.yaml,one.yaml,two.yaml", { ...shown(r), entries: entries() });
+    }
+    const singleOverride = run(["up", "-f", "two.yaml", "--server", `nats://127.0.0.1:${held}`, "--dry-run"], listRoot);
+    check("up -f --dry-run accepts a single --server overriding a two-entry broker.servers",
+      singleOverride.status === 0 && singleOverride.stdout.includes(`at nats://127.0.0.1:${held}`) && entries() === "host-two.yaml,one.yaml,two.yaml", shown(singleOverride));
+    const topo = run(["topology", "view", "-f", "two.yaml"], listRoot);
+    check("topology view -f still accepts the two-entry broker.servers list",
+      topo.status === 0 && topo.stdout.includes(pair) && entries() === "host-two.yaml,one.yaml,two.yaml", shown(topo));
+    const bootRoot = join(home, "Desktop", "teamboot-list");
+    mkdirSync(bootRoot, { recursive: true, mode: 0o700 });
+    const bootCreated = run(["space", "create", "uplist", "--root", bootRoot, "--json"]);
+    const bootDry = run(["team", "boot", join(listRoot, "two.yaml"), "--dry-run", "--json"], bootRoot);
+    const bootRun = run(["team", "boot", join(listRoot, "two.yaml"), "--json"], bootRoot);
+    check("team boot and team boot --dry-run refuse a two-entry broker.servers as SCHEMA_INVALID, exit 1",
+      bootCreated.status === 0 && bootDry.status === 1 && bootDry.envelope?.error?.code === "SCHEMA_INVALID" && (bootDry.envelope.error.message ?? "").includes("broker.servers names 2 broker URLs") &&
+        bootRun.status === 1 && bootRun.envelope?.error?.code === "SCHEMA_INVALID" && (bootRun.envelope.error.message ?? "").includes("broker.servers names 2 broker URLs"), { bootDry: shown(bootDry), bootRun: shown(bootRun) });
+    run(["space", "forget", "uplist"]);
+  }
+
   // A bare up whose folder names a space that runs from another folder names a separate space for
   // this folder, and the stop for the other one in its own folder. The folder's account names main,
   // as one does after an earlier `up --space main` there. A child process that sends the broker's

@@ -1368,7 +1368,8 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       } catch {
         // Manifest errors are reported by the -f path with the same load; do not double-print.
       }
-      // A --space that names another space is refused by the -f path below, before anything is written.
+      // A --space that names another space, or a multi-entry server URL list, is refused by the -f path below, before anything is written.
+      if (prepared && singleServerUrlProblem(values.server ?? prepared.manifest.broker?.servers, values.server ? "--server" : "broker.servers")) prepared = undefined;
       if (prepared && (values.space === undefined || values.space === prepared.manifest.space)) ensureRootForSpace(prepared.manifest.space);
     } else {
       ensureRootForSpace(spaceForRoot);
@@ -3283,6 +3284,8 @@ export async function prepareFreshTeamBoot(file: string, opts: { space: string; 
   const { prepared: eff, hostSource, serverSource } = applyUpOverrides(prepared, flags);
   const m = eff.manifest;
   const host = m.broker?.host ?? "127.0.0.1";
+  const singleProblem = singleServerUrlProblem(m.broker?.servers, serverSource);
+  if (singleProblem) throw new CommandFailure("refused", "SCHEMA_INVALID", singleProblem, { target: { space: opts.space } });
   const server = m.broker?.host ? reconcileHostAndServer(m.broker.host, m.broker?.servers, hostSource, serverSource) : (m.broker?.servers ?? DEFAULT_SERVER);
   const open = m.broker?.auth === false;
   const mode = open ? "open" as const : m.broker?.auth === "user" ? "user" as const : "auth" as const;
@@ -3315,6 +3318,8 @@ export async function prepareResumeTeamBoot(file: string, opts: { space: string;
     throw new CommandFailure("refused", "CONFLICT", "the team manifest no longer names the selected space; nothing was resumed", { target: { selectedSpace: opts.space, declaredSpace: prepared.manifest.space } });
   const { prepared: eff, hostSource, serverSource } = applyUpOverrides(prepared, { transport: opts.transport, dryRun: false, freshTeamBoot: true });
   const m = eff.manifest;
+  const singleProblem = singleServerUrlProblem(m.broker?.servers, serverSource);
+  if (singleProblem) throw new CommandFailure("refused", "SCHEMA_INVALID", singleProblem, { target: { space: opts.space } });
   const server = m.broker?.host ? reconcileHostAndServer(m.broker.host, m.broker?.servers, hostSource, serverSource) : (m.broker?.servers ?? DEFAULT_SERVER);
   const open = m.broker?.auth === false;
   const mode = open ? "open" as const : m.broker?.auth === "user" ? "user" as const : "auth" as const;
@@ -3426,6 +3431,12 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
   const { prepared: eff, hostSource, serverSource } = applyUpOverrides(prepared, opts);
   const m = eff.manifest;
   const host = m.broker?.host ?? "127.0.0.1";
+  const singleProblem = singleServerUrlProblem(m.broker?.servers, serverSource);
+  if (singleProblem) {
+    if (opts.freshTeamBoot) throw new CommandFailure("refused", "SCHEMA_INVALID", singleProblem, { target: { space: prepared.manifest.space } });
+    stderrLine("✗ ", singleProblem, c.red);
+    process.exit(1);
+  }
   // Same bind-vs-probe reconciliation as the flag path: a manifest that sets `broker.host` without
   // an explicit `broker.servers` would otherwise bind one address and be probed at another.
   const server = m.broker?.host ? reconcileHostAndServer(m.broker.host, m.broker?.servers, hostSource, serverSource) : (m.broker?.servers ?? DEFAULT_SERVER);
@@ -3721,6 +3732,15 @@ function applyUpOverrides(prepared: PreparedManifest, o: UpManifestFlags): { pre
     hostSource: !o.host && m.broker?.host !== undefined ? "broker.host" : "--host",
     serverSource: !o.server && m.broker?.servers !== undefined ? "broker.servers" : "--server",
   };
+}
+
+/** Why `servers` cannot be the single broker URL a fresh manifest boot binds, or `undefined` when
+ *  it can. `up -f` creates one local broker, so a comma-separated list is refused here with its
+ *  source (`broker.servers` or `--server`). */
+export function singleServerUrlProblem(servers: string | undefined, what: string): string | undefined {
+  if (servers === undefined) return undefined;
+  const count = servers.split(",").map((x) => x.trim()).filter(Boolean).length;
+  return count > 1 ? `${what} names ${count} broker URLs, and \`cotal up -f\` binds a single broker address` : undefined;
 }
 
 /** Start the CONTROL PLANE alongside the broker: old-manager preflight → delivery daemon (auth

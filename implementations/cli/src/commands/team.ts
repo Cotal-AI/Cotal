@@ -13,7 +13,7 @@ import { managerRecordState } from "../lib/manager-proc.js";
 import { authModeText, teamText } from "../lib/team-text.js";
 import { readLocalServiceCensus } from "../lib/service-census.js";
 import { liveMeshProcesses } from "./clean.js";
-import { preparedUpRoot, recordedBrokerTransport } from "./up.js";
+import { preparedUpRoot, recordedBrokerTransport, singleServerUrlProblem } from "./up.js";
 import { controllerTeamBoot } from "./team-boot-controller.js";
 import { applyChannelOnlyTeam } from "./team-deploy-apply.js";
 
@@ -564,6 +564,8 @@ async function previewBoot(file: string, values: TeamValues): Promise<void> {
   if (values["dry-run"] !== true) return bootTeam(file, values);
   const { path, prepared } = readTeamFile(file, values);
   const space = prepared.manifest.space;
+  const singleProblem = singleServerUrlProblem(prepared.manifest.broker?.servers, "broker.servers");
+  if (singleProblem) throw new CommandFailure("refused", "SCHEMA_INVALID", singleProblem, { target: { space, path } });
   let local: ReturnType<typeof findMesh>, waiting: ReturnType<typeof findPreparedSpace>;
   try { local = findMesh(space); waiting = findPreparedSpace(space); }
   catch { throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the local space registry or prepared-space records could not be read; no boot target was inferred", { target: { space } }); }
