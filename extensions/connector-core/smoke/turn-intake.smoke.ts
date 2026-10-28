@@ -91,6 +91,7 @@ const rig = () => {
     // answer it or every block that drives a turn boundary dies on a missing method rather than
     // on the property it is testing.
     setCondition: async () => {},
+    setAttention: async () => {},
     invokeService: async (_ep: string, command: string, args: unknown, opts: unknown) => {
       invokes.push({ command, args, opts });
       if (command === "turn-pending") {
@@ -232,6 +233,27 @@ const row = (goalId: string, context: string, acceptedAt = Date.now()): PendingT
   check("the real host completion after a presence-only idle still yields done",
     state.yields.length === 1 && state.yields[0]?.goalId === "presence-only" && state.yields[0]?.status === "done",
     state.yields);
+
+  // #4003: MeshAgent presence setters validate status, activity, attention and condition before
+  // mutating local state or queuing an endpoint write.
+  await a.setStatus("working");
+  await a.setAttention("dnd");
+  const agentRejected: Array<[() => Promise<void>, RegExp]> = [
+    [() => a.setStatus("idle", { text: "done" } as unknown as string), /\bactivity\b/],
+    [() => a.setStatus("busy" as unknown as "idle"), /\bstatus\b/],
+    [() => a.setActivity({ text: "reading" } as unknown as string), /\bactivity\b/],
+    [() => a.setCondition({ code: { id: "approval" } as unknown as "approval" }), /\bcondition\.code\b/],
+    [() => a.setAttention({ mode: "open" } as unknown as "open"), /\battention\b/],
+  ];
+  let allAgentRejected = true;
+  for (const [fn, pattern] of agentRejected) {
+    let err: unknown;
+    try { await fn(); } catch (e) { err = e; }
+    if (!(err instanceof TypeError && pattern.test(err.message))) allAgentRejected = false;
+  }
+  check("MeshAgent presence setters refuse invalid fields with TypeError before mutating local state",
+    allAgentRejected && a.status === "working" && a.attention === "dnd",
+    { allAgentRejected, status: a.status, attention: a.attention });
 }
 
 // ── 4) an unseen payload is never "done" ──────────────────────────────────────────────────────
@@ -1464,7 +1486,7 @@ await spawn(
   }
 }
 
-const EXPECTED_CELLS = 54;
+const EXPECTED_CELLS = 55;
 const ran = pass + fail;
 console.log(`\nturn-intake.smoke: ${pass} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {

@@ -392,7 +392,8 @@ diagnostic path. A `condition` of `null`, a bare string or an object with no `co
 A reader that kept a record whose `ts` is missing or text such as `"nope"` could not age it past the liveness window, so it would
 show its peer live after the key expired. Readers print the string fields as text, and an object
 such as `{"toString":null,"valueOf":null}` throws when converted, so one kept row would fail every
-reader's roster.
+reader's roster. Writers MUST check `status`, `activity`, `attention` and `condition` against the
+same shape before changing local state or publishing, and throw a `TypeError` naming the field.
 
 A watch delivers every member's heartbeat to every watcher, so a space of K watching members moves
 K² deliveries per heartbeat interval. A participant that needs the roster only when it acts (an

@@ -68,7 +68,9 @@ is not an object with a string `code`, such as `null`, a bare string or an objec
 report that rejection through the recoverable warning path. A kept row whose `ts` is missing or text
 such as `"nope"` would never read as stale, so it would stay live after its key expired. A kept object such as
 `{"toString":null,"valueOf":null}` in a printed field would throw when converted and fail every
-reader's roster.
+reader's roster. The presence setters check `status`, `activity`, `attention` and `condition`
+against the same shape before changing local state or publishing, and throw a `TypeError` naming
+the field.
 Details: [SPEC §6](../SPEC.md#6-presence-and-discovery). The dashboard surfaces a stale view
 on the same header mark it uses for a refused poll ([watch a mesh](watch-a-mesh.md)).
 

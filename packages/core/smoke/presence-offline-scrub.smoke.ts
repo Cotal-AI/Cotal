@@ -42,9 +42,19 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 try {
   await awaitBrokerReady(() => isReachable(servers), { servers, attempts: 50, delayMs: 200 });
 
-  const ep = new CotalEndpoint({ space, servers, channels: ["general"], card: { name: "otto", kind: "agent", id }, lifecycleUid: mintLifecycleUid() });
+  const reader = new CotalEndpoint({ space, servers, channels: [], consume: false, registerPresence: false, watchChannels: false, heartbeatMs: 200, ttlMs: 1_200, card: { name: "reader", kind: "endpoint", id: "reader_scrub" } });
+  reader.on("error", () => {});
+  const readerWarnings: string[] = [];
+  reader.on("warning", (err: Error) => readerWarnings.push(err.message));
+  await reader.start();
+
+  const ep = new CotalEndpoint({ space, servers, channels: ["general"], heartbeatMs: 200, ttlMs: 1_200, card: { name: "otto", kind: "agent", id }, lifecycleUid: mintLifecycleUid() });
   ep.on("error", () => {});
+  const writerWarnings: string[] = [];
+  ep.on("warning", (err: Error) => writerWarnings.push(err.message));
   await ep.start();
+  await ep.setActivity("reading");
+  await ep.setCondition({ code: "approval", since: 123 });
   await ep.setAttention("dnd");
   await ep.setChannelModes({ general: "muted" });
   await sleep(300);
@@ -57,8 +67,79 @@ try {
 
   const live = await read();
   check("LIVE raw record carries attention + channelModes", live?.attention === "dnd" && live?.channelModes?.general === "muted");
+  check(
+    "positive control: valid activity, condition and attention propagate with no drops",
+    live?.status === "idle"
+      && live.activity === "reading"
+      && live.condition?.code === "approval"
+      && live.attention === "dnd"
+      && reader.presenceBindingDropCount === 0
+      && readerWarnings.length === 0
+      && writerWarnings.length === 0
+      && reader.getRoster().find((p) => p.card.id === ep.card.id)?.status === "idle",
+    { live, roster: reader.getRoster(), drops: reader.presenceBindingDropCount },
+  );
+
+  // #4003: presence setters refuse non-string display fields, invalid statuses and malformed
+  // conditions with a TypeError naming the field before mutating local state or publishing.
+  const hostile = { toString: null, valueOf: null };
+  const rejectedCalls: Array<[string, () => Promise<void>, RegExp]> = [
+    ["setActivity with an object", () => ep.setActivity({ text: "reading" } as unknown as string), /\bactivity\b/],
+    ["setActivity with a hostile object", () => ep.setActivity(hostile as unknown as string), /\bactivity\b/],
+    ["setActivity with a number", () => ep.setActivity(42 as unknown as string), /\bactivity\b/],
+    ["setActivity with null", () => ep.setActivity(null as unknown as string), /\bactivity\b/],
+    ["setActivity with undefined", () => ep.setActivity(undefined as unknown as string), /\bactivity\b/],
+    ["setStatus with an object activity", () => ep.setStatus("working", { text: "reading" } as unknown as string), /\bactivity\b/],
+    ["setStatus with a null activity", () => ep.setStatus("working", null as unknown as string), /\bactivity\b/],
+    ["setStatus with an object status", () => ep.setStatus({ status: "working" } as unknown as "working"), /\bstatus\b/],
+    ["setStatus with an unknown status", () => ep.setStatus("busy" as unknown as "working"), /\bstatus\b/],
+    ["setCondition with an object condition.code", () => ep.setCondition({ code: { id: "approval" } as unknown as "approval", since: 1 }), /\bcondition\.code\b/],
+    ["setCondition with a hostile condition.code", () => ep.setCondition({ code: hostile as unknown as "approval" }), /\bcondition\.code\b/],
+    ["setCondition with no code", () => ep.setCondition({ since: 1 } as unknown as null), /\bcondition\.code\b/],
+    ["setCondition with a string", () => ep.setCondition("approval" as unknown as null), /\bcondition\b/],
+    ["setCondition with undefined", () => ep.setCondition(undefined as unknown as null), /\bcondition\b/],
+    ["setAttention with an object", () => ep.setAttention({ mode: "open" } as unknown as "open"), /\battention\b/],
+    ["setAttention with a hostile object", () => ep.setAttention(hostile as unknown as "open"), /\battention\b/],
+    ["setAttention with a number", () => ep.setAttention(7 as unknown as "open"), /\battention\b/],
+    ["setAttention with null", () => ep.setAttention(null as unknown as "open"), /\battention\b/],
+    ["setAttention with undefined", () => ep.setAttention(undefined as unknown as "open"), /\battention\b/],
+  ];
+  for (const [label, run, fieldPattern] of rejectedCalls) {
+    let thrown: unknown;
+    try {
+      await run();
+    } catch (err) {
+      thrown = err;
+    }
+    check(
+      `${label} throws TypeError naming the field`,
+      thrown instanceof TypeError && fieldPattern.test(thrown.message),
+      thrown instanceof Error ? `${thrown.name}: ${thrown.message}` : thrown,
+    );
+  }
+  await sleep(300);
+  const afterRejected = await read();
+  const rosterEntry = reader.getRoster().find((p) => p.card.id === ep.card.id);
+  check(
+    "rejected setter calls leave local state, the stored KV row and the reader roster intact with zero drops",
+    afterRejected?.status === "idle"
+      && afterRejected.activity === "reading"
+      && afterRejected.condition?.code === "approval"
+      && afterRejected.attention === "dnd"
+      && afterRejected.statusSince === live?.statusSince
+      && afterRejected.activitySince === live?.activitySince
+      && reader.presenceBindingDropCount === 0
+      && readerWarnings.length === 0
+      && writerWarnings.length === 0
+      && rosterEntry?.status === "idle"
+      && rosterEntry.activity === "reading"
+      && rosterEntry.condition?.code === "approval"
+      && rosterEntry.attention === "dnd",
+    { afterRejected, rosterEntry, drops: reader.presenceBindingDropCount, readerWarnings, writerWarnings },
+  );
 
   await ep.stop(); // graceful → publishes an offline record
+  await reader.stop();
   await sleep(300);
 
   const off = await read();

@@ -167,6 +167,7 @@ import {
   assertInboxConnId,
   type ParsedSubject,
   presenceBucket,
+  assertPresenceFields,
   isPresenceRow,
   membershipBucket,
   MEMBERSHIP_FEED_KEY,
@@ -3170,6 +3171,7 @@ export class CotalEndpoint extends EventEmitter {
   }
 
   async setActivity(activity: string): Promise<void> {
+    assertPresenceFields({ activity });
     if (activity !== this.activity) this.statusSince = this.activitySince = Date.now();
     this.activity = activity;
     await this.publishPresence();
@@ -3178,6 +3180,7 @@ export class CotalEndpoint extends EventEmitter {
   /** Set the status, and with `activity` the activity line too, in one presence write, so no peer sees
    *  the new activity beside the old status. */
   async setStatus(status: PresenceStatus, activity?: string): Promise<void> {
+    assertPresenceFields(activity === undefined ? { status } : { status, activity });
     if (activity !== undefined && activity !== this.activity) this.statusSince = this.activitySince = Date.now();
     if (activity !== undefined) this.activity = activity;
     if (status !== this.status) this.statusSince = Date.now();
@@ -3193,6 +3196,7 @@ export class CotalEndpoint extends EventEmitter {
 
   /** Publish a harness-reported condition, or clear it. Core stores the relay without interpretation. */
   async setCondition(condition: PresenceCondition | null): Promise<void> {
+    assertPresenceFields({ condition });
     this.condition = condition ?? undefined;
     this.conditionRevision++;
     await this.publishPresence();
@@ -3201,6 +3205,7 @@ export class CotalEndpoint extends EventEmitter {
   /** Publish the agent's global attention mode into presence (advisory observability). Mirror only —
    *  delivery decisions stay in the connector's authoritative state. */
   async setAttention(attention: AttentionMode): Promise<void> {
+    assertPresenceFields({ attention });
     this.attentionMode = attention;
     await this.publishPresence();
   }

@@ -30,6 +30,7 @@ import {
   type ControlReply,
   type Delivery,
   partsToText,
+  assertPresenceFields,
   assertValidRole,
   type MessageMeta,
   type Presence,
@@ -1823,6 +1824,7 @@ export class MeshAgent extends EventEmitter {
     *  it landed just before or after the captured frontier. Only ambient arriving after the local
     *  switch is ack-dropped. */
   async setAttention(mode: AttentionMode): Promise<void> {
+    assertPresenceFields({ attention: mode });
     await this.inOrder(async () => {
     if (mode === "focus") {
       await this.requireConnected();
@@ -2883,6 +2885,7 @@ export class MeshAgent extends EventEmitter {
   }
 
   async setStatus(status: PresenceStatus, activity?: string): Promise<void> {
+    assertPresenceFields(activity === undefined ? { status } : { status, activity });
     await this.inOrder(async () => {
     await this.requireConnected();
     const prev = this.turnStatus;
@@ -2932,6 +2935,7 @@ export class MeshAgent extends EventEmitter {
   /** Change only the activity line. Routing it through `setStatus` with the current status read the
    *  status before queued writes settled, then wrote that stale value back over them. */
   async setActivity(activity: string): Promise<void> {
+    assertPresenceFields({ activity });
     await this.inOrder(async () => {
       await this.requireConnected();
       await this.ep.setActivity(activity);
@@ -2940,6 +2944,7 @@ export class MeshAgent extends EventEmitter {
 
   /** Relay a harness-reported condition into presence, or clear it. */
   async setCondition(condition: PresenceCondition | null): Promise<void> {
+    assertPresenceFields({ condition });
     await this.inOrder(() => this.ep.setCondition(condition));
   }
 

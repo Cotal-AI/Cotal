@@ -901,6 +901,48 @@ function presenceOptionalString(value: unknown): boolean {
   return value === undefined || typeof value === "string";
 }
 
+/** Return the first presence-field defect in `value` under SPEC §6's row shape, or `undefined` when
+ *  `card.role`, `status`, `activity`, `attention` and `condition` have the types every reader
+ *  requires. Shared by {@link isPresenceRow} on the read boundary and {@link assertPresenceFields}
+ *  on the write boundary so writers and readers enforce one contract. */
+export function presenceShapeProblem(value: {
+  role?: unknown;
+  status: unknown;
+  activity?: unknown;
+  attention?: unknown;
+  condition?: unknown;
+}): string | undefined {
+  if (!presenceOptionalString(value.role)) return "presence card.role must be a string";
+  if (typeof value.status !== "string" || !Object.hasOwn(PRESENCE_STATUSES, value.status))
+    return "presence status must be \"idle\", \"waiting\", \"working\" or \"offline\"";
+  if (!presenceOptionalString(value.activity)) return "presence activity must be a string";
+  if (!presenceOptionalString(value.attention)) return "presence attention must be a string";
+  if (value.condition !== undefined && (!presenceRecord(value.condition) || typeof value.condition.code !== "string"))
+    return "presence condition must be null or an object with a string condition.code";
+  return undefined;
+}
+
+/** Check the presence fields a writer setter is about to store, throwing a `TypeError` that names
+ *  the offending field before local state is mutated. Uses {@link presenceShapeProblem} so the
+ *  writer refuses every value a reader's {@link isPresenceRow} would drop. */
+export function assertPresenceFields(fields: {
+  status?: unknown;
+  activity?: unknown;
+  attention?: unknown;
+  condition?: unknown;
+}): void {
+  if (!presenceRecord(fields)) throw new TypeError("presence fields must be an object");
+  const problem = presenceShapeProblem({
+    status: Object.hasOwn(fields, "status") ? fields.status : "idle",
+    activity: Object.hasOwn(fields, "activity") ? (fields.activity ?? null) : undefined,
+    attention: Object.hasOwn(fields, "attention") ? (fields.attention ?? null) : undefined,
+    condition: Object.hasOwn(fields, "condition")
+      ? (fields.condition === null ? undefined : (fields.condition ?? null))
+      : undefined,
+  });
+  if (problem !== undefined) throw new TypeError(problem);
+}
+
 /** The presence row shape every reader relies on (SPEC §6). A record whose `card.id` differs from
  *  its KV key, whose `card.name` or `status` has the wrong type, whose `ts` is not finite, whose
  *  printed display fields are present and not strings, or whose `condition` is present and is not
@@ -911,11 +953,14 @@ export function isPresenceRow(value: unknown, key: string): value is Presence {
   if (!presenceRecord(value) || !presenceRecord(value.card)) return false;
   const card = value.card;
   if (card.id !== key || typeof card.id !== "string" || card.id.length === 0 || typeof card.name !== "string") return false;
-  return presenceOptionalString(card.role) &&
-    typeof value.status === "string" && Object.hasOwn(PRESENCE_STATUSES, value.status) &&
-    typeof value.ts === "number" && Number.isFinite(value.ts) &&
-    presenceOptionalString(value.activity) && presenceOptionalString(value.attention) &&
-    (value.condition === undefined || (presenceRecord(value.condition) && typeof value.condition.code === "string"));
+  return typeof value.ts === "number" && Number.isFinite(value.ts) &&
+    presenceShapeProblem({
+      role: card.role,
+      status: value.status,
+      activity: value.activity,
+      attention: value.attention,
+      condition: value.condition,
+    }) === undefined;
 }
 
 /** Name of the KV bucket holding the channel registry (config) for a space — sibling of
