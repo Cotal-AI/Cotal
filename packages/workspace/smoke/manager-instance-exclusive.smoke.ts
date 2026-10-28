@@ -18,7 +18,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  createAuthInstanceIdentity,
   createManagerInstanceIdentity,
+  loadAuthInstanceIdentity,
   loadManagerInstanceIdentity,
   spaceSegment,
 } from "../src/auth-paths.js";
@@ -40,7 +42,7 @@ if (process.env.COTAL_I1263_EXCL_WORKER === "1") {
   const root = process.env.COTAL_I1263_EXCL_ROOT!;
   const barrier = process.env.COTAL_I1263_EXCL_BARRIER!;
   while (!existsSync(barrier)) {}
-  const claimed = createManagerInstanceIdentity(root, SPACE, candidate(`w${process.pid}`));
+  const claimed = createManagerInstanceIdentity(root, SPACE, () => candidate(`w${process.pid}`));
   process.stdout.write(`${claimed.instanceId}\n`);
   process.exit(0);
 } else {
@@ -55,10 +57,19 @@ if (process.env.COTAL_I1263_EXCL_WORKER === "1") {
     mkdirSync(join(root, ".cotal"), { recursive: true });
 
     const planted = candidate("planted");
-    createManagerInstanceIdentity(root, SPACE, planted);
-    const adopted = createManagerInstanceIdentity(root, SPACE, candidate("loser"));
+    let managerMints = 0;
+    createManagerInstanceIdentity(root, SPACE, () => { managerMints++; return planted; });
+    const adopted = createManagerInstanceIdentity(root, SPACE, () => { managerMints++; return candidate("loser"); });
     check("ACCEPT: an existing identity is adopted, the candidate is discarded",
-      adopted.instanceId === planted.instanceId && adopted.serveIdentity.id === planted.serveIdentity.id);
+      adopted.instanceId === planted.instanceId && adopted.serveIdentity.id === planted.serveIdentity.id && managerMints === 1);
+
+    const plantedAuth = candidate("planted-auth");
+    let authMints = 0;
+    const firstAuth = createAuthInstanceIdentity(root, SPACE, () => { authMints++; return plantedAuth; });
+    const adoptedAuth = createAuthInstanceIdentity(root, SPACE, () => { authMints++; return candidate("loser-auth"); });
+    check("ACCEPT: createAuthInstanceIdentity mints once on a fresh root and adopts the stored identity without calling mint again",
+      firstAuth.instanceId === plantedAuth.instanceId && adoptedAuth.instanceId === plantedAuth.instanceId
+        && loadAuthInstanceIdentity(root, SPACE)?.instanceId === plantedAuth.instanceId && authMints === 1);
 
     const refuseRoot = mkdtempSync(join(tmpdir(), "cotal-iid-refuse-"));
     mkdirSync(join(refuseRoot, ".cotal", spaceSegment(SPACE)), { recursive: true });
@@ -66,7 +77,7 @@ if (process.env.COTAL_I1263_EXCL_WORKER === "1") {
     writeFileSync(refusePath, "{not-json", { flag: "wx", mode: 0o600 });
     let refuseMsg = "";
     try {
-      createManagerInstanceIdentity(refuseRoot, SPACE, candidate("refuse"));
+      createManagerInstanceIdentity(refuseRoot, SPACE, () => candidate("refuse"));
     } catch (e) {
       refuseMsg = (e as Error).message;
     }
@@ -78,9 +89,10 @@ if (process.env.COTAL_I1263_EXCL_WORKER === "1") {
     mkdirSync(join(lostRoot, ".cotal", spaceSegment(SPACE)), { recursive: true });
     const lostPath = join(lostRoot, ".cotal", spaceSegment(SPACE), "manager-instance.json");
     writeFileSync(lostPath, JSON.stringify(candidate("winner"), null, 2), { flag: "wx", mode: 0o600 });
-    const adoptedAfterExclusive = createManagerInstanceIdentity(lostRoot, SPACE, candidate("late"));
+    let lateMints = 0;
+    const adoptedAfterExclusive = createManagerInstanceIdentity(lostRoot, SPACE, () => { lateMints++; return candidate("late"); });
     check("ACCEPT: exclusive-create loser adopts the winner (EEXIST then load)",
-      adoptedAfterExclusive.instanceId.startsWith("winner-"));
+      adoptedAfterExclusive.instanceId.startsWith("winner-") && lateMints === 0);
     rmSync(lostRoot, { recursive: true, force: true });
 
     const ambientEnv: NodeJS.ProcessEnv = { ...process.env };

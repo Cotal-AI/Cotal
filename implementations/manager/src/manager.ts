@@ -1,7 +1,7 @@
 import { createHash, randomUUID, randomBytes } from "node:crypto";
 import { hostname } from "node:os";
 import { credsAuthenticator } from "@nats-io/transport-node";
-import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
 import { isAbsolute, join, dirname, resolve } from "node:path";
 import Headless from "@xterm/headless";
 import {
@@ -82,7 +82,7 @@ import {
   digestIdToken,
 } from "@cotal-ai/core";
 import { loadLaunchPersonaFile, PersonaSourceError } from "@cotal-ai/workspace";
-import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, claimIdentityRecord, claimManagerSiblingIdentities, connectorInstallHint, DEFAULT_SEAT_CAP, DELIVERY_CREDS_KIND, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, localTrustOfSpace, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, probeLiveness, remintDaemonCreds, resolveAgentType, resolveOnPath, runtimeInstallHint, createManagerInstanceIdentity, SEAT_CAP_UNLIMITED, spaceKey, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type MeshEntry, type RenewalRecord, type SeatCap, type UserAuthInfo } from "@cotal-ai/workspace";
+import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, claimIdentityRecord, claimManagerSiblingIdentities, connectorInstallHint, DEFAULT_SEAT_CAP, DELIVERY_CREDS_KIND, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, localTrustOfSpace, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, probeLiveness, remintDaemonCreds, resolveAgentType, resolveOnPath, runtimeInstallHint, createManagerInstanceIdentity, SEAT_CAP_UNLIMITED, spaceKey, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type ManagerInstanceIdentity, type MeshEntry, type RenewalRecord, type SeatCap, type UserAuthInfo } from "@cotal-ai/workspace";
 import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, DaemonStoreAnswer, DeliveryLeaseInfo, EpCaller, EpErrorCode, EpErrorDetail, LaunchOpts, LaunchSpec, ManagedLifecycleHandoff, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeProvider, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth } from "@cotal-ai/core";
 import {
   createRuntime,
@@ -1412,6 +1412,7 @@ export class Manager {
    *  {@link provisionEndpointGateOpen} idempotent (no core barrier change) and gives verified
    *  eviction a stable target (the predecessor's connections under this principal). Set in start(). */
   private managerServeIdentity!: Identity;
+  private localIdentity?: ManagerInstanceIdentity;
   private readonly onServiceIdentity?: ManagerOptions["onServiceIdentity"];
   /** The manager's v0.4 service-endpoint serve state — the serve handle +
    *  its dedicated connection, the STABLE serve identity (renewals re-mint the same nkey), the
@@ -1701,9 +1702,12 @@ export class Manager {
     this.installedExtensions = opts.installedExtensions ?? false;
     this.pooled = opts.pooled === true;
     this.executionState = opts.execution === "none" ? { kind: "none" } : { kind: "runtime" };
-    if (!this.remoteAuthority) {
+    if (!this.remoteAuthority && this.hasExecutionRecord()) {
       const local = loadManagerInstanceIdentity(this.workspaceRoot, this.space);
-      if (local && existsSync(this.executionRecordPath(local.instanceId))) this.claimExecutionRecord(local.instanceId);
+      if (local && existsSync(this.executionRecordPath(local.instanceId))) {
+        this.claimExecutionRecord(local.instanceId);
+        this.localIdentity = local;
+      }
     }
     if (this.executionState.kind === "runtime") this.runtime = createRuntime(opts.runtime ?? "auto", `cotal-${this.space}`);
     if (opts.pooled && this.executionState.kind === "runtime" && isCustodialRuntime(this.requiredRuntime))
@@ -1958,6 +1962,13 @@ export class Manager {
     return join(this.workspaceRoot, ".cotal", `manager-execution.${spaceKey(this.space)}.${instanceId}.json`);
   }
 
+  private hasExecutionRecord(): boolean {
+    const dir = join(this.workspaceRoot, ".cotal");
+    if (!existsSync(dir)) return false;
+    const prefix = `manager-execution.${spaceKey(this.space)}.`;
+    return readdirSync(dir).some((entry) => entry.startsWith(prefix) && entry.endsWith(".json"));
+  }
+
   private claimExecutionRecord(instanceId: string): void {
     const record = claimIdentityRecord(this.executionRecordPath(instanceId), "manager execution capability", (raw) => {
       if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
@@ -1971,23 +1982,24 @@ export class Manager {
 
   private async admitExecutionState(): Promise<void> {
     if (!this.remoteAuthority) {
-      let local = loadManagerInstanceIdentity(this.workspaceRoot, this.space);
       if (this.execution === "none") {
         const recorded = loadMeshes().find((m) => m.space === this.space);
         const auth = hasUserAuthState(this.workspaceRoot, this.space) && recorded?.mode === "user"
           ? await getSpaceAuth(this.secrets, this.space) : undefined;
         if (!auth)
           throw new Error("execution: none requires a genuine hosting user-auth root and its user-mode mesh record");
-        if (local && !existsSync(this.executionRecordPath(local.instanceId)))
+        let proposed: ManagerInstanceIdentity | undefined;
+        const local = this.localIdentity ?? createManagerInstanceIdentity(this.workspaceRoot, this.space, () => {
+          proposed = { instanceId: mintLifecycleUid(), serveIdentity: newIdentity() };
+          return proposed;
+        });
+        if (!proposed && !existsSync(this.executionRecordPath(local.instanceId)))
           throw new Error("execution: none refuses an existing unclassified manager instance; keep its runtime and retained state, or register a fresh control instance");
-        if (!local) {
-          const proposed = { instanceId: mintLifecycleUid(), serveIdentity: newIdentity() };
-          local = createManagerInstanceIdentity(this.workspaceRoot, this.space, proposed);
-          if (local.instanceId !== proposed.instanceId)
-            throw new Error("execution: none refuses a concurrently claimed unclassified manager identity");
-        }
+        if (proposed && local.instanceId !== proposed.instanceId)
+          throw new Error("execution: none refuses a concurrently claimed unclassified manager identity");
+        if (!this.localIdentity) this.claimExecutionRecord(local.instanceId);
+        this.localIdentity = local;
         const localInstanceId = local.instanceId;
-        this.claimExecutionRecord(localInstanceId);
         const nc = await this.dial({ ...standaloneConnectOpts({ creds: await mintCreds(auth, newIdentity(), "provisioner"), tls: false }), maxReconnectAttempts: 0 });
         try {
           const kvm = new Kvm(nc);
@@ -1997,8 +2009,12 @@ export class Manager {
             throw new Error("execution: none refuses retained seat or turn inventory before recovery; keep the execution-owning Manager");
         } finally { await nc.drain().catch(() => nc.close()); }
       } else {
-        local ??= createManagerInstanceIdentity(this.workspaceRoot, this.space, { instanceId: mintLifecycleUid(), serveIdentity: newIdentity() });
-        this.claimExecutionRecord(local.instanceId);
+        const local = this.localIdentity ?? createManagerInstanceIdentity(this.workspaceRoot, this.space, () => ({
+          instanceId: mintLifecycleUid(),
+          serveIdentity: newIdentity(),
+        }));
+        if (!this.localIdentity) this.claimExecutionRecord(local.instanceId);
+        this.localIdentity = local;
       }
       return;
     }
@@ -2083,18 +2099,13 @@ export class Manager {
         this.managerInstanceId = this.remoteAuthority.instanceId;
         this.managerServeIdentity = this.remoteAuthority.identities.serve;
       } else {
-      const persisted = loadManagerInstanceIdentity(this.workspaceRoot, this.space);
-      if (persisted !== undefined) {
-        this.managerInstanceId = persisted.instanceId;
-        this.managerServeIdentity = persisted.serveIdentity;
-      } else {
-        const claimed = createManagerInstanceIdentity(this.workspaceRoot, this.space, {
+        const claimed = this.localIdentity ?? createManagerInstanceIdentity(this.workspaceRoot, this.space, () => ({
           instanceId: mintLifecycleUid(),
           serveIdentity: newIdentity(),
-        });
+        }));
+        this.localIdentity = undefined;
         this.managerInstanceId = claimed.instanceId;
         this.managerServeIdentity = claimed.serveIdentity;
-      }
       }
     }
     await this.onServiceIdentity?.(this.serviceIdentityObservation());

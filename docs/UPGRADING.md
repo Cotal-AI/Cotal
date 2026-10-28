@@ -34,6 +34,28 @@ What this page does not promise is a rolling upgrade. Nothing in the current lin
 authority versions, so where broker and manager run separately there is a window in which the mesh
 is down. The sections below give that window's shape so it can be scheduled rather than endured.
 
+## Instance identity create helpers after 0.119.4
+
+`createManagerInstanceIdentity(root, space, mint)` and
+`createAuthInstanceIdentity(root, space, mint)` in `@cotal-ai/workspace` now take a `mint` callback
+(`() => ManagerInstanceIdentity` and `() => AuthInstanceIdentity`) instead of an already-minted
+value, matching `claimIdentityRecord`. The callback runs only when no record exists for the space,
+so a caller no longer calls `loadManagerInstanceIdentity` or `loadAuthInstanceIdentity` in front of
+it to avoid minting and discarding an identity on a populated root. A running deployment needs
+nothing.
+
+### What stops working
+
+Code of your own that passes a `ManagerInstanceIdentity` or `AuthInstanceIdentity` object directly
+to `createManagerInstanceIdentity` or `createAuthInstanceIdentity` no longer compiles, and plain
+JavaScript throws a `TypeError` when the record is absent.
+
+### Before the upgrade
+
+Pass a function that returns the identity, such as `() => candidate`, or move the `mintLifecycleUid`
+and `newIdentity` calls inside the callback and drop the preceding `loadManagerInstanceIdentity` or
+`loadAuthInstanceIdentity` check.
+
 ## Multi-space host acknowledgments after 0.116.1
 
 Every multi-space host (`auth-service --spaces`, `auth-service --callout-only --spaces`,

@@ -839,10 +839,10 @@ writeFileSync(manifestPath, JSON.stringify({
 }));
 const digest = (p: string) => createHash("sha256").update(readFileSync(p)).digest("hex");
 
-createManagerInstanceIdentity(localWs, localSpace, {
+createManagerInstanceIdentity(localWs, localSpace, () => ({
   instanceId: localMgrInstanceId,
   serveIdentity: newIdentity(),
-});
+}));
 
 const localMgr = new Manager({
   space: localSpace,
