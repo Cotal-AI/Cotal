@@ -192,10 +192,22 @@ try {
   );
   // A docs page on a terminal is drawn: headings are titles, a table too wide is one record per row,
   // and it wraps to 80 columns. Only a line that is one word, or one span in backticks, stays wider.
+  const unbreakable = (line: string) => !/\S \S/.test(line.trim()) || /^[("']*`[^`]+`[)"',.;:]*$/.test(line.trim());
   const page = await helpAt(["docs", "cli"], 80);
   check("cotal docs cli on an 80-column terminal is drawn, with no heading marks or table rules",
     page.exitCode === 0 && page.all.includes("`cotal` CLI reference") && !page.all.some((line) => /^#{1,6} /.test(line) || /^\s*\|[\s:|-]+\|\s*$/.test(line)) && page.all.some((line) => /^ {2}field: +`schemaVersion`$/.test(line)), page.all.slice(0, 12));
-  check("cotal docs cli on an 80-column terminal fits every line that can break", page.exitCode === 0 && page.all.length > 1000 && fit(page.all.join("\n"), 80).every((line) => !/\S \S/.test(line.trim()) || /^[("']*`[^`]+`[)"',.;:]*$/.test(line.trim())), fit(page.all.join("\n"), 80));
+  check("cotal docs cli on an 80-column terminal fits every line that can break", page.exitCode === 0 && page.all.length > 1000 && fit(page.all.join("\n"), 80).every(unbreakable), fit(page.all.join("\n"), 80));
+  // A search hit is drawn as its page is, so a span in backticks that crosses a line break in the
+  // page's source stays whole, and `--plain` wraps the same text. A run of backticks closes at the
+  // next run as long, as in Markdown.
+  const spansClose = (line: string) => (line.match(/`+/g) ?? []).reduce((open, run) => (!open ? run.length : run.length === open ? 0 : open), 0) === 0;
+  for (const flags of [[], ["--plain"]]) {
+    const search = await helpAt(["docs", "--search", "manager", ...flags], 80);
+    const name = ["cotal docs --search manager", ...flags].join(" ");
+    check(`${name} on an 80-column terminal splits no span in backticks across lines`,
+      search.exitCode === 0 && search.all.some((line) => line.trim() === "read the full page: `cotal docs cli`") && search.all.every(spansClose), search.all.filter((line) => !spansClose(line)));
+    check(`${name} on an 80-column terminal fits every line that can break`, search.exitCode === 0 && search.all.length > 20 && fit(search.all.join("\n"), 80).every(unbreakable), fit(search.all.join("\n"), 80));
+  }
   const setup80 = await helpAt(["help", "setup"], 80);
   check("cotal help setup on an 80-column terminal fits every line, its examples included", setup80.exitCode === 0 && fit(setup80.all.join("\n"), 80).length === 0 && setup80.all.includes("Examples"), fit(setup80.all.join("\n"), 80));
   const setup = await helpAt(["help", "setup"], 40);
