@@ -6,8 +6,9 @@
  * cell then saves the preset over a broker-only open stack,
  * runs `service start --foreground`, waits for the roster boot, sends SIGINT to the CLI alone and
  * requires exit 130 with the native stop recorded on the instance. A corrupt seat-cap record then
- * fails the native child at boot: the background refusal quotes the cause it logged last and its
- * log holds it, and a foreground start prints it on the terminal and says its output went there.
+ * fails the native child at boot: the background refusal quotes the cause and next step it logged
+ * last and its log holds them, and a foreground start prints that line on stderr after its Mesh
+ * heading and lifetime notice and says its output went there.
  *
  * Bare `cotal down` on that legacy root then refuses while the saved service runs: its dry run lists
  * the running manager, warns with the refusal and changes nothing, `down --preserve-state` and bare
@@ -205,18 +206,24 @@ try {
     // inside its own startup, with a classified failure that wraps the record's refusal.
     const capRecord = join(root, ".cotal", `manager.${spaceKey(SPACE)}.seat-cap.json`);
     writeFileSync(capRecord, "not a record\n", { mode: 0o600 });
-    const cause = "✗ the manager did not start: OPERATION_UNKNOWN: the native manager child did not confirm startup; inspect the original protected launch records before another start; cause: SCHEMA_INVALID: the manager seat-cap record is not valid JSON";
+    // The line ends in the remedy the controller names for a native start it could not confirm.
+    const cause = "✗ the manager did not start: OPERATION_UNKNOWN: the native manager child did not confirm startup; inspect the original protected launch records before another start; cause: SCHEMA_INVALID: the manager seat-cap record is not valid JSON; next: inspect the original full instance and its launch request before another start\n";
     const failed = cotal(["service", "start", "mgr", "--space", SPACE]);
-    check("a manager that fails at boot logs its cause last, and the refusal quotes it",
+    check("a manager that fails at boot logs its cause and next step last, and the refusal quotes it",
       failed.status === 5 && out(failed).includes(`exited before readiness was established (exit code 3, signal none); the last line it logged is: ${cause}`), out(failed));
     const failedId = /cotal service logs mgr --instance (\S+) --space /.exec(out(failed))?.[1];
     const failedLog = cotal(["service", "logs", "mgr", "--instance", failedId ?? "none", "--space", SPACE]);
-    check("  and the log the refusal names holds that cause", failedLog.status === 0 && out(failedLog).includes(cause), out(failedLog));
+    check("  and the log the refusal names holds that line", failedLog.status === 0 && out(failedLog).includes(cause), out(failedLog));
     const fgFailed = cotal(["service", "start", "mgr", "--space", SPACE, "--foreground"]);
     check("a foreground manager that fails at boot prints its cause here, and the refusal says its output went here, not to its log",
       fgFailed.status === 5 && fgFailed.stderr.includes(cause)
         && out(fgFailed).includes("exited before readiness was established (exit code 3, signal none); its output went to this terminal and was not captured in its log")
         && !out(fgFailed).includes("its log records the cause") && !out(fgFailed).includes("cotal service logs"), out(fgFailed));
+    // The parent's Mesh header and lifetime notice come before the child starts, on the stream its line and the refusal use.
+    const order = [`Mesh: ${SPACE}\n`, "Foreground service lifetime", cause, `Mesh: ${SPACE}\n`, "exited before readiness was established"]
+      .reduce<number[]>((at, text) => [...at, fgFailed.stderr.indexOf(text, (at.at(-1) ?? -1) + 1)], []);
+    check("  and its stderr reads the Mesh header and lifetime notice, then the child's line, then the refusal",
+      order.every((at) => at >= 0), fgFailed.stderr);
     rmSync(capRecord);
 
     // ---- Bare down refuses while the space's service runs, and skips it once stopped -------------
