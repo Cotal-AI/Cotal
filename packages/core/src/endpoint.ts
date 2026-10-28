@@ -53,6 +53,7 @@ import { lastKvEntries, liveKvEntries } from "./kv-scan.js";
 import { isConsumerAlreadyExists, isConsumerNotFound, isJetStreamMissing } from "./jetstream-missing.js";
 import { isRestoredConsumer } from "./backup.js";
 import { ARTIFACT_PART_KIND, isArtifactPart } from "./artifact.js";
+import { assertValidKind } from "./agent-file.js";
 import { assertValidName } from "./resolve.js";
 import { EVICT_PRINCIPALS_MAX } from "./evict.js";
 import { createSpaceStreams, dmDurableConfig, dlvDurableConfig, taskDurableConfig, fanoutDurableConfig, inboxReaderConfig, MAX_MSGS_PER_SUBJECT, MANAGER_LEASE_TTL_MS, MANAGER_LEASE_ATTEMPT_MS, TTL_RECONCILE_CANARY_KEY, PRESENCE_STORAGE } from "./streams.js";
@@ -967,6 +968,7 @@ export class CotalEndpoint extends EventEmitter {
     // point every join/spawn path flows through. A role is an address too, refused here before
     // presence can advertise it.
     assertValidName(opts.card.name);
+    assertValidKind(opts.card.kind);
     if (opts.card.role !== undefined) assertValidRole(opts.card.role);
     // Auth mode is EITHER static creds (dev/no-login) OR a user bearer (login → callout) — never both.
     if (opts.bearer) {
