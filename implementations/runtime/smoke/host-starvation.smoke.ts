@@ -277,14 +277,44 @@ const handlerWith = (lag?: LoopLagObserver, clock: () => number = () => Date.now
 // class reported on #1517. It reads the observer the implementation reads.
 {
   const lag = loopLagObserver(50);
+  const initialTimer = (lag as unknown as { timer?: NodeJS.Timeout }).timer;
+  c("the observer arms an unrefed tick timer on Node",
+    initialTimer !== undefined && initialTimer.hasRef() === false);
   const mark = lag.mark();
   starveLoop(2_000);
   await wait(60);
+  const rescheduledTimer = (lag as unknown as { timer?: NodeJS.Timeout }).timer;
+  c("and each rescheduled tick timer stays unrefed",
+    rescheduledTimer !== undefined && rescheduledTimer !== initialTimer && rescheduledTimer.hasRef() === false);
   const w = lag.since(mark);
   lag.stop();
+  c("stopping the observer clears its armed tick timer",
+    (lag as unknown as { timer?: NodeJS.Timeout }).timer === undefined);
   c("a synchronous block is visible to the observer as lag across the window", w.lagMs >= 1_000, JSON.stringify(w));
   c("and as ticks the window should have contained and did not", w.ticksObserved * 2 < w.ticksExpected, JSON.stringify(w));
   c("so the same evidence the handler acts on says this process was not scheduled", wasStarved(w), JSON.stringify(w));
+
+  const realSetTimeout = globalThis.setTimeout;
+  const armedTimers: NodeJS.Timeout[] = [];
+  let unrefMissingErr: unknown;
+  try {
+    globalThis.setTimeout = ((fn: (...args: unknown[]) => void, ms?: number, ...args: unknown[]) => {
+      const t = realSetTimeout(fn, ms, ...args);
+      armedTimers.push(t);
+      Object.defineProperty(t, "unref", { value: undefined, configurable: true });
+      return t;
+    }) as typeof setTimeout;
+    try {
+      loopLagObserver(50).stop();
+    } catch (e) {
+      unrefMissingErr = e;
+    }
+  } finally {
+    globalThis.setTimeout = realSetTimeout;
+    for (const t of armedTimers) clearTimeout(t);
+  }
+  c("a timer without unref throws TypeError instead of silently leaving a refed tick armed",
+    unrefMissingErr instanceof TypeError, unrefMissingErr);
 }
 
 // ── 1b) the OTHER half of the pause: a starved ARM is absorbed too ───────────────────────────
@@ -723,7 +753,7 @@ done();
 // from this file produced exactly that, a passing run one cell lighter. An assertion silently
 // stops being paid for the moment nobody counts it, which is the same way a displaced mutation
 // anchor stops grading without anything going red.
-const EXPECTED_CELLS = 58;
+const EXPECTED_CELLS = 62;
 const ran = ok + fail;
 if (ran !== EXPECTED_CELLS) {
   console.error(
