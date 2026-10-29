@@ -61,11 +61,20 @@ still need to be idempotent because durable delivery may redeliver a message.
 
 `CotalEndpoint` can configure native NATS heartbeat detection on its resident connection with
 `transportPingIntervalMs` and `transportMaxPingOut`. Both options must be positive integers and
-supplied together. When omitted, NATS keeps its defaults. PING/PONG uses the existing socket and
+supplied together. When omitted, endpoints use a 10-second interval and two outstanding pings.
+This applies to connector seats and CLI endpoints, including loopback connections through proxies.
+With the current NATS client, a silent link normally disconnects within three intervals (about
+30 seconds), subject to event-loop scheduling. The delivery daemon keeps its 2.5-second override.
+PING/PONG uses the existing socket and
 opens no authenticated probe connection. A stale connection emits a transport disconnect before
 NATS retries, so a service can bound silent link-loss detection without periodic login dials.
 `transportConnectTimeoutMs`, a positive integer, bounds how long the first connect may take before it
 fails with the transport's timeout. When omitted, NATS keeps its default of 20 seconds.
+
+Transport liveness is separate from endpoint bind readiness and presence. A seat can report
+`degraded` after repeated presence-write failures before the socket is declared stale. Sends during
+that interval can time out with an unknown outcome. Shorter pings do not confirm a send or change
+presence expiry, request timeouts or reconnect policy.
 
 The reference client's finite KV scan binds an ordered consumer to read its pending count.
 It deletes that consumer before returning a complete result, including an empty result.
