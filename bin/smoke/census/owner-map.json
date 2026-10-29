@@ -1835,7 +1835,35 @@
   "cli:auth revoke-credential": "current:auth revoke-credential",
   "env:COTAL_SMOKE_HOLD_AFTER_LAUNCH_RECORD": "internal:test hook",
   "env:COTAL_SMOKE_HOLD_IN_SPACE_AUTH": "internal:test hook",
-  "env:COTAL_SMOKE_HOLD_AFTER_BROKER_SIGNAL": "internal:test hook"
+  "env:COTAL_SMOKE_HOLD_AFTER_BROKER_SIGNAL": "internal:test hook",
+  "ep:manager:turn-participate": "current:endpoint invoke --self",
+  "ep:manager:turn-participate#ephemeral/manager.self": "current:endpoint invoke --self",
+  "ep:manager:turn-participate@self": "current:endpoint invoke --self",
+  "ep:manager:remove-persona": "current:endpoint invoke",
+  "ep:manager:remove-persona#ephemeral/manager.persona": "current:endpoint invoke",
+  "ep:manager:remove-persona.name": "current:endpoint invoke --args",
+  "cli:up--log-file": "current:up --log-file",
+  "cli:up--logfile-size-limit": "current:up --logfile-size-limit",
+  "cli:up--logfile-max-num": "current:up --logfile-max-num",
+  "cli:up--max-payload": "current:up --max-payload",
+  "cli:up--recreate-issued-stores": "current:up --recreate-issued-stores",
+  "cli:__daemon-deliver--spaces": "internal:hidden delivery host entry serving each declared space from one process",
+  "cli:deliver--spaces": "current:deliver --spaces",
+  "cli:service-endpoint--to": [
+   "current:service-endpoint grant --to",
+   "current:service-endpoint revoke --to"
+  ],
+  "cli:service-endpoint--lifecycle": [
+   "current:service-endpoint grant --lifecycle",
+   "current:service-endpoint revoke --lifecycle"
+  ],
+  "cli:service-endpoint--commands": "current:service-endpoint grant --commands",
+  "cli:service-endpoint--cursor": "current:service-endpoint callers --cursor",
+  "cli:service-endpoint callers": "current:service-endpoint callers",
+  "cli:service-endpoint grant": "current:service-endpoint grant",
+  "cli:service-endpoint revoke": "current:service-endpoint revoke",
+  "env:COTAL_PI_SUPERVISED_CWD": "internal:managed Pi launch marker for native project-trust handling",
+  "auth-http:/managed-lifecycle/activate": "internal:loopback host action activating the manager's allocated lifecycle"
  },
  "checklist": {
   "spec:13.5 call": "current:invoke",
