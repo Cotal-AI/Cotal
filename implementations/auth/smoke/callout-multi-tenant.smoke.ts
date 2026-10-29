@@ -132,9 +132,9 @@ if (process.argv[2] === "__daemon-auth-service") {
     child.once("exit", (code) => resolve(code));
   });
 
-  /** Start one auth-service daemon process. */
-  const startDaemon = (label: string, args: string[]) => {
-    const child = spawn(process.execPath, [...process.execArgv, import.meta.filename, "__daemon-auth-service", "--server", servers, ...args],
+  /** Start one auth-service daemon process. `nodeArgs` go to node ahead of the script. */
+  const startDaemon = (label: string, args: string[], nodeArgs: string[] = []) => {
+    const child = spawn(process.execPath, [...process.execArgv, ...nodeArgs, import.meta.filename, "__daemon-auth-service", "--server", servers, ...args],
       { cwd: root, env: childEnv, stdio: ["ignore", "pipe", "pipe"] });
     const out: string[] = [];
     child.stdout!.setEncoding("utf8").on("data", (d: string) => out.push(d));
@@ -366,7 +366,12 @@ if (process.argv[2] === "__daemon-auth-service") {
       // are, so this host is the only callout member A and B have, and nothing answers E.
       const E = spaces[2];
       writeManifest([spaces[0].name, spaces[1].name, E.name]);
-      const mixed = startDaemon("mixed", ["--callout-only", "--spaces", manifestPath]);
+      // The soak below reads this host's RSS. V8 grows its young generation to as much as 128 MB and
+      // maps and releases those pages, and the buffers that die there, on its own schedule, which
+      // moved RSS by up to 60 MB with nothing retained. An object a retry keeps survives into the old
+      // generation, which RSS still counts, so a fixed 1 MB semi-space removes V8's sizing from the
+      // reading and still measures what the retries keep.
+      const mixed = startDaemon("mixed", ["--callout-only", "--spaces", manifestPath], ["--max-semi-space-size=1"]);
       await until(() => mixed.out.join("").includes("✓ auth callout host up") || mixed.child.exitCode !== null, `the mixed host did not come up: ${mixed.out.join("")}`);
       const retries = () => mixed.out.join("").split("\n").filter((l) => l.includes(`space "${E.name}" could not be served`) && l.includes("admits service endpoints")).length;
       check("a host naming a space with open service endpoint admission starts and answers for every other space",
