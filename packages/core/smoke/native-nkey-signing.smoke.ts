@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { Algorithms, decode, encodeAuthorizationResponse, encodeUser } from "@nats-io/jwt";
-import { createAccount, createCluster, createCurve, createOperator, createServer, createUser, fromPublic, NKeysErrorCode, Prefix } from "@nats-io/nkeys";
+import { createAccount, createCluster, createCurve, createOperator, createServer, createUser, fromPublic, fromSeed, NKeysErrorCode, Prefix } from "@nats-io/nkeys";
 import { Codec } from "@nats-io/nkeys/lib/codec.js";
 import { decodeNatsJwt, nativeNkeySigner } from "../src/nkey-signer.js";
+import { composeSpaceAuth, createBrokerAuth, createSpaceAccountAuth } from "../src/index.js";
 
 const messages = [new Uint8Array(), new TextEncoder().encode("NATS signing: café"), Uint8Array.from({ length: 256 }, (_, i) => i)];
 let cases = 0;
@@ -110,4 +111,31 @@ try {
     cases++;
   } finally { signer.clear(); issuer.clear(); holder.clear(); srv.clear(); }
 }
-console.log(`native nkey signing smoke: ${cases} cases passed (5 key kinds × 3 payloads, invalid seeds, v1/v2 JWTs and callout responses, native JWT decode)`);
+// The account factory uses the same signer without changing the operator/account trust chain.
+{
+  const broker = await createBrokerAuth("native-account-factory");
+  const operatorPub = decode(broker.operator.jwt).sub;
+  const accounts = [];
+  for (const space of ["native-account-a", "native-account-b"]) {
+    const account = await createSpaceAccountAuth(broker, space);
+    const stockAccount = fromSeed(new TextEncoder().encode(account.account.seed));
+    const stockSigning = fromSeed(new TextEncoder().encode(account.account.signingSeed));
+    try {
+      assert.equal(account.account.pub, stockAccount.getPublicKey());
+      assert.equal(account.account.signingPub, stockSigning.getPublicKey());
+      const claims = decode<{ signing_keys: string[] }>(account.account.jwt);
+      assert.equal(claims.iss, operatorPub, "stock JWT verification accepts the operator signature");
+      assert.equal(claims.sub, account.account.pub);
+      assert.deepEqual(claims.nats.signing_keys, [account.account.signingPub]);
+      assert.notEqual(account.account.pub, account.account.signingPub);
+      assert.doesNotThrow(() => composeSpaceAuth(broker, account));
+      accounts.push(account);
+      cases++;
+    } finally { stockAccount.clear(); stockSigning.clear(); }
+  }
+  assert.notEqual(accounts[0]!.account.pub, accounts[1]!.account.pub);
+  assert.notEqual(accounts[0]!.account.signingPub, accounts[1]!.account.signingPub);
+  await assert.rejects(() => createSpaceAccountAuth({ ...broker, operator: { ...broker.operator, seed: "" } }, "stripped"), /operator seed is required/);
+  cases++;
+}
+console.log(`native nkey signing smoke: ${cases} cases passed (5 key kinds × 3 payloads, invalid seeds, v1/v2 JWTs and callout responses, native JWT decode, account factory)`);
