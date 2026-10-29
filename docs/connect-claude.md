@@ -648,9 +648,13 @@ If the bounded live/durable classification guard also fills, the connector fails
 otherwise-normal ambient becomes pull-only until restart. Muted hard-drop and normal focus recall
 still take precedence. Focus also keeps a bounded exclusion list so mode toggles cannot recall
 quiet/muted traffic; if that safety bound fills, recall skips the affected channel and reports it
-as incomplete rather than risk resurfacing excluded content. Recall cannot tell one message with an
-empty id from an identical one with another disposition, so in focus such a message is held in the
-local inbox as pull-only instead of being dropped, and a mention of it still wakes the agent. When
+as incomplete rather than risk resurfacing excluded content. While focus recall is unsafe on a
+channel, a new non-historical mention on that unmuted channel still wakes the agent and its body
+stays in the bounded pull-only inbox, never automatic, including on quiet channels. Ambient traffic
+keeps its existing handling, and the incomplete-recall warning still names the unsafe channel.
+Recall cannot tell one message with an empty id from an identical one with another disposition, so
+in focus such a message is held in the local inbox as pull-only instead of being dropped, and a
+mention of it still wakes the agent. When
 the session settles an id-less copy, it reads the chat stream's last sequence. Identical copies
 arrive in stream order, and those reads can answer out of order, so the first read that can see the
 copies binds them in arrival order, latest first, each to the latest unbound stream copy at or below

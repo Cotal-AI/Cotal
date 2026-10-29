@@ -1177,6 +1177,15 @@ export class MeshAgent extends EventEmitter {
       if (remembered) this.evictedClassifications.delete(item.id);
       const snapshottedPullOnly = item.historical || (!item.mentionsMe && (remembered?.pullOnly ?? cm === "quiet"));
       if (cm === "quiet" || snapshottedPullOnly) this.excludeFromFocus(item);
+      // An unsafe channel cannot recall even a fresh mention. Keep that body in the existing
+      // bounded pull lane, never the automatic lane, including on quiet channels. Muted and
+      // historical traffic retain their earlier gates. Exclude this id so recall cannot repeat it.
+      if (this._attention === "focus" && item.mentionsMe && !item.historical && this.focusRecallUnsafeChannels.has(item.channel ?? "")) {
+        this.excludeFromFocus(item);
+        this.buffer(item, delivery, true, idless);
+        this.emit("mention-wake", item);
+        return;
+      }
       // Current normal+focus remains the stronger hard gate unless this exact id was previously
       // received pull-only. classificationUnsafe must not turn focus-dropped traffic into a buffer.
       if (cm !== "quiet" && !snapshottedPullOnly && this._attention === "focus") {
