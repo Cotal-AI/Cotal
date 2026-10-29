@@ -145,7 +145,7 @@ try {
   const pinnedUnknown = launch("--on", on, "--runtime", "nosuch");
   check("a launch pinned to this root's manager with an unknown runtime is refused DEPENDENCY_UNAVAILABLE before it is sent",
     pinnedUnknown.status === 2 && pinnedUnknown.envelope?.error?.code === "DEPENDENCY_UNAVAILABLE"
-    && pinnedUnknown.envelope.error.remedy?.startsWith('unknown runtime "nosuch" (known: pty, orca, tmux, cmux, herdr)') === true
+    && pinnedUnknown.envelope.error.remedy?.startsWith('unknown runtime "nosuch" (known: pty, orca, tmux, cmux, herdr, paseo)') === true
     && !pinnedUnknown.sent && pinnedUnknown.envelope.target?.requestId === undefined, pinnedUnknown);
   const unpinnedMissing = launch("--runtime", "tmux");
   check("an unpinned launch whose only manager is this root's names the package of an uninstalled runtime, before it is sent",

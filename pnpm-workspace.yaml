@@ -10,5 +10,11 @@ allowBuilds:
   esbuild: true
   msgpackr-extract: false
   protobufjs: false
+# @getpaseo 0.14.0 (published 2026-10-29) is the current Paseo release; drop these once it ages past
+# minimumReleaseAge (2026-10-30T08:15Z).
+minimumReleaseAgeExclude:
+  - '@getpaseo/client@0.14.0'
+  - '@getpaseo/protocol@0.14.0'
+  - '@getpaseo/relay@0.14.0'
 patchedDependencies:
   '@changesets/cli@3.0.3': patches/@changesets__cli@3.0.3.patch
