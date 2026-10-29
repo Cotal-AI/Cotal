@@ -1,5 +1,16 @@
 # @cotal-ai/cli
 
+## 0.121.7
+
+### Patch Changes
+
+- bfa1f40: `cotal service add <name> --preset broker --help` shows `--server <url>`, as the missing-option refusal and the bare `service` row do, where it showed `--server <string>`. The `--log-file` description no longer starts with "absolute path of", since `add` makes a relative path absolute.
+- b06f3c8: A delivery daemon stopped while its connection redials, as it does moments after `cotal up -d` starts the manager and the daemon moves onto a renewed credential, now waits for the redial and gives its lease back. It used to exit with the row still on the broker, so `cotal down` refused and the next `up` waited out the 30s lease. `up -d` now reports a delivery daemon that was ready and then exited before the boot finished as a degraded control plane and exits 1, where it used to leave the daemon out of its line and exit 0. `cotal down` no longer reads a pidless lease row as a live daemon from one read: it waits until the row is written again, which refuses as before, or expires, as a row left by a daemon whose broker stalled past its broker-gone window does, and then goes on.
+- Updated dependencies [05ecb0d]
+- Updated dependencies [912de5d]
+  - @cotal-ai/core@0.121.7
+  - @cotal-ai/workspace@0.121.7
+
 ## 0.121.6
 
 ### Patch Changes
