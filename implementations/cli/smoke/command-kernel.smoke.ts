@@ -1460,6 +1460,8 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
     { name: "manager", instanceId: "bbb2", host: null, activity: null, runtime: null, terminal: null, since: null },
   ], "each manager carries what its presence reports, and nothing it does not; one without a name shows as <host>/<runtime>, and a presence that does not say whether a terminal attaches reports neither way");
   assert.equal(restated.remedy, `rerun it on one: ${displayCmd()} stop --name 'x y' --json --on box-a/orca or ${displayCmd()} stop --name 'x y' --json --on bbb2`, "the Next reruns the caller's own command with --on for each manager, by the shortest value that picks it");
+  const runRestated = await managerChoiceFailure(refusal, async () => roster, ["run", "--json"]);
+  assert.equal(runRestated?.remedy, `rerun it on one: ${displayCmd()} run --json --on aaa1 or ${displayCmd()} run --json --on bbb2`, "a hosted run verb is pinned by the instance id, which is the only --on that verb accepts");
   const shown = renderReport(commandFailureReport(restated), "plain");
   assert.match(shown, /Live managers[\s\S]*Manager\s+Instance[\s\S]*box-a\/orca\s+aaa1\s+box-a\s+supervisor \(orca\)\s+2026-10-01T00:00:00\.000Z/, "the report lists each manager on its own row, by name first");
   const reported = [{ ...(roster[0] as unknown as { card: Record<string, unknown> }), card: { ...(roster[0] as unknown as { card: Record<string, unknown> }).card, meta: { host: "box-a", terminal: "none" } } }] as unknown as import("@cotal-ai/core").Presence[];

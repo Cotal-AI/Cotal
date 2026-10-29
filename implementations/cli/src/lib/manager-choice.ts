@@ -251,9 +251,26 @@ function withPin(argv: readonly string[], selector: string): string[] {
 /** `argv` again as a command line, pinned to `selector`. */
 export const rerunOn = (argv: readonly string[], selector: string): string => [displayCmd(), ...withPin(argv, selector).map(shellWord)].join(" ");
 
-/** The command again on each manager, by the shortest selector that picks it. */
-const reruns = (managers: readonly ManagerCandidate[], argv: readonly string[]): string =>
-  `rerun it on one: ${managers.map((m) => rerunOn(argv, selectorFor(m, managers))).join(" or ")}`;
+/** Hosted `cotal run` verbs take `--on` only as the full instance id `cotal ps` prints
+ *  (docs/cli.md). A name or `<host>/<runtime>` that other commands accept is refused
+ *  `USAGE_INVALID` there, so a remedy for those verbs must name the instance id.
+ *  Local, offline and seat-only run commands take no `--on`, so they are left alone. */
+const hostedRunArgv = (argv: readonly string[]): boolean => {
+  const end = argv.indexOf("--");
+  const words = (end === -1 ? argv : argv.slice(0, end)).filter((word) => word !== "cotal");
+  const at = words.indexOf("run");
+  if (at !== 0) return false;
+  if (words.includes("--local")) return false;
+  const verb = words[1];
+  return verb === undefined || !["validate", "plan", "simulate", "turns", "yield", "revoke", "check"].includes(verb);
+};
+
+/** The command again on each manager. Hosted run verbs are pinned by instance id; every other
+ *  command keeps the shortest selector that picks the manager. */
+const reruns = (managers: readonly ManagerCandidate[], argv: readonly string[]): string => {
+  const byInstance = hostedRunArgv(argv);
+  return `rerun it on one: ${managers.map((m) => rerunOn(argv, byInstance ? m.instanceId : selectorFor(m, managers))).join(" or ")}`;
+};
 
 /** The managers an unpinned manager selection refused to choose between, with what the roster
  *  says about each, or undefined when `failure` is not that refusal. A roster that cannot be read
