@@ -9,7 +9,7 @@ import { isAccountNkey } from "./identity.js";
 import { assertDerivedOwnerToken, assertLifecycleToken, spacePrefix } from "./subjects.js";
 
 import { SERVICE_AUTHORITY_MAX_BYTES, SERVICE_DESCRIBE_QUERY_BUDGET_MS } from "./service-authority-limits.js";
-export { SERVICE_ACCESS_TTL_SECONDS, SERVICE_RENEWAL_TTL_SECONDS, SERVICE_AUTHORITY_MAX_BYTES, SERVICE_DESCRIBE_QUERY_BUDGET_MS } from "./service-authority-limits.js";
+export { SERVICE_ACCESS_TTL_SECONDS, SERVICE_RENEWAL_TTL_SECONDS, SERVICE_AUTHORITY_MAX_BYTES, SERVICE_CALLER_PAYLOAD_OVERHEAD, SERVICE_CALLER_PAYLOAD_FLOOR, SERVICE_DESCRIBE_QUERY_BUDGET_MS } from "./service-authority-limits.js";
 
 /** One published Ed25519 verification key of the service authority's issuer: the public
  *  coordinate only, as the door projects its JWKS. */

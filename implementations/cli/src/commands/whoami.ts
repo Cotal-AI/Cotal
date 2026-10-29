@@ -34,8 +34,8 @@ export interface WhoamiResult {
     readonly actor: string | null;
     readonly subject: string | null;
     readonly loginExpiresAt: string | null;
-    /** A signed-in user's ledger row: `granted`, `not-granted`, or `not-local` when the ledger is
-     *  not on this machine. `null` for every other kind of identity, and before sign-in. */
+    /** A signed-in user's grant: `granted`, `not-granted`, or `not-local` when neither a local row
+     *  nor an authoritative issuer response is available. `null` otherwise and before sign-in. */
     readonly grant: "granted" | "not-granted" | "not-local" | null;
   };
   readonly read: Grant | null;
@@ -74,9 +74,9 @@ export interface WhoamiCredentialResult {
 const none = { principal: null, owner: null, actor: null, subject: null, loginExpiresAt: null, grant: null };
 
 /** `cotal whoami`: what this CLI's one-shot identity holds in the selected space. It reads the
- *  registry, the login cache and, where it is on this machine, the grant ledger; it connects to
- *  nothing, since a one-shot process has no session to report. With `--creds`, it reports what that
- *  credential file permits instead (see {@link WhoamiCredentialResult}). */
+ *  registry, login cache and local grant ledger. For a signed-in remote user-auth space it asks the
+ *  pinned issuer for the current grant but opens no broker session. With `--creds`, it reports what
+ *  that credential file permits instead (see {@link WhoamiCredentialResult}). */
 export async function whoami(args: ParsedArgs): Promise<void> {
   const v = args.values as FlagValues<typeof whoamiFlags>;
   const presentation = presentationOf(v);
@@ -127,8 +127,26 @@ export async function whoami(args: ParsedArgs): Promise<void> {
       throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the login for ${t.space} could not be read: ${(e as Error).message}`, { target });
     }
     const signedIn = st.login !== undefined;
-    const owner = signedIn ? st.owner ?? null : null;
-    const grant = !signedIn ? null : st.grant === "not-granted" ? "not-granted" : st.grant ? "granted" : "not-local";
+    let issuerAuthority: Awaited<ReturnType<ReturnType<typeof resolveAuthProvider>["userCredentials"]>>["authority"];
+    let authorityWarning: OutputWarning | undefined;
+    if (signedIn && st.grant === undefined) {
+      try {
+        issuerAuthority = (await resolveAuthProvider().userCredentials({ store: workspaceSecretStore(t.root), dir: userAuthStateDir(t.root, t.space), space: t.space, actor: CLI_USER_ACTOR })).authority;
+        if (!issuerAuthority) authorityWarning = { code: "GRANT_NOT_LOCAL", target, message: `the issuer for ${t.space} returned no authoritative grant, so what this identity may read, post and do is unknown here` };
+      } catch (error) {
+        const code = (error as { code?: unknown } | undefined)?.code;
+        authorityWarning = {
+          code: code === "refused" ? "GRANT_REFUSED" : "GRANT_UNAVAILABLE",
+          target,
+          message: code === "refused"
+            ? `the issuer for ${t.space} refused to report this identity's grant, so what it may read, post and do is unknown here`
+            : `the issuer for ${t.space} could not report this identity's grant, so what it may read, post and do is unknown here`,
+        };
+      }
+    }
+    const owner = signedIn ? issuerAuthority?.owner ?? st.owner ?? null : null;
+    const currentGrant = issuerAuthority?.grant ?? (st.grant && st.grant !== "not-granted" ? st.grant : undefined);
+    const grant = !signedIn ? null : st.grant === "not-granted" ? "not-granted" : currentGrant ? "granted" : "not-local";
     const identity = {
       kind: "user" as const,
       principal: owner === null ? null : `${owner}.${CLI_USER_ACTOR}`,
@@ -139,12 +157,10 @@ export async function whoami(args: ParsedArgs): Promise<void> {
       grant,
     } as const;
     if (grant === null || grant === "not-granted") result = { ...base, identity, read: [], post: [], dms: false, capabilities: [] };
-    else if (st.grant && st.grant !== "not-granted") result = { ...base, identity, read: [...st.grant.allowSubscribe], post: [...st.grant.allowPublish], dms: false, capabilities: [...st.grant.scope] };
+    else if (currentGrant) result = { ...base, identity, read: [...currentGrant.allowSubscribe], post: [...currentGrant.allowPublish], dms: issuerAuthority?.grant.dmHistory === "own", capabilities: [...currentGrant.scope] };
     else {
-      // The ledger runs where the space was provisioned. From any other machine the grant is the
-      // auth service's to apply, and nothing here can read it.
-      warnings.push({ code: "GRANT_NOT_LOCAL", target, message: `the grant ledger for ${t.space} is not on this machine, so what this identity may read, post and do is unknown here` });
-      result = { ...base, identity, read: null, post: null, dms: false, capabilities: null };
+      warnings.push(authorityWarning ?? { code: "GRANT_NOT_LOCAL", target, message: `the grant ledger for ${t.space} is not on this machine, so what this identity may read, post and do is unknown here` });
+      result = { ...base, identity, read: null, post: null, dms: null, capabilities: null };
     }
   }
   // A mode `space add --force` recorded is what the operator gave, so what it implies is not stated as fact.

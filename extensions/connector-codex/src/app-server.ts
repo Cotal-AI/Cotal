@@ -276,9 +276,9 @@ export class AppServerDriver extends EventEmitter {
     return this.liveTurns.size > 0;
   }
 
-  /** The turn to steer into or interrupt: OURS if one is running, else the human's. (Steering a
-   *  peer message into a TUI-owned turn is deliberate — the person sees it — and safe, because
-   *  only a turn we own can ack, so anything steered elsewhere simply redelivers.) */
+  /** The current turn: prefer ours, otherwise return an externally started turn. The host's
+   *  automatic-batch steering requires an open connector-started turn; observing an external
+   *  turn here does not make it eligible to acknowledge the host's batch. */
   get currentTurnId(): string | undefined {
     for (const id of this.liveTurns) if (this.ownedTurns.has(id)) return id;
     for (const id of this.liveTurns) return id;

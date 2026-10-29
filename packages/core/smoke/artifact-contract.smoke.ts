@@ -23,6 +23,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { fromObjectStoreDigest, isArtifactPart, ARTIFACT_PART_KIND } from "../src/artifact.js";
 import { rawDigest, verifyRawBytes } from "../src/canonical.js";
+import { assertCredentialIdTail, credentialIdOf, credRowKey, epcredRowKey } from "../src/lifecycle-state.js";
 import { partsToText } from "../src/parts.js";
 
 let ok = 0, fail = 0;
@@ -120,6 +121,21 @@ throws("refuses a body one character too long", () => fromObjectStoreDigest("SHA
   throws("names the byte count in the mismatch", () => verifyRawBytes(full.subarray(0, 10), rawDigest(full)), "over 10 bytes");
   throws("refuses a malformed digest before hashing", () => verifyRawBytes(full, "sha256:nothex"), "malformed digest");
   throws("refuses a bare hex digest with no prefix", () => verifyRawBytes(full, "a".repeat(64)), "malformed digest");
+
+  const credText = "cotal-3855-fixture-not-a-credential";
+  const credBytes = new TextEncoder().encode(credText);
+  const credView = Uint8Array.from([0, 0, ...credBytes, 9]).subarray(2, 2 + credBytes.length);
+  const expectedCredId = `sha256-${createHash("sha256").update(credBytes).digest("hex")}`;
+  const uid = "fixture3855000000000000000000";
+  check("credentialIdOf derives the key-safe sha256-<hex> id for UTF-8 text and Uint8Array views",
+    credentialIdOf(credText) === expectedCredId && credentialIdOf(credView) === expectedCredId);
+  check("credentialIdOf output is accepted by assertCredentialIdTail, credRowKey and epcredRowKey",
+    assertCredentialIdTail(expectedCredId, "credentialId") === expectedCredId
+    && credRowKey(uid, credentialIdOf(credText)) === `cred.${uid}.${expectedCredId}`
+    && epcredRowKey("manager", uid, credentialIdOf(credView)) === `epcred.manager.${uid}.${expectedCredId}`);
+  throws("credRowKey refuses the sha256: artifact digest form", () => credRowKey(uid, rawDigest(credText)), "not a bounded dotted credential id");
+  throws("epcredRowKey refuses the sha256: artifact digest form", () => epcredRowKey("manager", uid, rawDigest(credText)), "not a bounded dotted credential id");
+  throws("credentialIdOf refuses a string with a lone surrogate", () => credentialIdOf("bad-\uD800-cred"), "lone surrogate");
 }
 
 // ---- the part guard ---------------------------------------------------------------------

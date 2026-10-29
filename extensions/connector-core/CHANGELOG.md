@@ -1,5 +1,190 @@
 # @cotal-ai/connector-core
 
+## 0.126.3
+
+No changes in this release.
+
+## 0.126.2
+
+### Patch Changes
+
+- 96b964f: Clarify that Codex automatic-message steering applies to connector-started turns. Messages received during attached-TUI turns or native goal continuations wait for a connector delivery turn, with acknowledgements still committed at that delivery turn's boundary.
+
+## 0.126.1
+
+No changes in this release.
+
+## 0.126.0
+
+No changes in this release.
+
+## 0.125.0
+
+No changes in this release.
+
+## 0.124.3
+
+No changes in this release.
+
+## 0.124.2
+
+No changes in this release.
+
+## 0.124.1
+
+No changes in this release.
+
+## 0.124.0
+
+### Patch Changes
+
+- 4529529: The `JsonlFileSource.sealAt` doc comment, which ships in `dist/durable-source.js` and `dist/durable-source.d.ts`, no longer carries the all-caps sentence explaining why the bound is stated or the clause naming how many reviewers reproduced it. No behavior changes.
+
+## 0.123.0
+
+No changes in this release.
+
+## 0.122.0
+
+No changes in this release.
+
+## 0.121.7
+
+No changes in this release.
+
+## 0.121.6
+
+### Patch Changes
+
+- b74d18e: Label broker redelivery separately from model handling: frames keep the broker delivery count and say the prior model handoff is unknown when no separate handoff evidence exists.
+
+## 0.121.5
+
+### Patch Changes
+
+- 339a92e: Keep live mentions on unmuted focus channels retrievable as pull-only bodies when exclusion tracking makes channel recall unsafe, while preserving the incomplete-recall warning and existing ambient handling.
+
+## 0.121.4
+
+No changes in this release.
+
+## 0.121.3
+
+### Patch Changes
+
+- 479895c: Keep the native error name in connection-close diagnostics and failed reconnect replies when the transport provides an empty message.
+- 98c69c7: Preserve focus mention wake and pull-only bodies after channel drop tracking fills, and disclose the degraded delivery state in inbox and connection status replies.
+- 0744bd0: Return an empty list from `searchDocs` when `limit` is zero or negative instead of collecting one hit before checking the limit.
+- 43e67ec: Forward NODE_EXTRA_CA_CERTS and SSL_CERT_FILE to launched seats so they retain the manager's private-CA trust paths without weakening TLS verification or inheriting unrelated environment settings.
+- 0c44f1a: Explain that an unknown turn-yield deadline may have recorded the yield. Describe the measured same-turn retry outcomes without reporting a missing responder or claiming that a retry is read-only. Actual no-responder failures retain their existing advice.
+
+## 0.121.2
+
+### Patch Changes
+
+- af4b631: Report the recorded connection failure when sends or DMs cannot bind, including a
+  refused first presence write. Inbox replies now identify a connection that is not
+  ready while continuing to return locally buffered messages.
+  
+  A timed-out presence update reports that its outcome is unknown and may have landed.
+- 3d07896: Report the concrete publish subject and unknown storage outcome when a channel send or direct message times out. A missing publish acknowledgement does not prove that the broker rejected the message.
+- b02da28: Explain confirmed Claude Code hook deliveries when a later inbox read has no unread messages. The receipt names the latest handoff without returning message bodies again or changing acknowledgements.
+- f450bfe: Keep static managed seats' self-stop, persona and spawn calls bound to their launching manager without changing their class-only credential grants.
+- ee93749: `assertValidKind` validates endpoint kinds (`"agent"` or `"endpoint"`). `CotalEndpoint`, `configFromEnv`, `loadAgentFile`, and `saveAgentFile` share it, so `COTAL_KIND` and `card.kind` refuse any other value instead of passing an unvalidated string through to the card.
+
+## 0.121.1
+
+No changes in this release.
+
+## 0.121.0
+
+No changes in this release.
+
+## 0.120.2
+
+### Patch Changes
+
+- 0bb0ef4: Point relayed workflow asks to the seat's native self-targeted answer command instead of a shell command that cannot find the managed mesh. Explain that yielding submits no answer value.
+
+## 0.120.1
+
+### Patch Changes
+
+- a49bee6: Report a bound session as degraded when consecutive presence writes fail, even if core NATS remains connected. Include the observed bucket write failure in connection status and clear it when writes recover.
+
+## 0.120.0
+
+No changes in this release.
+
+## 0.119.5
+
+No changes in this release.
+
+## 0.119.4
+
+### Patch Changes
+
+- ed5c23f: Remedies, hints and messages from `run`, `actor` and `auth`, `logout`, `supervise` and `manager`, `deliver`, `docs`, `daemon`, `linear`, the web dashboard, the console, the Claude Code connector, a run's checkpoint prompt and the endpoint issuance gate now name the commands they suggest in backticks, so a terminal keeps each one whole and `--json` carries the same text. They named them bare after other words, as in "list the recorded runs with cotal run", which split inside the command when the line wrapped.
+
+## 0.119.3
+
+### Patch Changes
+
+- 8866e1e: Endpoint calls now resolve only the command contracts they need instead of fetching the endpoint's complete visible surface. Manager operations that used to read 124 contract-store artifacts for a 40-command surface now read six artifacts for one command, while `describe` still resolves every visible command.
+
+## 0.119.2
+
+No changes in this release.
+
+## 0.119.1
+
+### Patch Changes
+
+- 9f32677: Clarify that a timed-out channel publish has an unknown outcome and that a disconnected send or yield refused before submission was not sent. Keep the Jcode user-auth tool catalog aligned with the host's capability gates without exposing credentials.
+- 3431be6: `cotal up --max-payload <bytes>` sets the broker's own message size limit, a positive integer up to 67108864. `up` renders it as `max_payload: <bytes>` in the broker config and records it in `.cotal/broker-policy.json`, which `readBrokerPolicy` reads back, so a later `cotal up` on the root renders it again without the flag, after `cotal down` or a preserved resume included. A running broker refuses a different value, and `--open`, `-f` and `--restore` refuse the flag. Service endpoint caller grants need at least 2098176 bytes, so a smaller value beside `--service-endpoints` refuses before anything starts. `SERVICE_CALLER_PAYLOAD_FLOOR` and `SERVICE_CALLER_PAYLOAD_OVERHEAD` now come from `@cotal-ai/core`, so the flag's validation and the auth host's assertion read one number. Before, `serverConfig` took a `maxPayload` that no `up` ever passed and no record kept, so a limit written into `server.conf` by hand was lost the next time `up` wrote the file.
+  
+  Caller issuance now survives a broker configuration reload. A reload keeps the same incarnation serving and moves VARZ `config_digest`, and issuance was bound to the digest the bootstrap observed, so every reload refused every later caller issuance until the auth plane was reopened. On a multi-tenant broker that is every tenant sign-up. The verifier now treats a moved digest as a trigger to re-measure: when the fresh observation proves the same broker incarnation and auth store, and proves the standalone topology, the payload floor, the control line, the system account and an uncapped auth stream again, it re-asserts the payload record under the held plane claim by CAS on the exact prior row and continues. A reload that breaks any of those still refuses, a `max_payload` below the floor included, a restart is a new incarnation and still refuses, and a withdrawn record is never overwritten.
+
+## 0.119.0
+
+No changes in this release.
+
+## 0.118.3
+
+### Patch Changes
+
+- e9b85f5: Recover a Unix control socket left by a crashed connector when the host restarts its MCP server with the same launch environment. Probe before retrying so a live listener still refuses the replacement.
+
+## 0.118.2
+
+No changes in this release.
+
+## 0.118.1
+
+### Patch Changes
+
+- 6a634a6: `handleGatewayRequest` accepts `selection`, so a hosted gateway's `cotal_connect` can take the channels, role and capabilities an agent asks for. The `cotal_connect` description now tells the agent to ask for what it already knows it needs in that first call.
+
+## 0.118.0
+
+No changes in this release.
+
+## 0.117.1
+
+No changes in this release.
+
+## 0.117.0
+
+### Patch Changes
+
+- c93dded: A conversation selection may now name channel patterns. `team.*` and `team.>` in a requested or approved selection grant every channel they match, including channels created after the approval, and the issued grant carries the pattern as it is.
+  
+  Before this, `checkConversationSelection` refused any non-concrete channel. A hosted approval page that let a person grant `team.>` produced an approval every stock client then rejected, so the connection failed after the person had approved it. The grammar check is unchanged: a malformed pattern such as `team.>.x` is still refused, as are more than 32 channels. Whether the person may grant a pattern is still decided by the authority, against that person's own row.
+
+## 0.116.5
+
+No changes in this release.
+
 ## 0.116.4
 
 No changes in this release.

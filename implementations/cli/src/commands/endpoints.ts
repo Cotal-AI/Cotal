@@ -1,5 +1,5 @@
 import { peerLabel, presenceText, type FlagSpec, type ParsedArgs, type Presence, type PresenceStamps } from "@cotal-ai/core";
-import { jsonFlag, recordOperationSpace, plainFlag, presentationOf, renderReport, targetFlags, terminalWidth, writeResult, type Report } from "@cotal-ai/workspace";
+import { jsonFlag, recordOperationSpace, plainFlag, presentationOf, renderReport, targetFlags, writeResult, type Report } from "@cotal-ai/workspace";
 import { activityAge, presenceFacts } from "../ui.js";
 import { openTransient, type ConnectValues } from "../lib/transient.js";
 
@@ -53,7 +53,7 @@ export async function endpoints(args: ParsedArgs): Promise<void> {
 }
 
 export function printEndpoints(roster: Presence[], space: string): void {
-  console.log(renderReport(endpointsView(rowsOf(roster), space), "rich", terminalWidth(process.stdout)));
+  console.log(renderReport(endpointsView(rowsOf(roster), space), "rich", process.stdout));
 }
 
 function endpointsView(items: readonly Row[], space: string): Report {

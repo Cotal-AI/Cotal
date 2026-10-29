@@ -122,7 +122,7 @@ Content type: `application/json`.
 
 `POST /exchange`
 
-No loopback capability on this listener. Fresh pinned-issuer/audience IdP proof or managed ledger actor secret authorizes the selected actor. Public views are channel-writer, channel-purger, manager-caller, session-caller and transfer-writer; other views return 403. ttlSec is constrained by issuer policy and proof expiry; agent bearer cap is 300 seconds. Invalid proof or manager selection returns 401. Refused proof/view attempts share the public peer budget; successful credentials still mint when the budget is full. Origin is refused.
+No loopback capability on this listener. Fresh pinned-issuer/audience IdP proof or managed ledger actor secret authorizes the selected actor. A successful human exchange includes the current grant the issuer authorized; a managed-agent exchange keeps the token, owner and exp response. Public views are channel-writer, channel-purger, manager-caller, session-caller and transfer-writer; other views return 403. ttlSec is constrained by issuer policy and proof expiry; agent bearer cap is 300 seconds. Invalid proof or manager selection returns 401. Refused proof/view attempts share the public peer budget; successful credentials still mint when the budget is full. Origin is refused.
 
 ### Parameters
 
@@ -803,7 +803,7 @@ Content type: `application/json`.
 
 `POST /service-endpoint-host`
 
-Only enabled with service endpoints; otherwise 404 before method/media/Origin guards. JSON idpToken derives owner and native granter. Caller-supplied granter is rejected. Operator-only operations are refused publicly (403). Native host outcomes, including denied/held/pending/refused, are returned with HTTP 200; inspect state. denied is a point-in-time no-binding observation, while held alone does not prove execution or authority. Native parser failures are 400, unexpected engine failures 500 or 503. Successful engine replies use Cache-Control: no-store. Origin is refused. The stock engine currently parses proposal-list, instance-read and instance-list but returns HTTP 200 with state=denied and reason=unsupported for them.
+Only enabled with service endpoints; otherwise 404 before method/media/Origin guards. JSON idpToken derives owner and native granter. Caller-supplied granter is rejected. Operator-only operations are refused publicly (403). Native host outcomes, including denied/held/pending/refused, are returned with HTTP 200; inspect state. denied is a point-in-time no-binding observation, while held alone does not prove execution or authority. Native parser failures are 400, unexpected engine failures 500 or 503. Successful engine replies use Cache-Control: no-store. Origin is refused. instance-read returns only the proved owner's selector, and instance-list returns only that owner's native assignments with cursor pagination. Missing and foreign instance reads both answer absent. proposal-list remains unsupported.
 
 ### Parameters
 
@@ -1673,6 +1673,9 @@ These schemas describe the HTTP request and response wrappers. The downloadable 
     "exp": {
       "type": "integer",
       "minimum": 0
+    },
+    "grant": {
+      "$ref": "#/components/schemas/UserAuthGrant"
     }
   },
   "required": [
@@ -1680,6 +1683,45 @@ These schemas describe the HTTP request and response wrappers. The downloadable 
     "owner",
     "exp"
   ]
+}
+```
+
+### UserAuthGrant
+
+```json
+{
+  "type": "object",
+  "description": "Current issuer-authorized agent grant. Present for a human IdP exchange and absent for a managed-agent secret exchange.",
+  "properties": {
+    "scope": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "allowSubscribe": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "allowPublish": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "dmHistory": {
+      "const": "own"
+    }
+  },
+  "required": [
+    "scope",
+    "allowSubscribe",
+    "allowPublish",
+    "dmHistory"
+  ],
+  "additionalProperties": false
 }
 ```
 

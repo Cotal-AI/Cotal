@@ -1,5 +1,154 @@
 # @cotal-ai/connector-claude-code
 
+## 0.126.3
+
+No changes in this release.
+
+## 0.126.2
+
+No changes in this release.
+
+## 0.126.1
+
+No changes in this release.
+
+## 0.126.0
+
+No changes in this release.
+
+## 0.125.0
+
+No changes in this release.
+
+## 0.124.3
+
+No changes in this release.
+
+## 0.124.2
+
+No changes in this release.
+
+## 0.124.1
+
+No changes in this release.
+
+## 0.124.0
+
+No changes in this release.
+
+## 0.123.0
+
+No changes in this release.
+
+## 0.122.0
+
+No changes in this release.
+
+## 0.121.7
+
+No changes in this release.
+
+## 0.121.6
+
+No changes in this release.
+
+## 0.121.5
+
+No changes in this release.
+
+## 0.121.4
+
+No changes in this release.
+
+## 0.121.3
+
+No changes in this release.
+
+## 0.121.2
+
+### Patch Changes
+
+- b02da28: Explain confirmed Claude Code hook deliveries when a later inbox read has no unread messages. The receipt names the latest handoff without returning message bodies again or changing acknowledgements.
+- c13e443: Keep Claude Code hook context below its inline output limit. Deliver only complete messages that fit, count the remainder, and leave omitted or oversized messages unacknowledged for the inbox or a later hook.
+
+## 0.121.1
+
+No changes in this release.
+
+## 0.121.0
+
+No changes in this release.
+
+## 0.120.2
+
+No changes in this release.
+
+## 0.120.1
+
+No changes in this release.
+
+## 0.120.0
+
+No changes in this release.
+
+## 0.119.5
+
+No changes in this release.
+
+## 0.119.4
+
+### Patch Changes
+
+- ed5c23f: Remedies, hints and messages from `run`, `actor` and `auth`, `logout`, `supervise` and `manager`, `deliver`, `docs`, `daemon`, `linear`, the web dashboard, the console, the Claude Code connector, a run's checkpoint prompt and the endpoint issuance gate now name the commands they suggest in backticks, so a terminal keeps each one whole and `--json` carries the same text. They named them bare after other words, as in "list the recorded runs with cotal run", which split inside the command when the line wrapped.
+
+## 0.119.3
+
+No changes in this release.
+
+## 0.119.2
+
+### Patch Changes
+
+- 99d87c9: Keep command text and tool arguments out of permission-wait presence activity. Report working when a main-agent tool begins a turn without a prompt hook, while preserving permission waits and terminal status handling.
+
+## 0.119.1
+
+No changes in this release.
+
+## 0.119.0
+
+No changes in this release.
+
+## 0.118.3
+
+No changes in this release.
+
+## 0.118.2
+
+No changes in this release.
+
+## 0.118.1
+
+No changes in this release.
+
+## 0.118.0
+
+No changes in this release.
+
+## 0.117.1
+
+No changes in this release.
+
+## 0.117.0
+
+No changes in this release.
+
+## 0.116.5
+
+### Patch Changes
+
+- f074dfc: `cotal update` now installs the `cotal` plugin at user scope on a machine that only has the per-project installs earlier releases made, so it loads in every project, and removes the per-project installs that had it on. A project that turned the plugin off keeps it off, and an account that turned it off is left as it is.
+
 ## 0.116.4
 
 No changes in this release.

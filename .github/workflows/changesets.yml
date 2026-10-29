@@ -1,5 +1,5 @@
 name: Changesets
-run-name: ${{ github.event_name == 'workflow_dispatch' && 'Publish packages' || 'Prepare release versions' }}
+run-name: "${{ (github.event_name == 'workflow_dispatch' || startsWith(github.event.head_commit.message, 'chore(release): version packages')) && 'Publish packages' || 'Prepare release versions' }}"
 
 on:
   push:
@@ -9,6 +9,9 @@ on:
 permissions:
   contents: read
 
+# A push that leaves changesets on main refreshes the version PR and packs its head with the native
+# binaries, so the release is ready before anyone asks for it. Merging the version PR publishes:
+# that push finds the pack made from the same tree and only uploads it.
 # Version preparation has its own queue. Only staged releases hold the publisher through
 # installation and latest promotion. Direct verification runs outside that queue.
 
@@ -24,7 +27,6 @@ jobs:
     outputs:
       mode: ${{ steps.select.outputs.mode }}
       staged: ${{ steps.release-mode.outputs.staged }}
-      plan: ${{ steps.staged-plan.outputs.artifact-id || steps.select.outputs.publish-plan-artifact-id }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -43,24 +45,6 @@ jobs:
         run: printf 'staged=%s\n' "$STAGED_RELEASE" >> "$GITHUB_OUTPUT"
       - uses: changesets/action/select-mode@v2.1.2
         id: select
-      # Direct publication is the default. Enable only after the publisher owner confirms
-      # independent dist-tag authority. v2.1.2 carries staging tags in its versioned plan schema.
-      - uses: actions/download-artifact@v4
-        if: steps.select.outputs.mode == 'publish' && github.event_name == 'workflow_dispatch' && steps.release-mode.outputs.staged == 'true'
-        with:
-          artifact-ids: ${{ steps.select.outputs.publish-plan-artifact-id }}
-          merge-multiple: true
-          path: ${{ runner.temp }}/selected-plan
-      - name: Stage the complete publish plan
-        if: steps.select.outputs.mode == 'publish' && github.event_name == 'workflow_dispatch' && steps.release-mode.outputs.staged == 'true'
-        run: node scripts/stage-release-plan.mjs stage "$RUNNER_TEMP/selected-plan/publish-plan.json" "$RUNNER_TEMP/publish-plan.json"
-      - uses: actions/upload-artifact@v4
-        id: staged-plan
-        if: steps.select.outputs.mode == 'publish' && github.event_name == 'workflow_dispatch' && steps.release-mode.outputs.staged == 'true'
-        with:
-          name: staged-publish-plan
-          path: ${{ runner.temp }}/publish-plan.json
-          if-no-files-found: error
       - name: Require versioned packages before publication
         if: github.event_name == 'workflow_dispatch' && steps.select.outputs.mode == 'version'
         run: |
@@ -78,6 +62,8 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+    outputs:
+      sha: ${{ steps.head.outputs.sha }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -96,10 +82,17 @@ jobs:
           script: pnpm ci:version
           pr-title: 'chore(release): version packages'
           commit-message: 'chore(release): version packages'
+      # The action reports only the PR number. This job's queue keeps the branch still until it is read.
+      - name: Read the version PR head
+        id: head
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: printf 'sha=%s\n' "$(gh api "repos/$GITHUB_REPOSITORY/commits/changeset-release/main" --jq .sha)" >> "$GITHUB_OUTPUT"
 
+  # Built from the pushed commit while the version PR is written. Versioning changes no native source.
   native:
     needs: select
-    if: github.event_name == 'workflow_dispatch' && needs.select.outputs.mode == 'publish'
+    if: github.event_name == 'push' && needs.select.outputs.mode == 'version'
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -129,20 +122,23 @@ jobs:
 
   workspace-native:
     needs: select
-    if: github.event_name == 'workflow_dispatch' && needs.select.outputs.mode == 'publish'
+    if: github.event_name == 'push' && needs.select.outputs.mode == 'version'
     uses: ./.github/workflows/workspace-native.yml
     with:
       darwin: true
 
+  # Packs the version PR head. The publish job of the version PR's merge consumes this pack.
   pack:
-    needs: [select, native, workspace-native]
+    needs: [select, version-pr, native, workspace-native]
     runs-on: ubuntu-latest
-    outputs:
-      artifact: ${{ steps.pack.outputs.pack-dir-artifact-id }}
     steps:
       - uses: actions/checkout@v6
         with:
+          ref: ${{ needs.version-pr.outputs.sha }}
+          fetch-depth: 2
           persist-credentials: false
+      - name: Require the version PR head made from this commit
+        run: test "$(git rev-parse HEAD^)" = "$GITHUB_SHA"
       - uses: pnpm/action-setup@v6.0.8
         with:
           cache: true
@@ -150,6 +146,29 @@ jobs:
         with:
           node-version: 24
       - run: pnpm install --frozen-lockfile --ignore-scripts
+      - uses: changesets/action/select-mode@v2.1.2
+        id: plan
+      - name: Require a complete publish plan
+        if: steps.plan.outputs.mode != 'publish'
+        run: exit 1
+      # Direct publication is the default. Enable only after the publisher owner confirms
+      # independent dist-tag authority. v2.1.2 carries staging tags in its versioned plan schema.
+      - uses: actions/download-artifact@v4
+        if: needs.select.outputs.staged == 'true'
+        with:
+          artifact-ids: ${{ steps.plan.outputs.publish-plan-artifact-id }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/selected-plan
+      - name: Stage the complete publish plan
+        if: needs.select.outputs.staged == 'true'
+        run: node scripts/stage-release-plan.mjs stage "$RUNNER_TEMP/selected-plan/publish-plan.json" "$RUNNER_TEMP/publish-plan.json"
+      - uses: actions/upload-artifact@v4
+        id: staged-plan
+        if: needs.select.outputs.staged == 'true'
+        with:
+          name: staged-publish-plan
+          path: ${{ runner.temp }}/publish-plan.json
+          if-no-files-found: error
       - run: pnpm --filter '!./examples/**' -r build
       - uses: actions/download-artifact@v4
         with:
@@ -160,6 +179,7 @@ jobs:
           node scripts/seat-assemble-natives.mjs
           node scripts/workspace-assemble-natives.mjs
         env:
+          NATIVE_SOURCE: ${{ github.sha }}
           SEAT_NATIVE_X64: ${{ runner.temp }}/native/seat-native-x64/peercred.node
           SEAT_NATIVE_ARM64: ${{ runner.temp }}/native/seat-native-arm64/peercred.node
           WORKSPACE_NATIVE_X64: ${{ runner.temp }}/native/workspace-native-x64
@@ -169,10 +189,68 @@ jobs:
       - uses: changesets/action/pack@v2.1.2
         id: pack
         with:
-          publish-plan-artifact-id: ${{ needs.select.outputs.plan }}
+          publish-plan-artifact-id: ${{ steps.staged-plan.outputs.artifact-id || steps.plan.outputs.publish-plan-artifact-id }}
+      # The staging mode travels with the pack, so the publishing run cannot read a later variable edit.
+      - name: Record the release candidate
+        env:
+          PACK: ${{ steps.pack.outputs.pack-dir-artifact-id }}
+          STAGED: ${{ needs.select.outputs.staged }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/candidate"
+          printf '{"tree":"%s","pack":"%s","staged":"%s"}\n' "$(git rev-parse 'HEAD^{tree}')" "$PACK" "$STAGED" > "$RUNNER_TEMP/candidate/candidate.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-candidate
+          path: ${{ runner.temp }}/candidate/candidate.json
+          if-no-files-found: error
+
+  # A merge of the version PR has the main commit whose push run packed the version PR head as its
+  # parent. A commit publishes only if this workflow's push run on main for its parent packed this
+  # commit's tree. Every other push finds nothing here and publishes nothing.
+  release:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      run: ${{ steps.find.outputs.run }}
+      pack: ${{ steps.find.outputs.pack }}
+      staged: ${{ steps.find.outputs.staged }}
+    steps:
+      - name: Find the pack made from this tree
+        id: find
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          commit=$(gh api "repos/$GH_REPO/commits/$GITHUB_SHA" --jq '"\(.parents[0].sha) \(.commit.tree.sha)"')
+          parent=${commit% *}
+          tree=${commit#* }
+          run=$(gh run list --workflow changesets.yml --event push --branch main --commit "$parent" --status success --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+          candidate="$RUNNER_TEMP/candidate/candidate.json"
+          if [ -n "$run" ] && gh run download "$run" --name release-candidate --dir "$RUNNER_TEMP/candidate" && [ "$(jq -r .tree "$candidate")" = "$tree" ]; then
+            jq -r --arg run "$run" '"run=\($run)", "pack=\(.pack)", "staged=\(.staged)"' "$candidate" >> "$GITHUB_OUTPUT"
+          elif [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+            printf 'No push run on main packed the tree of %s.\n' "$GITHUB_SHA"
+            exit 1
+          fi
+
+  # Select sees unpublished versions on main, but no pack matches this tree. Say so instead of
+  # publishing nothing quietly.
+  unprepared:
+    needs: [select, release]
+    if: needs.select.outputs.mode == 'publish' && needs.release.outputs.pack == ''
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require a pack for unpublished versions
+        run: |
+          printf '%s\n' 'Main holds unpublished versions, but no push run packed this tree. Merge the version PR after its push run finishes, or re-run the failed jobs of the run that published it.'
+          exit 1
 
   publish:
-    needs: [select, pack]
+    needs: release
+    if: needs.release.outputs.pack != ''
     runs-on: ubuntu-latest
     environment: npm-publish
     concurrency:
@@ -181,7 +259,7 @@ jobs:
       queue: max
     outputs:
       published: ${{ steps.publish.outputs.published }}
-      staged: ${{ needs.select.outputs.staged }}
+      staged: ${{ needs.release.outputs.staged }}
     permissions:
       contents: write
       actions: read
@@ -199,29 +277,38 @@ jobs:
       - run: pnpm --filter cotal-monorepo install --frozen-lockfile --ignore-scripts
       - uses: actions/download-artifact@v4
         with:
-          artifact-ids: ${{ needs.pack.outputs.artifact }}
+          artifact-ids: ${{ needs.release.outputs.pack }}
+          run-id: ${{ needs.release.outputs.run }}
+          github-token: ${{ github.token }}
           merge-multiple: true
           path: ${{ runner.temp }}/packed
+      # The publish action reads its pack from this run.
+      - uses: actions/upload-artifact@v4
+        id: packed
+        with:
+          name: changeset-pack
+          path: ${{ runner.temp }}/packed
+          if-no-files-found: error
       - name: Validate the packed closure and promotion order
-        if: needs.select.outputs.staged == 'true'
+        if: needs.release.outputs.staged == 'true'
         run: node scripts/stage-release-plan.mjs check "$RUNNER_TEMP/packed/publish-plan.json" > "$RUNNER_TEMP/promote-specs.txt"
       # One GitHub Release per version, not one per package: the fixed group publishes every package
       # at the same version, so per-package releases are the same change listed many times over.
       - uses: changesets/action/publish@v2.1.2
         id: publish
         with:
-          pack-dir-artifact-id: ${{ needs.pack.outputs.artifact }}
+          pack-dir-artifact-id: ${{ steps.packed.outputs.artifact-id }}
           create-github-releases: false
           push-git-tags: true
 
       - name: Verify published closure and registry installation
-        if: steps.publish.outputs.published == 'true' && needs.select.outputs.staged == 'true'
+        if: steps.publish.outputs.published == 'true' && needs.release.outputs.staged == 'true'
         run: |
           version=$(node --print "require('./bin/package.json').version")
           node scripts/verify-publish-closure.mjs "$version"
           node scripts/verify-release-installable.mjs "$version" --closure --deadline-ms=1500000 --poll-interval-ms=5000
       - name: Promote verified packages to latest
-        if: steps.publish.outputs.published == 'true' && needs.select.outputs.staged == 'true'
+        if: steps.publish.outputs.published == 'true' && needs.release.outputs.staged == 'true'
         run: |
           while IFS= read -r spec; do
             npm dist-tag add "$spec" latest

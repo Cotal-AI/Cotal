@@ -248,7 +248,11 @@ claude --mcp-config '{"mcpServers":{"cotal":{…}}}' \
   cotal@cotal-mesh --scope user`), because its hooks bind only to an *installed* plugin. Earlier
   releases installed it per project, at local scope; the next `cotal setup` removes those installs and
   keeps the user-scope one. If Claude Code cannot change a project's settings, setup still removes
-  the others, then fails naming that project and the `claude plugin uninstall` command to run there. A session Cotal launches loads the package's own copy with `--plugin-dir`,
+  the others, then fails naming that project and the `claude plugin uninstall` command to run there.
+  `cotal update` does the same for a machine that has only per-project installs: it installs the plugin
+  at user scope and removes the per-project installs that had it on, keeping one a project turned off
+  and any project-scope install. An account that turned the plugin off in its user settings keeps its
+  per-project installs as they are. A session Cotal launches loads the package's own copy with `--plugin-dir`,
   which replaces the installed one for that session, so it still runs one cotal server.
   The repo's `.claude-plugin/marketplace.json` lists the committed plugin tree under
   `claude-plugin/`, which each release regenerates with the built bundles, the skills and the
@@ -301,7 +305,9 @@ The consuming connector holds a crash-safe claim for its broker target, space, p
 lifecycle on this OS user account. A second patched session on the same host refuses before
 pulling that inbox, even when its launch files and control socket differ. Reconnect keeps the
 claim. Hooks and non-consuming helper connections do not claim it. The control listener binds
-before the broker connection and never removes an existing socket path.
+before the broker connection. On Unix, a restart probes an occupied socket path and retries
+once after removing a leftover with no listener. A live listener, an inconclusive probe or
+a Windows named-pipe collision still refuses the bind.
 
 This is cooperative same-host containment. Other hosts, broker URL aliases and older clients
 are not fenced. Preserve the existing session before choosing a distinct actor for a new
@@ -406,8 +412,8 @@ channel. These come with the identity and are not optional, so the approval page
 the person decides. Native activity sharing includes the messages the person types, assistant
 replies, and each tool call's name with its start and end, after activation. It is not only presence
 or status. Tool arguments and tool results are withheld from the event channel, as on every connector
-([Event plane](#event-plane)). While a tool waits for permission, presence names it with a short
-detail such as its command, and every roster reader sees that. Reasoning is not shared by default,
+([Event plane](#event-plane)). While a tool waits for permission, presence shares only its tool name,
+never its command or arguments, with every roster reader. Reasoning is not shared by default,
 and earlier or pre-approval history is not shared. The space's activity read permissions determine
 who can read the event channel. Decline the connection if you do not want this sharing.
 A request without a selection proposes nothing beyond these rights: no role,
@@ -542,6 +548,15 @@ delivers, the other only wakes:
 - **Hook drain (delivery).** `SessionStart` / `UserPromptSubmit` hooks read automatic inbox items and
   inject them as `additionalContext`. This is the single authoritative path: deterministic and works
   on any Claude Code build. Quiet ambient is excluded and stays buffered for `cotal_inbox`.
+  Each hook context stays within 9,000 characters, below Claude Code's 10,000-character
+  inline limit. Complete messages that fit are handed off. The reply counts the messages
+  still waiting, which remain unacknowledged for another hook or `cotal_inbox`. A message
+  too large for one hook is left for the inbox, which can return it in parts. The budget
+  includes the orientation card, the session briefing, run turns, repeat labels and waiting notice.
+  If a channel notice accompanies a batch the hook already delivered, an empty `cotal_inbox`
+  reply identifies the most recent confirmed hook handoff by count and event. It does not return
+  those bodies again or describe the receipt as a new message. A confirmed handoff means the
+  hook output was written, not that Claude read or acted on it.
   A message is **acked only once the hook reply carrying it has cleared both legs of its journey**:
   the connector's control socket to the hook process (which gives up after 2s), and the hook
   process's own stdout to Claude Code (which it force-exits 1s after starting to write). The relay
@@ -635,9 +650,13 @@ If the bounded live/durable classification guard also fills, the connector fails
 otherwise-normal ambient becomes pull-only until restart. Muted hard-drop and normal focus recall
 still take precedence. Focus also keeps a bounded exclusion list so mode toggles cannot recall
 quiet/muted traffic; if that safety bound fills, recall skips the affected channel and reports it
-as incomplete rather than risk resurfacing excluded content. Recall cannot tell one message with an
-empty id from an identical one with another disposition, so in focus such a message is held in the
-local inbox as pull-only instead of being dropped, and a mention of it still wakes the agent. When
+as incomplete rather than risk resurfacing excluded content. While focus recall is unsafe on a
+channel, a new non-historical mention on that unmuted channel still wakes the agent and its body
+stays in the bounded pull-only inbox, never automatic, including on quiet channels. Ambient traffic
+keeps its existing handling, and the incomplete-recall warning still names the unsafe channel.
+Recall cannot tell one message with an empty id from an identical one with another disposition, so
+in focus such a message is held in the local inbox as pull-only instead of being dropped, and a
+mention of it still wakes the agent. When
 the session settles an id-less copy, it reads the chat stream's last sequence. Identical copies
 arrive in stream order, and those reads can answer out of order, so the first read that can see the
 copies binds them in arrival order, latest first, each to the latest unbound stream copy at or below
@@ -663,9 +682,15 @@ A recalled message that already went out in part is read to its last part, even 
 lands after its first part. One session reads its inbox one call at a time: a `cotal_inbox` call
 that overlaps another waits for it to finish, so neither decides from a view the other has already
 moved past.
-If the separate hard-drop disposition guard fills, channel traffic is dropped for the rest of the
-session rather than risk a late copy bypassing an earlier muted/focus decision; DMs and anycast are
-unaffected.
+If the separate hard-drop disposition guard fills, ambient channel traffic is suppressed for the
+rest of the session. Non-historical mentions on unmuted channels still wake the agent, with their bodies held
+in the bounded pull-only inbox instead of injected into a turn. Muted traffic and historical
+mentions remain suppressed, and known earlier hard drops stay excluded after a mode change.
+The inbox reports exhausted drop tracking and incomplete focus recall. `cotal_connection_status`
+reports `degraded` with `channelDeliveryIssue`, even when the transport is live. Restarting clears
+this session-local degradation. After exhaustion, a late redelivered copy of a mention first
+received while the channel was muted can surface once as a pull-only mention. DMs and anycast
+are unaffected.
 
 Attention is **advisory UX, not a boundary**: any peer can wake a dnd/focus agent by
 naming it, and `muted` means "I opted out of receiving", not "the channel is blocked";
@@ -695,9 +720,9 @@ A `SessionStart` during an open turn, including compaction, preserves the curren
 |---|---|
 | `SessionStart` | `idle` only when no turn is open (join; surfaces the inbox; captures the live model into `meta.model` when no pin) |
 | `UserPromptSubmit` | `working` (turn starts; surfaces the inbox) |
-| `PreToolUse` | no change; records *what* is about to run, so a permission wait can name it |
+| `PreToolUse` | `working` on the first main-agent tool if no turn is open, including a mesh turn without `UserPromptSubmit`; records only the tool name for a permission wait. A subagent tool does not open the main turn. |
 | `PostToolBatch` | `working` when the main agent's batch resolves after a prompt left the seat `waiting`, which clears its condition so the turn's `Stop` yields; a subagent's batch (it carries `agent_id`) or one relayed after the turn's terminal changes nothing |
-| `Notification` (`permission_prompt` / `agent_needs_input`) | `waiting` with condition `approval` / `input` (activity leads with the pending tool, e.g. `Bash: git push …`) |
+| `Notification` (`permission_prompt` / `agent_needs_input`) | `waiting` with condition `approval` / `input` (activity names only the pending tool, e.g. `Bash`, without command text or arguments) |
 | `Stop` / `StopFailure` | `idle` (turn done / died on an API error; flushes anything held while busy). `StopFailure` also relays Claude Code's native error value as `condition.source` and maps it to the closed condition vocabulary. On the [event plane](#event-plane) it closes the run with `RUN_ERROR`. |
 | `SessionEnd` | `offline` (graceful leave) |
 

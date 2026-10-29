@@ -108,13 +108,15 @@ check(
   { closureAt, installAt, promoteAt },
 );
 
-check("the selected complete plan is staged before the maintained pack action", /stage-release-plan\.mjs stage/.test(csJobs.get("select") ?? "") && /steps\.staged-plan\.outputs\.artifact-id/.test(csJobs.get("select") ?? "") && /publish-plan-artifact-id:.*needs\.select\.outputs\.plan/.test(csJobs.get("pack") ?? ""));
+const packBody = csJobs.get("pack") ?? "";
+check("the selected complete plan is staged before the maintained pack action", packBody.indexOf("stage-release-plan.mjs stage") >= 0 && packBody.indexOf("stage-release-plan.mjs stage") < packBody.indexOf("changesets/action/pack@") && /publish-plan-artifact-id:.*steps\.staged-plan\.outputs\.artifact-id/.test(packBody));
 check("packing retains public builds and native assembly without repeated seat TypeScript compilation", /pnpm --filter '!\.\/examples\/\*\*' -r build/.test(csJobs.get("pack") ?? "") && /@cotal-ai\/seat build:native/.test(csJobs.get("native") ?? ""));
 check("the publisher installs frozen root tooling and consumes packed bytes without rebuilding", /pnpm --filter cotal-monorepo install --frozen-lockfile --ignore-scripts/.test(publishBody) && /cache: true/.test(publishBody) && !/pnpm (?:-r )?build/.test(publishBody));
 
-check("direct publishing is default and staging requires explicit opt-in without settings-read authority", /steps\.staged-plan\.outputs\.artifact-id \|\| steps\.select\.outputs\.publish-plan-artifact-id/.test(csJobs.get("select") ?? "") && /if: steps\.publish\.outputs\.published == 'true' && needs\.select\.outputs\.staged == 'true'/.test(publishBody) && !publishBody.includes("preflight-npm-publish.mjs"));
+check("direct publishing is default and staging requires explicit opt-in without settings-read authority", /steps\.staged-plan\.outputs\.artifact-id \|\| steps\.plan\.outputs\.publish-plan-artifact-id/.test(packBody) && /if: steps\.publish\.outputs\.published == 'true' && needs\.release\.outputs\.staged == 'true'/.test(publishBody) && !publishBody.includes("preflight-npm-publish.mjs"));
 
-check("direct verification runs outside the publisher queue and staging mode is frozen once", /if: needs\.publish\.outputs\.staged != 'true'/.test(verifyBody) && !/concurrency:/.test(verifyBody) && /published == 'true' && needs\.select\.outputs\.staged == 'true'/.test(publishBody) && (csText.match(/vars\.COTAL_STAGED_RELEASE/g) ?? []).length === 1 && /staged: \$\{\{ needs\.select\.outputs\.staged \}\}/.test(publishBody));
+// The mode is frozen once, in the preparing run, and travels with the pack to the publishing run.
+check("direct verification runs outside the publisher queue and staging mode is frozen once", /if: needs\.publish\.outputs\.staged != 'true'/.test(verifyBody) && !/concurrency:/.test(verifyBody) && /published == 'true' && needs\.release\.outputs\.staged == 'true'/.test(publishBody) && (csText.match(/vars\.COTAL_STAGED_RELEASE/g) ?? []).length === 1 && /STAGED: \$\{\{ needs\.select\.outputs\.staged \}\}/.test(packBody) && /staged: \$\{\{ needs\.release\.outputs\.staged \}\}/.test(publishBody));
 
 const EXPECTED = 12;
 check(`every cell ran (${EXPECTED} before sentinel)`, pass + fail === EXPECTED, pass + fail);

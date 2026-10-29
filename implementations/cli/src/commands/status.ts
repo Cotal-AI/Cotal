@@ -54,6 +54,7 @@ import {
   capBelowFloor,
   stoppedStack,
   unsettledStackOperation,
+  withdrawOperationNote,
   hasUserAuthState,
   homeCotalDir,
   cachedPreferences,
@@ -61,6 +62,7 @@ import {
   isMeshRegistryError,
   isWorkspaceTargetError,
   jsonFlag,
+  loadManagerInstanceIdentity,
   loadSoleSpaceAuth,
   localProcessPath,
   localProcessVisible,
@@ -125,7 +127,7 @@ import { c } from "../ui.js";
 import { preparedCatalogDiagnostics } from "./sync.js";
 import { agentStatus } from "./agents.js";
 import { invalidEnvironmentValues } from "./config.js";
-import { onInstance } from "../lib/control.js";
+import { askManager, onInstance, resolveControlTarget } from "../lib/control.js";
 import { serviceDefinitionProjection, serviceDefinitionStore } from "../lib/service-definitions.js";
 import { instanceProjection, serviceInstances } from "../lib/service-instances.js";
 import { readinessAddressSurvivors } from "../lib/service-process.js";
@@ -174,8 +176,6 @@ export const statusFlags = [
   jsonFlag,
   plainFlag,
 ] as const;
-
-type Proc = PidfileState;
 
 /** The mesh `spawn` would load personas from, resolved ONCE for the whole run.
  *
@@ -450,6 +450,13 @@ export async function status(args: ParsedArgs): Promise<void> {
   const folder = blocked ? unreadFolder(root, blocked) : await readFolder(root, selected, values, responder.state, gaps, hints);
   const meshes = await readMeshes(cwd, selected, Boolean(values.all), gaps, offline);
   const target = await readSelected(selected, responder, folder, gaps, hints);
+  // The note under the heading sends here for this folder's own stack cut off with no recorded
+  // outcome under another selection. A blocked one is named with its block under `This folder's
+  // space` and its step first in Next, so that note is left out here, with its --json warning. One
+  // that neither blocks nor stays part way settles from its members' processes when it starts.
+  const held = folderStack(folder, target);
+  if (held && folder.stackBlock) withdrawOperationNote("FOLDER_SPACE_NOT_RUNNING", held.space);
+  if (held && !folder.stackBlock && !folder.stackUnfinished && unsettledStackOperation(held.root, held.space)) hints.push(`start it with \`cotal up\` in ${held.root}`);
   const services = readOwnedServices(selected, gaps);
   const bootAttempts: StatusResult["bootAttempts"] = blocked ? { root, state: "partial", observedAt: new Date().toISOString(), unsettled: [], additive: [], unreadable: [], elsewhere: [] } : readBootAttempts(root, gaps);
   const maintenance: StatusResult["maintenance"] = blocked ? { root, space: null, state: "unreadable", attemptId: null, next: null } : readMaintenance(root, gaps);
@@ -845,9 +852,9 @@ async function readFolder(root: string, selected: Selected, values: FlagValues<t
   }
   const context: LocalProcessContext = { root, space, userAuth: userDisk };
   const processes: ProcessRow[] = [];
-  let nats: Proc | undefined;
+  let nats: PidfileState | undefined;
   for (const component of localProcessSurface().filter((component) => localProcessVisible(component, context)).sort((a, b) => (a.order ?? 50) - (b.order ?? 50))) {
-    let state: Proc;
+    let state: PidfileState;
     try {
       state = pidfileState(localProcessPath(component.pidFile, context));
     } catch (e) {
@@ -990,7 +997,7 @@ function sameDir(a: string, b: string): boolean {
   return canonicalRoot(a) === canonicalRoot(b);
 }
 
-function processRow(name: string, p: Proc, detail: string | null): ProcessRow {
+function processRow(name: string, p: PidfileState, detail: string | null): ProcessRow {
   if (p.liveness === "alive") return { name, state: "running", pid: p.pid ?? null, detail };
   return { name, state: p.liveness === "unknown" ? "unknown" : "stopped", pid: p.pid ?? null, detail: p.note ?? null };
 }
@@ -1010,7 +1017,7 @@ function processRow(name: string, p: Proc, detail: string | null): ProcessRow {
  *
  *  A dead/stopped pid never reaches the probe at all (the early return below), so a stopped manager
  *  still reads as stopped, not `not-serving` — a dead pid is not a live pid that will not answer. */
-async function managerProcess(target: MeshTarget | undefined, state: Proc, space: string, gaps: Gaps): Promise<ProcessRow> {
+async function managerProcess(target: MeshTarget | undefined, state: PidfileState, space: string, gaps: Gaps): Promise<ProcessRow> {
   if (state.liveness !== "alive") return processRow("manager", state, null);
   const details: string[] = [];
   let deliveryAware = false;
@@ -1025,7 +1032,10 @@ async function managerProcess(target: MeshTarget | undefined, state: Proc, space
   }
   const running = (extra?: string): ProcessRow => ({ name: "manager", state: "running", pid: state.pid ?? null, detail: [...details, ...(extra ? [extra] : [])].join(" · ") });
   if (!target) return running();
-  const endpoint = await managerEndpoint(target);
+  const localId = target.mode === "user" ? localManagerInstanceId(target.root, space) : undefined;
+  // A live pid whose instance is not on this root must not take an unpinned answer.
+  if (target.mode === "user" && localId === undefined) return running("service unchecked");
+  const endpoint = await managerEndpoint(target, localId);
   if (endpoint === "not-answering")
     return { name: "manager", state: "not-serving", pid: state.pid ?? null, detail: ["service endpoint not answering", ...details.filter((d) => d.startsWith("delivery-aware marker unreadable"))].join(" · ") };
   return running(endpoint === "unchecked" ? "service unchecked" : undefined);
@@ -1033,21 +1043,64 @@ async function managerProcess(target: MeshTarget | undefined, state: Proc, space
 
 type ManagerEndpoint = "answered" | "not-answering" | "unchecked";
 
+/** The instance id this workspace root persisted for `space`. That is the id the manager's
+ *  own status reports. Absent when this root has never registered a manager. A malformed
+ *  record is not an id: status must not invent one. */
+function localManagerInstanceId(root: string, space: string): string | undefined {
+  try {
+    const id = loadManagerInstanceIdentity(root, space)?.instanceId;
+    return typeof id === "string" && id.length > 0 ? id : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** User-mode manager status goes through the same control call `cotal spawn` uses. `instanceId`
+ *  pins that call to this machine's manager. Without it, the exchange may select another live
+ *  manager of the same owner. */
+async function userManagerStatus(target: MeshTarget, instanceId?: string): Promise<ManagerServiceStatus> {
+  const control = await resolveControlTarget(
+    { space: target.space, server: target.server },
+    "control-caller-privileged",
+    instanceId,
+    { onRefusal: "throw" },
+  );
+  const reply = await askManager(
+    control.space,
+    control.server,
+    "managerStatus",
+    undefined,
+    control.auth,
+    "owner",
+    3_000,
+  );
+  if (reply.ok !== true) {
+    const message = "error" in reply && typeof reply.error === "string" ? reply.error : "manager status refused";
+    // `unavailable` stays a reachability failure, as the static probe does. Anything else, including
+    // a manager that answered and refused, is a precondition. The reply's details stay on the error:
+    // a real no-answer carries the unanswered marker, and dropping it would report silence as a refusal.
+    const code = reply.code === "unavailable" ? "unavailable" : "failed-precondition";
+    throw new EpEnvelopeError(code, message, reply.details);
+  }
+  if (reply.data === undefined) throw new EpEnvelopeError("unavailable", "the manager status reply carried no data");
+  return reply.data as ManagerServiceStatus;
+}
+
 /** One probe of the space's manager service endpoint. Only a definitive no-answer is
  *  `not-answering`; a refused probe or an `unavailable` user-mode credential is `unchecked`, so a
  *  failed probe never reads as a dead rail. The operator's credential calls the class rail, so with
- *  `instanceId` an answer from another manager instance is `unchecked` too. */
+ *  `instanceId` an answer from another manager instance is `unchecked` too. Omitting
+ *  `instanceId` leaves the answer unpinned, for a probe that is not attributing a local process. */
 async function managerEndpoint(target: MeshTarget, instanceId?: string): Promise<ManagerEndpoint> {
   try {
-    let auth: ({ creds?: string } | { bearer: string; sentinelCreds: string }) & { caller: { owner: string; actor: string; uid: string } };
+    let status: ManagerServiceStatus;
     if (target.mode === "user") {
       const credential = await componentCredential(target);
       if (credential.kind !== "user") return "unchecked";
-      auth = { bearer: credential.bearer, sentinelCreds: credential.sentinelCreds, caller: credential.caller };
+      status = await userManagerStatus(target, instanceId);
     } else {
-      auth = await staticServiceAuth(target.auth);
+      status = await managerServiceHealth(target, await staticServiceAuth(target.auth));
     }
-    const status = await managerServiceHealth(target, auth);
     return instanceId === undefined || status.instanceId === instanceId ? "answered" : "unchecked";
   } catch (e) {
     return e instanceof EpEnvelopeError && (unansweredRequest(e) || /service registry.*stream not found/i.test((e as Error).message)) ? "not-answering" : "unchecked";
@@ -1056,11 +1109,13 @@ async function managerEndpoint(target: MeshTarget, instanceId?: string): Promise
 
 /** A controller stack's manager is an owned service, and its instance record reads `running` while
  *  the process lives, a hung one included. So a running stack manager gets the probe the legacy
- *  manager row gets, and only an answer from its own native instance counts. */
+ *  manager row gets. In user mode only an answer from the instance this root persisted counts. */
 async function readStackManager(target: MeshTarget, services: OwnedServiceStatus): Promise<StatusResult["stackManager"]> {
   const row = services.instances?.find((item) => item.definition === STACK_DEFINITION.manager && item.observedProcess === "running");
   if (!row?.pid) return undefined;
-  return { instanceId: row.instanceId, pid: row.pid, endpoint: await managerEndpoint(target, row.nativeEndpoint?.instanceId) };
+  const pin = target.mode === "user" ? localManagerInstanceId(target.root, target.space) : row.nativeEndpoint?.instanceId;
+  if (target.mode === "user" && pin === undefined) return { instanceId: row.instanceId, pid: row.pid, endpoint: "unchecked" };
+  return { instanceId: row.instanceId, pid: row.pid, endpoint: await managerEndpoint(target, pin) };
 }
 
 /** The delivery row's responder detail (#1576). An unbound responder is not a footnote about a
@@ -1301,7 +1356,8 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
     // starts it again rather than a registration to repair.
     const flagged = (target.source === "flag-server" || target.source === "flag-space-override") && target.recordedServer !== target.server;
     const offline = preflight.kind === "unreachable" && !flagged && target.origin === "up";
-    if (preflight.kind === "unreachable" && (flagged || offline)) {
+    // A blocked stack refuses that `up`, and Next names the step that clears the block instead.
+    if (preflight.kind === "unreachable" && (flagged || offline) && !(servedStack(folder, base) && folder.stackBlock)) {
       const { message, remedy } = workspaceErrorParts({ kind: "preflight", failure: "unreachable", target, pruned: !offline && preflight.prune });
       hints.push(remedy === undefined ? message : `${message}; ${remedy}`);
     }
@@ -1865,9 +1921,15 @@ function selectedOverview(r: StatusResult): Section | undefined {
 
 /** The selected space and its root when this folder's controller stack serves it: a resolved one, or
  *  a prepared one that is not started, as an `up` cut off before it registered the space leaves it. */
-function servedStack(folder: StatusResult["folder"], s: SelectedResult): { space: string; root: string } | undefined {
+function servedStack(folder: StatusResult["folder"], s: { space?: string; root?: string }): { space: string; root: string } | undefined {
   if (s.space === undefined || s.root === undefined) return undefined;
   return folder.controllerStack && folder.root === s.root && folder.processSpace === s.space ? { space: s.space, root: s.root } : undefined;
+}
+
+/** This folder's own controller stack when it does not serve the selected space. The note under the
+ *  heading sends to status when its last operation has no recorded outcome, so status names it. */
+function folderStack(folder: StatusResult["folder"], s: SelectedResult): { space: string; root: string } | undefined {
+  return folder.controllerStack && folder.processSpace !== null && !servedStack(folder, s) ? { space: folder.processSpace, root: folder.root } : undefined;
 }
 
 /** The lines that name this folder's stack operation cut off with no recorded outcome: one that keeps
@@ -1920,7 +1982,9 @@ function nextActions(r: StatusResult): Section {
   const elsewhere = dialed !== undefined && dialed.mode !== "user" && (dialed.source === "flag-server" || dialed.source === "flag-space-override")
     && r.meshes.items.find((m) => m.space === dialed.space)?.server !== dialed.server;
   const stack = servedStack(r.folder, r.selected), own = stack !== undefined;
-  const block = own ? r.folder.stackBlock : undefined;
+  // This folder's own stack is blocked the same way under another selection, and its block leads too.
+  const blocked = stack ?? folderStack(r.folder, r.selected);
+  const block = blocked ? r.folder.stackBlock : undefined;
   // A legacy static-auth stack started here whose broker or manager exited leaves its pidfile, and a
   // bare `up` in this folder starts it again on the address and store this machine recorded. An open
   // refresh restarts no manager, and an open or user-auth broker needs its mode flag again.
@@ -1928,8 +1992,8 @@ function nextActions(r: StatusResult): Section {
     && !["manual", "catalog"].includes(r.meshes.items.find((m) => m.space === r.selected.space)?.origin ?? "up");
   const exited = local ? (r.folder.processes ?? []).filter((row) => (row.name === "nats" || row.name === "manager") && row.state === "stopped" && row.pid !== null).map((row) => row.name) : [];
   if (r.selected.resolved && r.selected.connection === "broker-stopped") items.unshift({ command: `kill -CONT ${r.selected.brokerPid}`, description: "Resume the stopped broker process so it answers again" });
-  else if (block && stack) {
-    const inspect = { command: `${cmd} service status ${block.definition} --instance ${block.instanceId} --space ${stack.space}`, description: block.route.kind === "inspect" ? "Inspect the member that keeps up and down from settling" : "Inspect that member" };
+  else if (block && blocked) {
+    const inspect = { command: `${cmd} service status ${block.definition} --instance ${block.instanceId} --space ${blocked.space}`, description: block.route.kind === "inspect" ? "Inspect the member that keeps up and down from settling" : "Inspect that member" };
     items.unshift(...(block.route.kind === "abandon" ? [{ command: `${cmd} down --abandon-stop ${block.route.requestId} --yes`, description: `Abandon the unconfirmed stop of ${block.definition}; up and down refuse until then` }, inspect] : [inspect]));
   } else if (stack && r.folder.stackUnfinished) {
     const part = r.folder.stackUnfinished;
@@ -2066,10 +2130,13 @@ function maintenanceOverview(maintenance: StatusResult["maintenance"]): Section 
  *  full, as `--all` and `--wide` ask. */
 export function statusView(r: StatusResult, verbose = false, wide = false): Report {
   const selected = selectedOverview(r);
+  // This folder's own stack under another selection, with the lines it has when it is selected.
+  const held = folderStack(r.folder, r.selected), heldLines = held ? stackLines(r.folder) : [];
+  const heldSection: Section | undefined = held && heldLines.length ? { title: `This folder's space  → ${held.space}`, blocks: heldLines } : undefined;
   const owned = ownedServicesOverview(r.services);
   const attempts = bootAttemptOverview(r.bootAttempts);
   const maintenance = maintenanceOverview(r.maintenance);
-  const sections = [machineOverview(r, wide), spacesOverview(r, wide), ...(selected ? [selected] : []), ...(maintenance ? [maintenance] : []), ...(attempts ? [attempts] : []), ...(owned ? [owned] : [])];
+  const sections = [machineOverview(r, wide), spacesOverview(r, wide), ...(selected ? [selected] : []), ...(heldSection ? [heldSection] : []), ...(maintenance ? [maintenance] : []), ...(attempts ? [attempts] : []), ...(owned ? [owned] : [])];
   if (verbose) sections.push(machineSection(r.machine), extensionsSection(r.extensions), folderSection(r.folder, r.selected), ...meshesSections(r.meshes), selectedSection(r.selected, r.folder, stackDeliveryPid(r), r.store?.state === "full"));
   sections.push(nextActions(r));
   return { sections };
@@ -2146,11 +2213,14 @@ function processVerdict(record: ReturnType<typeof processRecord>): ComponentVerd
  *
  *  USER MODE (the #1832 fix): the flip forbids static-minting on a user-auth mesh, and a
  *  credential-less probe of an authenticated broker is the raw `Authorization Violation` this used
- *  to print. So a user-mode target connects as the machine's signed-in login — the SAME credential
- *  `ps` and the bare-status live snapshot use (`userCredentials`, which also serves discovered
- *  spaces through the registry entry). When that credential cannot be had (not signed in, service
- *  down, exchange refused), the components pass says so on the row instead of probing bare: a
- *  refused probe would be reporting the broker's answer to a question nobody asked. */
+ *  to print. So a user-mode target connects as the machine's signed-in login. Delivery stays on
+ *  that login. The broker row only checks that the registered address is reachable. It does not
+ *  present the login. `manager.status` does not use the login either: it publishes with the
+ *  manager-caller view `cotal spawn` exchanges, pinned to this machine's manager instance when a
+ *  running service row names it. That view carries `status` when the actor holds `spawn`. When the
+ *  login cannot be had (not signed in, service down, exchange refused), the components pass says so
+ *  on the row instead of probing bare: a refused probe would be reporting the broker's answer to a
+ *  question nobody asked. */
 type ComponentCredential =
   | { kind: "static"; auth: SpaceAuth | undefined }
   | { kind: "user"; bearer: string; sentinelCreds: string; caller: { owner: string; actor: string; uid: string } }
@@ -2313,7 +2383,7 @@ async function managerServiceHealth(
     maxReconnectAttempts: 0,
   });
   try {
-    const service = await resolveService(nc, target.space, "manager", auth.caller, { deadlineMs: 3_000 });
+    const service = await resolveService(nc, target.space, "manager", auth.caller, { deadlineMs: 3_000, commands: ["status"] });
     const response = await invokeRepairingSplit(nc, target.space, service, "status", undefined, { deadlineMs: 3_000 });
     if (response.reply.ok !== true)
       throw new EpEnvelopeError(response.reply.error?.code === "unavailable" ? "unavailable" : "failed-precondition", response.reply.error?.message ?? "manager status refused");
@@ -2360,17 +2430,28 @@ async function managerHealth(target: MeshTarget, context: LocalProcessContext, c
       if (lease) facts.push(`lease holder ${lease.holder}`, `lease pid ${lease.pid}`);
       else facts.push("lease absent");
     }
-    // The service caller triple is part of the manager's own authenticated control surface.  Keep
-    // the minted credential and the subject caller on the SAME identity; a mismatched random actor
-    // would turn an authorized manager into a false no-answer on static meshes.
-    // User mode: the SAME bearer the probe connected with answers the service rail, and the caller
-    // triple is the bearer's own principal (the comment above the triple read). Static/open: a
-    // fresh one-shot instrument, exactly as before.
-    const serviceAuth =
-      credential.kind === "user"
-        ? { bearer: credential.bearer, sentinelCreds: credential.sentinelCreds, caller: credential.caller }
-        : await staticServiceAuth(credential.auth);
-    const served = await managerServiceHealth(target, serviceAuth);
+    // Static/open keeps the one-shot instrument on the same identity as its caller triple.
+    // User mode calls manager status through the same control path `cotal spawn` uses.
+    // The login bearer does not carry that command for a spawn holder.
+    // Pin only while this machine's manager process is live. With no live process, an
+    // unpinned answer is this row's own verdict and the facts below name its instance.
+    const liveLocal = record.kind === "live";
+    const localId = credential.kind === "user" && liveLocal ? localManagerInstanceId(context.root, target.space) : undefined;
+    const served = credential.kind === "user"
+      ? await userManagerStatus(target, liveLocal ? localId : undefined)
+      : await managerServiceHealth(target, await staticServiceAuth(credential.auth));
+    // A live local process is serving only when its persisted instance answered. An unknown
+    // id, or a different one, cannot be attributed: refused, not not-serving, and the remote
+    // runtime stays off this row. The facts name the instance that answered.
+    if (credential.kind === "user" && liveLocal && (localId === undefined || served.instanceId !== localId)) {
+      const answered = typeof served.instanceId === "string" && served.instanceId.length > 0 ? served.instanceId : undefined;
+      facts.push(answered === undefined
+        ? "the manager answer named no instance, so it is not this machine's manager"
+        : localId === undefined
+          ? `answered by manager instance ${answered}; this machine's manager instance is not known`
+          : `answered by manager instance ${answered}, not this machine's manager ${localId}`);
+      return { name: "manager", verdict: "refused", facts };
+    }
     facts.push(`service instance ${served.instanceId ?? "unreported"}`);
     facts.push(`runtime ${served.runtime ?? "unreported"}`);
     facts.push(...managerStopImpactFacts(served.stopImpact));

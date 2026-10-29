@@ -25,6 +25,8 @@ const STARTUP_FAILURE_CODES = new Set([
   "readiness_timeout",
   "sessions_enumeration_failed",
   "sessions_unwritable",
+  "provider_auth_refused",
+  "provider_request_failed",
 ]);
 
 function startupFailureCode(error: unknown): string {

@@ -131,12 +131,15 @@ export class CommandFailure extends Error {
   /** The target key holding an ID the caller gave that names nothing here, such as a stop request ID
    *  no member retains. The report labels it `Given ID`; the envelope carries the target unchanged. */
   readonly given?: string;
+  /** The remedy is one command, run as written, so a terminal never breaks it: one wider than the
+   *  line runs past it, and a copied line is the whole command. The envelope carries the remedy unchanged. */
+  readonly remedyIsCommand?: true;
 
   constructor(
     outcome: Exclude<Outcome, "ok" | "no-op">,
     code: ErrorCode,
     message: string,
-    opts: { remedy?: string; native?: NativeCause; target?: unknown; changed?: readonly unknown[]; cause?: unknown; selfContained?: true; given?: string } = {},
+    opts: { remedy?: string; native?: NativeCause; target?: unknown; changed?: readonly unknown[]; cause?: unknown; selfContained?: true; given?: string; remedyIsCommand?: true } = {},
   ) {
     super(message, opts.cause === undefined ? undefined : { cause: opts.cause });
     const problem = outcomeCodeProblem(outcome, code);
@@ -150,6 +153,7 @@ export class CommandFailure extends Error {
     this.changed = opts.changed;
     this.selfContained = opts.selfContained;
     this.given = opts.given;
+    this.remedyIsCommand = opts.remedyIsCommand;
   }
 
   /** The error detail an envelope carries. */
@@ -229,6 +233,17 @@ export function operationWarnings(): readonly OutputWarning[] {
   return operationScope.getStore()?.warnings ?? [];
 }
 
+/** Withdraw the note this run recorded as a `code` warning about `space`, from its envelope and from
+ *  under its `Mesh:` heading, for a report that says the same in a section of its own. Outside
+ *  {@link runOperation} it does nothing. */
+export function withdrawOperationNote(code: string, space: string): void {
+  const scope = operationScope.getStore(), warnings = scope?.warnings ?? [];
+  const index = warnings.findIndex((w) => w.code === code && (w.target as { space?: unknown } | null)?.space === space);
+  if (!scope || index < 0) return;
+  const [warning] = warnings.splice(index, 1);
+  if (scope.spaceNote?.text === warning!.message) delete scope.spaceNote;
+}
+
 /** `failure` with the operation's recorded space added to its target, so its report begins with
  *  `Mesh: <space>` and its envelope carries `target.space`. A target that already has a `space`
  *  field, or is not an object, is kept as it is. */
@@ -236,7 +251,7 @@ export function inOperationSpace(failure: CommandFailure, space: string | undefi
   const target = failure.target;
   if (space === undefined || target !== null && (typeof target !== "object" || Array.isArray(target) || Object.hasOwn(target, "space"))) return failure;
   const fields = target === null ? {} : target as Record<string, unknown>;
-  const placed = new CommandFailure(failure.outcome, failure.code, failure.message, { remedy: failure.remedy, native: failure.native, changed: failure.changed, target: { space, ...fields }, cause: failure.cause, selfContained: failure.selfContained });
+  const placed = new CommandFailure(failure.outcome, failure.code, failure.message, { remedy: failure.remedy, native: failure.native, changed: failure.changed, target: { space, ...fields }, cause: failure.cause, selfContained: failure.selfContained, remedyIsCommand: failure.remedyIsCommand });
   placed.stack = failure.stack;
   return placed;
 }

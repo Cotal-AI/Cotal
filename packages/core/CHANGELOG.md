@@ -1,5 +1,189 @@
 # @cotal-ai/core
 
+## 0.126.3
+
+No changes in this release.
+
+## 0.126.2
+
+No changes in this release.
+
+## 0.126.1
+
+No changes in this release.
+
+## 0.126.0
+
+No changes in this release.
+
+## 0.125.0
+
+### Minor Changes
+
+- b2413e2: Add the typed `remove-persona` Manager command and grant it with existing persona authority, including removal of invalid legacy names.
+
+## 0.124.3
+
+No changes in this release.
+
+## 0.124.2
+
+No changes in this release.
+
+## 0.124.1
+
+No changes in this release.
+
+## 0.124.0
+
+No changes in this release.
+
+## 0.123.0
+
+No changes in this release.
+
+## 0.122.0
+
+### Minor Changes
+
+- b318ddd: `cotal manager start` and `restart` on a user-auth space now confirm the cached sign-in with its IdP before they save or launch anything. A sign-in the IdP rejects because it expired or was revoked is refused `AUTH_REQUIRED` (exit 2) with `cotal login --idp <base>` as the next step, as no sign-in is. Before, a participant's start launched the manager, which failed `OPERATION_FAILED`, and a hosting folder's start left the manager running behind an `OPERATION_UNKNOWN`. A space registered from another host now gets the signed-out refusal too. Any other failure of the check, such as an IdP that does not answer, is left to the start as before.
+  
+  Breaking for custom auth providers: `AuthProvider` gains `confirmLogin`, which the stock provider implements with one IdP proof and no mint. `manager start` and `restart` on a user-auth space refuse `UNSUPPORTED` when the installed provider does not implement it.
+
+## 0.121.7
+
+### Patch Changes
+
+- 05ecb0d: `@cotal-ai/core` exports `buildClusterDocument(urn, revision, rows)` and `buildClusterArtifacts(document)` beside `ClusterDocument`. `authClusterDocument`, `authClusterArtifacts`, `managerClusterDocument` and `managerClusterArtifacts` call these builders instead of carrying duplicate row-to-document mappings, inline `ClusterDocument` return types and single-document closure artifact wrappers. Every produced cluster document, root digest, manifest and closure digest is unchanged.
+- 912de5d: Clarify the endpoint-serve and sibling credential ledger-row comments in `@cotal-ai/core` and `@cotal-ai/manager`: the epoch-pinned serve grant distinguishes a re-registered successor incarnation from its revoked predecessor while a same-second serve re-mint at one epoch idempotently re-stages the active row, and the random `issuance:` tag on `goal-writer` and `session-ledger` gives each sibling issuance distinct bytes even within the same Unix second.
+
+## 0.121.6
+
+No changes in this release.
+
+## 0.121.5
+
+No changes in this release.
+
+## 0.121.4
+
+No changes in this release.
+
+## 0.121.3
+
+### Patch Changes
+
+- fe38cbd: `@cotal-ai/core` now exports `launcherSource` (and `LauncherPayload`) to build the private Node launcher script that `@cotal-ai/orca` and `@cotal-ai/herdr` write through `writeSecretFile`, parameterized by the diagnostic label and launch payload, while each runtime keeps its own temporary-directory prefix and backend transport.
+- 479895c: Keep the native error name in connection-close diagnostics and failed reconnect replies when the transport provides an empty message.
+- baf9576: Remove the dead chat join-watermark branch from `CotalEndpoint.pump` along with `dropWatermark` and the `joinSeq` map that remained after the per-instance chat durable was removed, while keeping `armJoin` returning the per-channel CHAT stream frontiers for `backfillArmed`.
+- 6990d29: Fix teardown of additive ledgers from the retired `spawn -f`. `down -f` now reports the actual membership read failure, and static teardown credentials carry the batched membership snapshot read they need. Channels remain retained when membership is uncertain.
+  
+  On user-auth meshes, teardown uses the signed-in deploying owner's authority rather than a synthetic static identity whose filtered roster could hide a running agent. Membership reads and channel deletion use the existing admin and channel-writer views. An older auth issuer still requires an upgrade before it can issue the snapshot read grant.
+- a77ac87: Detect silently lost seat and CLI connections sooner with native NATS heartbeats every ten seconds. Keep explicit heartbeat overrides and reconnect behavior unchanged.
+
+## 0.121.2
+
+### Patch Changes
+
+- af4b631: Report the recorded connection failure when sends or DMs cannot bind, including a
+  refused first presence write. Inbox replies now identify a connection that is not
+  ready while continuing to return locally buffered messages.
+  
+  A timed-out presence update reports that its outcome is unknown and may have landed.
+- 3d07896: Report the concrete publish subject and unknown storage outcome when a channel send or direct message times out. A missing publish acknowledgement does not prove that the broker rejected the message.
+- 1446ee9: Report a remote signed-in user's current read, post, direct-message and capability grant in `cotal whoami`. The stock issuer returns the authoritative grant beside each fresh bearer, while unavailable, refused and older issuers remain unknown instead of being inferred from the token or a successful exchange.
+- f450bfe: Keep static managed seats' self-stop, persona and spawn calls bound to their launching manager without changing their class-only credential grants.
+- ee93749: `assertValidKind` validates endpoint kinds (`"agent"` or `"endpoint"`). `CotalEndpoint`, `configFromEnv`, `loadAgentFile`, and `saveAgentFile` share it, so `COTAL_KIND` and `card.kind` refuse any other value instead of passing an unvalidated string through to the card.
+
+## 0.121.1
+
+No changes in this release.
+
+## 0.121.0
+
+### Minor Changes
+
+- 5d01ea1: Add native nats-server file logging and rotation settings, persist them across controller stack restarts, and keep broker log and startup diagnostics files private.
+
+## 0.120.2
+
+No changes in this release.
+
+## 0.120.1
+
+No changes in this release.
+
+## 0.120.0
+
+No changes in this release.
+
+## 0.119.5
+
+### Patch Changes
+
+- 8f7d6dd: An unpinned endpoint invoke now reaches a service whose caller grant names only its instance. When the broker refuses the publish on the class queue, nothing ran, so the call goes once more to the rail of the instance that answered its describe. A granted agent's `cotal_invoke` and an unpinned `cotal invoke` therefore work without naming the instance; a credential that holds neither rail is refused as before.
+
+## 0.119.4
+
+### Patch Changes
+
+- ed5c23f: Remedies, hints and messages from `run`, `actor` and `auth`, `logout`, `supervise` and `manager`, `deliver`, `docs`, `daemon`, `linear`, the web dashboard, the console, the Claude Code connector, a run's checkpoint prompt and the endpoint issuance gate now name the commands they suggest in backticks, so a terminal keeps each one whole and `--json` carries the same text. They named them bare after other words, as in "list the recorded runs with cotal run", which split inside the command when the line wrapped.
+
+## 0.119.3
+
+### Patch Changes
+
+- 8866e1e: Endpoint calls now resolve only the command contracts they need instead of fetching the endpoint's complete visible surface. Manager operations that used to read 124 contract-store artifacts for a 40-command surface now read six artifacts for one command, while `describe` still resolves every visible command.
+
+## 0.119.2
+
+No changes in this release.
+
+## 0.119.1
+
+### Patch Changes
+
+- 9f32677: Clarify that a timed-out channel publish has an unknown outcome and that a disconnected send or yield refused before submission was not sent. Keep the Jcode user-auth tool catalog aligned with the host's capability gates without exposing credentials.
+- 3431be6: `cotal up --max-payload <bytes>` sets the broker's own message size limit, a positive integer up to 67108864. `up` renders it as `max_payload: <bytes>` in the broker config and records it in `.cotal/broker-policy.json`, which `readBrokerPolicy` reads back, so a later `cotal up` on the root renders it again without the flag, after `cotal down` or a preserved resume included. A running broker refuses a different value, and `--open`, `-f` and `--restore` refuse the flag. Service endpoint caller grants need at least 2098176 bytes, so a smaller value beside `--service-endpoints` refuses before anything starts. `SERVICE_CALLER_PAYLOAD_FLOOR` and `SERVICE_CALLER_PAYLOAD_OVERHEAD` now come from `@cotal-ai/core`, so the flag's validation and the auth host's assertion read one number. Before, `serverConfig` took a `maxPayload` that no `up` ever passed and no record kept, so a limit written into `server.conf` by hand was lost the next time `up` wrote the file.
+  
+  Caller issuance now survives a broker configuration reload. A reload keeps the same incarnation serving and moves VARZ `config_digest`, and issuance was bound to the digest the bootstrap observed, so every reload refused every later caller issuance until the auth plane was reopened. On a multi-tenant broker that is every tenant sign-up. The verifier now treats a moved digest as a trigger to re-measure: when the fresh observation proves the same broker incarnation and auth store, and proves the standalone topology, the payload floor, the control line, the system account and an uncapped auth stream again, it re-asserts the payload record under the held plane claim by CAS on the exact prior row and continues. A reload that breaks any of those still refuses, a `max_payload` below the floor included, a restart is a new incarnation and still refuses, and a withdrawn record is never overwritten.
+
+## 0.119.0
+
+No changes in this release.
+
+## 0.118.3
+
+No changes in this release.
+
+## 0.118.2
+
+No changes in this release.
+
+## 0.118.1
+
+No changes in this release.
+
+## 0.118.0
+
+No changes in this release.
+
+## 0.117.1
+
+No changes in this release.
+
+## 0.117.0
+
+### Minor Changes
+
+- c93dded: A conversation selection may now name channel patterns. `team.*` and `team.>` in a requested or approved selection grant every channel they match, including channels created after the approval, and the issued grant carries the pattern as it is.
+  
+  Before this, `checkConversationSelection` refused any non-concrete channel. A hosted approval page that let a person grant `team.>` produced an approval every stock client then rejected, so the connection failed after the person had approved it. The grammar check is unchanged: a malformed pattern such as `team.>.x` is still refused, as are more than 32 channels. Whether the person may grant a pattern is still decided by the authority, against that person's own row.
+
+## 0.116.5
+
+No changes in this release.
+
 ## 0.116.4
 
 No changes in this release.

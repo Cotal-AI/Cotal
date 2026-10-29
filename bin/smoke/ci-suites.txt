@@ -791,3 +791,8 @@ smoke:team-views:live
 # A long-running command stopped by SIGINT or SIGTERM ends cleanly and exits 130 or 143. Appended at
 # the end: no ordering dependency, and appending keeps two branches from conflicting.
 smoke:signal-exits:live
+
+# A native 60-second DM redelivery must disclose the broker count without inventing a prior model
+# handoff. The first possible context frame and first inbox read both preserve unknown handling when
+# no separate handoff evidence exists. Appended so existing shard assignments remain unchanged.
+smoke:broker-redelivery-framing

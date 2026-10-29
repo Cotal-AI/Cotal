@@ -1,5 +1,5 @@
 import { findCommand, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
-import { jsonFlag, writeResult } from "@cotal-ai/workspace";
+import { jsonFlag, paintFor, writeResult } from "@cotal-ai/workspace";
 import { commandSurface } from "../ext-loader.js";
 import { printCommandList, printHelpPath } from "../help.js";
 import { unknownCommandMessage } from "../lib/nearest-word.js";
@@ -16,10 +16,10 @@ export const helpFlags = [{ name: "all", type: "boolean", description: "accepted
 export async function help(args: ParsedArgs): Promise<void> {
   const [word, ...path] = args.positionals;
   const commands = commandSurface();
-  if (word === undefined) return printCommandList(commands);
+  if (word === undefined) return paintFor(process.stdout, () => printCommandList(commands));
   const cmd = findCommand(commands, word);
   if (!cmd || cmd.name.startsWith("__")) throw new Error(unknownCommandMessage(commands, word));
-  printHelpPath(managerServiceCommand(cmd, path)?.cmd ?? cmd, path);
+  paintFor(process.stdout, () => printHelpPath(managerServiceCommand(cmd, path)?.cmd ?? cmd, path));
 }
 
 export const versionFlags = [jsonFlag] as const;

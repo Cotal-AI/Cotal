@@ -5,7 +5,8 @@
  * The binary must start under the pty and exit cleanly. The node child must see a terminal on both
  * ends, the pty's window size, and raw keystrokes as bytes: the 0x1d detach key and Ctrl+C, which a
  * cooked terminal turns into a signal. A report fits the terminal's own width. A command that would
- * prompt on a terminal must not prompt under `--no-input`. Linux and macOS run it under a pty, Windows under ConPTY.
+ * prompt on a terminal must not prompt under `--no-input`. With stdout or stderr in a file, color stays
+ * on the terminal and off the file. Linux and macOS run it under a pty, Windows under ConPTY.
  *
  * Offline: no broker. COTAL_HOME and XDG_CONFIG_HOME are sandboxed.
  *
@@ -17,7 +18,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createSuite } from "@cotal-ai/smoke-kit";
-import { clean, cotalPty, nodePty, repoRoot, wait, type Pty } from "./_console-pty.js";
+import { clean, COTAL, cotalPty, nodePty, repoRoot, wait, type Pty } from "./_console-pty.js";
 
 const home = mkdtempSync(join(tmpdir(), "cotal-cli-pty-"));
 const env: Record<string, string> = {};
@@ -79,6 +80,18 @@ const REPORT = `
 const { writeResult } = await import(${JSON.stringify(pathToFileURL(join(repoRoot, "packages", "workspace", "dist", "index.js")).href)});
 const table = { kind: "table", columns: [{ key: "name", label: "NAME" }, { key: "state", label: "STATE" }], rows: [{ name: "古い席-long-name", state: { text: "working", tone: "ok", mark: "*" } }] };
 writeResult("rich", { command: "probe", target: null, result: null }, () => ({ sections: [{ blocks: [table] }] }));`;
+
+// Each cotal run the third argument lists (by default `config`, which writes its report on stdout, and
+// `nope`, which writes its refusal on stderr) runs with the stream the first argument names written to
+// the file the second names, and the other left on the terminal.
+const REDIRECT = `
+const { spawnSync } = await import("node:child_process");
+const { closeSync, openSync } = await import("node:fs");
+const [file, path, runs = '[["config"],["nope"]]'] = process.argv.slice(1);
+const fd = openSync(path, "w");
+for (const args of JSON.parse(runs))
+  spawnSync(process.execPath, ["--import", ${JSON.stringify(import.meta.resolve("tsx"))}, ${JSON.stringify(COTAL)}, ...args], { stdio: ["inherit", file === "stdout" ? fd : "inherit", file === "stderr" ? fd : "inherit"] });
+closeSync(fd);`;
 
 const ptys: Pty[] = [];
 try {
@@ -153,7 +166,8 @@ try {
   }
 
   // A usage too wide for its line breaks after its own ` | ` alternatives first, and a group too wide
-  // takes lines of its own and breaks the same way inside. A word never leaves its argument.
+  // breaks the same way inside, starting on the `cotal send` line its opening piece fits on. A word
+  // never leaves its argument.
   // An example's command is never wrapped, so each stays one line to copy, and setup's fit leaves out
   // those lines alone; their notes and every other section still fit.
   const helpAt = async (argv: string[], cols: number) => {
@@ -172,17 +186,35 @@ try {
   check(
     "on 60 columns cotal help send breaks its destination group after its alternatives",
     usageOf(send.all).join("\n") === [
-      "  cotal send", "  (--to/-t <agent> | --channel/-c <channel> |", "  --role/-r <role>)",
+      "  cotal send (--to/-t <agent> | --channel/-c <channel> |", "  --role/-r <role>)",
       '  ["<message>" | --file/-f <path> | --stdin]', "  [--json|--plain]",
     ].join("\n"),
     usageOf(send.all),
   );
   // A docs page on a terminal is drawn: headings are titles, a table too wide is one record per row,
-  // and it wraps to 80 columns. Only a line that is one word, or one command a sentence names, stays wider.
+  // and it wraps to 80 columns. Only a line that is one word, or one span in backticks, stays wider.
+  const unbreakable = (line: string) => !/\S \S/.test(line.trim()) || /^[("']*`[^`]+`[)"',.;:]*$/.test(line.trim());
   const page = await helpAt(["docs", "cli"], 80);
   check("cotal docs cli on an 80-column terminal is drawn, with no heading marks or table rules",
     page.exitCode === 0 && page.all.includes("`cotal` CLI reference") && !page.all.some((line) => /^#{1,6} /.test(line) || /^\s*\|[\s:|-]+\|\s*$/.test(line)) && page.all.some((line) => /^ {2}field: +`schemaVersion`$/.test(line)), page.all.slice(0, 12));
-  check("cotal docs cli on an 80-column terminal fits every line that can break", page.exitCode === 0 && page.all.length > 1000 && fit(page.all.join("\n"), 80).every((line) => !/\S \S/.test(line.trim()) || /^`cotal [^`]+`[,.;:]?$/.test(line.trim())), fit(page.all.join("\n"), 80));
+  check("cotal docs cli on an 80-column terminal fits every line that can break", page.exitCode === 0 && page.all.length > 1000 && fit(page.all.join("\n"), 80).every(unbreakable), fit(page.all.join("\n"), 80));
+  // A search hit is drawn as its page is, so a span in backticks that crosses a line break in the
+  // page's source stays whole, and `--plain` wraps the same text. A run of backticks closes at the
+  // next run as long, as in Markdown.
+  const spansClose = (line: string) => (line.match(/`+/g) ?? []).reduce((open, run) => (!open ? run.length : run.length === open ? 0 : open), 0) === 0;
+  for (const flags of [[], ["--plain"]]) {
+    const search = await helpAt(["docs", "--search", "manager", ...flags], 80);
+    const name = ["cotal docs --search manager", ...flags].join(" ");
+    check(`${name} on an 80-column terminal splits no span in backticks across lines`,
+      search.exitCode === 0 && search.all.some((line) => line.trim() === "read the full page: `cotal docs cli`") && search.all.every(spansClose), search.all.filter((line) => !spansClose(line)));
+    check(`${name} on an 80-column terminal fits every line that can break`, search.exitCode === 0 && search.all.length > 20 && fit(search.all.join("\n"), 80).every(unbreakable), fit(search.all.join("\n"), 80));
+  }
+  // A hit's title, `Page › heading`, is a section title and wraps at its words as any title does.
+  // Titles are the lines that start at the margin.
+  const narrowSearch = await helpAt(["docs", "--search", "manager"], 40);
+  const hitTitles = narrowSearch.all.filter((line) => /^\S/.test(line));
+  check("cotal docs --search manager on a 40-column terminal fits every hit title line",
+    narrowSearch.exitCode === 0 && hitTitles.some((line) => line.includes(" › ")) && fit(hitTitles.join("\n"), 40).length === 0, hitTitles);
   const setup80 = await helpAt(["help", "setup"], 80);
   check("cotal help setup on an 80-column terminal fits every line, its examples included", setup80.exitCode === 0 && fit(setup80.all.join("\n"), 80).length === 0 && setup80.all.includes("Examples"), fit(setup80.all.join("\n"), 80));
   const setup = await helpAt(["help", "setup"], 40);
@@ -309,6 +341,47 @@ try {
     const s = session(pty);
     await until(() => s.exitCode !== undefined);
     check(`cotal help under ${label} is ${colored ? "colored" : "not colored"}`, s.exitCode === 0 && /\x1b\[[0-9;]*m/.test(s.raw) === colored && s.text().includes("cotal"), JSON.stringify(s.raw.slice(0, 200)));
+  }
+
+  // Each stream is colored only when it is a terminal, so with stdout or stderr in a file the stream
+  // left on the terminal is colored and the file has no ANSI color. FORCE_COLOR colors both and
+  // NO_COLOR neither. ConPTY repaints the stream with its own sequences, so this is read on POSIX only.
+  if (process.platform !== "win32") {
+    const sgr = /\x1b\[[0-9;]*m/;
+    const auto = { ...env };
+    delete auto.FORCE_COLOR;
+    delete auto.NO_COLOR;
+    const redirected = async (file: "stdout" | "stderr", name: string, extra: Record<string, string> = {}, runs?: string[][]) => {
+      const path = join(home, `${name}.txt`);
+      const pty = nodePty(["--input-type=module", "-e", REDIRECT, file, path, ...(runs ? [JSON.stringify(runs)] : [])], { cwd: home, env: { ...auto, ...extra } });
+      ptys.push(pty);
+      const s = session(pty);
+      // Up to two cotal runs, one after the other.
+      await until(() => s.exitCode !== undefined, 120_000);
+      return { exitCode: s.exitCode, terminal: s.raw, file: readFileSync(path, "utf8") };
+    };
+    const shown = (r: Awaited<ReturnType<typeof redirected>>) => ({ exitCode: r.exitCode, terminal: JSON.stringify(r.terminal.slice(0, 300)), file: JSON.stringify(r.file.slice(0, 300)) });
+    const report = "Preferences";
+    const refusal = "unknown command: nope";
+    const err = await redirected("stderr", "stderr-in-file");
+    check("with stdout on a terminal and stderr in a file, stdout is colored and stderr has no ANSI color",
+      err.exitCode === 0 && clean(err.terminal).includes(report) && sgr.test(err.terminal) && err.file.includes(refusal) && !sgr.test(err.file), shown(err));
+    const out = await redirected("stdout", "stdout-in-file");
+    check("with stderr on a terminal and stdout in a file, stderr is colored and stdout has no ANSI color",
+      out.exitCode === 0 && clean(out.terminal).includes(refusal) && sgr.test(out.terminal) && out.file.includes(report) && !sgr.test(out.file), shown(out));
+    // A report and help are each painted for the stream they are written to, so neither turns plain on a
+    // terminal stdout because stderr alone is redirected.
+    const config = await redirected("stderr", "config-stderr-in-file", {}, [["config"]]);
+    const help = await redirected("stderr", "help-stderr-in-file", {}, [["help"]]);
+    check("with stderr in a file, cotal config and cotal help stay colored on a terminal stdout",
+      [config, help].every((r) => r.exitCode === 0 && sgr.test(r.terminal) && !sgr.test(r.file)) && clean(config.terminal).includes(report) && clean(help.terminal).includes("cotal help"),
+      { config: shown(config), help: shown(help) });
+    const forced = await redirected("stderr", "force-color", { FORCE_COLOR: "1" });
+    check("FORCE_COLOR=1 colors stdout on a terminal and stderr in a file",
+      forced.exitCode === 0 && clean(forced.terminal).includes(report) && sgr.test(forced.terminal) && forced.file.includes(refusal) && sgr.test(forced.file), shown(forced));
+    const none = await redirected("stderr", "no-color", { NO_COLOR: "1" });
+    check("NO_COLOR=1 colors neither stdout on a terminal nor stderr in a file",
+      none.exitCode === 0 && clean(none.terminal).includes(report) && !sgr.test(none.terminal) && none.file.includes(refusal) && !sgr.test(none.file), shown(none));
   }
 
   // A catalog travels with a cloned repo, so on a terminal `personas show` escapes its control characters.

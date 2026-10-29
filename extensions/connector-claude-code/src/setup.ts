@@ -121,7 +121,7 @@ function claudeCommand(): string {
   const terminal = spawnSync("claude", ["--version"], { stdio: "ignore", timeout: 5_000, killSignal: "SIGKILL" });
   if (terminal.status === 0) return "claude";
   if ((terminal.error as NodeJS.ErrnoException | undefined)?.code !== "ENOENT")
-    throw new Error("The installed Claude Code command could not run. Repair it before running cotal setup.");
+    throw new Error("The installed Claude Code command could not run. Repair it before running `cotal setup`.");
   const config = desktopConfigPath();
   const app = config ? dirname(config) : process.platform === "linux"
     ? join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "Claude")
@@ -427,10 +427,10 @@ function resolvedPluginCurrent(entry: PluginEntry, version: string, name = "cota
  *  record. A project path that is no longer a directory has no settings left to enable the plugin, so
  *  its record is left as it is. A project Claude Code cannot change does not stop the others; setup
  *  then fails naming each one. Returns how many it removed. */
-function retireProjectInstalls(): number {
+function retireProjectInstalls(entries: PluginEntry[] = listPlugins()): number {
   let removed = 0;
   const failed: string[] = [];
-  for (const entry of listPlugins()) {
+  for (const entry of entries) {
     if (entry.id !== `cotal@${MARKETPLACE}` || entry.scope !== "local" || typeof entry.projectPath !== "string") continue;
     if (!statSync(entry.projectPath, { throwIfNoEntry: false })?.isDirectory()) continue;
     const result = commandIn(entry.projectPath, "plugin", "uninstall", `cotal@${MARKETPLACE}`, "--scope", "local");
@@ -444,6 +444,36 @@ function retireProjectInstalls(): number {
   return removed;
 }
 
+
+/** Whether the account turned the `cotal` plugin off in Claude Code's user settings, which a user-scope
+ *  install would turn back on. */
+function offForAccount(): boolean {
+  const path = join(process.env.CLAUDE_CONFIG_DIR?.trim() || join(homedir(), ".claude"), "settings.json");
+  if (!existsSync(path)) return false;
+  const settings = JSON.parse(readFileSync(path, "utf8")) as { enabledPlugins?: Record<string, unknown> };
+  return settings.enabledPlugins?.[`cotal@${MARKETPLACE}`] === false;
+}
+
+/** Before 0.92.1 setup installed the `cotal` plugin per project, at local scope, and the refresh updates
+ *  each install where it is, so a machine set up then and kept current with `cotal update` stayed
+ *  local-only: the plugin was missing in every other folder. When no user-scope or administrator install
+ *  exists, install it for the account as setup does, and retire the per-project installs that had it on
+ *  in their own project. One turned off in its project stays, so it keeps the plugin off there, and a
+ *  project-scope record is that project's shared setting and is left alone. An account that turned the
+ *  plugin off keeps its per-project installs as they are. Returns how many it retired,
+ *  or undefined when it changed nothing. */
+function promoteLocalOnly(installs: PluginEntry[], version: string): number | undefined {
+  if (installs.some((entry) => entry.scope !== "local" && entry.scope !== "project") || offForAccount()) return undefined;
+  const on = installs.filter((entry) => {
+    const project = entry.projectPath;
+    if (entry.scope !== "local" || typeof project !== "string" || !statSync(project, { throwIfNoEntry: false })?.isDirectory()) return false;
+    // `enabled` is reported for the folder the list runs in, so ask each project about its own install.
+    return listPlugins(project).some((own) => own.id === entry.id && own.scope === "local" && own.projectPath === project && own.enabled === true);
+  });
+  if (!on.length) return undefined;
+  install("cotal", "user", version);
+  return retireProjectInstalls(on);
+}
 
 /** The installed Claude Code plugins, or undefined when Claude cannot be launched or queried (both of
  *  which status renders as "unknown" rather than "absent"). ONE spawn serves both rows. */
@@ -588,7 +618,11 @@ export const claudeSetupProvider: ConnectorSetupProvider = {
         if (installs.length || skillInstalls.length) writeMarketplace();
         const parts: string[] = [];
         if (installs.length) {
-          const warnings = refreshInstalls("cotal", installs, version!);
+          const promoted = promoteLocalOnly(installs, version!);
+          const current = promoted === undefined ? installs : listPlugins().filter((entry) => entry.id === `cotal@${MARKETPLACE}`);
+          const warnings = refreshInstalls("cotal", current, version!);
+          if (promoted !== undefined)
+            parts.push(`cotal@${MARKETPLACE} (user scope${promoted ? `, replacing ${promoted} project install${promoted === 1 ? "" : "s"}` : ""})`);
           parts.push(`cotal@${MARKETPLACE} ${version}; reload plugins or reopen Claude to load it in running sessions`, ...warnings);
         }
         if (skillInstalls.length) {

@@ -31,6 +31,15 @@ export interface ToolResult {
 const ok = (text: string): ToolResult => ({ text });
 const err = (text: string): ToolResult => ({ text, isError: true });
 
+/** A local inbox read cannot establish that a session is receiving from the mesh. */
+function inboxConnectionWarning(agent: MeshAgent): string {
+  const state = agent.connectionState;
+  const channelIssue = agent.channelDeliveryIssue;
+  if (state === "ready" || state === "stalled") return channelIssue ?? "";
+  const issue = agent.connectionIssue;
+  return [channelIssue, `Mesh connection is not ready (${state})${issue ? `: ${issue.slice(0, 500)}` : "."}\nLocally buffered messages are still readable; an empty buffer does not mean no new mesh messages.`].filter(Boolean).join("\n");
+}
+
 /** Cap on the JSON text a generic endpoint tool returns into the session. */
 const ENDPOINT_RESULT_MAX_CHARS = 200_000;
 
@@ -696,12 +705,15 @@ export async function orientationCard(
  *  hosting connector and is stamped onto outgoing feedback. An explicit env restricts feedback's
  *  Git lookup to its global config; omitted preserves process inheritance and repository lookup.
  *  `offered` limits the set to those names for a host that serves only part of the surface, and the
- *  orientation card then lists only those. */
+ *  orientation card then lists only those. `emptyInboxNote` lets a delivery-owning connector
+ *  explain a prior confirmed handoff when an ordinary inbox read has no unread items. It is
+ *  advisory only and cannot change selection or acknowledgements. */
 export function cotalToolSpecs(
   config: AgentConfig,
   source = "connector",
   env?: NodeJS.ProcessEnv,
   offered?: ReadonlySet<string>,
+  emptyInboxNote?: () => string | undefined,
 ): CotalToolSpec[] {
   // Manager-op tools (cotal_spawn / cotal_persona / cotal_personas) ride the `spawn` capability — publish to the
   // privileged control subject. The AUTH layer is the real boundary: on an authed mesh an agent
@@ -743,14 +755,16 @@ export function cotalToolSpecs(
       title: "Cotal: connection status",
       description:
         "Report this session's mesh connection as one of six states, plus the raw facts it is " +
-        "derived from. `ready` is bound with a live transport AND consuming its queue. `stalled` is " +
+        "derived from. `ready` is bound with a live transport, no repeated presence write failures, and a progressing queue. `stalled` is " +
         "bound with a live transport while automatic deliveries have been queued with no progress " +
         "for over ten minutes: the connection is fine and the seat is not consuming, so peer " +
         "messages are piling up behind it. Progress is measured at the HEAD of the queue, so a seat " +
         "that keeps committing fresh arrivals while its oldest deliveries never come off reports " +
-        "`stalled` rather than `ready`. `degraded` is bound while the " +
-        "transport underneath is DOWN, so sends queue or fail until the client reconnects; this is " +
-        "the state that needs attention. `connecting` is a live transport whose Cotal bind has not " +
+        "`stalled` rather than `ready`. `degraded` is bound while the transport is down or two or more " +
+        "consecutive presence writes have failed. A live core NATS connection does not prove JetStream " +
+        "accepts writes; `connectionIssue` names the observed write failure. Exhausted channel drop tracking also reports " +
+        "`degraded`, with `channelDeliveryIssue` naming the session-local suppression and mention pull fallback. " +
+        "`connecting` is a live transport whose Cotal bind has not " +
         "finished. `disconnected` is neither. `stopped` means this session was shut down " +
         "deliberately and is terminal, which is not a fault. Also reports the buffered inbox count " +
         "and the time of the latest successful non-empty inbox drain when one has occurred. A " +
@@ -770,14 +784,10 @@ export function cotalToolSpecs(
         // which one it is; `state` says which to expect.
         const issueField =
           issue === undefined ? {} : state === "stopped" ? { lastConnectionIssue: issue } : { connectionIssue: issue };
-        // #1356: a bound endpoint can be `ready` on every field above while its presence writes are
-        // being refused - it stays connected, keeps heartbeating into a stream that accepts nothing,
-        // and the roster keeps serving its last good row. Reported as its own fact rather than folded
-        // into connectionIssue, because `ready` and "presence has been unwritable for 47s" are BOTH
-        // true and a caller needs to see the pair. The name says what was observed; it does not bound
-        // the fault, since JetStream can be down account-wide with connected/transportConnected true.
+        // Presence write failures remain a separate measured fact beside the derived state and
+        // current issue. JetStream can refuse writes while connected/transportConnected remain true.
         // Gated on a live transport for the same reason the connector's retry line is: the field's
-        // own note tells a reader the connection is up, so it must not be reachable when it is not.
+        // own note describes a live connection, so it must not be reachable when it is not.
         // A machine-readable lie outranks a human-readable one - a caller PARSES this - so the guard
         // matters more here than in the log string, not less. The endpoint clears the record on every
         // connection teardown, which is the primary fix; this stops a transport that dropped without
@@ -819,6 +829,7 @@ export function cotalToolSpecs(
               stopping: agent.stopping,
               bufferedCount: agent.inboxCount(),
               automaticCount: agent.inboxCount("automatic"),
+              ...(agent.channelDeliveryIssue ? { channelDeliveryIssue: agent.channelDeliveryIssue } : {}),
               ...issueField,
               ...presenceField,
               ...(lastDrainedAt !== undefined ? { lastDrainedAt: new Date(lastDrainedAt).toISOString() } : {}),
@@ -924,7 +935,8 @@ export function cotalToolSpecs(
       name: "cotal_inbox",
       title: "Cotal: read incoming messages",
       description:
-        "Read messages other agents have sent you since you last checked: channel broadcasts, direct messages, and role requests. It clears ONLY what it actually returns to you (nothing at all when peek is true), and one call carries at most a receivable window: direct messages and role requests first, then channel traffic, with replayed history last. Anything that does not fit stays buffered and is named in the reply, so call again for the next batch. A single message larger than one whole response is delivered in parts: once no smaller mail is waiting, each call carries the next part of it, a peek shows the current part without moving on, and the message is cleared only after its last part goes out. In focus mode it also pulls back the channel chatter held since you entered focus.",
+        "Read messages other agents have sent you since you last checked: channel broadcasts, direct messages, and role requests. It clears ONLY what it actually returns to you (nothing at all when peek is true), and one call carries at most a receivable window: direct messages and role requests first, then channel traffic, with replayed history last. Anything that does not fit stays buffered and is named in the reply, so call again for the next batch. A single message larger than one whole response is delivered in parts: once no smaller mail is waiting, each call carries the next part of it, a peek shows the current part without moving on, and the message is cleared only after its last part goes out. In focus mode it also pulls back the channel chatter held since you entered focus. If exclusion tracking makes a channel's focus recall unsafe, new non-historical mentions on that unmuted channel wake to pull their buffered bodies, never automatic injection, including on quiet channels. Ambient handling is unchanged, and the incomplete-recall warning still names unsafe channels. " +
+        "When the connection is not ready, the reply says so and still returns locally buffered messages; an empty local buffer does not prove no new mesh messages exist. Exhausted channel drop tracking is reported even with an empty inbox; non-historical mentions on unmuted channels wake to pull their buffered bodies while ambient traffic stays suppressed.",
       schema: {
         peek: z.boolean().optional().describe("If true, show messages without clearing them."),
       },
@@ -943,10 +955,12 @@ export function cotalToolSpecs(
         // MeshAgent.buffer), unchanged by this path; an evicted directed message is never acked.
         const automaticPending = scope ? agent.inboxCount("automatic") : 0;
         if (agent.attention !== "focus") {
+          const warning = inboxConnectionWarning(agent);
           const buffered = agent.peekInbox(inboxScope);
           const { text, shown, held, stuck } = renderInbox({
             items: buffered,
             peek,
+            warning,
             head: (s) =>
               scope
                 ? `${s.length} pull-only message${s.length === 1 ? "" : "s"} (cleared; automatic traffic remains connector-managed):`
@@ -954,9 +968,11 @@ export function cotalToolSpecs(
           });
           if (!buffered.length)
             return ok(
-              scope
+              [warning, scope
                 ? `No pull-only messages.${automaticPending ? ` ${automaticPending} connector-managed automatic message${automaticPending === 1 ? " is" : "s are"} still queued.` : ""}`
-                : "Inbox empty, no new messages.",
+                // A hook receipt never masks an unavailable connection, even with a live transport.
+                : warning ? "Local inbox buffer is empty."
+                  : (agent.connectionState === "ready" ? emptyInboxNote?.() : undefined) ?? "Inbox empty, no new messages."].filter(Boolean).join("\n\n"),
             );
           if (!shown.length) {
             const part = partReply({
@@ -965,6 +981,7 @@ export function cotalToolSpecs(
               offered: buffered,
               stuck,
               peek: keeps(),
+              warning,
               last: (i) => agent.drainInboxDeliveries([i.recvKey]),
             });
             if (part) return ok(part);
@@ -1028,7 +1045,8 @@ export function cotalToolSpecs(
         aheadFresh.sort(byTsThenId);
         const fresh = [...clocked, ...aheadFresh];
         const aheadIds = new Set(aheadFresh.map((i) => i.recvKey));
-        const warning = [droppedNote(recall.droppedChannels), aheadNote(aheadWithheld)]
+        const connectionWarning = inboxConnectionWarning(agent);
+        const warning = [connectionWarning, droppedNote(recall.droppedChannels), aheadNote(aheadWithheld)]
           .filter(Boolean)
           .join(" ");
         const { text, shown: all, stuck } = renderInbox({
@@ -1043,9 +1061,9 @@ export function cotalToolSpecs(
         });
         if (!buffered.length && !fresh.length && !recall.droppedChannels.length && !aheadWithheld.length)
           return ok(
-            scope
+            [connectionWarning, scope
               ? `No pull-only messages and no normal focus recall.${automaticPending ? ` ${automaticPending} connector-managed automatic message${automaticPending === 1 ? " is" : "s are"} still queued.` : ""}`
-              : "Inbox empty, no new messages, and no channel chatter since you entered focus.",
+              : connectionWarning ? "Local inbox buffer and available focus recall are empty." : "Inbox empty, no new messages, and no channel chatter since you entered focus."].filter(Boolean).join("\n\n"),
           );
         if (!all.length) {
           // A recalled message goes out in parts too, and its last part moves what a whole one would

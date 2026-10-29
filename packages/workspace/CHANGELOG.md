@@ -1,5 +1,264 @@
 # @cotal-ai/workspace
 
+## 0.126.3
+
+### Patch Changes
+
+- @cotal-ai/core@0.126.3
+
+## 0.126.2
+
+### Patch Changes
+
+- 566b08f: `cotal status` run in a folder whose stack is blocked by an unconfirmed stop, while another space is selected, no longer opens with a note that says to run `cotal status` there. It shows the block under `This folder's space` with the `--abandon-stop` step first in Next, and its `--json` no longer carries that note as a `FOLDER_SPACE_NOT_RUNNING` warning. Other commands run there still head with the note, which names `cotal status`.
+- @cotal-ai/core@0.126.2
+
+## 0.126.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.126.1
+
+## 0.126.0
+
+### Minor Changes
+
+- 6481f8b: Expose each connector's event-plane support as a required typed Manager status fact, including declared inventory rows before import.
+
+### Patch Changes
+
+- @cotal-ai/core@0.126.0
+
+## 0.125.0
+
+### Patch Changes
+
+- Updated dependencies [b2413e2]
+  - @cotal-ai/core@0.125.0
+
+## 0.124.3
+
+### Patch Changes
+
+- @cotal-ai/core@0.124.3
+
+## 0.124.2
+
+### Patch Changes
+
+- 05eba85: A stack left blocked by an unconfirmed stop is now named the same way wherever it is reported. A `cotal down` interrupted after the member it signalled exited says that `up` and `down` refuse until `cotal down --abandon-stop <request-id> --yes`, and no longer offers `cotal down --yes`, which refuses there. `cotal status` in that folder while another space is selected shows the block under `This folder's space` with the `--abandon-stop` step first in Next. The note under the heading no longer says to restart a stack whose last `up` or `down` has no recorded outcome with `cotal up`, and names `cotal status` instead. With that space selected, `status` no longer ends with `run cotal up there to restart`.
+- @cotal-ai/core@0.124.2
+
+## 0.124.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.124.1
+
+## 0.124.0
+
+### Patch Changes
+
+- @cotal-ai/core@0.124.0
+
+## 0.123.0
+
+### Patch Changes
+
+- @cotal-ai/core@0.123.0
+
+## 0.122.0
+
+### Patch Changes
+
+- Updated dependencies [b318ddd]
+  - @cotal-ai/core@0.122.0
+
+## 0.121.7
+
+### Patch Changes
+
+- Updated dependencies [05ecb0d]
+- Updated dependencies [912de5d]
+  - @cotal-ai/core@0.121.7
+
+## 0.121.6
+
+### Patch Changes
+
+- @cotal-ai/core@0.121.6
+
+## 0.121.5
+
+### Patch Changes
+
+- @cotal-ai/core@0.121.5
+
+## 0.121.4
+
+### Patch Changes
+
+- 672725a: Allow the first setup of a signed-in catalog space to bind its project root while retaining provider-owned credentials under the catalog custody root. Catalog refresh preserves the binding, existing client credential contexts keep working, and later setup refuses another project.
+- @cotal-ai/core@0.121.4
+
+## 0.121.3
+
+### Patch Changes
+
+- a90d7ba: Take the broker preset's `--log-file` as `cotal up --log-file` takes it: help shows `<path>`, `add` refuses an empty value or one with control characters and saves a relative path made absolute against the folder it runs in, the file need not exist yet, and its description no longer says only `cotal up` prepares it. A preset add's missing-option refusal and bare `service` now also name `--server <url>` when the space has no registered broker, so the printed line works as given. A schema or path refusal on a preset add names the flag typed, such as `--config`, instead of the adapter's option key, and a schema refusal gives the preset's `--help` as its Next. `service show` and `service remove` now resolve a preset name to the space's one service built on that preset, as the other service verbs do.
+- d189272: Rewrite the pid-attribution doc comments in `@cotal-ai/workspace` (`pid.ts` and `liveness.ts`) and `@cotal-ai/cli` (`down.ts`) to state the contract rules without first-person revision and review history.
+- Updated dependencies [fe38cbd]
+- Updated dependencies [479895c]
+- Updated dependencies [baf9576]
+- Updated dependencies [6990d29]
+- Updated dependencies [a77ac87]
+  - @cotal-ai/core@0.121.3
+
+## 0.121.2
+
+### Patch Changes
+
+- d98674a: Keep the signed sender principal stable across one-shot sends from the same OS login and host on a static-auth mesh. Each send retains a fresh, short-lived credential with the existing operator permissions. Explicit credentials and signed-in user identities are unchanged.
+- Updated dependencies [af4b631]
+- Updated dependencies [3d07896]
+- Updated dependencies [1446ee9]
+- Updated dependencies [f450bfe]
+- Updated dependencies [ee93749]
+  - @cotal-ai/core@0.121.2
+
+## 0.121.1
+
+### Patch Changes
+
+- 44ff795: A report's section title wider than the terminal now wraps at its words, and each of its lines keeps the title's style. At 40 or 60 columns `cotal docs --search manager` drew hit titles of up to 77 characters, such as `Upgrading a running deployment › Starting the manager by name after 0.105.0`, on one line past the terminal's edge. A title that fits is drawn as before.
+- @cotal-ai/core@0.121.1
+
+## 0.121.0
+
+### Minor Changes
+
+- 5d01ea1: Add native nats-server file logging and rotation settings, persist them across controller stack restarts, and keep broker log and startup diagnostics files private.
+
+### Patch Changes
+
+- Updated dependencies [5d01ea1]
+  - @cotal-ai/core@0.121.0
+
+## 0.120.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.120.2
+
+## 0.120.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.120.1
+
+## 0.120.0
+
+### Patch Changes
+
+- @cotal-ai/core@0.120.0
+
+## 0.119.5
+
+### Patch Changes
+
+- Updated dependencies [8f7d6dd]
+  - @cotal-ai/core@0.119.5
+
+## 0.119.4
+
+### Patch Changes
+
+- ed5c23f: Anything a line writes in backticks now wraps as one word on a terminal, whatever it starts with. At 80 columns the Next of `cotal daemon install --dry-run`, where no user manager answers, broke `` `systemctl --user show-environment` `` after `--user`; only a span that started with `cotal`, `pnpm`, `npx` or `cd` was kept whole, and only after other words. A span wider than the line keeps a line of its own, as a command does. A line that starts with a command outside backticks, such as a usage line, still wraps at its spaces.
+- Updated dependencies [ed5c23f]
+  - @cotal-ai/core@0.119.4
+
+## 0.119.3
+
+### Patch Changes
+
+- Updated dependencies [8866e1e]
+  - @cotal-ai/core@0.119.3
+
+## 0.119.2
+
+### Patch Changes
+
+- 4c61283: A manager that fails while it starts now ends its line in a next step the operator can take, and the refusal that quotes the line keeps that step.
+  
+  The service controller quoted the last line a failed service logged cut at 400 characters, so the line of a manager that did not trust a local CA, over 500 characters long, lost its `; next:` part. The quote now holds a line up to 1000 characters whole, and a longer line keeps its start and its last `; next:` step, with its length where the middle was cut. When the error a manager's startup fails on ends in a certificate this machine does not trust, such as `UNABLE_TO_VERIFY_LEAF_SIGNATURE`, the line keeps Node's message as the cause and its next step is to set `NODE_EXTRA_CA_CERTS` for the command that starts the manager. A seat-cap record that cannot be read names its path, and the line gives one next step, to remove or repair that record. The generic step the startup failure's message repeated is gone. Under `--foreground` on a terminal, the manager's line wraps at the terminal's width as the CLI's own lines do; in its log it stays on one line.
+- @cotal-ai/core@0.119.2
+
+## 0.119.1
+
+### Patch Changes
+
+- 7c52767: A stopped space's last operation now names its command in backticks, as in "its last operation, `cotal down`, completed", so `status`, `use`, `space` and `space show` no longer split it after `cotal`. With a 36-character space name, `status` at 80 columns broke inside `cotal down`, and `use` broke the same way at 40 columns. `--json` carries the same text, so `lastOperation` and the selected space's `message` now hold the backticks. The `--on` help of `run` and its `start`, `show`, `answer` and `amend` verbs, and the refusal for a malformed `--on`, now write `` `cotal ps` ``, and the `--launch` help of `supervise` writes `` `cotal up -f` `` and `` `spawn -f` ``.
+- f57bc1f: Redirecting stderr no longer leaves ANSI color in the file. Color under `auto` was decided by stdout alone, so `cotal spawn 2>err.txt` on a terminal wrote `Mesh:` headings and `✗` refusals to `err.txt` with their color codes, and `cotal spawn >out.txt` left the refusal on the terminal uncolored. Each stream is now colored only when it is a terminal, so a pipe or redirect of either stream is plain text. Reports, help, warnings and failure reports take their color from the stream they are written to, as do most error lines. Some other lines a command writes directly, such as progress notes, are colored only when stdout and stderr are both terminals. `always`, `never`, `--no-color`, `NO_COLOR`, `FORCE_COLOR` and `TERM=dumb` keep their meaning for both streams.
+- 3431be6: `cotal up --max-payload <bytes>` sets the broker's own message size limit, a positive integer up to 67108864. `up` renders it as `max_payload: <bytes>` in the broker config and records it in `.cotal/broker-policy.json`, which `readBrokerPolicy` reads back, so a later `cotal up` on the root renders it again without the flag, after `cotal down` or a preserved resume included. A running broker refuses a different value, and `--open`, `-f` and `--restore` refuse the flag. Service endpoint caller grants need at least 2098176 bytes, so a smaller value beside `--service-endpoints` refuses before anything starts. `SERVICE_CALLER_PAYLOAD_FLOOR` and `SERVICE_CALLER_PAYLOAD_OVERHEAD` now come from `@cotal-ai/core`, so the flag's validation and the auth host's assertion read one number. Before, `serverConfig` took a `maxPayload` that no `up` ever passed and no record kept, so a limit written into `server.conf` by hand was lost the next time `up` wrote the file.
+  
+  Caller issuance now survives a broker configuration reload. A reload keeps the same incarnation serving and moves VARZ `config_digest`, and issuance was bound to the digest the bootstrap observed, so every reload refused every later caller issuance until the auth plane was reopened. On a multi-tenant broker that is every tenant sign-up. The verifier now treats a moved digest as a trigger to re-measure: when the fresh observation proves the same broker incarnation and auth store, and proves the standalone topology, the payload floor, the control line, the system account and an uncapped auth stream again, it re-asserts the payload record under the held plane claim by CAS on the exact prior row and continues. A reload that breaks any of those still refuses, a `max_payload` below the floor included, a restart is a new incarnation and still refuses, and a withdrawn record is never overwritten.
+- Updated dependencies [9f32677]
+- Updated dependencies [3431be6]
+  - @cotal-ai/core@0.119.1
+
+## 0.119.0
+
+### Patch Changes
+
+- ba731fe: Keep a command wider than the terminal line on one line, so a copied line is the whole command.
+  
+  On an 80-column terminal the exec-endpoint `next:` of `cotal service` broke before `--handler <file>`, and the remedy of `cotal service add <name> --preset exec-endpoint` broke before its last `<file>`, both in the refusal line and in the `--plain` report's Next. Copying the first line gave a command without its last option, and copying both ran two commands. A command cell now overflows the line as one line, and so does a remedy that is one whole command: `CommandFailure` takes `remedyIsCommand`, which every terminal remedy path honours. A remedy that starts with a command and goes on as prose still wraps at its spaces. `--json` output is unchanged.
+- @cotal-ai/core@0.119.0
+
+## 0.118.3
+
+### Patch Changes
+
+- @cotal-ai/core@0.118.3
+
+## 0.118.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.118.2
+
+## 0.118.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.118.1
+
+## 0.118.0
+
+### Patch Changes
+
+- @cotal-ai/core@0.118.0
+
+## 0.117.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.117.1
+
+## 0.117.0
+
+### Patch Changes
+
+- Updated dependencies [c93dded]
+  - @cotal-ai/core@0.117.0
+
+## 0.116.5
+
+### Patch Changes
+
+- e9edf03: On a terminal, the source a `→ using`, `→ wrote` or `→ removed` line names now wraps as one word, however many spaces it holds. A path such as `<root>/proj/with space/.cotal/agents/default.md` that does not fit after the label goes whole on the line under it, wider than the line if it must be. It used to be split at its spaces, so no line held the whole path to copy. The label still wraps at its spaces, and written to a pipe or a file the line is unchanged.
+- @cotal-ai/core@0.116.5
+
 ## 0.116.4
 
 ### Patch Changes

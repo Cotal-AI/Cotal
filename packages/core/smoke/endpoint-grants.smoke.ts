@@ -119,10 +119,10 @@ c("baseline: the reply rail is ALWAYS granted (no capability required)",
   baseline.sub.length === 1 && baseline.sub[0] === epCallerReplyGrantRow("demo", caller));
 c("baseline: no journal rows (the baseline is ephemeral request forms only)",
   baseline.pub.every((r) => !r.includes(".epj.")));
-c("the spawn set: spawn and resolve-agent are UNTARGETED (virgin child); despawn/attach ride owner-mode (no owner-stop synonym of despawn); define-persona + inspect + list-personas + show-persona + goal-result ride untargeted (the 1c table's connector reads)",
-  spawnCallerCapabilities("u_abc").length === 9
+c("the spawn set: spawn and resolve-agent are UNTARGETED (virgin child); despawn/attach ride owner-mode (no owner-stop synonym of despawn); define/remove persona + inspect + list-personas + show-persona + goal-result ride untargeted (the 1c table's connector reads)",
+  spawnCallerCapabilities("u_abc").length === 10
   && epCallerGrantRows("demo", spawnCallerCapabilities("u_abc"), caller).pub.join("|")
-  === `cotal.demo.ep.one.manager.spawn.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.resolve-agent.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.despawn.owner.u_abc.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.attach.owner.u_abc.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.define-persona.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.inspect.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.list-personas.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.show-persona.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.goal-result.u_abc.cli.${UID}.*`);
+  === `cotal.demo.ep.one.manager.spawn.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.resolve-agent.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.despawn.owner.u_abc.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.attach.owner.u_abc.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.define-persona.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.remove-persona.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.inspect.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.list-personas.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.show-persona.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.goal-result.u_abc.cli.${UID}.*`);
 // THE REGRESSION GUARD FOR THE `input` PLACEMENT, and it is a cell rather than a comment because
 // the mistake it stops is a ONE-WORD edit that reads as tidying: adding "input" to
 // SPAWN_OWNER_LIFECYCLE_COMMANDS beside its two obvious siblings. That edit hands every
@@ -139,10 +139,10 @@ c("the spawn capability grants NO `input` row in either mode: seat input is oper
 // only, §13.2 - the broker grant IS the tier boundary), BOTH modes of `input` and `turn` (the two
 // seat writes, granted nowhere else; the run driver submits its turns under this instrument), and
 // the untargeted `manager.admin` family.
-c("the privileged instrument set: reads + spawn + resolve-agent + resolve-cwd + define-persona + the chat-session pair + the run family with the keyed pair, with run-answer self-targeted",
-  operatorInstrumentCapabilities("privileged").length === 22
+c("the privileged instrument set: reads + spawn + resolve-agent + resolve-cwd + persona writes + the chat-session pair + the run family with the keyed pair, with run-answer self-targeted",
+  operatorInstrumentCapabilities("privileged").length === 23
   && operatorInstrumentCapabilities("privileged").filter((cap) => cap.target !== undefined).every((cap) => cap.command === "run-answer" && cap.target?.mode === "self")
-  && operatorInstrumentCapabilities("privileged").map((cap) => cap.command).join(",") === "status,ps,slots,inspect,models,list-personas,show-persona,goal-result,spawn,resolve-agent,resolve-cwd,define-persona,chat-session-open,chat-session-retire,run-status,run-ps,run-start,run-resume,run-start-keyed,run-submission-status,run-cancel,run-answer");
+  && operatorInstrumentCapabilities("privileged").map((cap) => cap.command).join(",") === "status,ps,slots,inspect,models,list-personas,show-persona,goal-result,spawn,resolve-agent,resolve-cwd,define-persona,remove-persona,chat-session-open,chat-session-retire,run-status,run-ps,run-start,run-resume,run-start-keyed,run-submission-status,run-cancel,run-answer");
 // `resolve-cwd` is the placement read the folder question of a managed launch calls, and on a static
 // mesh the instrument IS that caller: without this row the question offers typing and every typed
 // folder is refused at the broker. It stays out of the standing agent `spawn` set, which reaches
@@ -178,14 +178,14 @@ c("the instrument's `ps` and `slots` rows are the only reads minted on the scatt
 // nothing targeted beyond what spawn already carries. The implication is one-way: a spawn-only
 // caller gains no run row.
 c("the run capability set: run-start/run-resume/run-start-keyed/run-submission-status/run-cancel/run-status/run-ps untargeted, run-answer self-targeted + the spawn set",
-  runCallerCapabilities("u_abc").length === 17
+  runCallerCapabilities("u_abc").length === 18
   && runCallerCapabilities("u_abc").slice(0, 8).map((cap) => cap.command).join(",") === "run-start,run-resume,run-start-keyed,run-submission-status,run-cancel,run-answer,run-status,run-ps"
   && runCallerCapabilities("u_abc").slice(0, 8).every((cap) => cap.command === "run-answer" ? cap.target?.mode === "self" : cap.target === undefined)
   && JSON.stringify(runCallerCapabilities("u_abc").slice(8)) === JSON.stringify(spawnCallerCapabilities("u_abc"))
   && !spawnCallerCapabilities("u_abc").some((cap) => cap.command.startsWith("run-")));
 const adminCaps = operatorInstrumentCapabilities("admin", "u_abc");
 c("the admin instrument set adds any-mode despawn/attach + BOTH modes of input and turn + the manager.admin family",
-  adminCaps.length === 37
+  adminCaps.length === 38
   && adminCaps.filter((cap) => cap.target?.mode === "any").map((cap) => cap.command).join(",") === "despawn,attach,input,turn"
   && adminCaps.filter((cap) => cap.target?.mode === "owner").map((cap) => cap.command).join(",") === "input,turn"
   && adminCaps.filter((cap) => cap.target?.mode === "owner").every((cap) => (cap.target as { tOwner?: string }).tOwner === "u_abc")

@@ -7,7 +7,7 @@ import {
 } from "@cotal-ai/core";
 import { type NatsConnection } from "@nats-io/transport-node";
 import {
-  CommandFailure, codeSpan, commandFailureReport, exitCode, failureEnvelope, jsonFlag, plainFlag, presentationOf, renderReport, streamRecord, terminalWidth, writeEnvelope, writeResult, writeStreamRecord,
+  CommandFailure, codeSpan, commandFailureReport, exitCode, failureEnvelope, jsonFlag, plainFlag, presentationOf, renderReport, streamRecord, writeEnvelope, writeResult, writeStreamRecord,
   loadMeshes, targetFlags, type Report,
   recordOperationSpace,
 } from "@cotal-ai/workspace";
@@ -135,19 +135,24 @@ export async function invokeCmd(args: ParsedArgs, commandName = "invoke"): Promi
     // `--timeout` is one deadline for the call: the contract read, a `--name` lookup and the reply spend from it.
     const budgetMs = values.timeout === undefined ? 10_000 : Number(values.timeout);
     const deadlineAt = performance.now() + budgetMs;
+    const longer = budgetMs < 10_000 ? 10_000 : Math.min(budgetMs * 2, 2_147_483_647);
+    const longerTimeout = `rerun it with a longer --timeout and the same other flags, such as ${codeSpan(`cotal ${commandName === "endpoint" ? "endpoint invoke" : "invoke"} ${shellWord(selector)} ${shellWord(command)} --timeout ${longer}`)}`;
     const remainingMs = (): number => {
       const left = Math.floor(deadlineAt - performance.now());
-      if (left <= 0) throw new CommandFailure("failed", "OPERATION_FAILED", `the ${budgetMs}ms --timeout ran out before the command was published`, { target });
+      if (left <= 0) throw new CommandFailure("failed", "OPERATION_FAILED", `the ${budgetMs}ms --timeout ran out before the command was published`, { target, remedy: longerTimeout });
       return left;
     };
     // A contract read that was answered and then ran out of time spent this deadline. An unanswered
-    // read stays the TARGET_UNAVAILABLE refusal, and `endpointFailure` adds the target to both.
-    const service = await resolveService(nc, space, endpoint, auth.epCaller!, { deadlineMs: budgetMs, ...(instanceId === undefined ? {} : { instanceId }) }).catch((error: unknown) => {
-      if (!(error instanceof EpEnvelopeError) || error.code !== "deadline-exceeded" || unansweredRequest(error)) throw error;
-      const longer = budgetMs < 10_000 ? 10_000 : Math.min(budgetMs * 2, 2_147_483_647);
-      throw new CommandFailure("failed", "OPERATION_FAILED", `the ${budgetMs}ms ${values.timeout === undefined ? "deadline" : "--timeout"} ran out during the endpoint contract read; no command was published`, {
+    // read stays the TARGET_UNAVAILABLE refusal; under a `--timeout` the user set it names the flag,
+    // which may be what ran out. `endpointFailure` adds the target to all three.
+    const service = await resolveService(nc, space, endpoint, auth.epCaller!, { deadlineMs: budgetMs, commands: [command], ...(instanceId === undefined ? {} : { instanceId }) }).catch((error: unknown) => {
+      if (!(error instanceof EpEnvelopeError) || error.code !== "deadline-exceeded" || unansweredRequest(error) && values.timeout === undefined) throw error;
+      if (unansweredRequest(error)) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `no instance of ${endpoint} answered its contract read within the ${budgetMs}ms --timeout, so nothing is serving it, none could be reached, or the deadline was too short`, {
         native: { code: error.code, outcome: error.outcome }, cause: error,
-        remedy: `rerun it with a longer --timeout and the same other flags, such as ${codeSpan(`cotal ${commandName === "endpoint" ? "endpoint invoke" : "invoke"} ${shellWord(selector)} ${shellWord(command)} --timeout ${longer}`)}`,
+        remedy: `start the service that serves ${endpoint}, then run the command again, or rerun it with a longer --timeout such as \`cotal ${commandName === "endpoint" ? "endpoint invoke" : "invoke"} ${shellWord(selector)} ${shellWord(command)} --timeout ${longer}\`; \`cotal service --space ${shellWord(selection.space)}\` lists this space's services`,
+      });
+      throw new CommandFailure("failed", "OPERATION_FAILED", `the ${budgetMs}ms ${values.timeout === undefined ? "deadline" : "--timeout"} ran out during the endpoint contract read; no command was published`, {
+        native: { code: error.code, outcome: error.outcome }, cause: error, remedy: longerTimeout,
       });
     });
     const declaration = service.commands.get(command);
@@ -160,7 +165,7 @@ export async function invokeCmd(args: ParsedArgs, commandName = "invoke"): Promi
     const canonicalInput = input === undefined && !declaration.contract.input.validate(null) && declaration.contract.input.validate({}) ? {} : input ?? null;
     if (!declaration.contract.input.validate(canonicalInput)) throw new CommandFailure("refused", "SCHEMA_INVALID", "arguments do not match the fetched native input contract; no command was published", { target, remedy: "read describe --json for the declared schema; the argument body is not echoed" });
     // A static-root operator instrument can request only the manager. A paired caller file makes
-    // this call to another endpoint when the call and the whole surface fit that file's mode.
+    // this call to another endpoint when the selected command fits that file's mode.
     pairedCaller = connection.mode === "auth" && !callerCredential && !selection.reference && on === undefined && nativeTarget === undefined
       && !values.admin && !values.all && !values.cast && !values.wait && [...service.commands.values()].every(pairedCallerCommand);
     selection.check();
@@ -221,7 +226,7 @@ export async function invokeCmd(args: ParsedArgs, commandName = "invoke"): Promi
     }
     if (interrupted) {
       if (values.json) writeEnvelope(failureEnvelope(commandName, failure));
-      process.stderr.write(`${renderReport(commandFailureReport(failure), values.plain ? "plain" : "rich", terminalWidth(process.stderr))}
+      process.stderr.write(`${renderReport(commandFailureReport(failure), values.plain ? "plain" : "rich", process.stderr)}
 `);
       process.exitCode = interrupted === "SIGINT" ? 130 : 143;
       return;

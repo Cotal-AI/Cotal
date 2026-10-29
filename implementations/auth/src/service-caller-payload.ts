@@ -8,15 +8,12 @@
  * standalone host bootstrap authenticates native VARZ and binds the row to its broker and plane
  * claim. Any writer that sees a live check fail withdraws the record until explicit reassertion.
  * One connection's INFO is not complete topology evidence and never replaces the observation. */
-import { EpEnvelopeError, SERVICE_AUTHORITY_MAX_BYTES, isContractDigest } from "@cotal-ai/core";
+// O and the floor live in core: `cotal up --max-payload` validates against the same number this
+// host asserts, and two copies of a limit are two limits.
+import { EpEnvelopeError, isContractDigest, SERVICE_CALLER_PAYLOAD_FLOOR, SERVICE_CALLER_PAYLOAD_OVERHEAD } from "@cotal-ai/core";
+export { SERVICE_CALLER_PAYLOAD_FLOOR, SERVICE_CALLER_PAYLOAD_OVERHEAD };
 
 export const SERVICE_CALLER_PAYLOAD_KEY = "svchost.payload";
-/** O: a bound on the header block of one caller-policy create or CAS, which `max_payload` counts
- *  with the body. The subject and publish line count against `max_control_line`, asserted
- *  separately, so this bound is conservative. */
-export const SERVICE_CALLER_PAYLOAD_OVERHEAD = 1024;
-/** The smallest `max_payload` under which every row the headroom rule admits fits in one write. */
-export const SERVICE_CALLER_PAYLOAD_FLOOR = SERVICE_AUTHORITY_MAX_BYTES + SERVICE_CALLER_PAYLOAD_OVERHEAD;
 
 export type ServiceCallerPayloadRecord =
   /** `floor` is the smallest `max_payload` the operator's complete per-server assertion observed. */

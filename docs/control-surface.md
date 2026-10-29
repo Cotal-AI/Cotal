@@ -215,11 +215,16 @@ instance.
 
 ## Persona write observation
 
-An unanswered `define-persona` command does not prove the persona was not written. The
-`cotal_persona` tool reports that write outcome as unknown and tells the caller to read it with
-`cotal_personas` on the same manager before acting. The write may still land after the wait ends,
-so a missing readback alone does not make another definition safe. A failed describe, broker
-no-responders answer or explicit pre-effect refusal remains a failure, not an unknown write.
+The Manager serves `define-persona` and `remove-persona` under `manager.persona`. Removal takes
+`{name}` and returns `{name}`. It deletes only the machine-local definition, not agents already
+running from it. A missing definition is `not-found`. The name may exceed the current 64-character
+spawn limit, provided it is still a safe catalog filename stem, so an invalid legacy definition can
+be removed.
+
+An unanswered `define-persona` or `remove-persona` command does not prove the write did not land.
+The caller must read the catalog again on the same manager before acting. The write may still land
+after the wait ends, so a missing readback alone does not make another write safe. A failed describe,
+broker no-responders answer or explicit pre-effect refusal remains a failure, not an unknown write.
 
 ## Spawn is a goal
 
@@ -313,7 +318,11 @@ On a static mesh or from an unbound open caller, an untargeted spawn rides class
 persona definition, list, show and spawn tools default to its launching manager. Its generic
 manager describe and self-targeted invoke use that launch address too. An explicit existing
 persona or spawn selector still selects that instance. Static credential grants and user-auth
-issuer selection are unchanged. The library's `describeService` accepts an optional `instanceId`;
+issuer selection are unchanged. For self-stop, persona definition and direct spawn, a static managed
+seat keeps its class-only credential and accepts only its launching manager's attributed describe
+reply. These commands retain that bind on the class rail, so a sibling refuses before effects and
+the existing bounded split repair asks again. An absent launching manager never selects a replacement.
+The library's `describeService` accepts an optional `instanceId`;
 a pinned describe does not read or populate the endpoint-only class cache.
 `cotal spawn <persona> --detach --on <instance>` and `cotal_spawn(instance: "<instance>")`
 pin one instance by its exact id, as `--on` does for `cotal ps`, `cotal models` and every hosted
@@ -335,6 +344,12 @@ owner's live manager instance ids and names the caller's way to pick one: `--on 
 the CLI, `--manager-instance <instanceId>` for `cotal agent-bearer --manager-call`, and the
 `instance` argument for an agent's tools.
 A pin changes routing, not the caller's grant.
+
+Each `status.connectors` row includes `eventPlane: boolean`. The value is true only when the
+connector declares the event channel it publishes. Installed-extension rows carry the cached fact
+before the package is imported, and an old inventory without it is refused rather than treated as
+true. A client that reads a required event policy can use this field to disable an incompatible
+connector before spawn. The Manager still owns the launch refusal text and applies it at admission.
 
 Managed launches carry `COTAL_MANAGER_INSTANCE` so their tools address the manager that launched
 them; a tool's `instance` argument must name that same manager. The `cotal` commands run from their
@@ -420,7 +435,9 @@ store read fails the resolve with `deadline-exceeded` when that deadline expires
 `cotal describe` has no `--timeout` and passes 10000 ms. Cancelling a
 resolve settles a store read in flight instead of waiting for it to return. When one store read
 fails, the resolve fails with it and fetches no further command contracts; fetches already under
-way finish on their own.
+way finish on their own. A call for one command fetches only that command's cluster and schema
+closures. `describe` still fetches the complete visible surface because its result lists every
+command.
 
 The resolve and the invoke are separate trips through the same anycast queue, so in a
 multi-manager space an unpinned call can land on an instance the caller did not resolve. Every

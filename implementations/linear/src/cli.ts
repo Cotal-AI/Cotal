@@ -79,7 +79,7 @@ export function validateLinearArguments(args: ParsedArgs): void {
 export function accountForRead(name: string) {
   try { return loadAccount(name); }
   catch (error) {
-    if (accountMissing(error)) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no Linear account with this name is recorded; nothing was opened or sent", { target: { account: name }, remedy: `record it first with cotal linear account add ${name} --mode <write|readonly> --token-file <path>, or cotal linear account login ${name} --mode <write|readonly>` });
+    if (accountMissing(error)) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no Linear account with this name is recorded; nothing was opened or sent", { target: { account: name }, remedy: `record it first with \`cotal linear account add ${name} --mode <write|readonly> --token-file <path>\`, or \`cotal linear account login ${name} --mode <write|readonly>\`` });
     throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the selected Linear account metadata could not be read; no token or account-file contents were printed", { target: { account: name } });
   }
 }

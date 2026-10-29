@@ -12,7 +12,6 @@ import {
   renderReport,
   streamRecord,
   targetFlags,
-  terminalWidth,
   writeResult,
   writeStreamRecord,
   type Cell,
@@ -536,7 +535,7 @@ function openLive(ep: CotalEndpoint, conn: Connection, channel: string | undefin
       });
       const line = (cell: Cell) => {
         const scoped = typeof cell === "string" ? `[${conn.space}] ${cell}` : { ...cell, text: `[${conn.space}] ${cell.text}` };
-        process.stdout.write(`${renderReport({ sections: [{ blocks: [{ kind: "lines", lines: [scoped] }] }] }, presentation === "rich" ? "rich" : "plain", terminalWidth(process.stdout))}\n`);
+        process.stdout.write(`${renderReport({ sections: [{ blocks: [{ kind: "lines", lines: [scoped] }] }] }, presentation === "rich" ? "rich" : "plain", process.stdout)}\n`);
       };
       let refusal: ConnectRefusal | undefined;
       // While the connection is down, one line says so and the raw failures that follow are not shown.

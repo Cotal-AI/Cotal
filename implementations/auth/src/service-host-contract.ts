@@ -1,6 +1,6 @@
 import {
   EpEnvelopeError, assertCommandToken, assertDerivedOwnerToken, assertLifecycleToken, assertBoundedOwner,
-  endpointToken, isAccountNkey, isContractDigest, isEpAuthzMode, parseEndpointCapabilities,
+  endpointToken, isAccountNkey, isContractDigest, isEpAuthzMode, parseEndpointCapabilities, parseServiceRegistrationWitness,
   type EpCapability, type EpCommandAuthority, type ServicePrincipal, type ServiceRegistrationWitness,
 } from "@cotal-ai/core";
 import { parseServiceCallerGrant } from "./service-caller-policy.js";
@@ -421,6 +421,18 @@ export function parseServiceProposalTombstoneView(raw: unknown): ServiceProposal
   return structuredClone(o) as unknown as ServiceProposalTombstoneView;
 }
 
+export function parseServiceInstanceView(raw: unknown): ServiceInstanceView {
+  const o = closed(raw, ["assignmentDigest", "principal", "endpoint", "instanceId", "state", "rootCredentialId", "rootExpiresAt",
+    "approvalDigest", "approvalExpiresAt", "activationIssued", "witness", "nameBinding"]);
+  dig(o.assignmentDigest, "assignmentDigest"); principalView(o.principal); endpointName(o.endpoint); lifecycleTok(o.instanceId, "instanceId");
+  oneOf(o.state, ["pending-root", "approved-unregistered", "registering", "registered", "ready", "revoking", "retired"], "instance state");
+  nullable(o.rootCredentialId, (v) => lifecycleTok(v, "rootCredentialId")); nullable(o.rootExpiresAt, (v) => nat(v, "rootExpiresAt"));
+  nullable(o.approvalDigest, (v) => dig(v, "approvalDigest")); nullable(o.approvalExpiresAt, (v) => nat(v, "approvalExpiresAt"));
+  if (typeof o.activationIssued !== "boolean") badResult("invalid activationIssued");
+  nullable(o.witness, (v) => grammar(() => parseServiceRegistrationWitness(v), "witness")); nullable(o.nameBinding, nameView);
+  return structuredClone(o) as unknown as ServiceInstanceView;
+}
+
 function principalView(raw: unknown): void {
   const o = closed(raw, ["owner", "actor", "lifecycleUid"]);
   ownerTok(o.owner); if (typeof o.actor !== "string") badResult("invalid actor"); grammar(() => assertBoundedOwner(o.actor as string, "actor"), "actor");
@@ -481,11 +493,10 @@ export function parseServiceCallerPolicyView(raw: unknown): ServiceCallerPolicyV
   return structuredClone(o) as unknown as ServiceCallerPolicyView;
 }
 
-const SUPPORTED_RESULTS = new Set(["decide", "revoke", "name-bind", "name-read", "operation-read", "proposal-read", "caller-grant", "caller-policy-read", "caller-policy-list"]);
-/** Closed parser for the results of the operations this slice serves (decide, revoke, name-bind,
- *  name-read, operation-read, proposal-read, caller-grant and the two caller-policy reads) and for the shared
- *  arms of every operation. A caller revoke's `revoked` arm is refused: no host emits it, because a
- *  terminal caller revocation needs a proof this slice does not build. */
+const SUPPORTED_RESULTS = new Set(["decide", "revoke", "name-bind", "name-read", "operation-read", "proposal-read", "instance-read", "instance-list", "caller-grant", "caller-policy-read", "caller-policy-list"]);
+/** Closed parser for the results of the operations this slice serves, including instance reads and
+ *  lists, and for the shared arms of every operation. A caller revoke's `revoked` arm is refused: no
+ *  host emits it, because a terminal caller revocation needs a proof this slice does not build. */
 export function parseServiceHostResult(raw: unknown): ServiceHostResult {
   const env = ["v", "kind", "operation", "requestId", "space", "accountPublicKey", "state"];
   const o = raw as Rec, state = o?.state;
@@ -522,6 +533,14 @@ export function parseServiceHostResult(raw: unknown): ServiceHostResult {
     }
     else if (o.operation === "name-read" && state === "absent") keys = closed(raw, env);
     else if (o.operation === "name-read" && state === "present") { keys = closed(raw, [...env, "record"]); const r = closed(o.record, ["value", "revision"]); nat(r.revision, "revision"); nameView(r.value); }
+    else if (o.operation === "instance-read" && state === "absent") keys = closed(raw, env);
+    else if (o.operation === "instance-read" && state === "present") { keys = closed(raw, [...env, "record"]); const r = closed(o.record, ["value", "revision"]); nat(r.revision, "revision"); parseServiceInstanceView(r.value); }
+    else if (o.operation === "instance-list" && state === "page") {
+      keys = closed(raw, [...env, "records", "nextCursor"]);
+      if (!Array.isArray(o.records) || o.records.length > 50) badResult("a page carries at most 50 records");
+      for (const rec of o.records) { const r = closed(rec, ["value", "revision"]); nat(r.revision, "revision"); parseServiceInstanceView(r.value); }
+      nullable(o.nextCursor, (v) => text(v, "nextCursor", 1024));
+    }
     else if ((o.operation === "operation-read" || o.operation === "proposal-read") && state === "absent") keys = closed(raw, env);
     else if ((o.operation === "operation-read" || o.operation === "proposal-read") && state === "present") {
       keys = closed(raw, [...env, "record"]); const r = closed(o.record, ["value", "revision"]); nat(r.revision, "revision");

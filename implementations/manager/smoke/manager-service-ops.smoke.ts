@@ -244,11 +244,11 @@ try {
   const A = await instrument([
     { command: "status" }, { command: "ps" }, { command: "inspect" }, { command: "slots" }, { command: "models" },
     { command: "spawn" }, { command: "despawn", owner: true }, { command: "attach", owner: true },
-    { command: "define-persona" }, { command: "list-personas" }, { command: "show-persona" }, { command: "purge" }, { command: "launch" },
+    { command: "define-persona" }, { command: "remove-persona" }, { command: "list-personas" }, { command: "show-persona" }, { command: "purge" }, { command: "launch" },
     { command: "resume-preserved" }, { command: "commit-resume" }, { command: "finalize-resume" },
     { command: "prepare-preservation" }, { command: "commit-preservation" }, { command: "abort-preservation" },
   ]);
-  const B = await instrument([{ command: "despawn", owner: true }, { command: "define-persona" }]);
+  const B = await instrument([{ command: "despawn", owner: true }, { command: "define-persona" }, { command: "remove-persona" }]);
   const P = await instrument([
     { command: "describe", instanceId: M.managerInstanceId },
     { command: "resolve-cwd", instanceId: M.managerInstanceId },
@@ -794,6 +794,32 @@ try {
     check("a foreign show-persona is not-found (no existence leak of the body)",
       rShowB.reply.ok === false && rShowB.reply.error?.code === "not-found", rShowB.reply);
     check("and leaves the operator's read set alone", JSON.stringify(widened.subscribe) === '["general"]', widened.subscribe);
+
+    const rRemoveB = await B.call("remove-persona", { name: "eppersona" });
+    check("a foreign remove-persona refuses without deleting the definition",
+      rRemoveB.reply.ok === false && rRemoveB.reply.error?.code === "permission-denied" && existsSync(eppPath), rRemoveB.reply);
+    const { row: runningFromPersona } = await spawnLive(A.call, { name: "eppersona", agent: "e2e-stub", cwd: repoRoot, events: false });
+    const rRemove = await A.call("remove-persona", { name: "eppersona" });
+    const rListAfterRemove = await A.call("list-personas");
+    const afterRemove = ((rListAfterRemove.reply.data as { personas?: Array<{ name: string }> })?.personas) ?? [];
+    check("the owner removes a persona and list-personas no longer shows it",
+      rRemove.reply.ok === true && !existsSync(eppPath) && !afterRemove.some((p) => p.name === "eppersona"),
+      { remove: rRemove.reply, afterRemove });
+    check("removing the definition leaves an agent already launched from it running",
+      M.agents.get(runningFromPersona.name)?.lifecycleUid === runningFromPersona.lifecycleUid, runningFromPersona);
+    const rStopRemovedPersonaAgent = await A.call("despawn", { graceful: true }, { actor: runningFromPersona.id, lifecycleUid: runningFromPersona.lifecycleUid });
+    check("the running agent from the removed definition is cleaned up explicitly",
+      rStopRemovedPersonaAgent.reply.ok === true, rStopRemovedPersonaAgent.reply);
+    const rRemoveMissing = await A.call("remove-persona", { name: "eppersona" });
+    check("remove-persona refuses an unknown name instead of silently succeeding",
+      rRemoveMissing.reply.ok === false && rRemoveMissing.reply.error?.code === "not-found", rRemoveMissing.reply);
+
+    const invalidName = "x".repeat(69);
+    const invalidPath = join(workspaceRoot, ".cotal", "agents", `${invalidName}.md`);
+    writeFileSync(invalidPath, `---\nname: ${invalidName}\nowner: ${A.principal}\nsubscribe: []\n---\n`);
+    const rRemoveInvalid = await A.call("remove-persona", { name: invalidName });
+    check("remove-persona deletes an owned 69-character legacy entry that cannot be spawned",
+      rRemoveInvalid.reply.ok === true && !existsSync(invalidPath), rRemoveInvalid.reply);
 
     const rModels = await A.call("models", {});
     const catalogs = (rModels.reply.data as { catalogs: Array<{ agent: string; supported: boolean }> })?.catalogs;

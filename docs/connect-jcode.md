@@ -367,6 +367,15 @@ If the mandatory readiness turn receives a provider `invalid_request` refusal fo
 reasoning-effort value, the launch diagnostic names only the provider error code and rejected
 value. Other provider response text remains scrubbed, so an external observer/UI can correct
 connector-visible input without exposing private harness output.
+An OpenAI-compatible HTTP 404 with structured `model_not_found` and `param: model` is also named
+when Jcode wraps it in `internal`. That diagnostic uses the requested model pin and fixed provider
+code. Endpoint, authentication details and provider prose remain private.
+
+During that readiness turn, `provider_auth_refused` names an OpenAI-compatible HTTP 401 response.
+`provider_request_failed` means Jcode could not send the OpenAI-compatible request. It does not
+establish whether the cause was a stopped provider, routing, or another transport failure.
+These fixed codes reach the workflow step error and `cotal run show`. Provider URLs,
+authentication details and response text remain private.
 
 The following fail loud before a new session is provisioned where the manager can preflight them,
 or at connector launch as a backstop:
@@ -381,6 +390,12 @@ or at connector launch as a backstop:
 - **Containers:** the current deploy image does not bundle Jcode, so there is no containerized Jcode connector today.
 
 ## Security limits
+
+On `SIGINT` or `SIGTERM`, the host shuts down its private Jcode tree and records the received
+signal in its final connector diagnostic. A pty manager includes that diagnostic in the seat's
+reap line, even when graceful teardown exits with code 0. Node.js does not expose the signal's
+sender, so the diagnostic says that attribution is unavailable. A manager-initiated stop is
+identified separately by the manager's stop path.
 
 The private home protects against accidental sharing and stale session selection; it is not an
 OS-user isolation boundary. A hostile process running as the same user can still read that user's

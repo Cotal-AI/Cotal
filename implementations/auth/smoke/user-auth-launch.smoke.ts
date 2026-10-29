@@ -20,12 +20,29 @@
  *   E3. `cotal supervise` from another root that holds its own signer for the space is refused as a
  *      refusal: a `Mesh:` heading, PERMISSION_DENIED, the refused credential and broker, and a Next
  *      naming the folder that hosts the space. No bare `Authorization Violation` line.
- *   E4. A prepared second root of the same space under its own home: `manager start` with no sign-in
- *      is refused AUTH_REQUIRED before anything is saved; a manager left running after a sign-out is
- *      stopped by the folder's owner through `manager stop` and `down`. `supervise` is refused before
- *      it connects, under a `Mesh:` heading with a code and no boot line, from that stopped root, from
- *      a folder with no records (naming the folder that hosts the space, writing nothing there), and
- *      from a stopped static root.
+ *   E4. A prepared second root of the same space under its own home: `manager start` with no sign-in,
+ *      or with one the IdP revoked, is refused AUTH_REQUIRED before anything is saved. With the revoked
+ *      one, a bare `up` of the running stack and of the stopped stack leaves the manager unattempted,
+ *      and a team boot resuming the stopped stack is refused AUTH_REQUIRED before any effect, saying
+ *      nothing was started or written, each naming `cotal login --idp <base>`. A manifest without
+ *      `auth: user` is refused CONFLICT naming the auth mode, both its values and the `broker.auth`
+ *      change, in text and JSON. Signed in again, the manager starts, and a `manager restart`
+ *      over it with the sign-in revoked is refused AUTH_REQUIRED before it stops anything, saying the
+ *      running manager was left running. A manager left
+ *      running after a sign-out is stopped by the folder's owner through `manager stop` and `down`.
+ *      `supervise` is refused before it connects, under a `Mesh:` heading with a code and no boot
+ *      line, from that stopped root, from a folder with no records (naming the folder that hosts the
+ *      space, writing nothing there), and from a stopped static root. A third root is prepared for
+ *      a first team as the fresh boot's refusal says, and the `auth grant cli --sub <subject> --full`
+ *      it names succeeds. With the IdP's token route answering 503, that boot exits 3, and the next
+ *      `down` says the stack start ended with its outcome unconfirmed.
+ *   E5. A TLS space behind a local CA, its public exchange behind an HTTPS proxy, joined by a
+ *      participant from its bundle: with `NODE_EXTRA_CA_CERTS` set, the participant's `manager start`
+ *      comes up and its native child carries the variable; with it unset, the line the refusal quotes
+ *      names the TLS reason and ends in the step to set `NODE_EXTRA_CA_CERTS`, quoted whole. With its
+ *      sign-in revoked at the IdP, and then with none, its `manager start` is refused AUTH_REQUIRED
+ *      before any launch, naming `cotal login --idp <base>`. Signed in again, its manager runs, and a
+ *      `manager restart` over it with that sign-in revoked is refused the same way and leaves it running.
  *   F. `cotal down` stops the auth service (space-scoped pid) with the broker; re-`up` WITHOUT
  *      --user-auth on a user-enabled root is refused fail-closed.
  *   G. `clean all`, and `reset space` on a stopped controller stack, name the IdP trust and the
@@ -34,10 +51,11 @@
  * COTAL_HOME is sandboxed; kills only what it starts. Needs nats-server on PATH.
  * Run: pnpm smoke:user-auth-launch:live   (pnpm build first — the subprocesses run built dist)
  */
-import { spawn } from "node:child_process";
-import { createServer } from "node:http";
+import { execFileSync, spawn } from "node:child_process";
+import { createServer, request as httpRequest } from "node:http";
+import { createServer as createHttpsServer, type Server as HttpsServer } from "node:https";
 import type { AddressInfo } from "node:net";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { assertSmokeSandboxDown, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
@@ -71,7 +89,7 @@ const { connect, credsAuthenticator, tokenAuthenticator } = await import("@nats-
 const { jetstreamManager } = await import("@nats-io/jetstream");
 const { channelBucket, chatSubject, isReachable, mintCreds, mintLifecycleUid, newIdentity, presenceBucket } = await import("@cotal-ai/core");
 const { authDir, loadSoleSpaceAuth, loadSpaceAuth, readRenewalRecord, spaceKey, spaceSegment, userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
-const { cotalAuthProvider, deleteIdpSession, establishIdpSession, INTERACTIVE_RETIRE_PATH, loadActorLedger, loadAuthServiceInfo } = await import("../src/index.js");
+const { cotalAuthProvider, deleteIdpSession, establishIdpSession, INTERACTIVE_RETIRE_PATH, loadActorLedger, loadAuthServiceInfo, loadIdpSession } = await import("../src/index.js");
 type CotalMessage = import("@cotal-ai/core").CotalMessage;
 type DeviceLoginPrompt = import("../src/index.js").DeviceLoginPrompt;
 
@@ -101,7 +119,7 @@ const CLAUDE = join(import.meta.dirname, "..", "..", "..", "extensions", "connec
 /** Run the REAL binary (built dist through bin/cotal.ts) in the sandboxed workspace. ASYNC on
  *  purpose: a sync child would block this process's event loop — and the in-process IdP with it —
  *  deadlocking any subprocess step that calls back into the IdP (the user-mode send does). */
-function cotal(args: string[], opts: { cwd?: string; timeoutMs?: number; env?: Record<string, string>; sandbox?: SmokeSandboxAnchor } = {}): Promise<{ status: number | null; out: string }> {
+function cotal(args: string[], opts: { cwd?: string; timeoutMs?: number; env?: Record<string, string | undefined>; sandbox?: SmokeSandboxAnchor } = {}): Promise<{ status: number | null; out: string }> {
   return new Promise((resolvePromise) => {
     const options = {
       cwd: opts.cwd ?? root,
@@ -119,7 +137,11 @@ function cotal(args: string[], opts: { cwd?: string; timeoutMs?: number; env?: R
 
 // ---------- the real Better Auth IdP ----------
 let handler: ReturnType<typeof toNodeHandler> | undefined;
-const idpSrv = createServer((req, res) => handler!(req, res));
+// While set, the token route answers 503, as an IdP that is down does (E4).
+let idpTokenUnavailable = false;
+const idpSrv = createServer((req, res) => idpTokenUnavailable && req.method === "GET" && req.url?.split("?")[0] === "/api/auth/token"
+  ? void res.writeHead(503, { "content-type": "application/json" }).end('{"error":"unavailable"}')
+  : handler!(req, res));
 await new Promise<void>((r) => idpSrv.listen(0, "127.0.0.1", r));
 const origin = `http://127.0.0.1:${(idpSrv.address() as AddressInfo).port}`;
 const base = `${origin}/api/auth`;
@@ -151,12 +173,23 @@ async function approve(userCode: string): Promise<void> {
   });
   if (!res.ok) throw new Error(`device/approve failed: HTTP ${res.status}`);
 }
+/** Revoke one cached sign-in from the account's session list, as the account page does. */
+async function revokeSignIn(token: string): Promise<void> {
+  const res = await fetch(`${base}/revoke-session`, {
+    method: "POST",
+    headers: { "content-type": "application/json", cookie, origin },
+    body: JSON.stringify({ token }),
+  });
+  if (!res.ok) throw new Error(`revoke-session failed: HTTP ${res.status}`);
+}
 
 let witnessNc: Awaited<ReturnType<typeof connect>> | undefined;
 // E3's second root, with its own home, so `finally` can stop and remove it.
 let other: { root: string; home: string; env: Record<string, string>; sandbox: SmokeSandboxAnchor } | undefined;
 // E4's home, its prepared roots and its folder with no records, likewise.
 let second: { home: string; env: Record<string, string>; roots: { root: string; sandbox: SmokeSandboxAnchor }[]; bare?: string } | undefined;
+// E5's TLS host, its proxy and the participant that joined it, likewise.
+let caRig: { hostRoot: string; hostHome: string; hostEnv: Record<string, string>; sandbox: SmokeSandboxAnchor; joinRoot: string; joinHome: string; joinEnv: Record<string, string>; proxy: HttpsServer } | undefined;
 try {
   // ---------- A. up --user-auth ----------
   console.log("A) cotal up --user-auth --idp <real IdP> --auth-timeout 3 --detach");
@@ -719,7 +752,8 @@ try {
     const root2 = await prepare(SPACE);
     const sandbox2 = second.roots[0]!.sandbox;
     const managerPid = join(root2, ".cotal", `manager.${spaceKey(SPACE)}.pid`);
-    const up2 = await cotal(["up", "-d", "--user-auth", "--idp", base, "--server", `nats://127.0.0.1:${await pickFreePort()}`], { cwd: root2, env });
+    const server2 = `nats://127.0.0.1:${await pickFreePort()}`;
+    const up2 = await cotal(["up", "-d", "--user-auth", "--idp", base, "--server", server2], { cwd: root2, env });
     check("with no sign-in, up starts the other members and names cotal login first",
       up2.status === 4 && field(up2.out, "Native code", "AUTH_REQUIRED") && plain(up2.out).includes(`\nNext\n  cotal login --idp ${base}, then`), up2.out);
     const refusedStart = await cotal(["manager", "start"], { cwd: root2, env });
@@ -733,9 +767,63 @@ try {
     const { sub: sub2 } = await establishIdpSession({ dir: home2, idpUrl: base, clientId: CLIENT_ID, onPrompt: (p: DeviceLoginPrompt) => void approve(p.userCode) });
     const grant2 = await cotal(["actor", "grant", "cli", "--sub", sub2, "--full"], { cwd: root2, env });
     check("the second root grants its signed-in CLI", grant2.status === 0, grant2.out);
+    // A cached sign-in the IdP revoked is refused as no sign-in is, before anything is saved or launched.
+    await revokeSignIn(loadIdpSession(home2, base)!.token);
+    const revokedStart = await cotal(["manager", "start"], { cwd: root2, env });
+    const revokedText = plain(revokedStart.out);
+    check("manager start with a sign-in the IdP revoked exits 2 with AUTH_REQUIRED, and Next signs in at that IdP, then starts it",
+      revokedStart.status === 2 && revokedText.includes(`Mesh: ${SPACE}\n`) && field(revokedStart.out, "Code", "AUTH_REQUIRED") &&
+        revokedText.includes("the IdP rejected this machine's sign-in, which has expired or was revoked") && revokedText.includes(`cotal login --idp ${base}, then \`cotal manager start\``), revokedStart.out);
+    const revokedShown = await cotal(["service", "show", "manager"], { cwd: root2, env });
+    check("…before anything was saved or launched, so no manager runs",
+      !revokedText.includes("saved manager") && revokedShown.status === 2 && field(revokedShown.out, "Code", "TARGET_NOT_FOUND") && !existsSync(managerPid), { start: revokedStart.out, show: revokedShown.out });
+    // `up` and a team boot start the manager behind the same confirmation, so neither attempts it. A
+    // bare up says so; a team boot, which refuses before any write, says nothing was started.
+    const revokedRejection = "the IdP rejected this machine's sign-in, which has expired or was revoked; the manager was not attempted";
+    const revokedUp = await cotal(["up"], { cwd: root2, env });
+    check("with that sign-in, a bare up keeps the other members, does not attempt the manager, and Next signs in at that IdP, then runs up again",
+      revokedUp.status === 4 && field(revokedUp.out, "Native code", "AUTH_REQUIRED") && field(revokedUp.out, "Native detail", revokedRejection) &&
+        plain(revokedUp.out).includes(`\nNext\n  cotal login --idp ${base}, then run bare \`cotal up\` again`) && !existsSync(managerPid), revokedUp.out);
+    const stoppedForBoot = await cotal(["down", "--yes"], { cwd: root2, env, sandbox: sandbox2 });
+    check("…and down stops that stack, whose manager was never attempted", stoppedForBoot.status === 0, stoppedForBoot.out);
+    // A manifest that leaves out `auth: user` declares static auth, which this stopped stack was not.
+    const staticFile = join(root2, "static.yaml");
+    writeFileSync(staticFile, `apiVersion: cotal/v1\nkind: Mesh\nspace: ${SPACE}\nbroker:\n  servers: ${server2}\nchannels:\n  general:\n    description: The general channel.\n`);
+    const modeConflict = "the manifest differs from the recorded stopped stack in its auth mode (recorded user auth, declared static auth); nothing was resumed";
+    const modeNext = "set `broker.auth` to `user` in the manifest to resume this stack, or boot the manifest as a new space in another folder prepared with `cotal space create <space>`";
+    const conflictBoot = await cotal(["team", "boot", staticFile], { cwd: root2, env });
+    check("a team boot of a manifest without auth: user is refused CONFLICT, naming only the auth mode with both values, and Next names broker.auth or a new space",
+      conflictBoot.status === 2 && field(conflictBoot.out, "Code", "CONFLICT") && plain(conflictBoot.out).includes(modeConflict) && plain(conflictBoot.out).includes(`\nNext\n  ${modeNext}`), conflictBoot.out);
+    const conflictJson = await cotal(["team", "boot", staticFile, "--json"], { cwd: root2, env });
+    const conflictError = (JSON.parse(conflictJson.out.split("\n").find((line) => line.startsWith("{")) ?? "null") as { error?: { code?: string; message?: string; remedy?: string } } | null)?.error;
+    check("…and --json carries the same detail and remedy",
+      conflictJson.status === 2 && conflictError?.code === "CONFLICT" && conflictError.message === modeConflict && conflictError.remedy === modeNext, conflictJson.out);
+    const teamFile = join(root2, "team.yaml");
+    writeFileSync(teamFile, `apiVersion: cotal/v1\nkind: Mesh\nspace: ${SPACE}\nbroker:\n  servers: ${server2}\n  auth: user\n  idp: ${base}\nchannels:\n  general:\n    description: The general channel.\n`);
+    const revokedBoot = await cotal(["team", "boot", teamFile], { cwd: root2, env });
+    const revokedBootText = plain(revokedBoot.out);
+    check("a team boot resuming it is refused AUTH_REQUIRED, exit 2, says nothing was started or written, and Next signs in at that IdP, then boots the team again",
+      revokedBoot.status === 2 && field(revokedBoot.out, "Code", "AUTH_REQUIRED") && revokedBootText.includes("the IdP rejected this machine's sign-in, which has expired or was revoked; nothing was started or written") &&
+        !revokedBootText.includes("the manager was not attempted") && revokedBootText.includes(`cotal login --idp ${base}, then \`cotal team boot ${teamFile}\``), revokedBoot.out);
+    check("…before any effect: no broker answers and no manager runs", !(await isReachable(server2)) && !existsSync(managerPid), revokedBoot.out);
+    const restarted = await cotal(["up"], { cwd: root2, env });
+    check("a bare up of the stopped stack starts the other members and refuses the manager the same way",
+      restarted.status === 4 && field(restarted.out, "Native detail", revokedRejection) && plain(restarted.out).includes(`cotal login --idp ${base}, then run bare \`cotal up\` again`) && !existsSync(managerPid), restarted.out);
+    await establishIdpSession({ dir: home2, idpUrl: base, clientId: CLIENT_ID, onPrompt: (p: DeviceLoginPrompt) => void approve(p.userCode) });
     const started = await cotal(["manager", "start"], { cwd: root2, env });
     check("signed in and granted, manager start starts it", started.status === 0 && existsSync(managerPid), started.out);
     const pid2 = Number(readFileSync(managerPid, "utf8").trim());
+    // A restart over that running manager, with the sign-in revoked, is refused before anything is
+    // stopped, and says that manager was left running.
+    const revokedRunning = "the IdP rejected this machine's sign-in, which has expired or was revoked; the running manager was left running";
+    await revokeSignIn(loadIdpSession(home2, base)!.token);
+    const revokedRestart = await cotal(["manager", "restart", "--yes"], { cwd: root2, env });
+    const revokedRestartText = plain(revokedRestart.out);
+    check("with the sign-in revoked, manager restart over the running manager exits 2 with AUTH_REQUIRED, says the running manager was left running, and Next signs in at that IdP, then restarts it",
+      revokedRestart.status === 2 && field(revokedRestart.out, "Code", "AUTH_REQUIRED") && revokedRestartText.includes(revokedRunning) && !revokedRestartText.includes("the manager was not attempted") &&
+        revokedRestartText.includes(`cotal login --idp ${base}, then \`cotal manager restart\``), revokedRestart.out);
+    check("…before anything was stopped: the same manager still runs",
+      readFileSync(managerPid, "utf8").trim() === String(pid2) && (() => { try { process.kill(pid2, 0); return true; } catch { return false; } })(), revokedRestart.out);
     deleteIdpSession(home2, base);
     const blocked = await cotal(["down", "--yes"], { cwd: root2, env, sandbox: sandbox2 });
     check("signed out, down names the manager's own stop first", blocked.status === 2 && field(blocked.out, "Code", "LIFECYCLE_BLOCKED") && plain(blocked.out).includes("cotal svc stop manager --instance"), blocked.out);
@@ -752,8 +840,8 @@ try {
     const stoppedHere = await cotal(["supervise", "--space", SPACE, "--server", SERVER], { cwd: root2, env });
     check("supervise from that stopped root is refused as stopped, not as stale state to remove",
       stoppedHere.status === 2 && plain(stoppedHere.out).includes(`Mesh: ${SPACE}\n`) && preConnect(stoppedHere.out, "TARGET_UNAVAILABLE") &&
-        plain(stoppedHere.out).includes(`"${SPACE}" is stopped; its last operation, cotal down, completed, so no manager started`) &&
-        plain(stoppedHere.out).includes(`start it again with \`cotal up\` in ${root2}, or start the manager from the folder whose cotal up started the broker at ${SERVER}`), stoppedHere.out);
+        plain(stoppedHere.out).includes(`"${SPACE}" is stopped; its last operation, \`cotal down\`, completed, so no manager started`) &&
+        plain(stoppedHere.out).includes(`start it again with \`cotal up\` in ${root2}, or start the manager from the folder whose \`cotal up\` started the broker at ${SERVER}`), stoppedHere.out);
     second.bare = mkdtempSync(join(tmpdir(), "cotal-ua-no-records-"));
     const elsewhere = await cotal(["supervise", "--space", SPACE, "--server", SERVER], { cwd: second.bare });
     check("supervise from a folder with no records names the folder that hosts the space, and writes nothing there",
@@ -768,7 +856,129 @@ try {
     const staticStopped = await cotal(["supervise", "--space", RT, "--server", SERVER], { cwd: root3, env });
     check("supervise from the stopped static root is refused as stopped, naming its own up and the broker's folder",
       staticStopped.status === 2 && plain(staticStopped.out).includes(`Mesh: ${RT}\n`) && preConnect(staticStopped.out, "TARGET_UNAVAILABLE") &&
-        plain(staticStopped.out).includes(`start it again with \`cotal up\` in ${root3}, or start the manager from the folder whose cotal up started the broker at ${SERVER}`), staticStopped.out);
+        plain(staticStopped.out).includes(`start it again with \`cotal up\` in ${root3}, or start the manager from the folder whose \`cotal up\` started the broker at ${SERVER}`), staticStopped.out);
+    // A first user-auth team, prepared as the boot's own refusal says. With the IdP's token route
+    // answering 503, the boot then ends with its outcome unconfirmed, and the next down says so.
+    const TB = `${SPACE}-tb`;
+    const rootTb = await prepare(TB);
+    const tbSandbox = second.roots.at(-1)!.sandbox;
+    const serverTb = `nats://127.0.0.1:${await pickFreePort()}`;
+    const tbFile = join(rootTb, "team.yaml");
+    writeFileSync(tbFile, `apiVersion: cotal/v1\nkind: Mesh\nspace: ${TB}\nbroker:\n  servers: ${serverTb}\n  auth: user\n  idp: ${base}\nchannels:\n  general:\n    description: The general channel.\n`);
+    const unprepared = await cotal(["team", "boot", tbFile], { cwd: rootTb, env });
+    check("a team boot of a root with no granted login is refused AUTH_REQUIRED, and Next grants the CLI with --full",
+      unprepared.status === 2 && field(unprepared.out, "Code", "AUTH_REQUIRED") && plain(unprepared.out).includes("then `cotal login`, then `cotal auth grant cli --sub <subject> --full`, then `cotal down`") && !existsSync(join(rootTb, ".cotal", "stack-controller.json")), unprepared.out);
+    const tbUp = await cotal(["up", "-d", "--user-auth", "--idp", base, "--server", serverTb], { cwd: rootTb, env });
+    const { sub: tbSub } = await establishIdpSession({ dir: home2, idpUrl: base, clientId: CLIENT_ID, onPrompt: (p: DeviceLoginPrompt) => void approve(p.userCode) });
+    const tbGrant = await cotal(["auth", "grant", "cli", "--sub", tbSub, "--full"], { cwd: rootTb, env });
+    const tbDown = await cotal(["down", "--yes"], { cwd: rootTb, env, sandbox: tbSandbox });
+    check("following it, up prepares the space, the grant it names succeeds, and down stops the stack",
+      tbUp.status === 4 && tbGrant.status === 0 && plain(tbGrant.out).includes("Actor grant stored") && tbDown.status === 0, { up: tbUp.out, grant: tbGrant.out, down: tbDown.out });
+    idpTokenUnavailable = true;
+    const unconfirmed = await cotal(["team", "boot", tbFile], { cwd: rootTb, env });
+    idpTokenUnavailable = false;
+    check("with the IdP's token route answering 503, that team boot exits 3 with its outcome unconfirmed",
+      unconfirmed.status === 3 && field(unconfirmed.out, "Code", "OPERATION_UNKNOWN"), unconfirmed.out);
+    const settled = await cotal(["down", "--yes"], { cwd: rootTb, env, sandbox: tbSandbox });
+    check("the next down says that stack start ended with its outcome unconfirmed, and not that it was interrupted",
+      settled.status === 0 && /^! the earlier stack start \S+ ended with its outcome unconfirmed; every member is running \(broker, auth, delivery, manager\)$/m.test(plain(settled.out)) && !plain(settled.out).includes("was interrupted"), settled.out);
+  }
+
+  // ---------- E5. a participant joined by bundle starts a manager behind a local CA ----------
+  console.log("E5) a participant that joined a TLS space by its bundle starts a manager with NODE_EXTRA_CA_CERTS, and names the TLS refusal without it");
+  {
+    const hostHome = mkdtempSync(join(tmpdir(), "cotal-ua-ca-host-home-")), hostRoot = mkdtempSync(join(tmpdir(), "cotal-ua-ca-host-root-"));
+    const joinHome = mkdtempSync(join(tmpdir(), "cotal-ua-ca-join-home-")), joinRoot = mkdtempSync(join(tmpdir(), "cotal-ua-ca-join-root-"));
+    // A throwaway CA and the 127.0.0.1 certificate it signs, which the broker and the proxy serve.
+    const pki = join(hostHome, "pki");
+    mkdirSync(pki, { mode: 0o700 });
+    const caFile = join(pki, "ca.pem"), caKey = join(pki, "ca.key"), srvCert = join(pki, "srv.pem"), srvKey = join(pki, "srv.key"), srvExt = join(pki, "srv.ext");
+    const openssl = (args: string[]) => execFileSync("openssl", args, { stdio: "ignore" });
+    openssl(["req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-keyout", caKey, "-out", caFile, "-days", "2", "-subj", "/CN=cotal-smoke-ca",
+      "-addext", "basicConstraints=critical,CA:TRUE", "-addext", "keyUsage=critical,keyCertSign,cRLSign", "-addext", "subjectKeyIdentifier=hash"]);
+    openssl(["req", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-keyout", srvKey, "-out", join(pki, "srv.csr"), "-subj", "/CN=127.0.0.1"]);
+    writeFileSync(srvExt, "subjectAltName=IP:127.0.0.1\nbasicConstraints=CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\nsubjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid,issuer\n");
+    openssl(["x509", "-req", "-in", join(pki, "srv.csr"), "-CA", caFile, "-CAkey", caKey, "-CAcreateserial", "-out", srvCert, "-days", "2", "-extfile", srvExt]);
+    for (const key of [caKey, srvKey]) chmodSync(key, 0o600);
+    // The HTTPS reverse proxy an operator puts in front of the public exchange face.
+    const exchangePort = await pickFreePort();
+    const proxy = createHttpsServer({ key: readFileSync(srvKey), cert: readFileSync(srvCert) }, (req, res) => {
+      req.pipe(httpRequest({ host: "127.0.0.1", port: exchangePort, path: req.url, method: req.method, headers: req.headers }, (answer) => {
+        res.writeHead(answer.statusCode ?? 502, answer.headers);
+        answer.pipe(res);
+      }).on("error", () => res.writeHead(502).end()));
+    });
+    await new Promise<void>((r) => proxy.listen(0, "127.0.0.1", r));
+    const proxyUrl = `https://127.0.0.1:${(proxy.address() as AddressInfo).port}`;
+    const hostEnv = { COTAL_HOME: hostHome, XDG_CONFIG_HOME: join(hostHome, "xdg"), NODE_EXTRA_CA_CERTS: caFile };
+    const joinEnv = { COTAL_HOME: joinHome, XDG_CONFIG_HOME: join(joinHome, "xdg"), NODE_EXTRA_CA_CERTS: caFile };
+    const hostSandbox = recordSmokeSandbox({ root: hostRoot, cotalHome: hostHome, xdgConfigHome: hostEnv.XDG_CONFIG_HOME });
+    caRig = { hostRoot, hostHome, hostEnv, sandbox: hostSandbox, joinRoot, joinHome, joinEnv, proxy };
+    const CA_SPACE = `${SPACE}-ca`;
+    const hostUp = await cotal(["up", "-d", "--user-auth", "--idp", base, "--space", CA_SPACE, "--server", `tls://127.0.0.1:${await pickFreePort()}`,
+      "--tls-cert", srvCert, "--tls-key", srvKey, "--exchange-public-port", String(exchangePort), "--exchange-public-url", proxyUrl], { cwd: hostRoot, env: hostEnv });
+    check("a TLS user-auth space behind a local CA starts, its public exchange behind an HTTPS proxy", hostUp.status === 0, hostUp.out);
+    const bundleFile = join(hostHome, "bundle.json");
+    writeFileSync(bundleFile, await (await fetch(`http://127.0.0.1:${exchangePort}/.well-known/cotal-mesh`)).text());
+    const added = await cotal(["space", "add", "--file", bundleFile, "--root", joinRoot], { cwd: joinRoot, env: joinEnv });
+    check("a participant under its own home registers the space from its bundle", added.status === 0, added.out);
+    const { sub: joinSub } = await establishIdpSession({ dir: joinHome, idpUrl: base, clientId: CLIENT_ID, onPrompt: (p: DeviceLoginPrompt) => void approve(p.userCode) });
+    const joinGrant = await cotal(["actor", "grant", "cli", "--sub", joinSub, "--full", "--scope", "spawn,role:default,supervise"], { cwd: hostRoot, env: hostEnv });
+    check("the host grants the participant's signed-in CLI supervise", joinGrant.status === 0, joinGrant.out);
+    const trusted = await cotal(["manager", "start", "--name", "joined"], { cwd: joinRoot, env: joinEnv });
+    check("with NODE_EXTRA_CA_CERTS set, as docs/cli.md says, the participant's manager start comes up",
+      trusted.status === 0 && plain(trusted.out).includes("Owned process running"), trusted.out);
+    const childPid = /^\s*PID:\s+(\d+)$/m.exec(plain(trusted.out))?.[1];
+    const childEnvironment = childPid ? readFileSync(`/proc/${childPid}/environ`, "utf8").split("\0") : [];
+    check("…and the native child it launched carries NODE_EXTRA_CA_CERTS from that command", childEnvironment.includes(`NODE_EXTRA_CA_CERTS=${caFile}`), { childPid, names: childEnvironment.map((entry) => entry.split("=")[0]) });
+    const joinStop = await cotal(["manager", "stop", "--yes"], { cwd: joinRoot, env: joinEnv });
+    check("…and the participant stops it", joinStop.status === 0 && plain(joinStop.out).includes("Service stopped"), joinStop.out);
+    const untrusted = await cotal(["manager", "start", "--name", "joined"], { cwd: joinRoot, env: { ...joinEnv, NODE_EXTRA_CA_CERTS: undefined } });
+    const quoted = /the last line it logged is: (.*)$/m.exec(plain(untrusted.out))?.[1] ?? "";
+    check("with NODE_EXTRA_CA_CERTS unset, manager start exits 5 and the line it quotes names the TLS reason the authority call failed on",
+      untrusted.status === 5 && quoted.includes(`did not answer at ${proxyUrl}/manager-service-authority (fetch failed); cause: `) && quoted.includes("UNABLE_TO_VERIFY_LEAF_SIGNATURE"), untrusted.out);
+    const logsCommand = /`cotal service logs (\S+) --instance (\S+) --space \S+`/.exec(plain(untrusted.out));
+    const untrustedLog = await cotal(["service", "logs", logsCommand?.[1] ?? "manager", "--instance", logsCommand?.[2] ?? "none", "--space", CA_SPACE], { cwd: joinRoot, env: joinEnv });
+    const logged = /^ *(✗ the manager did not start: .*)$/m.exec(plain(untrustedLog.out))?.[1] ?? "";
+    check("…and that line keeps Node's own message as the cause and ends in the step to trust the CA with NODE_EXTRA_CA_CERTS",
+      logged.includes("UNABLE_TO_VERIFY_LEAF_SIGNATURE: unable to verify the first certificate")
+        && logged.endsWith("; next: trust the certificate's CA, or a self-signed certificate itself, by setting `NODE_EXTRA_CA_CERTS` to that PEM file for the command that starts the manager, then start it again"), untrustedLog.out);
+    check("…and the refusal quotes that line whole, over 400 characters as it is, so the quote ends in its next step",
+      [...logged].length > 400 && quoted === logged, { quoted, logged });
+    // The participant's cached sign-in, revoked at the IdP and then removed, is refused before any launch.
+    const joinManagerPid = join(joinRoot, ".cotal", `manager.${spaceKey(CA_SPACE)}.pid`);
+    const joinManagerRuns = () => { try { process.kill(Number(readFileSync(joinManagerPid, "utf8").trim()), 0); return true; } catch { return false; } };
+    await revokeSignIn(loadIdpSession(joinHome, base)!.token);
+    const revokedJoin = await cotal(["manager", "start"], { cwd: joinRoot, env: joinEnv });
+    const revokedJoinText = plain(revokedJoin.out);
+    check("with its sign-in revoked at the IdP, the participant's manager start exits 2 with AUTH_REQUIRED, and Next signs in at that IdP, then starts it",
+      revokedJoin.status === 2 && field(revokedJoin.out, "Code", "AUTH_REQUIRED") && revokedJoinText.includes("the IdP rejected this machine's sign-in, which has expired or was revoked; the manager was not attempted") &&
+        revokedJoinText.includes(`cotal login --idp ${base}, then \`cotal manager start\``), revokedJoin.out);
+    deleteIdpSession(joinHome, base);
+    const signedOutJoin = await cotal(["manager", "start"], { cwd: joinRoot, env: joinEnv });
+    const signedOutJoinText = plain(signedOutJoin.out);
+    check("signed out, the participant's manager start refuses the same way",
+      signedOutJoin.status === 2 && field(signedOutJoin.out, "Code", "AUTH_REQUIRED") && signedOutJoinText.includes("no user is signed in for this space; the manager was not attempted") &&
+        signedOutJoinText.includes(`cotal login --idp ${base}, then \`cotal manager start\``), signedOutJoin.out);
+    check("…and neither start left a manager running", !joinManagerRuns(), { pidFile: existsSync(joinManagerPid) ? readFileSync(joinManagerPid, "utf8") : "absent" });
+    // Signed in again, its manager runs; a restart over it with that sign-in revoked is refused the same
+    // way and leaves it running.
+    await establishIdpSession({ dir: joinHome, idpUrl: base, clientId: CLIENT_ID, onPrompt: (p: DeviceLoginPrompt) => void approve(p.userCode) });
+    const joinRunning = await cotal(["manager", "start"], { cwd: joinRoot, env: joinEnv });
+    check("signed in again, the participant's manager start starts it", joinRunning.status === 0 && joinManagerRuns(), joinRunning.out);
+    const joinRunningPid = readFileSync(joinManagerPid, "utf8").trim();
+    await revokeSignIn(loadIdpSession(joinHome, base)!.token);
+    const revokedJoinRestart = await cotal(["manager", "restart", "--yes"], { cwd: joinRoot, env: joinEnv });
+    const revokedJoinRestartText = plain(revokedJoinRestart.out);
+    check("with that sign-in revoked, the participant's manager restart exits 2 with AUTH_REQUIRED, says the running manager was left running, and Next signs in at that IdP, then restarts it",
+      revokedJoinRestart.status === 2 && field(revokedJoinRestart.out, "Code", "AUTH_REQUIRED") && revokedJoinRestartText.includes("the IdP rejected this machine's sign-in, which has expired or was revoked; the running manager was left running") &&
+        revokedJoinRestartText.includes(`cotal login --idp ${base}, then \`cotal manager restart\``), revokedJoinRestart.out);
+    check("…and leaves the running manager as it was", joinManagerRuns() && readFileSync(joinManagerPid, "utf8").trim() === joinRunningPid, revokedJoinRestart.out);
+    await establishIdpSession({ dir: joinHome, idpUrl: base, clientId: CLIENT_ID, onPrompt: (p: DeviceLoginPrompt) => void approve(p.userCode) });
+    const joinStopped = await cotal(["manager", "stop", "--yes"], { cwd: joinRoot, env: joinEnv });
+    check("signed in again, the participant stops it", joinStopped.status === 0 && await until(() => !joinManagerRuns()), joinStopped.out);
+    const hostDown = await cotal(["down", "--yes"], { cwd: hostRoot, env: hostEnv, sandbox: hostSandbox });
+    check("…and the TLS host stops", hostDown.status === 0, hostDown.out);
   }
 
   // ---------- F. down + fail-closed re-up ----------
@@ -844,6 +1054,12 @@ try {
     }
     if (second.bare) rmSync(second.bare, { recursive: true, force: true });
     rmSync(second.home, { recursive: true, force: true });
+  }
+  if (caRig) {
+    await cotal(["manager", "stop", "--yes"], { cwd: caRig.joinRoot, env: caRig.joinEnv, timeoutMs: 30_000 }); // E5's participant manager, if it still runs
+    await cotal(["down", "--yes"], { cwd: caRig.hostRoot, env: caRig.hostEnv, sandbox: caRig.sandbox, timeoutMs: 30_000 }); // E5's TLS host, if still up
+    caRig.proxy.close();
+    for (const dir of [caRig.hostHome, caRig.hostRoot, caRig.joinHome, caRig.joinRoot]) rmSync(dir, { recursive: true, force: true });
   }
   idpSrv.close();
   rmSync(home, { recursive: true, force: true });

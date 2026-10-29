@@ -321,7 +321,7 @@ async function startSession(
   );
 
   mcp = server;
-  registerCotalTools(server, agent, config, "claude-code", env);
+  registerCotalTools(server, agent, config, "claude-code", env, claude.inboxDeliveryNote);
 
   // The wake policy owns every `claude/channel` push (arriving messages + the Stop→idle flush).
   // It stays inert until the handshake below confirms the client speaks claude/channel.

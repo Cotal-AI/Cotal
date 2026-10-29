@@ -10,6 +10,7 @@
  * live with their executors; a second copy of either is the dual-encoder drift this module
  * exists to prevent.
  */
+import { DIGEST_PREFIX, rawDigest } from "./canonical.js";
 import { parseServiceConnectionBinding, parseServiceGateAuthority, type ServiceConnectionBinding, type ServiceGateAuthority } from "./service-gate.js";
 import { EpEnvelopeError } from "./endpoint-envelope.js";
 import { LIFECYCLE_HEAD, UID_RESERVATION, recordAtomicKey, decodeRecordJson } from "./endpoint-records.js";
@@ -197,6 +198,13 @@ export function assertCredentialIdTail(v: unknown, what: string): string {
   if (typeof v !== "string" || v.length === 0 || v.length > 256 || !v.split(".").every((s) => KEY_SEGMENT.test(s)))
     throw new EpEnvelopeError("failed-precondition", `${what} ${JSON.stringify(v)} is not a bounded dotted credential id (SPEC 13.1)`);
   return v;
+}
+
+/** The key-safe per-credential ledger id `sha256-<hex>` over raw credential bytes or UTF-8 text:
+ *  the id becomes a segment of the durable `cred.`, `epcred.` and `bysrc.` KV keys, whose grammar
+ *  forbids the `:` in the §13.7 `sha256:` artifact form. */
+export function credentialIdOf(credential: Uint8Array | string): string {
+  return `sha256-${rawDigest(credential).slice(DIGEST_PREFIX.length)}`;
 }
 
 /** A holder principal `<owner>.<actor>` with a REAL owner (derived `u_…`, platform `p_…` or the dev owner) —

@@ -166,14 +166,32 @@ function replacementOf(input: unknown, root: string): StackReplacement {
   return value as unknown as StackReplacement;
 }
 
-export interface StackBrokerInputs { storeDir: string; maxFileStore?: number; host?: string }
+export interface StackBrokerInputs {
+  storeDir: string;
+  maxFileStore?: number;
+  host?: string;
+  logFile?: string;
+  logfileSizeLimit?: number;
+  logfileMaxNum?: number;
+}
 
 function brokerInputs(input: unknown, root: string): StackBrokerInputs {
-  const value = localRecordObject(input, ["storeDir", "maxFileStore", "host"]);
+  const value = localRecordObject(input, ["storeDir", "maxFileStore", "host", "logFile", "logfileSizeLimit", "logfileMaxNum"]);
   if (typeof value.storeDir !== "string" || !isAbsolute(value.storeDir) || value.storeDir.length > 4096 || /[\u0000-\u001f\u007f]/u.test(value.storeDir)) invalid(root);
   if (value.maxFileStore !== undefined && (!Number.isSafeInteger(value.maxFileStore) || Number(value.maxFileStore) <= 0)) invalid(root);
   if (value.host !== undefined && (typeof value.host !== "string" || !value.host || value.host.length > 253 || /[\u0000- \u007f]/u.test(value.host))) invalid(root);
-  return { storeDir: value.storeDir as string, ...(value.maxFileStore !== undefined ? { maxFileStore: Number(value.maxFileStore) } : {}), ...(value.host !== undefined ? { host: value.host as string } : {}) };
+  if (value.logFile !== undefined && (typeof value.logFile !== "string" || !isAbsolute(value.logFile) || !value.logFile.trim() || value.logFile.length > 4096 || /[\u0000-\u001f\u007f]/u.test(value.logFile))) invalid(root);
+  for (const field of ["logfileSizeLimit", "logfileMaxNum"] as const)
+    if (value[field] !== undefined && (!Number.isSafeInteger(value[field]) || Number(value[field]) <= 0)) invalid(root);
+  if (value.logFile === undefined && (value.logfileSizeLimit !== undefined || value.logfileMaxNum !== undefined)) invalid(root);
+  return {
+    storeDir: value.storeDir as string,
+    ...(value.maxFileStore !== undefined ? { maxFileStore: Number(value.maxFileStore) } : {}),
+    ...(value.host !== undefined ? { host: value.host as string } : {}),
+    ...(value.logFile !== undefined ? { logFile: value.logFile as string } : {}),
+    ...(value.logfileSizeLimit !== undefined ? { logfileSizeLimit: Number(value.logfileSizeLimit) } : {}),
+    ...(value.logfileMaxNum !== undefined ? { logfileMaxNum: Number(value.logfileMaxNum) } : {}),
+  };
 }
 
 export interface StackJournalSnapshot { journal: StackJournal; sha256: string }
@@ -623,10 +641,14 @@ export function unfinishedStackOperation(journal: StackJournal): { kind: "up" | 
 /** The one-line notice a command prints after it settled an earlier operation. */
 export function stackSettlementNotice(settled: StackSettlement): string {
   const gone = settled.members.filter((row) => row.process === "gone").map((row) => row.role), running = settled.members.filter((row) => row.process === "running").map((row) => row.role);
-  const { kind, id } = settled.operation;
+  const { kind, id, phase } = settled.operation;
+  // An operation that exited with its outcome unconfirmed recorded it as unknown; one that recorded
+  // nothing was interrupted. A team boot records its start as an up, so that start is named in words
+  // true of both.
+  const ended = phase === "unknown" ? `the earlier ${kind === "up" ? "stack start" : kind} ${id} ended with its outcome unconfirmed` : undefined;
   // An up whose members all run, or a down whose members are all gone, reached its end anyway.
-  if (kind === "up" && !gone.length && !settled.unstarted.length) return `the earlier up ${id} was interrupted before it recorded an outcome; every member is running (${running.join(", ")})`;
-  if (kind === "down" && !running.length) return `the earlier down ${id} was interrupted before it recorded an outcome; every member is stopped`;
+  if (kind === "up" && !gone.length && !settled.unstarted.length) return `${ended ?? `the earlier up ${id} was interrupted before it recorded an outcome`}; every member is running (${running.join(", ")})`;
+  if (kind === "down" && !running.length) return `${ended ?? `the earlier down ${id} was interrupted before it recorded an outcome`}; every member is stopped`;
   return `the earlier ${kind} ${id} had no recorded outcome; it was recorded as failed from its members' processes (gone: ${gone.join(", ") || "none"}; running: ${running.join(", ") || "none"}${settled.unstarted.length ? `; not started: ${settled.unstarted.join(", ")}` : ""})`;
 }
 

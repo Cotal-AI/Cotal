@@ -7,7 +7,9 @@ import { fileURLToPath } from "node:url";
 import { nativeDir, nativeFile, sha256, sourceFiles, verifyNative } from "../packages/workspace/scripts/native-contract.mjs";
 
 const repo = fileURLToPath(new URL("..", import.meta.url));
-const source = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).trim();
+// The commit the native builders checked out. The release pack assembles natives built from the pushed
+// commit into the version PR head, whose only change is versioning, so it names that commit here.
+const source = process.env.NATIVE_SOURCE ?? execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).trim();
 const inputs = [
   ["win32", "x64", "WORKSPACE_NATIVE_X64"], ["win32", "arm64", "WORKSPACE_NATIVE_ARM64"],
   ["darwin", "x64", "WORKSPACE_NATIVE_DARWIN_X64"], ["darwin", "arm64", "WORKSPACE_NATIVE_DARWIN_ARM64"],

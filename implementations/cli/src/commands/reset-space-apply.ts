@@ -6,7 +6,7 @@ import { accountFromCreds, isLoopbackLiteral, type ParsedArgs } from "@cotal-ai/
 import {
   ConfirmationRequired,
   acquireMaintenanceLock, canonicalRoot, CommandFailure, isCommandFailure, findMesh, localMeshesForRoot, oneLine, presentationOf,
-  releaseMaintenanceLock, removeMeshesByRoot, renderReport, STORE_CONTENTS, terminalWidth, writeResult, type Report,
+  releaseMaintenanceLock, removeMeshesByRoot, renderReport, STORE_CONTENTS, writeResult, type Report,
 } from "@cotal-ai/workspace";
 import { protectedCredentialReference } from "../lib/protected-records.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
@@ -84,7 +84,7 @@ export async function resetSpaceApply(space: string, args: ParsedArgs): Promise<
     return;
   }
   if (!yes) {
-    console.error(renderReport({ ...impactView(), space }, presentation === "plain" ? "plain" : "rich", terminalWidth(process.stderr)));
+    console.error(renderReport({ ...impactView(), space }, presentation === "plain" ? "plain" : "rich", process.stderr));
     const answer = await prompts.confirm({ message: `Remove the reviewed stopped store and local identity for ${oneLine(space)}?`, initialValue: false });
     if (prompts.isCancel(answer) || !answer) {
       stopReporting?.();

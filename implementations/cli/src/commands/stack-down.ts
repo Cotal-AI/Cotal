@@ -11,7 +11,7 @@ import { dirname } from "node:path";
 import * as prompts from "../lib/prompts.js";
 import { CotalEndpoint, DEFAULT_SPACE, deliveryLeaseHolderFor, mintCreds, newIdentity, type ParsedArgs } from "@cotal-ai/core";
 import {
-  CommandFailure, ConfirmationRequired, canonicalRoot, deliveryCredsKey, findMesh, getSpaceAuth, homeCotalDir, isCommandFailure, isConnectRefusal, oneLine, presentationOf, processStopped, readBrokerPolicy, readNatsInfoGreeting, recordMesh, recordOperationSpace, recordPreparedSpace, releaseMaintenanceLock, removeMesh, removeMeshesByRoot, renderReport, resolveMeshTarget, stackHomeRemedy, stackRunsUnderOtherHome, terminalWidth, workspaceSecretStore, writeResult,
+  CommandFailure, ConfirmationRequired, canonicalRoot, deliveryCredsKey, findMesh, getSpaceAuth, homeCotalDir, isCommandFailure, isConnectRefusal, oneLine, presentationOf, processStopped, readBrokerPolicy, readNatsInfoGreeting, recordMesh, recordOperationSpace, recordPreparedSpace, releaseMaintenanceLock, removeMesh, removeMeshesByRoot, renderReport, resolveMeshTarget, stackHomeRemedy, stackRunsUnderOtherHome, workspaceSecretStore, writeResult,
   type MaintenanceLock, type MeshEntry, type OutputWarning, type Presentation, type Report, type ServiceAdapterKernelStopPlan, type ServiceAdapterStopAbandonment, type ServiceAdapterStopPlan,
 } from "@cotal-ai/workspace";
 import { brokerLaunchAt } from "../lib/broker-service.js";
@@ -313,14 +313,20 @@ export async function stackDown(rootInput: string, values: ParsedArgs["values"])
 
 /** What an interrupted bare down left: the members still running, and the down that finishes it. A
  *  member it left `stopping` under a signal is stopped again by that down while it runs, and once it
- *  has exited only `--abandon-stop` settles it, so the notice names both. */
+ *  has exited only `--abandon-stop` settles it, so the notice names both while it runs. Once it no
+ *  longer runs, up and down refuse until then, so the notice names only `--abandon-stop`. */
 function stackStopInterruptNotice(root: string): string {
   const space = readStackJournal(root)?.journal.space;
   const running = space === undefined ? [] : runningStackRoles(space);
   const signalled = space === undefined ? undefined : STACK_ROLES.flatMap((role) => serviceInstances(space, STACK_DEFINITION[role])
     .filter(({ record: { value } }) => !value.nativeStopRequired && value.state === "stopping").map(({ record: { value } }) => ({ role, requestId: value.requestId })))[0];
   const left = running.length ? `${running.join(", ")} ${running.length === 1 ? "is" : "are"} still running` : "no member is running";
-  if (signalled) return `Interrupted while stopping the stack in ${root}; ${left}. The stop of ${signalled.role} is not confirmed: while it runs, \`cotal down --yes\` stops it again, and once it has exited, \`cotal down --abandon-stop ${signalled.requestId} --yes\` finishes the stop.`;
+  if (signalled) {
+    const abandon = `\`cotal down --abandon-stop ${signalled.requestId} --yes\` finishes the stop`;
+    return running.includes(signalled.role)
+      ? `Interrupted while stopping the stack in ${root}; ${left}. The stop of ${signalled.role} is not confirmed: while it runs, \`cotal down --yes\` stops it again, and once it has exited, ${abandon}.`
+      : `Interrupted while stopping the stack in ${root}; ${left}. The stop of ${signalled.role} is not confirmed, so up and down refuse until ${abandon}.`;
+  }
   return running.length
     ? `Interrupted while stopping the stack in ${root}; ${left}. Run \`cotal down --yes\` to finish the stop.`
     : `Interrupted while stopping the stack in ${root}; no member is running. Run \`cotal down --yes\` to finish its cleanup.`;
@@ -392,7 +398,7 @@ async function previewStackStop(root: string, values: ParsedArgs["values"], pres
  *  that was killed, or whose release write the broker refused, as a full store refuses it, leaves its
  *  row until the lease expires. The holder is the one that credential gives, never a name or pid.
  *  "unread" when the row could not be read. */
-async function deliveryLeaseAfterStop(root: string, space: string, server: string): Promise<"held" | "released" | "unread"> {
+export async function deliveryLeaseAfterStop(root: string, space: string, server: string): Promise<"held" | "released" | "unread"> {
   const store = workspaceSecretStore(root);
   let ep: CotalEndpoint | undefined;
   try {
@@ -464,8 +470,8 @@ async function applyStackStop(root: string, values: ParsedArgs["values"], presen
     if (!values.yes) {
       // What the prompt asks to confirm. The receipt names the mesh, so the plan does not.
       if (presentation !== "json") {
-        console.log(renderReport({ sections: planView(journal0, members, withAgents, settlement).sections }, presentation, terminalWidth(process.stdout)));
-        if (manager?.native) console.log(renderReport(nativeImpactView(manager.native), presentation, terminalWidth(process.stdout)));
+        console.log(renderReport({ sections: planView(journal0, members, withAgents, settlement).sections }, presentation, process.stdout));
+        if (manager?.native) console.log(renderReport(nativeImpactView(manager.native), presentation, process.stdout));
       }
       const answer = await prompts.confirm({ message: `Stop every displayed member of ${oneLine(journal0.space)}'s controller stack with only the displayed native impact?`, initialValue: false });
       if (prompts.isCancel(answer) || !answer) {

@@ -60,8 +60,9 @@ import {
 import {
   CommandFailure, loadLaunchPersonaFile, personaFileReference, PersonaSourceError, inputDisabledByFlag, jsonFlag, plainFlag, presentationOf, recordOperationWarning, renderReport, terminalWidth, wrapWords, writeResult, type OutputWarning, type RefusalCode, type Report,
   agentActorTokenKey,
-  agentCredsKey,
+  agentLifecycleSecretFilePaths,
   agentSecretFilePaths,
+  agentSecretKeyForFile,
   agentSentinelCredsKey,
   authDir,
   cachedPreferences,
@@ -707,7 +708,7 @@ export async function launchManagedPersona(
   }
   // The report that answers names the mesh in its heading, so this block names it once, in a field.
   const toStdout = !observer && presentationOf(values) !== "json";
-  (toStdout ? console.log : console.error)(renderReport({ sections: [{ title: "Managed launch", blocks: [{ kind: "fields", rows: [["Space", t.space], ["Manager selector", on ?? t.auth.managerInstanceId ?? "native class selection"], ["Persona", ref], ["File source", managerConfigRef ? `${managerConfigRef} · manager execution host` : "selected manager's persona catalog"], ["File transfer", "none"]] }, { kind: "lines", lines: [{ text: "The accepting manager validates its own visible file before allocation. No local file is uploaded, and a pin never selects a replacement manager.", tone: "hint" }] }] }] }, presentationOf(values) === "plain" ? "plain" : "rich", terminalWidth(toStdout ? process.stdout : process.stderr)));
+  (toStdout ? console.log : console.error)(renderReport({ sections: [{ title: "Managed launch", blocks: [{ kind: "fields", rows: [["Space", t.space], ["Manager selector", on ?? t.auth.managerInstanceId ?? "native class selection"], ["Persona", ref], ["File source", managerConfigRef ? `${managerConfigRef} · manager execution host` : "selected manager's persona catalog"], ["File transfer", "none"]] }, { kind: "lines", lines: [{ text: "The accepting manager validates its own visible file before allocation. No local file is uploaded, and a pin never selects a replacement manager.", tone: "hint" }] }] }] }, presentationOf(values) === "plain" ? "plain" : "rich", toStdout ? process.stdout : process.stderr));
   for (const line of wrapWords("waiting for the manager: it answers when it refuses the launch, or when the agent joins or exits (at most about 30s) …", terminalWidth(process.stderr))) console.error(c.dim(line));
   const start = () => askManager(t.space, t.server, "start", {
     name: ref,
@@ -860,7 +861,7 @@ export async function launchManagedPersona(
   }
   if (verdict.kind === "failed") throw new CommandFailure("partial", "OPERATION_PARTIAL", "the agent joined, but attachment did not complete; no replacement was launched", { target, changed: [result], native: { detail: oneLine(verdict.message) }, remedy: await next() });
   if (verdict.kind === "gone" && observer) throw new CommandFailure("partial", "OPERATION_PARTIAL", "the agent joined, but its exact native terminal was unavailable before setup could open the view; no replacement was launched", { target, changed: [result], remedy: `check the original lifecycle with ${codeSpan(ps)} before another startup` });
-  console.error(renderReport({ sections: [{ title: verdict.kind === "gone" ? "Attach target unavailable" : verdict.reason === "detached" ? "Detached" : "Attach session ended", blocks: [{ kind: "fields", rows: [["Agent", d.name], ["Identity", d.id], ["Manager", reply.managerInstanceId]] }, { kind: "lines", lines: [{ text: "Leaving the view sent no stop request. The original lifecycle was not replaced.", tone: "hint" }] }] }] }, "rich", terminalWidth(process.stderr)));
+  console.error(renderReport({ sections: [{ title: verdict.kind === "gone" ? "Attach target unavailable" : verdict.reason === "detached" ? "Detached" : "Attach session ended", blocks: [{ kind: "fields", rows: [["Agent", d.name], ["Identity", d.id], ["Manager", reply.managerInstanceId]] }, { kind: "lines", lines: [{ text: "Leaving the view sent no stop request. The original lifecycle was not replaced.", tone: "hint" }] }] }] }, "rich", process.stderr));
 }
 
 /** Whether `runtime` streams a terminal, as a provider registered in this CLI or installed as its
@@ -1326,13 +1327,13 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // operator passed neither flag), so default it on here the way the old boolean did.
   const launchEvents = eventsRequired || events !== false;
   const { space, server, auth } = target;
-  const composition = { injected: false as const, root: target.root };
 
   // Where the config lives: --config, else the positional <persona>, else the persona preference
   // (.cotal/agents/<name>.md under the TARGET mesh's root). With none, fall back to its `default`
   // persona — `cotal spawn` with no args launches `<root>/.cotal/agents/default.md`.
   const { ref, from: personaFrom } = spawnPersona(values.config, positionals, { space, preferences: cachedPreferences() });
-  const path = redeemedEnrollment && values.config ? resolvePath(values.config) : agentFilePath(target.root, ref);
+  const personaProject = resolvePath(target.personaRoot, "..", "..");
+  const path = redeemedEnrollment && values.config ? resolvePath(values.config) : agentFilePath(personaProject, ref);
   let def: AgentDef;
   try {
     def = loadLaunchPersonaFile(path);
@@ -1376,7 +1377,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // effective role, model (flag over file) and launch options before anything is provisioned or launched.
   let cotalConfig: CotalConfig;
   try {
-    cotalConfig = loadCotalConfig(target.root);
+    cotalConfig = loadCotalConfig(personaProject);
     const refusal = modelPolicyRefusal(cotalConfig, {
       persona: `persona "${ref}" (${path})`,
       role, model, variant,
@@ -1504,7 +1505,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     process.exit(1);
   }
   // Said once every check above has passed, so a refusal is never read as a launch that started.
-  console.error(renderReport({ sections: [{ title: "Direct application", blocks: [{ kind: "lines", lines: ["This is native foreground execution, not a detachable Cotal view.", { text: "Native exit, Ctrl-C or terminal loss may end this process. No crash or reboot survival is promised.", tone: "hint" }] }] }] }, "rich", terminalWidth(process.stderr)));
+  console.error(renderReport({ sections: [{ title: "Direct application", blocks: [{ kind: "lines", lines: ["This is native foreground execution, not a detachable Cotal view.", { text: "Native exit, Ctrl-C or terminal loss may end this process. No crash or reboot survival is promised.", tone: "hint" }] }] }] }, "rich", process.stderr));
   // Auth mode provisions the identity + writes its creds to disk BEFORE the connector validates the
   // launch (e.g. `buildLaunch` throws on a rejected `--opt`) and before the child execs. The SAME
   // retirement serves a failed provisioning or launch (rollback) and the normal foreground
@@ -1523,7 +1524,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     // (byte-identical locally). The broker teardown mints its own credential, so a creds file that
     // cannot be removed must not leave the durables and ACL row behind.
     const failed: CleanupFailure[] = [];
-    await attemptCleanup(failed, "creds secret", () => workspaceSecretStore(target.root).delete(agentCredsKey(space, name, composition)));
+    await attemptCleanup(failed, "creds secret", () => workspaceSecretStore(target.root).delete(agentSecretKeyForFile(credsFile, space)));
     await attemptCleanup(failed, "creds file", () => rmSync(credsFile, { force: true }));
     await attemptCleanup(failed, "broker teardown", () =>
       mintCreds(auth, newIdentity(), "deprovisioner", { deprovisionTarget: { principal: targetId, lifecycleUid } })
@@ -1620,7 +1621,10 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     // What the retirement needs is recorded before the first durable exists, so a throw anywhere from
     // provisioning through the creds write can still find and remove the footprint.
     id = identity.id;
-    credsPath = agentSecretFilePaths(target.root, space, name).creds;
+    // LIFECYCLE-KEYED, as the manager keys its own spawns: the file embeds this incarnation's uid, so
+    // the retirement can only remove this incarnation's credential, never a same-name spawn's or the
+    // operator's standing `<name>.creds` (#3857).
+    credsPath = agentLifecycleSecretFilePaths(target.root, space, name, lifecycleUid).creds;
     // THE EVENT GRANT, from the principal this spawn ALLOCATED. Static mode keys on the nkey, never
     // on the display name: a name is not an identity, and the manager derives the same subject from
     // the same connector function, so a foreground and a detached spawn of one persona land on one
@@ -1661,8 +1665,8 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       // Store first (the source of truth), then materialize — the child's launch reads this FILE.
       // The CLI is the local FS composition (byte-identical), same posture as the manager's spawn.
       const secrets = workspaceSecretStore(target.root);
-      await secrets.put(agentCredsKey(space, name, composition), creds);
-      await materializeSecretToFile(secrets, agentCredsKey(space, name, composition), credsPath);
+      await secrets.put(agentSecretKeyForFile(credsPath, space), creds);
+      await materializeSecretToFile(secrets, agentSecretKeyForFile(credsPath, space), credsPath);
     } catch (e) {
       await retireProvision("provisioning failed");
       throw e;

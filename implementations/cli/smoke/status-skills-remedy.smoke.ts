@@ -70,7 +70,7 @@ exit 0
     spec: claudePkg,
     provides: [{ kind: "connector", name: "claude" }, { kind: "connector-setup", name: "claude" }],
     commands: [],
-    connectors: [{ name: "claude", requires: ["claude"], setup: { kind: "connector-setup", name: "claude" } }],
+    connectors: [{ name: "claude", requires: ["claude"], eventPlane: true, setup: { kind: "connector-setup", name: "claude" } }],
   }] }));
   chmodSync(join(home, "bin", "claude"), 0o755);
   chmodSync(join(home, "bin", "cotal"), 0o755);

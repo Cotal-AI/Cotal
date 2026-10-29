@@ -79,7 +79,6 @@ import {
   presentationOf,
   recordOperationSpace,
   renderReport,
-  terminalWidth,
   writeEnvelope,
   connectOrExit,
   controlCaller,
@@ -198,7 +197,7 @@ async function openPlanes(values: RunValues, role: "run-driver" | "run-operator"
 function refuseSingleCredential(conn: Connection): void {
   if (conn.creds !== undefined && conn.auth === undefined)
     throw new CommandFailure("refused", "USAGE_INVALID", "run --local needs the space signer to mint a separate mediator; a single --creds file cannot supply both roles", {
-      remedy: "From the project with the recorded static-auth mesh and signer, omit --creds and run cotal run start --local --space <space> --file <program>. If you only have caller credentials, ask the mesh operator to host the run.",
+      remedy: "From the project with the recorded static-auth mesh and signer, omit --creds and run `cotal run start --local --space <space> --file <program>`. If you only have caller credentials, ask the mesh operator to host the run.",
     });
 }
 
@@ -367,7 +366,7 @@ async function revoke(values: RunValues, runId: string | undefined): Promise<voi
     // The marker sits beside the run's admission. With no admission there is no run here to revoke,
     // so refuse before anything is written.
     if (await kv.get(admissionKey(endpoint, runId)) === null)
-      throw new CommandFailure("refused", "TARGET_NOT_FOUND", `run ${runId} has no admission on endpoint ${endpoint}, so there is nothing to revoke; nothing was written`, { target: { space: conn.space, endpoint, run: runId }, remedy: "list the recorded runs with cotal run" });
+      throw new CommandFailure("refused", "TARGET_NOT_FOUND", `run ${runId} has no admission on endpoint ${endpoint}, so there is nothing to revoke; nothing was written`, { target: { space: conn.space, endpoint, run: runId }, remedy: "list the recorded runs with `cotal run`" });
     await revokeRunAdmission(kv, endpoint, { version: 1, runId, reason: values.reason, by: values.by, revokedAt: Date.now() });
     const view = await readRunAdmission(await jetstreamManager(nc), conn.space, endpoint, runId);
     console.log(`run ${runId} on ${endpoint}: revoked by ${view.revoked!.by} (${view.revoked!.reason}); its hosts refuse the next channel effect, and it is not resumed or taken back`);
@@ -514,7 +513,7 @@ async function answer(values: RunValues, reader: Planes, runId: string | undefin
     { runId, stepKey, takeoverId },
   ).catch((e: unknown) => {
     // Locating writes nothing, so a pause it does not find is refused as the hosted answer refuses it.
-    if (e instanceof CheckpointNotOpen) throw new CommandFailure("refused", "TARGET_NOT_FOUND", e.message, { target: { space: reader.space, endpoint, run: runId }, remedy: `read the run's open requests with cotal run show ${runId} --local` });
+    if (e instanceof CheckpointNotOpen) throw new CommandFailure("refused", "TARGET_NOT_FOUND", e.message, { target: { space: reader.space, endpoint, run: runId }, remedy: `read the run's open requests with \`cotal run show ${runId} --local\`` });
     throw e;
   });
   // Resume is holder-bound (SPEC 13.10) and the CLI is not the driver: the resolver presents as
@@ -557,7 +556,7 @@ async function amend(values: RunValues, reader: Planes, runId: string | undefine
     { runId, stepKey, takeoverId },
   ).catch((e: unknown) => {
     // Locating writes nothing, so an answer it does not find is refused as the hosted amend refuses it.
-    if (e instanceof CheckpointNotAmendable) throw new CommandFailure("refused", "TARGET_NOT_FOUND", e.message, { target: { space: reader.space, endpoint, run: runId }, remedy: `read the run's answers with cotal run show ${runId} --local` });
+    if (e instanceof CheckpointNotAmendable) throw new CommandFailure("refused", "TARGET_NOT_FOUND", e.message, { target: { space: reader.space, endpoint, run: runId }, remedy: `read the run's answers with \`cotal run show ${runId} --local\`` });
     throw e;
   });
   const writer = await openPlanes(values, "run-operator", { runOperator: { endpoint, takeoverId: newTakeoverId(), answers: { token: accepted.token } } });
@@ -616,7 +615,7 @@ async function migrate(values: RunValues, planes: Planes, runId: string | undefi
   const record = await readRunRecord(planes.kv, endpoint, runId);
   // A run ID nothing records is refused as `run show` refuses it; the check writes nothing either way.
   if (record === undefined)
-    throw new CommandFailure("refused", "TARGET_NOT_FOUND", `run ${runId}: no record on endpoint ${endpoint}; a run that was never started cannot be checked`, { target: { space: planes.space, endpoint, run: runId }, remedy: "list the recorded runs with cotal run" });
+    throw new CommandFailure("refused", "TARGET_NOT_FOUND", `run ${runId}: no record on endpoint ${endpoint}; a run that was never started cannot be checked`, { target: { space: planes.space, endpoint, run: runId }, remedy: "list the recorded runs with `cotal run`" });
   const replay = await replayRunJournal(planes.js, planes.jsm, planes.space, runId, takeoverId);
   const source = sourceOf(values.file);
   let report: MigrateReport;
@@ -713,15 +712,15 @@ export function managerRefusal(command: string, space: string, args: Record<stri
   // A resume refused as a precondition, such as of a completed or failed run, appended nothing, so
   // the run's recorded state is what to read next.
   const resumeBlocked = command === "run-resume" && err?.code === "failed-precondition" && typeof args?.runId === "string";
-  const remedy = busy ? { remedy: `wait until one of them has activated, then run ${command === "run-resume" ? "the resume" : "the start"} again; cotal run lists a run once it has` }
-    : resumeBlocked ? { remedy: `read the run's recorded state with cotal run show ${args.runId}${on ? ` --on ${on}` : ""}` }
-    : err?.code !== "not-found" ? {} : { remedy: command === "run-answer" && typeof args?.runId === "string" ? `read the run's open requests with cotal run show ${args.runId}` : "list the recorded runs with cotal run" };
+  const remedy = busy ? { remedy: `wait until one of them has activated, then run ${command === "run-resume" ? "the resume" : "the start"} again; \`cotal run\` lists a run once it has` }
+    : resumeBlocked ? { remedy: `read the run's recorded state with \`cotal run show ${args.runId}${on ? ` --on ${on}` : ""}\`` }
+    : err?.code !== "not-found" ? {} : { remedy: command === "run-answer" && typeof args?.runId === "string" ? `read the run's open requests with \`cotal run show ${args.runId}\`` : "list the recorded runs with `cotal run`" };
   if (code) return new CommandFailure("refused", err!.details?.some((d) => d.kind === LANG_PROBLEM_DETAIL_KIND) ? "SCHEMA_INVALID" : code, message, { ...options, ...remedy });
   // A reply too large for the broker changed nothing; the local read takes no reply.
   if (command === "run-status" && err?.code === "resource-exhausted")
     return new CommandFailure("refused", "UNSUPPORTED", message, { ...options, remedy: `read the run from its project folder with ${localJournal(args)}` });
   if (command === "run-status" || command === "run-ps") return new CommandFailure("failed", "OPERATION_FAILED", message, options);
-  return new CommandFailure("unknown", "OPERATION_UNKNOWN", message, { ...options, remedy: "read the run with cotal run show, or list the runs with cotal run, before trying again; it was not retried" });
+  return new CommandFailure("unknown", "OPERATION_UNKNOWN", message, { ...options, remedy: "read the run with `cotal run show`, or list the runs with `cotal run`, before trying again; it was not retried" });
 }
 
 /** nats.js refuses a frame over the broker's `max_payload` before writing any of it. */
@@ -737,10 +736,10 @@ function payloadRefused(error: unknown): boolean {
 function reportInterruptedStart(values: RunValues, space: string): () => void {
   const exit = (signal: "SIGINT" | "SIGTERM"): void => {
     const failure = new CommandFailure("unknown", "OPERATION_UNKNOWN", "interrupted after the start request was sent, so the manager may already have recorded the run", {
-      target: { space }, remedy: "list the recorded runs with cotal run before starting it again",
+      target: { space }, remedy: "list the recorded runs with `cotal run` before starting it again",
     });
     if (values.json) writeEnvelope(failureEnvelope("run", failure));
-    process.stderr.write(`${renderReport(commandFailureReport(failure), values.plain ? "plain" : "rich", terminalWidth(process.stderr))}\n`);
+    process.stderr.write(`${renderReport(commandFailureReport(failure), values.plain ? "plain" : "rich", process.stderr)}\n`);
     process.exit(signal === "SIGINT" ? 130 : 143);
   };
   const onInterrupt = () => exit("SIGINT");
@@ -779,6 +778,7 @@ async function askHost(values: RunValues, command: string, args: Record<string, 
       : who.caller;
     const service = await resolveService(nc, t.space, BASELINE_LIFECYCLE_ENDPOINT, caller, {
       deadlineMs: 10_000,
+      commands: [command],
       ...(auth.managerInstanceId !== undefined ? { instanceId: auth.managerInstanceId } : {}),
     });
     // A start or resume is answered only once the drive has activated, which the manager waits on
@@ -856,7 +856,7 @@ async function refuseWithoutLiveManager(nc: NatsConnection, space: string, on?: 
     throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "no manager is running for this space to host or read its workflow runs", {
       target: { space },
       native: { code: e.code, detail: `${e.code}: ${e.message}` },
-      remedy: "start the stack's manager with bare cotal up; a stack started with --no-manager has none",
+      remedy: "start the stack's manager with bare `cotal up`; a stack started with --no-manager has none",
     });
   }
   // A pin that names none of the running managers can only wait out its describe, so it is refused
@@ -1098,7 +1098,7 @@ export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: 
   // A run id is an id token, so a malformed one is refused here, before any contact, rather than
   // by whichever plane reads it first.
   if (["journal", "resume", "revoke", "answer", "amend", "migrate"].includes(verb) && first !== undefined) {
-    try { assertIdToken(first, "run id"); } catch { usage(`run ${raw}: ${JSON.stringify(boundedValue(first, SHOWN_VALUE_MAX))} is not a run id, which is 1 to 64 letters, digits, "_" or "-"; cotal run lists them`); }
+    try { assertIdToken(first, "run id"); } catch { usage(`run ${raw}: ${JSON.stringify(boundedValue(first, SHOWN_VALUE_MAX))} is not a run id, which is 1 to 64 letters, digits, "_" or "-"; \`cotal run\` lists them`); }
   }
   let a: string | undefined = first;
   let b: string | undefined = second;
@@ -1120,7 +1120,7 @@ export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: 
     if (first !== undefined) usage(`run ${raw} takes no positional argument`);
   } else if (verb === "answer" || verb === "amend") {
     if (!first || !second) usage(`run ${verb} requires a run id and step key`);
-  } else if (!first || second !== undefined) usage(`run ${raw} takes one identifier`, verb === "yield" ? "cotal run turns lists your turns; run cotal run yield <turn-id>" : `cotal run lists the runs; run cotal run ${raw} <run-id>`);
+  } else if (!first || second !== undefined) usage(`run ${raw} takes one identifier`, verb === "yield" ? "`cotal run turns` lists your turns; run `cotal run yield <turn-id>`" : `\`cotal run\` lists the runs; run \`cotal run ${raw} <run-id>\``);
   const scopes: Record<string, readonly string[]> = {
     timeout: ["start", "resume"], by: ["answer", "amend", "revoke"], reason: ["revoke"], value: ["answer", "amend"], artifact: ["answer", "amend"],
     "admit-read": ["start"], "admit-publish": ["start"], adopt: ["migrate"], release: ["migrate"], "discard-approvals": ["migrate"],
@@ -1156,7 +1156,7 @@ export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: 
   if (verb === "revoke" && values.local === true) {
     for (const [flag, what] of [["by", "who revokes the run"], ["reason", "why it is revoked"]] as const) {
       if (values[flag] !== undefined && !values[flag].trim())
-        throw new CommandFailure("refused", "USAGE_INVALID", `--${flag} is empty; nothing was written`, { remedy: `name ${what}: cotal run revoke ${a} --local --by <who> --reason <text>`, selfContained: true });
+        throw new CommandFailure("refused", "USAGE_INVALID", `--${flag} is empty; nothing was written`, { remedy: `name ${what}: \`cotal run revoke ${a} --local --by <who> --reason <text>\``, selfContained: true });
     }
   }
   if (verb === "revoke" && (values.local !== true || !values.by?.trim() || !values.reason?.trim())) usage("run revoke requires --local --by <actor> --reason <text> under the existing trust checks");
@@ -1179,14 +1179,14 @@ export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: 
   if (values.on !== undefined) {
     if (values.local === true || ["validate", "plan", "simulate", "turns", "yield", "revoke"].includes(verb)) usage("--on pins a hosted run command; local and offline commands take no manager instance");
     try { assertLifecycleToken(values.on, "instanceId"); }
-    catch { usage("--on requires the full manager instance id as cotal ps prints it"); }
+    catch { usage("--on requires the full manager instance id as `cotal ps` prints it"); }
   }
   // A local drive, a revoke and a check print text only. Name the manager's form where one takes the
   // flag, and the same command without it where none does.
   if ((values.json || values.plain) && values.local && !["ps", "journal", "answer", "amend"].includes(verb)) {
     const flag = values.json ? "--json" : "--plain";
     if (verb === "start" || verb === "resume")
-      usage(`run ${raw} --local prints no ${flag} output`, `drop --local to ${raw} it on the manager, which takes ${flag}: cotal run ${verb === "start" ? "start <file>" : `resume ${a}`} ${flag}`);
+      usage(`run ${raw} --local prints no ${flag} output`, `drop --local to ${raw} it on the manager, which takes ${flag}: \`cotal run ${verb === "start" ? "start <file>" : `resume ${a}`} ${flag}\``);
     usage(`run ${raw} prints no ${flag} output`, `run it without ${flag}: ${verb === "revoke" ? `cotal run revoke ${a} --local --by <who> --reason <text>` : `cotal run check ${a} <program>`}`);
   }
   return { values, verb, ...(a === undefined ? {} : { a }), ...(b === undefined ? {} : { b }) };

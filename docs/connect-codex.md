@@ -4,8 +4,11 @@
 
 [OpenAI Codex](https://developers.openai.com/codex/) joins a Cotal mesh as a lateral peer: the
 same `cotal_*` tool surface, the same message delivery and attention model as the other
-connectors, plus mid-turn steering (previously pi-only): a directed peer message arriving
-mid-turn is **steered into the running turn** instead of waiting for it to end.
+connectors, plus mid-turn steering: a directed peer message arriving during a
+connector-started turn is **steered into that turn** instead of waiting for it to end.
+Message batches arriving during a turn started in the attached TUI or by Codex itself,
+including a native goal continuation, wait for that turn to end before the connector starts
+a delivery turn.
 
 **Beta** means the everyday path (spawn into the real Codex TUI, coordinate, watch) works; the
 spawn options that are not wired **fail loud** rather than degrade: resuming a session
@@ -77,8 +80,12 @@ runs on). The app-server runs as an authenticated loopback **listener** rather t
 pipe, which is what lets Codex's own TUI attach to the very thread the mesh is driving.
 
 - **Wake and steer.** An inbound batch starts a real turn (`turn/start`). A DIRECTED message
-  (DM, anycast, @mention) arriving mid-turn is injected into the live turn (`turn/steer`);
-  ambient channel chatter waits for the turn boundary so it can't derail work in flight.
+  (DM, anycast, @mention) arriving during a connector-started turn is injected into that turn
+  (`turn/steer`). During an externally started turn, the connector buffers the message and starts
+  a delivery turn after the external turn ends. The external turn's completion cannot acknowledge
+  a connector batch it did not carry. In focus mode, an @mention's pull hint can still steer an
+  external turn; the message body stays on the inbox recall path. Ambient channel chatter waits
+  for the turn boundary so it can't derail work in flight.
 - **Native tools, one endpoint.** The host serves the shared `cotal_*` tools itself, on a
   bearer-authenticated loopback MCP endpoint (the token is passed by env name, so it never appears
   in the process table; see [Limits](#limits) for what that token does and does not protect). The model calls them like any tool and they

@@ -1,5 +1,152 @@
 # @cotal-ai/connector-jcode
 
+## 0.126.3
+
+No changes in this release.
+
+## 0.126.2
+
+No changes in this release.
+
+## 0.126.1
+
+No changes in this release.
+
+## 0.126.0
+
+No changes in this release.
+
+## 0.125.0
+
+No changes in this release.
+
+## 0.124.3
+
+No changes in this release.
+
+## 0.124.2
+
+No changes in this release.
+
+## 0.124.1
+
+No changes in this release.
+
+## 0.124.0
+
+No changes in this release.
+
+## 0.123.0
+
+No changes in this release.
+
+## 0.122.0
+
+No changes in this release.
+
+## 0.121.7
+
+No changes in this release.
+
+## 0.121.6
+
+No changes in this release.
+
+## 0.121.5
+
+### Patch Changes
+
+- 2a39a6b: Preserve safe startup categories for Jcode readiness authentication refusals and failed provider requests in native workflow diagnostics without exposing provider output.
+
+## 0.121.4
+
+No changes in this release.
+
+## 0.121.3
+
+No changes in this release.
+
+## 0.121.2
+
+### Patch Changes
+
+- 1a32c3c: Retain SIGINT and SIGTERM in the host's final shutdown diagnostic so a pty manager can name the received signal without inventing its sender.
+- 758f03d: Name an OpenAI-compatible model-not-found refusal during Jcode startup even when the harness wraps it as an internal error. Keep provider output private.
+
+## 0.121.1
+
+No changes in this release.
+
+## 0.121.0
+
+No changes in this release.
+
+## 0.120.2
+
+No changes in this release.
+
+## 0.120.1
+
+No changes in this release.
+
+## 0.120.0
+
+No changes in this release.
+
+## 0.119.5
+
+No changes in this release.
+
+## 0.119.4
+
+No changes in this release.
+
+## 0.119.3
+
+No changes in this release.
+
+## 0.119.2
+
+No changes in this release.
+
+## 0.119.1
+
+### Patch Changes
+
+- 9f32677: Clarify that a timed-out channel publish has an unknown outcome and that a disconnected send or yield refused before submission was not sent. Keep the Jcode user-auth tool catalog aligned with the host's capability gates without exposing credentials.
+
+## 0.119.0
+
+No changes in this release.
+
+## 0.118.3
+
+No changes in this release.
+
+## 0.118.2
+
+No changes in this release.
+
+## 0.118.1
+
+No changes in this release.
+
+## 0.118.0
+
+No changes in this release.
+
+## 0.117.1
+
+No changes in this release.
+
+## 0.117.0
+
+No changes in this release.
+
+## 0.116.5
+
+No changes in this release.
+
 ## 0.116.4
 
 No changes in this release.

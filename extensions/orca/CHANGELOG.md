@@ -1,5 +1,150 @@
 # @cotal-ai/orca
 
+## 0.126.3
+
+No changes in this release.
+
+## 0.126.2
+
+No changes in this release.
+
+## 0.126.1
+
+No changes in this release.
+
+## 0.126.0
+
+No changes in this release.
+
+## 0.125.0
+
+No changes in this release.
+
+## 0.124.3
+
+No changes in this release.
+
+## 0.124.2
+
+No changes in this release.
+
+## 0.124.1
+
+No changes in this release.
+
+## 0.124.0
+
+No changes in this release.
+
+## 0.123.0
+
+No changes in this release.
+
+## 0.122.0
+
+No changes in this release.
+
+## 0.121.7
+
+No changes in this release.
+
+## 0.121.6
+
+No changes in this release.
+
+## 0.121.5
+
+No changes in this release.
+
+## 0.121.4
+
+No changes in this release.
+
+## 0.121.3
+
+### Patch Changes
+
+- fe38cbd: `@cotal-ai/core` now exports `launcherSource` (and `LauncherPayload`) to build the private Node launcher script that `@cotal-ai/orca` and `@cotal-ai/herdr` write through `writeSecretFile`, parameterized by the diagnostic label and launch payload, while each runtime keeps its own temporary-directory prefix and backend transport.
+
+## 0.121.2
+
+### Patch Changes
+
+- 5b6ecac: Validate `terminal.tail` in `orca.readScreen` so malformed `terminal read --screen --json` responses throw an error naming the command and terminal handle instead of a raw `TypeError`.
+- e5d2975: `currentTerminal` and `currentTerminalForWait` now share `resolveTerminal` and `isGoneCode`, so the synchronous status probe and the asynchronous exit wait resolve a terminal from `terminal list` and `terminal show` by one rule and classify gone error codes in one place. When a terminal's `ptyId` leaves `terminal list`, `currentTerminal` returns `undefined` without calling `terminal show` on the stale handle, and when `terminal show` returns an `ok` envelope with no terminal for a handle-only seat, `currentTerminal` throws the same authoritative-state error as `currentTerminalForWait` instead of returning the caller's input.
+
+## 0.121.1
+
+No changes in this release.
+
+## 0.121.0
+
+No changes in this release.
+
+## 0.120.2
+
+No changes in this release.
+
+## 0.120.1
+
+No changes in this release.
+
+## 0.120.0
+
+No changes in this release.
+
+## 0.119.5
+
+No changes in this release.
+
+## 0.119.4
+
+No changes in this release.
+
+## 0.119.3
+
+No changes in this release.
+
+## 0.119.2
+
+No changes in this release.
+
+## 0.119.1
+
+No changes in this release.
+
+## 0.119.0
+
+No changes in this release.
+
+## 0.118.3
+
+No changes in this release.
+
+## 0.118.2
+
+No changes in this release.
+
+## 0.118.1
+
+No changes in this release.
+
+## 0.118.0
+
+No changes in this release.
+
+## 0.117.1
+
+No changes in this release.
+
+## 0.117.0
+
+No changes in this release.
+
+## 0.116.5
+
+No changes in this release.
+
 ## 0.116.4
 
 No changes in this release.

@@ -1834,7 +1834,8 @@
   "cli:auth--replace": "current:auth mint --replace",
   "cli:auth revoke-credential": "current:auth revoke-credential",
   "env:COTAL_SMOKE_HOLD_AFTER_LAUNCH_RECORD": "internal:test hook",
-  "env:COTAL_SMOKE_HOLD_IN_SPACE_AUTH": "internal:test hook"
+  "env:COTAL_SMOKE_HOLD_IN_SPACE_AUTH": "internal:test hook",
+  "env:COTAL_SMOKE_HOLD_AFTER_BROKER_SIGNAL": "internal:test hook"
  },
  "checklist": {
   "spec:13.5 call": "current:invoke",
