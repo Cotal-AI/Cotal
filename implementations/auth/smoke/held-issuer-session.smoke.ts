@@ -88,6 +88,8 @@ async function startContext(acct: HostedAuthAccount, i: number, issuerSessionTtl
     context: { accountPublicKey: acct.accountPublicKey, lifecycleUid: `held-${i}` },
     space: acct.space, servers: fx.servers, stateDir: acct.stateDir, store: acct.store, storeIdentity: acct.store.identity,
     publicFace: { port: 0, trustedProxy: false },
+    // This suite measures issuer write/fence races, not the independently tested actor limiter.
+    connectLimits: { actorPerMinute: 1000 },
     ...(issuerSessionTtlSeconds !== undefined ? { issuerSessionTtlSeconds } : {}),
   });
   handles.push(service);
