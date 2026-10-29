@@ -163,6 +163,15 @@ first 240 characters, so that field comes before the error of a failed recovery,
 code remains transient by default and retries inside the same bounded window; new permanent codes
 must be added to the explicit classifier and its exact-count regression.
 
+An unacknowledged queued message does not prove an attached TUI's native turn has stopped.
+If that turn is busy, the connector replaces only its API connection to the same private bridge,
+then attaches the same session with its reported native busy state. It does not stop the server
+or interrupt the running tool. The unacknowledged inbox batch remains owed. If acknowledgement is
+still ambiguous after that one recovery, queued-turn attempts stop and the connector reports the
+queued depth and age, while the native session stays alive. The connector does not claim those
+messages ran, acknowledge them, or keep submitting copies. A genuine connection close still uses
+the bounded private-instance recovery described above.
+
 Jcode currently supports **stdio** MCP servers. The connector writes only its own `cotal` entry to
 the private `JCODE_HOME/mcp.json`. Jcode starts this package's stdio MCP bridge for that entry, and
 the bridge relays its calls

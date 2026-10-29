@@ -1369,6 +1369,17 @@ export async function runJcodeHost(): Promise<void> {
     // existing one-shot guard governs it, so this cannot become a reconnect loop.
     if (acceptanceSuspectUntilBridgeReplaced && !bridgeReplacementRequestedForSuspicion) {
       bridgeReplacementRequestedForSuspicion = true;
+      // A missing acknowledgement poisons this API connection, not the live native session.
+      // Reconnect to the same owned bridge instead of killing a TUI-owned tool and its server.
+      if (tui && sessionBusy()) {
+        const suspect = client;
+        writeJcodeDiagnostic(
+          `[cotal-jcode] a queued turn lapsed without acknowledgement while the session is busy; ` +
+            `replacing only the Harness API connection and preserving the private Jcode tree\n`,
+        );
+        if (suspect) void recoverBridge(suspect, true);
+        return;
+      }
       const suspect = client;
       writeJcodeDiagnostic(
         `[cotal-jcode] a queued turn lapsed with no acknowledgement, so acceptance on this ` +
@@ -1663,9 +1674,19 @@ export async function runJcodeHost(): Promise<void> {
    * inbox driver see the pending work again. A second close is terminal — retry pacing belongs to
    * the turn policy, not an unbounded connector relaunch loop.
    */
-  const recoverBridge = async (lost: JcodeClient): Promise<void> => {
+  const recoverBridge = async (lost: JcodeClient, preserveInstance = false): Promise<void> => {
     if (stopping || lost !== client || reconnecting) return;
     if (bridgeRecoveryUsed) {
+      if (preserveInstance) {
+        queuedTurnTierStopped = true;
+        writeJcodeDiagnostic(
+          `[cotal-jcode] queued-turn acknowledgement remains ambiguous after its one connection recovery; ` +
+            `preserving the private Jcode tree and stopping queued-turn attempts; ` +
+            `${unservedAutomatic().length} automatic message(s) stay queued and UN-ACKED for redelivery\n`,
+        );
+        publishInboundHealth();
+        return;
+      }
       writeJcodeDiagnostic(endingLine("private Harness connection closed after its one recovery attempt"));
       await shutdown(1);
       return;
@@ -1696,16 +1717,26 @@ export async function runJcodeHost(): Promise<void> {
       // cannot own the same home until it is gone. The lost client's close listener is ignored
       // because reconnecting is already true, and the relaunch goes through the same
       // identity-capturing path as startup so teardown targets the replacement tree, not the corpse.
-      await stopPrivateJcode();
+      if (preserveInstance) {
+        // A connected client does not own the SDK instance. Closing it retires only this
+        // connection's ambiguous replies, while the TUI keeps the native turn alive.
+        await lost.close();
+        client = undefined;
+      } else await stopPrivateJcode();
       if (!sessionId) throw new Error("jcode connector: Harness connection closed before a session was established");
       for (;;) {
         let replacement: JcodeClient | undefined;
         try {
-          replacement = await launchPrivateJcode(deadline);
+          replacement = preserveInstance
+            ? await JcodeClient.connect({
+                socketPath: instance!.socketPath, requestTimeoutMs: Math.max(1, deadline - Date.now()),
+              })
+            : await launchPrivateJcode(deadline);
           const attachRemaining = Math.max(1, deadline - Date.now());
           let attachDeadline: ReturnType<typeof setTimeout> | undefined;
+          let attached: Awaited<ReturnType<JcodeClient["attachSession"]>>;
           try {
-            await Promise.race([
+            attached = await Promise.race([
               replacement.attachSession(sessionId),
               new Promise<never>((_, reject) => {
                 attachDeadline = setTimeout(() => reject(new Error("jcode connector: recovery attach exceeded its bounded window")), attachRemaining);
@@ -1729,13 +1760,16 @@ export async function runJcodeHost(): Promise<void> {
           deferralAnnounced = false;
           queuedTurnTierStopped = false;
           watchClient(replacement);
+          // The initial native state event can arrive before watchClient is installed.
+          // Do not redrive into a TUI turn that is still running.
+          if (preserveInstance) turnActive = attached.status !== "idle";
           writeJcodeDiagnostic(`[cotal-jcode] recovered private Harness connection for session ${sessionId}\n`);
-          void agent.setStatus("idle").catch(() => {});
+          void agent.setStatus(turnActive ? "working" : "idle").catch(() => {});
           break;
         } catch (error) {
           lastError = error;
           await replacement?.close().catch(() => {});
-          await stopPrivateJcode();
+          if (!preserveInstance) await stopPrivateJcode();
           if (stopping) return;
           if (permanentBridgeRecoveryFailure(error)) throw error;
           const remaining = deadline - Date.now();
