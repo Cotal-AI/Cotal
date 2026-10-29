@@ -488,7 +488,7 @@ export async function runCodexHost(): Promise<void> {
   // turn while the endpoint is still connecting; dropping that "working" would leave the roster
   // showing the default `idle` for the whole first turn. So the latest desired status is latched
   // and replayed once the endpoint is up (last write wins — a stale one is never resurrected).
-  type Presence = { status: "idle" | "working" | "waiting" | "offline"; activity?: string };
+  type Presence = { status: "idle" | "working" | "waiting" | "offline"; activity?: string; presenceOnly?: boolean };
   let desired: Presence | undefined;
   let desiredCondition: PresenceCondition | null | undefined;
   let flushTimer: ReturnType<typeof setInterval> | undefined;
@@ -523,7 +523,10 @@ export async function runCodexHost(): Promise<void> {
       flushTimer = undefined;
       inOrder(async () => {
         if (wantCondition !== undefined) await agent.setCondition(wantCondition);
-        if (want) await agent.setStatus(want.status, want.activity);
+        if (want) {
+          if (want.presenceOnly) await agent.resetStatus(want.status, want.activity);
+          else await agent.setStatus(want.status, want.activity);
+        }
       })
         .catch(() => {
           if (!desired) desired = want;
@@ -533,14 +536,18 @@ export async function runCodexHost(): Promise<void> {
     }, STATUS_FLUSH_MS);
     flushTimer.unref?.();
   }
-  const safeStatus = async (status: Presence["status"], activity?: string): Promise<void> => {
-    desired = { status, activity };
+  const safeStatus = async (status: Presence["status"], activity?: string, presenceOnly = false): Promise<void> => {
+    desired = { status, activity, presenceOnly };
     if (!agent.connected) return armStatusFlush();
     const want = desired;
     desired = undefined;
     await inOrder(async () => {
       try {
-        await agent.setStatus(status, activity);
+        // Requests are answered by the driver, not host-turn boundaries. Keep their waiting
+        // presence from disarming the working-to-idle completion of the same native turn.
+        // A later command or MCP item is not required for a completed turn to yield done.
+        if (presenceOnly) await agent.resetStatus(status, activity);
+        else await agent.setStatus(status, activity);
       } catch {
         if (!desired) desired = want;
         armStatusFlush();
@@ -892,7 +899,7 @@ export async function runCodexHost(): Promise<void> {
   });
   driver.on("waiting", (detail: string, condition?: PresenceCondition) => {
     if (condition) void safeCondition(condition);
-    void safeStatus("waiting", detail);
+    void safeStatus("waiting", detail, detail === "item/tool/requestUserInput");
   });
   driver.on("turnCompleted", ({ status, condition, owned }: { status: string; condition?: PresenceCondition; owned: boolean }) => {
     flushEvents();
