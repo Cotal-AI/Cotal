@@ -93,6 +93,7 @@ const groups = [
       'docs/auth-api.md',
       'docs/cli.md',
       'docs/mcp-tools.md',
+      'docs/agent-briefing.md',
       'docs/agent-files.md',
       'docs/manifest.md',
       'docs/channels-and-permissions.md',

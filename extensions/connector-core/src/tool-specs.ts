@@ -686,6 +686,21 @@ export function defaultSendChannel(config: Pick<AgentConfig, "allowPublish" | "c
 const NO_POSTABLE_DEFAULT =
   "you may post to none of the channels you read, so there is no default and an omitted channel is refused - name one your post ACL allows (cotal_orientation lists them)";
 
+/** The orientation card as the model reads it, over the SAME gated tool list the connector exposes
+ *  (cotalToolSpecs already filters spawn/persona by capability), so the card can't claim a tool the
+ *  agent can't call. The `cotal_orientation` tool, a connect result and a session-start hook all
+ *  hand over this one rendering. */
+export async function orientationCard(
+  agent: MeshAgent,
+  config: AgentConfig,
+  source?: string,
+  env?: NodeJS.ProcessEnv,
+  offered?: ReadonlySet<string>,
+): Promise<string> {
+  const visible: OrientationTool[] = cotalToolSpecs(config, source, env, offered).map((s) => ({ name: s.name, title: s.title }));
+  return renderOrientation(buildOrientation(agent, config, visible, Date.now(), await agent.readRoster()));
+}
+
 /** The full Cotal tool set for a given config. Renderers iterate this; `source` names the
  *  hosting connector and is stamped onto outgoing feedback. An explicit env restricts feedback's
  *  Git lookup to its global config; omitted preserves process inheritance and repository lookup.
@@ -726,13 +741,7 @@ export function cotalToolSpecs(
         "present, your status/attention, and how many messages are unread. Call this first to get your " +
         "bearings; it's read-only and safe to re-check anytime.",
       async run(agent) {
-        // Reflect the SAME gated tool list the connector exposes (cotalToolSpecs already filters
-        // spawn/persona by capability), so the card can't claim a tool the agent can't call.
-        const visible: OrientationTool[] = cotalToolSpecs(config, source, env, offered).map((s) => ({
-          name: s.name,
-          title: s.title,
-        }));
-        const card = renderOrientation(buildOrientation(agent, config, visible, Date.now(), await agent.readRoster()));
+        const card = await orientationCard(agent, config, source, env, offered);
         const issue = agent.connectionIssue;
         return ok(
           agent.connected
