@@ -24,7 +24,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import { createHash, randomUUID } from "node:crypto";
 import { hardenPrivate, wfjStreamName } from "@cotal-ai/core";
 import { recordOperationWarning } from "./output.js";
-import { foreignStoreEntries, STORE_ENTRY_NAMES } from "./store-entries.js";
+import { foreignStoreEntries, STORE_ENTRY_NAMES, storeAccounts } from "./store-entries.js";
 
 /** Version 1 lives in `<project>/.cotal/maintenance/v1`; the lock is shared across versions. */
 export const MAINTENANCE_JOURNAL_VERSION = 1 as const;
@@ -4116,7 +4116,7 @@ export function rollbackRestore(lock: MaintenanceLock, options: RollbackRestoreO
   return writeJournal(lock, record, readyFrom(record)) as MaintenanceReadyRecord;
 }
 
-type LeftOutRecord = { readonly space: string; readonly restore: Pick<RestoreContext, "selection">; readonly launch?: { readonly [key: string]: JsonValue } };
+type LeftOutRecord = { readonly space: string; readonly mode: MaintenanceAuthMode; readonly restore: Pick<RestoreContext, "selection" | "previousSource">; readonly launch?: { readonly [key: string]: JsonValue } };
 
 /** Whether a restore's launch records that the cut it replaced was preserved after its artifact was
  *  made, so the store it set aside holds history newer than the artifact. */
@@ -4124,12 +4124,22 @@ export function restoreReplacedNewerCut(record: LeftOutRecord): boolean {
   return record.launch?.previousCutNewer === true;
 }
 
-/** The other JetStream accounts whose streams a restore's launch records in the store it set aside,
- *  such as an open mesh's account beside a static space's after both ran in one folder. A backup
- *  holds one account, so that store holds their only copy. Empty when it recorded none. */
+/** The other JetStream accounts whose streams a restore left in the store it set aside, such as an
+ *  open mesh's account beside a static space's after both ran in one folder. A backup holds one
+ *  account, so that store holds their only copy. The restore's launch records them. When it has no
+ *  such record, as in a restore journaled by an earlier release, they are read from that store while
+ *  it is still the recorded one, and only the accounts the journal's auth mode rules out are named:
+ *  an open restore restored `$G`, and a static or user restore restored a data account, never `$G`.
+ *  Which data account that was is not recorded, so after a static or user restore only `$G` is named.
+ *  A store at that path that is not the recorded one throws. */
 export function restoreOtherAccounts(record: LeftOutRecord): string[] {
   const recorded = record.launch?.otherAccounts;
-  return Array.isArray(recorded) ? recorded.filter((account): account is string => typeof account === "string") : [];
+  if (Array.isArray(recorded)) return recorded.filter((account): account is string => typeof account === "string");
+  const previous = record.restore.previousSource?.identity;
+  if (!record.launch || !previous || !identityAt(previous.path)) return [];
+  assertStoreIdentity(previous);
+  const held = storeAccounts(previous.path);
+  return record.mode === "open" ? held.filter((account) => account !== "$G") : held.filter((account) => account === "$G");
 }
 
 /** What a restore left only in the store it set aside. A registry restore left out every other
