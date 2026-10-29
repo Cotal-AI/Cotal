@@ -15,13 +15,7 @@ import {
   resolveEventsStateRoot,
   eventPlaneStopped,
 } from "@cotal-ai/connector-core";
-import {
-  getAgentDir,
-  ProjectTrustStore,
-  type ExtensionAPI,
-  type ExtensionContext,
-  type ProjectTrustEventResult,
-} from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, ProjectTrustEventResult } from "@earendil-works/pi-coding-agent";
 import { PiDriver, type CotalBatchDetails, type PiContextLike } from "./driver.js";
 import { registerCotalTools } from "./tools.js";
 import { wrapped } from "./wrap.js";
@@ -102,8 +96,11 @@ export function persistProjectTrustPrompt(cwd: string): void {
 }
 
 /** Preserve Pi's own saved decision. With none, a supervised seat chooses untrusted for this run
- * only, because nobody is present to approve project code at its terminal. */
-export function supervisedProjectTrust(cwd: string): ProjectTrustEventResult {
+ * only, because nobody is present to approve project code at its terminal. Pi's trust store is loaded
+ * here, from the Pi host running this handler: the cotal CLI imports this package to register the
+ * connector without Pi installed, so a top-level value import would fail that load. */
+export async function supervisedProjectTrust(cwd: string): Promise<ProjectTrustEventResult> {
+  const { getAgentDir, ProjectTrustStore } = await import("@earendil-works/pi-coding-agent");
   const saved = new ProjectTrustStore(getAgentDir()).getEntry(cwd);
   if (saved?.decision === true) return { trusted: "undecided" };
   if (saved?.decision === false) {
