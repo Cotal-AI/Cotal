@@ -7843,7 +7843,7 @@ Each lane applies the per-space refusals a single-space replica applies, so a sp
 material, a mismatched issuer pin, an unreachable broker or open service-endpoint admission refuses.
 At startup the host answers for every space it can, names each one it cannot with the reason, and
 retries those every 5 seconds; its ready line counts the spaces answering against the spaces named
-and lists the ones it retries:
+and lists the ones it answers and the ones it retries, in manifest order:
 
 ```
 ✓ auth callout host up (2 of 3 space(s) answering: <s>, <s>; retrying <s>) - answering the callout on <server>; no HTTP listener, no auth-service.json
@@ -7903,7 +7903,8 @@ keep serving. An embedder that writes the manifest checks it with `parseAuthHost
 message the host would log.
 
 At startup this host serves every space it can, names each one it cannot with the reason, and retries
-those every 5 seconds; its ready line counts the spaces serving against the spaces named. A space
+those every 5 seconds; its ready line counts the spaces serving against the spaces named and lists
+them in manifest order. A space
 whose plane another process still holds opens once that process stops, so you can move spaces off
 one process each by starting the host on all of them and then stopping the old processes. A fence or
 a lost broker connection closes that space's lane alone, and the host reopens it. The lines of a lane
