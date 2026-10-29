@@ -5011,7 +5011,8 @@ length where the middle was cut. `cotal service logs manager --instance <id>` sh
 When the error ends in a certificate this machine does not trust, such as
 `UNABLE_TO_VERIFY_LEAF_SIGNATURE`, Node's message stays as the cause, and the next step is to set
 `NODE_EXTRA_CA_CERTS` to the CA file, or the self-signed certificate, for the command that starts
-the manager, as the `--tls-cert` row of [up](#up) says. With `--foreground` the line goes to this
+the manager, as the `--tls-cert` row of [up](#up) says. The manager forwards that CA-file path to
+the seats it launches without a `spawn.env` entry. With `--foreground` the line goes to this
 terminal on stderr, wrapped at its width as the CLI's own lines are, after the `Mesh:` heading and
 lifetime notice that `start` prints there first, and the refusal says
 `its output went to this terminal and was not captured in its log` and names no log.
