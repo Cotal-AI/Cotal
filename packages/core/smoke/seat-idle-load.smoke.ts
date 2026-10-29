@@ -591,7 +591,7 @@ try {
     console.log(`| goroutine stacks | ${f1(last.heap.stackInuseMb)} | ${f1((last.heap.stackInuseMb / N) * 1024)} | ${f1(((last.heap.stackInuseMb - before.heap.stackInuseMb) / N) * 1024)} | ${last.heap.goroutines} |`);
     console.log(`| heap spans not live (GC headroom, fragmentation) | ${f1(last.heap.heapInuseMb - last.heap.heapAllocMb)} | | | |`);
     console.log(`| RSS beyond heap and stacks (runtime, freed-not-returned pages, binary) | ${f1(headroom)} | | | |`);
-    console.log("\nTop broker allocation sites (live heap at the end):\n");
+    console.log("\nTop broker allocation site/category pairs (live heap at the end):\n");
     for (const t of last.heap.topSites) console.log(`- ${t.site} (${t.part}): ${f1(t.mb)} MB, ${f1((t.mb / N) * 1024)} KB per seat`);
 
     // JetStream assets by kind, and every connection's queued outbound bytes.
