@@ -1355,9 +1355,10 @@ warning. Spawn and retirement require a functioning control plane, so its Next o
 `cotal spawn`, only the stop; follow the reported next step before retrying. The same happens when
 another `cotal supervise` takes over the manager pidfile before the started process comes up. A
 manager pidfile that holds no pid names no process, so `down` refuses it too and Cotal does not
-remove it for you. Next then names `rm <pidfile>`, to run once `cotal ps --space <space>` finds no
-manager running, and `cotal up` to start the manager, or `cotal up --no-manager` after a start with
-that flag. A legacy
+remove it for you. Its report and Next first ask you to confirm that no manager runs for the folder,
+because a manager that does not answer on the mesh, so that `cotal ps` finds none, may still be
+running. Next then names `rm <pidfile>`, and `cotal up` to start the manager, or
+`cotal up --no-manager` after a start with that flag. A legacy
 refresh that finds everything already running reports it like any other start: the `Mesh: <space>`
 heading, the `✓ mesh "<space>" already running` line, and a Next that names the launch and the stop,
 with `cotal spawn` when a manager runs and the control plane is not degraded. A controller refresh prints its members under `Controller

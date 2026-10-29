@@ -2085,7 +2085,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       // The same Next a launch ends with: this mesh runs, so the steps are the ones that use and
       // stop it. A manager the refresh found or healed is what makes `spawn` one of them.
       const managerRecord = managerRecordState(held.space);
-      console.log(`\n${renderReport({ sections: [{ title: "Next", blocks: [{ kind: "commands", items: detachedNext({ manager: managerRecord.state === "alive", controlPlane: controlPlane !== undefined, machineHome: canonicalRoot(root) === canonicalRoot(homedir()), ...(values.root ? { root } : {}), ...(managerRecord.state === "unattributable" ? { unattributableManager: managerRecord.path, noManager } : {}) }, held.space) }] }] }, "rich", process.stdout)}`);
+      console.log(`\n${renderReport({ sections: [{ title: "Next", blocks: detachedNext({ manager: managerRecord.state === "alive", controlPlane: controlPlane !== undefined, machineHome: canonicalRoot(root) === canonicalRoot(homedir()), ...(values.root ? { root } : {}), ...(managerRecord.state === "unattributable" ? { unattributableManager: managerRecord.path, noManager } : {}) }, held.space) }] }, "rich", process.stdout)}`);
       return;
     }
     const who = held ? `mesh "${held.space}" (${held.root})` : "a broker not started here";
@@ -2215,7 +2215,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     }
     if (!quietRestore) {
       const managerRecord = managerRecordState(receiptSpace);
-      console.log(`\n${renderReport({ sections: [{ title: "Next", blocks: [{ kind: "commands", items: detachedNext({ ...detached, controlPlane, ...(managerRecord.state === "unattributable" ? { unattributableManager: managerRecord.path, noManager } : {}) }, receiptSpace) }] }] }, "rich", process.stdout)}`);
+      console.log(`\n${renderReport({ sections: [{ title: "Next", blocks: detachedNext({ ...detached, controlPlane, ...(managerRecord.state === "unattributable" ? { unattributableManager: managerRecord.path, noManager } : {}) }, receiptSpace) }] }, "rich", process.stdout)}`);
     }
     if (restored) restoreSinks.get(restored.attemptId)?.({
       attemptId: restored.attemptId, space: restored.space, root: restored.root, server: restored.server, mode: restored.mode,
