@@ -5867,27 +5867,31 @@ export class Manager {
     this.bootNotes = [];
     if (this.execution === "none") { this.connectorStatuses = []; return; }
     const rows: ManagerConnectorStatus[] = [];
-    let declared: Array<{ name: string; requires: readonly string[] }>;
+    let declared: Array<{ name: string; requires: readonly string[]; eventPlane: boolean }>;
     if (this.installedExtensions) {
       try {
         declared = loadExtensionsManifest().extensions.flatMap((ext) => extensionConnectors(ext));
       } catch (error) {
         const reason = rejectionText(error);
         this.bootNotes.push(`! manager boot: connector inventory unavailable - ${reason}`);
-        this.connectorStatuses = [{ agent: "(inventory)", state: "unavailable", binaries: {}, reason }];
+        this.connectorStatuses = [{ agent: "(inventory)", state: "unavailable", binaries: {}, eventPlane: false, reason }];
         this.bootNotes.push("! manager: no agent application is available here, so a spawn without --on goes to another manager in this space");
         return;
       }
     } else {
-      declared = registry.all<Connector>("connector").map((connector) => ({ name: connector.name, requires: connector.requires ?? [] }));
+      declared = registry.all<Connector>("connector").map((connector) => ({
+        name: connector.name,
+        requires: connector.requires ?? [],
+        eventPlane: connector.eventChannel !== undefined,
+      }));
     }
-    for (const { name, requires } of declared) {
+    for (const { name, requires, eventPlane } of declared) {
       const { binaries, reason } = resolveHarness(name, requires);
       if (reason) {
-        rows.push({ agent: name, state: "unavailable", binaries, reason });
+        rows.push({ agent: name, state: "unavailable", binaries, eventPlane, reason });
         this.bootNotes.push(`! manager boot: connector ${name} unavailable - ${reason}`);
       } else {
-        rows.push({ agent: name, state: "available", binaries });
+        rows.push({ agent: name, state: "available", binaries, eventPlane });
       }
     }
     this.connectorStatuses = rows.sort((a, b) => a.agent.localeCompare(b.agent));

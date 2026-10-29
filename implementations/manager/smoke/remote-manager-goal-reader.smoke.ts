@@ -251,7 +251,7 @@ mkdirSync(extensionDir, { recursive: true });
 writeFileSync(join(extensionDir, "package.json"), JSON.stringify({ name: "remote-reader-test", version: "1.0.0", type: "module", main: "index.js", peerDependencies: { "@cotal-ai/core": "*" } }));
 writeFileSync(join(extensionDir, "index.js"), `import { registry } from ${JSON.stringify(coreDistUrl)};
 registry.register({ kind: "connector", name: "remote-reader-test", buildLaunch() { throw new Error("fixture refuses child launch"); } });\n`);
-writeFileSync(join(extensions, "extensions.json"), JSON.stringify({ extensions: [{ pkg: "remote-reader-test", version: "1.0.0", spec: "file:remote-reader-test", provides: [{ kind: "connector", name: "remote-reader-test" }], commands: [], connectors: [{ name: "remote-reader-test", requires: [] }] }] }));
+writeFileSync(join(extensions, "extensions.json"), JSON.stringify({ extensions: [{ pkg: "remote-reader-test", version: "1.0.0", spec: "file:remote-reader-test", provides: [{ kind: "connector", name: "remote-reader-test" }], commands: [], connectors: [{ name: "remote-reader-test", requires: [], eventPlane: false }] }] }));
 for (const [index, root] of [partRootA, partRootB].entries()) {
   const dir = join(root, ".cotal", "agents");
   mkdirSync(dir, { recursive: true });

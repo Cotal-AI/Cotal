@@ -524,7 +524,7 @@ if (process.platform !== "win32") {
     pkg: `@rig/${name}`, version: VERSION, spec: `@rig/${name}@${VERSION}`,
     provides: [{ kind: "connector", name }], commands: [],
     // No setup provider, so no package is imported for its rows.
-    connectors: [{ name, requires, setup: null }],
+    connectors: [{ name, requires, eventPlane: false, setup: null }],
   });
   const manifest = join(home, ".config", "cotal", "extensions");
   mkdirSync(manifest, { recursive: true });

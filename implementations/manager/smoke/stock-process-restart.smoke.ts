@@ -255,7 +255,7 @@ mkdirSync(extensionRoot, { recursive: true });
 writeFileSync(join(extensionRoot, "extensions.json"), JSON.stringify({ extensions: [{
   pkg: "scripted-sdk-extension", version: "1.0.0", spec: "file:scripted-sdk-extension",
   provides: [{ kind: "connector", name: "scripted-sdk" }], commands: [],
-  connectors: [{ name: "scripted-sdk", requires: [] }],
+  connectors: [{ name: "scripted-sdk", requires: [], eventPlane: false }],
 }] }, null, 2));
 
 // Write persona file with explicit allowSubscribe for general and dynamic channels

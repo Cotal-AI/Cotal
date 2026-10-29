@@ -54,6 +54,9 @@ export interface ProvidedRef extends ExtensionRef {
 export interface CachedConnector {
   readonly name: string;
   readonly requires: readonly string[];
+  /** Whether the connector publishes the AG-UI event plane. Cached explicitly so a manager can
+   *  report the fact before importing the connector. Never inferred true from its name. */
+  readonly eventPlane: boolean;
   /** The connector's declared setup provider, `null` when it declares none. Absent only in a
    *  manifest written before this was cached. */
   readonly setup?: ExtensionRef | null;
@@ -174,16 +177,20 @@ export function cacheConnector(connector: Connector): CachedConnector {
   return {
     name: connector.name,
     requires: [...(connector.requires ?? [])],
+    eventPlane: connector.eventChannel !== undefined,
     setup: connector.setup ? { kind: connector.setup.kind, name: connector.setup.name } : null,
   };
 }
 
 /** True when an entry's connector metadata predates what `cacheConnector` records now: an advertised
- *  connector with no cached entry, or one cached before setup providers were. Never throws. */
+ *  connector with no cached entry, or one cached before setup providers or event-plane facts were.
+ *  Never throws. */
 export function connectorMetadataStale(ext: InstalledExtension): boolean {
-  return extensionProvides(ext).some((ref) =>
-    ref.kind === "connector" && ext.connectors?.find((connector) => connector.name === ref.name)?.setup === undefined,
-  );
+  return extensionProvides(ext).some((ref) => {
+    if (ref.kind !== "connector") return false;
+    const connector = ext.connectors?.find((candidate) => candidate.name === ref.name);
+    return connector?.setup === undefined || connector.eventPlane === undefined;
+  });
 }
 
 /** Connector boot metadata from one installed package. An older manifest that advertised a
@@ -196,6 +203,9 @@ export function extensionConnectors(ext: InstalledExtension): readonly CachedCon
   for (const ref of advertised)
     if (!ext.connectors.some((connector) => connector.name === ref.name))
       throw new Error(`installed extension ${ext.pkg}@${ext.version} advertises connector ${ref.name} without cached requirements - re-run \`cotal ext add ${ext.pkg}\``);
+  for (const connector of ext.connectors)
+    if (typeof connector.eventPlane !== "boolean")
+      throw new Error(`installed extension ${ext.pkg}@${ext.version} connector ${connector.name} has no cached event-plane fact - re-run \`cotal ext add ${ext.pkg}\``);
   return ext.connectors;
 }
 

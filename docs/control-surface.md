@@ -345,6 +345,12 @@ the CLI, `--manager-instance <instanceId>` for `cotal agent-bearer --manager-cal
 `instance` argument for an agent's tools.
 A pin changes routing, not the caller's grant.
 
+Each `status.connectors` row includes `eventPlane: boolean`. The value is true only when the
+connector declares the event channel it publishes. Installed-extension rows carry the cached fact
+before the package is imported, and an old inventory without it is refused rather than treated as
+true. A client that reads a required event policy can use this field to disable an incompatible
+connector before spawn. The Manager still owns the launch refusal text and applies it at admission.
+
 Managed launches carry `COTAL_MANAGER_INSTANCE` so their tools address the manager that launched
 them; a tool's `instance` argument must name that same manager. The `cotal` commands run from their
 shell select it too, unless `--on` names another instance. Existing unbound sessions can use the exchange's unique authorized selection without
