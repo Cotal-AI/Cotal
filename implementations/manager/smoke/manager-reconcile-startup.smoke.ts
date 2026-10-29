@@ -503,6 +503,7 @@ try {
       stop: () => { adoptedState = "exited"; },
       waitForExit: async () => {},
       interrupt: () => {},
+      attach: () => { throw new Error("adopted turn fixture has no terminal session"); },
     };
     const adoptedPersonaPath = join(workspaceRoot, ".cotal", "agents", `${allocated.name}.md`);
     const adoptedPersona = `---\nname: ${allocated.name}\n---\nAdopted turn fixture.\n`;
