@@ -768,7 +768,8 @@ runs from another folder refuses `CONFLICT` as well. Its Next names
 `cotal up --space <name>` to start a separate space in this folder, and the `cotal down` that stops
 the other one in its own folder. A background boot also brings up the control plane (delivery daemon in auth
 mode, then the manager). An open mesh runs no delivery daemon, also in a root that still holds a
-static stack's accounts. `--no-manager` is the broker-only mode: it boots
+static stack's accounts, and its manager mints no credentials from those accounts, so static and
+open boots can alternate in one folder. `--no-manager` is the broker-only mode: it boots
 the broker (and the delivery daemon in auth mode) and starts no manager, so there is no manager
 pidfile to leave stale. Authenticated starts and refreshes warn that no local process re-signs the
 daemon credentials and list their stored expiry times. A manager must renew the same secret store;
