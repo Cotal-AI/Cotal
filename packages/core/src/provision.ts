@@ -572,13 +572,14 @@ export async function createBrokerAuth(label: string): Promise<BrokerAuth> {
 
 /** Generate one space's data account (+ signing key), signed by an EXISTING broker operator. This is
  *  the per-tenant half of provisioning: call it once per space against the same {@link BrokerAuth}
- *  to put many spaces on one broker, each in its own NATS account. */
+ *  to put many spaces on one broker, each in its own NATS account. Key generation and JWT
+ *  construction stay with NATS; the existing native signer derives public keys and signs. */
 export async function createSpaceAccountAuth(broker: BrokerAuth, space: string): Promise<SpaceAccountAuth> {
   if (!broker.operator.seed)
     throw new Error("createSpaceAccountAuth: the broker operator seed is required - a stripped broker cannot sign a new space account");
-  const okp = fromSeed(new TextEncoder().encode(broker.operator.seed));
-  const akp = createAccount();
-  const askp = createAccount(); // account signing key - what mints users
+  const okp = nativeNkeySigner(new TextEncoder().encode(broker.operator.seed));
+  const akp = nativeNkeySigner(createAccount().getSeed());
+  const askp = nativeNkeySigner(createAccount().getSeed()); // account signing key - what mints users
   const accountJwt = await encodeAccount(
     token(space),
     akp,
