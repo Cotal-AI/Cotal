@@ -20,7 +20,7 @@ import {
   MODE_ALICE,
   MODE_PEERS,
   prog,
-  wirePath,
+  straightWire,
   Wires,
   type Pt,
 } from "./scene";
@@ -33,7 +33,7 @@ const SEG1: [Pt, Pt] = [
   { x: INBOX.x - 38, y: INBOX.y + 9 },
 ];
 
-const PATH1 = wirePath(SEG1[0], lerp(...SEG1, 0.4), lerp(...SEG1, 0.6), SEG1[1]);
+const PATH1 = straightWire(...SEG1);
 
 const T = {
   sendStart: 14,
@@ -59,7 +59,7 @@ export const ModeUnicast: React.FC = () => {
     { x: INBOX.x + 38, y: INBOX.y - 9 },
     { x: bob.at.x - 48, y: bob.at.y + 12 },
   ];
-  const path2 = wirePath(seg2[0], lerp(...seg2, 0.4), lerp(...seg2, 0.6), seg2[1]);
+  const path2 = straightWire(...seg2);
 
   const t1 = prog(frame, T.sendStart, T.sendEnd);
   const t2 = prog(frame, T.deliverStart, T.deliverEnd);

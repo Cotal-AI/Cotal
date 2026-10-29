@@ -21,6 +21,7 @@ import {
   Labels,
   lerp,
   prog,
+  straightWire,
   wirePath,
   Wires,
   type Pt,
@@ -47,7 +48,7 @@ const OUT: [Pt, Pt] = [
 
 const PATH_A = wirePath(FROM_A, ...inCtrl(FROM_A), GATE_IN);
 const PATH_C = wirePath(FROM_C, ...inCtrl(FROM_C), GATE_IN);
-const PATH_OUT = wirePath(OUT[0], lerp(...OUT, 0.4), lerp(...OUT, 0.6), OUT[1]);
+const PATH_OUT = straightWire(...OUT);
 
 // a: alice, honest. f: carol forges the subject. p: carol forges only the payload.
 const T = {
