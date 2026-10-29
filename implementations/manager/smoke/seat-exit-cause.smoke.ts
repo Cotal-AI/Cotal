@@ -93,8 +93,8 @@ interface ManagedLike {
   launch: { allowSubscribe: string[] };
 }
 
-function managerWith(handle: AgentHandle): { manager: Manager; agents: Map<string, ManagedLike> } {
-  const manager = new Manager({ space: "exitcause-smoke", runtime: "pty", workspaceRoot: root });
+function managerWith(handle: AgentHandle, opts: { preserveStopTimeoutMs?: number; also?: AgentHandle[] } = {}): { manager: Manager; agents: Map<string, ManagedLike> } {
+  const manager = new Manager({ space: "exitcause-smoke", runtime: "pty", workspaceRoot: root, ...(opts.preserveStopTimeoutMs !== undefined ? { preserveStopTimeoutMs: opts.preserveStopTimeoutMs } : {}) });
   const agents = (manager as unknown as { agents: Map<string, ManagedLike> }).agents;
   (manager as unknown as { runtime: unknown }).runtime = { kind: "fake", spawn: () => handle };
   (manager as unknown as { ep: unknown }).ep = {
@@ -103,9 +103,9 @@ function managerWith(handle: AgentHandle): { manager: Manager; agents: Map<strin
     releaseManagerLease: async () => {}, releaseDaemonRenewalLease: async () => {}, stop: async () => {},
   };
   (manager as unknown as { attach: unknown }).attach = { stop: async () => {} };
-  agents.set(handle.name, {
-    id: `local.${handle.name}`, name: handle.name, lifecycleUid: `uid-${handle.name}`,
-    handle, suppressCleanup: false, terminalizing: false, startedAt: Date.now(), launch: { allowSubscribe: [] },
+  for (const one of [handle, ...(opts.also ?? [])]) agents.set(one.name, {
+    id: `local.${one.name}`, name: one.name, lifecycleUid: `uid-${one.name}`,
+    handle: one, suppressCleanup: false, terminalizing: false, startedAt: Date.now(), launch: { allowSubscribe: [] },
   });
   return { manager, agents };
 }
@@ -209,11 +209,34 @@ function reap(handle: AgentHandle, cause: FreeSlotCause): { lines: string[]; sea
   check("a recursive reap names the parent that left", /recursive reap/i.test(seat ?? "") && /u_parent\.actor/.test(seat ?? ""), seat);
 }
 {
-  const { manager, agents } = managerWith(fakeHandle("worker", { exitInfo: () => ({ code: 0 }) }));
-  const lines = capture(() => { void (manager as unknown as { teardownManagedAgents(): Promise<void> }).teardownManagedAgents(); });
-  await new Promise((r) => setTimeout(r, 50));
+  const { manager } = managerWith(fakeHandle("worker", { exitInfo: () => ({ code: 0 }) }));
+  const { lines } = await captureAsync(() => (manager as unknown as { teardownManagedAgents(): Promise<void> }).teardownManagedAgents());
   const seat = lines.find((l) => /seat reaped/i.test(l));
   check("a manager shutdown reaps with its own sentence, not silence", /stopped it on manager shutdown/i.test(seat ?? ""), lines);
+}
+{
+  // #3404: the reap line is the record that the seat is gone, so a shutdown writes it only after
+  // the exit proof. A refused stop and an exit that never arrives are named by the shutdown error.
+  const unproved = (name: string, refuse: boolean): AgentHandle => {
+    const session: AttachSession = { cols: 80, rows: 24, backlog: () => Buffer.alloc(0), onData: () => () => {}, onExit: () => () => {}, write: () => {}, resize: () => {} };
+    return {
+      name, kind: "fake", status: () => "running", interrupt: () => {}, attach: () => session,
+      stop: () => { if (refuse) throw new Error("runtime refused the stop"); },
+      waitForExit: () => new Promise(() => {}),
+    };
+  };
+  const { manager } = managerWith(fakeHandle("good", { exitInfo: () => ({ code: 0 }) }), {
+    preserveStopTimeoutMs: 50,
+    also: [unproved("bad", true), unproved("slow", false)],
+  });
+  let error = "";
+  const { lines } = await captureAsync(async () => {
+    try { await manager.stop({ withAgents: true }); }
+    catch (e) { error = (e as Error).message; }
+  });
+  const reaped = lines.filter((l) => /seat reaped/i.test(l));
+  check("a refused stop and an unproved exit are not logged as reaped", reaped.length === 1 && /seat reaped: good /.test(reaped[0] ?? "") && !reaped.some((l) => /seat reaped: (bad|slow) /.test(l)), reaped);
+  check("…and the shutdown error names both, with the refusal rather than a timeout for the refused stop", error.startsWith("manager shutdown could not prove every seat exited: ") && error.includes("bad: stop failed: runtime refused the stop") && error.includes("slow: child did not exit within 50ms") && !error.includes("good:"), error);
 }
 {
   const { seat } = reap(fakeHandle("worker", { exitInfo: () => ({ code: 1 }) }), "pi-crash-loop");
