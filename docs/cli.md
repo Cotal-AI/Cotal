@@ -1787,6 +1787,15 @@ cotal down -f <cotal.yaml> | --run <id> [--dry-run]
 | `--store-dir <dir>` | the recorded store, else `.cotal/nats` | With `--preserve-state`: the store to cut. The mesh record names the store the broker runs on, such as a `backup restore --store-dir` target, and a different path refuses `CONFLICT` before anything stops |
 | `--session-store <dir>` | none | With `--preserve-state`: a harness transcript store directory to capture with every continuation-capable retained seat. Repeatable. No default and never inferred from a connector name; a path that does not exist or is not a directory is refused before anything stops |
 
+For an additive ledger from the retired `spawn -f`, `down -f` keeps an authenticated channel when
+membership cannot be read. Its output includes the read failure, rather than calling every failure
+an absent feed. A user-auth teardown uses the signed-in user's control authority and an admin read
+view, plus the channel-writer view for deletion. Run it from the registered checkout as the owner
+who deployed the agents, with the admin scope needed to inspect membership and remove channels.
+It does not use the local static signer to stand in for that user's identity. If the issuer predates
+the membership snapshot read, upgrade it and obtain a new credential before retrying the retained
+run. See [membership snapshot reads](UPGRADING.md#membership-snapshot-reads-after-01154).
+
 Bare `cotal down` stops the whole local stack in dependency order and leaves managed agents running
 when their runtime lets them outlive the manager. Before signalling the manager it verifies the spare
 capability of the exact recorded manager, which records what that manager's stop does with its

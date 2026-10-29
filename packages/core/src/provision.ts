@@ -2076,6 +2076,8 @@ function teardownPermissions(space: string, pr: MintPrincipal, transferStreams: 
         `$JS.API.CONSUMER.INFO.${CHKV}.>`,
         // readMembership's one-pass scan of the feed (its STREAM.INFO is in `del`). No `$KV` publish:
         // only `membership-rw` writes the feed.
+        // Batched snapshots read the same feed as the watch below, without a consumer.
+        `$JS.API.DIRECT.GET.${MSHIP}`,
         `$JS.API.CONSUMER.CREATE.${MSHIP}.>`,
         `$JS.API.CONSUMER.INFO.${MSHIP}.>`,
         // Space deletion names the workflow runs it removes by their status records: a non-fencing

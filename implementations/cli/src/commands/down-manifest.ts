@@ -30,7 +30,7 @@ import {
   unlinkFileNoFollow,
   type EpCaller,
 } from "@cotal-ai/core";
-import { agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, getSpaceAuth, isCommandFailure, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
+import { agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, connectTargetOrThrow, getSpaceAuth, isCommandFailure, resolveMeshTarget, userAuthStateDir, userViewAuth, workspaceSecretStore } from "@cotal-ai/workspace";
 import { c, stderrLine } from "../ui.js";
 import { cotalRoot } from "../lib/paths.js";
 import { connectProbe } from "../lib/manifest/live.js";
@@ -96,9 +96,7 @@ export async function downManifest(file: string, flags: DownManifestFlags): Prom
   const removed: string[] = [];
   const openNoFeed: string[] = []; // owned channels removed on an open mesh with no membership proof
   const skipped: Array<{ channel: string; why: string }> = [];
-  const teardownAuth = await mintIfAuth(root, ledger.space);
-  const creds = teardownAuth?.creds;
-  const reachable = await isReachable(ledger.server, creds ? { creds } : undefined);
+  const reachable = await isReachable(ledger.server);
   let liveById = new Map<string, { name: string; id: string; lifecycleUid?: string }>();
   // controlOk: we completed the live ps/stop/channel pass. A control-plane error (no manager
   // responder, a thrown ps/stop/membership/delete) is teardown UNCERTAINTY, not a crash — we catch
@@ -106,7 +104,24 @@ export async function downManifest(file: string, flags: DownManifestFlags): Prom
   let controlOk = false;
   if (reachable) {
     try {
-      const ep = await connectProbe({ space: ledger.space, server: ledger.server, creds, lifecycleUid: teardownAuth?.epCaller.uid });
+      // A static caller on a user mesh sees an owner-filtered ps, not proof of absence.
+      const target = resolveMeshTarget(root, { space: ledger.space, server: ledger.server, readOnly: true });
+      if (resolve(target.root) !== resolve(root) || target.server !== ledger.server)
+        throw new Error("run teardown from the checkout and broker recorded by this ledger");
+      if (target.mode === "auth" && !target.auth)
+        throw new Error("the recorded static-auth mesh has no local trust material; refusing bare teardown");
+      const connection = target.mode === "user" ? await connectTargetOrThrow(target, "teardown") : undefined;
+      const user = connection ? await userViewAuth(connection, "admin") : undefined;
+      if (user && ledger.created.agents.some((a) => parsePrincipalKey(a.id)?.owner !== user.owner))
+        throw new Error("this user-mode ledger contains another owner's agents; refusing an owner-scoped absence check");
+      const teardownAuth = target.mode === "auth" ? await mintIfAuth(root, ledger.space) : undefined;
+      const creds = teardownAuth?.creds;
+      const ep = await connectProbe({ space: ledger.space, server: ledger.server, creds,
+        lifecycleUid: connection?.epCaller?.uid ?? teardownAuth?.epCaller.uid,
+        ...(connection && user ? { user: { source: async () => connection.bearer!, sentinelCreds: connection.sentinelCreds!, owner: user.owner, actor: user.actor } } : {}),
+        tls: target.tlsRequired,
+      });
+      let membershipProbe: Awaited<ReturnType<typeof connectProbe>> | undefined;
       try {
         // v0.4 ep rails (1c.2c): `ps` over the generic invoke path, then per-agent any-mode despawn.
         const psR = await ep.invokeService("manager", "ps", undefined, { deadlineMs: 8_000 });
@@ -142,9 +157,21 @@ export async function downManifest(file: string, flags: DownManifestFlags): Prom
         // fail-closed "skip when membership is unobservable" rule protects ACL isolation, which exists
         // only on an AUTH mesh; an open mesh has no isolation and no membership feed by design, so an
         // owned card is removable there (otherwise `down -f` could never clean an open dev mesh).
-        const openMesh = !creds;
+        const openMesh = target.mode === "open";
         const stopFailed = ledger.created.agents.some((a) => liveById.has(a.id) && !stoppedIds.has(a.id));
-        const snapshot = await ep.readMembership().catch(() => null);
+        let membershipFailure: string | undefined;
+        const snapshot = await (async () => {
+          try {
+            // The base bearer carries control, not the silent-reader census. Read through
+            // the existing admin view, issued against the current user's grant.
+            if (user) membershipProbe = await connectProbe({ space: ledger.space, server: ledger.server,
+              lifecycleUid: user.lifecycleUid, user, tls: target.tlsRequired });
+            return await (membershipProbe ?? ep).readMembership();
+          } catch (error) {
+            membershipFailure = error instanceof Error ? error.message : String(error);
+            return null;
+          }
+        })();
         const ownedIds = new Set(ledger.created.agents.map((a) => a.id));
         const toRemove: string[] = [];
         for (const ch of ledger.created.channels) {
@@ -161,7 +188,7 @@ export async function downManifest(file: string, flags: DownManifestFlags): Prom
               continue;
             }
           } else if (!openMesh) {
-            skipped.push({ channel: ch, why: "membership unknown (no feed) on an auth mesh" });
+            skipped.push({ channel: ch, why: `membership unknown on an auth mesh: ${membershipFailure ?? "no membership snapshot"}` });
             continue;
           } else {
             openNoFeed.push(ch); // open mesh, no feed: removable (no isolation), but no membership proof
@@ -169,15 +196,18 @@ export async function downManifest(file: string, flags: DownManifestFlags): Prom
           toRemove.push(ch);
         }
         if (toRemove.length) {
-          await deleteChannels({ servers: ledger.server, space: ledger.space, creds, channels: toRemove });
+          const writer = connection ? await userViewAuth(connection, "channel-writer") : undefined;
+          await deleteChannels({ servers: ledger.server, space: ledger.space,
+            ...(writer ? { bearer: writer.bearer, sentinelCreds: writer.sentinelCreds } : { creds }), channels: toRemove });
           removed.push(...toRemove);
         }
         controlOk = true; // got all the way through — the live pass is trustworthy
       } finally {
-        await ep.stop();
+        try { await membershipProbe?.stop(); }
+        finally { await ep.stop(); }
       }
     } catch (e) {
-      console.log(c.yellow(`  ! ${ledger.server}: control plane unavailable (${(e as Error).message}) - nothing torn down remotely; the ledger is RETAINED for a later \`down -f --run ${ledger.runId}\``));
+      console.log(c.yellow(`  ! ${ledger.server}: control plane incomplete (${(e as Error).message}) - unresolved resources are RETAINED for a later \`down -f --run ${ledger.runId}\``));
     }
   } else {
     console.log(c.yellow(`  ! ${ledger.server} unreachable - can't stop processes or remove channels; the ledger is RETAINED for a later \`down -f --run ${ledger.runId}\``));
