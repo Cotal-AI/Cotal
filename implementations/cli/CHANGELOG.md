@@ -1,5 +1,18 @@
 # @cotal-ai/cli
 
+## 0.124.0
+
+### Minor Changes
+
+- d85b6df: `cotal up` on a user-auth space this folder hosts, and a `cotal team boot` that resumes a stopped user-auth stack, now confirm the cached sign-in with its IdP before they start the manager, as `cotal manager start` does. A sign-in the IdP rejects because it expired or was revoked counts as none. `up` keeps the other members, leaves the manager unattempted and reports `OPERATION_PARTIAL` with native cause `AUTH_REQUIRED`, and the team boot refuses `AUTH_REQUIRED` before any write. Both name `cotal login --idp <base>` as the next step. Before, both launched the manager, which missed its readiness deadline and was left running behind an `OPERATION_UNKNOWN`. Any other failure of the check, such as an IdP that does not answer, is left to the start as before, and an auth provider without `confirmLogin` gets the manager refused `UNSUPPORTED`, as `manager start` does. A refused team boot that resumes a stopped stack now names the team boot again after the sign-in, where it named a bare `cotal up`, which would start the manager without the team.
+  
+  Breaking for custom auth providers: `cotal up` and `cotal team boot` on a user-auth space now need `AuthProvider.confirmLogin` as well.
+
+### Patch Changes
+
+- @cotal-ai/core@0.124.0
+  - @cotal-ai/workspace@0.124.0
+
 ## 0.123.0
 
 ### Patch Changes
