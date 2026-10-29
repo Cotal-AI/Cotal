@@ -1,7 +1,9 @@
 # @cotal-ai/pi
 
 Cotal as an extension for the operator's own [Pi coding agent](https://github.com/earendil-works/pi).
-The package does not bundle Pi.
+The package does not bundle Pi. It declares `@earendil-works/pi-coding-agent` as an optional peer
+and loads it from the Pi host that runs the extension, so `cotal` can register the connector
+without Pi installed.
 
 ## Requirements
 

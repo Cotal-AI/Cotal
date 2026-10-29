@@ -798,7 +798,7 @@ for (const assistant of [
   process.env.COTAL_PI_SESSION_STATE = state;
   console.error = (...args: unknown[]) => diagnostics.push(args.map(String).join(" "));
   try {
-    ok(supervisedProjectTrust(project).trusted === "no", "an undecided supervised project is untrusted for this run");
+    ok((await supervisedProjectTrust(project)).trusted === "no", "an undecided supervised project is untrusted for this run");
     const pending = JSON.parse(readFileSync(state, "utf8"));
     ok(
       pending.status === "prompt" && pending.prompt === "Trust project folder?" && pending.cwd === project,
@@ -812,11 +812,11 @@ for (const assistant of [
     const trustStore = new ProjectTrustStore(agentDir);
     trustStore.set(project, true);
     diagnostics.length = 0;
-    ok(supervisedProjectTrust(project).trusted === "undecided", "a saved trusted project remains Pi's decision");
+    ok((await supervisedProjectTrust(project)).trusted === "undecided", "a saved trusted project remains Pi's decision");
     ok(diagnostics.length === 0, "a saved trust decision emits no skipped-resource notice");
     trustStore.set(project, false);
     diagnostics.length = 0;
-    ok(supervisedProjectTrust(project).trusted === "undecided", "a saved denied project also remains Pi's decision");
+    ok((await supervisedProjectTrust(project)).trusted === "undecided", "a saved denied project also remains Pi's decision");
     ok(
       diagnostics.some((line) => line.includes("saved trust decision denies") && line.includes(project)),
       "a saved denial keeps skipped project resources visible",
