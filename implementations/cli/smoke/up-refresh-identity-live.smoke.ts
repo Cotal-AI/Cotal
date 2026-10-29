@@ -471,13 +471,13 @@ async function hostShapeRefusals(): Promise<void> {
 
 try {
   await hostShapeRefusals();
+  await foregroundCrashKeepsRecord();
   await orderedRefresh("alpha-root", "omega-tenant", ["alpha-root", "omega-tenant"]);
   await orderedRefresh("omega-root", "alpha-tenant", ["alpha-tenant", "omega-root"]);
   await foreignRootRefusal();
   await namedSpaceElsewhere();
   await storeRecordRepair();
   await preFieldWarning();
-  await foregroundCrashKeepsRecord();
   if (passed !== EXPECTED_CHECKS)
     throw new Error(`FAIL: expected ${EXPECTED_CHECKS} checks, ran ${passed}`);
   console.log(`\nUP REFRESH IDENTITY LIVE SMOKE OK ✅ (${passed} checks passed)`);
