@@ -403,26 +403,30 @@ await cell("every operation in REMOTE_MANAGER_AUTHORITY_OPERATIONS requires its 
       err.message === "manager-service renewRunDriver returned credentials outside its closed profile set",
   );
 });
-await cell("issueRemoteManagerAuthority maps each operation through a frozen REQUIRED_CREDENTIALS record with no default fallback", () => {
+await cell("issueRemoteManagerAuthority maps each operation through a frozen CREDENTIALS record with no default fallback", () => {
   const built = readFileSync(new URL("../dist/manager-authority.js", import.meta.url), "utf8");
-  const tableMatch = /const REQUIRED_CREDENTIALS = Object\.freeze\(\{([\s\S]*?)\n\}\);/.exec(built);
-  assert.ok(tableMatch, "expected frozen REQUIRED_CREDENTIALS table in built manager-authority.js");
+  const tableMatch = /const CREDENTIALS = Object\.freeze\(\{([\s\S]*?)\n\}\);/.exec(built);
+  assert.ok(tableMatch, "expected frozen CREDENTIALS table in built manager-authority.js");
   const fnStart = built.indexOf("export async function issueRemoteManagerAuthority(");
   const fnEnd = built.indexOf("\n}\n", fnStart);
   assert.ok(fnStart > 0 && fnEnd > fnStart);
   const fnBody = built.slice(fnStart, fnEnd);
-  assert.equal(fnBody.includes("const required = REQUIRED_CREDENTIALS[r.operation];"), true);
+  assert.equal(fnBody.includes("const required = CREDENTIALS[r.operation].required;"), true);
   assert.equal(fnBody.includes(": REMOTE_MANAGER_IDENTITY_NAMES"), false);
   const evaluate = new Function(
     "REMOTE_MANAGER_IDENTITY_NAMES",
-    `${tableMatch[0]}\nreturn REQUIRED_CREDENTIALS;`,
-  ) as (names: readonly string[]) => Record<string, readonly string[] | undefined>;
+    `${tableMatch[0]}\nreturn CREDENTIALS;`,
+  ) as (names: readonly string[]) => Record<string, { readonly required: readonly string[]; readonly closed?: true } | undefined>;
   const table = evaluate(REMOTE_MANAGER_IDENTITY_NAMES);
   assert.equal(Object.isFrozen(table), true);
   assert.deepEqual(Object.keys(table), [...REMOTE_MANAGER_AUTHORITY_OPERATIONS]);
   for (const op of REMOTE_MANAGER_AUTHORITY_OPERATIONS) {
-    assert.equal(Object.isFrozen(table[op]), true);
-    assert.deepEqual(table[op], expectedRequiredByOperation[op]);
+    const row = table[op];
+    assert.ok(row);
+    assert.equal(Object.isFrozen(row), true);
+    assert.equal(Object.isFrozen(row.required), true);
+    assert.deepEqual(row.required, expectedRequiredByOperation[op]);
+    assert.equal(row.closed, op === "renewStandingBundle" || op === "renewRunDriver" ? true : undefined);
   }
   for (const unmapped of ["probeOp", "renewal", "activateX"]) {
     assert.equal(table[unmapped], undefined);

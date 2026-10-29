@@ -84,7 +84,7 @@ import { PUBLIC_EXCHANGE_VIEWS, assertTransferWriterClaim, validateUserToken, ty
 import { grantCoordinates } from "./session-redemption.js";
 import { pinnedJwksResolver, type UserTokenIssuer } from "./issuer.js";
 import { bootstrapServiceCallerPayload, type ServiceCallerPayloadBootstrap } from "./service-caller-payload-bootstrap.js";
-import { handleRemoteRunCancel, parseRemoteRunCancelRequest, admitRemoteRun, handleRemoteRunSubmission, authorizeRemoteManagerRenewal, authorizeRemoteRunAttempt, holdsRunFence, issueRemoteManagerAuthority, observedRunRequest, parseRemoteRunAdmissionRequest, parseRemoteRunAttemptRequest, parseRemoteRunRevokeRequest, revokeRemoteRun, type ObservedRunRequest } from "./manager-authority.js";
+import { handleRemoteRunCancel, parseRemoteRunCancelRequest, admitRemoteRun, handleRemoteRunSubmission, authorizeRemoteManagerRenewal, isRenewal, authorizeRemoteRunAttempt, holdsRunFence, issueRemoteManagerAuthority, observedRunRequest, parseRemoteRunAdmissionRequest, parseRemoteRunAttemptRequest, parseRemoteRunRevokeRequest, revokeRemoteRun, type ObservedRunRequest } from "./manager-authority.js";
 import { authorizeRemoteRetainedAgentValidation, completeRemoteRetainedAgentValidation, remoteManagerCurrentRegistrationProof } from "./retained-manager-validation.js";
 import { authorizeRemoteManagedAgentEnrollment, authorizeRemoteManagedAgentPrepareRetirement, authorizeRemoteManagedAgentRuntimeCreate, authorizeRemoteManagedAgentRuntimeStatus, type ObserveManagerGate, type RemoteManagedAgentRuntimeDecision } from "./managed-agent-enrollment.js";
 import { authorizeRemoteManagerGoalIndexScan, completeRemoteManagerGoalIndexScan } from "./manager-goal-index.js";
@@ -1394,70 +1394,67 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
             );
             return { credentials };
           }
-          if (r.operation === "renewStandingBundle") {
-            // authorizeRenewal fresh-checked account, owner, epoch and the current-registration proof
-            // (which binds the held nkeys and lifecycle). Re-observe so every row binds one revision.
+          if (isRenewal(r.operation)) {
+            // authorizeRenewal fresh-checked account, owner, epoch and the current-registration proof.
+            // Re-observe once so both renewals issue against that same gate.
             const gate = managerIssuanceGate(r.instanceId);
             const observed = await gate.observe();
             if (!observed || observed.state !== "open" || observed.processEpoch !== r.processEpoch)
-              throw new EpEnvelopeError("conflict", "manager-service standing renewal gate moved before issuance");
-            credentials.supervisor = await credential("supervisor", "remote-manager", actors.supervisor, {
-              remoteManager: { instanceId: r.instanceId, owner, actor: actors.supervisor },
-              expiresInSeconds: standingTtl,
-            });
-            credentials.executor = await credential("executor", "remote-manager", actors.executor, {
-              remoteManager: { instanceId: r.instanceId, owner, actor: actors.executor },
-              expiresInSeconds: 5 * 60,
-            });
-            credentials.serve = await mintPublicUserJwt(
-              issuerAuth(),
-              r.identities.serve.id,
-              "endpoint-serve",
-              bounded({
-                principal: { owner, actor: actors.serve },
-                lifecycleUid: r.managerLifecycleUid,
+              throw new EpEnvelopeError("conflict", "manager-service renewal gate moved before issuance");
+            if (r.operation === "renewStandingBundle") {
+              credentials.supervisor = await credential("supervisor", "remote-manager", actors.supervisor, {
+                remoteManager: { instanceId: r.instanceId, owner, actor: actors.supervisor },
                 expiresInSeconds: standingTtl,
-                endpointServe: remoteManagerServeGrantFromCluster(r, owner, await registeredManagerCluster(owner, r.instanceId, observed), observed),
-                serveIssuance: gate,
-              }),
-            );
-            const sibling = siblingOn(gate, observed);
-            credentials.goalWriter = await sibling("goalWriter", "goal-writer", actors.goalWriter);
-            credentials.sessionLedger = await sibling("sessionLedger", "session-ledger", actors.sessionLedger);
-            return { credentials };
-          }
-          if (r.operation === "renewRunDriver") {
-            const gate = managerIssuanceGate(r.instanceId);
-            const observed = await gate.observe();
-            if (!observed || observed.state !== "open" || observed.processEpoch !== r.processEpoch)
-              throw new EpEnvelopeError("conflict", "manager-service run renewal gate moved before issuance");
+              });
+              credentials.executor = await credential("executor", "remote-manager", actors.executor, {
+                remoteManager: { instanceId: r.instanceId, owner, actor: actors.executor },
+                expiresInSeconds: 5 * 60,
+              });
+              credentials.serve = await mintPublicUserJwt(
+                issuerAuth(),
+                r.identities.serve.id,
+                "endpoint-serve",
+                bounded({
+                  principal: { owner, actor: actors.serve },
+                  lifecycleUid: r.managerLifecycleUid,
+                  expiresInSeconds: standingTtl,
+                  endpointServe: remoteManagerServeGrantFromCluster(r, owner, await registeredManagerCluster(owner, r.instanceId, observed), observed),
+                  serveIssuance: gate,
+                }),
+              );
+              const sibling = siblingOn(gate, observed);
+              credentials.goalWriter = await sibling("goalWriter", "goal-writer", actors.goalWriter);
+              credentials.sessionLedger = await sibling("sessionLedger", "session-ledger", actors.sessionLedger);
+              return { credentials };
+            }
+            if (r.operation === "renewRunDriver") {
+              if (!holdsRunFence(await observeManagerRun(r, r.run!.runId), r))
+                throw new EpEnvelopeError("conflict", "manager-service run renewal authority moved before issuance");
 
-            if (!holdsRunFence(await observeManagerRun(r, r.run!.runId), r))
-              throw new EpEnvelopeError("conflict", "manager-service run renewal authority moved before issuance");
-
-            const caller = runDriverCaller(r.run!.runId, owner);
-            const binding = {
-              endpoint: "manager",
-              runId: r.run!.runId,
-              takeoverId: r.run!.takeoverId,
-              instanceId: r.instanceId,
-              epoch: r.run!.epoch,
-              owner,
-            };
-            credentials.runDriver = await mintPublicUserJwt(issuerAuth(), r.run!.driverId, "run-driver", bounded({
-              principal: { owner, actor: caller.actor },
-              lifecycleUid: r.managerLifecycleUid,
-              runDriver: binding,
-              expiresInSeconds: standingTtl,
-            }));
-            credentials.runMediator = await mintPublicUserJwt(issuerAuth(), r.run!.mediatorId, "run-mediator", bounded({
-              principal: { owner, actor: caller.actor },
-              lifecycleUid: r.managerLifecycleUid,
-              // Renewed with the placement the attempt was issued with (authorizeRemoteRunAttempt).
-              runMediator: { ...binding, placement: { instanceId: r.instanceId } },
-              expiresInSeconds: standingTtl,
-            }));
-            return { credentials };
+              const caller = runDriverCaller(r.run!.runId, owner);
+              const binding = {
+                endpoint: "manager",
+                runId: r.run!.runId,
+                takeoverId: r.run!.takeoverId,
+                instanceId: r.instanceId,
+                epoch: r.run!.epoch,
+                owner,
+              };
+              credentials.runDriver = await mintPublicUserJwt(issuerAuth(), r.run!.driverId, "run-driver", bounded({
+                principal: { owner, actor: caller.actor },
+                lifecycleUid: r.managerLifecycleUid,
+                runDriver: binding,
+                expiresInSeconds: standingTtl,
+              }));
+              credentials.runMediator = await mintPublicUserJwt(issuerAuth(), r.run!.mediatorId, "run-mediator", bounded({
+                principal: { owner, actor: caller.actor },
+                lifecycleUid: r.managerLifecycleUid,
+                // Renewed with the placement the attempt was issued with (authorizeRemoteRunAttempt).
+                runMediator: { ...binding, placement: { instanceId: r.instanceId } },
+                expiresInSeconds: standingTtl,
+              }));
+              return { credentials };
+            }
           }
           if (r.operation === "activate") {
             const expectedProof = remoteManagerRegistrationProof(owner, registration, r.contractArtifacts);
