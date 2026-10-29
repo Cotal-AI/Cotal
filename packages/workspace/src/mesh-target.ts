@@ -1,6 +1,6 @@
 import { existsSync, lstatSync, readFileSync, realpathSync, type Stats } from "node:fs";
 import { join } from "node:path";
-import { boundedValue, DEFAULT_SERVER, DEFAULT_SPACE, MEMBERSHIP_MAX_BYTES, personaDir, type SpaceAuth } from "@cotal-ai/core";
+import { boundedValue, DEFAULT_SERVER, DEFAULT_SPACE, personaDir, type SpaceAuth } from "@cotal-ai/core";
 import { accountInventory, authDir, cotalDirLink, findCotalRoot, hasUserAuthState, listSpaceAccounts, loadSpaceAuth, movedRootRemedy, rootPathProblem, soleSpaceOf, stackJournalPath, stackJournalRoot, userAuthSpacesOnDisk } from "./auth-paths.js";
 import { DELIVERY_PIDFILE, localProcessPath, MANAGER_PIDFILE } from "./local-process.js";
 import { recordOperationSpaceNote, recordOperationWarning, SHOWN_VALUE_MAX } from "./output.js";
@@ -162,17 +162,6 @@ export interface MeshTargetErrorDetails {
   /** For `not-started` on a prepared space: the last whole-stack operation its root's stack journal
    *  records for it with no outcome, which `cotal status` there names the way out of. */
   unsettled?: "up" | "down";
-}
-
-/** The smallest JetStream file store cap a stack starts on: the bytes the space's membership bucket
- *  reserves, plus one. nats-server creates a stream with no byte limit only while at least one byte
- *  of the cap is unreserved, so a cap equal to the reservation fails every later stream with 10047. */
-export const MIN_FILE_STORE = MEMBERSHIP_MAX_BYTES + 1;
-
-/** Whether a stopped stack's recorded file store cap is below {@link MIN_FILE_STORE}, so a bare
- *  `cotal up` fails on it and the step that starts the stack names `--max-file-store` at the floor. */
-export function capBelowFloor(cap: number | undefined): cap is number {
-  return cap !== undefined && cap < MIN_FILE_STORE;
 }
 
 const WORKSPACE_TARGET_ERROR = "cotal:workspace:mesh-target-error";
@@ -765,20 +754,12 @@ function noteFolderSpaceHeld(folder: { root: string; registered: readonly string
 export function heldSpaceNote(held: { space: string; root: string; state: "prepared" | "stopped" }): string {
   const unsettled = unsettledStackOperation(held.root, held.space);
   if (unsettled) return `this folder holds the space "${held.space}", and the last ${unsettled} of its stack has no recorded outcome; run \`cotal status\` here, which names the step that finishes or settles it`;
-  return `this folder holds the ${held.state} space "${held.space}"; ${held.state === "prepared" ? "start" : "restart"} it with \`${upCommand(held.root, held.space)}\`${upNeedsCap(held.root, held.space) ? " or more" : ""}`;
+  return `this folder holds the ${held.state} space "${held.space}"; ${held.state === "prepared" ? "start" : "restart"} it with \`${upCommand(held.root, held.space)}\``;
 }
 
-/** Whether a bare `cotal up` of `space` at `root` fails on the file store cap its stopped stack
- *  recorded ({@link capBelowFloor}), so {@link upCommand} names `--max-file-store` at the floor. */
-export function upNeedsCap(root: string, space: string): boolean {
-  return capBelowFloor(stoppedStack(root, space)?.storeCap);
-}
-
-/** The `cotal up` that starts `space`'s stack at `root`, with `args`, such as a `--root`, after `up`:
- *  with `--max-file-store` at the floor when {@link upNeedsCap}. It runs as written; a note that
- *  names it says "or more" after it, and a step's label says so beside it. */
-export function upCommand(root: string, space: string, ...args: string[]): string {
-  return ["cotal up", ...args, ...(upNeedsCap(root, space) ? [`--max-file-store ${MIN_FILE_STORE}`] : [])].join(" ");
+/** The `cotal up` that starts `space`'s stack at `root`, with `args`, such as a `--root`, after `up`. */
+export function upCommand(_root: string, _space: string, ...args: string[]): string {
+  return ["cotal up", ...args].join(" ");
 }
 
 /** The space a folder holds that is not running: the one it prepared, the one its stopped stack is

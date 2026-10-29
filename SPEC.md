@@ -722,13 +722,16 @@ KV buckets are also streams and are pre-created:
 | --- | --- | --- |
 | `cotal_presence_<space>` | presence (§6) | 6000 ms |
 | `cotal_channels_<space>` | channel registry (§7) | none |
-| `cotal_membership_<space>` | derived channel-membership feed (below) | none |
+| `cotal_membership_<space>` | derived channel-membership feed (below), history 1 per key, maximum value 262144 bytes, no global byte reservation | none |
 
 **Derived channel-membership feed (observability).** `cotal_membership_<space>` is a per-agent
 (key = `card.id`) derived view of who is subscribed to each channel: the **union** of an agent's
 `live` core-subscriptions (read by a privileged daemon from the broker's connection view) and its
 `durable` memberships (the members registry), each value `{ live: string[], durable: string[],
 observedAt }` with `live` keeping subscription patterns (wildcards) the consumer expands at read time.
+The backing KV keeps one message per agent key and limits each serialized value to 262144 bytes. Its
+global `max_bytes` is unlimited (`-1`), so creating an empty space reserves no file-store capacity;
+the broker's actual file-store limit remains the aggregate storage bound.
 It exists so an observer can show silent readers and `live`-channel membership without a broker-admin
 credential in the dashboard tier; it is written by a scoped privileged daemon and read only by the
 admin/observer profile and by the `deployer` and `teardown` operator credentials, which check a

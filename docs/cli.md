@@ -61,10 +61,9 @@ folder. It ends that line with the step the commands there name. It points a pre
 split it, and a machine with no space to `cotal setup`. While the space it names is prepared or
 stopped, that `cotal up` is its first step and it offers no `cotal spawn`, in any folder. Otherwise,
 in a folder that holds another space, its first step is that folder's own `cotal up`, which it says
-starts this folder's space, and `cotal spawn` follows. Each `cotal up` it names reads
-`cotal up --max-file-store 67108865`, with a label saying a store cap of 67108865 or more, when that
-stopped stack recorded a file store cap below 67108865, as `status` says, because a bare `up` fails on
-that cap; the command runs as written. With spaces on the machine but none selected
+starts this folder's space, and `cotal spawn` follows. A stopped stack's recorded file-store cap does
+not change that restart command. Membership and artifact stores reserve no capacity at creation, so
+there is no per-space `--max-file-store` floor. With spaces on the machine but none selected
 or in this folder, it names `cotal use <name>` and `cotal space` instead. Every command generates its own help, usage, and shell completion from its declared
 flags, and `cotal <command> --help` prints the same help as `cotal help <command>`. A word after the
 command that names none of its subcommands refuses with `--help` too, as `cotal help` and the command
@@ -683,7 +682,7 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 | `--space <s>` | the folder's space | Space name, at most 64 characters; a longer one refuses `USAGE_INVALID` before anything is written |
 | `--root <prepared-dir>` | current folder's workspace | Start the project in `<dir>` instead of the folder you run `up` from. `<dir>` must already have its own `.cotal`, which `space create <space> --root <dir>` or an earlier `up` there made. An absent, inherited or symlinked `.cotal`, or the machine's home store, refuses before startup. Relative file, restore, channels, TLS and store paths remain relative to the invoking folder. The native `up` selection rule still applies after startup. |
 | `--store-dir <dir>` | none | JetStream store directory (recorded; a repair up reuses it). Also accepted with `-f`. A path that is a link refuses `USAGE_INVALID`, naming the directory it points to. A store folder belongs to one space: a folder another space uses refuses `CONFLICT`, naming that space |
-| `--max-file-store <bytes>` | nats-server's dynamic cap | JetStream file storage cap in bytes (a positive integer, no unit suffix). At least 67108865: the space's membership bucket reserves 67108864 (64 MiB), and nats-server creates each of the other streams only while one more byte is free. A smaller value refuses `USAGE_INVALID`, naming 67108865, before anything starts. Without it nats-server sizes the store at start as three quarters of the free space on its filesystem. The cap is fixed at broker start: a running broker cannot change it (`cotal down` first), and a stopped stack's next `up --max-file-store` replaces the recorded cap. A controller stack keeps it across `cotal down`, because it refuses `down --preserve-state` in this release. On a legacy root, `down --preserve-state` keeps it for the resume, and a resume with a different value refuses `CONFLICT`, exit 2. When a broker `up` started cannot create the space's streams for want of storage, the failure names the cap and `cotal up --max-file-store <bytes>`. Once the space holds more than the cap, the broker refuses every write: `send` refuses naming the cap, and `status` shows the store full. Not accepted with `-f` |
+| `--max-file-store <bytes>` | nats-server's dynamic cap | JetStream file storage cap in bytes (a positive integer, no unit suffix). Membership and artifact stores reserve no capacity at creation, so Cotal applies no per-space minimum. The broker can still refuse setup or later writes when the cap has too little room for actual stream data and metadata. Without the flag, nats-server sizes the store at start as three quarters of the free space on its filesystem. The cap is fixed at broker start: a running broker cannot change it (`cotal down` first), and a stopped stack's next `up --max-file-store` replaces the recorded cap. A controller stack keeps it across `cotal down`, because it refuses `down --preserve-state` in this release. On a legacy root, `down --preserve-state` keeps it for the resume, and a resume with a different value refuses `CONFLICT`, exit 2. When a broker `up` started cannot create the space's streams for want of storage, the failure names the cap and `cotal up --max-file-store <bytes>`. Once the space holds more than the cap, the broker refuses every write: `send` refuses naming the cap, and `status` shows the store full. Not accepted with `-f` |
 | `--log-file <path>` | none | Use nats-server's native `log_file`. The path is resolved from the invoking folder, created owner-private, recorded with the controller stack and reused by a later bare `up`. It must differ from the private service startup diagnostics log. In a manifest, use `broker.logFile`; a relative path resolves beside the manifest. |
 | `--logfile-size-limit <bytes>` | none | Rotate the native broker log after this positive integer byte count. Requires `--log-file`, or `broker.logFile` in a manifest. The controller records and reuses it after `cotal down`. |
 | `--logfile-max-num <count>` | none | Keep at most this positive integer count of native broker log files, including the active file. Requires `--log-file`, or `broker.logFile` in a manifest. The controller records and reuses it after `cotal down`. |
@@ -3265,10 +3264,8 @@ folder reach that stack until then.
 
 A prepared space whose controller stack ran and was stopped reads as stopped, with its last
 operation and how it ended, such as `` `cotal down`, completed ``, and Next names `cotal up` in its root.
-A space that never started still reads as prepared but not started. When the stopped stack recorded
-a file store cap below 67108865, the least the space's streams start on, the selected space shows it
-in a `Store cap` row, and Next names `cotal up --max-file-store 67108865` or more instead, because a
-bare `up` would fail on that cap. `--json` carries the cap as `selected.storeCap`, and
+A space that never started still reads as prepared but not started. A recorded file-store cap does not
+change the restart command because Cotal reserves no fixed capacity per space.
 `meshes.currentStopped` says whether the selection is such a stopped stack. A stack whose last `up`
 or `down` has no recorded outcome is not stopped, even when a member it launched still runs: the
 selection reads as prepared but not started, and the selected space names that operation.
