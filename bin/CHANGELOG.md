@@ -1,5 +1,32 @@
 # cotal-ai
 
+## 0.121.2
+
+### Patch Changes
+
+- 1446ee9: Report a remote signed-in user's current read, post, direct-message and capability grant in `cotal whoami`. The stock issuer returns the authoritative grant beside each fresh bearer, while unavailable, refused and older issuers remain unknown instead of being inferred from the token or a successful exchange.
+- Updated dependencies [9ff8f5a]
+- Updated dependencies [c30a662]
+- Updated dependencies [9ff8f5a]
+- Updated dependencies [af4b631]
+- Updated dependencies [3d07896]
+- Updated dependencies [b02da28]
+- Updated dependencies [1446ee9]
+- Updated dependencies [069204b]
+- Updated dependencies [7401742]
+- Updated dependencies [d98674a]
+- Updated dependencies [f450bfe]
+- Updated dependencies [ee93749]
+  - @cotal-ai/cli@0.121.2
+  - @cotal-ai/manager@0.121.2
+  - @cotal-ai/connector-core@0.121.2
+  - @cotal-ai/core@0.121.2
+  - @cotal-ai/auth@0.121.2
+  - @cotal-ai/workspace@0.121.2
+  - @cotal-ai/runtime@0.121.2
+  - @cotal-ai/delivery@0.121.2
+  - @cotal-ai/seat@0.121.2
+
 ## 0.121.1
 
 ### Patch Changes
