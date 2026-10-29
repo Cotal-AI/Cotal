@@ -20,16 +20,18 @@
  *   E3. `cotal supervise` from another root that holds its own signer for the space is refused as a
  *      refusal: a `Mesh:` heading, PERMISSION_DENIED, the refused credential and broker, and a Next
  *      naming the folder that hosts the space. No bare `Authorization Violation` line.
- *   E4. A prepared second root of the same space under its own home: `manager start` with no sign-in
- *      is refused AUTH_REQUIRED before anything is saved; a manager left running after a sign-out is
- *      stopped by the folder's owner through `manager stop` and `down`. `supervise` is refused before
- *      it connects, under a `Mesh:` heading with a code and no boot line, from that stopped root, from
- *      a folder with no records (naming the folder that hosts the space, writing nothing there), and
- *      from a stopped static root.
+ *   E4. A prepared second root of the same space under its own home: `manager start` with no sign-in,
+ *      or with one the IdP revoked, is refused AUTH_REQUIRED before anything is saved; a manager left
+ *      running after a sign-out is stopped by the folder's owner through `manager stop` and `down`.
+ *      `supervise` is refused before it connects, under a `Mesh:` heading with a code and no boot
+ *      line, from that stopped root, from a folder with no records (naming the folder that hosts the
+ *      space, writing nothing there), and from a stopped static root.
  *   E5. A TLS space behind a local CA, its public exchange behind an HTTPS proxy, joined by a
  *      participant from its bundle: with `NODE_EXTRA_CA_CERTS` set, the participant's `manager start`
  *      comes up and its native child carries the variable; with it unset, the line the refusal quotes
- *      names the TLS reason and ends in the step to set `NODE_EXTRA_CA_CERTS`, quoted whole.
+ *      names the TLS reason and ends in the step to set `NODE_EXTRA_CA_CERTS`, quoted whole. With its
+ *      sign-in revoked at the IdP, and then with none, its `manager start` is refused AUTH_REQUIRED
+ *      before any launch, naming `cotal login --idp <base>`.
  *   F. `cotal down` stops the auth service (space-scoped pid) with the broker; re-`up` WITHOUT
  *      --user-auth on a user-enabled root is refused fail-closed.
  *   G. `clean all`, and `reset space` on a stopped controller stack, name the IdP trust and the
@@ -76,7 +78,7 @@ const { connect, credsAuthenticator, tokenAuthenticator } = await import("@nats-
 const { jetstreamManager } = await import("@nats-io/jetstream");
 const { channelBucket, chatSubject, isReachable, mintCreds, mintLifecycleUid, newIdentity, presenceBucket } = await import("@cotal-ai/core");
 const { authDir, loadSoleSpaceAuth, loadSpaceAuth, readRenewalRecord, spaceKey, spaceSegment, userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
-const { cotalAuthProvider, deleteIdpSession, establishIdpSession, INTERACTIVE_RETIRE_PATH, loadActorLedger, loadAuthServiceInfo } = await import("../src/index.js");
+const { cotalAuthProvider, deleteIdpSession, establishIdpSession, INTERACTIVE_RETIRE_PATH, loadActorLedger, loadAuthServiceInfo, loadIdpSession } = await import("../src/index.js");
 type CotalMessage = import("@cotal-ai/core").CotalMessage;
 type DeviceLoginPrompt = import("../src/index.js").DeviceLoginPrompt;
 
@@ -155,6 +157,15 @@ async function approve(userCode: string): Promise<void> {
     body: JSON.stringify({ userCode }),
   });
   if (!res.ok) throw new Error(`device/approve failed: HTTP ${res.status}`);
+}
+/** Revoke one cached sign-in from the account's session list, as the account page does. */
+async function revokeSignIn(token: string): Promise<void> {
+  const res = await fetch(`${base}/revoke-session`, {
+    method: "POST",
+    headers: { "content-type": "application/json", cookie, origin },
+    body: JSON.stringify({ token }),
+  });
+  if (!res.ok) throw new Error(`revoke-session failed: HTTP ${res.status}`);
 }
 
 let witnessNc: Awaited<ReturnType<typeof connect>> | undefined;
@@ -740,6 +751,17 @@ try {
     const { sub: sub2 } = await establishIdpSession({ dir: home2, idpUrl: base, clientId: CLIENT_ID, onPrompt: (p: DeviceLoginPrompt) => void approve(p.userCode) });
     const grant2 = await cotal(["actor", "grant", "cli", "--sub", sub2, "--full"], { cwd: root2, env });
     check("the second root grants its signed-in CLI", grant2.status === 0, grant2.out);
+    // A cached sign-in the IdP revoked is refused as no sign-in is, before anything is saved or launched.
+    await revokeSignIn(loadIdpSession(home2, base)!.token);
+    const revokedStart = await cotal(["manager", "start"], { cwd: root2, env });
+    const revokedText = plain(revokedStart.out);
+    check("manager start with a sign-in the IdP revoked exits 2 with AUTH_REQUIRED, and Next signs in at that IdP, then starts it",
+      revokedStart.status === 2 && revokedText.includes(`Mesh: ${SPACE}\n`) && field(revokedStart.out, "Code", "AUTH_REQUIRED") &&
+        revokedText.includes("the IdP rejected this machine's sign-in, which has expired or was revoked") && revokedText.includes(`cotal login --idp ${base}, then \`cotal manager start\``), revokedStart.out);
+    const revokedShown = await cotal(["service", "show", "manager"], { cwd: root2, env });
+    check("…before anything was saved or launched, so no manager runs",
+      !revokedText.includes("saved manager") && revokedShown.status === 2 && field(revokedShown.out, "Code", "TARGET_NOT_FOUND") && !existsSync(managerPid), { start: revokedStart.out, show: revokedShown.out });
+    await establishIdpSession({ dir: home2, idpUrl: base, clientId: CLIENT_ID, onPrompt: (p: DeviceLoginPrompt) => void approve(p.userCode) });
     const started = await cotal(["manager", "start"], { cwd: root2, env });
     check("signed in and granted, manager start starts it", started.status === 0 && existsSync(managerPid), started.out);
     const pid2 = Number(readFileSync(managerPid, "utf8").trim());
@@ -839,6 +861,22 @@ try {
         && logged.endsWith("; next: trust the certificate's CA, or a self-signed certificate itself, by setting `NODE_EXTRA_CA_CERTS` to that PEM file for the command that starts the manager, then start it again"), untrustedLog.out);
     check("…and the refusal quotes that line whole, over 400 characters as it is, so the quote ends in its next step",
       [...logged].length > 400 && quoted === logged, { quoted, logged });
+    // The participant's cached sign-in, revoked at the IdP and then removed, is refused before any launch.
+    const joinManagerPid = join(joinRoot, ".cotal", `manager.${spaceKey(CA_SPACE)}.pid`);
+    const joinManagerRuns = () => { try { process.kill(Number(readFileSync(joinManagerPid, "utf8").trim()), 0); return true; } catch { return false; } };
+    await revokeSignIn(loadIdpSession(joinHome, base)!.token);
+    const revokedJoin = await cotal(["manager", "start"], { cwd: joinRoot, env: joinEnv });
+    const revokedJoinText = plain(revokedJoin.out);
+    check("with its sign-in revoked at the IdP, the participant's manager start exits 2 with AUTH_REQUIRED, and Next signs in at that IdP, then starts it",
+      revokedJoin.status === 2 && field(revokedJoin.out, "Code", "AUTH_REQUIRED") && revokedJoinText.includes("the IdP rejected this machine's sign-in, which has expired or was revoked; the manager was not attempted") &&
+        revokedJoinText.includes(`cotal login --idp ${base}, then \`cotal manager start\``), revokedJoin.out);
+    deleteIdpSession(joinHome, base);
+    const signedOutJoin = await cotal(["manager", "start"], { cwd: joinRoot, env: joinEnv });
+    const signedOutJoinText = plain(signedOutJoin.out);
+    check("signed out, the participant's manager start refuses the same way",
+      signedOutJoin.status === 2 && field(signedOutJoin.out, "Code", "AUTH_REQUIRED") && signedOutJoinText.includes("no user is signed in for this space; the manager was not attempted") &&
+        signedOutJoinText.includes(`cotal login --idp ${base}, then \`cotal manager start\``), signedOutJoin.out);
+    check("…and neither start left a manager running", !joinManagerRuns(), { pidFile: existsSync(joinManagerPid) ? readFileSync(joinManagerPid, "utf8") : "absent" });
     const hostDown = await cotal(["down", "--yes"], { cwd: hostRoot, env: hostEnv, sandbox: hostSandbox });
     check("…and the TLS host stops", hostDown.status === 0, hostDown.out);
   }

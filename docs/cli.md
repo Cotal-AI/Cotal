@@ -4996,10 +4996,13 @@ stopped manager saves it again with that option, and says so. A running one refu
 `LIFECYCLE_BLOCKED` and names `cotal manager stop` first.
 
 On a user-auth space this folder hosts, `start` and `restart` need your signed-in, granted login,
-as `cotal up` does for its manager. Without one they refuse `AUTH_REQUIRED` (exit 2) before
-anything is saved or launched, and Next names `cotal login`, then the command again. `stop` and
-`cotal down` need no sign-in there: the broker, the records and the process belong to this folder,
-so the stop reads the manager's own local receipt.
+as `cotal up` does for its manager. On a user-auth space registered here from another host, they
+need your sign-in. Before anything is saved or launched, they confirm the sign-in with its IdP.
+Without one, or when the IdP rejects it because it expired or was revoked, they refuse
+`AUTH_REQUIRED` (exit 2), and Next names `cotal login --idp <base>`, then the command again. Any
+other failure of that check, such as an IdP that does not answer, is left to the start. In a folder
+that hosts the space, `stop` and `cotal down` need no sign-in: the broker, the records and the
+process belong to this folder, so the stop reads the manager's own local receipt.
 
 The manager these verbs act on is the space's one manager service: `manager` when `cotal manager
 start` saved it, or `stack-manager` when `cotal up` did. Stderr names the saved service when it is
@@ -5060,7 +5063,9 @@ cotal manager start --space <space> --runtime <orca|tmux|pty>
 ```
 
 It needs you signed in to the space (`cotal login`) and the space registered on this machine
-(`cotal meshes add`). With the space selected by `cotal use <space>`, a bare `cotal manager start`
+(`cotal meshes add`). A sign-in the IdP rejects because it expired or was revoked counts as none:
+the start refuses `AUTH_REQUIRED` before it launches anything, as [manager](#manager) says. With
+the space selected by `cotal use <space>`, a bare `cotal manager start`
 is enough: it uses the `pty` runtime, which every platform has built in. `orca` and `tmux` need
 their extension first, such as `cotal ext add @cotal-ai/orca`. The command returns once the manager
 answers; `--foreground` keeps it in this terminal instead. `cotal ps` then lists it with the agents
