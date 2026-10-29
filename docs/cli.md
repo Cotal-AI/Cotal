@@ -7944,7 +7944,8 @@ host is stopped by its supervisor: on SIGTERM or SIGINT it closes every lane, re
 and exits 0, or exits after 10 seconds when a lane cannot finish.
 
 At startup the host serves every space it can, names each one it cannot with the reason, and
-retries those every 5 seconds; its ready line names the spaces it retries. A space whose lease a
+retries those every 5 seconds; its ready line names the spaces it serves and the spaces it retries,
+in manifest order. A space whose lease a
 single-space daemon still holds opens once that daemon stops, so you can move spaces from one process
 each onto a host by starting the host on all of them and then stopping the old daemons. A manifest
 that does not read or parse whole still refuses startup. The host rereads the manifest when it
