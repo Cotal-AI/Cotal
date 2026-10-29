@@ -228,6 +228,7 @@
     "smoke:provision-stream-info": "tsx packages/core/smoke/provision-stream-info.smoke.ts",
     "smoke:attention": "tsx extensions/connector-core/smoke/attention.smoke.ts",
     "smoke:focus-drop-exhaustion": "tsx extensions/connector-core/smoke/focus-drop-exhaustion.smoke.ts",
+    "smoke:focus-exclusion-mention": "tsx extensions/connector-core/smoke/focus-exclusion-mention.smoke.ts",
     "smoke:gateway": "tsx extensions/connector-core/smoke/gateway.smoke.ts",
     "smoke:discovery-addressing": "tsx extensions/connector-core/smoke/discovery-addressing.smoke.ts",
     "smoke:injection-framing": "tsx extensions/connector-core/smoke/injection-framing.smoke.ts",
