@@ -10357,7 +10357,14 @@ export class Manager {
     const identity = record.agent.identity;
     if (identity.mode !== "static" || identity.id !== row.actor || identity.lifecycleUid !== row.lifecycleUid) return undefined;
     if (record.instanceId !== this.managerInstanceId || record.agent.space !== this.space) return undefined;
-    if (record.agent.launch.runtime !== row.runtime?.kind) {
+    let runtimeMatches = record.agent.launch.runtime === row.runtime?.kind;
+    if (row.runtime === undefined) {
+      // Non-custodial backends such as pty record no slot reference. A custodial backend still
+      // requires one, and an unavailable backend must refuse rather than select a replacement.
+      const runtime = this.runtimeFor(record.agent.launch.runtime);
+      runtimeMatches = runtime.kind === record.agent.launch.runtime && !isCustodialRuntime(runtime);
+    }
+    if (!runtimeMatches) {
       console.error(`! ${row.alias}: its seat ran on runtime "${record.agent.launch.runtime}" and its slot names "${row.runtime?.kind ?? "none"}"; the lifecycle is retired, not restarted`);
       return undefined;
     }

@@ -5271,12 +5271,12 @@ exit 2, submit no stop and name its pid. Once that process is ended, as with `ki
 same command finds it gone and goes on. After an abrupt manager death, the same logical successor
 terminalizes only its own durable static slots, verify-evicts the predecessor's broker principal,
 records that result in the lifecycle's caller-readable audit detail, reaps the predecessor's seat
-process through the runtime's custody reference recorded on the slot (the pty runtime verifies the
-process start identity in its seat record, so a reused pid is never signalled), and only then
-retires the lifecycle and frees the alias. A seat whose spawn carried `supervise` with restarts left
-is restarted instead of retired: the successor reaps any seat the slot still names, relaunches it
-under the same name, lifecycle uid, credential, persona and cwd, and counts the restart against the
-policy. A seat on a runtime that can adopt a live seat (tmux) and still running when the successor
+process through any runtime custody reference recorded on the slot, and only then retires the
+lifecycle and frees the alias. A seat whose spawn carried `supervise` with restarts left is restarted
+instead of retired: the successor reaps any seat the slot still names, relaunches it under the same
+name, lifecycle uid, credential, persona and cwd, and counts the restart against the policy. New
+built-in `pty` seats have no custody reference. Their supervised recovery validates the runtime
+saved in the seat record; a custodial runtime still requires its matching slot reference. A seat on a runtime that can adopt a live seat (tmux) and still running when the successor
 starts is adopted in place: the successor checks that the recorded tmux server, window and pane are
 the ones the slot names and that the pane's process still runs, then manages that seat again under
 its existing credential, without a restart. Both paths read the record the manager writes to
