@@ -2596,11 +2596,20 @@ export class MeshAgent extends EventEmitter {
     if (!reply.instanceId || lease.managerInstanceId !== reply.instanceId)
       throw new Error("turn-participate lease does not bind the manager instance that answered");
     this.authorizeNativeTurnParticipation(lease);
+    // authorizeNativeTurnParticipation may see the relay already armed. A renewal is also the
+    // explicit recovery path after a lost notice, so it always asks for the current self snapshot.
+    this.requestTurnPull();
     return lease;
   }
 
   nativeTurnParticipationExpiresAt(): number | undefined {
     return this.nativeTurnLeaseValid() ? this.nativeTurnLease!.expiresAt : undefined;
+  }
+
+  /** Number of currently held workflow turns, surfaced or not. Read-only diagnostics for native
+   * ingress and acceptance tests; the manager's next pull remains the settlement authority. */
+  activeTurnCount(): number {
+    return this.activeTurns.size;
   }
 
   private nativeTurnLeaseValid(): boolean {

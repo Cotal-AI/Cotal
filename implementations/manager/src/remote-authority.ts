@@ -14,10 +14,14 @@ import {
   parseGoalIndexEntry,
   parseRemoteManagedAgentRuntimeResult,
   remoteManagerActors,
+  remoteManagerParticipationAuthorizationRequest as coreParticipationAuthorizationRequest,
+  remoteManagerParticipationAuthorized as coreParticipationAuthorized,
   REMOTE_MANAGER_IDENTITY_NAMES,
   type Identity,
   type RemoteManagerAdminAuthorizationRequest,
   type RemoteManagerAdminAuthorizationResult,
+  type RemoteManagerParticipationAuthorizationRequest,
+  type RemoteManagerParticipationAuthorizationResult,
   type RemoteManagerAuthorityMaterial,
   type RemoteManagerAuthorityRequest,
   type RemoteManagerGoalIndexScanRequest,
@@ -276,6 +280,31 @@ export function remoteManagerAdminAuthorized(
       typeof result.authorized !== "boolean")
     throw new Error("manager admin authorization returned different lifecycle, identity, caller, owner, or boolean coordinates");
   return result.authorized;
+}
+
+export function remoteManagerParticipationAuthorizationRequest(
+  state: RemoteManagerIdentityState,
+  actor: string,
+  registrationProof: string,
+  serveEpoch: number,
+  caller: { owner: string; actor: string; lifecycleUid: string },
+): RemoteManagerParticipationAuthorizationRequest {
+  return coreParticipationAuthorizationRequest(
+    { space: state.space, instanceId: state.instanceId, lifecycleUid: state.lifecycleUid, identities: publicIdentities(state) },
+    actor,
+    registrationProof,
+    serveEpoch,
+    caller,
+    `participate${mintLifecycleUid()}`,
+  );
+}
+
+export function remoteManagerParticipationAuthorized(
+  result: RemoteManagerParticipationAuthorizationResult,
+  request: RemoteManagerParticipationAuthorizationRequest,
+  expectedOwner: string,
+): boolean {
+  return coreParticipationAuthorized(result, request, expectedOwner);
 }
 
 function stateFile(root: string, space: string): string {

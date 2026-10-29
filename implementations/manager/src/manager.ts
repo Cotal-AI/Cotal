@@ -611,6 +611,10 @@ export interface ManagerOptions {
     scanGoalIndex: () => Promise<import("@cotal-ai/core").GoalIndexEntry[]>;
     /** Fresh host-owned serve-time admin decision for a broker-authenticated caller tuple. */
     authorizeAdmin: (caller: { owner: string; actor: string; lifecycleUid: string }) => Promise<boolean>;
+    /** Fresh host-owned participation decision for one exact personal caller lifecycle. The host
+     * verifies the current foreground grant and `run` scope. The manager still proves live exact
+     * presence before it issues its finite local lease. */
+    authorizeParticipation?: (caller: { owner: string; actor: string; lifecycleUid: string }) => Promise<boolean>;
     /** Pinned public auth-service base used by retained managed children for fresh bearers. The
      * signerless Manager must select `agent-bearer --exchange-url`, never the local `--dir` arm. */
     agentBearerExchangeUrl: string;
@@ -1162,6 +1166,22 @@ export interface SpawnHooks {
   onUndone?: (code: EpErrorCode) => void;
 }
 
+const TURN_PARTICIPATION_TTL_MS = 5 * 60_000;
+
+/** One native personal lifecycle that may receive workflow turns through this manager. */
+interface PersonalTurnParticipant {
+  name: string;
+  owner: string;
+  actor: string;
+  uid: string;
+  generation?: string;
+  expiresAt: number;
+}
+
+function participantKey(owner: string, actor: string, uid: string): string {
+  return `${owner}.${actor}.${uid}`;
+}
+
 /** The spawn-as-action acceptance floor: the ALLOCATED agent identity (name + the
  *  addressing triple) plus the goal coordinates (goalId = the request id) and
  *  the executor coordinate (the manager incarnation its terminal fences on). Carries NO secret
@@ -1511,6 +1531,7 @@ export class Manager {
    * window would hear `not-found` again.
    */
   private turnAcceptances = new Map<string, { acceptance: TurnAcceptance; ref?: GoalRef; leftoverSince?: number; settled?: { state: string; at: number } }>();
+  private readonly participants = new Map<string, PersonalTurnParticipant>();
   /** Every relayed turn awaiting its seat's yield, by {@link goalKey}. The seat's `turn-pending` pull
    *  scans it; the deadline sweep drives expiry; a seat reap stamps its entries `seatDiedAt`, which
    *  the deadline terminal carries as `agentDownAt` so the run reads that death as L4002.
@@ -1678,7 +1699,7 @@ export class Manager {
       throw new Error("execution: none requires boolean pooled and a non-null remote authority object when supplied");
     if (opts.execution === "none" && (opts.runtime !== undefined || (!!opts.pooled !== !!opts.remoteAuthority)))
       throw new Error("execution: none requires pooled signerless remote authority for remote composition, or genuine local authority, and no runtime option");
-    if (opts.execution === "none" && opts.remoteAuthority && ["renewExecutor", "renewStandingBundle", "mintSessionServing", "mintRetirementRequester", "prepareAgentRetirement", "validateRetainedAgent", "scanGoalIndex", "authorizeAdmin"].some((key) =>
+    if (opts.execution === "none" && opts.remoteAuthority && ["renewExecutor", "renewStandingBundle", "mintSessionServing", "mintRetirementRequester", "prepareAgentRetirement", "validateRetainedAgent", "scanGoalIndex", "authorizeAdmin", "authorizeParticipation"].some((key) =>
       typeof opts.remoteAuthority?.[key as keyof NonNullable<ManagerOptions["remoteAuthority"]>] !== "function"))
       throw new Error("execution: none requires complete closed remote authority callbacks before construction");
     if (opts.pooled && (!opts.remoteAuthority || (opts.execution !== "none" && (opts.runtime === undefined || opts.runtime === "auto" || opts.runtime === "pty"))))
@@ -3993,6 +4014,77 @@ export class Manager {
       throw new EpEnvelopeError("permission-denied", `run-answer is allowed to ${agent.name} only for the open pause named by its pending ask or escalation relay; ${args.runId} ${args.stepKey} is not that pause`);
   }
 
+  /** Find one exact live presence row. Presence is not authority, but a participation lease with no
+   * live addressee would authorize a durable turn nobody can receive. Duplicate exact rows are
+   * refused rather than selected by order. */
+  private liveParticipantPresence(caller: EpCaller): Presence {
+    const principal = principalKey(caller.owner, caller.actor).key;
+    const rows = this.ep.getRoster().filter((p) =>
+      p.card.id === principal && p.lifecycleUid === caller.uid && p.status !== "offline");
+    if (rows.length !== 1)
+      throw new EpEnvelopeError("expired", rows.length === 0
+        ? `personal participant ${principal} (lifecycle ${caller.uid}) has no exact live presence`
+        : `personal participant ${principal} (lifecycle ${caller.uid}) has multiple exact live presence rows; no row was selected`, undefined, "not-executed");
+    return rows[0]!;
+  }
+
+  /** Authorize and renew one personal native participant. Local user-auth authority reads the exact
+   * managed foreground row fresh; a signerless manager asks its registered host. The lease is held
+   * only in memory and is therefore renewed after reconnect or manager restart. */
+  private async serveTurnParticipation(caller: EpCaller): Promise<{
+    owner: string; actor: string; lifecycleUid: string; name: string; managerInstanceId: string; expiresAt: number;
+  }> {
+    if (this.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal(), undefined, "not-executed");
+    if (!/^pa_[a-z2-7]{26}$/.test(caller.actor))
+      throw new EpEnvelopeError("permission-denied", "workflow turn participation is reserved for approved personal conversation actors", undefined, "not-executed");
+    if (!this.remoteAuthority)
+      throw new EpEnvelopeError("unimplemented", "personal workflow participation requires a registered issuing host with fresh lifecycle authority", undefined, "not-executed");
+    if (!this.remoteAuthority.authorizeParticipation)
+      throw new EpEnvelopeError("unimplemented", "the issuing host supplies no closed personal participation authorization", undefined, "not-executed");
+    const authorized = await this.remoteAuthority.authorizeParticipation({ owner: caller.owner, actor: caller.actor, lifecycleUid: caller.uid });
+    if (!authorized)
+      throw new EpEnvelopeError("permission-denied", "the exact personal lifecycle is not currently foreground-authorized with run scope", undefined, "not-executed");
+    const presence = this.liveParticipantPresence(caller);
+    const expiresAt = Date.now() + TURN_PARTICIPATION_TTL_MS;
+    const generation = (caller as EpCaller & { generation?: string }).generation;
+    const participant: PersonalTurnParticipant = {
+      name: presence.card.name, owner: caller.owner, actor: caller.actor, uid: caller.uid,
+      ...(generation !== undefined ? { generation } : {}),
+      expiresAt,
+    };
+    this.participants.set(participantKey(caller.owner, caller.actor, caller.uid), participant);
+    return { owner: caller.owner, actor: caller.actor, lifecycleUid: caller.uid, name: participant.name,
+      managerInstanceId: this.managerInstanceId, expiresAt };
+  }
+
+  private currentParticipant(owner: string, actor: string, uid: string): PersonalTurnParticipant | undefined {
+    const key = participantKey(owner, actor, uid);
+    const p = this.participants.get(key);
+    if (!p) return undefined;
+    if (p.expiresAt <= Date.now()) { this.participants.delete(key); return undefined; }
+    try { this.liveParticipantPresence({ owner, actor, uid }); }
+    catch { this.participants.delete(key); return undefined; }
+    return p;
+  }
+
+  /** A managed seat or a finite authorized personal participant. Only the first carries custody. */
+  private turnTarget(ctx: EpServeContext): { kind: "managed"; agent: ManagedAgent; name: string } | { kind: "personal"; participant: PersonalTurnParticipant; name: string } {
+    if (this.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
+    const t = ctx.request.target!;
+    const managed = this.findManagedByTarget(t);
+    if (managed) return { kind: "managed", agent: managed, name: managed.name };
+    const participant = this.currentParticipant(t.owner, t.actor, t.lifecycleUid);
+    if (participant) return { kind: "personal", participant, name: participant.name };
+    throw new EpEnvelopeError("expired", `target ${t.owner}.${t.actor} (lifecycle ${t.lifecycleUid}) is neither a live managed agent nor a current personal participant of this manager`, undefined, "not-executed");
+  }
+
+  /** Resolve whether an exact turn executor lifecycle is current. */
+  private turnExecutorEpoch(name: string, owner: string, actor: string, uid: string): number | null {
+    const managed = this.agents.get(name);
+    if (managed && this.managedPrincipal(managed) === principalKey(owner, actor).key && managed.lifecycleUid === uid) return 0;
+    return this.currentParticipant(owner, actor, uid)?.name === name ? 0 : null;
+  }
+
   /** A baseline seat may amend only an answer recorded under its own name: it changes its own
    *  position, never another answerer's. Explicit `run` holders and unmanaged operator instruments
    *  keep the reach they have to answer, as {@link authorizeRunAnswer} does. */
@@ -4186,11 +4278,20 @@ export class Manager {
       // caller must hold owner-equality or admin over the TARGET seat — written out for the same
       // reason `input` is (a shared policy, not a shared body).
       turn: (ctx) => this.serveGated(ctx, async () => {
-        const a = targetAgent(ctx);
-        const denied = await this.authorizeNamed(a, callerOf(ctx), await this.epAnyModeAdmin(ctx), ctx.subject.caller);
-        if (denied) throw new EpEnvelopeError("permission-denied", denied, undefined, "not-executed");
-        return this.serveTurnGoal(ctx, a);
+        const target = this.turnTarget(ctx);
+        if (target.kind === "managed") {
+          const denied = await this.authorizeNamed(target.agent, callerOf(ctx), await this.epAnyModeAdmin(ctx), ctx.subject.caller);
+          if (denied) throw new EpEnvelopeError("permission-denied", denied, undefined, "not-executed");
+        } else {
+          const admitted = this.runHosting?.admittedCaller(ctx.subject.caller);
+          if (!admitted || admitted.owner !== target.participant.owner || admitted.actor !== target.participant.actor || admitted.uid !== target.participant.uid)
+            throw new EpEnvelopeError("permission-denied", "a personal participant may be turned only by the workflow run admitted for that exact owner, actor and lifecycle", undefined, "not-executed");
+        }
+        return this.serveTurnGoal(ctx, target);
       }),
+      // A personal native lifecycle must opt in explicitly. The command is self-targeted and returns
+      // only a finite relay lease. It never inserts a ManagedAgent or grants stop/attach/input custody.
+      turnParticipate: (ctx) => this.serveGated(ctx, () => this.serveTurnParticipation(ctx.subject.caller)),
       // The seat's own half of the relay (`manager.self`, stop-self's tier): a seat pulls the
       // turns addressed to ITS incarnation and yields them; no reach beyond itself exists here.
       turnPending: (ctx) => this.serveGated(ctx, () => this.turnPendingFor(ctx.subject.caller)),
@@ -8382,7 +8483,9 @@ export class Manager {
           if (this.remoteAuthority) {
             const key = principalKey(t.owner, t.actor).key;
             for (const a of this.agents.values()) if (a.id === key) return { lifecycleUid: a.lifecycleUid, mappingRevision: 0 };
-            return undefined;
+            const participant = [...this.participants.values()].find((p) =>
+              p.owner === t.owner && p.actor === t.actor && this.currentParticipant(p.owner, p.actor, p.uid) === p);
+            return participant ? { lifecycleUid: participant.uid, mappingRevision: 0 } : undefined;
           }
           if (t.owner === DEV_OWNER) {
             for (const a of this.agents.values()) if (!a.userOwner && a.id === t.actor) return { lifecycleUid: a.lifecycleUid, mappingRevision: 0 };
@@ -9535,7 +9638,10 @@ export class Manager {
    *  path (idempotent retry map, index-CAS-before-bind, create-only bindGoal) but runs it INLINE:
    *  there is no launch to hand off, so the accept either completes durably or unwinds its own
    *  bound goal with a `failed` terminal before refusing. */
-  private async serveTurnGoal(ctx: EpServeContext, a: ManagedAgent): Promise<TurnAcceptance> {
+  private async serveTurnGoal(
+    ctx: EpServeContext,
+    target: { kind: "managed"; agent: ManagedAgent; name: string } | { kind: "personal"; participant: PersonalTurnParticipant; name: string },
+  ): Promise<TurnAcceptance> {
     const gw = this.goalWriter;
     if (!gw) throw new EpEnvelopeError("unavailable", "the manager goal-writer connection is not standing; turn-as-action cannot accept (SPEC 13.6)");
     const serve = this.serviceServe;
@@ -9543,6 +9649,7 @@ export class Manager {
     if (!this.goalReconcileDone)
       throw new EpEnvelopeError("unavailable", "the manager is still reconciling accepted goals at boot; retry shortly (SPEC 13.6)");
     const t = ctx.request.target!; // targeted command: the serve boundary enforced presence + currency
+    const name = target.name;
     const goalId = ctx.request.id;
     const { fingerprint } = submissionFingerprint(ctx.request as unknown, ctx.subject);
     const ref = goalRefOf(ctx.subject, goalId);
@@ -9557,7 +9664,7 @@ export class Manager {
       return prior;
     }
     // Refused here, before anything durable, so the caller's goal id stays free for another seat.
-    this.assertSeatTurnFree(a, t, goalId);
+    this.assertSeatTurnFree(name, t, goalId);
 
     const raw = (ctx.request.args ?? {}) as Record<string, unknown>;
     const payload = String(raw.payload);
@@ -9580,7 +9687,7 @@ export class Manager {
       throw new EpEnvelopeError("failed-precondition", `goal "${goalId}" already ended ${ended.state}; a bound goal is never accepted again (SPEC 13.6)`);
     // Index-CAS-before-bind, exactly as spawn: the entry (floor + note) is the durable relay
     // record a successor rebuilds from, so it must exist before the acceptance is servable.
-    const idx = await recordGoalIndex(gw.ctx, ref, executor.lifecycleUid, { name: a.name, owner: t.owner, actor: t.actor, uid: t.lifecycleUid, readinessDeadlineMs: deadlineMs }, note);
+    const idx = await recordGoalIndex(gw.ctx, ref, executor.lifecycleUid, { name, owner: t.owner, actor: t.actor, uid: t.lifecycleUid, readinessDeadlineMs: deadlineMs }, note);
     if (!idx.recorded && idx.existing.iid !== executor.lifecycleUid)
       throw new EpEnvelopeError("failed-precondition", `goal "${goalId}" was accepted by instance "${idx.existing.iid}"; that instance owns its relay and this attempt provisions nothing (SPEC 13.6)`);
     const b = await bindGoal(gw.ctx, ref, fingerprint);
@@ -9627,7 +9734,7 @@ export class Manager {
       });
       // Again after the awaits, with no await before the maps are written: another caller's
       // accept of this id to this seat may have finished meanwhile, and this unwinds the loser.
-      this.assertSeatTurnFree(a, t, goalId);
+      this.assertSeatTurnFree(name, t, goalId);
     } catch (e) {
       // The accept is inline (no launch closure to fail later), so a post-bind throw unwinds HERE:
       // commit the failed terminal this attempt owns, clear the index, and refuse the accept — an
@@ -9643,7 +9750,7 @@ export class Manager {
           ref, now: Date.now(), cause: "complete", state: "failed", data: { error: msg },
           committer: { instanceId: this.managerInstanceId, epoch: executor.epoch },
           executor: { lifecycleUid: t.lifecycleUid, epoch: 0 },
-          resolveCurrentEpoch: (target) => this.agents.get(a.name)?.lifecycleUid === target.lifecycleUid ? 0 : null,
+          resolveCurrentEpoch: (current) => this.turnExecutorEpoch(name, t.owner, t.actor, current.lifecycleUid),
         });
         await clearGoalIndex(gw.ctx, ref);
       } catch (e2) { console.error(`! turn accept unwind for ${goalId}: ${rejectionText(e2)}`); }
@@ -9651,7 +9758,7 @@ export class Manager {
     }
     const pending: PendingTurn = {
       ref, goalId,
-      seat: { name: a.name, owner: t.owner, actor: t.actor, uid: t.lifecycleUid },
+      seat: { name, owner: t.owner, actor: t.actor, uid: t.lifecycleUid },
       payload, acceptedAt, deadlineAt,
       holdToken, holdEpoch: executor.epoch,
       ...(handoffFrom !== undefined ? { handoffFrom } : {}),
@@ -9659,7 +9766,7 @@ export class Manager {
     this.pendingTurns.set(key, pending);
     this.ensureTurnSweep();
     this.noticeSeatTurns(pending.seat);
-    const acceptance: TurnAcceptance = { name: a.name, owner: t.owner, actor: t.actor, uid: t.lifecycleUid, goalId, fingerprint, deadlineAt, executor };
+    const acceptance: TurnAcceptance = { name, owner: t.owner, actor: t.actor, uid: t.lifecycleUid, goalId, fingerprint, deadlineAt, executor };
     this.turnAcceptances.set(key, { acceptance, ref });
     this.emitGoalProgress(ref, executor.epoch, { phase: "relayed" });
     return acceptance;
@@ -9700,7 +9807,8 @@ export class Manager {
     if (!serve) return;
     // An issued seat credential reads only the versioned rail, under the generation it was issued.
     const a = this.agents.get(seat.name);
-    const generation = a?.lifecycleUid === seat.uid ? a.issued?.generation : undefined;
+    const participant = this.currentParticipant(seat.owner, seat.actor, seat.uid);
+    const generation = a?.lifecycleUid === seat.uid ? a.issued?.generation : participant?.generation;
     const caller = { owner: seat.owner, actor: seat.actor, uid: seat.uid, ...(generation !== undefined ? { generation } : {}) };
     try {
       serve.nc.publish(turnNoticeSubject(this.space, this.managerInstanceId, serve.grant.epoch, caller), new TextEncoder().encode(JSON.stringify({ v: 1 })));
@@ -9711,9 +9819,9 @@ export class Manager {
 
   /** A seat names a turn by goal id alone when it yields, so one incarnation holding two callers'
    *  turns under one id could not say which of the two it answered. */
-  private assertSeatTurnFree(a: ManagedAgent, t: { owner: string; actor: string; lifecycleUid: string }, goalId: string): void {
+  private assertSeatTurnFree(name: string, t: { owner: string; actor: string; lifecycleUid: string }, goalId: string): void {
     if (this.seatTurnKey({ owner: t.owner, actor: t.actor, uid: t.lifecycleUid }, goalId) !== undefined)
-      throw new EpEnvelopeError("failed-precondition", `seat "${a.name}" already holds another caller's turn "${goalId}"; a seat yields by goal id, so it is never handed two turns under one (SPEC 13.6)`);
+      throw new EpEnvelopeError("failed-precondition", `seat "${name}" already holds another caller's turn "${goalId}"; a seat yields by goal id, so it is never handed two turns under one (SPEC 13.6)`);
   }
 
   /** The relay key of the turn addressed to seat incarnation `c` under `goalId`, pending or kept
@@ -9792,7 +9900,7 @@ export class Manager {
       ref: p.ref, now: at, cause: "complete", state: "succeeded", data,
       committer: { instanceId: this.managerInstanceId, epoch },
       executor: { lifecycleUid: p.seat.uid, epoch: 0 },
-      resolveCurrentEpoch: (target) => this.agents.get(p.seat.name)?.lifecycleUid === target.lifecycleUid ? 0 : null,
+      resolveCurrentEpoch: (target) => this.turnExecutorEpoch(p.seat.name, p.seat.owner, p.seat.actor, target.lifecycleUid),
     });
     this.emitGoalProgress(p.ref, epoch, { phase: "terminal", state: fact.state, ...(fact.data !== undefined ? { data: fact.data } : {}) });
     await clearGoalIndex(gw.ctx, p.ref);
