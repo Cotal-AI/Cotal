@@ -17,7 +17,7 @@
  *
  * Run: pnpm smoke:manager-reconcile-startup   (needs nats-server + node on PATH)
  */
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -54,6 +54,7 @@ import {
   epAuthBucket,
   epCall,
   registry,
+  type AgentHandle,
   type Connector,
   type ControlReply,
   type EpCaller,
@@ -495,7 +496,31 @@ try {
     // The yield's commit proves the executor's LIVE currency against the agents map (a seat that
     // died between its yield and the commit refuses `expired`); the adopting manager here never
     // started, so its map is empty and the fixture registers the seat the way a resume would.
-    (adopting as unknown as { agents: Map<string, { name: string; lifecycleUid: string }> }).agents.set(allocated.name, { name: allocated.name, lifecycleUid: seatUid });
+    let adoptedState: "running" | "exited" = "running";
+    const adoptedHandle: AgentHandle = {
+      name: allocated.name, kind: "fixture",
+      status: () => adoptedState,
+      stop: () => { adoptedState = "exited"; },
+      waitForExit: async () => {},
+      interrupt: () => {},
+    };
+    const adoptedPersonaPath = join(workspaceRoot, ".cotal", "agents", `${allocated.name}.md`);
+    const adoptedPersona = `---\nname: ${allocated.name}\n---\nAdopted turn fixture.\n`;
+    writeFileSync(adoptedPersonaPath, adoptedPersona);
+    const adoptedEntry = {
+      id: allocated.actor, name: allocated.name, lifecycleUid: seatUid,
+      agent: "reconcile-stub", spawner: `${runner.owner}.${runner.actor}`, startedAt: ACCEPTED_AT,
+      handle: adoptedHandle,
+      launch: {
+        source: {
+          kind: "persona" as const, ref: allocated.name, configPath: adoptedPersonaPath,
+          configSha256: createHash("sha256").update(adoptedPersona).digest("hex"),
+        },
+        cwd: workspaceRoot, allowSubscribe: [], events: false,
+      },
+    };
+    const adoptedAgents = (adopting as unknown as { agents: Map<string, typeof adoptedEntry> }).agents;
+    adoptedAgents.set(allocated.name, adoptedEntry);
     const adoptedSeat = { owner: "local", actor: allocated.actor, uid: seatUid };
     const asValue = (e: unknown) => ({ code: (e as { code?: string }).code, message: String((e as Error).message).slice(0, 200) });
     const first = await adoptDoors.serveTurnYield(adoptedSeat, { goalId, status: "done" }).then((r) => r, asValue);
