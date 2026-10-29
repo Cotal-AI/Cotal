@@ -1,5 +1,11 @@
 # @cotal-ai/connector-jcode
 
+## 0.127.0
+
+### Patch Changes
+
+- 2feda8b: Reconnect only the private Harness API client when queued-message acknowledgement times out during an attached Jcode TUI's running tool. Preserve the tool when the same bridge reconnects within the bounded window, and name the cause in the terminal diagnostic if recovery fails and ends the seat.
+
 ## 0.126.3
 
 No changes in this release.
