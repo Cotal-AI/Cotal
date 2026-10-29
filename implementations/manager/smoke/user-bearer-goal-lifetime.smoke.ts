@@ -58,6 +58,14 @@ import {
   type EpCommandDef,
   type EpServeGrant,
   type EpServeHandle,
+  holdIssuerSession,
+  type HeldIssuerSession,
+  mintGeneration,
+  connectionAcceptedToken,
+  acceptedReadGrant,
+  importNativeSubjectPermissions,
+  actorLedgerSource,
+  writeAcceptedRow,
 } from "@cotal-ai/core";
 import {
   createCalloutAuth,
@@ -140,6 +148,9 @@ async function main() {
 
   let mgr: InstanceType<typeof Manager> | undefined;
   let compatManager: InstanceType<typeof Manager> | undefined;
+  let cliIssuer: HeldIssuerSession | undefined;
+  let cliManagerPin: string | undefined;
+  const cliIssuedConnections: Array<{ connId: string; generation: string; actor: string }> = [];
   let calloutNc: NatsConnection | undefined;
   const endpoints: CotalEndpoint[] = [];
   const startEndpoint = async (ep: CotalEndpoint) => { endpoints.push(ep); await ep.start(); };
@@ -148,6 +159,7 @@ async function main() {
     for (const ep of endpoints) { try { await ep.stop(); } catch (e) { errors.push(e); } }
     try { await compatManager?.stop({ withAgents: true }); } catch (e) { errors.push(e); }
     try { await mgr?.stop({ withAgents: true }); } catch (e) { errors.push(e); }
+    try { await cliIssuer?.close(); } catch (e) { errors.push(e); }
     try { await calloutNc?.close(); } catch (e) { errors.push(e); }
     try { await killAndAwaitExit(broker); } catch (e) { errors.push(e); }
     if (errors.length === 0) {
@@ -177,6 +189,7 @@ async function main() {
       ...standaloneConnectOpts({ creds: callout.calloutCreds, tls: false }),
     });
 
+    cliIssuer = holdIssuerSession({ servers: SERVERS, space: SPACE, auth, tls: false, name: "lifetime-cli-issuer" });
     startAuthCallout(calloutNc as never, {
       xkeySeed: callout.xkey.seed,
       authAccount: { pub: callout.account.pub, signingSeed: callout.account.signingSeed },
@@ -185,7 +198,31 @@ async function main() {
       token: { key: issuer.localKeySet(), issuer: "https://auth.cotal.test" },
       recordIssuance: async () => {},
       authorizeActor: () => {},
-      permissionsFor: (t, connId) => {
+      permissionsFor: async (t, connId) => {
+        if (t.act.actor === "caller_cli") {
+          if (!cliManagerPin || t.act.managerInstanceId !== cliManagerPin || !t.act.lifecycleUid)
+            throw new Error("CLI fixture requires its actual selected manager and lifecycle");
+          const generation = mintGeneration(t.exp);
+          const acceptedToken = connectionAcceptedToken(connId);
+          const caller = { owner: t.owner, actor: t.act.actor, uid: t.act.lifecycleUid, generation };
+          const rows = epCallerGrantRows(SPACE, ["describe", "status", "spawn", "goal-result"].map((command) => ({
+            endpoint: "manager", command, instanceId: cliManagerPin, instanceOnly: true,
+          })), caller);
+          const permissions = {
+            pub: { allow: [...rows.pub, acceptedReadGrant(SPACE, acceptedToken), `$JS.API.DIRECT.GET.${epcStreamName(SPACE)}.${spacePrefix(SPACE)}.epc.>`] },
+            sub: { allow: [`_INBOX_${connId}.>`, ...rows.sub] },
+          };
+          await cliIssuer!.run(async (session) => {
+            const ref = { space: SPACE, ...caller };
+            const prepared = await session.store.stage({ version: 1, ref,
+              sources: [actorLedgerSource(SPACE, caller.owner, caller.actor, caller.uid)],
+              permissions: importNativeSubjectPermissions(permissions), expiresAt: t.exp });
+            await session.store.release(prepared, async () => {});
+            await writeAcceptedRow(session.accepted, acceptedToken, ref);
+          });
+          cliIssuedConnections.push({ connId, generation, actor: caller.actor });
+          return permissions;
+        }
         const caller = { owner: t.owner, actor: t.act.actor, uid: t.act.lifecycleUid! };
         const rows = epCallerGrantRows(SPACE, [
           { endpoint: "manager", command: "describe" },
@@ -356,6 +393,33 @@ async function main() {
     check("COMPAT: exactly zero mutation submits occurred", mutationSubmits === 0, { mutationSubmits });
     check("COMPAT: preserves not-executed outcome", compatError?.outcome === "not-executed");
     check("COMPAT: actual native spawn handler admitted nothing", admissions === 0, { admissions });
+
+    // The built CLI control API opens its own signed-bearer connection and reads that
+    // connection's actual accepted row. This is an API probe, not a CLI binary journey.
+    const { askManager } = await import("../../cli/dist/lib/control.js");
+    cliManagerPin = mgrIid;
+    const cliUid = mintLifecycleUid();
+    const cliBearer = await issuer.issue({ owner, space: SPACE, actor: "caller_cli", lifecycleUid: cliUid,
+      scope: ["spawn"], view: "manager-caller", managerInstanceId: mgrIid, ttlSec: 60 });
+    const cliIdentity = { owner, actor: "caller_cli", uid: cliUid };
+    const ncPrototype = Object.getPrototypeOf(compatNc) as { publish: NatsConnection["publish"] };
+    const nativePublish = ncPrototype.publish;
+    let cliSubmits = 0;
+    ncPrototype.publish = function(this: NatsConnection, subject, data, options) {
+      const parsed = parseEpSubject(subject);
+      if (parsed?.plane === "request" && parsed.command === "spawn" && parsed.caller.actor === "caller_cli") cliSubmits++;
+      return nativePublish.call(this, subject, data, options);
+    };
+    const issuedBefore = cliIssuedConnections.length;
+    const cliReply = await askManager(SPACE, SERVERS, "spawn", { name: "cli-legacy", agent: "delayed-join" },
+      { bearer: cliBearer, sentinelCreds: callout.sentinelCreds, epCaller: cliIdentity, managerInstanceId: mgrIid, tls: false },
+      "owner", 10_000, { instanceId: mgrIid }).finally(() => { ncPrototype.publish = nativePublish; });
+    check("CLI-API: real signed-bearer legacy preflight keeps failed-precondition", cliReply.ok === false && cliReply.code === "failed-precondition", cliReply);
+    check("CLI-API: legacy preflight keeps explicit not-executed", cliReply.nativeOutcome === "not-executed", cliReply);
+    check("CLI-API: legacy preflight provides goal-result upgrade guidance", cliReply.error?.includes('does not support "goal-result"') === true && cliReply.error.includes("upgrade manager"), cliReply);
+    check("CLI-API: no spawn request or native handler admission occurred", cliSubmits === 0 && admissions === 0, { cliSubmits, admissions });
+    check("CLI-API: its own connection received fresh accepted-row issuance", cliIssuedConnections.length === issuedBefore + 1 && cliIssuedConnections.at(-1)?.actor === "caller_cli", { issuedBefore, issuedAfter: cliIssuedConnections.length });
+
     hideSpawn = true;
     await epCompat.describeService(BASELINE_LIFECYCLE_ENDPOINT, { refresh: true });
     compatNc.publish = compatPublish;
@@ -1042,7 +1106,7 @@ async function main() {
     await cleanup();
   }
 
-  if (pass + fail !== 70) throw new Error(`lifetime suite executed ${pass + fail} checks, expected 70`);
+  if (pass + fail !== 75) throw new Error(`lifetime suite executed ${pass + fail} checks, expected 75`);
   console.log(`\nSmoke suite completed: ${pass} passed, ${fail} failed.`);
   emitSentinel({ passed: pass, failed: fail });
   if (fail > 0) process.exitCode = 1;
