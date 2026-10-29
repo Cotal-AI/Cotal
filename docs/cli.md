@@ -5526,8 +5526,9 @@ presets this machine has, and a name it does not have is refused as `DEPENDENCY_
 `cotal service add <name> --preset <preset> --help` lists a preset's options. An option the preset
 fills itself shows `(default: ...)`, such as the space's root for `--root` and `pty` for the
 manager's `--runtime`. A required option with no default is marked `(required)`, and an option that
-takes a path shows `<dir>` or `<file>`. A missing required option is refused with each one named,
-and the refusal prints the command line with them.
+takes a path shows `<dir>` or `<file>`. An option the service names in camelCase takes a dashed flag,
+so the broker's `logFile` is `--log-file`, as `cotal up` spells it. A missing required option is
+refused with each one named, and the refusal prints the command line with them.
 
 A preset's options describe the service and never choose its space. `add` saves into the space
 `--space` names, or else the selected space or the folder's, as other commands resolve it.

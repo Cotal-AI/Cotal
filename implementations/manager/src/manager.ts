@@ -11373,10 +11373,10 @@ export class Manager {
           term.dispose();
         }
       } catch {
-        throw new EpEnvelopeError("failed-precondition", `cannot inspect Claude input for seat "${a.name}"; use cotal attach --name ${a.name} to inspect and type directly`, undefined, "not-executed");
+        throw new EpEnvelopeError("failed-precondition", `cannot inspect Claude input for seat "${a.name}"; use \`cotal attach --name ${a.name}\` to inspect and type directly`, undefined, "not-executed");
       }
       if (selection)
-        throw new EpEnvelopeError("failed-precondition", `Claude is showing a selection menu for seat "${a.name}"; input text cannot safely select an option. Use cotal attach --name ${a.name}, then arrow keys and Enter; nothing was typed`, undefined, "not-executed");
+        throw new EpEnvelopeError("failed-precondition", `Claude is showing a selection menu for seat "${a.name}"; input text cannot safely select an option. Use \`cotal attach --name ${a.name}\`, then arrow keys and Enter; nothing was typed`, undefined, "not-executed");
       // Snapshot parsing awaits I/O. Keep this write bound to the authorized incarnation and handle.
       if (this.agents.get(a.name) !== a || a.handle !== handle || handle.status() !== "running")
         throw new EpEnvelopeError("failed-precondition", `agent "${a.name}" changed while inspecting its terminal; nothing was typed`, undefined, "not-executed");
