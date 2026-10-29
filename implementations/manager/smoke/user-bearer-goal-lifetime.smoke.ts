@@ -411,7 +411,7 @@ async function main() {
       return nativePublish.call(this, subject, data, options);
     };
     const issuedBefore = cliIssuedConnections.length;
-    const cliReply = await askManager(SPACE, SERVERS, "spawn", { name: "cli-legacy", agent: "delayed-join" },
+    const cliReply = await askManager(SPACE, SERVERS, "start", { name: "cli-legacy", agent: "delayed-join" },
       { bearer: cliBearer, sentinelCreds: callout.sentinelCreds, epCaller: cliIdentity, managerInstanceId: mgrIid, tls: false },
       "owner", 10_000, { instanceId: mgrIid }).finally(() => { ncPrototype.publish = nativePublish; });
     check("CLI-API: real signed-bearer legacy preflight keeps failed-precondition", cliReply.ok === false && cliReply.code === "failed-precondition", cliReply);
