@@ -244,8 +244,9 @@ export const MANAGER_VITALS_COMMAND = "vitals" as const;
 /** The manager endpoint's read commands (`manager.read` class). */
 export const MANAGER_READ_COMMANDS = Object.freeze(["status", "ps", "slots", "inspect", "models", "list-personas", "show-persona", "goal-result"] as const);
 /** The manager endpoint's admin-class commands (`manager.admin`): capability-only + untargeted -
- *  the broker grant (who holds the row) IS the boundary; minted ONLY into operator instruments,
- *  NEVER an agent/spawn profile (the ratified 1c pin). */
+ *  the broker grant (who holds the row) IS the boundary. Minted into the operator instruments and
+ *  into a credential that holds the `admin` capability, and never into the baseline, `spawn` or `run`
+ *  sets (the ratified 1c pin). */
 export const MANAGER_ADMIN_COMMANDS = Object.freeze([
   "purge", "launch",
   "resume-preserved", "commit-resume", "finalize-resume",
