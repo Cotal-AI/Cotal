@@ -293,6 +293,16 @@ try {
   check("failed lanes retry and the full requested cohort eventually serves", await until(() => fairHost.lanes.size === 9, 8_000)
     && [0, 1, 2, 3].every((i) => starts.get(`fair${i}`) === 2));
 
+  // ---- a cooldown that expires inside an admitted batch still schedules its retry ----------------------
+  const retryBatchManifest = join(dir, "retry-batch.json");
+  faults.set("retryBatchFail", { openFailures: 1 });
+  faults.set("retryBatchSlow", { holdOpen: wait(6_000) });
+  write(retryBatchManifest, entries({ retryBatchFail: 501, retryBatchSlow: 502, retryBatchA: 503, retryBatchB: 504 }));
+  const retryBatchHost = await runSpaceHost({ manifest: retryBatchManifest, settings, startup: "servable", open: openStub,
+    label: "retry batch host", entry: "retry-batch --spaces", serving: "serving", log: (l) => logLines.push(l) });
+  check("a retry already due when another admitted open settles runs without waiting for the backstop",
+    await until(() => retryBatchHost.lanes.size === 4, 2_000) && starts.get("retryBatchFail") === 2);
+
   // ---- a replacement arriving during a close is read before the next admission -------------------------
   const beforeClose: Record<string, number> = { ...queuedPorts, staleQueued: 401 };
   delete beforeClose.queued0;
@@ -347,7 +357,7 @@ try {
   check("shutdown never starts queued lanes and drains every admitted lane",
     [0, 1, 2].every((i) => count(`stopQueued${i}`, "open") === 1 && count(`stopQueued${i}`, "closed") === 1)
     && [3, 4, 5, 6, 7].every((i) => starts.get(`stopQueued${i}`) === undefined));
-  await Promise.all([queuedHost.ended, fairHost.ended]);
+  await Promise.all([queuedHost.ended, fairHost.ended, retryBatchHost.ended]);
 } finally {
   rmSync(dir, { recursive: true, force: true });
 }

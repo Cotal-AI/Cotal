@@ -336,9 +336,13 @@ export async function runSpaceHost<S = undefined>(options: SpaceHostOptions<S>):
         inflight.delete(open);
       }
     }));
+    if (stopping) return;
     let nextRetry = Infinity;
     const afterBatch = performance.now();
-    for (const at of retryAfter.values()) if (at > afterBatch) nextRetry = Math.min(nextRetry, at);
+    for (const [space, at] of retryAfter) {
+      if (at <= afterBatch) queued.add(space);
+      else nextRetry = Math.min(nextRetry, at);
+    }
     if (Number.isFinite(nextRetry)) schedule(Math.max(0, nextRetry - afterBatch) / 1000);
     if (queued.size > 0 && opening.size + inflight.size < MAX_CONCURRENT_OPENS) schedule(0);
   };
