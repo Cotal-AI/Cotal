@@ -3420,7 +3420,7 @@ anything. A broker that does not answer, or a space name already registered, bec
 than an error. For a name added by hand, the first choice is another name. Replacing a registered
 record then asks you to type `y`; Enter keeps No. Nothing is written before that last question, and
 a cancel at any question says nothing was registered. A name prepared or started on this machine, or
-listed by a catalog, is not offered for replacement. Anything you pass on the command line is taken as given and not asked again. Without
+listed by a catalog, is not offered for replacement. Anything you pass on the command line, `--tls` included, is taken as given and not asked again. Without
 a terminal - a script, an agent, CI - nothing prompts and the flag form's errors stand
 (`COTAL_NO_PROMPT=1` forces that too).
 
@@ -3444,6 +3444,7 @@ through the record demands the handshake (and `meshes add tls://…` against a p
 refused at registration). Without required TLS the fence admits loopback literals, and
 private-overlay literals only with `--allow-unencrypted-overlay`, which records your acceptance that
 the overlay is protected only while its tunnel is up ([Run a mesh](run-a-mesh.md#which-addresses-you-may-register)). RFC1918 addresses are refused in both modes because a cafe LAN is private but does not belong to you.
+`--force` does not change these address rules.
 
 A **user-auth** mesh registers from supplied pinned trust, never guessed: `--user-auth-file`
 takes the bundle exported where the mesh runs; `--from` asks before it dials the address at all,

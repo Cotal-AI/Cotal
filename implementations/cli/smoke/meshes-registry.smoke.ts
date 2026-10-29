@@ -10,14 +10,16 @@
  *    on that sweep and on every later one; a pre-origin record is `up` and is kept the same way.
  *    (REVERSAL of the previous origin split: redness of "sweep prunes a dead mesh this machine
  *    started" / "absent origin = `up`" is expected and intended.)
- *  • `add` verifies against the real broker before recording, and records nothing when that fails;
+ *  • `add` verifies against the real broker before recording, and records nothing when that fails,
+ *    over TLS too: a host name whose broker requires TLS registers through the handshake;
  *  • `--force` is the explicit record-without-verifying / replace escape;
  *  • `add` refuses a space name `space create` refuses, and `rm` still removes one an earlier
  *    release registered;
  *  • `rm` drops records, releases the `current` pointer, and refuses a mesh running here, saying
  *    that on its pidfile root `cotal down` drops the record.
  *
- * Needs `nats-server` on PATH (as the rest of smoke:ci does) for the live-broker probes.
+ * Needs `nats-server` on PATH (as the rest of smoke:ci does) for the live-broker probes, and
+ * `openssl` for the test certificates.
  *
  * KNOWN LIMIT: the live broker here is open and JetStream-less, so the AUTH admission path is
  * covered only by its refusals (a broker that enforces nothing, a root whose trust does not
@@ -28,7 +30,7 @@
 import { strict as assert } from "node:assert";
 import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { createServer } from "node:net";
+import { connect as netConnect, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { SMOKE_BROKER_TOKEN, freePort, listenOn, onFreePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
@@ -101,6 +103,37 @@ async function run(positionals: string[], values: Record<string, string | boolea
 }
 class ExitSignal extends Error {}
 
+/** The runner's environment for a child that trusts `ca` from startup (Node reads
+ *  NODE_EXTRA_CA_CERTS only then), without session credentials or instrument knobs. */
+function trustingChildEnv(ca: string): NodeJS.ProcessEnv {
+  // NO SESSION CREDENTIALS AND NO INSTRUMENT KNOBS IN ANY CHILD.
+  //
+  // Spreading the runner's whole environment handed a child a live managed session's credential and
+  // broker URL, and no child here needs any of it: the downgrade fixture inlines its key, cert and
+  // redirect target into its source, and a registration child is handed its sandbox home explicitly.
+  // Not "reviewed safe" — that would claim inheritance was measured harmless; these children simply
+  // have no business holding connection material.
+  //
+  // The named knobs go too, and NODE_TLS_REJECT_UNAUTHORIZED is the one that matters: an ambient
+  // `0` would switch off exactly the certificate verification these children exercise, and a cell
+  // would then pass for a reason that has nothing to do with the policy under test.
+  // A deny-list rather than a whitelist on purpose — a whitelist breaks the child the first time it
+  // legitimately needs a new variable, and the repair for that is always to widen it back to
+  // everything.
+  const DENIED_KNOBS = /^(NODE_OPTIONS|NODE_TLS_REJECT_UNAUTHORIZED|SSL_CERT_FILE|SSL_CERT_DIR|(HTTP|HTTPS|ALL|NO)_PROXY)$/i;
+  const childEnv: NodeJS.ProcessEnv = { NODE_EXTRA_CA_CERTS: ca };
+  for (const [k, v] of Object.entries(process.env)) {
+    // The `startsWith("COTAL_")` test is written out rather than folded into DENIED_KNOBS because
+    // the census matches that exact spelling (`suite-ambient-env.smoke.ts:52`). Folding it into one
+    // regex is a STRICTER filter that the census reads as NO filter at all — measured: the combined
+    // form failed the census naming this file. One more way that instrument grades a spelling
+    // rather than the property, noted here because the next person to tidy this loop will hit it.
+    if (k.startsWith("COTAL_") || DENIED_KNOBS.test(k)) continue;
+    childEnv[k] ??= v;
+  }
+  return childEnv;
+}
+
 /**
  * Run the REAL pinned-fetch policy against an `https://` source whose 302 points at plaintext,
  * out of process so the self-signed CA can be trusted at startup (Node reads NODE_EXTRA_CA_CERTS
@@ -132,31 +165,7 @@ async function httpsDowngradeFixture(
   ], { stdio: "ignore" });
   if (gen.status !== 0 || !existsSync(cert)) return { ok: false, why: "openssl unavailable" };
 
-  // NO SESSION CREDENTIALS AND NO INSTRUMENT KNOBS IN EITHER CHILD.
-  //
-  // Spreading the runner's whole environment handed a child a live managed session's credential and
-  // broker URL, and neither child needs any of it: the server's key, cert and redirect target are
-  // inlined into its source at write time, and the probe imports one function and fetches one URL.
-  // Not "reviewed safe" — that would claim inheritance was measured harmless; these children simply
-  // have no business holding connection material.
-  //
-  // The named knobs go too, and NODE_TLS_REJECT_UNAUTHORIZED is the one that matters: an ambient
-  // `0` would switch off exactly the certificate verification this fixture exists to exercise, and
-  // the downgrade cell would then pass for a reason that has nothing to do with the redirect policy.
-  // A deny-list rather than a whitelist on purpose — a whitelist breaks the child the first time it
-  // legitimately needs a new variable, and the repair for that is always to widen it back to
-  // everything.
-  const DENIED_KNOBS = /^(NODE_OPTIONS|NODE_TLS_REJECT_UNAUTHORIZED|SSL_CERT_FILE|SSL_CERT_DIR|(HTTP|HTTPS|ALL|NO)_PROXY)$/i;
-  const childEnv: NodeJS.ProcessEnv = { NODE_EXTRA_CA_CERTS: cert };
-  for (const [k, v] of Object.entries(process.env)) {
-    // The `startsWith("COTAL_")` test is written out rather than folded into DENIED_KNOBS because
-    // the census matches that exact spelling (`suite-ambient-env.smoke.ts:52`). Folding it into one
-    // regex is a STRICTER filter that the census reads as NO filter at all — measured: the combined
-    // form failed the census naming this file. One more way that instrument grades a spelling
-    // rather than the property, noted here because the next person to tidy this loop will hit it.
-    if (k.startsWith("COTAL_") || DENIED_KNOBS.test(k)) continue;
-    childEnv[k] ??= v;
-  }
+  const childEnv = trustingChildEnv(cert);
   const serverJs = join(dir, "server.mjs");
   writeFileSync(serverJs, `import { createServer } from "node:https";\nimport { readFileSync } from "node:fs";\nconst s = createServer({ key: readFileSync(${JSON.stringify(key)}), cert: readFileSync(${JSON.stringify(cert)}) }, (_q, res) => { res.statusCode = 302; res.setHeader("location", ${JSON.stringify(`${plaintextTarget}/health`)}); res.end(); });\ns.listen(0, "127.0.0.1", () => console.log(JSON.stringify({ port: s.address().port })));\n`);
   const server = spawn(process.execPath, [serverJs], { stdio: ["ignore", "pipe", "ignore"], env: childEnv });
@@ -410,6 +419,44 @@ try {
   const cafeTls = await run(["add", "cafe"], { server: "tls://192.168.1.10:4222", root, tls: true, force: true });
   check("RFC1918 stays refused even with TLS intent (a cafe LAN is private too)",
     cafeTls.code === 1 && findMesh("cafe") === undefined, cafeTls.out);
+
+  // The production shape, verified rather than forced: a broker that requires TLS, whose certificate
+  // names only a host name, registered by that name through the probe and the trust check. The CLI
+  // runs in a child that trusts the test CA from startup.
+  {
+    const pki = mkdtempSync(join(tmpdir(), "cotal-tlshost-"));
+    roots.push(pki);
+    const openssl = (...args: string[]) => assert.equal(spawnSync("openssl", args, { stdio: "ignore" }).status, 0, `openssl ${args.join(" ")}`);
+    openssl("req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", join(pki, "ca.key"), "-out", join(pki, "ca.pem"), "-days", "1", "-subj", "/CN=meshes-registry test CA");
+    openssl("req", "-newkey", "rsa:2048", "-nodes", "-keyout", join(pki, "leaf.key"), "-out", join(pki, "leaf.csr"), "-subj", "/CN=localhost");
+    writeFileSync(join(pki, "leaf.ext"), "subjectAltName=DNS:localhost\n");
+    openssl("x509", "-req", "-in", join(pki, "leaf.csr"), "-CA", join(pki, "ca.pem"), "-CAkey", join(pki, "ca.key"), "-CAcreateserial", "-out", join(pki, "leaf.pem"), "-days", "1", "-extfile", join(pki, "leaf.ext"));
+    const tlsPort = await freePort();
+    const tlsBroker = spawn("nats-server", ["-a", "127.0.0.1", "-p", String(tlsPort), "--tls", "--tlscert", join(pki, "leaf.pem"), "--tlskey", join(pki, "leaf.key"), "-sd", mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN))], { stdio: "ignore" });
+    teardownOnSignal(tlsBroker);
+    try {
+      const accepts = () => new Promise<boolean>((done) => { const s = netConnect(tlsPort, "127.0.0.1", () => { s.destroy(); done(true); }); s.on("error", () => done(false)); });
+      for (let i = 0; i < 50 && !(await accepts()); i++) await new Promise((r) => setTimeout(r, 100));
+      const bin = new URL("../../../bin/cotal.ts", import.meta.url).pathname;
+      const env = { ...trustingChildEnv(join(pki, "ca.pem")), COTAL_HOME: home, COTAL_NO_PROMPT: "1", COTAL_SKIP_CONNECTOR_SEED: "1" };
+      const add = (server: string, flags: string[], extra: NodeJS.ProcessEnv = {}) =>
+        spawnSync(process.execPath, ["--import", "tsx", bin, "meshes", "add", "tls-host-live", "--server", server, "--root", root, ...flags], { encoding: "utf8", env: { ...env, ...extra }, timeout: 60_000 });
+      // The trust check runs: without the CA the handshake fails and nothing is recorded.
+      const untrusted = add(`tls://localhost:${tlsPort}`, [], { NODE_EXTRA_CA_CERTS: "" });
+      check("add tls://<host name> without the issuing CA is refused at the handshake",
+        untrusted.status === 1 && untrusted.stderr.includes("could not complete the handshake") && findMesh("tls-host-live") === undefined, untrusted.stdout + untrusted.stderr);
+      const byScheme = add(`tls://localhost:${tlsPort}`, []);
+      check("add tls://<host name> registers a TLS broker through the probe, recording the requirement",
+        byScheme.status === 0 && findMesh("tls-host-live")?.tlsRequired === true, { out: byScheme.stdout + byScheme.stderr, entry: findMesh("tls-host-live") });
+      removeMesh("tls-host-live");
+      const byFlag = add(`nats://localhost:${tlsPort}`, ["--tls"]);
+      check("add nats://<host name> --tls registers the same broker the same way",
+        byFlag.status === 0 && findMesh("tls-host-live")?.tlsRequired === true, { out: byFlag.stdout + byFlag.stderr, entry: findMesh("tls-host-live") });
+      removeMesh("tls-host-live");
+    } finally {
+      tlsBroker.kill("SIGKILL");
+    }
+  }
 
   // ── add: --mode user with SUPPLIED pinned trust ────────────────────────────────────────────────────
   // The old refusal's reasoning — IdP pins must be established, not guessed — is satisfied by
@@ -1370,6 +1417,18 @@ try {
   const newAsk = seededSafe.asked.find((a) => a.kind === "confirm");
   check("a new record's last question keeps its default", newAsk?.message === "Register this mesh?" && newAsk.initialValue === undefined, seededSafe.asked);
   removeMesh("seeded-safe");
+
+  // `--tls` holds in the guided form as it does in the flag form: the probe requires the handshake,
+  // and a host name passes the address rule and is recorded with the requirement.
+  const tlsPlain = driver(["tls-guided", "cancel"]);
+  const tlsPlainOut = await addWizard({ server: LIVE, root, tls: true }, root, tlsPlain.io as never);
+  check("guided --tls against a plaintext broker fails the check and writes nothing",
+    tlsPlainOut === false && tlsPlain.asked.some((a) => a.message === "The check did not pass. What next?") && findMesh("tls-guided") === undefined, tlsPlain.asked);
+  const tlsHost = driver(["anyway", "tls-host", true]);
+  const tlsHostOut = await addWizard({ server: DEAD.replace("127.0.0.1", "localhost"), root, tls: true }, root, tlsHost.io as never);
+  check("guided --tls registers a host name with the TLS requirement",
+    tlsHostOut === true && findMesh("tls-host")?.tlsRequired === true, { asked: tlsHost.asked, entry: findMesh("tls-host") });
+  removeMesh("tls-host");
 
   // 1. A name that came in on the command line must still hit the clash gate.
   recordMesh({ space: "taken", server: LIVE, root, mode: "open", origin: "manual", ts: new Date(0).toISOString() });
