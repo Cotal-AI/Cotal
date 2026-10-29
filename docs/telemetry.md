@@ -132,7 +132,7 @@ and `ci` as above, and:
 | `installMethod` | `"installer"`, `"npm"` or `"unknown"` | `installer` under the launcher `get.cotal.ai` writes, `npm` when the binary runs from a `node_modules` tree. |
 | `connectors` | `{ kind, version }` array | The installed connectors by kind (`claude`, `opencode`, `codex`, `hermes`, `jcode`, `pi`), from the extensions manifest. |
 | `extensions` | `{ name, version }` array | The other installed `@cotal-ai/*` packages. Third-party packages are not listed. |
-| `runtimes` | string array | The registered runtime names (`pty`, `tmux`, `cmux`, `orca`, `herdr`). |
+| `runtimes` | string array | The registered runtime names (`pty`, `tmux`, `cmux`, `orca`, `herdr`, `paseo`). |
 | `meshes` | integer | How many meshes the mesh registry holds. |
 | `hostedMesh` | boolean | Whether any registered mesh uses user sign-in. |
 | `uptimeDays` | integer | Whole days since `telemetry.json` was created. |
