@@ -141,7 +141,7 @@ check("re-login is deterministic (same sub → same owner)",
   const called = await bridge.exchange(idpJwt, { actor: "agent_1", view: "manager-caller", managerInstanceId: instanceId });
   const act = (await validateUserToken(called.token, { key: cotalIssuer.localKeySet(), issuer: "https://auth.cotal.test", audience: SPACE })).act;
   check("a manager-caller bearer binds the requested instance", act.view === "manager-caller" && act.managerInstanceId === instanceId);
-  check("a manager-caller exchange answers only token, owner and exp", Object.keys(called).sort().join() === "exp,owner,token", Object.keys(called));
+  check("a manager-caller exchange answers with token, owner, exp and the current grant", Object.keys(called).sort().join() === "exp,grant,owner,token", Object.keys(called));
 }
 
 await rejects("ledger deny fails the exchange", () => bridge.exchange(idpJwt, { actor: "denied_agent" }), "ledger");

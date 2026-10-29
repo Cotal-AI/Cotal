@@ -506,7 +506,7 @@ try {
   check("a granted user reports the ledger's read, post and scope", granted.code === 0 && JSON.stringify(granted.env.result?.read) === '["general"]' && JSON.stringify(granted.env.result?.post) === '["general","ops"]' && JSON.stringify(granted.env.result?.capabilities) === '["spawn"]' && granted.env.result?.dms === false, granted.env.result);
   status = { idpUrl: "https://idp.example", login: { sub: "sub-1", expiresAt: later }, owner: "u_owner" };
   const remote = await call();
-  check("a grant ledger on another machine is a partial read, exit 4", remote.code === 4 && remote.env.outcome === "partial" && remote.env.warnings.some((w) => w.code === "GRANT_NOT_LOCAL") && remote.env.result?.read === null, remote.env);
+  check("a grant with no local row or issuer answer is a partial read, exit 4", remote.code === 4 && remote.env.outcome === "partial" && remote.env.warnings.some((w) => w.code === "GRANT_UNAVAILABLE") && remote.env.result?.read === null && remote.env.result?.dms === null, remote.env);
   release();
 }
 
@@ -519,8 +519,8 @@ try {
   mkdirSync(join(remoteRoot, ".cotal"), { recursive: true });
   const remoteEnv = { ...cleanEnv, HOME: remoteHome, USERPROFILE: remoteHome, TMPDIR: remoteHome, COTAL_HOME: join(remoteHome, ".cotal"), XDG_CONFIG_HOME: join(remoteHome, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1" };
   const remoteSpace = "remote-whoami";
-  let idpRequests = 0;
-  const idp = createServer((_req, res) => { idpRequests++; res.writeHead(503); res.end("offline fixture"); });
+  const idpRequests: string[] = [];
+  const idp = createServer((req, res) => { idpRequests.push(req.url ?? ""); res.writeHead(503); res.end("offline fixture"); });
   await new Promise<void>((resolve) => idp.listen(0, "127.0.0.1", resolve));
   const idpUrl = `http://127.0.0.1:${(idp.address() as AddressInfo).port}/auth`;
   const priorHome = process.env.COTAL_HOME;
@@ -539,11 +539,11 @@ try {
     const fixtureToken = "offline-whoami-fixture-not-a-live-credential";
     saveIdpSession(remoteEnv.COTAL_HOME, idpUrl, { token: fixtureToken, sub: "fixture-user", expiresAt: Math.floor(Date.now() / 1000) + 3600 });
     const signed = await read("--json");
-    check("the native remote provider leaves a logged-in user's grant unknown, not empty", signed.code === 4 && signed.env?.outcome === "partial" && signed.env.completeness === "partial" && signed.env.result?.identity?.grant === "not-local" && signed.env.result.identity.principal === null && signed.env.result.identity.owner === null && signed.env.result.identity.actor === "cli" && signed.env.result.identity.subject === "fixture-user" && signed.env.result.read === null && signed.env.result.post === null && signed.env.result.capabilities === null && signed.env.warnings.some((w) => w.code === "GRANT_NOT_LOCAL"), signed);
+    check("an unavailable remote issuer leaves a logged-in user's grant unknown, not empty", signed.code === 4 && signed.env?.outcome === "partial" && signed.env.completeness === "partial" && signed.env.result?.identity?.grant === "not-local" && signed.env.result.identity.principal === null && signed.env.result.identity.owner === null && signed.env.result.identity.actor === "cli" && signed.env.result.identity.subject === "fixture-user" && signed.env.result.read === null && signed.env.result.post === null && signed.env.result.dms === null && signed.env.result.capabilities === null && signed.env.warnings.some((w) => w.code === "GRANT_UNAVAILABLE"), signed);
     const human = await read("--plain");
     check("a cached remote login with no locally derivable principal is not called signed out", human.code === 4 && /identity:\s+cached user login/.test(human.stdout) && /principal:\s+not known on this machine/.test(human.stdout) && !/not signed in|sign in with `cotal login`/.test(human.stdout), human);
     check("the remote reports never print the cached login token", ![signed.stdout, signed.stderr, human.stdout, human.stderr].some((text) => text.includes(fixtureToken)), {});
-    check("whoami stays offline with a cached login and an uncached catalog", idpRequests === 0, { idpRequests });
+    check("whoami does not refresh the remote space catalog", idpRequests.every((path) => !path.includes("spaces")), { idpRequests });
   } finally {
     if (priorHome === undefined) delete process.env.COTAL_HOME;
     else process.env.COTAL_HOME = priorHome;

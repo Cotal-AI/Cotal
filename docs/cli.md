@@ -4076,9 +4076,10 @@ cotal whoami --creds <file> [--json | --plain]
 ```
 
 Reports the identity this CLI acts under in the selected space and what it may read, post and do.
-It reads the mesh registry, the login cache and, when it is on this machine, the user-auth grant
-ledger. It does not refresh the remote space catalog or contact the IdP. A one-shot command has no
-session, so there is no unread count or connection state to report.
+It reads the mesh registry and login cache. For a signed-in remote user-auth space it asks the
+pinned issuer to exchange a fresh IdP proof and reports the current grant returned beside the
+bearer. It does not refresh the remote space catalog or connect to the broker. A one-shot command
+has no mesh session, so there is no unread count or connection state to report.
 
 | Mesh | `identity.kind` | What it may do |
 |---|---|---|
@@ -4090,14 +4091,16 @@ session, so there is no unread count or connection state to report.
 | A space `space add --force` registered without checking its broker | the kind its recorded mode gives | What that mode allows, if the broker enforces it: `modeChecked` is `false`, and the run is `partial` (exit 4) with `MODE_NOT_CHECKED`, naming how to add it again with the check |
 
 A user who is not signed in has no principal. A signed-in user with no ledger row (`grant:
-"not-granted"`) may read and post nothing. When the grant ledger is on another machine the grant
-cannot be read here: `read`, `post` and `capabilities` are `null`, the run is `partial` (exit 4) and
-the `GRANT_NOT_LOCAL` warning says so. A remote registration can hold a cached login without the
-secret that derives its owner and principal. Those fields stay `null`; the report calls the
-principal unknown on this machine, rather than calling the user signed out. The cached expiry is
-advisory and the command does not verify the login with the IdP. `dms` says whether the identity
-may read DM history: on an open mesh, or with the space signer's audit credential on an authenticated mesh. The report
-reads local configuration and does not contact the broker to check its authentication requirements.
+"not-granted"`) may read and post nothing. On a remote user-auth space, `read`, `post`, `dms` and
+`capabilities` come from the stock issuer's current grant response. The command never infers them
+from a successful exchange, token presence, or decoded bearer claims. Each report exchanges again,
+so a grant change appears on the next report. When the issuer is unavailable, refuses the request,
+or does not return an authoritative grant, the access fields remain unknown, the run is `partial`
+(exit 4), and a warning names the state. A remote registration can hold a cached login while the
+issuer is unavailable. Until the issuer answers, the owner and principal stay `null`; the report
+calls the principal unknown on this machine rather than calling the user signed out. The cached
+expiry is advisory. `dms` says whether the identity may read its own DM history, every DM, or none.
+The report does not contact the broker to check its authentication requirements.
 So an address no registration names is reported as unknown, never as open; adding the space with
 `cotal space add` checks the broker. The same holds for the space's own folder: its signer does not
 say whether a broker at another address serves the space, and the remedy names `cotal whoami --space

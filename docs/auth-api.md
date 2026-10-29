@@ -122,7 +122,7 @@ Content type: `application/json`.
 
 `POST /exchange`
 
-No loopback capability on this listener. Fresh pinned-issuer/audience IdP proof or managed ledger actor secret authorizes the selected actor. Public views are channel-writer, channel-purger, manager-caller, session-caller and transfer-writer; other views return 403. ttlSec is constrained by issuer policy and proof expiry; agent bearer cap is 300 seconds. Invalid proof or manager selection returns 401. Refused proof/view attempts share the public peer budget; successful credentials still mint when the budget is full. Origin is refused.
+No loopback capability on this listener. Fresh pinned-issuer/audience IdP proof or managed ledger actor secret authorizes the selected actor. A successful human exchange includes the current grant the issuer authorized; a managed-agent exchange keeps the token, owner and exp response. Public views are channel-writer, channel-purger, manager-caller, session-caller and transfer-writer; other views return 403. ttlSec is constrained by issuer policy and proof expiry; agent bearer cap is 300 seconds. Invalid proof or manager selection returns 401. Refused proof/view attempts share the public peer budget; successful credentials still mint when the budget is full. Origin is refused.
 
 ### Parameters
 
@@ -1673,6 +1673,9 @@ These schemas describe the HTTP request and response wrappers. The downloadable 
     "exp": {
       "type": "integer",
       "minimum": 0
+    },
+    "grant": {
+      "$ref": "#/components/schemas/UserAuthGrant"
     }
   },
   "required": [
@@ -1680,6 +1683,45 @@ These schemas describe the HTTP request and response wrappers. The downloadable 
     "owner",
     "exp"
   ]
+}
+```
+
+### UserAuthGrant
+
+```json
+{
+  "type": "object",
+  "description": "Current issuer-authorized agent grant. Present for a human IdP exchange and absent for a managed-agent secret exchange.",
+  "properties": {
+    "scope": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "allowSubscribe": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "allowPublish": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "dmHistory": {
+      "const": "own"
+    }
+  },
+  "required": [
+    "scope",
+    "allowSubscribe",
+    "allowPublish",
+    "dmHistory"
+  ],
+  "additionalProperties": false
 }
 ```
 
