@@ -925,8 +925,9 @@ async function preserveStateDown(storeOverride?: string, sessionStores: readonly
         // The delivery daemon was stopped above as the Plane 3 fence, and a refusal used to leave
         // it stopped: the operator read "running, unfenced mesh" while no spawn, retirement or join
         // could complete until the next `cotal up` (#4510). Start it again, and when that fails say
-        // so in the refusal, so what it names is what is actually left.
-        if (deliveryFenced) {
+        // so in the refusal, so what it names is what is actually left. An open mesh runs no
+        // daemon, so one an earlier open boot left behind stays stopped.
+        if (deliveryFenced && mesh.mode !== "open") {
           const notRestarted = await restartFencedDelivery(mesh.space, mesh.server, target.auth.tls === true);
           if (notRestarted !== undefined) {
             const message = `${cause instanceof Error ? cause.message : String(cause)}; the delivery daemon stopped for the cut could not be started again (${notRestarted})`;

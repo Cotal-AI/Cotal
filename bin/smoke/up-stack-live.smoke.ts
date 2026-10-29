@@ -23,6 +23,8 @@
  *     retired, a `--no-manager` refresh stays broker-only, a refresh over a manager pidfile that
  *     holds no pid exits 1 with the degraded report with or without `--runtime`, and a bare refresh
  *     restores the manager.
+ *  3d. In the first root, which still holds the static stack's accounts, an open `up --detach` exits
+ *     0 and starts no delivery daemon, and its `down` stops the broker and manager and nothing else.
  *  4. #1307: Ctrl-C on a FOREGROUND `up` follows the same sparing rule as bare `down`. One managed
  *     seat (a shim `claude` on PATH: a real core-dist endpoint that joins presence and stays alive)
  *     runs on the in-process pty runtime, so it cannot outlive the manager: after the SIGINT the
@@ -37,7 +39,7 @@
  */
 import { spawn as spawnProc, spawnSync, type ChildProcess } from "node:child_process";
 import { createConnection } from "node:net";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { renderDetachedSummary } from "../../implementations/cli/src/lib/up-report.js";
@@ -109,6 +111,16 @@ const portOpenAt = (port: number) =>
     s.setTimeout(400, () => { s.destroy(); res(false); });
   });
 const portOpen = () => portOpenAt(PORT);
+/** The pids of the running delivery daemons for `space`, read from the process table (Linux). */
+const deliveryDaemons = (space: string) => readdirSync("/proc").filter((entry) => /^\d+$/.test(entry)).filter((entry) => {
+  try {
+    const argv = readFileSync(`/proc/${entry}/cmdline`, "utf8").split("\0");
+    const at = argv.indexOf("__daemon-deliver");
+    return at >= 0 && argv[at + 1] === "--space" && argv[at + 2] === space;
+  } catch {
+    return false;
+  }
+}).map(Number);
 
 const pids: number[] = [];
 let startedOccupant = false;
@@ -464,9 +476,15 @@ try {
 
   // Open mode in the SAME root retains static-auth files from the prior boot. Reporting follows the
   // effective live mode, not stale on-disk auth material: broker + manager, never delivery/auth-service.
+  // The mode also decides what starts: no delivery daemon, so the next down has none to stop.
   ok("static auth material remains before the open-mode reporting check", existsSync(join(root, ".cotal", "auth")));
   const open = cli("up", "--detach", "--open", "--server", SERVER);
   ok("open up --detach exits 0", open.status === 0, open.stdout + open.stderr);
+  const openStack = [pidOf("nats.pid"), pidOf(recordName(MANAGER_PIDFILE))];
+  pids.push(...openStack);
+  ok("an open up over static accounts starts no delivery daemon",
+    !existsSync(record(DELIVERY_PIDFILE)) && (process.platform !== "linux" || deliveryDaemons(SPACE).length === 0),
+    { pidfile: existsSync(record(DELIVERY_PIDFILE)), daemons: process.platform === "linux" ? deliveryDaemons(SPACE) : "not read" });
   ok(
     "open up reports the exact running component set",
     /^✓ running in the background: nats-server \(pid \d+\), manager - stop with: `cotal down`$/m.test(plain(open.stdout)),
@@ -476,6 +494,10 @@ try {
   ok("a folder that now names its space gets no default-space note", !/names no space/.test(open.stdout), open.stdout);
   const openDown = cli("down");
   ok("open down exits 0", openDown.status === 0, openDown.stdout + openDown.stderr);
+  for (let i = 0; i < 24 && openStack.some(alive); i++) await sleep(500);
+  ok("open down stops the broker and manager, names no delivery daemon, and leaves nothing running",
+    !openStack.some(alive) && !(await portOpen()) && !/stopped delivery daemon/.test(plain(openDown.stdout)) && (process.platform !== "linux" || deliveryDaemons(SPACE).length === 0),
+    { openStack, alive: openStack.filter(alive), out: plain(openDown.stdout) });
 
   // 4) #1417 broker-only boot: `up --detach --no-manager` starts broker + delivery daemon (auth
   //    mode) and NO manager — no manager pidfile, no manager process, no stale slot to leave —

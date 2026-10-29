@@ -89,21 +89,13 @@ async function orderedRefresh(rootSpace: string, tenantSpace: string, expectedOr
   const fixture = await makeFixture(rootSpace);
   process.env.COTAL_HOME = fixture.home;
   process.env.XDG_CONFIG_HOME = fixture.env.XDG_CONFIG_HOME;
-  const { composeSpaceAuth, createBrokerAuth, createSpaceAccountAuth, mintConnectionEvictorCreds, mintMembershipObserverCreds, newIdentity } = await import("@cotal-ai/core");
-  const { authDir, connectionEvictorCredsKey, findMesh, loadMeshes, membershipObserverCredsKey, recordMesh, removeMesh, saveBrokerAuth, saveSpaceAccountAuth, spaceAccountPath, workspaceSecretStore } = await import("@cotal-ai/workspace");
+  const { createBrokerAuth, createSpaceAccountAuth } = await import("@cotal-ai/core");
+  const { authDir, findMesh, loadMeshes, recordMesh, removeMesh, saveBrokerAuth, saveSpaceAccountAuth, spaceAccountPath } = await import("@cotal-ai/workspace");
   const broker = await createBrokerAuth(`refresh-${rootSpace}`);
   saveBrokerAuth(authDir(fixture.root), broker);
   const rootAccount = await createSpaceAccountAuth(broker, rootSpace);
   saveSpaceAccountAuth(authDir(fixture.root), rootAccount);
   saveSpaceAccountAuth(authDir(fixture.root), await createSpaceAccountAuth(broker, tenantSpace));
-  // A fresh `up` writes the space's $SYS pair while the broker's signing seed is in memory. This
-  // fixture builds the trust chain itself, so it writes the pair too: without it the delivery daemon
-  // on a two-space broker refuses, and a first boot whose control plane does not come up exits 1.
-  const rootAuth = composeSpaceAuth(broker, rootAccount);
-  const composition = { injected: false as const, root: fixture.root };
-  const store = workspaceSecretStore(fixture.root);
-  await store.put(membershipObserverCredsKey(rootSpace, composition), await mintMembershipObserverCreds(rootAuth, newIdentity()));
-  await store.put(connectionEvictorCredsKey(rootSpace, composition), await mintConnectionEvictorCreds(rootAuth, newIdentity()));
   const removeTenantAccount = () => rmSync(spaceAccountPath(authDir(fixture.root), tenantSpace), { force: true });
   let started = false;
   try {
