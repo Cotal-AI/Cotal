@@ -184,8 +184,9 @@ for the space it serves ([Config](config.md#project-files)). That path is projec
 `up` redirects the daemon's stdout and stderr onto the file, so wrapping the launcher in a
 systemd unit does not put those lines in that unit's journal. A daemon stopped by SIGTERM or
 SIGINT, which is what `cotal down`, a service stop and Ctrl-C send, writes `received <signal>,
-exiting` to that log before it releases its lease. A SIGKILL, including one from the kernel OOM
-killer, ends the daemon with no line.
+exiting` to that log before it releases its lease. A signal that arrives while the daemon is
+still claiming the lease waits for the broker's answer, and a claim that won is then released the
+same way. A SIGKILL, including one from the kernel OOM killer, ends the daemon with no line.
 
 A foreground `cotal up` restarts a daemon it started when that daemon dies while the broker that
 `up` started is still running. It logs
