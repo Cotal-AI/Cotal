@@ -69,7 +69,7 @@ const HOST_CLIENT = fileURLToPath(new URL("./managed-activate-host-client.mjs", 
 type Answer = { status: number; body: Record<string, unknown> };
 async function separateHostRequest(handle: AuthServiceHandle, body: ManagedLifecycleActivationRequest): Promise<Answer> {
   return await new Promise<Answer>((resolve, reject) => {
-    const child = execFile(process.execPath, [HOST_CLIENT], { encoding: "utf8" }, (error, stdout, stderr) => {
+    const child = execFile(process.execPath, [HOST_CLIENT], { encoding: "utf8", timeout: 5_000, maxBuffer: 64 * 1024 }, (error, stdout, stderr) => {
       if (error) return reject(new Error(`separate host client failed: ${stderr || error.message}`));
       try { resolve(JSON.parse(stdout) as Answer); }
       catch (cause) { reject(new Error("separate host client returned unreadable JSON", { cause })); }
@@ -100,15 +100,16 @@ async function publicRequest(handle: AuthServiceHandle, body: unknown): Promise<
   return { status: response.status, body: await response.json() as Record<string, unknown> };
 }
 
-async function admittedRequest(handle: AuthServiceHandle, body: ManagedLifecycleActivationRequest): Promise<{ release(): void; answer: Promise<Answer> }> {
+async function admittedRequest(handle: AuthServiceHandle, body: ManagedLifecycleActivationRequest): Promise<{ release(): void; abort(): void; answer: Promise<Answer> }> {
   const text = JSON.stringify(body);
   let release!: () => void;
   const gate = new Promise<void>((resolve) => { release = resolve; });
   let admitted!: () => void;
   const admission = new Promise<void>((resolve) => { admitted = resolve; });
+  let req: ReturnType<typeof httpRequest> | undefined;
   const answer = new Promise<Answer>((resolve, reject) => {
     const url = new URL(`${handle.url}${MANAGED_ACTIVATE_PATH}`);
-    const req = httpRequest({
+    req = httpRequest({
       hostname: url.hostname,
       port: url.port,
       path: url.pathname,
@@ -129,13 +130,15 @@ async function admittedRequest(handle: AuthServiceHandle, body: ManagedLifecycle
     });
     req.once("continue", () => {
       admitted();
-      void gate.then(() => req.end(text));
+      void gate.then(() => req?.end(text));
     });
     req.on("error", reject);
+    req.once("timeout", () => req?.destroy(new Error("activation request timed out")));
+    req.setTimeout(5_000);
     req.flushHeaders();
   });
-  await Promise.race([admission, wait(2_000).then(() => { throw new Error("activation request did not receive 100 Continue"); })]);
-  return { release, answer };
+  await Promise.race([admission, wait(2_000).then(() => { req?.destroy(); throw new Error("activation request did not receive 100 Continue"); })]);
+  return { release, abort: () => req?.destroy(), answer };
 }
 
 /** Native kill-live: find one scanner connection in account CONNZ and KICK it on its server. */
@@ -168,6 +171,7 @@ async function kickNamed(acct: HostedAuthAccount, name: string): Promise<number>
   return kicked;
 }
 
+let heldRequest: { abort(): void } | undefined;
 try {
   const [a, b] = fx.accounts;
   for (const account of fx.accounts)
@@ -282,12 +286,14 @@ try {
   console.log("D. genuine stock scanner fence refuses without lifecycle effect");
   const fenced = target("fenced");
   const admitted = await admittedRequest(aHandle, fenced);
+  heldRequest = admitted;
   ok((await kickNamed(a, `cotal:auth-scan:${a.space}`)) === 1, "exactly the stock auth-ledger scanner connection is disconnected");
   let unavailable = await aHandle.readiness();
   for (let i = 0; i < 50 && unavailable.state !== "unavailable"; i++) { await wait(20); unavailable = await aHandle.readiness(); }
   ok(unavailable.state === "unavailable", "the same stock authority reports unavailable before the admitted body is released", unavailable);
   admitted.release();
   const fencedAnswer = await admitted.answer;
+  heldRequest = undefined;
   ok(fencedAnswer.status === 503 && fencedAnswer.body.code === "unavailable" && fencedAnswer.body.outcome === "unknown",
     "the admitted request reaches the fenced authority and refuses instead of reporting activation", fencedAnswer);
   ok((await head("fenced")) === undefined, "the genuine scanner-fence refusal creates no lifecycle head");
@@ -295,6 +301,7 @@ try {
   console.log(`managed activation door: ${count} assertions passed`);
   emitSentinel({ passed: count, failed: 0 });
 } finally {
+  heldRequest?.abort();
   for (const reader of readers) await reader.close().catch(() => {});
   for (const connection of conns) await connection.close().catch(() => {});
   for (const handle of handles) await handle.close().catch(() => {});

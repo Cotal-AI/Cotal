@@ -874,6 +874,15 @@ revoked at that uid, or it answers 409. It runs the same `managedRetirementOpId(
 the rail, and the rail and the door share one in-process flight, so a late participant request and
 the host call converge on one barrier.
 
+| lifecycle head | answer |
+| --- | --- |
+| absent, or `retired` at another uid | `200 { retired: false, lifecycleUid, notStarted: true }` |
+| `active`/`retiring` at another uid | `409` |
+| `retired` at this uid | `200 { retired: true, lifecycleUid, alreadyRetired: true }` |
+| `active`/`retiring` at this uid | the barrier runs, then `200 { retired: true, lifecycleUid }` |
+
+Deprovisioning durables stays with `deprovisionAgent` and a `deprovisioner` credential. Pass `memberChannels` to both to also purge the retired lifecycle's durable membership rows on those concrete channels. The manager fills that list from the launch's concrete read channels and the delivery daemon's read-only `lifecycleMemberships` admin verb. Before it reads that verb, it calls `fenceLifecycleAcl` under a deprovisioner credential for the same lifecycle with no member channels. That narrows the lifecycle's read-ACL row to no reads, and a durable join the inventory does not see then removes its own row. When that verb cannot answer, rows on other channels stay retained, the teardown logs the inventory as incomplete, and retirement remains held pending retry rather than releasing the alias. Each teardown examines two exact consumers, one ACL key and the named member keys. KV deletion uses a native revision condition; a lost condition with a live replacement refuses rather than claiming absence. Consumer INFO checks before and after DELETE distinguish verified prior absence from disappearance. `acknowledged` counts native DELETE success replies. `disappeared` counts observed live-to-absent consumers and live KV rows whose conditional purge lost to a competing deletion. These KV rows were present at the first read, so they never count as prior `absent` or as this caller's `deleted`. The ACL and membership subtotals preserve that distinction. Neither establishes which concurrent caller uniquely removed a consumer, so `consumers.deleted` and the total `deleted` are `null` when a consumer disappears without a winner token. A repeat after verified absence reports zero, not an invented deletion. `refused` counts slots whose cleanup or state remains uncertain. A partial failure raises `DeprovisionError` carrying these bounded observations. The Manager's static sweep preserves unknown uniqueness rather than adding acknowledged requests as physical removals; its slot totals remain exact.
+
 A separate host activates one exact managed lifecycle through the same full account auth service:
 `POST /managed-lifecycle/activate` (exported as `MANAGED_ACTIVATE_PATH`) with the `Bearer <cap>` from
 that account's `auth-service.json` and the closed body
@@ -901,15 +910,6 @@ active at that UID and its issuance gate is open. The native lifecycle contract 
 | `retiring` | lifecycle-blocked `failed-precondition` |
 | this UID frozen by retirement, or terminally retired | lifecycle-blocked refusal |
 | authority fenced or unavailable | `unavailable`; no success result |
-
-| lifecycle head | answer |
-| --- | --- |
-| absent, or `retired` at another uid | `200 { retired: false, lifecycleUid, notStarted: true }` |
-| `active`/`retiring` at another uid | `409` |
-| `retired` at this uid | `200 { retired: true, lifecycleUid, alreadyRetired: true }` |
-| `active`/`retiring` at this uid | the barrier runs, then `200 { retired: true, lifecycleUid }` |
-
-Deprovisioning durables stays with `deprovisionAgent` and a `deprovisioner` credential. Pass `memberChannels` to both to also purge the retired lifecycle's durable membership rows on those concrete channels. The manager fills that list from the launch's concrete read channels and the delivery daemon's read-only `lifecycleMemberships` admin verb. Before it reads that verb, it calls `fenceLifecycleAcl` under a deprovisioner credential for the same lifecycle with no member channels. That narrows the lifecycle's read-ACL row to no reads, and a durable join the inventory does not see then removes its own row. When that verb cannot answer, rows on other channels stay retained, the teardown logs the inventory as incomplete, and retirement remains held pending retry rather than releasing the alias. Each teardown examines two exact consumers, one ACL key and the named member keys. KV deletion uses a native revision condition; a lost condition with a live replacement refuses rather than claiming absence. Consumer INFO checks before and after DELETE distinguish verified prior absence from disappearance. `acknowledged` counts native DELETE success replies. `disappeared` counts observed live-to-absent consumers and live KV rows whose conditional purge lost to a competing deletion. These KV rows were present at the first read, so they never count as prior `absent` or as this caller's `deleted`. The ACL and membership subtotals preserve that distinction. Neither establishes which concurrent caller uniquely removed a consumer, so `consumers.deleted` and the total `deleted` are `null` when a consumer disappears without a winner token. A repeat after verified absence reports zero, not an invented deletion. `refused` counts slots whose cleanup or state remains uncertain. A partial failure raises `DeprovisionError` carrying these bounded observations. The Manager's static sweep preserves unknown uniqueness rather than adding acknowledged requests as physical removals; its slot totals remain separate.
 
 A host that resumes retained managed actors also implements
 `remoteAuthority.validateRetainedAgent`. The participant sends back the actor token and sentinel it
