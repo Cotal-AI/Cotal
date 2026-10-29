@@ -1,5 +1,15 @@
 # @cotal-ai/connector-core
 
+## 0.121.3
+
+### Patch Changes
+
+- 479895c: Keep the native error name in connection-close diagnostics and failed reconnect replies when the transport provides an empty message.
+- 98c69c7: Preserve focus mention wake and pull-only bodies after channel drop tracking fills, and disclose the degraded delivery state in inbox and connection status replies.
+- 0744bd0: Return an empty list from `searchDocs` when `limit` is zero or negative instead of collecting one hit before checking the limit.
+- 43e67ec: Forward NODE_EXTRA_CA_CERTS and SSL_CERT_FILE to launched seats so they retain the manager's private-CA trust paths without weakening TLS verification or inheriting unrelated environment settings.
+- 0c44f1a: Explain that an unknown turn-yield deadline may have recorded the yield. Describe the measured same-turn retry outcomes without reporting a missing responder or claiming that a retry is read-only. Actual no-responder failures retain their existing advice.
+
 ## 0.121.2
 
 ### Patch Changes

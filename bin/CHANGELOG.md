@@ -1,5 +1,35 @@
 # cotal-ai
 
+## 0.121.3
+
+### Patch Changes
+
+- 36f7d62: Keep a broker that an earlier release started stoppable after an upgrade. Each instance record pins its adapter's declaration, and every control path compared that digest exactly, so a release that changed the built-in broker's declaration, even one option description as 0.121.1 did, left brokers started by 0.121.0 or 0.120.2 refusing `cotal service stop`, `cotal service logs` and `cotal down` (CONFLICT, "the selected broker pins another definition, adapter revision or stop policy") while they kept running. `cotal up` then refused to start such a stack again. A built-in or `@cotal-ai/*` adapter's instance now stays controllable while it names the same provider and runs under the stop policy that adapter declares now. A third-party adapter's instances still need their recorded version and declaration.
+- Updated dependencies [a90d7ba]
+- Updated dependencies [fe38cbd]
+- Updated dependencies [9732c12]
+- Updated dependencies [479895c]
+- Updated dependencies [baf9576]
+- Updated dependencies [98c69c7]
+- Updated dependencies [6990d29]
+- Updated dependencies [9c09cc5]
+- Updated dependencies [a77ac87]
+- Updated dependencies [0744bd0]
+- Updated dependencies [43e67ec]
+- Updated dependencies [a8404e4]
+- Updated dependencies [36f7d62]
+- Updated dependencies [d189272]
+- Updated dependencies [0c44f1a]
+  - @cotal-ai/cli@0.121.3
+  - @cotal-ai/workspace@0.121.3
+  - @cotal-ai/core@0.121.3
+  - @cotal-ai/connector-core@0.121.3
+  - @cotal-ai/auth@0.121.3
+  - @cotal-ai/manager@0.121.3
+  - @cotal-ai/seat@0.121.3
+  - @cotal-ai/delivery@0.121.3
+  - @cotal-ai/runtime@0.121.3
+
 ## 0.121.2
 
 ### Patch Changes

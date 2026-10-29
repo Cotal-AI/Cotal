@@ -1,5 +1,11 @@
 # @cotal-ai/web
 
+## 0.121.3
+
+### Patch Changes
+
+- a88645e: The shipped comments in `app.js`, `parts.js` and `web.ts` (`dist/web/app.js`, `dist/web/parts.js`, `dist/web.js` and `dist/web.d.ts`) now state the dashboard's refresh loop, backfill merge, membership feed, write-route ingress and message-part rendering contracts in the present tense. They no longer narrate earlier revisions of the code or of the comments themselves. No runtime change.
+
 ## 0.121.2
 
 No changes in this release.
