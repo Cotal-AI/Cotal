@@ -1375,7 +1375,9 @@ export async function runJcodeHost(): Promise<void> {
         const suspect = client;
         writeJcodeDiagnostic(
           `[cotal-jcode] a queued turn lapsed without acknowledgement while the session is busy; ` +
-            `replacing only the Harness API connection and preserving the private Jcode tree\n`,
+            `replacing only the Harness API connection; preserving the private Jcode tree if ` +
+            `the same bridge reconnects and attaches within ${BRIDGE_RECOVERY_WINDOW_MS}ms; ` +
+            `otherwise ending the seat and stopping its tree\n`,
         );
         if (suspect) void recoverBridge(suspect, true);
         return;
@@ -1781,8 +1783,16 @@ export async function runJcodeHost(): Promise<void> {
         }
       }
     } catch (error) {
+      const failure = lastError ?? error;
+      const reason = preserveInstance
+        ? `same-bridge recovery ${permanentBridgeRecoveryFailure(failure)
+          ? "permanently refused"
+          : Date.now() >= deadline
+            ? `window expired after ${BRIDGE_RECOVERY_WINDOW_MS}ms`
+            : "failed"}; ending seat and stopping private Jcode tree`
+        : "private Harness connection closed and recovery failed";
       writeJcodeDiagnostic(
-        endingLine("private Harness connection closed and recovery failed", ((lastError ?? error) as Error).message),
+        endingLine(reason, (failure as Error).message),
       );
       await shutdown(1);
     } finally {

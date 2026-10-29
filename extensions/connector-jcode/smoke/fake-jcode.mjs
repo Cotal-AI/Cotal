@@ -350,6 +350,7 @@ function runTurn(frame, socket) {
   }, Number(process.env.FAKE_JCODE_TURN_DELAY_MS ?? "10"));
 }
 
+let helloCount = 0;
 const server = createServer((socket) => {
   let buffered = "";
   socket.setEncoding("utf8");
@@ -371,6 +372,16 @@ const server = createServer((socket) => {
       const event = (body) => socket.write(JSON.stringify({ v: 1, ...body }) + "\n");
       switch (frame.req) {
         case "hello":
+          helloCount++;
+          // Failure-path fixtures keep the original daemon busy while the same bridge cannot
+          // complete a new handshake. This opt-in does not change the first connection.
+          if (helloCount > 1 && ["silent", "refusal"].includes(process.env.FAKE_JCODE_RECONNECT_HELLO)) {
+            const mode = process.env.FAKE_JCODE_RECONNECT_HELLO;
+            log({ ev: "reconnect_hello", mode });
+            if (mode === "refusal")
+              reply({ ev: "error", code: "unsupported_version", message: "synthetic permanent reconnect refusal" });
+            break;
+          }
           reply({ ev: "hello_ok", version: 1, server: "fake-jcode/1", capabilities: ["sessions", "streaming"] });
           break;
         // A prior session is offered only when the harness is told to have one, so the same fake

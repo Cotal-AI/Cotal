@@ -164,10 +164,14 @@ code remains transient by default and retries inside the same bounded window; ne
 must be added to the explicit classifier and its exact-count regression.
 
 An unacknowledged queued message does not prove an attached TUI's native turn has stopped.
-If that turn is busy, the connector replaces only its API connection to the same private bridge,
-then attaches the same session with its reported native busy state. It does not stop the server
-or interrupt the running tool. The unacknowledged inbox batch remains owed. If acknowledgement is
-still ambiguous after that one recovery, queued-turn attempts stop and the connector reports the
+If that turn is busy, the connector tries a new API connection to the same private bridge and
+attaches the same session with its reported native busy state. When both steps succeed within the
+60-second recovery window, the server and running tool are preserved. If the bridge permanently
+refuses the connection or attach, or the window expires, the host ends with exit code 1 and stops
+the TUI and private server tree. Its terminal diagnostic names the same-bridge refusal or expired
+window and says it is ending the seat and stopping the tree. It does not launch a replacement tree
+on this path. The unacknowledged inbox batch remains owed. If acknowledgement is still ambiguous
+after a successful recovery, queued-turn attempts stop and the connector reports the
 queued depth and age, while the native session stays alive. The connector does not claim those
 messages ran, acknowledge them, or keep submitting copies. A genuine connection close still uses
 the bounded private-instance recovery described above.
