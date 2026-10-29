@@ -593,6 +593,18 @@ try {
   pids.push(boDeliveryPid);
   ok("the delivery daemon is up and alive under the flag", Number.isFinite(boDeliveryPid) && alive(boDeliveryPid), boDeliveryPid);
   ok("the broker still answers under the flag", await portOpen());
+  // An empty manager registry is a refusal before any manager is asked. It used to fail
+  // OPERATION_FAILED, exit 5, as if ps itself had failed. A registration is not proof of a process,
+  // so it says no more than the registry showed and names nothing to remove.
+  const emptyPs = cli("ps", "--json");
+  const emptyError = (() => { try { return (JSON.parse(emptyPs.stdout) as { error?: { code?: string; message?: string; remedy?: string; cause?: { detail?: string } } }).error; } catch { return undefined; } })();
+  ok("ps on the broker-only stack refuses TARGET_UNAVAILABLE, exit 2, saying no manager is registered and not that none runs",
+    emptyPs.status === 2 && emptyError?.code === "TARGET_UNAVAILABLE" &&
+      emptyError.message?.startsWith("no manager is registered for this space, so none was asked and nothing was listed.") === true &&
+      emptyError.message.includes("this does not show that no manager process runs") &&
+      emptyError.cause?.detail === 'failed-precondition: service "manager" has no live registered instances' &&
+      emptyError.remedy === "start the stack's manager with bare `cotal up`; a stack started with --no-manager has none",
+    emptyPs.stdout + emptyPs.stderr);
   // --preserve-state takes its inventory from a manager. With none serving the space it refuses
   // before any stop, where it used to stop the delivery daemon and then wait on a manager that never ran.
   const preserveStarted = Date.now();

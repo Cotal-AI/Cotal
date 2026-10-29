@@ -904,6 +904,11 @@ export async function readSeats(v: ConnectFlags, command: "ps" | "slots", on: st
   const silentPid = !scatter.ok && scatter.unanswered === true && t.root !== undefined ? runningStackManagerPid(t.root, t.space) : undefined;
   if (!scatter.ok && silentPid !== undefined)
     throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `this space's stack manager (pid ${silentPid}) is running but did not answer, so no agents were listed`, { target, native: { code: scatter.code, ...(scatter.error ? { detail: scatter.error } : {}) }, remedy: `if it stays unresponsive, end that process with kill -KILL ${silentPid}; then bare \`cotal up\` starts the manager again` });
+  // Anywhere else, a registry that was read and lists no live manager is the same boundary: no
+  // manager was asked. It is not proof that no manager process runs, since one that is starting or
+  // cannot register is not listed, so the refusal says only what the registry showed.
+  if (!scatter.ok && scatter.noLiveManager)
+    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "no manager is registered for this space, so none was asked and nothing was listed. A manager that is still starting or cannot register has no registration either, so this does not show that no manager process runs", { target, native: { code: scatter.code, ...(scatter.error ? { detail: scatter.error } : {}) }, remedy: "start the stack's manager with bare `cotal up`; a stack started with --no-manager has none" });
   if (!scatter.ok) throw readFailure(scatter, target);
   return seatCensus(target, scatter.instances, command, t.mode);
 }
