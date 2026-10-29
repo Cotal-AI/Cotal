@@ -785,8 +785,15 @@ export class MeshAgent extends EventEmitter {
     return this._stopping;
   }
 
-  /** The connection and write-health facts combined. Repeated presence write failures degrade a
-   *  bound session even while its transport remains live.
+  /** Session-local channel degradation, independent of transport liveness. */
+  get channelDeliveryIssue(): string | undefined {
+    return this.dropUnsafe
+      ? "Channel drop tracking exhausted. Ambient channel traffic is suppressed until restart; non-historical mentions on unmuted channels wake to pull their buffered body. Focus recall may be incomplete."
+      : undefined;
+  }
+
+  /** The connection, write-health and channel-delivery facts combined. Repeated presence write
+   *  failures or exhausted drop tracking degrade a bound session even with a live transport.
    *  Every combination maps, so a caller never has
    *  to guess what an unlisted pair means, and a caller that disagrees with this reading can still
    *  read {@link connected}, {@link transportConnected} and {@link stopping} directly.
@@ -802,6 +809,7 @@ export class MeshAgent extends EventEmitter {
   get connectionState(): ConnectionState {
     if (this._stopping) return "stopped";
     if (this._connected) {
+      if (this.dropUnsafe) return "degraded";
       if ((this.presenceWriteFailure?.consecutiveFailures ?? 0) >= 2) return "degraded";
       if (!this._transportConnected) return "degraded";
       const held = this.automaticQueueStalledForMs();
@@ -1149,7 +1157,13 @@ export class MeshAgent extends EventEmitter {
       if (this.enteringFocus) this.excludeFromFocus(item);
       if (this.dropUnsafe) {
         this.excludeFromFocus(item);
-        delivery.ack();
+        if (cm !== "muted" && item.mentionsMe && !item.historical) {
+          // Mentions are an untrusted wake hint, never authority to inject a channel body.
+          // Keep the body in the bounded pull lane while normal ambient stays fail-closed.
+          // After exhaustion an unknown late copy can surface once, disclosed by the warning.
+          this.buffer(item, delivery, true, idless);
+          this.emit("mention-wake", item);
+        } else delivery.ack();
         return;
       }
       if (cm === "muted") {
@@ -1395,7 +1409,8 @@ export class MeshAgent extends EventEmitter {
     if (ids.size >= PROTECTED_DISPOSITION_CAP) {
       if (disposition === "drop") this.dropUnsafe = true;
       else this.classificationUnsafe = true;
-      ids.clear();
+      // Keep known hard drops suppressed across later mode changes. The set stays bounded.
+      if (disposition !== "drop") ids.clear();
       return;
     }
     ids.add(id);
