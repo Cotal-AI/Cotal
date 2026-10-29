@@ -30,7 +30,8 @@ import { codeSpan } from "./text-wrap.js";
  * preflight (`probeConnect`) on top.
  */
 export interface MeshTarget {
-  /** Absolute dir whose `.cotal/{auth,agents}` hold trust + personas. */
+  /** Absolute project root. For a discovered space this may differ from the catalog custody root
+   *  that keeps its provider-owned sentinel credential. */
   root: string;
   server: string;
   space: string;

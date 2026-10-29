@@ -15,7 +15,7 @@ import { exchangeRateLimit, readAuthResponseJson, type ExchangeRateLimit } from 
  *    discovery file the daemon writes only after BOTH planes are bound, then confirm /health).
  */
 import { assertDerivedOwnerToken, isLoopbackLiteral, registry, type AuthPreflightInput, type AuthPreflightVerdict, type AuthPrepareInput, type AuthPrepared, type AuthProvider, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAdminAuthorizationResult, type RemoteManagerAuthorityMaterial, type RemoteManagerAuthorityRequest, type RemoteManagerGoalIndexScanRequest, type RemoteManagerGoalIndexScanResult, type RemoteManagerMaintenanceRequest, type RemoteManagerMaintenanceResult, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult, type RemoteManagedAgentPrepareRetirementRequest, type RemoteManagedAgentPrepareRetirementResult, type RemoteManagedAgentRuntimeRequest, type RemoteManagedAgentRuntimeResult, type RemoteRetainedAgentValidationRequest, type RemoteRetainedAgentValidationResult, type RemoteRunAdmissionRequest, type RemoteRunAdmissionResult, type RemoteRunAttemptRequest, type RemoteRunAttemptResult, type SecretStore, type UserAuthGrant, type UserCredentialsRequest, type UserCredentialsResult } from "@cotal-ai/core";
-import { assertUserAuthInfo, credentialFailure, findMesh, homeCotalDir, loadMeshes, probeLiveness, spaceSegment, type UserAuthInfo } from "@cotal-ai/workspace";
+import { assertUserAuthInfo, credentialFailure, findMesh, homeCotalDir, loadMeshes, probeLiveness, spaceSegment, userAuthStateDir, type UserAuthInfo } from "@cotal-ai/workspace";
 import { readFileSync } from "node:fs";
 import { resolve, sep } from "node:path";
 import { AGENT_LIFECYCLE_HELD, AgentGrantConflictError, EP_ERROR_CODES, EpEnvelopeError, agentLifecycleHeld, type AgentLifecycleRelease, type EpEffectOutcome, type EpErrorCode } from "@cotal-ai/core";
@@ -831,8 +831,9 @@ function carriesField(value: unknown, field: string): boolean {
 }
 
 /** The registry entry's user-auth position for a REMOTE space, bound to the CALLER'S state dir the
- *  way {@link remoteUserCredentials} binds it: `dir` derives from the resolved target's root, so an
- *  entry for the same space under a different root must not answer for it. `undefined` when the
+ *  way {@link remoteUserCredentials} binds it. A discovered entry may bind a separate project root,
+ *  while its sentinel stays under the catalog custody root. Both coordinates come from the same
+ *  registry row and are checked here, so another root cannot borrow the entry. `undefined` when the
  *  registry holds no such remote entry. This is the ONE read of the entry's pins — connect and the
  *  offline status read consume the same trust position, so they cannot drift. */
 function remoteUserAuthEntry(
@@ -841,11 +842,16 @@ function remoteUserAuthEntry(
 ): (UserAuthInfo & { remote: true; endpoints: { url: string }; sentinelCredsPath: string }) | undefined {
   const entry = findMesh(space);
   const ua = entry?.mode === "user" ? entry.userAuth : undefined;
+  const callerDir = entry ? userAuthStateDir(entry.root, space) : undefined;
+  const custodyDir = entry ? userAuthStateDir(entry.catalogRoot ?? entry.root, space) : undefined;
   const bound =
     ua?.remote === true &&
     typeof ua.endpoints?.url === "string" &&
     typeof ua.sentinelCredsPath === "string" &&
-    resolve(ua.sentinelCredsPath).startsWith(resolve(dir) + sep);
+    callerDir !== undefined &&
+    custodyDir !== undefined &&
+    resolve(dir) === resolve(callerDir) &&
+    resolve(ua.sentinelCredsPath).startsWith(resolve(custodyDir) + sep);
   return bound ? (ua as UserAuthInfo & { remote: true; endpoints: { url: string }; sentinelCredsPath: string }) : undefined;
 }
 

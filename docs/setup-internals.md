@@ -33,10 +33,12 @@ connector surface, and the space at its destination. A local space goes through 
 in [`space-registration.ts`](../implementations/cli/src/commands/space-registration.ts), the
 checks `space create` makes, which with setup's `again` reports a space already prepared or started
 at that root instead of refusing it; a local space also needs a `nats-server` to locate. A
-self-hosted space goes through `checkSelfHostedSpace`: a registration whose root is the project, or
-a connection file `addFromBundle` will register.
+self-hosted space goes through `checkSelfHostedSpace`: a hand-added registration whose root is the
+project, a signed-in catalog registration that is already bound there or can bind there without
+moving its catalog credential custody, or a connection file `addFromBundle` will register.
 
-`prepare` then writes, in order: the prepared space or the registration, the `default` persona in
+`prepare` then writes, in order: the prepared space, registration or signed-in catalog project
+binding, the `default` persona in
 `<project>/.cotal/agents` (plus the demo personas with `--demo`), the space's `harness`
 preference and your own when you have none, the application's `connector` and `mcpServers`
 actions, every present connector's `skills` action, `~/.agents/skills` when it is not current, the

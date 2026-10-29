@@ -15,7 +15,7 @@
 import { execFile } from "node:child_process";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
@@ -479,6 +479,15 @@ console.log("C2) advertised space catalog cache");
   const discoveredRequired = (await import("@cotal-ai/workspace")).findMesh("shared_project");
   check("catalog reconciliation preserves registration.policy.events required",
     discoveredRequired?.policy?.events === "required", discoveredRequired);
+  const boundProject = join(catalogDir, "bound-project");
+  const originalCatalogRoot = discoveredRequired!.root;
+  mkdirSync(boundProject);
+  (await import("@cotal-ai/workspace")).recordMesh({ ...discoveredRequired!, root: boundProject, catalogRoot: originalCatalogRoot });
+  await prepareCatalogTargets({ idpUrl: catalogIdp, force: true });
+  const refreshedBinding = (await import("@cotal-ai/workspace")).findMesh("shared_project");
+  check("catalog refresh preserves a bound project root and its separate catalog credential custody",
+    refreshedBinding?.root === boundProject && refreshedBinding.catalogRoot === originalCatalogRoot &&
+      refreshedBinding.userAuth?.sentinelCredsPath?.startsWith(originalCatalogRoot) === true, refreshedBinding);
   const meshDir = join(catalogDir, "meshes");
   const meshTimes = new Map(readdirSync(meshDir).map((file) => [file, statSync(join(meshDir, file)).mtimeMs]));
   const warmTimes: number[] = [];
