@@ -367,10 +367,17 @@ export function remoteManagerMaintenanceResult(
   request: RemoteManagerMaintenanceRequest,
   expectedOwner: string,
 ): RemoteManagerMaintenanceResult {
+  let resultField: "evictions" | "reconciliation";
+  if (request.operation === "evict-family-principal") resultField = "evictions";
+  else if (request.operation === "reconcile-registration") resultField = "reconciliation";
+  else {
+    const unhandled: never = request.operation;
+    throw new Error(`manager maintenance has no result for operation ${unhandled}`);
+  }
   const expectedKeys = [
     "v", "kind", "operation", "space", "owner", "actor", "instanceId", "managerLifecycleUid",
     "requestId", "identities", "targetInstanceId", ...(request.principals ? ["principals"] : []),
-    request.operation === "evict-family-principal" ? "evictions" : "reconciliation",
+    resultField,
   ];
   if (!result || typeof result !== "object" || Array.isArray(result) ||
       Object.keys(result).sort().join(",") !== expectedKeys.sort().join(",") ||
@@ -394,7 +401,7 @@ export function remoteManagerMaintenanceResult(
       if (e.verifiedGone && (!e.scanComplete || e.remaining !== 0))
         throw new Error("manager maintenance returned contradictory eviction evidence");
     }
-  } else {
+  } else if (request.operation === "reconcile-registration") {
     const r = result.reconciliation;
     const reportKeys = [
       "endpoint", "instanceId", "holderPrincipal", "opId", "freezeToken", "before", "after", "liveness",
@@ -410,6 +417,9 @@ export function remoteManagerMaintenanceResult(
         (r.repairCursorCleanup !== "deleted" && r.repairCursorCleanup !== "retained") ||
         !r.liveness || r.liveness.state !== "gone" || typeof r.liveness.detail !== "string")
       throw new Error("manager maintenance returned no closed matching reconciliation report");
+  } else {
+    const unhandled: never = request.operation;
+    throw new Error(`manager maintenance has no result for operation ${unhandled}`);
   }
   return result;
 }

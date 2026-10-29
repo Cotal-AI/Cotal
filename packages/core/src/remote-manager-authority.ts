@@ -8,6 +8,11 @@ import { assertDerivedOwnerToken, assertLifecycleToken, assertValidChannel, asse
  *  list, so an operation added here is admitted by the parser too. */
 export const REMOTE_MANAGER_AUTHORITY_OPERATIONS = Object.freeze(["prepare", "activate", "renew", "session", "retire", "renewStandingBundle", "renewRunDriver", "transferReader"] as const);
 
+/** The host-owned manager-service maintenance operations. The request type, the host parser, and
+ *  the result check all read this list, so an operation added here is admitted by the parser too
+ *  and cannot fall through another operation's branch. */
+export const REMOTE_MANAGER_MAINTENANCE_OPERATIONS = Object.freeze(["evict-family-principal", "reconcile-registration"] as const);
+
 /**
  * Closed request for one remote manager-service authority lifecycle.
  *
@@ -132,7 +137,7 @@ export interface RemoteManagerAuthorityMaterial {
 export interface RemoteManagerMaintenanceRequest {
   v: 1;
   kind: "manager-service-maintenance";
-  operation: "evict-family-principal" | "reconcile-registration";
+  operation: (typeof REMOTE_MANAGER_MAINTENANCE_OPERATIONS)[number];
   space: string;
   actor: string;
   instanceId: string;
