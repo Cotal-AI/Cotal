@@ -1682,10 +1682,12 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     const retained = implicit ? recorded : undefined;
     // An address up chooses for a TLS broker names TLS, as an explicit one must.
     const serving = (url: string) => transport.kind === "tls-required" ? tlsAddress(url) : url;
+    // Printed below, once this up is known to start the stack: a refresh of the running one says nothing.
+    let stoppedStart: string | undefined;
     if (retained) {
-      console.log(c.dim(`starting this folder's stopped stack as it last ran: ${serving(retained.server)}${values.open ? ", open" : ""}`));
+      stoppedStart = `starting this folder's stopped stack as it last ran: ${serving(retained.server)}${values.open ? ", open" : ""}`;
     } else if (recorded?.open) {
-      console.log(c.dim("starting this folder's stopped stack in the mode it last ran: open"));
+      stoppedStart = "starting this folder's stopped stack in the mode it last ran: open";
     } else if (implicit) {
       const cleaned = cleanedManifestStart(cotalRoot(), recordedSpace, values.open === true);
       if (cleaned) throw new CommandFailure("refused", "CONFLICT", `this folder was deployed from a manifest as "${cleaned.space}" at ${cleaned.server} in ${cleaned.mode === "open" ? "open" : "static auth"} mode, and its identity and broker configuration were removed, so a bare up would not start it as it was deployed; nothing was started`, { target: { root: cotalRoot(), space: cleaned.space, server: cleaned.server }, remedy: `deploy it again with ${codeSpan(cleaned.command)}` });
@@ -2077,7 +2079,8 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       seedPersonaAfterUp(root);
       // The same Next a launch ends with: this mesh runs, so the steps are the ones that use and
       // stop it. A manager the refresh found or healed is what makes `spawn` one of them.
-      console.log(`\n${renderReport({ sections: [{ title: "Next", blocks: [{ kind: "commands", items: detachedNext({ manager: managerRecordState(held.space).state === "alive", controlPlane: controlPlane !== undefined, machineHome: canonicalRoot(root) === canonicalRoot(homedir()), ...(values.root ? { root } : {}) }, held.space) }] }] }, "rich", process.stdout)}`);
+      const managerRecord = managerRecordState(held.space);
+      console.log(`\n${renderReport({ sections: [{ title: "Next", blocks: [{ kind: "commands", items: detachedNext({ manager: managerRecord.state === "alive", controlPlane: controlPlane !== undefined, machineHome: canonicalRoot(root) === canonicalRoot(homedir()), ...(values.root ? { root } : {}), ...(managerRecord.state === "unattributable" ? { unattributableManager: managerRecord.path, noManager } : {}) }, held.space) }] }] }, "rich", process.stdout)}`);
       return;
     }
     const who = held ? `mesh "${held.space}" (${held.root})` : "a broker not started here";
@@ -2108,6 +2111,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       process.exit(1);
     }
   }
+  if (stoppedStart) console.log(c.dim(stoppedStart));
 
   if (!resumeAttempt) refuseRegisteredAddress(server, values.space ?? folderSpace(), `start this one at another address with \`cotal up --server nats://${host}:<port>\``);
   await assertBrokerAddressFree(server, "cotal up");
@@ -2204,7 +2208,10 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       if (journal && "restore" in journal && journal.restore.attemptId === restored.attemptId)
         console.log(c.dim(`next: ${restoreNextStep(journal.state, restored.attemptId, restoreLeftOut(journal))}`));
     }
-    if (!quietRestore) console.log(`\n${renderReport({ sections: [{ title: "Next", blocks: [{ kind: "commands", items: detachedNext({ ...detached, controlPlane }, receiptSpace) }] }] }, "rich", process.stdout)}`);
+    if (!quietRestore) {
+      const managerRecord = managerRecordState(receiptSpace);
+      console.log(`\n${renderReport({ sections: [{ title: "Next", blocks: [{ kind: "commands", items: detachedNext({ ...detached, controlPlane, ...(managerRecord.state === "unattributable" ? { unattributableManager: managerRecord.path, noManager } : {}) }, receiptSpace) }] }] }, "rich", process.stdout)}`);
+    }
     if (restored) restoreSinks.get(restored.attemptId)?.({
       attemptId: restored.attemptId, space: restored.space, root: restored.root, server: restored.server, mode: restored.mode,
       selection: restored.selection, restoredStreams: restored.restoredStreams, targetPath: restored.targetPath, runtime: restored.runtime, brokerPid: pid,
@@ -3885,8 +3892,12 @@ async function startDeliveryWithBroker(
   }
 }
 
+/** The degraded control plane on stderr: each line of `why`, then its consequence, wrapped to the
+ *  terminal as every other warning is. */
 function reportDegradedControlPlane(why: string): void {
-  console.error(c.dim(`! control plane degraded: ${why} - durable delivery/manager may be down; spawn and retirement require a functioning control plane`));
+  const [first, ...rest] = why.split("\n");
+  stderrLine("! ", `control plane degraded: ${first}`, c.dim);
+  for (const line of [...rest, "Spawn and retirement require a functioning control plane."]) stderrLine("  ", line, c.dim);
 }
 
 /**
