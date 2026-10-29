@@ -45,8 +45,8 @@
     {
       "name": "drops options when filter argument is explicitly undefined",
       "file": "packages/core/src/kv-scan.ts",
-      "find": "  let opts: LiveKvEntriesOptions | undefined = options;",
-      "replace": "  let opts: LiveKvEntriesOptions | undefined;",
+      "find": "  } else {\n    opts = options;\n  }",
+      "replace": "  }",
       "expectRed": "empty cleanup explicit-undefined: abort throws after delete",
       "cell": "empty cleanup explicit-undefined: abort throws after delete",
       "afterRestore": "pnpm --filter @cotal-ai/core build"

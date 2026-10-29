@@ -124,17 +124,31 @@ export interface LiveKvEntriesOptions {
  */
 export async function liveKvEntries(
   kv: KV,
+  options?: LiveKvEntriesOptions,
+): Promise<KvEntry[]>;
+export async function liveKvEntries(
+  kv: KV,
+  filter: string | string[] | undefined,
+  options?: LiveKvEntriesOptions,
+): Promise<KvEntry[]>;
+export async function liveKvEntries(
+  kv: KV,
   filterOrOptions?: string | string[] | LiveKvEntriesOptions,
   options?: LiveKvEntriesOptions,
 ): Promise<KvEntry[]> {
-  let filter: string | string[] | undefined;
   // The three-argument form may deliberately omit the filter: (kv, undefined, options).
-  let opts: LiveKvEntriesOptions | undefined = options;
+  let filter: string | string[] | undefined;
+  let opts: LiveKvEntriesOptions | undefined;
   if (typeof filterOrOptions === "string" || Array.isArray(filterOrOptions)) {
     filter = filterOrOptions;
     opts = options;
   } else if (filterOrOptions && typeof filterOrOptions === "object") {
+    if (options !== undefined) {
+      throw new TypeError("liveKvEntries does not accept a third argument when the second argument is options");
+    }
     opts = filterOrOptions;
+  } else {
+    opts = options;
   }
 
   if (opts?.signal?.aborted) {
@@ -417,11 +431,31 @@ export async function lastKvEntries(kv: KV): Promise<KvEntry[]> {
 export async function liveKvValues<T>(
   kv: KV,
   decode: (e: KvEntry) => T | undefined,
+  options?: LiveKvEntriesOptions,
+): Promise<T[]>;
+export async function liveKvValues<T>(
+  kv: KV,
+  decode: (e: KvEntry) => T | undefined,
+  filter: string | string[] | undefined,
+  options?: LiveKvEntriesOptions,
+): Promise<T[]>;
+export async function liveKvValues<T>(
+  kv: KV,
+  decode: (e: KvEntry) => T | undefined,
   filterOrOptions?: string | string[] | LiveKvEntriesOptions,
   options?: LiveKvEntriesOptions,
 ): Promise<T[]> {
+  let entries: KvEntry[];
+  if (filterOrOptions && typeof filterOrOptions === "object" && !Array.isArray(filterOrOptions)) {
+    if (options !== undefined) {
+      throw new TypeError("liveKvValues does not accept a fourth argument when the third argument is options");
+    }
+    entries = await liveKvEntries(kv, filterOrOptions);
+  } else {
+    entries = await liveKvEntries(kv, filterOrOptions, options);
+  }
   const out: T[] = [];
-  for (const e of await liveKvEntries(kv, filterOrOptions, options)) {
+  for (const e of entries) {
     const v = decode(e);
     if (v !== undefined) out.push(v);
   }

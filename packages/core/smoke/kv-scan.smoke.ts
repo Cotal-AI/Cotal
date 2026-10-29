@@ -27,7 +27,7 @@ import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
 import { jetstreamManager, type ConsumerMessages, type PushConsumer } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
-import { IncompleteKvScan, isReachable, liveKvEntries, walkKvEntries } from "../src/index.js";
+import { IncompleteKvScan, isReachable, liveKvEntries, liveKvValues, walkKvEntries } from "../src/index.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { pickFreePort } from "./_free-port.js";
 
@@ -635,6 +635,76 @@ try {
     }
     const names = (await jsm.consumers.list(stream).next()).map((info) => info.name);
     check("pre-aborted call shapes create no consumer and preserve sentinel", names.length === 1 && names[0] === "unrelated_sentinel", names);
+  }
+
+  // ── OVERLOAD AND HOOK DISPATCH FOR liveKvEntries AND liveKvValues (#3312) ──────────────────────
+  {
+    const hk = await kvm.create("hook_overloads", { history: 1 });
+    await hk.put("a.one", enc("1"));
+    await hk.put("a.two", enc("2"));
+    const decode = (e: { string(): string }) => e.string();
+    const makeHooks = () => {
+      const counts = { deleteOwnConsumer: 0, onConsumer: 0 };
+      return {
+        counts,
+        opts: {
+          deleteOwnConsumer: async (_stream: string, _name: string, del: () => Promise<boolean>) => {
+            counts.deleteOwnConsumer++;
+            return del();
+          },
+          onConsumer: () => {
+            counts.onConsumer++;
+          },
+        },
+      };
+    };
+
+    for (const [label, run] of [
+      ["liveKvEntries(kv, opts)", (h: ReturnType<typeof makeHooks>) => liveKvEntries(hk, h.opts)],
+      ["liveKvEntries(kv, undefined, opts)", (h: ReturnType<typeof makeHooks>) => liveKvEntries(hk, undefined, h.opts)],
+      ["liveKvEntries(kv, \">\", opts)", (h: ReturnType<typeof makeHooks>) => liveKvEntries(hk, ">", h.opts)],
+      ["liveKvEntries(kv, [\"a.>\"], opts)", (h: ReturnType<typeof makeHooks>) => liveKvEntries(hk, ["a.>"], h.opts)],
+      ["liveKvValues(kv, decode, opts)", (h: ReturnType<typeof makeHooks>) => liveKvValues(hk, decode, h.opts)],
+      ["liveKvValues(kv, decode, undefined, opts)", (h: ReturnType<typeof makeHooks>) => liveKvValues(hk, decode, undefined, h.opts)],
+      ["liveKvValues(kv, decode, \">\", opts)", (h: ReturnType<typeof makeHooks>) => liveKvValues(hk, decode, ">", h.opts)],
+      ["liveKvValues(kv, decode, [\"a.>\"], opts)", (h: ReturnType<typeof makeHooks>) => liveKvValues(hk, decode, ["a.>"], h.opts)],
+    ] as const) {
+      const h = makeHooks();
+      const out = await run(h);
+      check(
+        `overload control ${label}: returns 2 rows and invokes both hooks once`,
+        out.length === 2 && h.counts.deleteOwnConsumer === 1 && h.counts.onConsumer === 1,
+        { rows: out.length, counts: h.counts },
+      );
+    }
+
+    const hEntries = makeHooks();
+    let entriesErr: unknown;
+    try {
+      // @ts-expect-error options in filter slot cannot be followed by a second options argument
+      await liveKvEntries(hk, { signal: new AbortController().signal }, hEntries.opts);
+    } catch (e) {
+      entriesErr = e;
+    }
+    check(
+      "liveKvEntries(kv, opts, opts): refused at compile time and throws TypeError at runtime",
+      entriesErr instanceof TypeError && hEntries.counts.deleteOwnConsumer === 0 && hEntries.counts.onConsumer === 0,
+      { err: String(entriesErr), counts: hEntries.counts },
+    );
+
+    const hValues = makeHooks();
+    let valuesErr: unknown;
+    try {
+      // @ts-expect-error options in filter slot cannot be followed by a second options argument
+      await liveKvValues(hk, decode, { signal: new AbortController().signal }, hValues.opts);
+    } catch (e) {
+      valuesErr = e;
+    }
+    check(
+      "liveKvValues(kv, decode, opts, opts): refused at compile time and throws TypeError at runtime",
+      valuesErr instanceof TypeError && hValues.counts.deleteOwnConsumer === 0 && hValues.counts.onConsumer === 0,
+      { err: String(valuesErr), counts: hValues.counts },
+    );
   }
 
   await nc.close();
