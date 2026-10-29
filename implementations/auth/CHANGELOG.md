@@ -1,5 +1,17 @@
 # @cotal-ai/auth
 
+## 0.123.0
+
+### Minor Changes
+
+- f23cb6f: Add a capability-gated, account-bound loopback operation for separately hosted auth services to activate one exact managed lifecycle through the stock authority fence.
+
+### Patch Changes
+
+- @cotal-ai/core@0.123.0
+  - @cotal-ai/lang@0.123.0
+  - @cotal-ai/workspace@0.123.0
+
 ## 0.122.0
 
 ### Minor Changes
