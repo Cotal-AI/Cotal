@@ -6,7 +6,9 @@
  *   3. manager killed — ps says no manager answered and lists your agents from presence, exit 0,
  *      never a bare empty list
  *
- * Spawn-only refusal is asserted in user-spawn.smoke.ts B1e (ungated); not duplicated here.
+ * Spawn-only `status --components` runs under `actor grant --full` after the admin ps
+ * cells, then the admin grant is restored. Refusal of other spawn-only commands stays
+ * in user-spawn.smoke.ts B1e.
  * Gated: a RED here is C or the user-mode connect path broken.
  *
  * STEP 3 follows the product decision that a user-auth `ps` with no manager answering is not an
@@ -323,6 +325,27 @@ try {
     whoEnvelope?.result?.managers === "partial" && whoEnvelope.warnings.some((w) => w.code === "MANAGED_SCOPE"), whoJson.out.slice(-600));
   check("that label is not a part left unread: user-mode who exits 0, ok and complete",
     whoJson.status === 0 && whoEnvelope?.outcome === "ok" && whoEnvelope.completeness === "complete", whoJson.out.slice(-600));
+
+  // The admin grant above hides this defect: `--full` alone is the documented owner
+  // grant (scope spawn,role:default, no admin). Later cells need the admin grant back.
+  console.log("3a spawn-only) status --components under the documented owner grant");
+  try {
+    const narrowed = await cotal(["actor", "grant", "cli", "--sub", sub, "--full", "--label", "spawn-only status"], 60_000);
+    mustHaveRun(narrowed, "the spawn-only owner grant");
+    check("the documented --full grant stores the spawn-only owner scope", narrowed.status === 0 && /^Actor grant stored$/m.test(narrowed.out), narrowed.out.slice(-300));
+    const components = await cotal(["status", "--components", "--space", SPACE], 30_000);
+    mustHaveRun(components, "spawn-only status --components");
+    const plain = components.out.replace(/\x1b\[[0-9;]*m/g, "");
+    const managerLine = plain.split("\n").find((line) => /^  manager /.test(line)) ?? plain.slice(-600);
+    console.log(`   spawn-only status --components (exit=${components.status}):\n` +
+      plain.split("\n").filter((line) => /Component Health|^  (manager|delivery|web|broker) /.test(line)).map((line) => `   | ${line}`).join("\n").slice(0, 1200));
+    check("spawn-only status --components exits 0", components.status === 0, managerLine);
+    check("spawn-only status --components manager row is serving", /^  manager {9,}serving /m.test(plain), managerLine);
+  } finally {
+    const restore = await cotal(["actor", "grant", "cli", "--sub", sub, "--full", "--scope", "spawn,role:default,admin", "--label", "ps human"], 60_000);
+    mustHaveRun(restore, "restoring the fixture's admin grant after the spawn-only status cell");
+    check("the later checks receive the admin grant again after the spawn-only status cell", restore.status === 0, restore.out.slice(-500));
+  }
 
   console.log("3a history) native user-auth reads through its channel grant");
   const historyText = `native history ${Date.now()}`;
