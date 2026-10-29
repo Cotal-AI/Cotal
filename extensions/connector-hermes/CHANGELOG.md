@@ -1,5 +1,9 @@
 # @cotal-ai/connector-hermes
 
+## 0.127.1
+
+No changes in this release.
+
 ## 0.127.0
 
 No changes in this release.
