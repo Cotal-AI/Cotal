@@ -23,7 +23,9 @@
  * there, and `down` and `down --dry-run` there find no stack. A fresh folder under the home makes its
  * own `.cotal` on a bare `up`, and removes it when a later check refuses, under a home that holds a
  * stack as well, leaving that home's records as they were, while `up -f` there refuses CONFLICT and
- * writes nothing. A bare `up` in a new project
+ * writes nothing. On an 80-column terminal the stderr note that names that `.cotal` wraps at spaces
+ * to stderr's width, each line dimmed on its own, and with stderr in a file it is one line there even
+ * when stdout is a terminal. A bare `up` in a new project
  * names its space after the folder: two sibling folders get their own names, `--space` and a project
  * above the folder keep theirs, and a folder name that is no valid space name, a name another folder
  * holds, or a selection whose folder was moved refuses before anything is written. A bare `up` whose
@@ -49,6 +51,7 @@ import { accessSync, chmodSync, constants, existsSync, lstatSync, mkdirSync, mkd
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
+import { clean, ptySpawn } from "./_console-pty.js";
 
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
 if (!existsSync(BIN)) {
@@ -237,7 +240,34 @@ if (process.platform !== "win32") {
   const prepare = "prepare this folder with `cotal space create <space> --root .`, then run `cotal up` again from this folder";
   const manifestUp = run(["up", "-f", "cotal.yaml", "--json"], nested);
   check("up -f there still refuses CONFLICT, exit 2, naming space create and up from the folder, and writes nothing", manifestUp.status === 2 && manifestUp.envelope?.error?.code === "CONFLICT" && manifestUp.envelope.error.message === inherited && manifestUp.envelope.error.remedy === prepare && !existsSync(nestedRecords), shown(manifestUp));
-  const { findMesh, recordMesh, removeMesh } = await import("@cotal-ai/workspace");
+  const { displayWidth, findMesh, recordMesh, removeMesh } = await import("@cotal-ai/workspace");
+  // On an 80-column terminal the note wraps at spaces to stderr's width, each line dimmed on its own.
+  // `redirect` sends one stream to a file, so stdout and stderr can be told apart.
+  const made = `made ${nestedRecords} for this folder's records; the machine's home .cotal was not used`;
+  const streamFile = join(folder, "redirected.txt");
+  const onTerminal = async (redirect: string, extra: NodeJS.ProcessEnv) => {
+    rmSync(streamFile, { force: true });
+    let raw = "";
+    const pty = ptySpawn("/bin/sh", ["-c", `exec "$0" "$@" ${redirect}`, process.execPath, BIN, "up", "--runtime", "nosuch", "--server", "nats://127.0.0.1:1"], { name: "xterm-256color", cols: 80, rows: 200, cwd: nested, env: { ...extra, REDIRECTED: streamFile } as Record<string, string> });
+    pty.onData((data) => { raw += data; });
+    const exit = await new Promise<number>((done) => pty.onExit((e) => done(e.exitCode)));
+    return { exit, raw: raw.split(/\r?\n/), lines: clean(raw).split(/\r?\n/), file: existsSync(streamFile) ? readFileSync(streamFile, "utf8") : "" };
+  };
+  /** The note's lines, from the first one, until they read as the note again. */
+  const noteLines = (lines: string[]): string[] => {
+    const block: string[] = [];
+    if (lines[0]?.startsWith("made")) for (const line of lines) { block.push(line); if (block.join(" ").length >= made.length) break; }
+    return block;
+  };
+  const wraps = (block: string[]) => block.length > 1 && block.join(" ") === made && block.every((l) => displayWidth(l) <= 80 || !l.includes(" "));
+  const colored = await onTerminal("", Object.fromEntries(Object.entries(env).filter(([k]) => k !== "NO_COLOR")));
+  const coloredNote = noteLines(colored.lines);
+  check("on an 80-column terminal the note comes first and wraps at spaces within 80 columns, the rest of the run unchanged", colored.exit === 2 && wraps(coloredNote) && colored.lines.some((l) => /Code:\s+DEPENDENCY_UNAVAILABLE/.test(l)) && !existsSync(nestedRecords), colored.lines);
+  check("...each of its lines dimmed on its own", coloredNote.every((l, i) => colored.raw[i] === `\x1b[2m${l}\x1b[0m`), colored.raw.slice(0, coloredNote.length));
+  const stdoutFiled = await onTerminal(`>"$REDIRECTED"`, env);
+  check("with stdout in a file and stderr on the terminal, the note still wraps there within 80 columns", stdoutFiled.exit === 2 && wraps(noteLines(stdoutFiled.lines)) && !stdoutFiled.file.includes("made"), stdoutFiled.lines);
+  const stderrFiled = await onTerminal(`2>"$REDIRECTED"`, env);
+  check("with stderr in a file and stdout on the terminal, the note is one exact line there", stderrFiled.exit === 2 && stderrFiled.file.split("\n")[0] === made && !stderrFiled.lines.some((l) => l.includes("made")), { lines: stderrFiled.lines, file: stderrFiled.file.slice(0, 900) });
   process.env.COTAL_HOME = join(home, ".cotal");
   recordMesh({ space: "homestack", server: "nats://127.0.0.1:1", root: home, mode: "auth", ts: new Date().toISOString() });
   const homeEntry = JSON.stringify(findMesh("homestack"));
