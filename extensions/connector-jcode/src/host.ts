@@ -596,6 +596,14 @@ export async function runJcodeHost(): Promise<void> {
    *  finishes cleanly. A soft_interrupt `ok` proves the live recipient session queued the text; it
    *  does not prove the model consumed it yet, so the turn boundary remains the sole ack site. */
   let surfacedIds: string[] = [];
+  // A client-only recovery leaves accepted work owned by the same native session.
+  // In particular an old run() rejecting on client close must not discard that ledger.
+  let nativeTreePreserved = false;
+  const unansweredSteers = new Set<() => void>();
+  const releaseUnansweredSteers = (): void => {
+    for (const release of unansweredSteers) release();
+    unansweredSteers.clear();
+  };
   /**
    * Serialises everything that can make this session emit `message_accepted`.
    *
@@ -798,7 +806,7 @@ export async function runJcodeHost(): Promise<void> {
    *
    *  The measured failure is the SDK's 30s request timeout, but this is deliberately set for ANY
    *  rejection: the connector cannot tell a timeout from a refusal it has not seen before, and the
-   *  consequence is identical either way — the live session did not take the message. Cleared on the
+   *  consequence is an unacknowledged handover, not proof the native session rejected it. Cleared on the
    *  next accepted handoff, so a seat that recovers goes back to the cheap mid-turn path. */
   let softInterruptFailed = false;
   /** The last in-flight steer request. `drive()` waits for it before deciding which ids the clean
@@ -1011,6 +1019,8 @@ export async function runJcodeHost(): Promise<void> {
   };
 
   const finishHostIdleTurn = async (): Promise<void> => {
+    await steerSettled;
+    if (!sessionBusy()) releaseUnansweredSteers();
     await commitSteeredIfHostIdle();
     if (!sessionBusy() && !reconnecting && hasDriveWork()) void drive();
   };
@@ -1031,6 +1041,7 @@ export async function runJcodeHost(): Promise<void> {
       writeJcodeDiagnostic("[cotal-jcode] deferred turn after steering: native session unavailable\n");
       return;
     }
+    releaseUnansweredSteers();
     if (surfacedIds.length) {
       const committed = surfacedIds;
       surfacedIds = [];
@@ -1192,8 +1203,10 @@ export async function runJcodeHost(): Promise<void> {
     } catch (error) {
       closeEventRun(error as Error);
       await events?.settled();
-      agent.releaseInFlight(surfacedIds);
-      surfacedIds = [];
+      if (!nativeTreePreserved || (!reconnecting && client === turnClient)) {
+        agent.releaseInFlight(surfacedIds);
+        surfacedIds = [];
+      }
       consecutiveFailures++;
       const condition = jcodeTurnCondition(error);
       if (condition) relayTurnCondition(condition);
@@ -1279,9 +1292,13 @@ export async function runJcodeHost(): Promise<void> {
         try {
           await request;
         } catch (error) {
-          // The handoff did not land. Release before rethrowing so the items are owed again before
-          // anything else reads the ledger, and stay un-acked.
-          release();
+          // A request timeout drops only the SDK waiter. The same native session can apply the
+          // interrupt later, so after preserving it do not steer these keys again this busy turn.
+          // A boundary or connection replacement releases the hold without claiming acceptance.
+          if (nativeTreePreserved && client === current && sessionBusy()
+            && error instanceof HarnessError && error.code === "timeout") {
+            unansweredSteers.add(release);
+          } else release();
           throw error;
         }
         // The live session took it. Whatever made a previous handoff fail is over, so the fallback
@@ -1369,6 +1386,19 @@ export async function runJcodeHost(): Promise<void> {
     // existing one-shot guard governs it, so this cannot become a reconnect loop.
     if (acceptanceSuspectUntilBridgeReplaced && !bridgeReplacementRequestedForSuspicion) {
       bridgeReplacementRequestedForSuspicion = true;
+      // A missing acknowledgement poisons this API connection, not the live native session.
+      // Reconnect to the same owned bridge instead of killing a TUI-owned tool and its server.
+      if (tui && sessionBusy()) {
+        const suspect = client;
+        writeJcodeDiagnostic(
+          `[cotal-jcode] a queued turn lapsed without acknowledgement while the session is busy; ` +
+            `replacing only the Harness API connection; preserving the private Jcode tree if ` +
+            `the same bridge reconnects and attaches within ${BRIDGE_RECOVERY_WINDOW_MS}ms; ` +
+            `otherwise ending the seat and stopping its tree\n`,
+        );
+        if (suspect) void recoverBridge(suspect, true);
+        return;
+      }
       const suspect = client;
       writeJcodeDiagnostic(
         `[cotal-jcode] a queued turn lapsed with no acknowledgement, so acceptance on this ` +
@@ -1663,9 +1693,19 @@ export async function runJcodeHost(): Promise<void> {
    * inbox driver see the pending work again. A second close is terminal — retry pacing belongs to
    * the turn policy, not an unbounded connector relaunch loop.
    */
-  const recoverBridge = async (lost: JcodeClient): Promise<void> => {
+  const recoverBridge = async (lost: JcodeClient, preserveInstance = false): Promise<void> => {
     if (stopping || lost !== client || reconnecting) return;
     if (bridgeRecoveryUsed) {
+      if (preserveInstance) {
+        queuedTurnTierStopped = true;
+        writeJcodeDiagnostic(
+          `[cotal-jcode] queued-turn acknowledgement remains ambiguous after its one connection recovery; ` +
+            `preserving the private Jcode tree and stopping queued-turn attempts; ` +
+            `${unservedAutomatic().length} automatic message(s) stay queued and UN-ACKED for redelivery\n`,
+        );
+        publishInboundHealth();
+        return;
+      }
       writeJcodeDiagnostic(endingLine("private Harness connection closed after its one recovery attempt"));
       await shutdown(1);
       return;
@@ -1674,8 +1714,12 @@ export async function runJcodeHost(): Promise<void> {
     reconnecting = true;
     turnActive = false;
     driving = false;
-    agent.releaseInFlight(surfacedIds);
-    surfacedIds = []; // deliberately unacked; the replacement redrives the durable inbox batch
+    nativeTreePreserved = preserveInstance;
+    releaseUnansweredSteers();
+    if (!preserveInstance) {
+      agent.releaseInFlight(surfacedIds);
+      surfacedIds = []; // a new tree redrives the durable batch, unlike a client-only replacement
+    }
     // Same reasoning: the replacement redrives the durable batch, so reservations held against the
     // lost bridge must not keep those items unselectable on the new one.
     //
@@ -1696,16 +1740,26 @@ export async function runJcodeHost(): Promise<void> {
       // cannot own the same home until it is gone. The lost client's close listener is ignored
       // because reconnecting is already true, and the relaunch goes through the same
       // identity-capturing path as startup so teardown targets the replacement tree, not the corpse.
-      await stopPrivateJcode();
+      if (preserveInstance) {
+        // A connected client does not own the SDK instance. Closing it retires only this
+        // connection's ambiguous replies, while the TUI keeps the native turn alive.
+        await lost.close();
+        client = undefined;
+      } else await stopPrivateJcode();
       if (!sessionId) throw new Error("jcode connector: Harness connection closed before a session was established");
       for (;;) {
         let replacement: JcodeClient | undefined;
         try {
-          replacement = await launchPrivateJcode(deadline);
+          replacement = preserveInstance
+            ? await JcodeClient.connect({
+                socketPath: instance!.socketPath, requestTimeoutMs: Math.max(1, deadline - Date.now()),
+              })
+            : await launchPrivateJcode(deadline);
           const attachRemaining = Math.max(1, deadline - Date.now());
           let attachDeadline: ReturnType<typeof setTimeout> | undefined;
+          let attached: Awaited<ReturnType<JcodeClient["attachSession"]>>;
           try {
-            await Promise.race([
+            attached = await Promise.race([
               replacement.attachSession(sessionId),
               new Promise<never>((_, reject) => {
                 attachDeadline = setTimeout(() => reject(new Error("jcode connector: recovery attach exceeded its bounded window")), attachRemaining);
@@ -1729,13 +1783,16 @@ export async function runJcodeHost(): Promise<void> {
           deferralAnnounced = false;
           queuedTurnTierStopped = false;
           watchClient(replacement);
+          // The initial native state event can arrive before watchClient is installed.
+          // Do not redrive into a TUI turn that is still running.
+          if (preserveInstance) turnActive = attached.status !== "idle";
           writeJcodeDiagnostic(`[cotal-jcode] recovered private Harness connection for session ${sessionId}\n`);
-          void agent.setStatus("idle").catch(() => {});
+          void agent.setStatus(turnActive ? "working" : "idle").catch(() => {});
           break;
         } catch (error) {
           lastError = error;
           await replacement?.close().catch(() => {});
-          await stopPrivateJcode();
+          if (!preserveInstance) await stopPrivateJcode();
           if (stopping) return;
           if (permanentBridgeRecoveryFailure(error)) throw error;
           const remaining = deadline - Date.now();
@@ -1747,8 +1804,16 @@ export async function runJcodeHost(): Promise<void> {
         }
       }
     } catch (error) {
+      const failure = lastError ?? error;
+      const reason = preserveInstance
+        ? `same-bridge recovery ${permanentBridgeRecoveryFailure(failure)
+          ? "permanently refused"
+          : Date.now() >= deadline
+            ? `window expired after ${BRIDGE_RECOVERY_WINDOW_MS}ms`
+            : "failed"}; ending seat and stopping private Jcode tree`
+        : "private Harness connection closed and recovery failed";
       writeJcodeDiagnostic(
-        endingLine("private Harness connection closed and recovery failed", ((lastError ?? error) as Error).message),
+        endingLine(reason, (failure as Error).message),
       );
       await shutdown(1);
     } finally {
