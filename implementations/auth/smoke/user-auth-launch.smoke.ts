@@ -23,9 +23,11 @@
  *   E4. A prepared second root of the same space under its own home: `manager start` with no sign-in,
  *      or with one the IdP revoked, is refused AUTH_REQUIRED before anything is saved. With the revoked
  *      one, a bare `up` of the running stack and of the stopped stack leaves the manager unattempted,
- *      and a team boot resuming the stopped stack is refused AUTH_REQUIRED before any effect, each
- *      naming `cotal login --idp <base>`. Signed in again, the manager starts, and a `manager restart`
- *      over it with the sign-in revoked is refused AUTH_REQUIRED before it stops anything. A manager left
+ *      and a team boot resuming the stopped stack is refused AUTH_REQUIRED before any effect, saying
+ *      nothing was started or written, each naming `cotal login --idp <base>`. Signed in again, the
+ *      manager starts, and a `manager restart`
+ *      over it with the sign-in revoked is refused AUTH_REQUIRED before it stops anything, saying the
+ *      running manager was left running. A manager left
  *      running after a sign-out is stopped by the folder's owner through `manager stop` and `down`.
  *      `supervise` is refused before it connects, under a `Mesh:` heading with a code and no boot
  *      line, from that stopped root, from a folder with no records (naming the folder that hosts the
@@ -769,7 +771,8 @@ try {
     const revokedShown = await cotal(["service", "show", "manager"], { cwd: root2, env });
     check("…before anything was saved or launched, so no manager runs",
       !revokedText.includes("saved manager") && revokedShown.status === 2 && field(revokedShown.out, "Code", "TARGET_NOT_FOUND") && !existsSync(managerPid), { start: revokedStart.out, show: revokedShown.out });
-    // `up` and a team boot start the manager behind the same confirmation, so neither attempts it.
+    // `up` and a team boot start the manager behind the same confirmation, so neither attempts it. A
+    // bare up says so; a team boot, which refuses before any write, says nothing was started.
     const revokedRejection = "the IdP rejected this machine's sign-in, which has expired or was revoked; the manager was not attempted";
     const revokedUp = await cotal(["up"], { cwd: root2, env });
     check("with that sign-in, a bare up keeps the other members, does not attempt the manager, and Next signs in at that IdP, then runs up again",
@@ -781,9 +784,9 @@ try {
     writeFileSync(teamFile, `apiVersion: cotal/v1\nkind: Mesh\nspace: ${SPACE}\nbroker:\n  servers: ${server2}\n  auth: user\n  idp: ${base}\nchannels:\n  general:\n    description: The general channel.\n`);
     const revokedBoot = await cotal(["team", "boot", teamFile], { cwd: root2, env });
     const revokedBootText = plain(revokedBoot.out);
-    check("a team boot resuming it is refused AUTH_REQUIRED, exit 2, and Next signs in at that IdP, then boots the team again",
-      revokedBoot.status === 2 && field(revokedBoot.out, "Code", "AUTH_REQUIRED") && revokedBootText.includes(revokedRejection) &&
-        revokedBootText.includes(`cotal login --idp ${base}, then \`cotal team boot ${teamFile}\``), revokedBoot.out);
+    check("a team boot resuming it is refused AUTH_REQUIRED, exit 2, says nothing was started or written, and Next signs in at that IdP, then boots the team again",
+      revokedBoot.status === 2 && field(revokedBoot.out, "Code", "AUTH_REQUIRED") && revokedBootText.includes("the IdP rejected this machine's sign-in, which has expired or was revoked; nothing was started or written") &&
+        !revokedBootText.includes("the manager was not attempted") && revokedBootText.includes(`cotal login --idp ${base}, then \`cotal team boot ${teamFile}\``), revokedBoot.out);
     check("…before any effect: no broker answers and no manager runs", !(await isReachable(server2)) && !existsSync(managerPid), revokedBoot.out);
     const restarted = await cotal(["up"], { cwd: root2, env });
     check("a bare up of the stopped stack starts the other members and refuses the manager the same way",
@@ -792,12 +795,14 @@ try {
     const started = await cotal(["manager", "start"], { cwd: root2, env });
     check("signed in and granted, manager start starts it", started.status === 0 && existsSync(managerPid), started.out);
     const pid2 = Number(readFileSync(managerPid, "utf8").trim());
-    // A restart over that running manager, with the sign-in revoked, is refused before anything is stopped.
+    // A restart over that running manager, with the sign-in revoked, is refused before anything is
+    // stopped, and says that manager was left running.
+    const revokedRunning = "the IdP rejected this machine's sign-in, which has expired or was revoked; the running manager was left running";
     await revokeSignIn(loadIdpSession(home2, base)!.token);
     const revokedRestart = await cotal(["manager", "restart", "--yes"], { cwd: root2, env });
     const revokedRestartText = plain(revokedRestart.out);
-    check("with the sign-in revoked, manager restart over the running manager exits 2 with AUTH_REQUIRED, and Next signs in at that IdP, then restarts it",
-      revokedRestart.status === 2 && field(revokedRestart.out, "Code", "AUTH_REQUIRED") && revokedRestartText.includes(revokedRejection) &&
+    check("with the sign-in revoked, manager restart over the running manager exits 2 with AUTH_REQUIRED, says the running manager was left running, and Next signs in at that IdP, then restarts it",
+      revokedRestart.status === 2 && field(revokedRestart.out, "Code", "AUTH_REQUIRED") && revokedRestartText.includes(revokedRunning) && !revokedRestartText.includes("the manager was not attempted") &&
         revokedRestartText.includes(`cotal login --idp ${base}, then \`cotal manager restart\``), revokedRestart.out);
     check("…before anything was stopped: the same manager still runs",
       readFileSync(managerPid, "utf8").trim() === String(pid2) && (() => { try { process.kill(pid2, 0); return true; } catch { return false; } })(), revokedRestart.out);
@@ -938,8 +943,8 @@ try {
     await revokeSignIn(loadIdpSession(joinHome, base)!.token);
     const revokedJoinRestart = await cotal(["manager", "restart", "--yes"], { cwd: joinRoot, env: joinEnv });
     const revokedJoinRestartText = plain(revokedJoinRestart.out);
-    check("with that sign-in revoked, the participant's manager restart exits 2 with AUTH_REQUIRED, and Next signs in at that IdP, then restarts it",
-      revokedJoinRestart.status === 2 && field(revokedJoinRestart.out, "Code", "AUTH_REQUIRED") && revokedJoinRestartText.includes("the IdP rejected this machine's sign-in, which has expired or was revoked; the manager was not attempted") &&
+    check("with that sign-in revoked, the participant's manager restart exits 2 with AUTH_REQUIRED, says the running manager was left running, and Next signs in at that IdP, then restarts it",
+      revokedJoinRestart.status === 2 && field(revokedJoinRestart.out, "Code", "AUTH_REQUIRED") && revokedJoinRestartText.includes("the IdP rejected this machine's sign-in, which has expired or was revoked; the running manager was left running") &&
         revokedJoinRestartText.includes(`cotal login --idp ${base}, then \`cotal manager restart\``), revokedJoinRestart.out);
     check("…and leaves the running manager as it was", joinManagerRuns() && readFileSync(joinManagerPid, "utf8").trim() === joinRunningPid, revokedJoinRestart.out);
     await establishIdpSession({ dir: joinHome, idpUrl: base, clientId: CLIENT_ID, onPrompt: (p: DeviceLoginPrompt) => void approve(p.userCode) });

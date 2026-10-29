@@ -5021,8 +5021,9 @@ as `cotal up` does for its manager. On a user-auth space registered here from an
 need your sign-in. Before anything is saved, stopped or launched, they confirm the sign-in with its
 IdP. Without one, or when the IdP rejects it because it expired or was revoked, they refuse
 `AUTH_REQUIRED` (exit 2), and Next names `cotal login --idp <base>`, then the command again. A
-refused `restart` leaves a running manager as it was. Any
-other failure of that check, such as an IdP that does not answer, is left to the start. In a folder
+refused `restart` leaves a running manager as it was and says the running manager was left
+running. Any other failure of that check, such as an IdP that does not answer, is left to the start.
+In a folder
 that hosts the space, `stop` and `cotal down` need no sign-in: the broker, the records and the
 process belong to this folder, so the stop reads the manager's own local receipt.
 
@@ -8573,9 +8574,9 @@ For a first user-auth team, prepare with `cotal up --user-auth --idp <url>`, the
 explicitly grant the invoking user with `cotal auth grant cli --sub <subject> --full`, and run
 `cotal down` before `cotal team boot <file>`. Do not start the manager between preparation and that
 stop. Before any write, that boot confirms your sign-in with its IdP. Without one, or when the IdP
-rejects it because it expired or was revoked, it refuses `AUTH_REQUIRED` (exit 2), and Next names
-`cotal login --idp <base>`, then the team boot again. Any other failure of that check, such as an
-IdP that does not answer, is left to the boot. A
+rejects it because it expired or was revoked, it refuses `AUTH_REQUIRED` (exit 2), says nothing was
+started or written, and Next names `cotal login --idp <base>`, then the team boot again. Any other
+failure of that check, such as an IdP that does not answer, is left to the boot. A
 static-auth or open preparation uses `cotal up --no-manager` before `cotal down`. No implicit owner
 grant or borrowed caller is substituted. A previously attempted manager is never adopted.
 
