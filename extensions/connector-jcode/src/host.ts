@@ -12,6 +12,7 @@ import { chooseSessionToResume, type ResumeCandidate } from "./session-resume.js
 import { forkJcodeSession, jcodeSeatHome, markJcodeForkBriefed, type JcodeFork } from "./session-fork.js";
 import { activeModelRoute, bareModelId, describeRoute, effectiveProvider } from "./route-identity.js";
 import {
+  classifyReadinessFailure,
   classifyReadinessProviderRefusal,
   installJcodeDiagnosticLog,
   JcodeConnectorError,
@@ -2138,6 +2139,8 @@ export async function runJcodeHost(): Promise<void> {
         );
         throw classified;
       }
+      const failure = classifyReadinessFailure(error);
+      if (failure) throw failure;
       throw error;
     }
     if (!readiness || !hasOrientation(readiness)) {

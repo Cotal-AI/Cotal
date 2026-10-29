@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, readdirSync, rmSync, statSync, symlinkSync } fr
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HarnessError } from "@1jehuang/jcode-sdk";
-import { classifyReadinessProviderRefusal, installJcodeDiagnosticLog, writeJcodeDiagnostic } from "../src/startup-diagnostics.js";
+import { classifyReadinessFailure, classifyReadinessProviderRefusal, installJcodeDiagnosticLog, writeJcodeDiagnostic } from "../src/startup-diagnostics.js";
 
 let pass = 0;
 const check = (name: string, condition: boolean, actual?: unknown): void => {
@@ -30,6 +30,27 @@ try {
     ["null error", new HarnessError("internal", envelope.replace(/\{"error":.*\}\}/, '{"error":null}')), "owned-pin"],
   ] as const) {
     check(`wrapped refusal leaves ${name} scrubbed`, classifyReadinessProviderRefusal(error, pin) === undefined);
+  }
+
+  const authEnvelope = envelope.replace("404 Not Found", "401 Unauthorized");
+  const sendEnvelope = "Failed to send OpenAI-compatible chat request\n  endpoint: PRIVATE_CANARY\n  model: PRIVATE_CANARY\n  auth: PRIVATE_CANARY\nLocal endpoint hint: PRIVATE_CANARY";
+  for (const [name, message, expected] of [
+    ["HTTP 401", authEnvelope, "provider_auth_refused"],
+    ["failed provider send", sendEnvelope, "provider_request_failed"],
+  ] as const) {
+    const failure = classifyReadinessFailure(new HarnessError("internal", message));
+    check(`${name} keeps only a fixed startup category`, failure?.code === expected && !failure.message.includes("PRIVATE_CANARY"));
+  }
+  for (const [name, error] of [
+    ["plain error", new Error(authEnvelope)],
+    ["other SDK code", new HarnessError("invalid_request", authEnvelope)],
+    ["unrelated 401", new HarnessError("internal", "unrelated\n  status: 401 Unauthorized\nPRIVATE_CANARY")],
+    ["HTTP 403", new HarnessError("internal", authEnvelope.replace("401 Unauthorized", "403 Forbidden"))],
+    ["HTTP 500", new HarnessError("internal", authEnvelope.replace("401 Unauthorized", "500 Internal Server Error"))],
+    ["wrong send prefix", new HarnessError("internal", `unrelated ${sendEnvelope}`)],
+    ["model refusal", new HarnessError("internal", envelope)],
+  ] as const) {
+    check(`readiness failure leaves ${name} unchanged`, classifyReadinessFailure(error) === undefined);
   }
 
   const home = join(root, "home");
