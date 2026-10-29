@@ -28,9 +28,10 @@
  *     refused at a port another program holds names another `--server`, records no broker instance
  *     and pins nothing: `down --yes` stops nothing and the next `up` starts at another address. The
  *     refusal says the stack started no member. A running broker keeps its file store cap; a stopped
- *     one takes a new `--max-file-store`, and a recorded cap too small for the space's streams fails
- *     naming that cap and the flag. After replacement, `status` reads the stack as stopped, with its
- *     last operation, and names bare up. Once a space holds
+ *     one takes a new `--max-file-store`. With no stream reservations, a recorded one-byte cap lets
+ *     the empty streams start, then delivery's first write fails and keeps the broker as a partial
+ *     start; stopping that broker lets a replacement cap apply. After replacement, `status` reads the
+ *     stack as stopped, with its last operation, and names bare up. Once a space holds
  *     more than its cap, `send` refuses `DEPENDENCY_UNAVAILABLE` naming the store and the cap,
  *     `status` shows the store full and leads Next with `history clear`, and `down` and `service stop
  *     stack-manager` refuse the same way before any stop, because the manager's stop needs an
@@ -559,7 +560,8 @@ try {
     check("down --yes stops it", stopped.status === 0, shown(stopped));
   }
 
-  // 3c. A recorded file store cap too small for the space's streams, as an earlier release accepted.
+  // 3c. A recorded one-byte file store cap, as an earlier release accepted, starts empty streams
+  // without reservations. Delivery's first write fills it, so the broker is kept until a scoped down.
   {
     const space = "smallcap";
     const root = prepare(space);
@@ -574,7 +576,9 @@ try {
     writeFileSync(path, JSON.stringify({ ...journal, broker: { ...journal.broker, maxFileStore: 1 } }));
     const failed = cli(root, "up", "--no-manager", "--json");
     track(space);
-    check("bare up with a 1-byte recorded cap fails OPERATION_FAILED, exit 5, naming the cap and the flag that replaces it", failed.status === 5 && failed.env?.error?.code === "OPERATION_FAILED" && failed.env.error.message.includes("its JetStream file store cap (--max-file-store 1) has too little room for them") && Boolean(failed.env.error.remedy?.includes(`run \`cotal up --max-file-store <bytes>\` from ${root}`)), shown(failed));
+    check("bare up with a 1-byte recorded cap keeps the broker after delivery's first write fails: OPERATION_PARTIAL, exit 4, naming the full store and replacement-cap route", failed.status === 4 && failed.env?.error?.code === "OPERATION_PARTIAL" && failed.env.error.message.includes("started members were kept and nothing was retried") && failed.env.error.message.includes("is full at its --max-file-store cap of 1 bytes") && Boolean(failed.env.error.remedy?.includes("run `cotal down --yes` and `cotal up --max-file-store <bytes>` with a larger cap")), shown(failed));
+    const partialDown = cli(root, "down", "--yes", "--json");
+    check("down --yes stops the broker kept by the partial startup before its cap is changed", partialDown.status === 0, shown(partialDown));
     const fixed = cli(root, "up", "--no-manager", "--max-file-store", "134217728", "--json");
     track(space);
     check("up with a new cap on the stopped broker records it and starts", fixed.status === 0 && (JSON.parse(readFileSync(path, "utf8")) as { broker: { maxFileStore?: number } }).broker.maxFileStore === 134217728, shown(fixed));
