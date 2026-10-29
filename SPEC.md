@@ -3728,6 +3728,13 @@ requires both a current `meshView` and a true identity flag before presenting th
 row's roster status or `activeAt` as this lifecycle's observation. A false or absent
 flag is not proof that the seat is absent, and older managers may omit both fields.
 
+**Manager persona removal.** The reference manager's typed surface includes an untargeted
+`remove-persona` write under the same `manager.persona` capability as `define-persona`. Its input is
+`{ name }`, where `name` is a safe machine-local catalog filename stem. It MUST accept a stem whose
+length is no longer valid for a spawn identity, so a client can remove an obsolete definition. It
+removes only the definition and MUST NOT stop a running lifecycle created from it. An unknown name
+MUST be refused as `not-found`; it is not an idempotent success. The response is `{ name }`.
+
 **Effect.** A command declaration carries `effect`, one of `read` or `write`.
 
 **Reachability.** `effect` is reachable only under `protocol.v: 2` (*Version*, below). A responder
@@ -6727,6 +6734,7 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
+| 2026-10-29 | **The Manager persona catalog has a typed removal command (§13.7), additive.** `remove-persona` rides the same `manager.persona` capability as `define-persona`, removes only the machine-local definition, refuses an unknown name, and accepts a safe filename stem even when it exceeds the current spawn-name limit. The reference Manager cluster advances to revision 41. |
 | 2026-10-28 | **A retiring lifecycle's fence is its ACL row (Appendix B).** The fence of the next entry lived only in one daemon's memory and was checked before a join wrote its row, so a join whose ACL lookup outlived the fence, a join from a still-connected seat after a daemon restart, or a join a quiesced predecessor finished after its successor's inventory each kept one row of a retired lifecycle. The manager now narrows the lifecycle's ACL row to an empty `allowSubscribe` before it asks for the inventory. The daemon re-reads that exact row before and after the write that creates a membership row, and removes the row and refuses the join when the channel is no longer within it. Other membership writes only update the revision they read. The daemon's own refusal and its wait for running writes stay, for a manager that does not narrow, as on a hosted daemon serving older managers. No wire change. |
 | 2026-10-28 | **A lifecycle's memberships stop changing once its inventory is requested (Appendix B).** A seat's eviction closes its connection but does not settle the daemon's own work: a `durableJoin` already running, or one queued on `ctl.delivery` and authorized after the inventory against the still-live ACL row, could commit a row the inventory never listed, and retirement then kept it. Once the daemon takes a lifecycle's `lifecycleMemberships` request, it MUST refuse every `durableJoin` and `durableLeave` bound to that lifecycle, and it MUST begin the read only after the ones already running have finished. No wire change. |
 | 2026-10-27 | **The membership inventory is not held behind other admin commands (Appendix B).** A manager stop retires many lifecycles at once, and each retirement asked the delivery daemon for its `lifecycleMemberships` inventory after its eviction. The daemon answered its admin commands one at a time, so the inventories waited behind every other seat's eviction, missed their deadline, and left rows retained. The daemon now MUST NOT hold that verb behind its other admin commands. Requests that arrive together MAY share one read of the members bucket, provided the read began after each of them arrived, so every answer stays as complete as a read of its own. No wire change. |

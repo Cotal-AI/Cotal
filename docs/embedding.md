@@ -611,7 +611,8 @@ that returns the person's own `manager-caller` bearer and the space's sentinel c
 embedding's backend obtains the bearer from the stock exchange with the person's IdP proof. The
 bearer's space, principal, lifecycle and instance are checked before anything is dialled, and the
 describe is pinned to that instance. The view carries only the commands the person's ledger scope
-grants. `spawn`, for example, carries `spawn`, `despawn`, `inspect`, the persona commands and
+grants. `spawn`, for example, carries `spawn`, `despawn`, `inspect`, the persona commands
+(`define-persona`, `remove-persona`, `list-personas`, `show-persona`) and
 `goal-result`, plus the launch reads `status`, `models` and `resolve-cwd` on that one instance,
 while operator reads such as `ps` and `slots` come only with `admin`; the broker
 refuses a command the view does not carry. The connection never reconnects on its own; `reopen`

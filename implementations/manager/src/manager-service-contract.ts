@@ -29,7 +29,7 @@
  *   manager.spawn    spawn / resolve-cwd / resolve-agent   (privileged-grade creation)
  *   manager.lifecycle despawn / attach / input             (owner-mode terminal/interactive)
  *   manager.self     stop                                  (self-mode halt; baseline)
- *   manager.persona  definePersona                         (privileged-grade; ownership-checked)
+ *   manager.persona  definePersona / removePersona         (privileged-grade; ownership-checked)
  *   manager.chat     chat-session-open / chat-session-retire (operator instruments only; static managers)
  *   manager.admin    purge / launch / resume family / transcript-receive  (operator instruments only)
  *   manager.run      run-start / run-resume / run-answer   (the `run` capability + privileged instrument)
@@ -730,6 +730,17 @@ const PERSONA_OUTPUT_SCHEMA = {
   type: "object", additionalProperties: false, required: ["name", "path"],
   properties: { name: { type: "string" }, path: { type: "string" } },
 } as const;
+/** Removal names a catalog filename stem, not a spawnable identity. It deliberately has no
+ *  64-character ceiling: invalid legacy entries are the ones a caller most needs to remove. The
+ *  alphabet still keeps the request inside `.cotal/agents` and excludes paths and `.md` suffixes. */
+const REMOVE_PERSONA_INPUT_SCHEMA = {
+  type: "object", additionalProperties: false, required: ["name"],
+  properties: { name: { type: "string", pattern: "^[A-Za-z0-9_-]+$" } },
+} as const;
+const REMOVE_PERSONA_OUTPUT_SCHEMA = {
+  type: "object", additionalProperties: false, required: ["name"],
+  properties: { name: { type: "string" } },
+} as const;
 
 /** A chat session's channel list: bounded, since every entry becomes broker permission rows. */
 const CHAT_CHANNEL_LIST = { type: "array", maxItems: 64, uniqueItems: true, items: { type: "string", minLength: 1 } } as const;
@@ -1204,6 +1215,7 @@ const ROWS: CommandRow[] = [
   { name: "run-ps", capability: "manager.read", input: RUN_PS_INPUT_SCHEMA, output: RUN_PS_OUTPUT_SCHEMA, targeted: false, handler: "runPs" },
   { name: "goal-result", capability: "manager.read", input: GOAL_RESULT_INPUT_SCHEMA, output: GOAL_RESULT_OUTPUT_SCHEMA, targeted: false, handler: "goalResult" },
   { name: "define-persona", capability: "manager.persona", input: PERSONA_INPUT_SCHEMA, output: PERSONA_OUTPUT_SCHEMA, targeted: false, handler: "definePersona" },
+  { name: "remove-persona", capability: "manager.persona", input: REMOVE_PERSONA_INPUT_SCHEMA, output: REMOVE_PERSONA_OUTPUT_SCHEMA, targeted: false, handler: "removePersona" },
   // A static chat session's open and retire: untargeted, because the session does not exist before
   // open and retire names it by its own slot. Minted into operator instruments only.
   { name: "chat-session-open", capability: "manager.chat", input: CHAT_SESSION_OPEN_INPUT_SCHEMA, output: CHAT_SESSION_OPEN_OUTPUT_SCHEMA, targeted: false, handler: "chatSessionOpen" },
@@ -1373,9 +1385,12 @@ export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: Compile
  *  record cannot be read. The status output schema is closed, so a revision-38 contract rejects it.
  *
  *  40 = `ps`/`inspect` add optional joinHealth for a launch whose bounded wait elapsed without
- *  a join. Process liveness remains separate, and an exact-incarnation late join clears it. */
+ *  a join. Process liveness remains separate, and an exact-incarnation late join clears it.
+ *
+ *  41 = `remove-persona` removes one caller-owned machine-local persona definition, including a
+ *  filename whose stem is no longer a valid spawn name. A new served command cannot fold into 40. */
 export function managerClusterDocument(): ClusterDocument {
-  return buildClusterDocument(MANAGER_CLUSTER_URN, 40, ROWS);
+  return buildClusterDocument(MANAGER_CLUSTER_URN, 41, ROWS);
 }
 
 /** Revision, count, and names from the shipped cluster document. Reached smokes derive surface pins from this. */
@@ -1454,6 +1469,7 @@ export interface ManagerServiceHandlers {
   runPs(ctx: EpServeContext): unknown | Promise<unknown>;
   goalResult(ctx: EpServeContext): unknown | Promise<unknown>;
   definePersona(ctx: EpServeContext): unknown | Promise<unknown>;
+  removePersona(ctx: EpServeContext): unknown | Promise<unknown>;
   chatSessionOpen(ctx: EpServeContext): unknown | Promise<unknown>;
   chatSessionRetire(ctx: EpServeContext): unknown | Promise<unknown>;
   listPersonas(ctx: EpServeContext): unknown | Promise<unknown>;

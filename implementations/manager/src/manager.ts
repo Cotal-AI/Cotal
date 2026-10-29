@@ -3,6 +3,7 @@ import { hostname } from "node:os";
 import { credsAuthenticator } from "@nats-io/transport-node";
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
 import { isAbsolute, join, dirname, resolve } from "node:path";
+import { parse as parseYaml } from "yaml";
 import Headless from "@xterm/headless";
 import {
   CotalEndpoint,
@@ -4199,6 +4200,11 @@ export class Manager {
       cancel: (ctx) => this.serveGated(ctx, () => this.serveTurnCancel(ctx)),
       stopSelf: (ctx) => this.serveGated(ctx, () => unwrap(this.opStopSelf(callerOf(ctx), args(ctx)))),
       definePersona: (ctx) => this.serveGated(ctx, () => unwrap(this.opDefinePersona(args(ctx), callerOf(ctx), false))),
+      removePersona: (ctx) => this.serveGated(ctx, () => {
+        const r = this.opRemovePersona(args(ctx), callerOf(ctx), false);
+        if (!r.ok) throw new EpEnvelopeError((r.code ?? "failed-precondition") as EpErrorCode, r.error ?? "the operation failed", r.details, "not-executed");
+        return r.data;
+      }),
       // Reach is the broker's: only operator instruments carry these rows. The serve gate is the
       // maintenance fence, so neither runs while a shutdown or resume holds control.
       chatSessionOpen: (ctx) => this.serveGated(ctx, () => this.openStaticChatSession(args(ctx))),
@@ -11242,6 +11248,52 @@ export class Manager {
       return { ok: false, error: rejectionText(e) };
     }
     return { ok: true, data: { name, path } };
+  }
+
+  /** Remove one machine-local persona definition without touching any running lifecycle that was
+   *  launched from it. Removal accepts the catalog's safe filename alphabet without applying the
+   *  current spawn-name length or user-mode actor rules, so an obsolete invalid-name entry remains
+   *  repairable. Ownership matches redefine: the recorded owner, or admin for an ownerless file. */
+  private opRemovePersona(args: Record<string, unknown>, caller: string, admin: boolean): ControlReply {
+    if (this.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
+    const name = String(args.name ?? "").trim();
+    if (!name) return { ok: false, code: "bad-request", error: "name required" };
+    if (!/^[A-Za-z0-9_-]+$/.test(name))
+      return { ok: false, code: "bad-request", error: `unsafe persona name ${JSON.stringify(name)} (allowed: letters, digits, _ -)` };
+    const path = agentFilePath(this.workspaceRoot, name);
+    if (!existsSync(path)) return { ok: false, code: "not-found", error: `no persona "${name}"` };
+    let owner: string | undefined;
+    try {
+      owner = loadAgentFile(path).owner;
+    } catch {
+      // A catalog entry may be invalid for launch solely because an older release admitted a name
+      // above today's identity limit. Read only its frontmatter owner without asking the launch
+      // parser to accept the identity. This does not make the file spawnable or readable.
+      try {
+        const source = readFileSync(path, "utf8").replace(/^\uFEFF/, "").replace(/\r\n/g, "\n");
+        const match = /^---\n([\s\S]*?)\n---(?:\n|$)/.exec(source);
+        if (!match) throw new Error("missing frontmatter");
+        const frontmatter: unknown = parseYaml(match[1]);
+        if (!frontmatter || typeof frontmatter !== "object" || Array.isArray(frontmatter)) throw new Error("frontmatter is not a mapping");
+        const fields = frontmatter as Record<string, unknown>;
+        if (String(fields.name ?? "") !== name) throw new Error("frontmatter name differs from the catalog entry");
+        if (fields.owner !== undefined && typeof fields.owner !== "string") throw new Error("owner is not a string");
+        owner = fields.owner;
+      } catch {
+        return { ok: false, code: "not-found", error: `no persona "${name}"` };
+      }
+    }
+    if (!admin && owner !== caller) {
+      const heldBy = owner ? `owned by ${owner}` : "operator-owned (legacy file - no agent owner)";
+      return { ok: false, code: "permission-denied", error: `not authorized to remove ${name}: ${heldBy}; only its owner or an operator can` };
+    }
+    try {
+      rmSync(path);
+    } catch (e) {
+      if (!existsSync(path)) return { ok: false, code: "not-found", error: `no persona "${name}"` };
+      return { ok: false, error: rejectionText(e) };
+    }
+    return { ok: true, data: { name } };
   }
 
   /** The owner a fresh wire-defined persona records. A user-auth caller's principal is stable, and

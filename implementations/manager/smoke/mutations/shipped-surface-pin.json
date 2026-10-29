@@ -10,8 +10,8 @@
     "Reached suites used to pin 18 while the shipped document served 20. Restating the count is the",
     "defect class: correct the day it is written, wrong after the next served command.",
     "",
-    "M2 restores revision 39 after managed join health changes the shipped surface.",
-    "The changed output ships with revision 40, so 39 would name the preceding surface. The",
+    "M2 restores revision 40 after persona removal changes the shipped surface.",
+    "The new command ships with revision 41, so 40 would name the preceding surface. The",
     "named revision cell runs after the service has published and a generic client has resolved the",
     "actual shipped document.",
     "",
@@ -31,12 +31,12 @@
       "cell": "the resolved surface matches the shipped cluster document"
     },
     {
-      "name": "M2 keep revision 39 after managed join health lands",
+      "name": "M2 keep revision 40 after persona removal lands",
       "file": "implementations/manager/src/manager-service-contract.ts",
-      "find": "  return buildClusterDocument(MANAGER_CLUSTER_URN, 40, ROWS);",
-      "replace": "  return buildClusterDocument(MANAGER_CLUSTER_URN, 39, ROWS);",
-      "expectRed": "run-status program identity advances the manager cluster revision and retains vitals, workflow cancellation, keyed submission and existing commands",
-      "cell": "run-status program identity advances the manager cluster revision and retains vitals, workflow cancellation, keyed submission and existing commands"
+      "find": "  return buildClusterDocument(MANAGER_CLUSTER_URN, 41, ROWS);",
+      "replace": "  return buildClusterDocument(MANAGER_CLUSTER_URN, 40, ROWS);",
+      "expectRed": "persona removal advances the manager cluster revision and retains existing commands",
+      "cell": "persona removal advances the manager cluster revision and retains existing commands"
     },
     {
       "name": "M3 compile every contract pair at module scope again",

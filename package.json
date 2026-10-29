@@ -406,6 +406,7 @@
     "smoke:no-execution": "tsx implementations/manager/smoke/no-execution.smoke.ts",
     "smoke:no-execution-participant": "tsx implementations/manager/smoke/no-execution-participant.smoke.ts",
     "smoke:browser-manager-caller": "tsx implementations/manager/smoke/browser-manager-caller.smoke.ts",
+    "smoke:persona-remove-contract": "tsx implementations/manager/smoke/persona-remove-contract.smoke.ts",
     "smoke:remote-ef-pooled": "tsx implementations/manager/smoke/remote-ef-pooled.smoke.ts",
     "smoke:remote-run-attempt": "tsx implementations/manager/smoke/remote-run-attempt.smoke.ts",
     "smoke:remote-run-client": "tsx implementations/manager/smoke/remote-run-client.smoke.ts",
