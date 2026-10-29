@@ -224,6 +224,7 @@ export interface DocHit {
 /** BM25 search over heading-aware sections. Returns the best-matching sections (at most two per
  *  page, for diversity), each with a pointer to read the full page. Offline; no embeddings. */
 export function searchDocs(query: string, limit = 5): DocHit[] {
+  if (limit <= 0) return [];
   let terms = tokenize(query).filter((t) => !STOP.has(t));
   if (!terms.length) terms = tokenize(query); // all-stopword query → keep the raw terms
   const termSet = new Set(terms);
