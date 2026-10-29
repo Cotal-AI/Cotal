@@ -851,7 +851,8 @@ writes all of it again. A bare `down` interrupted the same way exits with the sa
 the members still running; `cotal down --yes` finishes the stop. When it had signalled a member that
 had not yet exited, it also names that stop's request: `cotal down --yes` stops the member again
 while it runs, and once it has exited, `cotal down --abandon-stop <request-id> --yes` finishes the
-stop. A bare `down` on the retained launcher, whose stop lines name each process and its pid, stops
+stop. When that member no longer runs as the `down` ends, the notice names only the
+`--abandon-stop` command, because `up` and `down` refuse until it runs. A bare `down` on the retained launcher, whose stop lines name each process and its pid, stops
 one member at a time. A signal that lands while a member's stop is in flight lets that stop finish
 and print its line first. The `down` then exits with the same codes and names the members it
 stopped and those still running, and `cotal down --yes` finishes the stop. A second signal ends it
@@ -3071,7 +3072,10 @@ included, says the selection applies outside the folder. A space `cotal space cr
 and no `cotal up` started, and one whose stack there is stopped, is the target of the commands about
 the folder itself only: `cotal up`, `cotal down`, `cotal space show` and the folder part of
 `cotal status`. Every other command run there targets the selection, and the note under its `Mesh:`
-heading says what this folder holds and the `cotal up` that starts it. A refusal there keeps that
+heading says what this folder holds and the `cotal up` that starts it. When that stack's last `up`
+or `down` ended before it recorded an outcome, a member's unconfirmed stop can keep `cotal up`
+refusing, so the note names `cotal status` there instead, whose Next names the step that finishes
+or settles it. A refusal there keeps that
 note whole, as for a selection whose stack is stopped, which names its own `cotal up` under Next.
 `--json` carries the same note in
 `warnings` as `FOLDER_SPACE_NOT_RUNNING`, whose `target` names the folder's `space`, its `state`
@@ -3284,7 +3288,10 @@ saw that process exit, `up` and `down` refuse until that stop is abandoned. `sta
 under the selected space, names the member, the earlier stop as `operation <id>` and the member's
 stop as `stop request <request-id>`, and offers `cotal down --abandon-stop <request-id> --yes` with
 that stop request ID, which their refusal names too, and the member's `service status`, in place of
-`up --root`.
+`up --root` and of a step that names `cotal up`. Run in that folder while another space is selected,
+`status` says the same under `This folder's space` with the same Next first. A stack there whose
+last `up` or `down` has no recorded outcome and that is not blocked settles when it starts, so Next
+names the `cotal up` that starts it there.
 `--json` carries the same as `folder.stackBlock`. A manager stop is decided by the manager's own
 receipts, which only `up` and `down` read, so `status` does not name it. An `up` or `down` that was
 interrupted before it recorded an outcome, and left some members running and others stopped, is

@@ -970,6 +970,8 @@ async function stopKernelService(definition: ServiceDefinitionSnapshot, current:
   } catch {
     throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the exact broker signal was not confirmed delivered to the pinned process; its stop request was retained and no exit was attributed to it", { target: instanceProjection(row) });
   }
+  // Smoke only: hold a signalled broker's stop before its exit is seen, so a signal can land in that window.
+  if (process.env.COTAL_SMOKE_HOLD_AFTER_BROKER_SIGNAL === "1") await delay(60_000);
   const deadline = Date.now() + 30000;
   while (Date.now() < deadline) {
     const state = observeServiceProcess(row.record.value);
