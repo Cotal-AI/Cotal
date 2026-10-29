@@ -82,17 +82,6 @@ export function otherStoreTenants(dir: string, space: string): StoreTenant[] {
   return [...tenants.values()].map((row) => ({ ...row, streams: row.streams.sort() })).sort((a, b) => a.space.localeCompare(b.space));
 }
 
-/** The JetStream accounts other than `account` that hold streams in the store folder `dir`, such as an
- *  open mesh's account beside a static space's after both ran in one folder. A folder with no
- *  `jetstream` tree, or an account with no `streams`, holds none. */
-export function otherStoreAccounts(dir: string, account: string): string[] {
-  const entries = (path: string): string[] => {
-    try { return readdirSync(path); }
-    catch (error) { if (["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "")) return []; throw error; }
-  };
-  return entries(join(dir, "jetstream")).filter((name) => name !== account && entries(join(dir, "jetstream", name, "streams")).length > 0).sort();
-}
-
 /** The tenants as one clause: each space, the root a record names and its streams in the folder. */
 export function storeTenantsText(tenants: readonly StoreTenant[]): string {
   return tenants.map((row) => `space ${row.space}${row.root ? ` at ${row.root}` : ""}${row.streams.length ? ` (streams ${listEntries(row.streams)})` : ""}`).join("; ");

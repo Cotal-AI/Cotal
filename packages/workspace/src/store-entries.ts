@@ -17,3 +17,14 @@ export function foreignStoreEntries(dir: string): string[] {
 
 /** The names of the store entries, the only entries a store cleanup removes. */
 export const STORE_ENTRY_NAMES: readonly string[] = [...STORE_ENTRIES.keys()];
+
+/** The JetStream accounts that hold streams in the store folder `dir`, sorted, such as an open mesh's
+ *  account beside a static space's after both ran in one folder. A folder with no `jetstream` tree,
+ *  or an account with no `streams`, holds none. */
+export function storeAccounts(dir: string): string[] {
+  const entries = (path: string): string[] => {
+    try { return readdirSync(path); }
+    catch (error) { if (["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "")) return []; throw error; }
+  };
+  return entries(join(dir, "jetstream")).filter((name) => entries(join(dir, "jetstream", name, "streams")).length > 0).sort();
+}

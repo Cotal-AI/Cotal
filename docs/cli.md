@@ -2504,9 +2504,12 @@ restored and names the accounts in `otherAccounts`. That is an `OTHER_ACCOUNTS_N
 or the warning above when the restore also left out history or workflow runs, and its next step
 includes `--discard-history` as well. `previousStore` names the store a restore set aside whenever
 that store holds the only copy of something the restore left out, and is null otherwise. A restore
-made by an earlier release recorded no other accounts, so its receipt, preview and cleanup do not
-name them. Before such a cleanup, list the previous store's `jetstream` folder: each folder there is
-one account.
+made by an earlier release recorded no other accounts. For it, `status`, the cleanup preview and
+the cleanup read them from the store it set aside while that store is still the one the restore
+recorded, and name only the accounts the restore's auth mode rules out: every account but `$G` after
+an open restore, and `$G` after a static or user one. Which data account a static or user restore
+brought back is not recorded, so another data account in that store is not named. Before such a
+cleanup, list the previous store's `jetstream` folder: each folder there is one account.
 When that restore brought the workflow runs back, it also names each run it rolled back and each
 step that was answered after the artifact and is open again, and says that answer is only in the
 store it set aside. A reopened step accepts an answer again. `cotal status` and the

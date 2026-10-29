@@ -60,7 +60,7 @@ import {
   prepareAlternateRestore,
   prepareMissingSourceRestore,
   prepareSamePathRestore,
-  localProcessOwnerStatus, readMaintenanceJournal, restoreLeftOut, restoreOtherAccounts, restoreReplacedNewerCut, restoreRolledBackRuns,
+  localProcessOwnerStatus, readMaintenanceJournal, restoreLeftOut, restoreOtherAccounts, restoreReplacedNewerCut, restoreRolledBackRuns, storeAccounts,
   readMaintenanceResumeDocument,
   recordRestoreAttemptResources,
   recordRestoreManagerCommit,
@@ -95,7 +95,7 @@ import { noticeOnInterrupt } from "./interrupt-notice.js";
 import { displayCmd } from "./self-exec.js";
 import { assertEndpointUnreachable } from "./endpoint-cut.js";
 import { acquireStackOperationLock } from "./stack-journal.js";
-import { foreignEntriesRefusal, oldStoreForeignEntries, otherStoreAccounts } from "./store-dir.js";
+import { foreignEntriesRefusal, oldStoreForeignEntries } from "./store-dir.js";
 import { admitAndRestoreSeatCheckpoints } from "./seat-resume.js";
 import { assertControllerRestorable, reconfigureControllerBroker, rollbackRestoreWithBroker } from "./controller-restore.js";
 import { assertControllerCoupling, newControllerAttemptLaunch } from "./controller-resume.js";
@@ -1031,7 +1031,7 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
     // The store can also hold another account's streams, such as an open mesh's beside a static
     // space's. The artifact holds only this space's account, so the store this restore sets aside
     // keeps their only copy; they are read before it moves.
-    const otherAccounts = sourceExists ? otherStoreAccounts(journal.source.path, currentAuthority.account) : [];
+    const otherAccounts = sourceExists ? storeAccounts(journal.source.path).filter((account) => account !== currentAuthority.account) : [];
     const stagedStat = lstatSync(artifact.directory, { bigint: true });
     const claim = {
       deadline: deadline.toISOString(),
