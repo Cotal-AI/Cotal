@@ -791,6 +791,74 @@ try {
     stragglerRefusal === "agent is stopping; presence writes are refused" && !offlineStartedWhileHeldStraggler && !putAfterOffline,
     { stragglerRefusal, offlineStartedWhileHeldStraggler, putAfterOffline },
   );
+  // A real WebSocket dial can reject with ConnectionError whose message is empty on Node 24.
+  // Drive the actual transport and registered MCP routes, without constructing an error object.
+  {
+    const wsPort = await pickFreePort();
+    const wsTcpPort = await pickFreePort();
+    const wsProxyPort = await pickFreePort();
+    const wsConfig = join(dir, "ws-reason.conf");
+    writeFileSync(wsConfig, `host: 127.0.0.1\nport: ${wsTcpPort}\njetstream { store_dir: "${join(dir, "ws-reason")}" }\nwebsocket { host: 127.0.0.1\nport: ${wsPort}\nno_tls: true }\n`);
+    const wsBroker = startBroker(wsConfig);
+    const releaseWs = teardownOnSignal(wsBroker, dir);
+    const wsSockets = new Set<Socket>();
+    let refuseWs = false;
+    const wsProxy = createServer((socket) => {
+      wsSockets.add(socket);
+      socket.on("error", () => {});
+      socket.on("close", () => wsSockets.delete(socket));
+      if (refuseWs) { socket.destroy(); return; }
+      const upstream = netConnect(wsPort, "127.0.0.1", () => {
+        socket.pipe(upstream);
+        upstream.pipe(socket);
+      });
+      wsSockets.add(upstream);
+      upstream.on("error", () => socket.destroy());
+      upstream.on("close", () => { wsSockets.delete(upstream); socket.destroy(); });
+    });
+    const wsCfg = { ...cfg, name: "ws-reason-agent", space: `ws-reason-${wsPort}`, servers: `ws://127.0.0.1:${wsProxyPort}` };
+    const wsAgent = new MeshAgent(wsCfg);
+    const wsServer = new McpServer({ name: "ws-reason", version: "0.0.0" });
+    registerCotalTools(wsServer, wsAgent, wsCfg, "smoke");
+    const [wsClientTransport, wsServerTransport] = InMemoryTransport.createLinkedPair();
+    const wsClient = new Client({ name: "ws-reason-client", version: "0.0.0" });
+    const wsTool = async (name: string): Promise<string> => {
+      const reply = await wsClient.callTool({ name, arguments: {} });
+      const content = reply.content as Array<{ type: string; text?: string }>;
+      const text = content.find((part) => part.type === "text")?.text;
+      if (text === undefined) throw new Error(`${name} returned no text`);
+      return text;
+    };
+    try {
+      await new Promise<void>((resolve) => wsProxy.listen(wsProxyPort, "127.0.0.1", resolve));
+      for (let i = 0; i < 80; i++) { if (await isReachable(`nats://127.0.0.1:${wsTcpPort}`)) break; await sleep(50); }
+      await wsAgent.start();
+      await Promise.all([wsClient.connect(wsClientTransport), wsServer.connect(wsServerTransport)]);
+      check("a real WebSocket MCP session starts ready before the socket fault", JSON.parse(await wsTool("cotal_connection_status")).state === "ready");
+      refuseWs = true;
+      for (const socket of wsSockets) socket.destroy();
+      const terminal = await until(() => !wsAgent.connected && !!wsAgent.connectionIssue?.startsWith("mesh connection closed"), 30_000);
+      const wsIssue = JSON.parse(await wsTool("cotal_connection_status")).connectionIssue as string | undefined;
+      check("a REAL WebSocket terminal close keeps a nonempty native error reason", terminal && typeof wsIssue === "string" && /^mesh connection closed: \S/.test(wsIssue), wsIssue);
+      const failedWsReconnect = await wsTool("cotal_reconnect");
+      check("a REAL failed WebSocket reconnect keeps a nonempty native error reason", /^Reconnect failed: \S/.test(failedWsReconnect) && !/^Reconnect failed: \./.test(failedWsReconnect), failedWsReconnect);
+      refuseWs = false;
+      const wsRecovered = await until(() => wsAgent.connected && wsAgent.transportConnected, 45_000);
+      check("the WebSocket reason change preserves automatic recovery and clears the issue", wsRecovered && !("connectionIssue" in JSON.parse(await wsTool("cotal_connection_status"))));
+    } finally {
+      refuseWs = false;
+      for (const socket of wsSockets) socket.destroy();
+      await wsClient.close().catch(() => {});
+      await wsServer.close().catch(() => {});
+      await wsAgent.stop().catch(() => {});
+      for (const socket of wsSockets) socket.destroy();
+      await new Promise<void>((resolve) => wsProxy.close(() => resolve()));
+      wsBroker.kill("SIGTERM");
+      await awaitExit(wsBroker);
+      releaseWs();
+    }
+  }
+
   // JetStream can fail while core NATS continues answering. Exercise an actual broker reload,
   // not a replaced KV put, and read the registered MCP route that connectors expose.
   const jsPort = await pickFreePort();
@@ -1054,7 +1122,7 @@ try {
   for (const release of releases) release();
 }
 
-const EXPECTED_CELLS = 48;
+const EXPECTED_CELLS = 52;
 const ran = pass + fail;
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"}: ${pass} passed, ${fail} failed`);
 console.log(`SUITE COMPLETE: ${ran} cells`);

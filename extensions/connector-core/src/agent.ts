@@ -1062,7 +1062,7 @@ export class MeshAgent extends EventEmitter {
           : "";
       return { ok: true, message: `Reconnected ✓ (${this.config.name}@${this.config.space})${stalled}` };
     } catch (e) {
-      return { ok: false, message: `Reconnect failed: ${(e as Error).message}. Still retrying automatically — or run /reconnect to retry now.` };
+      return { ok: false, message: `Reconnect failed: ${(e as Error).message || (e as Error).name}. Still retrying automatically — or run /reconnect to retry now.` };
     }
   }
 

@@ -2061,7 +2061,7 @@ export class CotalEndpoint extends EventEmitter {
       this.emit("connection", { connected: false });
       this.emit(
         "error",
-        new Error(`mesh connection closed${err ? `: ${(err as Error).message}` : ""} - re-establishing`),
+        new Error(`mesh connection closed${err ? `: ${err.message || err.name}` : ""} - re-establishing`),
       );
       void this.reestablishLoop();
     });
