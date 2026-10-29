@@ -181,11 +181,14 @@ const STATUS_OUTPUT_SCHEMA = {
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["agent", "state", "binaries"],
+        required: ["agent", "state", "binaries", "eventPlane"],
         properties: {
           agent: { type: "string" },
           state: { enum: ["available", "unavailable"] },
           binaries: { type: "object", additionalProperties: { type: "string" } },
+          /** Whether this connector publishes the AG-UI event plane. Required and explicit: a
+           *  client must never read an absent fact as true. */
+          eventPlane: { type: "boolean" },
           reason: { type: "string" },
         },
       },
@@ -321,6 +324,7 @@ export interface ManagerConnectorStatus {
   agent: string;
   state: "available" | "unavailable";
   binaries: Record<string, string>;
+  eventPlane: boolean;
   reason?: string;
 }
 
@@ -1388,9 +1392,12 @@ export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: Compile
  *  a join. Process liveness remains separate, and an exact-incarnation late join clears it.
  *
  *  41 = `remove-persona` removes one caller-owned machine-local persona definition, including a
- *  filename whose stem is no longer a valid spawn name. A new served command cannot fold into 40. */
+ *  filename whose stem is no longer a valid spawn name. A new served command cannot fold into 40.
+ *
+ *  42 = every `status.connectors` row requires `eventPlane`, including rows projected from the
+ *  declared extension inventory before its connector package is imported. */
 export function managerClusterDocument(): ClusterDocument {
-  return buildClusterDocument(MANAGER_CLUSTER_URN, 41, ROWS);
+  return buildClusterDocument(MANAGER_CLUSTER_URN, 42, ROWS);
 }
 
 /** Revision, count, and names from the shipped cluster document. Reached smokes derive surface pins from this. */

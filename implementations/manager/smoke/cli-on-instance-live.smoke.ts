@@ -621,7 +621,7 @@ try {
     extensions: [{
       pkg: "@fixture/models-unloadable", version: "1.0.0", spec: "@fixture/models-unloadable@1.0.0",
       provides: [{ kind: "connector", name: "models-listed" }, { kind: "connector", name: "models-unloadable" }], commands: [],
-      connectors: [{ name: "models-listed", requires: ["node"] }, { name: "models-unloadable", requires: ["node"] }],
+      connectors: [{ name: "models-listed", requires: ["node"], eventPlane: false }, { name: "models-unloadable", requires: ["node"], eventPlane: false }],
     }],
   });
   m1 = new Manager({ space, servers: SERVERS, runtime: "pty", workspaceRoot: mkRoot("ws4"), installedExtensions: true });

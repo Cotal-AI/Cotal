@@ -33,6 +33,10 @@ it; stopping preserves it so an operator can inspect why the session never conne
 | `cotal_*` tool transport | stdio MCP, no listener | loopback, per-launch Basic secret | loopback MCP, per-host bearer | Unix socket, control token on the first frame | stdio MCP bridge relayed over a Unix socket, per-instance token | in-process, no listener |
 | Containers ([deploy](deploy.md)) | ✓ | ✓ | ✗ | ✗ | ✗ | ✗ |
 
+The Manager reports the same support fact as `status.connectors[].eventPlane`. Clients use that
+typed field instead of copying this table. On a space whose policy requires events, a false value
+means the connector cannot launch there. Spawn remains the authority and keeps the policy refusal.
+
 The tool transport row covers only how the `cotal_*` tools reach the mesh endpoint. A managed seat
 on every connector also has connector-core's authenticated local control socket, which carries
 lifecycle hooks and stop requests ([authoring a connector](authoring-a-connector.md#local-listeners)).

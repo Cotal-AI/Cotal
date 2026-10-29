@@ -9,7 +9,7 @@ const { join } = await import("node:path");
 const { hostname } = await import("node:os");
 const { pathToFileURL } = await import("node:url");
 const { SignJWT, generateKeyPair, exportJWK, decodeJwt } = createRequire(new URL("../../auth/package.json", import.meta.url))("jose") as any;
-const { mintLifecycleUid, mintCreds, newIdentity, setupSpaceStreams, registry } = core;
+const { eventChannel, mintLifecycleUid, mintCreds, newIdentity, setupSpaceStreams, registry } = core;
 const { startAuthService, grantActor, loadOwnerSecret, deriveOwnerForIdpSubject } = auth;
 const { startHostedAuthFixture } = await import("../../auth/smoke/_hosted-auth-fixture.js");
 const { bootDeliveryDaemon } = await import("./_boot-delivery.js");
@@ -46,6 +46,8 @@ grantActor(a.stateDir, { owner: otherOwner, actor: "cli", lifecycleUid: mintLife
 const token = await jwt("owner"), otherToken = await jwt("other");
 // A connector that reports a catalog and is never launched.
 registry.register({ kind: "connector", name: "status-probe", requires: ["node"], listModels: () => ({ models: [{ id: "probe-model" }] }),
+  buildLaunch: () => { throw new Error("status-metadata: nothing is launched"); } } as import("@cotal-ai/core").Connector);
+registry.register({ kind: "connector", name: "status-events", requires: ["node"], eventChannel,
   buildLaunch: () => { throw new Error("status-metadata: nothing is launched"); } } as import("@cotal-ai/core").Connector);
 let service: Awaited<ReturnType<typeof startAuthService>> | undefined;
 let delivery: Awaited<ReturnType<typeof bootDeliveryDaemon>> | undefined;
@@ -112,6 +114,13 @@ try {
   const outputDigest = source.document.commands.find((c) => c.name === "status")!.outputDigest;
   const validate = contracts.validators[outputDigest];
   cell("host-generated browser validator accepts complete status", validate(aData) && validate(bData));
+  const aConnectors = aData.connectors as Array<{ agent: string; eventPlane: boolean; [key: string]: unknown }>;
+  const statusProbe = aConnectors.find((row) => row.agent === "status-probe");
+  const statusEvents = aConnectors.find((row) => row.agent === "status-events");
+  cell("live registry rows report event-plane support without connector-name inference",
+    statusProbe?.eventPlane === false && statusEvents?.eventPlane === true, aConnectors);
+  cell("browser status validator requires every connector eventPlane fact",
+    !validate({ ...aData, connectors: aConnectors.map((row) => row.agent === "status-probe" ? (({ eventPlane: _eventPlane, ...rest }) => rest)(row) : row) }));
   const { host: _host, version: _version, ...withoutMetadata } = aData;
   cell("absent metadata compatibility: output validator accepts omission", validate(withoutMetadata));
   cell("absent metadata compatibility: no values are synthesized", !Object.hasOwn(withoutMetadata, "host") && !Object.hasOwn(withoutMetadata, "version"));

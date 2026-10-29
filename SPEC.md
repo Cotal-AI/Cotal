@@ -3735,6 +3735,13 @@ length is no longer valid for a spawn identity, so a client can remove an obsole
 removes only the definition and MUST NOT stop a running lifecycle created from it. An unknown name
 MUST be refused as `not-found`; it is not an idempotent success. The response is `{ name }`.
 
+**Manager connector event-plane facts.** Every row in the reference manager's
+`status.connectors` array carries required `eventPlane: boolean`. True means the connector declares
+the event channel it publishes; false means it does not. The fact MUST be present on rows built from
+declared extension inventory before the package is imported. A missing declaration MUST NOT be read
+as true. A client that knows the space requires events can therefore refuse a connector with
+`eventPlane: false` before spawn. The launch path's existing policy refusal remains authoritative.
+
 **Effect.** A command declaration carries `effect`, one of `read` or `write`.
 
 **Reachability.** `effect` is reachable only under `protocol.v: 2` (*Version*, below). A responder
@@ -6734,6 +6741,7 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
+| 2026-10-29 | **Manager connector status declares event-plane support (§13.7), additive.** Every `status.connectors` row now requires `eventPlane: boolean`, including rows built from the declared extension inventory before its package is imported. The fact is true only when the connector declares its event channel; it is never defaulted to true. The reference Manager cluster advances to revision 42. |
 | 2026-10-29 | **The Manager persona catalog has a typed removal command (§13.7), additive.** `remove-persona` rides the same `manager.persona` capability as `define-persona`, removes only the machine-local definition, refuses an unknown name, and accepts a safe filename stem even when it exceeds the current spawn-name limit. The reference Manager cluster advances to revision 41. |
 | 2026-10-28 | **A retiring lifecycle's fence is its ACL row (Appendix B).** The fence of the next entry lived only in one daemon's memory and was checked before a join wrote its row, so a join whose ACL lookup outlived the fence, a join from a still-connected seat after a daemon restart, or a join a quiesced predecessor finished after its successor's inventory each kept one row of a retired lifecycle. The manager now narrows the lifecycle's ACL row to an empty `allowSubscribe` before it asks for the inventory. The daemon re-reads that exact row before and after the write that creates a membership row, and removes the row and refuses the join when the channel is no longer within it. Other membership writes only update the revision they read. The daemon's own refusal and its wait for running writes stay, for a manager that does not narrow, as on a hosted daemon serving older managers. No wire change. |
 | 2026-10-28 | **A lifecycle's memberships stop changing once its inventory is requested (Appendix B).** A seat's eviction closes its connection but does not settle the daemon's own work: a `durableJoin` already running, or one queued on `ctl.delivery` and authorized after the inventory against the still-live ACL row, could commit a row the inventory never listed, and retirement then kept it. Once the daemon takes a lifecycle's `lifecycleMemberships` request, it MUST refuse every `durableJoin` and `durableLeave` bound to that lifecycle, and it MUST begin the read only after the ones already running have finished. No wire change. |
