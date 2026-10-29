@@ -756,6 +756,10 @@ export async function holdForegroundStack(root: string, start?: () => Promise<vo
 }
 
 async function holdStack(root: string, start?: () => Promise<void>): Promise<void> {
+  // The start's listeners go only once the hold's own are installed. Node runs a listener for a
+  // signal when the loop next polls, and drops the signal if its last listener was removed first,
+  // so a signal that lands in the start's last synchronous step would be lost in between.
+  let releaseStart = (): void => {};
   if (start) {
     let requested: "SIGINT" | "SIGTERM" | undefined;
     const request = (signal: "SIGINT" | "SIGTERM") => {
@@ -768,7 +772,8 @@ async function holdStack(root: string, start?: () => Promise<void>): Promise<voi
     handOverStartupNotice();
     let failure: { error: unknown } | undefined;
     try { await start(); } catch (error) { failure = { error }; }
-    finally { process.off("SIGINT", interrupt); process.off("SIGTERM", terminate); }
+    releaseStart = () => { process.off("SIGINT", interrupt); process.off("SIGTERM", terminate); };
+    if (requested || failure) releaseStart();
     if (requested) await stopForegroundStack(root, requested);
     if (failure) throw failure.error;
     if (requested) return;
@@ -801,6 +806,7 @@ async function holdStack(root: string, start?: () => Promise<void>): Promise<voi
     const interrupt = () => stop("SIGINT");
     const terminate = () => stop("SIGTERM");
     process.on("SIGINT", interrupt); process.on("SIGTERM", terminate);
+    releaseStart();
     handOverStartupNotice();
   });
 }
