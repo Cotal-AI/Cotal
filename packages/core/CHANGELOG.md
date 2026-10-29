@@ -1,5 +1,11 @@
 # @cotal-ai/core
 
+## 0.128.4
+
+### Patch Changes
+
+- 4bfbede: Derive fresh user identity public keys with the existing native NKey signer while preserving stock NATS seed generation and encoding.
+
 ## 0.128.3
 
 No changes in this release.
