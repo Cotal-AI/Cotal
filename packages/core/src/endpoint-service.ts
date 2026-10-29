@@ -26,7 +26,7 @@ import {
 } from "./endpoint-records.js";
 import { verifyClusterManifest, verifyClusterRoot, deriveDescriptor, GOVERNED_TRAIT_URNS, type ClusterDocument, type DescribeDescriptor } from "./endpoint-cluster.js";
 import { createPublicKey, verify as verifySignature } from "node:crypto";
-import { canonicalJson, contractDigest } from "./canonical.js";
+import { canonicalJson, contractDigest, isContractDigest } from "./canonical.js";
 import { isCanonicalEd25519PublicCoordinate } from "./remote-service-authority.js";
 import type { ServiceAuthorityInfo, ServiceAuthorityResult, ServiceIssuerKey, ServiceRegistration, ServiceRegistrationWitness } from "./remote-service-authority.js"; // type-only: the runtime graph stays authority → service
 import { isSupervisorWrite, type SupervisorWriteGrant } from "./endpoint-supervisor.js";
@@ -114,7 +114,6 @@ export function parseActivationPolicy(raw: unknown): VirtualActivationPolicy {
 const STATE_TOKEN = /^[a-z][a-z0-9-]{0,31}$/;
 const isRec = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
 const wireInt = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
-const isDigest = (v: unknown): v is string => typeof v === "string" && /^sha256:[0-9a-f]{64}$/.test(v);
 
 function svcFail(what: string): never {
   throw new EpEnvelopeError("internal", `service record does not validate: ${what}`);
@@ -134,7 +133,7 @@ export function parseServiceSpec(raw: unknown, key: { endpoint: string }): Servi
     svcFail(`owner: ${(e as Error).message}`);
   }
   if (o.endpointType !== undefined && typeof o.endpointType !== "string") svcFail("endpointType");
-  if (!Array.isArray(o.clusterDigests) || o.clusterDigests.length === 0 || !o.clusterDigests.every(isDigest))
+  if (!Array.isArray(o.clusterDigests) || o.clusterDigests.length === 0 || !o.clusterDigests.every(isContractDigest))
     svcFail("clusterDigests must be a non-empty array of sha256 digests");
   if (!isRec(o.protocol) || o.protocol.v !== 1) svcFail("protocol.v");
   if (o.activation !== undefined) parseActivationPolicy(o.activation); // closed schema, capacity REQUIRED (§13.6)

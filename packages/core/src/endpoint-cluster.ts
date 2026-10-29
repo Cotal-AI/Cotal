@@ -19,14 +19,13 @@
  * verifies every bundle member), so the authority chain has no unverified link. Multi-member
  * cluster bundles are D8 contract-tooling scope.
  */
-import { contractDigest } from "./canonical.js";
+import { contractDigest, isContractDigest } from "./canonical.js";
 import { parseClosureManifest } from "./contract-manifest.js";
 import { ContractInvalidError } from "./schema-profile.js";
 import { endpointToken, assertCommandToken, assertBoundedOwner, isEpAuthzMode, type EpAuthzMode } from "./endpoint-subjects.js";
 import type { EpClass } from "./endpoint-envelope.js";
 
 const isRec = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
-const isDigest = (v: unknown): v is string => typeof v === "string" && /^sha256:[0-9a-f]{64}$/.test(v);
 /** Reverse-DNS cluster type URN (§13.7: `ai.cotal.lifecycle`, `com.acme.deploy`). */
 const URN = /^[a-z0-9][a-z0-9-]{0,62}(\.[a-z0-9][a-z0-9-]{0,62}){1,15}$/;
 
@@ -141,8 +140,8 @@ export function parseClusterDocument(raw: unknown): ClusterDocument {
       invalid(`untargeted command "${name}" must not declare authorization modes`);
     }
     if (typeof cmd.capability !== "string" || !CAPABILITY.test(cmd.capability)) invalid(`command "${name}" capability is not a bounded capability token`);
-    if (!isDigest(cmd.inputDigest)) invalid(`command "${name}" inputDigest is not a sha256 closure digest`);
-    if (!isDigest(cmd.outputDigest)) invalid(`command "${name}" outputDigest is not a sha256 closure digest`);
+    if (!isContractDigest(cmd.inputDigest)) invalid(`command "${name}" inputDigest is not a sha256 closure digest`);
+    if (!isContractDigest(cmd.outputDigest)) invalid(`command "${name}" outputDigest is not a sha256 closure digest`);
     let traits: string[] | undefined;
     if (cmd.traits !== undefined) {
       if (!Array.isArray(cmd.traits)) invalid(`command "${name}" traits is not an array`);
@@ -224,7 +223,7 @@ export interface ClusterManifest {
  *  clusters, so `members` MUST be empty — a non-empty closure needs the D8 multi-artifact
  *  loader and fails loud until then, never silently under-verified. */
 export function verifyClusterManifest(closureDigest: string, manifest: unknown): ClusterManifest {
-  if (!isDigest(closureDigest)) throw new ContractInvalidError(`${JSON.stringify(closureDigest)} is not a sha256 closure digest`);
+  if (!isContractDigest(closureDigest)) throw new ContractInvalidError(`${JSON.stringify(closureDigest)} is not a sha256 closure digest`);
   const actual = contractDigest(manifest);
   if (actual !== closureDigest)
     throw new ContractInvalidError(`cluster manifest does not hash to its registered closure digest ${closureDigest} (content is ${actual}); a reader MUST verify fetched bytes and fail loud (SPEC 13.7)`);
@@ -238,7 +237,7 @@ export function verifyClusterManifest(closureDigest: string, manifest: unknown):
  *  parse the command surface — the second half of the §13.7 two-digest read; a document that
  *  does not hash to `root` fails loud, never parses. */
 export function verifyClusterRoot(rootDigest: string, document: unknown): ClusterDocument {
-  if (!isDigest(rootDigest)) throw new ContractInvalidError(`${JSON.stringify(rootDigest)} is not a sha256 artifact digest`);
+  if (!isContractDigest(rootDigest)) throw new ContractInvalidError(`${JSON.stringify(rootDigest)} is not a sha256 artifact digest`);
   const actual = contractDigest(document);
   if (actual !== rootDigest)
     throw new ContractInvalidError(`cluster document does not hash to its manifest root ${rootDigest} (content is ${actual}); a reader MUST verify fetched bytes and fail loud (SPEC 13.7)`);

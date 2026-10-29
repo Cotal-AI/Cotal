@@ -6,8 +6,8 @@ export const DIGEST_PREFIX = "sha256:" as const;
 const DIGEST_RE = /^sha256:[0-9a-f]{64}$/;
 
 /** True iff `s` is a well-formed `sha256:<hex>` artifact digest. */
-export function isContractDigest(s: string): boolean {
-  return DIGEST_RE.test(s);
+export function isContractDigest(s: unknown): s is string {
+  return typeof s === "string" && DIGEST_RE.test(s);
 }
 
 /** True iff the string is well-formed UTF-16 (no unpaired surrogate). A lone surrogate has NO

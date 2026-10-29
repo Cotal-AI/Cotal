@@ -1,5 +1,5 @@
 import { fromPublic } from "@nats-io/nkeys";
-import { rawDigest, canonicalJson } from "./canonical.js";
+import { rawDigest, canonicalJson, isContractDigest } from "./canonical.js";
 import { EpEnvelopeError } from "./endpoint-error.js";
 import { isAccountNkey, isUserNkey } from "./identity.js";
 import { assertDerivedOwnerToken, assertLifecycleToken, assertValidChannel, assertValidOwnerToken } from "./subjects.js";
@@ -531,7 +531,7 @@ export function parseRemoteManagerEnvelope(o: Record<string, unknown>, kind: str
   if (!/^[A-Za-z0-9_-]{22,64}$/.test(o.requestId as string))
     enrollmentError(what, "requestId must be a 22-64 character idempotency token");
   if (registrationProof) {
-    if (typeof o.registrationProof !== "string" || !/^sha256:[0-9a-f]{64}$/.test(o.registrationProof))
+    if (!isContractDigest(o.registrationProof))
       enrollmentError(what, "requires a sha256 registrationProof");
   } else if (o.registrationProof !== undefined) enrollmentError(what, "must not carry registrationProof");
   const identities = parseRemoteManagerIdentities(o.identities, (detail) => enrollmentError(what, detail));
