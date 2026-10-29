@@ -10,7 +10,9 @@ export type JcodeConnectorFailureCode =
   | "private_state"
   | "readiness_timeout"
   | "sessions_enumeration_failed"
-  | "sessions_unwritable";
+  | "sessions_unwritable"
+  | "provider_auth_refused"
+  | "provider_request_failed";
 
 /** A bounded connector-owned startup refusal. Only its allow-listed code is rendered publicly. */
 export class JcodeConnectorError extends Error {
@@ -201,6 +203,25 @@ export function jcodeEffortRefusal(
     identity.apiMethod,
     acceptedEffortLadder(error),
   );
+}
+
+/** Classify measured readiness failures without exposing endpoints, auth details or child output.
+ * A failed send does not establish why the provider could not be reached. */
+export function classifyReadinessFailure(error: unknown): JcodeConnectorError | undefined {
+  if (!(error instanceof HarnessError) || error.code !== "internal") return undefined;
+  if (error.message.startsWith("internal: Failed to send OpenAI-compatible chat request\n")) {
+    return new JcodeConnectorError(
+      "provider_request_failed",
+      "Jcode could not send the readiness request to its provider",
+    );
+  }
+  if (
+    error.message.startsWith("internal: OpenAI-compatible chat request failed\n") &&
+    /^  status: 401 Unauthorized\r?$/m.test(error.message)
+  ) {
+    return new JcodeConnectorError("provider_auth_refused", "Jcode provider refused readiness authentication");
+  }
+  return undefined;
 }
 
 /**
