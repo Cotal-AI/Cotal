@@ -13,6 +13,6 @@ and `backup cleanup-fallback` and `clean restore-fallback` refuse and delete not
 `--discard-history` is given. Which data account a static or user restore brought back is not
 recorded, so another data account in that store is still not named.
 
-The exported restore-summary helpers now require the record's . Library callers that passed
+The exported restore-summary helpers now require the record's `mode`. Library callers that passed
 only a partial record must pass the validated maintenance journal, including its mode. This is a
 breaking TypeScript API change for those callers.
