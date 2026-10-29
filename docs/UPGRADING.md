@@ -74,6 +74,13 @@ An observer or admin credential minted by an older manager or auth service lacks
 the issuer first, then mint the dashboard's and the CLI's observer credentials again; reconnecting
 with the old credential does not add the grant.
 
+This also applies to `down -f` for a ledger written by the retired `spawn -f`. The teardown keeps
+owned channels when it cannot establish membership, and now prints the read failure and the
+missing grant. On a user-auth mesh, run it as the signed-in deploying owner with admin scope.
+Upgrading only the CLI does not add the snapshot grant to a credential issued by an old auth
+service. Upgrade the issuer before retrying the retained run. On a static-auth mesh, the current
+CLI mints its short-lived teardown credential with the snapshot read.
+
 ## Membership watch entries after 0.115.4
 
 `CotalEndpoint.watchMembership(onChange)` now hands `onChange` each feed entry as a
