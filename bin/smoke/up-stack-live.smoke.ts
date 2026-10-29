@@ -603,8 +603,27 @@ try {
       emptyError.message?.startsWith("no manager is registered for this space, so none was asked and nothing was listed.") === true &&
       emptyError.message.includes("this does not show that no manager process runs") &&
       emptyError.cause?.detail === 'failed-precondition: service "manager" has no live registered instances' &&
-      emptyError.remedy === "start the stack's manager with bare `cotal up`; a stack started with --no-manager has none",
+      emptyError.remedy === `start the stack's manager with bare \`cotal up\` in ${realpathSync(root)}; a stack started with --no-manager has none`,
     emptyPs.stdout + emptyPs.stderr);
+  // Bare `cotal up` starts the manager only in the stack's own root. From another folder it would act
+  // on that folder's stack, so the step names the root, and a machine that only registered the
+  // space is not told to run `cotal up` at all.
+  const remedyOf = (r: ReturnType<typeof cli>) => { try { return (JSON.parse(r.stdout) as { error?: { code?: string; remedy?: string } }).error; } catch { return undefined; } };
+  const elsewherePs = cliIn(autoRoot, "ps", "--space", SPACE, "--json");
+  ok("ps --space from another folder names the stack's root in its step",
+    elsewherePs.status === 2 && remedyOf(elsewherePs)?.code === "TARGET_UNAVAILABLE" &&
+      remedyOf(elsewherePs)?.remedy === `start the stack's manager with bare \`cotal up\` in ${realpathSync(root)}; a stack started with --no-manager has none`,
+    elsewherePs.stdout + elsewherePs.stderr);
+  const clientHome = mkdtempSync(join(tmpdir(), "cotal-upstack-client-"));
+  const clientEnv = { COTAL_HOME: clientHome, XDG_CONFIG_HOME: join(clientHome, "xdg") };
+  const registered = cliInEnv(clientHome, clientEnv, "space", "add", SPACE, "--server", SERVER, "--root", root);
+  ok("another Cotal home registers the space with space add", registered.status === 0, registered.stdout + registered.stderr);
+  const clientPs = cliInEnv(clientHome, clientEnv, "ps", "--space", SPACE, "--json");
+  ok("ps where the space is only registered keeps TARGET_UNAVAILABLE, exit 2, and names no local cotal up",
+    clientPs.status === 2 && remedyOf(clientPs)?.code === "TARGET_UNAVAILABLE" &&
+      remedyOf(clientPs)?.remedy === "start this space's manager where its stack runs; a stack started with --no-manager has none",
+    clientPs.stdout + clientPs.stderr);
+  rmSync(clientHome, { recursive: true, force: true });
   // --preserve-state takes its inventory from a manager. With none serving the space it refuses
   // before any stop, where it used to stop the delivery daemon and then wait on a manager that never ran.
   const preserveStarted = Date.now();
