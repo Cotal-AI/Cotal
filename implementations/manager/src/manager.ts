@@ -5306,21 +5306,29 @@ export class Manager {
     }
   }
 
-  private readSessionStatePath(path: string): { sessionId: string; status: "running" | "quit" } {
+  private readSessionStatePath(path: string):
+    | { sessionId: string; status: "running" | "quit" }
+    | { connector: string; status: "prompt"; prompt: string; cwd: string } {
     let parsed: unknown;
     try {
       parsed = JSON.parse(readFileSync(path, "utf8"));
     } catch (error) {
       throw new Error(`cannot read connector session state ${path}: ${rejectionText(error)}`);
     }
-    const state = parsed as { version?: unknown; sessionId?: unknown; status?: unknown };
-    if (state.version !== 1 || typeof state.sessionId !== "string" || !state.sessionId.trim() || state.sessionId.length > 4096 ||
-        (state.status !== "running" && state.status !== "quit"))
-      throw new Error(`connector session state ${path} is malformed`);
-    return { sessionId: state.sessionId, status: state.status };
+    const state = parsed as { version?: unknown; sessionId?: unknown; status?: unknown; connector?: unknown; prompt?: unknown; cwd?: unknown };
+    if (state.version === 1 && typeof state.sessionId === "string" && state.sessionId.trim() && state.sessionId.length <= 4096 &&
+        (state.status === "running" || state.status === "quit"))
+      return { sessionId: state.sessionId, status: state.status };
+    if (state.version === 2 && state.status === "prompt" && typeof state.connector === "string" && /^[a-z0-9-]{1,64}$/.test(state.connector) &&
+        typeof state.prompt === "string" && state.prompt.trim() && state.prompt.length <= 1024 &&
+        typeof state.cwd === "string" && state.cwd.trim() && state.cwd.length <= 4096)
+      return { connector: state.connector, status: "prompt", prompt: state.prompt, cwd: state.cwd };
+    throw new Error(`connector session state ${path} is malformed`);
   }
 
-  private readManagedSessionState(a: ManagedAgent): { sessionId: string; status: "running" | "quit" } {
+  private readManagedSessionState(a: ManagedAgent):
+    | { sessionId: string; status: "running" | "quit" }
+    | { connector: string; status: "prompt"; prompt: string; cwd: string } {
     const path = a.restart?.sessionStatePath;
     if (!path) throw new Error("connector supplied no session state path");
     return this.readSessionStatePath(path);
@@ -5333,7 +5341,10 @@ export class Manager {
     if (!connector.supportsSessionContinuation) return undefined;
     const path = join(this.workspaceRoot, ".cotal", "pi-sessions", `${entry.name}-${entry.identity.lifecycleUid}.json`);
     try {
-      return this.readSessionStatePath(path).sessionId;
+      const state = this.readSessionStatePath(path);
+      if (state.status === "prompt")
+        throw new Error(`${state.connector} is waiting at prompt ${JSON.stringify(state.prompt)} for directory ${JSON.stringify(state.cwd)}`);
+      return state.sessionId;
     } catch (error) {
       throw new Error(
         `retained ${connector.name} agent ${entry.name} has no sessionId in its older inventory and no usable upgrade state at ${path} ` +
@@ -5403,7 +5414,10 @@ export class Manager {
   }
 
   private readManagedSession(a: ManagedAgent): string {
-    return this.readManagedSessionState(a).sessionId;
+    const state = this.readManagedSessionState(a);
+    if (state.status === "prompt")
+      throw new Error(`${state.connector} is waiting at prompt ${JSON.stringify(state.prompt)} for directory ${JSON.stringify(state.cwd)}`);
+    return state.sessionId;
   }
 
   /** Re-record an exact seat's assignment at a proven session, so crash recovery, a preserved resume
@@ -5426,16 +5440,22 @@ export class Manager {
   private async awaitManagedSessionState(a: ManagedAgent): Promise<{ sessionId: string; status: "running" | "quit" }> {
     const deadline = Date.now() + 15_000;
     let last = "session state not written yet";
+    let prompt: { connector: string; prompt: string; cwd: string } | undefined;
+    const promptFailure = (): string | undefined => prompt
+      ? `${prompt.connector} is waiting at prompt ${JSON.stringify(prompt.prompt)} for directory ${JSON.stringify(prompt.cwd)}`
+      : undefined;
     while (Date.now() < deadline) {
-      if (a.handle.status() === "exited") throw new Error("process exited before writing session state");
       try {
-        return this.readManagedSessionState(a);
+        const state = this.readManagedSessionState(a);
+        if (state.status === "prompt") prompt = state;
+        else return state;
       } catch (error) {
         last = rejectionText(error);
       }
+      if (a.handle.status() === "exited") throw new Error(promptFailure() ?? "process exited before writing session state");
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
-    throw new Error(`connector did not write session state (${last})`);
+    throw new Error(promptFailure() ?? `connector did not write session state (${last})`);
   }
 
   /** Bind a continuation-capable connector only after its process is ready. The file proves the
