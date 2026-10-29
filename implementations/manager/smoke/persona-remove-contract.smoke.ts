@@ -38,4 +38,9 @@ check("remove-persona requires only a name and returns the removed name",
   && contract?.output.validate({ name: "machine-template", path: "/secret/path" }) === false);
 
 console.log(`\n${passed} passed, ${failed} failed`);
+const EXPECTED = 5;
+if (passed + failed !== EXPECTED) {
+  console.log(`FAIL expected ${EXPECTED} cells, ran ${passed + failed}`);
+  failed++;
+}
 if (failed) process.exitCode = 1;
