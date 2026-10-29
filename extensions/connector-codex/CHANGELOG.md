@@ -1,5 +1,11 @@
 # @cotal-ai/connector-codex
 
+## 0.126.2
+
+### Patch Changes
+
+- 96b964f: Clarify that Codex automatic-message steering applies to connector-started turns. Messages received during attached-TUI turns or native goal continuations wait for a connector delivery turn, with acknowledgements still committed at that delivery turn's boundary.
+
 ## 0.126.1
 
 No changes in this release.
