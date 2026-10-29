@@ -78,6 +78,7 @@ async function request(server: Server, to: CalloutAuth, o: { sealer?: KeyPair; h
   const claim = {
     aud: to.xkey.pub,
     sub: "nats_user_auth_request",
+    exp: Math.floor(Date.now() / 1000) + 30,
     nats: {
       user_nkey: user,
       server_id: { name: "n", host: "127.0.0.1", id: server.id, xkey: server.xkey },
@@ -114,6 +115,7 @@ function serve(callout: CalloutAuth, reqs: Req[], o: { expectedServerIds?: strin
     recordIssuance: async () => {},
     authorizeActor: () => {},
     permissionsFor: () => ({}),
+    limits: { maxInFlight: reqs.length },
     log: (line) => o.log?.push(line),
   }).done;
 }

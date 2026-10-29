@@ -12,7 +12,7 @@
 import { Algorithms, decode, encode } from "@nats-io/jwt";
 import { SignJWT, generateKeyPair } from "jose";
 import { createAccount, createCurve, createServer, createUser } from "@nats-io/nkeys";
-import { AUTH_CALLOUT_SUBJECT, CALLOUT_TIMEOUT_REASON, createCalloutAuth, startAuthCallout, USER_TOKEN_VER, type StartAuthCalloutOpts } from "../src/index.js";
+import { AUTH_CALLOUT_SUBJECT, createCalloutAuth, startAuthCallout, USER_TOKEN_VER, type StartAuthCalloutOpts } from "../src/index.js";
 import { createSpaceAuth } from "@cotal-ai/core";
 
 let pass = 0, fail = 0;
@@ -34,11 +34,12 @@ const serverCurve = createCurve();
 const serverXkey = serverCurve.getPublicKey();
 
 /** Build a sealed callout request. Overrides let each case bend exactly one property. */
-async function sealedRequest(opts: { signer?: ReturnType<typeof createServer>; serverIdInClaim?: string; xkeyInClaim?: string; sealWith?: string; token?: string } = {}) {
+async function sealedRequest(opts: { signer?: ReturnType<typeof createServer>; serverIdInClaim?: string; xkeyInClaim?: string; sealWith?: string; token?: string; brokerExp?: number | false } = {}) {
   const userNkey = createUser().getPublicKey();
   const claim = {
     aud: calloutXkeyPub,
     sub: "nats_user_auth_request",
+    ...(opts.brokerExp === false ? {} : { exp: opts.brokerExp ?? Math.floor(Date.now() / 1000) + 30 }),
     nats: {
       user_nkey: userNkey,
       server_id: { name: "n", host: "127.0.0.1", id: opts.serverIdInClaim ?? serverId, xkey: opts.xkeyInClaim ?? serverXkey },
@@ -108,18 +109,20 @@ const noHeader = msg(await sealedRequest(), undefined);
 const undecryptable = msg(enc("not a sealed payload"), serverXkey);
 const xkeyMismatch = msg(await sealedRequest({ xkeyInClaim: createCurve().getPublicKey() }), serverXkey);
 const forgedIssuer = msg(await sealedRequest({ signer: createServer(), serverIdInClaim: serverId }), serverXkey); // signed by a DIFFERENT server key, claims the real server id
+const noBrokerExpiry = msg(await sealedRequest({ brokerExp: false }), serverXkey);
 const nonServerIssuer = (async () => {
   const acct = createAccount();
   // issuer === server_id.id but it's an A-key, not an N-server key
   return msg(await sealedRequest({ signer: acct as never, serverIdInClaim: acct.getPublicKey() }), serverXkey);
 })();
 
-const cases = [noHeader, undecryptable, xkeyMismatch, forgedIssuer, await nonServerIssuer];
+const cases = [noHeader, undecryptable, xkeyMismatch, forgedIssuer, noBrokerExpiry, await nonServerIssuer];
 await run(cases);
 check("missing seal header → no response", !noHeader.responded);
 check("undecryptable payload → no response", !undecryptable.responded);
 check("signed server_id.xkey != sealing key → no response (anti-reseal)", !xkeyMismatch.responded);
 check("issuer != server_id.id → no response (in-account forgery guard)", !forgedIssuer.responded);
+check("missing broker expiry → no response", !noBrokerExpiry.responded);
 check("non-server (N…) issuer → no response", !(await nonServerIssuer).responded);
 
 // ---- control: a well-formed request DOES get a response (a signed deny, since the bearer is junk) ----
@@ -147,20 +150,32 @@ const options: StartAuthCalloutOpts = {
   expectedServerIds: [serverId], recordIssuance: async () => {}, authorizeActor: () => {},
   permissionsFor: () => ({ pub: { deny: [">"] }, sub: { deny: [">"] } }), log: () => {},
 };
-const boundedMessages = await Promise.all(Array.from({ length: 40 }, async () => msg(await sealedRequest({ token }), serverXkey)));
+// A valid signed request the broker has already stopped waiting for is answered without entering
+// bearer or ledger work. The response signing is asynchronous, so wait for it after the input ends.
+const expiredDeadline = msg(await sealedRequest({ token, brokerExp: Math.floor(Date.now() / 1000) - 1 }), serverXkey);
+let expiredAuthorized = false;
+const expiredLog: string[] = [];
+await startAuthCallout({ async *subscribe() { yield expiredDeadline; } }, {
+  ...options, authorizeActor: () => { expiredAuthorized = true; }, log: (line) => expiredLog.push(line),
+}).done;
+check("an already-expired broker request is shed before bearer verification",
+  !expiredDeadline.responded && !expiredAuthorized && expiredLog.some((line) => /^auth callout: level=warn outcome=shed /.test(line)));
+const boundedMessages = await Promise.all(Array.from({ length: 12 }, async () => msg(await sealedRequest({ token }), serverXkey)));
 const firstRelease = deferred(), tailRelease = deferred(), atCapacity = deferred(), atTail = deferred();
 let active = 0, peak = 0, entered = 0, yielded = 0, settled = false;
 const bounded = startAuthCallout({ async *subscribe() {
   for (const message of boundedMessages) { yielded++; yield message; }
 } }, {
   ...options,
+  connectLimiter: { take() {}, limits: { actorPerMinute: 1_000_000, ownerPerMinute: 1_000_000, hostPerMinute: 1_000_000 } } as never,
+  limits: { maxInFlight: 4 },
   async authorizeActor() {
     const index = ++entered;
     active++;
     peak = Math.max(peak, active);
-    if (index === 32) atCapacity.resolve();
-    if (index === 40) atTail.resolve();
-    try { await (index <= 32 ? firstRelease.promise : tailRelease.promise); }
+    if (index === 4) atCapacity.resolve();
+    if (index === 8) atTail.resolve();
+    try { await (index <= 4 ? firstRelease.promise : tailRelease.promise); }
     finally { active--; }
   },
 });
@@ -168,17 +183,18 @@ void bounded.done.then(() => { settled = true; }, () => { settled = true; });
 try {
   await Promise.race([atCapacity.promise, new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error("callout capacity was not reached")), 5000))]);
   await new Promise<void>((resolve) => setImmediate(resolve));
-  check("at most 32 authorization hooks run together while every request is read on arrival", entered === 32 && peak === 32 && yielded === 40);
+  check("at most 4 authorization hooks run together while every request is read on arrival", entered === 4 && peak === 4 && yielded === 12);
   firstRelease.resolve();
   await Promise.race([atTail.promise, new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error("callout tail was not reached")), 5000))]);
   await new Promise<void>((resolve) => setImmediate(resolve));
-  check("done waits for admitted hooks after the input iterator ends", !settled && entered === 40 && active === 8);
+  check("done waits for the bounded admitted queue after the input iterator ends", !settled && entered === 8 && active === 4);
+  tailRelease.resolve();
 } finally {
   firstRelease.resolve();
   tailRelease.resolve();
 }
 await bounded.done;
-check("all admitted responses complete without exceeding the bound", boundedMessages.every((message) => message.responded) && peak === 32 && active === 0);
+check("the waiting queue is capped at one wave and excess burst requests are shed", boundedMessages.filter((message) => message.responded).length === 8 && peak === 4 && active === 0);
 
 // A worker can fail after the input iterator ended; that failure still rejects done.
 const failureRelease = deferred(), failureEntered = deferred();
@@ -214,13 +230,13 @@ interface Tracked {
   reply?: Uint8Array;
   respond(d: Uint8Array): void;
 }
-const tracked = async (actor: string): Promise<Tracked> => {
+const tracked = async (actor: string, brokerExp = Math.floor(Date.now() / 1000) + 3): Promise<Tracked> => {
   const t = Math.floor(Date.now() / 1000);
   const bearer = await new SignJWT({ scope: [], ver: USER_TOKEN_VER, act: { owner, actor } })
     .setProtectedHeader({ alg: "EdDSA" }).setSubject(owner).setAudience("shape").setIssuer("https://auth.test")
     .setIssuedAt(t).setNotBefore(t).setExpirationTime(t + 300).sign(privateKey);
   const m: Tracked = {
-    data: await sealedRequest({ token: bearer }),
+    data: await sealedRequest({ token: bearer, brokerExp }),
     headers: { get: (k) => (k === "Nats-Server-Xkey" ? serverXkey : undefined) },
     answers: 0,
     respond(d) { m.answers++; m.answeredAt ??= performance.now(); m.reply ??= d; },
@@ -235,10 +251,14 @@ const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
 const deadlineLog: string[] = [];
 const heldRelease = deferred(), heldEntered = deferred();
 let heldRecorded = false, heldMinted = false;
-const warm = await tracked("warm"), held = await tracked("held");
-const queued = await tracked("queued"), queuedNext = await tracked("queued_next"), shed = await tracked("shed");
-// One request at a time with a 1050 ms budget. While the held request keeps the slot, two requests
-// arriving together both queue; one arriving after the oldest has waited past 525 ms is shed.
+while (Date.now() % 1000 > 50) await sleep(5);
+const brokerExp = Math.floor(Date.now() / 1000) + 2;
+const brokerDeadlineAt = brokerExp * 1000 - 250;
+const warm = await tracked("warm", brokerExp), held = await tracked("held", brokerExp);
+const queued = await tracked("queued", brokerExp), queuedNext = await tracked("queued_next", brokerExp), shed = await tracked("shed", brokerExp);
+// One request at a time with a 1750 ms full budget. The broker expiry's whole-second precision
+// leaves about 1700 ms in this aligned fixture. While held keeps the slot, two requests queue; one
+// arriving after the oldest has less than half the full budget left is shed.
 const deadlines = startAuthCallout({ async *subscribe() {
   yield warm;
   while (!warm.answers) await sleep(5);
@@ -248,12 +268,12 @@ const deadlines = startAuthCallout({ async *subscribe() {
   yield queued;
   queuedNext.sentAt = performance.now();
   yield queuedNext;
-  await sleep(650);
+  while (Date.now() < brokerDeadlineAt - 800) await sleep(5);
   shed.sentAt = performance.now();
   yield shed;
 } }, {
   ...options,
-  limits: { authTimeoutMs: 1300, maxInFlight: 1 },
+  limits: { authTimeoutMs: 2000, maxInFlight: 1 },
   async authorizeActor(t) {
     if (t.act.actor === "held") { heldEntered.resolve(); await heldRelease.promise; }
   },
@@ -266,14 +286,13 @@ try {
 } finally { heldRelease.resolve(); }
 await deadlines.done;
 const lineOf = (actor: string) => deadlineLog.filter((line) => line.includes(`actor=${actor} `));
-check("admission refuses at once, with the signed timeout denial, while the oldest queued request has waited past half the budget",
-  shed.answers === 1 && shed.answeredAt! - shed.sentAt! < 300 && replyOf(shed)?.error === CALLOUT_TIMEOUT_REASON &&
-  deadlineLog.some((line) => /^auth callout: level=warn outcome=shed .* waited_ms=\d+ ahead=3$/.test(line) && Number(/waited_ms=(\d+)/.exec(line)![1]) > 525));
-check("requests still waiting for a slot at their deadline get the signed timeout denial, however many queue together",
-  [queued, queuedNext].every((m) => m.answers === 1 && m.answeredAt! - m.sentAt! >= 1000 && replyOf(m)?.error === CALLOUT_TIMEOUT_REASON) &&
-  deadlineLog.filter((line) => /^auth callout: level=warn outcome=timeout .* at=queue$/.test(line)).length === 2);
-check("a request whose ledger hook outlives the deadline gets the timeout denial and its work stops there",
-  held.answers === 1 && replyOf(held)?.error === CALLOUT_TIMEOUT_REASON && !heldRecorded && !heldMinted &&
+check("requests still waiting for a slot at their deadline are abandoned without a response",
+  queued.answers === 0 && queuedNext.answers === 0 &&
+  deadlineLog.filter((line) =>
+    (/^auth callout: level=warn outcome=timeout /.test(line) && line.endsWith(" at=queue")) ||
+    /^auth callout: level=warn outcome=shed /.test(line)).length >= 2);
+check("a request whose ledger hook outlives the deadline is abandoned and its work stops there",
+  held.answers === 0 && !heldRecorded && !heldMinted &&
   lineOf("held").length === 1 && /^auth callout: level=warn outcome=timeout .* at=ledger$/.test(lineOf("held")[0]));
 check("each answered request writes one callout line",
   replyOf(warm)?.jwt !== undefined && lineOf("warm").length === 1 &&

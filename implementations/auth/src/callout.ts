@@ -84,19 +84,26 @@ function curveSecret(kp: unknown): { secret: Uint8Array; decode: (key: string) =
   return { secret: curve.seed, decode: curve.decodePubCurveKey.bind(curve) };
 }
 
-/** The error a callout answers when it cannot answer inside the broker's auth timeout. */
+/** The reason recorded when work cannot finish inside the broker's auth timeout. */
 export const CALLOUT_TIMEOUT_REASON = "timeout: the auth callout could not answer inside the broker's authorization timeout";
 
-/** Taken off the broker's auth timeout so a timeout denial still reaches the broker in time. */
+/** Response-release margin. The 250 ms bound is above the measured unloaded verify/sign p99. */
 const DEADLINE_MARGIN_MS = 250;
+/** The signed expiry hides this much of the broker's sub-second deadline phase. */
+const BROKER_EXPIRY_ROUNDING_MS = 999;
+/** Extra dispatch headroom above the full rounding interval; unloaded work never uses this floor. */
+const SLOW_RESPONSE_MARGIN_MS = 500;
+/** Below-knee work stays under this; overloaded work crosses it before late response release. */
+const SLOW_WORK_MS = 500;
+/** Keep no more work than the running bound plus one full waiting wave. */
+const QUEUE_WAVES = 1;
 
 /** Per-service callout limits. Every field is optional and has a default. */
 export interface AuthCalloutLimits {
-  /** The broker's `authorization { timeout }`, in milliseconds. Set it to the broker's value: a
-   *  request not answered 250 ms before it gets a signed timeout denial. Default 2000, the
-   *  nats-server default. */
+  /** The broker's `authorization { timeout }`, in milliseconds. Set it to the broker's value. The
+   *  local budget is capped by the signed request expiry's upper whole-second bound. Default 2000. */
   authTimeoutMs?: number;
-  /** Requests worked on at once. The rest wait in arrival order. Default 32. */
+  /** Requests worked on at once. The waiting queue is FIFO and capped at the same size. Default 32. */
   maxInFlight?: number;
   /** A callout that takes longer than this, in milliseconds, logs its line at warn. Default 500. */
   slowMs?: number;
@@ -278,6 +285,8 @@ interface Callout {
   arrivedAt: number;
   queuedAt: number;
   startedAt?: number;
+  /** Local monotonic deadline. The broker expiry only caps the arrival-based budget. */
+  deadlineAt: number;
   /** Unix seconds, for the native service path. */
   admittedAt: number;
   deadline?: ReturnType<typeof setTimeout>;
@@ -297,10 +306,9 @@ const field = (s: string) => (/^[\w.:@|-]+$/.test(s) ? s : JSON.stringify(s));
 /** Serve the auth callout on an existing (auth-account) connection. Resolves setup synchronously —
  *  throws on missing/invalid xkey or signing material; returns the running service.
  *
- *  Requests are worked on oldest first, at most `maxInFlight` at a time. Each one's deadline is the
- *  broker's auth timeout less 250 ms after it arrived. A request still unanswered then gets a signed
- *  timeout denial, and its work stops at its next step. While the oldest request still waiting for a
- *  slot has waited more than half that budget, a new request gets the same denial at once. */
+ *  Requests run at most `maxInFlight` at a time. Each one's local monotonic budget is capped by the
+ *  broker-issued request expiry range. A request still unfinished then stops without more work or a
+ *  response. The FIFO waiting queue is capped at `maxInFlight`; excess arrivals are shed. */
 export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOpts): { done: Promise<void> } {
   if (!opts.xkeySeed) throw new Error("auth callout: xkey seed is required - refusing to start a callout that would receive bearer tokens unsealed");
   const xkp = fromCurveSeed(new TextEncoder().encode(opts.xkeySeed)); // throws on non-curve seeds
@@ -322,7 +330,6 @@ export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOp
   const serviceAuthority = opts.serviceAuthority;
   if (serviceAuthority) assertNativeServiceCalloutAuthority(serviceAuthority, opts.space, opts.dataAccount.pub);
   const limits = calloutLimits(opts.limits);
-  const budgetMs = limits.authTimeoutMs - DEADLINE_MARGIN_MS;
   const log = opts.log ?? ((l: string) => console.error(l));
   const limiter = opts.connectLimiter ?? new ConnectLimiter();
   const enc = (s: string) => new TextEncoder().encode(s);
@@ -333,6 +340,7 @@ export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOp
   const sub = nc.subscribe(AUTH_CALLOUT_SUBJECT, { queue: "cotal-auth-callout" });
   const queue: Callout[] = []; // admitted and not started, oldest first
   const running = new Set<Promise<void>>();
+  let activeLimit = limits.maxInFlight;
   let stopped = false;
   let workerFailed = false;
   let workerError: unknown;
@@ -347,7 +355,8 @@ export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOp
     const ms = (n: number) => Math.round(n);
     log(`auth callout: level=${level} outcome=${outcome} space=${field(opts.space)} req=${field(c.id)} cid=${c.req.client_info?.id ?? "-"}` +
       ` owner=${field(c.owner ?? "-")} actor=${field(c.actor ?? "-")} queue_ms=${ms((c.startedAt ?? now) - c.queuedAt)}` +
-      ` verify_ms=${ms(c.ms.verify)} ledger_ms=${ms(c.ms.ledger)} policy_ms=${ms(c.ms.policy)} sign_ms=${ms(c.ms.sign)} total_ms=${ms(total)}${extra}`);
+      ` verify_ms=${ms(c.ms.verify)} ledger_ms=${ms(c.ms.ledger)} policy_ms=${ms(c.ms.policy)} sign_ms=${ms(c.ms.sign)} total_ms=${ms(total)}` +
+      ` remaining_ms=${ms(c.deadlineAt - performance.now())}${extra}`);
   };
 
   /** Sign and seal a response to one request. */
@@ -378,19 +387,25 @@ export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOp
     return true;
   };
 
-  /** Answer the signed timeout denial: at the deadline, or at once when admission sheds. */
-  const refuse = async (c: Callout, outcome: "timeout" | "shed", extra: string) => {
-    if (c.answered) return;
-    try {
-      send(c, await seal(c, { error: CALLOUT_TIMEOUT_REASON }), outcome, extra);
-    } catch (e) {
-      log(`auth callout: failed to send the ${outcome} response to ${c.id}: ${e instanceof Error ? e.message : String(e)}`);
-    }
+  /** Stop work the broker no longer has enough budget to receive. No response is signed or sent. */
+  const abandon = (c: Callout, outcome: "timeout" | "shed", extra: string): boolean => {
+    if (c.answered) return false;
+    c.answered = true;
+    clearTimeout(c.deadline);
+    journal(c, outcome, extra);
+    return true;
   };
 
   /** One timed step of a callout's work. Stops the work once something else answered it. */
   const step = async <T>(c: Callout, phase: CalloutPhase, f: () => T | Promise<T>): Promise<T> => {
     c.phase = phase;
+    const phaseFloorMs = () => (phase === "verify" || phase === "sign") &&
+      performance.now() - c.arrivedAt >= SLOW_WORK_MS
+      ? BROKER_EXPIRY_ROUNDING_MS + SLOW_RESPONSE_MARGIN_MS : 0;
+    if (c.deadlineAt - performance.now() < phaseFloorMs()) {
+      abandon(c, "timeout", ` at=${phase}`);
+      throw ANSWERED;
+    }
     const t = performance.now();
     let out: T;
     try {
@@ -399,8 +414,17 @@ export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOp
       c.ms[phase] += performance.now() - t;
     }
     if (c.answered) throw ANSWERED;
+    if (performance.now() - c.arrivedAt >= SLOW_WORK_MS) activeLimit = Math.min(activeLimit, 4);
+    if (c.deadlineAt - performance.now() < phaseFloorMs()) {
+      abandon(c, "timeout", ` at=${phase}`);
+      throw ANSWERED;
+    }
     return out;
   };
+
+  const responseFloorMs = (c: Callout): number =>
+    performance.now() - c.arrivedAt >= SLOW_WORK_MS
+      ? BROKER_EXPIRY_ROUNDING_MS + SLOW_RESPONSE_MARGIN_MS : 0;
 
   /** Authenticate a request as it arrives. Shape violations get NO response. */
   function admit(msg: CalloutMsg, arrivedAt: number): Callout | undefined {
@@ -409,18 +433,18 @@ export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOp
       log("auth callout: dropped an UNSEALED request (no Nats-Server-Xkey header) - check the account xkey config");
       return;
     }
-    let claims, sharedKey: Uint8Array;
+    let claims: { exp?: number; iss?: string; nats?: AuthorizationRequest }, sharedKey: Uint8Array;
     try {
       const { nonce, box } = xkv1Parts(msg.data);
       sharedKey = sharedKeys.get(serverXkey) ?? nacl.box.before(decodeServerXkey(serverXkey), xkeySecret);
       const plain = nacl.box.open.after(box, nonce, sharedKey);
       if (plain === null) throw new Error("xkey open failed");
-      claims = decodeNatsJwt<AuthorizationRequest>(dec(plain)); // the issuer's ed25519 signature, verified natively
+      claims = decodeNatsJwt<typeof claims>(dec(plain)); // the issuer's ed25519 signature, verified natively
     } catch (e) {
       log(`auth callout: dropped an undecryptable/unverifiable request (${e instanceof Error ? e.message : String(e)})`);
       return;
     }
-    const req = (claims as { nats?: AuthorizationRequest }).nats;
+    const req = claims.nats;
     if (!req?.user_nkey || !req.server_id?.id) {
       log("auth callout: dropped a request without user_nkey/server_id");
       return;
@@ -431,7 +455,7 @@ export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOp
     // reply subject it controls and be minted a data-account JWT. So: the issuer must be the
     // request's own server id AND a server-prefixed (`N…`) nkey, and — when configured — one of
     // the trusted server ids.
-    const issuer = (claims as { iss?: string }).iss;
+    const issuer = claims.iss;
     if (issuer !== req.server_id.id || !req.server_id.id.startsWith("N")) {
       log("auth callout: dropped a request whose issuer is not its own server identity (forgery guard)");
       return;
@@ -446,12 +470,25 @@ export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOp
       log("auth callout: dropped a request whose signed server_id.xkey != sealing header key");
       return;
     }
+    if (!Number.isSafeInteger(claims.exp) || claims.exp! <= 0) {
+      log("auth callout: dropped a request without a valid broker expiry");
+      return;
+    }
+    const arrivedWall = Date.now();
+    // The broker's true deadline is within [exp*1000, exp*1000+1000). Cap the ordinary
+    // arrival-based budget with the latest possible broker deadline, then run on a monotonic clock.
+    // This tolerates wall-clock skew: an implausibly far broker expiry contributes no extra time,
+    // while a backed-up request receives only the broker range it can still plausibly have.
+    const brokerRemainingMs = claims.exp! * 1000 + BROKER_EXPIRY_ROUNDING_MS - arrivedWall;
+    const remainingMs = Math.min(limits.authTimeoutMs, Math.max(0, brokerRemainingMs)) - DEADLINE_MARGIN_MS;
+    const deadlineAt = performance.now() + Math.max(0, remainingMs);
     keepSharedKey(serverXkey, sharedKey);
     const queuedAt = performance.now();
     return {
       msg, req, sharedKey,
       id: req.user_nkey,
       arrivedAt, queuedAt,
+      deadlineAt,
       admittedAt: Math.floor(Date.now() / 1000),
       answered: false,
       phase: "queue",
@@ -501,6 +538,10 @@ export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOp
         const sealed = await step(c, "sign", () => seal(c, { jwt: minted.jwt }));
         if (minted.exp <= Math.floor(Date.now() / 1000))
           throw new Error("service callout expired before encrypted response release");
+        if (c.deadlineAt - performance.now() < responseFloorMs(c)) {
+          abandon(c, "timeout", " at=sign");
+          return;
+        }
         send(c, sealed, "minted", "", () => opts.onMint?.(minted));
         return;
       }
@@ -554,6 +595,10 @@ export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOp
       }
       const sealed = await step(c, "sign", () => seal(c, { jwt: userJwt }));
       if (exp <= Math.floor(Date.now() / 1000)) throw new Error("callout: authority expired before response release");
+      if (c.deadlineAt - performance.now() < responseFloorMs(c)) {
+        abandon(c, "timeout", " at=sign");
+        return;
+      }
       send(c, sealed, "minted", "", () => opts.onMint?.({ jwt: userJwt, principal: key, exp }));
     } catch (e) {
       if (e === ANSWERED || c.answered) return;
@@ -561,14 +606,24 @@ export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOp
         ? `${e.code} retry-after ${e.retryAfterSeconds}s: ${e.message}`
         : e instanceof Error ? e.message : String(e);
       try {
+        if (c.deadlineAt - performance.now() < responseFloorMs(c)) {
+          abandon(c, "timeout", ` at=${c.phase}`);
+          return;
+        }
         // The deny response MUST always encode: a denied connect that can't be answered TIMES OUT
         // instead of getting a legible signed refusal, which breaks the fail-closed "refuse, never
         // hang" contract. The auth-response JWT claim encoder is Latin1-limited (btoa-style — a
         // non-ASCII char like the em-dash in many of our throw messages raises "Invalid character"),
         // so coerce the reason to ASCII at this boundary. It is a human-readable hint, not a security
         // token, so lossy folding (em-dash → "-", smart quotes → ASCII, else "?") is fine.
-        send(c, await seal(c, { error: asciiFold(reason) }), "denied", ` reason=${JSON.stringify(reason)}`);
+        const sealed = await step(c, "sign", () => seal(c, { error: asciiFold(reason) }));
+        if (c.deadlineAt - performance.now() < responseFloorMs(c)) {
+          abandon(c, "timeout", " at=sign");
+          return;
+        }
+        send(c, sealed, "denied", ` reason=${JSON.stringify(reason)}`);
       } catch (re) {
+        if (re === ANSWERED) return;
         log(`auth callout: failed to send deny response to ${c.id} (${reason}): ${re instanceof Error ? re.message : String(re)}`);
       }
     }
@@ -592,7 +647,7 @@ export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOp
     running.add(task);
   };
   const drain = () => {
-    while (!stopped && running.size < limits.maxInFlight && queue.length) {
+    while (!stopped && running.size < activeLimit && queue.length) {
       const c = queue.shift()!;
       if (!c.answered) start(c);
     }
@@ -606,17 +661,19 @@ export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOp
       const arrivedAt = performance.now();
       const c = admit(msg, arrivedAt);
       if (!c) continue;
-      const left = budgetMs - (performance.now() - arrivedAt);
+      const left = c.deadlineAt - performance.now();
+      if (left <= 0) {
+        abandon(c, "shed", ` remaining_ms=${Math.round(left)} ahead=${running.size + queue.length}`);
+        continue;
+      }
       c.deadline = setTimeout(() => {
         const queued = queue.indexOf(c);
         if (queued >= 0) queue.splice(queued, 1);
-        void refuse(c, "timeout", ` at=${c.phase}`);
+        abandon(c, "timeout", ` at=${c.phase}`);
       }, left);
-      // While the oldest request still waiting for a slot has waited more than half the budget, the
-      // queue is not draining in time, and a new request is refused at once instead of joining it.
-      const waited = queue.length ? performance.now() - queue[0].queuedAt : 0;
-      if (waited > budgetMs / 2) {
-        void refuse(c, "shed", ` waited_ms=${Math.round(waited)} ahead=${running.size + queue.length}`);
+      const queueCap = limits.maxInFlight * QUEUE_WAVES;
+      if (queue.length >= queueCap) {
+        abandon(c, "shed", ` remaining_ms=${Math.round(left)} ahead=${running.size + queue.length}`);
         continue;
       }
       queue.push(c);

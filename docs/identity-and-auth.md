@@ -436,13 +436,14 @@ keeps its actionable reason without spending the shared probing budget.
 
 nats-server waits for the auth callout's answer for its `authorization { timeout }`, two seconds
 unless the broker config sets it. From 2.15 a connect with no answer by then is refused; 2.14 leaves
-it waiting for the client's own connect timeout. The callout answers inside that window. A request's
-deadline is the broker timeout less 250 ms, counted from when the callout received it. A request
-still unanswered then gets a signed denial with the reason
-`timeout: the auth callout could not answer inside the broker's authorization timeout`, and its work
-stops at its next step. While the oldest request still waiting for a slot has waited more than half
-that budget, the queue is not draining in time, and a new request gets the same denial at once
-instead of joining it. Requests start oldest first, at most `maxInFlight` at a time.
+it waiting for the client's own connect timeout. The callout answers inside that window. nats-server
+stamps the signed request expiry in Unix seconds, rounded down, so the true broker deadline is within
+that second. The callout caps an arrival-based local budget with the upper end of that signed range,
+then subtracts a response margin. The arrival cap prevents a broker clock that is ahead from granting
+extra time, while the signed range prevents unread backlog from receiving a fresh full timeout.
+A request still unanswered then stops without signing or sending a response. The broker refuses it
+when its own timeout expires. At most `maxInFlight` requests run at once. The FIFO waiting queue holds
+at most another `maxInFlight`; excess burst arrivals are shed, so work and timers stay bounded.
 
 The client sees `Authorization Violation` for this denial as for any other, because nats-server does
 not pass a callout's reason to the client. The broker logs the reason after
@@ -451,18 +452,19 @@ not pass a callout's reason to the client. The broker logs the reason after
 Each answered request writes one line to the auth service's standard error:
 
 ```
-auth callout: level=info outcome=minted space=<space> req=<user nkey> cid=<broker client id> owner=<owner> actor=<actor> queue_ms=0 verify_ms=1 ledger_ms=2 policy_ms=0 sign_ms=1 total_ms=4
+auth callout: level=info outcome=minted space=<space> req=<user nkey> cid=<broker client id> owner=<owner> actor=<actor> queue_ms=0 verify_ms=1 ledger_ms=2 policy_ms=0 sign_ms=1 total_ms=4 remaining_ms=1496
 ```
 
-`outcome` is `minted`, `denied`, `timeout` when the deadline passed, or `shed` when admission
-refused the request. `space` is the space the connect was for, which a process serving several
+`outcome` is `minted`, `denied`, `timeout` when the local budget passed, or `shed` when admission was
+already out of budget or the bounded queue was full. Deadline outcomes write a line but send no response. `space` is the space the connect was for, which a process serving several
 spaces needs and a process serving one still writes, so operators parse one format. `req` is the
 user key the broker generated for this connect. `cid` is the broker's client id,
 which the broker's own log lines carry as `cid:<n>`. `queue_ms` is the time spent waiting for a slot. `verify_ms` covers the request and bearer checks, `ledger_ms` the actor
 check and the issuance record, `policy_ms` the permission build, and `sign_ms` signing the user JWT
-and the response. A `denied` line adds `reason="<message>"`, a `timeout` line adds `at=<step>` for
-the step it was in, and a `shed` line adds `waited_ms=<ms> ahead=<n>`: how long the oldest waiting
-request had waited, and how many requests were queued or in progress. The line logs at `level=warn`
+and the response. `remaining_ms` is the local conservative budget left when the line was written. A
+`denied` line adds `reason="<message>"`, a `timeout` line adds `at=<step>` for
+the step it stopped in, and a `shed` line adds `remaining_ms=<ms> ahead=<n>`: how much broker budget
+that request had left, and how many requests were queued or in progress. The line logs at `level=warn`
 when the request took longer than 500 ms or its outcome is `timeout` or `shed`. A request that fails
 the provenance checks still gets no answer and logs why it was dropped.
 
@@ -470,7 +472,10 @@ A hosted context sets its limits with `startAuthService({ ..., calloutLimits })`
 `calloutLimits` is `{ authTimeoutMs, maxInFlight, slowMs }`. `authTimeoutMs` (default 2000) must
 match the broker's `authorization { timeout }` in milliseconds: against a broker set to 10 seconds,
 the default refuses at 1.75 seconds connects the broker would still wait for. `maxInFlight` (default
-32) bounds the requests in progress, and `slowMs` (default 500) sets when a line logs at warn.
+32) bounds both the requests in progress and the FIFO waiting queue. Once one request has spent 500
+ms in the service, new work starts at most four at a time until restart, which prevents CPU
+contention from extending more replies beyond the broker window. `slowMs` (default 500) sets
+when a line logs at warn.
 
 `cotal up --auth-timeout <seconds>` sets both sides for a CLI stack from one value. It renders the
 broker's `authorization { timeout }` and starts the space's auth service with that timeout as its

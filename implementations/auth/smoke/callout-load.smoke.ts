@@ -9,7 +9,7 @@
  * the run rather than guessed.
  *
  * TWO ARMS, so a gain is measured rather than claimed:
- *  - `--arm main`  — this worktree's `../src/callout.js` (native Ed25519 signer, `maxInFlight 32`);
+ *  - `--arm main`  — this worktree's `../src/callout.js` (native Ed25519 signer, default `maxInFlight 4`);
  *  - `--arm stock` — the callout as shipped in **v0.99.3** (pure-JS signer, one request at a time),
  *    extracted with `git show v0.99.3:implementations/auth/src/callout.ts`. It is the real
  *    historical file, not a reconstruction: the run pins its sha256 and refuses to continue if the
@@ -62,13 +62,15 @@ import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 // ---------------------------------------------------------------------------------------------
 
 /** One connect attempt as a load child saw it. `ms` is the client-side connect wall time. */
-interface Attempt { ok: boolean; ms: number; reason?: string }
+interface Attempt { ok: boolean; ms: number; wallPhaseMs: number; reason?: string }
 /** What a load child reports back on stdout when its phase is over. */
 interface ChildResult {
   attempts: number;
   ok: number;
   byReason: Record<string, number>;
   latencies: number[];
+  boundaryAttempts: number;
+  boundaryOk: number;
   /** Request/reply round-trips completed by a `hold` child, and their latencies. */
   /** hold: messages published into the space. */
   msgs?: number;
@@ -81,7 +83,7 @@ interface ChildResult {
 }
 /** The job one load child runs. Carries credential material, so it travels over stdin only. */
 interface ChildJob {
-  mode: "churn" | "seats" | "hold";
+  mode: "churn" | "burst" | "seats" | "hold";
   servers: string;
   sentinelCreds: string;
   bearers: string[];
@@ -158,6 +160,7 @@ async function runChild(): Promise<void> {
    *  on). `keep` decides whether this models connect churn or a resident endpoint. */
   const once = async (bearer: string, keep: boolean): Promise<void> => {
     const nonce = `ibx${randomUUID().replace(/-/g, "")}`;
+    const wallPhaseMs = Date.now() % 1000;
     const t0 = performance.now();
     try {
       const nc = await connect({
@@ -166,11 +169,11 @@ async function runChild(): Promise<void> {
         name: nonce, inboxPrefix: `_INBOX_${nonce}`,
         timeout: job.connectTimeoutMs, maxReconnectAttempts: 0,
       });
-      attempts.push({ ok: true, ms: performance.now() - t0 });
+      attempts.push({ ok: true, ms: performance.now() - t0, wallPhaseMs });
       if (keep) held.push(nc);
       else await nc.close();
     } catch (e) {
-      attempts.push({ ok: false, ms: performance.now() - t0, reason: reasonOf(e) });
+      attempts.push({ ok: false, ms: performance.now() - t0, wallPhaseMs, reason: reasonOf(e) });
     }
   };
 
@@ -196,6 +199,8 @@ async function runChild(): Promise<void> {
       while (issued < due) fire(job.bearers[issued++ % job.bearers.length], false);
       await wait(2);
     }
+  } else if (job.mode === "burst") {
+    for (let i = 0; i < job.ratePerSec!; i++) fire(job.bearers[i % job.bearers.length], false);
   } else if (job.mode === "seats") {
     // Each seat reconnects on its own `pollMs` timer, phase-spread so N seats do not beat in
     // lockstep. This is the connect cadence of the connector's turn poll, nothing else.
@@ -269,6 +274,8 @@ async function runChild(): Promise<void> {
     ok: attempts.filter((a) => a.ok).length,
     byReason,
     latencies: attempts.filter((a) => a.ok).map((a) => a.ms),
+    boundaryAttempts: attempts.filter((a) => a.wallPhaseMs <= 50 || a.wallPhaseMs >= 950).length,
+    boundaryOk: attempts.filter((a) => a.ok && (a.wallPhaseMs <= 50 || a.wallPhaseMs >= 950)).length,
     msgs, received, msgLatencies,
     cpuMs: (cpu.user + cpu.system) / 1000,
     loadMs,
@@ -399,6 +406,10 @@ const listen = ((): { host: string; port: number } | undefined => {
 const CALLOUTS = Math.max(1, num("callouts", "1"));
 const CONNECT_TIMEOUT_MS = num("connect-timeout-ms", "10000");
 const AUTH_TIMEOUT = flag("auth-timeout", ""); // empty: emit no `authorization` block at all
+const MAX_IN_FLIGHT = num("max-in-flight", "32");
+// Exact CID correlation requires broker debug lines, which materially change the broker workload under
+// the shared CPU ceiling. Capacity runs leave it off; safety cells pass --correlate-refusals.
+const CORRELATE_REFUSALS = argv.includes("--correlate-refusals");
 const LIMITS = flag("connect-limits", ""); // empty: the callout's production defaults
 const connectLimiter = LIMITS ? limiterOf(LIMITS) : undefined;
 function limiterOf(spec: string): ConnectLimiter {
@@ -508,17 +519,23 @@ const conf = serverConfig(auth, [auth], {
   extraAccounts: [{ pub: callout.account.pub, jwt: callout.account.jwt }],
 }) + `\nhttp: 127.0.0.1:${MON_PORT}\n` + (AUTH_TIMEOUT ? `authorization { timeout: ${AUTH_TIMEOUT} }\n` : "");
 writeFileSync(join(dir, "server.conf"), conf);
-const srv = spawn(NATS_BIN, ["-c", join(dir, "server.conf")], { stdio: ["ignore", "ignore", "pipe"] });
+const srv = spawn(NATS_BIN, [...(CORRELATE_REFUSALS ? ["-D"] : []), "-c", join(dir, "server.conf")], { stdio: ["ignore", "ignore", "pipe"] });
 const releaseBroker = teardownOnSignal(srv, dir);
 // The client sees the same "Authorization Violation" for a signed callout denial and for a callout
 // the broker gave up on, so the broker's own log tells them apart: a connect the callout refused in
 // time logs the callout's reason, and any other refusal does not.
-const brokerLog = { calloutReasons: 0, partial: "" };
+const brokerLog = { calloutReasons: 0, refusedCids: new Set<number>(), partial: "" };
 srv.stderr!.setEncoding("utf8");
 srv.stderr!.on("data", (d: string) => {
   const lines = (brokerLog.partial + d).split("\n");
   brokerLog.partial = lines.pop() ?? "";
-  for (const l of lines) if (l.includes("Auth callout service returned an error")) brokerLog.calloutReasons++;
+  for (const l of lines) {
+    if (l.includes("Auth callout service returned an error")) brokerLog.calloutReasons++;
+    if (CORRELATE_REFUSALS && /authentication failure|authorization violation|authentication timeout|authorization callout response not received in time/i.test(l)) {
+      const cid = /cid:(\d+)/i.exec(l);
+      if (cid) brokerLog.refusedCids.add(Number(cid[1]));
+    }
+  }
 });
 
 const varz = async (): Promise<Record<string, number>> => {
@@ -595,8 +612,8 @@ let ledgerStall: Promise<void> | undefined;
 let stallWindow: [number, number] | undefined;
 const calloutLog: string[] = [];
 /** One per answered callout, parsed from its `auth callout: level=…` line. */
-const answers: Array<{ level: string; outcome: string; totalMs: number; arrivedAt: number }> = [];
-const ANSWER_LINE = /^auth callout: level=(\w+) outcome=(\w+) .* total_ms=(\d+)/;
+const answers: Array<{ level: string; outcome: string; cid?: number; queueMs: number; verifyMs: number; ledgerMs: number; policyMs: number; signMs: number; totalMs: number; remainingMs: number; arrivedAt: number }> = [];
+const ANSWER_LINE = /^auth callout: level=(\w+) outcome=(\w+) .* cid=(\d+|-) .* queue_ms=(\d+) verify_ms=(\d+) ledger_ms=(\d+) policy_ms=(\d+) sign_ms=(\d+) total_ms=(\d+) remaining_ms=(-?\d+)/;
 
 let calloutNc: NatsConnection | undefined;
 const children: ChildProcess[] = [];
@@ -669,6 +686,8 @@ const merge = (rs: ChildResult[]): ChildResult => ({
   ok: rs.reduce((a, r) => a + r.ok, 0),
   byReason: rs.reduce<Record<string, number>>((a, r) => { for (const [k, v] of Object.entries(r.byReason)) a[k] = (a[k] ?? 0) + v; return a; }, {}),
   latencies: rs.flatMap((r) => r.latencies),
+  boundaryAttempts: rs.reduce((a, r) => a + r.boundaryAttempts, 0),
+  boundaryOk: rs.reduce((a, r) => a + r.boundaryOk, 0),
   msgs: rs.reduce((a, r) => a + (r.msgs ?? 0), 0),
   received: rs.reduce((a, r) => a + (r.received ?? 0), 0),
   msgLatencies: rs.flatMap((r) => r.msgLatencies ?? []),
@@ -701,11 +720,11 @@ try {
     ...(connectLimiter ? { connectLimiter } : {}),
     log: (l) => {
       const m = ANSWER_LINE.exec(l);
-      if (m) answers.push({ level: m[1], outcome: m[2], totalMs: Number(m[3]), arrivedAt: performance.now() - Number(m[3]) });
+      if (m) answers.push({ level: m[1], outcome: m[2], ...(m[3] === "-" ? {} : { cid: Number(m[3]) }), queueMs: Number(m[4]), verifyMs: Number(m[5]), ledgerMs: Number(m[6]), policyMs: Number(m[7]), signMs: Number(m[8]), totalMs: Number(m[9]), remainingMs: Number(m[10]), arrivedAt: performance.now() - Number(m[9]) });
       if (calloutLog.length < 200) calloutLog.push(l);
     },
     // The broker's `authorization { timeout }` under test, so the callout's deadline matches it.
-    ...(AUTH_TIMEOUT ? { limits: { authTimeoutMs: Math.round(Number(AUTH_TIMEOUT) * 1000) } } : {}),
+    limits: { ...(AUTH_TIMEOUT ? { authTimeoutMs: Math.round(Number(AUTH_TIMEOUT) * 1000) } : {}), maxInFlight: MAX_IN_FLIGHT },
   });
   await calloutNc.flush();
 
@@ -743,7 +762,7 @@ try {
   await runLoad({ mode: "churn", servers: CHILD_SERVERS, sentinelCreds: callout.sentinelCreds, bearers: bearers.slice(0, 4), connectTimeoutMs: CONNECT_TIMEOUT_MS, ratePerSec: 4, seconds: 1 });
   handlerMs.length = 0; served = 0; answers.length = 0;
   resetDeal();
-  const broker0 = { ...brokerLog };
+  const broker0 = { ...brokerLog, refusedCids: new Set(brokerLog.refusedCids) };
 
   const v0 = await varz();
   const genBusy0 = generators.map((g) => genBusyS(g.host));
@@ -757,8 +776,9 @@ try {
     const offered = SCENARIO === "burst" ? BURST : RATE;
     const secs = SCENARIO === "burst" ? 1 : SECONDS;
     const procs = Math.min(LOAD_PROCS, Math.max(1, Math.ceil(offered / 25)));
-    result = merge(await Promise.all(Array.from({ length: procs }, () =>
-      runLoad({ mode: "churn", servers: CHILD_SERVERS, sentinelCreds: callout.sentinelCreds, bearers, connectTimeoutMs: CONNECT_TIMEOUT_MS, ratePerSec: offered / procs, seconds: secs }))));
+    const base = Math.floor(offered / procs), remainder = offered % procs;
+    result = merge(await Promise.all(Array.from({ length: procs }, (_, i) =>
+      runLoad({ mode: SCENARIO === "burst" ? "burst" : "churn", servers: CHILD_SERVERS, sentinelCreds: callout.sentinelCreds, bearers, connectTimeoutMs: CONNECT_TIMEOUT_MS, ratePerSec: SCENARIO === "burst" ? base + (i < remainder ? 1 : 0) : offered / procs, seconds: secs }))));
     note = `${procs} load process(es), ${offered}/s offered for ${secs}s`;
   } else if (SCENARIO === "idle-seats") {
     result = await runLoad({ mode: "seats", servers: CHILD_SERVERS, sentinelCreds: callout.sentinelCreds, bearers, connectTimeoutMs: CONNECT_TIMEOUT_MS, seats: SEATS, pollMs: POLL_MS, seconds: SECONDS });
@@ -823,7 +843,7 @@ try {
   row("load generator", generators.length
     ? `${generators.map((g) => `${g.host} (${g.cores} cores, ${g.dir})`).join(", ")} over ssh${LOAD_EXEC ? `, under \`${LOAD_EXEC}\`` : ""}`
     : "co-located with the broker and the auth service");
-  row("arm", ARM === "main" ? "main (native Ed25519 signer, maxInFlight 32)" : `stock ${STOCK_REF} (pure-JS signer, serial)`);
+  row("arm", ARM === "main" ? `main (native Ed25519 signer, maxInFlight ${MAX_IN_FLIGHT})` : `stock ${STOCK_REF} (pure-JS signer, serial)`);
   row("auth callout processes", CALLOUTS);
   const limits = (connectLimiter ?? new ConnectLimiter()).limits;
   row("connect limits (a minute)", ARM === "stock" ? "none (the stock arm has no limiter)" : `actor ${limits.actorPerMinute}, owner ${limits.ownerPerMinute}, host ${limits.hostPerMinute}${connectLimiter ? "" : " (production defaults)"}`);
@@ -833,6 +853,7 @@ try {
   row("connects attempted", result.attempts);
   row("connects succeeded", result.ok);
   row("connects refused", result.attempts - result.ok);
+  row("connects started within 50 ms of a second boundary", `${result.boundaryOk}/${result.boundaryAttempts}`);
   for (const [k, v] of Object.entries(result.byReason).sort((a, b) => b[1] - a[1])) row(`  refused: ${k}`, v);
   row("load window (s)", loadS);
   row("offered connect rate (/s)", result.attempts / loadS);
@@ -884,13 +905,25 @@ try {
   const reasoned = brokerLog.calloutReasons - broker0.calloutReasons;
   row("refusals with a callout reason (broker log)", reasoned);
   row("refusals without one", result.attempts - result.ok - reasoned);
+  const measuredRefusedCids = new Set([...brokerLog.refusedCids].filter((cid) => !broker0.refusedCids.has(cid)));
+  row("broker refusal identities", CORRELATE_REFUSALS ? measuredRefusedCids.size : "not collected (pass --correlate-refusals)");
   const outcomes = (set: typeof answers, label: string) => {
     for (const o of [...new Set(set.map((a) => a.outcome))].sort()) {
-      const ms = set.filter((a) => a.outcome === o).map((a) => a.totalMs);
-      row(`  ${label}${o}`, `${ms.length} (total ms p50 ${n2(pct(ms, 50))}, p99 ${n2(pct(ms, 99))}, max ${n2(Math.max(...ms))})`);
+      const selected = set.filter((a) => a.outcome === o);
+      const queueMs = selected.map((a) => a.queueMs);
+      const totalMs = selected.map((a) => a.totalMs);
+      row(`  ${label}${o}`, `${selected.length} (queue ms p50 ${n2(pct(queueMs, 50))}, p99 ${n2(pct(queueMs, 99))}, max ${n2(Math.max(...queueMs))}; total ms p50 ${n2(pct(totalMs, 50))}, p99 ${n2(pct(totalMs, 99))}, max ${n2(Math.max(...totalMs))})`);
     }
   };
   row("callout answer lines", `${answers.length} (${answers.filter((a) => a.level === "warn").length} at warn)`);
+  row("minted after anchored deadline", answers.filter((a) => a.outcome === "minted" && a.remainingMs <= 0).length);
+  row("minted after broker refusal", CORRELATE_REFUSALS
+    ? answers.filter((a) => a.outcome === "minted" && a.cid !== undefined && measuredRefusedCids.has(a.cid)).length
+    : "not collected (pass --correlate-refusals)");
+  const minted = answers.filter((a) => a.outcome === "minted");
+  row("minted verify+sign p99 (ms)", n2(pct(minted.map((a) => a.verifyMs + a.signMs), 99)));
+  row("minted verify+sign max (ms)", n2(Math.max(...minted.map((a) => a.verifyMs + a.signMs))));
+  row("minted phase p99 (ms)", `verify ${n2(pct(minted.map((a) => a.verifyMs), 99))}, ledger ${n2(pct(minted.map((a) => a.ledgerMs), 99))}, policy ${n2(pct(minted.map((a) => a.policyMs), 99))}, sign ${n2(pct(minted.map((a) => a.signMs), 99))}`);
   outcomes(answers, "");
   if (stallWindow) {
     const [from, to] = stallWindow;
