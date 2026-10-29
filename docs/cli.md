@@ -680,7 +680,7 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 | `--root <prepared-dir>` | current folder's workspace | Start the project in `<dir>` instead of the folder you run `up` from. `<dir>` must already have its own `.cotal`, which `space create <space> --root <dir>` or an earlier `up` there made. An absent, inherited or symlinked `.cotal`, or the machine's home store, refuses before startup. Relative file, restore, channels, TLS and store paths remain relative to the invoking folder. The native `up` selection rule still applies after startup. |
 | `--store-dir <dir>` | none | JetStream store directory (recorded; a repair up reuses it). Also accepted with `-f`. A path that is a link refuses `USAGE_INVALID`, naming the directory it points to. A store folder belongs to one space: a folder another space uses refuses `CONFLICT`, naming that space |
 | `--max-file-store <bytes>` | nats-server's dynamic cap | JetStream file storage cap in bytes (a positive integer, no unit suffix). At least 67108865: the space's membership bucket reserves 67108864 (64 MiB), and nats-server creates each of the other streams only while one more byte is free. A smaller value refuses `USAGE_INVALID`, naming 67108865, before anything starts. Without it nats-server sizes the store at start as three quarters of the free space on its filesystem. The cap is fixed at broker start: a running broker cannot change it (`cotal down` first), and a stopped stack's next `up --max-file-store` replaces the recorded cap. A controller stack keeps it across `cotal down`, because it refuses `down --preserve-state` in this release. On a legacy root, `down --preserve-state` keeps it for the resume, and a resume with a different value refuses `CONFLICT`, exit 2. When a broker `up` started cannot create the space's streams for want of storage, the failure names the cap and `cotal up --max-file-store <bytes>`. Once the space holds more than the cap, the broker refuses every write: `send` refuses naming the cap, and `status` shows the store full. Not accepted with `-f` |
-| `--log-file <path>` | none | Use nats-server's native `log_file`. The path is resolved from the invoking folder, created owner-private, recorded with the controller stack and reused by a later bare `up`. It must differ from the private service startup diagnostics log. In a manifest, use `broker.logFile`; a relative path resolves beside the manifest. |
+| `--log-file <path>` | none | Use nats-server's native `log_file`. The path is resolved from the invoking folder, created owner-private, recorded with the controller stack and reused by a later bare `up`. It must differ from the private service startup diagnostics log. Like the broker's configuration, the file and the folders above it must be writable only by you or root, and a broker stop refuses `DEPENDENCY_UNAVAILABLE` while the file is missing. In a manifest, use `broker.logFile`; a relative path resolves beside the manifest. |
 | `--logfile-size-limit <bytes>` | none | Rotate the native broker log after this positive integer byte count. Requires `--log-file`, or `broker.logFile` in a manifest. The controller records and reuses it after `cotal down`. |
 | `--logfile-max-num <count>` | none | Keep at most this positive integer count of native broker log files, including the active file. Requires `--log-file`, or `broker.logFile` in a manifest. The controller records and reuses it after `cotal down`. |
 | `--auth-timeout <seconds>` | nats-server's 2 seconds | User-auth only: how long the broker waits for the auth callout's answer before it refuses a connect, a whole number from 1 to 60. `up` renders it as `authorization { timeout: <seconds> }` in `.cotal/auth/server.conf` and starts the space's auth service with the same value as its callout deadline, so the two never differ ([callout deadlines](identity-and-auth.md#callout-deadlines)). It is recorded in `.cotal/broker-policy.json`, so a later `up` on the root renders it again without the flag, after `cotal down` or a preserved resume included. It is fixed at broker start: a running broker refuses a different value (`cotal down` first), and a stopped stack's next `up --auth-timeout` replaces the recorded one. Refused `USAGE_INVALID` with `--open`, without user auth, with `-f` or with `--restore`. A resume renders the recorded value and refuses another one |
@@ -5543,9 +5543,12 @@ presets this machine has, and a name it does not have is refused as `DEPENDENCY_
 `cotal service add <name> --preset <preset> --help` lists a preset's options. An option the preset
 fills itself shows `(default: ...)`, such as the space's root for `--root` and `pty` for the
 manager's `--runtime`. A required option with no default is marked `(required)`, and an option that
-takes a path shows `<dir>` or `<file>`. An option the service names in camelCase takes a dashed flag,
-so the broker's `logFile` is `--log-file`, as `cotal up` spells it. A missing required option is
-refused with each one named, and the refusal prints the command line with them.
+takes a path shows `<dir>` or `<file>`. A path option takes an absolute path, and a relative one is
+refused. An option the service names in camelCase takes a dashed flag, so the broker's `logFile` is
+`--log-file`, as `cotal up` spells it. A missing required option is refused with each one named,
+and the refusal prints the command line with them. That line also names each option whose default
+the space cannot fill yet, such as the broker's `--server <url>` in a space with no registered
+broker, so it works as printed.
 
 A preset's options describe the service and never choose its space. `add` saves into the space
 `--space` names, or else the selected space or the folder's, as other commands resolve it.
@@ -5553,9 +5556,11 @@ A preset's options describe the service and never choose its space. `add` saves 
 `add` checks the options against the preset's schema, and checks that each declared path exists
 with its required protection. It does not check that a root or credential suits the preset, such
 as a root's auth mode or which credential a file holds. Those are checked when the service starts.
-A refusal names the option or field at fault. Option values are not printed, except the `broker`
-preset's `server`: `add` checks it against the address rules a start applies, and its refusal quotes
-the address unless it holds an `@`, which may be a credential.
+A refusal names the option or field at fault, by its flag on a preset add, such as `--log-file`. A
+value the preset's schema refuses gives the preset's help as its Next:
+`cotal service add <name> --preset <preset> --help`. Option values are not printed, except the
+`broker` preset's `server`: `add` checks it against the address rules a start applies, and its
+refusal quotes the address unless it holds an `@`, which may be a credential.
 
 `--file` imports a version-1 definition. This one runs a program and treats it as ready once its
 loopback health URL answers 200:
@@ -8941,11 +8946,13 @@ already be private. Without one, the intake appends to a private instance-keyed 
 service records. Feedback records and logs remain private local data and are retained on removal.
 
 The `broker` preset uses `nats-broker`. It requires a prepared local `root`, a protected existing
-`config` inside that root's `.cotal`, an absolute `binary` and one explicit `server` address. It
-prepares no trust, generates no configuration and starts no other service. Legacy broker custody,
-known shared registrations, maintenance and mismatched transport refuse. Its creation-pinned
-direct child writes a native ports report in a fresh private launch directory, and the readiness
-check sets that report to `0600` before it reads it. Its listener must
+`config` inside that root's `.cotal`, an absolute `binary` and one explicit `server` address. An
+optional `logFile` names the existing log file its configuration's `log_file` writes, and is checked
+as `config` is; `start` makes it owner-private. It prepares no trust, generates no configuration and
+starts no other service. Legacy broker custody, known shared registrations, maintenance and
+mismatched transport refuse. Its creation-pinned direct child writes a native ports report in a
+fresh private launch directory, and the readiness check sets that report to `0600` before it reads
+it. Its listener must
 match the declared IP, port and transport. `add` refuses a `server` that is not one `nats://` or
 `tls://` URL naming an IP literal, and DNS, wildcard and mapped-IPv6 targets, so none is saved. A
 definition saved before that check refuses on start, before launch, naming its `server` option and

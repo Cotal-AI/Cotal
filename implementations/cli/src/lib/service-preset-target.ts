@@ -93,6 +93,16 @@ function ambiguous(space: string, requested: string, rows: readonly ServiceDefin
   });
 }
 
+/** The one definition of `space` built on `preset` that the name `requested` means: the running one,
+ *  else the only one saved. Undefined when none is saved; refused when several could be meant. */
+export function presetDefinition(space: string, root: string, preset: ServicePreset, requested: string, mode: string): ServiceDefinitionSnapshot | undefined {
+  const rows = presetDefinitions(space, root, preset);
+  const live = rows.filter((row) => running(space, row.name));
+  const chosen = live.length === 1 ? live[0] : live.length > 1 ? undefined : rows.length === 1 ? rows[0] : undefined;
+  if (rows.length > 1 && !chosen) throw ambiguous(space, requested, live.length > 1 ? live : rows, mode);
+  return chosen;
+}
+
 /** Resolve a preset name given to a service action to the one definition of this space it means.
  *  A saved definition of that exact name always wins and is returned as itself. Otherwise a start
  *  with no definition saves one from the preset's defaults and the options it named; a start of an
@@ -118,10 +128,7 @@ export function resolvePresetService(space: string, root: string, requested: str
     const recorded = recordedPresetProcess(space, root, manager);
     return recorded ? { requested, name: requested, preset: manager.name, saved: null, recorded } : stoppedManagerLog(space, root, requested, manager);
   }
-  const rows = presetDefinitions(space, root, preset);
-  const live = rows.filter((row) => running(space, row.name));
-  const chosen = live.length === 1 ? live[0] : live.length > 1 ? undefined : rows.length === 1 ? rows[0] : undefined;
-  if (rows.length > 1 && !chosen) throw ambiguous(space, requested, live.length > 1 ? live : rows, mode);
+  const chosen = presetDefinition(space, root, preset, requested, mode);
   if (chosen) return options.length ? redefine(space, root, preset, chosen, requested, options, values) : { requested, name: chosen.name, preset: preset.name, saved: null };
   const recorded = recordedPresetProcess(space, root, preset);
   if (recorded) return { requested, name: requested, preset: preset.name, saved: null, recorded };

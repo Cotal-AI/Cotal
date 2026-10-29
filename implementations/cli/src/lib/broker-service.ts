@@ -355,13 +355,13 @@ export const brokerService: LocalProcess = {
   service: {
     abiVersion: 1, readiness: "listener", stop: "kernel-exit",
     capabilities: { multiInstance: false, foreground: false, logs: true },
-    paths: { root: "directory", config: "file", binary: "file" },
+    paths: { root: "directory", config: "file", binary: "file", logFile: "file" },
     optionsSchema: { type: "object", additionalProperties: false, required: ["root", "config", "binary", "server"], properties: {
       root: { type: "string", minLength: 1, maxLength: 4096, description: "prepared local root whose .cotal holds this space's broker configuration" },
       config: { type: "string", minLength: 1, maxLength: 4096, description: "explicitly prepared nats-server configuration inside that root's .cotal directory; it is never generated here" },
       binary: { type: "string", minLength: 1, maxLength: 4096, description: "absolute nats-server executable; no PATH lookup is made" },
       server: { type: "string", minLength: 1, maxLength: 4096, description: "the one broker URL this configuration serves" },
-      logFile: { type: "string", minLength: 1, maxLength: 4096, description: "native nats-server log_file path prepared by `cotal up`" },
+      logFile: { type: "string", minLength: 1, maxLength: 4096, description: "absolute path of the existing nats-server log file this configuration's log_file names; start makes it owner-private" },
     } },
   },
   async buildServiceLaunch(context) {

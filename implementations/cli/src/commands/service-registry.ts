@@ -1,11 +1,10 @@
-import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import * as prompts from "../lib/prompts.js";
 import { parseCommandArgs, registry, type Command, type CompletionResult, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
 import { ConfirmationRequired, CommandFailure, recordOperationSpace, isCommandFailure, hasUserAuthState, jsonFlag, loadMeshes, localProcessPath, localProcessVisible, oneLine, parsePid, plainFlag, presentationOf, probeLiveness, readPidfile, spaceFlag, writeResult, type LocalProcess, type LocalProcessContext, type Report, type ServiceDefinitionInput, type ServicePreset } from "@cotal-ai/workspace";
 import { canPrompt } from "./meshes-wizard.js";
-import { findServicePreset, presetFlagName, presetMaterialPath, presetMissingOptions, presetStartFlags, resolveServicePreset, servicePresetDefinition, servicePresetFlags, servicePresets } from "../lib/service-presets.js";
-import { forgetRefusedPresetService, presetDefinitions, recordedPresetProcess, resolvePresetService, type PresetServiceTarget } from "../lib/service-preset-target.js";
+import { findServicePreset, presetMissingOptions, presetStartFlags, presetUnfilledDefaults, resolveServicePreset, servicePresetDefinition, servicePresetFlags, servicePresets } from "../lib/service-presets.js";
+import { forgetRefusedPresetService, presetDefinition, presetDefinitions, recordedPresetProcess, resolvePresetService, type PresetServiceTarget } from "../lib/service-preset-target.js";
 import { execWords } from "../lib/exec-words.js";
 import { resolveServiceAdapter } from "../lib/service-adapters.js";
 import { personaCatalog } from "../lib/persona-files.js";
@@ -156,7 +155,7 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
     return;
   }
   if (mode === "show") {
-    const row = store.read(suppliedName!);
+    const row = savedService(suppliedName!);
     if (!row) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no saved service definition has this full name in the selected space", { target: { ...target, name: suppliedName }, remedy: "see the saved definitions with `cotal service`" });
     writeResult(presentation, { command: "service", target: { ...target, name: row.name }, result: { ...serviceDefinitionProjection(row), rootMatch: definitionRootMatch(row.record.value, root) } }, (result): Report => ({ sections: [
       { title: "Service definition", blocks: [{ kind: "fields", rows: [["Name", result.name], ["Space", result.space], ["Execution host", "this machine"], ["Revision", result.revision], ["Launch", result.launch.type], ...(result.launch.type === "process" ? [["Executable", result.launch.executable], ["Arguments", `${result.launch.argumentCount} declared; values omitted`], ["Working directory", result.launch.cwd]] as const : [["Adapter", result.launch.adapter], ["Options", `${result.launch.optionCount} declared; values omitted`]] as const), ["Readiness policy", result.readiness.type], ["Readiness deadline", `${result.readiness.timeoutMs} ms`], ["Environment references", Object.entries(result.environmentReferences).map(([destination, source]) => `${destination} from ${source}`).join(", ") || "none"], ["Caller reference", result.credentialRef ? "protected file reference; not checked" : "none"], ["Added in", result.root === null ? "root not recorded" : result.rootMatch === "inherited" ? `${result.root}, not this space's root; it does not start here` : result.root], ["Live state", "not checked"]] }, { kind: "lines", lines: [{ text: "Saved policy is not proof of process ownership, OS supervision or endpoint registration. Argument bodies, adapter option values and credential contents are omitted.", tone: "hint" }] }] },
@@ -164,7 +163,7 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
     return;
   }
   if (mode === "remove") {
-    const row = store.read(suppliedName!);
+    const row = savedService(suppliedName!);
     if (!row) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no saved service definition has this full name in the selected space", { target: { ...target, name: suppliedName }, remedy: "see the saved definitions with `cotal service`" });
     if (args.values.instance !== undefined) {
       // One stopped instance record goes; the definition, its other instances and the logs stay.
@@ -260,6 +259,14 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
   const executable = definition.launch.type === "process" ? definition.launch.executable : null;
   writeResult(presentation, { command: "service", target: { ...target, name }, result: { kind: "service-definition-added", name, revision: record.revision, space, preset: chosenPreset ?? null, executable, started: false, authorityGranted: false } }, (): Report => ({ sections: [{ title: "Service definition saved", blocks: [{ kind: "fields", rows: [["Name", name], ["Space", space], ["Execution host", "this machine"], ...(executable ? [["Executable", executable] as [string, string]] : []), ["Revision", record.revision], ["Process", "not started"], ["Authority", "not granted"]] }, { kind: "lines", lines: [{ text: "Only the owner-private definition was saved. Referenced credential contents were not read. This declaration is not a process sandbox.", tone: "hint" }] }] },
     { title: "Next", blocks: [{ kind: "commands", items: [{ command: `cotal svc start ${name}`, description: "Start it; dependencies are not started for it" }, { command: `cotal svc show ${name}`, description: "Read its saved launch and readiness policy" }] }] }] }));
+  /** The definition `show` or `remove` acts on: the one of this name, else the space's one service
+   *  built on the preset of this name, said on stderr as the other actions say it. */
+  function savedService(requested: string): ServiceDefinitionSnapshot | undefined {
+    const exact = store.read(requested), preset = exact ? undefined : findServicePreset(requested);
+    const row = preset && presetDefinition(space, root, preset, requested, mode);
+    if (preset && row) announcePresetTarget({ requested, name: row.name, preset: preset.name, saved: null }, space, presentation);
+    return exact ?? row;
+  }
   function cancelled(title: string): void { writeResult(presentation, { command: "service", target, result: { kind: "service-definition-change", changed: false }, noOp: true }, () => ({ sections: [{ title, blocks: [{ kind: "lines", lines: ["No service definition, process or OS unit was changed."] }] }] })); }
 }
 
@@ -297,8 +304,7 @@ function serviceRows(space: string, root: string, catalog: readonly ServicePrese
     let needs: string[] = [], several = false;
     try {
       const flags = servicePresetFlags(preset), missing = new Set(presetMissingOptions(preset, {}));
-      for (const [name, fallback] of Object.entries(preset.defaults ?? {})) if ("space" in fallback && fallback.space === "material" && !existsSync(presetMaterialPath(fallback.kind, space, root, false))) missing.add(presetFlagName(name));
-      needs = flags.filter((flag) => missing.has(flag.name)).map((flag) => `--${flag.name}${flag.value ? ` ${flag.value}` : ""}`);
+      needs = [...flags.filter((flag) => missing.has(flag.name)).map((flag) => `--${flag.name}${flag.value ? ` ${flag.value}` : ""}`), ...presetUnfilledDefaults(preset, space, root, {}).map((row) => `--${row.name} ${row.value}`)];
       several = resolveServiceAdapter(preset.adapter, {}, false).declaration.capabilities.multiInstance;
     } catch { needs = ["its options"]; }
     // A preset that runs many instances is added under a name of your own; any other starts by its name.
