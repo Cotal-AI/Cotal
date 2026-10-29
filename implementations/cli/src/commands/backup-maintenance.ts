@@ -6,7 +6,7 @@ import {
   CommandFailure, acquireMaintenanceLock, assertSingleSpaceBroker, assessMaintenanceClaim, assessRestoreClaim, authDir,
   cleanupRestoreFallback, isCommandFailure, isMaintenanceError, oneLine, presentationOf,
   readMaintenanceJournal, recoverStaleMaintenanceClaim, releaseMaintenanceLock, writeResult, type Report,
-  restoreLeftOut, restoreLeftOutReason, restoreRolledBackRuns,
+  restoreLeftOut, restoreLeftOutReason, restoreOtherAccounts, restoreRolledBackRuns,
 } from "@cotal-ai/workspace";
 import { rollbackRestoreWithBroker } from "../lib/controller-restore.js";
 import { heldClaim, restoreNextStep, rolledBackNotes } from "../lib/restore.js";
@@ -34,20 +34,21 @@ export async function backupMaintenance(args: ParsedArgs): Promise<void> {
   const target = { root, space: snapshot.space, attemptId, revision: snapshot.revision };
   const restore = snapshot.restore;
   // A registry-only restore left every other stream out, a full restore of an artifact with no runs
-  // left the runs out, and one of an artifact older than the cut it replaced left out what was written
-  // since, so its previous store holds their only copy: the preview warns, and the delete needs
-  // --discard-history.
+  // left the runs out, one of an artifact older than the cut it replaced left out what was written
+  // since, and any restore left out another account's streams in the store it replaced, so its
+  // previous store holds their only copy: the preview warns, and the delete needs --discard-history.
   const leftOut = mode === "cleanup-fallback" ? restoreLeftOut(snapshot) : undefined;
   const onlyCopy = leftOut ? restore.previousSource?.identity.path : undefined;
   const onlyCopyText = `${restoreLeftOutReason(snapshot)}, so the previous store at ${onlyCopy} holds the only copy of the ${leftOut} it left out`;
   // A restore over a newer cut also names each run it rolled back and the steps open again.
   const rolledBack = onlyCopy ? restoreRolledBackRuns(snapshot) : { runs: [], more: 0 };
+  const otherAccounts = onlyCopy ? restoreOtherAccounts(snapshot) : [];
   // A file in the old store that no Cotal store writes is someone's, so the preview names it and the
   // cleanup refuses until it is moved out.
   const oldStore = mode === "cleanup-fallback" ? restore.previousSource?.identity.path : undefined;
   const foreign = oldStoreForeignEntries(oldStore);
   const retry = `cotal backup cleanup-fallback ${attemptId} --yes${onlyCopy ? " --discard-history" : ""}`;
-  const historyWarnings = onlyCopy ? [{ code: "HISTORY_ONLY_IN_PREVIOUS_STORE", target: { space: snapshot.space, previousStore: onlyCopy, ...(rolledBack.runs.length ? { rolledBackRuns: rolledBack.runs } : {}) }, message: `${onlyCopyText[0]!.toUpperCase()}${onlyCopyText.slice(1)}. Cleanup deletes it only with --discard-history.` }] : [];
+  const historyWarnings = onlyCopy ? [{ code: "HISTORY_ONLY_IN_PREVIOUS_STORE", target: { space: snapshot.space, previousStore: onlyCopy, ...(otherAccounts.length ? { otherAccounts } : {}), ...(rolledBack.runs.length ? { rolledBackRuns: rolledBack.runs } : {}) }, message: `${onlyCopyText[0]!.toUpperCase()}${onlyCopyText.slice(1)}. Cleanup deletes it only with --discard-history.` }] : [];
   const assessment = snapshot.state === "restore-ready" ? assessRestoreClaim(snapshot, { unrecordedOwnersDead: attemptProcessesGone(root) }) : null;
   const claim = snapshot.state === "restore-ready" ? snapshot.claim : undefined;
   const preview = { kind: "backup-maintenance-preview", operation: mode, ...target, state: snapshot.state, preservedSource: snapshot.source.path, restoreTarget: restore.targetPath, previousSource: restore.previousSource?.identity.path ?? null, previousSourceForeignEntries: foreign, restoreMethod: restore.method, selection: restore.selection ?? null, claimAssessment: assessment, claimDeadline: claim?.deadline ?? null, claimHolderPid: claim?.coordinator.pid ?? null, effectAttempted: false, nativeGuardsStillRequired: true };
