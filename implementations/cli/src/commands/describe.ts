@@ -135,9 +135,11 @@ export async function invokeCmd(args: ParsedArgs, commandName = "invoke"): Promi
     // `--timeout` is one deadline for the call: the contract read, a `--name` lookup and the reply spend from it.
     const budgetMs = values.timeout === undefined ? 10_000 : Number(values.timeout);
     const deadlineAt = performance.now() + budgetMs;
+    const longer = budgetMs < 10_000 ? 10_000 : Math.min(budgetMs * 2, 2_147_483_647);
+    const longerTimeout = `rerun it with a longer --timeout and the same other flags, such as ${codeSpan(`cotal ${commandName === "endpoint" ? "endpoint invoke" : "invoke"} ${shellWord(selector)} ${shellWord(command)} --timeout ${longer}`)}`;
     const remainingMs = (): number => {
       const left = Math.floor(deadlineAt - performance.now());
-      if (left <= 0) throw new CommandFailure("failed", "OPERATION_FAILED", `the ${budgetMs}ms --timeout ran out before the command was published`, { target });
+      if (left <= 0) throw new CommandFailure("failed", "OPERATION_FAILED", `the ${budgetMs}ms --timeout ran out before the command was published`, { target, remedy: longerTimeout });
       return left;
     };
     // A contract read that was answered and then ran out of time spent this deadline. An unanswered
@@ -145,14 +147,12 @@ export async function invokeCmd(args: ParsedArgs, commandName = "invoke"): Promi
     // which may be what ran out. `endpointFailure` adds the target to all three.
     const service = await resolveService(nc, space, endpoint, auth.epCaller!, { deadlineMs: budgetMs, commands: [command], ...(instanceId === undefined ? {} : { instanceId }) }).catch((error: unknown) => {
       if (!(error instanceof EpEnvelopeError) || error.code !== "deadline-exceeded" || unansweredRequest(error) && values.timeout === undefined) throw error;
-      const longer = budgetMs < 10_000 ? 10_000 : Math.min(budgetMs * 2, 2_147_483_647);
       if (unansweredRequest(error)) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `no instance of ${endpoint} answered its contract read within the ${budgetMs}ms --timeout, so nothing is serving it, none could be reached, or the deadline was too short`, {
         native: { code: error.code, outcome: error.outcome }, cause: error,
         remedy: `start the service that serves ${endpoint}, then run the command again, or rerun it with a longer --timeout such as \`cotal ${commandName === "endpoint" ? "endpoint invoke" : "invoke"} ${shellWord(selector)} ${shellWord(command)} --timeout ${longer}\`; \`cotal service --space ${shellWord(selection.space)}\` lists this space's services`,
       });
       throw new CommandFailure("failed", "OPERATION_FAILED", `the ${budgetMs}ms ${values.timeout === undefined ? "deadline" : "--timeout"} ran out during the endpoint contract read; no command was published`, {
-        native: { code: error.code, outcome: error.outcome }, cause: error,
-        remedy: `rerun it with a longer --timeout and the same other flags, such as ${codeSpan(`cotal ${commandName === "endpoint" ? "endpoint invoke" : "invoke"} ${shellWord(selector)} ${shellWord(command)} --timeout ${longer}`)}`,
+        native: { code: error.code, outcome: error.outcome }, cause: error, remedy: longerTimeout,
       });
     });
     const declaration = service.commands.get(command);

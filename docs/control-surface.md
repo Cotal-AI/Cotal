@@ -313,7 +313,11 @@ On a static mesh or from an unbound open caller, an untargeted spawn rides class
 persona definition, list, show and spawn tools default to its launching manager. Its generic
 manager describe and self-targeted invoke use that launch address too. An explicit existing
 persona or spawn selector still selects that instance. Static credential grants and user-auth
-issuer selection are unchanged. The library's `describeService` accepts an optional `instanceId`;
+issuer selection are unchanged. For self-stop, persona definition and direct spawn, a static managed
+seat keeps its class-only credential and accepts only its launching manager's attributed describe
+reply. These commands retain that bind on the class rail, so a sibling refuses before effects and
+the existing bounded split repair asks again. An absent launching manager never selects a replacement.
+The library's `describeService` accepts an optional `instanceId`;
 a pinned describe does not read or populate the endpoint-only class cache.
 `cotal spawn <persona> --detach --on <instance>` and `cotal_spawn(instance: "<instance>")`
 pin one instance by its exact id, as `--on` does for `cotal ps`, `cotal models` and every hosted

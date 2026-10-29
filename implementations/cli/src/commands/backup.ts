@@ -139,7 +139,7 @@ function lockHeld(root: string, retry: string): CommandFailure {
     : "another maintenance operation holds this root's maintenance lock";
   return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `backup create is refused: ${who}; nothing was changed`, {
     target: { root, ...(holder ? { holderPid: holder.owner.pid, holderStartedAt: holder.owner.startedAt, ...(holder.operation ? { holderOperation: holder.operation } : {}) } : {}) },
-    remedy: `wait for ${holder ? `process ${holder.owner.pid}` : "that operation"} to finish, then run ${retry} again; \`cotal status\` shows this root's maintenance state`,
+    remedy: `wait for ${holder ? `process ${holder.owner.pid}` : "that operation"} to finish, then run \`${retry}\` again; \`cotal status\` shows this root's maintenance state`,
   });
 }
 

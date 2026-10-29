@@ -7,7 +7,7 @@ import { openPublishDenialWatch } from "./endpoint-publish-denial.js";
 import { EpEnvelopeError, EP_UNBOUND_RESPONDER, EP_UNANSWERED, parseEndpointReply } from "./endpoint-envelope.js";
 import type { CompiledContract } from "./schema-profile.js";
 import { epCall, type EpVerbTarget, type EpAttributedReply } from "./endpoint-call.js";
-import { epRequestSubject, epCallerReplyFilter, epPlaneTokens, parseEpSubject, type EpCaller, type EpRoute } from "./endpoint-subjects.js";
+import { epRequestSubject, epCallerReplyFilter, epPlaneTokens, parseEpSubject, assertLifecycleToken, type EpCaller, type EpRoute } from "./endpoint-subjects.js";
 
 export const dec = new TextDecoder(), enc = new TextEncoder();
 const nonce = (): string => base64url(globalThis.crypto.getRandomValues(new Uint8Array(24)));
@@ -82,9 +82,14 @@ export async function describeEndpoint(
   space: string,
   endpoint: string,
   caller: EpCaller,
-  opts: { deadlineMs?: number; instanceId?: string; signal?: AbortSignal } = {},
+  opts: { deadlineMs?: number; instanceId?: string; classInstanceId?: string; signal?: AbortSignal } = {},
 ): Promise<{ answer: DescribeAnswer; responder: { instanceId: string; epoch: number } }> {
   opts.signal?.throwIfAborted();
+  if (opts.classInstanceId !== undefined) {
+    assertLifecycleToken(opts.classInstanceId, "classInstanceId");
+    if (opts.instanceId !== undefined)
+      throw new EpEnvelopeError("bad-request", "a describe cannot select both an instance route and a class responder");
+  }
   const deadlineMs = opts.deadlineMs ?? 10_000;
   const n = nonce();
   const requestId = nonce();
@@ -108,7 +113,7 @@ export async function describeEndpoint(
   let denialWatch: { denied: Promise<never>; release(): void } | undefined;
   let onAbort: (() => void) | undefined;
   const startedAt = performance.now();
-  const unanswered = (ms: number) => new EpEnvelopeError("deadline-exceeded", `no describe reply from ${endpoint}${opts.instanceId !== undefined ? ` instance ${opts.instanceId}` : ""} within ${ms}ms on the ${rail} rail`, [{ kind: EP_UNANSWERED, endpoint, command: "describe", rail }]);
+  const unanswered = (ms: number) => new EpEnvelopeError("deadline-exceeded", `no describe reply from ${endpoint}${opts.instanceId !== undefined ? ` instance ${opts.instanceId}` : opts.classInstanceId !== undefined ? ` class responder ${opts.classInstanceId}` : ""} within ${ms}ms on the ${rail} rail`, [{ kind: EP_UNANSWERED, endpoint, command: "describe", rail }]);
   const cancelled = new Promise<never>((_, reject) => {
     onAbort = () => reject(opts.signal?.reason?.name === "TimeoutError"
       ? unanswered(Math.round(performance.now() - startedAt))
@@ -138,6 +143,10 @@ export async function describeEndpoint(
           try { reply = parseEndpointReply(JSON.parse(dec.decode(msg.data))); }
           catch { return; } // a malformed body on our nonce is not a usable answer; wait for a valid one
           if (reply.id !== requestId) return;
+          // Static managed seats hold class-only rows. A sibling's attributed reply cannot
+          // select a replacement for their launching manager. The existing read-only retry
+          // stays inside the original deadline and never retries a command here.
+          if (opts.classInstanceId !== undefined && parsed.instanceId !== opts.classInstanceId) return;
           resolve({ body: reply as unknown as Record<string, unknown>, responder: { instanceId: parsed.instanceId, epoch: parsed.epoch } });
         },
       });

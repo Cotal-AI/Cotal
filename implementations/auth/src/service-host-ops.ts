@@ -14,9 +14,10 @@
  * what a later invocation reads. The invocation limit and the original deadline are limits, never
  * waits, fences or proof that an earlier write cannot still land. */
 import { createHash } from "node:crypto";
+import type { MsgRequest } from "@nats-io/jetstream";
 import type { NatsConnection } from "@nats-io/transport-node";
 import {
-  EpEnvelopeError, GOVERN_HEAD, RECORD_KINDS, assertBoundedOwner, assertDerivedOwnerToken, assertLifecycleToken, canonicalJson, contractArtifactCanonicalBytes,
+  EpEnvelopeError, GOVERN_HEAD, RECORD_KINDS, assertBoundedOwner, assertDerivedOwnerToken, assertLifecycleToken, canonicalJson, contractArtifactCanonicalBytes, epAuthBucket,
   contractDigest, contractStoreContext, endpointCapabilitiesWithin, endpointRegistrationBarrier, endpointToken, epgateKey, isContractDigest, mintLifecycleUid,
   parseEndpointCapabilities, parseNativeUidCustody, parseServiceSpec, parseServiceStatus, publishContractArtifact, recordAtomicKey,
   recordSpecKey, recordStatusKey, registerServiceInstance, serviceEndpointActor, serviceGateApprovalLive, serviceWitnessDigest,
@@ -28,7 +29,7 @@ import { SERVICE_HOST_INVOCATION_MS, openAuthorityClient, serviceHostEffectGrant
 import { callerParentRefs } from "./service-caller-ancestry.js";
 import { findActorUnified, findInteractiveActor } from "./ledger.js";
 import { openLifecycleRegistry, registryMaxPayload, registryServerId, registryStores, type LifecycleRegistry } from "./lifecycle-registry.js";
-import { activatedServiceGateRow, approvedServiceGateRow, assertApprovableServiceGate, type ServiceAssignmentBinding, type ServiceGateRows } from "./native-service-gate.js";
+import { activatedServiceGateRow, approvedServiceGateRow, assertApprovableServiceGate, serviceGateRows, type ServiceAssignmentBinding, type ServiceGateRows } from "./native-service-gate.js";
 import { nativeServiceNameAuthority, readNativeServiceName, serviceNameKey, serviceNameRowBytes } from "./native-service-name.js";
 import { genuinePlaneHold, readPlaneClaim, type PlaneClaimHold } from "./plane-claim.js";
 import {
@@ -49,7 +50,7 @@ import {
   type ServiceApprovalResult, type ServiceCallerGrant, type ServiceCallerPolicyView, type ServiceDenyNew, type ServiceHostDebt, type ServiceHostGranter,
   type ServiceHostInputs, type ServiceHostOutcome, type ServiceHostReason, type ServiceHostRequest, type ServiceHostResult, type ServiceNameView, type ServiceOperationKind,
   type ServiceOperationProjection, type ServiceOperationRefusal, type ServiceOperationTerminalView, type ServiceOperationView,
-  type ServiceProposalCloseReason, type ServiceProposalTombstoneView, type ServiceProposalView, type ServiceSelector,
+  type ServiceInstanceView, type ServiceProposalCloseReason, type ServiceProposalTombstoneView, type ServiceProposalView, type ServiceSelector,
 } from "./service-host-contract.js";
 import { readRegistryServiceRoot } from "./service-root-reader.js";
 import {
@@ -782,8 +783,7 @@ export interface ServiceHostOperations {
   readonly accountPublicKey: string;
   /** Internal register admission; the public register route that verifies the owner calls it. */
   register(raw: unknown): Promise<ServiceRegisterResult>;
-  /** decide, revoke, name-bind, caller-grant, caller-revoke, operation-read, proposal-read, name-read
-   *  and the two caller-policy reads; every other operation is `unsupported`. */
+  /** Owner and operator decisions plus the native reads implemented by this host. */
   handle(raw: unknown): Promise<ServiceHostResult>;
   /** One owner's assignment at a selector, from one discovery read of its record and endpoint gate.
    *  Another owner's assignment reads absent. For the authority door, which proved the owner. */
@@ -2072,6 +2072,93 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
   // ---- reads (never write) ------------------------------------------------------------------------
 
   type ReadOut<T> = { state: "present"; record: { value: T; revision: number } } | { state: "absent" } | Arms;
+  type InstancePage = { state: "page"; records: Array<{ value: ServiceInstanceView; revision: number }>; nextCursor: string | null } | Arms;
+
+  /** One assignment's public view. The assignment revision versions the selector binding; the
+   *  endpoint gate, registration stamp, ready status and name are current leader reads. */
+  async function instanceView(ctx: Ctx, a: Assignment): Promise<ServiceInstanceView> {
+    let binding: ServiceAssignmentBinding, epgate: ServiceGateRows;
+    if (a.state === "bound") ({ binding, epgate } = serviceAssignmentGate(discovery.host, a.reservation));
+    else {
+      const proposal = await readProposal(ctx, a.proposalId);
+      if (proposal.state === "absent" || proposal.row.kind !== "service-proposal-terminal" || proposal.row.state !== "approved" || proposal.row.operationId === null)
+        return held("assignment-inconsistent", ctx.step, "the fenced assignment has no retained approval");
+      const operation = await readOp(ctx, proposal.row.operationId), outcome = operation.state === "value" ? outcomeOf(operation.row) : undefined;
+      if (outcome?.state !== "complete") return held("assignment-inconsistent", ctx.step, "the fenced assignment's approval result is not readable");
+      const approval = outcome.result as ServiceApprovalResult;
+      if (approval.assignment.endpoint !== a.endpoint || approval.assignment.instanceId !== a.instanceId || approval.assignment.assignmentDigest !== a.assignmentDigest
+        || approval.approvalDigest !== proposal.row.approvalDigest)
+        return held("assignment-inconsistent", ctx.step, "the fenced assignment disagrees with its retained approval");
+      binding = { accountPublicKey, space, owner: a.owner, endpoint: a.endpoint, instanceId: a.instanceId,
+        lifecycleUid: approval.assignment.lifecycleUid, assignmentDigest: a.assignmentDigest };
+      epgate = serviceGateRows(ctx.h.registry, binding);
+    }
+    const principal = { owner: a.owner, actor: serviceEndpointActor(binding), lifecycleUid: binding.lifecycleUid };
+    const name = await nameOf(ctx, a.endpoint), nameBinding = name?.owner === a.owner ? name : null;
+    const gate = await endpoint(ctx, { epgate });
+    if (gate.kind === "absent" || gate.kind === "pending") {
+      if (a.state === "fenced") return held("assignment-inconsistent", ctx.step, "the fenced assignment has no retired endpoint gate");
+      return { assignmentDigest: a.assignmentDigest, principal, endpoint: a.endpoint, instanceId: a.instanceId,
+      state: a.cancel === null ? "pending-root" : "revoking", rootCredentialId: null, rootExpiresAt: null, approvalDigest: null, approvalExpiresAt: null,
+      activationIssued: false, witness: null, nameBinding };
+    }
+    if (gate.kind === "foreign") return held("assignment-inconsistent", ctx.step, "the endpoint gate belongs to another assignment");
+    const authority = gate.row.serviceAuthority, witness = stampWitness(ctx, binding, gate.row) ?? null;
+    let state: ServiceInstanceView["state"];
+    if (a.state === "fenced") state = "retired";
+    else if (a.cancel !== null || gate.kind === "revoked") state = "revoking";
+    else if (authority.pendingRegistration !== undefined) state = "registering";
+    else if (witness === null) state = "approved-unregistered";
+    else state = await reportedAt(ctx, witness) === undefined ? "registered" : "ready";
+    return { assignmentDigest: a.assignmentDigest, principal, endpoint: a.endpoint, instanceId: a.instanceId, state,
+      rootCredentialId: authority.rootCredentialId, rootExpiresAt: authority.rootExpiresAt, approvalDigest: authority.approvalDigest,
+      approvalExpiresAt: authority.approvalExpiresAt, activationIssued: authority.activationIssued, witness, nameBinding };
+  }
+
+  async function instanceRead(req: Extract<ServiceHostRequest, { operation: "instance-read" }>): Promise<ReadOut<ServiceInstanceView>> {
+    try {
+      const ctx = discoveryCtx("instance-read"), a = await readAssignment(ctx, req.input.endpoint, req.input.instanceId);
+      if (a.state === "absent" || (req.granter.kind === "owner" && a.row.owner !== req.granter.owner)) return { state: "absent" };
+      return { state: "present", record: { value: await instanceView(ctx, a.row), revision: a.revision } };
+    } catch (err) { if (err instanceof Held || err instanceof EpEnvelopeError) return denied("unavailable"); throw err; }
+  }
+
+  const instanceCursor = (ownerFilter: string | null, afterSeq: number) =>
+    Buffer.from(canonicalJson({ v: 1, op: "instance-list", accountPublicKey, space, owner: ownerFilter, afterSeq }), "utf8").toString("base64url");
+
+  async function instanceList(req: Extract<ServiceHostRequest, { operation: "instance-list" }>): Promise<InstancePage> {
+    const requestedOwner = req.input.owner;
+    if (req.granter.kind === "owner" && requestedOwner !== null && requestedOwner !== req.granter.owner)
+      return { state: "page", records: [], nextCursor: null };
+    const ownerFilter = req.granter.kind === "owner" ? req.granter.owner : requestedOwner;
+    let afterSeq = 0;
+    if (req.input.cursor !== null) {
+      try { afterSeq = (JSON.parse(Buffer.from(req.input.cursor, "base64url").toString("utf8")) as Rec)?.afterSeq as number; } catch { return denied("bad-request"); }
+      if (!Number.isSafeInteger(afterSeq) || afterSeq < 0 || instanceCursor(ownerFilter, afterSeq) !== req.input.cursor) return denied("bad-request");
+    }
+    try {
+      const ctx = discoveryCtx("instance-list"), records: Array<{ value: ServiceInstanceView; revision: number }> = [];
+      const bucket = epAuthBucket(space), prefix = `$KV.${bucket}.`, filter = `${prefix}svcasg.*.*`;
+      let seq = afterSeq + 1, lastIncluded = afterSeq;
+      for (;;) {
+        let m;
+        const next = await bounded(ctx, () => ctx.jsm.streams.getMessage(`KV_${bucket}`, { seq, next_by_subj: filter } as unknown as MsgRequest));
+        if (!next.ok) {
+          if ("error" in next && (next.error as { code?: unknown })?.code === 10037) return { state: "page", records, nextCursor: null };
+          return denied("unavailable");
+        }
+        m = next.value;
+        if (!m) return { state: "page", records, nextCursor: null };
+        seq = m.seq + 1;
+        const key = m.subject.slice(prefix.length), current = await read(ctx, key, "assignment", parseServiceAssignmentRecord);
+        if (current.state === "absent" || current.revision !== m.seq || (ownerFilter !== null && current.row.owner !== ownerFilter)) continue;
+        if (records.length === req.input.limit) return { state: "page", records, nextCursor: instanceCursor(ownerFilter, lastIncluded) };
+        records.push({ value: await instanceView(ctx, current.row), revision: current.revision });
+        lastIncluded = m.seq;
+      }
+    } catch (err) { if (err instanceof Held || err instanceof EpEnvelopeError) return denied("unavailable"); throw err; }
+  }
+
   async function operationRead(req: Extract<ServiceHostRequest, { operation: "operation-read" }>): Promise<ReadOut<ServiceOperationView | ServiceOperationTerminalView>> {
     try {
       const ctx = discoveryCtx("operation-read");
@@ -2639,6 +2726,8 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
       case "operation-read": return out(authorized ? await operationRead(req) : denied("permission-denied"));
       case "proposal-read": return out(authorized ? await proposalRead(req) : denied("permission-denied"));
       case "name-read": return out(authorized ? await nameRead(req) : denied("permission-denied"));
+      case "instance-read": return out(authorized ? await instanceRead(req) : denied("permission-denied"));
+      case "instance-list": return out(authorized ? await instanceList(req) : denied("permission-denied"));
       case "caller-grant": return out(await callerGrant(req, authorized));
       case "caller-revoke": return out(await callerRevoke(req, authorized));
       case "caller-policy-read": return out(authorized ? await callerPolicyRead(req) : denied("permission-denied"));

@@ -1561,6 +1561,38 @@ try {
     refusalErr,
   );
 
+  // Real Jcode's OpenAI-compatible route wraps this HTTP refusal in `internal`, with prose
+  // following the JSON body. Keep the provider envelope private and render the requested pin.
+  const wrappedRefusal = spawnHost({
+    cwd: root,
+    env: {
+      ...env,
+      PATH: `${shimDir}:${env.PATH ?? ""}`,
+      FAKE_JCODE_READINESS_REFUSAL: "internal",
+      COTAL_SPACE: "jcodehost",
+      COTAL_NAME: "wrappedrefusal",
+      COTAL_MODEL: "rejected-model-id",
+      COTAL_SERVERS: servers,
+      COTAL_SUBSCRIBE: "team",
+      COTAL_ALLOW_SUBSCRIBE: "team",
+      COTAL_ALLOW_PUBLISH: "team",
+      COTAL_JCODE_HOME: root,
+      COTAL_JCODE_TUI: "0",
+      COTAL_CONTROL_SOCKET: controlSock("wrapped-control.sock"),
+      COTAL_CONTROL_TOKEN: "wrapped-control-token",
+    },
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  let wrappedErr = "";
+  wrappedRefusal.stderr?.on("data", (chunk: Buffer) => (wrappedErr += chunk.toString()));
+  await waitFor("wrapped provider refusal host exit", () => wrappedRefusal.exitCode === null ? undefined : wrappedRefusal.exitCode);
+  const wrappedLog = connectorLog(managedHome("jcodehost", "wrappedrefusal"));
+  check("internal-wrapped provider model refusal names the requested pin and fixed cause without private output",
+    wrappedRefusal.exitCode === 1 &&
+    wrappedLog.includes('fatal: Jcode readiness turn refused model "rejected-model-id" (model_not_found)') &&
+    !wrappedLog.includes("PRIVATE_PROVIDER_CANARY") && !wrappedErr.includes("PRIVATE_PROVIDER_CANARY"),
+    { connectorLog: wrappedLog, stderr: wrappedErr });
+
   // #1216: a long readiness turn used to keep the host alive with no mesh presence at all.
   // The persona is already in the transcript, the kickoff prompt is not, and cotal_dm fails
   // with `no peer`. Bound that turn, and name the pre-join state while it is still running.

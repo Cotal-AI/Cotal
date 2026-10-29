@@ -262,8 +262,8 @@ retains `target.space` without a text header. A refusal for a name no space has,
 history prefix each new row with the mesh name so the context remains visible as
 output scrolls.
 
-On a terminal, a long value, line, warning or failure wraps at spaces, and each continuation line
-starts under the text it continues. A labeled value with a word too wide to fit beside its label,
+On a terminal, a long title, value, line, warning or failure wraps at spaces, and each continuation
+line starts under the text it continues. A labeled value with a word too wide to fit beside its label,
 such as an identity, starts on the line under the label. A word wider than the line, such as a path,
 keeps a line of its own and is never split. A command under Next wraps as one word, so a copied line
 never holds part of one. So does anything a line writes in backticks, from its opening backtick to its
@@ -288,8 +288,11 @@ on the line before it whenever it fits there. A compact `|`, such as the one in
 `<persona.md>|--prompt`, is a break point too: the line ends right after it, the next line starts
 with the following option, and no space is added or lost. A usage too wide for the line breaks after
 its own ` | ` or compact `|` alternatives first. A group too wide for the line, such as
-`(--to/-t <agent> | --channel/-c <channel> | --role/-r <role>)`, takes lines of its own and breaks
-the same way inside, and so does a group nested in it. A group that fits, such as
+`(--to/-t <agent> | --channel/-c <channel> | --role/-r <role>)`, breaks the same way inside, and so
+does a group nested in it. When its first piece opens a bracket, as `(--to/-t <agent> |` does, and
+fits on the line before the group, the group continues that line, so on a narrow terminal the usage
+starts `cotal send (--to/-t <agent> |`. Otherwise the group starts a line, which keeps two words
+such as `cotal stop` together. What follows the group starts a new line. A group that fits, such as
 `[--json|--plain]`, stays whole. Only a single option with its argument that is wider than the line
 breaks at its spaces. An example's command is not wrapped, so each stays one line to copy.
 
@@ -663,6 +666,7 @@ cotal up [--foreground|--detach] [--open] [--space <s>] [--root <prepared-dir>] 
 cotal up --user-auth --idp <url> [--exchange-public-port <n> --exchange-public-url <https://…> [--exchange-trusted-proxy]]
          [--advertised-server <url>] [--agent-provisioning-url <https://…>] [--auth-timeout <seconds>]
 cotal up [--max-payload <bytes>]                      # broker message size limit; caller grants need 2098176
+cotal up --log-file <path> [--logfile-size-limit <bytes> --logfile-max-num <count>]
 cotal up --tls-cert <cert.pem> --tls-key <key.pem>   # serve broker TLS (both, or neither)
 cotal up --restore <dir> [--restore-only registry] [--accept-missing-source]
 cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
@@ -676,6 +680,9 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 | `--root <prepared-dir>` | current folder's workspace | Start the project in `<dir>` instead of the folder you run `up` from. `<dir>` must already have its own `.cotal`, which `space create <space> --root <dir>` or an earlier `up` there made. An absent, inherited or symlinked `.cotal`, or the machine's home store, refuses before startup. Relative file, restore, channels, TLS and store paths remain relative to the invoking folder. The native `up` selection rule still applies after startup. |
 | `--store-dir <dir>` | none | JetStream store directory (recorded; a repair up reuses it). Also accepted with `-f`. A path that is a link refuses `USAGE_INVALID`, naming the directory it points to. A store folder belongs to one space: a folder another space uses refuses `CONFLICT`, naming that space |
 | `--max-file-store <bytes>` | nats-server's dynamic cap | JetStream file storage cap in bytes (a positive integer, no unit suffix). At least 67108865: the space's membership bucket reserves 67108864 (64 MiB), and nats-server creates each of the other streams only while one more byte is free. A smaller value refuses `USAGE_INVALID`, naming 67108865, before anything starts. Without it nats-server sizes the store at start as three quarters of the free space on its filesystem. The cap is fixed at broker start: a running broker cannot change it (`cotal down` first), and a stopped stack's next `up --max-file-store` replaces the recorded cap. A controller stack keeps it across `cotal down`, because it refuses `down --preserve-state` in this release. On a legacy root, `down --preserve-state` keeps it for the resume, and a resume with a different value refuses `CONFLICT`, exit 2. When a broker `up` started cannot create the space's streams for want of storage, the failure names the cap and `cotal up --max-file-store <bytes>`. Once the space holds more than the cap, the broker refuses every write: `send` refuses naming the cap, and `status` shows the store full. Not accepted with `-f` |
+| `--log-file <path>` | none | Use nats-server's native `log_file`. The path is resolved from the invoking folder, created owner-private, recorded with the controller stack and reused by a later bare `up`. It must differ from the private service startup diagnostics log. In a manifest, use `broker.logFile`; a relative path resolves beside the manifest. |
+| `--logfile-size-limit <bytes>` | none | Rotate the native broker log after this positive integer byte count. Requires `--log-file`, or `broker.logFile` in a manifest. The controller records and reuses it after `cotal down`. |
+| `--logfile-max-num <count>` | none | Keep at most this positive integer count of native broker log files, including the active file. Requires `--log-file`, or `broker.logFile` in a manifest. The controller records and reuses it after `cotal down`. |
 | `--auth-timeout <seconds>` | nats-server's 2 seconds | User-auth only: how long the broker waits for the auth callout's answer before it refuses a connect, a whole number from 1 to 60. `up` renders it as `authorization { timeout: <seconds> }` in `.cotal/auth/server.conf` and starts the space's auth service with the same value as its callout deadline, so the two never differ ([callout deadlines](identity-and-auth.md#callout-deadlines)). It is recorded in `.cotal/broker-policy.json`, so a later `up` on the root renders it again without the flag, after `cotal down` or a preserved resume included. It is fixed at broker start: a running broker refuses a different value (`cotal down` first), and a stopped stack's next `up --auth-timeout` replaces the recorded one. Refused `USAGE_INVALID` with `--open`, without user auth, with `-f` or with `--restore`. A resume renders the recorded value and refuses another one |
 | `--max-payload <bytes>` | nats-server's 1048576 | The broker's own message size limit, a positive integer of bytes up to 67108864. `up` renders it as `max_payload: <bytes>` in `.cotal/auth/server.conf` and records it in `.cotal/broker-policy.json`, so a later `up` on the root renders it again without the flag, after `cotal down` or a preserved resume included. [Service endpoint caller grants](embedding.md#native-service-custody-guards) need at least 2098176, so `--max-payload` below that with `--service-endpoints` refuses `USAGE_INVALID` naming the limit, before anything starts. It is fixed at broker start: a running broker refuses a different value (`cotal down` first), and a stopped stack's next `up --max-payload` replaces the recorded one. Refused `USAGE_INVALID` with `--open`, whose broker configuration renders no limit, and with `-f` or `--restore`. A resume renders the recorded value and refuses another one |
 | `--channels <path>` | `.cotal/channels.json` if present | Channel-registry seed file (JSON), in the [channel seed file](#channel-seed-file) format. An explicit path that is missing, unreadable or not JSON refuses `USAGE_INVALID`, naming the file, before anything is written. Content the registry would not take refuses `SCHEMA_INVALID` before anything starts, naming the file and the entry. `up` reads the file once, so a pipe or a FIFO such as `--channels <(…)` works. A default `.cotal/channels.json` that is not a regular file, such as a FIFO, refuses `USAGE_INVALID` the same way |
@@ -758,7 +765,10 @@ runs from another folder refuses `CONFLICT` as well. Its Next names
 the other one in its own folder. A background boot also brings up the control plane (delivery daemon in auth
 mode, then the manager). `--no-manager` is the broker-only mode: it boots
 the broker (and the delivery daemon in auth mode) and starts no manager, so there is no manager
-pidfile to leave stale. A refresh under the flag of a mesh whose manager is live refuses rather
+pidfile to leave stale. Authenticated starts and refreshes warn that no local process re-signs the
+daemon credentials and list their stored expiry times. A manager must renew the same secret store;
+the daemon only adopts re-signed credentials. `cotal doctor auth` inspects their local health.
+A refresh under the flag of a mesh whose manager is live refuses rather
 than keeping or stopping it. Stop a controller stack's manager first with
 `cotal service stop stack-manager --space <s> --yes`. A legacy stack has no command that stops only
 its manager: `cotal down` stops the whole stack, then `cotal up --no-manager --space <s>` starts it
@@ -1336,7 +1346,8 @@ must name this workspace root and a pid that is not running on this host; the ne
 recorded running in this folder and the row must be held by the credential this folder gave its
 previous daemon; `up` prints `shard 0 is still leased to this folder's previous delivery daemon`.
 This holds on a controller stack too, both for an `up` right after the crash and for one after a
-`down` that recorded the members as already stopped, because that `down` keeps the credential.
+`down` that recorded the members as already stopped, because that `down` keeps the credential. A
+legacy bare `down` keeps it too when the stopped daemon's row is still there.
 The wait never writes the lease. A row that is written again while `up` waits has a live holder, so
 the start is refused and `up` exits nonzero. A row held by any other process is refused at once,
 as before.
@@ -1704,7 +1715,12 @@ above does. A record that check leaves unread, such as one behind a link, refuse
 before the first stop and is named once, where reading stopped. No process behind it is read or
 signalled, and no record is removed. A manager or delivery daemon whose pidfile is gone while
 its lease is still live refuses `LIFECYCLE_BLOCKED`, exit 2, before the broker stops. The refusal
-names that daemon and says to stop it, or put its pidfile back, then run `cotal down` again. These are known-blocker
+names that daemon and says to stop it, or put its pidfile back, then run `cotal down` again. A
+delivery daemon gets two seconds to release shard 0 of its lease after the signal and then exits
+anyway, so after it stops, the bare stop reads the lease while the broker still runs. When the row
+still names the credential this folder gave that daemon, or the lease cannot be read, the credential
+stays and `down` prints a `!` line saying so. The next `up` uses it to wait the row out, as after a
+crash, and then starts the new daemon. These are known-blocker
 checks, not a complete live broker-sharing or stop plan; aliases, remote tenants,
 agent impact and process identity remain unproved. These paths do not check full
 whole-stack target ownership, set exclusion, confirmed agent impact or schema
@@ -4352,8 +4368,8 @@ caller grant, therefore needs no `--on`. It fetches only that command's cluster 
 *before*
 publish, and `--timeout` sets one deadline in milliseconds for the whole call (default 10000): the contract read, a
 `--name` lookup and the reply all spend from it, so an endpoint nothing serves is refused when it runs out. When the
-endpoint answers but its contract read runs out of the deadline, the call fails with `OPERATION_FAILED` before any
-command is published, names the deadline, and its Next suggests a longer `--timeout`. `--server` overrides the
+endpoint answers but the deadline runs out before the command is published, during the contract read or after it, the
+call fails with `OPERATION_FAILED`, names the deadline, and its Next suggests a longer `--timeout`. `--server` overrides the
 registry's broker URL and `--creds` names a creds file for an off-registry connection. A targeted command takes `--name <agent>` (resolved to the agent's current principal through
 `inspect`) or `--self`. `--admin` uses the admin instrument credential, whose cross-agent reach rides
 the operator-only `any` authorization mode. Neither command has compile-time knowledge of any
@@ -4769,6 +4785,11 @@ cotal input --name reviewer --text=--verbose          # dash-leading text: use -
 Enter is pressed by default, since a command typed but never submitted has not been delivered.
 `--no-enter` types the text and leaves it sitting at the prompt, which is how you stage a line and
 send it later.
+
+At a Claude selection menu, including `AskUserQuestion`, text input is refused before any bytes
+are written. Pasting a number or an answer there can otherwise confirm the highlighted option
+instead of the requested answer. Use `cotal attach --name <n>` and the menu's arrow keys and Enter.
+This refusal also applies to `--no-enter`.
 
 Nothing comes back but a `Terminal input written` receipt. It names the agent, space and manager,
 the bytes the manager reported writing (counting the trailing carriage return) and whether Enter was
@@ -5881,6 +5902,13 @@ Direct and role sends have no native mention field and refuse that option as `US
 (exit 1), before connecting.
 A direct send may use `--reply-to <message-id>` to identify the message it answers. The sender
 still has no inbox and does not promise thread continuity.
+
+A one-shot sender displays the OS login and host as `<login>@<host>`, not the launching
+seat's name. On a local static-auth mesh, the account signer binds that label to a stable
+`local.cli_<sha256>` principal. Each send still uses a fresh, short-lived connection credential
+with the existing operator permissions. An explicit `--creds` keeps that credential's principal,
+and a signed-in mesh keeps the user's `cli` actor. Open meshes do not authenticate a sender.
+A peer message is not proof of the person's authorization to perform an action.
 
 The receipt names the destination and message identifier without repeating the body. Direct and
 role sends include the broker's stored sequence. Storage does not confirm delivery, acceptance

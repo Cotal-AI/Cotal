@@ -72,6 +72,8 @@ export interface ConnectFlags extends ResolveFlags {
 export interface ConnectOpts {
   instanceId?: string | string[];
   mint?: Pick<MintOpts, "runDriver" | "runMediator" | "runOperator" | "runAdmitter">;
+  /** Stable actor for a one-shot operator sender. Does not replace an explicit credential or user bearer. */
+  operatorActor?: string;
   /** A read must not sweep or prune the local registry as a hidden prelude. */
   readOnly?: boolean;
 }
@@ -724,7 +726,11 @@ export async function connectTargetOrThrow(target: MeshTarget, role: Profile, op
         throw e;
       }
     } else {
-      creds = await mintCreds(target.auth, newIdentity(), role, opts.mint ?? {});
+      // Keep each connection's nkey and lifetime fresh. Only its signed sender principal is stable.
+      const sender = role === "operator" && opts.operatorActor !== undefined
+        ? { principal: { owner: DEV_OWNER, actor: opts.operatorActor } }
+        : {};
+      creds = await mintCreds(target.auth, newIdentity(), role, { ...opts.mint, ...sender });
     }
   }
   // A registered AUTH mesh with no seed is still authenticated. A credless probe would

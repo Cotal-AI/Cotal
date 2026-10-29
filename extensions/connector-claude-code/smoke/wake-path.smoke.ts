@@ -41,7 +41,7 @@ import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { CotalEndpoint, seedChannelRegistry, isReachable, unicastSubject, parsePrincipalKey } from "@cotal-ai/core";
 import { connect as rawConnect } from "@nats-io/transport-node";
-import { MeshAgent, startControlServer, type InboxItem } from "@cotal-ai/connector-core";
+import { MeshAgent, startControlServer, cotalToolSpecs, type InboxItem } from "@cotal-ai/connector-core";
 import { createClaudeHandle, createWakePolicy } from "../src/hooks.js";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
@@ -117,6 +117,7 @@ const wake = createWakePolicy(
 // ---- the hook side: the SHIPPED handler behind the SHIPPED control server ---------------------
 // Wired to the wake policy as `mcp.ts` wires it: a frame that surfaces an item spends its nudge.
 const claude = createClaudeHandle({ surfaced: (items) => wake.surfaced(items) });
+const inboxSpec = cotalToolSpecs(agent.config, "claude-code", undefined, undefined, claude.inboxDeliveryNote).find((s) => s.name === "cotal_inbox")!;
 const controlServer = startControlServer(agent, { path: socketPath, token: TOKEN }, claude.handle, {
   onReply: claude.onReply,
 });
@@ -296,6 +297,19 @@ try {
 
   const beforeRepeat = await fireHook({ hook_event_name: "UserPromptSubmit" });
   check("a committed batch is not surfaced twice", !injected(beforeRepeat).includes("dm-one: wake me"), injected(beforeRepeat));
+
+  // A queued channel notice can accompany context the prompt hook already carried. An empty
+  // inbox must explain that confirmed handoff without replaying the peer's body as new mail.
+  const afterHook = await inboxSpec.run(agent, agent.config, {});
+  check("an empty inbox identifies the latest confirmed hook delivery without duplicating it",
+    afterHook.text.includes("most recent confirmed Claude Code hook handoff carried 1 message") &&
+    afterHook.text.includes("additionalContext (UserPromptSubmit)") &&
+    !afterHook.text.includes("dm-one: wake me"));
+  const freshHooks = createClaudeHandle();
+  check("a fresh hook handler invents no delivery receipt", freshHooks.inboxDeliveryNote() === undefined);
+  const plainInbox = cotalToolSpecs(agent.config).find((s) => s.name === "cotal_inbox")!;
+  check("a connector without hook receipts retains the ordinary empty answer",
+    (await plainInbox.run(agent, agent.config, {})).text === "Inbox empty, no new messages.");
   await fireHook({ hook_event_name: "Stop" });
 
   // ---- 2. THE BUG: a reply the runtime never receives must not consume the message --------------
@@ -311,6 +325,8 @@ try {
     stillPending("dm-two: reply is lost"),
     { inbox: agent.peekInbox("all").map((i) => i.text) },
   );
+  check("an unconfirmed hook reply does not update the delivery receipt",
+    claude.inboxDeliveryNote() === afterHook.text);
   // Un-acked means JetStream is still on the hook for it: the message comes back on its own.
   const nudgesBeforeRedelivery = nudges.length;
   await waitFor("JetStream to redeliver the abandoned DM", () => nudges.length > nudgesBeforeRedelivery, ACK_WAIT_MS * 3);

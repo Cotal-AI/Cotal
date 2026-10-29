@@ -14,6 +14,11 @@
  *       expiry. Only the held row requires a wait message; both repairs exit 0 with the daemon up.
  *   D2  daemon SIGKILLed while something keeps rewriting shard 0 under its credential: the repair
  *       refuses at the first rewrite and starts no daemon.
+ *   R   `down --yes` with the broker stalled from the manager's exit until 2.5s later, past the two
+ *       seconds the delivery daemon gives its release, then `up` 2.5s after, three times. `down`
+ *       exits 0 and keeps the daemon's credential, and `up` waits the row out and binds a new daemon.
+ *       Before the fix `down` dropped the credential and `up` was refused with "a live lease already
+ *       exists".
  *
  * Sandboxes COTAL_HOME, XDG_CONFIG_HOME and the root; picks a free port; kills only pids its own
  * root recorded; tears down with `cotal down`. Needs `nats-server` on PATH.
@@ -59,16 +64,17 @@ const cli = (...args: string[]) => {
 };
 const UP = ["up", "--server", SERVER, "--detach", "--space", SPACE];
 const up = () => cli(...UP);
-/** `up` without blocking this process, so a rewriter in this process keeps running while it waits. */
-const upAsync = () => {
+/** A command without blocking this process, so a rewriter in this process keeps running while it waits. */
+const cliAsync = (...args: string[]) => {
   const options = { cwd: root, env };
-  assertSmokeSandboxDown(sandbox, UP, options);
-  const child = spawn(TSX, [CLI, ...UP], options);
+  assertSmokeSandboxDown(sandbox, args, options);
+  const child = spawn(TSX, [CLI, ...args], options);
   let out = "";
   child.stdout.on("data", (b) => (out += b));
   child.stderr.on("data", (b) => (out += b));
   return new Promise<{ status: number | null; out: string }>((r) => child.on("close", (status) => r({ status, out })));
 };
+const upAsync = () => cliAsync(...UP);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const ctx = { root, space: SPACE };
 const pidOf = (file: string): number | undefined => {
@@ -114,6 +120,38 @@ const settle = () => sleep(35_000);
 try {
   const first = up();
   ok("mesh up with a delivery daemon and a manager", first.status === 0 && alive(pidOf(DELIVERY_PIDFILE)) && alive(pidOf(MANAGER_PIDFILE)), first.out);
+
+  // R
+  for (let round = 1; round <= 3; round++) {
+    const manager = pidOf(MANAGER_PIDFILE)!, daemon = pidOf(DELIVERY_PIDFILE)!, broker = pidOf("nats.pid")!;
+    const stopped = deliveryLeaseHolderFor((await workspaceSecretStore(root).get(deliveryCredsKey(SPACE, { injected: false, root })))!);
+    const down = cliAsync("down", "--yes");
+    // `down` stops the manager, then signals the daemon; the broker stalls in between.
+    while (alive(manager)) await sleep(5);
+    process.kill(broker, "SIGSTOP");
+    const signalledInStall = alive(daemon);
+    await sleep(2_500);
+    process.kill(broker, "SIGCONT");
+    const stop = await down;
+    ok(`R${round} the daemon was still running when the broker stalled`, signalledInStall, { daemon });
+    ok(`R${round} down exits 0 and stops the daemon`, stop.status === 0 && stop.out.includes(`stopped delivery daemon (pid ${daemon})`) && !alive(daemon), stop.out);
+    ok(`R${round} down keeps the credential of a daemon that left its row`, stop.out.replace(/\s+/g, " ").includes("exited without releasing shard 0 of its lease, so its credential stays"), stop.out);
+    await sleep(2_500);
+    const restart = up();
+    const log = readLog(DELIVERY_LOGFILE);
+    ok(`R${round} up right after down exits 0`, restart.status === 0, restart.out);
+    ok(`R${round} no daemon is refused for a live lease`, !/a live lease already exists/.test(`${restart.out}${log}`), `${restart.out}\n${log.slice(-800)}`);
+    const fresh = (await workspaceSecretStore(root).get(deliveryCredsKey(SPACE, { injected: false, root })))!;
+    const nc = await connect({ servers: SERVER, authenticator: credsAuthenticator(new TextEncoder().encode(fresh)), inboxPrefix: `_INBOX_${idFromCreds(fresh)}` });
+    try {
+      const row = await (await new Kvm(nc).open(deliveryBucket(SPACE))).get(leaseKey(0));
+      const lease = row?.operation === "PUT" ? row.json<{ holder: string; ready: boolean }>() : undefined;
+      const replacement = deliveryLeaseHolderFor(fresh);
+      ok(`R${round} the new daemon holds a ready lease`, replacement !== stopped && lease?.holder === replacement && lease.ready === true && alive(pidOf(DELIVERY_PIDFILE)), lease);
+    } finally {
+      await nc.close();
+    }
+  }
 
   // M1
   const deadManager = await crash(MANAGER_PIDFILE, "manager");

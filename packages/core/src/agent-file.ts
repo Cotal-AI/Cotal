@@ -138,6 +138,17 @@ function assertLaunchSelectors(def: Pick<AgentDef, "model" | "variant">, where: 
   }
 }
 
+/** Validate an endpoint **kind** (`card.kind`, `COTAL_KIND`, or an agent file's `kind:`): the
+ *  closed `"agent" | "endpoint"` set ({@link EndpointKind}). The endpoint branches on
+ *  `card.kind === "agent"` for the authed agent's `dm_` incarnation proof before presence
+ *  publishes, so an unvalidated string would skip that proof. */
+export function assertValidKind(kind: unknown, where?: string): EndpointKind {
+  if (kind === "agent" || kind === "endpoint") return kind;
+  throw new Error(
+    `${where ? `${where}: ` : `invalid kind ${JSON.stringify(kind)}: `}"kind" must be "agent" or "endpoint"`,
+  );
+}
+
 /** Load and parse an agent definition file (Markdown + `---` frontmatter). */
 export function loadAgentFile(path: string): AgentDef {
   return parseAgentFileSource(readFileSync(path, "utf8"), path);
@@ -175,9 +186,8 @@ export function parseAgentFileSource(src: string, path: string): AgentDef {
   const model = str("model");
   const variant = str("variant");
   assertLaunchSelectors({ model, variant }, `agent file ${path}`);
-  const kind = str("kind");
-  if (kind && kind !== "agent" && kind !== "endpoint")
-    throw new Error(`agent file ${path}: "kind" must be "agent" or "endpoint"`);
+  const rawKind = str("kind");
+  const kind = rawKind !== undefined ? assertValidKind(rawKind, `agent file ${path}`) : undefined;
 
   // The pre-ACL field names were renamed (channels→subscribe, publish→allowPublish, +allowSubscribe).
   // Fail loud on the old names rather than silently sweeping them into meta and ignoring them —
@@ -251,7 +261,7 @@ export function parseAgentFileSource(src: string, path: string): AgentDef {
   return {
     name,
     role: str("role"),
-    kind: kind as EndpointKind | undefined,
+    kind,
     description: str("description"),
     tags: list("tags"),
     agent: str("agent"),
@@ -278,6 +288,7 @@ export function parseAgentFileSource(src: string, path: string): AgentDef {
 export function saveAgentFile(path: string, def: AgentDef): void {
   if (!def.name) throw new Error('saveAgentFile: "name" is required');
   assertValidName(def.name);
+  if (def.kind !== undefined) assertValidKind(def.kind, "saveAgentFile");
   assertLaunchSelectors(def, "saveAgentFile");
   for (const k of Object.keys(def.meta ?? {}))
     if (MODELED_KEYS.has(k) || RENAMED_KEYS.includes(k))

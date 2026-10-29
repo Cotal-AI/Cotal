@@ -166,14 +166,32 @@ function replacementOf(input: unknown, root: string): StackReplacement {
   return value as unknown as StackReplacement;
 }
 
-export interface StackBrokerInputs { storeDir: string; maxFileStore?: number; host?: string }
+export interface StackBrokerInputs {
+  storeDir: string;
+  maxFileStore?: number;
+  host?: string;
+  logFile?: string;
+  logfileSizeLimit?: number;
+  logfileMaxNum?: number;
+}
 
 function brokerInputs(input: unknown, root: string): StackBrokerInputs {
-  const value = localRecordObject(input, ["storeDir", "maxFileStore", "host"]);
+  const value = localRecordObject(input, ["storeDir", "maxFileStore", "host", "logFile", "logfileSizeLimit", "logfileMaxNum"]);
   if (typeof value.storeDir !== "string" || !isAbsolute(value.storeDir) || value.storeDir.length > 4096 || /[\u0000-\u001f\u007f]/u.test(value.storeDir)) invalid(root);
   if (value.maxFileStore !== undefined && (!Number.isSafeInteger(value.maxFileStore) || Number(value.maxFileStore) <= 0)) invalid(root);
   if (value.host !== undefined && (typeof value.host !== "string" || !value.host || value.host.length > 253 || /[\u0000- \u007f]/u.test(value.host))) invalid(root);
-  return { storeDir: value.storeDir as string, ...(value.maxFileStore !== undefined ? { maxFileStore: Number(value.maxFileStore) } : {}), ...(value.host !== undefined ? { host: value.host as string } : {}) };
+  if (value.logFile !== undefined && (typeof value.logFile !== "string" || !isAbsolute(value.logFile) || !value.logFile.trim() || value.logFile.length > 4096 || /[\u0000-\u001f\u007f]/u.test(value.logFile))) invalid(root);
+  for (const field of ["logfileSizeLimit", "logfileMaxNum"] as const)
+    if (value[field] !== undefined && (!Number.isSafeInteger(value[field]) || Number(value[field]) <= 0)) invalid(root);
+  if (value.logFile === undefined && (value.logfileSizeLimit !== undefined || value.logfileMaxNum !== undefined)) invalid(root);
+  return {
+    storeDir: value.storeDir as string,
+    ...(value.maxFileStore !== undefined ? { maxFileStore: Number(value.maxFileStore) } : {}),
+    ...(value.host !== undefined ? { host: value.host as string } : {}),
+    ...(value.logFile !== undefined ? { logFile: value.logFile as string } : {}),
+    ...(value.logfileSizeLimit !== undefined ? { logfileSizeLimit: Number(value.logfileSizeLimit) } : {}),
+    ...(value.logfileMaxNum !== undefined ? { logfileMaxNum: Number(value.logfileMaxNum) } : {}),
+  };
 }
 
 export interface StackJournalSnapshot { journal: StackJournal; sha256: string }

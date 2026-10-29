@@ -59,7 +59,7 @@
     {
       "name": "hosted MCP tools omit the session environment",
       "file": "extensions/connector-claude-code/src/mcp.ts",
-      "find": "  registerCotalTools(server, agent, config, \"claude-code\", env);",
+      "find": "  registerCotalTools(server, agent, config, \"claude-code\", env, claude.inboxDeliveryNote);",
       "replace": "  registerCotalTools(server, agent, config, \"claude-code\");",
       "expectRed": "AssertionError [ERR_ASSERTION]: hosted_env_feedback_a",
       "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... --filter @cotal-ai/auth... build"
@@ -67,7 +67,7 @@
     {
       "name": "tool renderer drops the explicit environment",
       "file": "extensions/connector-core/src/tools.ts",
-      "find": "  for (const spec of cotalToolSpecs(config, source, env)) {",
+      "find": "  for (const spec of cotalToolSpecs(config, source, env, undefined, emptyInboxNote)) {",
       "replace": "  for (const spec of cotalToolSpecs(config, source)) {",
       "expectRed": "AssertionError [ERR_ASSERTION]: hosted_env_feedback_a",
       "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... --filter @cotal-ai/auth... build"

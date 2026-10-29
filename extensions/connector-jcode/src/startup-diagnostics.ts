@@ -205,10 +205,30 @@ export function jcodeEffortRefusal(
 
 /**
  * Classify only the Jcode SDK's invalid-request response and only when both fields are safely
- * extractable. Everything else retains the existing scrubbed startup diagnostic.
+ * extractable. The OpenAI-compatible adapter wraps HTTP model-not-found in `internal`; recognize
+ * that measured envelope separately and use only the requested pin, never provider prose.
+ * Everything else retains the existing scrubbed startup diagnostic.
  */
-export function classifyReadinessProviderRefusal(error: unknown): JcodeReadinessProviderRefusal | undefined {
-  if (!(error instanceof HarnessError) || error.code !== "invalid_request") return undefined;
+export function classifyReadinessProviderRefusal(error: unknown, requestedModel?: string): JcodeReadinessProviderRefusal | undefined {
+  if (!(error instanceof HarnessError)) return undefined;
+  if (error.code === "internal") {
+    if (
+      !requestedModel || !SAFE_VALUE.test(requestedModel) ||
+      !error.message.startsWith("internal: OpenAI-compatible chat request failed\n") ||
+      !/^  status: 404 Not Found\r?$/m.test(error.message)
+    ) return undefined;
+    const response = /^  response: (\{[^\r\n]*\})\r?$/m.exec(error.message)?.[1];
+    if (!response) return undefined;
+    try {
+      const parsed = JSON.parse(response) as { error?: { code?: unknown; param?: unknown } };
+      if (parsed?.error?.code === "model_not_found" && parsed.error.param === "model")
+        return new JcodeReadinessProviderRefusal("model_not_found", "model", requestedModel);
+    } catch {
+      // An unrecognized provider body remains private.
+    }
+    return undefined;
+  }
+  if (error.code !== "invalid_request") return undefined;
   const body = providerBody(error.message);
   const code = classifiedCode(error.message, body);
   const parameter = rejectedParameter(typeof body?.message === "string" ? body.message : error.message);

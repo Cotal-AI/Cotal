@@ -53,6 +53,7 @@ import { lastKvEntries, liveKvEntries } from "./kv-scan.js";
 import { isConsumerAlreadyExists, isConsumerNotFound, isJetStreamMissing } from "./jetstream-missing.js";
 import { isRestoredConsumer } from "./backup.js";
 import { ARTIFACT_PART_KIND, isArtifactPart } from "./artifact.js";
+import { assertValidKind } from "./agent-file.js";
 import { assertValidName } from "./resolve.js";
 import { EVICT_PRINCIPALS_MAX } from "./evict.js";
 import { createSpaceStreams, dmDurableConfig, dlvDurableConfig, taskDurableConfig, fanoutDurableConfig, inboxReaderConfig, MAX_MSGS_PER_SUBJECT, MANAGER_LEASE_TTL_MS, MANAGER_LEASE_ATTEMPT_MS, TTL_RECONCILE_CANARY_KEY, PRESENCE_STORAGE } from "./streams.js";
@@ -967,6 +968,7 @@ export class CotalEndpoint extends EventEmitter {
     // point every join/spawn path flows through. A role is an address too, refused here before
     // presence can advertise it.
     assertValidName(opts.card.name);
+    assertValidKind(opts.card.kind);
     if (opts.card.role !== undefined) assertValidRole(opts.card.role);
     // Auth mode is EITHER static creds (dev/no-login) OR a user bearer (login → callout) — never both.
     if (opts.bearer) {
@@ -2576,12 +2578,18 @@ export class CotalEndpoint extends EventEmitter {
     assertPartsSerializable(msg.parts);
     // Publish DIRECTLY rather than through publishMsg, the way multicastExpecting does: this path
     // must read the ack, and publishMsg deliberately discards it.
-    const ack = await this.js.publish(
-      unicastSubject(this.space, recip.owner, recip.actor, this.owner, this.actor),
-      JSON.stringify(msg),
-      { msgID: msg.id },
-    );
-    return { msg, ack: { seq: ack.seq, duplicate: ack.duplicate === true } };
+    const subject = unicastSubject(this.space, recip.owner, recip.actor, this.owner, this.actor);
+    try {
+      const ack = await this.js.publish(subject, JSON.stringify(msg), { msgID: msg.id });
+      return { msg, ack: { seq: ack.seq, duplicate: ack.duplicate === true } };
+    } catch (error) {
+      if (error instanceof TimeoutError)
+        throw new Error(
+          `${error.message} publishing to ${JSON.stringify(subject)}. The send outcome is unknown: the broker may have stored the message. Check before resending.`,
+          { cause: error },
+        );
+      throw error;
+    }
   }
 
   /** Anycast: deliver to ANY one instance of a service (role) — queue-group load balancing. */
@@ -2890,7 +2898,7 @@ export class CotalEndpoint extends EventEmitter {
     endpoint: string,
     command: string,
     args?: Record<string, unknown>,
-    opts: { target?: EpVerbTarget; deadlineMs?: number; follow?: boolean; signal?: AbortSignal; instanceId?: string } = {},
+    opts: { target?: EpVerbTarget; deadlineMs?: number; follow?: boolean; signal?: AbortSignal; instanceId?: string; classInstanceId?: string } = {},
   ): Promise<EpAttributedReply> {
     if (!this.nc) throw new Error(this.notLiveMsg());
     const nc = this.nc;
@@ -2898,10 +2906,11 @@ export class CotalEndpoint extends EventEmitter {
     const resolve = async (signal = opts.signal, deadlineMs = opts.deadlineMs ?? 10_000): Promise<ResolvedService> => {
       signal?.throwIfAborted();
       const needed = opts.follow ? [command, "goal-result"] : [command];
-      const full = opts.instanceId === undefined ? this.resolvedServices.get(endpoint) : undefined;
+      const classSelected = opts.instanceId === undefined && opts.classInstanceId === undefined;
+      const full = classSelected ? this.resolvedServices.get(endpoint) : undefined;
       if (full && needed.every((name) => full.commands.has(name))) return full;
       const cacheKey = [...needed].sort().join("\u0000");
-      const commandCache = opts.instanceId === undefined ? this.resolvedCommandServices.get(endpoint) : undefined;
+      const commandCache = classSelected ? this.resolvedCommandServices.get(endpoint) : undefined;
       const cached = commandCache?.get(cacheKey);
       if (cached) return cached;
       const svc = await resolveService(nc, this.space, endpoint, caller, {
@@ -2909,10 +2918,11 @@ export class CotalEndpoint extends EventEmitter {
         signal,
         commands: needed,
         ...(opts.instanceId !== undefined ? { instanceId: opts.instanceId } : {}),
+        ...(opts.classInstanceId !== undefined ? { classInstanceId: opts.classInstanceId } : {}),
       });
       // Pinned resolves never enter either class cache. Narrow unpinned handles stay in their own
       // command-set cache, so they cannot truncate discovery or evict another command's handle.
-      if (opts.instanceId === undefined) {
+      if (classSelected) {
         let byCommand = this.resolvedCommandServices.get(endpoint);
         if (!byCommand) {
           byCommand = new Map();
@@ -4603,7 +4613,7 @@ export class CotalEndpoint extends EventEmitter {
     } catch (error) {
       if (error instanceof TimeoutError)
         throw new Error(
-          `${error.message}. The send outcome is unknown: the broker may have stored the message. Check before resending.`,
+          `${error.message} publishing to ${JSON.stringify(subject)}. The send outcome is unknown: the broker may have stored the message. Check before resending.`,
           { cause: error },
         );
       throw error;

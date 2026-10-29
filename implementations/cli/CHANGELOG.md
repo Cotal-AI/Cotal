@@ -1,5 +1,37 @@
 # @cotal-ai/cli
 
+## 0.121.1
+
+### Patch Changes
+
+- 44ff795: Name `cotal up` in backticks in the broker service schema's log file description.
+- 44ff795: `cotal invoke` and `cotal endpoint invoke` now give a Next when their deadline runs out after the endpoint contract read and before the command is published. That failure, "the <n>ms --timeout ran out before the command was published", had no remedy. It now names the same longer `--timeout` as the failure during the contract read, such as `cotal invoke manager ps --timeout 10000`, and `--json` carries it as `error.remedy`. The code stays `OPERATION_FAILED`.
+- Updated dependencies [44ff795]
+  - @cotal-ai/workspace@0.121.1
+  - @cotal-ai/core@0.121.1
+
+## 0.121.0
+
+### Minor Changes
+
+- 5d01ea1: Add native nats-server file logging and rotation settings, persist them across controller stack restarts, and keep broker log and startup diagnostics files private.
+
+### Patch Changes
+
+- 539997b: Name the retry command in backticks when `backup create` meets another operation's maintenance lock, and the `backup cleanup-fallback` command when `up -f` refuses over an active restore, so the wrapper keeps each command whole.
+- 6d557ce: A help usage whose bracketed group is wider than the terminal starts that group on the line before it when its opening piece fits there, so `cotal help daemon` starts `cotal daemon <setup|status|...` and `cotal help service-endpoint` starts `cotal service-endpoint <approve <proposalId> |`, where `cotal` sat alone on the first usage line. The same applies to `auth`, `run`, `team`, `manager`, `service`, `endpoint`, `channel`, `send` and `watch` at the widths where their group wraps. The `service-endpoint callers` example's note is now "list who may call it", so each `service-endpoint` example fits one 80-column line with its note.
+- Updated dependencies [5d01ea1]
+  - @cotal-ai/core@0.121.0
+  - @cotal-ai/workspace@0.121.0
+
+## 0.120.2
+
+### Patch Changes
+
+- bf946f3: Warn on authenticated `up --no-manager` starts and refreshes that no local process renews the daemon credentials, naming their stored expiry times and the same-store manager requirement.
+- @cotal-ai/core@0.120.2
+  - @cotal-ai/workspace@0.120.2
+
 ## 0.120.1
 
 ### Patch Changes

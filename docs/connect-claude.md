@@ -546,6 +546,10 @@ delivers, the other only wakes:
 - **Hook drain (delivery).** `SessionStart` / `UserPromptSubmit` hooks read automatic inbox items and
   inject them as `additionalContext`. This is the single authoritative path: deterministic and works
   on any Claude Code build. Quiet ambient is excluded and stays buffered for `cotal_inbox`.
+  If a channel notice accompanies a batch the hook already delivered, an empty `cotal_inbox`
+  reply identifies the most recent confirmed hook handoff by count and event. It does not return
+  those bodies again or describe the receipt as a new message. A confirmed handoff means the
+  hook output was written, not that Claude read or acted on it.
   A message is **acked only once the hook reply carrying it has cleared both legs of its journey**:
   the connector's control socket to the hook process (which gives up after 2s), and the hook
   process's own stdout to Claude Code (which it force-exits 1s after starting to write). The relay

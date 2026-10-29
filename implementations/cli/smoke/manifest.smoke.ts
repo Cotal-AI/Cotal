@@ -209,6 +209,26 @@ agents: { a: ./a.md }
 channels: { general: { subscribe: [a] } }
 `, "bind address");
 
+// Canonical workspace manifest schema accepts native broker logging and resolves its relative path.
+{
+  const m = ok(`${HEAD}
+broker:
+  logFile: ./logs/nats.log
+  logfileSizeLimit: 2048
+  logfileMaxNum: 3
+agents: { a: ./a.md }
+channels: { general: { subscribe: [a] } }
+`);
+  assert.equal(m.broker?.logFile, rel("logs/nats.log"));
+  assert.equal(m.broker?.logfileSizeLimit, 2048);
+  assert.equal(m.broker?.logfileMaxNum, 3);
+}
+fails(`${HEAD}
+broker: { logfileSizeLimit: 2048 }
+agents: { a: ./a.md }
+channels: { general: { subscribe: [a] } }
+`, "require broker.logFile");
+
 // inline agent with neither model nor instructions
 fails(`${HEAD}
 agents: { a: { description: just a blurb } }

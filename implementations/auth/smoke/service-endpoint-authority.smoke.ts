@@ -26,6 +26,7 @@ import { authClientSentinelKey, ensurePinnedIdp, loadOwnerSecret, saveAuthServic
 import type { ServiceEndpointHost, ServiceHostRequest, ServiceHostResult } from "../src/service-host-contract.js";
 import { postRemoteServiceAuthority, readRemoteServiceAuthorityInfo } from "../src/service-authority-client.js";
 import { serviceEndpointHostCall } from "../src/service-host-client.js";
+import { mintServiceCallerPayloadObserverCreds } from "../src/service-caller-payload-bootstrap.js";
 import { serviceAuthorityEngineRequestId, serviceHostGranterFor } from "../src/service-endpoint-authority.js";
 import { serviceHostOperationId } from "../src/service-host-ops.js";
 import { authServiceConfiguration, startAuthService, type AuthServiceHandle } from "../src/service.js";
@@ -70,7 +71,7 @@ const cluster = (urn: string, commands: object[]) => {
 const orders = cluster("org.example.orders", [cmd("lookup")]), extra = cluster("org.example.extra", [cmd("count")]);
 const registration = (...cs: Array<ReturnType<typeof cluster>>) => ({ clusterDigests: cs.map((x) => x.closureDigest), contractArtifacts: cs.flatMap((x) => [x.manifest, x.document]) });
 
-const fx = await startHostedAuthFixture("svauth", 1);
+const fx = await startHostedAuthFixture("svauth", 1, { maxPayload: 4 * 1024 * 1024 });
 const [a] = fx.accounts;
 const space = a.space, accountPublicKey = a.accountPublicKey;
 const handles: AuthServiceHandle[] = [];
@@ -85,8 +86,9 @@ try {
   const ownerOf = (sub: string) => deriveOwnerForIdpSubject(ownerSecret, origin, sub);
   const [ownerA, ownerB, ownerC] = ["user-a", "user-b", "user-c"].map(ownerOf);
   // Fixture rows: A signs in from the CLI, B from the web; C has no interactive row.
-  grantActor(stateDir, { owner: ownerA, actor: "cli", scope: [], allowSubscribe: [], allowPublish: [] });
-  grantActor(stateDir, { owner: ownerB, actor: "web", scope: [], allowSubscribe: [], allowPublish: [] });
+  const actorA = grantActor(stateDir, { owner: ownerA, actor: "cli", scope: [], allowSubscribe: [], allowPublish: [] });
+  const webApp = grantActor(stateDir, { owner: ownerA, actor: "web_app", scope: [], allowSubscribe: [], allowPublish: [] });
+  const actorB = grantActor(stateDir, { owner: ownerB, actor: "web", scope: [], allowSubscribe: [], allowPublish: [] });
   process.env.COTAL_HOME = home;
   const signIn = (s: "a" | "b" | "c") => saveIdpSession(home, idpUrl, { token: `session-${s}`, expiresAt: Math.floor(Date.now() / 1000) + 600, sub: `user-${s}` });
   const inputs = { context: { accountPublicKey, lifecycleUid: "life-0" }, space, servers: fx.servers, store: a.store, storeIdentity: a.store.identity,
@@ -106,7 +108,9 @@ try {
   c.check("A1 without serviceEndpoints the route answers 404 on both faces", offGet.status === 404 && offPost.status === 404, { offGet, offPost });
   await off.close();
 
-  const on = await startAuthService({ ...inputs, serviceEndpoints: { startup: { kind: "normal" } } });
+  const on = await startAuthService({ ...inputs, serviceEndpoints: { startup: { kind: "normal" }, callerPayload: {
+    observerCreds: () => mintServiceCallerPayloadObserverCreds({ pub: a.auth.sys.pub, signingSeed: a.auth.sys.signingSeed! }),
+  } } });
   handles.push(on);
   const host = on.serviceEndpointHost!, pub = on.publicUrl!;
   saveAuthServiceInfo(clientDir, { url: on.url, pid: process.pid, cap: on.cap });
@@ -128,6 +132,15 @@ try {
   const engineOp = (owner: string, r: ServiceAuthorityRequest) => serviceHostOperationId(space, serviceAuthorityEngineRequestId({ space, accountPublicKey }, owner, r, "register", r.requestId));
   const idpProof = async (s: "a" | "b" | "c") => ({ kind: "idp" as const, token: await fetchIdpJwt(idpUrl, `session-${s}`) });
   const denied = (r: ServiceAuthorityResult, reason: string) => r.state === "denied" && r.reason === reason;
+  const hostRoute = async (base: string, body: unknown, init: { method?: string; headers?: Record<string, string> } = {}) => {
+    const r = await fetch(`${base}/service-endpoint-host`, { method: init.method ?? "POST", headers: { "content-type": "application/json", ...init.headers },
+      ...(init.method === "GET" ? {} : { body: typeof body === "string" ? body : JSON.stringify(body) }) });
+    const text = await r.text();
+    let json: unknown; try { json = JSON.parse(text); } catch { json = text; }
+    return { status: r.status, body: json as Record<string, any>, cacheControl: r.headers.get("cache-control") };
+  };
+  const tokenA = await fetchIdpJwt(idpUrl, "session-a"), tokenB = await fetchIdpJwt(idpUrl, "session-b");
+  const hostReq = (operation: string, input: object, requestId = rid()) => ({ v: 1, kind: "service-endpoint-host", requestId, operation, input });
 
   // ---- B: info ----
   const info = await cotalAuthProvider.serviceEndpointInfo!({ store: clientStore, dir: clientDir, space });
@@ -267,12 +280,13 @@ try {
   const nameOwned = await viaProvider("b", register(rid()));
   c.check("H1 another owner cannot register under a bound name", denied(nameOwned, "name-owned"), nameOwned);
   const p1c = await propRead(proposalId);
-  const decide = (owner: string, pid: string, revision: number, decision: "approve" | "refuse") => call(host, { v: 1, kind: "service-endpoint-host", requestId: rid(), operation: "decide",
-    granter: { kind: "owner", owner }, input: { proposalId: pid, expectedProposalRevision: revision, expectedNameRevision: nameRevision, decision, callerCeiling: [] } });
+  const decide = (owner: string, pid: string, revision: number, decision: "approve" | "refuse", callerCeiling: object[] = []) => call(host, { v: 1, kind: "service-endpoint-host", requestId: rid(), operation: "decide",
+    granter: { kind: "owner", owner }, input: { proposalId: pid, expectedProposalRevision: revision, expectedNameRevision: nameRevision, decision, callerCeiling } });
   const pOther = await propRead(otherProposal);
   const bApprove = await decide(ownerB, otherProposal, pOther.state === "present" ? pOther.record.revision : 0, "approve");
   c.check("H2 an owner's proposal under another owner's name cannot be approved", bApprove.state === "denied" && bApprove.reason === "name-claim-required", bApprove);
-  const approved = await decide(ownerA, proposalId, p1c.state === "present" ? p1c.record.revision : 0, "approve");
+  const approved = await decide(ownerA, proposalId, p1c.state === "present" ? p1c.record.revision : 0, "approve",
+    [{ endpoint, command: "lookup", instanceId: i1, instanceOnly: true }]);
   const approval = approved.state === "approved" ? approved.approval : undefined;
   c.check("H3 the owner approves through the host", approval !== undefined && approval.proposalId === proposalId, approved);
   const s5 = await viaProvider("a", status(i1, r1.requestId));
@@ -281,6 +295,40 @@ try {
   const replayed = await viaProvider("a", r1);
   c.check("H5 a register replay after approval enters the registration phase and registers, never a credential",
     replayed.state === "registered" && replayed.witness.registrationRequestId === r1.requestId, replayed);
+  const hRead = await hostRoute(pub, { idpToken: tokenA, request: hostReq("instance-read", { endpoint, instanceId: i1 }) });
+  const hMissing = await hostRoute(pub, { idpToken: tokenA, request: hostReq("instance-read", { endpoint, instanceId: rid() }) });
+  const hForeign = await hostRoute(pub, { idpToken: tokenB, request: hostReq("instance-read", { endpoint, instanceId: i1 }) });
+  const hList = await hostRoute(pub, { idpToken: tokenA, request: hostReq("instance-list", { owner: ownerA, cursor: null, limit: 1 }) });
+  const hReadValue = hRead.body.state === "present" ? hRead.body.record.value as { state: string; approvalDigest: string | null } : undefined;
+  const hListValue = hList.body.state === "page" ? hList.body.records[0]?.value as { instanceId: string } | undefined : undefined;
+  c.check("H6 the owner reads its registered instance with approval material and lists it through the host contract",
+    hReadValue?.state === "registered" && hReadValue.approvalDigest === approval?.approvalDigest
+    && hList.body.state === "page" && hList.body.records.length === 1 && hListValue?.instanceId === i1, { hRead, hList });
+  c.check("H7 missing and foreign instance reads reveal the same absence", hMissing.body.state === "absent" && hForeign.body.state === "absent", { hMissing, hForeign });
+  const hGrant = await hostRoute(pub, { idpToken: tokenA, request: hostReq("caller-grant", {
+    grantee: { owner: ownerA, actor: "web_app", lifecycleUid: webApp.lifecycleUid! },
+    service: { endpoint, instanceId: i1, approvalDigest: approval?.approvalDigest },
+    capabilities: [{ endpoint, command: "lookup", instanceId: i1, instanceOnly: true }], expectedPolicyRevision: 0,
+  }) });
+  const hPolicy = await hostRoute(pub, { idpToken: tokenA, request: hostReq("caller-policy-read", {
+    grantee: { owner: ownerA, actor: "web_app", lifecycleUid: webApp.lifecycleUid! }, service: null,
+  }) });
+  c.check("H8 an actual caller grant uses the instance readback and the owner reads its own web_app policy unfiltered",
+    hGrant.body.state === "granted" && hPolicy.body.state === "present" && hPolicy.body.record.value.service === null
+    && hPolicy.body.record.value.grants[0]?.serviceApprovalDigest === hReadValue?.approvalDigest, { hGrant, hPolicy });
+  const pageInstance = rid(), pageRegister = register(pageInstance), pageProposal = await viaProvider("a", pageRegister);
+  const pageProposalId = pageProposal.state === "approval-required" ? pageProposal.proposalId : "";
+  const pageProposalRead = await propRead(pageProposalId);
+  const pageApproval = await decide(ownerA, pageProposalId, pageProposalRead.state === "present" ? pageProposalRead.record.revision : 0, "approve");
+  const pageRegistered = await viaProvider("a", pageRegister);
+  const hPage1 = await hostRoute(pub, { idpToken: tokenA, request: hostReq("instance-list", { owner: ownerA, cursor: null, limit: 1 }) });
+  const hPage2 = await hostRoute(pub, { idpToken: tokenA, request: hostReq("instance-list", { owner: ownerA, cursor: hPage1.body.nextCursor, limit: 1 }) });
+  const hForeignList = await hostRoute(pub, { idpToken: tokenB, request: hostReq("instance-list", { owner: ownerA, cursor: null, limit: 50 }) });
+  const pageIds = [hPage1.body.records?.[0]?.value?.instanceId, hPage2.body.records?.[0]?.value?.instanceId].sort();
+  c.check("H9 owner instance-list paginates native assignments and a foreign owner gets an empty page",
+    pageApproval.state === "approved" && pageRegistered.state === "registered" && typeof hPage1.body.nextCursor === "string" && hPage2.body.nextCursor === null
+    && JSON.stringify(pageIds) === JSON.stringify([i1, pageInstance].sort()) && hForeignList.body.state === "page" && hForeignList.body.records.length === 0,
+    { pageApproval, pageRegistered, hPage1, hPage2, hForeignList });
   const r4 = register(rid());
   const second = await viaProvider("a", r4);
   const p4 = second.state === "approval-required" ? await propRead(second.proposalId) : undefined;
@@ -296,6 +344,10 @@ try {
   const s7 = await viaProvider("a", status(i1, r1.requestId)), after = await viaProvider("a", r1);
   c.check("I2 status reports revoking once deny-new landed", s7.state === "status" && s7.status.state === "revoking" && s7.status.phase === "deny-new-landed", s7);
   c.check("I3 a register replay after revocation is denied approval-revoked", denied(after, "approval-revoked"), after);
+  const retiredRead = await hostRoute(pub, { idpToken: tokenA, request: hostReq("instance-read", { endpoint, instanceId: i1 }) });
+  c.check("I4 the retained assignment reads revoking with its approval digest after deny-new lands",
+    retiredRead.body.state === "present" && retiredRead.body.record.value.state === "revoking"
+    && retiredRead.body.record.value.approvalDigest === approval?.approvalDigest, retiredRead);
 
   // ---- J: the public face end to end, and its refusal budget ----
   const r5 = register(rid());
@@ -336,16 +388,7 @@ try {
   c.check("K6 the approved and revoked history keeps its answer", k7.state === "status" && k7.status.state === "revoking", k7);
 
   // ---- L: the authenticated host route ----
-  const hostRoute = async (base: string, body: unknown, init: { method?: string; headers?: Record<string, string> } = {}) => {
-    const r = await fetch(`${base}/service-endpoint-host`, { method: init.method ?? "POST", headers: { "content-type": "application/json", ...init.headers },
-      ...(init.method === "GET" ? {} : { body: typeof body === "string" ? body : JSON.stringify(body) }) });
-    const text = await r.text();
-    let json: unknown; try { json = JSON.parse(text); } catch { json = text; }
-    return { status: r.status, body: json as Record<string, any>, cacheControl: r.headers.get("cache-control") };
-  };
   const capHeader = { authorization: `Bearer ${on.cap}` };
-  const tokenA = await fetchIdpJwt(idpUrl, "session-a"), tokenB = await fetchIdpJwt(idpUrl, "session-b");
-  const hostReq = (operation: string, input: object, requestId = rid()) => ({ v: 1, kind: "service-endpoint-host", requestId, operation, input });
   const routeBind = hostReq("name-bind", { endpoint: "org.example.route", owner: ownerA, expectedRevision: 0, claimReference: "route-claim" });
   const l1 = await hostRoute(on.url, { idpToken: tokenA, request: routeBind }, { headers: capHeader });
   c.check("L1 the loopback face binds a name under the exchange capability and a signed-in operator", l1.status === 200 && l1.body.state === "bound" && l1.body.binding?.owner === ownerA && l1.cacheControl === "no-store", l1);

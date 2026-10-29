@@ -159,14 +159,18 @@ function drawnPage(body: string): Section[] {
   return sections.filter((section) => section.title !== undefined || section.blocks.length);
 }
 
+/** Each hit drawn as its page is, so a paragraph is one line the report wraps. A hit opens at its own
+ *  heading, which the hit's title names with its page. */
 function searchView(r: DocsSearchResult): Report {
   if (!r.hits.length)
     return { sections: [{ blocks: [{ kind: "lines", lines: [{ text: `no matches for "${r.query}" in the Cotal v${r.version} docs; \`cotal docs\` lists the pages, or search an exact identifier`, tone: "hint" }] }] }] };
   return {
-    sections: r.hits.map((h) => ({
-      title: h.heading,
-      blocks: [{ kind: "lines" as const, lines: [...h.text.split("\n"), { text: `read the full page: \`cotal docs ${h.slug}\``, tone: "hint" as const }] }],
-    })),
+    sections: r.hits.flatMap((h) => {
+      const [first, ...rest] = drawnPage(h.text);
+      const drawn: Section[] = [{ title: h.heading, blocks: first?.blocks ?? [] }, ...rest];
+      const last = drawn.pop()!;
+      return [...drawn, { ...last, blocks: [...last.blocks, { kind: "lines", lines: [{ text: `read the full page: \`cotal docs ${h.slug}\``, tone: "hint" }] }] }];
+    }),
   };
 }
 
