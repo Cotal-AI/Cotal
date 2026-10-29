@@ -169,8 +169,9 @@
  *     there by `COTAL_SMOKE_HOLD_AFTER_BROKER_SIGNAL`. It exits 130 saying `up` and `down` refuse until
  *     `cotal down --abandon-stop <request> --yes`, and offers no `cotal down --yes`. `status` names the
  *     block and leads Next with that command, with the space selected and with another one selected,
- *     where the block shows under `This folder's space` and the note under the heading names `status`
- *     and no `cotal up`. `up` and `down --yes` there refuse naming it; following it records the broker
+ *     where the block shows under `This folder's space`, with no folder note under the heading in its
+ *     text or `--json`, and nothing names `cotal up` for it. `ps` there still heads with the folder note,
+ *     which names `status`. `up` and `down --yes` there refuse naming it; following it records the broker
  *     failed, after which the note names `cotal up` again and the stack cycles.
  *
  * Sandboxes COTAL_HOME and every project root, and signals only pids its own stack records name.
@@ -1775,14 +1776,21 @@ try {
     check(`${space}: with another space selected, status there names the block under this folder's space and leads Next with --abandon-stop`,
       switched.status === 0 && new RegExp(`^This folder's space .* ${space}$`, "m").test(away.stdout) && away.stdout.includes("Stack blocked · ") && awayNext.split("\n")[0]!.includes(`cotal down --abandon-stop ${request} --yes`),
       { request, stdout: away.stdout.slice(-2500) });
-    check(`${space}: its heading names status for that stack, and nothing there offers cotal up for it`,
-      away.stdout.includes(`this folder holds the space "${space}", and the last down of its stack has no recorded outcome; run \`cotal status\` here`) && !away.stdout.includes("restart it with") && awayNext.split("\n").filter((line) => /cotal up\b/.test(line)).every((line) => line.includes(otherRoot)),
+    // The folder note sends to status, which is this report, so status leaves it out.
+    const heldNote = `this folder holds the space "${space}", and the last down of its stack has no recorded outcome; run \`cotal status\` here, which names the step that finishes or settles it`;
+    check(`${space}: with another space selected, status there does not send to cotal status, still names the block under this folder's space with --abandon-stop first in Next, and offers no cotal up for it`,
+      !away.stdout.includes(`this folder holds the space "${space}"`) && !away.stdout.includes("run `cotal status`") && new RegExp(`^This folder's space .* ${space}$`, "m").test(away.stdout) && away.stdout.includes("Stack blocked · ")
+        && awayNext.split("\n")[0]!.includes(`cotal down --abandon-stop ${request} --yes`) && !away.stdout.includes("restart it with") && awayNext.split("\n").filter((line) => /cotal up\b/.test(line)).every((line) => line.includes(otherRoot)),
       { stdout: away.stdout.slice(0, 600), next: awayNext });
     const awayJson = cli(root, "status", "--json");
     const note = awayJson.env?.warnings?.find((warning) => warning.code === "FOLDER_SPACE_NOT_RUNNING");
-    check(`${space}: status --json carries the block and a folder note that offers no cotal up`,
-      (awayJson.env?.result?.folder as { stackBlock?: { route?: { requestId?: string } } | null } | undefined)?.stackBlock?.route?.requestId === request && note !== undefined && !note.message?.includes("cotal up"),
+    check(`${space}: status --json carries the block and, as its text, no folder note`,
+      (awayJson.env?.result?.folder as { stackBlock?: { route?: { requestId?: string } } | null } | undefined)?.stackBlock?.route?.requestId === request && note === undefined,
       { note, folder: awayJson.env?.result?.folder });
+    // ps shows no block, so its folder note still names status.
+    const listed = cli(root, "ps");
+    check(`${space}: ps there still heads with the folder note that names cotal status`,
+      listed.stderr.includes(`Mesh: ${other}\n  ${heldNote}\n`), { ...shown(listed), stdout: listed.stdout.slice(0, 600) });
     const up = cli(root, "up", "--json"), down = cli(root, "down", "--yes", "--json");
     check(`${space}: up and down --yes there refuse LIFECYCLE_BLOCKED naming that --abandon-stop`,
       [up, down].every((run) => run.status === 2 && run.env?.error?.code === "LIFECYCLE_BLOCKED" && Boolean(run.env.error.remedy?.includes(`cotal down --abandon-stop ${request} --yes`))) && gone(space, "stack-broker"),

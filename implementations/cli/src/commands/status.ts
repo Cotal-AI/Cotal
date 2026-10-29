@@ -54,6 +54,7 @@ import {
   capBelowFloor,
   stoppedStack,
   unsettledStackOperation,
+  withdrawOperationNote,
   hasUserAuthState,
   homeCotalDir,
   cachedPreferences,
@@ -450,9 +451,11 @@ export async function status(args: ParsedArgs): Promise<void> {
   const meshes = await readMeshes(cwd, selected, Boolean(values.all), gaps, offline);
   const target = await readSelected(selected, responder, folder, gaps, hints);
   // The note under the heading sends here for this folder's own stack cut off with no recorded
-  // outcome under another selection. A blocked one is named with its block; one that neither blocks
-  // nor stays part way settles from its members' processes when it starts.
+  // outcome under another selection. A blocked one is named with its block under `This folder's
+  // space` and its step first in Next, so that note is left out here, with its --json warning. One
+  // that neither blocks nor stays part way settles from its members' processes when it starts.
   const held = folderStack(folder, target);
+  if (held && folder.stackBlock) withdrawOperationNote("FOLDER_SPACE_NOT_RUNNING", held.space);
   if (held && !folder.stackBlock && !folder.stackUnfinished && unsettledStackOperation(held.root, held.space)) hints.push(`start it with \`cotal up\` in ${held.root}`);
   const services = readOwnedServices(selected, gaps);
   const bootAttempts: StatusResult["bootAttempts"] = blocked ? { root, state: "partial", observedAt: new Date().toISOString(), unsettled: [], additive: [], unreadable: [], elsewhere: [] } : readBootAttempts(root, gaps);

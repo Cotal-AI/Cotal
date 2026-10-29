@@ -233,6 +233,17 @@ export function operationWarnings(): readonly OutputWarning[] {
   return operationScope.getStore()?.warnings ?? [];
 }
 
+/** Withdraw the note this run recorded as a `code` warning about `space`, from its envelope and from
+ *  under its `Mesh:` heading, for a report that says the same in a section of its own. Outside
+ *  {@link runOperation} it does nothing. */
+export function withdrawOperationNote(code: string, space: string): void {
+  const scope = operationScope.getStore(), warnings = scope?.warnings ?? [];
+  const index = warnings.findIndex((w) => w.code === code && (w.target as { space?: unknown } | null)?.space === space);
+  if (!scope || index < 0) return;
+  const [warning] = warnings.splice(index, 1);
+  if (scope.spaceNote?.text === warning!.message) delete scope.spaceNote;
+}
+
 /** `failure` with the operation's recorded space added to its target, so its report begins with
  *  `Mesh: <space>` and its envelope carries `target.space`. A target that already has a `space`
  *  field, or is not an object, is kept as it is. */
