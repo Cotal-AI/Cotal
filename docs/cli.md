@@ -4519,6 +4519,14 @@ stack's manager, `ps` refuses `TARGET_UNAVAILABLE` saying the manager is startin
 to run `cotal ps` again once `up` reports it started. That `up` holds the root's maintenance lock;
 once it has exited, `ps` gives the refusal above.
 
+On any other static or open space, such as a legacy stack started with `--no-manager`, a manager
+registry that lists no live manager makes `ps` refuse `TARGET_UNAVAILABLE`, exit 2: no manager is
+registered, so none was asked. It used to fail `OPERATION_FAILED`, exit 5. `cotal status <agent>`
+and the `attach` picker read the same list and refuse the same way. The refusal does not show that
+no manager process runs, because a manager that is still starting or cannot register is not listed.
+The registry's own answer stays under `error.cause`. A registry that could not be read is reported
+as it was.
+
 A raw `--creds` file is refused by `ps`, `stop`, `attach` and the other control commands, because
 that route mints no endpoint-caller triple; the project folder, or `--space` against the registry
 entry, is the route that does.
