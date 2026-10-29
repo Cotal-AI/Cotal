@@ -6,11 +6,12 @@
  *
  * Cells (auth mode, the default, because only an authed mesh runs a delivery daemon):
  *   U   delivery daemon SIGTERMed once the first `up -d` starts the manager, after the daemon's
- *       readiness wait returned: `up` exits 1 naming the daemon it lost, the daemon gives its lease
- *       back, and the next `up` restores it without a wait.
+ *       readiness wait returned: `up` exits 1 naming the daemon it lost, its Next offers only
+ *       `cotal down`, the daemon gives its lease back, and the next `up` restores it without a wait.
  *   P   broker stalled just after the daemon renews, until the daemon (restored by U with a 2s
- *       broker-gone window) exits on its own with no pidfile and leaves its row: `down --yes` waits
- *       the row out and exits 0. Before the fix it read that row as a live daemon and refused.
+ *       broker-gone window) exits on its own with no pidfile and leaves its row: `down --yes` on an
+ *       80-column terminal waits the row out, wraps the line that says so, and exits 0. Before the
+ *       fix it read that row as a live daemon and refused.
  *   M1  manager SIGKILLed, repair at once: the new manager waits out the dead pid's row, and `up` exits 0.
  *   M2  manager SIGKILLed while something keeps rewriting its row: the new manager refuses at the
  *       first rewrite, and `up` exits 1. A live holder is never waited past.
@@ -40,6 +41,7 @@ import { CotalEndpoint, deliveryBucket, deliveryLeaseHolderFor, idFromCreds, LEA
 import { canonicalLocalProcessPath, deliveryCredsKey, DELIVERY_LOGFILE, DELIVERY_PIDFILE, getSpaceAuth, MANAGER_LOGFILE, MANAGER_PIDFILE, parsePid, workspaceSecretStore } from "@cotal-ai/workspace";
 import { assertSmokeSandboxDown, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
+import { clean, cotalPty } from "./_console-pty.js";
 
 const PORT = await pickFreePort();
 const SERVER = `nats://127.0.0.1:${PORT}`;
@@ -82,6 +84,14 @@ const cliAsync = (...args: string[]) => {
   return new Promise<{ status: number | null; out: string }>((r) => child.on("close", (status) => r({ status, out })));
 };
 const upAsync = () => cliAsync(...UP);
+/** A command on a terminal `cols` columns wide: its exit code and what it printed, escapes removed. */
+const cliOnTerminal = (cols: number, ...args: string[]) => {
+  assertSmokeSandboxDown(sandbox, args, { cwd: root, env });
+  const pty = cotalPty(args, { cwd: root, env: { ...env, TERM: "xterm-256color" } as Record<string, string>, cols });
+  let out = "";
+  pty.onData((d) => (out += d));
+  return new Promise<{ status: number; out: string }>((r) => pty.onExit((e) => r({ status: e.exitCode, out: clean(out).replace(/\r/g, "") })));
+};
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const ctx = { root, space: SPACE };
 const pidOf = (file: string): number | undefined => {
@@ -145,6 +155,7 @@ try {
   const lost = await booting;
   ok("U2 up exits 1 and names the delivery daemon it lost", lost.status === 1 && lost.out.includes(`! control plane degraded: the delivery daemon started for space "${SPACE}" (pid ${lostDaemon}) exited before this boot finished`), lost.out);
   ok("U3 its summary leaves the daemon out", /running in the background: nats-server \(pid \d+\), manager /.test(lost.out), lost.out);
+  ok("U3b its Next offers only cotal down, since spawn needs the control plane it lost", /\nNext\n {2}cotal down +Stop the stack\n/.test(lost.out) && !lost.out.includes("cotal spawn"), lost.out);
   ok("U4 the daemon exited and gave its lease back", await until(() => !alive(lostDaemon), 10_000) && await deliveryRow() === undefined);
   const restoring = cliWith({ COTAL_DELIVERY_BROKER_GONE_MS: "2000" }, ...UP);
   ok("U5 the next up restores the daemon without waiting for a lease", restoring.status === 0 && alive(pidOf(DELIVERY_PIDFILE)) && !/still leased/.test(restoring.out), restoring.out);
@@ -161,8 +172,10 @@ try {
     process.kill(pausedBroker, "SIGCONT");
     ok("P2 the daemon exited on its own during the stall and left no pidfile", exited && pidOf(DELIVERY_PIDFILE) === undefined && readLog(DELIVERY_LOGFILE).includes("exiting (coupled to the broker)"), readLog(DELIVERY_LOGFILE).slice(-800));
     ok("P3 its row is still on the broker", await deliveryRow() !== undefined);
-    const stop = cli("down", "--yes");
-    ok("P4 down waits the row out and exits 0", stop.status === 0 && /delivery daemon has no pidfile; waiting up to \d+s to see whether its lease is renewed/.test(stop.out), stop.out);
+    const stop = await cliOnTerminal(80, "down", "--yes");
+    const waiting = stop.out.split("\n").findIndex((line) => /^\S+ delivery daemon has no pidfile;/.test(line));
+    ok("P4 down waits the row out and exits 0", stop.status === 0 && /delivery daemon has no pidfile; waiting up to \d+s to see whether its lease is renewed/.test(stop.out.replace(/\n {2}/g, " ")), stop.out);
+    ok("P4b on an 80-column terminal the line that says so wraps at a space under its text", waiting >= 0 && [...stop.out.split("\n")[waiting]!].length <= 80 && /^ {2}\S/.test(stop.out.split("\n")[waiting + 1] ?? ""), stop.out);
     ok("P5 and it stopped the broker", await until(() => !alive(pausedBroker), 10_000), stop.out);
   }
 

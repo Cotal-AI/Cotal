@@ -1339,12 +1339,12 @@ refresh, a first `--detach` boot or `up -f`. A first `--detach` boot reports a d
 same way when the daemon was ready and then exited before the boot finished, such as on a SIGTERM
 while the manager started, and leaves it out of the `running in the background` line. The degraded
 message preserves the failure's own recovery instructions. Spawn and retirement require a
-functioning control plane; follow the
+functioning control plane, so its Next offers no `cotal spawn`, only the stop; follow the
 reported next step before retrying. The same happens when another
 `cotal supervise` takes over the manager pidfile before the started process comes up. A legacy
 refresh that finds everything already running reports it like any other start: the `Mesh: <space>`
 heading, the `✓ mesh "<space>" already running` line, and a Next that names the launch and the stop,
-with `cotal spawn` when a manager runs. A controller refresh prints its members under `Controller
+with `cotal spawn` when a manager runs and the control plane is not degraded. A controller refresh prints its members under `Controller
 stack already running`, and its JSON result is a no-op unless it wrote the default persona. Neither
 lists a role the stack's mode does not use, such as auth on a static-auth stack. A first boot starts
 its manager without the restore line.

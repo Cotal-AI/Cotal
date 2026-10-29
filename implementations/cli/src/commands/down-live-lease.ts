@@ -36,7 +36,7 @@ export async function directKvValue<T>(
 
 
 import { awaitLeaseExpiry, dialerFor, deliveryBucket, isReachable, LEASE_EXPIRY_GRACE_MS, LEASE_TTL_MS, leaseRemainingMs, MANAGER_LEASE_KEY, MANAGER_LEASE_TTL_MS, managerBucket, standaloneConnectOpts } from "@cotal-ai/core";
-import { CommandFailure, findMesh, localProcessPath, type LocalProcess, type LocalProcessContext } from "@cotal-ai/workspace";
+import { CommandFailure, findMesh, localProcessPath, stderrLine, type LocalProcess, type LocalProcessContext } from "@cotal-ai/workspace";
 import { connectOrExit, userViewAuthOrExit } from "../lib/connect.js";
 import { c } from "../ui.js";
 
@@ -107,7 +107,7 @@ async function liveUnrecordedDaemonNames(
         const read = () => directKvRow(nc, `KV_${bucket}`, subject);
         const row = await read();
         if (row === undefined) continue;
-        console.error(c.dim(`• ${label} has no pidfile; waiting up to ${Math.ceil((leaseRemainingMs(row.created, ttlMs) + LEASE_EXPIRY_GRACE_MS) / 1000)}s to see whether its lease is renewed`));
+        stderrLine("• ", `${label} has no pidfile; waiting up to ${Math.ceil((leaseRemainingMs(row.created, ttlMs) + LEASE_EXPIRY_GRACE_MS) / 1000)}s to see whether its lease is renewed`, c.dim);
         // A row the broker is late to expire but nobody wrote for a whole TTL has no renewer either.
         if (await awaitLeaseExpiry({ read, ...row, ttlMs }) === "rewritten") return true;
       }
