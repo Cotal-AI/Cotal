@@ -2189,7 +2189,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       const [mark, ...summary] = renderDetachedSummary(detached).split(" ");
       for (const line of hang(`${mark} `, summary.join(" "), terminalWidth(process.stdout))) console.log(c.green(line));
       if (unnamed) console.log(c.dim(`  This folder names no space, so up started the default space "${receiptSpace}"; pass --space <name> to start another`));
-      if (values.__folderNamed) console.log(c.dim(`  This new project's space is named after its folder, "${receiptSpace}"; pass --space <name> to start another`));
+      if (values.__folderNamed) for (const line of hang("  ", `This new project's space is named after its folder, "${receiptSpace}"; pass --space <name> to start another`, terminalWidth(process.stdout))) console.log(c.dim(line));
     }
     if (restored && process.env.COTAL_SMOKE_FAIL_AFTER_RESTORE_LISTENER_READY === "1")
       throw new Error("smoke-injected failure after restore listener readiness");
@@ -4603,11 +4603,11 @@ function recordOurMesh(m: MeshEntry, provenance: Provenance, quietBoot = false):
   removePreparedSpace(m.space); // started: the registration is its record now
   if (!usableCurrent) {
     setCurrent(m.space);
-    if (!quietBoot) console.log(c.dim(selectedOnUp(m.space)));
+    if (!quietBoot) for (const line of hang("", selectedOnUp(m.space), terminalWidth(process.stdout), c.dim)) console.log(line);
     return;
   }
   if (usableCurrent !== m.space && !quietBoot)
-    console.log(c.dim(keptOnUp(m.space, usableCurrent)));
+    for (const line of hang("", keptOnUp(m.space, usableCurrent), terminalWidth(process.stdout), c.dim)) console.log(line);
 }
 
 /** Write the default persona into the root this `up` started or refreshed when it has none, and
@@ -4620,7 +4620,7 @@ function seedPersonaAfterUp(root: string, quiet = false): void {
     console.error(c.yellow(`! the default persona was not written in ${root}: ${(e as Error).message}`));
     return;
   }
-  if (written && !quiet) console.log(c.dim(`  wrote ${written.what}: ${written.path}`));
+  if (written && !quiet) for (const line of hang("  ", `wrote ${written.what}: ${written.path}`, terminalWidth(process.stdout))) console.log(c.dim(line));
 }
 
 async function waitReady(server: string, creds?: string, tls = false, log?: string): Promise<boolean> {
