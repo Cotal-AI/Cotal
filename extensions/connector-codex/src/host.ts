@@ -360,7 +360,7 @@ export async function runCodexHost(): Promise<void> {
   const baseOverrides = configOverrides(model, variant);
   // The cotal_* tools must be LISTENING before the child spawns: the child's config names this
   // URL and codex dials it while starting the thread.
-  const mcp = await startCotalMcp(agent, config, log);
+  const mcp = await startCotalMcp(agent, config, log, () => ready && !driver.stopped ? driver.thread : undefined);
   const driver = new AppServerDriver({
     cwd: process.cwd(),
     codexHome,
@@ -1148,6 +1148,8 @@ export async function runCodexHost(): Promise<void> {
     // was told about is a path nobody finds. Codex paints on the alternate screen, so this line is
     // on screen until it starts and back again the moment it exits.
     const logPath = join(codexHome, "host.log");
+    if (!logSink) process.stderr.write(`[cotal-codex] Managed conversation: ${threadId}. ` +
+      `/new does not replace it. Return to this thread to use Cotal tools.\n`);
     if (!logSink) {
       process.stderr.write(`[cotal-codex] handing the terminal to Codex — host log continues in ${logPath}\n`);
       // Owner-private and never appended through a symlink: the stream writes to this descriptor.
