@@ -89,6 +89,7 @@ import { authorizeRemoteRetainedAgentValidation, completeRemoteRetainedAgentVali
 import { authorizeRemoteManagedAgentEnrollment, authorizeRemoteManagedAgentPrepareRetirement, authorizeRemoteManagedAgentRuntimeCreate, authorizeRemoteManagedAgentRuntimeStatus, type ObserveManagerGate, type RemoteManagedAgentRuntimeDecision } from "./managed-agent-enrollment.js";
 import { authorizeRemoteManagerGoalIndexScan, completeRemoteManagerGoalIndexScan } from "./manager-goal-index.js";
 import { authorizeRemoteManagerAdmin } from "./manager-admin-authorization.js";
+import { authorizeRemoteManagerParticipation } from "./manager-participation-authorization.js";
 import { authorizeRemoteManagerMaintenance, completeRemoteManagerMaintenance } from "./manager-maintenance.js";
 import { validateRetainedManagedAgent } from "./continuity.js";
 import { reconstructRemoteManagerServeGrant, remoteManagerServeGrantFromCluster, remoteManagerSurface, type ManagerCluster } from "./manager-contract.js";
@@ -350,6 +351,9 @@ export interface AuthAuthorityPlane extends CalloutAuthority {
   authorizeManagerAdmin: (args: ManagerAuthorityHolder & {
     request: RemoteManagerAdminAuthorizationRequest;
   }) => Promise<import("@cotal-ai/core").RemoteManagerAdminAuthorizationResult>;
+  authorizeManagerParticipation: (args: ManagerAuthorityHolder & {
+    request: import("@cotal-ai/core").RemoteManagerParticipationAuthorizationRequest;
+  }) => Promise<import("@cotal-ai/core").RemoteManagerParticipationAuthorizationResult>;
   /** First-run admission for one hosted run-start, asked by a registered signerless manager. The
    *  plane authenticates the registration, resolves the caller's issued generation on its own issuer
    *  connection with live sources, and creates the admission through a run-admitter credential
@@ -1814,6 +1818,15 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
         observeManagerGate: observeLegacyManagerGate,
       });
     },
+    authorizeManagerParticipation: async ({ request, ...holder }) => {
+      refuseIfFenced();
+      if (holder.holder === "platform") throw new EpEnvelopeError("permission-denied", "manager participation authorization requires a human owner holder");
+      return authorizeRemoteManagerParticipation({
+        managerOwner: holder.owner, managerScope: holder.scope, proofSecret: dataAccount.signingSeed,
+        space, request, dir: opts.dir, observeManagerGate: observeLegacyManagerGate,
+        readLifecycle: (owner, actor) => readLifecycleHeadForOperation(barrierReg, owner, actor),
+      });
+    },
     submitManagerRun: async ({ request, ...holder }) => {
       refuseIfFenced();
       const { owner } = holder;
@@ -2891,6 +2904,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
       prepareManagedAgentRetirement: plane.prepareManagedAgentRetirement,
       scanManagerGoalIndex: plane.scanManagerGoalIndex,
       authorizeManagerAdmin: plane.authorizeManagerAdmin,
+      authorizeManagerParticipation: plane.authorizeManagerParticipation,
       admitManagerRun: plane.admitManagerRun,
       submitManagerRun: plane.submitManagerRun,
       revokeManagerRun: plane.revokeManagerRun,
@@ -3179,6 +3193,7 @@ interface HandlerCtx {
   prepareManagedAgentRetirement: AuthAuthorityPlane["prepareManagedAgentRetirement"];
   scanManagerGoalIndex: (args: HumanHolder & { request: import("@cotal-ai/core").RemoteManagerGoalIndexScanRequest }) => ReturnType<AuthAuthorityPlane["scanManagerGoalIndex"]>;
   authorizeManagerAdmin: (args: HumanHolder & { request: RemoteManagerAdminAuthorizationRequest }) => ReturnType<AuthAuthorityPlane["authorizeManagerAdmin"]>;
+  authorizeManagerParticipation?: (args: HumanHolder & { request: import("@cotal-ai/core").RemoteManagerParticipationAuthorizationRequest }) => ReturnType<AuthAuthorityPlane["authorizeManagerParticipation"]>;
   admitManagerRun: (args: HumanHolder & { request: unknown }) => ReturnType<AuthAuthorityPlane["admitManagerRun"]>;
   submitManagerRun?: (args: HumanHolder & { request: unknown }) => ReturnType<AuthAuthorityPlane["submitManagerRun"]>;
   revokeManagerRun?: (args: HumanHolder & { request: unknown }) => ReturnType<AuthAuthorityPlane["revokeManagerRun"]>;
@@ -3207,7 +3222,7 @@ interface HandlerCtx {
   retireChatSession: AuthAuthorityPlane["retireChatSession"];
 }
 
-type ManagerAuthorityDispatchCtx = Pick<HandlerCtx, "space" | "dir" | "secrets" | "managerServiceAuthority" | "maintainRemoteManager" | "validateRetainedAgent" | "enrollManagedAgent" | "prepareManagedAgentRetirement" | "scanManagerGoalIndex" | "authorizeManagerAdmin" | "admitManagerRun" | "submitManagerRun" | "issueManagerRunAttempt" | "revokeManagerRun" | "cancelManagerRun">;
+type ManagerAuthorityDispatchCtx = Pick<HandlerCtx, "space" | "dir" | "secrets" | "managerServiceAuthority" | "maintainRemoteManager" | "validateRetainedAgent" | "enrollManagedAgent" | "prepareManagedAgentRetirement" | "scanManagerGoalIndex" | "authorizeManagerAdmin" | "authorizeManagerParticipation" | "admitManagerRun" | "submitManagerRun" | "issueManagerRunAttempt" | "revokeManagerRun" | "cancelManagerRun">;
 
 /** Dispatch one already-authenticated manager-authority body through the fixed host validator. */
 export async function dispatchManagerAuthorityRequest(
@@ -3253,6 +3268,10 @@ export async function dispatchManagerAuthorityRequest(
     return ctx.scanManagerGoalIndex({ owner, scope: row.scope ?? [], request: body.request as import("@cotal-ai/core").RemoteManagerGoalIndexScanRequest });
   if (request.kind === "manager-admin-authorization")
     return ctx.authorizeManagerAdmin({ owner, scope: row.scope ?? [], request: body.request as RemoteManagerAdminAuthorizationRequest });
+  if (request.kind === "manager-participation-authorization")
+    return ctx.authorizeManagerParticipation
+      ? ctx.authorizeManagerParticipation({ owner, scope: row.scope ?? [], request: body.request as import("@cotal-ai/core").RemoteManagerParticipationAuthorizationRequest })
+      : Promise.reject(new EpEnvelopeError("unimplemented", "manager participation authorization is unavailable"));
   if (request.kind === "manager-run-admission")
     return ctx.admitManagerRun({ owner, scope: row.scope ?? [], request: body.request });
   if (request.kind === "manager-run-submission") {

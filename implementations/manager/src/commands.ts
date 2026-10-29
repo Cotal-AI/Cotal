@@ -47,7 +47,7 @@ import { loadLaunchSpec, materializePersona, launchAgentToStartOpts } from "./la
 import { type RuntimeMode } from "./runtime/index.js";
 import { custodyRoot } from "./runtime/custodial-pty.js";
 import { drainSeats } from "@cotal-ai/seat";
-import { currentRegistrationProof, loadOrCreateRemoteManagerIdentity, materialCredential, remoteStandingBundleRenewal, remoteManagedAgentEnrollmentMaterial, remoteManagedAgentEnrollmentRequest, remoteManagedAgentPrepareRetirementRequest, remoteManagedAgentRetirementPrepared, remoteManagerAdminAuthorizationRequest, remoteManagerAdminAuthorized, remoteManagerAuthorityRequest, remoteManagerGoalIndexEntries, remoteManagerGoalIndexScanRequest, remoteManagerMaintenanceRequest, remoteManagerMaintenanceResult, remoteRetainedAgentValidationRequest, retainedAgentAuthority, remoteRunHosting } from "./remote-authority.js";
+import { currentRegistrationProof, loadOrCreateRemoteManagerIdentity, materialCredential, remoteStandingBundleRenewal, remoteManagedAgentEnrollmentMaterial, remoteManagedAgentEnrollmentRequest, remoteManagedAgentPrepareRetirementRequest, remoteManagedAgentRetirementPrepared, remoteManagerAdminAuthorizationRequest, remoteManagerAdminAuthorized, remoteManagerParticipationAuthorizationRequest, remoteManagerParticipationAuthorized, remoteManagerAuthorityRequest, remoteManagerGoalIndexEntries, remoteManagerGoalIndexScanRequest, remoteManagerMaintenanceRequest, remoteManagerMaintenanceResult, remoteRetainedAgentValidationRequest, retainedAgentAuthority, remoteRunHosting } from "./remote-authority.js";
 import { registerRemoteManagerAuthority } from "./remote-register.js";
 import { managerClusterArtifacts } from "./manager-service-contract.js";
 
@@ -563,6 +563,19 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
           );
           const result = await provider.scanRemoteManagerGoalIndex!({ ...providerCall, request });
           return remoteManagerGoalIndexEntries(result, request, material.owner);
+        },
+        authorizeParticipation: async (caller) => {
+          if (!provider.authorizeRemoteManagerParticipation)
+            throw new Error(`the registered auth provider "${provider.name}" does not implement native workflow participation authorization`);
+          const request = remoteManagerParticipationAuthorizationRequest(
+            state,
+            "cli",
+            retainedRegistrationProof,
+            registered.processEpoch,
+            caller,
+          );
+          const result = await provider.authorizeRemoteManagerParticipation({ ...providerCall, request });
+          return remoteManagerParticipationAuthorized(result, request, material.owner);
         },
         authorizeAdmin: async (caller) => {
           const request = remoteManagerAdminAuthorizationRequest(

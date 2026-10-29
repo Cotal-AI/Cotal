@@ -1716,6 +1716,7 @@ const SIM_HANDLER = new URL("./_sim-handler.mjs", import.meta.url).href;
   const sim = new SimHandler(SCRIPT);
   const recording: EffectHandler = {
     now: () => sim.now(),
+    participant: (req, ctx) => sim.participant(req, ctx),
     spawn: (req, ctx) => { events.push("effect:spawn"); return sim.spawn(req, ctx); },
     turn: (req, ctx) => { events.push("effect:turn"); return sim.turn(req, ctx); },
     ask: (req, ctx) => sim.ask(req, ctx),
@@ -1879,6 +1880,7 @@ log("winner", r.index)
     const sim = new SimHandler({});
     return {
       now: () => sim.now(),
+      participant: (req, ctx) => sim.participant(req, ctx),
       spawn: async (req, ctx) => {
         events.push(`enter:${req.persona}`);
         ctx.signal.onCancel(() => events.push(`cancel:${req.persona}`));

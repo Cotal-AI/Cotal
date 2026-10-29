@@ -111,7 +111,7 @@ async function buildSeam(): Promise<{ handler: EffectHandler; journal?: Journal 
     return {
       handler: {
         now: () => request.pins!.startedAt,
-        spawn: stop, turn: stop, ask: stop, checkpoint: stop, sleep: stop,
+        spawn: stop, participant: stop, turn: stop, ask: stop, checkpoint: stop, sleep: stop,
         wait: stop, notify: stop, monitor: stop, openConclave: stop, closeConclave: stop,
       } as unknown as EffectHandler,
       journal: new InspectionJournal(request.runId, request.entries ?? [], request.cutAt),

@@ -430,13 +430,21 @@ Endpoint calls are not selectable through this connection approval contract, whi
 an empty endpoint selection. These conversations do not offer `cotal_describe` or `cotal_invoke`.
 
 A connection is offered the tools its grant can use: `cotal_spawn`, `cotal_persona`,
-`cotal_personas` and `cotal_despawn` with `spawn`, `cotal_run` with `run`, and `cotal_reconnect`.
+`cotal_personas` and `cotal_despawn` with `spawn`, and `cotal_run`,
+`cotal_turn_participate` and `cotal_yield` with `run`, plus `cotal_reconnect`.
 Its manager calls exchange the conversation's own secret for a manager-call view, so they carry only
 its grant and name the manager instance when more than one could answer. A conversation is not a
 managed seat. `cotal_despawn` without a name refuses rather than stopping your app, and
-`cotal_disconnect` retires only that connection. No run turn is addressed to it, because a workflow
-addresses turns to agents it spawned, so `cotal_yield` is not offered. Persona text and model pins
-do not change the conversation's own instructions or model.
+`cotal_disconnect` retires only that connection.
+
+`cotal_turn_participate` opts the exact personal lifecycle into workflow turns for a short lease.
+Call it before starting a program that uses `participant()`, and renew it before expiry or after a
+reconnect. The manager verifies the current foreground grant still has `run`, the exact lifecycle is
+current and live, and the request came from that lifecycle. A hosted program can then bind only the
+conversation that admitted the run. Pending turns arrive through the native session reader. An
+explicit `cotal_yield` reports `done`, `blocked` or `handoff`; ending the native host turn reports
+`done` automatically. Participation never adds stop, attach, input or terminal custody. Persona text
+and model pins do not change the conversation's own instructions or model.
 
 The plugin's ordinary command hooks supply the session and transcript binding. Its native module
 uses that binding without intercepting `classic.*` events, which Claude's built-in security guard

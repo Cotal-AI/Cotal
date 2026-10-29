@@ -51,6 +51,7 @@ export function createRunEffectHost(
 
   return Object.freeze({
     now: () => handler.now(),
+    participant: (req, ctx) => dispatch("participant", req, ctx, (request, current) => handler.participant(request, current)),
     spawn: (req, ctx) => dispatch("spawn", req, ctx, (request, current) => handler.spawn(request, current)),
     turn: (req, ctx) => dispatch("turn", req, ctx, (request, current) => handler.turn(request, current)),
     ask: (req, ctx) => dispatch("ask", req, ctx, (request, current) => handler.ask(request, current)),

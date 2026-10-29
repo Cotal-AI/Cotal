@@ -169,7 +169,7 @@ export const BASELINE_DELIVERY_COMMANDS = Object.freeze(["join", "leave", "list"
  *  broker-denied at its first `turn-pending` and the relay is silently dead for every spawned
  *  agent (measured: the connector reads the denial as "no manager here" and stays quiet). */
 export const BASELINE_LIFECYCLE_ENDPOINT = "manager";
-export const BASELINE_SELF_LIFECYCLE_COMMANDS = Object.freeze(["stop", "turn-pending", "turn-yield", "run-answer"] as const);
+export const BASELINE_SELF_LIFECYCLE_COMMANDS = Object.freeze(["stop", "turn-participate", "turn-pending", "turn-yield", "run-answer"] as const);
 /** `spawn` is CREATION: a virgin spawn has no target lifecycle UID or current mapping yet, so it
  *  CANNOT ride owner mode (§13.2 owner mode resolves a body `{owner, actor, lifecycleUid}` against
  *  the CURRENT mapping — there is nothing to resolve for a not-yet-existing child). It is minted

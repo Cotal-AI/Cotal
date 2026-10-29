@@ -271,6 +271,63 @@ export interface RemoteManagerAdminAuthorizationResult {
   authorized: boolean;
 }
 
+/** Closed pre-run decision for one exact native personal caller lifecycle. */
+export interface RemoteManagerParticipationAuthorizationRequest {
+  v: 1;
+  kind: "manager-participation-authorization";
+  space: string;
+  actor: string;
+  instanceId: string;
+  managerLifecycleUid: string;
+  requestId: string;
+  registrationProof: string;
+  serveEpoch: number;
+  identities: RemoteManagerAuthorityRequest["identities"];
+  caller: { owner: string; actor: string; lifecycleUid: string };
+}
+
+/** Exact request echo plus the host-derived authorization decision. */
+export interface RemoteManagerParticipationAuthorizationResult extends RemoteManagerParticipationAuthorizationRequest {
+  owner: string;
+  authorized: boolean;
+}
+
+/** Build the closed request a registered manager sends for one native workflow participant. */
+export function remoteManagerParticipationAuthorizationRequest(
+  manager: { space: string; instanceId: string; lifecycleUid: string; identities: RemoteManagerAuthorityRequest["identities"] },
+  actor: string,
+  registrationProof: string,
+  serveEpoch: number,
+  caller: RemoteManagerParticipationAuthorizationRequest["caller"],
+  requestId: string,
+): RemoteManagerParticipationAuthorizationRequest {
+  return { v: 1, kind: "manager-participation-authorization", space: manager.space, actor,
+    instanceId: manager.instanceId, managerLifecycleUid: manager.lifecycleUid, requestId,
+    registrationProof, serveEpoch, identities: manager.identities, caller };
+}
+
+/** Bind an untrusted host decision to the exact request before using its boolean. */
+export function remoteManagerParticipationAuthorized(
+  raw: unknown,
+  request: RemoteManagerParticipationAuthorizationRequest,
+  expectedOwner: string,
+): boolean {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw))
+    throw new Error("manager participation authorization returned a non-object result");
+  const result = raw as Record<string, unknown>;
+  const fields = ["v", "kind", "space", "owner", "actor", "instanceId", "managerLifecycleUid", "requestId", "registrationProof", "serveEpoch", "identities", "caller", "authorized"];
+  if (Object.keys(result).sort().join(",") !== fields.sort().join(",") || result.v !== 1 ||
+      result.kind !== request.kind || result.space !== request.space || result.owner !== expectedOwner ||
+      result.actor !== request.actor || result.instanceId !== request.instanceId ||
+      result.managerLifecycleUid !== request.managerLifecycleUid || result.requestId !== request.requestId ||
+      result.registrationProof !== request.registrationProof || result.serveEpoch !== request.serveEpoch ||
+      canonicalJson(result.identities) !== canonicalJson(request.identities) ||
+      canonicalJson(result.caller) !== canonicalJson(request.caller) ||
+      typeof result.authorized !== "boolean")
+    throw new Error("manager participation authorization returned different manager, caller, owner, or boolean coordinates");
+  return result.authorized;
+}
+
 /**
  * Closed wire request for host-owned managed agent enrollment (#1972).
  *

@@ -12,6 +12,7 @@ const FILES = [
   "pins",
   "scopes",
   "sim",
+  "participant",
   "interpret",
   "dispatch-failure",
   "fuel",

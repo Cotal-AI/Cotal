@@ -11,6 +11,8 @@ import type {
   RemoteManagerGoalIndexScanResult,
   RemoteManagerMaintenanceRequest,
   RemoteManagerMaintenanceResult,
+  RemoteManagerParticipationAuthorizationRequest,
+  RemoteManagerParticipationAuthorizationResult,
   RemoteManagedAgentEnrollmentRequest,
   RemoteManagedAgentEnrollmentResult,
   RemoteManagedAgentPrepareRetirementRequest,
@@ -316,6 +318,12 @@ export interface AuthProvider extends Extension {
     dir: string;
     request: RemoteManagerAdminAuthorizationRequest;
   }): Promise<RemoteManagerAdminAuthorizationResult>;
+  /** Fresh host decision for one exact active native personal caller lifecycle. */
+  authorizeRemoteManagerParticipation?(opts: {
+    store: SecretStore;
+    dir: string;
+    request: RemoteManagerParticipationAuthorizationRequest;
+  }): Promise<RemoteManagerParticipationAuthorizationResult>;
   /**
    * Revalidate one retained remote managed agent at the host that owns the current ledger and auth
    * secrets. This is a read-only lifecycle check, never a mint and never a generic provider hook.

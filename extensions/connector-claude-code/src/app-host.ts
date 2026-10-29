@@ -3,7 +3,7 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { basename, isAbsolute } from "node:path";
-import { ApprovalRequired, configFromEnv, eventPlaneArmed, GATEWAY_TOOLS, MeshAgent, NameTaken, type GatewayConnection, type GatewayHost, type HookEvent } from "@cotal-ai/connector-core";
+import { ApprovalRequired, configFromEnv, eventPlaneArmed, GATEWAY_TOOLS, MeshAgent, NameTaken, type GatewayConnection, type GatewayHost, type HookEvent, type NativeTurnParticipationLease } from "@cotal-ai/connector-core";
 import type { ConversationApprovalPending, ConversationGrant, ConversationPending, ConversationSelection } from "@cotal-ai/core";
 import { createClaudeHandle, type ClaudeHooks } from "./hooks.js";
 import { createClaudeEventPlane } from "./claude-events.js";
@@ -25,6 +25,10 @@ export interface AppHostOptions {
   env: NodeJS.ProcessEnv;
   /** Tell the bound native session what the person decided. True when a reader heard it. */
   notify?: (session: string, notice: ApprovalNotice) => boolean;
+  /** Obtain a finite authority-issued lease for this exact personal identity. */
+  participate?: (connection: GatewayConnection) => Promise<NativeTurnParticipationLease>;
+  /** Deliver one pending workflow turn through the bound native session wake feed. */
+  turn?: (session: string, connectionId: string, text: string) => boolean;
   watch?: typeof WATCH;
 }
 
@@ -71,7 +75,7 @@ function grantedTools(grant: ConversationGrant): ReadonlySet<string> {
     ...GATEWAY_TOOLS,
     "cotal_reconnect",
     ...(grant.scope.includes("spawn") ? ["cotal_spawn", "cotal_persona", "cotal_personas", "cotal_despawn"] : []),
-    ...(grant.scope.includes("run") ? ["cotal_run"] : []),
+    ...(grant.scope.includes("run") ? ["cotal_run", "cotal_turn_participate", "cotal_yield"] : []),
   ]);
 }
 
@@ -245,7 +249,7 @@ export function createAppHost(o: AppHostOptions): AppHost {
       if (eventPlaneArmed(config, env)) plane = createClaudeEventPlane(agent, config, env, source);
       // Native ingress owns messages. Lifecycle forwarding has no command-hook reply consumer,
       // so it must not acquire a second delivery hold for context that nobody can receive.
-      const hooks = binding ? createClaudeHandle({ env, events: () => plane?.events, delivery: false }) : undefined;
+      const hooks = binding ? createClaudeHandle({ env, events: () => plane?.events, delivery: false, turns: true }) : undefined;
       hooks?.adoptTranscript(binding!.path, "resume");
       void agent.start();
       for (let waited = 0; !agent.connected && waited < JOIN_MS; waited += 100) await new Promise((resolve) => setTimeout(resolve, 100));
@@ -292,6 +296,7 @@ export function createAppHost(o: AppHostOptions): AppHost {
       return h?.conn;
     },
     close: (_account, id) => close(id),
+    ...(o.participate ? { participate: (_account: string, connection: GatewayConnection) => o.participate!(connection) } : {}),
     sessionFor: (id) => held.get(id)?.session,
     async nativeEvent(event) {
       const session = event.session_id;
@@ -306,8 +311,13 @@ export function createAppHost(o: AppHostOptions): AppHost {
       bindings.set(session, { session, path, event: bound });
       for (const [id, h] of held) {
         if (h.session !== session || h.stopped) continue;
-        // The gateway owns inbox consumption. Lifecycle replies are never injected or acknowledged.
-        await h.hooks?.handle(h.conn.agent, bound);
+        // The gateway owns peer inbox consumption. An authorized run turn is the sole lifecycle
+        // payload: send the hook's exact context through the bound native reader, then feed the
+        // delivery verdict back to the existing two-phase turn correlation.
+        const reply = await h.hooks?.handle(h.conn.agent, bound);
+        const context = (reply?.hookSpecificOutput as { additionalContext?: unknown } | undefined)?.additionalContext;
+        if (event.hook_event_name === "SessionStart" && typeof context === "string")
+          h.hooks?.onReply(bound, o.turn?.(session, id, context) === true);
         if (event.hook_event_name === "SessionEnd") await close(id);
       }
       if (event.hook_event_name === "SessionEnd") {

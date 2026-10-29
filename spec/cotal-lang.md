@@ -397,6 +397,7 @@ journal recorded. `channel()` and `run()` are pure primitives: they build a valu
 
 | Primitive | Signature | Journal kind | Name |
 | --- | --- | --- | --- |
+| `participant` | `participant({ name? }) -> AgentHandle` | `participant` | optional |
 | `spawn` | `spawn(persona, { name?, cwd?, placement?, worktree?, join?, role?, permits?, supervise?, onFork?, events?, runtime? }) -> AgentHandle` | `spawn` | `name`, else the persona |
 | `turn` | `turn(agent, { name, deadline? }) -> { status, to?, note?, at }` | `turn` | required |
 | `ask` | `ask(agent, { name, schema, deadline?, attempts? }) -> record` | `ask` | required |
@@ -443,6 +444,7 @@ implementation's option suite edits each one on a resumed run and requires exact
 
 | Effect | Projection |
 | --- | --- |
+| `participant` | `{}` |
 | `spawn` | `{ persona, model, variant, worktree, role, join: [channel names] }`, plus `cwd` when the option bag carries it and `placement: { endpoint, instanceId }` when the option bag carries it |
 | `turn` | `{ agent, deadline }` |
 | `ask` | `{ agent, schema, deadline, attempts }` |
@@ -471,6 +473,13 @@ keys in a placement record are not projected, and key order never matters (§4.4
 
 ### 6.5 Semantics of each primitive
 
+- **`participant`** resolves the personal native session whose exact issued caller admitted the
+  hosted run and returns a handle with `kind: "participant"`. Program text cannot choose its owner,
+  actor, lifecycle or display name. The host reads those from the immutable run admission, requires
+  one exact live presence row, and journals the owner, actor, lifecycle, name and manager instance.
+  Resume rebuilds the run roster from that entry and never selects a successor lifecycle. It creates
+  no seat, worktree, permits or process custody. A host without an issued personal admission refuses
+  it as L4000; an absent exact live presence is L4002.
 - **`spawn`** brings an agent into the run and returns its handle. `permits` are budgets whose
   violation the handler reports as a catchable failure (L4001); `supervise` is a declarative
   restart policy; `onFork` is `"respawn"` (default) or `"adopt"` (§11.3); `events: false` starts the
