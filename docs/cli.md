@@ -7963,6 +7963,14 @@ does not read or parse whole is reported and the lanes already open are kept. A 
 store connection or the broker closes on its own and the other lanes keep answering; the host
 reopens it, retrying every 5 seconds while it fails.
 
+Multi-space hosts admit at most four lane opens at once. The ready line distinguishes `queued`
+spaces from failed spaces being retried and opens still running past their deadline. A queued
+space's 30-second opening deadline starts only when its open begins. An overdue open keeps its
+slot until it settles; if all four are stuck, queued spaces wait. Each batch rereads the manifest,
+so a queued removal never opens and a changed entry uses its current settings. Failed attempts
+return behind spaces still waiting for a first turn, after the existing 5-second retry wait.
+Authentication and connection budgets are unchanged.
+
 Every multi-space host, this one, the full auth service host below and `deliver --spaces`, writes
 `<manifest>.applied` beside its manifest once a reread has closed the lane of every space the
 manifest does not name. The file holds `{"version": 1, "sha256": "<hex>"}`, the SHA-256 of the
@@ -7973,7 +7981,8 @@ confirm its close holds the acknowledgment back, and the host retries that close
 without opening the space again until it does. So does a space the manifest no longer names whose
 open is still running past its deadline: that open would come up as a lane after you were told
 there was none, so the host names the space and acknowledges nothing until the open has settled and
-any lane it brought up is closed. The other spaces keep opening and serving meanwhile. A host writes
+any lane it brought up is closed. Other spaces keep serving, and queued spaces open as slots become
+available. A host writes
 the file before it opens any lane at startup, and refuses to start when it cannot. A host whose last
 space you remove is stopped instead, since a manifest names at least one space.
 
