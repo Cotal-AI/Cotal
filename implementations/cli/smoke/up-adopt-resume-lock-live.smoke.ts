@@ -54,9 +54,8 @@ const TSX = join(WT, "node_modules", ".bin", "tsx");
 const journalPath = join(root, ".cotal", "maintenance", "v1", "journal.json");
 const resumeDocPath = join(root, ".cotal", "maintenance", "v1", "resume.json");
 const openConfPath = join(root, ".cotal", "server-open.conf");
-// Comfortably above the space's own reservations (the artifact Object Store reserves nothing, so what
-// remains is a 64 MiB membership bucket), so the cap is honored without refusing provisioning. What is
-// under test is that the cap is RENDERED and RESUMED, not where it sits.
+// Roomy enough for the fixture's real writes. What is under test is that the cap is rendered and
+// resumed, not where it sits.
 const CAP = 17179869184;
 // The broker runs from the root, so a store inside it is named relative to it.
 const cappedBlock = `jetstream { store_dir: ${JSON.stringify(join(".cotal", "nats"))}, max_file_store: ${CAP} }`;

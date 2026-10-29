@@ -35,6 +35,7 @@
     "smoke:artifact-contract": { "seconds": 1, "shard": 3 },
     "smoke:artifact-store": { "seconds": 3.8, "shard": 0 },
     "smoke:artifact-store-no-reserve": { "seconds": 8.1, "shard": 3 },
+    "smoke:membership-store-no-reserve": { "seconds": 9, "shard": 2 },
     "smoke:attach-auth": { "seconds": 1.4, "shard": 1 },
     "smoke:attach-auth-root": { "seconds": 20.9, "shard": 1 },
     "smoke:attach-host-persistence": { "seconds": 1.5, "shard": 2 },
