@@ -28,6 +28,9 @@
  *     manager.
  *  3d. In the first root, which still holds the static stack's accounts, an open `up --detach` exits
  *     0 and starts no delivery daemon, and its `down` stops the broker and manager and nothing else.
+ *  3e. Static and open boots then alternate in that root, twice. Every boot exits 0 with a manager
+ *     that answers `ps`, a static boot runs one delivery daemon and an open boot none, and every
+ *     `down` leaves no broker, manager or delivery daemon of the space running.
  *  4. #1307: Ctrl-C on a FOREGROUND `up` follows the same sparing rule as bare `down`. One managed
  *     seat (a shim `claude` on PATH: a real core-dist endpoint that joins presence and stays alive)
  *     runs on the in-process pty runtime, so it cannot outlive the manager: after the SIGINT the
@@ -121,16 +124,17 @@ const portOpenAt = (port: number) =>
     s.setTimeout(400, () => { s.destroy(); res(false); });
   });
 const portOpen = () => portOpenAt(PORT);
-/** The pids of the running delivery daemons for `space`, read from the process table (Linux). */
-const deliveryDaemons = (space: string) => readdirSync("/proc").filter((entry) => /^\d+$/.test(entry)).filter((entry) => {
+/** The pids of the running `daemon` processes for `space`, read from the process table (Linux). */
+const daemonsOf = (daemon: "__daemon-deliver" | "__daemon-manager", space: string) => readdirSync("/proc").filter((entry) => /^\d+$/.test(entry)).filter((entry) => {
   try {
     const argv = readFileSync(`/proc/${entry}/cmdline`, "utf8").split("\0");
-    const at = argv.indexOf("__daemon-deliver");
+    const at = argv.indexOf(daemon);
     return at >= 0 && argv[at + 1] === "--space" && argv[at + 2] === space;
   } catch {
     return false;
   }
 }).map(Number);
+const deliveryDaemons = (space: string) => daemonsOf("__daemon-deliver", space);
 
 const pids: number[] = [];
 let startedOccupant = false;
@@ -531,6 +535,40 @@ try {
   ok("open down stops the broker and manager, names no delivery daemon, and leaves nothing running",
     !openStack.some(alive) && !(await portOpen()) && !/stopped delivery daemon/.test(plain(openDown.stdout)) && (process.platform !== "linux" || deliveryDaemons(SPACE).length === 0),
     { openStack, alive: openStack.filter(alive), out: plain(openDown.stdout) });
+
+  // 3e) Static and open boots alternate in this root. An open boot used to run its manager on the
+  //     static stack's accounts, so it minted credentials into the open account's registry. The next
+  //     open boot could then re-register only by verify-evicting them through a delivery daemon that
+  //     an open mesh does not run: it exited 1 after about a minute and its manager was gone.
+  for (let round = 1; round <= 2; round++) {
+    for (const mode of ["static", "open"] as const) {
+      const cell = `round ${round}, ${mode}`;
+      const boot = cli("up", "--detach", ...(mode === "open" ? ["--open"] : []), "--server", SERVER);
+      ok(`${cell}: up --detach exits 0`, boot.status === 0, plain(boot.stdout + boot.stderr));
+      const deliveryPid = existsSync(record(DELIVERY_PIDFILE)) ? pidOf(recordName(DELIVERY_PIDFILE)) : undefined;
+      const stack = [pidOf("nats.pid"), pidOf(recordName(MANAGER_PIDFILE)), ...(deliveryPid === undefined ? [] : [deliveryPid])];
+      pids.push(...stack);
+      const answers = (r: { status: number | null; stdout: string }) => r.status === 0 && /^\s*No managed agents\.$/m.test(r.stdout);
+      let ps = cli("ps");
+      for (let i = 0; i < 14 && !answers(ps); i++) {
+        await sleep(2000);
+        ps = cli("ps");
+      }
+      ok(`${cell}: the manager answers ps`, answers(ps), plain(ps.stdout + ps.stderr));
+      const delivery = process.platform === "linux" ? deliveryDaemons(SPACE) : undefined;
+      ok(`${cell}: the boot runs ${mode === "static" ? "one delivery daemon" : "no delivery daemon"}`,
+        mode === "static"
+          ? deliveryPid !== undefined && (delivery === undefined || (delivery.length === 1 && delivery[0] === deliveryPid))
+          : deliveryPid === undefined && (delivery === undefined || delivery.length === 0),
+        { deliveryPid, daemons: delivery ?? "not read" });
+      const stop = cli("down");
+      ok(`${cell}: down exits 0`, stop.status === 0, plain(stop.stdout + stop.stderr));
+      for (let i = 0; i < 24 && stack.some(alive); i++) await sleep(500);
+      const left = process.platform === "linux" ? [...deliveryDaemons(SPACE), ...daemonsOf("__daemon-manager", SPACE)] : [];
+      ok(`${cell}: down leaves no broker, manager or delivery daemon of the space running`,
+        !stack.some(alive) && !(await portOpen()) && left.length === 0, { stack, alive: stack.filter(alive), left });
+    }
+  }
 
   // 4) #1417 broker-only boot: `up --detach --no-manager` starts broker + delivery daemon (auth
   //    mode) and NO manager — no manager pidfile, no manager process, no stale slot to leave —

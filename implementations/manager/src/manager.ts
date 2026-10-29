@@ -2065,19 +2065,24 @@ export class Manager {
     // "corrupt or mislabeled". Other tenants' records — split (their account + the shared
     // per-root broker record) or monolith — are not this space's trust and never refuse; an
     // unreadable record on a key that is read refuses loud with the store's own parse message.
+    //
+    // An OPEN mesh mints nothing, also in a root that still holds a static stack's accounts. A
+    // credential minted there joins this instance's family in the open account, and the next open
+    // boot could re-register only by verify-evicting it through a delivery daemon that an open mesh
+    // does not run.
+    const recorded = loadMeshes().find((m) => m.space === this.space);
     if (this.remoteAuthority) {
       if ((await localTrustOfSpace(this.secrets, this.space)).present)
         throw new Error("remote manager-service authority cannot be combined with local space signing trust - choose one authority path, never a fallback");
       this.auth = undefined;
     } else {
-      this.auth = await getSpaceAuth(this.secrets, this.space);
+      this.auth = recorded?.mode === "open" ? undefined : await getSpaceAuth(this.secrets, this.space);
     }
     // USER-MODE detection is FAIL-CLOSED on the on-disk marker (the space-scoped state dir), never
     // on the mutable mesh registry alone — registry drift/tamper must not let a user-auth space
     // take the static self-mint branch. A marker/registry disagreement is a refused start with the
     // repair, not a guess.
     this.userMode = this.remoteAuthority !== undefined || hasUserAuthState(this.workspaceRoot, this.space);
-    const recorded = loadMeshes().find((m) => m.space === this.space);
     if (!this.remoteAuthority && recorded && (recorded.mode === "user") !== this.userMode)
       throw new Error(
         `mesh registry says space "${this.space}" is ${recorded.mode}-mode but the on-disk user-auth marker ${this.userMode ? "exists" : "is missing"} (${userAuthStateDir(this.workspaceRoot, this.space)}) - \`cotal down\` and re-\`cotal up\` this space to reconcile before running a manager`,
