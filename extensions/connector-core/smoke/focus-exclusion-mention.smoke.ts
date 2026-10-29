@@ -84,10 +84,22 @@ try {
   // Controlled historical metadata verifies that history cannot enter the new live fallback.
   const historical = { ...live, id: "historical-control", parts: [{ type: "text" as const, text: "unsafe-historical-mention" }] };
   agent.ep.emit("message", historical, { durable: false, ack: () => {}, nak: () => {} }, { historical: true, kind: "channel" });
-  check("historical mention does not wake or become automatic", !wakes.some(i => i.id === historical.id) && !agent.peekInbox("automatic").some(i => i.id === historical.id));
+  check("historical mention keeps its existing pull-only handling without a wake", !wakes.some(i => i.id === historical.id) && agent.peekInbox("pull-only").some(i => i.id === historical.id) && !agent.peekInbox("automatic").some(i => i.id === historical.id));
   await pub.multicast("healthy-mention", { channel: "team.healthy", mentions: ["otto"] });
   await until("healthy wake", () => wakes.some(i => i.text === "healthy-mention"));
   check("unaffected channel keeps recall-only mention handling", !agent.peekInbox().some(i => i.text === "healthy-mention") && (await agent.recallAmbient()).items.some(i => i.text === "healthy-mention"));
+  // Overflow remains bounded local loss, but a late copy while the channel is still unsafe
+  // must re-enter the same pull lane rather than quiet's ordinary automatic mention lane.
+  await agent.setChannelMode("team.b", "quiet");
+  const overflowed = await pub.multicast("overflowed-unsafe-mention", { channel: "team.b", mentions: ["otto"] });
+  await until("overflow target wake", () => wakes.some(i => i.id === overflowed.id));
+  for (let i = 0; i < 200; i++) await pub.multicast(`later-quiet-${i}`, { channel: "team.a" });
+  await barrier();
+  check("bounded inbox can evict unhandled fallback mention", !agent.peekInbox().some(i => i.id === overflowed.id));
+  agent.ep.emit("message", overflowed, { durable: true, ack: () => {}, nak: () => {} }, { historical: false, kind: "channel" });
+  check("late overflow copy stays pull-only while focus recall is unsafe", agent.peekInbox("pull-only").some(i => i.id === overflowed.id) && !agent.peekInbox("automatic").some(i => i.id === overflowed.id));
+  const overflowReply = await inbox.run(agent, cfg, { scope: "pull-only" });
+  check("late overflow mention is returned with unsafe-channel warning", overflowReply.text.includes("overflowed-unsafe-mention") && overflowReply.text.includes("#team.b") && overflowReply.text.includes("Some earlier chatter"));
   await agent.setAttention("open"); await agent.setAttention("focus");
   const next = await inbox.run(agent, cfg, { scope: "pull-only" });
   check("new focus epoch does not repeat previously returned mention", !next.text.includes("unsafe-normal-mention") && !next.text.includes("unsafe-quiet-mention"));
