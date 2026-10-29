@@ -385,6 +385,12 @@ or at connector launch as a backstop:
 
 ## Security limits
 
+On `SIGINT` or `SIGTERM`, the host shuts down its private Jcode tree and records the received
+signal in its final connector diagnostic. A pty manager includes that diagnostic in the seat's
+reap line, even when graceful teardown exits with code 0. Node.js does not expose the signal's
+sender, so the diagnostic says that attribution is unavailable. A manager-initiated stop is
+identified separately by the manager's stop path.
+
 The private home protects against accidental sharing and stale session selection; it is not an
 OS-user isolation boundary. A hostile process running as the same user can still read that user's
 files or inspect another same-user process. Use OS/container isolation where peers must be mutually
