@@ -629,10 +629,6 @@ const INPUT_OUTPUT_SCHEMA = {
   properties: { name: { type: "string" }, bytes: { type: "integer", minimum: 0 } },
 } as const;
 
-/** `turn-pending`: the SEAT's own pull of the turns accepted against it and not yet terminal,
- *  oldest first. Self-targeted, so the caller triple IS the query; there is no other input.
- *  `notices` says this manager publishes a turn notice whenever the answer changes (SPEC 14.3),
- *  so the seat pulls on notices instead of on a timer. */
 /** `turn-participate`: a native personal connection opts into the existing self turn relay.
  * The caller triple is the requested lifecycle. The manager and its issuing host derive every
  * authority fact and return a finite exact lease. This creates no managed seat and no custody. */
@@ -649,6 +645,10 @@ const TURN_PARTICIPATE_OUTPUT_SCHEMA = {
   },
 } as const;
 
+/** `turn-pending`: the SEAT's own pull of the turns accepted against it and not yet terminal,
+ *  oldest first. Self-targeted, so the caller triple IS the query; there is no other input.
+ *  `notices` says this manager publishes a turn notice whenever the answer changes (SPEC 14.3),
+ *  so the seat pulls on notices instead of on a timer. */
 const TURN_PENDING_OUTPUT_SCHEMA = {
   type: "object", additionalProperties: false, required: ["turns"],
   properties: {

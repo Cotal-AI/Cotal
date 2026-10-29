@@ -141,7 +141,12 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(subcommand)) {
     authority.addMesh({ space, server: servers, root, owner, userAuth: assertUserAuthInfo(prepared.publicAuth),
       sentinelCreds: (await loadCalloutAuth(store, space))!.sentinelCreds, exchange: `${loadAuthServiceInfo(stateDir)!.publicUrl}/exchange`,
       local: { stateDir, provisioner, auth, servers }, selection: true });
-    host = createAppHost({ cotal: () => [process.execPath, ...process.execArgv, import.meta.filename], cwd: root, env: childEnv });
+    host = createAppHost({
+      cotal: () => [process.execPath, ...process.execArgv, import.meta.filename],
+      cwd: root,
+      env: childEnv,
+      participate: (connection) => connection.agent.participateInTurns(),
+    });
     for (const session of ["native-plain", "native-wide", "native-sel", "native-run"]) {
       const path = join(home, `${session}.jsonl`);
       writeFileSync(path, "");
@@ -177,9 +182,9 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(subcommand)) {
     send({ method: "notifications/initialized" });
     const listed = (await rpc("tools/list", {})).result?.tools ?? [];
     const names = listed.map((t) => t.name);
-    check("the native surface registers process, workflow and reconnect tools, and no yield or endpoint calls",
-      ["cotal_spawn", "cotal_despawn", "cotal_run", "cotal_reconnect"].every((n) => names.includes(n)) &&
-      !["cotal_yield", "cotal_describe", "cotal_invoke"].some((n) => names.includes(n)), names);
+    check("the native surface registers process, workflow participation and reconnect tools, and no endpoint calls",
+      ["cotal_spawn", "cotal_despawn", "cotal_run", "cotal_turn_participate", "cotal_yield", "cotal_reconnect"].every((n) => names.includes(n)) &&
+      !["cotal_describe", "cotal_invoke"].some((n) => names.includes(n)), names);
     const connectArgs = Object.keys(listed.find((t) => t.name === "cotal_connect")?.inputSchema?.properties ?? {});
     check("cotal_connect takes channels, role and capabilities, and no endpoints",
       ["channels", "role", "capabilities"].every((k) => connectArgs.includes(k)) && !connectArgs.includes("endpoints"), connectArgs);

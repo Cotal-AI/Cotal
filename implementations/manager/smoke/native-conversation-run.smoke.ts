@@ -41,7 +41,7 @@ async function main(): Promise<void> {
   } = await import("@cotal-ai/core");
   const { connect } = await import("@nats-io/transport-node");
   const { assertUserAuthInfo, authDir, recordMesh, saveSpaceAuth, userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
-  const { cotalAuthProvider, grantActor, loadAuthServiceInfo, loadCalloutAuth, saveIdpSession } = await import("@cotal-ai/auth");
+  const { cotalAuthProvider, findManagedActor, grantActor, grantManagedActor, loadAuthServiceInfo, loadCalloutAuth, revokeManagedActor, saveIdpSession } = await import("@cotal-ai/auth");
   const { startApprovalAuthority, EMPTY } = await import("../../auth/smoke/_approval-authority.js");
   const { NATIVE_GATEWAY_TOOLS, serveGatewayStdio } = await import("@cotal-ai/connector-core");
   const { createAppHost } = await import("../../../extensions/connector-claude-code/src/app-host.js");
@@ -292,6 +292,58 @@ async function main(): Promise<void> {
       return !nativeStatus.isError && nativeStatus.text.includes(": completed,");
     }, `the native turn did not complete: ${nativeStatus.text.slice(0, 600)}`, 60_000);
     check("the native turn completes through the conversation's supported ingress and yield", nativeStatus.text.includes("native-turn"), nativeStatus);
+
+    // A finite lease is not a five-minute authorization cache. The manager must fresh-check the
+    // issuing host immediately before accepting each personal turn goal. Both attenuation and full
+    // revocation happen while the connection and exact lifecycle presence remain live, then the row
+    // is restored only so this same authorized fixture can read the run's terminal proof.
+    const actor = personalConnection!.config.userAuth!.actor;
+    const original = findManagedActor(hostDir, owner, actor);
+    if (!original?.tokenHash || !original.lifecycleUid || !original.custody)
+      throw new Error("the personal connection has no complete managed grant to attenuate");
+    const { grantedAt: _grantedAt, ...grant } = original;
+    const restoreGrant = () => grantManagedActor(hostDir, { ...grant, scope: original.scope, tokenHash: original.tokenHash!, custody: original.custody! });
+    const startAuthorityCut = async (name: string) => {
+      const started = await tool("cotal_run", {
+        connection_id: conn,
+        verb: "start",
+        source: `const session = await participant({ name: "${name}-session" });\nawait sleep("5s", { name: "${name}-delay" });\nawait turn(session, { name: "${name}-turn", deadline: "5s" });`,
+        file: `${name}.cotal.js`,
+      });
+      const id = /run-[0-9a-f]{32}/.exec(started.text)?.[0];
+      check(`${name}: the run starts before current personal authority is removed`, !started.isError && id !== undefined, started);
+      let status = { text: "", isError: true };
+      await until(async () => {
+        status = await tool("cotal_run", { connection_id: conn, verb: "status", runId: id });
+        return !status.isError && status.text.includes(`${name}-session`);
+      }, `${name}: participant() did not settle before authority removal: ${status.text.slice(0, 600)}`, 20_000);
+      return id!;
+    };
+    const authorityRefusal = async (name: string, runId: string) => {
+      await wait(15_000);
+      const internals = manager as unknown as { pendingTurns: Map<string, unknown>; runHosting: { status(args: { runId: string }): Promise<{ status?: { state?: string; failure?: { code?: string; message?: string } } }> } };
+      const pendingCount = internals.pendingTurns.size;
+      const recorded = await internals.runHosting.status({ runId });
+      check(`${name}: current host authority is rechecked before the personal turn goal is accepted`,
+        recorded.status?.state === "failed" && recorded.status.failure?.code === "L4000" &&
+        recorded.status.failure.message?.includes("foreground-authorized with run scope") === true &&
+        pendingCount === 0 && personalConnection!.agent.activeTurnCount() === 0, { recorded, pendingCount });
+      restoreGrant();
+    };
+
+    const lostRunId = await startAuthorityCut("lost-run");
+    grantManagedActor(hostDir, { ...grant, scope: original.scope.filter((s) => s !== "run"), tokenHash: original.tokenHash, custody: original.custody });
+    check("lost-run: the issuing host now denies the exact lifecycle before its turn begins",
+      !(await remoteAuthority.authorizeParticipation!({ owner, actor, lifecycleUid: original.lifecycleUid })));
+    await authorityRefusal("lost-run", lostRunId);
+
+    const renewedAfterAttenuation = await tool("cotal_turn_participate", { connection_id: conn });
+    check("the restored exact grant can renew participation for the revocation case", !renewedAfterAttenuation.isError, renewedAfterAttenuation);
+    const revokedId = await startAuthorityCut("revoked");
+    check("revoked: the exact managed grant is removed while its lease and presence remain live", revokeManagedActor(hostDir, owner, actor));
+    check("revoked: the issuing host now denies the exact lifecycle before its turn begins",
+      !(await remoteAuthority.authorizeParticipation!({ owner, actor, lifecycleUid: original.lifecycleUid })));
+    await authorityRefusal("revoked", revokedId);
 
     await tool("cotal_disconnect", { connection_id: conn });
     console.log(`native-conversation-run: ${checks} checks passed on a real participant Manager; no hosted acceptance claimed`);

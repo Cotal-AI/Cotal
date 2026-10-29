@@ -4286,6 +4286,17 @@ export class Manager {
           const admitted = this.runHosting?.admittedCaller(ctx.subject.caller);
           if (!admitted || admitted.owner !== target.participant.owner || admitted.actor !== target.participant.actor || admitted.uid !== target.participant.uid)
             throw new EpEnvelopeError("permission-denied", "a personal participant may be turned only by the workflow run admitted for that exact owner, actor and lifecycle", undefined, "not-executed");
+          if (!this.remoteAuthority?.authorizeParticipation)
+            throw new EpEnvelopeError("unimplemented", "the issuing host supplies no closed personal participation authorization", undefined, "not-executed");
+          const authorized = await this.remoteAuthority.authorizeParticipation({
+            owner: target.participant.owner,
+            actor: target.participant.actor,
+            lifecycleUid: target.participant.uid,
+          });
+          if (!authorized) {
+            this.participants.delete(participantKey(target.participant.owner, target.participant.actor, target.participant.uid));
+            throw new EpEnvelopeError("permission-denied", "the exact personal lifecycle is no longer foreground-authorized with run scope", undefined, "not-executed");
+          }
         }
         return this.serveTurnGoal(ctx, target);
       }),
