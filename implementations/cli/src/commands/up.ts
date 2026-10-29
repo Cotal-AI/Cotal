@@ -201,6 +201,8 @@ import {
   NATS_PIDFILE,
   UNTRUSTED_CERTIFICATE,
   exitCode,
+  canonicalLocalProcessPath,
+  DELIVERY_LOGFILE,
 } from "@cotal-ai/workspace";
 import { FlagValueRefusal } from "../lib/flag-value-refusal.js";
 import { ensureAuthService, resolveAuthProvider, stopAuthService } from "../lib/auth-proc.js";
@@ -2139,7 +2141,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     refuseStartOverUserState(Boolean(values.open), wantUser, receiptSpace);
     await claimSpace(receiptSpace, server, cotalRoot());
     if (!quietRestore) console.log(`${renderReport({ space: receiptSpace, sections: [] }, "rich", process.stdout)}\n`);
-    const { pid, executable, authService, controlPlane, delivery, manager } = await startMeshDetached({
+    const { pid, executable, authService, controlPlane: planeReturned, delivery, deliveryLost, manager } = await startMeshDetached({
       transport,
       server,
       storeDir: values["store-dir"],
@@ -2169,6 +2171,9 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       ...(quietRestore ? { quietBoot: true } : {}),
     });
     // Transport policy is committed inside startMeshDetached before delivery launch (S5+S9).
+    // A delivery daemon this boot started and lost degrades the control plane, as one that never came up does.
+    if (deliveryLost !== undefined) reportDegradedControlPlane(deliveryLost);
+    const controlPlane = planeReturned && deliveryLost === undefined;
     const detached = { pid, delivery, authService: wantUser && authService, manager, machineHome: canonicalRoot(cotalRoot()) === canonicalRoot(homedir()), ...(values.root ? { root: cotalRoot() } : {}) };
     if (!quietRestore) {
       console.log(c.dim(`Started ${executable}.`));
@@ -3859,9 +3864,13 @@ async function startDeliveryWithBroker(
     // Non-fatal (live messaging is unaffected) — but never SILENT: without the manager,
     // `spawn --detach` / cotal_spawn have no responder, and the operator must hear it here,
     // not as an unexplained "no manager reachable" later.
-    console.error(c.dim(`! control plane degraded: ${(e as Error).message} - durable delivery/manager may be down; spawn and retirement require a functioning control plane`));
+    reportDegradedControlPlane((e as Error).message);
     return undefined;
   }
+}
+
+function reportDegradedControlPlane(why: string): void {
+  console.error(c.dim(`! control plane degraded: ${why} - durable delivery/manager may be down; spawn and retirement require a functioning control plane`));
 }
 
 /**
@@ -4190,7 +4199,7 @@ export async function startMeshDetached(
   // The `= {}` default is gone with the optional transport: an options object that can be omitted
   // entirely cannot carry a mandatory decision.
   opts: DetachOpts,
-): Promise<{ server: string; pid: number; executable: string; controlPlane: boolean; authService: boolean; deliveryResponderBound: boolean | null; delivery: boolean; manager: boolean }> {
+): Promise<{ server: string; pid: number; executable: string; controlPlane: boolean; authService: boolean; deliveryResponderBound: boolean | null; delivery: boolean; deliveryLost?: string; manager: boolean }> {
   const { server, space, useAuth, storeDir, seedFile, transport, setup, args, bin, source, version } = await prepareBrokerStart(opts);
   await seedBeforeLaunch();
   const logPath = cotalPath("nats.log");
@@ -4217,6 +4226,10 @@ export async function startMeshDetached(
     quietBoot: opts.quietBoot,
   });
   if (opts.noManager && useAuth && controlPlane) recordOperationWarning(await noManagerCredentialWarning(cotalRoot(), space));
+  const delivery = useAuth && deliveryUp(space);
+  // A daemon this boot started can still stop before the boot ends, such as on a SIGTERM while the
+  // manager starts, and it removes its own record as it goes.
+  const lost = controlPlane?.delivery?.started && !delivery ? controlPlane.delivery : undefined;
   return {
     server,
     pid: child.pid ?? 0,
@@ -4224,7 +4237,8 @@ export async function startMeshDetached(
     controlPlane: controlPlane !== undefined,
     authService,
     deliveryResponderBound: useAuth ? controlPlane?.responderBound === true : null,
-    delivery: useAuth && deliveryUp(space),
+    delivery,
+    ...(lost ? { deliveryLost: `the delivery daemon started for space "${space}" (pid ${lost.pid}) exited before this boot finished. It logged its reason to ${canonicalLocalProcessPath(DELIVERY_LOGFILE, { root: cotalRoot(), space })}` } : {}),
     manager: managerUp(space),
   };
 }

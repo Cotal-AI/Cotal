@@ -1384,6 +1384,45 @@ try {
   signalGroup(afterX, "SIGKILL");
   await untilExit(afterX, 5000);
 
+  // ── V. A STOP THAT LANDS WHILE THE CONNECTION REDIALS MUST STILL GIVE THE SHARD BACK ─────────
+  //
+  // `cotal up` starts the manager right after the daemon, and the manager's boot renewal moves the
+  // daemon's connection onto the renewed credential with a deliberate reconnect. nats.js holds a
+  // redial until 2s after the previous dial, and the daemon dialled moments before, so for about a
+  // second it has no connection. A request written then is never answered. A SIGTERM there sent its
+  // release into that gap, and the 2s hard exit ended the process with the row still on the broker:
+  // `cotal down` refused, and the next `up` waited out the TTL.
+  //
+  // THE STIMULUS IS THE SAME THROTTLE, made through the proxy instead of a renewal: cut the daemon's
+  // sockets, let them redial, and cut them again. The second redial waits out nats.js's reconnect
+  // wait, and the signal lands inside it. The daemon runs at the shipped broker-gone window, so the
+  // redial wait it is given is the shipped one.
+  console.log("\nV. an ordinary stop while the connection redials");
+  await deleteLease(spaceH, credsPathH);
+  const vProxy = startFreshConnectBlackholeProxy();
+  const vd = spawnDaemon(spaceH, credsPathH, `nats://127.0.0.1:${await vProxy.listening}`, { COTAL_DELIVERY_BROKER_GONE_MS: "15000" });
+  check("V1 the daemon is up through the proxy", await untilUp(vd), tail(vd));
+  const vFirst = vProxy.established;
+  vProxy.dropEstablished();
+  for (let i = 0; i < 100 && vProxy.established === vFirst; i++) await wait(20);
+  vProxy.dropEstablished();
+  const vSecond = vProxy.established;
+  await wait(150);
+  const vHeld = vProxy.established === vSecond && !vd.exited;
+  signalGroup(vd, "SIGTERM");
+  check("V2 the signal landed while the daemon's redial was held", vSecond > vFirst && vHeld, { vFirst, vSecond, now: vProxy.established });
+  check("V3 the daemon exited 0", await untilExit(vd, 15_000) && vd.code === 0, { code: vd.code, tail: tail(vd) });
+  check("V4 it redialed before it exited", vProxy.established > vSecond, { vSecond, now: vProxy.established });
+  // THE CLAIM, off the BROKER rather than the daemon's log.
+  const vRow = await readLease(spaceH, credsPathH);
+  check("V5 the lease row is GONE, released once the connection was back", vRow === undefined, vRow);
+  const afterV = spawnDaemon(spaceH, credsPathH);
+  check("V6 a real replacement daemon comes up on that shard, never refused a live lease",
+    await untilUp(afterV) && !/a live lease already exists/.test(afterV.stderr), tail(afterV));
+  signalGroup(afterV, "SIGKILL");
+  await untilExit(afterV, 5000);
+  vProxy.close();
+
   // ── B. BROKER GONE: the real thing still ends the daemon ────────────────────────────────────────
   console.log("\nB. the broker is actually killed");
   const coupled = spawnDaemon(spaceB, credsPathB);
@@ -1405,6 +1444,7 @@ try {
   // the successor row that must NOT be adopted as our own).
   // 80 -> 87: cells W1-W7 (an ordinary stop inside the start-up window must give the shard back).
   // 87 -> 93: cells X1-X6 (a start-up failure the CALLER catches must give the shard back too).
+  // V1-V6: a stop while the connection redials must give the shard back too.
   // ── P. THE SUITE'S OWN ENVIRONMENT DISCRIMINATOR ────────────────────────────────────────────────
   // Graded because it SHIPPED BROKEN: the condition was evaluated after the catch had incremented
   // the failure counter, so it was false on every path and the diagnostic beneath it could never
@@ -1441,7 +1481,7 @@ try {
   // that only fires on a broken environment is never walked by a passing suite. It is a pure
   // function now precisely so it can be walked without one.
   // E8-E11 retain the prolonged-loss case after the bounded scheduling-burst control.
-  const EXPECTED_CELLS = 101;
+  const EXPECTED_CELLS = 107;
   check(`every cell ran (${EXPECTED_CELLS} before this sentinel)`, pass + fail === EXPECTED_CELLS, pass + fail);
 
   console.log(`\nDELIVERY-STARVATION SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);

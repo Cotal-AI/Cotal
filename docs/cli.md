@@ -1330,8 +1330,11 @@ persistence error instead of trusting the value returned by stream info. A refre
 missing manager waits for that process to come up, then says so with its pid (`✓ restored in the
 background: manager (pid N)`). A manager that `up` starts and that exits at boot instead is reported
 as `! control plane degraded:` with the path of its log, and `up` then exits nonzero, whether it was a
-refresh, a first `--detach` boot or `up -f`. The degraded message preserves the failure's own
-recovery instructions. Spawn and retirement require a functioning control plane; follow the
+refresh, a first `--detach` boot or `up -f`. A first `--detach` boot reports a delivery daemon the
+same way when the daemon was ready and then exited before the boot finished, such as on a SIGTERM
+while the manager started, and leaves it out of the `running in the background` line. The degraded
+message preserves the failure's own recovery instructions. Spawn and retirement require a
+functioning control plane; follow the
 reported next step before retrying. The same happens when another
 `cotal supervise` takes over the manager pidfile before the started process comes up. A legacy
 refresh that finds everything already running reports it like any other start: the `Mesh: <space>`
@@ -1717,11 +1720,17 @@ that finishes it: `cotal down --run <id>` for a readable one, and for an unreada
 could not be read and the same command once it is repaired. It reads each record its sweep stops as the stopped-stack check
 above does. A record that check leaves unread, such as one behind a link, refuses `LIFECYCLE_BLOCKED`
 before the first stop and is named once, where reading stopped. No process behind it is read or
-signalled, and no record is removed. A manager or delivery daemon whose pidfile is gone while
-its lease is still live refuses `LIFECYCLE_BLOCKED`, exit 2, before the broker stops. The refusal
-names that daemon and says to stop it, or put its pidfile back, then run `cotal down` again. A
-delivery daemon gets two seconds to release shard 0 of its lease after the signal and then exits
-anyway, so after it stops, the bare stop reads the lease while the broker still runs. When the row
+signalled, and no record is removed. When a manager or delivery daemon has no pidfile but its lease
+row is still there, `down` prints `<daemon> has no pidfile; waiting up to <n>s to see whether its
+lease is renewed` and watches the row until the lease TTL ends. A row that is written again refuses
+`LIFECYCLE_BLOCKED`, exit 2, before the broker stops. The refusal names that daemon and says to stop
+it, or put its pidfile back, then run `cotal down` again. A row that expires, or that nothing writes
+until the TTL and a five-second grace have passed, was left by a daemon that exited without
+releasing it, such as one whose broker stalled past its broker-gone window, and `down` goes on.
+A delivery daemon gets two seconds to release shard 0 of its lease after the signal and then exits
+anyway. A signal that lands while its connection redials first waits up to five seconds from the
+drop for the redial. So after it stops, the bare stop reads the lease while the broker still runs.
+When the row
 still names the credential this folder gave that daemon, or the lease cannot be read, the credential
 stays and `down` prints a `!` line saying so. The next `up` uses it to wait the row out, as after a
 crash, and then starts the new daemon. These are known-blocker
