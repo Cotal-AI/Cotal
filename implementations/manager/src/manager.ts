@@ -2654,10 +2654,11 @@ export class Manager {
           }
         }
       }
-      // The manager is the `endpoint-serve` renewal owner for its OWN
-      // service credential — re-mint the SAME serve identity with a fresh bounded exp THROUGH the
-      // §13.1 mint fence over a scoped one-shot executor (every renewal stages a distinct ledger
-      // row and wins the gate CAS; never the standing connection). The serve connection's
+      // The manager is the `endpoint-serve` renewal owner for its own
+      // service credential: re-mint the same serve identity with a fresh bounded exp through the
+      // §13.1 mint fence over a scoped one-shot executor (staging a new ledger row in a later
+      // second or idempotently re-staging the active row within the same second, and releasing only
+      // on winning the gate CAS; never the standing connection). The serve connection's
       // authenticator presents the refreshed credential on its next (re)connect.
       if (this.serviceServe?.creds && this.auth) {
         const s = this.serviceServe;
@@ -8635,11 +8636,13 @@ export class Manager {
   /** Mint the standing `goal-writer` credential and STAGE it into this
    *  instance's §13.1 revocation family (`epcred.<e>.<iid>`), over the passed executor's `authKv`
    *  (the scoped `endpoint-serve-executor`, which holds the epcred write grant). The GRANT profile
-   *  stays goal-writer-only (Q2 — disjoint from the serve credential); only the FAMILY membership
+   *  stays goal-writer-only (Q2, disjoint from the serve credential); only the FAMILY membership
    *  is shared, so the registration barrier's existing enumerate+revoke+evict catches the
    *  goal-writer on takeover/retire with NO barrier code change. Used both at registration (the run
    *  block's `authKv`) and at renewal (a fresh executor's), re-minting the SAME stable nkey with a
-   *  fresh bounded exp — each issuance writes a DISTINCT ledger row (per-JWT credentialId digest). */
+   *  fresh bounded exp: `mintCreds` stamps a random `issuance:` tag on `goal-writer` (`userTags`),
+   *  so each issuance signs distinct bytes and stages a distinct ledger row (per-JWT `credentialId`
+   *  digest) even within one second. */
   private async mintAndStageGoalWriter(authKv: KV): Promise<string> {
     const auth = this.auth!;
     const identity = this.goalWriterIdentity!;
@@ -8766,15 +8769,17 @@ export class Manager {
   }
 
   /** Mint the standing `session-ledger` credential and STAGE it into this instance's
-   *  §13.1 revocation family (`epcred.<e>.<iid>`), over the passed executor's `authKv` — EXACTLY the
-   *  {@link mintAndStageGoalWriter} pattern, under the same open-and-commit fence.
+   *  §13.1 revocation family (`epcred.<e>.<iid>`), over the passed executor's `authKv`, following the
+   *  {@link mintAndStageGoalWriter} pattern under the same open-and-commit fence.
    *
    *  This credential carries the DEDICATED sessions-bucket ledger rows and no session rail at all.
    *  It therefore takes no epoch pin: §13.6 makes it the durable revocation authority that must
    *  outlive the serving endpoint, so scoping it to one serving epoch would defeat its purpose. The
    *  epoch lives where it belongs, on the per-session serving credentials, which are minted per
-   *  redemption into this same family. Re-minting the SAME nkey on renewal writes a DISTINCT ledger
-   *  row (per-JWT credentialId digest). */
+   *  redemption into this same family. Because `mintCreds` stamps a random `issuance:` tag on
+   *  `session-ledger` (`userTags`), re-minting the SAME nkey on renewal or restart signs distinct
+   *  bytes and stages a distinct ledger row (per-JWT `credentialId` digest) even within one
+   *  second. */
   private async mintAndStageSessionLedger(authKv: KV): Promise<string> {
     const auth = this.auth!;
     const identity = this.sessionLedgerIdentity!;

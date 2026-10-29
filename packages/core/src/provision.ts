@@ -1033,14 +1033,17 @@ export async function mintCreds(
     if (!opts.serveIssuance)
       throw new Error("mintCreds: endpoint-serve requires opts.serveIssuance (the durable issuance-gate seam; the mint releases only on its revision-pinned CAS win, SPEC 13.1)");
     await finalizeServeIssuance(opts.serveIssuance, opts.endpointServe!, {
-      // PER-ISSUED-JWT id (digest of the credential): every issuance (a standing renewal included)
-      // has distinct bytes (fresh exp/iat), so it writes a DISTINCT ledger row and never overwrites
-      // or resurrects a prior one. The create-only / idempotent-if-identical guarantee lives at the
-      // finalize/stage seam (the SAME credential object staged twice), not the mint layer. The
-      // stable nkey rides separately as `credentialKey` for broker revocation. KEY-SAFE digest
-      // form (`sha256-<hex>`, never the §13.7 `sha256:` artifact form): the id becomes a segment
-      // of the durable `epcred.` KV key, whose grammar has no ":" — the digest property (a
-      // byte-identical retry maps to the SAME id) is what matters, not the separator.
+      // PER-ISSUED-JWT id (digest of the credential): `exp` and `iat` have whole-second Unix
+      // resolution and `jti` is derived from the claims, so what keeps a re-registered successor
+      // serve credential off its revoked predecessor's row within the same second is the
+      // epoch-pinned serve grant (`endpointServe.epoch` in the permission rows). A renewal in a
+      // later second gets a fresh `iat`/`exp` and writes a new ledger row; a same-second renewal
+      // at one epoch signs identical bytes and re-stages the same active row, which the
+      // create-only / idempotent-if-identical stage seam accepts as a retry while refusing a
+      // revoked row with `conflict`. The stable nkey rides separately as `credentialKey` for
+      // broker revocation. KEY-SAFE digest form (`sha256-<hex>`, never the §13.7 `sha256:`
+      // artifact form): the id becomes a segment of the durable `epcred.` KV key, whose grammar
+      // has no ":".
       credentialId: credentialIdOf(creds),
       credentialKey: identity.id,
       holderActor: pr.actor,
