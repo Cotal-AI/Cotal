@@ -1,5 +1,15 @@
 # @cotal-ai/manager
 
+## 0.128.3
+
+### Patch Changes
+
+- 5e19e96: Restart supervised built-in PTY seats after a manager crash when their slots correctly have no custody reference. Keep runtime matching for custodial seats and preserve the saved identity, lifecycle and restart budget.
+- Updated dependencies [76fcf89]
+  - @cotal-ai/workspace@0.128.3
+  - @cotal-ai/core@0.128.3
+  - @cotal-ai/seat@0.128.3
+
 ## 0.128.2
 
 ### Patch Changes
