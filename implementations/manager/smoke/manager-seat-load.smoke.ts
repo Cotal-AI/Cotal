@@ -125,7 +125,7 @@ async function runManager(job: ManagerJob): Promise<void> {
       continue;
     }
     if (cmd.cmd === "stop") {
-      await Promise.race([mgr.stop().catch(() => {}), wait(30_000)]);
+      await Promise.race([mgr.stop({ withAgents: true }).catch(() => {}), wait(30_000)]);
       await ipcSend({ stopped: true });
       return;
     }
