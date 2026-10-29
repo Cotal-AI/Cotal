@@ -55,9 +55,10 @@
  * turn defers and delivers late rather than reconnecting, and finite so a wedged one cannot defer
  * forever. Delivery is late, bounded, and exactly once in every branch.
  *
- * The deferral is covered by the policy cells and a live reproduction, and no mutation-graded live
- * cell reaches it, because the loss suite's swallowed send never consults it and `nextFallbackAction`
- * reaches `queue-turn` only on the busy branch after a failed soft interrupt.
+ * The policy cells grade the deferral predicate and M12 grades the call site through the live
+ * run-debt cell, which holds an unacknowledged run open so the seat stays busy and a failed soft
+ * interrupt routes the next delivery to `queue-turn`. The loss suite's swallowed send is not an open
+ * run and never consults it.
  */
 export function attributionBlockedByOpenRun(unsettledRunDispatches: number, blockedForMs = 0): boolean {
   if (unsettledRunDispatches <= 0) return false;
