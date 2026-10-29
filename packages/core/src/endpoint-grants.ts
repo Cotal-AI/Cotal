@@ -215,11 +215,11 @@ export const SPAWN_OWNER_LIFECYCLE_COMMANDS = Object.freeze(["despawn", "attach"
  *  so a run on an auth mesh had its every turn submit dropped at the broker. */
 export const OPERATOR_SEAT_COMMANDS = Object.freeze(["input", "turn"] as const);
 /** The spawn capability's UNTARGETED additions (the 1c grant-migration table): the connector's
- *  persona write (`define-persona`, caller-scoped by the pinned triple), per-agent status read
+ *  persona writes (`define-persona` / `remove-persona`, caller-scoped by the pinned triple), per-agent status read
  *  (`inspect` - the responder narrows the view to the caller's owner domain, like `ps`), and the
  *  persona-catalog reads (`list-personas` / `show-persona`). These ride the v0.3 privileged tier
  *  today; minting them with `spawn` keeps that tier's surface 1:1. */
-export const SPAWN_SERVICE_COMMANDS = Object.freeze(["define-persona", "inspect", "list-personas", "show-persona", "goal-result"] as const);
+export const SPAWN_SERVICE_COMMANDS = Object.freeze(["define-persona", "remove-persona", "inspect", "list-personas", "show-persona", "goal-result"] as const);
 /** The `run` capability's commands (SPEC 14.3): the manager-hosted workflow-run surface. The
  *  writes start a run, take one over and answer its open pause, and the keyed pair starts a run
  *  under a submission ID and reads that submission's binding; the two reads list runs and render
@@ -380,7 +380,7 @@ export function runCallerCapabilities(callerOwner: string): EpCapability[] {
  *  this for their ep rails; no new minting authority.
  *
  *  `privileged` (the ps/start instrument): the manager reads (incl. persona catalog list/show) +
- *  untargeted `spawn` + `define-persona` + the static chat-session open/retire pair - structurally
+ *  untargeted `spawn` + persona writes + the static chat-session open/retire pair - structurally
  *  barred from cross-agent reach: no any-mode row.
  *
  *  `admin` (the stop/attach/deploy instrument): everything above plus ANY-mode `despawn`/`attach`
@@ -413,6 +413,7 @@ export function operatorInstrumentCapabilities(tier: "privileged" | "admin", cal
     // through the class rail, and this instrument is pinned and one-shot.
     { endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: "resolve-cwd" },
     { endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: "define-persona" },
+    { endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: "remove-persona" },
     ...CHAT_SESSION_SNAP.map((command) => ({ endpoint: BASELINE_LIFECYCLE_ENDPOINT, command })),
     // The workflow-run surface (SPEC 14.3) rides the privileged tier as `cotal run`'s instrument:
     // the reads beside the manager reads, the writes beside `spawn`, which is the tier's existing

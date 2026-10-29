@@ -215,11 +215,16 @@ instance.
 
 ## Persona write observation
 
-An unanswered `define-persona` command does not prove the persona was not written. The
-`cotal_persona` tool reports that write outcome as unknown and tells the caller to read it with
-`cotal_personas` on the same manager before acting. The write may still land after the wait ends,
-so a missing readback alone does not make another definition safe. A failed describe, broker
-no-responders answer or explicit pre-effect refusal remains a failure, not an unknown write.
+The Manager serves `define-persona` and `remove-persona` under `manager.persona`. Removal takes
+`{name}` and returns `{name}`. It deletes only the machine-local definition, not agents already
+running from it. A missing definition is `not-found`. The name may exceed the current 64-character
+spawn limit, provided it is still a safe catalog filename stem, so an invalid legacy definition can
+be removed.
+
+An unanswered `define-persona` or `remove-persona` command does not prove the write did not land.
+The caller must read the catalog again on the same manager before acting. The write may still land
+after the wait ends, so a missing readback alone does not make another write safe. A failed describe,
+broker no-responders answer or explicit pre-effect refusal remains a failure, not an unknown write.
 
 ## Spawn is a goal
 

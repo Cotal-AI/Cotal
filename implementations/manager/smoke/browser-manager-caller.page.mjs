@@ -70,6 +70,11 @@ if (phase === "first") {
   await step("openB", async () => described(b = await open(cfg.instances.b)));
   await step("readA", async () => replyOf(await a.invoke("list-personas")));
   await step("readB", async () => replyOf(await b.invoke("list-personas")));
+  await step("definePersona", async () => replyOf(await a.invoke("define-persona", { name: "browser_temp", persona: "Temporary browser persona." })));
+  await step("listDefinedPersona", async () => replyOf(await a.invoke("list-personas")));
+  await step("removePersona", async () => replyOf(await a.invoke("remove-persona", { name: "browser_temp" })));
+  await step("listRemovedPersona", async () => replyOf(await a.invoke("list-personas")));
+  await step("removeInvalidPersona", async () => replyOf(await a.invoke("remove-persona", { name: cfg.invalidPersona })));
   // `ps` is an operator read that stays with `admin`. The person's spawn-scoped view carries only the
   // launch reads (`status`, `models`, `resolve-cwd`).
   await step("notGranted", async () => replyOf(await a.invoke("ps")));
