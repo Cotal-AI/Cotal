@@ -42,6 +42,7 @@ import {
   assertManagedGrantCustody,
   assertValidChannel,
   assertValidOwnerToken,
+  capabilityWithin,
   eventChannel,
   mintLifecycleUid,
   mkSecretDir,
@@ -385,7 +386,9 @@ export function assertWithinSpawnerGrant(
       throw new Error(
         `agent "${childKey}" cannot be delegated by spawner "${parentKey}" of a different owner - cross-owner spawns are operator (admin) launches only`,
       );
-    const overScope = child.scope.filter((s) => !parent.scope.includes(s));
+    // `run` carries the whole spawn set, so a run holder hands on `spawn` too (the token rule core
+    // shares with the static bound).
+    const overScope = child.scope.filter((s) => !capabilityWithin(parent.scope, s));
     const overSub = child.allowSubscribe.filter((ch) => !patternInAllow(parent.allowSubscribe, ch));
     // A spawner that may post its own events may hand each child that child's own event channel
     // and no other. The channel names the child, so it reaches nothing the spawner holds, and the

@@ -73,7 +73,8 @@ See [SPEC §13.7](../SPEC.md#137-contracts-and-discovery) and [cli.md](cli.md).
 The manager's `vitals` command reports one invocation-time sample of host CPU count and load,
 available and total memory, and bounded local filesystem capacity. It is untargeted but resolves to
 one exact Manager instance. The separate `manager.vitals` capability is issued only when the actor
-scope contains `machine-vitals`; `spawn`, `run` and `admin` do not imply it. The response contains
+scope contains `machine-vitals`; `spawn`, `run` and `admin` do not imply it. On a static mesh a
+spawner cannot hand it on, because no agent mint carries it. The response contains
 mount points and aggregate byte counts, never device paths, remote endpoints, process data, command
 lines, environment values or persisted history. Unsupported measurement refuses without a partial
 or zero-valued fallback.

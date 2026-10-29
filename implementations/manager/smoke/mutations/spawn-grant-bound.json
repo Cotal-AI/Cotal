@@ -1,0 +1,63 @@
+{
+  "suite": [
+    "implementations/manager/smoke/spawn-grant-bound.smoke.ts"
+  ],
+  "guard": "on a static mesh the manager bounds every spawn's grant against the spawner's resolved issued evidence, gives a caller with no evidence no grant and no callerAcl default, clamps that default to the evidence, and exempts operator instruments and admin spawners",
+  "command": "pnpm smoke:spawn-grant-bound",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/mutations/spawn-grant-bound.json",
+  "completionMarker": "SPAWN-GRANT-BOUND SMOKE",
+  "why": [
+    "The spawner in this suite is a real managed seat issued by the real spawn path, and the manager",
+    "resolves its evidence from the real issuer store on a throwaway broker. Each cell hands",
+    "startAgent the spawner's issued caller, as the served spawn door hands it the subject's caller.",
+    "",
+    "S1 drops the refusal, so a helper reads a channel its spawner cannot: the hole this closes. S2",
+    "treats a caller with no issued generation as exempt. S3 treats evidence that does not resolve as",
+    "exempt. S4 stops clamping the callerAcl default. S5 gives a caller with no evidence that default.",
+    "S6 ignores the evidence's standing, so an operator instrument is bounded like an agent."
+  ],
+  "mutations": [
+    {
+      "name": "S1 drop the bound's refusal",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    if (boundRefusal) return { ok: false, error: boundRefusal };",
+      "replace": "    void boundRefusal;",
+      "expectRed": "reading a channel the spawner cannot read is refused by name"
+    },
+    {
+      "name": "S2 treat a caller with no issued generation as exempt",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    if (!isIssuedCaller(caller))\n      return { kind: \"none\", reason: \"its credential carries no issued generation (an unissued mint or a legacy rail)\" };",
+      "replace": "    if (!isIssuedCaller(caller)) return { kind: \"exempt\" };",
+      "expectRed": "a caller with no issued generation hands on no grant"
+    },
+    {
+      "name": "S3 treat evidence that does not resolve as exempt",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      return { kind: \"none\", reason: `its issued evidence does not resolve: ${rejectionText(e)}` };",
+      "replace": "      void e;\n      return { kind: \"exempt\" };",
+      "expectRed": "evidence that does not resolve hands on no grant"
+    },
+    {
+      "name": "S4 stop clamping the callerAcl default",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "        return bound.kind === \"bounded\" ? own.filter((ch) => grantOverreach(this.space, bound.caller, bound.ceiling, { [field]: [ch] }).length === 0) : own;",
+      "replace": "        return own;",
+      "expectRed": "clamped to what the spawner's evidence holds"
+    },
+    {
+      "name": "S5 give a caller with no evidence the callerAcl default",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "        scoped = !personaNamesChannels && opts.callerAcl && bound.kind !== \"none\" ? {",
+      "replace": "        scoped = !personaNamesChannels && opts.callerAcl ? {",
+      "expectRed": "with no callerAcl default"
+    },
+    {
+      "name": "S6 ignore the evidence's standing",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      return issuedSpawnerStanding(evidence) === \"bounded\" ? { kind: \"bounded\", caller, ceiling: evidence.permissions } : { kind: \"exempt\" };",
+      "replace": "      return { kind: \"bounded\", caller, ceiling: evidence.permissions };",
+      "expectRed": "an operator instrument is exempt"
+    }
+  ]
+}

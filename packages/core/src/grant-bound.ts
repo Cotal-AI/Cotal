@@ -15,8 +15,8 @@
  * every agent receives (inbox, presence, DM, the endpoint baseline) never decides anything.
  */
 import { permissionsFor } from "./provision.js";
-import { issuedPermitsPattern, mintAcceptedToken, type IssuedSubjectPermissions } from "./issued-authority.js";
-import { resolveReadAcl } from "./subjects.js";
+import { issuedPermitsPattern, mintAcceptedToken, type IssuedEvidence, type IssuedSubjectPermissions } from "./issued-authority.js";
+import { presenceKeySubject, resolveReadAcl } from "./subjects.js";
 import type { EpCapability } from "./endpoint-grants.js";
 import type { IssuedCaller } from "./endpoint-subjects.js";
 
@@ -56,11 +56,9 @@ export function isDelegableCapability(token: string): boolean {
   return (DELEGABLE_CAPABILITIES as readonly string[]).includes(token) || ROLE_TOKEN.test(token);
 }
 
-/** The token rule: a child token is within the parent's scope when the parent holds it, or when it
- *  is `spawn` and the parent holds `run`, which carries the whole spawn set. An unknown token is
- *  never within. */
+/** The ledger's token rule: a child token is within the parent's scope when the parent holds it, or
+ *  when it is `spawn` and the parent holds `run`, which carries the whole spawn set. */
 export function capabilityWithin(parentScope: readonly string[], token: string): boolean {
-  if (!isDelegableCapability(token)) return false;
   return parentScope.includes(token) || (token === "spawn" && parentScope.includes("run"));
 }
 
@@ -71,6 +69,35 @@ export function endpointGrantCapabilities(grants: readonly EndpointGrant[]): EpC
     g.instanceId === undefined
       ? { endpoint: g.endpoint, command }
       : { endpoint: g.endpoint, command, instanceId: g.instanceId, instanceOnly: true }));
+}
+
+type MintExtra = Parameters<typeof permissionsFor>[3];
+
+/** Each part of a grant, with the mint options that project it alone. `project` is absent for a
+ *  token no mint maps, which nothing can be shown to hold. */
+function partsOf(grant: DelegatedGrant): { part: GrantOverreach; project?: MintExtra }[] {
+  const out: { part: GrantOverreach; project?: MintExtra }[] = [];
+  for (const ch of resolveReadAcl([...(grant.subscribe ?? [])], grant.allowSubscribe ? [...grant.allowSubscribe] : undefined))
+    out.push({ part: { field: "allowSubscribe", value: ch }, project: { allowSubscribe: [ch] } });
+  for (const ch of grant.allowPublish ?? []) out.push({ part: { field: "allowPublish", value: ch }, project: { allowPublish: [ch] } });
+  if (grant.role !== undefined) out.push({ part: { field: "role", value: grant.role }, project: { role: grant.role } });
+  for (const token of grant.capabilities ?? []) {
+    const role = ROLE_TOKEN.exec(token)?.[1];
+    const project = role !== undefined ? { role } : isDelegableCapability(token) ? { capabilities: [token] } : undefined;
+    out.push({ part: { field: "capabilities", value: token }, ...(project ? { project } : {}) });
+  }
+  for (const cap of endpointGrantCapabilities(grant.endpoints ?? []))
+    out.push({
+      part: { field: "endpoints", value: `${cap.endpoint} ${cap.command}${cap.instanceId === undefined ? "" : ` on ${cap.instanceId}`}` },
+      project: { endpointCapabilities: [cap] },
+    });
+  return out;
+}
+
+/** Every part of `grant`, named as {@link grantOverreach} names a refusal: what a spawner that holds
+ *  no evidence is refused when it asks for any of it. Throws on a malformed grant. */
+export function grantParts(grant: DelegatedGrant): GrantOverreach[] {
+  return partsOf(grant).map(({ part }) => part);
 }
 
 /**
@@ -90,7 +117,7 @@ export function grantOverreach(
   // the coordinate alone produces are identical across projections and cancel exactly.
   const pr = { owner: caller.owner, actor: caller.actor, connId: caller.actor, lifecycleUid: caller.uid };
   const issued = { generation: caller.generation, acceptedToken: mintAcceptedToken() };
-  const rows = (extra: Parameters<typeof permissionsFor>[3]) => {
+  const rows = (extra: MintExtra) => {
     const perms = permissionsFor("agent", space, pr, { lifecycleUid: caller.uid, issued, ...extra }) as {
       pub: { allow: string[] };
       sub: { allow: string[] };
@@ -98,29 +125,29 @@ export function grantOverreach(
     return { pub: new Set(perms.pub.allow), sub: new Set(perms.sub.allow) };
   };
   const empty = rows({});
-  const held = (extra: Parameters<typeof permissionsFor>[3]): boolean => {
+  const held = (extra: MintExtra): boolean => {
     const projected = rows(extra);
     const pub = [...projected.pub].filter((r) => !empty.pub.has(r));
     const sub = [...projected.sub].filter((r) => !empty.sub.has(r));
     if (pub.length + sub.length === 0) return false;
     return pub.every((r) => issuedPermitsPattern(ceiling.publish, r)) && sub.every((r) => issuedPermitsPattern(ceiling.subscribe, r));
   };
+  return partsOf(grant).filter(({ project }) => project === undefined || !held(project)).map(({ part }) => part);
+}
 
-  const over: GrantOverreach[] = [];
-  for (const ch of resolveReadAcl([...(grant.subscribe ?? [])], grant.allowSubscribe ? [...grant.allowSubscribe] : undefined))
-    if (!held({ allowSubscribe: [ch] })) over.push({ field: "allowSubscribe", value: ch });
-  for (const ch of grant.allowPublish ?? [])
-    if (!held({ allowPublish: [ch] })) over.push({ field: "allowPublish", value: ch });
-  if (grant.role !== undefined && !held({ role: grant.role })) over.push({ field: "role", value: grant.role });
-  for (const token of grant.capabilities ?? []) {
-    const role = ROLE_TOKEN.exec(token)?.[1];
-    const within = role !== undefined
-      ? held({ role })
-      : isDelegableCapability(token) && held({ capabilities: [token] });
-    if (!within) over.push({ field: "capabilities", value: token });
-  }
-  for (const cap of endpointGrantCapabilities(grant.endpoints ?? []))
-    if (!held({ endpointCapabilities: [cap] }))
-      over.push({ field: "endpoints", value: `${cap.endpoint} ${cap.command}${cap.instanceId === undefined ? "" : ` on ${cap.instanceId}`}` });
-  return over;
+/** How a static spawner stands toward the bound. */
+export type IssuedSpawnerStanding = "instrument" | "admin" | "bounded";
+
+/**
+ * Classify a static spawner from its resolved evidence. An operator instrument is issued with no
+ * source and holds no presence key of its own, which every agent mint carries; the issuer writes
+ * both facts at mint, so neither can be claimed. An instrument and a spawner holding the admin set
+ * are exempt, as an admin spawner is on the ledger. Every other spawner is bounded by its evidence.
+ */
+export function issuedSpawnerStanding(evidence: IssuedEvidence): IssuedSpawnerStanding {
+  const { space, owner, actor, uid, generation } = evidence.ref;
+  if (evidence.sources.length === 0 && !issuedPermitsPattern(evidence.permissions.publish, presenceKeySubject(space, owner, actor)))
+    return "instrument";
+  const caller = { owner, actor, uid, generation } as IssuedCaller;
+  return grantOverreach(space, caller, evidence.permissions, { capabilities: ["admin"] }).length === 0 ? "admin" : "bounded";
 }

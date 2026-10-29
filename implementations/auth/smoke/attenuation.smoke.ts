@@ -106,6 +106,21 @@ try {
     }),
     "scope [admin] beyond [spawn]",
   );
+  // `run` carries the whole spawn set, so a run holder hands on `spawn`; the converse stays refused.
+  grantActor(dir, { owner: OWNER, actor: "runner", scope: ["run"], allowSubscribe: ["general"], allowPublish: ["general"] });
+  const fromRun = grantManagedActor(dir, { custody: { kind: "foreground" },
+    owner: OWNER, actor: "runkid", scope: ["spawn"], parent: `${OWNER}.runner`,
+    allowSubscribe: ["general"], allowPublish: ["general"], tokenHash: newActorToken().tokenHash, lifecycleUid: mintLifecycleUid(),
+  });
+  check("scope [spawn] delegates within a [run] spawner (run carries the spawn set)", fromRun.scope.includes("spawn"));
+  rejects(
+    "scope [run] is refused under a [spawn] spawner",
+    () => grantManagedActor(dir, { custody: { kind: "foreground" },
+      owner: OWNER, actor: "runspy", scope: ["run"], parent: CLI,
+      allowSubscribe: ["general"], allowPublish: ["general"], tokenHash: newActorToken().tokenHash, lifecycleUid: mintLifecycleUid(),
+    }),
+    "scope [run] beyond [spawn]",
+  );
   rejects(
     "a cross-owner delegation is refused (agents live under their spawner's owner)",
     () => grantManagedActor(dir, { custody: { kind: "foreground" },

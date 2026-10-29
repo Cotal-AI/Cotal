@@ -5307,6 +5307,22 @@ broker connection lives until its capped expiry: its gate row is writable under 
 a client that bypasses stock registration can still rewrite that one row. Live eviction remains the
 host's retirement barrier.
 
+**Delegation bound.** On a static space, a manager that mints a credential for an agent a caller
+spawned MUST first resolve that caller's issued authority and bound the grant it hands on against
+the evidence. The grant is every channel the helper may read, with its subscribe set folded in,
+every channel it may post to, and every capability token. Each part is projected through the agent
+mint at the spawner's own coordinate, the projection of an empty grant is subtracted, and every
+remaining row MUST be covered by the evidence's `permissions` with no overlapping deny. A part
+whose projection adds no row is refused, so a token no agent mint maps is never read as an empty
+grant. `run` carries the whole `spawn` set, so a `run` holder may hand on `spawn`. A caller whose
+authority does not resolve, a legacy-rail caller included, hands on no grant: a spawn that names
+any part is refused. Two callers are exempt. One is an operator instrument, whose evidence has no
+`sources` and does not permit a publish on its own presence key, which every agent mint carries.
+The other is a spawner whose evidence holds the admin set. A spawn the manager starts on its own
+behalf, with no caller, is not bounded. A refusal names each part it refuses and happens before
+any name, credential or durable exists. A user-auth space bounds the same grant on its actor
+ledger, at the managed row's write.
+
 **Compatibility.** A command whose semantics require the binding (this revision: `run-start`
 and `run-cancel`, §14.8, and `run-start-keyed` and `run-submission-status`, §14) MUST refuse a legacy-rail request
 with `permission-denied` carrying the detail kind
@@ -6763,6 +6779,7 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
+| 2026-10-30 | **A static spawn is bounded against the spawner's issued evidence (§13.15), breaking.** A caller that could spawn on a static space could hand its helper any channel or capability, because nothing compared the grant with what the caller held. The manager now resolves the caller's issued authority and refuses, by name, every channel and capability token the evidence does not cover, measured at the caller's own coordinate. A caller with no resolvable authority hands on no grant. Operator instruments and admin spawners are exempt. The user-auth ledger's own scope rule learns that `run` carries `spawn`. No wire change. |
 | 2026-10-29 | **Manager connector status declares event-plane support (§13.7), additive.** Every `status.connectors` row now requires `eventPlane: boolean`, including rows built from the declared extension inventory before its package is imported. The fact is true only when the connector declares its event channel; it is never defaulted to true. The reference Manager cluster advances to revision 42. |
 | 2026-10-29 | **The Manager persona catalog has a typed removal command (§13.7), additive.** `remove-persona` rides the same `manager.persona` capability as `define-persona`, removes only the machine-local definition, refuses an unknown name, and accepts a safe filename stem even when it exceeds the current spawn-name limit. The reference Manager cluster advances to revision 41. |
 | 2026-10-28 | **A retiring lifecycle's fence is its ACL row (Appendix B).** The fence of the next entry lived only in one daemon's memory and was checked before a join wrote its row, so a join whose ACL lookup outlived the fence, a join from a still-connected seat after a daemon restart, or a join a quiesced predecessor finished after its successor's inventory each kept one row of a retired lifecycle. The manager now narrows the lifecycle's ACL row to an empty `allowSubscribe` before it asks for the inventory. The daemon re-reads that exact row before and after the write that creates a membership row, and removes the row and refuses the join when the channel is no longer within it. Other membership writes only update the revision they read. The daemon's own refusal and its wait for running writes stay, for a manager that does not narrow, as on a hosted daemon serving older managers. No wire change. |

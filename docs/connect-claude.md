@@ -846,7 +846,7 @@ managed row is re-armed from that document and the credential is re-minted from 
 
 The rule reads a **concrete** channel, two principal tokens and nothing else. A pattern such as
 `events.<owner>.>` is not an event channel to it and passes untouched, governed by ordinary ACL
-authority: on a user mesh the delegation envelope, on a static mesh the spawning credential itself.
+authority: on a user mesh the delegation envelope, on a static mesh the spawner's issued evidence.
 That is deliberate, because the pattern is the form an operator writes on purpose for an observer,
 and it is worth knowing rather than assuming the fence is total.
 

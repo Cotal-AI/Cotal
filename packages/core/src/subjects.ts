@@ -891,6 +891,12 @@ export function presenceBucket(space: string): string {
   return `cotal_presence_${token(space)}`;
 }
 
+/** The publish subject of one principal's own presence key. Every agent mint carries it; an
+ *  operator instrument's never does. */
+export function presenceKeySubject(space: string, owner: string, actor: string): string {
+  return `$KV.${presenceBucket(space)}.${principalKey(owner, actor).key}`;
+}
+
 const PRESENCE_STATUSES: Record<PresenceStatus, true> = { idle: true, waiting: true, working: true, offline: true };
 
 function presenceRecord(value: unknown): value is Record<string, unknown> {

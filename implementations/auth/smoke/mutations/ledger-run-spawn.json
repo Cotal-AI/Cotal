@@ -1,0 +1,22 @@
+{
+  "suite": [
+    "implementations/auth/smoke/attenuation.smoke.ts"
+  ],
+  "guard": "the ledger's delegation walk applies the shared token rule, under which run carries the spawn set",
+  "command": "pnpm smoke:auth-attenuation",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/auth/smoke/mutations/ledger-run-spawn.json",
+  "completionMarker": "ATTENUATION SMOKE",
+  "why": [
+    "A run holder reaches the whole spawn set, so it may hand on spawn. L1 puts back plain set",
+    "inclusion, which refuses that delegation."
+  ],
+  "mutations": [
+    {
+      "name": "L1 plain set inclusion for scope",
+      "file": "implementations/auth/src/ledger.ts",
+      "find": "    const overScope = child.scope.filter((s) => !capabilityWithin(parent.scope, s));",
+      "replace": "    const overScope = child.scope.filter((s) => !parent.scope.includes(s));",
+      "expectRed": "scope [spawn] delegates within a [run] spawner (run carries the spawn set)"
+    }
+  ]
+}

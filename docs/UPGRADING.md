@@ -34,6 +34,36 @@ What this page does not promise is a rolling upgrade. Nothing in the current lin
 authority versions, so where broker and manager run separately there is a window in which the mesh
 is down. The sections below give that window's shape so it can be scheduled rather than endured.
 
+## Static spawns are bounded by the spawner's evidence after 0.127.3
+
+On a static mesh, an agent that could spawn could hand its helper any channel or capability, because
+nothing compared the grant with what the agent held. The manager now measures every spawn an agent
+makes against the agent's own issued evidence, which is the ceiling its credential was minted with,
+and refuses each channel and capability token the evidence does not cover:
+
+```
+spawn: this spawn hands its helper more than the spawner holds: <parts>. A spawner hands on only what its own issued credential carries (SPEC 13.15). Drop these from the persona or the spawn, or have the operator widen the spawner's own persona.
+```
+
+The persona file, the channel overrides on the spawn request, and the default a channel-less persona
+takes from its spawner are all measured. The operator's own commands, such as `cotal spawn
+--detach`, call the manager with a one-shot instrument and are exempt. So are agents holding
+`capabilities: [admin]`, and anything the manager starts on its own behalf.
+
+### What changes for you
+
+- A manager persona that spawns helpers on channels it does not read or post itself is refused.
+  Add those channels to the manager persona's `allowSubscribe` and `allowPublish`, or narrow the
+  helper.
+- A spawner holding `capabilities: [run]` may hand on `spawn` as well as `run`. A token no agent mint
+  uses, such as `machine-vitals`, is refused on a static mesh.
+- An agent started by foreground `cotal spawn`, `cotal join` or `cotal mint` carries no issued
+  evidence, so it hands on no grant. Its helpers start with no channels and no capabilities, and a
+  persona that names any is refused. Start such a spawner under a manager with `cotal spawn
+  --detach` instead.
+- A user-auth mesh keeps its ledger rule, except that a spawner whose scope holds `run` may now hand
+  on `spawn`.
+
 ## Multi-space host acknowledgments after 0.116.1
 
 Every multi-space host (`auth-service --spaces`, `auth-service --callout-only --spaces`,

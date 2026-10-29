@@ -61,6 +61,7 @@ import {
   taskDurable,
   dlvDurable,
   presenceBucket,
+  presenceKeySubject,
   channelBucket,
   membersBucket,
   aclBucket,
@@ -1574,7 +1575,7 @@ export function permissionsFor(
     // cannot be pinned, and a stream-wide delete reaches every peer's watch cursor (#691). A
     // rebuild's refused predecessor delete leaves that consumer to the broker's inactive threshold.
     "$JS.FC.>",
-    `$KV.${presenceBucket(space)}.${pk.key}`, // own presence key (owner+actor) only — can't spoof peers
+    presenceKeySubject(space, pr.owner, pr.actor), // own presence key (owner+actor) only — can't spoof peers
     // Channel registry: read-only (watch + direct kv.get for the join-time replay decision).
     // No `$KV.${channelBucket(space)}.*` publish — privileged-write, default-deny gives that free.
     `$JS.API.STREAM.MSG.GET.${CHKV}`,

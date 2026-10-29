@@ -2,8 +2,8 @@
  *  coordinate, and each part it does not hold is named. Each ceiling here is the evidence an agent
  *  mint records (provision.ts imports the minted permissions verbatim). No broker. */
 import { permissionsFor, type MintOpts } from "../src/provision.js";
-import { importNativeSubjectPermissions, mintAcceptedToken, mintGeneration, type IssuedSubjectPermissions } from "../src/issued-authority.js";
-import { capabilityWithin, grantOverreach, type DelegatedGrant, type GrantOverreach } from "../src/grant-bound.js";
+import { importNativeSubjectPermissions, mintAcceptedToken, mintGeneration, type IssuedEvidence, type IssuedSubjectPermissions } from "../src/issued-authority.js";
+import { capabilityWithin, grantOverreach, grantParts, issuedSpawnerStanding, type DelegatedGrant, type GrantOverreach } from "../src/grant-bound.js";
 import type { IssuedCaller } from "../src/endpoint-subjects.js";
 import { spacePrefix } from "../src/subjects.js";
 
@@ -114,11 +114,42 @@ console.log("ceiling modes");
   ok("the empty grant is within any ceiling", over(none, {}).length === 0);
 }
 
+console.log("parts (no evidence)");
+{
+  const p = names(grantParts({ subscribe: ["review"], allowPublish: ["ops"], role: "worker", capabilities: ["spawn", "superuser"], endpoints: [{ endpoint: "linear", commands: ["search"] }] }));
+  ok("every part of a grant is named, an unknown token included", same(p, ["allowPublish:ops", "allowSubscribe:review", "capabilities:spawn", "capabilities:superuser", "endpoints:linear search", "role:worker"]), p);
+  ok("an empty grant has no parts", grantParts({}).length === 0);
+}
+
+console.log("standing (static spawner)");
+{
+  const mint = (profile: "agent" | "control-caller-privileged" | "control-caller-admin" | "deployer", opts: Omit<MintOpts, "lifecycleUid" | "issued"> = {}) =>
+    importNativeSubjectPermissions(permissionsFor(profile, space,
+      { owner: caller.owner, actor: caller.actor, connId: caller.actor, lifecycleUid: caller.uid },
+      { ...opts, lifecycleUid: caller.uid, issued: { generation: caller.generation, acceptedToken: mintAcceptedToken() } }));
+  const source = { space, bucket: "cotal_static_lifecycle_gb", key: "slot.x" };
+  const ev = (permissions: IssuedSubjectPermissions, sourced: boolean): IssuedEvidence => ({
+    version: 1,
+    ref: { space, owner: caller.owner, actor: caller.actor, uid: caller.uid, generation: caller.generation },
+    sources: sourced ? [source] : [],
+    permissions,
+    ...(sourced ? {} : { expiresAt: Math.floor(Date.now() / 1000) + 300 }),
+  });
+  ok("the privileged instrument is an instrument", issuedSpawnerStanding(ev(mint("control-caller-privileged"), false)) === "instrument");
+  ok("the admin instrument is an instrument", issuedSpawnerStanding(ev(mint("control-caller-admin"), false)) === "instrument");
+  ok("a source-free deployer is an instrument", issuedSpawnerStanding(ev(mint("deployer"), false)) === "instrument");
+  ok("a source-free agent (fixed expiry) stays bounded: it holds its own presence key", issuedSpawnerStanding(ev(mint("agent", { allowSubscribe: ["review"] }), false)) === "bounded");
+  ok("a managed agent is bounded", issuedSpawnerStanding(ev(mint("agent", { capabilities: ["spawn"] }), true)) === "bounded");
+  ok("an agent holding the admin set is admin", issuedSpawnerStanding(ev(mint("agent", { capabilities: ["admin"] }), true)) === "admin");
+  ok("a sourced instrument shape is not an instrument", issuedSpawnerStanding(ev(mint("control-caller-privileged"), true)) === "bounded");
+}
+
 console.log("token rule (ledger)");
 ok("spawn is within run", capabilityWithin(["run"], "spawn"));
 ok("run is not within spawn", !capabilityWithin(["spawn"], "run"));
 ok("role:<r> needs the same token", capabilityWithin(["role:a"], "role:a") && !capabilityWithin(["role:a"], "role:b"));
-ok("an unknown token is never within, even when the parent lists it", !capabilityWithin(["superuser"], "superuser"));
+ok("a token the parent lists is within, the ledger's open vocabulary included", capabilityWithin(["supervise"], "supervise"));
+ok("a token the parent does not list is not within", !capabilityWithin(["spawn"], "supervise"));
 
 console.log(`\nGRANT-BOUND SMOKE ${pass} passed, ${fail} failed`);
 if (fail) process.exit(1);

@@ -81,10 +81,15 @@ import {
   resolveService,
   invokeCommand,
   digestIdToken,
+  grantOverreach,
+  grantParts,
+  isIssuedCaller,
+  issuedSpawnerStanding,
+  withIssuerSession,
 } from "@cotal-ai/core";
 import { loadLaunchPersonaFile, PersonaSourceError } from "@cotal-ai/workspace";
 import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, claimIdentityRecord, claimManagerSiblingIdentities, connectorInstallHint, DEFAULT_SEAT_CAP, DELIVERY_CREDS_KIND, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, localTrustOfSpace, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, probeLiveness, remintDaemonCreds, resolveAgentType, resolveOnPath, runtimeInstallHint, createManagerInstanceIdentity, SEAT_CAP_UNLIMITED, spaceKey, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type MeshEntry, type RenewalRecord, type SeatCap, type UserAuthInfo } from "@cotal-ai/workspace";
-import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, DaemonStoreAnswer, DeliveryLeaseInfo, EpCaller, EpErrorCode, EpErrorDetail, LaunchOpts, LaunchSpec, ManagedLifecycleHandoff, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeProvider, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth } from "@cotal-ai/core";
+import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, DaemonStoreAnswer, DelegatedGrant, DeliveryLeaseInfo, EpCaller, EpErrorCode, EpErrorDetail, GrantOverreach, IssuedCaller, IssuedSubjectPermissions, LaunchOpts, LaunchSpec, ManagedLifecycleHandoff, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeProvider, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth } from "@cotal-ai/core";
 import {
   createRuntime,
   exitProof,
@@ -977,6 +982,14 @@ interface PreparedResume {
 
 /** What the host returned for one managed-agent enrollment (#1972). */
 type ManagedEnrollment = Awaited<ReturnType<NonNullable<NonNullable<ManagerOptions["remoteAuthority"]>["enrollManagedAgent"]>>>;
+
+/** What bounds the grant a spawn hands its helper on a static mesh (SPEC 13.15). Nothing for the
+ *  manager's own composition root, an operator instrument or a spawner holding the admin set; no
+ *  grant at all for a caller whose evidence does not resolve; otherwise the caller's evidence. */
+type StaticSpawnBound =
+  | { kind: "exempt" }
+  | { kind: "none"; reason: string }
+  | { kind: "bounded"; caller: IssuedCaller; ceiling: IssuedSubjectPermissions };
 
 /** A user-mode spawn's provisioning options. Both arms take this one declaration because
  *  {@link Manager.provisionUserAgent} forwards it to {@link Manager.enrollUserAgent} on the
@@ -6351,6 +6364,50 @@ export class Manager {
     return { ref, configPath, def, agent: resolveAgentType({ flag: opts.agent, pin: def?.agent, callerDefault: opts.defaultAgent }) };
   }
 
+  /**
+   * Resolve what bounds a spawn's grant on a STATIC mesh: the caller's issued evidence, read the way
+   * keyed runs read it. A user-auth mesh bounds the mint on its ledger instead, and an open mesh
+   * mints no grant, so both return `exempt`. So does a call with no authenticated caller, which is
+   * the manager's own composition root (roster boot, a manifest `launch`, which a static mesh mints
+   * only into operator instruments). A caller with no issued generation, or whose evidence does not
+   * resolve, hands on no grant. The evidence's own standing decides the rest.
+   */
+  private async staticSpawnBound(caller: EpCaller | undefined): Promise<StaticSpawnBound> {
+    if (this.meshMode !== "static" || caller === undefined) return { kind: "exempt" };
+    // A workflow run's spawns are not bounded here: the driver's own credential is not the run's
+    // authority, and the run's admission (SPEC 14.8) does not record what its starter may hand on.
+    if (this.runHosting?.admittedCaller(caller) !== undefined) return { kind: "exempt" };
+    if (!isIssuedCaller(caller))
+      return { kind: "none", reason: "its credential carries no issued generation (an unissued mint or a legacy rail)" };
+    const ref = { space: this.space, owner: caller.owner, actor: caller.actor, uid: caller.uid, generation: caller.generation };
+    try {
+      const { evidence } = await withIssuerSession({ servers: this.servers ?? DEFAULT_SERVER, space: this.space, auth: this.auth!, tls: false }, (s) =>
+        s.store.resolve(ref, s.sourceIsLive));
+      return issuedSpawnerStanding(evidence) === "bounded" ? { kind: "bounded", caller, ceiling: evidence.permissions } : { kind: "exempt" };
+    } catch (e) {
+      return { kind: "none", reason: `its issued evidence does not resolve: ${rejectionText(e)}` };
+    }
+  }
+
+  /** The refusal for a grant its static spawner does not hold, or `undefined` when it holds all of
+   *  it. Each part is named, so the caller can drop exactly what overreached. */
+  private spawnBoundRefusal(bound: StaticSpawnBound, grant: DelegatedGrant): string | undefined {
+    if (bound.kind === "exempt") return undefined;
+    let over: GrantOverreach[];
+    try {
+      over = bound.kind === "none" ? grantParts(grant) : grantOverreach(this.space, bound.caller, bound.ceiling, grant);
+    } catch (e) {
+      return `spawn: ${rejectionText(e)}`;
+    }
+    if (!over.length) return undefined;
+    const named = over.map((o) => `${o.field} ${o.value}`).join(", ");
+    return bound.kind === "none"
+      ? `spawn: the spawner holds no issued evidence (SPEC 13.15), so it hands on no grant: ${bound.reason}. This spawn asks for ${named}. ` +
+          `Spawn a persona that names none of these, or start the spawner under a manager (\`cotal spawn --detach\`), whose seats carry issued evidence.`
+      : `spawn: this spawn hands its helper more than the spawner holds: ${named}. A spawner hands on only what its own issued credential carries (SPEC 13.15). ` +
+          `Drop these from the persona or the spawn, or have the operator widen the spawner's own persona.`;
+  }
+
   private async startAgentActive(opts: StartAgentOpts, spawner?: string, hooks?: SpawnHooks, authenticatedCaller?: EpCaller): Promise<ControlReply> {
     // Before the first await, so the grant, the launch, the retained form and the restart slot all read
     // the lists and the restart policy as admitted.
@@ -6390,6 +6447,8 @@ export class Manager {
       if (hooks?.onAccepted) throw new EpEnvelopeError("failed-precondition", error, undefined, "not-executed");
       return { ok: false, error };
     }
+    // Read here, beside the connector, so the capacity check and the reserve below take no new await.
+    const bound = await this.staticSpawnBound(authenticatedCaller);
 
     const readinessTimeoutMs = connector.readinessTimeoutMs ?? this.readinessTimeoutMs;
     if (!Number.isSafeInteger(readinessTimeoutMs) || readinessTimeoutMs <= 0)
@@ -6540,12 +6599,23 @@ export class Manager {
       // when the door sent one). The spawner's own event channel is dropped from it: that plane is
       // foreign to the child, and the guard below refuses any spawn that asks for one. The joined
       // set is never copied from the spawner: a helper starts on what its persona lists plus what
-      // the caller passes in `join`, and nothing else.
+      // the caller passes in `join`, and nothing else. The ACL is the caller's own report, so on a
+      // static mesh it is clamped to what the caller's evidence shows it holds, and a caller with
+      // no evidence gets no default at all.
       const personaNamesChannels = def.subscribe !== undefined || def.allowSubscribe !== undefined || def.allowPublish !== undefined;
-      const scoped = !personaNamesChannels && opts.callerAcl ? {
-        allowSubscribe: opts.callerAcl.allowSubscribe.filter((ch) => eventChannelPrincipal(ch) === null),
-        allowPublish: opts.callerAcl.allowPublish.filter((ch) => eventChannelPrincipal(ch) === null),
-      } : undefined;
+      const heldChannels = (field: "allowSubscribe" | "allowPublish", channels: string[]) => {
+        const own = channels.filter((ch) => eventChannelPrincipal(ch) === null);
+        return bound.kind === "bounded" ? own.filter((ch) => grantOverreach(this.space, bound.caller, bound.ceiling, { [field]: [ch] }).length === 0) : own;
+      };
+      let scoped: { allowSubscribe: string[]; allowPublish: string[] } | undefined;
+      try {
+        scoped = !personaNamesChannels && opts.callerAcl && bound.kind !== "none" ? {
+          allowSubscribe: heldChannels("allowSubscribe", opts.callerAcl.allowSubscribe),
+          allowPublish: heldChannels("allowPublish", opts.callerAcl.allowPublish),
+        } : undefined;
+      } catch (e) {
+        return { ok: false, error: `callerAcl: ${rejectionText(e)}` };
+      }
       const base = opts.subscribe ?? def.subscribe;
       subscribe = opts.join?.length ? [...new Set([...(base ?? []), ...opts.join])] : base;
       allowSubscribe = opts.allowSubscribe ?? def.allowSubscribe ?? scoped?.allowSubscribe ?? [];
@@ -6566,6 +6636,15 @@ export class Manager {
     } catch (e) {
       return { ok: false, error: opts.resolved ? `launch agent: ${rejectionText(e)}` : `persona ${configPath}: ${rejectionText(e)}` };
     }
+    // THE DELEGATION BOUND, on the grant as it will be minted: every channel and capability the
+    // helper gets, from the persona, the raw overrides and the `callerAcl` default alike, so no
+    // door reaches the mint around it. Before any reserve or mint, so a refusal leaves nothing.
+    const boundRefusal = this.spawnBoundRefusal(bound, {
+      allowSubscribe,
+      ...(allowPublish !== undefined ? { allowPublish } : {}),
+      ...(capabilities !== undefined ? { capabilities } : {}),
+    });
+    if (boundRefusal) return { ok: false, error: boundRefusal };
     // Checked after every path has resolved its selectors: a direct `startAgent` call skips the
     // `start` op's checks, and no connector may receive a blank one (#2862).
     if (model !== undefined && !model.trim()) return { ok: false, error: "model: must not be empty" };

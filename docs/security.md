@@ -139,15 +139,17 @@ The guarantees, at a glance, each enforced by the broker per
   can still mint fresh creds); on a per-user-auth mesh it is held by the auth service (the callout
   stage) and by any running manager, which self-mints its supervisor cred and renewals from it
   ([identity & auth](identity-and-auth.md)).
-- **A static mesh's spawn credential is the ACL tier:** a caller that may spawn may also name the
-  child's channel ACL, and on a static-auth mesh nothing attenuates that against the caller's own
-  grant, because there is no ledger to attenuate against. This is the same class as the entry above
-  and is not specific to any channel: the read set a spawn-capable static caller may hand its child
-  covers ordinary channels, and `events.*` alongside them. A per-user-auth mesh does attenuate it:
-  every delegation must sit inside the spawner's own grant, checked by NATS-pattern containment
-  along the whole chain, at the grant write and again at every bearer exchange
-  ([identity & auth](identity-and-auth.md)). Grant `spawn` on a static mesh as ACL authority, not
-  as a narrow "add a teammate" permission.
+- **A spawner hands on only what it holds:** a caller that may spawn names its helper's channels
+  and capabilities, and the manager refuses any part the caller does not hold itself. On a
+  static-auth mesh the measure is the caller's issued evidence, the ceiling its own credential was
+  minted with ([SPEC 13.15](../SPEC.md#1315-issued-authority)), and `events.*` is measured like any
+  other channel. A caller whose evidence does not resolve hands on no grant. That includes
+  agents started by foreground `cotal spawn`, `cotal join` and `cotal mint`, whose credentials
+  carry no issued evidence. Operator instruments and admin spawners are exempt. A
+  per-user-auth mesh checks the same rule on its ledger: every delegation must sit inside the
+  spawner's own grant, checked by NATS-pattern containment along the whole chain, at the grant
+  write and again at every bearer exchange ([identity & auth](identity-and-auth.md)). On a static
+  mesh the helper's role is not measured.
 - **`spawn` is host-launch authority:** launch options are a raw passthrough (no allow/deny
   list), so a persona holding `capabilities: [spawn]` can drive the connector's full launch
   surface on the manager host (Claude `--mcp-config`, `--add-dir`, permission flags; OpenCode
