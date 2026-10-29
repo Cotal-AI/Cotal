@@ -1,7 +1,7 @@
 import { registry, type Command, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
 import { existsSync } from "node:fs";
-import { join } from "node:path";
-import { cacheServicePreset, CommandFailure, extensionProvides, findMesh, loadExtensionsManifest, oneLine, segmentedKey, serviceMetadataDigest, spaceMaterialKey, verifiedExtensionServicePresets, type ServiceDefinitionInput, type ServicePreset, type ServicePresetDefault } from "@cotal-ai/workspace";
+import { join, resolve } from "node:path";
+import { cacheServicePreset, CommandFailure, extensionProvides, findMesh, isCommandFailure, loadExtensionsManifest, oneLine, segmentedKey, serviceMetadataDigest, spaceMaterialKey, verifiedExtensionServicePresets, type ServiceDefinitionInput, type ServicePreset, type ServicePresetDefault } from "@cotal-ai/workspace";
 import { installedExtensionsEnabled } from "../ext-loader.js";
 import { resolveServiceAdapter } from "./service-adapters.js";
 import { cliVersion } from "./version.js";
@@ -49,6 +49,11 @@ function optionProperties(preset: ServicePreset) {
   return { adapter, properties: adapter.declaration.optionsSchema.properties as Record<string, Record<string, unknown>>, required: new Set((adapter.declaration.optionsSchema.required ?? []) as string[]) };
 }
 
+/** Options a preset takes as `cotal up --log-file` takes its path, by adapter: made absolute against
+ *  the folder the command runs in. They are not declared paths, so the file need not exist yet and a
+ *  stop never checks it. */
+const resolvedPaths: Readonly<Record<string, readonly string[]>> = { "nats-broker": ["logFile"] };
+
 /** The flag an adapter option takes: its name with each capital letter as a dash and that letter in
  *  lower case, so `logFile` is `--log-file`, as `cotal up` spells the same option. */
 export function presetFlagName(option: string): string {
@@ -72,7 +77,8 @@ export function servicePresetFlags(preset: ServicePreset): FlagSpec[] {
     const description = typeof schema.description === "string" ? schema.description : `add --preset ${preset.name}: declared ${option} option`;
     const fallback = preset.defaults?.[option];
     const marked = fallback ? `${description} (default: ${describeDefault(fallback)})` : required.has(option) && !description.includes("(required)") ? `${description} (required)` : description;
-    flags.push({ name, type: schema.type === "boolean" ? "boolean" : "string", ...(schema.type === "boolean" ? {} : { value: placeholder(adapter.declaration.paths?.[option], schema.type) }), description: marked });
+    const value = resolvedPaths[preset.adapter]?.includes(option) ? "<path>" : placeholder(adapter.declaration.paths?.[option], schema.type);
+    flags.push({ name, type: schema.type === "boolean" ? "boolean" : "string", ...(schema.type === "boolean" ? {} : { value }), description: marked });
     // A boolean whose schema admits only true, such as an explicit intent, has no valid negative form.
     if (schema.type === "boolean" && schema.const !== true && !(Array.isArray(schema.enum) && !schema.enum.includes(false))) flags.push({ name: `no-${name}`, type: "boolean", description: `add --preset ${preset.name}: set ${option} to false` });
   }
@@ -110,6 +116,20 @@ export function presetMissingOptions(preset: ServicePreset, values: ParsedArgs["
   return [...required].filter((option) => values[presetFlagName(option)] === undefined && values[`no-${presetFlagName(option)}`] === undefined && preset.defaults?.[option] === undefined).map(presetFlagName);
 }
 
+/** The defaults `space` cannot fill yet for the options the person did not give, by flag name, with
+ *  the value each takes and why: no registered broker, or a file the space does not keep yet. It only
+ *  reads, so a listing or a refusal can name them before {@link presetDefaultOptions} refuses one. */
+export function presetUnfilledDefaults(preset: ServicePreset, space: string, root: string, values: ParsedArgs["values"]): { name: string; value: string; reason: string }[] {
+  const unfilled: { name: string; value: string; reason: string }[] = [];
+  for (const [option, fallback] of Object.entries(preset.defaults ?? {})) {
+    const name = presetFlagName(option);
+    if (values[name] !== undefined || values[`no-${name}`] !== undefined || "value" in fallback || fallback.space === "root") continue;
+    if (fallback.space !== "material") { if (!findMesh(space)?.server) unfilled.push({ name, value: "<url>", reason: `space ${oneLine(space)} has no registered broker` }); }
+    else if (!existsSync(presetMaterialPath(fallback.kind, space, root, false))) unfilled.push({ name, value: "<file>", reason: `space ${oneLine(space)} keeps no ${fallback.kind} yet` });
+  }
+  return unfilled;
+}
+
 /** The option values a preset's defaults supply in `space`, for the options the person did not give.
  *  A default that cannot be resolved refuses with the flag that replaces it; nothing is invented. */
 export function presetDefaultOptions(preset: ServicePreset, space: string, root: string, values: ParsedArgs["values"], migrate = true): Record<string, string | boolean> {
@@ -139,7 +159,11 @@ export function servicePresetDefinition(preset: ServicePreset, space: string, gi
   const flags = servicePresetFlags(preset);
   const missing = presetMissingOptions(preset, given);
   const line = verb === "start" ? `cotal service start ${preset.name}` : `cotal service ${verb} --preset ${preset.name}`;
-  if (missing.length) throw new CommandFailure("refused", "USAGE_INVALID", `the ${preset.name} preset needs ${missing.map((name) => `--${name}`).join(", ")}, which ${missing.length === 1 ? "has" : "have"} no default; nothing was saved or started`, { remedy: `${line} ${missing.map((name) => `--${name} ${flags.find((flag) => flag.name === name)?.value ?? ""}`.trimEnd()).join(" ")}`, selfContained: true, remedyIsCommand: true });
+  // The line also names each default this space cannot fill, so it works the first time it is run.
+  if (missing.length) {
+    const unfilled = presetUnfilledDefaults(preset, space, root, given);
+    throw new CommandFailure("refused", "USAGE_INVALID", `the ${preset.name} preset needs ${missing.map((name) => `--${name}`).join(", ")}, which ${missing.length === 1 ? "has" : "have"} no default${unfilled.map((row) => `, and --${row.name}, since ${row.reason}`).join("")}; nothing was saved or started`, { remedy: `${line} ${[...missing.map((name) => `--${name} ${flags.find((flag) => flag.name === name)?.value ?? ""}`.trimEnd()), ...unfilled.map((row) => `--${row.name} ${row.value}`)].join(" ")}`, selfContained: true, remedyIsCommand: true });
+  }
   const values: ParsedArgs["values"] = { ...presetDefaultOptions(preset, space, root, given, migrate), ...given };
   for (const [option, schema] of Object.entries(properties)) {
     const name = presetFlagName(option), value = values[name], negative = values[`no-${name}`];
@@ -151,7 +175,10 @@ export function servicePresetDefinition(preset: ServicePreset, space: string, gi
     }
     if (value === undefined) continue;
     if (typeof value !== "string" || Buffer.byteLength(value, "utf8") > 256 * 1024) throw new CommandFailure("refused", "USAGE_INVALID", "a preset option exceeds its bounded string input; the value was not printed");
-    if (schema.type === "string") options[option] = value;
+    if (resolvedPaths[preset.adapter]?.includes(option)) {
+      if (!value.trim() || /[\u0000-\u001f\u007f]/u.test(value)) throw new CommandFailure("refused", "USAGE_INVALID", `--${name} must be a non-empty file path without control characters`);
+      options[option] = resolve(value);
+    } else if (schema.type === "string") options[option] = value;
     else {
       try { options[option] = JSON.parse(value); }
       catch { throw new CommandFailure("refused", "USAGE_INVALID", `--${name} is not valid JSON for its declared ${String(schema.type)} type; numeric values use JSON number syntax and bodies are not echoed`); }
@@ -159,7 +186,12 @@ export function servicePresetDefinition(preset: ServicePreset, space: string, gi
       if (over) throw new CommandFailure("refused", "USAGE_INVALID", `--${name} argument ${over.index + 1} has ${over.length} characters, and each holds at most ${over.max}; the value was not printed`);
     }
   }
-  resolveServiceAdapter(preset.adapter, options);
+  // A refused option value is named by the flag the person typed, and the preset's help says what each takes.
+  try { resolveServiceAdapter(preset.adapter, options, true, (option) => `--${presetFlagName(option)}`); }
+  catch (error) {
+    if (!isCommandFailure(error) || error.code !== "SCHEMA_INVALID" || error.remedy !== undefined) throw error;
+    throw new CommandFailure(error.outcome, error.code, error.message, { target: error.target, remedy: `see what each option takes with \`${line} --help\`` });
+  }
   return { schemaVersion: 1, space, launch: { type: "adapter", adapter: preset.adapter, options }, readiness: { type: "adapter", timeoutMs: preset.timeoutMs } };
 }
 

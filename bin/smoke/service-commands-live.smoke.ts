@@ -10,7 +10,8 @@
  * ends with a sentence instead of a JSON line, and `manager stop` and `install --dry-run` still refuse
  * it with the stack advice. After that `down`, `manager logs` reads the log it left, marked stopped
  * with `cotal up` next, and `install --dry-run` names the `ExecStart=` line. A plain follow of your
- * own service ends with a sentence too.
+ * own service ends with a sentence too. A broker saved with the broker preset and a --log-file, in a
+ * space `space create` prepared, stops when its log file was moved away while it ran.
  *
  * Linux only: the native manager child is Linux-only. Every directory is a sandbox this suite
  * removes; teardown stops what still runs, then `cotal down` stops the stack it started.
@@ -18,7 +19,7 @@
  * Run: pnpm smoke:service-commands:live
  */
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { SMOKE_BROKER_TOKEN, assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
@@ -55,6 +56,10 @@ const upProject = join(upRoot, UP_SPACE);
 for (const dir of [join(upProject, ".cotal"), join(upHome, ".cotal"), upXdg]) mkdirSync(dir, { recursive: true, mode: 0o700 });
 const upAt = { root: upProject, env: { ...env, HOME: upHome, USERPROFILE: upHome, COTAL_HOME: join(upHome, ".cotal"), XDG_CONFIG_HOME: upXdg }, anchor: recordSmokeSandbox({ root: upProject, cotalHome: join(upHome, ".cotal"), xdgConfigHome: upXdg }) };
 const UP_SERVER = `nats://127.0.0.1:${await freePort()}`;
+// A space `space create` prepares and nothing starts, for a broker saved with the broker preset. Its
+// configuration path carries the token, so the reaper can claim that broker.
+const presetRoot = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}service-commands-presetbroker-`));
+const PRESET_SPACE = "servicecommandspreset";
 const upCotal = (args: string[]) => cotal(args, 180_000, upAt);
 const out = (run: ReturnType<typeof cotal>) => `${run.stdout ?? ""}${run.stderr ?? ""}`;
 /** A plain `logs --follow` in `at`, read until it exits. */
@@ -81,6 +86,7 @@ let stackUp = false;
 let managerUp = false;
 let helloUp = false;
 let upStackUp = false;
+let presetBrokerUp = false;
 try {
   if (process.platform !== "linux") console.log("  - SKIP every cell: the native manager child is Linux-only");
   else {
@@ -222,10 +228,31 @@ try {
     check("  and its text says so, with no cotal manager start and no claim that none was started",
       gone.status === 2 && out(gone).includes("is no longer there; nothing was read") && /Next\s+start the stack again with `cotal up`\s*$/.test(out(gone))
         && !out(gone).includes("cotal manager start") && !out(gone).includes("no manager has been started"), out(gone));
+
+    // ---- A preset broker stops even when its log file was moved away -----------------------------
+    const presetSpace = cotal(["space", "create", PRESET_SPACE, "--root", presetRoot]);
+    check("space create prepares a space for a preset broker", presetSpace.status === 0, out(presetSpace));
+    const { findNatsServer } = await import("../../implementations/cli/src/lib/nats-bin.js");
+    const presetServer = `nats://127.0.0.1:${await freePort()}`, log = join(presetRoot, "logs", "broker.log"), config = join(presetRoot, ".cotal", "broker.conf");
+    mkdirSync(dirname(log), { mode: 0o700 });
+    writeFileSync(config, `listen: ${new URL(presetServer).host}\nlog_file: ${JSON.stringify(log)}\n`, { mode: 0o600 });
+    const presetAdd = cotal(["service", "add", "b0", "--preset", "broker", "--space", PRESET_SPACE, "--config", config, "--binary", realpathSync((await findNatsServer()).path), "--server", presetServer, "--log-file", log]);
+    check("service add b0 --preset broker saves it with a --log-file", presetAdd.status === 0, out(presetAdd));
+    const presetStart = cotal(["service", "start", "b0", "--space", PRESET_SPACE]);
+    presetBrokerUp = presetStart.status === 0;
+    check("  and service start b0 starts it", presetBrokerUp, out(presetStart));
+    renameSync(log, `${log}.moved`);
+    const presetStop = cotal(["service", "stop", "b0", "--space", PRESET_SPACE, "--yes"]);
+    presetBrokerUp = presetStop.status !== 0;
+    check("  and with its log file moved away, service stop b0 --yes still stops it", presetStop.status === 0 && out(presetStop).includes("Original broker process exited"), out(presetStop));
   }
 } catch (e) {
   check(`suite ran without throwing: ${e instanceof Error ? e.message : String(e)}`, false, e instanceof Error ? e.stack : e);
 } finally {
+  if (presetBrokerUp) {
+    const stop = cotal(["service", "stop", "b0", "--space", PRESET_SPACE, "--yes"]);
+    check("teardown stops the preset broker", stop.status === 0, out(stop));
+  }
   if (upStackUp) {
     const down = upCotal(["down"]);
     check("teardown stops the plain stack", down.status === 0, out(down));
@@ -242,7 +269,7 @@ try {
     const down = cotal(["down"]);
     check("cotal down stops the sandboxed stack", down.status === 0, out(down));
   }
-  for (const dir of [home, root, upHome, upRoot]) rmSync(dir, { recursive: true, force: true });
+  for (const dir of [home, root, upHome, upRoot, presetRoot]) rmSync(dir, { recursive: true, force: true });
   finish();
   process.exit(process.exitCode ?? 0);
 }

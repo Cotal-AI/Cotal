@@ -5544,9 +5544,14 @@ presets this machine has, and a name it does not have is refused as `DEPENDENCY_
 `cotal service add <name> --preset <preset> --help` lists a preset's options. An option the preset
 fills itself shows `(default: ...)`, such as the space's root for `--root` and `pty` for the
 manager's `--runtime`. A required option with no default is marked `(required)`, and an option that
-takes a path shows `<dir>` or `<file>`. An option the service names in camelCase takes a dashed flag,
-so the broker's `logFile` is `--log-file`, as `cotal up` spells it. A missing required option is
-refused with each one named, and the refusal prints the command line with them.
+takes a path shows `<dir>`, `<file>` or `<path>`. A `<dir>` or `<file>` option takes the absolute path
+of one that exists, and a relative one is refused. An option the service names in camelCase takes a
+dashed flag, so the broker's `logFile` is `--log-file <path>`, as `cotal up` spells it, and `add`
+takes it as `cotal up --log-file` does: a relative path is made absolute against the folder `add`
+runs in, and the file need not exist yet. A missing required option is refused with each one named,
+and the refusal prints the command line with them. That line also names each option whose default
+the space cannot fill yet, such as the broker's `--server <url>` in a space with no registered
+broker, so it works as printed.
 
 A preset's options describe the service and never choose its space. `add` saves into the space
 `--space` names, or else the selected space or the folder's, as other commands resolve it.
@@ -5554,9 +5559,11 @@ A preset's options describe the service and never choose its space. `add` saves 
 `add` checks the options against the preset's schema, and checks that each declared path exists
 with its required protection. It does not check that a root or credential suits the preset, such
 as a root's auth mode or which credential a file holds. Those are checked when the service starts.
-A refusal names the option or field at fault. Option values are not printed, except the `broker`
-preset's `server`: `add` checks it against the address rules a start applies, and its refusal quotes
-the address unless it holds an `@`, which may be a credential.
+A refusal names the option or field at fault, by its flag on a preset add, such as `--log-file`. A
+value the preset's schema refuses gives the preset's help as its Next:
+`cotal service add <name> --preset <preset> --help`. Option values are not printed, except the
+`broker` preset's `server`: `add` checks it against the address rules a start applies, and its
+refusal quotes the address unless it holds an `@`, which may be a credential.
 
 `--file` imports a version-1 definition. This one runs a program and treats it as ready once its
 loopback health URL answers 200:
@@ -8942,11 +8949,13 @@ already be private. Without one, the intake appends to a private instance-keyed 
 service records. Feedback records and logs remain private local data and are retained on removal.
 
 The `broker` preset uses `nats-broker`. It requires a prepared local `root`, a protected existing
-`config` inside that root's `.cotal`, an absolute `binary` and one explicit `server` address. It
-prepares no trust, generates no configuration and starts no other service. Legacy broker custody,
-known shared registrations, maintenance and mismatched transport refuse. Its creation-pinned
-direct child writes a native ports report in a fresh private launch directory, and the readiness
-check sets that report to `0600` before it reads it. Its listener must
+`config` inside that root's `.cotal`, an absolute `binary` and one explicit `server` address. An
+optional `logFile` names the log file its configuration's `log_file` writes. `add` makes a relative
+one absolute, the file need not exist, and `start` creates it owner-private. It prepares no trust,
+generates no configuration and starts no other service. Legacy broker custody, known shared
+registrations, maintenance and mismatched transport refuse. Its creation-pinned direct child writes
+a native ports report in a fresh private launch directory, and the readiness check sets that report
+to `0600` before it reads it. Its listener must
 match the declared IP, port and transport. `add` refuses a `server` that is not one `nats://` or
 `tls://` URL naming an IP literal, and DNS, wildcard and mapped-IPv6 targets, so none is saved. A
 definition saved before that check refuses on start, before launch, naming its `server` option and

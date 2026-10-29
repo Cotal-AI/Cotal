@@ -22,8 +22,9 @@ export interface LoadedServiceAdapter extends ResolvedServiceAdapter {
 }
 
 /** Resolve only cached data during add, previews and semantic validation. Executable hooks are
- *  materialized separately, under the ordinary version-locked extension import path. */
-export function resolveServiceAdapter(name: string, options: Readonly<Record<string, unknown>>, checkOptions = true): ResolvedServiceAdapter {
+ *  materialized separately, under the ordinary version-locked extension import path. `label` gives
+ *  how an option reads in a refusal of its value, such as the flag a preset gives it. */
+export function resolveServiceAdapter(name: string, options: Readonly<Record<string, unknown>>, checkOptions = true, label?: (option: string) => string): ResolvedServiceAdapter {
   const registered = registry.all<LocalProcess>("local-process").find((component) => component.name === name);
   const owners = installedExtensionsEnabled() ? loadExtensionsManifest().extensions.filter((extension) => extensionLocalProcesses(extension).some((component) => component.name === name)) : [];
   if (owners.length > 1) throw new CommandFailure("refused", "CONFLICT", "several installed packages claim this service adapter; no provider was chosen");
@@ -32,7 +33,7 @@ export function resolveServiceAdapter(name: string, options: Readonly<Record<str
   if (!cached?.service) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "no installed local-process provider declares this service adapter; install or update its extension explicitly before adding or starting the definition");
   if (owner?.pkg.startsWith("@cotal-ai/") && owner.version !== cliVersion()) throw new CommandFailure("refused", "CONFLICT", "the first-party service adapter and this CLI have different versions; run `cotal update` before use");
   const declaration = serviceAdapterDeclaration(JSON.parse(JSON.stringify(cached.service)));
-  if (checkOptions) { validateServiceAdapterOptions(declaration, options); validateServiceAdapterPaths(declaration, options); }
+  if (checkOptions) { validateServiceAdapterOptions(declaration, options, label); validateServiceAdapterPaths(declaration, options, label); }
   const pin = { name, package: owner?.pkg ?? null, version: owner?.version ?? cliVersion(), declarationSha256: serviceMetadataDigest(declaration) };
   if (registered && (!registered.service || serviceMetadataDigest(serviceAdapterDeclaration(registered.service)) !== pin.declarationSha256)) throw new CommandFailure("refused", "CONFLICT", "the loaded service provider disagrees with its cached declaration; no changed schema was silently adopted");
   return { pin, declaration };
