@@ -88,6 +88,8 @@ async function serveLocal(desktop: boolean): Promise<void> {
     env: process.env,
     // The person's decision on a pending request reaches only the native session that asked.
     ...(feed ? { notify: (session, notice) => feed.notifyApproval(session, notice) } : {}),
+    ...(feed ? { turn: (session, id, text) => feed.sendTurn(session, id, text) } : {}),
+    participate: (connection) => connection.agent.participateInTurns(),
   });
   feed?.onNative((event) => host.nativeEvent(event));
   let rearm: (connection?: GatewayConnection, fireNow?: boolean) => void = () => {};

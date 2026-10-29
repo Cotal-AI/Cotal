@@ -102,6 +102,8 @@ export interface ClaudeHandleDeps {
   surfaced?: (items: readonly InboxItem[]) => void;
   /** False when native ingress owns delivery and these hooks observe lifecycle only. */
   delivery?: boolean;
+  /** Allow run-turn lifecycle and exact yield correlation while peer inbox delivery stays disabled. */
+  turns?: boolean;
 }
 
 /** Prefixed to a batch containing anything whose previous delivery went unconfirmed. */
@@ -310,7 +312,7 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
    *  goal ids commit as surfaced (arming the automatic `done`) only when the reply reached the
    *  runtime — a lost frame re-surfaces them instead of yielding for work the model never saw. */
   const surfaceTurns = (agent: MeshAgent, ev: HookEvent): string | undefined => {
-    if (deps.delivery === false) return undefined;
+    if (deps.delivery === false && deps.turns !== true) return undefined;
     const peek = agent.peekPendingTurns();
     if (!peek) return undefined;
     const rec = inFlight.get(ev);
