@@ -3075,7 +3075,8 @@ the folder itself only: `cotal up`, `cotal down`, `cotal space show` and the fol
 heading says what this folder holds and the `cotal up` that starts it. When that stack's last `up`
 or `down` ended before it recorded an outcome, a member's unconfirmed stop can keep `cotal up`
 refusing, so the note names `cotal status` there instead, whose Next names the step that finishes
-or settles it. A refusal there keeps that
+or settles it. `cotal status` there leaves the note out, in `--json` too, when it shows that stop's
+block under `This folder's space`. A refusal there keeps that
 note whole, as for a selection whose stack is stopped, which names its own `cotal up` under Next.
 `--json` carries the same note in
 `warnings` as `FOLDER_SPACE_NOT_RUNNING`, whose `target` names the folder's `space`, its `state`
@@ -3289,7 +3290,8 @@ under the selected space, names the member, the earlier stop as `operation <id>`
 stop as `stop request <request-id>`, and offers `cotal down --abandon-stop <request-id> --yes` with
 that stop request ID, which their refusal names too, and the member's `service status`, in place of
 `up --root` and of a step that names `cotal up`. Run in that folder while another space is selected,
-`status` says the same under `This folder's space` with the same Next first. A stack there whose
+`status` says the same under `This folder's space` with the same Next first, and leaves out the
+folder note that names `cotal status`. A stack there whose
 last `up` or `down` has no recorded outcome and that is not blocked settles when it starts, so Next
 names the `cotal up` that starts it there.
 `--json` carries the same as `folder.stackBlock`. A manager stop is decided by the manager's own
