@@ -1,5 +1,11 @@
 # @cotal-ai/connector-core
 
+## 0.121.6
+
+### Patch Changes
+
+- b74d18e: Label broker redelivery separately from model handling: frames keep the broker delivery count and say the prior model handoff is unknown when no separate handoff evidence exists.
+
 ## 0.121.5
 
 ### Patch Changes
