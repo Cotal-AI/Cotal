@@ -25,7 +25,7 @@ import {
 import {
   EpEnvelopeError, parseEndpointRequest, checkRequestSubjectAgreement, assertClassMatches,
   assertArgsValid, assertOutputValid, EP_BIND_REFUSED, EP_TARGET_UNMAPPED,
-  type EndpointRequest, type EndpointReply, type EpClass, type EpBindRefusedDetail,
+  type EndpointRequest, type EndpointReply, type EpClass, type EpBindRefusedDetail, type EpEffectOutcome,
 } from "./endpoint-envelope.js";
 import { compileContract, assertCompiledContract, VOID_SCHEMA, type CompiledContract } from "./schema-profile.js";
 import { assertServeGrantAuthorized, type EpServeGrant } from "./endpoint-service.js";
@@ -471,6 +471,9 @@ function encodeReply(reply: EndpointReply): Uint8Array {
     let env: EndpointRequest | undefined;
     let dispatched = false;
     let reply: EndpointReply;
+    // Set only once the handler has returned a value. A throw leaves it unset: the loop cannot
+    // tell how far that handler got, so the reply keeps the outcome the handler stated.
+    let ran: EpEffectOutcome | undefined;
     try {
       const originalEnvelope: unknown = JSON.parse(dec.decode(msg.data));
       env = parseEndpointRequest(originalEnvelope);
@@ -551,8 +554,12 @@ function encodeReply(reply: EndpointReply): Uint8Array {
         return; // cast: the responder MUST NOT reply (§13.5)
       }
       const data = await def.handler(ctx);
+      // The handler returned. The output check below throws into the same catch as a handler
+      // throw, so this mark is what makes that refusal `executed` (SPEC 13.3). A success carries
+      // no error, so a replacement of this reply reads the same mark.
+      ran = "executed";
       // §13.7: the reply validates against the output schema BEFORE it is published, under the
-      // same fixed budget as args — an invalid reply is a server bug and fails loud, never
+      // same fixed budget as args. An invalid reply is a server bug and fails loud, never
       // reaches the caller as success.
       assertOutputValid(def.validate.output, data);
       reply = successReply(env.id, data);
@@ -563,14 +570,17 @@ function encodeReply(reply: EndpointReply): Uint8Array {
         : { code: "internal", message: (err as Error)?.message ?? String(err) };
       // §13.3: a refusal raised before dispatch MUST say nothing ran, and an omitted outcome reads
       // as `unknown`. Deciding it here, from where the loop stands, covers every check ahead of the
-      // handler, including one added later and a body that never parsed into an envelope.
+      // handler, including one added later and a body that never parsed into an envelope. `ran`
+      // is set only after the handler returns, so the output check states `executed` while a
+      // handler throw keeps the outcome it stated.
       // The id echoes the request where one parsed; the reply subject is already nonce-scoped
       // to exactly this request's caller, so attribution never rides the echo.
-      reply = { v: 1, id: env?.id ?? "invalid", ok: false, error: dispatched ? error : { ...error, outcome: "not-executed" } };
+      const stated = ran ?? (dispatched ? error.outcome : "not-executed");
+      reply = { v: 1, id: env?.id ?? "invalid", ok: false, error: stated === undefined ? error : { ...error, outcome: stated } };
     }
-    // Replacing a reply that cannot be serialized or published changes nothing about whether the
-    // command ran, so each replacement below keeps the outcome the replaced reply stated.
-    const outcome = reply.error?.outcome;
+    // A success carries no error, so its replacement reads `ran`. Every other reply already
+    // carries the outcome it stated.
+    const outcome = ran ?? reply.error?.outcome;
     let bytes: Uint8Array;
     try {
       bytes = encodeReply(reply);
