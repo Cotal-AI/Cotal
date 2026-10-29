@@ -150,7 +150,11 @@ pipe, which is what lets Codex's own TUI attach to the very thread the mesh is d
   path, and `ls -t .cotal/codex/*/host.log` finds it after the fact). Attached, a failure is also
   reported on the terminal; detached, that report goes to the pty, so the file is the durable copy.
 - **Presence from events.** working/idle/waiting are derived from the app-server event stream;
-  approval requests relay an `approval` condition. A failed turn maps its native
+  a user-input request's temporary waiting presence does not end the host turn. A completed
+  native turn still yields `done` for its surfaced workflow turn after the host answers a
+  user-input request, even if no later command or MCP item runs. Explicit `blocked` and
+  `handoff` yields remain unchanged.
+  Approval requests relay an `approval` condition. A failed turn maps its native
   `codexErrorInfo` into the closed condition vocabulary and preserves that value in
   `condition.source`. Presence writes leave the host in the order the events arrived, so a
   turn that fails or asks for approval in the tick it started keeps its condition until the
