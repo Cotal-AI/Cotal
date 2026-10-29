@@ -38,11 +38,14 @@
 import type { BrowserContractSource } from "@cotal-ai/core/browser-validators-build";
 import type { ManagerVitals } from "./vitals.js";
 import {
+  buildClusterArtifacts,
+  buildClusterDocument,
   serviceContractTable,
   singleDocumentClosure,
   TURN_INPUT_SCHEMA,
   TURN_OUTPUT_SCHEMA,
   VOID_SCHEMA,
+  type ClusterDocument,
   type CompiledContract,
   type ContractClosureManifest,
   type EpAuthzMode,
@@ -1371,36 +1374,8 @@ export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: Compile
  *
  *  40 = `ps`/`inspect` add optional joinHealth for a launch whose bounded wait elapsed without
  *  a join. Process liveness remains separate, and an exact-incarnation late join clears it. */
-export function managerClusterDocument(): {
-  urn: string;
-  revision: number;
-  attributes: never[];
-  events: never[];
-  commands: Array<{
-    name: string;
-    class: "ephemeral";
-    targeted: boolean;
-    modes?: EpAuthzMode[];
-    capability: string;
-    inputDigest: string;
-    outputDigest: string;
-  }>;
-} {
-  return {
-    urn: MANAGER_CLUSTER_URN,
-    revision: 40,
-    attributes: [],
-    events: [],
-    commands: ROWS.map((r) => ({
-      name: r.name,
-      class: "ephemeral" as const,
-      targeted: r.targeted,
-      ...(r.modes ? { modes: r.modes } : {}),
-      capability: r.capability,
-      inputDigest: singleDocumentClosure(r.input).closureDigest,
-      outputDigest: singleDocumentClosure(r.output).closureDigest,
-    })),
-  };
+export function managerClusterDocument(): ClusterDocument {
+  return buildClusterDocument(MANAGER_CLUSTER_URN, 40, ROWS);
 }
 
 /** Revision, count, and names from the shipped cluster document. Reached smokes derive surface pins from this. */
@@ -1416,7 +1391,7 @@ export function managerShippedSurface(): { revision: number; commandCount: numbe
 
 /** Public, immutable source artifacts used by both local registration and the remote
  * host-registration protocol. Exporting the same values avoids a second manager contract dialect. */
-export function managerAuthorityContractSource(): { document: ReturnType<typeof managerClusterDocument>; artifacts: unknown[] } {
+export function managerAuthorityContractSource(): { document: ClusterDocument; artifacts: unknown[] } {
   return { document: managerClusterDocument(), artifacts: managerContractArtifactValues() };
 }
 
@@ -1426,14 +1401,12 @@ export function managerAuthorityContractSource(): { document: ReturnType<typeof 
  *  spec carries the closure digest. Returned together so the manager publishes both then registers
  *  under the closure digest. */
 export function managerClusterArtifacts(): {
-  document: ReturnType<typeof managerClusterDocument>;
+  document: ClusterDocument;
   rootDigest: string;
   manifest: ContractClosureManifest;
   closureDigest: string;
 } {
-  const document = managerClusterDocument();
-  const { manifest, closureDigest } = singleDocumentClosure(document);
-  return { document, rootDigest: manifest.root, manifest, closureDigest };
+  return buildClusterArtifacts(managerClusterDocument());
 }
 
 /** The manager's contract data as a host's build-time generator takes it (`generateBrowserContracts`
