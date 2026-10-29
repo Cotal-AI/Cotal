@@ -1,5 +1,14 @@
 # @cotal-ai/runtime
 
+## 0.121.5
+
+### Patch Changes
+
+- 9aec92a: Call `timer.unref()` directly on the loop-lag tick timer in `host-starvation.ts` instead of `timer.unref?.()`, removing the misleading DOM/bundler comment and failing loudly if a timer lacks `unref`.
+- @cotal-ai/core@0.121.5
+  - @cotal-ai/lang@0.121.5
+  - @cotal-ai/workspace@0.121.5
+
 ## 0.121.4
 
 ### Patch Changes

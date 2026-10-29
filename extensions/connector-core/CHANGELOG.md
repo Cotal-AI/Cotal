@@ -1,5 +1,11 @@
 # @cotal-ai/connector-core
 
+## 0.121.5
+
+### Patch Changes
+
+- 339a92e: Keep live mentions on unmuted focus channels retrievable as pull-only bodies when exclusion tracking makes channel recall unsafe, while preserving the incomplete-recall warning and existing ambient handling.
+
 ## 0.121.4
 
 No changes in this release.

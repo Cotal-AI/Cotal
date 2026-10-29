@@ -1,5 +1,14 @@
 # @cotal-ai/auth
 
+## 0.121.5
+
+### Patch Changes
+
+- d8ad20c: A multi-space auth service host and auth callout host list the spaces they serve or answer for in their ready line in manifest order, as the line's other lists already did, instead of the order the lanes finished opening.
+- @cotal-ai/core@0.121.5
+  - @cotal-ai/lang@0.121.5
+  - @cotal-ai/workspace@0.121.5
+
 ## 0.121.4
 
 ### Patch Changes
