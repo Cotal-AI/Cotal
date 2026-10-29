@@ -1,5 +1,26 @@
 # @cotal-ai/cli
 
+## 0.121.3
+
+### Patch Changes
+
+- a90d7ba: Take the broker preset's `--log-file` as `cotal up --log-file` takes it: help shows `<path>`, `add` refuses an empty value or one with control characters and saves a relative path made absolute against the folder it runs in, the file need not exist yet, and its description no longer says only `cotal up` prepares it. A preset add's missing-option refusal and bare `service` now also name `--server <url>` when the space has no registered broker, so the printed line works as given. A schema or path refusal on a preset add names the flag typed, such as `--config`, instead of the adapter's option key, and a schema refusal gives the preset's `--help` as its Next. `service show` and `service remove` now resolve a preset name to the space's one service built on that preset, as the other service verbs do.
+- 9732c12: `cotal down` now calls an extension-removal reservation (`removing:<pid>`) stale only when its owner is proven gone or is not a pid. When the kernel will not report whether the owner pid is running, the stop refuses naming that pid and preserves the file without advising the operator to delete a reservation whose removal may still be in progress.
+- 6990d29: Fix teardown of additive ledgers from the retired `spawn -f`. `down -f` now reports the actual membership read failure, and static teardown credentials carry the batched membership snapshot read they need. Channels remain retained when membership is uncertain.
+  
+  On user-auth meshes, teardown uses the signed-in deploying owner's authority rather than a synthetic static identity whose filtered roster could hide a running agent. Membership reads and channel deletion use the existing admin and channel-writer views. An older auth issuer still requires an upgrade before it can issue the snapshot read grant.
+- 36f7d62: Keep a broker that an earlier release started stoppable after an upgrade. Each instance record pins its adapter's declaration, and every control path compared that digest exactly, so a release that changed the built-in broker's declaration, even one option description as 0.121.1 did, left brokers started by 0.121.0 or 0.120.2 refusing `cotal service stop`, `cotal service logs` and `cotal down` (CONFLICT, "the selected broker pins another definition, adapter revision or stop policy") while they kept running. `cotal up` then refused to start such a stack again. A built-in or `@cotal-ai/*` adapter's instance now stays controllable while it names the same provider and runs under the stop policy that adapter declares now. A third-party adapter's instances still need their recorded version and declaration.
+- d189272: Rewrite the pid-attribution doc comments in `@cotal-ai/workspace` (`pid.ts` and `liveness.ts`) and `@cotal-ai/cli` (`down.ts`) to state the contract rules without first-person revision and review history.
+- Updated dependencies [a90d7ba]
+- Updated dependencies [fe38cbd]
+- Updated dependencies [479895c]
+- Updated dependencies [baf9576]
+- Updated dependencies [6990d29]
+- Updated dependencies [a77ac87]
+- Updated dependencies [d189272]
+  - @cotal-ai/workspace@0.121.3
+  - @cotal-ai/core@0.121.3
+
 ## 0.121.2
 
 ### Patch Changes

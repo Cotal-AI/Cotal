@@ -1,5 +1,11 @@
 # @cotal-ai/herdr
 
+## 0.121.3
+
+### Patch Changes
+
+- fe38cbd: `@cotal-ai/core` now exports `launcherSource` (and `LauncherPayload`) to build the private Node launcher script that `@cotal-ai/orca` and `@cotal-ai/herdr` write through `writeSecretFile`, parameterized by the diagnostic label and launch payload, while each runtime keeps its own temporary-directory prefix and backend transport.
+
 ## 0.121.2
 
 No changes in this release.

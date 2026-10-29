@@ -1,5 +1,21 @@
 # @cotal-ai/auth
 
+## 0.121.3
+
+### Patch Changes
+
+- 9c09cc5: `issueRemoteManagerAuthority` now maps each manager-service authority operation to its required credentials through a frozen `Record` keyed by the core operations tuple, replacing the nested ternary and its unreachable default arm.
+- Updated dependencies [a90d7ba]
+- Updated dependencies [fe38cbd]
+- Updated dependencies [479895c]
+- Updated dependencies [baf9576]
+- Updated dependencies [6990d29]
+- Updated dependencies [a77ac87]
+- Updated dependencies [d189272]
+  - @cotal-ai/workspace@0.121.3
+  - @cotal-ai/core@0.121.3
+  - @cotal-ai/lang@0.121.3
+
 ## 0.121.2
 
 ### Patch Changes

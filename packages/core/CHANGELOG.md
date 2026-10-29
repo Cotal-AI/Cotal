@@ -1,5 +1,17 @@
 # @cotal-ai/core
 
+## 0.121.3
+
+### Patch Changes
+
+- fe38cbd: `@cotal-ai/core` now exports `launcherSource` (and `LauncherPayload`) to build the private Node launcher script that `@cotal-ai/orca` and `@cotal-ai/herdr` write through `writeSecretFile`, parameterized by the diagnostic label and launch payload, while each runtime keeps its own temporary-directory prefix and backend transport.
+- 479895c: Keep the native error name in connection-close diagnostics and failed reconnect replies when the transport provides an empty message.
+- baf9576: Remove the dead chat join-watermark branch from `CotalEndpoint.pump` along with `dropWatermark` and the `joinSeq` map that remained after the per-instance chat durable was removed, while keeping `armJoin` returning the per-channel CHAT stream frontiers for `backfillArmed`.
+- 6990d29: Fix teardown of additive ledgers from the retired `spawn -f`. `down -f` now reports the actual membership read failure, and static teardown credentials carry the batched membership snapshot read they need. Channels remain retained when membership is uncertain.
+  
+  On user-auth meshes, teardown uses the signed-in deploying owner's authority rather than a synthetic static identity whose filtered roster could hide a running agent. Membership reads and channel deletion use the existing admin and channel-writer views. An older auth issuer still requires an upgrade before it can issue the snapshot read grant.
+- a77ac87: Detect silently lost seat and CLI connections sooner with native NATS heartbeats every ten seconds. Keep explicit heartbeat overrides and reconnect behavior unchanged.
+
 ## 0.121.2
 
 ### Patch Changes
