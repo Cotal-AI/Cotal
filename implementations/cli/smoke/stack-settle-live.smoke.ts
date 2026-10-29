@@ -1746,7 +1746,7 @@ try {
 
   // 19. A down interrupted after its broker exited and before it saw that exit.
   {
-    const space = "unconfirmed", other = "unconfirmed-other";
+    const space = "brokergone", other = "brokergone-other";
     const root = prepare(space), otherRoot = prepare(other);
     const started = cli(root, "up", "--server", `nats://127.0.0.1:${await freePort()}`, "--no-manager", "--json");
     track(space);
