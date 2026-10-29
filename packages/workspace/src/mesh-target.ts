@@ -758,8 +758,13 @@ function noteFolderSpaceHeld(folder: { root: string; registered: readonly string
   recordOperationWarning({ code: "FOLDER_SPACE_NOT_RUNNING", target: { space: held.space, state: held.state, root: folder.root, selected: current }, message }, { echo: false });
 }
 
-/** What a folder holds that is not running, and the step that starts it with {@link upCommand}. */
+/** What a folder holds that is not running, and the step that starts it with {@link upCommand}. A
+ *  stack whose last `up` or `down` has no recorded outcome ({@link unsettledStackOperation}) refuses
+ *  that `up` while a member's unconfirmed stop blocks it, which only `cotal status` reads, so the
+ *  note names status there. */
 export function heldSpaceNote(held: { space: string; root: string; state: "prepared" | "stopped" }): string {
+  const unsettled = unsettledStackOperation(held.root, held.space);
+  if (unsettled) return `this folder holds the space "${held.space}", and the last ${unsettled} of its stack has no recorded outcome; run \`cotal status\` here, which names the step that finishes or settles it`;
   return `this folder holds the ${held.state} space "${held.space}"; ${held.state === "prepared" ? "start" : "restart"} it with \`${upCommand(held.root, held.space)}\`${upNeedsCap(held.root, held.space) ? " or more" : ""}`;
 }
 

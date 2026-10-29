@@ -165,6 +165,13 @@
  * 18. An `up` signalled the moment it makes the root's maintenance folder, for the lock of its
  *     recovery check, before it reaches the stack. It keeps the CLI's startup notice until its own
  *     takes over, so it exits 130 with a notice, and the next `up` starts the stack.
+ * 19. A `down` interrupted after the broker it signalled exited and before it saw that exit, held
+ *     there by `COTAL_SMOKE_HOLD_AFTER_BROKER_SIGNAL`. It exits 130 saying `up` and `down` refuse until
+ *     `cotal down --abandon-stop <request> --yes`, and offers no `cotal down --yes`. `status` names the
+ *     block and leads Next with that command, with the space selected and with another one selected,
+ *     where the block shows under `This folder's space` and the note under the heading names `status`
+ *     and no `cotal up`. `up` and `down --yes` there refuse naming it; following it records the broker
+ *     failed, after which the note names `cotal up` again and the stack cycles.
  *
  * Sandboxes COTAL_HOME and every project root, and signals only pids its own stack records name.
  * Run: pnpm smoke:stack-settle:live
@@ -1735,6 +1742,60 @@ try {
     check("the next up starts the stack", started.status === 0 && pidOf(space, "stack-delivery") !== null, shown(started));
     const last = cli(root, "down", "--yes", "--json");
     check("and down --yes stops it", last.status === 0, shown(last));
+  }
+
+  // 19. A down interrupted after its broker exited and before it saw that exit.
+  {
+    const space = "brokergone", other = "brokergone-other";
+    const root = prepare(space), otherRoot = prepare(other);
+    const started = cli(root, "up", "--server", `nats://127.0.0.1:${await freePort()}`, "--no-manager", "--json");
+    track(space);
+    check(`${space}: a manager-free stack starts`, started.status === 0, shown(started));
+    assertSmokeSandboxDown(anchors.get(root), ["down", "--yes"], { cwd: root, env });
+    const stopping = spawn(process.execPath, ["--import", TSX_IMPORT, CLI, "down", "--yes"], { cwd: root, env: { ...env, COTAL_SMOKE_HOLD_AFTER_BROKER_SIGNAL: "1" }, stdio: ["ignore", "ignore", "pipe"] });
+    let downErr = "";
+    stopping.stderr!.on("data", (chunk: Buffer) => { downErr += chunk.toString(); });
+    const record = () => serviceInstances(space, "stack-broker")[0]?.record.value;
+    const held = await until(() => record()?.state === "stopping" && gone(space, "stack-broker"), 60_000);
+    const request = record()?.requestId;
+    stopping.kill("SIGINT");
+    await exited(stopping);
+    check(`${space}: a down interrupted once the broker it signalled exited exits 130, names the block and --abandon-stop, and offers no down --yes`,
+      held && stopping.exitCode === 130 && downErr.includes(`no member is running. The stop of broker is not confirmed, so up and down refuse until \`cotal down --abandon-stop ${request} --yes\` finishes the stop.`) && !downErr.includes("`cotal down --yes`"),
+      { held, request, exitCode: stopping.exitCode, stderr: downErr.slice(-600) });
+    const nextOf = (out: string) => out.includes("\nNext\n") ? out.slice(out.indexOf("\nNext\n") + 6) : "";
+    const selected = cli(home, "use", space);
+    const own = cli(root, "status");
+    check(`${space}: with it selected, status names the block, leads Next with --abandon-stop and names no cotal up`,
+      selected.status === 0 && own.stdout.includes("Stack blocked · ") && nextOf(own.stdout).split("\n")[0]!.includes(`cotal down --abandon-stop ${request} --yes`) && !/cotal up\b/.test(nextOf(own.stdout)),
+      { request, stdout: own.stdout.slice(-2500) });
+    const switched = cli(home, "use", other);
+    const away = cli(root, "status");
+    const awayNext = nextOf(away.stdout);
+    check(`${space}: with another space selected, status there names the block under this folder's space and leads Next with --abandon-stop`,
+      switched.status === 0 && new RegExp(`^This folder's space .* ${space}$`, "m").test(away.stdout) && away.stdout.includes("Stack blocked · ") && awayNext.split("\n")[0]!.includes(`cotal down --abandon-stop ${request} --yes`),
+      { request, stdout: away.stdout.slice(-2500) });
+    check(`${space}: its heading names status for that stack, and nothing there offers cotal up for it`,
+      away.stdout.includes(`this folder holds the space "${space}", and the last down of its stack has no recorded outcome; run \`cotal status\` here`) && !away.stdout.includes("restart it with") && awayNext.split("\n").filter((line) => /cotal up\b/.test(line)).every((line) => line.includes(otherRoot)),
+      { stdout: away.stdout.slice(0, 600), next: awayNext });
+    const awayJson = cli(root, "status", "--json");
+    const note = awayJson.env?.warnings?.find((warning) => warning.code === "FOLDER_SPACE_NOT_RUNNING");
+    check(`${space}: status --json carries the block and a folder note that offers no cotal up`,
+      (awayJson.env?.result?.folder as { stackBlock?: { route?: { requestId?: string } } | null } | undefined)?.stackBlock?.route?.requestId === request && note !== undefined && !note.message?.includes("cotal up"),
+      { note, folder: awayJson.env?.result?.folder });
+    const up = cli(root, "up", "--json"), down = cli(root, "down", "--yes", "--json");
+    check(`${space}: up and down --yes there refuse LIFECYCLE_BLOCKED naming that --abandon-stop`,
+      [up, down].every((run) => run.status === 2 && run.env?.error?.code === "LIFECYCLE_BLOCKED" && Boolean(run.env.error.remedy?.includes(`cotal down --abandon-stop ${request} --yes`))) && gone(space, "stack-broker"),
+      { up: shown(up), down: shown(down) });
+    const abandoned = cli(root, "down", "--abandon-stop", String(request), "--yes", "--json");
+    check(`${space}: down --abandon-stop abandons that stop with a warning and records the broker failed`,
+      abandoned.status === 0 && Boolean(abandoned.env?.warnings?.some((warning) => warning.code === "STOP_ABANDONED" && warning.target?.requestId === request)) && record()?.state === "failed", shown(abandoned));
+    const after = cli(root, "status");
+    check(`${space}: status there then names the stopped space and its cotal up`, after.stdout.includes(`this folder holds the stopped space "${space}"; restart it with \`cotal up\``) && !after.stdout.includes("Stack blocked"), { stdout: after.stdout.slice(0, 1500) });
+    const restarted = cli(root, "up", "--json");
+    track(space);
+    const final = cli(root, "down", "--yes", "--json");
+    check(`${space}: up then down cycle the stack`, restarted.status === 0 && final.status === 0 && gone(space, "stack-broker"), { up: shown(restarted), down: shown(final) });
   }
 } finally {
   for (const root of roots) cli(root, "down", "--yes", "--json");

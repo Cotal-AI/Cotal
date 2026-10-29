@@ -313,14 +313,20 @@ export async function stackDown(rootInput: string, values: ParsedArgs["values"])
 
 /** What an interrupted bare down left: the members still running, and the down that finishes it. A
  *  member it left `stopping` under a signal is stopped again by that down while it runs, and once it
- *  has exited only `--abandon-stop` settles it, so the notice names both. */
+ *  has exited only `--abandon-stop` settles it, so the notice names both while it runs. Once it no
+ *  longer runs, up and down refuse until then, so the notice names only `--abandon-stop`. */
 function stackStopInterruptNotice(root: string): string {
   const space = readStackJournal(root)?.journal.space;
   const running = space === undefined ? [] : runningStackRoles(space);
   const signalled = space === undefined ? undefined : STACK_ROLES.flatMap((role) => serviceInstances(space, STACK_DEFINITION[role])
     .filter(({ record: { value } }) => !value.nativeStopRequired && value.state === "stopping").map(({ record: { value } }) => ({ role, requestId: value.requestId })))[0];
   const left = running.length ? `${running.join(", ")} ${running.length === 1 ? "is" : "are"} still running` : "no member is running";
-  if (signalled) return `Interrupted while stopping the stack in ${root}; ${left}. The stop of ${signalled.role} is not confirmed: while it runs, \`cotal down --yes\` stops it again, and once it has exited, \`cotal down --abandon-stop ${signalled.requestId} --yes\` finishes the stop.`;
+  if (signalled) {
+    const abandon = `\`cotal down --abandon-stop ${signalled.requestId} --yes\` finishes the stop`;
+    return running.includes(signalled.role)
+      ? `Interrupted while stopping the stack in ${root}; ${left}. The stop of ${signalled.role} is not confirmed: while it runs, \`cotal down --yes\` stops it again, and once it has exited, ${abandon}.`
+      : `Interrupted while stopping the stack in ${root}; ${left}. The stop of ${signalled.role} is not confirmed, so up and down refuse until ${abandon}.`;
+  }
   return running.length
     ? `Interrupted while stopping the stack in ${root}; ${left}. Run \`cotal down --yes\` to finish the stop.`
     : `Interrupted while stopping the stack in ${root}; no member is running. Run \`cotal down --yes\` to finish its cleanup.`;

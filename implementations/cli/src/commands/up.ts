@@ -2037,6 +2037,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       // to auth mode inside `ensureControlPlane`. Open meshes normally skip this (a bare refresh has
       // nothing to heal that must be touched), but a `--runtime` request must be honored there too,
       // not silently dropped.
+      let planeHealthy = true;
       if (held.mode !== "open" || values.runtime) {
         // Warn only when the manager is genuinely REUSED: a live delivery-aware (this-build) manager
         // is kept as-is by `ensureManager`, so its runtime can't change. An old hosting manager (no
@@ -2062,7 +2063,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
           maxSessions: maxSessionsFor(held.space, maxSessions),
           noManager,
         });
-        if (!controlPlane) process.exitCode = 1;
+        if (!controlPlane) { process.exitCode = 1; planeHealthy = false; }
         // #883: a refresh that HEALED a missing manager must say so — the summary line otherwise reads
         // identically to a refresh that found everything already up, and the operator cannot tell which
         // world they are in without a second command. Only here does a started manager mean one was
@@ -2078,7 +2079,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       seedPersonaAfterUp(root);
       // The same Next a launch ends with: this mesh runs, so the steps are the ones that use and
       // stop it. A manager the refresh found or healed is what makes `spawn` one of them.
-      console.log(`\n${renderReport({ sections: [{ title: "Next", blocks: [{ kind: "commands", items: detachedNext({ manager: managerRecordState(held.space).state === "alive", machineHome: canonicalRoot(root) === canonicalRoot(homedir()), ...(values.root ? { root } : {}) }, held.space) }] }] }, "rich", process.stdout)}`);
+      console.log(`\n${renderReport({ sections: [{ title: "Next", blocks: [{ kind: "commands", items: detachedNext({ manager: managerRecordState(held.space).state === "alive", controlPlane: planeHealthy, machineHome: canonicalRoot(root) === canonicalRoot(homedir()), ...(values.root ? { root } : {}) }, held.space) }] }] }, "rich", process.stdout)}`);
       return;
     }
     const who = held ? `mesh "${held.space}" (${held.root})` : "a broker not started here";
@@ -2205,7 +2206,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       if (journal && "restore" in journal && journal.restore.attemptId === restored.attemptId)
         console.log(c.dim(`next: ${restoreNextStep(journal.state, restored.attemptId, restoreLeftOut(journal))}`));
     }
-    if (!quietRestore) console.log(`\n${renderReport({ sections: [{ title: "Next", blocks: [{ kind: "commands", items: detachedNext(detached, receiptSpace) }] }] }, "rich", process.stdout)}`);
+    if (!quietRestore) console.log(`\n${renderReport({ sections: [{ title: "Next", blocks: [{ kind: "commands", items: detachedNext({ ...detached, controlPlane }, receiptSpace) }] }] }, "rich", process.stdout)}`);
     if (restored) restoreSinks.get(restored.attemptId)?.({
       attemptId: restored.attemptId, space: restored.space, root: restored.root, server: restored.server, mode: restored.mode,
       selection: restored.selection, restoredStreams: restored.restoredStreams, targetPath: restored.targetPath, runtime: restored.runtime, brokerPid: pid,

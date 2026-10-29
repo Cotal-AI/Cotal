@@ -449,6 +449,11 @@ export async function status(args: ParsedArgs): Promise<void> {
   const folder = blocked ? unreadFolder(root, blocked) : await readFolder(root, selected, values, responder.state, gaps, hints);
   const meshes = await readMeshes(cwd, selected, Boolean(values.all), gaps, offline);
   const target = await readSelected(selected, responder, folder, gaps, hints);
+  // The note under the heading sends here for this folder's own stack cut off with no recorded
+  // outcome under another selection. A blocked one is named with its block; one that neither blocks
+  // nor stays part way settles from its members' processes when it starts.
+  const held = folderStack(folder, target);
+  if (held && !folder.stackBlock && !folder.stackUnfinished && unsettledStackOperation(held.root, held.space)) hints.push(`start it with \`cotal up\` in ${held.root}`);
   const services = readOwnedServices(selected, gaps);
   const bootAttempts: StatusResult["bootAttempts"] = blocked ? { root, state: "partial", observedAt: new Date().toISOString(), unsettled: [], additive: [], unreadable: [], elsewhere: [] } : readBootAttempts(root, gaps);
   const maintenance: StatusResult["maintenance"] = blocked ? { root, space: null, state: "unreadable", attemptId: null, next: null } : readMaintenance(root, gaps);
@@ -1348,7 +1353,8 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
     // starts it again rather than a registration to repair.
     const flagged = (target.source === "flag-server" || target.source === "flag-space-override") && target.recordedServer !== target.server;
     const offline = preflight.kind === "unreachable" && !flagged && target.origin === "up";
-    if (preflight.kind === "unreachable" && (flagged || offline)) {
+    // A blocked stack refuses that `up`, and Next names the step that clears the block instead.
+    if (preflight.kind === "unreachable" && (flagged || offline) && !(servedStack(folder, base) && folder.stackBlock)) {
       const { message, remedy } = workspaceErrorParts({ kind: "preflight", failure: "unreachable", target, pruned: !offline && preflight.prune });
       hints.push(remedy === undefined ? message : `${message}; ${remedy}`);
     }
@@ -1912,9 +1918,15 @@ function selectedOverview(r: StatusResult): Section | undefined {
 
 /** The selected space and its root when this folder's controller stack serves it: a resolved one, or
  *  a prepared one that is not started, as an `up` cut off before it registered the space leaves it. */
-function servedStack(folder: StatusResult["folder"], s: SelectedResult): { space: string; root: string } | undefined {
+function servedStack(folder: StatusResult["folder"], s: { space?: string; root?: string }): { space: string; root: string } | undefined {
   if (s.space === undefined || s.root === undefined) return undefined;
   return folder.controllerStack && folder.root === s.root && folder.processSpace === s.space ? { space: s.space, root: s.root } : undefined;
+}
+
+/** This folder's own controller stack when it does not serve the selected space. The note under the
+ *  heading sends to status when its last operation has no recorded outcome, so status names it. */
+function folderStack(folder: StatusResult["folder"], s: SelectedResult): { space: string; root: string } | undefined {
+  return folder.controllerStack && folder.processSpace !== null && !servedStack(folder, s) ? { space: folder.processSpace, root: folder.root } : undefined;
 }
 
 /** The lines that name this folder's stack operation cut off with no recorded outcome: one that keeps
@@ -1967,7 +1979,9 @@ function nextActions(r: StatusResult): Section {
   const elsewhere = dialed !== undefined && dialed.mode !== "user" && (dialed.source === "flag-server" || dialed.source === "flag-space-override")
     && r.meshes.items.find((m) => m.space === dialed.space)?.server !== dialed.server;
   const stack = servedStack(r.folder, r.selected), own = stack !== undefined;
-  const block = own ? r.folder.stackBlock : undefined;
+  // This folder's own stack is blocked the same way under another selection, and its block leads too.
+  const blocked = stack ?? folderStack(r.folder, r.selected);
+  const block = blocked ? r.folder.stackBlock : undefined;
   // A legacy static-auth stack started here whose broker or manager exited leaves its pidfile, and a
   // bare `up` in this folder starts it again on the address and store this machine recorded. An open
   // refresh restarts no manager, and an open or user-auth broker needs its mode flag again.
@@ -1975,8 +1989,8 @@ function nextActions(r: StatusResult): Section {
     && !["manual", "catalog"].includes(r.meshes.items.find((m) => m.space === r.selected.space)?.origin ?? "up");
   const exited = local ? (r.folder.processes ?? []).filter((row) => (row.name === "nats" || row.name === "manager") && row.state === "stopped" && row.pid !== null).map((row) => row.name) : [];
   if (r.selected.resolved && r.selected.connection === "broker-stopped") items.unshift({ command: `kill -CONT ${r.selected.brokerPid}`, description: "Resume the stopped broker process so it answers again" });
-  else if (block && stack) {
-    const inspect = { command: `${cmd} service status ${block.definition} --instance ${block.instanceId} --space ${stack.space}`, description: block.route.kind === "inspect" ? "Inspect the member that keeps up and down from settling" : "Inspect that member" };
+  else if (block && blocked) {
+    const inspect = { command: `${cmd} service status ${block.definition} --instance ${block.instanceId} --space ${blocked.space}`, description: block.route.kind === "inspect" ? "Inspect the member that keeps up and down from settling" : "Inspect that member" };
     items.unshift(...(block.route.kind === "abandon" ? [{ command: `${cmd} down --abandon-stop ${block.route.requestId} --yes`, description: `Abandon the unconfirmed stop of ${block.definition}; up and down refuse until then` }, inspect] : [inspect]));
   } else if (stack && r.folder.stackUnfinished) {
     const part = r.folder.stackUnfinished;
@@ -2113,10 +2127,13 @@ function maintenanceOverview(maintenance: StatusResult["maintenance"]): Section 
  *  full, as `--all` and `--wide` ask. */
 export function statusView(r: StatusResult, verbose = false, wide = false): Report {
   const selected = selectedOverview(r);
+  // This folder's own stack under another selection, with the lines it has when it is selected.
+  const held = folderStack(r.folder, r.selected), heldLines = held ? stackLines(r.folder) : [];
+  const heldSection: Section | undefined = held && heldLines.length ? { title: `This folder's space  → ${held.space}`, blocks: heldLines } : undefined;
   const owned = ownedServicesOverview(r.services);
   const attempts = bootAttemptOverview(r.bootAttempts);
   const maintenance = maintenanceOverview(r.maintenance);
-  const sections = [machineOverview(r, wide), spacesOverview(r, wide), ...(selected ? [selected] : []), ...(maintenance ? [maintenance] : []), ...(attempts ? [attempts] : []), ...(owned ? [owned] : [])];
+  const sections = [machineOverview(r, wide), spacesOverview(r, wide), ...(selected ? [selected] : []), ...(heldSection ? [heldSection] : []), ...(maintenance ? [maintenance] : []), ...(attempts ? [attempts] : []), ...(owned ? [owned] : [])];
   if (verbose) sections.push(machineSection(r.machine), extensionsSection(r.extensions), folderSection(r.folder, r.selected), ...meshesSections(r.meshes), selectedSection(r.selected, r.folder, stackDeliveryPid(r), r.store?.state === "full"));
   sections.push(nextActions(r));
   return { sections };
