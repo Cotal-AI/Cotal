@@ -38,6 +38,7 @@ export const OFFICIAL_RUNTIME_TOOLS: Readonly<Record<string, { readonly names: r
   tmux: { names: ["tmux"] },
   cmux: { names: ["cmux"], override: "CMUX_BUNDLED_CLI_PATH" },
   herdr: { names: ["herdr"] },
+  paseo: { names: ["paseo"], override: "COTAL_PASEO_BIN" },
 };
 
 /** The commands official first-party extensions add that the binary does not seed, command name →
