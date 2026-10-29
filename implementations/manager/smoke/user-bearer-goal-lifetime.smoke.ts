@@ -15,7 +15,8 @@
  *
  * The Manager, broker, signed bearer verification and expiry are real. The callout's actor-ledger
  * authorizer and permission table are fixture policy; this is not an exchange-policy proof.
- * Compatibility views and several accepted-result inputs are doubles. Instance-bound MeshAgent
+ * The legacy command view is served on the real authenticated native boundary. Several accepted-result
+ * inputs remain doubles. Instance-bound MeshAgent
  * routing is exercised separately by user-manager-transport.smoke.ts.
  */
 import { spawn } from "node:child_process";
@@ -53,6 +54,10 @@ import {
   type EpAttributedReply,
   type GoalResultFact,
   contractDigest,
+  serveEndpoint,
+  type EpCommandDef,
+  type EpServeGrant,
+  type EpServeHandle,
 } from "@cotal-ai/core";
 import {
   createCalloutAuth,
@@ -308,22 +313,38 @@ async function main() {
     });
     await startEndpoint(epCompat);
 
-    // Keep the real fetched contracts; only the supported-command view is a compatibility double.
-    await epCompat.invokeService(BASELINE_LIFECYCLE_ENDPOINT, "status");
-    const services = (epCompat as unknown as { resolvedServices: Map<string, import("@cotal-ai/core").ResolvedService> }).resolvedServices;
-    const realService = services.get(BASELINE_LIFECYCLE_ENDPOINT)!;
-    const legacyCommands = new Map(realService.commands);
-    legacyCommands.delete("goal-result");
-    services.set(BASELINE_LIFECYCLE_ENDPOINT, { ...realService, commands: legacyCommands });
+    // Serve the legacy view through the public native boundary on the manager's own scoped
+    // connection and grant. No caller cache or resolver result is replaced.
+    const native = mgr as unknown as {
+      serviceServe: { nc: NatsConnection; grant: EpServeGrant; handle: EpServeHandle };
+      managerServiceDefs(): EpCommandDef[];
+    };
+    const state = native.serviceServe;
+    const defs = native.managerServiceDefs();
+    let legacyView = true, hideSpawn = false, admissions = 0;
+    const servedDefs = defs.map((def) => def.command === "spawn" ? {
+      ...def, handler: (...args: Parameters<typeof def.handler>) => { admissions++; return def.handler(...args); },
+    } : def);
+    await state.handle.stop();
+    state.handle = serveEndpoint(state.nc, SPACE, state.grant, servedDefs, {
+      view: () => ({ commands: defs.map((def) => def.command).filter((command) =>
+        !(legacyView && command === "goal-result") && !(hideSpawn && command === "spawn")) }),
+    });
+    await state.nc.flush();
+    const compatStatus = await epCompat.invokeService(BASELINE_LIFECYCLE_ENDPOINT, "status");
+    check("COMPAT: real non-follow status remains usable", compatStatus.reply.ok === true, compatStatus.reply);
+    const realService = await epCompat.describeService(BASELINE_LIFECYCLE_ENDPOINT);
+    check("COMPAT: native descriptor exposes spawn but no goal-result", realService.commands.has("spawn") && !realService.commands.has("goal-result"), [...realService.commands.keys()]);
 
     let mutationSubmits = 0;
     const compatNc = (epCompat as unknown as { nc: NatsConnection }).nc;
     const publish = compatNc.publish.bind(compatNc);
-    compatNc.publish = (subject, data, options) => {
+    const compatPublish: typeof publish = (subject, data, options) => {
       const request = parseEpSubject(subject);
       if (request?.plane === "request" && request.command === "spawn") mutationSubmits++;
       publish(subject, data, options);
     };
+    compatNc.publish = compatPublish;
     const compatError = await outcomeError(epCompat.invokeService(
       BASELINE_LIFECYCLE_ENDPOINT, "spawn", { name: "compat-test", agent: "delayed-join" }, { follow: true },
     )).finally(() => { compatNc.publish = publish; });
@@ -331,6 +352,16 @@ async function main() {
     check("COMPAT: message provides actionable upgrade notice", compatError?.message.includes("does not support \"goal-result\"") === true);
     check("COMPAT: exactly zero mutation submits occurred", mutationSubmits === 0, { mutationSubmits });
     check("COMPAT: preserves not-executed outcome", compatError?.outcome === "not-executed");
+    check("COMPAT: actual native spawn handler admitted nothing", admissions === 0, { admissions });
+    hideSpawn = true;
+    await epCompat.describeService(BASELINE_LIFECYCLE_ENDPOINT, { refresh: true });
+    compatNc.publish = compatPublish;
+    const targetMissing = await outcomeError(epCompat.invokeService(
+      BASELINE_LIFECYCLE_ENDPOINT, "spawn", { name: "missing-target", agent: "delayed-join" }, { follow: true },
+    )).finally(() => { compatNc.publish = publish; });
+    check("COMPAT: target command remains required when goal-result is absent", targetMissing?.code === "not-found" && targetMissing.message.includes('command "spawn"'), targetMissing);
+    check("COMPAT: absent target publishes and admits no mutation", mutationSubmits === 0 && admissions === 0, { mutationSubmits, admissions });
+    hideSpawn = false;
     await epCompat.stop();
     const unhandled: unknown[] = [];
     const onUnhandled = (reason: unknown) => { unhandled.push(reason); };
@@ -363,52 +394,43 @@ async function main() {
     });
     await startEndpoint(epRetryCompat);
 
-    // Candidate 1: Real service commands (with goal-result), but bound to epoch 999 (manager fences before effects)
-    const cand1Service = {
-      ...realService,
-      responder: { instanceId: mgrIid, epoch: 999 },
+    // The first real request carries a stale bind and is fenced by the real serve boundary.
+    // Its observed split changes the next native describe to the legacy view before re-resolve.
+    legacyView = false;
+    let splits = 0, retrySubmits = 0;
+    epRetryCompat.on("split-recovered", () => { splits++; legacyView = true; });
+    const retryNc = (epRetryCompat as unknown as { nc: NatsConnection }).nc;
+    const retryPublish = retryNc.publish.bind(retryNc);
+    retryNc.publish = (subject, data, options) => {
+      const parsed = parseEpSubject(subject);
+      if (parsed?.plane === "request" && parsed.command === "spawn") {
+        retrySubmits++;
+        if (retrySubmits === 1) {
+          const request = JSON.parse(new TextDecoder().decode(data));
+          request.bind = { instanceId: mgrIid, epoch: 999 };
+          data = new TextEncoder().encode(JSON.stringify(request));
+        }
+      }
+      retryPublish(subject, data, options);
     };
-
-    // Candidate 2: Real service commands EXCEPT goal-result removed (simulating 0.53 legacy manager)
-    const cand2Commands = new Map(realService.commands);
-    cand2Commands.delete("goal-result");
-    const cand2Service = {
-      ...realService,
-      commands: cand2Commands,
-      responder: { instanceId: mgrIid, epoch: 0 },
-    };
-
-    const resolvedMap = new Map<string, unknown>();
-    Object.defineProperty(epRetryCompat, "resolvedServices", {
-      get() {
-        return {
-          get(k: string) {
-            return resolvedMap.get(k);
-          },
-          set(k: string, v: unknown) {
-            resolvedMap.set(k, v);
-          },
-          delete(k: string) {
-            resolvedMap.delete(k);
-            resolvedMap.set(k, cand2Service);
-          },
-        };
-      },
-    });
-    resolvedMap.set(BASELINE_LIFECYCLE_ENDPOINT, cand1Service);
 
     const retryCompatError = await outcomeError(epRetryCompat.invokeService(
       BASELINE_LIFECYCLE_ENDPOINT,
       "spawn",
       { name: "retry-compat", agent: "delayed-join" },
       { follow: true },
-    ));
+    )).finally(() => { retryNc.publish = retryPublish; });
 
     check("COMPAT-RETRY: re-resolved service lacking goal-result refuses with expired or failed-precondition", retryCompatError?.code === "expired" || retryCompatError?.code === "failed-precondition");
     check("COMPAT-RETRY: preserves original not-executed outcome", retryCompatError?.outcome === "not-executed");
     check("COMPAT-RETRY: message explains goal-result requirement", retryCompatError?.message.includes("goal-result") === true);
     check("COMPAT-RETRY: carries bind refusal detail", (retryCompatError?.details ?? []).some((d) => d.kind === EP_BIND_REFUSED));
+    check("COMPAT-RETRY: actual native bind fence caused one re-resolution", splits === 1 && admissions === 0, { splits, admissions });
+    check("COMPAT-RETRY: only the fenced request was published, never a second mutation", retrySubmits === 1, { retrySubmits });
     await epRetryCompat.stop();
+    await state.handle.stop();
+    state.handle = serveEndpoint(state.nc, SPACE, state.grant, defs, { public: true });
+    await state.nc.flush();
 
     // ==================================================================
     // 3. STOP CLEANUP: ep.stop() cancels owned follow waits promptly
@@ -1009,7 +1031,7 @@ async function main() {
     await cleanup();
   }
 
-  if (pass + fail !== 63) throw new Error(`lifetime suite executed ${pass + fail} checks, expected 63`);
+  if (pass + fail !== 70) throw new Error(`lifetime suite executed ${pass + fail} checks, expected 70`);
   console.log(`\nSmoke suite completed: ${pass} passed, ${fail} failed.`);
   emitSentinel({ passed: pass, failed: fail });
   if (fail > 0) process.exitCode = 1;
