@@ -102,8 +102,9 @@
  *     and reuses it, and its notice says the earlier up was interrupted with every member running.
  *     After a `down`, a bare `up` there keeps the `--max-sessions` that redefined it.
  *  8. An upgrade. Each member record pins its built-in adapter at the release that wrote it. With
- *     every pin set to an earlier release and the declarations unchanged, `down` stops the running
- *     stack, `up` starts it again and a later `down` stops it.
+ *     every pin set to an earlier release and another declaration, as a changed option description
+ *     makes, `service logs` reads the broker, `down` stops the running stack, `up` starts it again
+ *     and a later `down` stops it.
  *  9. A `down` killed mid-stop. Killed while the broker's record is `stopping`, it leaves a broker
  *     that is gone under an unconfirmed request: `status` names that member and request, the next
  *     `down` refuses and names `down --abandon-stop <request> --yes`, which records the broker failed
@@ -1304,7 +1305,8 @@ try {
     check("down stops it again", last.status === 0 && gone("redefup", "stack-manager"), shown(last));
   }
 
-  // 8. An upgrade: this release controls member records an earlier release wrote.
+  // 8. An upgrade: this release controls member records an earlier release wrote under another
+  // declaration of each built-in adapter.
   {
     const root = prepare("upgraded");
     const port = await freePort();
@@ -1315,12 +1317,14 @@ try {
       for (const row of serviceInstances("upgraded")) {
         const adapter = row.record.value.adapter;
         if (!adapter) continue;
-        serviceInstanceStore("upgraded").commit(row.name, row, { ...row.record.value, adapter: { ...adapter, version: "0.0.1" } });
+        serviceInstanceStore("upgraded").commit(row.name, row, { ...row.record.value, adapter: { ...adapter, version: "0.0.1", declarationSha256: "0".repeat(64) } });
         pinned++;
       }
       return pinned;
     };
-    check("upgraded: every running member's record now pins an earlier release", started.status === 0 && pinEarlier() >= 3, shown(started));
+    check("upgraded: every running member's record now pins an earlier release and declaration", started.status === 0 && pinEarlier() >= 3, shown(started));
+    const logs = cli(root, "service", "logs", "stack-broker");
+    check("service logs reads the broker such a record pins", logs.status === 0, shown(logs));
     const stopped = cli(root, "down", "--yes", "--json");
     check("down stops a running stack whose member records an earlier release wrote", stopped.status === 0 && gone("upgraded", "stack-manager") && gone("upgraded", "stack-broker"), shown(stopped));
     check("upgraded: the stopped members' records pin an earlier release again", pinEarlier() >= 3, serviceInstances("upgraded").map((row) => row.record.value.adapter?.version));

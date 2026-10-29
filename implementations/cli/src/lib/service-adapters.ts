@@ -38,14 +38,21 @@ export function resolveServiceAdapter(name: string, options: Readonly<Record<str
   return { pin, declaration };
 }
 
-/** Whether two pins name the same provider and declaration. A built-in or `@cotal-ai/*` adapter is
- *  version-locked to this CLI, so its recorded version only says which release wrote the record:
- *  after an upgrade that left the declaration unchanged, instances an earlier release recorded stay
- *  controllable. Any other package keeps its version in the pin. */
-export function sameServiceAdapterPin(a: ServiceAdapterPin | undefined, b: ServiceAdapterPin | undefined): boolean {
-  if (a === undefined || b === undefined) return a === b;
-  const cliLocked = a.package === null || a.package.startsWith("@cotal-ai/");
-  return a.name === b.name && a.package === b.package && (cliLocked || a.version === b.version) && a.declarationSha256 === b.declarationSha256;
+/** Whether two resolves name the same provider, version and declaration. */
+const sameServiceAdapterPin = (a: ServiceAdapterPin, b: ServiceAdapterPin) => a.name === b.name && a.package === b.package && a.version === b.version && a.declarationSha256 === b.declarationSha256;
+
+/** Whether `current`, the adapter this CLI resolves now, controls an instance with this recorded pin
+ *  and stop policy. A built-in or `@cotal-ai/*` adapter is version-locked to this CLI, so its recorded
+ *  version and declaration only say which release wrote the record: after an upgrade that changed
+ *  either, even one description, the instance stays controllable while it names the same provider and
+ *  was launched under the stop policy that adapter declares now. Any other package must match its
+ *  recorded version and declaration. */
+export function controlsRecordedAdapter(instance: { adapter?: ServiceAdapterPin; nativeStopRequired?: true; kernelStopRequired?: true }, current: ResolvedServiceAdapter | undefined): boolean {
+  const recorded = instance.adapter;
+  if (recorded === undefined || current === undefined) return recorded === current;
+  if (recorded.package !== null && !recorded.package.startsWith("@cotal-ai/")) return sameServiceAdapterPin(recorded, current.pin);
+  const stop = current.declaration.stop;
+  return recorded.name === current.pin.name && recorded.package === current.pin.package && (instance.nativeStopRequired === true) === (stop === "native") && (instance.kernelStopRequired === true) === (stop === "kernel-exit");
 }
 
 /** Call only after an explicitly authorized operation has reserved its definition and launch. */

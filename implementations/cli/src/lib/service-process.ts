@@ -9,7 +9,7 @@ import { serviceInstallIntents } from "./service-install-intent.js";
 import { serviceUninstallIntents } from "./service-uninstall-intent.js";
 import { serviceUnitActionStore } from "./service-unit-action.js";
 import { daemonArgv } from "./self-exec.js";
-import { loadServiceAdapter, resolveServiceAdapter, sameServiceAdapterPin, type LoadedServiceAdapter, type ResolvedServiceAdapter } from "./service-adapters.js";
+import { controlsRecordedAdapter, loadServiceAdapter, resolveServiceAdapter, type LoadedServiceAdapter, type ResolvedServiceAdapter } from "./service-adapters.js";
 import { serviceDefinitionStore, validateServiceDefinition, type ServiceDefinitionSnapshot } from "./service-definitions.js";
 import { instanceProjection, observeServiceProcess, processServiceHost, requireProcessIdentity, serviceInstances, serviceInstanceStore, type ServiceCustody, type ServiceInstance, type ServiceInstanceSnapshot } from "./service-instances.js";
 import { maintenanceStackView, STACK_DEFINITION, stackMemberRecord } from "./stack-journal.js";
@@ -102,7 +102,7 @@ export async function settleRetainedNativeStop(definition: ServiceDefinitionSnap
   if (resumableSignalStop(value)) return transition(row, { state: "running", readiness: "not-checked" });
   if (!retained || retained.publication !== "published" || launch.type !== "adapter" || !value.process) return row;
   const declared = resolveServiceAdapter(launch.adapter, launch.options);
-  if (declared.declaration.stop !== "native" || !sameServiceAdapterPin(value.adapter, declared.pin) || value.definitionRevision !== definition.record.revision) return row;
+  if (declared.declaration.stop !== "native" || !controlsRecordedAdapter(value, declared) || value.definitionRevision !== definition.record.revision) return row;
   const provider = await loadServiceAdapter(declared, launch.options);
   const raw = provider.settleStop?.({ ...adapterContext(definition, value), process: { ...value.process }, requestId: retained.requestId });
   if (raw === undefined) return row;
@@ -138,7 +138,7 @@ export async function abandonRetainedNativeStop(definition: ServiceDefinitionSna
   if (retained.publication !== "published") throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "this launch's stop request file does not read as its own; nothing was abandoned", { target });
   if (launch.type !== "adapter") throw new CommandFailure("refused", "UNSUPPORTED", "only an adapter's native stop can be abandoned; nothing was abandoned", { target });
   const declared = resolveServiceAdapter(launch.adapter, launch.options);
-  if (declared.declaration.stop !== "native" || !sameServiceAdapterPin(value.adapter, declared.pin) || value.definitionRevision !== definition.record.revision)
+  if (declared.declaration.stop !== "native" || !controlsRecordedAdapter(value, declared) || value.definitionRevision !== definition.record.revision)
     throw new CommandFailure("refused", "CONFLICT", "the instance's adapter or definition changed since its launch; nothing was abandoned", { target });
   const provider = await loadServiceAdapter(declared, launch.options);
   if (!provider.abandonStop) throw new CommandFailure("refused", "UNSUPPORTED", "this service adapter cannot abandon a stop; nothing was abandoned", { target });
@@ -411,7 +411,7 @@ export async function serviceReadiness(row: ServiceInstanceSnapshot, definition:
     if (state !== "running") throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "service process ownership could not be re-established while observing readiness; no replacement was launched", { target: { instanceId: row.name, requestId: row.record.value.requestId } });
     if (definition.readiness.type === "process") return transition(row, { state: "running", readiness: "process-running" });
     if (definition.readiness.type === "adapter") {
-      if (!adapter || !row.record.value.process || !sameServiceAdapterPin(row.record.value.adapter, adapter.provider.pin)) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the service readiness has no matching pinned adapter; no provider was substituted", { target: instanceProjection(row) });
+      if (!adapter || !row.record.value.process || !controlsRecordedAdapter(row.record.value, adapter.provider)) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the service readiness has no matching pinned adapter; no provider was substituted", { target: instanceProjection(row) });
       const began = Date.now();
       let observation;
       try {
@@ -537,7 +537,7 @@ export async function startProcessService(definition: ServiceDefinitionSnapshot,
     // A crash or failed start is settled from its own evidence before the relaunch checks below.
     const selected = chosen && settleExitedInstance(chosen);
     if (selected && selected.record.value.definitionRevision !== definition.record.revision) throw staleRevisionInstance(definition, selected);
-    if (selected && !sameServiceAdapterPin(selected.record.value.adapter, declaredAdapter?.pin)) throw new CommandFailure("refused", "CONFLICT", "the recorded instance pins a different adapter declaration or package version; stop and explicitly remove its retained records before choosing a different provider", { target: instanceProjection(selected) });
+    if (selected && !controlsRecordedAdapter(selected.record.value, declaredAdapter)) throw new CommandFailure("refused", "CONFLICT", "the recorded instance pins a different adapter declaration or package version; stop and explicitly remove its retained records before choosing a different provider", { target: instanceProjection(selected) });
     if (selected) {
       refuseRecordedSupervisor(selected.record.value, "start");
       const state = observeServiceProcess(selected.record.value);
@@ -731,7 +731,7 @@ export async function prepareNativeServiceStop(definition: ServiceDefinitionSnap
     if (preserved) throw new CommandFailure("refused", "UNSUPPORTED", "a preserved-exit stop requires a declared native stop policy");
     return undefined;
   }
-  if (!sameServiceAdapterPin(selected.record.value.adapter, declared.pin) || selected.record.value.definitionRevision !== definition.record.revision) throw new CommandFailure("refused", "CONFLICT", "the selected native service pins another definition or adapter revision");
+  if (!controlsRecordedAdapter(selected.record.value, declared) || selected.record.value.definitionRevision !== definition.record.revision) throw new CommandFailure("refused", "CONFLICT", "the selected native service pins another definition or adapter revision");
   if (selected.record.value.state === "stopped" && selected.record.value.nativeStop && gone(observeServiceProcess(selected.record.value))) return undefined;
   const retained = retainedStopRequest(selected.record.value);
   if (retained) throw retainedNativeStop(definition, selected, retained);
@@ -751,7 +751,7 @@ export async function prepareKernelServiceStop(definition: ServiceDefinitionSnap
   const value = definition.record.value;
   const declared = value.launch.type === "adapter" ? resolveServiceAdapter(value.launch.adapter, value.launch.options) : undefined;
   if (declared?.declaration.stop !== "kernel-exit") return undefined;
-  if (!sameServiceAdapterPin(selected.record.value.adapter, declared.pin) || selected.record.value.definitionRevision !== definition.record.revision || selected.record.value.kernelStopRequired !== true) throw new CommandFailure("refused", "CONFLICT", "the selected broker pins another definition, adapter revision or stop policy");
+  if (!controlsRecordedAdapter(selected.record.value, declared) || selected.record.value.definitionRevision !== definition.record.revision || selected.record.value.kernelStopRequired !== true) throw new CommandFailure("refused", "CONFLICT", "the selected broker pins another definition, adapter revision or stop policy");
   if (selected.record.value.state === "stopped" && selected.record.value.kernelStop && gone(observeServiceProcess(selected.record.value))) return undefined;
   if (goneWithoutStop(selected.record.value)) return undefined;
   if (selected.record.value.state === "stopping") throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "an earlier broker stop request is retained without its exact-exit receipt; it was not resubmitted", { target: instanceProjection(selected) });
@@ -774,7 +774,7 @@ export function preflightProcessServiceStop(definition: ServiceDefinitionSnapsho
   if (neverLaunched(value)) return;
   const declared = launch.type === "adapter" ? resolveServiceAdapter(launch.adapter, launch.options) : undefined;
   if (declared?.declaration.stop === "native") {
-    if (!sameServiceAdapterPin(value.adapter, declared.pin) || value.definitionRevision !== definition.record.revision) throw new CommandFailure("refused", "CONFLICT", "a selected native incarnation pins another definition or adapter; no service was stopped");
+    if (!controlsRecordedAdapter(value, declared) || value.definitionRevision !== definition.record.revision) throw new CommandFailure("refused", "CONFLICT", "a selected native incarnation pins another definition or adapter; no service was stopped");
     if (gone(state) && value.state === "stopped" && value.nativeStop) return;
     if (state !== "running" || !value.process) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "a selected native service has no attributable live process or retained returned stop; no new stop was submitted");
     return;
@@ -836,7 +836,7 @@ export async function stopProcessService(definition: ServiceDefinitionSnapshot, 
     const launch = definition.record.value.launch;
     const declared = launch.type === "adapter" ? resolveServiceAdapter(launch.adapter, launch.options) : undefined;
     if (declared?.declaration.stop === "native") {
-      if (!sameServiceAdapterPin(row.record.value.adapter, declared.pin) || row.record.value.definitionRevision !== definition.record.revision) throw new CommandFailure("refused", "CONFLICT", "the native service incarnation pins another definition or adapter; it was not controlled");
+      if (!controlsRecordedAdapter(row.record.value, declared) || row.record.value.definitionRevision !== definition.record.revision) throw new CommandFailure("refused", "CONFLICT", "the native service incarnation pins another definition or adapter; it was not controlled");
       if (gone(initial) && row.record.value.state === "stopped" && row.record.value.nativeStop) return { instance: row, noOp: true, nativeStop: row.record.value.nativeStop };
       const retained = retainedStopRequest(row.record.value);
       if (retained) throw retainedNativeStop(definition, row, retained);
@@ -941,7 +941,7 @@ async function stopKernelService(definition: ServiceDefinitionSnapshot, current:
   let row = current;
   const value = row.record.value, launch = definition.record.value.launch;
   if (native?.withAgents) throw new CommandFailure("refused", "UNSUPPORTED", "a broker kernel-exit stop has no agent policy; --with-agents belongs to the exact manager instance");
-  if (!sameServiceAdapterPin(value.adapter, declared.pin) || value.definitionRevision !== definition.record.revision || value.kernelStopRequired !== true) throw new CommandFailure("refused", "CONFLICT", "the broker incarnation pins another definition, adapter or stop policy; it was not controlled", { target: instanceProjection(row) });
+  if (!controlsRecordedAdapter(value, declared) || value.definitionRevision !== definition.record.revision || value.kernelStopRequired !== true) throw new CommandFailure("refused", "CONFLICT", "the broker incarnation pins another definition, adapter or stop policy; it was not controlled", { target: instanceProjection(row) });
   if (gone(initial) && value.state === "stopped" && value.kernelStop) return { instance: row, noOp: true, kernelStop: value.kernelStop };
   // Already gone without a stop of ours: record that exit under this lock. No exit is attributed
   // to a signal, and no kernel-exit receipt is written.

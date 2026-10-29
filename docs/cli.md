@@ -570,8 +570,9 @@ login to a remote mesh does not block the software update. Local manager continu
 apply before changing the installation.
 
 After an upgrade, `up`, `down` and the `service` verbs still control the stack members and
-first-party service instances an earlier release recorded, as long as their adapter's declaration
-did not change. A third-party adapter's instances stay pinned to the package version that started
+first-party service instances an earlier release recorded, even when that release declared their
+adapter differently, as long as each runs under the stop policy its adapter declares now. A
+third-party adapter's instances stay pinned to the package version and declaration that started
 them.
 
 Without `--self`, `update` keeps the installed first-party surfaces coherent with the running
