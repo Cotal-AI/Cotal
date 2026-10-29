@@ -1,5 +1,16 @@
 # @cotal-ai/cli
 
+## 0.124.2
+
+### Patch Changes
+
+- 05eba85: A stack left blocked by an unconfirmed stop is now named the same way wherever it is reported. A `cotal down` interrupted after the member it signalled exited says that `up` and `down` refuse until `cotal down --abandon-stop <request-id> --yes`, and no longer offers `cotal down --yes`, which refuses there. `cotal status` in that folder while another space is selected shows the block under `This folder's space` with the `--abandon-stop` step first in Next. The note under the heading no longer says to restart a stack whose last `up` or `down` has no recorded outcome with `cotal up`, and names `cotal status` instead. With that space selected, `status` no longer ends with `run cotal up there to restart`.
+- 6006c39: An `up -d` or refresh whose control plane is degraded, such as one whose delivery daemon exited before the boot finished, no longer offers `cotal spawn` under Next, which needs that control plane; it offers only the stop, as the other degraded outcomes do. The line `cotal down` prints while it waits out a daemon's lease row with no pidfile now wraps on a narrow terminal like the CLI's other stderr lines.
+- 8293bb2: `cotal status --components` asks for manager status with the manager-caller view a spawn holder already uses. When this machine's manager process is live, that call is pinned to the instance id the process persisted. An unknown id, or an answer from another instance, is refused rather than reported as this process serving. An answer names the instance that gave it. A probe refused before any answer says so. With no local manager process, an unpinned answer is still serving and the row names that instance. Other component probes, `ps`, and `slots` stay unchanged.
+- Updated dependencies [05eba85]
+  - @cotal-ai/workspace@0.124.2
+  - @cotal-ai/core@0.124.2
+
 ## 0.124.1
 
 ### Patch Changes
