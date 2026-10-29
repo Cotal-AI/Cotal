@@ -890,7 +890,7 @@ export async function up(args: ParsedArgs, inheritedLock?: MaintenanceLock, fres
     const fresh = args.values.root === undefined ? freshFolderRoot(args.values) : undefined;
     if (fresh) {
       mkdirSync(join(fresh, ".cotal"), { mode: 0o700 });
-      console.error(c.dim(`made ${join(fresh, ".cotal")} for this folder's records; the machine's home .cotal was not used`));
+      for (const line of hang("", `made ${join(fresh, ".cotal")} for this folder's records; the machine's home .cotal was not used`, terminalWidth(process.stderr), c.dim)) console.error(line);
     }
     const root = args.values.root === undefined ? undefined : preparedUpRoot(String(args.values.root));
     const previousCwd = process.cwd();
