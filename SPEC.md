@@ -5944,6 +5944,25 @@ split, mediated, written by the driver's commit path only.
   journal's tail, which nothing inside the journal can see, and the driver MUST refuse to resume it.
   Interior loss is the journal's own ordinal chain's.
 
+**Native personal participation.** An approved personal native lifecycle MAY opt into workflow
+turns through the manager's self-mode `turn-participate` command. The request body is empty. The
+broker-authenticated caller triple is the lifecycle being authorized. The manager MUST fresh-check
+through its issuing host that the caller is a personal `pa_…` actor, its lifecycle is current and
+active, its managed grant has foreground custody and current `run` scope, and its exact presence row
+is live. Success returns the CLOSED value `{ owner, actor, lifecycleUid, name, managerInstanceId,
+expiresAt }` and creates or renews a finite manager-local lease. The lease MUST NOT create a managed
+seat and MUST NOT add stop, attach, input or terminal custody. Missing, expired, foreign, replaced,
+revoked or disconnected lifecycles MUST be refused without fallback to another lifecycle or manager.
+A manager restart loses the lease; the personal lifecycle renews it.
+
+A hosted language `participant` effect (§14.2) binds only the personal caller in that run's immutable
+issued admission. The runtime MUST require one exact live presence row, journal the owner, actor,
+lifecycle, name and manager instance before returning the handle, and rebuild the run roster from
+that settled entry on resume. Program text cannot choose those coordinates. A `turn` to that handle
+is accepted only while the exact lease is current on the admitting manager and only from the run
+derived from the same admitted caller. The ordinary `turn-pending`, `turn-yield`, goal, cancellation
+and deadline protocol below is unchanged.
+
 **Turn notices.** A run's `turn` reaches its seat through the hosting manager, and the seat reads
 it with its own self-mode `turn-pending`. The manager MUST publish a turn notice to the seat
 whenever the set that seat's `turn-pending` would answer changes: on accepting a turn, on its

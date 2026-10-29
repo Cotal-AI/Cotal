@@ -4,7 +4,7 @@
 
 A **workflow run** is a program that coordinates agents over hours or days and survives the
 process that started it. The program is written in **Cotal Lang**, a small subset of JavaScript in
-which every interaction with the world is one of a dozen **effects** (`spawn`, `turn`, `ask`,
+which every interaction with the world is one of a dozen **effects** (`participant`, `spawn`, `turn`, `ask`,
 `checkpoint`, `sleep`, `wait`, `notify`, `monitor`, and the four concurrency scopes) and everything
 else is ordinary, pure JavaScript. Every effect is written into the run's **step journal** before
 it is performed and settled after, keyed by where in the program it happened rather than by when,
@@ -45,6 +45,20 @@ wakes an agent for one turn and returns how it yielded; `race` runs two branches
 whose recorded clock is earliest. Agents talk to each other in channels as they always do; the
 program never speaks in a channel, and the one thing it can put in front of an agent (`notify`) is a
 bounded decision record, not prose.
+
+A run started by an approved personal native conversation may bind that same session as a durable
+turn target:
+
+```js
+const session = await participant({ name: "native-session" })
+await turn(session, { name: "review", deadline: "30m" })
+```
+
+The program cannot name an actor or lifecycle. `participant()` reads the immutable run admission,
+pins the exact personal lifecycle in the journal, and refuses if that lifecycle is not live. Before
+starting the program, the conversation opts in with `cotal_turn_participate`. The manager issues a
+short lease for its self-only turn relay. The lease grants no stop, attach or terminal custody, and
+must be renewed after a reconnect or manager restart.
 
 ## The mental model
 
