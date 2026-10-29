@@ -1737,7 +1737,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
             }
           } else if (heldForRepair.storeDir !== undefined) {
             values["store-dir"] = heldForRepair.storeDir;
-            console.log(c.dim(`reopening the recorded store ${heldForRepair.storeDir}`));
+            for (const line of hang("", `reopening the recorded store ${heldForRepair.storeDir}`, terminalWidth(process.stdout), c.dim)) console.log(line);
           } else {
             const defaultStore = cotalPath("nats");
             let hasEntries = false;
@@ -2184,8 +2184,10 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     const controlPlane = planeReturned && deliveryLost === undefined;
     const detached = { pid, delivery, authService: wantUser && authService, manager, machineHome: canonicalRoot(cotalRoot()) === canonicalRoot(homedir()), ...(values.root ? { root: cotalRoot() } : {}) };
     if (!quietRestore) {
-      console.log(c.dim(`Started ${executable}.`));
-      console.log(c.green(renderDetachedSummary(detached)));
+      for (const line of hang("", `Started ${executable}.`, terminalWidth(process.stdout), c.dim)) console.log(line);
+      // The summary's continuation lines start under its text, past the `✓`.
+      const [mark, ...summary] = renderDetachedSummary(detached).split(" ");
+      for (const line of hang(`${mark} `, summary.join(" "), terminalWidth(process.stdout))) console.log(c.green(line));
       if (unnamed) console.log(c.dim(`  This folder names no space, so up started the default space "${receiptSpace}"; pass --space <name> to start another`));
       if (values.__folderNamed) console.log(c.dim(`  This new project's space is named after its folder, "${receiptSpace}"; pass --space <name> to start another`));
     }

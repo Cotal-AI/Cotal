@@ -14,14 +14,18 @@
  * registry refusal or died as a raw `Invalid URL` on the `--server` mismatch parse. A URL, and a
  * `host:port` spelling, are refused by name pointing at `--server`, and a correct bare host still
  * reaches the registry's own refusal.
+ *
+ * A repair's `reopening the recorded store`, `Started` and `✓ running in the background` lines are
+ * each one stdout line off a terminal, and on an 80-column terminal wrap at spaces, each path whole.
  * Run: pnpm smoke:up-refresh-identity:live
  */
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { delimiter, join, resolve } from "node:path";
 import { assertEphemeralBroker, scrubAmbientBrokerEnv } from "../../../packages/core/smoke/_ephemeral-only.js";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { assertScratchHeld, makeScratch } from "../../../bin/smoke/_scratch.js";
+import { clean, cotalPty } from "./_console-pty.js";
 import { assertSmokeSandboxDown, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
 
 scrubAmbientBrokerEnv();
@@ -32,7 +36,7 @@ const rootEnv = { ...process.env };
 for (const key of Object.keys(rootEnv)) if (key.startsWith("COTAL_")) delete rootEnv[key];
 
 let passed = 0;
-const EXPECTED_CHECKS = 29 + 9 + 13 + 5 + 15; // namedSpaceElsewhere + storeRecordRepair + preFieldWarning + foregroundCrashKeepsRecord
+const EXPECTED_CHECKS = 29 + 9 + 13 + 5 + 15 + 1 + 6; // namedSpaceElsewhere + storeRecordRepair + preFieldWarning + foregroundCrashKeepsRecord + storeRecordRepair's off-terminal line check + detachedLinesWrap
 const check = (name: string, ok: boolean, detail?: unknown): void => {
   if (!ok) throw new Error(`FAIL: ${name}${detail === undefined ? "" : `\n${JSON.stringify(detail, null, 2)}`}`);
   passed++;
@@ -254,6 +258,11 @@ async function storeRecordRepair(): Promise<void> {
     const repair = cotal(fixture, ["up", "--detach", "--open", "--server", fixture.server, "--space", space]);
     check("(4) the bare repair exits 0", repair.status === 0, `${repair.stdout}${repair.stderr}`);
     check("(4) the repair output names reopening the recorded store", /reopening the recorded store/.test(`${repair.stdout}${repair.stderr}`), `${repair.stdout}${repair.stderr}`);
+    const repairLines = repair.stdout.replace(/\x1b\[[0-9;]*m/g, "").split("\n");
+    check("(4) off a terminal its reopening, Started and summary lines are each one line on stdout",
+      repairLines.includes(`reopening the recorded store ${resolve(storeA)}`) && repairLines.some((l) => /^Started (bundled )?nats-server \S+ (on PATH )?at .+\.$/.test(l)) &&
+        repairLines.some((l) => /^✓ running in the background: nats-server \(pid \d+\)(, [a-z -]+)* - stop with: `cotal down`$/.test(l)) && !/reopening|Started|running in the background/.test(repair.stderr),
+      { stdout: repair.stdout, stderr: repair.stderr });
     const log = readFileSync(join(fixture.root, ".cotal", "nats.log"), "utf8");
     const lastStoreLine = log.split("\n").filter((l) => l.includes("Store Directory:")).pop() ?? "";
     check("(4) the log's last Store Directory: line names store-a/jetstream", lastStoreLine.includes(join("store-a", "jetstream")), lastStoreLine);
@@ -276,6 +285,61 @@ async function storeRecordRepair(): Promise<void> {
 
     const same = cotal(fixture, ["up", "--detach", "--open", "--server", fixture.server, "--space", space, "--store-dir", storeA]);
     check("(6) repairing with the SAME --store-dir starts", same.status === 0, `${same.stdout}${same.stderr}`);
+
+    started = !(await stop(fixture));
+  } finally {
+    if (started) await stop(fixture);
+    rmSync(fixture.home, { recursive: true, force: true });
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+}
+
+/** On an 80-column terminal a detached start and its repair wrap their `Started`, `✓ running in the
+ *  background` and `reopening the recorded store` lines at spaces. The pty's PATH holds no
+ *  nats-server, so the start names the bundled one, whose path is wider than the line and keeps a
+ *  whole line of its own. The recorded store's path takes the next line. The summary's continuation
+ *  lines start under its text, past the `✓`, with `cotal down` whole. */
+async function detachedLinesWrap(): Promise<void> {
+  const fixture = await makeFixture("pty-wrap");
+  process.env.COTAL_HOME = fixture.home;
+  process.env.XDG_CONFIG_HOME = fixture.env.XDG_CONFIG_HOME;
+  const { displayWidth, findMesh } = await import("@cotal-ai/workspace");
+  const space = "pty-wrap";
+  const PATH = (fixture.env.PATH ?? "").split(delimiter).filter((dir) => dir && !existsSync(join(dir, "nats-server"))).join(delimiter);
+  const onTerminal = async (): Promise<{ exit: number; lines: string[] }> => {
+    let shown = "";
+    const pty = cotalPty(["up", "--detach", "--open", "--server", fixture.server, "--space", space], { cwd: fixture.root, env: { ...fixture.env, PATH } as Record<string, string>, cols: 80, rows: 200 });
+    pty.onData((data) => { shown += data; });
+    const exit = await new Promise<number>((done) => pty.onExit((e) => done(e.exitCode)));
+    return { exit, lines: clean(shown).split(/\r?\n/) };
+  };
+  const startedWraps = (lines: string[]): boolean => {
+    const at = lines.findIndex((l) => /^Started bundled nats-server \S+ at$/.test(l));
+    const path = lines[at + 1] ?? "";
+    return at >= 0 && displayWidth(path) > 80 && path.endsWith("/nats-server.") && existsSync(path.slice(0, -1));
+  };
+  const summaryWraps = (lines: string[]): boolean => {
+    const at = lines.findIndex((l) => l.startsWith("✓ running in the background:"));
+    const end = lines.findIndex((l, i) => i > at && !/^ {2}\S/.test(l));
+    const summary = lines.slice(at, end);
+    return at >= 0 && summary.length > 1 && summary.every((l) => displayWidth(l) <= 80) && summary.some((l) => l.includes("`cotal down`")) &&
+      /^✓ running in the background: nats-server \(pid \d+\)(, [a-z -]+)* - stop with: `cotal down`$/.test(summary.map((l, i) => (i ? l.slice(2) : l)).join(" "));
+  };
+  let started = false;
+  try {
+    const first = await onTerminal();
+    started = first.exit === 0;
+    check("on 80 columns a fresh detached start exits 0", started, first.lines);
+    check("...its Started line breaks before the bundled nats-server's path, which keeps a whole line of its own", startedWraps(first.lines), first.lines);
+    check("...and its summary wraps under its text past the ✓, with `cotal down` whole", summaryWraps(first.lines), first.lines);
+
+    process.kill(Number(readFileSync(join(fixture.root, ".cotal", "nats.pid"), "utf8").trim()), "SIGKILL");
+    await sleep(1_000);
+    const repair = await onTerminal();
+    const store = findMesh(space)?.storeDir;
+    const at = repair.lines.indexOf("reopening the recorded store");
+    check("the repair on 80 columns exits 0, its Started and summary lines wrapped the same way", repair.exit === 0 && startedWraps(repair.lines) && summaryWraps(repair.lines), repair.lines);
+    check("...and its reopening line breaks before the recorded store, which takes the next line whole", store !== undefined && at >= 0 && repair.lines[at + 1] === store, { store, lines: repair.lines });
 
     started = !(await stop(fixture));
   } finally {
@@ -477,6 +541,7 @@ try {
   await foreignRootRefusal();
   await namedSpaceElsewhere();
   await storeRecordRepair();
+  await detachedLinesWrap();
   await preFieldWarning();
   if (passed !== EXPECTED_CHECKS)
     throw new Error(`FAIL: expected ${EXPECTED_CHECKS} checks, ran ${passed}`);
