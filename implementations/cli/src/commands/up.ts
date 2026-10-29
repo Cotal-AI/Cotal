@@ -3375,6 +3375,9 @@ export async function prepareFreshTeamBoot(file: string, opts: { space: string; 
   return { root: canonicalRoot(cotalRoot()), space: m.space, server, host: m.broker?.host, mode, idp: m.broker?.idp, runtime, manifestPath: resolve(file), prepared: eff, transport: assertServesDialHost(opts.transport, new URL(server).hostname), maxSessions: opts.maxSessions, logFile: m.broker?.logFile, logfileSizeLimit: m.broker?.logfileSizeLimit, logfileMaxNum: m.broker?.logfileMaxNum };
 }
 
+/** A stack's auth mode in words, and the manifest's `broker.auth` value that declares it. */
+const RESUME_MODE = { open: { words: "open", field: "false" }, auth: { words: "static auth", field: "static" }, user: { words: "user auth", field: "user" } } as const;
+
 /** A team boot that resumes one exact stopped controller stack whose manager was never attempted.
  *  The same manifest load, agreement, durable-on-open, runtime, reachability and connector refusals
  *  as {@link prepareFreshTeamBoot}, without the fresh zero-instance ownership gate: that gate is
@@ -3393,8 +3396,20 @@ export async function prepareResumeTeamBoot(file: string, opts: { space: string;
   const open = m.broker?.auth === false;
   const mode = open ? "open" as const : m.broker?.auth === "user" ? "user" as const : "auth" as const;
   const runtime = m.runtime ?? "pty";
-  if (server !== opts.recorded.server || mode !== opts.recorded.mode || (m.broker?.host !== undefined && m.broker.host !== opts.recorded.host))
-    throw new CommandFailure("refused", "CONFLICT", "the manifest's broker address, bind host or auth mode differs from the recorded stopped stack; nothing was resumed", { target: { space: m.space, recorded: opts.recorded, declared: { server: brokerAddressForDisplay(server) ?? "not displayable", host: m.broker?.host ?? null, mode } } });
+  // Each setting the manifest moves, with both values and the manifest change that keeps the recorded one.
+  const shown = (address: string) => brokerAddressForDisplay(address) ?? "not displayable";
+  const moved = [
+    ...(server !== opts.recorded.server ? [{ name: "broker address", recorded: shown(opts.recorded.server), declared: shown(server), keep: `set \`broker.servers\` to ${shown(opts.recorded.server)}` }] : []),
+    ...(m.broker?.host !== undefined && m.broker.host !== opts.recorded.host ? [{ name: "bind host", recorded: opts.recorded.host ?? "none", declared: m.broker.host, keep: opts.recorded.host ? `set \`broker.host\` to ${opts.recorded.host}` : "remove `broker.host`" }] : []),
+    ...(mode !== opts.recorded.mode ? [{ name: "auth mode", recorded: RESUME_MODE[opts.recorded.mode].words, declared: RESUME_MODE[mode].words, keep: `set \`broker.auth\` to \`${RESUME_MODE[opts.recorded.mode].field}\`` }] : []),
+  ];
+  if (moved.length) {
+    const named = moved.map((row) => `${row.name} (recorded ${row.recorded}, declared ${row.declared})`);
+    throw new CommandFailure("refused", "CONFLICT", `the manifest differs from the recorded stopped stack in its ${named.length > 1 ? `${named.slice(0, -1).join(", ")} and ${named.at(-1)}` : named[0]}; nothing was resumed`, {
+      target: { space: m.space, recorded: { ...opts.recorded, server: shown(opts.recorded.server) }, declared: { server: shown(server), host: m.broker?.host ?? null, mode } },
+      remedy: `${moved.map((row) => row.keep).join(" and ")} in the manifest to resume this stack, or boot the manifest as a new space in another folder prepared with \`cotal space create <space>\``,
+    });
+  }
   if (open && (m.defaults?.deliveryClass === "durable" || m.channels.some((channel) => channel.deliveryClass === "durable")))
     throw new CommandFailure("refused", "UNSUPPORTED", "this open manifest explicitly requests durable channel delivery, but the open broker has no delivery daemon; nothing was resumed", { target: { space: m.space } });
   const other = loadMeshes().filter((row) => row.space !== m.space && row.server === server);

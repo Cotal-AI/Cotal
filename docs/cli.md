@@ -8553,7 +8553,11 @@ A `team boot` in a root whose stack is up, with no `cotal down` since, refuses w
 `cotal team deploy <file>`, which adds the manifest's channels and agents to the running stack, or
 `cotal down` before the boot.
 A recorded stack resumes only after its last whole-stack stop completed and its manager was never
-attempted. Its broker inputs must be recorded, every applicable member must have its original
+attempted. The manifest's `broker.servers`, `broker.host` and `broker.auth` must match that stack.
+A manifest that differs refuses `CONFLICT` (exit 2) and names each setting that differs with its
+recorded and declared values. Its Next names the manifest change that matches the stack, or a new
+space in another folder prepared with `cotal space create <space>`.
+The stack's broker inputs must be recorded, every applicable member must have its original
 settled stopped record, and no supervisor, retained custody or earlier team boot may remain. A
 stack that an earlier team boot started refuses with `LIFECYCLE_BLOCKED`, and its Next names
 `cotal up` in the root, which starts that stack again, and `cotal team show <id>` with each earlier

@@ -24,8 +24,9 @@
  *      or with one the IdP revoked, is refused AUTH_REQUIRED before anything is saved. With the revoked
  *      one, a bare `up` of the running stack and of the stopped stack leaves the manager unattempted,
  *      and a team boot resuming the stopped stack is refused AUTH_REQUIRED before any effect, saying
- *      nothing was started or written, each naming `cotal login --idp <base>`. Signed in again, the
- *      manager starts, and a `manager restart`
+ *      nothing was started or written, each naming `cotal login --idp <base>`. A manifest without
+ *      `auth: user` is refused CONFLICT naming the auth mode, both its values and the `broker.auth`
+ *      change, in text and JSON. Signed in again, the manager starts, and a `manager restart`
  *      over it with the sign-in revoked is refused AUTH_REQUIRED before it stops anything, saying the
  *      running manager was left running. A manager left
  *      running after a sign-out is stopped by the folder's owner through `manager stop` and `down`.
@@ -785,6 +786,18 @@ try {
         plain(revokedUp.out).includes(`\nNext\n  cotal login --idp ${base}, then run bare \`cotal up\` again`) && !existsSync(managerPid), revokedUp.out);
     const stoppedForBoot = await cotal(["down", "--yes"], { cwd: root2, env, sandbox: sandbox2 });
     check("…and down stops that stack, whose manager was never attempted", stoppedForBoot.status === 0, stoppedForBoot.out);
+    // A manifest that leaves out `auth: user` declares static auth, which this stopped stack was not.
+    const staticFile = join(root2, "static.yaml");
+    writeFileSync(staticFile, `apiVersion: cotal/v1\nkind: Mesh\nspace: ${SPACE}\nbroker:\n  servers: ${server2}\nchannels:\n  general:\n    description: The general channel.\n`);
+    const modeConflict = "the manifest differs from the recorded stopped stack in its auth mode (recorded user auth, declared static auth); nothing was resumed";
+    const modeNext = "set `broker.auth` to `user` in the manifest to resume this stack, or boot the manifest as a new space in another folder prepared with `cotal space create <space>`";
+    const conflictBoot = await cotal(["team", "boot", staticFile], { cwd: root2, env });
+    check("a team boot of a manifest without auth: user is refused CONFLICT, naming only the auth mode with both values, and Next names broker.auth or a new space",
+      conflictBoot.status === 2 && field(conflictBoot.out, "Code", "CONFLICT") && plain(conflictBoot.out).includes(modeConflict) && plain(conflictBoot.out).includes(`\nNext\n  ${modeNext}`), conflictBoot.out);
+    const conflictJson = await cotal(["team", "boot", staticFile, "--json"], { cwd: root2, env });
+    const conflictError = (JSON.parse(conflictJson.out.split("\n").find((line) => line.startsWith("{")) ?? "null") as { error?: { code?: string; message?: string; remedy?: string } } | null)?.error;
+    check("…and --json carries the same detail and remedy",
+      conflictJson.status === 2 && conflictError?.code === "CONFLICT" && conflictError.message === modeConflict && conflictError.remedy === modeNext, conflictJson.out);
     const teamFile = join(root2, "team.yaml");
     writeFileSync(teamFile, `apiVersion: cotal/v1\nkind: Mesh\nspace: ${SPACE}\nbroker:\n  servers: ${server2}\n  auth: user\n  idp: ${base}\nchannels:\n  general:\n    description: The general channel.\n`);
     const revokedBoot = await cotal(["team", "boot", teamFile], { cwd: root2, env });
