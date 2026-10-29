@@ -1,5 +1,14 @@
 # @cotal-ai/cli
 
+## 0.121.4
+
+### Patch Changes
+
+- 672725a: Allow the first setup of a signed-in catalog space to bind its project root while retaining provider-owned credentials under the catalog custody root. Catalog refresh preserves the binding, existing client credential contexts keep working, and later setup refuses another project.
+- Updated dependencies [672725a]
+  - @cotal-ai/workspace@0.121.4
+  - @cotal-ai/core@0.121.4
+
 ## 0.121.3
 
 ### Patch Changes
