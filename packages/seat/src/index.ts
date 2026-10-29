@@ -1,7 +1,7 @@
 export { MAX_SOCKET_PATH, PROTOCOL_VERSION, UNATTENDED_MS, assertSocketPathFits, unattendedMs, unsupportedTransport } from "./protocol.js";
 export { launchSeat, loadSeat, RUN_MARKER_FLAG, runMarker, runMarkerOf, type LaunchSeatOpts, type SeatLaunchSpec } from "./launcher.js";
 export { adoptSeat, adoptSeatSync, type SeatHandle, type SeatAttachSession } from "./handle.js";
-export { assertSeatId, bootToken, processStartToken, readRecord, recordPath, seatId, socketPath, type SeatRecord } from "./record.js";
+export { assertSeatId, bootToken, processStartToken, processStatFields, readRecord, recordPath, seatId, socketPath, type SeatRecord } from "./record.js";
 export { censusCustodians, drainSeats, identityVerdict, reapSeat, type CustodianSighting, type SeatInventoryEntry, type SeatReapEvidence } from "./reap.js";
 export { SeatClient } from "./client.js";
 export { flockExclusiveNb, peerCredentials, type PeerCredentials } from "./peercred.js";

@@ -22,7 +22,7 @@ import {
   type ServerMessage,
 } from "./protocol.js";
 import { ConnectorDiagnosticReader } from "./diagnostic.js";
-import { RECORD_VERSION, appendPrivate, bootToken, exitPath, processStartToken, writePrivate, writeRecord, type SeatRecord } from "./record.js";
+import { RECORD_VERSION, appendPrivate, bootToken, exitPath, processStartToken, processStatFields, writePrivate, writeRecord, type SeatRecord } from "./record.js";
 import { StartupConfirmGate } from "./startup-confirm.js";
 
 export interface CustodianLaunch {
@@ -164,12 +164,8 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
   };
 
   const childGone = (): boolean => {
-    try {
-      const stat = readFileSync(`/proc/${proc.pid}/stat`, "utf8");
-      return (stat.slice(stat.lastIndexOf(") ") + 2).split(" ")[0] ?? "") === "Z";
-    } catch {
-      return true;
-    }
+    const state = processStatFields(proc.pid)?.[0];
+    return state === undefined || state === "Z";
   };
 
   /**
