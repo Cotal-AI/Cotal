@@ -111,7 +111,12 @@ export function fmtDeliveryItem(i: InboxItem): string {
 function formatItem(i: InboxItem, metadata = ""): string {
   const h = i.historical ? "(history) " : ""; // backfilled on join, so it pre-dates you and is not live
   // The broker's count, so a peer cannot forge or hide it: an earlier copy outlived its ack wait.
-  const r = i.deliveryCount !== undefined && i.deliveryCount > 1 ? `(redelivered, delivery ${i.deliveryCount}: an earlier delivery may already have run) ` : "";
+  // That is a delivery fact, not evidence of a prior context handoff. A process restart also loses
+  // every local observation of what happened before it, so preserve the unknown rather than inventing
+  // a prior run or claiming the earlier copy did not reach one.
+  const r = i.deliveryCount !== undefined && i.deliveryCount > 1
+    ? `(broker redelivery, delivery ${i.deliveryCount}: prior model handoff unknown) `
+    : "";
   const body = `${metadata}${h}${r}${fmtBody(i.text)}`;
   if (i.kind === "dm") return `[DM from ${fmtFrom(i)}] ${body}`;
   if (i.kind === "anycast") return `[@${attributionSafe(i.service ?? "")} from ${fmtFrom(i)}] ${body}`;

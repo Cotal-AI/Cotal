@@ -66,6 +66,7 @@
     "smoke:broker-floor": { "seconds": 0.9, "shard": 3 },
     "smoke:broker-migration": { "seconds": 3.8, "shard": 0 },
     "smoke:broker-policy": { "seconds": 1.3, "shard": 1 },
+    "smoke:broker-redelivery-framing": { "seconds": 66, "shard": 2 },
     "smoke:broker-teardown": { "seconds": 13.9, "shard": 3 },
     "smoke:callout-deny:auth": { "seconds": 2.4, "shard": 1 },
     "smoke:callout-shape": { "seconds": 1.9, "shard": 2 },

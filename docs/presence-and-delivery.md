@@ -251,7 +251,9 @@ redelivered while it runs, by restarting their ack wait with JetStream's in-prog
 ([Connect OpenCode](connect-opencode.md#how-it-binds)). A redelivered copy says so: the broker
 counts each delivery, and a connector marks a message the broker delivered more than once as
 redelivered in the frame it injects. The count comes from the broker, so a sender cannot forge
-or hide it.
+or hide it. The count proves only that an earlier copy outlived its ack wait. It does not prove
+whether that copy reached a model. When the connector has no separate handoff record, including
+after a restart, the frame labels the prior model handoff as unknown.
 
 Delivery stays at-least-once, so a role request can still run twice: when its holder crashes or
 fails a turn after acting, or when renewal lapsed and the broker handed the request to another

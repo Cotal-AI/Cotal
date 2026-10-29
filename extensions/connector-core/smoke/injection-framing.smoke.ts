@@ -30,7 +30,7 @@
 import { strict as assert } from "node:assert";
 import { readFileSync } from "node:fs";
 import { formatInjection } from "../src/control.js";
-import { fmtFrom, fmtChannel, fmtKind } from "../src/framing.js";
+import { fmtFrom, fmtChannel, fmtKind, fmtItem } from "../src/framing.js";
 import type { InboxItem } from "../src/agent.js";
 
 /** Collect failures instead of throwing on the first one, so the run always reaches its completion
@@ -102,6 +102,18 @@ console.log("injection framing");
   check("each item is rendered", out.includes("first") && out.includes("second"));
   check("sender identity is preserved", out.includes("peer2/reviewer"));
   check("empty input yields no block", formatInjection([]) === undefined);
+}
+
+// A broker redelivery count is not a record of a prior context handoff. The first possible frame
+// after an unacked copy outlives its ack wait must preserve that handling is unknown, including
+// across process restarts where no local cache can answer it. Genuine at-least-once uncertainty
+// remains visible, and the broker-authenticated count remains intact.
+{
+  const out = fmtItem(dm("retry", { deliveryCount: 2 }));
+  check("a redelivery frame names the broker-derived delivery count", out.includes("broker redelivery, delivery 2"), out);
+  check("a redelivery frame labels prior model handoff unknown", out.includes("prior model handoff unknown"), out);
+  check("a broker count alone does not invent a prior run", !out.includes("may already have run"), out);
+  check("a first delivery carries no redelivery warning", !fmtItem(dm("first", { deliveryCount: 1 })).includes("redelivery"));
 }
 
 // 4. History is context, even when a caller explicitly includes it in a mixed batch.
