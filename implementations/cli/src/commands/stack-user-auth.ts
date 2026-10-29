@@ -64,12 +64,12 @@ export async function preflightUserStack(root: string, space: string, idpUrl: st
 
 /** The existing local login and interactive grant for the CLI actor, read without any network.
  *  `ready` means a signed-in login whose locally readable ledger holds a granted CLI row. */
-export async function userLoginState(root: string, space: string): Promise<{ state: "ready" } | { state: "absent" | "not-granted" | "unreadable"; idpUrl?: string }> {
+export async function userLoginState(root: string, space: string): Promise<{ state: "ready" | "absent" | "not-granted"; idpUrl?: string } | { state: "unreadable" }> {
   try {
     const status = await resolveAuthProvider().userStatus({ store: workspaceSecretStore(root), dir: userAuthStateDir(root, space, { readOnly: true }), space, actor: CLI_USER_ACTOR });
     if (!status.login) return { state: "absent", idpUrl: status.idpUrl };
     if (!status.grant || status.grant === "not-granted") return { state: "not-granted", idpUrl: status.idpUrl };
-    return { state: "ready" };
+    return { state: "ready", idpUrl: status.idpUrl };
   } catch { return { state: "unreadable" }; }
 }
 
@@ -91,25 +91,29 @@ export function userLoginRequired(space: string, login: Awaited<ReturnType<typeo
 }
 
 /** Refuse a start of the manager of a user-auth space that `root` hosts while no signed-in, granted
- *  login exists, as `up` does for its own manager: its readiness is read as that login, so it could
- *  not be confirmed. A space registered here from another host needs the login alone, since its
- *  grant is not readable here. The cached login is then confirmed with its IdP, so one the IdP
- *  rejects as expired or revoked is refused the same way. Any other failure of that check, such as
- *  an IdP that does not answer, is left to the launch, which reports it as before. Runs before a
- *  definition is saved or a child launched. */
+ *  login exists: its readiness is read as that login, so it could not be confirmed. `manager start`,
+ *  `up` and a team boot all start the manager behind this check. A space registered here from
+ *  another host needs the login alone, since its grant is not readable here. The cached login is
+ *  then confirmed with its IdP, so one the IdP rejects as expired or revoked is refused the same way.
+ *  Any other failure of that check, such as an IdP that does not answer, is left to the launch,
+ *  which reports it as before. Runs before a definition is saved or a child launched. */
 export async function assertManagerLogin(root: string, space: string, then: string): Promise<void> {
   const registered = findMesh(space)?.userAuth;
+  // The IdP the remedy names. A stopped stack, such as one a team boot resumes, has no registration,
+  // so the hosting folder's own pin comes first.
+  let idpUrl = registered?.idp.url;
   if (registered?.remote !== true) {
     if (!hasUserAuthState(root, space, { readOnly: true })) return;
     const login = await userLoginState(root, space);
     if (login.state !== "ready") throw userLoginRequired(space, login, then);
+    idpUrl = login.idpUrl ?? idpUrl;
   }
   const provider = resolveAuthProvider();
   if (!provider.confirmLogin) throw new CommandFailure("refused", "UNSUPPORTED", "the installed auth provider cannot confirm a login with its IdP; the manager was not attempted", { target: { space, provider: provider.name } });
   let answer: "confirmed" | "signed-out" | "rejected";
   try { answer = await provider.confirmLogin({ dir: userAuthStateDir(root, space, { readOnly: true }), space }); }
   catch { return; }
-  if (answer !== "confirmed") throw userLoginRequired(space, { state: answer === "rejected" ? "rejected" : "absent", idpUrl: registered?.idp.url }, then);
+  if (answer !== "confirmed") throw userLoginRequired(space, { state: answer === "rejected" ? "rejected" : "absent", idpUrl }, then);
 }
 
 /** The provisional registry metadata: the prepared trust pins only. No endpoint is copied from a

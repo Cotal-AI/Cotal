@@ -72,7 +72,7 @@ import { freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries 
 import { foreignLocalProcesses, newStackOperation, readStackJournal, runningStackRoles, serviceHeldRecords, settleRetainedStackStops, settleStackOperation, STACK_ADAPTER, STACK_DEFINITION, STACK_ROLES, stackDefinitionsAt, stackMaintenanceFence, stackNeverStarted, stackOperationUnsettled, stackRoleApplies, stackSettlementNotice, withSettledMembers, writeStackJournal, type StackJournal, type StackJournalSnapshot, type StackMember, type StackMode, type StackRole, type StackSettlement } from "../lib/stack-journal.js";
 import { natsServerLabel, type NatsServer } from "../lib/nats-bin.js";
 import { missingStoreWarning, sharedStoreAtStart, sharedStoreWarning, type StoreTenant } from "../lib/store-dir.js";
-import { assertUserStackTransport, confirmUserAuthEndpoints, preflightUserStack, provisionalUserAuth, userLoginRequired, userLoginState, userRegistrationIncomplete, type StackUserPrepared } from "./stack-user-auth.js";
+import { assertManagerLogin, assertUserStackTransport, confirmUserAuthEndpoints, preflightUserStack, provisionalUserAuth, userRegistrationIncomplete, type StackUserPrepared } from "./stack-user-auth.js";
 
 /** Callbacks into the native broker preparation that `up.ts` owns. They hold private authority
  *  material and are passed in, so this module never re-derives trust or a transport decision. */
@@ -960,11 +960,15 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
       const delivery = ensureDefinition(space, "delivery", adapterDefinition(space, STACK_ADAPTER.delivery, { root, creds: credsPath, server }, 40000), root, replace("delivery"));
       await start("delivery", delivery);
     }
-    // A user stack's manager is read as the invoking user's existing login. Without a signed-in,
-    // granted login it is not attempted; nothing is launched for it.
+    // A user stack's manager is read as the invoking user's existing login, confirmed with its IdP
+    // as `manager start` confirms it. Without a signed-in, granted login, or with one the IdP
+    // rejects, it is not attempted; nothing is launched for it.
     if (!request.noManager && mode === "user") {
-      const login = await userLoginState(root, space);
-      if (login.state !== "ready") loginBlock = userLoginRequired(space, login);
+      try { await assertManagerLogin(root, space, "run bare `cotal up` again"); }
+      catch (error) {
+        if (!isCommandFailure(error) || error.code !== "AUTH_REQUIRED") throw error;
+        loginBlock = error;
+      }
     }
     if (!request.noManager && !loginBlock) {
       const options: Record<string, unknown> = { root, runtime: request.runtime, server };

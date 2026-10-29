@@ -1286,7 +1286,11 @@ static or borrowed caller.
 The manager requires an existing signed-in, granted CLI login. First enable can therefore start
 the other members and return partial `OPERATION_PARTIAL` with native cause `AUTH_REQUIRED`, while
 leaving the manager unattempted. Sign in with `cotal login`, obtain the required grant, then run
-bare `cotal up` to continue that known partial operation. `cotal manager start` refuses the same
+bare `cotal up` to continue that known partial operation. Before it starts the manager, `up`
+confirms the cached sign-in with its IdP. A sign-in the IdP rejects because it expired or was
+revoked counts as none: the manager is not attempted, and Next names `cotal login --idp <base>`,
+then bare `cotal up` again. Any other failure of that check, such as an IdP that does not answer,
+is left to the manager's start. `cotal manager start` refuses the same
 way, with `AUTH_REQUIRED` and exit 2, before it saves or launches anything. Stopping the manager
 needs no sign-in in the folder that hosts the space: `cotal down` and `cotal manager stop` read its
 stop impact from the manager's own local receipt. `--no-manager` omits that member and its
@@ -8549,7 +8553,11 @@ configuration stays inside the selected root's `.cotal` directory, even when its
 
 For a first user-auth team, prepare with `cotal up --user-auth --idp <url>`, then `cotal login`,
 explicitly grant the invoking user with `cotal auth grant cli --sub <subject>`, and run `cotal down`
-before `cotal team boot <file>`. Do not start the manager between preparation and that stop. A
+before `cotal team boot <file>`. Do not start the manager between preparation and that stop. Before
+any write, that boot confirms your sign-in with its IdP. Without one, or when the IdP rejects it
+because it expired or was revoked, it refuses `AUTH_REQUIRED` (exit 2), and Next names
+`cotal login --idp <base>`, then the team boot again. Any other failure of that check, such as an
+IdP that does not answer, is left to the boot. A
 static-auth or open preparation uses `cotal up --no-manager` before `cotal down`. No implicit owner
 grant or borrowed caller is substituted. A previously attempted manager is never adopted.
 

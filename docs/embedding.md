@@ -90,8 +90,9 @@ inferring broad access from a bearer, successful exchange or broker ping.
 `AuthProvider.confirmLogin` asks the space's IdP whether this machine's cached login still holds.
 It mints nothing. It answers `confirmed`, `signed-out` when no login is cached, or `rejected` when
 the IdP refused the cached one, and throws on any other failure. `cotal manager start` and
-`restart` call it on a user-auth space before they save or launch anything, and refuse
-`UNSUPPORTED` when the provider does not implement it.
+`restart` call it on a user-auth space before they save or launch anything, `cotal up` before it
+starts the manager, and a team boot that resumes a stopped stack before any write. Each refuses
+the manager `UNSUPPORTED` when the provider does not implement it.
 
 ## Account connection census
 
