@@ -14,7 +14,7 @@ import { exchangeRateLimit, readAuthResponseJson, type ExchangeRateLimit } from 
  *  - the service handle: the `auth-service` command name + the readiness contract (poll the
  *    discovery file the daemon writes only after BOTH planes are bound, then confirm /health).
  */
-import { isLoopbackLiteral, registry, type AuthPreflightInput, type AuthPreflightVerdict, type AuthPrepareInput, type AuthPrepared, type AuthProvider, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAdminAuthorizationResult, type RemoteManagerAuthorityMaterial, type RemoteManagerAuthorityRequest, type RemoteManagerGoalIndexScanRequest, type RemoteManagerGoalIndexScanResult, type RemoteManagerMaintenanceRequest, type RemoteManagerMaintenanceResult, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult, type RemoteManagedAgentPrepareRetirementRequest, type RemoteManagedAgentPrepareRetirementResult, type RemoteManagedAgentRuntimeRequest, type RemoteManagedAgentRuntimeResult, type RemoteRetainedAgentValidationRequest, type RemoteRetainedAgentValidationResult, type RemoteRunAdmissionRequest, type RemoteRunAdmissionResult, type RemoteRunAttemptRequest, type RemoteRunAttemptResult, type SecretStore, type UserCredentialsRequest } from "@cotal-ai/core";
+import { assertDerivedOwnerToken, isLoopbackLiteral, registry, type AuthPreflightInput, type AuthPreflightVerdict, type AuthPrepareInput, type AuthPrepared, type AuthProvider, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAdminAuthorizationResult, type RemoteManagerAuthorityMaterial, type RemoteManagerAuthorityRequest, type RemoteManagerGoalIndexScanRequest, type RemoteManagerGoalIndexScanResult, type RemoteManagerMaintenanceRequest, type RemoteManagerMaintenanceResult, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult, type RemoteManagedAgentPrepareRetirementRequest, type RemoteManagedAgentPrepareRetirementResult, type RemoteManagedAgentRuntimeRequest, type RemoteManagedAgentRuntimeResult, type RemoteRetainedAgentValidationRequest, type RemoteRetainedAgentValidationResult, type RemoteRunAdmissionRequest, type RemoteRunAdmissionResult, type RemoteRunAttemptRequest, type RemoteRunAttemptResult, type SecretStore, type UserAuthGrant, type UserCredentialsRequest, type UserCredentialsResult } from "@cotal-ai/core";
 import { assertUserAuthInfo, credentialFailure, findMesh, homeCotalDir, loadMeshes, probeLiveness, spaceSegment, type UserAuthInfo } from "@cotal-ai/workspace";
 import { readFileSync } from "node:fs";
 import { resolve, sep } from "node:path";
@@ -276,10 +276,10 @@ export const cotalAuthProvider: AuthProvider = {
         `signed in, but the exchange for actor "${actor}"${view ? ` (view "${view}")` : ""} was refused: ${body.error ?? `HTTP ${res.status}`}`,
       );
     }
-    const out = (await readAuthResponseJson(res, `the auth service's exchange at ${info.url}/exchange`)) as { token?: string };
+    const out = (await readAuthResponseJson(res, `the auth service's exchange at ${info.url}/exchange`)) as { token?: string; owner?: unknown; grant?: unknown };
     if (typeof out.token !== "string" || !out.token)
       throw new Error(`the auth service's exchange returned no token - its build may be stale; restart it with \`cotal up\``);
-    return { bearer: out.token, sentinelCreds: callout.sentinelCreds };
+    return { bearer: out.token, sentinelCreds: callout.sentinelCreds, ...exchangeAuthority(out, `the auth service's exchange at ${info.url}/exchange`) };
   },
 
   async serviceEndpointInfo({ store, dir, space }) {
@@ -898,7 +898,7 @@ function exchangeBody(idpToken: string, { actor, view, managerInstanceId, sessio
  *  differences: the POST goes to the PUBLIC exchange face (capless - the idpToken IS the
  *  credential; the 0600 capability file exists only where the daemon runs), and the sentinel
  *  creds come from the 0600 file registration landed rather than the local secret store. */
-async function remoteUserCredentials(request: UserCredentialsRequest): Promise<{ bearer: string; sentinelCreds: string }> {
+async function remoteUserCredentials(request: UserCredentialsRequest): Promise<UserCredentialsResult> {
   const { dir, space, actor, view } = request;
   const remote = remoteUserAuthEntry(dir, space);
   if (!remote)
@@ -958,10 +958,35 @@ async function remoteUserCredentials(request: UserCredentialsRequest): Promise<{
         : `signed in, but the exchange for ${actorLabel} was refused, and the exchange face withheld the reason (HTTP ${res.status})`,
     );
   }
-  const out = (await readAuthResponseJson(res, `the exchange at ${exchangeUrl}`)) as { token?: string };
+  const out = (await readAuthResponseJson(res, `the exchange at ${exchangeUrl}`)) as { token?: string; owner?: unknown; grant?: unknown };
   if (typeof out.token !== "string" || !out.token)
     throw new Error(`the exchange at ${exchangeUrl} returned no token - the mesh's auth service build may be stale`);
-  return { bearer: out.token, sentinelCreds };
+  return { bearer: out.token, sentinelCreds, ...exchangeAuthority(out, `the exchange at ${exchangeUrl}`) };
+}
+
+/** Read the stock issuer's authority response. An older issuer that returns no grant remains usable,
+ *  but supplies no authority to infer from. Once either field is present the pair is closed and
+ *  validated, so malformed server output is unavailable rather than partially trusted. */
+function exchangeAuthority(out: { owner?: unknown; grant?: unknown }, source: string): Pick<UserCredentialsResult, "authority"> {
+  if (out.grant === undefined) return {};
+  if (typeof out.owner !== "string" || out.grant === null || typeof out.grant !== "object" || Array.isArray(out.grant))
+    throw new Error(`${source} returned malformed authority - its build may be stale`);
+  assertDerivedOwnerToken(out.owner);
+  const grant = out.grant as Record<string, unknown>;
+  const strings = (field: "scope" | "allowSubscribe" | "allowPublish"): string[] => {
+    const value = grant[field];
+    if (!Array.isArray(value) || value.some((item) => typeof item !== "string"))
+      throw new Error(`${source} returned malformed authority.${field} - its build may be stale`);
+    return [...value];
+  };
+  if (grant.dmHistory !== "own") throw new Error(`${source} returned malformed authority.dmHistory - its build may be stale`);
+  const current: UserAuthGrant = {
+    scope: strings("scope"),
+    allowSubscribe: strings("allowSubscribe"),
+    allowPublish: strings("allowPublish"),
+    dmHistory: "own",
+  };
+  return { authority: { owner: out.owner, grant: current } };
 }
 
 /** The auth service's chat-session routes are `/chat-session/<op>` (its `CHAT_SESSION_PATHS`). */

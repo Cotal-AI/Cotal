@@ -26,7 +26,7 @@
  */
 import { decodeJwt, decodeProtectedHeader, jwtVerify } from "jose";
 import type { CryptoKey, JWTPayload, JWTVerifyGetKey } from "jose";
-import { assertValidOwnerToken } from "@cotal-ai/core";
+import { assertValidOwnerToken, type UserAuthGrant } from "@cotal-ai/core";
 import { deriveOwnerForIdpSubject } from "./derive.js";
 import type { UserTokenIssuer } from "./issuer.js";
 import { CLOCK_TOLERANCE_SEC, USER_TOKEN_VIEWS, VIEW_REQUIRED_SCOPE, viewTtlCapSec, type UserTokenSession, type UserTokenTransferWriter, type UserTokenView } from "./token.js";
@@ -110,6 +110,9 @@ export interface ExchangeResult {
   owner: string;
   /** Bearer expiry (unix seconds) — schedule re-mint before this. */
   exp: number;
+  /** The current grant the issuer authorized for this mint. It is separate from the bearer so a
+   *  client never needs to decode permission claims itself. */
+  grant: UserAuthGrant;
 }
 
 export interface IdpBridge {
@@ -384,7 +387,17 @@ export function createIdpBridge(opts: CreateIdpBridgeOpts): IdpBridge {
       });
       const { exp } = decodeJwt(token);
       if (typeof exp !== "number") throw new Error("idp bridge: minted bearer is missing exp - issuer contract violated");
-      return { token, owner, exp };
+      return {
+        token,
+        owner,
+        exp,
+        grant: {
+          scope: [...(grant.scope ?? [])],
+          allowSubscribe: [...(grant.allowSubscribe ?? [])],
+          allowPublish: [...(grant.allowPublish ?? [])],
+          dmHistory: "own",
+        },
+      };
     },
   };
 }

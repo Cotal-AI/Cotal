@@ -88,12 +88,12 @@
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
     },
     {
-      "name": "a grant ledger on another machine reads as complete",
+      "name": "an unavailable remote authority reads as complete",
       "file": "implementations/cli/src/commands/whoami.ts",
-      "find": "      warnings.push({ code: \"GRANT_NOT_LOCAL\", target,",
-      "replace": "      void ({ code: \"GRANT_NOT_LOCAL\", target,",
-      "expectRed": "a grant ledger on another machine is a partial read, exit 4",
-      "cell": "a grant ledger on another machine is a partial read, exit 4",
+      "find": "      warnings.push(authorityWarning ?? { code: \"GRANT_NOT_LOCAL\", target,",
+      "replace": "      void (authorityWarning ?? { code: \"GRANT_NOT_LOCAL\", target,",
+      "expectRed": "a grant with no local row or issuer answer is a partial read, exit 4",
+      "cell": "a grant with no local row or issuer answer is a partial read, exit 4",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
     },
     {
@@ -128,8 +128,8 @@
       "file": "implementations/cli/src/commands/whoami.ts",
       "find": "    const signedIn = st.login !== undefined;\n",
       "replace": "    const signedIn = st.login !== undefined && st.owner !== undefined;\n",
-      "expectRed": "the native remote provider leaves a logged-in user's grant unknown, not empty",
-      "cell": "the native remote provider leaves a logged-in user's grant unknown, not empty",
+      "expectRed": "an unavailable remote issuer leaves a logged-in user's grant unknown, not empty",
+      "cell": "an unavailable remote issuer leaves a logged-in user's grant unknown, not empty",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
     },
     {
