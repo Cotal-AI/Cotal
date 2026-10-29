@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createServer } from "node:http";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AddressInfo } from "node:net";
 import { emitSentinel, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
@@ -64,12 +64,13 @@ if (process.argv[2] === "worker") {
     kind: "connector", name: "foreground-names-fixture", requires: [], eventChannel,
     buildLaunch: (options) => ({
       command: process.execPath,
-      args: ["-e", "console.log('FIXTURE_BEARER '+process.env.COTAL_BEARER_CMD);console.log('FIXTURE_READY '+process.env.COTAL_NAME+' '+process.env.COTAL_ACTOR+' '+process.env.COTAL_BEARER_ACTOR);process.stdin.on('data',()=>process.exit(0));process.stdin.resume();"],
+      args: ["-e", "console.log('FIXTURE_BEARER '+process.env.COTAL_BEARER_CMD);console.log('FIXTURE_CREDS '+process.env.FIXTURE_CREDS_PATH);console.log('FIXTURE_READY '+process.env.COTAL_NAME+' '+process.env.COTAL_ACTOR+' '+process.env.COTAL_BEARER_ACTOR);process.stdin.on('data',()=>process.exit(0));process.stdin.resume();"],
       env: {
         COTAL_NAME: options.name,
         COTAL_ACTOR: options.userAuth?.actor ?? "",
         COTAL_BEARER_ACTOR: options.userAuth?.bearerCmd[options.userAuth.bearerCmd.indexOf("--actor") + 1] ?? "",
         COTAL_BEARER_CMD: JSON.stringify(options.userAuth?.bearerCmd ?? []),
+        FIXTURE_CREDS_PATH: options.creds ?? "",
       },
     }),
   };
@@ -83,8 +84,9 @@ const home = mkdtempSync(join(tmpdir(), "cotal-foreground-names-home-"));
 const root = mkdtempSync(join(tmpdir(), "cotal-foreground-names-root-"));
 const store = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}foreground-names-js-`));
 process.env.COTAL_HOME = home;
-const { isReachable, mintLifecycleUid } = await import("@cotal-ai/core");
-const { recordMesh, agentSecretFilePaths } = await import("@cotal-ai/workspace");
+const { createSpaceAuth, isReachable, mintCreds, mintLifecycleUid, newIdentity, setupSpaceStreams } = await import("@cotal-ai/core");
+const { recordMesh, agentCredsKey, agentSecretFilePaths, agentSecretKeyForFile, authDir, materializeSecretToFile, saveSpaceAuth, workspaceSecretStore } = await import("@cotal-ai/workspace");
+const { bootBroker } = await import("../../manager/smoke/_boot-broker.js");
 const owner = `u_${"a".repeat(26)}`;
 const idp = { url: "https://idp.example/api/auth", issuer: "https://idp.example", audience: "https://idp.example" };
 const granted = new Set<string>();
@@ -177,8 +179,8 @@ const env: NodeJS.ProcessEnv = {
 for (const key of ["HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME"]) mkdirSync(env[key]!, { recursive: true });
 type Worker = { child: ChildProcessWithoutNullStreams; output: string; ready: Promise<boolean>; closed: Promise<number | null>; exited: boolean };
 const workers: Worker[] = [];
-function launch(extra: string[] = [], extraEnv: NodeJS.ProcessEnv = {}, entry = process.argv[1]): Worker {
-  const child = spawn(process.execPath, [...process.execArgv, entry, "worker", ...extra], { cwd: root, env: { ...env, ...extraEnv }, stdio: ["pipe", "pipe", "pipe"], detached: true });
+function launch(extra: string[] = [], extraEnv: NodeJS.ProcessEnv = {}, entry = process.argv[1], cwd = root): Worker {
+  const child = spawn(process.execPath, [...process.execArgv, entry, "worker", ...extra], { cwd, env: { ...env, ...extraEnv }, stdio: ["pipe", "pipe", "pipe"], detached: true });
   let complete!: (ready: boolean) => void;
   const ready = new Promise<boolean>((resolve) => { complete = resolve; });
   const worker: Worker = { child, output: "", ready, closed: Promise.resolve(null), exited: false };
@@ -211,6 +213,8 @@ async function stop(worker: Worker): Promise<void> {
   clearTimeout(timer);
 }
 const digest = (path: string) => createHash("sha256").update(readFileSync(path)).digest("hex");
+const staticRoot = mkdtempSync(join(tmpdir(), "cotal-foreground-names-static-"));
+let staticBroker: Awaited<ReturnType<typeof bootBroker>> | undefined;
 let passed = false;
 try {
   let reachable = false;
@@ -321,11 +325,49 @@ try {
     const renewal = spawnSync(bearerCmd[0]!, bearerCmd.slice(1), { cwd: root, env, encoding: "utf8" });
     assert.equal(renewal.stdout.trim(), "foreground-names-fixture-bearer", `the bearer command still runs after an install replaced the bin link: ${JSON.stringify(bearerCmd)} ${renewal.stderr}`);
   }
+  // #3857: a static-auth spawn keys its creds by the lifecycle UID it minted, as the manager keys its
+  // own spawns. The fixture child joins no presence, so a second spawn started while the first runs
+  // lands on the same name, as two real spawns do before the first one joins. Each holds its own file
+  // and store row, retiring one leaves the other's in place, and the operator's standing
+  // `<name>.creds` is never touched.
+  const staticSpace = "foregroundstatic";
+  const staticAuth = await createSpaceAuth(staticSpace);
+  staticBroker = await bootBroker(staticAuth);
+  saveSpaceAuth(authDir(staticRoot), staticAuth);
+  await setupSpaceStreams({ servers: staticBroker.servers, space: staticSpace, creds: await mintCreds(staticAuth, newIdentity(), "provisioner") });
+  recordMesh({ space: staticSpace, server: staticBroker.servers, root: staticRoot, mode: "auth", origin: "manual", ts: new Date().toISOString() });
+  mkdirSync(join(staticRoot, ".cotal", "agents"), { recursive: true });
+  writeFileSync(join(staticRoot, ".cotal", "agents", "default.md"), "---\nname: worker\nagent: foreground-names-fixture\nsubscribe: []\nallowSubscribe: []\nallowPublish: []\n---\nFixture only.\n");
+  const secrets = workspaceSecretStore(staticRoot);
+  const standing = agentSecretFilePaths(staticRoot, staticSpace, "worker").creds;
+  const standingKey = agentCredsKey(staticSpace, "worker", { injected: false, root: staticRoot });
+  await secrets.put(standingKey, "fixture standing operator credential\n");
+  await materializeSecretToFile(secrets, standingKey, standing);
+  const standingBefore = digest(standing);
+  const credsOf = (worker: Worker) => /^FIXTURE_CREDS (.+)$/m.exec(worker.output)?.[1] ?? "";
+  const row = (path: string) => secrets.get(agentSecretKeyForFile(path, staticSpace));
+  const spawnA = launch(["--name", "worker", "--space", staticSpace], {}, process.argv[1], staticRoot);
+  assert(await spawnA.ready, `a static foreground spawn reaches a real child: ${spawnA.output}`);
+  const credsA = credsOf(spawnA);
+  const heldA = digest(credsA);
+  const spawnB = launch(["--name", "worker", "--space", staticSpace], {}, process.argv[1], staticRoot);
+  assert(await spawnB.ready, `a second static foreground spawn reaches a real child: ${spawnB.output}`);
+  const credsB = credsOf(spawnB);
+  assert([spawnA, spawnB].every((worker) => /^FIXTURE_READY worker /m.test(worker.output)), `both static spawns run under the one name: ${spawnA.output}${spawnB.output}`);
+  assert(credsA !== credsB && [credsA, credsB].every((path) => dirname(path) === dirname(standing) && /^worker\.[a-z0-9]+\.creds$/.test(basename(path))), `each static spawn holds its own lifecycle-keyed creds file: ${credsA} ${credsB}`);
+  assert.equal(digest(credsA), heldA, "the second spawn leaves the first one's creds file as the first was handed it");
+  await stop(spawnB);
+  assert(spawnB.output.includes("↩ retired creds for worker (agent exited)") && !existsSync(credsB) && await row(credsB) === undefined, `the second spawn's exit retires its own creds file and store row: ${spawnB.output}`);
+  assert(!spawnA.exited && digest(credsA) === heldA && await row(credsA) === readFileSync(credsA, "utf8"), "the first spawn keeps running with its creds file and store row in place");
+  assert(digest(standing) === standingBefore && await row(standing) === readFileSync(standing, "utf8"), "the standing worker.creds survives the second spawn's retirement");
+  await stop(spawnA);
+  assert(!existsSync(credsA) && await row(credsA) === undefined && digest(standing) === standingBefore && await row(standing) !== undefined, `the first spawn's exit retires its own creds and leaves the standing worker.creds: ${spawnA.output}`);
   console.log("FOREGROUND ACTOR NAMING: all real-process collision controls passed");
-  emitSentinel({ passed: 42 + relinkChecks, failed: 0 });
+  emitSentinel({ passed: 51 + relinkChecks, failed: 0 });
   passed = true;
 } finally {
   for (const worker of workers) await stop(worker);
+  await staticBroker?.stop();
   if (broker.exitCode === null && broker.signalCode === null) {
     const closed = new Promise<void>((resolve) => broker.once("close", () => resolve()));
     broker.kill("SIGKILL");
@@ -334,6 +376,7 @@ try {
   await new Promise<void>((resolve) => provisioning.close(() => resolve()));
   if (passed && workers.every((worker) => worker.exited)) {
     rmSync(root, { recursive: true, force: true });
+    rmSync(staticRoot, { recursive: true, force: true });
     rmSync(home, { recursive: true, force: true });
     rmSync(store, { recursive: true, force: true });
   }

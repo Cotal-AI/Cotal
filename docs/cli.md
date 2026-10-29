@@ -3939,7 +3939,10 @@ spawn is refused with that explanation before any request is sent. A spawn runs 
 to your terminal; `--detach` and `--on` hand the launch to a manager. Every mode gets the durable
 backstop on a mesh that runs the delivery daemon; `--live-only` skips it for a spawn in this
 terminal (messages posted while it is disconnected are then not replayed). A foreground exit retires
-the agent's creds and broker footprint, like a manager despawn. On a static-auth mesh, a spawn that
+the agent's creds and broker footprint, like a manager despawn. On a static-auth mesh its creds file
+is `<name>.<lifecycleUid>.creds`, keyed by the spawn's lifecycle UID as a manager's spawns are, so
+the retirement removes only that spawn's credential: another spawn of the same name and a standing
+`<name>.creds` from `cotal auth mint` keep theirs. On a static-auth mesh, a spawn that
 fails after its footprint exists, for example because the creds directory cannot be written,
 retires that footprint the same way before it exits with the error. The creds and the footprint are
 removed as separate steps, so a creds file that cannot be deleted does not leave the broker durables
