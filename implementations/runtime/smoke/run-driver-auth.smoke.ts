@@ -15,7 +15,7 @@
  */
 import { spawn, spawnSync } from "node:child_process";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect, type NatsConnection } from "@nats-io/transport-node";
@@ -652,17 +652,9 @@ const A = await driver(RUN_A, TK_A);
       },
     };
     const waits = createRunWaitHost(hostPlanes, authority, admissionOf(hostPlanes, runId));
-    const watcher: import("../src/index.js").SettleWatcher = {
-      // A 50ms observing poll: the settle fact is written while the pump's fire is parked, so the
-      // next poll observes it and the race decides — against a pump whose fire is still in flight.
-      async awaitSettle(ref) {
-        for (;;) {
-          const settled = await inner.readSettle(ref.token);
-          if (settled !== undefined) return settled;
-          await wait(50);
-        }
-      },
-    };
+    // A 50ms observing poll: the settle fact is written while the pump's fire is parked, so the
+    // next poll observes it and the race decides — against a pump whose fire is still in flight.
+    const watcher = new EpfSettleWatcher((ref) => inner.readSettle(ref.token), 50);
     const handler = new MeshHandler(hostPlanes.nc, hostPlanes.kv, hostPlanes.js, hostPlanes.jsm, {
       space: S, endpoint: EP, runId, caller: runDriverCaller(runId), instanceId: IID, epoch: EPOCH,
       holder: { id: "manager", lifecycleUid: "u_rdauth" }, defaultCheckpointTimeout: "1h",
@@ -1069,6 +1061,29 @@ const A = await driver(RUN_A, TK_A);
     for (const ep of seats) await ep.stop().catch(() => {});
     await prov.stop().catch(() => {});
   }
+}
+
+// ── createRunEffectHost constructs EpfSettleWatcher over pauses.readSettle (#3344) ─────────────
+{
+  const hostSrc = readFileSync(new URL("../src/run-effect-host.ts", import.meta.url), "utf8");
+  c("createRunEffectHost constructs EpfSettleWatcher over pauses.readSettle (#3344)",
+    hostSrc.includes("new EpfSettleWatcher((ref) => pauses.readSettle(ref.token))")
+      && !hostSrc.includes("awaitSettle") && !hostSrc.includes("2_000"));
+  const authority = createRunScopeAuthority(A.hostPlanes, RUN_A, lease(TK_A, 1));
+  const pauses = createRunPauseHost(A.hostPlanes, {
+    endpoint: EP, instanceId: IID, epoch: EPOCH, holder: { id: "manager", lifecycleUid: "u_rdauth" },
+  }, authority);
+  const directWatcher = new EpfSettleWatcher(A.hostPlanes.jsm, S);
+  const hostWatcher = new EpfSettleWatcher((ref) => pauses.readSettle(ref.token));
+  c("direct and pause-mediated EpfSettleWatcher instances share one awaitSettle method and default cadence (#3344)",
+    directWatcher.awaitSettle === hostWatcher.awaitSettle
+      && (directWatcher as unknown as { pollMs: number }).pollMs === 2_000
+      && (hostWatcher as unknown as { pollMs: number }).pollMs === 2_000);
+  const deniedWatch = await new EpfSettleWatcher((ref) => pauses.readSettle(ref.token), 50)
+    .awaitSettle({ endpoint: EP, token: "foreign-unrecorded-settle" })
+    .then(() => "allowed", (e) => e instanceof RunScopeDenied ? "denied" : short(e));
+  c("a pause-mediated EpfSettleWatcher enforces run-scope authority on settle reads (#3344)",
+    deniedWatch === "denied", deniedWatch);
 }
 } catch (error) {
   fail++;
