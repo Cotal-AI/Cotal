@@ -131,7 +131,7 @@ const maintenanceResult = {
   evictions: [{ principal: maintenanceRequest.principals![0], kicked: 1, remaining: 0, verifiedGone: true, scanComplete: true }],
 };
 assert.deepEqual(remoteManagerMaintenanceResult(maintenanceResult, maintenanceRequest, owner).evictions, maintenanceResult.evictions);
-assert.throws(() => remoteManagerMaintenanceResult({ ...maintenanceResult, extra: true } as never, maintenanceRequest, owner), /different lifecycle|closed matching/);
+assert.throws(() => remoteManagerMaintenanceResult({ ...maintenanceResult, extra: true } as never, maintenanceRequest, owner), /non-closed result/);
 assert.throws(() => remoteManagerMaintenanceResult({ ...maintenanceResult, evictions: [{ ...maintenanceResult.evictions[0], verifiedGone: true, remaining: 1 }] }, maintenanceRequest, owner), /contradictory/);
 
 let remoteChecks = 0;
