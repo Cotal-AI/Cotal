@@ -15,7 +15,7 @@
  * expiry and renewal owner.
  */
 import { TTL_RECONCILE_CANARY_KEY, ttlBuckets } from "./streams.js";
-import { nativeNkeySigner } from "./nkey-signer.js";
+import { decodeNatsJwt, nativeNkeySigner } from "./nkey-signer.js";
 import { spaceDeletionStreams } from "./space-deletion-targets.js";
 import { BROKER_USER_INFO_SUBJECT } from "./broker-identity.js";
 import { randomBytes } from "node:crypto";
@@ -427,11 +427,11 @@ export function assertAccountSignedByBroker(broker: BrokerAuth, spaceAccount: Sp
     throw new Error("assertAccountSignedByBroker: broker operator material is required to verify the account binding");
   let operatorPub: string;
   try {
-    operatorPub = fromSeed(new TextEncoder().encode(broker.operator.seed)).getPublicKey();
+    operatorPub = nativeNkeySigner(new TextEncoder().encode(broker.operator.seed)).getPublicKey();
   } catch {
     throw new Error("assertAccountSignedByBroker: the broker operator seed is not a valid operator seed");
   }
-  const claims = decode<{ iss?: string }>(spaceAccount.account.jwt);
+  const claims = decodeNatsJwt<{ iss?: string }>(spaceAccount.account.jwt);
   if (claims.iss !== operatorPub)
     throw new Error(
       `space "${spaceAccount.space}" account was signed by ${claims.iss ?? "an unknown issuer"}, not this broker's operator ${operatorPub} - refusing to compose trust across brokers`,

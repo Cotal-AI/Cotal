@@ -133,9 +133,23 @@ try {
       cases++;
     } finally { stockAccount.clear(); stockSigning.clear(); }
   }
+  const first = accounts[0]!;
+  const foreignBroker = await createBrokerAuth("native-account-foreign");
+  assert.throws(() => composeSpaceAuth(foreignBroker, first), /refusing to compose trust across brokers/);
+  cases++;
+  const parts = first.account.jwt.split(".");
+  const signature = Buffer.from(parts[2]!, "base64url");
+  signature[0] = signature[0]! ^ 1;
+  const invalidJwt = [parts[0], parts[1], signature.toString("base64url")].join(".");
+  assert.throws(() => decode(invalidJwt), /sig verification failed/);
+  assert.throws(() => composeSpaceAuth(broker, { ...first, account: { ...first.account, jwt: invalidJwt } }), /sig verification failed/);
+  cases++;
+  assert.throws(() => composeSpaceAuth({ ...broker, operator: { ...broker.operator, seed: "invalid" } }, first), /not a valid operator seed/);
+  assert.throws(() => composeSpaceAuth({ ...broker, operator: { ...broker.operator, seed: "" } }, first), /operator material is required/);
+  cases++;
   assert.notEqual(accounts[0]!.account.pub, accounts[1]!.account.pub);
   assert.notEqual(accounts[0]!.account.signingPub, accounts[1]!.account.signingPub);
   await assert.rejects(() => createSpaceAccountAuth({ ...broker, operator: { ...broker.operator, seed: "" } }, "stripped"), /operator seed is required/);
   cases++;
 }
-console.log(`native nkey signing smoke: ${cases} cases passed (5 key kinds × 3 payloads, invalid seeds, v1/v2 JWTs and callout responses, native JWT decode, account factory)`);
+console.log(`native nkey signing smoke: ${cases} cases passed (5 key kinds × 3 payloads, invalid seeds, v1/v2 JWTs and callout responses, native JWT decode, account factory and broker binding)`);
