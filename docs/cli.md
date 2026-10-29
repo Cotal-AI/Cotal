@@ -3311,6 +3311,9 @@ refuses until the block is cleared. The next bare
 `up` or `down` settles the interrupted operation with an `OPERATION_SETTLED` warning. When the
 stack reached that operation's end anyway, every member running after an `up` or stopped after a
 `down`, the warning says it was interrupted and where the stack stands, without calling it failed.
+When that `up`, `team boot` or `down` ran to its end and exited 3 with its outcome unconfirmed, the
+warning says it ended with its outcome unconfirmed instead. The journal records a team boot's start
+as an `up`, so the warning calls either one a stack start.
 A running `stack-manager` gets one
 probe of its manager endpoint, and the selected space's `Manager` row reads `answering`,
 `not answering · stack-manager pid <pid>`, or `endpoint not checked` when the probe could not be

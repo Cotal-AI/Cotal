@@ -641,10 +641,14 @@ export function unfinishedStackOperation(journal: StackJournal): { kind: "up" | 
 /** The one-line notice a command prints after it settled an earlier operation. */
 export function stackSettlementNotice(settled: StackSettlement): string {
   const gone = settled.members.filter((row) => row.process === "gone").map((row) => row.role), running = settled.members.filter((row) => row.process === "running").map((row) => row.role);
-  const { kind, id } = settled.operation;
+  const { kind, id, phase } = settled.operation;
+  // An operation that exited with its outcome unconfirmed recorded it as unknown; one that recorded
+  // nothing was interrupted. A team boot records its start as an up, so that start is named in words
+  // true of both.
+  const ended = phase === "unknown" ? `the earlier ${kind === "up" ? "stack start" : kind} ${id} ended with its outcome unconfirmed` : undefined;
   // An up whose members all run, or a down whose members are all gone, reached its end anyway.
-  if (kind === "up" && !gone.length && !settled.unstarted.length) return `the earlier up ${id} was interrupted before it recorded an outcome; every member is running (${running.join(", ")})`;
-  if (kind === "down" && !running.length) return `the earlier down ${id} was interrupted before it recorded an outcome; every member is stopped`;
+  if (kind === "up" && !gone.length && !settled.unstarted.length) return `${ended ?? `the earlier up ${id} was interrupted before it recorded an outcome`}; every member is running (${running.join(", ")})`;
+  if (kind === "down" && !running.length) return `${ended ?? `the earlier down ${id} was interrupted before it recorded an outcome`}; every member is stopped`;
   return `the earlier ${kind} ${id} had no recorded outcome; it was recorded as failed from its members' processes (gone: ${gone.join(", ") || "none"}; running: ${running.join(", ") || "none"}${settled.unstarted.length ? `; not started: ${settled.unstarted.join(", ")}` : ""})`;
 }
 

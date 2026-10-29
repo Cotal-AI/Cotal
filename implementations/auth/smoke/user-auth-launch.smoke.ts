@@ -33,7 +33,8 @@
  *      line, from that stopped root, from a folder with no records (naming the folder that hosts the
  *      space, writing nothing there), and from a stopped static root. A third root is prepared for
  *      a first team as the fresh boot's refusal says, and the `auth grant cli --sub <subject> --full`
- *      it names succeeds.
+ *      it names succeeds. With the IdP's token route answering 503, that boot exits 3, and the next
+ *      `down` says the stack start ended with its outcome unconfirmed.
  *   E5. A TLS space behind a local CA, its public exchange behind an HTTPS proxy, joined by a
  *      participant from its bundle: with `NODE_EXTRA_CA_CERTS` set, the participant's `manager start`
  *      comes up and its native child carries the variable; with it unset, the line the refusal quotes
@@ -135,7 +136,11 @@ function cotal(args: string[], opts: { cwd?: string; timeoutMs?: number; env?: R
 
 // ---------- the real Better Auth IdP ----------
 let handler: ReturnType<typeof toNodeHandler> | undefined;
-const idpSrv = createServer((req, res) => handler!(req, res));
+// While set, the token route answers 503, as an IdP that is down does (E4).
+let idpTokenUnavailable = false;
+const idpSrv = createServer((req, res) => idpTokenUnavailable && req.method === "GET" && req.url?.split("?")[0] === "/api/auth/token"
+  ? void res.writeHead(503, { "content-type": "application/json" }).end('{"error":"unavailable"}')
+  : handler!(req, res));
 await new Promise<void>((r) => idpSrv.listen(0, "127.0.0.1", r));
 const origin = `http://127.0.0.1:${(idpSrv.address() as AddressInfo).port}`;
 const base = `${origin}/api/auth`;
@@ -839,7 +844,8 @@ try {
     check("supervise from the stopped static root is refused as stopped, naming its own up and the broker's folder",
       staticStopped.status === 2 && plain(staticStopped.out).includes(`Mesh: ${RT}\n`) && preConnect(staticStopped.out, "TARGET_UNAVAILABLE") &&
         plain(staticStopped.out).includes(`start it again with \`cotal up\` in ${root3}, or start the manager from the folder whose \`cotal up\` started the broker at ${SERVER}`), staticStopped.out);
-    // A first user-auth team, prepared as the boot's own refusal says.
+    // A first user-auth team, prepared as the boot's own refusal says. With the IdP's token route
+    // answering 503, the boot then ends with its outcome unconfirmed, and the next down says so.
     const TB = `${SPACE}-tb`;
     const rootTb = await prepare(TB);
     const tbSandbox = second.roots.at(-1)!.sandbox;
@@ -855,6 +861,14 @@ try {
     const tbDown = await cotal(["down", "--yes"], { cwd: rootTb, env, sandbox: tbSandbox });
     check("following it, up prepares the space, the grant it names succeeds, and down stops the stack",
       tbUp.status === 4 && tbGrant.status === 0 && plain(tbGrant.out).includes("Actor grant stored") && tbDown.status === 0, { up: tbUp.out, grant: tbGrant.out, down: tbDown.out });
+    idpTokenUnavailable = true;
+    const unconfirmed = await cotal(["team", "boot", tbFile], { cwd: rootTb, env });
+    idpTokenUnavailable = false;
+    check("with the IdP's token route answering 503, that team boot exits 3 with its outcome unconfirmed",
+      unconfirmed.status === 3 && field(unconfirmed.out, "Code", "OPERATION_UNKNOWN"), unconfirmed.out);
+    const settled = await cotal(["down", "--yes"], { cwd: rootTb, env, sandbox: tbSandbox });
+    check("the next down says that stack start ended with its outcome unconfirmed, and not that it was interrupted",
+      settled.status === 0 && /^! the earlier stack start \S+ ended with its outcome unconfirmed; every member is running \(broker, auth, delivery, manager\)$/m.test(plain(settled.out)) && !plain(settled.out).includes("was interrupted"), settled.out);
   }
 
   // ---------- E5. a participant joined by bundle starts a manager behind a local CA ----------
