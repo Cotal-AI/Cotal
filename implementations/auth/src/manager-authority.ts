@@ -226,14 +226,14 @@ export function parseRemoteManagerAuthorityRequest(raw: unknown, opts: { allowPl
 }
 
 const CREDENTIALS: Record<(typeof REMOTE_MANAGER_AUTHORITY_OPERATIONS)[number], { readonly required: readonly string[]; readonly closed?: true }> = Object.freeze({
-  prepare: { required: Object.freeze(["supervisor", "executor"]) },
-  activate: { required: Object.freeze(["serve", "goalWriter", "sessionLedger"]) },
-  renew: { required: Object.freeze(["supervisor", "executor"]) },
-  session: { required: Object.freeze(["sessionServing"]) },
-  retire: { required: Object.freeze(["retirementRequester"]) },
-  renewStandingBundle: { required: REMOTE_MANAGER_IDENTITY_NAMES, closed: true },
-  renewRunDriver: { required: Object.freeze(["runDriver", "runMediator"]), closed: true },
-  transferReader: { required: Object.freeze(["transferReader"]) },
+  prepare: Object.freeze({ required: Object.freeze(["supervisor", "executor"]) }),
+  activate: Object.freeze({ required: Object.freeze(["serve", "goalWriter", "sessionLedger"]) }),
+  renew: Object.freeze({ required: Object.freeze(["supervisor", "executor"]) }),
+  session: Object.freeze({ required: Object.freeze(["sessionServing"]) }),
+  retire: Object.freeze({ required: Object.freeze(["retirementRequester"]) }),
+  renewStandingBundle: Object.freeze({ required: REMOTE_MANAGER_IDENTITY_NAMES, closed: true as const }),
+  renewRunDriver: Object.freeze({ required: Object.freeze(["runDriver", "runMediator"]), closed: true as const }),
+  transferReader: Object.freeze({ required: Object.freeze(["transferReader"]) }),
 });
 
 /** Renewal operations are the credential rows with a closed set. Authorization, account
