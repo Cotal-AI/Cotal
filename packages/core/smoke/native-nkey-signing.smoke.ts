@@ -3,7 +3,7 @@ import { Algorithms, decode, encodeAuthorizationResponse, encodeUser } from "@na
 import { createAccount, createCluster, createCurve, createOperator, createServer, createUser, fromPublic, fromSeed, NKeysErrorCode, Prefix } from "@nats-io/nkeys";
 import { Codec } from "@nats-io/nkeys/lib/codec.js";
 import { decodeNatsJwt, nativeNkeySigner } from "../src/nkey-signer.js";
-import { composeSpaceAuth, createBrokerAuth, createSpaceAccountAuth } from "../src/index.js";
+import { composeSpaceAuth, createBrokerAuth, createSpaceAccountAuth, newIdentity } from "../src/index.js";
 
 const messages = [new Uint8Array(), new TextEncoder().encode("NATS signing: café"), Uint8Array.from({ length: 256 }, (_, i) => i)];
 let cases = 0;
@@ -111,6 +111,26 @@ try {
     cases++;
   } finally { signer.clear(); issuer.clear(); holder.clear(); srv.clear(); }
 }
+// Fresh user identities retain stock seed encoding and public-key/signature compatibility.
+{
+  const identities = [newIdentity(), newIdentity()];
+  for (const identity of identities) {
+    const seed = new TextEncoder().encode(identity.seed);
+    const stock = fromSeed(seed);
+    try {
+      assert.ok(/^U[A-Z2-7]{55}$/.test(identity.id), "generated identity is a user public key");
+      assert.ok(/^SU[A-Z2-7]{56}$/.test(identity.seed), "generated seed is a user seed");
+      assert.equal(stock.getPublicKey(), identity.id, "stock nkeys derives the same public identity");
+      assert.ok(Buffer.from(stock.getSeed()).equals(seed), "stock nkeys preserves the encoded seed");
+      for (const message of messages)
+        assert.equal(fromPublic(identity.id).verify(message, stock.sign(message)), true);
+      cases++;
+    } finally { stock.clear(); seed.fill(0); }
+  }
+  assert.notEqual(identities[0]!.id, identities[1]!.id, "fresh identities do not reuse a public key");
+  assert.ok(identities[0]!.seed !== identities[1]!.seed, "fresh identities do not reuse a seed");
+  cases++;
+}
 // The account factory uses the same signer without changing the operator/account trust chain.
 {
   const broker = await createBrokerAuth("native-account-factory");
@@ -152,4 +172,4 @@ try {
   await assert.rejects(() => createSpaceAccountAuth({ ...broker, operator: { ...broker.operator, seed: "" } }, "stripped"), /operator seed is required/);
   cases++;
 }
-console.log(`native nkey signing smoke: ${cases} cases passed (5 key kinds × 3 payloads, invalid seeds, v1/v2 JWTs and callout responses, native JWT decode, account factory and broker binding)`);
+console.log(`native nkey signing smoke: ${cases} cases passed (5 key kinds × 3 payloads, invalid seeds, v1/v2 JWTs and callout responses, native JWT decode, identity/account factories and broker binding)`);
