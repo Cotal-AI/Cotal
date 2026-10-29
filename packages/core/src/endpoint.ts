@@ -339,10 +339,10 @@ export interface EndpointOptions {
   /** Require a TLS connection to the server. */
   tls?: boolean;
   /** Native NATS PING interval for this endpoint's resident connection, in milliseconds.
-   *  Omitted uses the transport's default. Pair with transportMaxPingOut. No probe connection. */
+   *  Defaults to 10 seconds. Pair with transportMaxPingOut. No probe connection. */
   transportPingIntervalMs?: number;
-  /** Unanswered native PING count before the resident transport becomes stale. Omitted uses
-   *  the transport's default. Pair with transportPingIntervalMs for bounded silent loss. */
+  /** Unanswered native PING count before the resident transport becomes stale. Defaults to 2.
+   *  Pair with transportPingIntervalMs for bounded silent loss. */
   transportMaxPingOut?: number;
   /** How long the first connect may take before it fails with the transport's TimeoutError, in
    *  milliseconds. Omitted uses the transport's default. */
@@ -1072,8 +1072,8 @@ export class CotalEndpoint extends EventEmitter {
     if ((opts.transportPingIntervalMs === undefined) !== (opts.transportMaxPingOut === undefined))
       throw new Error("EndpointOptions transportPingIntervalMs and transportMaxPingOut must be configured together");
     this.onConnection = opts.onConnection;
-    this.transportPingIntervalMs = opts.transportPingIntervalMs;
-    this.transportMaxPingOut = opts.transportMaxPingOut;
+    this.transportPingIntervalMs = opts.transportPingIntervalMs ?? 10_000;
+    this.transportMaxPingOut = opts.transportMaxPingOut ?? 2;
     this.transportConnectTimeoutMs = opts.transportConnectTimeoutMs;
     // No implicit channel: an endpoint reads exactly what its caller lists. Omitted means none.
     this.channels = opts.channels ?? [];
