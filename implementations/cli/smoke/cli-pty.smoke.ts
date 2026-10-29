@@ -17,7 +17,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { createSuite } from "@cotal-ai/smoke-kit";
+import { createSuite, freePort } from "@cotal-ai/smoke-kit";
 import { clean, COTAL, cotalPty, nodePty, repoRoot, wait, type Pty } from "./_console-pty.js";
 
 const home = mkdtempSync(join(tmpdir(), "cotal-cli-pty-"));
@@ -333,6 +333,16 @@ try {
     check(`cotal ${argv.join(" ")} on a terminal prints the usage line and exits 1`, s.exitCode === 1 && s.text().includes("usage: cotal meshes add <space>"), s.text());
     check(`cotal ${argv.join(" ")} opens no prompt`, !s.text().includes("Register a mesh"), s.text());
   }
+
+  // `--tls` reaches the guided form, so a host name the TLS requirement admits goes on to the probe
+  // instead of the host-name refusal.
+  const tlsPty = cotalPty(["meshes", "add", "--server", `nats://localhost:${await freePort()}`, "--tls"], { cwd: home, env });
+  ptys.push(tlsPty);
+  const tlsAdd = session(tlsPty);
+  const probed = await until(() => tlsAdd.text().includes("No broker answered there"));
+  check("meshes add --tls on a terminal takes a host name to the probe", probed && !tlsAdd.text().includes("is a host name"), tlsAdd.text());
+  tlsPty.write("\x03");
+  check("…and exits when cancelled", await until(() => tlsAdd.exitCode !== undefined), tlsAdd.exitCode);
 
   // A dumb terminal gets no color, unless FORCE_COLOR asks for it.
   for (const [label, extra, colored] of [["TERM=dumb", {}, false], ["TERM=dumb with FORCE_COLOR=1", { FORCE_COLOR: "1" }, true]] as const) {

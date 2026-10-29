@@ -106,6 +106,8 @@ export interface WizardSeed {
   force?: boolean;
   /** Pre-accepted overlay tunnel dependency (the flag form's `--allow-unencrypted-overlay`). */
   allowUnencryptedOverlay?: boolean;
+  /** The flag form's `--tls`: require TLS on whichever address the record ends on. */
+  tls?: boolean;
 }
 
 /** Run the guided registration. Returns false if the operator backed out (the caller exits 0 —
@@ -137,6 +139,8 @@ export async function addWizard(seed: WizardSeed, cwd: string, io: WizardIO = cl
   /** Whether the FINAL settled address carried a residual — the thing actually recorded. */
   let overlayResidual = false;
   let enforces: "auth" | "open" | "unreachable" = "unreachable";
+  // The TLS intent of an address, from `--tls` or its scheme, as the flag form sources it.
+  const tlsFor = (address: string) => tlsIntent(address, Boolean(seed.tls));
 
   for (;;) {
     if (!server) {
@@ -153,9 +157,8 @@ export async function addWizard(seed: WizardSeed, cwd: string, io: WizardIO = cl
             // Classified as a CANDIDATE here (acceptance granted for the check) so an overlay
             // address survives the prompt and reaches the question below. Refusing it here made
             // that question unreachable: the operator could never say yes to something the
-            // validator had already rejected. TLS intent comes from the typed scheme — the
-            // guided form's one source for it.
-            const d = checkDialPolicy(v, { tlsRequired: tlsIntent(v, false), allowUnencryptedOverlay: true });
+            // validator had already rejected. TLS intent comes from `--tls` or the typed scheme.
+            const d = checkDialPolicy(v, { tlsRequired: tlsFor(v), allowUnencryptedOverlay: true });
             return d.ok ? undefined : d.message.replace(/^✗ /, "");
           },
         });
@@ -166,7 +169,7 @@ export async function addWizard(seed: WizardSeed, cwd: string, io: WizardIO = cl
         server = undefined;
         continue;
       }
-      const dial = checkDialPolicy(server, { tlsRequired: tlsIntent(server, false), allowUnencryptedOverlay: true }); // candidate; the ask below decides
+      const dial = checkDialPolicy(server, { tlsRequired: tlsFor(server), allowUnencryptedOverlay: true }); // candidate; the ask below decides
       if (!dial.ok) {
         io.log.error(dial.message);
         server = undefined;
@@ -182,7 +185,7 @@ export async function addWizard(seed: WizardSeed, cwd: string, io: WizardIO = cl
     // register an overlay mesh at all, and silently accepting would be the warning-and-continue
     // shape that was just removed.
     if (ackedFor !== server) {
-      const probe = checkDialPolicy(server, { tlsRequired: tlsIntent(server, false), allowUnencryptedOverlay: true });
+      const probe = checkDialPolicy(server, { tlsRequired: tlsFor(server), allowUnencryptedOverlay: true });
       if (probe.ok && probe.value.residual) {
         io.log.warn(probe.value.residual);
         // DEFAULT DENY. This is the one confirmation in the wizard where pressing Enter must not
@@ -195,7 +198,7 @@ export async function addWizard(seed: WizardSeed, cwd: string, io: WizardIO = cl
     }
     // Re-checked with the REAL answer, so the decision is enforced by the same rule the flag form
     // uses rather than by the branch above happening to be right.
-    const settled = checkDialPolicy(server, { tlsRequired: tlsIntent(server, false), allowUnencryptedOverlay: ackedFor === server });
+    const settled = checkDialPolicy(server, { tlsRequired: tlsFor(server), allowUnencryptedOverlay: ackedFor === server });
     if (!settled.ok) { io.log.error(settled.message); server = undefined; continue; }
     overlayResidual = Boolean(settled.value.residual);
 
@@ -291,7 +294,7 @@ export async function addWizard(seed: WizardSeed, cwd: string, io: WizardIO = cl
       const b = parsed.value;
       const named = checkSpaceName(b.space);
       if (!named.ok) { io.log.error(named.message); return cancelled(io, "Nothing was registered."); }
-      const userTls = b.tlsRequired || tlsIntent(server as string, false);
+      const userTls = b.tlsRequired || tlsFor(server as string);
       const userDial = checkDialPolicy(server as string, { tlsRequired: userTls, allowUnencryptedOverlay: ackedFor === server });
       if (!userDial.ok) { io.log.error(userDial.message); return cancelled(io, "Nothing was registered."); }
       const exch = await verifyUserExchange(b.userAuth.endpoints!.url!, userExchangeIssuer(b.space));
@@ -406,7 +409,7 @@ export async function addWizard(seed: WizardSeed, cwd: string, io: WizardIO = cl
 
   // ── 5. verify for real, then confirm ──────────────────────────────────────────────────────────
   if (!unverified) {
-    const target = candidateTarget(space, server as string, root, mode, trust.value, tlsIntent(server as string, false));
+    const target = candidateTarget(space, server as string, root, mode, trust.value, tlsFor(server as string));
     const spin = io.spinner();
     spin.start(mode === "auth" ? `Checking this folder's credentials for "${space}"` : `Checking the connection to "${space}"`);
     const verified = await verifyTarget(target);
@@ -428,7 +431,7 @@ export async function addWizard(seed: WizardSeed, cwd: string, io: WizardIO = cl
   io.note(
     [
       `${dim("space ")}  ${bold(space)}`,
-      `${dim("broker")}  ${server}`,
+      `${dim("broker")}  ${server}${tlsFor(server as string) ? dim("  (TLS required)") : ""}`,
       `${dim("mode  ")}  ${mode}${unverified ? dim("  (not verified - the broker was not reachable/checked)") : dim(mode === "auth" ? "  (broker enforces credentials)" : "  (broker is open)")}`,
       ...(replace ? [`${dim("note  ")}  ${bold("replaces")} the existing record for "${space}"`] : []),
       `${dim("folder")}  ${root}`,
@@ -445,9 +448,9 @@ export async function addWizard(seed: WizardSeed, cwd: string, io: WizardIO = cl
   // opt-in replaced, one surface over.
   const entry: MeshEntry = {
     space, server: server as string, root, mode, origin: "manual",
-    // The guided form's TLS intent is the typed scheme, persisted the same way the flag form
-    // persists it — recorded strictness is what the dial policy relaxed on, so it must be carried.
-    ...(tlsIntent(server as string, false) ? { tlsRequired: true } : {}),
+    // The guided form's TLS intent, from `--tls` or the typed scheme, persisted the same way the
+    // flag form persists it — recorded strictness is what the dial policy relaxed on, so it must be carried.
+    ...(tlsFor(server as string) ? { tlsRequired: true } : {}),
     // From the FINAL classification, never from "the operator accepted something earlier". The
     // flag form persists `dial.residual` for the same reason: the field is evidence about the
     // recorded target, and evidence that can detach from its subject is worse than none, because

@@ -10,13 +10,14 @@ import {
   waitForDeliveryLease,
   deliveryLeaseHolderFor,
 } from "@cotal-ai/core";
-import { DELIVERY_PROCESS, DELIVERY_CREDS_KIND, DELIVERY_LOGFILE, DELIVERY_PIDFILE, authDir, canonicalLocalProcessPath, commandIsCotalDelivery, deliveryCredsKey, findCotalRoot, getSpaceAuth, listSpaceAccounts, localProcessPath, parsePid, probeLiveness, readProcessCommand, readProcessRecord, reclaimDeadPreUpgradeRecord, segmentedKey, stopReservationPath, type LivenessProbe, type LocalProcessContext, type ProcessRecord, type ProcessRecordState, workspaceSecretStore, writePidPair } from "@cotal-ai/workspace";
+import { DELIVERY_PROCESS, DELIVERY_CREDS_KIND, DELIVERY_LOGFILE, DELIVERY_PIDFILE, authDir, canonicalLocalProcessPath, codeSpan, commandIsCotalDelivery, deliveryCredsKey, findCotalRoot, getSpaceAuth, listSpaceAccounts, localProcessPath, parsePid, probeLiveness, readProcessCommand, readProcessRecord, reclaimDeadPreUpgradeRecord, segmentedKey, stopReservationPath, type LivenessProbe, type LocalProcessContext, type ProcessRecord, type ProcessRecordState, workspaceSecretStore, writePidPair } from "@cotal-ai/workspace";
 import { daemonArgv, displayCmd } from "./self-exec.js";
 import { resolveRuntimeSpace } from "./status.js";
 import { cotalRoot } from "./paths.js";
 import { clearManagerArtifacts, ensureManager, managerHasDeliveryMarker, managerRecordState, recordSeams, stopManager, type RecordSeams } from "./manager-proc.js";
 import { stopLocalProcess } from "./local-process-stop.js";
 import { RESPONDER_UNBOUND_CONSEQUENCE } from "./delivery-responder.js";
+import { shellWord } from "./endpoint-errors.js";
 import { seedBeforeLaunch } from "../seed/launch.js";
 
 /** The space this folder's commands mean, and the per-space record paths over it. The daemon is
@@ -143,19 +144,18 @@ export async function stopOldHostingManagerIfPresent(
   const record = managerRecordState(space, root, { probe });
   if (record.state === "absent") return;
   const verdict = oldHostingManagerVerdict(record, space, probe, root);
-  // FIRST action, before any mint/write/start, so the refusal actually fences the daemon.
+  // FIRST action, before any mint/write/start, so the refusal actually fences the daemon: an old
+  // Plane-3-hosting manager behind an indeterminate record is still bound to fanout/reader, and a
+  // daemon started anyway would double-bind them; the daemon's own lease cannot detect that.
   if (verdict === "indeterminate") {
     const p = record.path;
-    const consequence = `Refusing before the daemon starts. If that manager is an old Plane-3-hosting one it is still bound to fanout/reader, and starting the daemon anyway would double-bind them; the daemon's own lease cannot detect that.\n`;
     if (record.state === "unattributable")
       throw new Error(
-        `the manager pidfile at ${p} holds content that is not a pid (${JSON.stringify(record.content)}), so the delivery cutover preflight cannot run.\n` +
-          consequence +
-          `NEXT: find and stop that process, then remove \`${p}\` by hand.`,
+        `the manager pidfile at ${p} holds content that is not a pid (${JSON.stringify(record.content)}), so it names no process and cotal cannot tell whether a manager still runs. Nothing was started over it.\n` +
+          `NEXT: once ${codeSpan(`cotal ps --space ${shellWord(space)}`)} finds no manager running, remove that file and re-run.`,
       );
     throw new Error(
-      `the recorded manager pid (${record.pid}) cannot be attributed, so the delivery cutover preflight cannot run: the kernel answered neither "running" nor "no such process" (a seccomp filter or LSM policy does this inside some sandboxes).\n` +
-        consequence +
+      `the recorded manager pid (${record.pid}) cannot be attributed, so cotal cannot tell whether a manager still runs: the kernel answered neither "running" nor "no such process" (a seccomp filter or LSM policy does this inside some sandboxes). Nothing was started over it.\n` +
         `NEXT: verify the process yourself (\`ps -p <pid>\`). If it is gone, remove \`${p}\` and re-run. If it is running, stop it with \`cotal down\` first.`,
     );
   }

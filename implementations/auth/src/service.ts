@@ -1580,6 +1580,10 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
         const evictions = await evictHolders(authorized.principals!);
         return completeRemoteManagerMaintenance(authorized, owner, { evictions });
       }
+      if (authorized.operation !== "reconcile-registration") {
+        const unhandled: never = authorized.operation;
+        throw new EpEnvelopeError("internal", `manager maintenance has no host effect for operation ${unhandled}`);
+      }
       const principalOracle = makeDeliveryAdminPrincipalOracle({ onConnection, space, server, dataAccount, log });
       const executorIdentity = newIdentity();
       const executorCreds = await mintCreds(issuerAuth(), executorIdentity, "endpoint-serve-executor", {

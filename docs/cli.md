@@ -1125,7 +1125,8 @@ with no `--server` or `--host`, it starts at the address in the broker configura
 rendered there, and says so in one line. The mode is a separate decision, because `--server` and
 `--host` name where the broker listens and not whether it authenticates: a root whose last start was
 open starts open again whatever address this one names, and the receipt says the mode it started
-in. A mode flag still decides for itself, so `--open` or `--user-auth` starts the mode it names.
+in. A refresh of the running stack starts nothing, so it prints neither line.
+A mode flag still decides for itself, so `--open` or `--user-auth` starts the mode it names.
 An open root holds no account to name its space, so the broker configuration its last start rendered
 names it, and plain `cotal up` starts that space again. A configuration an earlier release rendered
 names none, and a root it deployed with `up -f` starts again as the space its newest open fresh team
@@ -1342,10 +1343,14 @@ refresh, a first `--detach` boot or `up -f`. A refresh over a manager pidfile th
 reported the same way, naming that file. A first `--detach` boot reports a delivery daemon the
 same way when the daemon was ready and then exited before the boot finished, such as on a SIGTERM
 while the manager started, and leaves it out of the `running in the background` line. The degraded
-message preserves the failure's own recovery instructions. Spawn and retirement require a
-functioning control plane, so its Next offers no `cotal spawn`, only the stop; follow the
-reported next step before retrying. The same happens when another
-`cotal supervise` takes over the manager pidfile before the started process comes up. A legacy
+message preserves the failure's own recovery instructions and wraps on a terminal like any other
+warning. Spawn and retirement require a functioning control plane, so its Next offers no
+`cotal spawn`, only the stop; follow the reported next step before retrying. The same happens when
+another `cotal supervise` takes over the manager pidfile before the started process comes up. A
+manager pidfile that holds no pid names no process, so `down` refuses it too and Cotal does not
+remove it for you. Next then names `rm <pidfile>`, to run once `cotal ps --space <space>` finds no
+manager running, and `cotal up` to start the manager, or `cotal up --no-manager` after a start with
+that flag. A legacy
 refresh that finds everything already running reports it like any other start: the `Mesh: <space>`
 heading, the `✓ mesh "<space>" already running` line, and a Next that names the launch and the stop,
 with `cotal spawn` when a manager runs and the control plane is not degraded. A controller refresh prints its members under `Controller
@@ -3412,7 +3417,7 @@ anything. A broker that does not answer, or a space name already registered, bec
 than an error. For a name added by hand, the first choice is another name. Replacing a registered
 record then asks you to type `y`; Enter keeps No. Nothing is written before that last question, and
 a cancel at any question says nothing was registered. A name prepared or started on this machine, or
-listed by a catalog, is not offered for replacement. Anything you pass on the command line is taken as given and not asked again. Without
+listed by a catalog, is not offered for replacement. Anything you pass on the command line, `--tls` included, is taken as given and not asked again. Without
 a terminal - a script, an agent, CI - nothing prompts and the flag form's errors stand
 (`COTAL_NO_PROMPT=1` forces that too).
 
@@ -3436,6 +3441,7 @@ through the record demands the handshake (and `meshes add tls://…` against a p
 refused at registration). Without required TLS the fence admits loopback literals, and
 private-overlay literals only with `--allow-unencrypted-overlay`, which records your acceptance that
 the overlay is protected only while its tunnel is up ([Run a mesh](run-a-mesh.md#which-addresses-you-may-register)). RFC1918 addresses are refused in both modes because a cafe LAN is private but does not belong to you.
+`--force` does not change these address rules.
 
 A **user-auth** mesh registers from supplied pinned trust, never guessed: `--user-auth-file`
 takes the bundle exported where the mesh runs; `--from` asks before it dials the address at all,
@@ -3970,8 +3976,11 @@ with the host's reason and `PERMISSION_DENIED` (exit 2). A host that fails or do
 [Agent files](agent-files.md). (`cotal start` was merged into `cotal spawn --detach`.)
 A managed spawn onto a manager from another Cotal release is refused before any request is sent
 when the manager's contract does not declare a field this CLI sends. The refusal names the field,
-calls it version skew, and gives this CLI's version. A field you leave unset is not sent, so it
-never causes that refusal.
+calls it version skew, and gives this CLI's version and the version that manager reports in its
+`status`. When the manager is older, it names `cotal update --self` on the manager's host and then
+`cotal manager restart`, or a CLI at the manager's version. When this CLI is older, it names
+`cotal update --self` here. A manager that reports no version is asked to run at this CLI's version.
+A field you leave unset is not sent, so it never causes that refusal.
 
 A manager has 50 seat slots, and each seat counts once. A slot is held by a managed seat (a row in
 that manager's `cotal ps`, including a seat still joining), by a reserved launch the manager accepted

@@ -34,6 +34,7 @@ import {
   runAgentBearer,
   CotalEndpoint,
   GOAL_ENTITY_RUNNING_DETAIL_KIND,
+  EP_UNDECLARED_ARG,
   seatCapFrom,
   acquireLock,
   inspectLock,
@@ -804,6 +805,8 @@ export async function launchManagedPersona(
       throw new CommandFailure("refused", code, reply.error ? oneLine(reply.error) : "the manager refused the launch before execution", { target, native, remedy: elsewhere.length
         ? `nothing was launched; ${elsewhere.length === 1 ? "this manager of yours has" : "these managers of yours have"} ${ref === "default" ? "a default persona" : `persona "${ref}"`}: ${elsewhere.map((selector) => rerunOn(process.argv.slice(2), selector)).join(" or ")}`
         : missing ? "nothing was launched; create that file on the manager's host, then run the spawn again"
+        // This CLI refused before sending, so the manager reported nothing; the refusal names the side to update.
+        : reply.details?.some((d) => d.kind === EP_UNDECLARED_ARG) ? "nothing was launched; update the side the refusal names, then run the spawn again"
         : "nothing was launched; fix what the manager reported, then run the spawn again" });
     }
     // A committed `failed` terminal is the manager's answer: the launch ran and failed, as an agent
