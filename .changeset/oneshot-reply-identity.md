@@ -2,4 +2,4 @@
 "@cotal-ai/connector-core": patch
 ---
 
-Show the sender id and message id inside a native injected frame and a cotal_inbox reply, so a recipient can answer one of two one-shot senders that share a display name without guessing.
+Show sender and message IDs in Codex injected messages and cotal_inbox replies, using the existing metadata block separate from peer labels, so recipients can select one of two same-name senders without guessing.

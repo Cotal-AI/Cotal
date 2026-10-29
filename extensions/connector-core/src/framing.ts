@@ -103,12 +103,12 @@ export function fmtDeliveryItem(i: InboxItem): string {
   const field = (value: string) => Array.from(JSON.stringify(value), (char) =>
     [91, 93, 133, 8232, 8233].includes(char.charCodeAt(0))
       ? `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}` : char).join("");
-  const metadata = [...(i.fromId ? [`sender_id=${field(i.fromId)}`] : []), ...(i.id ? [`message_id=${field(i.id)}`] : []),
+  const metadata = [`sender_id=${field(i.fromId)}`, ...(i.id ? [`message_id=${field(i.id)}`] : []),
     ...(i.contextId ? [`context_id=${field(i.contextId)}`] : []), ...(i.replyTo ? [`reply_to=${field(i.replyTo)}`] : [])];
-  return formatItem(i, "", ` ${metadata.join(" ")}`);
+  return formatItem(i, `[${metadata.join(" ")}] `);
 }
 
-function formatItem(i: InboxItem, prefix = "", suffix = ""): string {
+function formatItem(i: InboxItem, metadata = ""): string {
   const h = i.historical ? "(history) " : ""; // backfilled on join, so it pre-dates you and is not live
   // The broker's count, so a peer cannot forge or hide it: an earlier copy outlived its ack wait.
   // That is a delivery fact, not evidence of a prior context handoff. A process restart also loses
@@ -117,10 +117,10 @@ function formatItem(i: InboxItem, prefix = "", suffix = ""): string {
   const r = i.deliveryCount !== undefined && i.deliveryCount > 1
     ? `(broker redelivery, delivery ${i.deliveryCount}: prior model handoff unknown) `
     : "";
-  const body = `${prefix}${h}${r}${fmtBody(i.text)}`;
-  if (i.kind === "dm") return `[DM from ${fmtFrom(i)}${suffix}] ${body}`;
-  if (i.kind === "anycast") return `[@${attributionSafe(i.service ?? "")} from ${fmtFrom(i)}${suffix}] ${body}`;
-  return `[#${attributionSafe(i.channel ?? "")}${i.mentionsMe ? " @you" : ""} ${fmtFrom(i)}${suffix}] ${body}`;
+  const body = `${metadata}${h}${r}${fmtBody(i.text)}`;
+  if (i.kind === "dm") return `[DM from ${fmtFrom(i)}] ${body}`;
+  if (i.kind === "anycast") return `[@${attributionSafe(i.service ?? "")} from ${fmtFrom(i)}] ${body}`;
+  return `[#${attributionSafe(i.channel ?? "")}${i.mentionsMe ? " @you" : ""} ${fmtFrom(i)}] ${body}`;
 }
 
 /**

@@ -6078,7 +6078,7 @@ the sender's name works only while it names one principal among the senders the 
 from and the present peers. Once the recipient has heard two sends from the same login and host, a
 reply by that name refuses with `TARGET_AMBIGUOUS` and lists the principals. When none of them is
 present on a current roster, the refusal says they are no longer present and names how to answer one
-message. Answer by the id on the message instead (`from.id` in `chat --stdio`, or `sender_id` in a native injected frame and in `cotal_inbox`, with `replyTo` set to
+message. Answer by the id on the message instead (`from.id` in `chat --stdio`, or `sender_id` in a Codex injected frame and in `cotal_inbox`, with `replyTo` set to
 the message id), or with `/reply` in `chat`. The reply is stored
 under the sender's id in the space's DM history, which an operator's DM view such as the
 dashboard's Direct messages lens shows. The `cotal send` that asked has already exited, so the reply
