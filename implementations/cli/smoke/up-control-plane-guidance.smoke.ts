@@ -58,6 +58,23 @@ try {
         suite.check("a broker-only start's Next removes the pidfile and runs up --no-manager again, not a down that refuses it",
           JSON.stringify(next.slice(next.lastIndexOf("Next") + 1).map((line) => line.trim().split(/ {2,}/))) ===
             JSON.stringify([[`rm ${pidfile}`, `Remove the pidfile once \`cotal ps --space ${space}\` finds no manager running`], ["cotal up --no-manager", "Then refresh the stack without a manager"]]), output);
+        // `down` refuses that record too, without calling it a process. Its Next states the check
+        // only the operator can make before it names the removal. Nothing is stopped or removed.
+        const refused = run("down");
+        const refusedOutput = plain(refused.stdout + refused.stderr);
+        suite.check("down over that pidfile exits 1 and says the record names no process",
+          refused.status === 1 && !refusedOutput.includes("Stop that process") &&
+          plain(refused.stderr).includes(`the manager pidfile at ${pidfile} holds content that is not a pid ("garbage"), so it names no process and cotal cannot tell whether a manager still runs; refusing to remove it or report a clean stop`), refusedOutput);
+        const refusedNext = plain(refused.stdout).trimEnd().split("\n");
+        suite.check("down's Next states the operator's check before the removal, then runs the same down",
+          JSON.stringify(refusedNext.slice(refusedNext.lastIndexOf("Next") + 1).map((line) => line.trim().split(/ {2,}/))) === JSON.stringify([
+            ["The manager pidfile names no process, so cotal cannot check whether a manager still runs for this folder, and one that does not answer on the mesh may still be running. Confirm yourself that none runs before you remove that file."],
+            [`rm ${pidfile}`, "Remove it once no manager runs for this folder"],
+            ["cotal down", "Then stop the stack"],
+          ]), refusedOutput);
+        suite.check("down keeps that pidfile and the broker",
+          readFileSync(pidfile, "utf8") === "garbage" && brokerPid !== undefined && probeLiveness(brokerPid) === "alive", refusedOutput);
+        // This fixture started no manager (--no-manager), so it knows none runs for this folder.
         rmSync(pidfile);
         const again = run("up", "--no-manager");
         const againOutput = plain(again.stdout + again.stderr);

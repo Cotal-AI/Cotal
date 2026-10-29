@@ -1865,7 +1865,12 @@ run; the lease lapses on its TTL. A named `down` is the service stop above and n
 legacy component by its pidfile, so `cotal down manager` or `cotal down web` on a legacy stack is
 refused unless a saved definition has that name. Only bare `cotal down` stops a legacy root's
 components, all together, under the folder you run it in. It takes no `--space`. Its stop lines
-follow a `Mesh: <space>` heading, and its Next names `cotal up` to start the stack again. A bare `down` or
+follow a `Mesh: <space>` heading, and its Next names `cotal up` to start the stack again. A
+component pidfile that holds content that is not a pid names no process, so `down` says so, keeps
+the file, does not stop the broker, and keeps the artifacts and the registration. Its Next first asks
+you to confirm that no such component still runs for the folder, because cotal cannot check a record
+that names no process and a manager that does not answer on the mesh may still be running. It then
+names `rm <pidfile>` and the same `cotal down`. A bare `down` or
 `down --dry-run` whose `--space` names a space whose stack is recorded in another folder refuses
 `TARGET_NOT_FOUND`, exit 2, naming that folder and the stop or preview to run there. The
 `-f` / `--run` forms tear down a [manifest deploy](#manifest-deploys) without stopping the whole mesh
