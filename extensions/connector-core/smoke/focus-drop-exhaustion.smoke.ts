@@ -66,7 +66,11 @@ try {
   check("known pre-exhaustion muted copy remains suppressed after unmute", acked && !wakes.some(i => i.id === muted.id) && !agent.peekInbox().some(i => i.id === muted.id));
   let postCapAcked = false;
   agent.ep.emit("message", postCapMuted, { durable: true, ack: () => { postCapAcked = true; }, nak: () => {} }, { historical: false, kind: "channel" });
-  check("unknown post-exhaustion muted durable copy remains suppressed after unmute", postCapAcked && !wakes.some(i => i.id === postCapMuted.id) && !agent.peekInbox().some(i => i.id === postCapMuted.id));
+  check("unknown late muted mention wakes after unmute with a pull-only body", !postCapAcked && wakes.filter(i => i.id === postCapMuted.id).length === 1 && agent.peekInbox("pull-only").some(i => i.id === postCapMuted.id) && !agent.peekInbox("automatic").some(i => i.id === postCapMuted.id));
+  const residualReply = await inbox.run(agent, cfg, { scope: "pull-only" });
+  check("late mention residual is surfaced with the exhaustion warning", residualReply.text.includes("muted-after-exhaustion") && residualReply.text.includes("Channel drop tracking exhausted") && postCapAcked);
+  agent.ep.emit("message", postCapMuted, { durable: true, ack: () => {}, nak: () => {} }, { historical: false, kind: "channel" });
+  check("the handled late mention is not surfaced a second time", wakes.filter(i => i.id === postCapMuted.id).length === 1 && !agent.peekInbox().some(i => i.id === postCapMuted.id));
   const replay = await pub.multicast("history-control", { channel: "team.muted" });
   agent.ep.emit("message", { ...replay, id: "historical-copy", mentions: ["otto"] }, { durable: false, ack: () => {}, nak: () => {} }, { historical: true, kind: "channel" });
   check("historical mentions cannot create a wake or buffered body", !wakes.some(i => i.id === "historical-copy") && !agent.peekInbox().some(i => i.id === "historical-copy"));

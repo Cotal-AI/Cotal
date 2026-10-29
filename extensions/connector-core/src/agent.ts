@@ -1157,10 +1157,10 @@ export class MeshAgent extends EventEmitter {
       if (this.enteringFocus) this.excludeFromFocus(item);
       if (this.dropUnsafe) {
         this.excludeFromFocus(item);
-        if (cm !== "muted" && item.mentionsMe && !item.historical && !delivery.durable) {
+        if (cm !== "muted" && item.mentionsMe && !item.historical) {
           // Mentions are an untrusted wake hint, never authority to inject a channel body.
           // Keep the body in the bounded pull lane while normal ambient stays fail-closed.
-          // An unknown durable copy may have been muted before its live copy was forgotten.
+          // After exhaustion an unknown late copy can surface once, disclosed by the warning.
           this.buffer(item, delivery, true, idless);
           this.emit("mention-wake", item);
         } else delivery.ack();
