@@ -77,8 +77,8 @@
     {
       "name": "color ignores the saved preference",
       "file": "packages/workspace/src/colors.ts",
-      "find": "  return mode === \"always\" || (mode === \"auto\" && Boolean(process.stdout.isTTY) && process.env.TERM !== \"dumb\");",
-      "replace": "  return mode !== \"never\" && Boolean(process.stdout.isTTY) && process.env.TERM !== \"dumb\";",
+      "find": "  return mode === \"always\" || (mode === \"auto\" && Boolean(stream.isTTY) && process.env.TERM !== \"dumb\");",
+      "replace": "  return mode !== \"never\" && Boolean(stream.isTTY) && process.env.TERM !== \"dumb\";",
       "expectRed": "a saved color=always colors piped output",
       "cell": "a saved color=always colors piped output",
       "afterRestore": "pnpm --filter cotal-ai... build"

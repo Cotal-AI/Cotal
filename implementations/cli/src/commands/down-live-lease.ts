@@ -1,6 +1,8 @@
 /** A manager or delivery daemon whose pidfile is gone while its lease is still live.
- *  One read, no TTL wait: a daemon that is running keeps renewing, and `down` must not stop
- *  the broker under it. A bucket that does not exist, or a broker that does not answer, is not a
+ *  A daemon that is running keeps renewing, and `down` must not stop the broker under it. A daemon
+ *  that exited without releasing, such as one whose broker stalled past its broker-gone window,
+ *  leaves a row that nobody renews, so a row counts only once it is written again within the bucket
+ *  TTL. A bucket that does not exist, or a broker that does not answer, is not a
  *  live daemon. */
 import { existsSync } from "node:fs";
 import { jetstreamManager } from "@nats-io/jetstream";
@@ -33,9 +35,25 @@ export async function directKvValue<T>(
 }
 
 
-import { dialerFor, deliveryBucket, isReachable, MANAGER_LEASE_KEY, managerBucket, standaloneConnectOpts } from "@cotal-ai/core";
-import { CommandFailure, findMesh, localProcessPath, type LocalProcess, type LocalProcessContext } from "@cotal-ai/workspace";
+import { awaitLeaseExpiry, dialerFor, deliveryBucket, isReachable, LEASE_EXPIRY_GRACE_MS, LEASE_TTL_MS, leaseRemainingMs, MANAGER_LEASE_KEY, MANAGER_LEASE_TTL_MS, managerBucket, standaloneConnectOpts } from "@cotal-ai/core";
+import { CommandFailure, findMesh, localProcessPath, stderrLine, type LocalProcess, type LocalProcessContext } from "@cotal-ai/workspace";
 import { connectOrExit, userViewAuthOrExit } from "../lib/connect.js";
+import { c } from "../ui.js";
+
+/** One KV subject's last row as its revision and broker write time, without creating a consumer.
+ *  A missing subject or a DEL/PURGE tombstone is no row. */
+async function directKvRow(nc: NatsConnection, stream: string, subject: string): Promise<{ revision: number; created: number } | undefined> {
+  const response = await nc.request(`$JS.API.STREAM.MSG.GET.${stream}`, JSON.stringify({ last_by_subj: subject }), { timeout: 5_000 });
+  const body = JSON.parse(new TextDecoder().decode(response.data)) as {
+    message?: { seq: number; time: string; hdrs?: string };
+    error?: { code?: number; description?: string };
+  };
+  if (body.error?.code === 404) return undefined;
+  if (body.error) throw new Error(`lease read failed: ${body.error.description ?? "JetStream error"}`);
+  const headers = body.message?.hdrs ? Buffer.from(body.message.hdrs, "base64").toString("utf8") : "";
+  if (!body.message || /^KV-Operation:\s*(?:DEL|PURGE)\s*$/im.test(headers)) return undefined;
+  return { revision: body.message.seq, created: Date.parse(body.message.time) };
+}
 
 export async function refuseLiveUnrecordedDaemons(
   components: readonly LocalProcess[],
@@ -74,7 +92,7 @@ async function liveUnrecordedDaemonNames(
   });
   try {
     const jsm = await jetstreamManager(nc);
-    const live = async (bucket: string, leasePrefix: string | undefined): Promise<boolean> => {
+    const live = async (label: string, bucket: string, leasePrefix: string | undefined, ttlMs: number): Promise<boolean> => {
       let subjects: string[];
       try {
         const info = await jsm.streams.info(`KV_${bucket}`, { subjects_filter: `$KV.${bucket}.>` });
@@ -86,7 +104,12 @@ async function liveUnrecordedDaemonNames(
       // The manager bucket also holds mesh config. Only a current `lease.<instance>` is a daemon.
       const leases = leasePrefix === undefined ? subjects : subjects.filter((subject) => subject.startsWith(`$KV.${bucket}.${leasePrefix}.`));
       for (const subject of leases) {
-        if (await directKvValue(nc, `KV_${bucket}`, subject, true) !== undefined) return true;
+        const read = () => directKvRow(nc, `KV_${bucket}`, subject);
+        const row = await read();
+        if (row === undefined) continue;
+        stderrLine("• ", `${label} has no pidfile; waiting up to ${Math.ceil((leaseRemainingMs(row.created, ttlMs) + LEASE_EXPIRY_GRACE_MS) / 1000)}s to see whether its lease is renewed`, c.dim);
+        // A row the broker is late to expire but nobody wrote for a whole TTL has no renewer either.
+        if (await awaitLeaseExpiry({ read, ...row, ttlMs }) === "rewritten") return true;
       }
       return false;
     };
@@ -94,7 +117,7 @@ async function liveUnrecordedDaemonNames(
     for (const component of watched) {
       const manager = component.name === "manager";
       const bucket = manager ? managerBucket(context.space) : deliveryBucket(context.space);
-      if (await live(bucket, manager ? MANAGER_LEASE_KEY : undefined)) found.push(component.label);
+      if (await live(component.label, bucket, manager ? MANAGER_LEASE_KEY : undefined, manager ? MANAGER_LEASE_TTL_MS : LEASE_TTL_MS)) found.push(component.label);
     }
     // Both daemons, when both are live. Object key order must not drop the manager behind delivery.
     const order = ["manager", "delivery daemon"];

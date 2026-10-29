@@ -1,8 +1,9 @@
 import type { Readable, Writable } from "node:stream";
-import { BASELINE_LIFECYCLE_ENDPOINT, invokeCommand, remoteManagerActors, resolveService, type Presence } from "@cotal-ai/core";
-import { CommandFailure, DEFAULT_MANAGER_NAME, codeSpan, instanceIdShaped, isCommandFailure, isConnectRefusal, renderReport, resolveMeshTarget, terminalWidth, type Connection } from "@cotal-ai/workspace";
+import { BASELINE_LIFECYCLE_ENDPOINT, findCommand, invokeCommand, registry, remoteManagerActors, resolveService, type Command, type Presence } from "@cotal-ai/core";
+import { CommandFailure, DEFAULT_MANAGER_NAME, codeSpan, instanceIdShaped, isCommandFailure, isConnectRefusal, renderReport, resolveMeshTarget, type Connection } from "@cotal-ai/workspace";
 import { askManager, liveManagerIds, onInstance, onInstanceId, reportedManagerHost, resolveControlTarget, type ControlAuth } from "./control.js";
 import { openEndpointConnection } from "./endpoint-client.js";
+import { commandWord } from "./leading-flags.js";
 import { shellWord } from "./endpoint-errors.js";
 import { displayCmd } from "./self-exec.js";
 import { openTransient } from "./transient.js";
@@ -172,7 +173,7 @@ export async function managersWithPersona(values: { space?: unknown; server?: un
     let connection: Awaited<ReturnType<typeof openEndpointConnection>> | undefined;
     try {
       connection = await openEndpointConnection(flags, "control-caller-privileged", BASELINE_LIFECYCLE_ENDPOINT, manager.instanceId);
-      const service = await resolveService(connection.nc, connection.space, BASELINE_LIFECYCLE_ENDPOINT, connection.auth.epCaller!, { instanceId: manager.instanceId, deadlineMs: 5_000 });
+      const service = await resolveService(connection.nc, connection.space, BASELINE_LIFECYCLE_ENDPOINT, connection.auth.epCaller!, { instanceId: manager.instanceId, deadlineMs: 5_000, commands: ["list-personas"] });
       // The list names every persona in the catalog; a card it cannot show you is listed by name.
       const listed = service.commands.has("list-personas") ? (await invokeCommand(connection.nc, connection.space, service, "list-personas", undefined, { deadlineMs: 5_000 })).reply : undefined;
       const personas = listed?.ok ? (listed.data as { personas?: unknown } | undefined)?.personas : undefined;
@@ -251,9 +252,33 @@ function withPin(argv: readonly string[], selector: string): string[] {
 /** `argv` again as a command line, pinned to `selector`. */
 export const rerunOn = (argv: readonly string[], selector: string): string => [displayCmd(), ...withPin(argv, selector).map(shellWord)].join(" ");
 
-/** The command again on each manager, by the shortest selector that picks it. */
-const reruns = (managers: readonly ManagerCandidate[], argv: readonly string[]): string =>
-  `rerun it on one: ${managers.map((m) => rerunOn(argv, selectorFor(m, managers))).join(" or ")}`;
+/** Hosted `cotal run` verbs take `--on` only as the full instance id `cotal ps` prints
+ *  (docs/cli.md). A name or `<host>/<runtime>` that other commands accept is refused
+ *  `USAGE_INVALID` there, so a remedy for those verbs must name the instance id.
+ *  The command word is the registered name or any alias the registry claims for it
+ *  (`r` in implementations/runtime/src/index.ts). Local, offline and seat-only run
+ *  commands take no `--on`, so they are left alone. */
+const OFFLINE_RUN_VERBS = ["validate", "plan", "simulate", "turns", "yield", "revoke", "check"];
+const hostedRunArgv = (argv: readonly string[]): boolean => {
+  const end = argv.indexOf("--");
+  const words = (end === -1 ? argv : argv.slice(0, end)).filter((word) => word !== "cotal");
+  // The dispatcher reads the command after leading output and global flags (commandWord).
+  // A remedy that looks only at words[0] would miss `cotal --json run` and suggest a name.
+  const word = commandWord(words);
+  const command = word === undefined ? undefined : findCommand(registry.all<Command>("command"), word);
+  if ((command?.name ?? word) !== "run") return false;
+  if (words.includes("--local")) return false;
+  const at = words.indexOf(word!);
+  const verb = words[at + 1];
+  return verb === undefined || !OFFLINE_RUN_VERBS.includes(verb);
+};
+
+/** The command again on each manager. Hosted run verbs are pinned by instance id; every other
+ *  command keeps the shortest selector that picks the manager. */
+const reruns = (managers: readonly ManagerCandidate[], argv: readonly string[]): string => {
+  const byInstance = hostedRunArgv(argv);
+  return `rerun it on one: ${managers.map((m) => rerunOn(argv, byInstance ? m.instanceId : selectorFor(m, managers))).join(" or ")}`;
+};
 
 /** The managers an unpinned manager selection refused to choose between, with what the roster
  *  says about each, or undefined when `failure` is not that refusal. A roster that cannot be read
@@ -297,7 +322,7 @@ function choose(chosen: ManagerCandidate, managers: readonly ManagerCandidate[],
   process.stderr.write(`${renderReport({ sections: [{ title: "Manager chosen", blocks: [
     { kind: "fields", rows: [["Manager", chosen.name ?? chosen.instanceId], ["Instance", chosen.instanceId], ["Host", chosen.host ?? "not reported (started by an older cotal)"]] },
     { kind: "lines", lines: [{ text: `To choose it without this question: ${codeSpan(rerunOn(argv, pick.selector))}`, tone: "hint" }] },
-  ] }] }, "rich", terminalWidth(process.stderr))}\n`);
+  ] }] }, "rich", process.stderr)}\n`);
   return chosen;
 }
 
@@ -466,7 +491,7 @@ export async function askManagerFolder(
     output.write(`${renderReport({ sections: [{ title: "Folder chosen", blocks: [
       { kind: "fields", rows: [["Folder", folder ?? MANAGER_WORKSPACE], ["Host", selection.manager.host ?? "not reported"]] },
       ...(folder === undefined ? [] : [{ kind: "lines" as const, lines: [{ text: `To choose it without this question: ${codeSpan(rerunWithCwd(argv, folder, selection.selector))}`, tone: "hint" as const }] }]),
-    ] }] }, "rich", terminalWidth(output as { isTTY?: boolean; columns?: number }))}\n`);
+    ] }] }, "rich", output as NodeJS.WriteStream)}\n`);
     return folder;
   }
 }

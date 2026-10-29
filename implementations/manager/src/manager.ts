@@ -3,6 +3,7 @@ import { hostname } from "node:os";
 import { credsAuthenticator } from "@nats-io/transport-node";
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
 import { isAbsolute, join, dirname, resolve } from "node:path";
+import { parse as parseYaml } from "yaml";
 import Headless from "@xterm/headless";
 import {
   CotalEndpoint,
@@ -125,7 +126,7 @@ import {
   publishContractArtifact,
   contractArtifactCanonicalBytes,
   standaloneConnectOpts,
-  rawDigest,
+  credentialIdOf,
   STANDING_RENEWABLE_TTL_SEC as MANAGED_STATIC_TTL_SEC,
   STATIC_GENERATION_HORIZON_SEC,
   issuedHorizon,
@@ -1068,6 +1069,9 @@ interface ManagedAgent {
    *  host revoked the grant, never from the stop door. */
   handedOff?: true;
   launch: ManagedLaunch;
+  /** The bounded launch wait elapsed without a join. Process liveness is separate, and an
+   * exact-incarnation late join clears this diagnostic without stopping the seat. */
+  joinIssue?: string;
   /** Set on a manifest `continuity: exact` seat once its first session was proven: the coordinates
    *  its assignment is recorded under, kept current at every later proven rebind and at its stop. */
   continuity?: Omit<ContinuityAssignment, "version" | "sessionId">;
@@ -2661,10 +2665,11 @@ export class Manager {
           }
         }
       }
-      // The manager is the `endpoint-serve` renewal owner for its OWN
-      // service credential — re-mint the SAME serve identity with a fresh bounded exp THROUGH the
-      // §13.1 mint fence over a scoped one-shot executor (every renewal stages a distinct ledger
-      // row and wins the gate CAS; never the standing connection). The serve connection's
+      // The manager is the `endpoint-serve` renewal owner for its own
+      // service credential: re-mint the same serve identity with a fresh bounded exp through the
+      // §13.1 mint fence over a scoped one-shot executor (staging a new ledger row in a later
+      // second or idempotently re-staging the active row within the same second, and releasing only
+      // on winning the gate CAS; never the standing connection). The serve connection's
       // authenticator presents the refreshed credential on its next (re)connect.
       if (this.serviceServe?.creds && this.auth) {
         const s = this.serviceServe;
@@ -4205,6 +4210,11 @@ export class Manager {
       cancel: (ctx) => this.serveGated(ctx, () => this.serveTurnCancel(ctx)),
       stopSelf: (ctx) => this.serveGated(ctx, () => unwrap(this.opStopSelf(callerOf(ctx), args(ctx)))),
       definePersona: (ctx) => this.serveGated(ctx, () => unwrap(this.opDefinePersona(args(ctx), callerOf(ctx), false))),
+      removePersona: (ctx) => this.serveGated(ctx, () => {
+        const r = this.opRemovePersona(args(ctx), callerOf(ctx), false);
+        if (!r.ok) throw new EpEnvelopeError((r.code ?? "failed-precondition") as EpErrorCode, r.error ?? "the operation failed", r.details, "not-executed");
+        return r.data;
+      }),
       // Reach is the broker's: only operator instruments carry these rows. The serve gate is the
       // maintenance fence, so neither runs while a shutdown or resume holds control.
       chatSessionOpen: (ctx) => this.serveGated(ctx, () => this.openStaticChatSession(args(ctx))),
@@ -4824,6 +4834,7 @@ export class Manager {
     for (const a of this.agents.values()) {
       const seen = roster.get(this.managedPrincipal(a));
       if (a.terminalizing || !this.isOwnPresence(a, seen)) continue;
+      if (seen.status !== "offline") a.joinIssue = undefined;
       const who = `${a.name} (${a.id}, uid ${a.lifecycleUid}${a.handle.pid !== undefined ? `, pid ${a.handle.pid}` : ""})`;
       if (seen.status === "offline" && !a.offMesh) {
         a.offMesh = true;
@@ -5157,7 +5168,7 @@ export class Manager {
         // The service resolves FRESH on every attempt (never cached on `this`): a plane restart
         // mid-despawn then lands on the new epoch through an ordinary resolve, rather than a
         // caller pinned to a now-superseded incarnation.
-        const service = await resolveService(nc, this.space, AUTH_ENDPOINT, caller, { deadlineMs: 10_000 });
+        const service = await resolveService(nc, this.space, AUTH_ENDPOINT, caller, { deadlineMs: 10_000, commands: [EP_CMD_RETIRE_LIFECYCLE] });
         // The TARGET rides the invoke's own target (authz mode `exact`, arity 3) — broker-enforced,
         // and pinned by the grant minted above, so it is not a body claim the caller can vary.
         const attributed = await invokeCommand(nc, this.space, service, EP_CMD_RETIRE_LIFECYCLE, {
@@ -5311,21 +5322,29 @@ export class Manager {
     }
   }
 
-  private readSessionStatePath(path: string): { sessionId: string; status: "running" | "quit" } {
+  private readSessionStatePath(path: string):
+    | { sessionId: string; status: "running" | "quit" }
+    | { connector: string; status: "prompt"; prompt: string; cwd: string } {
     let parsed: unknown;
     try {
       parsed = JSON.parse(readFileSync(path, "utf8"));
     } catch (error) {
       throw new Error(`cannot read connector session state ${path}: ${rejectionText(error)}`);
     }
-    const state = parsed as { version?: unknown; sessionId?: unknown; status?: unknown };
-    if (state.version !== 1 || typeof state.sessionId !== "string" || !state.sessionId.trim() || state.sessionId.length > 4096 ||
-        (state.status !== "running" && state.status !== "quit"))
-      throw new Error(`connector session state ${path} is malformed`);
-    return { sessionId: state.sessionId, status: state.status };
+    const state = parsed as { version?: unknown; sessionId?: unknown; status?: unknown; connector?: unknown; prompt?: unknown; cwd?: unknown };
+    if (state.version === 1 && typeof state.sessionId === "string" && state.sessionId.trim() && state.sessionId.length <= 4096 &&
+        (state.status === "running" || state.status === "quit"))
+      return { sessionId: state.sessionId, status: state.status };
+    if (state.version === 2 && state.status === "prompt" && typeof state.connector === "string" && /^[a-z0-9-]{1,64}$/.test(state.connector) &&
+        typeof state.prompt === "string" && state.prompt.trim() && state.prompt.length <= 1024 &&
+        typeof state.cwd === "string" && state.cwd.trim() && state.cwd.length <= 4096)
+      return { connector: state.connector, status: "prompt", prompt: state.prompt, cwd: state.cwd };
+    throw new Error(`connector session state ${path} is malformed`);
   }
 
-  private readManagedSessionState(a: ManagedAgent): { sessionId: string; status: "running" | "quit" } {
+  private readManagedSessionState(a: ManagedAgent):
+    | { sessionId: string; status: "running" | "quit" }
+    | { connector: string; status: "prompt"; prompt: string; cwd: string } {
     const path = a.restart?.sessionStatePath;
     if (!path) throw new Error("connector supplied no session state path");
     return this.readSessionStatePath(path);
@@ -5338,7 +5357,10 @@ export class Manager {
     if (!connector.supportsSessionContinuation) return undefined;
     const path = join(this.workspaceRoot, ".cotal", "pi-sessions", `${entry.name}-${entry.identity.lifecycleUid}.json`);
     try {
-      return this.readSessionStatePath(path).sessionId;
+      const state = this.readSessionStatePath(path);
+      if (state.status === "prompt")
+        throw new Error(`${state.connector} is waiting at prompt ${JSON.stringify(state.prompt)} for directory ${JSON.stringify(state.cwd)}`);
+      return state.sessionId;
     } catch (error) {
       throw new Error(
         `retained ${connector.name} agent ${entry.name} has no sessionId in its older inventory and no usable upgrade state at ${path} ` +
@@ -5408,7 +5430,10 @@ export class Manager {
   }
 
   private readManagedSession(a: ManagedAgent): string {
-    return this.readManagedSessionState(a).sessionId;
+    const state = this.readManagedSessionState(a);
+    if (state.status === "prompt")
+      throw new Error(`${state.connector} is waiting at prompt ${JSON.stringify(state.prompt)} for directory ${JSON.stringify(state.cwd)}`);
+    return state.sessionId;
   }
 
   /** Re-record an exact seat's assignment at a proven session, so crash recovery, a preserved resume
@@ -5431,16 +5456,22 @@ export class Manager {
   private async awaitManagedSessionState(a: ManagedAgent): Promise<{ sessionId: string; status: "running" | "quit" }> {
     const deadline = Date.now() + 15_000;
     let last = "session state not written yet";
+    let prompt: { connector: string; prompt: string; cwd: string } | undefined;
+    const promptFailure = (): string | undefined => prompt
+      ? `${prompt.connector} is waiting at prompt ${JSON.stringify(prompt.prompt)} for directory ${JSON.stringify(prompt.cwd)}`
+      : undefined;
     while (Date.now() < deadline) {
-      if (a.handle.status() === "exited") throw new Error("process exited before writing session state");
       try {
-        return this.readManagedSessionState(a);
+        const state = this.readManagedSessionState(a);
+        if (state.status === "prompt") prompt = state;
+        else return state;
       } catch (error) {
         last = rejectionText(error);
       }
+      if (a.handle.status() === "exited") throw new Error(promptFailure() ?? "process exited before writing session state");
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
-    throw new Error(`connector did not write session state (${last})`);
+    throw new Error(promptFailure() ?? `connector did not write session state (${last})`);
   }
 
   /** Bind a continuation-capable connector only after its process is ready. The file proves the
@@ -5858,27 +5889,31 @@ export class Manager {
     this.bootNotes = [];
     if (this.execution === "none") { this.connectorStatuses = []; return; }
     const rows: ManagerConnectorStatus[] = [];
-    let declared: Array<{ name: string; requires: readonly string[] }>;
+    let declared: Array<{ name: string; requires: readonly string[]; eventPlane: boolean }>;
     if (this.installedExtensions) {
       try {
         declared = loadExtensionsManifest().extensions.flatMap((ext) => extensionConnectors(ext));
       } catch (error) {
         const reason = rejectionText(error);
         this.bootNotes.push(`! manager boot: connector inventory unavailable - ${reason}`);
-        this.connectorStatuses = [{ agent: "(inventory)", state: "unavailable", binaries: {}, reason }];
+        this.connectorStatuses = [{ agent: "(inventory)", state: "unavailable", binaries: {}, eventPlane: false, reason }];
         this.bootNotes.push("! manager: no agent application is available here, so a spawn without --on goes to another manager in this space");
         return;
       }
     } else {
-      declared = registry.all<Connector>("connector").map((connector) => ({ name: connector.name, requires: connector.requires ?? [] }));
+      declared = registry.all<Connector>("connector").map((connector) => ({
+        name: connector.name,
+        requires: connector.requires ?? [],
+        eventPlane: connector.eventChannel !== undefined,
+      }));
     }
-    for (const { name, requires } of declared) {
+    for (const { name, requires, eventPlane } of declared) {
       const { binaries, reason } = resolveHarness(name, requires);
       if (reason) {
-        rows.push({ agent: name, state: "unavailable", binaries, reason });
+        rows.push({ agent: name, state: "unavailable", binaries, eventPlane, reason });
         this.bootNotes.push(`! manager boot: connector ${name} unavailable - ${reason}`);
       } else {
-        rows.push({ agent: name, state: "available", binaries });
+        rows.push({ agent: name, state: "available", binaries, eventPlane });
       }
     }
     this.connectorStatuses = rows.sort((a, b) => a.agent.localeCompare(b.agent));
@@ -7766,6 +7801,12 @@ export class Manager {
       const finish = (r: { ok: true; operator?: string } | { ok: false; uncertain?: boolean; running?: boolean; deliberate?: boolean; detail: string }): void => {
         if (done) return;
         done = true;
+        if (!r.ok && r.uncertain) {
+          a.joinIssue = r.detail;
+          console.error(`seat join degraded: ${r.detail}`);
+        } else if (r.ok) {
+          a.joinIssue = undefined;
+        }
         clearTimeout(timer);
         clearTimeout(operatorTimer);
         if (joinedPoll !== undefined) clearInterval(joinedPoll);
@@ -8658,11 +8699,13 @@ export class Manager {
   /** Mint the standing `goal-writer` credential and STAGE it into this
    *  instance's §13.1 revocation family (`epcred.<e>.<iid>`), over the passed executor's `authKv`
    *  (the scoped `endpoint-serve-executor`, which holds the epcred write grant). The GRANT profile
-   *  stays goal-writer-only (Q2 — disjoint from the serve credential); only the FAMILY membership
+   *  stays goal-writer-only (Q2, disjoint from the serve credential); only the FAMILY membership
    *  is shared, so the registration barrier's existing enumerate+revoke+evict catches the
    *  goal-writer on takeover/retire with NO barrier code change. Used both at registration (the run
    *  block's `authKv`) and at renewal (a fresh executor's), re-minting the SAME stable nkey with a
-   *  fresh bounded exp — each issuance writes a DISTINCT ledger row (per-JWT credentialId digest). */
+   *  fresh bounded exp: `mintCreds` stamps a random `issuance:` tag on `goal-writer` (`userTags`),
+   *  so each issuance signs distinct bytes and stages a distinct ledger row (per-JWT `credentialId`
+   *  digest) even within one second. */
   private async mintAndStageGoalWriter(authKv: KV): Promise<string> {
     const auth = this.auth!;
     const identity = this.goalWriterIdentity!;
@@ -8683,7 +8726,7 @@ export class Manager {
     // it a barrier mid-takeover (already past its enumeration) would let this credential land
     // ACTIVE in a family nothing revokes again.
     await commitSiblingIssuance(fence, observed, {
-      credentialId: rawDigest(creds).replace("sha256:", "sha256-"),
+      credentialId: credentialIdOf(creds),
       credentialKey: identity.id,
       holderPrincipal: principalKey(DEV_OWNER, identity.id).key,
       endpoint: MANAGER_ENDPOINT, lifecycleUid: iid, sourceChain: ["root"], state: "active", exp,
@@ -8789,15 +8832,17 @@ export class Manager {
   }
 
   /** Mint the standing `session-ledger` credential and STAGE it into this instance's
-   *  §13.1 revocation family (`epcred.<e>.<iid>`), over the passed executor's `authKv` — EXACTLY the
-   *  {@link mintAndStageGoalWriter} pattern, under the same open-and-commit fence.
+   *  §13.1 revocation family (`epcred.<e>.<iid>`), over the passed executor's `authKv`, following the
+   *  {@link mintAndStageGoalWriter} pattern under the same open-and-commit fence.
    *
    *  This credential carries the DEDICATED sessions-bucket ledger rows and no session rail at all.
    *  It therefore takes no epoch pin: §13.6 makes it the durable revocation authority that must
    *  outlive the serving endpoint, so scoping it to one serving epoch would defeat its purpose. The
    *  epoch lives where it belongs, on the per-session serving credentials, which are minted per
-   *  redemption into this same family. Re-minting the SAME nkey on renewal writes a DISTINCT ledger
-   *  row (per-JWT credentialId digest). */
+   *  redemption into this same family. Because `mintCreds` stamps a random `issuance:` tag on
+   *  `session-ledger` (`userTags`), re-minting the SAME nkey on renewal or restart signs distinct
+   *  bytes and stages a distinct ledger row (per-JWT `credentialId` digest) even within one
+   *  second. */
   private async mintAndStageSessionLedger(authKv: KV): Promise<string> {
     const auth = this.auth!;
     const identity = this.sessionLedgerIdentity!;
@@ -8815,7 +8860,7 @@ export class Manager {
     // The §13.1 open-and-commit fence (see {@link mintAndStageGoalWriter}): stage + revision-pinned
     // commit against the gate this mint's grant was scoped from, releasing only on the win.
     await commitSiblingIssuance(fence, observed, {
-      credentialId: rawDigest(creds).replace("sha256:", "sha256-"),
+      credentialId: credentialIdOf(creds),
       credentialKey: identity.id,
       holderPrincipal: principalKey(DEV_OWNER, identity.id).key,
       endpoint: MANAGER_ENDPOINT, lifecycleUid: iid, sourceChain: ["root"], state: "active", exp,
@@ -8989,7 +9034,7 @@ export class Manager {
             epoch: grant.serving.epoch,
             exp: Math.floor(grant.exp / 1000),
           });
-          const id = rawDigest(creds).replace("sha256:", "sha256-");
+          const id = credentialIdOf(creds);
           this.sessionServingKeys.set(id, identity.id);
           return { id, creds, exp: grant.exp };
         }
@@ -9002,8 +9047,9 @@ export class Manager {
         const health = inspectCredHealth(creds);
         if (health.exp === undefined)
           throw new Error(`the session-serving credential for ${grant.sessionId} is unbounded; a per-session credential never outlives its session (SPEC 13.6)`);
-        this.sessionServingKeys.set(rawDigest(creds).replace("sha256:", "sha256-"), identity.id);
-        return { id: rawDigest(creds).replace("sha256:", "sha256-"), creds, exp: grant.exp };
+        const id = credentialIdOf(creds);
+        this.sessionServingKeys.set(id, identity.id);
+        return { id, creds, exp: grant.exp };
       },
       observeGate: async (_endpoint, instanceId) => {
         // Open mesh: nothing is minted and nothing is staged, so there is no gate to pin (see
@@ -10486,7 +10532,7 @@ export class Manager {
       );
       // The same credential id the issuance path derives, so a re-sent identical credential maps to
       // the same row.
-      const credentialId = rawDigest(creds).replace("sha256:", "sha256-");
+      const credentialId = credentialIdOf(creds);
       await this.withLifecycleExecutor(pin, async (t) => {
         await recordSlotCredential(t, DEV_OWNER, alias, lifecycleUid, credentialId);
         await appendStaticCredentialRow(t, { lifecycleUid, credentialId, holderPrincipal: principalKey(DEV_OWNER, identity.id).key, exp });
@@ -11261,6 +11307,52 @@ export class Manager {
     return { ok: true, data: { name, path } };
   }
 
+  /** Remove one machine-local persona definition without touching any running lifecycle that was
+   *  launched from it. Removal accepts the catalog's safe filename alphabet without applying the
+   *  current spawn-name length or user-mode actor rules, so an obsolete invalid-name entry remains
+   *  repairable. Ownership matches redefine: the recorded owner, or admin for an ownerless file. */
+  private opRemovePersona(args: Record<string, unknown>, caller: string, admin: boolean): ControlReply {
+    if (this.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
+    const name = String(args.name ?? "").trim();
+    if (!name) return { ok: false, code: "bad-request", error: "name required" };
+    if (!/^[A-Za-z0-9_-]+$/.test(name))
+      return { ok: false, code: "bad-request", error: `unsafe persona name ${JSON.stringify(name)} (allowed: letters, digits, _ -)` };
+    const path = agentFilePath(this.workspaceRoot, name);
+    if (!existsSync(path)) return { ok: false, code: "not-found", error: `no persona "${name}"` };
+    let owner: string | undefined;
+    try {
+      owner = loadAgentFile(path).owner;
+    } catch {
+      // A catalog entry may be invalid for launch solely because an older release admitted a name
+      // above today's identity limit. Read only its frontmatter owner without asking the launch
+      // parser to accept the identity. This does not make the file spawnable or readable.
+      try {
+        const source = readFileSync(path, "utf8").replace(/^\uFEFF/, "").replace(/\r\n/g, "\n");
+        const match = /^---\n([\s\S]*?)\n---(?:\n|$)/.exec(source);
+        if (!match) throw new Error("missing frontmatter");
+        const frontmatter: unknown = parseYaml(match[1]);
+        if (!frontmatter || typeof frontmatter !== "object" || Array.isArray(frontmatter)) throw new Error("frontmatter is not a mapping");
+        const fields = frontmatter as Record<string, unknown>;
+        if (String(fields.name ?? "") !== name) throw new Error("frontmatter name differs from the catalog entry");
+        if (fields.owner !== undefined && typeof fields.owner !== "string") throw new Error("owner is not a string");
+        owner = fields.owner;
+      } catch {
+        return { ok: false, code: "not-found", error: `no persona "${name}"` };
+      }
+    }
+    if (!admin && owner !== caller) {
+      const heldBy = owner ? `owned by ${owner}` : "operator-owned (legacy file - no agent owner)";
+      return { ok: false, code: "permission-denied", error: `not authorized to remove ${name}: ${heldBy}; only its owner or an operator can` };
+    }
+    try {
+      rmSync(path);
+    } catch (e) {
+      if (!existsSync(path)) return { ok: false, code: "not-found", error: `no persona "${name}"` };
+      return { ok: false, error: rejectionText(e) };
+    }
+    return { ok: true, data: { name } };
+  }
+
   /** The owner a fresh wire-defined persona records. A user-auth caller's principal is stable, and
    *  so is one of this manager's own seats for its life. Any other static caller, such as the CLI's
    *  operator instrument minted for one call, would leave an owner no later call matches, so it
@@ -11375,6 +11467,34 @@ export class Manager {
     const write = a.handle.write?.bind(a.handle);
     if (!write)
       throw new EpEnvelopeError("unimplemented", `input is not supported by runtime ${a.handle.kind}`, undefined, "not-executed");
+    if (a.agent === "claude") {
+      // AskUserQuestion ignores bracketed text at its choice menu, but the following Enter
+      // confirms the highlighted option. Refuse rather than answer a different question choice.
+      const handle = a.handle;
+      let selection = false;
+      try {
+        const session = handle.attach();
+        const backlog = await session.backlog();
+        const term = new Headless.Terminal({ cols: session.cols, rows: session.rows, allowProposedApi: true });
+        try {
+          await new Promise<void>((done) => term.write(backlog, done));
+          const screen = term.buffer.active;
+          const lines = Array.from({ length: term.rows }, (_, y) =>
+            screen.getLine(screen.baseY + y)?.translateToString(true).trim() ?? "");
+          selection = lines.some((line) => /^❯\s+\d+\./u.test(line))
+            && lines.some((line) => line.includes("Enter to select") && line.includes("↑/↓ to navigate") && line.includes("Esc to cancel"));
+        } finally {
+          term.dispose();
+        }
+      } catch {
+        throw new EpEnvelopeError("failed-precondition", `cannot inspect Claude input for seat "${a.name}"; use \`cotal attach --name ${a.name}\` to inspect and type directly`, undefined, "not-executed");
+      }
+      if (selection)
+        throw new EpEnvelopeError("failed-precondition", `Claude is showing a selection menu for seat "${a.name}"; input text cannot safely select an option. Use \`cotal attach --name ${a.name}\`, then arrow keys and Enter; nothing was typed`, undefined, "not-executed");
+      // Snapshot parsing awaits I/O. Keep this write bound to the authorized incarnation and handle.
+      if (this.agents.get(a.name) !== a || a.handle !== handle || handle.status() !== "running")
+        throw new EpEnvelopeError("failed-precondition", `agent "${a.name}" changed while inspecting its terminal; nothing was typed`, undefined, "not-executed");
+    }
     // The contract validated `text` (non-empty, <= 64KiB) and `enter` (boolean) before this ran, so
     // the only decision left is the carriage return. `!== false` and not `?? true`: an ABSENT enter
     // and an explicit `true` must behave identically, and only `false` may suppress the return.
@@ -11600,6 +11720,7 @@ export class Manager {
         status: a.handle.status(),
         uptimeMs: Date.now() - a.startedAt,
         mesh: seen?.status ?? "absent",
+        ...(a.joinIssue ? { joinHealth: { state: "degraded" as const, reason: a.joinIssue } } : {}),
         ...(condition ? { condition } : {}),
         ...(activeAt !== undefined ? { activeAt } : {}),
         // `current` is the only state in which `mesh` is a verdict; the other two are the

@@ -27,7 +27,7 @@ import { hostname, tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import type { Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import {
@@ -55,7 +55,7 @@ import { authDir, recordMesh, saveSpaceAuth, setCurrent } from "@cotal-ai/worksp
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const EXPECTED = 75;
+const EXPECTED = 76;
 let pass = 0;
 let fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -198,6 +198,20 @@ try {
   bob.on("error", (error: Error) => console.error("! bob:", error.message));
   await bob.start();
   await wait(800);
+
+  const repeated = Array.from({ length: 3 }, (_, n) => `stable-sender-${n}-${randomUUID()}`);
+  const repeatedResults = [];
+  for (const text of repeated) repeatedResults.push(await run(["send", "-t", "bob", text]));
+  await wait(400);
+  const repeatedMessages = got.filter((message) => repeated.includes(message.text));
+  const stablePrincipal = `local.cli_${createHash("sha256").update(expectedSender).digest("hex")}`;
+  check(
+    "three consecutive one-shot sends carry one signed operator principal, distinct from a peer seat",
+    repeatedResults.every((result) => result.code === 0) && repeatedMessages.length === 3 &&
+      repeatedMessages.every((message) => message.fromId === stablePrincipal && message.fromName === expectedSender) &&
+      stablePrincipal !== bob.card.id,
+    repeatedMessages,
+  );
 
   // The consumer count on the presence and channel-registry streams, read from the broker.
   const inspectorId = newIdentity();

@@ -14,14 +14,14 @@ import { exchangeRateLimit, readAuthResponseJson, type ExchangeRateLimit } from 
  *  - the service handle: the `auth-service` command name + the readiness contract (poll the
  *    discovery file the daemon writes only after BOTH planes are bound, then confirm /health).
  */
-import { isLoopbackLiteral, registry, type AuthPreflightInput, type AuthPreflightVerdict, type AuthPrepareInput, type AuthPrepared, type AuthProvider, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAdminAuthorizationResult, type RemoteManagerAuthorityMaterial, type RemoteManagerAuthorityRequest, type RemoteManagerGoalIndexScanRequest, type RemoteManagerGoalIndexScanResult, type RemoteManagerMaintenanceRequest, type RemoteManagerMaintenanceResult, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult, type RemoteManagedAgentPrepareRetirementRequest, type RemoteManagedAgentPrepareRetirementResult, type RemoteManagedAgentRuntimeRequest, type RemoteManagedAgentRuntimeResult, type RemoteRetainedAgentValidationRequest, type RemoteRetainedAgentValidationResult, type RemoteRunAdmissionRequest, type RemoteRunAdmissionResult, type RemoteRunAttemptRequest, type RemoteRunAttemptResult, type SecretStore, type UserCredentialsRequest } from "@cotal-ai/core";
-import { assertUserAuthInfo, credentialFailure, findMesh, homeCotalDir, loadMeshes, probeLiveness, spaceSegment, type UserAuthInfo } from "@cotal-ai/workspace";
+import { assertDerivedOwnerToken, isLoopbackLiteral, registry, type AuthPreflightInput, type AuthPreflightVerdict, type AuthPrepareInput, type AuthPrepared, type AuthProvider, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAdminAuthorizationResult, type RemoteManagerAuthorityMaterial, type RemoteManagerAuthorityRequest, type RemoteManagerGoalIndexScanRequest, type RemoteManagerGoalIndexScanResult, type RemoteManagerMaintenanceRequest, type RemoteManagerMaintenanceResult, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult, type RemoteManagedAgentPrepareRetirementRequest, type RemoteManagedAgentPrepareRetirementResult, type RemoteManagedAgentRuntimeRequest, type RemoteManagedAgentRuntimeResult, type RemoteRetainedAgentValidationRequest, type RemoteRetainedAgentValidationResult, type RemoteRunAdmissionRequest, type RemoteRunAdmissionResult, type RemoteRunAttemptRequest, type RemoteRunAttemptResult, type SecretStore, type UserAuthGrant, type UserCredentialsRequest, type UserCredentialsResult } from "@cotal-ai/core";
+import { assertUserAuthInfo, credentialFailure, findMesh, homeCotalDir, loadMeshes, probeLiveness, spaceSegment, userAuthStateDir, type UserAuthInfo } from "@cotal-ai/workspace";
 import { readFileSync } from "node:fs";
 import { resolve, sep } from "node:path";
 import { AGENT_LIFECYCLE_HELD, AgentGrantConflictError, EP_ERROR_CODES, EpEnvelopeError, agentLifecycleHeld, type AgentLifecycleRelease, type EpEffectOutcome, type EpErrorCode } from "@cotal-ai/core";
 import { parseServiceAuthorityEnvelope, parseServiceAuthorityRequest } from "@cotal-ai/core";
 import { readRemoteServiceAuthorityInfo, postRemoteServiceAuthority, serviceAuthorityUrl, withServiceAuthorityBudget, assertServiceViewFreshness } from "./service-authority-client.js";
-import { deleteIdpSpaceCatalog, fetchIdpJwt, hasIdpSessions, hasIdpSpaceCatalog, loadIdpSession, normalizeIdpUrl, prepareIdpSpaceCatalogs, probeIdpJwks, requireIdpSession } from "./login.js";
+import { deleteIdpSpaceCatalog, fetchIdpJwt, hasIdpSessions, hasIdpSpaceCatalog, IdpSessionRejectedError, loadIdpSession, normalizeIdpUrl, prepareIdpSpaceCatalogs, probeIdpJwks, requireIdpSession } from "./login.js";
 import { deriveOwnerForIdpSubject } from "./derive.js";
 import { findActorUnified, findInteractiveActor, hashActorToken, newActorToken, notGrantedReason, withManagedGrantTransaction } from "./ledger.js";
 import { userAuthTrustFingerprint, validateRetainedManagedAgent } from "./continuity.js";
@@ -276,10 +276,10 @@ export const cotalAuthProvider: AuthProvider = {
         `signed in, but the exchange for actor "${actor}"${view ? ` (view "${view}")` : ""} was refused: ${body.error ?? `HTTP ${res.status}`}`,
       );
     }
-    const out = (await readAuthResponseJson(res, `the auth service's exchange at ${info.url}/exchange`)) as { token?: string };
+    const out = (await readAuthResponseJson(res, `the auth service's exchange at ${info.url}/exchange`)) as { token?: string; owner?: unknown; grant?: unknown };
     if (typeof out.token !== "string" || !out.token)
       throw new Error(`the auth service's exchange returned no token - its build may be stale; restart it with \`cotal up\``);
-    return { bearer: out.token, sentinelCreds: callout.sentinelCreds };
+    return { bearer: out.token, sentinelCreds: callout.sentinelCreds, ...exchangeAuthority(out, `the auth service's exchange at ${info.url}/exchange`) };
   },
 
   async serviceEndpointInfo({ store, dir, space }) {
@@ -624,6 +624,19 @@ export const cotalAuthProvider: AuthProvider = {
     };
   },
 
+  async confirmLogin({ dir, space }) {
+    const idpUrl = loadPinnedIdp(dir)?.url ?? remoteUserAuthEntry(dir, space)?.idp.url;
+    if (!idpUrl) throw new Error(`space "${space}" has no user-auth material on this machine`);
+    const session = loadIdpSession(homeCotalDir(), idpUrl);
+    if (!session) return "signed-out";
+    try { await fetchIdpJwt(idpUrl, session.token); }
+    catch (e) {
+      if (e instanceof IdpSessionRejectedError) return "rejected";
+      throw e;
+    }
+    return "confirmed";
+  },
+
   /** Spawn-path grant authorship: one atomic MANAGED-AGENT row (its own row space — never
    *  IdP-exchangeable by construction) carrying the agent's ACLs + the hash of a fresh per-agent
    *  secret. Upsert semantics rotate the secret on respawn — a captured old secret dies the moment
@@ -786,7 +799,7 @@ async function postManagerAuthority(
     headers: { "content-type": "application/json", ...(authorization ? { authorization } : {}) },
     body: JSON.stringify({ idpToken: idpJwt, request }),
     signal: AbortSignal.timeout(30_000),
-  }).catch((error) => { throw new Error(`the ${what} endpoint did not answer at ${endpoint} (${error instanceof Error ? error.message : String(error)})`); });
+  }).catch((error) => { throw new Error(`the ${what} endpoint did not answer at ${endpoint} (${error instanceof Error ? error.message : String(error)})`, { cause: error }); });
   if (response.status >= 300 && response.status < 400)
     throw new Error(`the ${what} endpoint answered ${response.status} with redirect Location ${JSON.stringify(response.headers.get("location") ?? "")} - redirects are refused`);
   // A stand-in object would reach the caller as a result the endpoint never sent.
@@ -831,8 +844,10 @@ function carriesField(value: unknown, field: string): boolean {
 }
 
 /** The registry entry's user-auth position for a REMOTE space, bound to the CALLER'S state dir the
- *  way {@link remoteUserCredentials} binds it: `dir` derives from the resolved target's root, so an
- *  entry for the same space under a different root must not answer for it. `undefined` when the
+ *  way {@link remoteUserCredentials} binds it. A discovered entry may bind a separate project root,
+ *  while its sentinel stays under the catalog custody root. Both coordinates come from the same
+ *  registry row. Existing catalog contexts and the bound project remain usable; another root cannot
+ *  borrow the entry. `undefined` when the
  *  registry holds no such remote entry. This is the ONE read of the entry's pins — connect and the
  *  offline status read consume the same trust position, so they cannot drift. */
 function remoteUserAuthEntry(
@@ -841,11 +856,16 @@ function remoteUserAuthEntry(
 ): (UserAuthInfo & { remote: true; endpoints: { url: string }; sentinelCredsPath: string }) | undefined {
   const entry = findMesh(space);
   const ua = entry?.mode === "user" ? entry.userAuth : undefined;
+  const callerDir = entry ? userAuthStateDir(entry.root, space) : undefined;
+  const custodyDir = entry ? userAuthStateDir(entry.catalogRoot ?? entry.root, space) : undefined;
   const bound =
     ua?.remote === true &&
     typeof ua.endpoints?.url === "string" &&
     typeof ua.sentinelCredsPath === "string" &&
-    resolve(ua.sentinelCredsPath).startsWith(resolve(dir) + sep);
+    callerDir !== undefined &&
+    custodyDir !== undefined &&
+    (resolve(dir) === resolve(callerDir) || resolve(dir) === resolve(custodyDir)) &&
+    resolve(ua.sentinelCredsPath).startsWith(resolve(custodyDir) + sep);
   return bound ? (ua as UserAuthInfo & { remote: true; endpoints: { url: string }; sentinelCredsPath: string }) : undefined;
 }
 
@@ -898,7 +918,7 @@ function exchangeBody(idpToken: string, { actor, view, managerInstanceId, sessio
  *  differences: the POST goes to the PUBLIC exchange face (capless - the idpToken IS the
  *  credential; the 0600 capability file exists only where the daemon runs), and the sentinel
  *  creds come from the 0600 file registration landed rather than the local secret store. */
-async function remoteUserCredentials(request: UserCredentialsRequest): Promise<{ bearer: string; sentinelCreds: string }> {
+async function remoteUserCredentials(request: UserCredentialsRequest): Promise<UserCredentialsResult> {
   const { dir, space, actor, view } = request;
   const remote = remoteUserAuthEntry(dir, space);
   if (!remote)
@@ -958,10 +978,35 @@ async function remoteUserCredentials(request: UserCredentialsRequest): Promise<{
         : `signed in, but the exchange for ${actorLabel} was refused, and the exchange face withheld the reason (HTTP ${res.status})`,
     );
   }
-  const out = (await readAuthResponseJson(res, `the exchange at ${exchangeUrl}`)) as { token?: string };
+  const out = (await readAuthResponseJson(res, `the exchange at ${exchangeUrl}`)) as { token?: string; owner?: unknown; grant?: unknown };
   if (typeof out.token !== "string" || !out.token)
     throw new Error(`the exchange at ${exchangeUrl} returned no token - the mesh's auth service build may be stale`);
-  return { bearer: out.token, sentinelCreds };
+  return { bearer: out.token, sentinelCreds, ...exchangeAuthority(out, `the exchange at ${exchangeUrl}`) };
+}
+
+/** Read the stock issuer's authority response. An older issuer that returns no grant remains usable,
+ *  but supplies no authority to infer from. Once either field is present the pair is closed and
+ *  validated, so malformed server output is unavailable rather than partially trusted. */
+function exchangeAuthority(out: { owner?: unknown; grant?: unknown }, source: string): Pick<UserCredentialsResult, "authority"> {
+  if (out.grant === undefined) return {};
+  if (typeof out.owner !== "string" || out.grant === null || typeof out.grant !== "object" || Array.isArray(out.grant))
+    throw new Error(`${source} returned malformed authority - its build may be stale`);
+  assertDerivedOwnerToken(out.owner);
+  const grant = out.grant as Record<string, unknown>;
+  const strings = (field: "scope" | "allowSubscribe" | "allowPublish"): string[] => {
+    const value = grant[field];
+    if (!Array.isArray(value) || value.some((item) => typeof item !== "string"))
+      throw new Error(`${source} returned malformed authority.${field} - its build may be stale`);
+    return [...value];
+  };
+  if (grant.dmHistory !== "own") throw new Error(`${source} returned malformed authority.dmHistory - its build may be stale`);
+  const current: UserAuthGrant = {
+    scope: strings("scope"),
+    allowSubscribe: strings("allowSubscribe"),
+    allowPublish: strings("allowPublish"),
+    dmHistory: "own",
+  };
+  return { authority: { owner: out.owner, grant: current } };
 }
 
 /** The auth service's chat-session routes are `/chat-session/<op>` (its `CHAT_SESSION_PATHS`). */

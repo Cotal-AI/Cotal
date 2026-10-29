@@ -270,12 +270,13 @@ export function serviceAdapterDeclaration(input: unknown): ServiceAdapterDeclara
   return input as unknown as ServiceAdapterDeclaration;
 }
 
-export function validateServiceAdapterOptions(declaration: ServiceAdapterDeclaration, options: Readonly<Record<string, unknown>>): void {
+/** `name` gives how an option reads in a refusal, such as the flag a preset gives it. */
+export function validateServiceAdapterOptions(declaration: ServiceAdapterDeclaration, options: Readonly<Record<string, unknown>>, name = (option: string) => option): void {
   serviceAdapterDeclaration(declaration);
   let check: ValidateFunction, valid: boolean;
   try { check = new Ajv2020({ strict: true, ownProperties: true, validateFormats: false }).compile(declaration.optionsSchema); valid = check(options) === true; }
   catch { return invalid("the adapter options could not be validated against its closed declaration"); }
-  if (!valid) return invalid(`the service options do not match the installed adapter's closed schema${schemaErrorLocation(check.errors)}; option values were not printed`);
+  if (!valid) return invalid(`the service options do not match the installed adapter's closed schema${schemaErrorLocation(check.errors, name)}; option values were not printed`);
 }
 
 /** Public readiness evidence is closed and bound to a creation-pinned process. The installed
@@ -312,13 +313,13 @@ function pathFacts(path: string): string {
 }
 
 /** Reference protection is checked without reading file contents or importing provider code. A
- *  refusal names the option and, as the protected-path rule does, every unprotected entry on the
- *  path once, with its reason and one remedy, so a single change fixes them all. */
-export function validateServiceAdapterPaths(declaration: ServiceAdapterDeclaration, options: Readonly<Record<string, unknown>>): void {
+ *  refusal names the option as `label` reads it and, as the protected-path rule does, every
+ *  unprotected entry on the path once, with its reason and one remedy, so a single change fixes them all. */
+export function validateServiceAdapterPaths(declaration: ServiceAdapterDeclaration, options: Readonly<Record<string, unknown>>, label = (option: string) => option): void {
   for (const [name, kind] of Object.entries(declaration.paths ?? {})) {
     const path = options[name];
     if (path === undefined) continue;
-    if (typeof path !== "string" || !isAbsolute(path) || /[\u0000-\u001f\u007f]/u.test(path)) return invalid(`the ${name} option must be an absolute path with no terminal controls`);
+    if (typeof path !== "string" || !isAbsolute(path) || /[\u0000-\u001f\u007f]/u.test(path)) return invalid(`the ${label(name)} option must be an absolute path with no terminal controls`);
     if (kind === "private-file") { protectedCredentialReference(path); continue; }
     const unprotected = (refusal: CommandFailure): never => {
       const { path: deepest, paths = [deepest] } = refusal.target as { path: string; paths?: string[] };
@@ -336,19 +337,19 @@ export function validateServiceAdapterPaths(declaration: ServiceAdapterDeclarati
     const linked = (link: string): never => {
       let physical: string | undefined;
       try { physical = realpathSync(path); } catch { physical = undefined; }
-      throw new CommandFailure("refused", "PERMISSION_DENIED", `the declared adapter path ${name} crosses a symlink, which could be repointed after this check: ${pathFacts(link)}`, {
+      throw new CommandFailure("refused", "PERMISSION_DENIED", `the declared adapter path ${label(name)} crosses a symlink, which could be repointed after this check: ${pathFacts(link)}`, {
         target: { option: name, path, refused: link }, remedy: physical === undefined ? "use a physical path owned by you or root, without symlinks" : `use the physical path ${physical}`,
       });
     };
     try {
-      try { protectedLocalEntry(path, `the declared adapter path ${name}`); }
+      try { protectedLocalEntry(path, `the declared adapter path ${label(name)}`); }
       catch (error) { if (error instanceof CommandFailure && error.code === "PERMISSION_DENIED") unprotected(error); throw error; }
       const entry = lstatSync(path);
       if (kind === "directory" ? !entry.isDirectory() : !entry.isFile()) throw new Error();
       accessSync(path, constants.R_OK | (kind === "directory" ? constants.X_OK : 0));
     } catch (error) {
       if (error instanceof CommandFailure) throw error;
-      throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the declared adapter path ${name} is missing, unreadable or not a physical ${kind === "directory" ? "directory" : "file"}: ${pathFacts(path)}; no contents were printed`, { target: { option: name, path } });
+      throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the declared adapter path ${label(name)} is missing, unreadable or not a physical ${kind === "directory" ? "directory" : "file"}: ${pathFacts(path)}; no contents were printed`, { target: { option: name, path } });
     }
   }
 }

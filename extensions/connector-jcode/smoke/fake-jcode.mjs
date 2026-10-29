@@ -524,13 +524,14 @@ const server = createServer((socket) => {
           break;
         }
         case "send_message": {
-          if (process.env.FAKE_JCODE_READINESS_REFUSAL === "1" && !frame.no_reply && String(frame.content).includes("Call the cotal_orientation tool exactly once now")) {
+          if (["1", "internal"].includes(process.env.FAKE_JCODE_READINESS_REFUSAL) && !frame.no_reply && String(frame.content).includes("Call the cotal_orientation tool exactly once now")) {
+            const wrapped = process.env.FAKE_JCODE_READINESS_REFUSAL === "internal";
             event({
               ev: "error",
               session_id: frame.session_id,
               v: 1,
-              code: "invalid_request",
-              message: JSON.stringify({ error: { code: "model_not_found", message: "model parameter rejected-model-id was refused by provider" } }),
+              code: wrapped ? "internal" : "invalid_request",
+              message: wrapped ? 'OpenAI-compatible chat request failed\n  endpoint: http://127.0.0.1:12345/v1/chat/completions\n  model: rejected-model-id\n  auth: PRIVATE_PROVIDER_CANARY\n  status: 404 Not Found\n  response: {"error":{"code":"model_not_found","param":"model","message":"PRIVATE_PROVIDER_CANARY"}}\nLocal endpoint hint: PRIVATE_PROVIDER_CANARY' : JSON.stringify({ error: { code: "model_not_found", message: "model parameter rejected-model-id was refused by provider" } }),
             });
             break;
           }

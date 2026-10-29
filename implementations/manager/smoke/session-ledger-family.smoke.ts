@@ -28,7 +28,7 @@ import { connect, type NatsConnection } from "@nats-io/transport-node";
 import { Kvm } from "@nats-io/kv";
 import {
   isReachable, createSpaceAuth, serverConfig, setupSpaceStreams, mintCreds, newIdentity,
-  mintLifecycleUid, standaloneConnectOpts, principalKey, DEV_OWNER, rawDigest,
+  mintLifecycleUid, standaloneConnectOpts, principalKey, DEV_OWNER, credentialIdOf,
   epAuthBucket, epcredFamilyPrefix, sessionsBucket,
 } from "@cotal-ai/core";
 import { authDir, saveSpaceAuth } from "@cotal-ai/workspace";
@@ -44,7 +44,7 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
   else { fail++; console.log(`  ✗ FAIL: ${name}`, extra !== undefined ? JSON.stringify(extra) : ""); }
 };
 
-const credId = (creds: string): string => rawDigest(creds).replace("sha256:", "sha256-");
+const credId = credentialIdOf;
 
 const PORT = await freePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;

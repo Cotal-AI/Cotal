@@ -52,7 +52,7 @@
     {
       "name": "the transient endpoint again trusts the process environment as its wire principal",
       "file": "implementations/cli/src/lib/transient.ts",
-      "find": "    card: { name, kind: \"endpoint\" },",
+      "find": "    card: { name, kind: \"endpoint\", ...senderPrincipal },",
       "replace": "    card: {\n      name,\n      kind: \"endpoint\",\n      ...(process.env.COTAL_OWNER && process.env.COTAL_ACTOR\n        ? { owner: process.env.COTAL_OWNER, actor: process.env.COTAL_ACTOR }\n        : process.env.COTAL_ID\n          ? { owner: \"local\", actor: process.env.COTAL_ID }\n          : {}),\n    },",
       "command": "pnpm --filter @cotal-ai/cli build && pnpm smoke:send",
       "afterRestore": "pnpm --filter @cotal-ai/cli build",

@@ -131,13 +131,13 @@ export async function remotePersona(args: ParsedArgs): Promise<void> {
     target = { ...target, space: connection.space, endpoint: BASELINE_LIFECYCLE_ENDPOINT };
     recordOperationSpace(connection.space);
     if (connection.auth.managerInstanceId !== undefined && connection.auth.managerInstanceId !== instanceId) throw new CommandFailure("refused", "CONFLICT", "the supplied manager pin differs from the caller's bound instance; no class fallback was used", { target });
-    const service = await resolveService(connection.nc, connection.space, BASELINE_LIFECYCLE_ENDPOINT, connection.auth.epCaller!, { instanceId, deadlineMs: 10_000 });
+    const command = mode === "create" ? "define-persona" : mode === "show" ? "show-persona" : "list-personas";
+    const service = await resolveService(connection.nc, connection.space, BASELINE_LIFECYCLE_ENDPOINT, connection.auth.epCaller!, { instanceId, deadlineMs: 10_000, commands: [command] });
     if (values.announce !== undefined) {
       sender = await openTransient({ space: connection.space, server: connection.server }, "persona announcement", { throwOnRefusal: true, report: () => { warnings.push({ code: "ANNOUNCEMENT_CONNECTION_WARNING", target, message: "The announcement sender reported a connection warning; only its publish acknowledgement establishes storage." }); } });
       const sameRoot = connection.root !== undefined && sender.connection.root !== undefined && canonicalRoot(sender.connection.root) === canonicalRoot(connection.root);
       if (sender.space !== connection.space || sender.connection.server !== connection.server || !sameRoot || sender.connection.mode !== connection.mode || connection.account !== undefined && sender.connection.auth?.account.pub !== connection.account) throw new CommandFailure("refused", "CONFLICT", "the announcement's resolved space, root or account differs from the selected manager target; no persona was saved", { target });
     }
-    const command = mode === "create" ? "define-persona" : mode === "show" ? "show-persona" : "list-personas";
     const body = mode === "create" ? { name, persona: input, model: values.model, role: values.role, agent: values.harness, subscribe: csv(values.subscribe), allowSubscribe: csv(values["allow-subscribe"]), allowPublish: csv(values["allow-publish"]) } : mode === "show" ? { name } : undefined;
     if (!service.commands.has(command)) throw new CommandFailure("refused", "UNSUPPORTED", "the selected manager does not declare this native persona operation; no legacy or local path was substituted", { target });
     submitted = mode === "create";

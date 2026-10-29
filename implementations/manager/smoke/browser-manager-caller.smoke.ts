@@ -45,7 +45,7 @@ async function main() {
 
   const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
   // Every cell runs and is counted; a red cell does not hide the ones after it.
-  const EXPECTED = 27;
+  const EXPECTED = 31;
   let passed = 0, failed = 0;
   const check = (name: string, ok: unknown, detail?: unknown) => {
     if (ok) { passed++; console.log(`PASS ${name}`); } else { failed++; console.log(`FAIL ${name}${detail === undefined ? "" : ` :: ${JSON.stringify(detail)}`}`); }
@@ -98,6 +98,8 @@ async function main() {
   const sink = join(rootA, "sink"), ready = join(rootA, "ready"); writeFileSync(sink, "");
   writeFileSync(join(rootA, ".cotal", "agents", "native.md"), "---\nname: native\nagent: browser-native\ncapabilities: []\nallowSubscribe: []\nallowPublish: []\n---\n");
   for (const name of ["slow", "decoy"]) writeFileSync(join(rootA, ".cotal", "agents", `${name}.md`), `---\nname: ${name}\nagent: browser-slow\ncapabilities: []\nallowSubscribe: []\nallowPublish: []\n---\n`);
+  const invalidPersona = "x".repeat(69);
+  writeFileSync(join(rootA, ".cotal", "agents", `${invalidPersona}.md`), `---\nname: ${invalidPersona}\nowner: ${owner}.web\nsubscribe: []\n---\n`);
   const childEnv = { PATH: process.env.PATH!, HOME: process.env.HOME!, TMPDIR: process.env.TMPDIR!, ...(process.env.COTAL_HOME ? { COTAL_HOME: process.env.COTAL_HOME } : {}) };
   registry.register({ kind: "connector", name: "browser-native", requires: ["node"], buildLaunch: (o) => {
     launches.native++;
@@ -136,7 +138,7 @@ async function main() {
     const readBody = async (q: import("node:http").IncomingMessage) => { const chunks: Buffer[] = []; for await (const c of q) chunks.push(c as Buffer); return chunks.length ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : {}; };
     // Each route answers `{ status, body }`; a forward passes the auth service's own answer through.
     const routes: Record<string, (body: any) => Promise<{ status: number; body: unknown }>> = {
-      "/config": async () => ({ status: 200, body: { space: a.space, wsServers: fx.wsServers, sentinelCreds: a.sentinelCreds, instances: { a: A, b: B }, cwd: rootA, abortAfterMs: 5_000 } }),
+      "/config": async () => ({ status: 200, body: { space: a.space, wsServers: fx.wsServers, sentinelCreds: a.sentinelCreds, instances: { a: A, b: B }, cwd: rootA, invalidPersona, abortAfterMs: 5_000 } }),
       "/bridge/manager-instances": async (body) => forward("/manager-instances", { idpToken: body.as === "other" ? tokens.other : tokens.owner }),
       "/bridge/exchange": async (body) => forward("/exchange", { idpToken: tokens.owner, actor: "web", view: "manager-caller", managerInstanceId: body.managerInstanceId }),
       "/control/launches": async () => ({ status: 200, body: { ...launches } }),
@@ -233,6 +235,16 @@ async function main() {
       ok(first.openA)?.instanceId === A && ok(first.openA)?.responder === A && ok(first.openB)?.instanceId === B && ok(first.openB)?.responder === B, [first.openA, first.openB]);
     check("C10 a read is answered by the selected instance only",
       ok(first.readA)?.outcome === "replied" && ok(first.readA)?.responder === A && ok(first.readB)?.outcome === "replied" && ok(first.readB)?.responder === B, [first.readA, first.readB]);
+    check("C10a a browser caller with persona authority can define a machine-local persona",
+      ok(first.definePersona)?.ok === true && ok(first.definePersona)?.responder === A, first.definePersona);
+    const definedPersonas = ok(first.listDefinedPersona)?.data?.personas ?? [];
+    check("C10b list-personas shows the browser-defined persona",
+      Array.isArray(definedPersonas) && definedPersonas.some((row: any) => row.name === "browser_temp"), first.listDefinedPersona);
+    const removedPersonas = ok(first.listRemovedPersona)?.data?.personas ?? [];
+    check("C10c remove-persona deletes the definition and list-personas no longer shows it",
+      ok(first.removePersona)?.ok === true && Array.isArray(removedPersonas) && !removedPersonas.some((row: any) => row.name === "browser_temp"), [first.removePersona, first.listRemovedPersona]);
+    check("C10d remove-persona accepts and deletes a 69-character invalid spawn name",
+      ok(first.removeInvalidPersona)?.ok === true, first.removeInvalidPersona);
     check("C11 a goal without the caller's persisted id is refused before sending",
       err(first.noId)?.code === "bad-request" && err(first.noId)?.outcome === "not-executed", first.noId);
     const spawned = ok(first.spawn);

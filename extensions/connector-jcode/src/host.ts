@@ -12,6 +12,7 @@ import { chooseSessionToResume, type ResumeCandidate } from "./session-resume.js
 import { forkJcodeSession, jcodeSeatHome, markJcodeForkBriefed, type JcodeFork } from "./session-fork.js";
 import { activeModelRoute, bareModelId, describeRoute, effectiveProvider } from "./route-identity.js";
 import {
+  classifyReadinessFailure,
   classifyReadinessProviderRefusal,
   installJcodeDiagnosticLog,
   JcodeConnectorError,
@@ -183,7 +184,9 @@ function publicConfig(config: AgentConfig): AgentConfig {
   // pointer on the child rail.
   return {
     ...config,
-    creds: config.creds ? "managed" : undefined,
+    // Keep the catalog's authenticated-mode gate without exposing either credential shape.
+    // Clearing both markers makes a user-mode child advertise tools its host refuses.
+    creds: config.creds || config.userAuth ? "managed" : undefined,
     userAuth: undefined,
     token: undefined,
     user: undefined,
@@ -867,7 +870,7 @@ export async function runJcodeHost(): Promise<void> {
     tui.once("exit", (code) => void shutdown(code ?? 0));
   };
 
-  const shutdown = async (code = 0): Promise<void> => {
+  const shutdown = async (code = 0, signal?: "SIGINT" | "SIGTERM"): Promise<void> => {
     if (stopping) return;
     stopping = true;
     agent.releaseInFlight(surfacedIds);
@@ -903,6 +906,10 @@ export async function runJcodeHost(): Promise<void> {
     }
     socketHome.dispose();
     await agent.stop().catch(() => {});
+    // Keep the initiating signal last: closing a busy harness can print a turn failure during
+    // teardown, and the runtime retains the final connector diagnostic for its reap line.
+    if (signal)
+      writeJcodeDiagnostic(`[cotal-jcode] received ${signal}; shutting down; signal sender unavailable from Node.js\n`);
     process.exit(exit);
   };
 
@@ -1840,8 +1847,8 @@ export async function runJcodeHost(): Promise<void> {
     onShutdown: () => void shutdownControl(),
   });
 
-  process.on("SIGINT", () => void shutdown());
-  process.on("SIGTERM", () => void shutdown());
+  process.on("SIGINT", () => void shutdown(0, "SIGINT"));
+  process.on("SIGTERM", () => void shutdown(0, "SIGTERM"));
 
   try {
     client = await launchPrivateJcode();
@@ -2117,13 +2124,15 @@ export async function runJcodeHost(): Promise<void> {
       // A readiness-turn provider refusal is different from arbitrary Harness API failure: Jcode
       // supplied an invalid-request code and a rejected model/effort value the connector can safely
       // classify. Preserve only those bounded fields; all other message bytes stay scrubbed (#828).
-      const classified = classifyReadinessProviderRefusal(error);
+      const classified = classifyReadinessProviderRefusal(error, config.model);
       if (classified) {
         writeJcodeDiagnostic(
           `[cotal-jcode] pre-join readiness outcome: provider refusal of ${classified.parameter} ${JSON.stringify(classified.value)} (${classified.providerCode}); never joined\n`,
         );
         throw classified;
       }
+      const failure = classifyReadinessFailure(error);
+      if (failure) throw failure;
       throw error;
     }
     if (!readiness || !hasOrientation(readiness)) {

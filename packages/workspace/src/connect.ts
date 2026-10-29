@@ -34,7 +34,7 @@ import {
   type SpaceAuth,
 } from "@cotal-ai/core";
 import { brokerAddressForDisplay } from "./broker-display.js";
-import { c } from "./colors.js";
+import { c, paintFor } from "./colors.js";
 import { findCotalRoot, getSpaceAuth, hasUserAuthState, userAuthStateDir } from "./auth-paths.js";
 import { agentGrants, grantMintFlags } from "./agent-grants.js";
 import { workspaceSecretStore } from "./secret-store-fs.js";
@@ -72,6 +72,8 @@ export interface ConnectFlags extends ResolveFlags {
 export interface ConnectOpts {
   instanceId?: string | string[];
   mint?: Pick<MintOpts, "runDriver" | "runMediator" | "runOperator" | "runAdmitter">;
+  /** Stable actor for a one-shot operator sender. Does not replace an explicit credential or user bearer. */
+  operatorActor?: string;
   /** A read must not sweep or prune the local registry as a hidden prelude. */
   readOnly?: boolean;
 }
@@ -260,7 +262,7 @@ export async function userViewAuthOrExit(conn: Connection, view: string): Promis
   try {
     return await userViewAuth(conn, view);
   } catch (e) {
-    console.error(c.red(`✗ ${e instanceof Error ? e.message : String(e)}`));
+    console.error(paintFor(process.stderr, () => c.red(`✗ ${e instanceof Error ? e.message : String(e)}`)));
     process.exit(1);
   }
 }
@@ -483,8 +485,10 @@ function credentialCode(e: unknown): RefusalCode {
  *  the command. Anything that is not a {@link ConnectRefusal} is a real fault and rethrows. */
 function exitOnRefusal(e: unknown): never {
   if (!(e instanceof ConnectRefusal)) throw e;
-  console.error(c.red(e.rendered));
-  if (e.hint) console.error(c.dim(e.hint));
+  paintFor(process.stderr, () => {
+    console.error(c.red(e.rendered));
+    if (e.hint) console.error(c.dim(e.hint));
+  });
   process.exit(1);
 }
 
@@ -722,7 +726,11 @@ export async function connectTargetOrThrow(target: MeshTarget, role: Profile, op
         throw e;
       }
     } else {
-      creds = await mintCreds(target.auth, newIdentity(), role, opts.mint ?? {});
+      // Keep each connection's nkey and lifetime fresh. Only its signed sender principal is stable.
+      const sender = role === "operator" && opts.operatorActor !== undefined
+        ? { principal: { owner: DEV_OWNER, actor: opts.operatorActor } }
+        : {};
+      creds = await mintCreds(target.auth, newIdentity(), role, { ...opts.mint, ...sender });
     }
   }
   // A registered AUTH mesh with no seed is still authenticated. A credless probe would

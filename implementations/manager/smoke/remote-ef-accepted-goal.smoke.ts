@@ -296,7 +296,7 @@ registry.register({
 `);
   writeFileSync(join(extRoot, "extensions.json"), JSON.stringify({ extensions: [{
     pkg: "ef-sdk-fixture-extension", version: "1.0.0", spec: "file:ef-sdk-fixture-extension",
-    provides: [{ kind: "connector", name: "ef-sdk-fixture" }], commands: [], connectors: [{ name: "ef-sdk-fixture", requires: [] }],
+    provides: [{ kind: "connector", name: "ef-sdk-fixture" }], commands: [], connectors: [{ name: "ef-sdk-fixture", requires: [], eventPlane: false }],
   }] }));
   mkdirSync(join(partRoot, ".cotal", "agents"), { recursive: true });
   writeFileSync(join(partRoot, ".cotal", "agents", "sdkfixture.md"), "---\nname: sdkfixture\nagent: ef-sdk-fixture\n---\nlabelled scripted SDK fixture\n");

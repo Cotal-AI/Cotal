@@ -5,6 +5,13 @@
  * fix, the repair launched a replacement that lost the create, and `up` exited 1.
  *
  * Cells (auth mode, the default, because only an authed mesh runs a delivery daemon):
+ *   U   delivery daemon SIGTERMed once the first `up -d` starts the manager, after the daemon's
+ *       readiness wait returned: `up` exits 1 naming the daemon it lost, its Next offers only
+ *       `cotal down`, the daemon gives its lease back, and the next `up` restores it without a wait.
+ *   P   broker stalled just after the daemon renews, until the daemon (restored by U with a 2s
+ *       broker-gone window) exits on its own with no pidfile and leaves its row: `down --yes` on an
+ *       80-column terminal waits the row out, wraps the line that says so, and exits 0. Before the
+ *       fix it read that row as a live daemon and refused.
  *   M1  manager SIGKILLed, repair at once: the new manager waits out the dead pid's row, and `up` exits 0.
  *   M2  manager SIGKILLed while something keeps rewriting its row: the new manager refuses at the
  *       first rewrite, and `up` exits 1. A live holder is never waited past.
@@ -14,6 +21,11 @@
  *       expiry. Only the held row requires a wait message; both repairs exit 0 with the daemon up.
  *   D2  daemon SIGKILLed while something keeps rewriting shard 0 under its credential: the repair
  *       refuses at the first rewrite and starts no daemon.
+ *   R   `down --yes` with the broker stalled from the manager's exit until 2.5s later, past the two
+ *       seconds the delivery daemon gives its release, then `up` 2.5s after, three times. `down`
+ *       exits 0 and keeps the daemon's credential, and `up` waits the row out and binds a new daemon.
+ *       Before the fix `down` dropped the credential and `up` was refused with "a live lease already
+ *       exists".
  *
  * Sandboxes COTAL_HOME, XDG_CONFIG_HOME and the root; picks a free port; kills only pids its own
  * root recorded; tears down with `cotal down`. Needs `nats-server` on PATH.
@@ -29,6 +41,7 @@ import { CotalEndpoint, deliveryBucket, deliveryLeaseHolderFor, idFromCreds, LEA
 import { canonicalLocalProcessPath, deliveryCredsKey, DELIVERY_LOGFILE, DELIVERY_PIDFILE, getSpaceAuth, MANAGER_LOGFILE, MANAGER_PIDFILE, parsePid, workspaceSecretStore } from "@cotal-ai/workspace";
 import { assertSmokeSandboxDown, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
+import { clean, cotalPty } from "./_console-pty.js";
 
 const PORT = await pickFreePort();
 const SERVER = `nats://127.0.0.1:${PORT}`;
@@ -51,23 +64,33 @@ const ok = (name: string, cond: boolean, extra?: unknown) => {
   pass++;
   console.log(`  ✓ ${name}`);
 };
-const cli = (...args: string[]) => {
-  const options = { cwd: root, env, encoding: "utf8" as const, timeout: 180_000 };
+const cli = (...args: string[]) => cliWith({}, ...args);
+const cliWith = (extra: NodeJS.ProcessEnv, ...args: string[]) => {
+  const options = { cwd: root, env: { ...env, ...extra }, encoding: "utf8" as const, timeout: 180_000 };
   assertSmokeSandboxDown(sandbox, args, options);
   const r = spawnSync(TSX, [CLI, ...args], options);
   return { status: r.status, out: `${r.stdout ?? ""}${r.stderr ?? ""}` };
 };
 const UP = ["up", "--server", SERVER, "--detach", "--space", SPACE];
 const up = () => cli(...UP);
-/** `up` without blocking this process, so a rewriter in this process keeps running while it waits. */
-const upAsync = () => {
+/** A command without blocking this process, so a rewriter in this process keeps running while it waits. */
+const cliAsync = (...args: string[]) => {
   const options = { cwd: root, env };
-  assertSmokeSandboxDown(sandbox, UP, options);
-  const child = spawn(TSX, [CLI, ...UP], options);
+  assertSmokeSandboxDown(sandbox, args, options);
+  const child = spawn(TSX, [CLI, ...args], options);
   let out = "";
   child.stdout.on("data", (b) => (out += b));
   child.stderr.on("data", (b) => (out += b));
   return new Promise<{ status: number | null; out: string }>((r) => child.on("close", (status) => r({ status, out })));
+};
+const upAsync = () => cliAsync(...UP);
+/** A command on a terminal `cols` columns wide: its exit code and what it printed, escapes removed. */
+const cliOnTerminal = (cols: number, ...args: string[]) => {
+  assertSmokeSandboxDown(sandbox, args, { cwd: root, env });
+  const pty = cotalPty(args, { cwd: root, env: { ...env, TERM: "xterm-256color" } as Record<string, string>, cols });
+  let out = "";
+  pty.onData((d) => (out += d));
+  return new Promise<{ status: number; out: string }>((r) => pty.onExit((e) => r({ status: e.exitCode, out: clean(out).replace(/\r/g, "") })));
 };
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const ctx = { root, space: SPACE };
@@ -108,12 +131,88 @@ const rewriting = (rewrite: () => Promise<void>) => {
   })();
   return { stop: async () => { on = false; await loop; return rewrites; } };
 };
+/** The shard-0 delivery row on the broker, read with this root's delivery credential. */
+const deliveryRow = async () => {
+  const creds = (await workspaceSecretStore(root).get(deliveryCredsKey(SPACE, { injected: false, root })))!;
+  const nc = await connect({ servers: SERVER, authenticator: credsAuthenticator(new TextEncoder().encode(creds)), inboxPrefix: `_INBOX_${idFromCreds(creds)}` });
+  try {
+    const row = await (await new Kvm(nc).open(deliveryBucket(SPACE))).get(leaseKey(0));
+    return row?.operation === "PUT" ? row : undefined;
+  } finally {
+    await nc.close();
+  }
+};
 /** Wait for every lease this root's crashed processes left behind to expire before the next cell. */
 const settle = () => sleep(35_000);
 
 try {
+  // U
+  const booting = upAsync();
+  for (const end = Date.now() + 120_000; pidOf(MANAGER_PIDFILE) === undefined && Date.now() < end; await sleep(10));
+  const lostDaemon = pidOf(DELIVERY_PIDFILE);
+  ok("U1 the daemon is running when up starts the manager", alive(lostDaemon), { lostDaemon });
+  process.kill(lostDaemon!, "SIGTERM");
+  const lost = await booting;
+  ok("U2 up exits 1 and names the delivery daemon it lost", lost.status === 1 && lost.out.includes(`! control plane degraded: the delivery daemon started for space "${SPACE}" (pid ${lostDaemon}) exited before this boot finished`), lost.out);
+  ok("U3 its summary leaves the daemon out", /running in the background: nats-server \(pid \d+\), manager /.test(lost.out), lost.out);
+  ok("U3b its Next offers only cotal down, since spawn needs the control plane it lost", /\nNext\n {2}cotal down +Stop the stack\n/.test(lost.out) && !lost.out.includes("cotal spawn"), lost.out);
+  ok("U4 the daemon exited and gave its lease back", await until(() => !alive(lostDaemon), 10_000) && await deliveryRow() === undefined);
+  const restoring = cliWith({ COTAL_DELIVERY_BROKER_GONE_MS: "2000" }, ...UP);
+  ok("U5 the next up restores the daemon without waiting for a lease", restoring.status === 0 && alive(pidOf(DELIVERY_PIDFILE)) && !/still leased/.test(restoring.out), restoring.out);
+
+  // P
+  {
+    const pausedDaemon = pidOf(DELIVERY_PIDFILE), pausedBroker = pidOf("nats.pid")!;
+    const held = await deliveryRow();
+    let renewed = false;
+    for (const end = Date.now() + 20_000; !renewed && Date.now() < end; await sleep(50)) renewed = ((await deliveryRow())?.revision ?? 0) > held!.revision;
+    ok("P1 the daemon renewed its row just before the stall", renewed);
+    process.kill(pausedBroker, "SIGSTOP");
+    const exited = await until(() => !alive(pausedDaemon), 25_000);
+    process.kill(pausedBroker, "SIGCONT");
+    ok("P2 the daemon exited on its own during the stall and left no pidfile", exited && pidOf(DELIVERY_PIDFILE) === undefined && readLog(DELIVERY_LOGFILE).includes("exiting (coupled to the broker)"), readLog(DELIVERY_LOGFILE).slice(-800));
+    ok("P3 its row is still on the broker", await deliveryRow() !== undefined);
+    const stop = await cliOnTerminal(80, "down", "--yes");
+    const waiting = stop.out.split("\n").findIndex((line) => /^\S+ delivery daemon has no pidfile;/.test(line));
+    ok("P4 down waits the row out and exits 0", stop.status === 0 && /delivery daemon has no pidfile; waiting up to \d+s to see whether its lease is renewed/.test(stop.out.replace(/\n {2}/g, " ")), stop.out);
+    ok("P4b on an 80-column terminal the line that says so wraps at a space under its text", waiting >= 0 && [...stop.out.split("\n")[waiting]!].length <= 80 && /^ {2}\S/.test(stop.out.split("\n")[waiting + 1] ?? ""), stop.out);
+    ok("P5 and it stopped the broker", await until(() => !alive(pausedBroker), 10_000), stop.out);
+  }
+
   const first = up();
   ok("mesh up with a delivery daemon and a manager", first.status === 0 && alive(pidOf(DELIVERY_PIDFILE)) && alive(pidOf(MANAGER_PIDFILE)), first.out);
+
+  // R
+  for (let round = 1; round <= 3; round++) {
+    const manager = pidOf(MANAGER_PIDFILE)!, daemon = pidOf(DELIVERY_PIDFILE)!, broker = pidOf("nats.pid")!;
+    const stopped = deliveryLeaseHolderFor((await workspaceSecretStore(root).get(deliveryCredsKey(SPACE, { injected: false, root })))!);
+    const down = cliAsync("down", "--yes");
+    // `down` stops the manager, then signals the daemon; the broker stalls in between.
+    while (alive(manager)) await sleep(5);
+    process.kill(broker, "SIGSTOP");
+    const signalledInStall = alive(daemon);
+    await sleep(2_500);
+    process.kill(broker, "SIGCONT");
+    const stop = await down;
+    ok(`R${round} the daemon was still running when the broker stalled`, signalledInStall, { daemon });
+    ok(`R${round} down exits 0 and stops the daemon`, stop.status === 0 && stop.out.includes(`stopped delivery daemon (pid ${daemon})`) && !alive(daemon), stop.out);
+    ok(`R${round} down keeps the credential of a daemon that left its row`, stop.out.replace(/\s+/g, " ").includes("exited without releasing shard 0 of its lease, so its credential stays"), stop.out);
+    await sleep(2_500);
+    const restart = up();
+    const log = readLog(DELIVERY_LOGFILE);
+    ok(`R${round} up right after down exits 0`, restart.status === 0, restart.out);
+    ok(`R${round} no daemon is refused for a live lease`, !/a live lease already exists/.test(`${restart.out}${log}`), `${restart.out}\n${log.slice(-800)}`);
+    const fresh = (await workspaceSecretStore(root).get(deliveryCredsKey(SPACE, { injected: false, root })))!;
+    const nc = await connect({ servers: SERVER, authenticator: credsAuthenticator(new TextEncoder().encode(fresh)), inboxPrefix: `_INBOX_${idFromCreds(fresh)}` });
+    try {
+      const row = await (await new Kvm(nc).open(deliveryBucket(SPACE))).get(leaseKey(0));
+      const lease = row?.operation === "PUT" ? row.json<{ holder: string; ready: boolean }>() : undefined;
+      const replacement = deliveryLeaseHolderFor(fresh);
+      ok(`R${round} the new daemon holds a ready lease`, replacement !== stopped && lease?.holder === replacement && lease.ready === true && alive(pidOf(DELIVERY_PIDFILE)), lease);
+    } finally {
+      await nc.close();
+    }
+  }
 
   // M1
   const deadManager = await crash(MANAGER_PIDFILE, "manager");

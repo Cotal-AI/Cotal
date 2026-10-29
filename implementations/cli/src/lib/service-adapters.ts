@@ -22,8 +22,9 @@ export interface LoadedServiceAdapter extends ResolvedServiceAdapter {
 }
 
 /** Resolve only cached data during add, previews and semantic validation. Executable hooks are
- *  materialized separately, under the ordinary version-locked extension import path. */
-export function resolveServiceAdapter(name: string, options: Readonly<Record<string, unknown>>, checkOptions = true): ResolvedServiceAdapter {
+ *  materialized separately, under the ordinary version-locked extension import path. `label` gives
+ *  how an option reads in a refusal of its value, such as the flag a preset gives it. */
+export function resolveServiceAdapter(name: string, options: Readonly<Record<string, unknown>>, checkOptions = true, label?: (option: string) => string): ResolvedServiceAdapter {
   const registered = registry.all<LocalProcess>("local-process").find((component) => component.name === name);
   const owners = installedExtensionsEnabled() ? loadExtensionsManifest().extensions.filter((extension) => extensionLocalProcesses(extension).some((component) => component.name === name)) : [];
   if (owners.length > 1) throw new CommandFailure("refused", "CONFLICT", "several installed packages claim this service adapter; no provider was chosen");
@@ -32,20 +33,27 @@ export function resolveServiceAdapter(name: string, options: Readonly<Record<str
   if (!cached?.service) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "no installed local-process provider declares this service adapter; install or update its extension explicitly before adding or starting the definition");
   if (owner?.pkg.startsWith("@cotal-ai/") && owner.version !== cliVersion()) throw new CommandFailure("refused", "CONFLICT", "the first-party service adapter and this CLI have different versions; run `cotal update` before use");
   const declaration = serviceAdapterDeclaration(JSON.parse(JSON.stringify(cached.service)));
-  if (checkOptions) { validateServiceAdapterOptions(declaration, options); validateServiceAdapterPaths(declaration, options); }
+  if (checkOptions) { validateServiceAdapterOptions(declaration, options, label); validateServiceAdapterPaths(declaration, options, label); }
   const pin = { name, package: owner?.pkg ?? null, version: owner?.version ?? cliVersion(), declarationSha256: serviceMetadataDigest(declaration) };
   if (registered && (!registered.service || serviceMetadataDigest(serviceAdapterDeclaration(registered.service)) !== pin.declarationSha256)) throw new CommandFailure("refused", "CONFLICT", "the loaded service provider disagrees with its cached declaration; no changed schema was silently adopted");
   return { pin, declaration };
 }
 
-/** Whether two pins name the same provider and declaration. A built-in or `@cotal-ai/*` adapter is
- *  version-locked to this CLI, so its recorded version only says which release wrote the record:
- *  after an upgrade that left the declaration unchanged, instances an earlier release recorded stay
- *  controllable. Any other package keeps its version in the pin. */
-export function sameServiceAdapterPin(a: ServiceAdapterPin | undefined, b: ServiceAdapterPin | undefined): boolean {
-  if (a === undefined || b === undefined) return a === b;
-  const cliLocked = a.package === null || a.package.startsWith("@cotal-ai/");
-  return a.name === b.name && a.package === b.package && (cliLocked || a.version === b.version) && a.declarationSha256 === b.declarationSha256;
+/** Whether two resolves name the same provider, version and declaration. */
+const sameServiceAdapterPin = (a: ServiceAdapterPin, b: ServiceAdapterPin) => a.name === b.name && a.package === b.package && a.version === b.version && a.declarationSha256 === b.declarationSha256;
+
+/** Whether `current`, the adapter this CLI resolves now, controls an instance with this recorded pin
+ *  and stop policy. A built-in or `@cotal-ai/*` adapter is version-locked to this CLI, so its recorded
+ *  version and declaration only say which release wrote the record: after an upgrade that changed
+ *  either, even one description, the instance stays controllable while it names the same provider and
+ *  was launched under the stop policy that adapter declares now. Any other package must match its
+ *  recorded version and declaration. */
+export function controlsRecordedAdapter(instance: { adapter?: ServiceAdapterPin; nativeStopRequired?: true; kernelStopRequired?: true }, current: ResolvedServiceAdapter | undefined): boolean {
+  const recorded = instance.adapter;
+  if (recorded === undefined || current === undefined) return recorded === current;
+  if (recorded.package !== null && !recorded.package.startsWith("@cotal-ai/")) return sameServiceAdapterPin(recorded, current.pin);
+  const stop = current.declaration.stop;
+  return recorded.name === current.pin.name && recorded.package === current.pin.package && (instance.nativeStopRequired === true) === (stop === "native") && (instance.kernelStopRequired === true) === (stop === "kernel-exit");
 }
 
 /** Call only after an explicitly authorized operation has reserved its definition and launch. */

@@ -159,10 +159,9 @@ export class JsonlFileSource<T = unknown> implements DurableSource<T> {
    * resumable offset wants: *the bytes immediately before my cursor are still the bytes that were
    * there when I stopped.*
    *
-   * **THE BOUND IS PART OF THE GUARANTEE AND IS STATED HERE BECAUSE IT IS NOT THE WHOLE PREFIX.**
    * A rewrite confined to bytes EARLIER than `offset - 512` that preserves the sealed window, the
-   * inode and the size is **not detected** — reproduced independently by three reviewers, including
-   * with an ordinary same-length in-place PII scrub of earlier transcript lines. That is a real
+   * inode and the size is **not detected**, including an ordinary
+   * same-length in-place PII scrub of earlier transcript lines. That is a real
    * limitation with known edges: a scrub via temp-file+rename changes the inode and IS caught; one
    * that changes length trips the offset/identity path and IS caught; one touching the sealed window
    * IS caught. Only same-inode, same-size, in-place, wholly-outside-the-window escapes.

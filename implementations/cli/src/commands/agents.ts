@@ -11,7 +11,6 @@ import {
   jsonFlag,
   oneLine,
   renderReport,
-  terminalWidth,
   plainFlag,
   presentationOf,
   resolveSeatControlTarget,
@@ -169,6 +168,7 @@ type AgentRow = {
   status: string;
   uptimeMs: number;
   mesh: string;
+  joinHealth?: { state: "degraded"; reason: string };
   /** The harness-reported presence condition beside `mesh`; absent when none was reported. */
   condition?: { code: string; source?: string; message?: string; since?: number };
   /** Epoch ms of the seat's last reported work progress; absent when none was reported. */
@@ -229,7 +229,7 @@ function agentStatusProjection(row: AgentRow, managerInstanceId: string | null) 
       providerSource: row.provider ? exactPresence ? "exact-principal-lifecycle" : "name-match-unverified" : null, cwd: row.cwd ?? null,
       uptimeMs: row.uptimeMs, spawner: row.spawner ?? null, presenceView: row.meshView ?? null, presenceIdentityVerified: row.presenceIdentityVerified ?? null,
       presenceObservedAt: row.presenceObservedAt ?? null, offlineSince: row.offlineSince ?? null,
-      authHealth: row.authHealth ?? null, authReason: row.authReason ?? null, resume: row.resume ?? null },
+      authHealth: row.authHealth ?? null, authReason: row.authReason ?? null, joinHealth: row.joinHealth ?? null, resume: row.resume ?? null },
   };
 }
 
@@ -478,9 +478,11 @@ function silentManager(liveness: ScatterInstanceLiveness | undefined, instanceId
  *  on. A row from a manager that predates `meshView` carries no field and renders as before.
  *  An offline verdict says how long it has stood when the row carries `offlineSince` (#1208), so a
  *  seat that dropped a minute ago reads differently from one that dropped two days ago. */
-export function meshCell(r: Pick<AgentRow, "mesh" | "meshView" | "condition" | "activeAt" | "offlineSince">, now = Date.now()): Styled {
+export function meshCell(r: Pick<AgentRow, "mesh" | "meshView" | "condition" | "activeAt" | "offlineSince" | "joinHealth">, now = Date.now()): Styled {
   if (r.meshView === "stale") return { text: "mesh unknown (manager's presence view is stale)", tone: "waiting" };
   if (r.meshView === "unpopulated") return { text: "mesh unknown (manager's presence view not yet populated)", tone: "waiting" };
+  if (r.joinHealth?.state === "degraded")
+    return { text: "join degraded (readiness deadline elapsed)", tone: "failed" };
   // The harness-reported condition and the last work progress ride beside the status, as the roster
   // renders them (#618): a turn that died upstream 40m ago reads `waiting (rate_limit for 40m) ·
   // active 40m ago`, not a bare `waiting`, and a turn that stopped advancing shows the age of its
@@ -561,6 +563,8 @@ function seatBlocks(rows: readonly AgentRow[], wide: boolean): Block[] {
       }];
   const reasons = rows.filter((r) => r.authHealth && r.authReason).map((r): Cell => ({ text: `${peerLabel(r)}: ${r.authReason}`, tone: authTone(r) }));
   if (reasons.length) blocks.push({ kind: "lines", lines: reasons });
+  const joins = rows.filter((r) => r.joinHealth).map((r): Cell => ({ text: `${peerLabel(r)}: ${r.joinHealth!.reason}`, tone: "failed" }));
+  if (joins.length) blocks.push({ kind: "lines", lines: joins });
   return blocks;
 }
 
@@ -1226,7 +1230,7 @@ async function establishAttachSession(
   recordOperationSpace(t.space);
   const reach = t.auth.bearer ? "owner" : "any";
   // A refusal's report names the mesh in its heading, so this block names it once, in a field.
-  if (first) console.error(renderReport({ sections: [{ title: "Attach", blocks: [{ kind: "fields", rows: [["Space", t.space], ["Agent", v.name], ["Manager", on ?? t.auth.managerInstanceId ?? "native selection"]] }] }] }, "rich", terminalWidth(process.stderr)));
+  if (first) console.error(renderReport({ sections: [{ title: "Attach", blocks: [{ kind: "fields", rows: [["Space", t.space], ["Agent", v.name], ["Manager", on ?? t.auth.managerInstanceId ?? "native selection"]] }] }] }, "rich", process.stderr));
   const reply = await askManager(t.space, t.server, "attach", { name: v.name }, t.auth, reach, undefined, { instanceId: on, expectedTarget: v.expectedTarget });
   if (!reply.ok) {
     // The one refusal no attach can work around: this seat's runtime streams no terminal. It is
@@ -1823,7 +1827,7 @@ async function pickAttach(values: FlagValues<typeof attachFlags>): Promise<{ nam
     if (!on) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the agent's manager instance was not established", { target: census.target });
     return { name: row.name, on, expectedTarget: { id: row.id, lifecycleUid: row.lifecycleUid }, status: typeof row.status === "string" ? row.status : "not reported" };
   });
-  if (census.partial) console.error(renderReport({ space: census.target.space, sections: [{ title: "Agent list is partial", blocks: [{ kind: "lines", lines: [{ text: census.partial.message, tone: "waiting" }] }] }] }, "rich", terminalWidth(process.stderr)));
+  if (census.partial) console.error(renderReport({ space: census.target.space, sections: [{ title: "Agent list is partial", blocks: [{ kind: "lines", lines: [{ text: census.partial.message, tone: "waiting" }] }] }] }, "rich", process.stderr));
   if (!choices.length) throw new CommandFailure("refused", census.partial ? "TARGET_UNAVAILABLE" : "TARGET_NOT_FOUND", census.partial ? "no attachable agent was returned; some managers did not answer" : "the answering managers report no agents to attach", { target: census.target, remedy: "run `cotal ps`, or launch an agent with `cotal spawn`" });
   const choice = await prompts.select({
     message: `Return to an agent in ${oneLine(census.target.space)}`,
@@ -1831,7 +1835,7 @@ async function pickAttach(values: FlagValues<typeof attachFlags>): Promise<{ nam
   });
   if (prompts.isCancel(choice)) return undefined;
   const selected = choices[choice]!;
-  console.error(renderReport({ space: census.target.space, sections: [{ title: "Attaching", blocks: [{ kind: "fields", rows: [["Agent", selected.name], ["Identity", selected.expectedTarget.id], ["Manager", selected.on], ["Detach", `${detachKey().label} leaves the agent running`]] }] }] }, "rich", terminalWidth(process.stderr)));
+  console.error(renderReport({ space: census.target.space, sections: [{ title: "Attaching", blocks: [{ kind: "fields", rows: [["Agent", selected.name], ["Identity", selected.expectedTarget.id], ["Manager", selected.on], ["Detach", `${detachKey().label} leaves the agent running`]] }] }] }, "rich", process.stderr));
   return selected;
 }
 
@@ -1856,7 +1860,7 @@ export async function attach(args: ParsedArgs): Promise<void> {
   console.error(renderReport({ sections: [{ title: verdict.kind === "gone" ? "Attach target no longer available" : detached ? "Detached" : "Attach session ended", blocks: [
     { kind: "fields", rows: [["Agent", v.name]] },
     { kind: "lines", lines: [{ text: verdict.kind === "gone" ? "The selected agent or incarnation was not available to this attach request." : detached ? "Detaching did not send a stop request." : "The terminal session ended. This view sent no agent stop request; run `cotal ps` to check the agent's current state.", tone: "hint" }] },
-  ] }] }, "rich", terminalWidth(process.stderr)));
+  ] }] }, "rich", process.stderr));
 }
 
 /**

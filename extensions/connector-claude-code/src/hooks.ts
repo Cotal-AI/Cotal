@@ -27,16 +27,6 @@ import type { AguiEmitterHolder } from "@cotal-ai/connector-core";
 import type { ClaudeEntry } from "./agui-map.js";
 import { recordCarriedFork } from "./carried.js";
 
-/** A short, human-readable preview of a tool call: its most salient input, else compact JSON. */
-function toolDetail(name: unknown, input: unknown): { name: string; detail: string } | undefined {
-  if (typeof name !== "string" || !name) return undefined;
-  const i = (input ?? {}) as Record<string, unknown>;
-  const salient = i.command ?? i.file_path ?? i.path ?? i.url ?? i.pattern ?? i.description;
-  let detail = typeof salient === "string" ? salient : Object.keys(i).length ? JSON.stringify(i) : "";
-  if (detail.length > 300) detail = `${detail.slice(0, 299)}…`;
-  return { name, detail };
-}
-
 /**
  * The failure a `StopFailure` hook reports, or `undefined` for any other turn end.
  *
@@ -123,6 +113,11 @@ const REPEAT_NOTE = "(A previous delivery of one or more of these was not confir
 /** Bound on the advisory repeat labels. Only grows on undelivered replies, so it is normally empty. */
 const REPEAT_LABEL_CAP = 512;
 
+// Claude Code caps each additionalContext string at 10,000 characters. Keep headroom for
+// host framing and count the assembled context, including briefing, run turns and notices.
+const HOOK_CONTEXT_CHARS = 9_000;
+const WAITING_NOTE_RESERVE = 160;
+
 /** The hook side of the connector: the handler plus the delivery callback that commits what it
  *  injected. Both must be wired into {@link startControlServer} — the handler surfaces, the
  *  callback is the only place a peer message is ever acked. */
@@ -133,6 +128,8 @@ export interface ClaudeHooks {
   handle: HookHandle;
   /** Pass as {@link ControlServerOpts.onReply}. */
   onReply: (ev: HookEvent, delivered: boolean) => void;
+  /** Receipt for an empty inbox after a confirmed hook handoff. Contains no peer content. */
+  inboxDeliveryNote(): string | undefined;
 }
 
 /**
@@ -228,10 +225,10 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
   };
   /**
    * Last tool Claude tried to use, captured on PreToolUse. When a permission Notification
-   * fires moments later, this is *what* it's blocked on — so the dashboard shows the actual
-   * command/action awaiting approval, not just "Claude needs your permission".
+   * fires moments later, publish only its name. Tool input can carry commands, paths or
+   * private question text and must not become activity visible to every roster reader.
    */
-  let pendingTool: { name: string; detail: string } | undefined;
+  let pendingTool: string | undefined;
   /** SessionStart can arrive during an open turn, including after compaction. */
   let turnOpen = false;
   /** A session start found the seat unbound, so its card goes with the next prompt instead. */
@@ -259,6 +256,7 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
    *  it labels a possible repeat for the model. Bounded; on overflow the label is dropped (never
    *  the message), because the label is a courtesy and the message is the product. */
   const unconfirmed = new Set<string>();
+  let lastDelivery: { count: number; event: string } | undefined;
 
   /** Flag deliveries whose confirmation this process could not obtain (keyed by receive key, #624:
    *  an id-less item's wire id is "", so raw-id keying would label EVERY later id-less message a
@@ -287,12 +285,22 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
   };
 
   /** Format the automatic batch WITHOUT acking it; the ids ride on THIS frame's delivery verdict. */
-  const surfaceAutomatic = (agent: MeshAgent, ev: HookEvent): string | undefined => {
+  const surfaceAutomatic = (agent: MeshAgent, ev: HookEvent, reserved = 0): string | undefined => {
     if (deps.delivery === false) return undefined;
-    const items = agent.peekInbox("automatic");
-    if (!items.length) return undefined;
+    const pending = agent.peekInbox("automatic");
+    if (!pending.length) return undefined;
+    const budget = HOOK_CONTEXT_CHARS - reserved - WAITING_NOTE_RESERVE - REPEAT_NOTE.length - 1;
+    const items: InboxItem[] = [];
+    for (const item of pending) {
+      const candidate = formatInjection([...items, item]);
+      if (candidate && candidate.length <= budget) items.push(item);
+    }
+    const remaining = pending.length - items.length;
+    const waiting = remaining
+      ? `${remaining} Cotal message${remaining === 1 ? " is" : "s are"} still waiting. Read with cotal_inbox; messages too large for a hook remain there.`
+      : undefined;
     const body = formatInjection(items);
-    if (!body) return undefined;
+    if (!body) return waiting;
     const ids = items.map((i) => i.recvKey);
     // These stay in the inbox until the verdict, so the overflow valve could otherwise ack one out
     // from under us mid-delivery — unrecoverable, since an acked id is never redelivered. If the
@@ -305,7 +313,8 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
     // At-least-once, deliberately: an unconfirmed batch is re-surfaced rather than dropped, so a
     // reply that DID land but whose confirmation was lost shows the model the same message twice.
     // Say so, so a repeat reads as a repeat instead of as a peer sending twice.
-    return ids.some((id) => unconfirmed.has(id)) ? `${REPEAT_NOTE}\n${body}` : body;
+    const delivered = ids.some((id) => unconfirmed.has(id)) ? `${REPEAT_NOTE}\n${body}` : body;
+    return waiting ? `${delivered}\n${waiting}` : delivered;
   };
 
   /** Peek this seat's pending run turns for injection, riding THIS frame's delivery verdict: the
@@ -323,8 +332,20 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
 
   const handle: HookHandle = async (agent: MeshAgent, ev: HookEvent): Promise<Record<string, unknown>> => {
     const event = ev.hook_event_name ?? "";
-    const withContext = (text: string | undefined): Record<string, unknown> =>
-      text ? { hookSpecificOutput: { hookEventName: event, additionalContext: text } } : {};
+    const withContext = (text: string | undefined): Record<string, unknown> => {
+      if (!text) return {};
+      if (text.length > HOOK_CONTEXT_CHARS) {
+        // The other context can itself exceed the host cap. Never commit peer bodies or run
+        // turns from a frame the host would replace with a preview. Leave both for a later read.
+        const batch = inFlight.get(ev);
+        if (batch) {
+          inFlight.delete(ev);
+          batch.agent.releaseInFlight(batch.ids);
+        }
+        text = `${agent.inboxCount("automatic")} Cotal messages still waiting. Read with cotal_inbox. Additional session context did not fit in this hook.`;
+      }
+      return { hookSpecificOutput: { hookEventName: event, additionalContext: text } };
+    };
     try {
       switch (event) {
         case "SessionStart": {
@@ -362,7 +383,10 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
           // registry has loaded), plus any messages waiting. All advisory context.
           // Order matters: surfaceAutomatic creates this frame's inFlight record; surfaceTurns
           // extends it (or creates a message-less one), so it must evaluate second.
-          const parts = [await orientation(), agent.channelBriefing(), surfaceAutomatic(agent, ev), surfaceTurns(agent, ev)].filter(Boolean);
+          const card = await orientation();
+          const briefing = agent.channelBriefing();
+          const reserved = (card?.length ?? 0) + (briefing?.length ?? 0) + (agent.peekPendingTurns()?.text.length ?? 0) + 6;
+          const parts = [card, briefing, surfaceAutomatic(agent, ev, reserved), surfaceTurns(agent, ev)].filter(Boolean);
           return withContext(parts.length ? parts.join("\n\n") : undefined);
         }
         case "UserPromptSubmit": {
@@ -374,13 +398,23 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
           // Run turns ride the same frame as peer messages: this is an injectable boundary, and
           // the frame's delivery verdict is what commits them as surfaced (arming the automatic
           // `done` at the coming Stop). surfaceAutomatic first — it creates the inFlight record.
-          const parts = [cardOwed ? await orientation() : undefined, surfaceAutomatic(agent, ev), surfaceTurns(agent, ev)].filter(Boolean);
+          const card = cardOwed ? await orientation() : undefined;
+          const reserved = (card?.length ?? 0) + (agent.peekPendingTurns()?.text.length ?? 0) + 4;
+          const parts = [card, surfaceAutomatic(agent, ev, reserved), surfaceTurns(agent, ev)].filter(Boolean);
           return withContext(parts.length ? parts.join("\n\n") : undefined);
         }
         case "PreToolUse":
+          // A channel-started turn can reach its first tool without UserPromptSubmit. The
+          // main agent's tool is evidence of work; a successful nudge alone is not. Do not
+          // let a subagent open the main turn or a later tool clear an unresolved prompt.
+          if (!turnOpen && ev.agent_id === undefined) {
+            turnOpen = true;
+            promptOpen = false;
+            await safeStatus(agent, "working");
+          }
           // Remember what Claude is about to do; if it needs permission, the Notification
-          // below turns this into the "blocked on" detail. Auto-approved tools just overwrite it.
-          pendingTool = toolDetail(ev.tool_name, ev.tool_input);
+          // below names it without publishing its input. Auto-approved tools overwrite it.
+          pendingTool = typeof ev.tool_name === "string" && ev.tool_name ? ev.tool_name : undefined;
           flushEvents(ev.transcript_path); // near-live: each tool boundary ships the turn so far
           return {};
         case "PostToolBatch":
@@ -394,14 +428,10 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
           return {};
         case "Notification": {
           // Claude Code's Notification carries the human-readable reason the session is
-          // blocked in `message`. When a tool permission is pending, lead with *what* it's
-          // waiting on (the actual command) so a one-line card preview stays informative — the
-          // `waiting` status + the dashboard's "BLOCKED ON" label already convey the *why*.
+          // blocked in `message`. Name a pending tool without exposing any tool arguments.
           // Otherwise (idle-input / elicitation, no tool) the message itself is the content.
           const msg = typeof ev.message === "string" ? ev.message : undefined;
-          const activity = pendingTool
-            ? `${pendingTool.name}${pendingTool.detail ? `: ${pendingTool.detail}` : ""}`
-            : msg;
+          const activity = pendingTool ?? msg;
           promptOpen = turnOpen;
           // Both writes are queued before either settles, so a batch relayed meanwhile queues its
           // `working` behind the condition; queued between them, the condition would outlive the turn.
@@ -493,7 +523,9 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
     }
     for (const id of ids) unconfirmed.delete(id);
     try {
-      agent.drainInboxDeliveries(ids);
+      const committed = agent.drainInboxDeliveries(ids);
+      if (committed.items.length)
+        lastDelivery = { count: committed.items.length, event: ev.hook_event_name ?? "" };
     } catch {
       // The ack itself failed — a JetStream ack publishes, so a closed connection throws. Whatever
       // did not ack is also not marked handled, so JetStream redelivers it and nothing is lost. But
@@ -504,7 +536,12 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
     }
   };
 
-  return { handle, onReply, adoptTranscript: adoptEvents };
+  return {
+    handle, onReply, adoptTranscript: adoptEvents,
+    inboxDeliveryNote: () => lastDelivery
+      ? `No unread messages remain. The most recent confirmed Claude Code hook handoff carried ${lastDelivery.count} message${lastDelivery.count === 1 ? "" : "s"} as additionalContext (${lastDelivery.event}). This is a delivery receipt, not a new message.`
+      : undefined,
+  };
 }
 
 /** One `claude/channel` push. A rejection is surfaced to the caller. */

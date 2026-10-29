@@ -193,6 +193,26 @@ try {
     snapshot.members.length === 3 && snapshot.asOf === asOf, { members: snapshot.members.map((m) => m.id), asOf: snapshot.asOf, feedAsOf: asOf });
   check("…and binds no consumer on the feed's stream (#4123)", consumersAfterRead === consumersBeforeRead, { before: consumersBeforeRead, after: consumersAfterRead });
   await reader.stop();
+  // Historical down-f uses this short-lived profile on static meshes. It already reads the
+  // feed via consumers, but must also carry the bare batched snapshot subject (#3738).
+  const teardownId = newIdentity();
+  const teardownUid = mintLifecycleUid();
+  const teardownCreds = await mintCreds(auth, teardownId, "teardown", { lifecycleUid: teardownUid });
+  const teardownReader = new CotalEndpoint({ space, servers: SERVERS, creds: teardownCreds, lifecycleUid: teardownUid,
+    channels: [], consume: false, watchPresence: false, registerPresence: false, watchChannels: false,
+    card: { name: "teardown-snapshot-reader", kind: "endpoint" } });
+  teardownReader.on("error", () => {});
+  await teardownReader.start();
+  try {
+    const teardownSnapshot = await teardownReader.readMembership();
+    check("teardown reads the same membership census as the admin reader (#3738)",
+      teardownSnapshot.asOf === snapshot.asOf && teardownSnapshot.members.length === snapshot.members.length);
+    check("teardown snapshot binds no membership consumer", await feedConsumers() === consumersAfterRead);
+    const grants = permissionsFor("teardown", space,
+      { owner: DEV_OWNER, actor: teardownId.id, connId: teardownId.id, lifecycleUid: teardownUid }, {}) as { pub: { allow: string[] } };
+    check("teardown membership grants cannot write the census",
+      !grants.pub.allow.some((row) => row.startsWith(`$KV.${membershipBucket(space)}.`)));
+  } finally { await teardownReader.stop(); }
   const oldId = newIdentity();
   const current = permissionsFor("admin", space, { owner: DEV_OWNER, actor: oldId.id, connId: oldId.id }, {}) as { pub: { allow: string[] }; sub: { allow: string[] } };
   const directRow = `$JS.API.DIRECT.GET.KV_${membershipBucket(space)}`;

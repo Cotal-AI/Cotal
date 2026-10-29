@@ -157,7 +157,16 @@ try {
   writeFileSync(credsPath, credB, { mode: 0o600 });
   const credBSignedAt = Date.now();
   writeFileSync(rwPath, await mintCreds(auth, rwId, "membership-rw"), { mode: 0o600 }); // matrix default TTL
-  const adopted = await adminReq(sup, "reloadCreds");
+  // The daemon prints "delivery daemon up" and "membership feed up" before its start-up is done (its
+  // lease watch binds after them), and until then it refuses `reloadCreds` and adopts nothing. That
+  // refusal is the only start-up signal it gives, so ask again while the reply is that refusal, for
+  // at most 5s. Any other reply is graded as it is.
+  const startupBy = Date.now() + 5_000;
+  let adopted = await adminReq(sup, "reloadCreds");
+  while (!adopted.ok && (adopted.error ?? "").includes("has not finished starting") && Date.now() < startupBy) {
+    await wait(200);
+    adopted = await adminReq(sup, "reloadCreds");
+  }
   check("explicit reloadCreds replies ok (auditable adoption)", adopted.ok === true, JSON.stringify(adopted));
   const data = (adopted.ok ? adopted.data : {}) as {
     delivery?: { brokerAccepted?: { identity?: string; exp?: number } };

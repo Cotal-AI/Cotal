@@ -103,8 +103,7 @@ import { runSubmissionKey } from "./run-submission.js";
 import { runDriverGrants, runMediatorGrants, runOperatorGrants, type RunDriverGrantArgs, type RunOperatorGrantArgs } from "./run-driver-grants.js";
 import { transferReaderGrants, transferWriterGrants } from "./transfer.js";
 import { recordsBucket, recordSpecKey, recordStatusKey, recordAtomicKey, RECORD_KINDS, GOVERN_HEAD } from "./endpoint-records.js";
-import { lifecycleHeadKey, uidReservationKey, issuanceGateKey, staticSlotKey, STATIC_SLOT_PREFIX, epgateKey, epcredFamilyPrefix, eprepairKey } from "./lifecycle-state.js";
-import { rawDigest } from "./canonical.js";
+import { lifecycleHeadKey, uidReservationKey, issuanceGateKey, staticSlotKey, STATIC_SLOT_PREFIX, epgateKey, epcredFamilyPrefix, eprepairKey, credentialIdOf } from "./lifecycle-state.js";
 import { environmentManagerPermissions, isEnvironmentManagerProfile, type EnvironmentManagerGrantPin } from "./environment-manager-grants.js";
 import { credsClaims, isUserNkey, type Identity } from "./identity.js";
 import {
@@ -279,10 +278,10 @@ export const ROTATION_RENEWED_TTL_SEC = 30 * 24 * 60 * 60;
 /** The credential lifetime matrix. This is intentionally centralized so every new mint profile must classify its
  * credential-death behavior instead of silently inheriting non-expiring static creds. */
 export const CREDENTIAL_LIFETIMES: Record<CredentialKind, CredentialLifetimePolicy> = {
-  agent: { class: "mixed", note: "manager children, foreground spawn/join, and cotal mint static outputs all use this profile; split or repair flow required before default exp" },
+  agent: { class: "mixed", note: "manager children, foreground spawn/join, and `cotal mint` static outputs all use this profile; split or repair flow required before default exp" },
   "manager-caller": { class: "mixed", note: "short-lived user-auth view bound to the bearer expiry and one manager instance" },
-  observer: { class: "static-operator-managed", note: "out-of-band dashboard/audit credential from cotal mint" },
-  admin: { class: "static-operator-managed", note: "out-of-band elevated dashboard/audit credential from cotal mint" },
+  observer: { class: "static-operator-managed", note: "out-of-band dashboard/audit credential from `cotal mint`" },
+  admin: { class: "static-operator-managed", note: "out-of-band elevated dashboard/audit credential from `cotal mint`" },
   supervisor: { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "manager's always-on endpoint; the manager holds the DATA seed and self-remints via the endpoint creds source" },
   delivery: { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "server-side Plane-3 daemon; seed-less - the manager re-signs .cotal/delivery.creds for the SAME nkey, requests delivery-admin reloadCreds for explicit adoption, and the endpoint source re-read is only a backstop" },
   "membership-rw": { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "membership feed writer; seed-less - the manager re-signs the membership-rw.creds store key for the SAME nkey, the feed adopts it on a 75% preflight-proven renewal timer (its active self-heal), and delivery-admin reloadCreds is the explicit adoption on top" },
@@ -317,7 +316,7 @@ export const CREDENTIAL_LIFETIMES: Record<CredentialKind, CredentialLifetimePoli
   "transfer-writer": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "one carried resume per CLI call: one object's chunk and meta subjects in one instance's transfer bucket" },
   "transfer-reader": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "one transcript-receive or sweep over the minting instance's own transfer bucket" },
   "endpoint-evictor": { class: "one-shot", defaultTtlSeconds: 60, note: "one re-registration's verify-evict window: a scoped delivery-admin caller that kicks+verifies the SUPERSEDED serve family before the epoch advances; 60s bounds a copied cred to a minute" },
-  "remote-manager": { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "auth-service", note: "the scoped remote manager lifecycle: own lease/presence plus same-owner agent provisioning; issued only by the typed supervise protocol, never by cotal mint or a raw view/profile string" },
+  "remote-manager": { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "auth-service", note: "the scoped remote manager lifecycle: own lease/presence plus same-owner agent provisioning; issued only by the typed supervise protocol, never by `cotal mint` or a raw view/profile string" },
   "environment-bootstrap": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "one admitted environment's bootstrap caller; explicit expiry capped by admission and five minutes" },
   "environment-manager-supervisor": { class: "standing-renewable", renewalOwner: "environment-authority", note: "own lease/presence/liveness; explicit expiry capped by admission, no auth-store access" },
   "environment-manager-executor": { class: "standing-renewable", renewalOwner: "environment-authority", note: "own admitted authority instance RPC; explicit expiry capped by admission, no direct store access" },
@@ -1023,7 +1022,7 @@ export async function mintCreds(
         `would exceed the broker's CONNECT line and the connect would hang silently (issue #375)`,
     );
   }
-  await releaseIssuance(auth.space, profile, pr, opts, perms, validDates.exp, rawDigest(creds).replace("sha256:", "sha256-"));
+  await releaseIssuance(auth.space, profile, pr, opts, perms, validDates.exp, credentialIdOf(creds));
   // §13.1 mint fence for the serve credential: the credential is BUILT, but released only when its
   // NORMATIVE ledger row (holderPrincipal/lifecycleUid/sourceChain/state/exp + the currency
   // coordinates) is durably staged and its revision-pinned CAS wins the instance's single issuance
@@ -1034,15 +1033,18 @@ export async function mintCreds(
     if (!opts.serveIssuance)
       throw new Error("mintCreds: endpoint-serve requires opts.serveIssuance (the durable issuance-gate seam; the mint releases only on its revision-pinned CAS win, SPEC 13.1)");
     await finalizeServeIssuance(opts.serveIssuance, opts.endpointServe!, {
-      // PER-ISSUED-JWT id (digest of the credential): every issuance (a standing renewal included)
-      // has distinct bytes (fresh exp/iat), so it writes a DISTINCT ledger row and never overwrites
-      // or resurrects a prior one. The create-only / idempotent-if-identical guarantee lives at the
-      // finalize/stage seam (the SAME credential object staged twice), not the mint layer. The
-      // stable nkey rides separately as `credentialKey` for broker revocation. KEY-SAFE digest
-      // form (`sha256-<hex>`, never the §13.7 `sha256:` artifact form): the id becomes a segment
-      // of the durable `epcred.` KV key, whose grammar has no ":" — the digest property (a
-      // byte-identical retry maps to the SAME id) is what matters, not the separator.
-      credentialId: rawDigest(creds).replace("sha256:", "sha256-"),
+      // PER-ISSUED-JWT id (digest of the credential): `exp` and `iat` have whole-second Unix
+      // resolution and `jti` is derived from the claims, so what keeps a re-registered successor
+      // serve credential off its revoked predecessor's row within the same second is the
+      // epoch-pinned serve grant (`endpointServe.epoch` in the permission rows). A renewal in a
+      // later second gets a fresh `iat`/`exp` and writes a new ledger row; a same-second renewal
+      // at one epoch signs identical bytes and re-stages the same active row, which the
+      // create-only / idempotent-if-identical stage seam accepts as a retry while refusing a
+      // revoked row with `conflict`. The stable nkey rides separately as `credentialKey` for
+      // broker revocation. KEY-SAFE digest form (`sha256-<hex>`, never the §13.7 `sha256:`
+      // artifact form): the id becomes a segment of the durable `epcred.` KV key, whose grammar
+      // has no ":".
+      credentialId: credentialIdOf(creds),
       credentialKey: identity.id,
       holderActor: pr.actor,
       // A serve credential is minted directly by the provisioner authority, so its §13.1 issuance
@@ -1143,7 +1145,7 @@ export async function mintPublicUserJwt(
   if (profile === "endpoint-serve") {
     if (!opts.serveIssuance) throw new Error("mintPublicUserJwt: endpoint-serve requires serveIssuance");
     await finalizeServeIssuance(opts.serveIssuance, opts.endpointServe!, {
-      credentialId: rawDigest(jwt).replace("sha256:", "sha256-"),
+      credentialId: credentialIdOf(jwt),
       credentialKey: publicId,
       holderActor: pr.actor,
       sourceChain: ["root"],
@@ -1182,7 +1184,7 @@ export async function mintServiceCalloutJwt(
     { signer: nativeNkeySigner(new TextEncoder().encode(auth.account.signingSeed)), exp: expiresAt });
   if (Buffer.byteLength(jwt, "utf8") > MAX_MINTED_JWT_BYTES)
     throw new Error("service callout mint exceeds the native JWT byte limit");
-  const credentialId = rawDigest(jwt).replace("sha256:", "sha256-");
+  const credentialId = credentialIdOf(jwt);
   await finalizeServeIssuance(gate, serve, { credentialId, credentialKey: connection.userNkey,
     serviceConnection: connection, holderActor: principal.actor, sourceChain: ["root"], exp: expiresAt });
   if (expiresAt <= Math.floor(Date.now() / 1000))
@@ -2077,6 +2079,8 @@ function teardownPermissions(space: string, pr: MintPrincipal, transferStreams: 
         `$JS.API.CONSUMER.INFO.${CHKV}.>`,
         // readMembership's one-pass scan of the feed (its STREAM.INFO is in `del`). No `$KV` publish:
         // only `membership-rw` writes the feed.
+        // Batched snapshots read the same feed as the watch below, without a consumer.
+        `$JS.API.DIRECT.GET.${MSHIP}`,
         `$JS.API.CONSUMER.CREATE.${MSHIP}.>`,
         `$JS.API.CONSUMER.INFO.${MSHIP}.>`,
         // Space deletion names the workflow runs it removes by their status records: a non-fencing
@@ -3121,16 +3125,44 @@ export function openServerConfig(opts: {
   /** JetStream file storage cap in bytes (`max_file_store`). Omitted leaves nats-server's dynamic
    *  default. nats-server fixes the cap at start and refuses a reload that changes it. */
   maxFileStore?: number;
+  /** Native nats-server file logging and rotation. Rotation bounds require {@link logFile}. */
+  logFile?: string;
+  logfileSizeLimit?: number;
+  logfileMaxNum?: number;
   transport: BrokerTransport;
 }): string {
   const port = opts.port ?? 4222;
   const host = opts.host ?? "127.0.0.1";
+  const logBlock = renderLogBlock("openServerConfig", opts);
   return `# Generated by \`cotal up\` - do not edit by hand.
 host: ${host}
 port: ${port}
 max_control_line: ${MAX_CONTROL_LINE_BYTES}
-${renderTlsBlock(opts.transport)}${renderJetStreamBlock("openServerConfig", opts.storeDir, opts.maxFileStore)}
+${logBlock}${renderTlsBlock(opts.transport)}${renderJetStreamBlock("openServerConfig", opts.storeDir, opts.maxFileStore)}
 `;
+}
+
+/** Render native nats-server file logging and rotation directives when requested. */
+function renderLogBlock(renderer: string, opts: { logFile?: string; logfileSizeLimit?: number; logfileMaxNum?: number }): string {
+  if (opts.logFile === undefined && (opts.logfileSizeLimit !== undefined || opts.logfileMaxNum !== undefined))
+    throw new Error(`${renderer}: logfileSizeLimit and logfileMaxNum require logFile`);
+  const lines: string[] = [];
+  if (opts.logFile !== undefined) {
+    if (!opts.logFile.trim() || /[\u0000-\u001f\u007f]/u.test(opts.logFile))
+      throw new Error(`${renderer}: logFile must be a non-empty path without control characters`);
+    lines.push(`log_file: ${JSON.stringify(opts.logFile)}`);
+  }
+  if (opts.logfileSizeLimit !== undefined) {
+    if (!Number.isSafeInteger(opts.logfileSizeLimit) || opts.logfileSizeLimit <= 0)
+      throw new Error(`${renderer}: logfileSizeLimit must be a positive integer number of bytes`);
+    lines.push(`logfile_size_limit: ${opts.logfileSizeLimit}`);
+  }
+  if (opts.logfileMaxNum !== undefined) {
+    if (!Number.isSafeInteger(opts.logfileMaxNum) || opts.logfileMaxNum <= 0)
+      throw new Error(`${renderer}: logfileMaxNum must be a positive integer file count`);
+    lines.push(`logfile_max_num: ${opts.logfileMaxNum}`);
+  }
+  return lines.length ? `${lines.join("\n")}\n` : "";
 }
 
 /** The exact `jetstream{}` block both broker renderers write for this store and cap, for a caller
@@ -3185,6 +3217,10 @@ export function serverConfig(
     /** JetStream file storage cap in bytes (`max_file_store`). Omitted leaves nats-server's dynamic
      *  default. nats-server fixes the cap at start and refuses a reload that changes it. */
     maxFileStore?: number;
+    /** Native nats-server file logging and rotation. Rotation bounds require {@link logFile}. */
+    logFile?: string;
+    logfileSizeLimit?: number;
+    logfileMaxNum?: number;
     /** Explicit broker-wide payload limit. Omitted preserves nats-server's default. */
     maxPayload?: number;
     /** How long nats-server waits for an auth callout's answer, in whole seconds, rendered as
@@ -3238,6 +3274,7 @@ export function serverConfig(
   // for the derivation; mintCreds/mintPublicUserJwt refuse a JWT that would not fit it BEFORE this
   // config is ever reached, so a legal credential never depends on this margin alone.
   const tlsBlock = renderTlsBlock(opts.transport);
+  const logBlock = renderLogBlock("serverConfig", opts);
   if (opts.maxPayload !== undefined && (!Number.isSafeInteger(opts.maxPayload) || opts.maxPayload <= 0))
     throw new Error("serverConfig: maxPayload must be a positive safe integer of bytes");
   if (opts.authTimeout !== undefined && (!Number.isSafeInteger(opts.authTimeout) || opts.authTimeout <= 0))
@@ -3246,7 +3283,7 @@ export function serverConfig(
 host: ${host}
 port: ${port}
 max_control_line: ${MAX_CONTROL_LINE_BYTES}
-${opts.maxPayload === undefined ? "" : `max_payload: ${opts.maxPayload}\n`}${opts.authTimeout === undefined ? "" : `authorization { timeout: ${opts.authTimeout} }\n`}${tlsBlock}${renderJetStreamBlock("serverConfig", opts.storeDir, opts.maxFileStore)}
+${opts.maxPayload === undefined ? "" : `max_payload: ${opts.maxPayload}\n`}${opts.authTimeout === undefined ? "" : `authorization { timeout: ${opts.authTimeout} }\n`}${logBlock}${tlsBlock}${renderJetStreamBlock("serverConfig", opts.storeDir, opts.maxFileStore)}
 ${websocket}operator: ${broker.operator.jwt}
 system_account: ${broker.sys.pub}
 resolver: MEMORY

@@ -90,7 +90,7 @@ if (SUBCOMMAND === "auth-service") {
 // ---------- MAIN HARNESS ----------
 type ChildProcess = import("node:child_process").ChildProcess;
 
-const { spawn } = await import("node:child_process");
+const { execFile, spawn } = await import("node:child_process");
 const { mkdirSync, mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
 const { tmpdir } = await import("node:os");
 const { join } = await import("node:path");
@@ -141,6 +141,7 @@ const SERVER = `nats://127.0.0.1:${PORT}`;
 const SPACE = `rx-${Math.floor(Math.random() * 1e6)}`;
 const CLIENT_ID = "cotal-cli";
 const SELF = import.meta.filename;
+const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
 const AGENT = "worker";
 const dir = userAuthStateDir(root, SPACE);
 const store = workspaceSecretStore(root);
@@ -310,7 +311,53 @@ try {
     check("device login established", typeof sub === "string" && sub.length > 0);
     return cotalAuthProvider.ownerForLogin({ store, dir, space: SPACE });
   })();
-  grantActor(dir, { owner: OWNER, actor: "cli", scope: ["spawn", "supervise", "role:worker"], allowSubscribe: [">"], allowPublish: [">"], label: "smoke operator" });
+  const cliGrant = grantActor(dir, { owner: OWNER, actor: "cli", scope: ["spawn", "supervise", "role:worker"], allowSubscribe: [">"], allowPublish: [">"], label: "smoke operator" });
+  const clientRoot = mkdtempSync(join(tmpdir(), "cotal-rx-client-"));
+  const clientDir = userAuthStateDir(clientRoot, SPACE);
+  mkdirSync(clientDir, { recursive: true, mode: 0o700 });
+  const clientSentinel = join(clientDir, "sentinel.creds");
+  writeFileSync(clientSentinel, expectedCallout.sentinelCreds, { mode: 0o600 });
+  const { recordMesh, removeMesh } = await import("@cotal-ai/workspace");
+  recordMesh({
+    space: SPACE,
+    server: SERVER,
+    root: clientRoot,
+    mode: "user",
+    origin: "manual",
+    userAuth: { provider: "cotal", idp: { url: base, issuer: origin, audience: origin }, remote: true, endpoints: { url: PUBLIC }, sentinelCredsPath: clientSentinel },
+    ts: new Date().toISOString(),
+  });
+  const remoteWhoami = await new Promise<{ status: number | null; out: string }>((resolve) => {
+    execFile(process.execPath, [BIN, "whoami", "--space", SPACE, "--json"], { cwd: clientRoot, env: childEnv }, (error, stdout, stderr) => {
+      resolve({ status: typeof error?.code === "number" ? error.code : error ? null : 0, out: `${stdout}${stderr}` });
+    });
+  });
+  const remoteWhoamiEnvelope = JSON.parse(remoteWhoami.out) as {
+    completeness?: unknown;
+    result?: { identity?: { grant?: unknown; principal?: unknown }; read?: unknown; post?: unknown; dms?: unknown; capabilities?: unknown };
+    warnings?: Array<{ code?: unknown }>;
+  };
+  check("remote user-auth whoami reports the issuer's current grant",
+    remoteWhoami.status === 0 && remoteWhoamiEnvelope.completeness === "complete" &&
+      remoteWhoamiEnvelope.result?.identity?.grant === "granted" && remoteWhoamiEnvelope.result.identity.principal === `${OWNER}.cli` &&
+      JSON.stringify(remoteWhoamiEnvelope.result.read) === '[">"]' && JSON.stringify(remoteWhoamiEnvelope.result.post) === '[">"]' &&
+      JSON.stringify(remoteWhoamiEnvelope.result.capabilities) === '["spawn","supervise","role:worker"]' &&
+      remoteWhoamiEnvelope.result.dms === true && remoteWhoamiEnvelope.warnings?.length === 0,
+    remoteWhoamiEnvelope);
+  grantActor(dir, { owner: OWNER, actor: "cli", scope: ["role:worker"], allowSubscribe: ["general", "review.>"], allowPublish: ["general"], label: "narrow smoke operator", lifecycleUid: cliGrant.lifecycleUid });
+  const changedWhoami = await new Promise<{ status: number | null; out: string }>((resolve) => {
+    execFile(process.execPath, [BIN, "whoami", "--space", SPACE, "--json"], { cwd: clientRoot, env: childEnv }, (error, stdout, stderr) => {
+      resolve({ status: typeof error?.code === "number" ? error.code : error ? null : 0, out: `${stdout}${stderr}` });
+    });
+  });
+  const changedEnvelope = JSON.parse(changedWhoami.out) as typeof remoteWhoamiEnvelope;
+  check("remote user-auth whoami reads a fresh grant change on its next report",
+    changedWhoami.status === 0 && JSON.stringify(changedEnvelope.result?.read) === '["general","review.>"]' &&
+      JSON.stringify(changedEnvelope.result?.post) === '["general"]' && JSON.stringify(changedEnvelope.result?.capabilities) === '["role:worker"]',
+    changedEnvelope);
+  grantActor(dir, { owner: OWNER, actor: "cli", scope: ["spawn", "supervise", "role:worker"], allowSubscribe: [">"], allowPublish: [">"], label: "smoke operator", lifecycleUid: cliGrant.lifecycleUid });
+  removeMesh(SPACE);
+  rmSync(clientRoot, { recursive: true, force: true });
   const secret = newActorToken();
   const agentLifecycleUid = mintLifecycleUid();
   grantManagedActor(dir, { custody: { kind: "foreground" },
@@ -461,7 +508,7 @@ try {
   const viewLoopback = await post(`${LOOPBACK}/exchange`, { idpToken: idpJwt, actor: "cli", view: "purger" }, { authorization: `Bearer ${info!.cap}` });
   check("the same view request on LOOPBACK reaches the bridge (not the face refusal)",
     viewLoopback.status !== 403, viewLoopback);
-  grantActor(dir, { owner: OWNER, actor: "cli", scope: ["spawn", "supervise", "admin", "role:worker"], allowSubscribe: [">"], allowPublish: [">"], label: "smoke operator" });
+  grantActor(dir, { owner: OWNER, actor: "cli", scope: ["spawn", "supervise", "admin", "role:worker"], allowSubscribe: [">"], allowPublish: [">"], label: "smoke operator", lifecycleUid: cliGrant.lifecycleUid });
   const writerPublic = await post(`${PUBLIC}/exchange`, { idpToken: idpJwt, actor: "cli", view: "channel-writer" });
   let writerView = "";
   try {
@@ -475,8 +522,8 @@ try {
   const humanManagerCall = await post(`${PUBLIC}/exchange`, { idpToken: idpJwt, actor: "cli", view: "manager-caller", managerInstanceId: remoteOne });
   check("the public human exchange serves manager-caller bound to the selected instance",
     humanManagerCall.status === 200 && boundInstance(humanManagerCall) === remoteOne, humanManagerCall);
-  check("the human manager-caller exchange answers only token, owner and exp",
-    Object.keys(humanManagerCall.body).sort().join() === "exp,owner,token", humanManagerCall.body);
+  check("the human manager-caller exchange answers with token, owner, exp and the current grant",
+    Object.keys(humanManagerCall.body).sort().join() === "exp,grant,owner,token", humanManagerCall.body);
 
   // ---------- E2. the human's own manager instance list ----------
   console.log("E2) the signed-in human's own manager instances, read-only");
@@ -824,7 +871,7 @@ try {
 }
 
 // Counts, not just "no failures": a cell that stops running stops protecting anything.
-const EXPECTED = 120;
+const EXPECTED = 122;
 console.log(`\nremote-exchange smoke: ${pass} passed, ${fail} failed`);
 if (pass + fail !== EXPECTED) {
   console.log(`  ✗ FAIL: expected ${EXPECTED} cells, ran ${pass + fail} - a cell was added or silently skipped`);

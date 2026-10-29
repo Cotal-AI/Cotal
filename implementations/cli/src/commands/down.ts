@@ -8,7 +8,6 @@ import {
   localRecordName,
   presentationOf,
   renderReport,
-  terminalWidth,
   abortMaintenanceCut,
   acquireMaintenanceLock,
   assertSingleSpaceBroker,
@@ -106,7 +105,7 @@ import { captureSeatCheckpoint } from "../lib/seat-capture.js";
 import { processRecorded, stopInFlight, stopLocalProcess } from "../lib/local-process-stop.js";
 import { stopManager } from "../lib/manager-proc.js";
 import { ensureDelivery, removeDeliveryCredentials, stopDelivery } from "../lib/delivery-proc.js";
-import { controllerStackRecorded, nothingRunning, sameDown, stackDown, stackRootElsewhere, validateStackDownArguments } from "./stack-down.js";
+import { controllerStackRecorded, deliveryLeaseAfterStop, nothingRunning, sameDown, stackDown, stackRootElsewhere, validateStackDownArguments } from "./stack-down.js";
 import { noticeBetweenSteps } from "../lib/interrupt-notice.js";
 import { goneRootDown, goneRootStackDown, validateGoneRootDownArguments } from "./stack-gone.js";
 import { readStackJournal, recordedProcessLine } from "../lib/stack-journal.js";
@@ -381,7 +380,7 @@ function recordsElsewhere(root: string, action: "stop" | "preview"): CommandFail
 /** Keep the retained pidfile sweep from crossing an exact recorded broker-sharing boundary or
  *  stopping the broker under a saved service that still runs. This is not a complete live ownership
  *  or agent-impact proof. */
-function guardLegacyBareDown(): { space: string } {
+function guardLegacyBareDown(): { space: string; server: string } {
   const root = canonicalRoot(cotalRoot());
   const target = { root };
   if (root === canonicalRoot(homedir())) {
@@ -438,7 +437,7 @@ function guardLegacyBareDown(): { space: string } {
     "then run `cotal down` again",
   ].join("; ") });
   assertNoLiveServices(mesh.space, "down");
-  return { space: mesh.space };
+  return { space: mesh.space, server: mesh.server };
 }
 
 /** Bare down reads each process record it stops where the record lies, as the stopped-stack census
@@ -553,12 +552,13 @@ async function downCommand(args: ParsedArgs): Promise<void> {
   let cleaning = false, cleaned = false;
   const interrupt = noticeBetweenSteps(() => legacyStopInterruptNotice(selected, folderCtx(), stopped, stopInFlight(), cleaned), () => cleaning || stopInFlight() !== undefined);
   // The stop's lines follow the space they stop, as every other report of down begins.
-  console.log(`${renderReport({ space: guarded.space, sections: [] }, "rich", terminalWidth(process.stdout))}\n`);
+  console.log(`${renderReport({ space: guarded.space, sections: [] }, "rich", process.stdout)}\n`);
   // Every dry run returned or was refused above, so from here on this is the whole-stack stop of
   // this folder's root.
 
   let any = false;
   let allStopped = true;
+  let deliveryLease: Awaited<ReturnType<typeof deliveryLeaseAfterStop>> | undefined;
   // A missing manager or delivery pidfile is not proof those daemons stopped. They renew leases
   // while they run, so a live lease with no pidfile refuses before the broker is stopped.
   await refuseLiveUnrecordedDaemons(selected, { ...folderCtx(), space: guarded.space });
@@ -573,7 +573,13 @@ async function downCommand(args: ParsedArgs): Promise<void> {
     try {
       const context = folderCtx();
       if (component.name === "manager") await stopManager(context.space, { withAgents: values["with-agents"] });
-      else if (component.name === "delivery") await stopDelivery(context.space, { preserveCredentials: true });
+      else if (component.name === "delivery") {
+        await stopDelivery(context.space, { preserveCredentials: true });
+        // The daemon's exit does not prove its release committed: it gives the release two seconds
+        // and then exits anyway. The row it leaves is recognised by the next up only through this
+        // daemon's credential, so the lease is read while the broker still runs.
+        if (recorded) deliveryLease = await deliveryLeaseAfterStop(context.root, context.space, guarded.server);
+      }
       else await stopLocalProcess(component, context);
       if (recorded) stopped.push(component.label);
     } catch (e) {
@@ -590,7 +596,11 @@ async function downCommand(args: ParsedArgs): Promise<void> {
   }
   cleaning = true;
 
-  if (selected.some((component) => component.name === "delivery"))
+  if (deliveryLease === "held" || deliveryLease === "unread")
+    stderrLine("! ", deliveryLease === "held"
+      ? "the delivery daemon exited without releasing shard 0 of its lease, so its credential stays; the next `cotal up` waits for the lease to expire"
+      : "the delivery lease could not be read after the delivery daemon stopped, so its credential stays; the next `cotal up` waits out a lease that still names it", c.yellow);
+  else if (selected.some((component) => component.name === "delivery"))
     await removeDeliveryCredentials(folderCtx().space);
 
   for (const component of selected) {
@@ -634,7 +644,7 @@ async function downCommand(args: ParsedArgs): Promise<void> {
     console.error(c.red("Nothing running for the local stack (no recorded pidfiles)."));
     process.exit(1);
   }
-  console.log(`\n${renderReport({ sections: [{ title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal up", description: "Start it again" }] }] }] }, "rich", terminalWidth(process.stdout))}`);
+  console.log(`\n${renderReport({ sections: [{ title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal up", description: "Start it again" }] }] }] }, "rich", process.stdout)}`);
 }
 
 /** What an interrupted bare down of a legacy stack left: the members it stopped, the ones still
@@ -664,6 +674,8 @@ async function liveUnownedBrokers(context: LocalProcessContext): Promise<Array<{
   return live;
 }
 
+/** Whether a component's pidfile names a process the `@cotal-ai/workspace` pid-attribution contract
+ *  (`parsePid` + `probeLiveness`) reports alive. */
 export function processAlive(component: LocalProcess, context: LocalProcessContext): boolean {
   return pidfileState(localProcessPath(component.pidFile, context)).liveness === "alive";
 }
@@ -913,8 +925,9 @@ async function preserveStateDown(storeOverride?: string, sessionStores: readonly
         // The delivery daemon was stopped above as the Plane 3 fence, and a refusal used to leave
         // it stopped: the operator read "running, unfenced mesh" while no spawn, retirement or join
         // could complete until the next `cotal up` (#4510). Start it again, and when that fails say
-        // so in the refusal, so what it names is what is actually left.
-        if (deliveryFenced) {
+        // so in the refusal, so what it names is what is actually left. An open mesh runs no
+        // daemon, so one an earlier open boot left behind stays stopped.
+        if (deliveryFenced && mesh.mode !== "open") {
           const notRestarted = await restartFencedDelivery(mesh.space, mesh.server, target.auth.tls === true);
           if (notRestarted !== undefined) {
             const message = `${cause instanceof Error ? cause.message : String(cause)}; the delivery daemon stopped for the cut could not be started again (${notRestarted})`;
@@ -1260,8 +1273,9 @@ export function pidfileTargets(space: string, root: string): Array<[file: string
  *  `cotal down` refuses them as possibly fronting a live process. */
 export type PidfileState = { pid?: number; liveness: "alive" | "dead" | "unknown"; note?: string };
 
-/** The one classifier of a pidfile, read through the shared `readPidfile`: positive integers only,
- *  and EPERM means the process exists. `processAlive` and `mayBeRunning` are its two directions. */
+/** The one classifier of a pidfile, read through `readPidfile`, `parsePid` and `probeLiveness` in
+ *  `@cotal-ai/workspace`: positive integers only, and `EPERM` means the process exists.
+ *  `processAlive` and `mayBeRunning` are its two directions. */
 export function pidfileState(path: string): PidfileState {
   const raw = readPidfile(path);
   if (raw === undefined) return { liveness: "dead", note: "no pidfile" };

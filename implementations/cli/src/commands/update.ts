@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { globalConfigDir, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
 import {
-  CommandFailure, jsonFlag, plainFlag, presentationOf, protectedLocalDirectory, renderReport, terminalWidth, writeResult, type OutputWarning,
+  CommandFailure, jsonFlag, plainFlag, presentationOf, protectedLocalDirectory, renderReport, writeResult, type OutputWarning,
   cmdSpawnSpec,
   beginGlobalUpdateChild,
   bindExtensionPeers,
@@ -113,7 +113,7 @@ const runtime: UpdateRuntime = {
         { kind: "fields", rows: [["Changed files", String(completion.changed.length)], ["Preserved integrations", String(completion.preserved.length)]] },
         { kind: "lines", lines: [...completion.preserved.map((entry) => ({ text: `${entry.shell}: ${entry.reason}`, tone: "waiting" as const })), { text: "Startup files were not rewritten. Run `cotal completion` to inspect local integration.", tone: "hint" }] },
       ] },
-    ] }, "rich", terminalWidth(process.stdout))}\n`);
+    ] }, "rich", process.stdout)}\n`);
   },
   reportRunningManager: (target) => reportRunningManagers(target),
   extensions: () => loadExtensionsManifest().extensions,
@@ -711,7 +711,7 @@ function reportVersion(current: string, latest: string, rt: UpdateRuntime): void
   rt.out(renderReport({ sections: [
     { title: "CLI version", blocks: [{ kind: "fields", rows: [["This process", current], ["Registry latest", latest], ["Update", available ? { text: "available", tone: "waiting" } : "no newer latest tag"]] }, { kind: "lines", lines: [{ text: "Running processes keep the generation they loaded. This version report does not prove every live service was upgraded.", tone: "hint" }] }] },
     { title: "Next", blocks: [{ kind: "commands", items: [{ command: available ? "cotal update --self" : "cotal status", description: !available ? "Inspect the machine and selected space" : rt.checkout() ? "Install the validated CLI as a separate global copy and reconcile through it; this checkout does not change" : "Install the validated CLI and reconcile its matching extensions" }] }] },
-  ] }, "rich", terminalWidth(process.stdout)));
+  ] }, "rich", process.stdout));
 }
 
 function childBinding(rt: UpdateRuntime):

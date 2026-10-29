@@ -730,7 +730,7 @@ let P = "";
   const blankReason = await wf(["revoke", eid], { by: "smoke-operator", reason: "  " }).then(() => undefined, (e: Error) => e);
   c("a blank --reason is refused naming --reason, with the command to run instead",
     isCommandFailure(blankReason) && blankReason.code === "USAGE_INVALID" && blankReason.message === "--reason is empty; nothing was written"
-      && blankReason.remedy === `name why it is revoked: cotal run revoke ${eid} --local --by <who> --reason <text>`, blankReason);
+      && blankReason.remedy === `name why it is revoked: \`cotal run revoke ${eid} --local --by <who> --reason <text>\``, blankReason);
   // A run ID nothing admitted used to get its marker written and then a refusal citing the spec,
   // exit 1. It is refused as not found before anything is written, so no marker exists afterwards.
   const unadmitted = "run-0123456789abcdef0123456789abcdef";
@@ -829,7 +829,7 @@ let P = "";
   c("a check of a run ID nothing records is refused TARGET_NOT_FOUND, exit 2, with the run list as its Next",
     isCommandFailure(unknownCheck) && unknownCheck.code === "TARGET_NOT_FOUND" && exitCode(unknownCheck.outcome, unknownCheck.code) === 2
       && unknownCheck.message === `run ${unrecorded}: no record on endpoint ${EP}; a run that was never started cannot be checked`
-      && unknownCheck.remedy === "list the recorded runs with cotal run",
+      && unknownCheck.remedy === "list the recorded runs with `cotal run`",
     unknownCheck instanceof Error ? unknownCheck.message : unknownCheck);
   } finally { process.exit = origExit; }
 }

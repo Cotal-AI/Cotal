@@ -158,7 +158,12 @@ check("release packing downloads the same run's native artifacts", /pattern: '\*
 check("release packing builds and assembles both macOS bindings", /^\s+darwin: true\s*$/m.test(csJobs.get("workspace-native") ?? "")
   && ["WORKSPACE_NATIVE_DARWIN_X64", "WORKSPACE_NATIVE_DARWIN_ARM64"].every((name) => releasePack.includes(name)));
 check("publication uses the maintained Changesets publisher", /uses: changesets\/action\/publish@/.test(publish) && ciPublish === "pnpm changeset publish");
-check("publication consumes the packed artifact", /pack-dir-artifact-id:.*needs\.pack\.outputs\.artifact/.test(publish));
+const release = csJobs.get("release") ?? "";
+check("publication consumes the pack this workflow's push run on main made from the same tree",
+  /gh run list --workflow changesets\.yml --event push --branch main --commit "\$parent"/.test(release)
+    && /git rev-parse 'HEAD\^\{tree\}'/.test(releasePack) && /jq -r \.tree "\$candidate"\)" = "\$tree"/.test(release)
+    && /^\s+needs: release\s*$/m.test(publish) && /run-id: \$\{\{ needs\.release\.outputs\.run \}\}/.test(publish)
+    && /pack-dir-artifact-id:.*steps\.packed\.outputs\.artifact-id/.test(publish));
 check("only publication receives npm identity", /^\s+environment:\s*npm-publish\s*$/m.test(publish) && /id-token: write/.test(publish) && !/id-token:/.test(releasePack));
 check("publication does not invoke custom qualification or publication wrappers", !/release-qualification|publish-cold-candidate|direct-release|select-release-natives/.test(csText));
 

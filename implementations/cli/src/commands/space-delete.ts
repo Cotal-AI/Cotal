@@ -11,7 +11,7 @@ import {
 } from "@cotal-ai/core";
 import {
   ConfirmationRequired,
-  brokerAddressForDisplay, CommandFailure, findMesh, findPreparedSpace, getSpaceAuth, oneLine, presentationOf, renderReport, resolveNativeServiceTarget, terminalWidth, workspaceSecretStore, writeResult, type MeshEntry, type Report, localProcessPath, type Block,
+  brokerAddressForDisplay, CommandFailure, findMesh, findPreparedSpace, getSpaceAuth, oneLine, presentationOf, renderReport, resolveNativeServiceTarget, workspaceSecretStore, writeResult, type MeshEntry, type Report, localProcessPath, type Block,
 } from "@cotal-ai/workspace";
 import { runningStackMembers } from "../lib/stack-members.js";
 import { readStackJournal } from "../lib/stack-journal.js";
@@ -349,7 +349,7 @@ export async function spaceDelete(args: ParsedArgs): Promise<void> {
   const stopReporting = reportOnInterrupt(presentation, "space delete", () => interruptedDeletion(name, progress));
   const initial = await readSpaceDeletion(name);
   if (!yes) {
-    process.stderr.write(`${renderReport({ ...previewView(initial.result), space: name }, presentation === "plain" ? "plain" : "rich", terminalWidth(process.stderr))}\n`);
+    process.stderr.write(`${renderReport({ ...previewView(initial.result), space: name }, presentation === "plain" ? "plain" : "rich", process.stderr)}\n`);
     const pending = initial.result.runs.unfinished.length;
     const runs = pending ? ` Its ${pending} workflow run${pending === 1 ? " that has" : "s that have"} not finished go${pending === 1 ? "es" : ""} with it.` : "";
     const answer = await prompts.text({ message: `Permanently delete ${oneLine(name)} on ${oneLine(initial.result.recordedBroker ?? "the registered broker")}?${runs} Type the exact space name`, validate: (value) => value === name ? undefined : `Type ${oneLine(name)} to confirm, or cancel.` });

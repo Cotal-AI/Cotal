@@ -713,6 +713,41 @@ try {
       (await stopLocalProcess(authComponent as never, dpCtx as never)) === true && !existsSync(marker) && !existsSync(dpPid));
   }
 
+  // An extension-removal reservation (`removing:<pid>`): `ext remove` always records its own
+  // positive pid, so a live owner reports removal in progress, a dead or non-pid owner is stale,
+  // and an owner whose liveness the kernel will not confirm (`unknown`) refuses without calling the
+  // reservation stale or advising deletion (#3352).
+  writeFileSync(dpPid, `removing:${process.pid}`);
+  const liveRemovalMsg = await refusal(() => stopLocalProcess(authComponent as never, dpCtx as never));
+  check("removing:<live pid> refuses as an extension removal in progress and preserves the reservation",
+    liveRemovalMsg === `auth extension removal is in progress (pid ${process.pid})` && readFileSync(dpPid, "utf8") === `removing:${process.pid}`,
+    { liveRemovalMsg });
+  writeFileSync(dpPid, `removing:${UNKNOWN_PID}`);
+  let unkRemovalMsg: string;
+  try {
+    (process as unknown as { kill: typeof process.kill }).kill = ((p: number, sig?: string | number) => {
+      if (p === UNKNOWN_PID) { const err = new Error("EACCES") as NodeJS.ErrnoException; err.code = "EACCES"; throw err; }
+      return realKill(p, sig as never);
+    }) as typeof process.kill;
+    unkRemovalMsg = await refusal(() => stopLocalProcess(authComponent as never, dpCtx as never));
+  } finally {
+    (process as unknown as { kill: typeof process.kill }).kill = realKill;
+  }
+  check("removing:<unknown-liveness pid> refuses naming the pid and unconfirmed liveness without calling it stale or advising removal",
+    unkRemovalMsg.includes(`(pid ${UNKNOWN_PID})`)
+      && unkRemovalMsg.includes("whose liveness could not be confirmed")
+      && !/stale|remove/i.test(unkRemovalMsg)
+      && readFileSync(dpPid, "utf8") === `removing:${UNKNOWN_PID}`,
+    { unkRemovalMsg });
+  for (const staleRemoval of ["removing:999999", "removing:", "removing:not-a-pid", "removing:0", "removing:-5"]) {
+    writeFileSync(dpPid, staleRemoval);
+    const staleRemovalMsg = await refusal(() => stopLocalProcess(authComponent as never, dpCtx as never));
+    check(`${JSON.stringify(staleRemoval)} is reported as a stale extension-removal reservation and preserved`,
+      staleRemovalMsg.includes("has a stale extension-removal reservation") && readFileSync(dpPid, "utf8") === staleRemoval,
+      { staleRemoval, staleRemovalMsg });
+  }
+  rmSync(dpPid, { force: true });
+
   console.log("\n26) mayBeRunning fails CLOSED on an unattributable record, and a named `down nats` leaves it alone");
   // `mayBeRunning` is the liveness question `down --preserve-state` asks before it fences a daemon or
   // calls a cut complete, so it must fail closed on a torn/unattributable pidfile. `processAlive`

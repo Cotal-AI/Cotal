@@ -29,7 +29,7 @@
  *   manager.spawn    spawn / resolve-cwd / resolve-agent   (privileged-grade creation)
  *   manager.lifecycle despawn / attach / input             (owner-mode terminal/interactive)
  *   manager.self     stop                                  (self-mode halt; baseline)
- *   manager.persona  definePersona                         (privileged-grade; ownership-checked)
+ *   manager.persona  definePersona / removePersona         (privileged-grade; ownership-checked)
  *   manager.chat     chat-session-open / chat-session-retire (operator instruments only; static managers)
  *   manager.admin    purge / launch / resume family / transcript-receive  (operator instruments only)
  *   manager.run      run-start / run-resume / run-answer   (the `run` capability + privileged instrument)
@@ -38,11 +38,14 @@
 import type { BrowserContractSource } from "@cotal-ai/core/browser-validators-build";
 import type { ManagerVitals } from "./vitals.js";
 import {
+  buildClusterArtifacts,
+  buildClusterDocument,
   serviceContractTable,
   singleDocumentClosure,
   TURN_INPUT_SCHEMA,
   TURN_OUTPUT_SCHEMA,
   VOID_SCHEMA,
+  type ClusterDocument,
   type CompiledContract,
   type ContractClosureManifest,
   type EpAuthzMode,
@@ -178,11 +181,14 @@ const STATUS_OUTPUT_SCHEMA = {
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["agent", "state", "binaries"],
+        required: ["agent", "state", "binaries", "eventPlane"],
         properties: {
           agent: { type: "string" },
           state: { enum: ["available", "unavailable"] },
           binaries: { type: "object", additionalProperties: { type: "string" } },
+          /** Whether this connector publishes the AG-UI event plane. Required and explicit: a
+           *  client must never read an absent fact as true. */
+          eventPlane: { type: "boolean" },
           reason: { type: "string" },
         },
       },
@@ -318,6 +324,7 @@ export interface ManagerConnectorStatus {
   agent: string;
   state: "available" | "unavailable";
   binaries: Record<string, string>;
+  eventPlane: boolean;
   reason?: string;
 }
 
@@ -340,6 +347,15 @@ const AGENT_ROW_SCHEMA = {
     status: { type: "string" },
     uptimeMs: { type: "integer", minimum: 0 },
     mesh: { type: "string" },
+    // A bounded launch wait elapsed without the exact incarnation joining. Process status stays
+    // separate, and a later observed join clears this optional diagnostic.
+    joinHealth: {
+      type: "object", additionalProperties: false, required: ["state", "reason"],
+      properties: {
+        state: { type: "string", const: "degraded" },
+        reason: { type: "string" },
+      },
+    },
     // The roster's harness-reported condition beside `mesh` (SPEC §6), its four fields projected. Optional:
     // absent when the connector reported none, and on rows from managers that predate it.
     condition: {
@@ -730,6 +746,17 @@ const PERSONA_INPUT_SCHEMA = {
 const PERSONA_OUTPUT_SCHEMA = {
   type: "object", additionalProperties: false, required: ["name", "path"],
   properties: { name: { type: "string" }, path: { type: "string" } },
+} as const;
+/** Removal names a catalog filename stem, not a spawnable identity. It deliberately has no
+ *  64-character ceiling: invalid legacy entries are the ones a caller most needs to remove. The
+ *  alphabet still keeps the request inside `.cotal/agents` and excludes paths and `.md` suffixes. */
+const REMOVE_PERSONA_INPUT_SCHEMA = {
+  type: "object", additionalProperties: false, required: ["name"],
+  properties: { name: { type: "string", pattern: "^[A-Za-z0-9_-]+$" } },
+} as const;
+const REMOVE_PERSONA_OUTPUT_SCHEMA = {
+  type: "object", additionalProperties: false, required: ["name"],
+  properties: { name: { type: "string" } },
 } as const;
 
 /** A chat session's channel list: bounded, since every entry becomes broker permission rows. */
@@ -1205,6 +1232,7 @@ const ROWS: CommandRow[] = [
   { name: "run-ps", capability: "manager.read", input: RUN_PS_INPUT_SCHEMA, output: RUN_PS_OUTPUT_SCHEMA, targeted: false, handler: "runPs" },
   { name: "goal-result", capability: "manager.read", input: GOAL_RESULT_INPUT_SCHEMA, output: GOAL_RESULT_OUTPUT_SCHEMA, targeted: false, handler: "goalResult" },
   { name: "define-persona", capability: "manager.persona", input: PERSONA_INPUT_SCHEMA, output: PERSONA_OUTPUT_SCHEMA, targeted: false, handler: "definePersona" },
+  { name: "remove-persona", capability: "manager.persona", input: REMOVE_PERSONA_INPUT_SCHEMA, output: REMOVE_PERSONA_OUTPUT_SCHEMA, targeted: false, handler: "removePersona" },
   // A static chat session's open and retire: untargeted, because the session does not exist before
   // open and retire names it by its own slot. Minted into operator instruments only.
   { name: "chat-session-open", capability: "manager.chat", input: CHAT_SESSION_OPEN_INPUT_SCHEMA, output: CHAT_SESSION_OPEN_OUTPUT_SCHEMA, targeted: false, handler: "chatSessionOpen" },
@@ -1371,37 +1399,18 @@ export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: Compile
  *  38 = `run-status` accepts a journal page request and answers with `journalTotal`.
  *
  *  39 = `run-status` adds the recorded program's `programHash`, or `programUnreadable` when that
- *  record cannot be read. The status output schema is closed, so a revision-38 contract rejects it. */
-export function managerClusterDocument(): {
-  urn: string;
-  revision: number;
-  attributes: never[];
-  events: never[];
-  commands: Array<{
-    name: string;
-    class: "ephemeral";
-    targeted: boolean;
-    modes?: EpAuthzMode[];
-    capability: string;
-    inputDigest: string;
-    outputDigest: string;
-  }>;
-} {
-  return {
-    urn: MANAGER_CLUSTER_URN,
-    revision: 39,
-    attributes: [],
-    events: [],
-    commands: ROWS.map((r) => ({
-      name: r.name,
-      class: "ephemeral" as const,
-      targeted: r.targeted,
-      ...(r.modes ? { modes: r.modes } : {}),
-      capability: r.capability,
-      inputDigest: singleDocumentClosure(r.input).closureDigest,
-      outputDigest: singleDocumentClosure(r.output).closureDigest,
-    })),
-  };
+ *  record cannot be read. The status output schema is closed, so a revision-38 contract rejects it.
+ *
+ *  40 = `ps`/`inspect` add optional joinHealth for a launch whose bounded wait elapsed without
+ *  a join. Process liveness remains separate, and an exact-incarnation late join clears it.
+ *
+ *  41 = `remove-persona` removes one caller-owned machine-local persona definition, including a
+ *  filename whose stem is no longer a valid spawn name. A new served command cannot fold into 40.
+ *
+ *  42 = every `status.connectors` row requires `eventPlane`, including rows projected from the
+ *  declared extension inventory before its connector package is imported. */
+export function managerClusterDocument(): ClusterDocument {
+  return buildClusterDocument(MANAGER_CLUSTER_URN, 42, ROWS);
 }
 
 /** Revision, count, and names from the shipped cluster document. Reached smokes derive surface pins from this. */
@@ -1417,7 +1426,7 @@ export function managerShippedSurface(): { revision: number; commandCount: numbe
 
 /** Public, immutable source artifacts used by both local registration and the remote
  * host-registration protocol. Exporting the same values avoids a second manager contract dialect. */
-export function managerAuthorityContractSource(): { document: ReturnType<typeof managerClusterDocument>; artifacts: unknown[] } {
+export function managerAuthorityContractSource(): { document: ClusterDocument; artifacts: unknown[] } {
   return { document: managerClusterDocument(), artifacts: managerContractArtifactValues() };
 }
 
@@ -1427,14 +1436,12 @@ export function managerAuthorityContractSource(): { document: ReturnType<typeof 
  *  spec carries the closure digest. Returned together so the manager publishes both then registers
  *  under the closure digest. */
 export function managerClusterArtifacts(): {
-  document: ReturnType<typeof managerClusterDocument>;
+  document: ClusterDocument;
   rootDigest: string;
   manifest: ContractClosureManifest;
   closureDigest: string;
 } {
-  const document = managerClusterDocument();
-  const { manifest, closureDigest } = singleDocumentClosure(document);
-  return { document, rootDigest: manifest.root, manifest, closureDigest };
+  return buildClusterArtifacts(managerClusterDocument());
 }
 
 /** The manager's contract data as a host's build-time generator takes it (`generateBrowserContracts`
@@ -1482,6 +1489,7 @@ export interface ManagerServiceHandlers {
   runPs(ctx: EpServeContext): unknown | Promise<unknown>;
   goalResult(ctx: EpServeContext): unknown | Promise<unknown>;
   definePersona(ctx: EpServeContext): unknown | Promise<unknown>;
+  removePersona(ctx: EpServeContext): unknown | Promise<unknown>;
   chatSessionOpen(ctx: EpServeContext): unknown | Promise<unknown>;
   chatSessionRetire(ctx: EpServeContext): unknown | Promise<unknown>;
   listPersonas(ctx: EpServeContext): unknown | Promise<unknown>;

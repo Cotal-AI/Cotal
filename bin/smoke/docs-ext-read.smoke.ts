@@ -104,7 +104,7 @@ let specBody = "";
   const r = json.envelope?.result as { kind: string; query: string; hits: { slug: string; heading: string; text: string }[] } | undefined;
   check("--search returns sections that hold the query, each naming its page", json.status === 0 && r?.kind === "docs-search" && r.query === "allowSubscribe" && r.hits.length > 0 && r.hits.every((h) => h.slug && h.heading && /allowsubscribe/i.test(h.text)), r && { hits: r.hits.map((h) => `${h.slug}: ${h.heading}`) });
   const plain = run(["docs", "--search", "allowSubscribe", "--plain"]);
-  check("the plain search points at each hit's full page", plain.status === 0 && /read the full page: cotal docs \S+/.test(plain.stdout), shown(plain));
+  check("the plain search points at each hit's full page", plain.status === 0 && /read the full page: `cotal docs [^\s`]+`/.test(plain.stdout), shown(plain));
   const none = run(["docs", "--search", "zzqqxxnomatch", "--json"]);
   check("a search with no match is an empty, complete result", none.status === 0 && none.envelope?.completeness === "complete" && (none.envelope.result as { hits: unknown[] }).hits.length === 0, shown(none));
 }

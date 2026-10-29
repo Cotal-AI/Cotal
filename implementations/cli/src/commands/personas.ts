@@ -144,7 +144,7 @@ async function list(verbose: boolean, running: boolean, values: ConnectValues): 
   // marks follow the mesh they were read from, as every other report that reads one begins.
   const overlay = running ? await presentNames(values) : undefined;
   const present = overlay?.names;
-  if (overlay) console.log(`${renderReport({ space: overlay.space, sections: [] }, "rich", terminalWidth(process.stdout))}\n`);
+  if (overlay) console.log(`${renderReport({ space: overlay.space, sections: [] }, "rich", process.stdout)}\n`);
   // A catalog travels with a cloned repo, so every value read from it is shown with its control
   // characters escaped, as `persona` and `persona show` show them.
   const pad = Math.max(...entries.map((e) => oneLine(e.name).length));

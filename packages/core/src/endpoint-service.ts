@@ -443,7 +443,7 @@ export async function registerServiceInstance(
   if (obs.state !== "open" && !resuming) {
     if (typeof obs.op?.opId !== "string" || !ISSUANCE_GATE_OP_KINDS.has(obs.op.kind))
       throw new EpEnvelopeError("internal", `the issuance gate for "${args.instanceId}" is frozen without a valid op intent; a frozen gate is op-bound (SPEC 13.1)`);
-    throw lifecycleBlocked("conflict", `the issuance gate for "${args.instanceId}" is ${obs.state}; another barrier holds it; if the holder is a dead predecessor, run: cotal reconcile-gate (SPEC 13.8)`, {
+    throw lifecycleBlocked("conflict", `the issuance gate for "${args.instanceId}" is ${obs.state}; another barrier holds it; if the holder is a dead predecessor, run: \`cotal reconcile-gate\` (SPEC 13.8)`, {
       blockedOp: obs.op.kind,
       gateState: "frozen",
       opId: obs.op.opId,
@@ -914,7 +914,7 @@ async function assertForeignSlotIsOrphaned(
   if (observed < slot.generation)
     throw refuse("unavailable", "behind", `${held} at generation ${slot.generation}, ahead of its observed live gate generation ${observed}; refusing rather than treating an ahead or garbled observation as an abandoned slot (SPEC 13.7)`);
   if (observed === slot.generation)
-    throw refuse("conflict", "in-flight", `${held}; its issuance gate is still at generation ${slot.generation}, so that registration is IN FLIGHT and this one must wait; re-read and re-decide. If its holder is gone, reopen that instance's gate first (its own restart heals it on boot, or run: cotal reconcile-gate --instance ${slot.instanceId}), which advances the generation past the slot and lets this registration reclaim it (SPEC 13.7/13.8)`);
+    throw refuse("conflict", "in-flight", `${held}; its issuance gate is still at generation ${slot.generation}, so that registration is IN FLIGHT and this one must wait; re-read and re-decide. If its holder is gone, reopen that instance's gate first (its own restart heals it on boot, or run: \`cotal reconcile-gate --instance ${slot.instanceId}\`), which advances the generation past the slot and lets this registration reclaim it (SPEC 13.7/13.8)`);
   // observed > slot.generation: the holder's gate has reopened past the stamp, so the slot can
   // never satisfy the promote's generation equality. It is dead, and the slot-take replaces it.
 }
@@ -2032,8 +2032,10 @@ export interface EpIssuanceGate {
   /** Write the staged credential-ledger row (the §13.1 "write rows" step), before the CAS.
    *  CREATE-ONLY / idempotent-if-identical: staging a `credentialId` that is already present must
    *  succeed only when the row is byte-identical (a retry of the SAME issuance), and CONFLICT when
-   *  it differs (a different holder/lineage must never overwrite the row revocation/audit relies
-   *  on). Because `credentialId` is a per-JWT digest, a re-mint is a new id, never an overwrite. */
+   *  it differs (a different holder/lineage or a revoked row must never be overwritten or
+   *  resurrected). Because `credentialId` is a per-JWT digest, a distinct JWT (a new epoch's grant
+   *  or a later second's renewal) gets a new id, while a byte-identical same-second re-mint at one
+   *  epoch re-stages the active row. */
   stage: (row: EpServeLedgerRow) => Promise<void> | void;
   /** Revision-pinned CAS: keep the gate `open`, unchanged, at `expectedRevision`. TRUE iff this
    *  mint won the single-key serialization; FALSE on any change (a freeze/retire, or a
@@ -2099,8 +2101,9 @@ export interface EpIssuanceBarrier {
  *  `mintCreds` supplies these from the same values it stamps into the JWT — the ledger row and
  *  the credential describe ONE credential, never two. */
 export interface EpServeCredential {
-  /** PER-ISSUED-JWT identity (a digest of the credential): the ledger key, unique per JWT so a
-   *  standing renewal never overwrites the prior row. */
+  /** PER-ISSUED-JWT identity (a digest of the credential): the ledger key; a distinct JWT (a new
+   *  epoch's grant or a later second's renewal) writes a new row instead of overwriting the prior
+   *  one, while a byte-identical same-second re-mint at one epoch re-stages the active row. */
   credentialId: string;
   /** The stable holder NKEY (public key) the broker revokes by; many JWTs share it. */
   credentialKey: string;

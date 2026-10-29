@@ -77,6 +77,10 @@ export const piConnector: Connector = {
     if (opts.role) env.COTAL_ROLE = opts.role;
     if (opts.id) env.COTAL_ID = opts.id;
     if (opts.lifecycleUid) env.COTAL_LIFECYCLE_UID = opts.lifecycleUid;
+    // A managed seat has nobody at its terminal to answer Pi's project-trust prompt. The extension
+    // uses this marker to preserve Pi's saved decision, or choose untrusted for this run only when
+    // Pi has none. A foreground launch omits cwd and keeps Pi's native interactive choice.
+    if (opts.cwd) env.COTAL_PI_SUPERVISED_CWD = opts.cwd;
     if (opts.backfillFloor !== undefined) env.COTAL_BACKFILL_FLOOR = String(opts.backfillFloor);
     if (opts.acceptedToken) env.COTAL_ACCEPTED_TOKEN = opts.acceptedToken;
     if (opts.configPath) env.COTAL_AGENT_FILE = opts.configPath;

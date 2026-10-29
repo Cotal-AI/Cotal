@@ -1,21 +1,20 @@
 /**
  * THE pid-attribution contract for machine-local pidfiles, in ONE place.
  *
- * Two copies of "parse a pid" + "is it alive" had drifted (a bounded parser in `auth-proc`, an
- * unbounded `Number.isInteger` parser plus a two-state `isAlive` in `down`), and the gap between a
- * guard's validity predicate and what `process.kill` actually accepts is exactly where a live
- * process gets misread as dead and its pidfile deleted under a clean-stop report. One parser, one
- * tri-state probe, so every surface that decides "is this record a live process, a dead one, or
- * unattributable" decides it the same way.
+ * A gap between a guard's pid validity predicate and what `process.kill` accepts lets a live
+ * process be misread as dead and its pidfile be deleted under a clean-stop report. One bounded
+ * parser (`parsePid`) and one tri-state probe (`probeLiveness` / `livenessFromErrno`) keep every
+ * surface that decides "is this record a live process, a dead one, or unattributable" on the same
+ * rules: only an actual `ESRCH` proves a process gone, `EPERM` (another user's process) is alive,
+ * and anything else is `unknown`, never dead; CALLERS MUST PICK A DIRECTION (`!== "dead"` to
+ * preserve on doubt, `=== "alive"` to require proof of presence).
  *
- * WHO CAN ACTUALLY CONSUME IT, because "consumed everywhere" was never reachable and claiming it
- * hid the gap. This lives in `workspace` (machine-local operator tooling), the widest tier that may
- * hold a local-process concept: the CLI, the manager, the auth service and the web surface all
- * depend on it. `extensions/*` peer-depend `core` ONLY, and a pid probe is not a wire concept, so
- * moving it into core to reach them would leak a local concern into the standard. The two
- * extension-side probes (`connector-opencode`, `connector-hermes`) therefore keep their own copies
- * BY CONSTRUCTION, not by oversight; if they need this contract, the fix is a shared local-process
- * module they may depend on, never a core export.
+ * This lives in `workspace` (machine-local operator tooling), the widest tier that may hold a
+ * local-process concept: the CLI, the manager, the auth service and the web surface all depend on
+ * it. `extensions/*` peer-depend `core` ONLY, and a pid probe is not a wire concept, so moving it
+ * into core to reach them would leak a local concern into the standard. The two extension-side
+ * probes (`connector-opencode`, `connector-hermes`) therefore keep their own copies; if they need
+ * this contract, the fix is a shared local-process module they may depend on, never a core export.
  */
 
 import { spawnSync } from "node:child_process";
@@ -159,18 +158,14 @@ export function processGroupMembers(pgid: number): number[] {
   });
 }
 
-// ---- the manager's own record ------------------------------------------------------------------
-
-// `MANAGER_PIDFILE` and `MANAGER_DELIVERY_AWARE_MARKER` moved to `local-process.ts`. They became
-// `{space}` TEMPLATES rather than bare names, and a template is a local-process concept (that module
-// owns the expansion, the pre-upgrade spellings and the byte-exact resolution) rather than a
-// pid-parsing one. Both are still exported from the package index, so no importer changed.
+// Runtime pidfile templates (`MANAGER_PIDFILE`, `MANAGER_DELIVERY_AWARE_MARKER`) live in
+// `local-process.ts`, which owns `{space}` template expansion and path resolution.
 
 // ---- ATTRIBUTION: is the live process behind this record actually ours? -------------------------
 
 /** What was read about ONE pid's command line, three-valued for the same reason liveness is:
- *  "it is something else" and "I could not look" are different facts and only the first may be
- *  acted on. */
+ *  "it is something else" and "its command line could not be read" are different facts and only
+ *  the first may be acted on. */
 export type ProcessCommand =
   /** The process's argv, as the OS reports it. */
   | { kind: "command"; command: string }
@@ -188,10 +183,10 @@ export type CommandReader = (pid: number) => ProcessCommand;
  * Read one pid's command line.
  *
  * `/proc` on Linux (no subprocess, no PATH dependency, NUL-separated argv); `ps -p <pid> -o
- * command=` elsewhere on POSIX. Windows has neither and is `unreadable` — deliberately, and
- * harmlessly, because of the asymmetry the callers enforce: attribution may only ever DOWNGRADE a
- * record on affirmative evidence that the live process is something else, so a platform that cannot
- * look behaves exactly as every platform did before this existed.
+ * command=` elsewhere on POSIX. Windows has neither and is `unreadable`, because of the asymmetry
+ * the callers enforce: attribution may only ever DOWNGRADE a record on affirmative evidence that
+ * the live process is something else, so a platform that cannot read argv leaves a live pid
+ * trusted.
  */
 export function readProcessCommand(pid: number): ProcessCommand {
   if (process.platform === "win32") return { kind: "unreadable", why: "no process-argv source on win32" };
@@ -221,10 +216,9 @@ export function readProcessCommand(pid: number): ProcessCommand {
  * cron, or typed by hand. Matching the token rather than a path keeps it true across a global
  * install, a `tsx bin/cotal.ts` dev run, and a bundled binary, none of which agree on argv[0].
  *
- * IT FAILS TOWARD "OURS". A process whose argv merely mentions the word reads as a manager, and the
- * cost of that is exactly today's behaviour (a live pid is trusted). The cost of the opposite error
- * — calling a real manager foreign — is a second manager launched onto a live one, so the loose
- * direction is the safe one and is chosen deliberately.
+ * IT FAILS TOWARD "OURS". A process whose argv merely mentions the word reads as a manager, so a
+ * live pid stays trusted. The cost of the opposite error - calling a real manager foreign - is a
+ * second manager launched onto a live one, so the loose direction is the safe one.
  */
 export function commandIsCotalSupervisor(command: string): boolean {
   return /(^|\s)(?:supervise|__daemon-manager|__service-manager)(\s|$)/.test(command);
@@ -245,9 +239,9 @@ export function commandIsCotalServiceManager(command: string): boolean {
  * `cotal deliver --space …`. A token, not a substring, so `delivery-thing` and a `--creds
  * .../delivery.creds` path are not mistaken for the daemon.
  *
- * IT FAILS TOWARD "OURS" for the reason the manager's does: a live pid whose argv cannot be read is
- * still trusted, which is exactly the behaviour every reader had before attribution existed. Only
- * affirmative evidence that the live process is something else may downgrade a record.
+ * IT FAILS TOWARD "OURS" for the reason the manager's does: a live pid whose argv cannot be read
+ * stays trusted. Only affirmative evidence that the live process is something else may downgrade a
+ * record.
  */
 export function commandIsCotalDelivery(command: string): boolean {
   return /(^|\s)(deliver|__daemon-deliver|__service-delivery)(\s|$)/.test(command);
@@ -284,11 +278,9 @@ export type ProcessRecord = { state: "absent" } | {
  *  same rule; only `isOwnCommand` differs between them.
  *
  *  ATTRIBUTION MAY ONLY DOWNGRADE ON PROOF. A live pid is demoted to `foreign` when its command line
- *  was READ and `isOwnCommand` rejects it — never when the read failed, never on a platform that
- *  cannot look, never on a process that died during the read. The asymmetry is the safety argument,
- *  and it is the same one the liveness probe makes: absence of evidence must fail toward the old
- *  behaviour (trust the record), because the opposite error starts a second process on top of a
- *  live one. */
+ *  was READ and `isOwnCommand` rejects it - never when the read failed, never on a platform that
+ *  cannot look, never on a process that died during the read. Absence of evidence leaves the live
+ *  record trusted, because the opposite error starts a second process on top of a live one. */
 export function readProcessRecord(
   path: string,
   isOwnCommand: (command: string) => boolean,

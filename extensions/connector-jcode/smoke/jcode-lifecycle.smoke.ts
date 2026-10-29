@@ -271,6 +271,11 @@ try {
   healthy.child.kill("SIGTERM");
   await Promise.race([once(healthy.child, "exit"), sleep(30_000)]);
   check("graceful stop exits cleanly", healthy.child.exitCode === 0, { code: healthy.child.exitCode, stderr: healthy.stderr() });
+  check(
+    "graceful stop retains SIGTERM as the final diagnostic without inventing its sender",
+    healthy.stderr().trim().endsWith("[cotal-jcode] received SIGTERM; shutting down; signal sender unavailable from Node.js"),
+    healthy.stderr(),
+  );
   check("graceful stop tears down the private daemon (#839)", !alive(healthyDaemon.pid), { daemon: healthyDaemon.pid });
   check("graceful stop tears down the daemon's MCP child (#839)", !alive(healthyDaemon.mcp), { mcp: healthyDaemon.mcp });
 

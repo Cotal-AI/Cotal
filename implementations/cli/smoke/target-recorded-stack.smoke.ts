@@ -54,7 +54,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { assertSmokeSandboxDown, createSuite, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
+import { assertSmokeSandboxDown, assertSmokeSandboxLinkedDown, createSuite, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
 
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
 if (!existsSync(BIN)) {
@@ -91,6 +91,11 @@ const run = (args: string[], cwd = root) => {
 /** `run` for a down, refused unless `cwd` was recorded as a sandbox root. */
 const runDown = (args: string[], cwd: string) => {
   assertSmokeSandboxDown(anchors.get(cwd), args, { cwd, env });
+  return run(args, cwd);
+};
+/** `run` for a down in a folder of `home` whose .cotal is a link, refused unless `home` was recorded. */
+const runLinkedDown = (args: string[], cwd: string) => {
+  assertSmokeSandboxLinkedDown(anchors.get(home), args, { cwd, env });
   return run(args, cwd);
 };
 const shown = (r: ReturnType<typeof run>) => ({ status: r.status, stdout: r.stdout.slice(0, 900), stderr: r.stderr.slice(0, 600) });
@@ -313,7 +318,8 @@ check("with empty folders at the old path it is still moved, and names the same 
 const linked = `${root}-linked`, linkPath = join(linked, ".cotal"), linkTarget = join(root, ".cotal");
 mkdirSync(linked);
 symlinkSync(linkTarget, linkPath);
-const linkedUp = run(["up", "--json"], linked), linkedDown = run(["down", "--yes", "--json"], linked);
+sandbox(home);
+const linkedUp = run(["up", "--json"], linked), linkedDown = runLinkedDown(["down", "--yes", "--json"], linked);
 const linkRefused = (r: ReturnType<typeof run>, command: "up" | "down", effect: string, here: string) => r.status === 2 && r.envelope?.error?.code === "CONFLICT"
   && r.envelope.error.message === `${linkPath} is a link to ${linkTarget}, and a stack runs only from a folder whose .cotal is its own directory; nothing was ${effect}`
   && r.envelope.error.remedy === `run \`cotal ${command}\` from ${root}, whose .cotal this links to, or ${here}`;
@@ -399,7 +405,7 @@ rmSync(linked, { recursive: true, force: true });
   const emptyUp = run(["up", "--json"], toEmpty);
   check("up where .cotal links to a folder that is no project's .cotal names only removing the link",
     emptyUp.status === 2 && emptyUp.envelope?.error?.code === "CONFLICT" && (emptyUp.envelope.error.message ?? "").startsWith(`${join(toEmpty, ".cotal")} is a link to ${empty}, `) && emptyUp.envelope.error.remedy === `remove the link and prepare this folder with \`cotal space create <space> --root ${toEmpty}\``, shown(emptyUp));
-  const danglingUp = run(["up", "--json"], dangling), danglingDown = run(["down", "--dry-run", "--json"], dangling), danglingStatus = run(["status", "--json"], dangling);
+  const danglingUp = run(["up", "--json"], dangling), danglingDown = runLinkedDown(["down", "--dry-run", "--json"], dangling), danglingStatus = run(["status", "--json"], dangling);
   const nowhereRefused = (r: ReturnType<typeof run>, effect: string, remedy: string) => r.status === 2 && r.envelope?.error?.code === "TARGET_NOT_FOUND"
     && r.envelope.error.message === `${join(dangling, ".cotal")} links to ${nowhere}, which does not exist; nothing was ${effect}` && r.envelope.error.remedy === remedy;
   check("up where .cotal leads nowhere refuses TARGET_NOT_FOUND, naming the link and where it leads, not the home .cotal",

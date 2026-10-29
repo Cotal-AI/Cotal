@@ -344,7 +344,10 @@ export function readConnectionFile(file: string, flag: string, target: unknown):
 
 /** What `cotal setup --destination self-hosted` finds for a space: a registration to use as it is,
  *  or a connection file to register it from. */
-export type SelfHostedSpace = { readonly kind: "registered"; readonly entry: MeshEntry } | { readonly kind: "add"; readonly file: string };
+export type SelfHostedSpace =
+  | { readonly kind: "registered"; readonly entry: MeshEntry }
+  | { readonly kind: "bind"; readonly entry: MeshEntry; readonly project: string }
+  | { readonly kind: "add"; readonly file: string };
 
 /**
  * The checks `cotal setup` runs for a self-hosted space before it writes anything. The space must
@@ -362,14 +365,27 @@ export function checkSelfHostedSpace(space: string, project: string, connectionF
       throw refuse("TARGET_NOT_FOUND", `no space named "${space}" is registered here`, { requested: space }, "register it with `cotal space add`, or pass --connection-file <bundle.json>");
     return { kind: "add", file: connectionFile };
   }
-  if (canonicalRoot(entry.root) !== canonicalRoot(project))
-    throw refuse("CONFLICT", `"${space}" is registered with the root ${entry.root}, not ${project}`, target, `pass --project ${entry.root}`);
   if (connectionFile !== undefined) {
     const bundle = readConnectionFile(connectionFile, "--connection-file", target);
     if (bundle.space !== space) throw refuse("CONFLICT", `the bundle is for "${bundle.space}", not "${space}": a bundle adds the space it was exported for`, target);
     const server = take(checkServer(bundle.server, "the bundle's server"), target);
     if (server !== entry.server)
       throw refuse("CONFLICT", `"${space}" is registered at ${entry.server}, and the bundle names ${server}`, target, `forget it first with \`cotal space forget ${space}\``);
+  }
+  if (canonicalRoot(entry.root) !== canonicalRoot(project)) {
+    const custodyRoot = entry.origin === "catalog" ? entry.catalogRoot ?? entry.root : undefined;
+    const unboundCatalog = custodyRoot !== undefined && canonicalRoot(entry.root) === canonicalRoot(custodyRoot);
+    if (unboundCatalog) {
+      const pathProblem = rootPathProblem(project) ?? rootPathProblem(canonicalRoot(project));
+      if (pathProblem) throw refuse("USAGE_INVALID", `${pathProblem}; nothing was written`, target, "rename the folder without those characters, or choose another --project <dir>");
+      const control = rootControlProblem(project);
+      if (control) throw refuse("CONFLICT", `${control.message}; nothing was written`, { ...target, root: resolve(project), controlDirectory: control.controlDirectory }, control.project === undefined
+        ? "choose a project folder outside this machine's Cotal home"
+        : `run cotal from the project folder ${shellWord(control.project)}, or choose a folder outside any .cotal`);
+      protectedLocalDirectory(project, "the project folder");
+      return { kind: "bind", entry, project: canonicalRoot(project) };
+    }
+    throw refuse("CONFLICT", `"${space}" is registered with the root ${entry.root}, not ${project}`, target, `pass --project ${entry.root}`);
   }
   return { kind: "registered", entry };
 }

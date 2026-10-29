@@ -79,14 +79,33 @@ async function observe(registry: LifecycleRegistry, servers: string, source: Ser
     if (registryServerId(registry) !== serverId || maxPayload === undefined || maxPayload < SERVICE_CALLER_PAYLOAD_FLOOR) fail("data connection moved or has insufficient payload");
     remaining();
     return { serverId: serverId!, configDigest: data.config_digest as string, floor: data.max_payload as number,
+      // WHAT A LATER OBSERVATION MUST STILL MATCH EXACTLY. Everything else this function proves it
+      // proves ABSOLUTELY above - standalone topology, the payload floor, the control line, the
+      // system account, an uncapped auth stream - so a later observation re-measures those rather
+      // than comparing them. These five cannot be re-measured that way: they say the evidence still
+      // describes the same broker incarnation and the same auth store.
+      identity: { serverId: serverId!, systemAccount: data.system_account as string, start: data.start as string,
+        streamName: stream.config.name, streamCreated: String(stream.created) },
       evidenceDigest: contractDigest({ serverId, systemAccount: data.system_account, start: data.start, configDigest: data.config_digest,
         maxPayload: data.max_payload, maxControlLine: data.max_control_line, cluster: data.cluster, gateway: data.gateway, leaf: data.leaf,
         stream: { name: stream.config.name, created: stream.created, maxMsgSize: stream.config.max_msg_size } }) };
   } finally { await nc?.close(); }
 }
 
-/** Startup assertion, and a fresh live verifier for each later positive issuance. The writer
- * holds only this exact metadata key. The auth plane's existing claim must still be held. */
+/**
+ * Startup assertion, and a fresh live verifier for each later positive issuance. The writer holds
+ * only this exact metadata key. The auth plane's existing claim must still be held.
+ *
+ * A broker that is RELOADED under a live auth plane keeps serving, and its VARZ `config_digest`
+ * moves. Binding issuance to the bootstrap's digest made every such reload stop caller issuance
+ * until the plane was reopened, which on a multi-tenant broker is every tenant sign-up. The digest
+ * was never the protection: it was a proxy for "the configuration I measured is still the one in
+ * force". So the verifier keeps the proxy as a TRIGGER - a moved digest re-measures and re-binds
+ * under the held claim - and lets the measurement itself be the decision. What a reload can
+ * actually break (a `max_payload` below the floor, a shrunk control line, a cluster or leaf link, a
+ * swapped system account, a capped auth stream) is proved again on the fresh observation before any
+ * issuance, and still refuses.
+ */
 export async function bootstrapServiceCallerPayload(opts: {
   registry: LifecycleRegistry; hold: PlaneClaimHold; servers: string; accountPublicKey: string;
   dataAccount: { pub: string; signingSeed: string }; source: ServiceCallerPayloadBootstrap;
@@ -97,43 +116,84 @@ export async function bootstrapServiceCallerPayload(opts: {
   const proof = genuinePlaneHold(hold);
   if (!proof || proof.space !== space) fail("assertion requires this account's genuine plane claim");
   const assertHeld = (_what: string, deadline: number) => beforeDeadline(deadline, () => proof!.assertHeld("before"));
+  const claimBinding = { claimId: hold.claimId, claimGeneration: hold.generation };
+
+  /**
+   * Write one assertion row under the held claim and confirm the outcome by reading it back. The
+   * writer is opened for this write, holds only this key, and is closed after it; it must reach the
+   * same broker the evidence came from. `expect` is the row this write replaces: `"adopt"` takes
+   * whatever the key currently holds (the startup assertion, which may be a prior plane's), and an
+   * explicit revision and body is the re-assertion's CAS - a concurrent withdrawal or another
+   * plane's write loses it and refuses.
+   */
+  const commit = async (row: Extract<ServiceCallerPayloadRecord, { state: "asserted" }>, serverId: string, deadline: number,
+    expect: "adopt" | { revision: number; body: string }): Promise<number> => {
+    const writer = await beforeDeadline(deadline, () => openAuthorityClient({ onConnection: opts.onConnection, server: servers, space, dataAccount, label: "cotal:service-caller-payload-bootstrap", noReconnect: true,
+      grants: id => ({ publish: ["$JS.API.INFO", `$JS.API.STREAM.INFO.KV_${epAuthBucket(space)}`, `$JS.API.STREAM.INFO.KV_${recordsBucket(space)}`,
+        `$JS.API.STREAM.MSG.GET.KV_${epAuthBucket(space)}`, `$JS.API.STREAM.MSG.GET.KV_${recordsBucket(space)}`, `$KV.${epAuthBucket(space)}.${SERVICE_CALLER_PAYLOAD_KEY}`], subscribe: [`_INBOX_${id}.>`] }), log: () => {} }), late => late.close());
+    const writerDeadline = setTimeout(() => { void writer.close(); }, Math.max(0, deadline - Date.now()));
+    try {
+      const r = await beforeDeadline(deadline, () => openLifecycleRegistry(writer.nc, space));
+      if (registryServerId(r) !== serverId) fail("assertion writer reached another broker");
+      const kv = registryStores(r).authKv, previous = await beforeDeadline(deadline, () => kv.get(SERVICE_CALLER_PAYLOAD_KEY));
+      if (previous && previous.operation !== "PUT") fail("assertion key has deletion history");
+      if (previous) parseServiceCallerPayloadRecord(JSON.parse(dec.decode(previous.value)));
+      if (expect !== "adopt" && (!previous || previous.revision !== expect.revision || dec.decode(previous.value) !== expect.body))
+        fail("payload assertion changed or was withdrawn since bootstrap");
+      await assertHeld("commit caller payload assertion", deadline);
+      const bytes = enc.encode(canonicalJson(row));
+      const revision = previous ? await kv.update(SERVICE_CALLER_PAYLOAD_KEY, bytes, previous.revision) : await kv.create(SERVICE_CALLER_PAYLOAD_KEY, bytes);
+      const after = await beforeDeadline(deadline, () => kv.get(SERVICE_CALLER_PAYLOAD_KEY));
+      if (!after || after.operation !== "PUT" || after.revision !== revision || dec.decode(after.value) !== dec.decode(bytes)) fail("assertion write outcome is unconfirmed");
+      await assertHeld("release caller payload assertion", deadline);
+      return revision;
+    } finally { clearTimeout(writerDeadline); await writer.close(); }
+  };
+
   const deadline = Date.now() + 10_000;
   await assertHeld("assert caller payload", deadline);
   const evidence = await observe(registry, servers, source, deadline, opts.onConnection);
-  const broker = { serverId: evidence.serverId, configDigest: evidence.configDigest, claimId: hold.claimId, claimGeneration: hold.generation };
-  const row: Extract<ServiceCallerPayloadRecord, { state: "asserted" }> = { v: 1, kind: "service-caller-payload", state: "asserted", floor: evidence.floor,
-    assertedAtMs: Date.now(), evidenceDigest: evidence.evidenceDigest, broker };
-  const writer = await beforeDeadline(deadline, () => openAuthorityClient({ onConnection: opts.onConnection, server: servers, space, dataAccount, label: "cotal:service-caller-payload-bootstrap", noReconnect: true,
-    grants: id => ({ publish: ["$JS.API.INFO", `$JS.API.STREAM.INFO.KV_${epAuthBucket(space)}`, `$JS.API.STREAM.INFO.KV_${recordsBucket(space)}`,
-      `$JS.API.STREAM.MSG.GET.KV_${epAuthBucket(space)}`, `$JS.API.STREAM.MSG.GET.KV_${recordsBucket(space)}`, `$KV.${epAuthBucket(space)}.${SERVICE_CALLER_PAYLOAD_KEY}`], subscribe: [`_INBOX_${id}.>`] }), log: () => {} }), late => late.close());
-  const writerDeadline = setTimeout(() => { void writer.close(); }, Math.max(0, deadline - Date.now()));
-  let assertedRevision: number;
-  try {
-    const r = await beforeDeadline(deadline, () => openLifecycleRegistry(writer.nc, space));
-    if (registryServerId(r) !== evidence.serverId) fail("assertion writer reached another broker");
-    const kv = registryStores(r).authKv, previous = await beforeDeadline(deadline, () => kv.get(SERVICE_CALLER_PAYLOAD_KEY));
-    if (previous && previous.operation !== "PUT") fail("assertion key has deletion history");
-    if (previous) parseServiceCallerPayloadRecord(JSON.parse(dec.decode(previous.value)));
-    await assertHeld("commit caller payload assertion", deadline);
-    const bytes = enc.encode(canonicalJson(row));
-    const revision = previous ? await kv.update(SERVICE_CALLER_PAYLOAD_KEY, bytes, previous.revision) : await kv.create(SERVICE_CALLER_PAYLOAD_KEY, bytes);
-    const after = await beforeDeadline(deadline, () => kv.get(SERVICE_CALLER_PAYLOAD_KEY));
-    if (!after || after.operation !== "PUT" || after.revision !== revision || dec.decode(after.value) !== dec.decode(bytes)) fail("assertion write outcome is unconfirmed");
-    assertedRevision = revision;
-    await assertHeld("release caller payload assertion", deadline);
-  } finally { clearTimeout(writerDeadline); await writer.close(); }
+  const identity = canonicalJson(evidence.identity);
+  let row: Extract<ServiceCallerPayloadRecord, { state: "asserted" }> = { v: 1, kind: "service-caller-payload", state: "asserted", floor: evidence.floor,
+    assertedAtMs: Date.now(), evidenceDigest: evidence.evidenceDigest, broker: { serverId: evidence.serverId, configDigest: evidence.configDigest, ...claimBinding } };
+  let assertedRevision = await commit(row, evidence.serverId, deadline, "adopt");
+
+  /** Re-binding is SINGLE-FLIGHT. One reload is followed by a burst of issuances that all observe
+   *  the new configuration, and letting each run its own CAS would give the write to one and refuse
+   *  every other - which is the behaviour this exists to remove. The rest join the one write. */
+  let rebinding: Promise<void> | undefined;
+  const rebind = (fresh: Awaited<ReturnType<typeof observe>>, deadline: number): Promise<void> => {
+    if (rebinding === undefined) {
+      const flight = (async () => {
+        const next: typeof row = { ...row, floor: fresh.floor, assertedAtMs: Date.now(), evidenceDigest: fresh.evidenceDigest,
+          broker: { serverId: fresh.serverId, configDigest: fresh.configDigest, ...claimBinding } };
+        const revision = await commit(next, fresh.serverId, deadline, { revision: assertedRevision, body: canonicalJson(row) });
+        row = next;
+        assertedRevision = revision;
+      })();
+      rebinding = flight.finally(() => { rebinding = undefined; });
+    }
+    return rebinding;
+  };
+
   return async () => {
     const deadline = Date.now() + 10_000;
     await assertHeld("verify caller payload", deadline);
     const fresh = await observe(registry, servers, source, deadline, opts.onConnection);
-    if (fresh.serverId !== broker.serverId || fresh.configDigest !== broker.configDigest || fresh.evidenceDigest !== row.evidenceDigest)
-      fail("broker configuration changed since bootstrap; reopen and reassert before caller issuance");
+    if (canonicalJson(fresh.identity) !== identity)
+      fail("broker incarnation or auth store changed since bootstrap; reopen and reassert before caller issuance");
+    // The configuration moved and every invariant still holds: re-bind the record to what is in
+    // force now, under this same claim, before the issuance this verifier is gating. Two passes,
+    // because the first may have joined a re-bind that was already carrying an older observation.
+    for (let attempt = 0; attempt < 2 && fresh.evidenceDigest !== row.evidenceDigest; attempt++) await rebind(fresh, deadline);
+    if (fresh.evidenceDigest !== row.evidenceDigest)
+      fail("broker configuration moved again while this assertion was being re-bound; retry the issuance");
     const assertion = await beforeDeadline(deadline, () => registryStores(registry).authKv.get(SERVICE_CALLER_PAYLOAD_KEY));
     if (!assertion || assertion.operation !== "PUT" || assertion.revision !== assertedRevision || dec.decode(assertion.value) !== canonicalJson(row))
       fail("payload assertion changed or was withdrawn since bootstrap");
     await beforeDeadline(deadline, () => proof!.assertHeld("after"));
     const claim = await beforeDeadline(deadline, () => readPlaneClaim(registryStores(registry).authKv, space));
-    if (!claim || claim.state !== "held" || claim.claimId !== broker.claimId || claim.generation !== broker.claimGeneration)
+    if (!claim || claim.state !== "held" || claim.claimId !== claimBinding.claimId || claim.generation !== claimBinding.claimGeneration)
       fail("payload assertion belongs to another plane claim");
   };
 }

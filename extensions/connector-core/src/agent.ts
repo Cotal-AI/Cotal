@@ -347,7 +347,7 @@ export type ConnectionState = "ready" | "stalled" | "degraded" | "connecting" | 
 export const AUTOMATIC_QUEUE_STALL_MS = 600_000;
 
 /** An `ask` relayed as a turn: the record the run needs, the attempt it is on, the previous
- *  refusal when there was one, and the command that answers it (`cotal run answer`, the same door
+ *  refusal when there was one, and the native command that answers it (the same door
  *  a checkpoint is answered through). Empty when the payload carries no ask. */
 function renderAskRequest(p: { run?: unknown; step?: unknown; ask?: unknown; checkpoint?: unknown }): string {
   const escalation = renderEscalation(p);
@@ -361,7 +361,16 @@ function renderAskRequest(p: { run?: unknown; step?: unknown; ask?: unknown; che
   const refused = typeof a.refused === "string" ? `\nYour last answer was refused: ${a.refused}` : "";
   return `\nThis turn is an ask: the run needs a record from you at step ${String(p.step)} with fields ${fields}`
     + ` (attempt ${String(a.attempt)} of ${String(a.attempts)}${by}).${refused}`
-    + `\nAnswer with: cotal run answer ${String(p.run)} ${String(p.step)} --value '<json record>'`;
+    + renderPauseAnswer(p, "<json record>");
+}
+
+/** The seat's native connection holds its identity even when its shell has no mesh environment. */
+function renderPauseAnswer(p: { run?: unknown; step?: unknown }, value: string): string {
+  return `\nAnswer through your native Cotal tools: call cotal_describe for endpoint "manager", then cotal_invoke`
+    + ` with endpoint="manager", command="run-answer", self=true and args=`
+    + `{"runId":${JSON.stringify(p.run)},"stepKey":${JSON.stringify(p.step)},"value":${value}}.`
+    + `\nReplace ${value} with your answer. This route uses your own seat identity and needs no run grant or run-status read.`
+    + ` Do not use cotal_yield to answer this request: yielding or ending your host turn submits no value and can withdraw your answer authorization.`;
 }
 
 /** An escalated `checkpoint` relayed as a turn: the question, the record wanted when the pause
@@ -376,7 +385,7 @@ function renderEscalation(p: { run?: unknown; step?: unknown; checkpoint?: unkno
   const wanted = entries.length === 0 ? "" : `\nAnswer with a record with fields ${entries.map(([k, v]) => `${k}: ${String(v)}`).join(", ")}.`;
   const by = typeof c.deadlineAt === "number" ? ` It expires at ${new Date(c.deadlineAt).toISOString()}.` : "";
   return `\nThis turn is a checkpoint escalated to you at step ${String(p.step)}: ${String(c.prompt)}${by}${wanted}`
-    + `\nAnswer with: cotal run answer ${String(p.run)} ${String(p.step)} --value '<json>'`;
+    + `\nAnswer with: \`cotal run answer ${String(p.run)} ${String(p.step)} --value '<json>'\``;
 }
 
 /** A bearer JWT's `exp` in milliseconds, or undefined when it names none. */
@@ -675,20 +684,24 @@ export class MeshAgent extends EventEmitter {
     return this._transportConnected;
   }
 
-  /** Latest pre-bind failure. A successful bind clears it; stop preserves it for post-mortem diagnosis. */
+  /** Current connection failure, including repeated presence writes refused on a live transport.
+   *  A successful write clears that diagnosis. Pre-bind failures survive stop for post-mortem use. */
   get connectionIssue(): string | undefined {
+    const presence = this._connected && this._transportConnected && !this._stopping
+      ? this.presenceWriteFailure
+      : undefined;
+    if (presence !== undefined && presence.consecutiveFailures >= 2) {
+      return `presence writes to bucket ${JSON.stringify(presence.bucket)} have failed ${presence.consecutiveFailures} consecutive times: ${presence.error ?? "write failed"}`;
+    }
     return this.lastConnectionError;
   }
 
   /** #1356: the space's presence bucket has been refusing writes since this time, or `undefined`.
    *
-   *  Deliberately NOT folded into {@link connectionIssue}. That field has a defined relationship to
-   *  readiness which existing callers already read, and a bound endpoint surviving refused heartbeats
-   *  IS still ready — the neighbouring decision at the `warning` listener is correct and stands. This
-   *  is a distinct fact that can be true at the same time as `ready`, which is the actual shape of the
-   *  incident: connected, serving, and silently unable to publish presence.
+   *  The endpoint can remain bound with a live transport while JetStream refuses its writes.
+   *  Two consecutive failures make the session degraded; a successful write clears the record.
    *
-   *  Presence writes are the CANARY, not the scope — see CotalEndpoint.presenceWriteFailure. */
+   *  Presence writes can fail alongside other publishes. See CotalEndpoint.presenceWriteFailure. */
   get presenceWriteFailure(): {
     since: number;
     forMs: number;
@@ -772,7 +785,16 @@ export class MeshAgent extends EventEmitter {
     return this._stopping;
   }
 
-  /** The three liveness facts combined, in one place. Every combination maps, so a caller never has
+  /** Session-local channel degradation, independent of transport liveness. */
+  get channelDeliveryIssue(): string | undefined {
+    return this.dropUnsafe
+      ? "Channel drop tracking exhausted. Ambient channel traffic is suppressed until restart; non-historical mentions on unmuted channels wake to pull their buffered body. Focus recall may be incomplete."
+      : undefined;
+  }
+
+  /** The connection, write-health and channel-delivery facts combined. Repeated presence write
+   *  failures or exhausted drop tracking degrade a bound session even with a live transport.
+   *  Every combination maps, so a caller never has
    *  to guess what an unlisted pair means, and a caller that disagrees with this reading can still
    *  read {@link connected}, {@link transportConnected} and {@link stopping} directly.
    *
@@ -787,6 +809,8 @@ export class MeshAgent extends EventEmitter {
   get connectionState(): ConnectionState {
     if (this._stopping) return "stopped";
     if (this._connected) {
+      if (this.dropUnsafe) return "degraded";
+      if ((this.presenceWriteFailure?.consecutiveFailures ?? 0) >= 2) return "degraded";
       if (!this._transportConnected) return "degraded";
       const held = this.automaticQueueStalledForMs();
       return held !== undefined && held >= AUTOMATIC_QUEUE_STALL_MS ? "stalled" : "ready";
@@ -1046,7 +1070,7 @@ export class MeshAgent extends EventEmitter {
           : "";
       return { ok: true, message: `Reconnected ✓ (${this.config.name}@${this.config.space})${stalled}` };
     } catch (e) {
-      return { ok: false, message: `Reconnect failed: ${(e as Error).message}. Still retrying automatically — or run /reconnect to retry now.` };
+      return { ok: false, message: `Reconnect failed: ${(e as Error).message || (e as Error).name}. Still retrying automatically — or run /reconnect to retry now.` };
     }
   }
 
@@ -1133,7 +1157,13 @@ export class MeshAgent extends EventEmitter {
       if (this.enteringFocus) this.excludeFromFocus(item);
       if (this.dropUnsafe) {
         this.excludeFromFocus(item);
-        delivery.ack();
+        if (cm !== "muted" && item.mentionsMe && !item.historical) {
+          // Mentions are an untrusted wake hint, never authority to inject a channel body.
+          // Keep the body in the bounded pull lane while normal ambient stays fail-closed.
+          // After exhaustion an unknown late copy can surface once, disclosed by the warning.
+          this.buffer(item, delivery, true, idless);
+          this.emit("mention-wake", item);
+        } else delivery.ack();
         return;
       }
       if (cm === "muted") {
@@ -1147,6 +1177,15 @@ export class MeshAgent extends EventEmitter {
       if (remembered) this.evictedClassifications.delete(item.id);
       const snapshottedPullOnly = item.historical || (!item.mentionsMe && (remembered?.pullOnly ?? cm === "quiet"));
       if (cm === "quiet" || snapshottedPullOnly) this.excludeFromFocus(item);
+      // An unsafe channel cannot recall even a fresh mention. Keep that body in the existing
+      // bounded pull lane, never the automatic lane, including on quiet channels. Muted and
+      // historical traffic retain their earlier gates. Exclude this id so recall cannot repeat it.
+      if (this._attention === "focus" && item.mentionsMe && !item.historical && this.focusRecallUnsafeChannels.has(item.channel ?? "")) {
+        this.excludeFromFocus(item);
+        this.buffer(item, delivery, true, idless);
+        this.emit("mention-wake", item);
+        return;
+      }
       // Current normal+focus remains the stronger hard gate unless this exact id was previously
       // received pull-only. classificationUnsafe must not turn focus-dropped traffic into a buffer.
       if (cm !== "quiet" && !snapshottedPullOnly && this._attention === "focus") {
@@ -1379,7 +1418,8 @@ export class MeshAgent extends EventEmitter {
     if (ids.size >= PROTECTED_DISPOSITION_CAP) {
       if (disposition === "drop") this.dropUnsafe = true;
       else this.classificationUnsafe = true;
-      ids.clear();
+      // Keep known hard drops suppressed across later mode changes. The set stays bounded.
+      if (disposition !== "drop") ids.clear();
       return;
     }
     ids.add(id);
@@ -1975,7 +2015,11 @@ export class MeshAgent extends EventEmitter {
   // ---- sending -------------------------------------------------------------
 
   async send(text: string, channel?: string, mentions?: string[]): Promise<CotalMessage> {
-    await this.requireConnected();
+    try {
+      await this.requireConnected();
+    } catch (error) {
+      throw new Error(`${(error as Error).message}. The message was not sent.`, { cause: error });
+    }
     const clean = normalizeMentions(mentions);
     if (clean) await this.assertKnownMentions(clean);
     return this.ep.multicast(text, { channel, mentions: clean, ...this.stamp().stamp });
@@ -2358,7 +2402,15 @@ export class MeshAgent extends EventEmitter {
           }) : undefined,
         });
       } else {
-        r = await this.ep.invokeService(BASELINE_LIFECYCLE_ENDPOINT, command, input, opts);
+        // Static launches keep their class-only grants. Resolve the launching manager's
+        // attributed describe, then use the existing bind fence to refuse sibling deliveries
+        // before effects. An explicit instance retains its existing route and grant rules.
+        const launchLocal = command === "stop" || command === "spawn" || command === "define-persona";
+        const classInstanceId = this.config.creds && launchLocal && opts.instanceId === undefined
+          ? this.config.managerInstanceId : undefined;
+        r = await this.ep.invokeService(BASELINE_LIFECYCLE_ENDPOINT, command, input, {
+          ...opts, ...(classInstanceId !== undefined ? { classInstanceId } : {}),
+        });
       }
     } catch (e) {
       // The verdict "nobody answered" comes from core's answer-provenance marker, NEVER from the
@@ -2383,7 +2435,11 @@ export class MeshAgent extends EventEmitter {
         };
         const unknownDefinition = command === "define-persona" && e.outcome !== "not-executed" &&
           e.code === "deadline-exceeded" && e.details?.some(d => d.kind === EP_UNANSWERED && d.command === command);
-        const message = unknownDefinition
+        const unknownYield = command === "turn-yield" && e.code === "deadline-exceeded" && e.outcome === "unknown" &&
+          e.details?.some(d => d.kind === EP_UNANSWERED && d.endpoint === BASELINE_LIFECYCLE_ENDPOINT && d.command === command);
+        const message = unknownYield
+          ? `${e.code}: ${e.message}. The yield may already have been recorded. After reconnecting, retry cotal_yield with the same turn id and intended status. An already-settled reply confirms the turn is terminal, not which attempt settled it. A successful reply records the yield if it is still active. This retry is not a read-only check.`
+          : unknownDefinition
           ? `${e.code}: ${e.message}`
           : unansweredRequest(e)
           ? `${e.message} (no responder answered - a manager may be down, or this credential holds no "${command}" capability and the broker denied the request)`
@@ -2637,8 +2693,8 @@ export class MeshAgent extends EventEmitter {
     const text =
       `🎯 Cotal — a run handed you ${waiting.length === 1 ? "its turn" : `${waiting.length} turns`}:\n` +
       `${blocks.join("\n")}\n` +
-      `(Do the work now with your own tools. Ending your turn yields "done" back to the run automatically; ` +
-      `call cotal_yield only when you are blocked or handing the turn to another agent.)`;
+      `(Do the work now with your own tools. An ask must be answered through its native route above before ending your host turn. ` +
+      `For ordinary turns, ending your turn yields "done" automatically; call cotal_yield when blocked or handing off an ordinary turn.)`;
     return { text, goalIds: waiting.map((t) => t.goalId) };
   }
 
@@ -2658,7 +2714,11 @@ export class MeshAgent extends EventEmitter {
    *  the run reached first; a refused one stays for the poll to reconcile (the manager's answer,
    *  not a local guess, decides whether it is settled). */
   async yieldTurn(status: "done" | "blocked" | "handoff", opts: { to?: string; note?: string; turn?: string } = {}): Promise<ControlReply> {
-    await this.requireConnected();
+    try {
+      await this.requireConnected();
+    } catch (error) {
+      throw new Error(`${(error as Error).message}. The yield was not sent.`, { cause: error });
+    }
     const t = opts.turn !== undefined
       ? this.activeTurns.get(opts.turn)
       : [...this.activeTurns.values()].filter((x) => x.surfaced).sort((a, b) => a.acceptedAt - b.acceptedAt)[0];
@@ -3200,6 +3260,8 @@ export class MeshAgent extends EventEmitter {
    *  local. Someone whose agent joins a hosted mesh cannot fix it by starting their own, and being
    *  told to try sends them to repair the wrong thing entirely. */
   private notConnectedMessage(): string {
+    const issue = this.connectionIssue;
+    if (issue) return `not connected to the mesh at ${this.config.servers}: ${issue}`;
     const remedy = isLocalServer(this.config.servers)
       ? "is it running? (`cotal up`)"
       : "it did not become reachable — check that the mesh is up and that this machine can reach it.";

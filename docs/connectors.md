@@ -25,14 +25,18 @@ it; stopping preserves it so an operator can inspect why the session never conne
 | Binds via | installed plugin + MCP server | in-process plugin (native runtime) | host-mode peer driving `codex app-server` | native Python plugin, socket-bridged | host-mode peer driving Jcode Harness API | native pi extension, in-process |
 | Install | `cotal setup` | none, just `opencode` on PATH (1.x or 2.x) | seeded with the CLI; needs an authenticated `codex` on PATH | BYO `uv` + `hermes-agent` `>=0.18,<0.22`; Unix only | seeded with the CLI; needs `jcode` 0.78.1+ on PATH | pi 0.79.10 (one copied file for interactive/SDK) |
 | Watch the real TUI | ✓ | ✓ | ✓ (attached to the mesh-driven thread) | ✗ (headless gateway) | ✓ (attached to the managed Jcode session) | ✓ |
-| Inbound delivery | managed hook drain + idle nudge; personal native inline delivery | injected as a turn | wakes a turn; directed messages steer the live turn | fresh agent per message | injected as a Harness API turn; directed messages steer the live session | steered into the live turn |
-| Mid-turn steering | personal native sessions at supported boundaries | ✗ | ✓ (directed messages) | none | ✓ (directed messages) | ✓ |
+| Inbound delivery | managed hook drain + idle nudge; personal native inline delivery | injected as a turn | wakes a turn; directed messages steer connector-started turns; external turns defer delivery | fresh agent per message | injected as a Harness API turn; directed messages steer the live session | steered into the live turn |
+| Mid-turn steering | personal native sessions at supported boundaries | ✗ | ✓ (directed messages during connector-started turns) | none | ✓ (directed messages) | ✓ |
 | Session resume (`--resume`) | ✓ (forks) | ✗ ([#154](https://github.com/Cotal-AI/Cotal/issues/154)) | ✗ (a resumed thread has no MCP tools upstream) | ✓ (forks) | ✓ (forks) | ✓ (forks) |
 | Tool-sharing (`--share-tools`) | ✓ (setup shares your servers; narrow per spawn) | ✗ (inherits your servers wholesale) | ✗ (isolated per-agent `CODEX_HOME`) | ✗ | ✗ (private MCP configuration) | ✗ |
 | Models | `--model` | `--model` + catalog (`cotal models`) (1.x) + `--variant` | `--model` + catalog (`cotal models`) + `--variant` (reasoning effort) | any provider, via env | `--model` + `--variant` (reasoning effort) | `--model` |
 | Event plane (default on; `--no-events` opts out) | ✓ | ✓ (1.x); 2.x needs `--no-events` | ✓ | ✗ (requires `--no-events`) | ✓ | ✓ (completed messages) |
 | `cotal_*` tool transport | stdio MCP, no listener | loopback, per-launch Basic secret | loopback MCP, per-host bearer | Unix socket, control token on the first frame | stdio MCP bridge relayed over a Unix socket, per-instance token | in-process, no listener |
 | Containers ([deploy](deploy.md)) | ✓ | ✓ | ✗ | ✗ | ✗ | ✗ |
+
+The Manager reports the same support fact as `status.connectors[].eventPlane`. Clients use that
+typed field instead of copying this table. On a space whose policy requires events, a false value
+means the connector cannot launch there. Spawn remains the authority and keeps the policy refusal.
 
 The tool transport row covers only how the `cotal_*` tools reach the mesh endpoint. A managed seat
 on every connector also has connector-core's authenticated local control socket, which carries

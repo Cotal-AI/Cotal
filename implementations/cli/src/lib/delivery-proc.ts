@@ -44,8 +44,10 @@ const deliveryCredsKeysToClear = (space: string) => [segmentedKey(DELIVERY_CREDS
  *  caller that sets it has already refused it against a live manager (a refresh under the flag
  *  exits non-zero before reaching here), so this side never silently KEEPS or STOPS one either.
  *  `onDeliveryExit` hears the exit of a daemon this process launches; only a caller that outlives
- *  the launch (foreground `up`) can act on it. */
-type Opts = { space?: string; server?: string; tls?: boolean; spawn?: string[]; runtime?: string; launch?: string; attachHost?: string; resumeAttempt?: string; resumeCommit?: { path: string; sha256: string }; wsPort?: number; maxSessions?: number; noManager?: boolean; onDeliveryExit?: (code: number | null, signal: NodeJS.Signals | null) => void };
+ *  the launch (foreground `up`) can act on it.
+ *  `open` is the mesh's mode, decided by the caller. An open mesh runs no delivery daemon, whatever
+ *  trust material the root still holds from an earlier static stack. */
+type Opts = { space?: string; server?: string; tls?: boolean; open?: boolean; spawn?: string[]; runtime?: string; launch?: string; attachHost?: string; resumeAttempt?: string; resumeCommit?: { path: string; sha256: string }; wsPort?: number; maxSessions?: number; noManager?: boolean; onDeliveryExit?: (code: number | null, signal: NodeJS.Signals | null) => void };
 
 /** The recorded daemon, attributed by {@link readProcessRecord} to a `cotal deliver` process.
  *  Same order as {@link managerRecordState}: the space and root, then the test seams. */
@@ -96,8 +98,8 @@ export function deliveryStoppedByDown(space: string = folderSpace()): boolean {
 
 
 
-/** True when this folder runs an authed mesh — the only mode with a delivery daemon (Plane-3 needs the
- *  trusted reader; open dev mode is live-only). */
+/** True when this folder holds a space account, the trust a daemon's credential is minted from. It
+ *  does not say the mesh is authed: an open `up` leaves a static stack's accounts in place. */
 function hasAuth(): boolean {
   return listSpaceAccounts(authDir(findCotalRoot())).length > 0;
 }
@@ -249,7 +251,7 @@ export async function ensureDelivery(
   o: Opts = {},
   probe: LivenessProbe = probeLiveness,
 ): Promise<{ running: boolean; started?: boolean; pid?: number; responderBound?: boolean }> {
-  if (!hasAuth()) return { running: false }; // open dev mode — no daemon, agents are live-only
+  if (o.open || !hasAuth()) return { running: false }; // open dev mode — no daemon, agents are live-only
 
   const space = o.space ?? folderSpace();
   const root = cotalRoot();

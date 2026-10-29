@@ -56,14 +56,15 @@ const nativeString = (value: string): boolean => !/[\u0000-\u001f\u007f]/u.test(
 
 /** Where a closed-schema validator stopped, from its last error, as ` at <field path>` and what is
  *  wrong there. Each segment is printed only when it is a plain identifier or an index, so an
- *  arbitrary user-controlled property name never reaches a message. Empty when it cannot say. */
-export function schemaErrorLocation(errors: readonly { keyword: string; instancePath: string; params: Record<string, unknown> }[] | null | undefined): string {
+ *  arbitrary user-controlled property name never reaches a message. `name` gives how the first
+ *  segment reads, such as the flag a preset option takes. Empty when it cannot say. */
+export function schemaErrorLocation(errors: readonly { keyword: string; instancePath: string; params: Record<string, unknown> }[] | null | undefined, name = (field: string) => field): string {
   const last = errors?.at(-1);
   if (!last) return "";
   const field = last.keyword === "additionalProperties" ? last.params.additionalProperty : last.keyword === "required" ? last.params.missingProperty : undefined;
   const parts = [...last.instancePath.split("/").filter(Boolean), ...(field === undefined ? [] : [String(field)])];
   if (!parts.length || parts.some((part) => !/^(?:[A-Za-z_][A-Za-z0-9_-]{0,63}|[0-9]{1,4})$/.test(part))) return "";
-  const at = parts.join(".");
+  const at = [name(parts[0]!), ...parts.slice(1)].join(".");
   return last.keyword === "additionalProperties" ? ` at ${at}, which the schema does not declare` : last.keyword === "required" ? ` at ${at}, which is required` : ` at ${at}`;
 }
 

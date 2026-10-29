@@ -19,6 +19,7 @@ import {
   loadMeshes,
   manifestExtensionNames,
   meshFile,
+  paintFor,
   personaDir,
   plainFlag,
   preferenceSpaceProblem,
@@ -27,6 +28,7 @@ import {
   presentationOf,
   provenance,
   readPreferences,
+  recordMesh,
   resolveOnPath,
   seedConnectorServers,
   writePreference,
@@ -175,7 +177,7 @@ interface SetupResult {
   /** The project folder: the space's root, whose `.cotal/agents` holds its personas. */
   readonly project: string;
   /** How setup found the space: prepared or registered by this run, or already in place. */
-  readonly spaceState: LocalSpaceState | "added" | "registered";
+  readonly spaceState: LocalSpaceState | "added" | "bound" | "registered";
   readonly harness: {
     readonly name: string;
     /** Host tools the harness needs that are not on PATH; its own setup did not run. */
@@ -561,6 +563,21 @@ async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: bool
     warnings.push(...added.warnings);
     written.push({ what: "space registration", path: meshFile(inputs.space) });
     spaceState = "added";
+  } else if (plan.space.kind === "bind") {
+    const current = findMesh(inputs.space);
+    const expectedCustodyRoot = plan.space.entry.catalogRoot ?? plan.space.entry.root;
+    if (!current || current.origin !== "catalog" || current.catalogOwner !== plan.space.entry.catalogOwner || current.server !== plan.space.entry.server)
+      throw new CommandFailure("refused", "CONFLICT", `the discovered registration for "${inputs.space}" changed before its project was bound; nothing was written`, { target, remedy: "run the same setup again against the refreshed registration" });
+    const currentCustodyRoot = current.catalogRoot ?? current.root;
+    if (canonicalRoot(currentCustodyRoot) !== canonicalRoot(expectedCustodyRoot))
+      throw new CommandFailure("refused", "CONFLICT", `the discovered registration for "${inputs.space}" changed its catalog custody root before its project was bound; nothing was written`, { target, remedy: "run the same setup again against the refreshed registration" });
+    if (canonicalRoot(current.root) !== canonicalRoot(currentCustodyRoot) && canonicalRoot(current.root) !== canonicalRoot(plan.space.project))
+      throw new CommandFailure("refused", "CONFLICT", `"${inputs.space}" was bound to the project ${current.root} before this setup could bind ${plan.space.project}; nothing was written`, { target, remedy: `pass --project ${current.root}` });
+    if (canonicalRoot(current.root) === canonicalRoot(currentCustodyRoot)) {
+      recordMesh({ ...current, root: plan.space.project, catalogRoot: currentCustodyRoot, ts: new Date().toISOString() });
+      written.push({ what: "project root binding", path: meshFile(inputs.space) });
+    }
+    spaceState = "bound";
   } else if (plan.space.kind === "registered") {
     spaceState = "registered";
   } else {
@@ -668,7 +685,7 @@ async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: bool
           startup.joinedAt = new Date().toISOString();
           startup.state = "joined";
           warnings.push(...notices);
-          if (opts.interactive && !opts.detach) console.error(renderReport({ space: inputs.space, sections: [{ title: "Agent joined", blocks: [{ kind: "fields", rows: [["Agent", agent.name], ["Identity", agent.id], ["Manager", agent.managerInstanceId]] }, { kind: "lines", lines: [{ text: "Opening the allocated incarnation's terminal. Leaving the view sends no stop request.", tone: "hint" }] }] }] }, "rich"));
+          if (opts.interactive && !opts.detach) console.error(paintFor(process.stderr, () => renderReport({ space: inputs.space, sections: [{ title: "Agent joined", blocks: [{ kind: "fields", rows: [["Agent", agent.name], ["Identity", agent.id], ["Manager", agent.managerInstanceId]] }, { kind: "lines", lines: [{ text: "Opening the allocated incarnation's terminal. Leaving the view sends no stop request.", tone: "hint" }] }] }] }, "rich")));
         },
       });
       if (!startup.agent) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "setup received no native joined receipt; no readiness was inferred");
@@ -803,6 +820,7 @@ const SPACE_STATE: Record<SetupResult["spaceState"], string> = {
   prepared: "already prepared",
   started: "already started here",
   added: "registered by this setup",
+  bound: "project bound by this setup",
   registered: "already registered",
 };
 

@@ -4,11 +4,11 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, wri
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { ProjectTrustStore, SessionManager } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import type { ExactDrainResult, InboxItem, InboxScope, MeshAgent } from "@cotal-ai/connector-core";
 import { PiDriver, type CotalBatchDetails, type PiContextLike, type PiHost } from "./src/driver.js";
-import cotalMesh, { persistSessionId } from "./src/extension.js";
+import cotalMesh, { persistSessionId, supervisedProjectTrust } from "./src/extension.js";
 import { InboxTurn } from "./src/inbox-turn.js";
 import { piConnector } from "./src/connector.js";
 import { wrapped } from "./src/wrap.js";
@@ -782,6 +782,55 @@ for (const assistant of [
   rmSync(root, { recursive: true, force: true });
 }
 
+// A supervised Pi seat preserves saved trust, but an undecided project is explicitly untrusted for
+// this run and leaves both a visible instruction and a prompt-specific manager state record.
+{
+  const root = mkdtempSync(join(tmpdir(), "cotal-pi-project-trust-"));
+  const agentDir = join(root, "pi-agent");
+  const state = join(root, "session.json");
+  const project = join(root, "project");
+  mkdirSync(project, { recursive: true });
+  const previousDir = process.env.PI_CODING_AGENT_DIR;
+  const previousState = process.env.COTAL_PI_SESSION_STATE;
+  const previousError = console.error;
+  const diagnostics: string[] = [];
+  process.env.PI_CODING_AGENT_DIR = agentDir;
+  process.env.COTAL_PI_SESSION_STATE = state;
+  console.error = (...args: unknown[]) => diagnostics.push(args.map(String).join(" "));
+  try {
+    ok((await supervisedProjectTrust(project)).trusted === "no", "an undecided supervised project is untrusted for this run");
+    const pending = JSON.parse(readFileSync(state, "utf8"));
+    ok(
+      pending.status === "prompt" && pending.prompt === "Trust project folder?" && pending.cwd === project,
+      "an undecided supervised project records the exact native prompt and directory",
+    );
+    ok(
+      diagnostics.some((line) => line.includes("[cotal-pi/trust]") && line.includes(project) && line.includes("Run pi once")),
+      "the skipped project resources are visible with foreground trust guidance",
+    );
+
+    const trustStore = new ProjectTrustStore(agentDir);
+    trustStore.set(project, true);
+    diagnostics.length = 0;
+    ok((await supervisedProjectTrust(project)).trusted === "undecided", "a saved trusted project remains Pi's decision");
+    ok(diagnostics.length === 0, "a saved trust decision emits no skipped-resource notice");
+    trustStore.set(project, false);
+    diagnostics.length = 0;
+    ok((await supervisedProjectTrust(project)).trusted === "undecided", "a saved denied project also remains Pi's decision");
+    ok(
+      diagnostics.some((line) => line.includes("saved trust decision denies") && line.includes(project)),
+      "a saved denial keeps skipped project resources visible",
+    );
+  } finally {
+    console.error = previousError;
+    if (previousDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previousDir;
+    if (previousState === undefined) delete process.env.COTAL_PI_SESSION_STATE;
+    else process.env.COTAL_PI_SESSION_STATE = previousState;
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
 // Extension activation: unrelated operator settings are inert; partial managed control fails loud.
 {
   const keys = [
@@ -834,6 +883,7 @@ for (const assistant of [
       model: "flag/model",
       configPath: agentFile,
       workspaceRoot: root,
+      cwd: root,
       userAuth: { owner: "owner", actor: "actor", sentinelCredsPath: "/tmp/sentinel", bearerCmd: ["token"] },
     });
     ok(launch.args.includes("flag/model") && !launch.args.includes("file/model"), "spawn model overrides the agent file model");
@@ -882,6 +932,7 @@ for (const assistant of [
       "a fresh managed Pi seat gets an exact recoverable session id before its first turn",
     );
     ok(env.COTAL_PI_FRESH_SESSION === "1", "fresh managed Pi seat carries explicit native freshness marker");
+    ok(env.COTAL_PI_SUPERVISED_CWD === root, "managed Pi marks its authorized cwd for native project-trust handling");
     ok(
       typeof launch.sessionStatePath === "string" && env.COTAL_PI_SESSION_STATE === launch.sessionStatePath,
       "managed Pi launch env carries the exact session-state path",
@@ -924,6 +975,10 @@ for (const assistant of [
     assert.throws(() => piConnector.buildLaunch({ space: "test", name: "pi", prompt: "@notes.md summarize", events: false }), /cannot start with/);
     const unprompted = piConnector.buildLaunch({ space: "test", name: "pi", model: "flag/model", events: false }).args;
     ok(unprompted[unprompted.length - 1] === "flag/model", "no prompt, no positional argument: the last argument is still the model value");
+    ok(
+      piConnector.buildLaunch({ space: "test", name: "pi", events: false }).env?.COTAL_PI_SUPERVISED_CWD === undefined,
+      "a foreground Pi launch keeps the native interactive project-trust flow",
+    );
     checks += 11;
   } finally {
     if (previousGroq === undefined) delete process.env.GROQ_API_KEY;

@@ -178,7 +178,7 @@ export interface AuthProvider extends Extension {
    * deploy connections the operator surfaces (`web`, `console`, `history clear`, `channels`,
    * `spawn -f`) ride. An under-scoped or unknown view MUST fail loud with the exact re-grant.
    */
-  userCredentials(opts: UserCredentialsRequest): Promise<{ bearer: string; sentinelCreds: string }>;
+  userCredentials(opts: UserCredentialsRequest): Promise<UserCredentialsResult>;
   /**
    * Admit ONE distinct chat session for the signed-in human: the provider fetches the IdP
    * proof itself, and the minting authority derives the owner, draws the session actor and its
@@ -436,6 +436,14 @@ export interface AuthProvider extends Extension {
    */
   userStatus(opts: { store: SecretStore; dir: string; space: string; actor: string }): Promise<UserAuthStatus>;
   /**
+   * Ask the space's pinned IdP whether this machine's cached login for it still holds, by fetching
+   * one IdP proof and discarding it. Nothing is minted and no auth service is called. The IdP pins
+   * come from `dir` as for {@link userStatus}. `signed-out` means no login is cached for that IdP,
+   * and `rejected` that the IdP refused the cached one because it expired or was revoked. Any other
+   * failure, such as an IdP that does not answer, throws.
+   */
+  confirmLogin?(opts: { dir: string; space: string }): Promise<"confirmed" | "signed-out" | "rejected">;
+  /**
    * SERVER side, agent lifecycle: author an agent grant for `(owner, actor)` in this space's
    * ledger — the spawn path's half of "actors are server-ledger-authorized, never taken from
    * connect payloads". Returns the ONE-TIME plaintext agent secret (persisted only as a hash;
@@ -526,6 +534,26 @@ export interface AuthProvider extends Extension {
    * command prints `retry-after <seconds>` on stdout instead and exits non-zero, and the endpoint runs
    * it again when those seconds have passed, not before. */
   readonly agentBearerCommand: string;
+}
+
+/** The current agent authority the user-auth issuer read before minting one bearer. This is issuer
+ *  output, not a bearer claim decoded by the client. `dmHistory: "own"` is the ordinary agent
+ *  profile's own direct-message inbox and never means every DM in the space. */
+export interface UserAuthGrant {
+  scope: string[];
+  allowSubscribe: string[];
+  allowPublish: string[];
+  dmHistory: "own";
+}
+
+/** Connect material from {@link AuthProvider.userCredentials}. The stock provider returns
+ *  `authority` from the same successful issuer response as the bearer. It stays optional for a
+ *  provider or older issuer that cannot answer authoritatively; callers must report that absence as
+ *  unknown rather than decode the bearer or infer access from a successful connection. */
+export interface UserCredentialsResult {
+  bearer: string;
+  sentinelCreds: string;
+  authority?: { owner: string; grant: UserAuthGrant };
 }
 
 /** The error for a failed run of an {@link AuthProvider.agentBearerCommand} argv. The command prints

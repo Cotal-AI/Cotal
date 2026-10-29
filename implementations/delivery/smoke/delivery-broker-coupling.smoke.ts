@@ -160,7 +160,7 @@ try {
   let r2Log = await r2.done();
   check(
     "R2 an unreachable RECORDED broker is refused naming that URL (not the loopback default), without `Run: cotal up` for a manual record",
-    r2Log.includes(deadServer) && !r2Log.includes("nats://127.0.0.1:4222") && !r2Log.includes("Run: cotal up"),
+    r2Log.includes(deadServer) && !r2Log.includes("nats://127.0.0.1:4222") && !r2Log.includes("Run: `cotal up`"),
     r2Log,
   );
 
@@ -207,7 +207,7 @@ try {
   if (!defaultLive)
     check(
       "R5 CONTROL: 4222 dead here, so the refusal keeps today's line",
-      r5Log.includes("can't reach NATS at nats://127.0.0.1:4222. Run: cotal up"),
+      r5Log.includes("can't reach NATS at nats://127.0.0.1:4222. Run: `cotal up`"),
       r5Log,
     );
   if (r5.proc.exitCode === null) { try { r5.proc.kill("SIGKILL"); } catch { /* gone */ } }

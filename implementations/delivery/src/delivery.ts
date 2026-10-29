@@ -581,7 +581,7 @@ async function runStartedDelivery(
       if (held) throw new Error(`delivery: no broker answered at ${server}`);
       process.exit(1);
     }
-    log.err(`✗ delivery: can't reach NATS at ${server}. Run: cotal up`);
+    log.err(`✗ delivery: can't reach NATS at ${server}. Run: \`cotal up\``);
     if (held) throw new Error(`delivery: can't reach NATS at ${server}`);
     process.exit(1);
   }
@@ -649,6 +649,11 @@ async function runStartedDelivery(
     BROKER_GONE_MS,
     Number(process.env.COTAL_DELIVERY_BROKER_GONE_BACKSTOP_MS) || BROKER_GONE_MS * 4,
   );
+  /** How long after a drop a signalled stop waits for the redial before it releases the lease.
+   *  nats.js redials 2s after its previous dial, plus up to 1s of jitter over TLS, and the endpoint
+   *  waits the same 5s for its own credential swap's redial. Never longer than a serving daemon waits
+   *  for its broker. */
+  const REDIAL_WAIT_MS = Math.min(5_000, BROKER_GONE_MS);
   let stopHandler: ((code: number, cause?: string) => void) | undefined;
   let heldStartupFailure: Error | undefined;
   let stopHeld: ((cause: string, lost: string) => void) | undefined;
@@ -696,6 +701,20 @@ async function runStartedDelivery(
   ep.on("creds-adopted", () => {
     health.adopted();
   });
+
+  // A STOP THAT LANDS WHILE THE ACQUIRE IS IN FLIGHT IS HELD UNTIL ITS REPLY. The broker applies the
+  // create before this process reads the answer, so for that moment the row is on the broker while
+  // nothing here can give it back. A SIGTERM there found no handler and ended the process at once,
+  // leaving the create itself claiming the shard for the rest of the 30s bucket TTL. Only the reply
+  // says whether the shard is ours, so the signal is recorded here and run by the early stop below.
+  let signalledDuringAcquire: NodeJS.Signals | undefined;
+  const holdSignal = (signal: NodeJS.Signals) => (): void => { signalledDuringAcquire ??= signal; };
+  const holdSigint = holdSignal("SIGINT");
+  const holdSigterm = holdSignal("SIGTERM");
+  if (!held) {
+    process.on("SIGINT", holdSigint);
+    process.on("SIGTERM", holdSigterm);
+  }
 
   // Acquire the single-flight lease BEFORE binding the loops: a loud refusal-to-bind if another daemon
   // already holds this shard (two clients binding the same durable name SPLIT delivery). The bucket TTL
@@ -751,7 +770,9 @@ async function runStartedDelivery(
   // The handler cannot call `shutdown` (defined far below, over state that does not exist yet), so
   // it does the one thing that is always correct here and never wrong later: give the lease back if
   // it is provably ours, then exit. Once the real `shutdown` is installed it REPLACES this, and
-  // `stopping` makes the pair idempotent, so a signal arriving mid-swap cannot run both.
+  // `stopping` makes the pair idempotent, so a signal arriving mid-swap cannot run both. It replaces
+  // the hold armed before the acquire in turn, and runs a signal that hold recorded once the
+  // liveness record below exists, so the stop removes the record as well as the row.
   let stopping = false;
   let unavailable: string | undefined;
   /** What a held context lost when it closed itself, for its holder; unset on a deliberate close. */
@@ -798,10 +819,21 @@ async function runStartedDelivery(
   };
   const earlySigint = onSignal("SIGINT", earlyStop);
   const earlySigterm = onSignal("SIGTERM", earlyStop);
+  // On before off: removing a signal's last listener closes its handle, and a signal already caught
+  // but not yet dispatched is then dropped, so a stop sent during the acquire would be ignored.
   if (!held) {
     process.on("SIGINT", earlySigint);
     process.on("SIGTERM", earlySigterm);
+    process.off("SIGINT", holdSigint);
+    process.off("SIGTERM", holdSigterm);
   }
+  /** Resolves once the transport reports connected again, or after `ms`. */
+  const transportBack = (ms: number): Promise<void> => new Promise<void>((resolve) => {
+    const done = () => { clearTimeout(timer); ep.off("transport", onTransport); resolve(); };
+    const onTransport = ({ connected }: { connected: boolean }) => { if (connected) done(); };
+    const timer = setTimeout(done, ms);
+    ep.on("transport", onTransport);
+  });
   // THE LIVENESS RECORD GOES HERE, AFTER THE ACQUIRE AND NOT BEFORE IT (#1528).
   //
   // The record answers "which process is this space's delivery daemon", and until this line this
@@ -855,12 +887,7 @@ async function runStartedDelivery(
         const generation = transportGeneration;
         const reconnected = async () => {
           const downSince = transportDownSince;
-          if (downSince !== undefined) await new Promise<void>((resolve) => {
-            const done = () => { clearTimeout(timer); ep.off("transport", onTransport); resolve(); };
-            const onTransport = ({ connected }: { connected: boolean }) => { if (connected) done(); };
-            const timer = setTimeout(done, downSince + BROKER_GONE_MS - Date.now());
-            ep.on("transport", onTransport);
-          });
+          if (downSince !== undefined) await transportBack(downSince + BROKER_GONE_MS - Date.now());
           return transportDownSince === undefined && transportGeneration !== generation && transportLateGeneration <= generation;
         };
         left = await release().catch(async (e) => { if (!await reconnected()) throw e; return release(); });
@@ -892,6 +919,7 @@ async function runStartedDelivery(
       });
     }
     unrecordPid = recordDeliveryPid(root, space);
+    if (signalledDuringAcquire !== undefined) onSignal(signalledDuringAcquire, earlyStop)();
   }
   stopHeld = (cause, what) => {
     unavailable = `delivery context stopped (code 1): ${cause}`;
@@ -995,7 +1023,7 @@ async function runStartedDelivery(
   // A lane's holder owns its stop and says so on its own lines; `cotal down` would stop every lane.
   log.out(owner.kind === "lane"
     ? `✓ delivery lane up (space ${space})`
-    : `✓ delivery daemon up (space ${space}${shards > 1 ? `, shard ${shard}/${shards}` : ""}) — stop with: cotal down`);
+    : `✓ delivery daemon up (space ${space}${shards > 1 ? `, shard ${shard}/${shards}` : ""}) — stop with: \`cotal down\``);
 
   // Broker-sourced graph membership: a SEPARATE module on its OWN connections (system-account CONNZ
   // reader + data-account feed writer), isolated from Plane-3. Fail-soft — a missing cred / start error
@@ -1088,15 +1116,23 @@ async function runStartedDelivery(
     health.stop();
     stopLeaseWatch?.();
     // THE RECORD GOES FIRST, AND SYNCHRONOUSLY. Everything below this line talks to a broker that
-    // may be dead and is bounded only by the 2s hard exit; a record left behind because a drain
+    // may be dead and is bounded only by the hard exit; a record left behind because a drain
     // hung is a record that outlives its process, which is this issue's defect re-entering through
     // the exit path. Removing it needs no broker, and waits only on a publish of the same record
     // that is in flight (#1238), so it runs before any of it.
     unrecordPid?.();
+    // A STOP THAT LANDS WHILE THE CONNECTION REDIALS WAITS FOR THE REDIAL. nats.js never answers a
+    // request written while the connection is down, so a release sent then was lost, and the hard
+    // exit ended the process with the row still claiming the shard. A credential swap redials on
+    // purpose: the manager `cotal up` starts next renews the daemon's credential within a second of
+    // its start, and nats.js holds that redial until 2s after the first dial. A stop in that window
+    // left `down` refusing and the next `up` waiting out the lease TTL.
+    const redialMs = transportDownSince === undefined ? 0 : Math.max(0, transportDownSince + REDIAL_WAIT_MS - Date.now());
     // Hard-exit fallback: a graceful release/stop talks to the broker, which may be DEAD (the broker-gone
     // exit path) — don't let that hang the process. Force exit if the graceful path doesn't finish quickly.
-    setTimeout(() => process.exit(code), 2000);
+    setTimeout(() => process.exit(code), redialMs + 2000);
     void (async () => {
+      if (redialMs > 0) await transportBack(redialMs);
       // THE LEASE GOES FIRST. Everything else here is this process's own teardown, which nobody is
       // waiting on; the lease row is the one piece of SHARED state, and while it survives no
       // replacement daemon can acquire the shard at all (the acquire is an atomic create, so it is

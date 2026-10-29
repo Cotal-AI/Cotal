@@ -349,8 +349,12 @@ it, so the refusal stays after the setting is dropped. A callout host serving se
 such a space, retries it every 5 seconds and keeps answering for the others;
 `admitsServiceEndpoints` from `@cotal-ai/auth` answers the same check for a manifest writer.
 
-The loopback face also serves four host-only doors, all capability-gated and never on the public
-face. Two retire a lifecycle: `/interactive-lifecycle/retire` (used by `cotal actor grant/revoke`)
+The loopback face also serves host-only doors, all capability-gated and never on the public face.
+`/managed-lifecycle/activate` asks this exact assigned account authority to activate one
+`{ owner, actor, lifecycleUid }`; its closed body also repeats `accountPublicKey`, which must equal
+the context's assigned data account. It is served by an ordinary full auth service, including one in
+a separate process, and does not require the optional in-process `platformControl` composition.
+Two routes retire a lifecycle: `/interactive-lifecycle/retire` (used by `cotal actor grant/revoke`)
 and `/managed-lifecycle/retire`, which finishes a managed agent's terminal retirement after its
 remote manager is gone. The interactive door answers every refusal it makes before the retirement
 barrier with `outcome: "not-executed"`. An error without that outcome may follow a barrier that had

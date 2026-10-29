@@ -1,7 +1,7 @@
 import * as prompts from "../lib/prompts.js";
 import { lstatSync, readlinkSync } from "node:fs";
 import type { ParsedArgs } from "@cotal-ai/core";
-import { ConfirmationRequired, CommandFailure, canonicalRoot, commandFailureReport, isCommandFailure, oneLine, presentationOf, processGroupMembers, processGroupOf, protectedLocalDirectory, renderReport, terminalWidth, writeResult, type Report, type ServiceAdapterKernelStopPlan, type ServiceAdapterStopPlan } from "@cotal-ai/workspace";
+import { ConfirmationRequired, CommandFailure, canonicalRoot, commandFailureReport, isCommandFailure, oneLine, presentationOf, processGroupMembers, processGroupOf, protectedLocalDirectory, renderReport, writeResult, type Report, type ServiceAdapterKernelStopPlan, type ServiceAdapterStopPlan } from "@cotal-ai/workspace";
 import { reportOnInterrupt } from "../lib/interrupt-report.js";
 import { observeRecordedSupervisor, systemdUserUnitDirectory } from "../lib/service-systemd.js";
 import { observeSystemdAttempt } from "../lib/service-systemd-attempt-read.js";
@@ -21,7 +21,7 @@ import { canPrompt } from "./meshes-wizard.js";
 import { yesRequired } from "../lib/confirmation-required.js";
 import { fullStoreStopRefusal, jetStreamDisabled, jetStreamDisabledRefusal, recordedStore, storeRefusedWrite } from "../lib/broker-store-health.js";
 import { brokerStopBlocked } from "../lib/broker-service.js";
-import { resolveServiceAdapter, sameServiceAdapterPin } from "../lib/service-adapters.js";
+import { controlsRecordedAdapter, resolveServiceAdapter } from "../lib/service-adapters.js";
 import { assertDefinitionRoot, serviceDefinitionStore, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
 import { addedDefinitionStep, stackMemberFor } from "../lib/stack-journal.js";
 import { adapterInstallRefusal, type PresetServiceTarget } from "../lib/service-preset-target.js";
@@ -266,7 +266,7 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
     }
     if (definition.record.value.launch.type === "adapter") {
       const launch = definition.record.value.launch, adapter = resolveServiceAdapter(launch.adapter, launch.options);
-      if (!sameServiceAdapterPin(selected!.record.value.adapter, adapter.pin) || !adapter.declaration.capabilities.logs) throw new CommandFailure("refused", "UNSUPPORTED", "the pinned adapter does not declare log access through this controller, or its declaration changed; no different provider was loaded", { target });
+      if (!controlsRecordedAdapter(selected!.record.value, adapter) || !adapter.declaration.capabilities.logs) throw new CommandFailure("refused", "UNSUPPORTED", "the pinned adapter does not declare log access through this controller, or its declaration changed; no different provider was loaded", { target });
     }
     const tail = values.tail === undefined ? 100 : Number(values.tail);
     if (values.follow) return followServiceLog(selected!, presentation, tail);
@@ -311,7 +311,7 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
   if (prepared?.adapter) {
     const adapter = prepared.adapter;
     if (values["new-instance"] && !adapter.declaration.capabilities.multiInstance || values.foreground && !adapter.declaration.capabilities.foreground) throw new CommandFailure("refused", "UNSUPPORTED", "the adapter does not declare the requested multi-instance or foreground capability; no provider code was loaded", { target });
-    if (selected && !sameServiceAdapterPin(selected.record.value.adapter, adapter.pin)) throw new CommandFailure("refused", "CONFLICT", "the selected instance pins a different adapter declaration or package version; it was not stopped or adopted", { target });
+    if (selected && !controlsRecordedAdapter(selected.record.value, adapter)) throw new CommandFailure("refused", "CONFLICT", "the selected instance pins a different adapter declaration or package version; it was not stopped or adopted", { target });
   }
   const declaredStop = prepared?.adapter ?? (definition.record.value.launch.type === "adapter" ? resolveServiceAdapter(definition.record.value.launch.adapter, definition.record.value.launch.options) : undefined);
   if (values["with-agents"] && declaredStop?.declaration.stop !== "native") throw new CommandFailure("refused", "UNSUPPORTED", "--with-agents requires this selected adapter's native stop policy; generic descendant signals are not supported", { target });
@@ -354,7 +354,7 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
   const kernelPlan = mode === "stop" || mode === "restart" ? await prepareKernelServiceStop(definition, selected!) : undefined;
   // The impact is the first report the operation prints, so it carries the space's Mesh line.
   const impact = [...(nativePlan ? nativeImpactView(nativePlan).sections : []), ...(kernelPlan ? kernelImpactView(kernelPlan).sections : [])];
-  if (impact.length && presentation !== "json") console.log(renderReport({ space, sections: impact }, presentation, terminalWidth(process.stdout)));
+  if (impact.length && presentation !== "json") console.log(renderReport({ space, sections: impact }, presentation, process.stdout));
   if (confirmStop && !values.yes) {
     const answer = await prompts.confirm({ message: `${mode === "stop" ? "Stop" : "Restart"} ${oneLine(name)} instance ${selected!.name} on ${oneLine(selected!.record.value.host.name)}? ${nativePlan ? "Apply the displayed native seat policy only if its full scope is unchanged." : kernelPlan ? "Signal only the displayed broker process, only if its scope is unchanged." : "Only its pinned direct process is controlled."}`, initialValue: false });
     if (prompts.isCancel(answer) || !answer) return cancelled();
@@ -365,10 +365,11 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
     writeResult(presentation, { command: commandName, target, result: { kind: "service-stop", ...result, originalIncarnationGone: true, impact: nativePlan ?? kernelPlan ?? null, cleanup: result.nativeStop?.cleanup ?? result.kernelStop?.cleanup ?? "not-checked" }, warnings: await readinessAddressSurvivors(space, [name]), noOp: stopped.noOp }, (row) => instanceView(row, stopped.noOp ? "Service was not running; nothing was stopped" : row.kernelStop ? "Original broker process exited" : "Service stopped"));
     return;
   }
-  if (values.foreground) console.log(renderReport({ space, sections: [{ title: "Foreground service lifetime", blocks: [
+  // A progress notice, on stderr with the child's own failure line and the refusal, so that stream reads in order.
+  if (values.foreground) console.error(renderReport({ space, sections: [{ title: "Foreground service lifetime", blocks: [
     { kind: "fields", rows: [["Definition", name], ["Space", space], ["Instance", selected?.name ?? "assigned once at launch"], ["Execution", "owned terminal-bound process; not a detachable view"], ["Output", "this terminal; not captured in the background log"]] },
     { kind: "lines", lines: ["Ctrl-C or terminal loss may end this process and its native in-process work. Controlled shutdown uses the selected process identity and declared stop policy. An external kill or interrupted startup is not a confirmed stop or proof of descendant, registration or authority cleanup."] },
-  ] }] }, presentation === "plain" ? "plain" : "rich", terminalWidth(process.stdout)));
+  ] }] }, presentation === "plain" ? "plain" : "rich", process.stderr));
   let started: Awaited<ReturnType<typeof startProcessService>>;
   if (mode === "restart") {
     const hold = store.pin(definition);
@@ -416,7 +417,7 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
           await stopProcessService(definition, current, undefined, { plan: await prepareNativeServiceStop(definition, current), withAgents: false });
         } catch (error) {
           const failure = isCommandFailure(error) ? error : new CommandFailure("unknown", "OPERATION_UNKNOWN", "foreground shutdown did not confirm the owned process exit; its record was retained");
-          process.stderr.write(`${renderReport(commandFailureReport(failure), presentation === "plain" ? "plain" : "rich", terminalWidth(process.stderr))}\n`);
+          process.stderr.write(`${renderReport(commandFailureReport(failure), presentation === "plain" ? "plain" : "rich", process.stderr)}\n`);
         } finally { finishShutdown(); }
       })();
     };
@@ -432,7 +433,7 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
       if (current && current.record.value.process?.pid === started.instance.record.value.process?.pid && current.record.value.process?.token === started.instance.record.value.process?.token && !retainedStopRequest(current.record.value)) serviceInstanceStore(space).commit(current.name, current, { ...current.record.value, state: "stopped", readiness: "not-checked", exit, updatedAt: new Date().toISOString() });
       process.exitCode = signal === "SIGINT" ? 130 : signal === "SIGTERM" ? 143 : exit.code === 0 ? 0 : 5;
     } catch (error) {
-      if (isCommandFailure(error)) process.stderr.write(`${renderReport(commandFailureReport(error), presentation === "plain" ? "plain" : "rich", terminalWidth(process.stderr))}\n`);
+      if (isCommandFailure(error)) process.stderr.write(`${renderReport(commandFailureReport(error), presentation === "plain" ? "plain" : "rich", process.stderr)}\n`);
       throw error;
     } finally { process.off("SIGINT", interrupt); process.off("SIGTERM", terminate); }
   }

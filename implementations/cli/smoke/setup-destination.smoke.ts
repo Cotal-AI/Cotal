@@ -353,6 +353,39 @@ const FULL = (space: string, dir: string, harness = "codex") => ["setup", "--des
     ok.status === 0 && ok.env?.result.spaceState === "registered" && existsSync(join(target.personaRoot, "default.md")) && target.root === teamRoot, { run: shown(ok), personaRoot: target.personaRoot });
   check("its next command is spawn in that space", ok.env?.result.next.command === `${commandPrefix} spawn --space team` && ok.env.result.next.cwd === null, ok.env?.result.next);
 
+  const catalogCustodyRoot = project("catalog-custody");
+  const catalogProject = project("catalog-project");
+  const sentinelCredsPath = join(catalogCustodyRoot, ".cotal", "auth", "spaces", "catalog-team", "user-auth", "sentinel.creds");
+  mkdirSync(join(sentinelCredsPath, ".."), { recursive: true });
+  writeFileSync(sentinelCredsPath, "fixture-sentinel", { mode: 0o600 });
+  recordMesh({
+    space: "catalog-team", server: "nats://127.0.0.1:4997", root: catalogCustodyRoot, catalogRoot: catalogCustodyRoot,
+    mode: "user", origin: "catalog", catalogOwner: "fixture-account", catalogId: "catalog-space", catalogSlug: "catalog-team",
+    userAuth: { provider: "cotal", idp: { url: "https://idp.example.test", issuer: "https://idp.example.test", audience: "cotal-mesh" }, endpoints: { url: "https://auth.example.test" }, remote: true, sentinelCredsPath },
+    ts: new Date(0).toISOString(),
+  });
+  const bound = await json(hosted("catalog-team", catalogProject));
+  const boundEntry = findMesh("catalog-team");
+  const boundTarget = resolveMeshTarget(home, { space: "catalog-team" });
+  check("a discovered signed-in space binds its project root without moving catalog custody",
+    bound.status === 0 && bound.env?.result.spaceState === "bound" && boundEntry?.root === catalogProject && boundEntry.catalogRoot === catalogCustodyRoot &&
+      boundEntry.userAuth?.sentinelCredsPath === sentinelCredsPath && existsSync(sentinelCredsPath), { run: shown(bound), entry: boundEntry });
+  check("the bound project is the persona root while the catalog sentinel remains outside it",
+    boundTarget.root === catalogProject && boundTarget.personaRoot === join(catalogProject, ".cotal", "agents") &&
+      existsSync(join(boundTarget.personaRoot, "default.md")) && !sentinelCredsPath.startsWith(catalogProject), boundTarget);
+  const boundAgain = await json(hosted("catalog-team", catalogProject));
+  check("the same discovered project binding again is a no-op", boundAgain.status === 0 && boundAgain.env?.outcome === "no-op" && boundAgain.env.result.spaceState === "registered", shown(boundAgain));
+  const otherCatalogProject = project("catalog-project-other");
+  const rebound = await json(hosted("catalog-team", otherCatalogProject));
+  check("a discovered space already bound to another project refuses instead of moving again",
+    refused(rebound, 2, "CONFLICT") && rebound.env?.error?.remedy === `pass --project ${catalogProject}` && findMesh("catalog-team")?.root === catalogProject, shown(rebound));
+  const controlProject = join(process.env.COTAL_HOME!, "catalog-project");
+  mkdirSync(controlProject, { recursive: true });
+  recordMesh({ ...boundEntry!, space: "catalog-control", root: catalogCustodyRoot, catalogRoot: catalogCustodyRoot, catalogSlug: "catalog-control", userAuth: { ...boundEntry!.userAuth!, sentinelCredsPath } });
+  const control = await json(hosted("catalog-control", controlProject));
+  check("a discovered space still refuses a project inside the Cotal control directory",
+    refused(control, 2, "CONFLICT") && findMesh("catalog-control")?.root === catalogCustodyRoot && !existsSync(join(controlProject, ".cotal")), shown(control));
+
   const userRoot = project("hosted-root");
   const bundle = {
     space: "hosted",

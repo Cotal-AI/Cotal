@@ -53,6 +53,7 @@ import { lastKvEntries, liveKvEntries } from "./kv-scan.js";
 import { isConsumerAlreadyExists, isConsumerNotFound, isJetStreamMissing } from "./jetstream-missing.js";
 import { isRestoredConsumer } from "./backup.js";
 import { ARTIFACT_PART_KIND, isArtifactPart } from "./artifact.js";
+import { assertValidKind } from "./agent-file.js";
 import { assertValidName } from "./resolve.js";
 import { EVICT_PRINCIPALS_MAX } from "./evict.js";
 import { createSpaceStreams, dmDurableConfig, dlvDurableConfig, taskDurableConfig, fanoutDurableConfig, inboxReaderConfig, MAX_MSGS_PER_SUBJECT, MANAGER_LEASE_TTL_MS, MANAGER_LEASE_ATTEMPT_MS, TTL_RECONCILE_CANARY_KEY, PRESENCE_STORAGE } from "./streams.js";
@@ -338,10 +339,10 @@ export interface EndpointOptions {
   /** Require a TLS connection to the server. */
   tls?: boolean;
   /** Native NATS PING interval for this endpoint's resident connection, in milliseconds.
-   *  Omitted uses the transport's default. Pair with transportMaxPingOut. No probe connection. */
+   *  Defaults to 10 seconds. Pair with transportMaxPingOut. No probe connection. */
   transportPingIntervalMs?: number;
-  /** Unanswered native PING count before the resident transport becomes stale. Omitted uses
-   *  the transport's default. Pair with transportPingIntervalMs for bounded silent loss. */
+  /** Unanswered native PING count before the resident transport becomes stale. Defaults to 2.
+   *  Pair with transportPingIntervalMs for bounded silent loss. */
   transportMaxPingOut?: number;
   /** How long the first connect may take before it fails with the transport's TimeoutError, in
    *  milliseconds. Omitted uses the transport's default. */
@@ -734,11 +735,6 @@ export class CotalEndpoint extends EventEmitter {
   /** Live local cache of the channel registry (key = channel token), kept by a KV watch. */
   private readonly channelConfigs = new Map<string, ChannelConfig>();
   private channelDefaults: ChannelDefaults = {};
-  /** Per-subscription join watermark: the stream frontier captured when a channel was joined.
-   *  The tail ack-drops chat messages with `seq <= watermark` (suppresses pre-join history for
-   *  a lagging joiner + dedups the backfill overlap). Keyed by the subscription pattern (may be
-   *  wildcard), so the drop matches every concrete channel the pattern subsumes. */
-  private readonly joinSeq = new Map<string, number>();
   /** Serializes history reads ({@link collectHistory}): they share the fixed per-instance
    *  `chathist_<id>` consumer, so overlapping reads would delete/recreate it under one another. */
   private histLock: Promise<unknown> = Promise.resolve();
@@ -907,9 +903,13 @@ export class CotalEndpoint extends EventEmitter {
   private readonly acceptedToken?: string;
   /** The issuer-bound generation, learned once per connection from the accepted row. */
   private issuedGeneration?: string;
-  /** Per-endpoint-name {@link resolveService} cache for {@link invokeService} — dropped on a
-   *  `failed-precondition` currency refusal (the described incarnation was superseded). */
+  /** Full per-endpoint-name {@link resolveService} cache for {@link describeService}. Narrow command
+   *  handles never enter it, so discovery cannot inherit a truncated invocation surface. */
   private readonly resolvedServices = new Map<string, ResolvedService>();
+  /** Narrow invocation handles, keyed by endpoint and the sorted command set they verify. Kept
+   *  separate from full discovery handles so alternating commands neither overwrite each other nor
+   *  poison {@link describeService}. */
+  private readonly resolvedCommandServices = new Map<string, Map<string, ResolvedService>>();
   /** Active goal followers awaiting outcome, tracked so endpoint stop can cancel them immediately
    *  and connection replacement / reconnect can trigger reconciliation. */
   private readonly activeGoalFollowers = new Set<{ cancel: () => void; reconnected: (nc: NatsConnection) => void }>();
@@ -963,6 +963,7 @@ export class CotalEndpoint extends EventEmitter {
     // point every join/spawn path flows through. A role is an address too, refused here before
     // presence can advertise it.
     assertValidName(opts.card.name);
+    assertValidKind(opts.card.kind);
     if (opts.card.role !== undefined) assertValidRole(opts.card.role);
     // Auth mode is EITHER static creds (dev/no-login) OR a user bearer (login → callout) — never both.
     if (opts.bearer) {
@@ -1071,8 +1072,8 @@ export class CotalEndpoint extends EventEmitter {
     if ((opts.transportPingIntervalMs === undefined) !== (opts.transportMaxPingOut === undefined))
       throw new Error("EndpointOptions transportPingIntervalMs and transportMaxPingOut must be configured together");
     this.onConnection = opts.onConnection;
-    this.transportPingIntervalMs = opts.transportPingIntervalMs;
-    this.transportMaxPingOut = opts.transportMaxPingOut;
+    this.transportPingIntervalMs = opts.transportPingIntervalMs ?? 10_000;
+    this.transportMaxPingOut = opts.transportMaxPingOut ?? 2;
     this.transportConnectTimeoutMs = opts.transportConnectTimeoutMs;
     // No implicit channel: an endpoint reads exactly what its caller lists. Omitted means none.
     this.channels = opts.channels ?? [];
@@ -1924,7 +1925,6 @@ export class CotalEndpoint extends EventEmitter {
     this.presenceWatchEmpty = false;
     this.presenceSnapshotPopulated = false;
     this.emitPresenceViewIfChanged();
-    this.joinSeq.clear();
     this.channelConfigs.clear();
     this.channelDefaults = {};
     for (const watch of this.membershipFeedWatches)
@@ -2061,7 +2061,7 @@ export class CotalEndpoint extends EventEmitter {
       this.emit("connection", { connected: false });
       this.emit(
         "error",
-        new Error(`mesh connection closed${err ? `: ${(err as Error).message}` : ""} - re-establishing`),
+        new Error(`mesh connection closed${err ? `: ${err.message || err.name}` : ""} - re-establishing`),
       );
       void this.reestablishLoop();
     });
@@ -2572,12 +2572,18 @@ export class CotalEndpoint extends EventEmitter {
     assertPartsSerializable(msg.parts);
     // Publish DIRECTLY rather than through publishMsg, the way multicastExpecting does: this path
     // must read the ack, and publishMsg deliberately discards it.
-    const ack = await this.js.publish(
-      unicastSubject(this.space, recip.owner, recip.actor, this.owner, this.actor),
-      JSON.stringify(msg),
-      { msgID: msg.id },
-    );
-    return { msg, ack: { seq: ack.seq, duplicate: ack.duplicate === true } };
+    const subject = unicastSubject(this.space, recip.owner, recip.actor, this.owner, this.actor);
+    try {
+      const ack = await this.js.publish(subject, JSON.stringify(msg), { msgID: msg.id });
+      return { msg, ack: { seq: ack.seq, duplicate: ack.duplicate === true } };
+    } catch (error) {
+      if (error instanceof TimeoutError)
+        throw new Error(
+          `${error.message} publishing to ${JSON.stringify(subject)}. The send outcome is unknown: the broker may have stored the message. Check before resending.`,
+          { cause: error },
+        );
+      throw error;
+    }
   }
 
   /** Anycast: deliver to ANY one instance of a service (role) — queue-group load balancing. */
@@ -2839,13 +2845,20 @@ export class CotalEndpoint extends EventEmitter {
     }
   }
 
+  /** Drop every cached handle for one endpoint after refresh or a currency split. */
+  private clearResolvedService(endpoint: string): void {
+    this.resolvedServices.delete(endpoint);
+    this.resolvedCommandServices.delete(endpoint);
+  }
+
   /** The resolved, digest-verified command surface of `endpoint` as this connection's caller sees
-   *  it. Unpinned calls share {@link invokeService}'s per-name cache, and `refresh` drops that entry.
-   *  `instanceId` selects one instance without reading or populating the class cache, as a pinned
-   *  invoke does. The caller's existing credential must permit that route. */
+   *  it. Unpinned calls cache the complete discovery surface, and `refresh` drops both the full
+   *  handle and any command-specific invocation handles. `instanceId` selects one instance without
+   *  reading or populating either class cache, as a pinned invoke does. The caller's existing
+   *  credential must permit that route. */
   async describeService(endpoint: string, opts: { deadlineMs?: number; signal?: AbortSignal; refresh?: boolean; instanceId?: string } = {}): Promise<ResolvedService> {
     if (!this.nc) throw new Error(this.notLiveMsg());
-    if (opts.refresh) this.resolvedServices.delete(endpoint);
+    if (opts.refresh) this.clearResolvedService(endpoint);
     const cached = opts.instanceId === undefined ? this.resolvedServices.get(endpoint) : undefined;
     if (cached) return cached;
     const svc = await resolveService(this.nc, this.space, endpoint, this.serviceCaller(), { deadlineMs: opts.deadlineMs ?? 10_000, signal: opts.signal, ...(opts.instanceId !== undefined ? { instanceId: opts.instanceId } : {}) });
@@ -2879,23 +2892,38 @@ export class CotalEndpoint extends EventEmitter {
     endpoint: string,
     command: string,
     args?: Record<string, unknown>,
-    opts: { target?: EpVerbTarget; deadlineMs?: number; follow?: boolean; signal?: AbortSignal; instanceId?: string } = {},
+    opts: { target?: EpVerbTarget; deadlineMs?: number; follow?: boolean; signal?: AbortSignal; instanceId?: string; classInstanceId?: string } = {},
   ): Promise<EpAttributedReply> {
     if (!this.nc) throw new Error(this.notLiveMsg());
     const nc = this.nc;
     const caller = this.serviceCaller();
     const resolve = async (signal = opts.signal, deadlineMs = opts.deadlineMs ?? 10_000): Promise<ResolvedService> => {
       signal?.throwIfAborted();
-      const cached = opts.instanceId === undefined ? this.resolvedServices.get(endpoint) : undefined;
+      const needed = opts.follow ? [command, "goal-result"] : [command];
+      const classSelected = opts.instanceId === undefined && opts.classInstanceId === undefined;
+      const full = classSelected ? this.resolvedServices.get(endpoint) : undefined;
+      if (full && needed.every((name) => full.commands.has(name))) return full;
+      const cacheKey = [...needed].sort().join("\u0000");
+      const commandCache = classSelected ? this.resolvedCommandServices.get(endpoint) : undefined;
+      const cached = commandCache?.get(cacheKey);
       if (cached) return cached;
       const svc = await resolveService(nc, this.space, endpoint, caller, {
         deadlineMs,
         signal,
+        commands: needed,
         ...(opts.instanceId !== undefined ? { instanceId: opts.instanceId } : {}),
+        ...(opts.classInstanceId !== undefined ? { classInstanceId: opts.classInstanceId } : {}),
       });
-      // A pinned resolve never enters the endpoint-only class cache. Otherwise a later unpinned call
-      // could silently inherit that instance, or a different pin could reuse the wrong manager.
-      if (opts.instanceId === undefined) this.resolvedServices.set(endpoint, svc);
+      // Pinned resolves never enter either class cache. Narrow unpinned handles stay in their own
+      // command-set cache, so they cannot truncate discovery or evict another command's handle.
+      if (classSelected) {
+        let byCommand = this.resolvedCommandServices.get(endpoint);
+        if (!byCommand) {
+          byCommand = new Map();
+          this.resolvedCommandServices.set(endpoint, byCommand);
+        }
+        byCommand.set(cacheKey, svc);
+      }
       return svc;
     };
     const invokeOpts = { ...(opts.target ? { target: opts.target } : {}), ...(opts.deadlineMs !== undefined ? { deadlineMs: opts.deadlineMs } : {}) };
@@ -2954,7 +2982,7 @@ export class CotalEndpoint extends EventEmitter {
               (d): d is EpBindRefusedDetail => d.kind === EP_BIND_REFUSED,
             )?.boundTo,
           });
-          this.resolvedServices.delete(endpoint);
+          this.clearResolvedService(endpoint);
           // A FAILED RE-ISSUE RETHROWS THE ORIGINAL REFUSAL, not the resolve error: if the endpoint
           // has since retired, the resolve times out and the caller would otherwise get `no describe
           // reply within 10000ms` — about a describe it never asked for — losing the one fact that
@@ -3026,7 +3054,7 @@ export class CotalEndpoint extends EventEmitter {
           // the one answering, so every later call would reuse it and meet the same refusal. This is
           // not a retry — nothing is re-issued by it, and for a command that is not repeat-safe the
           // next call is the caller's, made after it has verified.
-          this.resolvedServices.delete(endpoint);
+          this.clearResolvedService(endpoint);
           if (!isRepeatSafeCommand(endpoint, command)) throw e;
           return await invokeResolved(await resolve(signal), signal);
         }
@@ -3329,12 +3357,10 @@ export class CotalEndpoint extends EventEmitter {
       // returning as if it were confirmed (a reconnect re-confirms from this.channels, which we never
       // pushed to). unsubscribeChat clears chatSubs.
       this.unsubscribeChat(channel);
-      this.joinSeq.delete(channel);
       throw new Error(`cannot join "${channel}": live subscription could not be confirmed (${(e as Error).message})`);
     }
     if (this.chatSubDenied.has(channel)) {
       this.unsubscribeChat(channel);
-      this.joinSeq.delete(channel);
       throw new Error(`cannot join "${channel}": not within this agent's read ACL (allowSubscribe)`);
     }
     this.channels.push(channel);
@@ -3392,7 +3418,6 @@ export class CotalEndpoint extends EventEmitter {
     this.unsubscribeChat(channel);
     const i = this.channels.indexOf(channel);
     if (i >= 0) this.channels.splice(i, 1);
-    this.joinSeq.delete(channel);
     return { left: true };
   }
 
@@ -4574,7 +4599,16 @@ export class CotalEndpoint extends EventEmitter {
     if (!this.js) throw new Error(this.notLiveMsg());
     assertPartsSerializable(msg.parts);
     // msgID = message id → free server-side dedup across JetStream redelivery.
-    await this.js.publish(subject, JSON.stringify(msg), { msgID: msg.id });
+    try {
+      await this.js.publish(subject, JSON.stringify(msg), { msgID: msg.id });
+    } catch (error) {
+      if (error instanceof TimeoutError)
+        throw new Error(
+          `${error.message} publishing to ${JSON.stringify(subject)}. The send outcome is unknown: the broker may have stored the message. Check before resending.`,
+          { cause: error },
+        );
+      throw error;
+    }
   }
 
   /** Create the three backing streams for this space (idempotent). Open-mode lazy create;
@@ -6708,23 +6742,6 @@ export class CotalEndpoint extends EventEmitter {
         const authed = this.authenticateStreamMsg(m);
         if (!authed) continue;
         const { msg, parsed } = authed;
-        // No-replay + dedup (chat only): drop a message at/below this channel's join watermark
-        // — pre-join history the New tail still carries for a *lagging* joiner (cursor behind the
-        // frontier), and the overlap a replay backfill already delivered. Must ack, or JetStream
-        // redelivers it forever. The drop is here, before the message becomes model context.
-        if (parsed.kind === "chat") {
-          const wm = this.dropWatermark(parsed.rest);
-          if (wm !== undefined && m.seq <= wm) {
-            m.ack();
-            continue;
-          }
-          // No pre-commit dedup here: the durable is the at-least-once path, so it must NEVER ack a copy
-          // just because an id was "seen" — that would drop an unhandled message (the security/critic
-          // HIGH). Steady state is single-path (coverage-partition: the core-sub drops durable-covered
-          // channels). The only overlap is the brief live-first transition window, and a duplicate there
-          // is coalesced downstream by the receiver's commit-aware id-dedup (MeshAgent.ingest keeps ONE
-          // entry and takes THIS durable ack handle) — so the durable copy is acked only once handled.
-        }
         this.emit("message", authenticatedMessage(msg, parsed), durableDelivery(m, ackWaitMs), {
           historical: false,
           kind: kindFromParsed(parsed.kind),
@@ -6886,7 +6903,6 @@ export class CotalEndpoint extends EventEmitter {
           const i = this.channels.indexOf(channel);
           if (i >= 0) {
             this.channels.splice(i, 1);
-            this.joinSeq.delete(channel);
             // A late sub.allow refusal forces this agent out of the channel (the broker revoked its live
             // read). If it held a Plane-3 durable membership, the §7 boundary must close too. This sub
             // callback can't await, so a fail-closed async helper RETRIES the tombstone (backoff) UNTIL it
@@ -6950,16 +6966,6 @@ export class CotalEndpoint extends EventEmitter {
     await new Promise((r) => setTimeout(r, 50));
   }
 
-  /** The highest join watermark among the joined subscriptions that cover `concreteChannel`
-   *  (a wildcard sub like `team.>` covers `team.backend`), or undefined if none — the tail
-   *  drops a chat message with `seq <= ` this. */
-  private dropWatermark(concreteChannel: string): number | undefined {
-    let wm: number | undefined;
-    for (const [pattern, seq] of this.joinSeq)
-      if (subjectMatches(pattern, concreteChannel) && (wm === undefined || seq > wm)) wm = seq;
-    return wm;
-  }
-
   /** The durable's info (rebind) or null (fresh — 404). Gates create/backfill to the join event
    *  and exposes the current `filter_subjects` for restart reconciliation. */
   private async consumerInfo(stream: string, durable: string): Promise<ConsumerInfo | null> {
@@ -7000,16 +7006,13 @@ export class CotalEndpoint extends EventEmitter {
     return (await (await this.manager()).getAccountInfo()).storage;
   }
 
-  /** Phase 1 of a join — arm each channel's tail-drop watermark at the current frontier. MUST run
-   *  BEFORE opening the core subscription so the live tail can never carry a just-joined message
-   *  un-watermarked — which would double-emit it (live + backfill).
-   *  Returns the per-channel frontiers for {@link backfillArmed}. */
+  /** Phase 1 of a join: capture each channel's current CHAT stream frontier before opening the
+   *  core subscription. The frontier bounds the {@link backfillArmed} read (`seq <= frontier`),
+   *  and the live subscription carries everything published after it. */
   private async armJoin(channels: string[]): Promise<Map<string, number>> {
     const frontiers = new Map<string, number>();
     for (const ch of channels) {
-      const frontier = await this.chatFrontier();
-      this.joinSeq.set(ch, frontier);
-      frontiers.set(ch, frontier);
+      frontiers.set(ch, await this.chatFrontier());
     }
     return frontiers;
   }
@@ -7310,6 +7313,11 @@ export class CotalEndpoint extends EventEmitter {
         this.presenceWriteFailures++;
         this.escalatePresenceWriteFailureIfStuck();
       }
+      if (e instanceof TimeoutError)
+        throw new Error(
+          `${e.message}. The presence write outcome is unknown: the broker may have stored the update. Read the roster before retrying.`,
+          { cause: e },
+        );
       throw e;
     }
     // A late SUCCESS cannot erase a refusal from newer evidence. Two fences, each answering half:

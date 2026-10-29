@@ -13,6 +13,7 @@ export interface MeshConn {
   space: string;
   server: string;
   creds?: string;
+  tls?: boolean;
   /** The deploy credential's v0.4 lifecycle uid (static: the instrument mint's; user: the
    *  bearer's ledger claim) — the probe endpoint's caller triple is keyed on it. */
   lifecycleUid?: string;
@@ -35,6 +36,7 @@ export async function connectProbe(conn: MeshConn): Promise<CotalEndpoint> {
           card: { owner: conn.user.owner, actor: conn.user.actor, name: "spawn-f", kind: "endpoint" as const },
         }
       : { creds: conn.creds, card: { name: "spawn-f", kind: "endpoint" as const } }),
+    tls: conn.tls,
     lifecycleUid: conn.lifecycleUid,
     channels: [],
     consume: false,

@@ -8,12 +8,12 @@
  *  here, outside any adapter plan. A failure after the first effect is reported as partial or
  *  unknown with the members it changed; nothing already started is rolled back. */
 import { randomUUID } from "node:crypto";
-import { existsSync, lstatSync, realpathSync } from "node:fs";
+import { closeSync, existsSync, lstatSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { isIP } from "node:net";
 import { basename, join, resolve } from "node:path";
 import { JetStreamApiCodes, JetStreamApiError } from "@nats-io/jetstream";
-import { awaitDeadDeliveryLease, deliveryLeaseHolderFor, isJetStreamMissing, isReachable, LEASE_TTL_MS, mintCreds, newIdentity, type BrokerTransport, type ParsedArgs } from "@cotal-ai/core";
+import { awaitDeadDeliveryLease, deliveryLeaseHolderFor, isJetStreamMissing, isReachable, LEASE_TTL_MS, mintCreds, newIdentity, openPrivateAppend, type BrokerTransport, type ParsedArgs } from "@cotal-ai/core";
 import {
   CommandFailure,
   accountInventory,
@@ -42,7 +42,6 @@ import {
   spaceNameTooLong,
   stackHomeRemedy,
   stackRunsUnderOtherHome,
-  terminalWidth,
   workspaceSecretStore,
   writeResult,
   MIN_FILE_STORE,
@@ -62,6 +61,7 @@ import { addressHolder, brokerListenAddress, listenerBindError } from "../lib/br
 import { brokerStoreWrite, jetStreamDisabled, jetStreamDisabledRefusal, readStoredBytes, storeDamageNotice, storeFull } from "../lib/broker-store-health.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { seedDefaultPersona } from "../lib/default-persona.js";
+import { noManagerCredentialWarning } from "../lib/daemon-credential-warning.js";
 import { definitionListeners, exposedPlaintext, listenerRow, type StackListener } from "../lib/stack-listeners.js";
 import { definitionRootMatch, serviceDefinitionStore, validateServiceDefinition, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
 import { instanceProjection, observeServiceProcess, serviceInstances, serviceInstanceStore, serviceRecordsWriteProblem, type ServiceInstance, type ServiceInstanceSnapshot } from "../lib/service-instances.js";
@@ -72,22 +72,23 @@ import { freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries 
 import { foreignLocalProcesses, newStackOperation, readStackJournal, runningStackRoles, serviceHeldRecords, settleRetainedStackStops, settleStackOperation, STACK_ADAPTER, STACK_DEFINITION, STACK_ROLES, stackDefinitionsAt, stackMaintenanceFence, stackNeverStarted, stackOperationUnsettled, stackRoleApplies, stackSettlementNotice, withSettledMembers, writeStackJournal, type StackJournal, type StackJournalSnapshot, type StackMember, type StackMode, type StackRole, type StackSettlement } from "../lib/stack-journal.js";
 import { natsServerLabel, type NatsServer } from "../lib/nats-bin.js";
 import { missingStoreWarning, sharedStoreAtStart, sharedStoreWarning, type StoreTenant } from "../lib/store-dir.js";
-import { assertUserStackTransport, confirmUserAuthEndpoints, preflightUserStack, provisionalUserAuth, userLoginRequired, userLoginState, userRegistrationIncomplete, type StackUserPrepared } from "./stack-user-auth.js";
+import { assertManagerLogin, assertUserStackTransport, confirmUserAuthEndpoints, preflightUserStack, provisionalUserAuth, userRegistrationIncomplete, type StackUserPrepared } from "./stack-user-auth.js";
 
 /** Callbacks into the native broker preparation that `up.ts` owns. They hold private authority
  *  material and are passed in, so this module never re-derives trust or a transport decision. */
 export interface StackUpNative {
   /** `userAuth` asks the native `authSetup` user arm (`prepareServer`) and must return its private
    *  `user` material; any other mode must return none. */
-  prepareBroker(opts: { transport: BrokerTransport; server: string; space: string; open: boolean; userAuth?: { idpUrl?: string }; host?: string; storeDir?: string; existingStore?: ExistingStorePin; maxFileStore?: number; authTimeout?: number; channels?: string; seed?: unknown }): Promise<{ root: string; server: string; space: string; storeDir: string; transport: BrokerTransport; setup?: { creds: string; wsPort: number }; user?: StackUserPrepared; confPath: string; bin: string; source: "path" | "bundled"; version: string | null; seedFile?: unknown; authTimeout?: number }>;
+  prepareBroker(opts: { transport: BrokerTransport; server: string; space: string; open: boolean; userAuth?: { idpUrl?: string }; host?: string; storeDir?: string; existingStore?: ExistingStorePin; maxFileStore?: number; logFile?: string; logfileSizeLimit?: number; logfileMaxNum?: number; authTimeout?: number; maxPayload?: number; channels?: string; seed?: unknown }): Promise<{ root: string; server: string; space: string; storeDir: string; transport: BrokerTransport; setup?: { creds: string; wsPort: number }; user?: StackUserPrepared; confPath: string; bin: string; source: "path" | "bundled"; version: string | null; seedFile?: unknown; authTimeout?: number; maxPayload?: number }>;
   /** `recreateIssuedStores` is the `--recreate-issued-stores` backup directory, for a fresh broker only. */
   initializeStreams(server: string, space: string, setup: { creds: string } | undefined, seedFile: unknown, recreateIssuedStores?: string): Promise<void>;
   /** On a broker the stack reuses, create the space's streams again when every one of them is gone,
    *  as after `cotal space delete`, and say whether it did. */
   recreateDeletedStreams(opts: { root: string; space: string; server: string; mode: StackMode; channels?: string; seed?: unknown }): Promise<boolean>;
   recordMesh(entry: { space: string; server: string; root: string; mode: StackMode; tlsRequired: boolean; storeDir: string; userAuth?: UserAuthInfo; maxSessions?: number; attachHost?: string; maxFileStore?: number }): void;
-  /** Record the transport and the auth callout timeout the prepared configuration rendered. */
-  commitTransport(root: string, transport: BrokerTransport, authTimeout?: number): void;
+  /** Record the transport, and the auth callout timeout and payload limit the prepared
+   *  configuration rendered. */
+  commitTransport(root: string, transport: BrokerTransport, limits?: { authTimeout?: number; maxPayload?: number }): void;
 }
 
 /** The identity of an existing broker store that a start must reuse and never create. */
@@ -140,8 +141,13 @@ export interface StackUpRequest {
   host?: string;
   storeDir?: string;
   maxFileStore?: number;
+  logFile?: string;
+  logfileSizeLimit?: number;
+  logfileMaxNum?: number;
   /** The auth callout timeout in seconds (`--auth-timeout`), user stacks only. Absent: the recorded one. */
   authTimeout?: number;
+  /** The broker's payload limit in bytes (`--max-payload`). Absent: the recorded one. */
+  maxPayload?: number;
   maxSessions?: number;
   channels?: string;
   foreground: boolean;
@@ -471,6 +477,7 @@ export async function stackUp(request: StackUpRequest, native: StackUpNative): P
     warnings.push({ code: "PERSONA_NOT_WRITTEN", target: { root, space }, message: `the default persona was not written in ${root}: ${(error as Error).message}` });
   }
   if (mode !== "open") {
+    if (request.noManager) warnings.push(await noManagerCredentialWarning(root, space));
     const unparsable = await unparsableDaemonCreds(root, space);
     if (unparsable.length) warnings.push({ code: "DAEMON_CREDENTIAL_UNPARSABLE", target: { root, space, credentials: unparsable }, message: unparsableDaemonCredsNotice(unparsable) });
   }
@@ -636,6 +643,9 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
     request.storeDir !== undefined && resolve(request.storeDir) !== recordedBroker.storeDir ? `--store-dir ${resolve(request.storeDir)} (recorded: ${recordedBroker.storeDir})` : undefined,
     request.maxFileStore !== undefined && request.maxFileStore !== recordedBroker.maxFileStore ? `--max-file-store ${request.maxFileStore} (recorded: ${recordedBroker.maxFileStore ?? "none"})` : undefined,
     request.host !== undefined && request.host !== recordedBroker.host ? `--host ${request.host} (recorded: ${recordedBroker.host ?? "none"})` : undefined,
+    request.logFile !== undefined && resolve(request.logFile) !== recordedBroker.logFile ? `--log-file ${resolve(request.logFile)} (recorded: ${recordedBroker.logFile ?? "none"})` : undefined,
+    request.logfileSizeLimit !== undefined && request.logfileSizeLimit !== recordedBroker.logfileSizeLimit ? `--logfile-size-limit ${request.logfileSizeLimit} (recorded: ${recordedBroker.logfileSizeLimit ?? "none"})` : undefined,
+    request.logfileMaxNum !== undefined && request.logfileMaxNum !== recordedBroker.logfileMaxNum ? `--logfile-max-num ${request.logfileMaxNum} (recorded: ${recordedBroker.logfileMaxNum ?? "none"})` : undefined,
   ].filter((input) => input !== undefined) : [];
   if (changedInputs.length)
     throw new CommandFailure("refused", "CONFLICT", `${changedInputs.join(", ")} ${changedInputs.length === 1 ? "differs" : "differ"} from this stack's recorded broker inputs; nothing was prepared`, { target: { root, space, recorded: recordedBroker }, remedy: `run bare \`cotal up\` from ${root} to start it with its recorded inputs${newCap ? `; a new --max-file-store applies once the broker is stopped with \`cotal down --yes\`` : ""}` });
@@ -655,6 +665,9 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
   const brokerStore = recordedBroker?.storeDir ?? request.storeDir ?? unstarted?.broker?.storeDir;
   const brokerCap = recordedBroker ? recordedBroker.maxFileStore : request.maxFileStore ?? unstarted?.broker?.maxFileStore;
   const brokerHost = recordedBroker ? recordedBroker.host : request.host ?? unstarted?.broker?.host;
+  const brokerLogFile = recordedBroker ? recordedBroker.logFile : request.logFile ?? unstarted?.broker?.logFile;
+  const brokerLogfileSizeLimit = recordedBroker ? recordedBroker.logfileSizeLimit : request.logfileSizeLimit ?? unstarted?.broker?.logfileSizeLimit;
+  const brokerLogfileMaxNum = recordedBroker ? recordedBroker.logfileMaxNum : request.logfileMaxNum ?? unstarted?.broker?.logfileMaxNum;
   // The manager's session ceiling is kept by its saved definition, so a bare up starts it with the
   // ceiling an earlier up set rather than the default. An explicit --max-sessions replaces it.
   const savedManager = serviceDefinitionStore(space).read(STACK_DEFINITION.manager)?.record.value.launch;
@@ -669,12 +682,21 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
     throw new CommandFailure("refused", "CONFLICT", "this root holds a broker account; an open stack does not bypass its recorded authorization", { target: { root, space } });
   if (mode === "user") assertUserStackTransport(previous?.journal.server ?? request.server, request.transport.kind === "tls-required");
   else if (request.idp !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "--idp belongs to a user-auth stack; nothing was prepared", { target: { root, space } });
+  const brokerIsRunning = () => serviceInstances(space, STACK_DEFINITION.broker).some((row) => observeServiceProcess(row.record.value) === "running");
   if (request.authTimeout !== undefined) {
     if (mode !== "user") throw new CommandFailure("refused", "USAGE_INVALID", "--auth-timeout sets the auth callout's timeout, which only a user-auth stack has; nothing was prepared", { target: { root, space }, remedy: "drop --auth-timeout" });
     // A running broker keeps the timeout it was started with, which the broker policy records.
     const recordedTimeout = readBrokerPolicy(root)?.authTimeout;
-    if (request.authTimeout !== recordedTimeout && serviceInstances(space, STACK_DEFINITION.broker).some((row) => observeServiceProcess(row.record.value) === "running"))
+    if (request.authTimeout !== recordedTimeout && brokerIsRunning())
       throw new CommandFailure("refused", "CONFLICT", `--auth-timeout ${request.authTimeout} differs from the running broker's (${recordedTimeout === undefined ? "nats-server's default" : `${recordedTimeout} seconds`}), which is fixed at its start; nothing was prepared`, { target: { root, space }, remedy: `stop the stack with \`cotal down --yes\` from ${root}, then run \`cotal up --auth-timeout ${request.authTimeout}\`` });
+  }
+  if (request.maxPayload !== undefined) {
+    // An open stack renders the open broker configuration, which carries no payload limit.
+    if (mode === "open") throw new CommandFailure("refused", "USAGE_INVALID", "--max-payload sets the broker's message size limit, which the open broker configuration does not render; nothing was prepared", { target: { root, space }, remedy: "drop --max-payload" });
+    // A running broker keeps the limit it was started with, which the same record carries.
+    const recordedPayload = readBrokerPolicy(root)?.maxPayload;
+    if (request.maxPayload !== recordedPayload && brokerIsRunning())
+      throw new CommandFailure("refused", "CONFLICT", `--max-payload ${request.maxPayload} differs from the running broker's (${recordedPayload === undefined ? "nats-server's default" : `${recordedPayload} bytes`}), which is fixed at its start; nothing was prepared`, { target: { root, space }, remedy: `stop the stack with \`cotal down --yes\` from ${root}, then run \`cotal up --max-payload ${request.maxPayload}\`` });
   }
   const admittedRestore = stackPreflight(root, space, previous?.journal, request.manifest?.deploymentId);
   // A recorded stack keeps its space and broker address. The refusal names what is recorded and the
@@ -847,13 +869,13 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
         }
         failedRole = undefined;
       }
-      prepared = await native.prepareBroker({ transport: request.transport, server, space, open: mode === "open", ...(mode === "user" ? { userAuth: request.idp !== undefined ? { idpUrl: request.idp } : {} } : {}), ...(brokerHost ? { host: brokerHost } : {}), ...(brokerStore ? { storeDir: brokerStore } : {}), ...(storePin ? { existingStore: storePin } : {}), ...(brokerCap !== undefined ? { maxFileStore: brokerCap } : {}), ...(request.authTimeout !== undefined ? { authTimeout: request.authTimeout } : {}), ...(request.manifest ? { seed: request.manifest.seed } : request.channels ? { channels: request.channels } : {}) });
+      prepared = await native.prepareBroker({ transport: request.transport, server, space, open: mode === "open", ...(mode === "user" ? { userAuth: request.idp !== undefined ? { idpUrl: request.idp } : {} } : {}), ...(brokerHost ? { host: brokerHost } : {}), ...(brokerStore ? { storeDir: brokerStore } : {}), ...(storePin ? { existingStore: storePin } : {}), ...(brokerCap !== undefined ? { maxFileStore: brokerCap } : {}), ...(brokerLogFile !== undefined ? { logFile: brokerLogFile } : {}), ...(brokerLogfileSizeLimit !== undefined ? { logfileSizeLimit: brokerLogfileSizeLimit } : {}), ...(brokerLogfileMaxNum !== undefined ? { logfileMaxNum: brokerLogfileMaxNum } : {}), ...(request.authTimeout !== undefined ? { authTimeout: request.authTimeout } : {}), ...(request.maxPayload !== undefined ? { maxPayload: request.maxPayload } : {}), ...(request.manifest ? { seed: request.manifest.seed } : request.channels ? { channels: request.channels } : {}) });
       if (canonicalRoot(prepared.root) !== root || prepared.space !== space || prepared.server !== server || (prepared.setup === undefined) !== (mode === "open") || (prepared.user === undefined) !== (mode !== "user")) throw new CommandFailure("refused", "CONFLICT", "the prepared broker configuration names another root, space, address or auth mode; the stack did not continue");
       if (mode === "user") assertUserStackTransport(server, prepared.transport.kind === "tls-required");
       // The validated transport decision is recorded before the broker child starts, so its
       // listener-report check compares against the transport this configuration actually serves.
-      native.commitTransport(root, prepared.transport, prepared.authTimeout);
-      journal = { ...journal, broker: { storeDir: resolve(prepared.storeDir), ...(brokerCap !== undefined ? { maxFileStore: brokerCap } : {}), ...(brokerHost ? { host: brokerHost } : {}) }, updatedAt: new Date().toISOString() };
+      native.commitTransport(root, prepared.transport, { authTimeout: prepared.authTimeout, maxPayload: prepared.maxPayload });
+      journal = { ...journal, broker: { storeDir: resolve(prepared.storeDir), ...(brokerCap !== undefined ? { maxFileStore: brokerCap } : {}), ...(brokerHost ? { host: brokerHost } : {}), ...(brokerLogFile !== undefined ? { logFile: resolve(brokerLogFile) } : {}), ...(brokerLogfileSizeLimit !== undefined ? { logfileSizeLimit: brokerLogfileSizeLimit } : {}), ...(brokerLogfileMaxNum !== undefined ? { logfileMaxNum: brokerLogfileMaxNum } : {}) }, updatedAt: new Date().toISOString() };
       snapshot = writeStackJournal(root, snapshot, journal);
     }
     // A running stack broker keeps its saved definition; a fresh one is defined from this preparation.
@@ -861,10 +883,14 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
     const savedOptions = savedBroker?.record.value.launch.type === "adapter" ? savedBroker.record.value.launch.options : undefined;
     if (!prepared && !savedOptions) throw new CommandFailure("refused", "CONFLICT", "a broker instance runs without its saved stack definition; it was not adopted", { target: { space, definition: STACK_DEFINITION.broker } });
     if (prepared) brokerExecutable = { path: canonicalBinary(prepared.bin), source: prepared.source, version: prepared.version };
-    const brokerOptions = prepared && brokerExecutable ? { root, config: prepared.confPath, binary: brokerExecutable.path, server } : { ...savedOptions! };
+    const brokerOptions = prepared && brokerExecutable ? { root, config: prepared.confPath, binary: brokerExecutable.path, server, ...(brokerLogFile !== undefined ? { logFile: resolve(brokerLogFile) } : {}) } : { ...savedOptions! };
     const broker = ensureDefinition(space, "broker", adapterDefinition(space, STACK_ADAPTER.broker, brokerOptions, 30000), root, replace("broker"));
     if (storePin) recheckExistingStore(storePin, { root, space });
     const brokerInstance = await start("broker", broker);
+    if (brokerLogFile !== undefined) {
+      let fd: number | undefined;
+      try { fd = openPrivateAppend(resolve(brokerLogFile)); } finally { if (fd !== undefined) closeSync(fd); }
+    }
     if (prepared) {
       startedBroker = { definition: broker, id: brokerInstance.name };
       // The broker's own stream and registry setup, on the native space path, after it serves.
@@ -934,11 +960,15 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
       const delivery = ensureDefinition(space, "delivery", adapterDefinition(space, STACK_ADAPTER.delivery, { root, creds: credsPath, server }, 40000), root, replace("delivery"));
       await start("delivery", delivery);
     }
-    // A user stack's manager is read as the invoking user's existing login. Without a signed-in,
-    // granted login it is not attempted; nothing is launched for it.
+    // A user stack's manager is read as the invoking user's existing login, confirmed with its IdP
+    // as `manager start` confirms it. Without a signed-in, granted login, or with one the IdP
+    // rejects, it is not attempted; nothing is launched for it.
     if (!request.noManager && mode === "user") {
-      const login = await userLoginState(root, space);
-      if (login.state !== "ready") loginBlock = userLoginRequired(space, login);
+      try { await assertManagerLogin(root, space, "run bare `cotal up` again"); }
+      catch (error) {
+        if (!isCommandFailure(error) || error.code !== "AUTH_REQUIRED") throw error;
+        loginBlock = error;
+      }
     }
     if (!request.noManager && !loginBlock) {
       const options: Record<string, unknown> = { root, runtime: request.runtime, server };
@@ -1084,5 +1114,5 @@ export function stackUpForegroundNotice(presentation: ReturnType<typeof presenta
   const holds = takeover
     ? "This stack is already running, and this terminal now takes over its lifetime. Ctrl-C or SIGTERM here stops the whole stack, though another command started it, with the same guarded whole-stack stop as bare `cotal down`, including its manager impact review."
     : "This terminal holds the stack's lifetime. Ctrl-C or SIGTERM runs the same guarded whole-stack stop as bare `cotal down`, including its manager impact review.";
-  console.log(renderReport({ space, sections: [{ title: "Foreground stack lifetime", blocks: [{ kind: "lines", lines: [`${holds} Terminal loss or an external kill is not a confirmed stop.`] }] }] }, presentation, terminalWidth(process.stdout)));
+  console.log(renderReport({ space, sections: [{ title: "Foreground stack lifetime", blocks: [{ kind: "lines", lines: [`${holds} Terminal loss or an external kill is not a confirmed stop.`] }] }] }, presentation, process.stdout));
 }

@@ -335,6 +335,71 @@ try {
   rmSync(root, { recursive: true, force: true });
 }
 
+// ── shipped doc comments state the contract rules without revision history ────────────────────
+const pidSrc = readFileSync(join(import.meta.dirname, "../src/pid.ts"), "utf8");
+const livenessSrc = readFileSync(join(import.meta.dirname, "../src/liveness.ts"), "utf8");
+const downSrc = readFileSync(join(import.meta.dirname, "../../../implementations/cli/src/commands/down.ts"), "utf8");
+const pidSurfaces: Array<[label: string, text: string]> = [
+  ["src/pid.ts", pidSrc],
+  ...(existsSync(join(import.meta.dirname, "../dist/pid.js")) ? [["dist/pid.js", readFileSync(join(import.meta.dirname, "../dist/pid.js"), "utf8")] as [string, string]] : []),
+  ...(existsSync(join(import.meta.dirname, "../dist/pid.d.ts")) ? [["dist/pid.d.ts", readFileSync(join(import.meta.dirname, "../dist/pid.d.ts"), "utf8")] as [string, string]] : []),
+];
+const livenessSurfaces: Array<[label: string, text: string]> = [
+  ["src/liveness.ts", livenessSrc],
+  ...(existsSync(join(import.meta.dirname, "../dist/liveness.js")) ? [["dist/liveness.js", readFileSync(join(import.meta.dirname, "../dist/liveness.js"), "utf8")] as [string, string]] : []),
+  ...(existsSync(join(import.meta.dirname, "../dist/liveness.d.ts")) ? [["dist/liveness.d.ts", readFileSync(join(import.meta.dirname, "../dist/liveness.d.ts"), "utf8")] as [string, string]] : []),
+];
+const downSurfaces: Array<[label: string, text: string]> = [
+  ["src/commands/down.ts", downSrc],
+  ...(existsSync(join(import.meta.dirname, "../../../implementations/cli/dist/commands/down.js")) ? [["dist/commands/down.js", readFileSync(join(import.meta.dirname, "../../../implementations/cli/dist/commands/down.js"), "utf8")] as [string, string]] : []),
+  ...(existsSync(join(import.meta.dirname, "../../../implementations/cli/dist/commands/down.d.ts")) ? [["dist/commands/down.d.ts", readFileSync(join(import.meta.dirname, "../../../implementations/cli/dist/commands/down.d.ts"), "utf8")] as [string, string]] : []),
+];
+for (const phrase of [
+  "had drifted",
+  "WHO CAN ACTUALLY CONSUME IT",
+  "the old suite could only reach",
+  "Found by review, not by me.",
+  "Reviewed against a repro",
+]) {
+  check(
+    `pid and liveness surfaces omit history phrase ${JSON.stringify(phrase)}`,
+    [...pidSurfaces, ...livenessSurfaces].every(([, text]) => !text.includes(phrase)),
+    phrase,
+  );
+}
+for (const rule of [
+  "only an actual `ESRCH` proves a",
+  "`EPERM`",
+  "CALLERS MUST PICK A DIRECTION",
+  "a pid probe is not a wire concept",
+]) {
+  check(
+    `pid surfaces state contract rule ${JSON.stringify(rule)}`,
+    pidSurfaces.every(([, text]) => text.includes(rule)),
+    rule,
+  );
+}
+for (const rule of [
+  "only an actual `ESRCH` proves a",
+  "`EPERM`",
+  "CALLERS MUST PICK A DIRECTION",
+]) {
+  check(
+    `liveness surfaces state contract rule ${JSON.stringify(rule)}`,
+    livenessSurfaces.every(([, text]) => text.includes(rule)),
+    rule,
+  );
+}
+check(
+  "down surfaces point pidfile/liveness comments at @cotal-ai/workspace instead of lib/pid.ts",
+  downSurfaces.every(
+    ([, text]) =>
+      !text.includes("(`lib/pid.ts`)") &&
+      !text.includes("the old unbounded parser + two-state") &&
+      text.includes("the `@cotal-ai/workspace` pid-attribution contract"),
+  ),
+);
+
 console.log(`\nPID CONTRACT TESTS PASSED ✅  (${pass} checks)`);
 console.log(
   "  COVERAGE, precisely: the `unknown` branch IS exercised, via the injected probe seam, including\n" +

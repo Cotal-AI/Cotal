@@ -46,7 +46,7 @@ export function failManifest(e: unknown): never {
     stderrLine("✗ ", `manifest file not found: ${(e as NodeJS.ErrnoException).path ?? ""}`, c.red);
   else {
     stderrLine("✗ ", `${(e as Error).message}`, c.red);
-    if (isCommandFailure(e) && e.remedy) stderrLine("  ↳ ", e.remedy, c.dim);
+    if (isCommandFailure(e) && e.remedy) stderrLine("  ↳ ", e.remedy, c.dim, e.remedyIsCommand);
   }
   process.exit(1);
 }

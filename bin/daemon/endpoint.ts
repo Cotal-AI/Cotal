@@ -8,13 +8,16 @@
  * the trust principal (see docs/connect-jcode.md, "Security limits").
  *
  * Nothing here repairs a path into shape. A pre-existing directory that is a symlink, not owned by
- * this uid, or not exactly 0700 is refused, never chmod-ed. Any pre-existing entry at the socket
- * path is refused, never removed, so this code never unlinks a socket it did not create.
+ * this uid, or not exactly 0700 is refused, never chmod-ed. A pre-existing entry at the socket path
+ * is removed only when it is the exact socket this daemon home's dead predecessor published, which
+ * the lifetime lock's record names; see lifetime.ts. Every other entry there is refused.
  */
 import { createHash } from "node:crypto";
 import { lstatSync, mkdirSync } from "node:fs";
 import type { Socket } from "node:net";
 import { join } from "node:path";
+import { mkSecretDir } from "@cotal-ai/core";
+import { homeCotalDir } from "@cotal-ai/workspace";
 
 /** Wire protocol version. A request naming any other version is refused before any effect. */
 export const DAEMON_PROTOCOL_VERSION = 1;
@@ -37,13 +40,16 @@ export type EndpointProblemCode =
   | "LOCK_HELD"
   | "NOT_RUNNING";
 
-/** A refusal at the local endpoint, typed so callers and tests can count it. */
+/** A refusal at the local endpoint, typed so callers and tests can count it. `remedy` replaces the
+ *  next step its code gives, for a case of that code that has its own. */
 export class EndpointRefusal extends Error {
   readonly code: EndpointProblemCode;
-  constructor(code: EndpointProblemCode, message: string) {
+  readonly remedy?: string;
+  constructor(code: EndpointProblemCode, message: string, remedy?: string) {
     super(message);
     this.name = "EndpointRefusal";
     this.code = code;
+    if (remedy !== undefined) this.remedy = remedy;
   }
 }
 
@@ -52,13 +58,16 @@ export interface DaemonPaths {
   readonly socket: string;
   /** Explicit daemon home only: the shared runtime directory `dir` lives in, created and checked first. */
   readonly parent?: string;
-  /** Explicit daemon home only: its lifetime lock. `serve` holds it while it runs; a client sends
-   *  nothing unless the process answering at `socket` is this lock's live owner. */
-  readonly lock?: string;
+  /** This daemon's lifetime lock. `serve` holds an exclusive `flock(2)` on it while it runs, and a
+   *  client sends nothing unless the process answering at `socket` is this lock's live owner. Both
+   *  daemon forms have one: the default daemon's lives beside its own state. */
+  readonly lock: string;
+  /** The directory `lock` lives in, created 0700 before the lock is taken. */
+  readonly state: string;
 }
 
 /** The fixed endpoint location for this user: `$XDG_RUNTIME_DIR/cotal/daemon.sock`. */
-export function daemonPaths(env: NodeJS.ProcessEnv = process.env): DaemonPaths {
+export function daemonPaths(env: NodeJS.ProcessEnv = process.env, home: string = homeCotalDir()): DaemonPaths {
   const runtime = env.XDG_RUNTIME_DIR;
   if (!runtime) {
     throw new EndpointRefusal(
@@ -67,7 +76,8 @@ export function daemonPaths(env: NodeJS.ProcessEnv = process.env): DaemonPaths {
     );
   }
   const dir = join(runtime, "cotal");
-  return { dir, socket: join(dir, "daemon.sock") };
+  const state = join(home, "daemon");
+  return { dir, socket: join(dir, "daemon.sock"), state, lock: join(state, "daemon.lock") };
 }
 
 /**
@@ -77,9 +87,9 @@ export function daemonPaths(env: NodeJS.ProcessEnv = process.env): DaemonPaths {
  * disjoint from the legacy socket.
  */
 export function daemonPathsFor(daemonHome: string, env: NodeJS.ProcessEnv = process.env): DaemonPaths {
-  const base = daemonPaths(env);
+  const base = daemonPaths(env, daemonHome);
   const dir = join(base.dir, `home-${createHash("sha256").update(daemonHome).digest("hex").slice(0, 16)}`);
-  return { parent: base.dir, dir, socket: join(dir, "daemon.sock"), lock: join(daemonHome, "daemon.lock") };
+  return { parent: base.dir, dir, socket: join(dir, "daemon.sock"), state: daemonHome, lock: join(daemonHome, "daemon.lock") };
 }
 
 export function assertLinux(platform: NodeJS.Platform = process.platform): void {
@@ -139,16 +149,14 @@ export function ensureDir(dir: string, uid: number = euid()): "created" | "exist
 }
 
 /**
- * Refuse any pre-existing entry at the public socket path. There is no automatic stale-socket
- * reclamation: a leftover socket from a crashed daemon is reported, never removed, because probing
- * then unlinking is a race that can delete another starter's live socket. The operator removes a
- * known-stale socket by hand; `link(2)` at bind time then gives exactly one winner.
+ * The directory holding this daemon's lifetime lock, created 0700 when it is the default daemon's
+ * own state directory under the Cotal home. An explicit `--daemon-home` is the operator's directory
+ * and was already checked by {@link checkDir}, so nothing is created or repaired there.
  */
-export function refuseExisting(path: string): void {
-  if (!exists(path)) return;
-  const st = lstatSync(path);
-  if (!st.isSocket()) throw new EndpointRefusal("SOCKET_NOT_SOCKET", `${path} exists and is not a socket; nothing was removed`);
-  throw new EndpointRefusal("ALREADY_RUNNING", `${path} already exists (uid ${st.uid}); a daemon may be running, or a previous one exited without cleanup. Nothing was removed`);
+export function ensureStateDir(paths: DaemonPaths, uid: number = euid()): void {
+  if (paths.state === paths.lock) throw new EndpointRefusal("DIR_NOT_DIRECTORY", `${paths.state} cannot hold its own lock`);
+  if (!exists(paths.state)) mkSecretDir(paths.state);
+  checkDir(paths.state, uid);
 }
 
 /** The peer's uid on a connected unix socket, read by the kernel via the stock seat helper. */

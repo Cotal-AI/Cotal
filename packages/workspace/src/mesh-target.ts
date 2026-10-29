@@ -30,7 +30,8 @@ import { codeSpan } from "./text-wrap.js";
  * preflight (`probeConnect`) on top.
  */
 export interface MeshTarget {
-  /** Absolute dir whose `.cotal/{auth,agents}` hold trust + personas. */
+  /** Absolute project root. For a discovered space this may differ from the catalog custody root
+   *  that keeps its provider-owned sentinel credential. */
   root: string;
   server: string;
   space: string;
@@ -377,7 +378,7 @@ function notStarted(space: string, cwd?: string): void {
 /** What the root a space was prepared in records about its stack, as a command that targets it
  *  reports it: `unsettled` when the last whole-stack `up` or `down` recorded no outcome, `stopped`
  *  once a stack that launched a member recorded one, else `prepared`. `lastOperation` names that
- *  operation and how it ended, such as `cotal down, completed`. */
+ *  operation and how it ended, such as `` `cotal down`, completed ``. */
 export type PreparedLifecycle =
   | { state: "prepared"; lastOperation: null }
   | { state: "stopped"; lastOperation: string; stopped: NonNullable<MeshTargetErrorDetails["stopped"]> }
@@ -387,12 +388,12 @@ export type PreparedLifecycle =
 export function preparedLifecycle(root: string, space: string): PreparedLifecycle {
   const stopped = stoppedStack(root, space);
   const unsettled = unsettledStackOperation(root, space);
-  if (unsettled) return { state: "unsettled", lastOperation: `cotal ${unsettled}, with no recorded outcome`, unsettled, ...(stopped ? { stopped } : {}) };
+  if (unsettled) return { state: "unsettled", lastOperation: `${codeSpan(`cotal ${unsettled}`)}, with no recorded outcome`, unsettled, ...(stopped ? { stopped } : {}) };
   if (stopped) return { state: "stopped", lastOperation: `${stopped.operation}, ${stopped.outcome}`, stopped };
   return { state: "prepared", lastOperation: null };
 }
 
-const OPERATION: Record<string, string> = { up: "cotal up", down: "cotal down", preserve: "a preserving cotal down", resume: "a resume" };
+const OPERATION: Record<string, string> = { up: codeSpan("cotal up"), down: codeSpan("cotal down"), preserve: `a preserving ${codeSpan("cotal down")}`, resume: "a resume" };
 const OUTCOME: Record<string, string> = { completed: "completed", failed: "failed", refused: "was refused", partial: "applied in part", unknown: "has an unknown outcome", applying: "did not finish", planned: "did not finish" };
 
 /** The last operation and recorded store cap of `space`'s controller stack at `root`, when its
@@ -757,8 +758,13 @@ function noteFolderSpaceHeld(folder: { root: string; registered: readonly string
   recordOperationWarning({ code: "FOLDER_SPACE_NOT_RUNNING", target: { space: held.space, state: held.state, root: folder.root, selected: current }, message }, { echo: false });
 }
 
-/** What a folder holds that is not running, and the step that starts it with {@link upCommand}. */
+/** What a folder holds that is not running, and the step that starts it with {@link upCommand}. A
+ *  stack whose last `up` or `down` has no recorded outcome ({@link unsettledStackOperation}) refuses
+ *  that `up` while a member's unconfirmed stop blocks it, which only `cotal status` reads, so the
+ *  note names status there. `status` leaves the note out where it shows that block itself. */
 export function heldSpaceNote(held: { space: string; root: string; state: "prepared" | "stopped" }): string {
+  const unsettled = unsettledStackOperation(held.root, held.space);
+  if (unsettled) return `this folder holds the space "${held.space}", and the last ${unsettled} of its stack has no recorded outcome; run \`cotal status\` here, which names the step that finishes or settles it`;
   return `this folder holds the ${held.state} space "${held.space}"; ${held.state === "prepared" ? "start" : "restart"} it with \`${upCommand(held.root, held.space)}\`${upNeedsCap(held.root, held.space) ? " or more" : ""}`;
 }
 

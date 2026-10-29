@@ -101,11 +101,16 @@ export async function stopLocalProcess(
   if (rawPid === undefined) return found;
 
   if (rawPid.startsWith("removing:")) {
+    // A live `ext remove` always records its own positive pid, so only a dead pid or a non-pid owner
+    // is stale; an owner whose liveness the kernel will not confirm may still be removing the extension.
     const owner = parsePid(rawPid.slice("removing:".length));
+    const liveness = owner === undefined ? "dead" : probeLiveness(owner);
     throw new Error(
-      owner && probeLiveness(owner) === "alive"
+      liveness === "alive"
         ? `${component.name} extension removal is in progress (pid ${owner})`
-        : `${component.name} has a stale extension-removal reservation at ${pidPath} - remove that file and retry`,
+        : liveness === "dead"
+          ? `${component.name} has a stale extension-removal reservation at ${pidPath} - remove that file and retry`
+          : `${component.name} has an extension-removal reservation at ${pidPath} (pid ${owner}) whose liveness could not be confirmed; its pidfile was preserved`,
     );
   }
   const pid = parsePid(rawPid);

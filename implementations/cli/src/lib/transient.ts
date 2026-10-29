@@ -1,4 +1,4 @@
-import { CotalEndpoint, channelBucket, credsClaims, isPublishPermissionDenied, mintCreds, newIdentity, presenceBucket, subjectMatches } from "@cotal-ai/core";
+import { CotalEndpoint, DEV_OWNER, channelBucket, credsClaims, isPublishPermissionDenied, mintCreds, newIdentity, presenceBucket, subjectMatches } from "@cotal-ai/core";
 import { CommandFailure, endpointAuth, type Connection } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
 import { connectOrExit, connectOrThrow } from "./connect.js";
@@ -96,9 +96,13 @@ function jetStreamUnanswered(conn: Connection): CommandFailure {
 export async function openTransient(
   values: ConnectValues,
   name: string,
-  opts: { throwOnRefusal?: boolean; watch?: boolean; presenceOnly?: boolean; report?: (level: "error" | "warning", e: Error) => void } = {},
+  opts: { throwOnRefusal?: boolean; senderActor?: string; watch?: boolean; presenceOnly?: boolean; report?: (level: "error" | "warning", e: Error) => void } = {},
 ): Promise<{ ep: CotalEndpoint; space: string; connection: Connection }> {
-  const conn = opts.throwOnRefusal ? await connectOrThrow(values, "operator") : await resolveConnect(values);
+  const conn = opts.throwOnRefusal ? await connectOrThrow(values, "operator", { operatorActor: opts.senderActor }) : await resolveConnect(values);
+  // Match the principal just minted by this connection's account signer, never a launch identity.
+  // Raw credentials and user-mode retain their existing path.
+  const senderPrincipal = opts.senderActor !== undefined && conn.auth && conn.creds
+    ? { owner: DEV_OWNER, actor: opts.senderActor } : undefined;
   const readOnce = batchedRead(conn, presenceBucket(conn.space)) && batchedRead(conn, channelBucket(conn.space));
   const once = !opts.watch && (opts.presenceOnly ? batchedRead(conn, presenceBucket(conn.space)) : readOnce);
   const report = opts.report ?? ((level, e) => console.error(level === "error" ? c.red("! " + e.message) : c.yellow("! " + e.message)));
@@ -125,7 +129,7 @@ export async function openTransient(
         // Display name only. The wire principal comes from the resolved static credential or user
         // bearer; on an open mesh the endpoint self-mints it. Process environment never supplies
         // authority for an operator command.
-        card: { name, kind: "endpoint" },
+        card: { name, kind: "endpoint", ...senderPrincipal },
       });
       attempt.on("error", (e: Error) => { if (opened) report("error", e); else held.push(["error", e]); });
       attempt.on("warning", (e: Error) => { if (opened) report("warning", e); else held.push(["warning", e]); });

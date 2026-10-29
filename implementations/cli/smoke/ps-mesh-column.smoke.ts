@@ -24,6 +24,10 @@ check("current view, seat in roster and idle", meshCell({ mesh: "idle", meshView
 check("current view, seat in roster and waiting", meshCell({ mesh: "waiting", meshView: "current" }), "waiting");
 check("current view, seat offline is a verdict", meshCell({ mesh: "offline", meshView: "current" }), "mesh offline");
 check("current view, seat absent is a verdict", meshCell({ mesh: "absent", meshView: "current" }), "not in roster");
+check("a readiness timeout is degraded join health, separate from the process",
+  meshCell({ mesh: "absent", meshView: "current", joinHealth: { state: "degraded", reason: "launch status uncertain" } }), "join degraded (readiness deadline elapsed)");
+check("a stale observer never invents current presence from the join diagnostic",
+  meshCell({ mesh: "absent", meshView: "stale", joinHealth: { state: "degraded", reason: "launch status uncertain" } }), "mesh unknown (manager's presence view is stale)");
 // A stale view: neither 'offline' nor 'absent' may be printed; the reason names the manager.
 check("stale view hides 'offline' behind mesh unknown", meshCell({ mesh: "offline", meshView: "stale" }), "mesh unknown (manager's presence view is stale)");
 check("stale view hides 'absent' behind mesh unknown", meshCell({ mesh: "absent", meshView: "stale" }), "mesh unknown (manager's presence view is stale)");
@@ -57,5 +61,9 @@ for (const meshView of ["current", "stale", "unpopulated"]) {
 judge("--json: a row without meshView (older manager) still passes the contract", validates(baseRow), psOut.validate.errors);
 judge("--json: a meshView outside the enum is refused by the contract (the enum is enforced, not decorative)", !validates({ ...baseRow, meshView: "frozen" }) && (psOut.validate.errors?.length ?? 0) > 0, psOut.validate.errors);
 judge("--json: an unknown row field is refused (additionalProperties is closed, so meshView passing is a real admission)", !validates({ ...baseRow, meshVeiw: "current" }));
+judge("--json: a degraded join diagnostic passes the closed ps contract",
+  validates({ ...baseRow, joinHealth: { state: "degraded", reason: "launch status uncertain" } }), psOut.validate.errors);
+judge("--json: a join diagnostic cannot claim a terminal process exit",
+  !validates({ ...baseRow, joinHealth: { state: "exited", reason: "not observed" } }));
 console.log(`\nps mesh column smoke: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

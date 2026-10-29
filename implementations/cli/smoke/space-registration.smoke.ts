@@ -1209,16 +1209,16 @@ if (process.platform === "linux") {
   // After its down, the space reads as stopped with its last operation, as `status` reads it.
   const stoppedList = await json(["space"]), stoppedListHuman = await run(["space", "--plain"]);
   check("after down, space lists it as stopped with its last operation, under a State column",
-    stoppedList.env?.result.prepared.some((p: { space: string; state: string; lastOperation: unknown }) => p.space === "demo" && p.state === "stopped" && p.lastOperation === "cotal down, completed")
-      && /^Prepared spaces$/m.test(stoppedListHuman.stdout) && /demo \(selected\) +stopped - cotal down, completed/.test(stoppedListHuman.stdout), { json: stoppedList.env?.result.prepared, human: stoppedListHuman.stdout });
+    stoppedList.env?.result.prepared.some((p: { space: string; state: string; lastOperation: unknown }) => p.space === "demo" && p.state === "stopped" && p.lastOperation === "`cotal down`, completed")
+      && /^Prepared spaces$/m.test(stoppedListHuman.stdout) && /demo \(selected\) +stopped - `cotal down`, completed/.test(stoppedListHuman.stdout), { json: stoppedList.env?.result.prepared, human: stoppedListHuman.stdout });
   const stoppedShow = await json(["space", "show"], fresh), stoppedShowHuman = await run(["space", "show", "--plain"], {}, fresh);
   check("...space show gives the same state and names cotal up again in its root",
-    stoppedShow.env?.result.state === "stopped" && stoppedShow.env.result.lastOperation === "cotal down, completed"
-      && /^broker: +stopped - cotal down, completed$/m.test(stoppedShowHuman.stdout) && stoppedShowHuman.stdout.includes(`start it again with \`cotal up\` in ${fresh}`), { json: stoppedShow.env?.result, human: stoppedShowHuman.stdout });
+    stoppedShow.env?.result.state === "stopped" && stoppedShow.env.result.lastOperation === "`cotal down`, completed"
+      && /^broker: +stopped - `cotal down`, completed$/m.test(stoppedShowHuman.stdout) && stoppedShowHuman.stdout.includes(`start it again with \`cotal up\` in ${fresh}`), { json: stoppedShow.env?.result, human: stoppedShowHuman.stdout });
   const stoppedUse = await json(["use"]), stoppedUseHuman = await run(["use", "--plain"]);
   check("...and use reports it as stopped, not as prepared and not started",
-    stoppedUse.env?.result.preparedState === "stopped" && stoppedUse.env.result.lastOperation === "cotal down, completed"
-      && stoppedUseHuman.stdout.includes(`stopped; its last operation, cotal down, completed - start it again with \`cotal up\` in ${fresh}`) && !/not started/.test(stoppedUseHuman.stdout), { json: stoppedUse.env?.result, human: stoppedUseHuman.stdout });
+    stoppedUse.env?.result.preparedState === "stopped" && stoppedUse.env.result.lastOperation === "`cotal down`, completed"
+      && stoppedUseHuman.stdout.includes(`stopped; its last operation, \`cotal down\`, completed - start it again with \`cotal up\` in ${fresh}`) && !/not started/.test(stoppedUseHuman.stdout), { json: stoppedUse.env?.result, human: stoppedUseHuman.stdout });
   // A second bare down of the stopped stack stops nothing: it needs no --yes, writes nothing, and
   // every presentation shows the same no-op.
   const journalBytes = () => readFileSync(stackJournalPath(fresh), "utf8");

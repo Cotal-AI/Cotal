@@ -16,15 +16,32 @@ export function disableColor(): void {
   }
 }
 
-/** Whether operator output gets ANSI color. `--no-color` wins. Then the `color` preference decides,
- *  through the one resolver `cotal config` shows: a set `FORCE_COLOR` (`0` or `false` in any case is
- *  off, any other value on), a non-empty `NO_COLOR` (off), the saved preference, and `auto`, where
- *  color follows whether stdout is a terminal that is not `TERM=dumb`, which terminfo defines as one
- *  without color. Read on every call, so a process that sets these after import is still honoured. */
-export function colorEnabled(): boolean {
+/** Whether operator output written to `stream` gets ANSI color. `--no-color` wins. Then the `color`
+ *  preference decides, through the one resolver `cotal config` shows: a set `FORCE_COLOR` (`0` or
+ *  `false` in any case is off, any other value on), a non-empty `NO_COLOR` (off), the saved
+ *  preference, and `auto`, where color follows whether `stream` is a terminal that is not
+ *  `TERM=dumb`, which terminfo defines as one without color. Read on every call, so a process that
+ *  sets these after import is still honoured. */
+export function colorEnabled(stream: NodeJS.WriteStream = process.stdout): boolean {
   if (colorDisabled) return false;
   const mode = resolvePreference("color", { preferences: savedOrNone() }).value;
-  return mode === "always" || (mode === "auto" && Boolean(process.stdout.isTTY) && process.env.TERM !== "dumb");
+  return mode === "always" || (mode === "auto" && Boolean(stream.isTTY) && process.env.TERM !== "dumb");
+}
+
+/** The stream the helpers in {@link c} paint for while {@link paintFor} runs. */
+let painting: NodeJS.WriteStream | undefined;
+
+/** `draw()` with the helpers in {@link c} painting for `stream`, so its text is colored only when
+ *  that stream is. `draw` must be synchronous: the stream is held only while it runs. Outside it a
+ *  helper cannot tell where its text goes, so it colors only when stdout and stderr both would. */
+export function paintFor<T>(stream: NodeJS.WriteStream, draw: () => T): T {
+  const outer = painting;
+  painting = stream;
+  try {
+    return draw();
+  } finally {
+    painting = outer;
+  }
 }
 
 /** The saved preferences for the color decision. An invalid file stops every command before it runs
@@ -38,7 +55,8 @@ function savedOrNone(): Preferences {
   }
 }
 
-const sgr = (code: string) => (s: string) => (colorEnabled() ? `\x1b[${code}m${s}\x1b[0m` : s);
+const colored = (): boolean => (painting ? colorEnabled(painting) : colorEnabled(process.stdout) && colorEnabled(process.stderr));
+const sgr = (code: string) => (s: string) => (colored() ? `\x1b[${code}m${s}\x1b[0m` : s);
 
 /** ANSI color helpers for operator-facing terminal output — shared by every command surface
  *  (@cotal-ai/cli, @cotal-ai/web, the manager, the delivery daemon) so they render identically

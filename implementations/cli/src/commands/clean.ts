@@ -111,7 +111,7 @@ export async function clean(args: ParsedArgs): Promise<void> {
     // The restore verbs act on one attempt, so the command to run names it, as given or as a placeholder.
     const attempt = target === "restore-attempt" || target === "restore-fallback" ? ` --attempt ${values.attempt || "<id>"}` : "";
     const discard = target === "restore-fallback" && values["discard-history"] ? " --discard-history" : "";
-    throw new CommandFailure("refused", "USAGE_INVALID", `clean ${target} deletes without prompting, so it requires --force`, { remedy: `cotal clean ${target}${attempt} --force${discard}` });
+    throw new CommandFailure("refused", "USAGE_INVALID", `clean ${target} deletes without prompting, so it requires --force`, { remedy: `cotal clean ${target}${attempt} --force${discard}`, remedyIsCommand: true });
   }
   if (target === "history") return purgeHistory(values);
 

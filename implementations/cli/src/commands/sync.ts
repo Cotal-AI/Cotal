@@ -128,14 +128,16 @@ function catalogRoot(ownerKey: string, space: string): string {
   return join(homeCotalDir(), "catalog", ownerKey, encodeURIComponent(space));
 }
 
-function entryFor(account: AuthSpaceCatalogAccount, row: CatalogSpace, fetchedAt?: string, error?: string): MeshEntry {
-  const root = catalogRoot(account.ownerKey, row.slug);
-  const dir = userAuthStateDir(root, row.slug);
+function entryFor(account: AuthSpaceCatalogAccount, row: CatalogSpace, prior?: MeshEntry, fetchedAt?: string, error?: string): MeshEntry {
+  const custodyRoot = prior?.catalogRoot ?? catalogRoot(account.ownerKey, row.slug);
+  const root = prior?.root ?? custodyRoot;
+  const dir = userAuthStateDir(custodyRoot, row.slug);
   const sentinelCredsPath = join(dir, "sentinel.creds");
   return {
     space: row.slug,
     server: row.registration.server,
     root,
+    catalogRoot: custodyRoot,
     mode: "user",
     origin: "catalog",
     catalogOwner: account.ownerKey,
@@ -156,7 +158,7 @@ function entryFor(account: AuthSpaceCatalogAccount, row: CatalogSpace, fetchedAt
 function writeCatalogCredential(entry: MeshEntry, row: CatalogSpace): void {
   const path = entry.userAuth?.sentinelCredsPath;
   if (!path) throw new Error(`catalog registration for "${entry.space}" has no sentinel credential path`);
-  mkSecretDir(userAuthStateDir(entry.root, entry.space));
+  mkSecretDir(userAuthStateDir(entry.catalogRoot ?? entry.root, entry.space));
   writeSecretFileAtomic(path, row.registration.sentinelCreds);
 }
 
@@ -223,8 +225,8 @@ function applyResult(result: AuthSpaceCatalogResult): CatalogDiff {
         diff.collisions.push(row.slug);
         continue;
       }
-      const next = entryFor(result.account, row, result.fetchedAt);
       const prior = priorByName.get(row.slug);
+      const next = entryFor(result.account, row, prior, result.fetchedAt);
       writeCatalogCredential(next, row);
       if (!prior) diff.added.push(row.slug);
       else if (sameEntry(prior, next)) diff.unchanged.push(row.slug);

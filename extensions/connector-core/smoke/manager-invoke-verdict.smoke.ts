@@ -261,7 +261,48 @@ for (const [label, config, expected] of [
   }
 }
 
-const EXPECTED_CELLS = 67;
+// Constructed errors grade only the diagnostic. The owned real manager/native-seat timeout
+// replay measures same-id retries after both recorded and unsent yields.
+{
+  const goalId = "yield_timeout_turn";
+  const yieldTool = cotalToolSpecs(cfg).find(t => t.name === "cotal_yield")!;
+  const renderYield = async (error: EpEnvelopeError) => {
+    const agent = new MeshAgent(cfg);
+    let calls = 0;
+    (agent as unknown as { ep: unknown }).ep = {
+      invokeService: async () => { calls++; throw error; }, principal: { owner: "local", actor: "caller" },
+    };
+    (agent as unknown as { _connected: boolean })._connected = true;
+    const active = (agent as unknown as { activeTurns: Map<string, unknown> }).activeTurns;
+    active.set(goalId, { goalId, payload: "owned diagnostic", acceptedAt: Date.now(), deadlineAt: Date.now() + 60_000, surfaced: true });
+    const result = await yieldTool.run(agent, cfg, { status: "blocked", turn: goalId });
+    return { result, calls, retained: active.has(goalId) };
+  };
+  const detail = { kind: EP_UNANSWERED, endpoint: "manager", command: "turn-yield" };
+  const unknown = await renderYield(new EpEnvelopeError("deadline-exceeded", "no reply to manager.turn-yield", [detail], "unknown"));
+  check("unknown yield deadline says it may already be recorded, without no-responder advice",
+    unknown.result.isError === true && unknown.result.text.includes("may already have been recorded") && !SILENCE.test(unknown.result.text), unknown);
+  check("unknown yield names the measured same-turn retry and does not call it a read-only check",
+    unknown.result.text.includes("same turn id") && unknown.result.text.includes("not which attempt settled it") &&
+    unknown.result.text.includes("not a read-only check"), unknown);
+  check("unknown yield diagnostic does not retry or discard the active turn",
+    unknown.calls === 1 && unknown.retained, unknown);
+  for (const [label, error] of [
+    ["real no-responder", new EpEnvelopeError("unavailable", "no responder", [detail], "not-executed")],
+    ["describe deadline", new EpEnvelopeError("deadline-exceeded", "no describe reply", [{ ...detail, command: "describe" }], "unknown")],
+    ["not-executed deadline", new EpEnvelopeError("deadline-exceeded", "not submitted", [detail], "not-executed")],
+  ] as const) {
+    const r = await renderYield(error);
+    check(`${label} yield retains the existing no-responder explanation`,
+      SILENCE.test(r.result.text) && !r.result.text.includes("may already have been recorded"), r);
+  }
+  const answered = await renderYield(new EpEnvelopeError("permission-denied", "manager refused yield", undefined, "not-executed"));
+  check("answered yield refusal retains its own cause without uncertainty or silence advice",
+    answered.result.text.includes("permission-denied: manager refused yield") &&
+    !SILENCE.test(answered.result.text) && !answered.result.text.includes("may already have been recorded"), answered);
+}
+
+const EXPECTED_CELLS = 74;
 const ran = pass + fail;
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"} — ${pass} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {

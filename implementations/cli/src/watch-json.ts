@@ -1,5 +1,5 @@
 import type { CotalEndpoint, Presence } from "@cotal-ai/core";
-import { oneLine, renderReport, streamRecord, terminalWidth, writeStreamRecord } from "@cotal-ai/workspace";
+import { oneLine, renderReport, streamRecord, writeStreamRecord } from "@cotal-ai/workspace";
 import { feedLine, isFeedView, matchesWatchFilter, observedText, watchReport, type WatchFilter } from "./watch-data.js";
 import { MeshView, type FeedEntry, type MeshSnapshot } from "./view/mesh-view.js";
 import { outputFailed, ownStdoutErrors } from "./lib/stdout-owner.js";
@@ -29,7 +29,7 @@ export async function runWatchStream(ep: CotalEndpoint, space: string, tapSubjec
     try {
       if (presentation === "json") writeStreamRecord(streamRecord("watch", type, target, data));
       else if (type === "snapshot" && currentSnapshot && !isFeedView(filter)) {
-        const report = renderReport({ ...watchReport(currentSnapshot, filter), space }, "plain", terminalWidth(process.stdout));
+        const report = renderReport({ ...watchReport(currentSnapshot, filter), space }, "plain", process.stdout);
         if (report !== lastReport) { lastReport = report; console.log(report); }
       } else if (type === "event" && data && typeof data === "object" && "row" in data) console.log(oneLine(`[${space}] ${feedLine(data.row as FeedEntry & { omittedCodeUnits?: number })}`));
       else if (type === "gap" || type === "error") {
@@ -78,7 +78,7 @@ export async function runWatchStream(ep: CotalEndpoint, space: string, tapSubjec
   const releaseOutput = ownStdoutErrors(outputClosed);
   view.on("change", changed);
   try {
-    if (presentation === "plain" && isFeedView(filter)) console.log(renderReport({ space, sections: [] }, "plain", terminalWidth(process.stdout)));
+    if (presentation === "plain" && isFeedView(filter)) console.log(renderReport({ space, sections: [] }, "plain", process.stdout));
     await view.start();
     emit("gap", { reason: "This view has bounded prefill and retention; it is not a complete event-history export." });
     changed(view.snapshot());

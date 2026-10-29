@@ -153,6 +153,9 @@ function idpTimeoutMs(): number {
 /** An IdP request that got no answer: the transport failed or the per-request timeout fired. */
 export class IdpUnreachableError extends Error {}
 
+/** The IdP answered 401 to a cached session: it expired or was revoked there. */
+export class IdpSessionRejectedError extends Error {}
+
 /** A sign-in stopped by the caller's AbortSignal. It stops this local operation only: nothing
  *  is revoked at the IdP, and an approval already given there is left as it is. */
 export class IdpLoginCancelled extends Error {}
@@ -421,7 +424,7 @@ async function fetchIdpJwtResponse(idpUrl: string, sessionToken: string, cancel?
 async function fetchIdpJwtUncached(base: string, sessionToken: string, cancel?: AbortSignal): Promise<IdpJwtResult> {
   const res = await idpFetch(`${base}/token`, { headers: { authorization: `Bearer ${sessionToken}` } }, cancel);
   if (res.status === 401)
-    throw new Error(
+    throw new IdpSessionRejectedError(
       `idp session: ${base} rejected the cached session (expired or revoked) - run \`cotal login --idp ${base}\` to sign in again`,
     );
   if (!res.ok) throw new Error(`idp session: ${base}/token failed (HTTP ${res.status})`);

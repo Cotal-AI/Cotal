@@ -108,7 +108,7 @@ try {
 
   console.log("1. resolveService: describe + fetch + recompile the full surface (no hand-imported schemas)");
   const service = await resolveService(nc, space, MANAGER_ENDPOINT, caller, { deadlineMs: 10_000 });
-  check("run-status program identity advances the manager cluster revision and retains vitals, workflow cancellation, keyed submission and existing commands", shipped.revision === 39 && service.commands.has("vitals") && service.commands.has("run-cancel") && service.commands.has("run-start-keyed") && service.commands.has("run-submission-status") && service.commands.has("chat-session-open") && service.commands.has("chat-session-retire") && service.commands.has("cancel") && service.commands.has("transcript-receive") && service.commands.has("goal-result") && service.commands.has("resolve-cwd"), shipped);
+  check("connector event-plane facts advance the manager cluster revision and retain persona removal plus existing commands", shipped.revision === 42 && service.commands.has("remove-persona") && service.commands.has("vitals") && service.commands.has("run-cancel") && service.commands.has("run-start-keyed") && service.commands.has("run-submission-status") && service.commands.has("chat-session-open") && service.commands.has("chat-session-retire") && service.commands.has("cancel") && service.commands.has("transcript-receive") && service.commands.has("goal-result") && service.commands.has("resolve-cwd"), shipped);
   check("the resolved surface matches the shipped cluster document", service.commands.size === shipped.commandCount && shipped.names.every((n) => service.commands.has(n)) && service.commands.has("status") && service.commands.has("spawn") && service.commands.has("despawn"), [...service.commands.keys()].sort());
   const statusCmd = service.commands.get("status")!;
   check("status resolved: untargeted, read capability, recompiled contracts carry closure digests",
@@ -117,6 +117,9 @@ try {
   const despawnCmd = service.commands.get("despawn")!;
   check("despawn resolved: targeted, owner mode (from the verified cluster document, not asserted)",
     despawnCmd.targeted === true && despawnCmd.modes.includes("owner"), despawnCmd);
+  const removePersonaCmd = service.commands.get("remove-persona")!;
+  check("remove-persona resolved under the define-persona capability and is untargeted",
+    removePersonaCmd.capability === "manager.persona" && removePersonaCmd.targeted === false, removePersonaCmd);
 
   console.log("2. invoke status (generic, by name)");
   const rStatus = await invokeCommand(nc, space, service, "status", undefined, { currentEpoch });
@@ -317,7 +320,7 @@ try {
   }
 }
 
-const EXPECTED = 26;
+const EXPECTED = 27;
 check("every declared manager service invoke cell ran", pass + fail === EXPECTED, { ran: pass + fail, expected: EXPECTED });
 console.log(`\n${fail === 0 ? "MANAGER SERVICE INVOKE SMOKE OK ✅" : "MANAGER SERVICE INVOKE SMOKE FAILED"}  (${pass} passed, ${fail} failed)`);
 emitSentinel({ passed: pass, failed: fail });

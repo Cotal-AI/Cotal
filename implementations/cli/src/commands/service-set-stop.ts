@@ -1,6 +1,6 @@
 import * as prompts from "../lib/prompts.js";
 import type { ParsedArgs } from "@cotal-ai/core";
-import { ConfirmationRequired, CommandFailure, recordOperationSpace, isCommandFailure, oneLine, presentationOf, renderReport, terminalWidth, writeResult, type Report, type ServiceAdapterStopPlan } from "@cotal-ai/workspace";
+import { ConfirmationRequired, CommandFailure, recordOperationSpace, isCommandFailure, oneLine, presentationOf, renderReport, writeResult, type Report, type ServiceAdapterStopPlan } from "@cotal-ai/workspace";
 import { personaCatalog } from "../lib/persona-files.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
 import { instanceProjection, observeServiceProcess, serviceInstances, type ServiceInstanceSnapshot } from "../lib/service-instances.js";
@@ -133,7 +133,7 @@ export async function stopNamedServiceSet(args: ParsedArgs): Promise<void> {
     rows[index]!.impact = member.impact ?? null;
   }
   distinctNativeTargets(members);
-  if (presentation !== "json") console.log(renderReport({ space, sections: [...setView(rows, "Named service stop review").sections, ...members.flatMap((member) => member.impact ? nativeImpactView(member.impact).sections : [])] }, presentation, terminalWidth(process.stdout)));
+  if (presentation !== "json") console.log(renderReport({ space, sections: [...setView(rows, "Named service stop review").sections, ...members.flatMap((member) => member.impact ? nativeImpactView(member.impact).sections : [])] }, presentation, process.stdout));
   if (!args.values.yes) {
     const answer = await prompts.confirm({ message: "Stop all displayed owned service incarnations with only the displayed native impact?", initialValue: false });
     if (prompts.isCancel(answer) || !answer) {

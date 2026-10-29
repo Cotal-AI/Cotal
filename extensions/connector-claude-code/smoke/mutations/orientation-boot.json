@@ -2,7 +2,7 @@
   "suite": [
     "extensions/connector-claude-code/smoke/orientation-boot.smoke.ts"
   ],
-  "guard": "the session-start hook hands the seat its orientation card at every SessionStart, or with the next prompt when the seat was not bound at the start, and hands an owed card over once",
+  "guard": "the session-start hook hands the seat its orientation card at every SessionStart, or with the next prompt when the seat was not bound at the start, and hands an owed card over once, within the hook's context budget",
   "command": "pnpm smoke:claude-orientation-boot",
   "completionMarker": "claude-orientation-boot smoke:",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-claude-code/smoke/mutations/orientation-boot.json",
@@ -18,22 +18,26 @@
     "K1 is the plain omission. K2 is the race that a startup hook loses: SessionStart arrives before",
     "the broker bind, so a card not owed to the next prompt is a card never handed over. K3 is the",
     "owed flag that never clears, which hands the card over with every prompt for the rest of the",
-    "session."
+    "session.",
+    "",
+    "K4 and K5 leave the card out of the 9,000-character hook budget. A full inbox then fills the",
+    "budget by itself, the frame overflows, and the hook replaces everything, card included, with a",
+    "waiting notice."
   ],
   "mutations": [
     {
       "name": "K1 the session start drops the card",
       "file": "extensions/connector-claude-code/src/hooks.ts",
-      "find": "const parts = [await orientation(), agent.channelBriefing(),",
-      "replace": "const parts = [agent.channelBriefing(),",
+      "find": "const parts = [card, briefing, surfaceAutomatic(agent, ev, reserved),",
+      "replace": "const parts = [briefing, surfaceAutomatic(agent, ev, reserved),",
       "expectRed": "a bound session start hands over the orientation card",
       "cell": "a bound session start hands over the orientation card"
     },
     {
       "name": "K2 an owed card is never delivered",
       "file": "extensions/connector-claude-code/src/hooks.ts",
-      "find": "const parts = [cardOwed ? await orientation() : undefined, surfaceAutomatic(agent, ev),",
-      "replace": "const parts = [surfaceAutomatic(agent, ev),",
+      "find": "const parts = [card, surfaceAutomatic(agent, ev, reserved),",
+      "replace": "const parts = [surfaceAutomatic(agent, ev, reserved),",
       "expectRed": "an unbound session start owes the card to the next prompt",
       "cell": "an unbound session start owes the card to the next prompt"
     },
@@ -44,6 +48,22 @@
       "replace": "cardOwed = deps.orientation !== undefined;",
       "expectRed": "the owed card is handed over once",
       "cell": "the owed card is handed over once"
+    },
+    {
+      "name": "K4 the session start leaves the card out of the hook budget",
+      "file": "extensions/connector-claude-code/src/hooks.ts",
+      "find": "const reserved = (card?.length ?? 0) + (briefing?.length ?? 0) +",
+      "replace": "const reserved = (briefing?.length ?? 0) +",
+      "expectRed": "a session start with a full inbox keeps the card and fits the budget",
+      "cell": "a session start with a full inbox keeps the card and fits the budget"
+    },
+    {
+      "name": "K5 the owed prompt leaves the card out of the hook budget",
+      "file": "extensions/connector-claude-code/src/hooks.ts",
+      "find": "const reserved = (card?.length ?? 0) + (agent.peekPendingTurns()?.text.length ?? 0) + 4;",
+      "replace": "const reserved = (agent.peekPendingTurns()?.text.length ?? 0) + 4;",
+      "expectRed": "an owed card with a full inbox is kept and fits the budget",
+      "cell": "an owed card with a full inbox is kept and fits the budget"
     }
   ]
 }

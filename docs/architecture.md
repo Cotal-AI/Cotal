@@ -219,7 +219,7 @@ agents exchange messages directly and choose their own work.
   The tmux driver's session-name and pane-capture failures name the operation, include tmux's
   error text and retain the failed call as `cause`.
 - **Served commands.** `spawn` (an action, below), `stop`, `ps`, `status`, `attach`,
-  `models`, and `define-persona` are among its endpoint commands
+  `models`, `define-persona`, and `remove-persona` are among its endpoint commands
   ([§13.5](../SPEC.md#135-verbs)) any authorized node can send, policy-gated
   ([identity & auth](identity-and-auth.md)). A caller learns them off the wire with `cotal
   describe manager`; nothing is compiled in.
@@ -240,7 +240,8 @@ agents exchange messages directly and choose their own work.
   slots and whether waiting can free one.
 - **Declared environment boundary.** A spawned agent receives a fixed OS allow-list (PATH/HOME/
   locale, including PATH entries connector binaries live in), the machine-wide `COTAL_*` operator
-  knobs, connector-declared provider inputs, explicitly shared MCP references, and names
+  knobs, the CA-file paths `NODE_EXTRA_CA_CERTS` and `SSL_CERT_FILE`, connector-declared provider
+  inputs, explicitly shared MCP references, and names
   deliberately added through `spawn.env`. It never inherits the manager's ambient environment, so
   host-session markers (`CLAUDE_CODE_CHILD_SESSION` and the analogous names other hosts use) and
   unrelated capabilities cannot become properties of every seat. Connection material rides a private
