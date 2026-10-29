@@ -34,9 +34,20 @@
  */
 import { strict as assert } from "node:assert";
 import type { CotalMessage, Delivery, MessageMeta } from "@cotal-ai/core";
-import { MeshAgent } from "../src/agent.js";
+import { MeshAgent as BaseMeshAgent } from "../src/agent.js";
 import type { AgentConfig } from "../src/config.js";
 import { cotalToolSpecs, INBOX_WINDOW_CHARS, type ToolResult } from "../src/tool-specs.js";
+
+// Existing window/framing cells model a ready session. No broker is dialled here.
+// The live companion proves degraded/disconnected reachability against owned brokers.
+class MeshAgent extends BaseMeshAgent {
+  constructor(config: AgentConfig) {
+    super(config);
+    const stage = this as unknown as { _connected: boolean; _transportConnected: boolean };
+    stage._connected = true;
+    stage._transportConnected = true;
+  }
+}
 
 let pass = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -1176,6 +1187,24 @@ try {
     const second = textOf(await inboxSpec().run(agent, cfg, {}));
     check("...so a new episode's message is not filtered out by the old episode's mark",
       second.includes("NEW_BEHIND") && second.includes("NEW_AHEAD"), second.slice(0, 200));
+  }
+
+  // Local messages remain readable while the connection is unavailable, including parts.
+  for (const focus of [false, true]) {
+    const agent = new BaseMeshAgent(cfg);
+    if (focus) {
+      Object.defineProperty(agent, "attention", { get: () => "focus" });
+      (agent as unknown as { recallAmbient: () => Promise<unknown> }).recallAmbient = async () => ({ items: [], droppedChannels: [] });
+    }
+    let acked = 0;
+    agent.ep.emit("message", dmMsg("offline-large", "z".repeat(60_000)), { ack: () => { acked++; }, nak: () => {}, durable: true }, dmMeta);
+    const peek = textOf(await inboxSpec().run(agent, cfg, { peek: true }));
+    check(`not-ready ${focus ? "focus" : "open"} peek preserves buffered mail and budgets its warning`, peek.includes("Mesh connection is not ready (disconnected)") && peek.length <= INBOX_WINDOW_CHARS && acked === 0 && agent.inboxCount() === 1);
+    const first = textOf(await inboxSpec().run(agent, cfg, {}));
+    const last = textOf(await inboxSpec().run(agent, cfg, {}));
+    check(`not-ready ${focus ? "focus" : "open"} parts deliver all content before the sole acknowledgement`, first.includes("Mesh connection is not ready") && last.includes("Mesh connection is not ready") && first.length <= INBOX_WINDOW_CHARS && last.length <= INBOX_WINDOW_CHARS && (first + last).split("z").length - 1 === 60_000 && acked === 1 && agent.inboxCount() === 0);
+    const empty = textOf(await inboxSpec().run(agent, cfg, {}));
+    check(`not-ready ${focus ? "focus" : "open"} empty reply names the unavailable mesh`, empty.includes("Mesh connection is not ready (disconnected)") && empty.includes("empty buffer does not mean no new mesh messages"));
   }
 
   console.log(`\nINBOX WINDOW SMOKE OK ✅  (${pass} passed, 0 failed)`);

@@ -1,5 +1,22 @@
 # @cotal-ai/auth
 
+## 0.121.2
+
+### Patch Changes
+
+- 1446ee9: Report a remote signed-in user's current read, post, direct-message and capability grant in `cotal whoami`. The stock issuer returns the authoritative grant beside each fresh bearer, while unavailable, refused and older issuers remain unknown instead of being inferred from the token or a successful exchange.
+- 7401742: Both barrier evictors build their unverified eviction result, and the note they use when the delivery-admin rail cannot be reached, through one helper each. A change to that result or that note can no longer land in only one evictor. The helper logs through the options it is given, on each call, so a logger that reads its options keeps them.
+- Updated dependencies [60f5412]
+- Updated dependencies [af4b631]
+- Updated dependencies [3d07896]
+- Updated dependencies [1446ee9]
+- Updated dependencies [d98674a]
+- Updated dependencies [f450bfe]
+- Updated dependencies [ee93749]
+  - @cotal-ai/lang@0.121.2
+  - @cotal-ai/core@0.121.2
+  - @cotal-ai/workspace@0.121.2
+
 ## 0.121.1
 
 ### Patch Changes

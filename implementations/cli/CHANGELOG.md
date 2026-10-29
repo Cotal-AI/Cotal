@@ -1,5 +1,22 @@
 # @cotal-ai/cli
 
+## 0.121.2
+
+### Patch Changes
+
+- 9ff8f5a: `cotal service add <name> --preset broker` works again. A preset option named in camelCase, such as the broker's `logFile`, now takes its dashed flag (`--log-file`, as `cotal up` spells it) instead of refusing the whole preset as UNSUPPORTED.
+- c30a662: A legacy bare `cotal down` now reads the delivery lease after it stops the delivery daemon. The daemon gives its lease release two seconds after the signal and then exits anyway, and `down` used to report it stopped and delete its credential in every case. When the release had not landed, the next `cotal up` could not recognise the row as the stopped daemon's, and its new daemon was refused with "a live lease already exists". When the row still names the stopped daemon's credential, or the lease cannot be read, `down` now keeps the credential and prints a line saying so, and the next `up` waits the row out and starts the new daemon.
+- 1446ee9: Report a remote signed-in user's current read, post, direct-message and capability grant in `cotal whoami`. The stock issuer returns the authoritative grant beside each fresh bearer, while unavailable, refused and older issuers remain unknown instead of being inferred from the token or a successful exchange.
+- d98674a: Keep the signed sender principal stable across one-shot sends from the same OS login and host on a static-auth mesh. Each send retains a fresh, short-lived credential with the existing operator permissions. Explicit credentials and signed-in user identities are unchanged.
+- Updated dependencies [af4b631]
+- Updated dependencies [3d07896]
+- Updated dependencies [1446ee9]
+- Updated dependencies [d98674a]
+- Updated dependencies [f450bfe]
+- Updated dependencies [ee93749]
+  - @cotal-ai/core@0.121.2
+  - @cotal-ai/workspace@0.121.2
+
 ## 0.121.1
 
 ### Patch Changes

@@ -96,6 +96,9 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
       // grants need at or above the caller floor. The auth-service daemon does not take it: the
       // broker configuration renders it and the auth host observes it.
       "max-payload:string",
+      // `--log-file`, `--logfile-size-limit`, `--logfile-max-num` (2026-10): nats-server native log
+      // file rotation, recorded with the controller stack.
+      "log-file:string", "logfile-size-limit:string", "logfile-max-num:string",
       // `--no-manager` (2026-09): broker-only boot, the broker and in auth mode the delivery daemon (#1856).
       "no-manager:boolean",
       // `--service-endpoints` (2026-10, #4396): hosts the service endpoint authority door and host

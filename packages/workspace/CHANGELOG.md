@@ -1,5 +1,17 @@
 # @cotal-ai/workspace
 
+## 0.121.2
+
+### Patch Changes
+
+- d98674a: Keep the signed sender principal stable across one-shot sends from the same OS login and host on a static-auth mesh. Each send retains a fresh, short-lived credential with the existing operator permissions. Explicit credentials and signed-in user identities are unchanged.
+- Updated dependencies [af4b631]
+- Updated dependencies [3d07896]
+- Updated dependencies [1446ee9]
+- Updated dependencies [f450bfe]
+- Updated dependencies [ee93749]
+  - @cotal-ai/core@0.121.2
+
 ## 0.121.1
 
 ### Patch Changes

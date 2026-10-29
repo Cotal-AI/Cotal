@@ -1,5 +1,11 @@
 # @cotal-ai/lang
 
+## 0.121.2
+
+### Patch Changes
+
+- 60f5412: Derive `Frame.depth` and `EngineFrame.depth` from `keys.path.length` as a getter instead of storing a separate constructor field and incrementing it alongside `keys.branch`.
+
 ## 0.121.1
 
 No changes in this release.

@@ -3216,6 +3216,8 @@ export class MeshAgent extends EventEmitter {
    *  local. Someone whose agent joins a hosted mesh cannot fix it by starting their own, and being
    *  told to try sends them to repair the wrong thing entirely. */
   private notConnectedMessage(): string {
+    const issue = this.connectionIssue;
+    if (issue) return `not connected to the mesh at ${this.config.servers}: ${issue}`;
     const remedy = isLocalServer(this.config.servers)
       ? "is it running? (`cotal up`)"
       : "it did not become reachable — check that the mesh is up and that this machine can reach it.";

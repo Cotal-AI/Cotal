@@ -73,6 +73,18 @@ keeps its remote-only composition. Supplying this programmatic option does not e
 `up`, restart or recovery paths; a host must compose those paths separately after adopting the
 published API. `ps` still lists only the selected Manager's managed seats, not HTTP-hosted sessions.
 
+## User credential authority
+
+`AuthProvider.userCredentials` returns the bearer and sentinel credential. A provider may also
+return `authority`, containing the owner and the current `scope`, `allowSubscribe`,
+`allowPublish` and `dmHistory` grant that its issuer authorized for that mint. The stock provider
+returns this from the exchange response on local and remote user-auth spaces. It does not decode
+the bearer to reconstruct access.
+
+The field is optional for provider compatibility. Its absence means the caller has no
+authoritative grant answer. A status surface must preserve unknown or unavailable instead of
+inferring broad access from a bearer, successful exchange or broker ping.
+
 ## Account connection census
 
 `mintAccountCensusCreds` creates a host-only SYS user with at most five minutes of authority.

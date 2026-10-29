@@ -1,5 +1,12 @@
 # @cotal-ai/orca
 
+## 0.121.2
+
+### Patch Changes
+
+- 5b6ecac: Validate `terminal.tail` in `orca.readScreen` so malformed `terminal read --screen --json` responses throw an error naming the command and terminal handle instead of a raw `TypeError`.
+- e5d2975: `currentTerminal` and `currentTerminalForWait` now share `resolveTerminal` and `isGoneCode`, so the synchronous status probe and the asynchronous exit wait resolve a terminal from `terminal list` and `terminal show` by one rule and classify gone error codes in one place. When a terminal's `ptyId` leaves `terminal list`, `currentTerminal` returns `undefined` without calling `terminal show` on the stale handle, and when `terminal show` returns an `ok` envelope with no terminal for a handle-only seat, `currentTerminal` throws the same authoritative-state error as `currentTerminalForWait` instead of returning the caller's input.
+
 ## 0.121.1
 
 No changes in this release.
