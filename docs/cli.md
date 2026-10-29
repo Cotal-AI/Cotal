@@ -5556,7 +5556,7 @@ presets this machine has, and a name it does not have is refused as `DEPENDENCY_
 `cotal service add <name> --preset <preset> --help` lists a preset's options. An option the preset
 fills itself shows `(default: ...)`, such as the space's root for `--root` and `pty` for the
 manager's `--runtime`. A required option with no default is marked `(required)`, and an option that
-takes a path shows `<dir>`, `<file>` or `<path>`. A `<dir>` or `<file>` option takes the absolute path
+takes a path shows `<dir>`, `<file>` or `<path>`, and the broker's `--server` shows `<url>`. A `<dir>` or `<file>` option takes the absolute path
 of one that exists, and a relative one is refused. An option the service names in camelCase takes a
 dashed flag, so the broker's `logFile` is `--log-file <path>`, as `cotal up` spells it, and `add`
 takes it as `cotal up --log-file` does: a relative path is made absolute against the folder `add`

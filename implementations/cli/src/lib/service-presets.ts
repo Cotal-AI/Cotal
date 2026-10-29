@@ -54,6 +54,9 @@ function optionProperties(preset: ServicePreset) {
  *  stop never checks it. */
 const resolvedPaths: Readonly<Record<string, readonly string[]>> = { "nats-broker": ["logFile"] };
 
+/** Options a preset takes as a broker URL, by adapter, so help names the value as the refusal does. */
+const urlOptions: Readonly<Record<string, readonly string[]>> = { "nats-broker": ["server"] };
+
 /** The flag an adapter option takes: its name with each capital letter as a dash and that letter in
  *  lower case, so `logFile` is `--log-file`, as `cotal up` spells the same option. */
 export function presetFlagName(option: string): string {
@@ -77,7 +80,7 @@ export function servicePresetFlags(preset: ServicePreset): FlagSpec[] {
     const description = typeof schema.description === "string" ? schema.description : `add --preset ${preset.name}: declared ${option} option`;
     const fallback = preset.defaults?.[option];
     const marked = fallback ? `${description} (default: ${describeDefault(fallback)})` : required.has(option) && !description.includes("(required)") ? `${description} (required)` : description;
-    const value = resolvedPaths[preset.adapter]?.includes(option) ? "<path>" : placeholder(adapter.declaration.paths?.[option], schema.type);
+    const value = resolvedPaths[preset.adapter]?.includes(option) ? "<path>" : urlOptions[preset.adapter]?.includes(option) ? "<url>" : placeholder(adapter.declaration.paths?.[option], schema.type);
     flags.push({ name, type: schema.type === "boolean" ? "boolean" : "string", ...(schema.type === "boolean" ? {} : { value }), description: marked });
     // A boolean whose schema admits only true, such as an explicit intent, has no valid negative form.
     if (schema.type === "boolean" && schema.const !== true && !(Array.isArray(schema.enum) && !schema.enum.includes(false))) flags.push({ name: `no-${name}`, type: "boolean", description: `add --preset ${preset.name}: set ${option} to false` });
