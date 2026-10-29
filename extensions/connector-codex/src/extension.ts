@@ -2,7 +2,8 @@
  * The Codex connector: launches a host-mode peer that embeds the Cotal endpoint and drives a
  * `codex app-server` thread over JSON-RPC (see host.ts). A mesh message becomes a real
  * Codex turn — wake an idle thread (`turn/start`) or steer a directed message into one already
- * running (`turn/steer`) — and the cotal_* tools are served by the host over a loopback MCP
+ * started by the connector (`turn/steer`). Externally started turns defer delivery until they end.
+ * The cotal_* tools are served by the host over a loopback MCP
  * endpoint, so the session is a full lateral peer at parity with the other connectors. Presence
  * is read off the app-server event stream; with a terminal the host attaches the real Codex TUI,
  * and without one it prints an activity feed. Self-registers on import; the manager resolves it

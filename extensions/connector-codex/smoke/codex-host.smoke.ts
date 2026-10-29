@@ -516,7 +516,7 @@ try {
   await waitFor("after-foreign turn", () => turnStarts().find((t) => t.includes("after-foreign")));
 
   // (7c) STANDALONE TUI TURN. Someone types in the TUI while nothing of ours is open, and a DM
-  // lands mid-turn. steerPending declines (we have no turn to steer into) so it buffers — and the
+  // lands mid-turn. steerPending declines (we have no connector-started turn) so it buffers — and the
   // foreign terminal is not our boundary, so nothing else is coming. The host must still pump at
   // that edge, or the message sits in the inbox until unrelated traffic happens to wake the loop.
   await sleep(300);
@@ -527,6 +527,17 @@ try {
     turnStarts().find((t) => t.includes("stranded-during-tui")),
   );
   check("a DM arriving during a standalone TUI turn is driven when that turn ends", pumped !== undefined, pumped);
+  check(
+    "automatic DM delivery does not steer an externally started turn",
+    !logEntries().some(
+      (e) =>
+        e.ev === "recv" &&
+        e.method === "turn/steer" &&
+        ((e.params?.input as { text?: string }[] | undefined) ?? []).some((i) =>
+          (i.text ?? "").includes("stranded-during-tui"),
+        ),
+    ),
+  );
   await sleep(500);
   await dm("after-solo");
   const tSolo = await waitFor("post-solo turn", () => turnStarts().find((t) => t.includes("after-solo")));

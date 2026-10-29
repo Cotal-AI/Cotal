@@ -4,8 +4,9 @@
  * one endpoint, one thread:
  *
  *  • inbound mesh messages become real Codex turns — a batch wakes an idle thread
- *    (`turn/start`); a DIRECTED message (DM / anycast / @mention) arriving mid-turn is
- *    steered INTO the live turn (`turn/steer`, race-safe via expectedTurnId) — ambient
+ *    (`turn/start`); a DIRECTED message (DM / anycast / @mention) arriving during a
+ *    connector-started turn is steered into it (`turn/steer`, race-safe via expectedTurnId).
+ *    Externally started turns defer automatic batches until their boundary; ambient
  *    chatter waits for the turn boundary so it can't derail the work in flight;
  *  • the cotal_* tools are served by THIS process over a loopback MCP endpoint (mcp.ts), so the
  *    model replies itself via cotal_send / cotal_dm — and, because the app-server is the MCP
@@ -659,7 +660,8 @@ export async function runCodexHost(): Promise<void> {
     }
   }
 
-  /** Steer DIRECTED (DM / anycast / @mention) automatic items into the live turn. Ambient waits
+  /** Steer DIRECTED (DM / anycast / @mention) automatic items into a connector-started turn.
+   *  Externally started turns leave these items buffered until their boundary. Ambient waits
    *  for the boundary so channel chatter can't derail the work in flight. Exact-id acks mean the
    *  steered set need not be front-contiguous. A declined steer (the turn just ended) leaves the
    *  items buffered — completeTurn's drive picks them up. */
@@ -1068,7 +1070,8 @@ export async function runCodexHost(): Promise<void> {
   });
   driver.on("error", (e: Error) => log(`app-server error: ${e.message}`));
 
-  // Inbound mesh traffic. Busy: steer directed items into the live turn, buffer ambient. Idle: a
+  // Inbound mesh traffic. Busy with a connector-started turn: steer directed items, buffer ambient.
+  // Externally started turns buffer automatic batches until their boundary. Idle: a
   // directed message always drives; ambient drives only in `open` (dnd/focus hold it for the next
   // boundary). Receive-time pull-only never reaches "incoming" as automatic; `muted` never at all.
   agent.on("incoming", (item: InboxItem) => {
