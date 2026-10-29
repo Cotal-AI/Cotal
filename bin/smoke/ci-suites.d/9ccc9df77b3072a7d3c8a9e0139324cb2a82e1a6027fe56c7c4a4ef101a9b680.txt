@@ -1,0 +1,3 @@
+# The delegation bound: a grant is tested against the spawner's evidence at the spawner's own
+# coordinate, and each part it does not hold is named.
+smoke:grant-bound

@@ -1,0 +1,64 @@
+{
+  "suite": [
+    "packages/core/smoke/grant-bound.smoke.ts"
+  ],
+  "guard": "the delegation bound tests each part of a grant against the spawner's issued evidence at the spawner's own coordinate, refuses what it does not cover, and applies the token rule the ledger uses",
+  "command": "pnpm smoke:grant-bound",
+  "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/mutations/grant-bound.json",
+  "completionMarker": "GRANT-BOUND SMOKE",
+  "why": [
+    "A spawner may hand a helper any part of what it holds and never more. On a static mesh the",
+    "only record of what it holds is its issued evidence, which names subjects under its own",
+    "principal, so the grant is projected at the spawner's coordinate and the empty grant's rows",
+    "are subtracted before the test.",
+    "",
+    "B1 drops the subtraction, so the coordinate's own rows decide and every grant refuses. B2",
+    "stops folding subscribe into the read ACL, so a subscribe-only grant escapes the bound. B3",
+    "stops testing publish rows. B4 forgets that run carries spawn. B5 mints a class rail for an",
+    "instance pin. B6 reads role:<r> as an ordinary token, so a held role cannot be handed on."
+  ],
+  "mutations": [
+    {
+      "name": "B1 test every projected row, not only the rows the field adds",
+      "file": "packages/core/src/grant-bound.ts",
+      "find": "    const pub = [...projected.pub].filter((r) => !empty.pub.has(r));\n    const sub = [...projected.sub].filter((r) => !empty.sub.has(r));",
+      "replace": "    const pub = [...projected.pub];\n    const sub = [...projected.sub];",
+      "expectRed": "a grant inside the spawner's channels is within"
+    },
+    {
+      "name": "B2 bound only the explicit read ACL",
+      "file": "packages/core/src/grant-bound.ts",
+      "find": "  for (const ch of resolveReadAcl([...(grant.subscribe ?? [])], grant.allowSubscribe ? [...grant.allowSubscribe] : undefined))",
+      "replace": "  for (const ch of grant.allowSubscribe ?? [])",
+      "expectRed": "a subscribe-only grant is folded into the read ACL and bounded"
+    },
+    {
+      "name": "B3 skip the publish test",
+      "file": "packages/core/src/grant-bound.ts",
+      "find": "    return pub.every((r) => issuedPermitsPattern(ceiling.publish, r)) && sub.every",
+      "replace": "    return sub.every",
+      "expectRed": "posting where the spawner may only read is named"
+    },
+    {
+      "name": "B4 drop run-implies-spawn from the token rule",
+      "file": "packages/core/src/grant-bound.ts",
+      "find": "  return parentScope.includes(token) || (token === \"spawn\" && parentScope.includes(\"run\"));",
+      "replace": "  return parentScope.includes(token);",
+      "expectRed": "spawn is within run"
+    },
+    {
+      "name": "B5 mint a class rail beside an instance pin",
+      "file": "packages/core/src/grant-bound.ts",
+      "find": "      : { endpoint: g.endpoint, command, instanceId: g.instanceId, instanceOnly: true }));",
+      "replace": "      : { endpoint: g.endpoint, command, instanceId: g.instanceId }));",
+      "expectRed": "the spawner's own instance pin is within"
+    },
+    {
+      "name": "B6 read role:<r> as an ordinary capability token",
+      "file": "packages/core/src/grant-bound.ts",
+      "find": "    const role = ROLE_TOKEN.exec(token)?.[1];",
+      "replace": "    const role = undefined as string | undefined;",
+      "expectRed": "role:<r> as a capability token is held when the spawner holds that role"
+    }
+  ]
+}
