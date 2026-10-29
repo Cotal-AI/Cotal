@@ -467,7 +467,7 @@ successor manager, reports how the child ended. When the custodian cannot write 
 says why in the seat's `custodian.log`, and a later reap of a child that ended on its own reports
 the record as missing or unreadable. Optional runtimes are installed
 through the extension surface, for example `cotal ext add @cotal-ai/orca`, then selected with
-`--runtime orca` (similarly `@cotal-ai/tmux`, `@cotal-ai/cmux`, `@cotal-ai/herdr`, and `@cotal-ai/paseo`). They put teammates in native
+`--runtime orca` (similarly `@cotal-ai/tmux`, `@cotal-ai/cmux`, and `@cotal-ai/herdr`). They put teammates in native
 terminal surfaces rather than manager-owned PTYs. Those surfaces stream no exit, so the manager
 asks the runtime every five seconds whether a seat's process has ended, and frees a seat that ended
 on its own once the runtime proves the exit. Its `seat reaped:` line says the exit detail is

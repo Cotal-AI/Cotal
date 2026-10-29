@@ -138,8 +138,6 @@ CLI plus a self-registering `orca` Runtime provider.
 - `**@cotal-ai/herdr**` (`extensions/herdr`): the Herdr integration: a driver over the herdr CLI
 plus a self-registering `herdr` Runtime provider that spawns agents into panes of a dedicated
 Herdr session (they survive the manager's terminal going away).
-- `**@cotal-ai/paseo**` (`extensions/paseo`): the Paseo integration: a driver over the public `paseo`
-CLI plus a self-registering `paseo` Runtime provider that spawns agents into Paseo workspace terminals.
 - `**@cotal-ai/cli**` (`implementations/cli`): the mesh CLI: `up`, `join`, `console`,
 `spawn`, `mint`, `status`, `doctor`, `channels`, `history`, `ext` (operator-installed command extensions).
 - `**@cotal-ai/web**` (`implementations/web`): the browser dashboard as a `cotal ext`-installable
@@ -150,7 +148,7 @@ registered endpoint that agents call with `cotal_describe` and `cotal_invoke`, p
 `cotal linear` operator command. A `cotal ext`-installable package that peer-depends on core +
 workspace.
 - `**@cotal-ai/manager**` (`implementations/manager`): the agent supervisor: spawns and manages
-nodes via a pluggable Runtime (`pty` built-in; `tmux`, `cmux`, `orca`, `herdr`, and `paseo` via extensions), with `spawn --detach`/`stop`/`ps`/`attach`
+nodes via a pluggable Runtime (`pty` built-in; `tmux`, `cmux`, `orca`, and `herdr` via extensions), with `spawn --detach`/`stop`/`ps`/`attach`
 (attach streams over a mesh session) and a credentialed local HTTP console.
 - `**@cotal-ai/delivery**` (`implementations/delivery`): the server-side Plane-3 delivery daemon
 — the durable backstop (fan-out writer + trusted reader + membership/ACL authority), a scoped,

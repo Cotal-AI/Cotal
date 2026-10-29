@@ -88,7 +88,7 @@ before it writes anything:
    plugin that way), and one whose executable is not on PATH is named. Setup records your choice
    as the space's `harness` preference, so a bare `cotal spawn` in that space launches it.
 3. **Which runtimes your agents run in.** `pty` is built in and always set up. Each other runtime
-   (`tmux`, `cmux`, `orca`, `herdr`, `paseo`, and any third-party one you installed) shows whether it is set
+   (`tmux`, `cmux`, `orca`, `herdr`, and any third-party one you installed) shows whether it is set
    up and whether its tool is on PATH. Installed ones and ones whose tool was found start selected.
    Setup installs the ones you keep and checks that each answers; it never removes one you leave
    out.

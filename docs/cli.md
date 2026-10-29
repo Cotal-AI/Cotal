@@ -449,7 +449,7 @@ cotal setup --skills
 |---|---|---|
 | `--destination` | asked | `local`: a space this machine starts. `self-hosted`: a space registered here that runs on a server, including a Cloud space `cotal login` discovered. `cloud` is refused before anything is written or contacted, and the refusal names that route: `cotal login`, then `--destination self-hosted --space <name>`. |
 | `--harness`, `-H` | asked | The connector your agents run in. Setup runs its own setup actions and records it as the space's `harness` preference, so `cotal spawn` in the space launches it. When you have no `harness` preference of your own, it becomes yours too. |
-| `--runtime` | asked; none in a script | A runtime to set up besides the built-in `pty`: `tmux`, `cmux`, `orca`, `herdr`, `paseo` or an installed third-party one. Repeat it for each. |
+| `--runtime` | asked; none in a script | A runtime to set up besides the built-in `pty`: `tmux`, `cmux`, `orca`, `herdr` or an installed third-party one. Repeat it for each. |
 | `--project` | asked | The project folder: the space's root, whose `.cotal/agents` holds its personas. A script's folder must exist; a terminal offers to create it. |
 | `--space` | asked | The space to prepare (local) or the registered space to use (self-hosted). |
 | `--connection-file` | none | Self-hosted: register the space from a connection bundle exported where it runs, with the checks `space add --file` makes. |
@@ -3732,7 +3732,7 @@ involved unless you pick one when it asks where to run, as described below. Its 
 ask for one. `--detach` (`-d`) hands it to a manager, waits until the agent joins, and returns
 without attaching. `--on <instance>` hands it to that manager and attaches this terminal to the
 agent (see [Managed launch view](#managed-launch-view)), when that manager's runtime streams a
-terminal. The built-in `pty` runtime streams one. The `tmux`, `cmux`, `orca`, `herdr` and `paseo` runtimes
+terminal. The built-in `pty` runtime streams one. The `tmux`, `cmux`, `orca` and `herdr` runtimes
 start the agent in a surface they do not own and stream none, so a launch on one of those managers
 is not attached: it returns once the agent joins, with a receipt that names the runtime and what
 reaches the agent instead. Attaching needs usable input and output
@@ -4726,8 +4726,8 @@ they are cross-agent admin operations. On a user-auth mesh, your own agents (any
 owner) need only the `spawn` scope; another owner's agent needs `admin` on your ledger row
 ([identity & auth](identity-and-auth.md)). Launch detached agents with [`spawn --detach`](#spawn).
 
-`pty` is the only runtime that streams a terminal. A seat started by the `tmux`, `cmux`, `orca`,
-`herdr` or `paseo` runtime runs in a surface the manager does not own, so there is no stream to give and
+`pty` is the only runtime that streams a terminal. A seat started by the `tmux`, `cmux`, `orca` or
+`herdr` runtime runs in a surface the manager does not own, so there is no stream to give and
 `attach` refuses once with `UNSUPPORTED`, exit 2, carrying that runtime's own guidance for watching
 the agent where it runs, and a Next that names `cotal send` and `cotal watch`. The reconnect loop
 below does not retry that refusal, because asking again cannot change it.
@@ -4894,7 +4894,7 @@ own-owner rule covers every seat under you, not only the ones you launched: a `s
 could otherwise type into a sibling it never started. Seat locality is still resolved for you.
 
 Only the `pty` runtime can be typed into. The external terminal runtimes (`tmux`, `cmux`, `orca`,
-`herdr`, `paseo`) attach to a process they do not own, so they have no input stream for it and the command
+`herdr`) attach to a process they do not own, so they have no input stream for it and the command
 refuses by name rather than dropping the keystroke.
 
 ## persona
@@ -5176,7 +5176,7 @@ resume commit, still accepted for older callers (see [Backups](#backups)).
 The manager is the agent supervisor and control plane: it answers `spawn --detach`, `stop`, `ps`,
 `attach`, and the `cotal_*` manager tools. `cotal up --detach` starts one for you; run `supervise`
 directly to recover a dead manager or drive a custom runtime. Default runtime is `pty`; install an
-optional provider first (`cotal ext add @cotal-ai/orca`, `@cotal-ai/tmux`, `@cotal-ai/cmux`, `@cotal-ai/herdr`, or `@cotal-ai/paseo`) and
+optional provider first (`cotal ext add @cotal-ai/orca`, `@cotal-ai/tmux`, `@cotal-ai/cmux`, or `@cotal-ai/herdr`) and
 select it explicitly. A missing provider or app fails loudly; there is no fallback. See [Deploy](deploy.md).
 Boot inventory decides whether this process takes unpinned `spawn`/`launch` on the class rail:
 if every declared connector is unavailable, those commands stay on this instance rail only
@@ -5893,7 +5893,7 @@ cotal runtimes [--json | --plain]
 ```
 
 Lists every agent runtime the manager can spawn through: the built-in `pty`, the official providers
-(`orca`, `tmux`, `cmux`, `herdr`, `paseo`), and any custom provider installed via `cotal ext add`. Each installed
+(`orca`, `tmux`, `cmux`, `herdr`), and any custom provider installed via `cotal ext add`. Each installed
 provider is probed so you can see what is actually reachable on this machine before selecting it:
 
 ```
@@ -5903,7 +5903,6 @@ orca     installed · reachable  @cotal-ai/orca
 tmux     not installed          @cotal-ai/tmux
 cmux     not installed          @cotal-ai/cmux
 herdr    not installed          @cotal-ai/herdr
-paseo    not installed          @cotal-ai/paseo
 add one that is not installed with `cotal ext add <package>`
 ```
 
@@ -8329,7 +8328,7 @@ does, the receipt adds a `Granted` line with the channels it got and the ones it
 in attach/status commands when their tokens are safe shell words; it otherwise retains
 placeholders beside the full identity fields.
 
-A manager on a runtime that streams no terminal, which is `tmux`, `cmux`, `orca`, `herdr` and `paseo`,
+A manager on a runtime that streams no terminal, which is `tmux`, `cmux`, `orca` and `herdr`,
 answers with that fact and the launch stops there: no attach is asked for, nothing is partial, and
 the command exits 0 with the agent running. Its `Runtime` row reads `<runtime> · no terminal
 stream`, its `View` row reads `not attached; the seat runs in the manager's <runtime> session`, and

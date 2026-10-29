@@ -99,7 +99,7 @@ const commandPrefix = resolveOnPath("cotal", env) ? "cotal" : "pnpm cotal";
 if (process.platform !== "win32") {
   check("the baseline PATH exposes the real node/npm and only the declared harness/runtime tools",
     resolveOnPath("node", env) !== undefined && resolveOnPath("npm", env) !== undefined &&
-      ["orca", "orca-ide", "herdr", "paseo", "claude", "cmux"].every((name) => resolveOnPath(name, env) === undefined));
+      ["orca", "orca-ide", "herdr", "claude", "cmux"].every((name) => resolveOnPath(name, env) === undefined));
 }
 
 // An open broker, one that refuses a bare connect, and a stand-in exchange for a bundle's pins.
@@ -267,7 +267,7 @@ const FULL = (space: string, dir: string, harness = "codex") => ["setup", "--des
   check("--connection-file with a local destination is USAGE_INVALID", refused(fileLocal, 1, "USAGE_INVALID"), shown(fileLocal));
   const runtime = await json([...FULL("r1", dirs.runtime), "--runtime", "bogus"]);
   check("an unknown --runtime is USAGE_INVALID, naming the runtimes setup offers",
-    refused(runtime, 1, "USAGE_INVALID") && /--runtime bogus is not a runtime: pass pty, orca, tmux, cmux, herdr, paseo/.test(runtime.env?.error?.message ?? ""), shown(runtime));
+    refused(runtime, 1, "USAGE_INVALID") && /--runtime bogus is not a runtime: pass pty, orca, tmux, cmux, herdr/.test(runtime.env?.error?.message ?? ""), shown(runtime));
   const noTool = await json([...FULL("r2", dirs.runtime), "--runtime", "cmux"]);
   check("a --runtime whose host tool is not on PATH is DEPENDENCY_UNAVAILABLE, naming the tool",
     refused(noTool, 2, "DEPENDENCY_UNAVAILABLE") && /the cmux runtime drives cmux, which is not on PATH/.test(noTool.env?.error?.message ?? "") && installed("@cotal-ai/cmux") === undefined, shown(noTool));
@@ -286,7 +286,7 @@ const FULL = (space: string, dir: string, harness = "codex") => ["setup", "--des
     ["prepared space", "default persona", "harness preference of research"].every((w) => written.includes(w)), written);
   const runtimes = (r?.runtimes ?? []) as { name: string; state: string; selected: boolean; tool: { found: string | null } | null }[];
   check("without --runtime only pty is set up, and each official runtime is listed with its host tool",
-    runtimes.map((x) => `${x.name}:${x.state}:${x.selected}`).join() === "pty:built-in:true,orca:left-out:false,tmux:left-out:false,cmux:left-out:false,herdr:left-out:false,paseo:left-out:false"
+    runtimes.map((x) => `${x.name}:${x.state}:${x.selected}`).join() === "pty:built-in:true,orca:left-out:false,tmux:left-out:false,cmux:left-out:false,herdr:left-out:false"
       && runtimes.find((x) => x.name === "tmux")?.tool?.found === "tmux" && runtimes.find((x) => x.name === "cmux")?.tool?.found === null && installed("@cotal-ai/tmux") === undefined, runtimes);
   const persona = join(dir, ".cotal", "agents", "default.md");
   check("the default persona lands in the project's .cotal/agents and parses", existsSync(persona) && loadAgentFile(persona).name === "default_agent");

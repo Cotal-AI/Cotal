@@ -2,7 +2,7 @@
 
 The agent supervisor: a mesh endpoint that spawns and manages nodes via a pluggable `Runtime`
 (`pty` built-in; `tmux` via `@cotal-ai/tmux`; `cmux` via `@cotal-ai/cmux`; `orca` via `@cotal-ai/orca`;
-`herdr` via `@cotal-ai/herdr`; `paseo` via `@cotal-ai/paseo`), plus its own control-plane commands
+`herdr` via `@cotal-ai/herdr`), plus its own control-plane commands
 (`spawn --detach`/`stop`/`ps`/`attach`, where attach streams over a mesh session) and a
 credentialed local HTTP console.
 
