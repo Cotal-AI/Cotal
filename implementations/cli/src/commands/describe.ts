@@ -208,7 +208,7 @@ export async function invokeCmd(args: ParsedArgs, commandName = "invoke"): Promi
         }
       } });
       else { beforeSubmit(); response = await invoke(nc, space, service, command, input, { ...(nativeTarget ? { target: nativeTarget } : {}), deadlineMs, id: requestId }); }
-      if (!response.reply.ok) throw new NativeReplyError(response, "invocation");
+      if (!response.reply.ok) throw new NativeReplyError(response.reply, response.responder, "invocation");
       result = { kind: "endpoint-reply" as const, command, requestId: response.reply.id, responder: response.responder,
         resolution: endpointResolution(selection, response.responder),
         ...(callerCredential ? { callerCredential: callerCredential } : {}),
@@ -264,7 +264,7 @@ async function resolveTarget(nc: NatsConnection, space: string, service: Resolve
   if (service.endpoint !== BASELINE_LIFECYCLE_ENDPOINT) throw new CommandFailure("refused", "UNSUPPORTED", "--name uses the manager's native alias resolver; this endpoint does not declare one");
   const invoke = pinResolvedInstance ? invokeCommand : invokeRepairingSplit;
   const inspected = await invoke(nc, space, service, "inspect", { name: values.name }, { deadlineMs: remainingMs() });
-  if (!inspected.reply.ok) throw new NativeReplyError(inspected, "target-inspection");
+  if (!inspected.reply.ok) throw new NativeReplyError(inspected.reply, inspected.responder, "target-inspection");
   const row = inspected.reply.data as { id?: unknown; lifecycleUid?: unknown } | undefined;
   if (!row || typeof row.id !== "string" || !row.id || typeof row.lifecycleUid !== "string" || !row.lifecycleUid) throw new CommandFailure("refused", "SCHEMA_INVALID", "the inspected target has no usable native incarnation");
   const principal = parsePrincipalKey(row.id);

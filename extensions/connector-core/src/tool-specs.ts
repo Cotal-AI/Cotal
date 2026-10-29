@@ -1913,9 +1913,9 @@ export function cotalToolSpecs(
             const e = r.reply.error;
             // An endpoint's error text is bounded like its data: nothing over the limit is cut, and
             // nothing over it reaches the session either.
-            const details = e?.details?.length ? JSON.stringify(e.details) : "";
-            const message = e?.message ?? "no message";
-            const head = `${endpoint}.${command} failed: ${e?.code ?? "error"}${e?.outcome ? ` (outcome ${e.outcome})` : ""}: `;
+            const details = e.details?.length ? JSON.stringify(e.details) : "";
+            const message = e.message;
+            const head = `${endpoint}.${command} failed: ${e.code}${e.outcome ? ` (outcome ${e.outcome})` : ""}: `;
             if (head.length + message.length > ENDPOINT_RESULT_MAX_CHARS)
               return err(`${head}the error message is ${message.length} characters, over this tool's ${ENDPOINT_RESULT_MAX_CHARS}-character limit, and was withheld.`);
             if (head.length + message.length + details.length + 40 > ENDPOINT_RESULT_MAX_CHARS)

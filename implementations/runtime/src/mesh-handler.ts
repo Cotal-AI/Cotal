@@ -348,7 +348,7 @@ export class MeshHandler {
           : String((err as Error)?.message ?? err));
     }
     if (reply.reply.ok === false)
-      throw cwdResolutionRefusal(req.persona, instanceId, cwd, reply.reply.error?.message ?? "refused with no message");
+      throw cwdResolutionRefusal(req.persona, instanceId, cwd, reply.reply.error.message);
     const data = reply.reply.data as { cwd?: unknown; host?: unknown } | undefined;
     if (typeof data?.cwd !== "string" || data.cwd.length === 0 || !isAbsolute(data.cwd))
       throw cwdResolutionRefusal(req.persona, instanceId, cwd,
@@ -826,11 +826,11 @@ export class MeshHandler {
       // Tolerated refusals are the two "already gone" shapes: `not-found` (no such agent), and
       // `expired` (the target's lifecycle mapping is gone or rotated — this despawn pins one
       // incarnation, and an incarnation the mapping no longer names is not running).
-      const code = reply.reply.ok === false ? reply.reply.error?.code : undefined;
-      if (code === undefined) return;
+      if (reply.reply.ok !== false) return;
+      const { code, message } = reply.reply.error;
       const unrun = replyRefusedBeforeEffect(reply.reply.error);
       if (!unrun && code !== "not-found" && code !== "expired")
-        throw new Error(`the spawn's agent could not be despawned: ${reply.reply.error?.message ?? "refused"}`);
+        throw new Error(`the spawn's agent could not be despawned: ${message}`);
       if (!unrun && (allocator === undefined || reply.responder.instanceId === allocator)) return;
       if (attempt === MANAGER_ROUTE_ATTEMPTS)
         throw new Error(`the spawn goal "${goalId}" was allocated by manager instance ${allocator ?? "(unrecorded)"}, but none of ${attempt + 1} despawns was answered by it, and neither another manager's miss nor a refusal that ran nothing means it is gone; the discharge stays open to retry`);
@@ -1499,9 +1499,9 @@ export class MeshHandler {
           // (L4001); every other refusal (persona unknown, name taken) is the host declining the
           // request (L4000), the manager's own code carried in the detail.
           const err = reply.reply.error;
-          throw new EffectError(err?.code === "resource-exhausted" ? "L4001" : "L4000", "spawn",
-            `spawn(${req.persona}) was refused by the ${this.binding.endpoint} endpoint: ${err?.message ?? "refused with no message"}`,
-            err?.code !== undefined ? { code: err.code } : undefined);
+          throw new EffectError(err.code === "resource-exhausted" ? "L4001" : "L4000", "spawn",
+            `spawn(${req.persona}) was refused by the ${this.binding.endpoint} endpoint: ${err.message}`,
+            { code: err.code });
         }
         const floor = reply === undefined ? undefined : (reply.reply.data as Record<string, unknown> | undefined);
         if (floor !== undefined && floor.goalId !== goalId)
@@ -1674,23 +1674,22 @@ export class MeshHandler {
       // ONE reading of a refused acceptance, for both submits: a seat that dies between the first
       // submit and the re-read is the same dead seat, and the resubmit path classing it as an
       // ordinary refusal made an L4002 the program can catch arrive as an uncatchable L4000.
-      const refusal = (r: EpAttributedReply, resubmitted: boolean): Error => {
-        const err = r.reply.error;
+      const refusal = (err: EpError, resubmitted: boolean): Error => {
         // `expired` is the serve boundary's "target is not a live managed agent". From the placed
         // host that is the seat's own manager answering about it. From the class rail it is only
         // the members this call reached, so the message does not claim more than that.
-        if (err?.code === "expired")
+        if (err.code === "expired")
           return new EffectError("L4002", "turn", `turn(${name}#${uid}) ${seatDownReading(err, host)} before the relay began: ${err.message}`);
         return new Error(resubmitted
-          ? `turn(${name}#${uid}) landed but its acceptance could not be re-read: ${err?.message ?? "refused with no message"}`
-          : `turn(${name}#${uid}) was refused by the ${this.binding.endpoint} endpoint: ${err?.message ?? "refused with no message"}`);
+          ? `turn(${name}#${uid}) landed but its acceptance could not be re-read: ${err.message}`
+          : `turn(${name}#${uid}) was refused by the ${this.binding.endpoint} endpoint: ${err.message}`);
       };
-      if (reply !== undefined && reply.reply.ok === false) throw refusal(reply, false);
+      if (reply !== undefined && reply.reply.ok === false) throw refusal(reply.reply.error, false);
       if (reply === undefined) {
         // The acceptance carries the deadline authority, so a lost reply is asked for again: the
         // same goalId under the same fingerprint is served from the manager's acceptance cache.
         reply = await submit();
-        if (reply.reply.ok === false) throw refusal(reply, true);
+        if (reply.reply.ok === false) throw refusal(reply.reply.error, true);
       }
       const floor = reply.reply.data as { deadlineAt?: unknown } | undefined;
       if (typeof floor?.deadlineAt !== "number")
@@ -2061,10 +2060,10 @@ export class MeshHandler {
     }
     if (reply.reply.ok === false) {
       const err = reply.reply.error;
-      if (err?.code === "expired")
+      if (err.code === "expired")
         throw new EffectError("L4002", kind, `${kind}(${step}): ${name}#${uid} ${seatDownReading(err, seat.host)} before its relay began: ${err.message}`);
-      if (err?.code === "deadline-exceeded" && this.now() >= deadlineAt) return;
-      throw new Error(`${kind}(${step}) was refused by the ${this.binding.endpoint} endpoint: ${err?.message ?? "refused with no message"}`);
+      if (err.code === "deadline-exceeded" && this.now() >= deadlineAt) return;
+      throw new Error(`${kind}(${step}) was refused by the ${this.binding.endpoint} endpoint: ${err.message}`);
     }
   }
 
@@ -2088,7 +2087,7 @@ export class MeshHandler {
       const reply = await this.invokeManager(await this.manager("cancel"), "cancel", { goalId }, { deadlineMs: TURN_ACCEPT_DEADLINE_MS });
       if (reply.reply.ok !== false || (await readGoalResult(actx, ref)) !== undefined) return;
       if (accepter === undefined || reply.responder.instanceId === accepter) {
-        const err = reply.reply.error!;
+        const err = reply.reply.error;
         throw new EpEnvelopeError(err.code as EpErrorCode, `the relay "${goalId}" could not be withdrawn from its seat: ${err.message}`);
       }
       if (attempt === MANAGER_ROUTE_ATTEMPTS)

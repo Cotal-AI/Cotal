@@ -244,7 +244,7 @@ export async function openBrowserManagerCaller(opts: BrowserManagerCallerOptions
           (signal) => endpointCaller.invoke(command, args, { ...o, ...(signal ? { signal } : {}) }), {
             reconcile: async (goalId, _attributed, context) => {
               const q = await reconcileGoal(goalId, { deadlineMs: Math.min(followMs, context.deadlineMs), signal: context.signal });
-              if (q.reply.ok !== true) throw new Error(q.reply.error?.message ?? "goal-result query refused");
+              if (q.reply.ok !== true) throw new Error(q.reply.error.message);
               return q.reply.data as { goalId: string; result?: GoalResultFact } | undefined;
             },
             ...(o.signal ? { signal: o.signal } : {}),

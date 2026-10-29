@@ -131,15 +131,25 @@ export interface EndpointRequest {
   auth?: string;
 }
 
-export interface EndpointReply {
-  v: typeof EP_ENVELOPE_V;
-  id: string;
-  ok: boolean;
-  data?: unknown;
-  error?: EpError;
-  /** Opaque signed receipt slot (§13.10). */
-  receipt?: string;
-}
+export type EndpointReply =
+  | {
+      v: typeof EP_ENVELOPE_V;
+      id: string;
+      ok: true;
+      data?: unknown;
+      error?: undefined;
+      /** Opaque signed receipt slot (§13.10). */
+      receipt?: string;
+    }
+  | {
+      v: typeof EP_ENVELOPE_V;
+      id: string;
+      ok: false;
+      data?: unknown;
+      error: EpError;
+      /** Opaque signed receipt slot (§13.10). */
+      receipt?: string;
+    };
 
 /** The {@link ControlReply} a caller hands on for an endpoint reply. Every caller converts here, so
  *  whether it can act on a refusal's code, its details, or the acceptance a non-succeeded terminal
@@ -147,7 +157,6 @@ export interface EndpointReply {
 export function controlReplyFrom(reply: EndpointReply): ControlReply {
   if (reply.ok) return { ok: true, ...(reply.data !== undefined ? { data: reply.data } : {}) };
   const { error } = reply;
-  if (!error) throw new Error(`endpoint reply ${reply.id} failed without an error`);
   return {
     ok: false,
     error: renderLifecycleBlocked(error.message, error),
@@ -463,14 +472,20 @@ export function parseEndpointReply(raw: unknown): EndpointReply {
   assertVersion(o, "reply");
   const id = grammar(() => assertIdToken(asString(o.id, "id"), "id"));
   if (typeof o.ok !== "boolean") fail("bad-request", "ok is not a boolean");
-  if (o.ok && o.error !== undefined) fail("bad-request", "an ok reply must not carry an error");
-  if (!o.ok && o.data !== undefined) fail("bad-request", "a failed reply must not carry data");
-  const error = o.ok ? undefined : pickError(o.error);
+  if (o.ok) {
+    if (o.error !== undefined) fail("bad-request", "an ok reply must not carry an error");
+    const receipt = o.receipt === undefined ? undefined : asString(o.receipt, "receipt");
+    return {
+      v: EP_ENVELOPE_V, id, ok: true,
+      ...(o.data !== undefined ? { data: o.data } : {}),
+      ...(receipt !== undefined ? { receipt } : {}),
+    };
+  }
+  if (o.data !== undefined) fail("bad-request", "a failed reply must not carry data");
+  const error = pickError(o.error);
   const receipt = o.receipt === undefined ? undefined : asString(o.receipt, "receipt");
   return {
-    v: EP_ENVELOPE_V, id, ok: o.ok,
-    ...(o.ok && o.data !== undefined ? { data: o.data } : {}),
-    ...(error ? { error } : {}),
+    v: EP_ENVELOPE_V, id, ok: false, error,
     ...(receipt !== undefined ? { receipt } : {}),
   };
 }

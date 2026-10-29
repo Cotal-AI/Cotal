@@ -102,12 +102,12 @@ function definitionInput(values: PersonaValues, name: string): string {
 
 /** The failure a persona reply carries. `notFoundRemedy` is the refusal's remedy when the manager
  *  answers not-found, as it does for a card this caller may not read. */
-function failedReply(response: EpAttributedReply, target: unknown, mutation: boolean, notFoundRemedy?: string): CommandFailure {
-  const error = response.reply.error;
-  const code = nativeEndpointRefusal(error?.code);
-  const native = { code: error?.code, outcome: error?.outcome, detail: { requestId: response.reply.id, responder: response.responder } };
-  if ((!mutation || error?.outcome === "not-executed") && code) return new CommandFailure("refused", code, "the selected manager refused this persona operation; its message and input contents were not copied", { target, native, ...(code === "TARGET_NOT_FOUND" && notFoundRemedy ? { remedy: notFoundRemedy } : {}) });
-  return new CommandFailure(mutation && error?.outcome !== "executed" ? "unknown" : "failed", mutation && error?.outcome !== "executed" ? "OPERATION_UNKNOWN" : "OPERATION_FAILED", "the native persona operation did not return success; it was not retried", { target, native });
+function failedReply(reply: Extract<EpAttributedReply["reply"], { ok: false }>, responder: EpAttributedReply["responder"], target: unknown, mutation: boolean, notFoundRemedy?: string): CommandFailure {
+  const { error } = reply;
+  const code = nativeEndpointRefusal(error.code);
+  const native = { code: error.code, outcome: error.outcome, detail: { requestId: reply.id, responder } };
+  if ((!mutation || error.outcome === "not-executed") && code) return new CommandFailure("refused", code, "the selected manager refused this persona operation; its message and input contents were not copied", { target, native, ...(code === "TARGET_NOT_FOUND" && notFoundRemedy ? { remedy: notFoundRemedy } : {}) });
+  return new CommandFailure(mutation && error.outcome !== "executed" ? "unknown" : "failed", mutation && error.outcome !== "executed" ? "OPERATION_UNKNOWN" : "OPERATION_FAILED", "the native persona operation did not return success; it was not retried", { target, native });
 }
 
 /** Exact native manager routes only. No remote operation reads or writes the local catalog. */
@@ -144,7 +144,7 @@ export async function remotePersona(args: ParsedArgs): Promise<void> {
     const response = await invokeCommand(connection.nc, connection.space, service, command, body, { deadlineMs: 10_000, id: requestId });
     // A manager in this root writes and reads this root's own catalog file.
     const localFile = connection.root === undefined || name === undefined ? undefined : agentFilePath(connection.root, name);
-    if (!response.reply.ok) throw failedReply(response, target, mode === "create",
+    if (!response.reply.ok) throw failedReply(response.reply, response.responder, target, mode === "create",
       mode === "show" && localFile !== undefined && existsSync(localFile) ? `a persona file of that name is in this root's catalog, which the manager does not show this caller: read it here with \`cotal p show ${name}\`` : undefined);
     const raw = response.reply.data as Record<string, unknown>;
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("persona reply shape");

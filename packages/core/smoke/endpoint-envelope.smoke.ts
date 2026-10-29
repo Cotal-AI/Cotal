@@ -10,7 +10,7 @@
 import { createHash } from "node:crypto";
 import {
   EP_ERROR_CODES, isEpErrorCode, EpEnvelopeError,
-  parseEndpointRequest, parseEndpointReply, parseEndpointEvent,
+  parseEndpointRequest, parseEndpointReply, parseEndpointEvent, controlReplyFrom, type EndpointReply,
   checkRequestSubjectAgreement, assertClassMatches, assertArgsValid, assertOutputValid, authDigest,
   epRequestSubject, parseEpSubject, type ParsedEpRequest,
   compileContractSchema, VOID_SCHEMA, VOID_SCHEMA_DIGEST, SCHEMA_PROFILE,
@@ -153,7 +153,7 @@ admits("a scatter cast WITH a deadline agrees",
 const okReply = parseEndpointReply({ v: 1, id: "req-1", ok: true, data: { pid: 1 }, junk: 1 });
 c("ok reply parses, unknown fields dropped", okReply.ok && (okReply.data as { pid: number }).pid === 1 && !("junk" in okReply));
 const errReply = parseEndpointReply({ v: 1, id: "req-1", ok: false, error: { code: "expired", message: "mapping moved", details: [{ kind: "ai.cotal.mapping", revision: 4 }] } });
-c("error reply parses with reverse-DNS detail kinds", errReply.error?.code === "expired" && errReply.error.details?.[0].kind === "ai.cotal.mapping");
+c("error reply parses with reverse-DNS detail kinds", errReply.ok === false && errReply.error.code === "expired" && errReply.error.details?.[0].kind === "ai.cotal.mapping");
 rejects("an ok reply with an error is bad-request", "bad-request",
   () => parseEndpointReply({ v: 1, id: "r", ok: true, error: { code: "internal", message: "x" } }));
 rejects("a failed reply with data is bad-request", "bad-request",
@@ -164,6 +164,30 @@ rejects("a non-reverse-DNS detail kind is bad-request", "bad-request",
   () => parseEndpointReply({ v: 1, id: "r", ok: false, error: { code: "internal", message: "x", details: [{ kind: "oops" }] } }));
 rejects("reply version skew is unsupported-version", "unsupported-version",
   () => parseEndpointReply({ v: 0, id: "r", ok: true }));
+{
+  // #3412: EndpointReply is a discriminated union on `ok`, with `data?: unknown` kept on the
+  // failed branch for goal-follower in-process replies that retain acceptance data.
+  // @ts-expect-error a failed reply requires `error`
+  const missingError: EndpointReply = { v: 1, id: "a", ok: false };
+  // @ts-expect-error an ok reply cannot carry `error`
+  const okWithError: EndpointReply = { v: 1, id: "b", ok: true, error: { code: "internal", message: "x" } };
+  void missingError; void okWithError;
+  const narrowedMessage = (r: EndpointReply): string => (r.ok === false ? r.error.message : "ok");
+  const followerFailed: EndpointReply = {
+    v: 1, id: "d", ok: false,
+    data: { accepted: true, name: "w" },
+    error: { code: "unavailable", message: "late" },
+  };
+  c("narrowing on ok === false reads error.message directly without optional chaining",
+    narrowedMessage(followerFailed) === "late" && narrowedMessage(okReply) === "ok");
+  const fromOk = controlReplyFrom(okReply);
+  c("controlReplyFrom maps an ok reply with its data",
+    fromOk.ok === true && (fromOk.data as { pid: number }).pid === 1);
+  const fromFollower = controlReplyFrom(followerFailed);
+  c("controlReplyFrom keeps acceptance data on a failed follower reply",
+    fromFollower.ok === false && fromFollower.code === "unavailable" && fromFollower.error === "late"
+    && (fromFollower.data as { accepted: boolean; name: string }).name === "w");
+}
 
 // ── §13.3 error.outcome: the field a conformant peer sends and this parser used to drop ──
 // `pickError` REBUILDS the error rather than passing it through, so a field it does not name is

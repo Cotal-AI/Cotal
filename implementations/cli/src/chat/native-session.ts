@@ -432,10 +432,10 @@ export class NativeChatSession implements AdmittedChatSession {
       const r = await this.inputs.endpoint.invokeService(endpoint, command, args ? { ...args } : undefined, { deadlineMs: timeoutMs });
       if (r.reply.ok) return { outcome: "ok", value: r.reply.data ?? null };
       const err = r.reply.error;
-      const pre = err ? PRE_EFFECT[err.code] : undefined;
-      if (err && pre && err.outcome !== "unknown" && err.outcome !== "executed")
+      const pre = PRE_EFFECT[err.code];
+      if (pre && err.outcome !== "unknown" && err.outcome !== "executed")
         return { outcome: "refused", code: pre, message: err.message, native: { code: err.code, detail: err.details } };
-      return { outcome: "unknown", message: err?.message ?? "the endpoint answered without a result" };
+      return { outcome: "unknown", message: err.message };
     } catch (e) {
       return classify(e);
     }

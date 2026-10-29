@@ -2380,7 +2380,7 @@ export class MeshAgent extends EventEmitter {
               const queryRes = await invokeUserManager(config, bearer, "goal-result", { goalId }, {
                 signal: context.signal, deadlineMs: Math.min(invokeOpts.deadlineMs ?? 10_000, context.deadlineMs),
               });
-              if (queryRes.reply.ok !== true) throw new Error(queryRes.reply.error?.message ?? "goal-result query refused");
+              if (queryRes.reply.ok !== true) throw new Error(queryRes.reply.error.message);
               return queryRes.reply.data as { goalId: string; result?: GoalResultFact } | undefined;
             },
           }) : undefined,

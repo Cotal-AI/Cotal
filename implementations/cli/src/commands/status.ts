@@ -2316,7 +2316,7 @@ async function managerServiceHealth(
     const service = await resolveService(nc, target.space, "manager", auth.caller, { deadlineMs: 3_000, commands: ["status"] });
     const response = await invokeRepairingSplit(nc, target.space, service, "status", undefined, { deadlineMs: 3_000 });
     if (response.reply.ok !== true)
-      throw new EpEnvelopeError(response.reply.error?.code === "unavailable" ? "unavailable" : "failed-precondition", response.reply.error?.message ?? "manager status refused");
+      throw new EpEnvelopeError(response.reply.error.code === "unavailable" ? "unavailable" : "failed-precondition", response.reply.error.message);
     return response.reply.data as ManagerServiceStatus;
   } finally {
     await nc.drain().catch(() => nc.close());

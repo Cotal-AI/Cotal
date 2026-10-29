@@ -217,8 +217,8 @@
     {
       "name": "the acceptance re-read classes a gone seat as an ordinary refusal",
       "file": "implementations/runtime/src/mesh-handler.ts",
-      "find": "        if (err?.code === \"expired\")\n          return new EffectError(\"L4002\", \"turn\", `turn(${name}#${uid}) ${seatDownReading(err, host)} before the relay began: ${err.message}`);",
-      "replace": "        if (false)\n          return new EffectError(\"L4002\", \"turn\", `turn(${name}#${uid}) ${seatDownReading(err!, host)} before the relay began: ${err?.message}`);",
+      "find": "      const refusal = (err: EpError, resubmitted: boolean): Error => {\n        // `expired` is the serve boundary's \"target is not a live managed agent\". From the placed\n        // host that is the seat's own manager answering about it. From the class rail it is only\n        // the members this call reached, so the message does not claim more than that.\n        if (err.code === \"expired\")\n          return new EffectError(\"L4002\", \"turn\", `turn(${name}#${uid}) ${seatDownReading(err, host)} before the relay began: ${err.message}`);",
+      "replace": "      const refusal = (err: EpError, resubmitted: boolean): Error => {\n        // `expired` is the serve boundary's \"target is not a live managed agent\". From the placed\n        // host that is the seat's own manager answering about it. From the class rail it is only\n        // the members this call reached, so the message does not claim more than that.\n        if (!resubmitted && err.code === \"expired\")\n          return new EffectError(\"L4002\", \"turn\", `turn(${name}#${uid}) ${seatDownReading(err, host)} before the relay began: ${err.message}`);",
       "expectRed": "a seat that died between the submit and the acceptance re-read is the catchable L4002",
       "cell": "a seat that died between the submit and the acceptance re-read is the catchable L4002",
       "note": "Measured 2026-09-03: KILLED. mesh-turn.smoke: 46 passed, 1 failed Named cell red: a seat that died between the submit and the acceptance re-read is the catchable L4002"

@@ -148,7 +148,7 @@
     {
       "name": "a gone seat at the relay is classed like any refusal",
       "file": "implementations/runtime/src/mesh-handler.ts",
-      "find": "      if (err?.code === \"expired\")\n        throw new EffectError(\"L4002\", kind,",
+      "find": "      if (err.code === \"expired\")\n        throw new EffectError(\"L4002\", kind,",
       "replace": "      if (false)\n        throw new EffectError(\"L4002\", kind,",
       "expectRed": "the ask fails as the catchable agent-down L4002, carrying the endpoint's reason",
       "cell": "the ask fails as the catchable agent-down L4002, carrying the endpoint's reason",

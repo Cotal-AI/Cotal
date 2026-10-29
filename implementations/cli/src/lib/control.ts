@@ -225,14 +225,14 @@ async function askManagerEp(
           const current = await resolveService(nc, space, BASELINE_LIFECYCLE_ENDPOINT, context.caller, { ...(instanceId !== undefined ? { instanceId: accepted.responder.instanceId } : {}), commands: ["goal-result"], deadlineMs: context.deadlineMs, signal: context.signal });
           const answer = await invokeRepairingSplit(nc, space, current, "goal-result", { goalId }, { deadlineMs: context.deadlineMs, signal: context.signal });
           if (!answer.reply.ok) {
-            observationCause = { code: answer.reply.error?.code, outcome: answer.reply.error?.outcome };
+            observationCause = { code: answer.reply.error.code, outcome: answer.reply.error.outcome };
             throw new Error("the accepting manager did not provide a confirmed goal-result read");
           }
           return answer.reply.data as { goalId: string; result?: GoalResultFact };
         },
       })
       : await submit();
-    if (r.reply.ok !== true) return { ...controlReplyFrom(r.reply), answered: true, managerInstanceId: r.responder.instanceId, managerEpoch: r.responder.epoch, ...(observationCause ? { observationCause } : {}), ...(intent ? { intent } : {}), ...(request ? { request } : {}), ...(r.reply.error?.outcome ? { nativeOutcome: r.reply.error.outcome } : {}) };
+    if (r.reply.ok !== true) return { ...controlReplyFrom(r.reply), answered: true, managerInstanceId: r.responder.instanceId, managerEpoch: r.responder.epoch, ...(observationCause ? { observationCause } : {}), ...(intent ? { intent } : {}), ...(request ? { request } : {}), ...(r.reply.error.outcome ? { nativeOutcome: r.reply.error.outcome } : {}) };
     // The ep `models` reply is normalized to `{catalogs}` — unwrap so call sites keep the ctl shape.
     const data = mapped.command === "models" ? (r.reply.data as { catalogs: unknown }).catalogs : r.reply.data;
     return { ok: true, managerInstanceId: r.responder.instanceId, managerEpoch: r.responder.epoch, ...(observationCause ? { observationCause } : {}), ...(intent ? { intent } : {}), ...(request ? { request } : {}), ...(data !== undefined ? { data } : {}) };
@@ -802,7 +802,7 @@ async function askManagerScatterEp(
       const instances: ScatterInstanceReply[] = [];
       for (const [instanceId, ar] of result.replies) {
         if (ar.reply.ok === true) instances.push({ instanceId, reachable: true, data: ar.reply.data });
-        else instances.push({ instanceId, reachable: true, error: ar.reply.error?.message ?? ar.reply.error?.code ?? "error", ...(ar.reply.error?.code ? { code: ar.reply.error.code } : {}) });
+        else instances.push({ instanceId, reachable: true, error: ar.reply.error.message, code: ar.reply.error.code });
       }
       // A frozen instance that never answered is UNREACHABLE — surfaced, never silently dropped
       // (pin 3) — and now carries WHY it is silent, as far as this command could establish it.

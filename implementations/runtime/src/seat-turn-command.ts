@@ -38,9 +38,9 @@ export async function seatTurnCommand(mode: "turns" | "yield", goalId: string | 
       goalId, status: values.status, ...(values.to === undefined ? {} : { to: values.to }), ...(values.note === undefined ? {} : { note: values.note }),
     }, { target: { mode: "self" }, deadlineMs: 10_000 });
     if (!response.reply.ok) {
-      const native = response.reply.error?.code;
+      const native = response.reply.error.code;
       const known: Record<string, RefusalCode> = { "permission-denied": "PERMISSION_DENIED", "not-found": "TARGET_NOT_FOUND", "expired": "LIFECYCLE_BLOCKED", "failed-precondition": "LIFECYCLE_BLOCKED", "invalid-argument": "SCHEMA_INVALID", "unavailable": "TARGET_UNAVAILABLE" };
-      const code = native === undefined ? undefined : known[native];
+      const code = known[native];
       if (code) throw new CommandFailure("refused", code, "the manager refused this self-only workflow request", { target, native: { code: native } });
       throw new CommandFailure(mode === "yield" ? "unknown" : "failed", mode === "yield" ? "OPERATION_UNKNOWN" : "OPERATION_FAILED", "the native workflow-turn request did not return a confirmed outcome; it was not retried", { target, native: { code: native } });
     }

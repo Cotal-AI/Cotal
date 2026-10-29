@@ -33,6 +33,6 @@ export async function followEndpointAction(nc: NatsConnection, space: string, se
     return reply.reply.data as { goalId: string; result?: GoalResultFact };
   } });
   if (response.reply.ok && !accepted) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the declared action returned success without a usable accepted goal ID; terminal completion was not inferred and the call was not retried", { target: { space, endpoint: service.endpoint, command, requestId: options.requestId } });
-  if (accepted && response.reply.ok === false && ["failed", "cancelled", "expired"].includes(response.reply.error?.code ?? "")) throw new CommandFailure("failed", "OPERATION_FAILED", "the accepted goal reached a native non-success terminal", { target: { space, endpoint: service.endpoint, command, accepted }, native: { code: response.reply.error!.code, outcome: "executed" } });
+  if (accepted && response.reply.ok === false && ["failed", "cancelled", "expired"].includes(response.reply.error.code)) throw new CommandFailure("failed", "OPERATION_FAILED", "the accepted goal reached a native non-success terminal", { target: { space, endpoint: service.endpoint, command, accepted }, native: { code: response.reply.error.code, outcome: "executed" } });
   return response;
 }

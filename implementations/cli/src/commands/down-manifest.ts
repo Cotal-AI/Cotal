@@ -127,7 +127,7 @@ export async function downManifest(file: string, flags: DownManifestFlags): Prom
         const psR = await ep.invokeService("manager", "ps", undefined, { deadlineMs: 8_000 });
         // A FAILED ps reply is teardown uncertainty too — not a trustworthy empty roster. Throw so it
         // joins the no-responder/thrown path → controlOk stays false → partial retention (review-ux).
-        if (psR.reply.ok !== true) throw new Error(psR.reply.error?.message ?? "ps failed");
+        if (psR.reply.ok !== true) throw new Error(psR.reply.error.message);
         const live = ((psR.reply.data as Array<{ name: string; id: string; lifecycleUid: string }>) ?? []);
         liveById = new Map(live.map((r) => [r.id, r]));
         for (const a of ledger.created.agents) {
@@ -150,7 +150,7 @@ export async function downManifest(file: string, flags: DownManifestFlags): Prom
             stoppedIds.add(a.id);
             console.log(c.green(`  ✓ stopped ${l.name}`));
           } else {
-            console.log(c.yellow(`  ! ${l.name}: stop failed - ${stopR.reply.error?.message ?? "unknown"}`));
+            console.log(c.yellow(`  ! ${l.name}: stop failed - ${stopR.reply.error.message}`));
           }
         }
         // Channel removal: skip on ANY uncertainty (best-effort, racy — said so in output). The

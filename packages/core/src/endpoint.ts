@@ -2826,7 +2826,7 @@ export class CotalEndpoint extends EventEmitter {
         const q = await this.invokeService(endpoint, "goal-result", { goalId }, {
           deadlineMs: Math.min(deadlineMs, context.deadlineMs), signal: context.signal,
         });
-        if (q.reply.ok !== true) throw new Error(q.reply.error?.message ?? "goal-result query refused");
+        if (q.reply.ok !== true) throw new Error(q.reply.error.message);
         return q.reply.data as { goalId: string; result?: GoalResultFact } | undefined;
       });
       return await submitAndFollowGoal(this.nc, this.space, endpoint, this.serviceCaller(), deadlineMs, submit, {
@@ -2978,7 +2978,7 @@ export class CotalEndpoint extends EventEmitter {
           // class that is churning.
           this.emit("split-recovered", {
             endpoint, command, servedBy: r.responder, splitsRecovered: this.splitsRecovered,
-            boundTo: (r.reply.error?.details ?? []).find(
+            boundTo: (r.reply.error.details ?? []).find(
               (d): d is EpBindRefusedDetail => d.kind === EP_BIND_REFUSED,
             )?.boundTo,
           });
@@ -2993,11 +2993,11 @@ export class CotalEndpoint extends EventEmitter {
           // `expired` for the same instance at ANY other epoch — the fence does not compare
           // direction, so a superseded incarnation still answering produces it too); the marker on
           // any other code is incoherent, so it is rejected rather than trusted (§13.3).
-          const raw = r.reply.error?.code;
+          const raw = r.reply.error.code;
           const refusalCode = raw === "expired" ? ("expired" as const)
             : raw === "failed-precondition" ? ("failed-precondition" as const) : undefined;
           if (refusalCode === undefined)
-            throw new EpEnvelopeError("internal", `${endpoint}.${command} came back marked as refused before it ran, but with code ${String(raw)}; the fence produces only failed-precondition or expired (SPEC 13.2)`, r.reply.error?.details);
+            throw new EpEnvelopeError("internal", `${endpoint}.${command} came back marked as refused before it ran, but with code ${String(raw)}; the fence produces only failed-precondition or expired (SPEC 13.2)`, r.reply.error.details);
           // ONLY THE RESOLVE IS WRAPPED — do not widen this `try` to cover the re-issue. A re-issue
           // that PUBLISHED AND RAN can still throw (an unfenced responder answers and the post-reply
           // currency check raises `respondedButUnbound`); wrapping that as the first hop's refusal
@@ -3009,12 +3009,12 @@ export class CotalEndpoint extends EventEmitter {
           try {
             reissueTarget = await resolve(signal);
             const unfollowable = opts.follow ? goalFollowRefusal(reissueTarget) : undefined;
-            if (unfollowable) throw new Error(unfollowable.reply.error!.message);
+            if (unfollowable) throw new Error(unfollowable.reply.error.message);
           } catch (reissue) {
             throw new EpEnvelopeError(
               refusalCode,
               `${endpoint}.${command} WAS NOT RUN - the incarnation that received it refused it before any effect, and the re-issue could not be resolved: ${reissue instanceof Error ? reissue.message : String(reissue)}. Re-resolve and re-issue when the endpoint is reachable (SPEC 13.2)`,
-              r.reply.error?.details,
+              r.reply.error.details,
               // §13.3: the message asserts the command did not run, so the FIELD a caller keys on
               // must assert it too. Omitted, it MUST be read as `unknown`, which is the opposite of
               // what this path knows: the responder fenced the call before any effect and the

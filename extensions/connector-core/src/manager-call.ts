@@ -126,10 +126,10 @@ export async function invokeUserManager(
       try {
         service = await resolve(signal);
         const unfollowable = opts.follow ? goalFollowRefusal(service) : undefined;
-        if (unfollowable) throw new Error(unfollowable.reply.error!.message);
+        if (unfollowable) throw new Error(unfollowable.reply.error.message);
       } catch (error) {
         return { ...result, reply: { ...result.reply, error: {
-          ...result.reply.error!,
+          ...result.reply.error,
           message: `${command} WAS NOT RUN; manager instance ${instanceId} refused before effects, and re-resolution failed: ${error instanceof Error ? error.message : String(error)}`,
         } } };
       }

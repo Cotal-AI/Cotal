@@ -474,7 +474,7 @@ export async function epCall(
       // both halves are DERIVABLE. A `boundTo` that is not the block this request carried was not
       // computed from this request; a `servedBy` disagreeing with the reply subject is a body
       // contradicting its own attribution. Both are `internal`, not a retry.
-      const refusal = (attributed.reply.error?.details ?? []).find((d) => d.kind === EP_BIND_REFUSED) as EpBindRefusedDetail | undefined;
+      const refusal = (attributed.reply.error.details ?? []).find((d) => d.kind === EP_BIND_REFUSED) as EpBindRefusedDetail | undefined;
       if (refusal === undefined)
         throw new EpEnvelopeError("internal", `${op.endpoint}.${op.command} came back marked ${EP_BIND_REFUSED} with no such detail to derive it from (SPEC 13.3)`);
       if (refusal.boundTo.instanceId !== op.bind.instanceId || refusal.boundTo.epoch !== op.bind.epoch)

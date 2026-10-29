@@ -805,7 +805,7 @@ async function askHost(values: RunValues, command: string, args: Record<string, 
       const err = r.reply.error;
       // A validation refusal carries every problem as the language's own records; print them the
       // way the validator would, so the fix is the same edit either way.
-      for (const d of err?.details ?? []) if (d.kind === LANG_PROBLEM_DETAIL_KIND) console.error(renderLangProblem(d));
+      for (const d of err.details ?? []) if (d.kind === LANG_PROBLEM_DETAIL_KIND) console.error(renderLangProblem(d));
       throw managerRefusal(command, t.space, args, err, values.on);
     }
     return r.reply.data;
