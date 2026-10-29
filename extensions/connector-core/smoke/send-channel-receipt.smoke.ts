@@ -346,6 +346,32 @@ const proto = MeshAgent.prototype as unknown as {
   const none = await run(readOnly, ["announce"]);
   check("with no channel it may post to, an omitted channel is refused before sending", none.result.isError === true && none.sent.length === 0 && none.result.text.includes("post to none"), none);
   check("the advertised text says there is no default to post to", none.described.includes("post to none"), none.described);
+  check(
+    "with nowhere to post, the refusal says an operator widens the grant and names cotal_dm meanwhile",
+    none.result.text.includes("ask an operator to widen it") && none.result.text.includes("cotal_dm"),
+    none.result.text,
+  );
+
+  // A seat on no channel at all (the fresh-helper case) is told the channels it may post to and the
+  // exact next call, so the first send does not have to bounce through the orientation card.
+  const nowhere = { ...base, subscribe: [], allowSubscribe: ["team.rocket"], allowPublish: ["team.rocket"], userAuth } as AgentConfig;
+  const fresh = await run(nowhere, []);
+  check(
+    "on no channel, the refusal names the postable channel and the exact next call",
+    fresh.result.isError === true && fresh.sent.length === 0 && fresh.result.text.includes("you are on no channel")
+      && fresh.result.text.includes('cotal_send with channel: "team.rocket"') && fresh.result.text.includes("cotal_join team.rocket"),
+    fresh.result.text,
+  );
+  check("the advertised text carries the same next call", fresh.described.includes('cotal_send with channel: "team.rocket"'), fresh.described);
+
+  const elsewhere = { ...base, subscribe: ["announce"], allowSubscribe: ["announce", "team.rocket"], allowPublish: ["team.rocket"], userAuth } as AgentConfig;
+  const other = await run(elsewhere, ["announce"]);
+  check(
+    "reading only a channel it may not post to, the refusal names what it reads and where it may post",
+    other.result.isError === true && other.sent.length === 0 && other.result.text.includes("post to none of the channels you read (#announce)")
+      && other.result.text.includes('cotal_send with channel: "team.rocket"'),
+    other.result.text,
+  );
 
   const open = { ...base, subscribe: ["announce", "lobby"], allowSubscribe: ["announce", "lobby"], allowPublish: [] } as AgentConfig;
   const unchanged = await run(open, ["announce", "lobby"]);
