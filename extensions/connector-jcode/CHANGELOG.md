@@ -1,5 +1,11 @@
 # @cotal-ai/connector-jcode
 
+## 0.121.5
+
+### Patch Changes
+
+- 2a39a6b: Preserve safe startup categories for Jcode readiness authentication refusals and failed provider requests in native workflow diagnostics without exposing provider output.
+
 ## 0.121.4
 
 No changes in this release.

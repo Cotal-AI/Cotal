@@ -1,5 +1,13 @@
 # @cotal-ai/delivery
 
+## 0.121.5
+
+### Patch Changes
+
+- 459e998: The `deliver --spaces` ready line lists the spaces it serves in manifest order again. Since lanes began opening together, it listed them in the order their opens finished, which changed from run to run.
+- @cotal-ai/core@0.121.5
+  - @cotal-ai/workspace@0.121.5
+
 ## 0.121.4
 
 ### Patch Changes

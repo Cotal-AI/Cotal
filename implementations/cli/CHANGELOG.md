@@ -1,5 +1,13 @@
 # @cotal-ai/cli
 
+## 0.121.5
+
+### Patch Changes
+
+- f21caf2: Suggest the full manager instance id when a hosted `cotal run` verb refuses to choose among several live managers, matching the `--on` that verb accepts.
+- @cotal-ai/core@0.121.5
+  - @cotal-ai/workspace@0.121.5
+
 ## 0.121.4
 
 ### Patch Changes
