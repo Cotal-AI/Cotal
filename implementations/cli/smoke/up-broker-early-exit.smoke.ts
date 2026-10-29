@@ -10,7 +10,9 @@
  *
  * `up --foreground` with the stand-in that exits 1 ends with exit 5, a failed run, not the broker's
  * own 1. Its line says the broker exited before the mesh was recorded, as `cotal meshes` confirms,
- * and its next step is the one a detached start gives, not the same `up` again.
+ * and its next step is the one a detached start gives, not the same `up` again. Off a terminal its
+ * start line is one line on stdout and its exit line one on stderr. On an 80-column terminal both
+ * wrap at spaces, each continuation under its text, with no path split and `cotal up` whole.
  *
  * Run: pnpm smoke:up-broker-early-exit
  */
@@ -18,7 +20,9 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { createSuite, freePort, skipSuite, SMOKE_BROKER_TOKEN } from "@cotal-ai/smoke-kit";
+import { displayWidth } from "@cotal-ai/workspace";
 import { assertScratchHeld, makeScratch } from "../../../bin/smoke/_scratch.js";
+import { clean, nodePty } from "./_console-pty.js";
 
 if (process.platform === "win32") skipSuite("the stand-in nats-server is a POSIX shell script");
 const scratch = makeScratch(`${SMOKE_BROKER_TOKEN}broker-early-exit-`);
@@ -62,6 +66,30 @@ try {
   suite.check("foreground: its next step is the output above, then the file or PATH, not the same up", line.includes(`next: read the terminal output above, then fix ${join(scratch, "bin-code", "nats-server")} or take it off PATH so cotal uses its bundled nats-server, and run \`cotal up\` again`) && !line.includes("repair:"), line);
   const meshes = spawnSync(process.execPath, [cli, "meshes"], { cwd: root, env, encoding: "utf8", timeout: 60_000 });
   suite.check("foreground: no record was written for it", meshes.status === 0 && flat(meshes.stdout).includes("no meshes registered"), flat(`${meshes.stdout}${meshes.stderr}`));
+  const fake = join(scratch, "bin-code", "nats-server");
+  const starting = (at: string) => `Starting nats-server 2.14.0 on PATH at ${fake} (JetStream, JWT auth) - store: ${join(at, ".cotal", "nats")}, bind: 127.0.0.1`;
+  const exited = `✗ nats-server exited unexpectedly (code 1) before the mesh "fg" was recorded; next: read the terminal output above, then fix ${fake} or take it off PATH so cotal uses its bundled nats-server, and run \`cotal up\` again`;
+  suite.check("foreground: off a terminal, the start line is one line on stdout and the exit line one line on stderr",
+    foreground.stdout.split("\n").includes(starting(root)) && foreground.stderr.split("\n").includes(exited), { stdout: foreground.stdout, stderr: foreground.stderr });
+
+  // The same start on an 80-column terminal, from a fresh folder of the same name.
+  const ttyRoot = join(scratch, "tty", "fg");
+  mkdirSync(ttyRoot, { recursive: true });
+  assertScratchHeld(ttyRoot, "the project folder");
+  let shown = "";
+  const pty = nodePty([cli, "up", "--foreground", "--server", `nats://127.0.0.1:${await freePort()}`], { cwd: ttyRoot, env, cols: 80, rows: 200 });
+  pty.onData((data) => { shown += data; });
+  const ptyExit = await new Promise<number>((done) => pty.onExit((e) => done(e.exitCode)));
+  const lines = clean(shown).split(/\r?\n/);
+  const startAt = lines.findIndex((l) => l.startsWith("Starting nats-server")), startEnd = lines.indexOf("Press Ctrl-C to stop.");
+  const exitAt = lines.findIndex((l) => l.startsWith("✗ nats-server exited unexpectedly"));
+  const exitEnd = lines.findIndex((l, i) => i > exitAt && !l.startsWith("  "));
+  suite.check("foreground on 80 columns: exit 5, and only a word wider than the line runs past it",
+    ptyExit === 5 && lines.every((l) => displayWidth(l) <= 80 || !l.trim().includes(" ")), { ptyExit, lines });
+  suite.check("foreground on 80 columns: the start line wraps at spaces and reads whole",
+    startAt >= 0 && startEnd - startAt > 1 && lines.slice(startAt, startEnd).join(" ") === starting(ttyRoot), lines);
+  suite.check("foreground on 80 columns: the exit line wraps at spaces under its text, with `cotal up` on one line",
+    exitAt >= 0 && exitEnd - exitAt > 1 && lines.slice(exitAt, exitEnd).map((l, i) => (i ? l.slice(2) : l)).join(" ") === exited && lines.slice(exitAt, exitEnd).some((l) => l.includes("`cotal up`")), lines);
 } finally {
   rmSync(scratch, { recursive: true, force: true });
   suite.finish();

@@ -203,11 +203,12 @@ import {
   exitCode,
   canonicalLocalProcessPath,
   DELIVERY_LOGFILE,
+  terminalWidth,
 } from "@cotal-ai/workspace";
 import { FlagValueRefusal } from "../lib/flag-value-refusal.js";
 import { ensureAuthService, resolveAuthProvider, stopAuthService } from "../lib/auth-proc.js";
 import { resolveSpace } from "../lib/status.js";
-import { c, stderrLine } from "../ui.js";
+import { c, hang, stderrLine } from "../ui.js";
 import { admitAndRestoreSeatCheckpoints, type StaleCheckpointConsent } from "../lib/seat-resume.js";
 import { natsServerLabel, resolveNatsServer, type NatsServer } from "../lib/nats-bin.js";
 import { cotalPath, cotalRoot, homeHoldsStack, linkedCotalRefusal } from "../lib/paths.js";
@@ -2258,11 +2259,8 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   const bin = natsServer.path;
   await seedBeforeLaunch();
 
-  console.log(
-    c.dim(
-      `Starting ${natsServerLabel(natsServer)} (JetStream, ${useAuth ? "JWT auth" : "OPEN/no-auth"}) - store: ${storeDir}, bind: ${host}`,
-    ),
-  );
+  const starting = `Starting ${natsServerLabel(natsServer)} (JetStream, ${useAuth ? "JWT auth" : "OPEN/no-auth"}) - store: ${storeDir}, bind: ${host}`;
+  for (const line of hang("", starting, terminalWidth(process.stdout), c.dim)) console.log(line);
   console.log(c.dim("Press Ctrl-C to stop.\n"));
   const listenerStartedAt = new Date().toISOString();
   // A terminal sends Ctrl-C to the whole foreground process group. Keep the broker outside it
@@ -2367,7 +2365,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       } catch {
         outcome = `; whether the mesh "${space}" stays recorded could not be read; ${repair}`;
       }
-      console.error(c.red(`✗ nats-server exited unexpectedly (${detail})${outcome}`));
+      stderrLine("✗ ", `nats-server exited unexpectedly (${detail})${outcome}`, c.red);
       // A foreground broker under `Restart=on-failure` must exit non-zero on a crash so the unit
       // restarts it; exiting 0 here (as an unconditional `code ?? 0` used to) looked like a clean
       // stop and left the unit sitting dead. A broker that exited 0, as after an external `down`,
