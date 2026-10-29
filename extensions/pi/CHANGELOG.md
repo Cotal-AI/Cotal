@@ -1,5 +1,9 @@
 # @cotal-ai/pi
 
+## 0.126.0
+
+No changes in this release.
+
 ## 0.125.0
 
 ### Patch Changes

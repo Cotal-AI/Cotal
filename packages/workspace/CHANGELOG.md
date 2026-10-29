@@ -1,5 +1,15 @@
 # @cotal-ai/workspace
 
+## 0.126.0
+
+### Minor Changes
+
+- 6481f8b: Expose each connector's event-plane support as a required typed Manager status fact, including declared inventory rows before import.
+
+### Patch Changes
+
+- @cotal-ai/core@0.126.0
+
 ## 0.125.0
 
 ### Patch Changes
