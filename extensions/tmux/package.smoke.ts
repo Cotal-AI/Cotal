@@ -1,7 +1,9 @@
 import { strict as assert } from "node:assert";
 import { readFileSync, rmSync, statSync } from "node:fs";
 import { dirname } from "node:path";
+import { registry } from "@cotal-ai/core";
 import { isolatedCommand, mergedCommand, privateLaunch } from "./src/driver.js";
+import * as tmuxPkg from "./src/index.js";
 
 // The tmux launcher contract is POSIX by construction: a bash script written 0o600 inside a
 // 0o700 dir. On Windows those modes are a no-op and bash is not the shell; secret-at-rest
@@ -39,5 +41,11 @@ try {
 } finally {
   rmSync(dirname(launchPath), { recursive: true, force: true });
 }
+
+check("package exports TmuxRuntime and tmuxRuntimeProvider, not tmuxTerminalProvider", "TmuxRuntime" in tmuxPkg && "tmuxRuntimeProvider" in tmuxPkg && !("tmuxTerminalProvider" in tmuxPkg));
+check("importing @cotal-ai/tmux registers runtime/tmux and no terminal provider", registry.has("runtime", "tmux") && !registry.has("terminal", "tmux") && registry.all("terminal").length === 0);
+assert.throws(() => registry.resolve("terminal", "tmux"), /no terminal registered for "tmux"/);
+checks++;
+console.log("  ✓ resolving terminal/tmux throws");
 
 console.log(`TMUX PACKAGE TESTS: ${checks} tests executed`);

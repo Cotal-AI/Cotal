@@ -21,7 +21,7 @@ import { registry, type Extension } from "./registry.js";
  * But the alternative that was shipping — every extension part rendering as a marker on every
  * surface — means an extension can put a part on the wire that **nothing in the standard can ever
  * display.** So core declares the contract and stays ignorant of who fills it, exactly as
- * {@link TerminalLayout} does for terminal backends: the provider self-registers on import, and the
+ * {@link RuntimeProvider} does for runtime backends: the provider self-registers on import, and the
  * consumer here resolves by kind without ever importing the extension package.
  *
  * **THE MARKER IS NOT REMOVED, AND THAT MATTERS.** A kind with no registered renderer still renders

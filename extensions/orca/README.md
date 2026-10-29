@@ -20,7 +20,6 @@ import.
   Orca tab rather than `cotal attach`.
 - Waits for exit through Orca's bounded native `terminal wait --for exit`, following handle rotation
   by stable PTY id and failing closed on timeout or an unreachable runtime.
-- Contributes a `Runtime` only, not a `TerminalLayout` provider for setup layouts.
 
 Orca must open terminals with a POSIX-compatible shell that supports `exec` and single-quoted
 arguments. Driver calls are synchronous because Cotal's `Runtime` lifecycle contract is synchronous;

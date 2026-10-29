@@ -5,7 +5,7 @@
  * surface that renders a message as flat text draws one as `[unrenderable part kind "ag-ui.frame"]`.
  * This is the provider that fixes that for the console family: a core {@link PartRenderer} of kind
  * `part-renderer`, named for the part kind it draws, self-registering on import exactly as a
- * terminal-layout provider does.
+ * runtime provider does.
  *
  * **IT LANDED BEFORE ANY PRODUCER, AND THAT ORDERING WAS THE POINT.** It shipped while nothing in
  * production published a frame, and the Claude connector's emitter followed it. The alternative

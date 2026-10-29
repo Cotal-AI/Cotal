@@ -4,11 +4,10 @@
  * Uses a real tmux session; cleans up on pass or fail.
  */
 import * as tmux from "./src/driver.js";
-import { TmuxRuntime, tmuxRuntimeProvider, tmuxTerminalProvider } from "./src/runtime.js";
+import { TmuxRuntime, tmuxRuntimeProvider } from "./src/runtime.js";
 import { registry } from "@cotal-ai/core";
 import { execFileSync } from "node:child_process";
-import { readdirSync, readFileSync, statSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, statSync } from "node:fs";
 
 const SESSION = "cotal-tmux-smoke";
 let passed = 0;
@@ -255,42 +254,8 @@ ok("tmuxRuntimeProvider.available() returns true", tmuxRuntimeProvider.available
 // ask for an attach at all, so a foreground `cotal spawn` on this runtime launches the seat and
 // stops there instead of failing on an attach that cannot open.
 ok("the runtime declares that it streams no terminal", new TmuxRuntime(SESSION).streamsTerminal === false);
-
-const resolvedTerminal = registry.resolve("terminal", "tmux");
-ok("tmuxTerminalProvider registered as 'terminal/tmux'", resolvedTerminal != null);
-ok("tmuxTerminalProvider.available() returns true", tmuxTerminalProvider.available());
-
-// refs() throws when not in tmux (no $TMUX env)
-throws("refs() throws when not in tmux", () => tmuxTerminalProvider.refs("anything"));
-
-// The provider reads its session from $TMUX/$TMUX_PANE, so point both at the smoke session.
-const [socketPath, serverPid] = execFileSync("tmux", ["-u", "display-message", "-p", "-t", `${SESSION}:`, "#{socket_path}\t#{pid}"], { encoding: "utf8" }).trim().split("\t");
-const anchorPane = execFileSync("tmux", ["list-panes", "-t", `${SESSION}:`, "-F", "#{pane_id}"], { encoding: "utf8" }).trim().split("\n")[0]!;
-process.env.TMUX = `${socketPath},${serverPid},0`;
-process.env.TMUX_PANE = anchorPane;
-const launchDirs = () => readdirSync(tmpdir()).filter((n) => n.startsWith("cotal-tmux-"));
-const twoPanes = () => [{ command: "sleep", args: ["30"] }, { command: "sleep", args: ["30"] }];
-try {
-  const windowsBefore = tmux.listWindows(SESSION).length;
-  const dirsBefore = new Set(launchDirs());
-  let refusal = "";
-  try {
-    tmuxTerminalProvider.open("unsplit", { panes: twoPanes() });
-  } catch (err) {
-    refusal = (err as Error).message;
-  }
-  ok("an unsplit multi-pane tab is refused", /2 panes need a split/.test(refusal));
-  ok("the refusal opens no window", tmux.listWindows(SESSION).length === windowsBefore && tmuxTerminalProvider.refs("unsplit").length === 0);
-  ok("the refusal writes no launch script", launchDirs().every((d) => dirsBefore.has(d)));
-
-  const split = tmuxTerminalProvider.open("split", { panes: twoPanes(), split: { direction: "vertical", ratio: 0.5 } });
-  const splitPanes = execFileSync("tmux", ["list-panes", "-t", split, "-F", "#{pane_id}"], { encoding: "utf8" }).trim().split("\n");
-  ok("a split two-pane tab opens one window with two panes", splitPanes.length === 2 && tmuxTerminalProvider.refs("split").length === 1);
-  tmuxTerminalProvider.close(split);
-} finally {
-  delete process.env.TMUX;
-  delete process.env.TMUX_PANE;
-}
+ok("importing @cotal-ai/tmux registers no terminal provider", registry.all("terminal").length === 0 && !registry.has("terminal", "tmux"));
+throws("resolving 'terminal/tmux' throws", () => registry.resolve("terminal", "tmux"));
 
 console.log("\n── command builders ─────────────────────────────");
 
