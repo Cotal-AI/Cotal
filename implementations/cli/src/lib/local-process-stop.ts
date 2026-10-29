@@ -9,6 +9,7 @@ import {
   type LocalProcess, type LocalProcessContext,
 } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
+import { shellWord } from "./endpoint-errors.js";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -29,6 +30,15 @@ export class UnattributableRecord extends Error {
   constructor(readonly label: string, readonly path: string, content: string) {
     super(`the ${label} pidfile at ${path} holds content that is not a pid (${JSON.stringify(content)}), so it names no process and cotal cannot tell whether a ${label} still runs; refusing to remove it or report a clean stop`);
   }
+}
+
+/** The steps a Next names for a pidfile that names no process: first the check only the operator can
+ *  make, because no answer or registration on the mesh shows that the process exited, then the removal. */
+export function unattributableRecordSteps(label: string, path: string): { check: string; removal: { command: string; description: string } } {
+  return {
+    check: `The ${label} pidfile names no process, so cotal cannot check whether a ${label} still runs for this folder, and one that does not answer on the mesh may still be running. Confirm yourself that none runs before you remove that file.`,
+    removal: { command: `rm ${shellWord(path)}`, description: `Remove it once no ${label} runs for this folder` },
+  };
 }
 
 export interface StopLocalProcessOptions {
