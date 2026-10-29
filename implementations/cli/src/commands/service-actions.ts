@@ -21,7 +21,7 @@ import { canPrompt } from "./meshes-wizard.js";
 import { yesRequired } from "../lib/confirmation-required.js";
 import { fullStoreStopRefusal, jetStreamDisabled, jetStreamDisabledRefusal, recordedStore, storeRefusedWrite } from "../lib/broker-store-health.js";
 import { brokerStopBlocked } from "../lib/broker-service.js";
-import { resolveServiceAdapter, sameServiceAdapterPin } from "../lib/service-adapters.js";
+import { controlsRecordedAdapter, resolveServiceAdapter } from "../lib/service-adapters.js";
 import { assertDefinitionRoot, serviceDefinitionStore, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
 import { addedDefinitionStep, stackMemberFor } from "../lib/stack-journal.js";
 import { adapterInstallRefusal, type PresetServiceTarget } from "../lib/service-preset-target.js";
@@ -266,7 +266,7 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
     }
     if (definition.record.value.launch.type === "adapter") {
       const launch = definition.record.value.launch, adapter = resolveServiceAdapter(launch.adapter, launch.options);
-      if (!sameServiceAdapterPin(selected!.record.value.adapter, adapter.pin) || !adapter.declaration.capabilities.logs) throw new CommandFailure("refused", "UNSUPPORTED", "the pinned adapter does not declare log access through this controller, or its declaration changed; no different provider was loaded", { target });
+      if (!controlsRecordedAdapter(selected!.record.value, adapter) || !adapter.declaration.capabilities.logs) throw new CommandFailure("refused", "UNSUPPORTED", "the pinned adapter does not declare log access through this controller, or its declaration changed; no different provider was loaded", { target });
     }
     const tail = values.tail === undefined ? 100 : Number(values.tail);
     if (values.follow) return followServiceLog(selected!, presentation, tail);
@@ -311,7 +311,7 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
   if (prepared?.adapter) {
     const adapter = prepared.adapter;
     if (values["new-instance"] && !adapter.declaration.capabilities.multiInstance || values.foreground && !adapter.declaration.capabilities.foreground) throw new CommandFailure("refused", "UNSUPPORTED", "the adapter does not declare the requested multi-instance or foreground capability; no provider code was loaded", { target });
-    if (selected && !sameServiceAdapterPin(selected.record.value.adapter, adapter.pin)) throw new CommandFailure("refused", "CONFLICT", "the selected instance pins a different adapter declaration or package version; it was not stopped or adopted", { target });
+    if (selected && !controlsRecordedAdapter(selected.record.value, adapter)) throw new CommandFailure("refused", "CONFLICT", "the selected instance pins a different adapter declaration or package version; it was not stopped or adopted", { target });
   }
   const declaredStop = prepared?.adapter ?? (definition.record.value.launch.type === "adapter" ? resolveServiceAdapter(definition.record.value.launch.adapter, definition.record.value.launch.options) : undefined);
   if (values["with-agents"] && declaredStop?.declaration.stop !== "native") throw new CommandFailure("refused", "UNSUPPORTED", "--with-agents requires this selected adapter's native stop policy; generic descendant signals are not supported", { target });

@@ -1,8 +1,9 @@
 /**
  * The short service commands, with no broker: `service add --exec` word splitting, preset option
  * defaults, the refusal that names an option with no default, the built-in presets' own defaults,
- * `cotal manager <verb>` dispatch onto the manager preset, and the help listing that names `manager`
- * and `service` under Services.
+ * which recorded adapter pins this release still controls after an upgrade, `cotal manager <verb>`
+ * dispatch onto the manager preset, and the help listing that names `manager` and `service` under
+ * Services.
  *
  * The in-process cells register a fixture adapter and preset of their own. The CLI cells run the real
  * binary from a sandboxed HOME, COTAL_HOME and project root against a registered space whose broker
@@ -34,6 +35,7 @@ type ServicePreset = import("@cotal-ai/workspace").ServicePreset;
 const { cacheServicePreset, isCommandFailure, recordMesh } = await import("@cotal-ai/workspace");
 const { execWords } = await import("../../implementations/cli/src/lib/exec-words.js");
 const { presetDefaultOptions, presetMaterialPath, servicePresetDefinition, servicePresetFlags } = await import("../../implementations/cli/src/lib/service-presets.js");
+const { controlsRecordedAdapter, resolveServiceAdapter } = await import("../../implementations/cli/src/lib/service-adapters.js");
 await import("@cotal-ai/cli");
 await import("@cotal-ai/manager");
 await import("@cotal-ai/delivery");
@@ -146,6 +148,22 @@ check("the web preset defaults to this space's root and read-only", sorted(built
 check("the auth-service and feedback-intake presets default only the root",
   ["auth-service", "feedback-intake"].every((name) => JSON.stringify(builtIn(name)?.defaults) === JSON.stringify({ root: { space: "root" } })), ["auth-service", "feedback-intake"].map((name) => builtIn(name)?.defaults));
 check("every built-in preset's summary is plain words a person reads", ["manager", "delivery", "web", "auth-service", "feedback-intake"].every((name) => (builtIn(name)?.summary.length ?? 0) > 10), ["manager", "delivery", "web", "auth-service", "feedback-intake"].map((name) => builtIn(name)?.summary));
+
+// ---- An upgrade keeps a built-in adapter's instances controllable; a third party's stay pinned ----
+const broker = resolveServiceAdapter("nats-broker", {}, false), manager = resolveServiceAdapter("manager-service", {}, false);
+/** A pin an earlier release wrote under another declaration, as a changed option description makes. */
+const earlier = (pin: typeof broker.pin) => ({ ...pin, version: "0.0.1", declarationSha256: "0".repeat(64) });
+check("a broker record an earlier release wrote under another declaration is controlled by this release",
+  controlsRecordedAdapter({ adapter: earlier(broker.pin), kernelStopRequired: true }, broker), earlier(broker.pin));
+check("  and so is such a manager record, under its native stop", controlsRecordedAdapter({ adapter: earlier(manager.pin), nativeStopRequired: true }, manager));
+check("  and a first-party extension's", controlsRecordedAdapter({ adapter: { ...earlier(broker.pin), package: "@cotal-ai/fixture" }, kernelStopRequired: true }, { ...broker, pin: { ...broker.pin, package: "@cotal-ai/fixture" } }));
+check("  but not one launched under another stop policy",
+  !controlsRecordedAdapter({ adapter: earlier(broker.pin) }, broker) && !controlsRecordedAdapter({ adapter: earlier(manager.pin), kernelStopRequired: true }, manager));
+check("  nor one of another adapter", !controlsRecordedAdapter({ adapter: earlier(manager.pin), kernelStopRequired: true }, broker));
+const thirdParty = { pin: { name: "fixture-adapter", package: "acme-fixture", version: "1.2.0", declarationSha256: "a".repeat(64) }, declaration: adapter.service! };
+check("a third-party adapter controls its record at its own version and declaration", controlsRecordedAdapter({ adapter: thirdParty.pin }, thirdParty));
+check("  and refuses one under a changed declaration or another version",
+  !controlsRecordedAdapter({ adapter: { ...thirdParty.pin, declarationSha256: "b".repeat(64) } }, thirdParty) && !controlsRecordedAdapter({ adapter: { ...thirdParty.pin, version: "1.1.0" } }, thirdParty));
 
 // ---- Help lists manager and service under Services; supervise is hidden ------------------------
 const command = (name: string) => registry.all<Command>("command").find((row) => row.name === name);
