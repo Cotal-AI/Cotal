@@ -154,3 +154,35 @@ export function reclaimWithChild(spec: LaunchSpec): LaunchSpec {
     args: ["-c", RECLAIM_SCRIPT, "cotal-launch", String(dirs.length), ...dirs, spec.command, ...spec.args],
   };
 }
+
+/** Payload serialized into the private Node launcher script built by {@link launcherSource}. */
+export interface LauncherPayload {
+  cwd: string;
+  command: string;
+  args: string[];
+  env: Record<string, string>;
+}
+
+/**
+ * Build the private `.mjs` launcher script that runtimes without an inline-free spawn API
+ * (`@cotal-ai/orca`, `@cotal-ai/herdr`) write through {@link writeSecretFile}. The script removes
+ * its own directory on load, changes to `payload.cwd`, spawns `payload.command` with `payload.args`
+ * and `payload.env`, forwards `SIGINT` and `SIGTERM`, prints `<label> <command>: <message>` with
+ * exit 127 on a spawn error, and exits 128 on a signalled child or the child's exit code.
+ */
+export function launcherSource(label: string, payload: LauncherPayload): string {
+  if (!label || label !== label.trim() || /[\r\n]/.test(label))
+    throw new Error("launcherSource requires a single-line diagnostic label");
+  return `import { spawn } from "node:child_process";\n` +
+    `import { rmSync } from "node:fs";\n` +
+    `const launch = ${JSON.stringify(payload)};\n` +
+    `try { rmSync(new URL(".", import.meta.url), { recursive: true, force: true }); } catch {}\n` +
+    `process.chdir(launch.cwd);\n` +
+    `const child = spawn(launch.command, launch.args, { env: launch.env, stdio: "inherit", windowsHide: false });\n` +
+    `let exiting = false;\n` +
+    `const forward = (signal) => { if (!exiting && child.pid) child.kill(signal); };\n` +
+    `process.on("SIGINT", () => forward("SIGINT"));\n` +
+    `process.on("SIGTERM", () => forward("SIGTERM"));\n` +
+    `child.on("error", (err) => { console.error(${JSON.stringify(`${label} `)} + launch.command + ": " + err.message); process.exit(127); });\n` +
+    `child.on("exit", (code, signal) => { exiting = true; if (signal) process.exit(128); process.exit(code ?? 0); });\n`;
+}

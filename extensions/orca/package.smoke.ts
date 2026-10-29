@@ -1,6 +1,8 @@
 import { strict as assert } from "node:assert";
 import { readFileSync, rmSync, statSync } from "node:fs";
 import { dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { launcherSource } from "@cotal-ai/core";
 import { isGoneCode, localCliEnv, OrcaCliError, resolveTerminal } from "./src/driver.js";
 import { privateLauncher } from "./src/runtime.js";
 
@@ -81,15 +83,31 @@ check(
   emptyShowErr instanceof Error && emptyShowErr.message === "orca terminal show returned no authoritative state for h1",
 );
 
+const runtimeSource = readFileSync(fileURLToPath(new URL("./src/runtime.ts", import.meta.url)), "utf8");
+check("orca runtime delegates launcher generation to core", !runtimeSource.includes("function launcherSource") && !runtimeSource.includes("process.chdir(launch.cwd)"));
+
 const secret = "orca-package-test-secret";
-const launcher = privateLauncher({ command: process.execPath, args: ["-e", ""], env: { TOKEN: secret } }, process.cwd());
+const payload = { cwd: process.cwd(), command: process.execPath, args: ["-e", ""], env: { TOKEN: secret } };
+const launcher = privateLauncher({ command: payload.command, args: payload.args, env: payload.env }, payload.cwd);
 try {
+  const scriptText = readFileSync(launcher.script, "utf8");
   check("launcher command does not expose secret env", !launcher.command.includes(secret));
   check("launcher script is owner-only", (statSync(launcher.script).mode & 0o777) === 0o600);
   check("launcher directory is owner-only", (statSync(dirname(launcher.script)).mode & 0o777) === 0o700);
-  check("secret is confined to the private launcher", readFileSync(launcher.script, "utf8").includes(secret));
+  check("secret is confined to the private launcher", scriptText.includes(secret));
+  check("privateLauncher writes the exact core launcherSource output", scriptText === launcherSource("[cotal-orca-launch]", payload));
 } finally {
   rmSync(launcher.dir, { recursive: true, force: true });
+}
+
+for (const badLabel of ["", "   ", " [cotal-orca-launch]", "[cotal-orca-launch] ", "[cotal-orca-launch]\n"]) {
+  let threw = false;
+  try {
+    launcherSource(badLabel, payload);
+  } catch (err) {
+    threw = /single-line diagnostic label/.test((err as Error).message);
+  }
+  check(`launcherSource refuses malformed label ${JSON.stringify(badLabel)}`, threw);
 }
 
 console.log(`ORCA PACKAGE TESTS: ${checks} tests executed`);
