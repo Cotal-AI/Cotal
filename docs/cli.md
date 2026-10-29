@@ -8570,10 +8570,10 @@ disappears. These checks do not exclude an unrelated local process changing the 
 configuration stays inside the selected root's `.cotal` directory, even when its store is elsewhere.
 
 For a first user-auth team, prepare with `cotal up --user-auth --idp <url>`, then `cotal login`,
-explicitly grant the invoking user with `cotal auth grant cli --sub <subject>`, and run `cotal down`
-before `cotal team boot <file>`. Do not start the manager between preparation and that stop. Before
-any write, that boot confirms your sign-in with its IdP. Without one, or when the IdP rejects it
-because it expired or was revoked, it refuses `AUTH_REQUIRED` (exit 2), and Next names
+explicitly grant the invoking user with `cotal auth grant cli --sub <subject> --full`, and run
+`cotal down` before `cotal team boot <file>`. Do not start the manager between preparation and that
+stop. Before any write, that boot confirms your sign-in with its IdP. Without one, or when the IdP
+rejects it because it expired or was revoked, it refuses `AUTH_REQUIRED` (exit 2), and Next names
 `cotal login --idp <base>`, then the team boot again. Any other failure of that check, such as an
 IdP that does not answer, is left to the boot. A
 static-auth or open preparation uses `cotal up --no-manager` before `cotal down`. No implicit owner

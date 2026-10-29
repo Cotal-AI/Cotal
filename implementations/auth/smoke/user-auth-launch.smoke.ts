@@ -29,7 +29,9 @@
  *      running after a sign-out is stopped by the folder's owner through `manager stop` and `down`.
  *      `supervise` is refused before it connects, under a `Mesh:` heading with a code and no boot
  *      line, from that stopped root, from a folder with no records (naming the folder that hosts the
- *      space, writing nothing there), and from a stopped static root.
+ *      space, writing nothing there), and from a stopped static root. A third root is prepared for
+ *      a first team as the fresh boot's refusal says, and the `auth grant cli --sub <subject> --full`
+ *      it names succeeds.
  *   E5. A TLS space behind a local CA, its public exchange behind an HTTPS proxy, joined by a
  *      participant from its bundle: with `NODE_EXTRA_CA_CERTS` set, the participant's `manager start`
  *      comes up and its native child carries the variable; with it unset, the line the refusal quotes
@@ -832,6 +834,22 @@ try {
     check("supervise from the stopped static root is refused as stopped, naming its own up and the broker's folder",
       staticStopped.status === 2 && plain(staticStopped.out).includes(`Mesh: ${RT}\n`) && preConnect(staticStopped.out, "TARGET_UNAVAILABLE") &&
         plain(staticStopped.out).includes(`start it again with \`cotal up\` in ${root3}, or start the manager from the folder whose \`cotal up\` started the broker at ${SERVER}`), staticStopped.out);
+    // A first user-auth team, prepared as the boot's own refusal says.
+    const TB = `${SPACE}-tb`;
+    const rootTb = await prepare(TB);
+    const tbSandbox = second.roots.at(-1)!.sandbox;
+    const serverTb = `nats://127.0.0.1:${await pickFreePort()}`;
+    const tbFile = join(rootTb, "team.yaml");
+    writeFileSync(tbFile, `apiVersion: cotal/v1\nkind: Mesh\nspace: ${TB}\nbroker:\n  servers: ${serverTb}\n  auth: user\n  idp: ${base}\nchannels:\n  general:\n    description: The general channel.\n`);
+    const unprepared = await cotal(["team", "boot", tbFile], { cwd: rootTb, env });
+    check("a team boot of a root with no granted login is refused AUTH_REQUIRED, and Next grants the CLI with --full",
+      unprepared.status === 2 && field(unprepared.out, "Code", "AUTH_REQUIRED") && plain(unprepared.out).includes("then `cotal login`, then `cotal auth grant cli --sub <subject> --full`, then `cotal down`") && !existsSync(join(rootTb, ".cotal", "stack-controller.json")), unprepared.out);
+    const tbUp = await cotal(["up", "-d", "--user-auth", "--idp", base, "--server", serverTb], { cwd: rootTb, env });
+    const { sub: tbSub } = await establishIdpSession({ dir: home2, idpUrl: base, clientId: CLIENT_ID, onPrompt: (p: DeviceLoginPrompt) => void approve(p.userCode) });
+    const tbGrant = await cotal(["auth", "grant", "cli", "--sub", tbSub, "--full"], { cwd: rootTb, env });
+    const tbDown = await cotal(["down", "--yes"], { cwd: rootTb, env, sandbox: tbSandbox });
+    check("following it, up prepares the space, the grant it names succeeds, and down stops the stack",
+      tbUp.status === 4 && tbGrant.status === 0 && plain(tbGrant.out).includes("Actor grant stored") && tbDown.status === 0, { up: tbUp.out, grant: tbGrant.out, down: tbDown.out });
   }
 
   // ---------- E5. a participant joined by bundle starts a manager behind a local CA ----------
