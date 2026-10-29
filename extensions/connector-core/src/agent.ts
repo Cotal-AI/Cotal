@@ -2395,7 +2395,11 @@ export class MeshAgent extends EventEmitter {
         };
         const unknownDefinition = command === "define-persona" && e.outcome !== "not-executed" &&
           e.code === "deadline-exceeded" && e.details?.some(d => d.kind === EP_UNANSWERED && d.command === command);
-        const message = unknownDefinition
+        const unknownYield = command === "turn-yield" && e.code === "deadline-exceeded" && e.outcome === "unknown" &&
+          e.details?.some(d => d.kind === EP_UNANSWERED && d.endpoint === BASELINE_LIFECYCLE_ENDPOINT && d.command === command);
+        const message = unknownYield
+          ? `${e.code}: ${e.message}. The yield may already have been recorded. After reconnecting, retry cotal_yield with the same turn id and intended status. An already-settled reply confirms the turn is terminal, not which attempt settled it. A successful reply records the yield if it is still active. This retry is not a read-only check.`
+          : unknownDefinition
           ? `${e.code}: ${e.message}`
           : unansweredRequest(e)
           ? `${e.message} (no responder answered - a manager may be down, or this credential holds no "${command}" capability and the broker denied the request)`

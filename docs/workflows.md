@@ -720,6 +720,10 @@ step and carries the rendered run context, plus any pending notices addressed to
 turn consumes. The seat yields through `cotal_yield` (`done`, `blocked`, or `handoff` with an
 addressee), and ending its host turn yields `done` for every turn it was shown. A
 `cotal_status` call changes presence only, including when it sets `idle`. It does not yield a turn.
+If a yield times out with an unknown outcome, it may already be recorded. After reconnecting,
+retry the same turn id and intended status. An already-settled reply confirms a terminal turn,
+not which attempt settled it. Success records a still-active turn, so this retry is not a
+read-only check.
 A `handoff` names another seat the same run spawned: the next `turn` in the same scope to that seat records the
 link, a handoff to a name the run never spawned is the catchable L4005, and one to a seat bound
 to a different worktree is L4004. The deadline elapsing before any yield is the catchable L4003:
