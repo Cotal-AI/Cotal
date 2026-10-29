@@ -1,5 +1,19 @@
 # @cotal-ai/manager
 
+## 0.125.0
+
+### Minor Changes
+
+- b2413e2: Add the typed `remove-persona` Manager command and grant it with existing persona authority, including removal of invalid legacy names.
+
+### Patch Changes
+
+- bd39e93: Keep supervised Pi seats out of the project-trust prompt without approving untrusted project resources, preserve saved Pi trust decisions, and report the prompt and directory when startup cannot continue.
+- Updated dependencies [b2413e2]
+  - @cotal-ai/core@0.125.0
+  - @cotal-ai/workspace@0.125.0
+  - @cotal-ai/seat@0.125.0
+
 ## 0.124.3
 
 ### Patch Changes

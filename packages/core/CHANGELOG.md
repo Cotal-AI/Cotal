@@ -1,5 +1,11 @@
 # @cotal-ai/core
 
+## 0.125.0
+
+### Minor Changes
+
+- b2413e2: Add the typed `remove-persona` Manager command and grant it with existing persona authority, including removal of invalid legacy names.
+
 ## 0.124.3
 
 No changes in this release.
