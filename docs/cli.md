@@ -3419,7 +3419,12 @@ requiring credentials. It then offers the spaces your `--root` already holds cre
 on an open broker the spaces that broker serves, states
 the mode as a fact about that broker rather than asking, and shows the exact record before writing
 anything. A broker that does not answer, or a space name already registered, becomes a choice rather
-than an error. For a name added by hand, the first choice is another name. Replacing a registered
+than an error. When a broker answers at an address with TLS intent but this machine does not trust
+its certificate, the guided form says so with the flag form's handshake failure and its
+`NODE_EXTRA_CA_CERTS` step, and Cancel is the first choice, because Node reads that variable only
+when the command starts. An address the flag form refuses is refused with the same next step, such
+as the `tls://` form of a host name, and the question that asks again shows no example address. For
+a name added by hand, the first choice is another name. Replacing a registered
 record then asks you to type `y`; Enter keeps No. Nothing is written before that last question, and
 a cancel at any question says nothing was registered. A name prepared or started on this machine, or
 listed by a catalog, is not offered for replacement. Anything you pass on the command line, `--tls` included, is taken as given and not asked again. Without
