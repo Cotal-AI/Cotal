@@ -42,7 +42,7 @@ interface Harness {
 function harness(): Harness {
   const agent = new MeshAgent({
     name: "victim", space: "main", connector: "test", kind: "agent",
-    servers: "nats://127.0.0.1:4222", subscribe: [], allowSubscribe: [], allowPublish: [],
+    servers: "nats://127.0.0.1:4222", tls: false, subscribe: [], allowSubscribe: [], allowPublish: [],
   });
   const acked = new Set<string>();
   const push: Harness["push"] = (partial, opts) => {
