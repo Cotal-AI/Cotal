@@ -404,10 +404,13 @@ async function main() {
     const cliIdentity = { owner, actor: "caller_cli", uid: cliUid };
     const ncPrototype = Object.getPrototypeOf(compatNc) as { publish: NatsConnection["publish"] };
     const nativePublish = ncPrototype.publish;
-    let cliSubmits = 0;
+    let cliSubmits = 0, cliDescribes = 0;
     ncPrototype.publish = function(this: NatsConnection, subject, data, options) {
       const parsed = parseEpSubject(subject);
-      if (parsed?.plane === "request" && parsed.command === "spawn" && parsed.caller.actor === "caller_cli") cliSubmits++;
+      if (parsed?.plane === "request" && parsed.caller.actor === "caller_cli") {
+        if (parsed.command === "spawn") cliSubmits++;
+        if (parsed.command === "describe") cliDescribes++;
+      }
       return nativePublish.call(this, subject, data, options);
     };
     const issuedBefore = cliIssuedConnections.length;
@@ -417,7 +420,7 @@ async function main() {
     check("CLI-API: real signed-bearer legacy preflight keeps failed-precondition", cliReply.ok === false && cliReply.code === "failed-precondition", cliReply);
     check("CLI-API: legacy preflight keeps explicit not-executed", cliReply.nativeOutcome === "not-executed", cliReply);
     check("CLI-API: legacy preflight provides goal-result upgrade guidance", cliReply.error?.includes('does not support "goal-result"') === true && cliReply.error.includes("upgrade manager"), cliReply);
-    check("CLI-API: no spawn request or native handler admission occurred", cliSubmits === 0 && admissions === 0, { cliSubmits, admissions });
+    check("CLI-API: observed describe but no spawn request or native handler admission", cliDescribes > 0 && cliSubmits === 0 && admissions === 0, { cliDescribes, cliSubmits, admissions });
     check("CLI-API: its own connection received fresh accepted-row issuance", cliIssuedConnections.length === issuedBefore + 1 && cliIssuedConnections.at(-1)?.actor === "caller_cli", { issuedBefore, issuedAfter: cliIssuedConnections.length });
 
     hideSpawn = true;
