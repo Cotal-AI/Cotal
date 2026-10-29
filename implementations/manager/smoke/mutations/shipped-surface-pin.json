@@ -33,8 +33,8 @@
     {
       "name": "M2 keep revision 39 after managed join health lands",
       "file": "implementations/manager/src/manager-service-contract.ts",
-      "find": "    revision: 40,",
-      "replace": "    revision: 39,",
+      "find": "  return buildClusterDocument(MANAGER_CLUSTER_URN, 40, ROWS);",
+      "replace": "  return buildClusterDocument(MANAGER_CLUSTER_URN, 39, ROWS);",
       "expectRed": "run-status program identity advances the manager cluster revision and retains vitals, workflow cancellation, keyed submission and existing commands",
       "cell": "run-status program identity advances the manager cluster revision and retains vitals, workflow cancellation, keyed submission and existing commands"
     },
