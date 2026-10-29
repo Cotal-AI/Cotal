@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { LocalProcess, LocalProcessContext } from "@cotal-ai/workspace";
 
+const actualStops = await import("../src/lib/local-process-stop.js");
 const root = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-down-retention-")));
 const cwd = process.cwd(), home = process.env.COTAL_HOME, exitCode = process.exitCode;
 const calls: string[] = [];
@@ -26,8 +27,10 @@ try {
   mock.module(new URL("../src/lib/local-process-stop.ts", import.meta.url), {
     cache: true,
     namedExports: {
-      // Record inventory is the process boundary, not the credential-cleanup rule under test.
-      processRecorded: () => true,
+      ...actualStops,
+      // No delivery daemon was recorded in this fixture. Its old credentials still
+      // belong to the stack; other process records exercise the stop ordering.
+      processRecorded: (component: LocalProcess) => component.name !== "delivery",
       // The fixture signals nothing, so no stop is ever waiting on an exit.
       stopInFlight: () => undefined,
       stopLocalProcess: async (component: LocalProcess, context: LocalProcessContext) => {
