@@ -1,5 +1,16 @@
 # @cotal-ai/cli
 
+## 0.128.1
+
+### Patch Changes
+
+- 00d85b7: Remove an accidentally tracked presence-render census probe from the CLI source tree.
+- 7b54f38: `cotal up` in a new folder under your home now wraps its stderr note `made <root>/.cotal for this folder's records; the machine's home .cotal was not used` at spaces on a terminal, to the width of stderr. A path wider than the line keeps a line of its own and is never split, and each line stays dimmed. When stderr is not a terminal the note is still one line, even when stdout is a terminal, and exit codes are unchanged.
+- Updated dependencies [20a5c96]
+- Updated dependencies [985519f]
+  - @cotal-ai/core@0.128.1
+  - @cotal-ai/workspace@0.128.1
+
 ## 0.128.0
 
 ### Patch Changes

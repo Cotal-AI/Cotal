@@ -1,5 +1,12 @@
 # @cotal-ai/core
 
+## 0.128.1
+
+### Patch Changes
+
+- 20a5c96: Use the existing native NKey signer during space account creation to avoid repeated JavaScript key derivation. NATS key generation, key encoding, JWT claims and account permissions are unchanged.
+- 985519f: Verify broker/account bindings with the existing native NKey and JWT helpers to reduce setup CPU. Signature verification and the required match to the broker operator remain enforced.
+
 ## 0.128.0
 
 No changes in this release.
