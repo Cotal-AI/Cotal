@@ -1,5 +1,9 @@
 # @cotal-ai/cmux
 
+## 0.123.0
+
+No changes in this release.
+
 ## 0.122.0
 
 No changes in this release.
