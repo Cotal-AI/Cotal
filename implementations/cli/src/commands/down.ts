@@ -674,6 +674,8 @@ async function liveUnownedBrokers(context: LocalProcessContext): Promise<Array<{
   return live;
 }
 
+/** Whether a component's pidfile names a process the `@cotal-ai/workspace` pid-attribution contract
+ *  (`parsePid` + `probeLiveness`) reports alive. */
 export function processAlive(component: LocalProcess, context: LocalProcessContext): boolean {
   return pidfileState(localProcessPath(component.pidFile, context)).liveness === "alive";
 }
@@ -1270,8 +1272,9 @@ export function pidfileTargets(space: string, root: string): Array<[file: string
  *  `cotal down` refuses them as possibly fronting a live process. */
 export type PidfileState = { pid?: number; liveness: "alive" | "dead" | "unknown"; note?: string };
 
-/** The one classifier of a pidfile, read through the shared `readPidfile`: positive integers only,
- *  and EPERM means the process exists. `processAlive` and `mayBeRunning` are its two directions. */
+/** The one classifier of a pidfile, read through `readPidfile`, `parsePid` and `probeLiveness` in
+ *  `@cotal-ai/workspace`: positive integers only, and `EPERM` means the process exists.
+ *  `processAlive` and `mayBeRunning` are its two directions. */
 export function pidfileState(path: string): PidfileState {
   const raw = readPidfile(path);
   if (raw === undefined) return { liveness: "dead", note: "no pidfile" };
