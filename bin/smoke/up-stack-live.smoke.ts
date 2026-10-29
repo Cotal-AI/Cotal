@@ -18,6 +18,11 @@
  *  3b. A SIGINT to that bare `down --yes` names the members it stopped and those still running and
  *     exits 130: after the heading, in each member's stop (the stop finishes and prints its line
  *     first, and `status` reads no stale pidfile), and twice in the manager's stop (at once).
+ *  3c. #3892: in a fresh open root, a refresh ensures the manager as the first boot did. Healthy
+ *     refreshes with and without `--runtime` exit 0 and keep the manager pid. Once that manager is
+ *     retired, a `--no-manager` refresh stays broker-only, a refresh over a manager pidfile that
+ *     holds no pid exits 1 with the degraded report with or without `--runtime`, and a bare refresh
+ *     restores the manager.
  *  4. #1307: Ctrl-C on a FOREGROUND `up` follows the same sparing rule as bare `down`. One managed
  *     seat (a shim `claude` on PATH: a real core-dist endpoint that joins presence and stays alive)
  *     runs on the in-process pty runtime, so it cannot outlive the manager: after the SIGINT the
@@ -52,6 +57,7 @@ const root = mkdtempSync(join(tmpdir(), "cotal-upstack-root-"));
 const autoRoot = mkdtempSync(join(tmpdir(), "cotal-upstack-auto-"));
 const occupantRoot = mkdtempSync(join(tmpdir(), "cotal-upstack-occupant-"));
 const warningRoot = mkdtempSync(join(tmpdir(), "cotal-upstack-warning-"));
+const openRoot = mkdtempSync(join(tmpdir(), "cotal-upstack-open-"));
 const fakeBin = mkdtempSync(join(tmpdir(), "cotal-upstack-bin-"));
 const configDir = join(home, "xdg");
 const anchors = new Map([
@@ -59,6 +65,7 @@ const anchors = new Map([
   [autoRoot, recordSmokeSandbox({ root: autoRoot, cotalHome: home, xdgConfigHome: configDir })],
   [occupantRoot, recordSmokeSandbox({ root: occupantRoot, cotalHome: home, xdgConfigHome: configDir })],
   [warningRoot, recordSmokeSandbox({ root: warningRoot, cotalHome: home, xdgConfigHome: configDir })],
+  [openRoot, recordSmokeSandbox({ root: openRoot, cotalHome: home, xdgConfigHome: configDir })],
 ]);
 const env = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1" };
 
@@ -415,6 +422,46 @@ try {
   ok("a second down reports the stack not running, names cotal up, and exits 0",
     again.status === 0 && plain(again.stdout).includes(`The stack in ${realpathSync(root)} is not running`) && /cotal up\s+Start it/.test(plain(again.stdout)), again.stdout + again.stderr);
 
+  // 3c) #3892: an open refresh ensures the manager under the decision its first boot followed, so its
+  //     exit status follows the manager's health, not whether it carried `--runtime`. A bare refresh
+  //     used to skip the ensure and exit 0 over a manager pidfile that the `--runtime` refresh
+  //     reported degraded. Its own root, which holds no trust material from an earlier stack.
+  const openServer = `nats://127.0.0.1:${await freePort()}`;
+  const openRecord = (template: string) => canonicalLocalProcessPath(template, { root: openRoot, space: basename(openRoot) });
+  const openManagerPid = () => Number(readFileSync(openRecord(MANAGER_PIDFILE), "utf8").trim());
+  const openRefresh = (...extra: string[]) => cliIn(openRoot, "up", "--detach", "--open", "--server", openServer, ...extra);
+  const openBoot = openRefresh();
+  ok("a fresh open up --detach starts the broker and manager", openBoot.status === 0 && /^✓ running in the background: nats-server \(pid \d+\), manager - stop with: `cotal down`$/m.test(plain(openBoot.stdout)), plain(openBoot.stdout + openBoot.stderr));
+  const openManager = openManagerPid();
+  pids.push(Number(readFileSync(join(openRoot, ".cotal", "nats.pid"), "utf8").trim()), openManager);
+  for (const extra of [[], ["--runtime", "pty"]]) {
+    const healthy = openRefresh(...extra);
+    ok(`a healthy open refresh${extra.length ? " with --runtime" : ""} exits 0 and keeps the manager pid`,
+      healthy.status === 0 && openManagerPid() === openManager && alive(openManager) && !/control plane degraded/.test(healthy.stderr), plain(healthy.stdout + healthy.stderr));
+  }
+  process.kill(openManager, "SIGTERM");
+  for (let i = 0; i < 24 && alive(openManager); i++) await sleep(500);
+  ok("the open manager is retired before the refreshes over its record", !alive(openManager) && !existsSync(openRecord(MANAGER_PIDFILE)), openManager);
+  const openBrokerOnly = openRefresh("--no-manager");
+  ok("a --no-manager open refresh stays broker-only and exits 0",
+    openBrokerOnly.status === 0 && !existsSync(openRecord(MANAGER_PIDFILE)) && !/restored in the background/.test(openBrokerOnly.stdout), plain(openBrokerOnly.stdout + openBrokerOnly.stderr));
+  writeFileSync(openRecord(MANAGER_PIDFILE), "not-a-pid");
+  for (const extra of [[], ["--runtime", "pty"]]) {
+    const degraded = openRefresh(...extra);
+    const degradedOut = plain(degraded.stdout + degraded.stderr);
+    ok(`an open refresh${extra.length ? " with --runtime" : ""} over a manager pidfile that holds no pid exits 1 with the degraded line and no spawn in its Next`,
+      degraded.status === 1 && degradedOut.includes(`! control plane degraded: the manager pidfile at ${openRecord(MANAGER_PIDFILE)} holds content that is not a pid ("not-a-pid")`) && /\nNext\n\s+cotal down\s+Stop the stack\s*$/.test(plain(degraded.stdout)), degradedOut);
+  }
+  rmSync(openRecord(MANAGER_PIDFILE));
+  const openHealed = openRefresh();
+  const openHealedPid = Number(/✓ restored in the background: manager \(pid (\d+)\)/.exec(plain(openHealed.stdout))?.[1]);
+  if (openHealedPid) pids.push(openHealedPid);
+  ok("a bare open refresh restores the missing manager and exits 0",
+    openHealed.status === 0 && alive(openHealedPid) && openManagerPid() === openHealedPid, plain(openHealed.stdout + openHealed.stderr));
+  const openRootDown = cliIn(openRoot, "down");
+  for (let i = 0; i < 24 && alive(openHealedPid); i++) await sleep(500);
+  ok("down stops the open root's stack", openRootDown.status === 0 && !alive(openHealedPid), plain(openRootDown.stdout + openRootDown.stderr));
+
   // Open mode in the SAME root retains static-auth files from the prior boot. Reporting follows the
   // effective live mode, not stale on-disk auth material: broker + manager, never delivery/auth-service.
   ok("static auth material remains before the open-mode reporting check", existsSync(join(root, ".cotal", "auth")));
@@ -730,7 +777,8 @@ try {
   cliIn(autoRoot, "down");
   if (startedOccupant) cliIn(occupantRoot, "down");
   cliIn(warningRoot, "down");
+  cliIn(openRoot, "down");
   for (const p of pids) if (alive(p)) { try { process.kill(p, "SIGTERM"); } catch { /* gone */ } }
   rmSync(home, { recursive: true, force: true });
-  for (const d of [root, autoRoot, occupantRoot, warningRoot, fakeBin]) rmSync(d, { recursive: true, force: true });
+  for (const d of [root, autoRoot, occupantRoot, warningRoot, openRoot, fakeBin]) rmSync(d, { recursive: true, force: true });
 }

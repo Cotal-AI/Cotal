@@ -60,8 +60,9 @@ import {
 import {
   CommandFailure, loadLaunchPersonaFile, personaFileReference, PersonaSourceError, inputDisabledByFlag, jsonFlag, plainFlag, presentationOf, recordOperationWarning, renderReport, terminalWidth, wrapWords, writeResult, type OutputWarning, type RefusalCode, type Report,
   agentActorTokenKey,
-  agentCredsKey,
+  agentLifecycleSecretFilePaths,
   agentSecretFilePaths,
+  agentSecretKeyForFile,
   agentSentinelCredsKey,
   authDir,
   cachedPreferences,
@@ -1326,7 +1327,6 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // operator passed neither flag), so default it on here the way the old boolean did.
   const launchEvents = eventsRequired || events !== false;
   const { space, server, auth } = target;
-  const composition = { injected: false as const, root: target.root };
 
   // Where the config lives: --config, else the positional <persona>, else the persona preference
   // (.cotal/agents/<name>.md under the TARGET mesh's root). With none, fall back to its `default`
@@ -1524,7 +1524,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     // (byte-identical locally). The broker teardown mints its own credential, so a creds file that
     // cannot be removed must not leave the durables and ACL row behind.
     const failed: CleanupFailure[] = [];
-    await attemptCleanup(failed, "creds secret", () => workspaceSecretStore(target.root).delete(agentCredsKey(space, name, composition)));
+    await attemptCleanup(failed, "creds secret", () => workspaceSecretStore(target.root).delete(agentSecretKeyForFile(credsFile, space)));
     await attemptCleanup(failed, "creds file", () => rmSync(credsFile, { force: true }));
     await attemptCleanup(failed, "broker teardown", () =>
       mintCreds(auth, newIdentity(), "deprovisioner", { deprovisionTarget: { principal: targetId, lifecycleUid } })
@@ -1621,7 +1621,10 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     // What the retirement needs is recorded before the first durable exists, so a throw anywhere from
     // provisioning through the creds write can still find and remove the footprint.
     id = identity.id;
-    credsPath = agentSecretFilePaths(target.root, space, name).creds;
+    // LIFECYCLE-KEYED, as the manager keys its own spawns: the file embeds this incarnation's uid, so
+    // the retirement can only remove this incarnation's credential, never a same-name spawn's or the
+    // operator's standing `<name>.creds` (#3857).
+    credsPath = agentLifecycleSecretFilePaths(target.root, space, name, lifecycleUid).creds;
     // THE EVENT GRANT, from the principal this spawn ALLOCATED. Static mode keys on the nkey, never
     // on the display name: a name is not an identity, and the manager derives the same subject from
     // the same connector function, so a foreground and a detached spawn of one persona land on one
@@ -1662,8 +1665,8 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       // Store first (the source of truth), then materialize — the child's launch reads this FILE.
       // The CLI is the local FS composition (byte-identical), same posture as the manager's spawn.
       const secrets = workspaceSecretStore(target.root);
-      await secrets.put(agentCredsKey(space, name, composition), creds);
-      await materializeSecretToFile(secrets, agentCredsKey(space, name, composition), credsPath);
+      await secrets.put(agentSecretKeyForFile(credsPath, space), creds);
+      await materializeSecretToFile(secrets, agentSecretKeyForFile(credsPath, space), credsPath);
     } catch (e) {
       await retireProvision("provisioning failed");
       throw e;

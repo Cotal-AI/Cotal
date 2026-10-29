@@ -1331,11 +1331,14 @@ refused the same way, and its next step makes it readable again.
 On an existing mesh, `cotal up` reconciles the presence and lease bucket TTLs. It writes a reserved
 canary and waits for the bucket to expire it before reporting success. If the broker accepts the
 stream update but the backing store does not persist or enforce it, `up` exits nonzero with a TTL
-persistence error instead of trusting the value returned by stream info. A refresh that restores a
+persistence error instead of trusting the value returned by stream info. A refresh ensures the
+manager in every mode, an open mesh included, unless it runs with `--no-manager`, as a first boot
+does. A refresh that restores a
 missing manager waits for that process to come up, then says so with its pid (`✓ restored in the
 background: manager (pid N)`). A manager that `up` starts and that exits at boot instead is reported
 as `! control plane degraded:` with the path of its log, and `up` then exits nonzero, whether it was a
-refresh, a first `--detach` boot or `up -f`. A first `--detach` boot reports a delivery daemon the
+refresh, a first `--detach` boot or `up -f`. A refresh over a manager pidfile that holds no pid is
+reported the same way, naming that file. A first `--detach` boot reports a delivery daemon the
 same way when the daemon was ready and then exited before the boot finished, such as on a SIGTERM
 while the manager started, and leaves it out of the `running in the background` line. The degraded
 message preserves the failure's own recovery instructions. Spawn and retirement require a
@@ -3936,7 +3939,10 @@ spawn is refused with that explanation before any request is sent. A spawn runs 
 to your terminal; `--detach` and `--on` hand the launch to a manager. Every mode gets the durable
 backstop on a mesh that runs the delivery daemon; `--live-only` skips it for a spawn in this
 terminal (messages posted while it is disconnected are then not replayed). A foreground exit retires
-the agent's creds and broker footprint, like a manager despawn. On a static-auth mesh, a spawn that
+the agent's creds and broker footprint, like a manager despawn. On a static-auth mesh its creds file
+is `<name>.<lifecycleUid>.creds`, keyed by the spawn's lifecycle UID as a manager's spawns are, so
+the retirement removes only that spawn's credential: another spawn of the same name and a standing
+`<name>.creds` from `cotal auth mint` keep theirs. On a static-auth mesh, a spawn that
 fails after its footprint exists, for example because the creds directory cannot be written,
 retires that footprint the same way before it exits with the error. The creds and the footprint are
 removed as separate steps, so a creds file that cannot be deleted does not leave the broker durables
