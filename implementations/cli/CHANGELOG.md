@@ -1,5 +1,26 @@
 # @cotal-ai/cli
 
+## 0.127.1
+
+### Patch Changes
+
+- b6c79ff: `cotal up` over a manager pidfile that holds no pid now names steps that work. Its Next offered only `cotal down`, which refuses that pidfile and leaves the broker running. It now names `rm <pidfile>`, to run once `cotal ps --space <space>` finds no manager running, and then `cotal up`, or `cotal up --no-manager` after a start with that flag. The `! control plane degraded:` report wraps on a terminal like other warnings, puts each sentence on its own line, and says what happened without internal component names. A refresh of a running stack no longer prints `starting this folder's stopped stack in the mode it last ran: open`; that line and the one naming the address it last ran at appear only when `up` starts a stopped stack.
+- 388ba4d: The guided `cotal meshes add` on a terminal now takes `--tls` as the flag form does. A host name
+  whose broker requires TLS passes the address rule, the probe requires the handshake, and the record
+  carries the TLS requirement. The guided form used to read TLS intent only from a `tls://` scheme, so
+  `--server nats://<host> --tls` was refused as a host name, and a loopback registration with `--tls`
+  was recorded without the requirement. The `--force` help now says that the address rules still apply.
+- beade82: When a manager's contract does not declare a field the CLI sends, the version-skew refusal now gives
+  the version that manager reports in its `status` and says which side is older. For an older manager
+  it names `cotal update --self` on the manager's host and then `cotal manager restart`, or a CLI at the
+  manager's version. For an older CLI it names `cotal update --self`. An unpinned refusal also names the
+  manager whose contract refused the field, and a managed spawn's next step no longer says to fix what
+  the manager reported, because the manager never received the request. Core's undeclared-argument
+  marker now carries the instance the refused request was bound to.
+- Updated dependencies [beade82]
+  - @cotal-ai/core@0.127.1
+  - @cotal-ai/workspace@0.127.1
+
 ## 0.127.0
 
 ### Patch Changes
