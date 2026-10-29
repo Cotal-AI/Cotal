@@ -62,12 +62,15 @@ export function validateServiceArguments(args: ParsedArgs): void {
   if (mode === "add" && (!name || args.values.file === undefined && args.values.preset === undefined && args.values.exec === undefined) && (!canPrompt() || args.values.json)) throw new CommandFailure("refused", "USAGE_INVALID", "scripted service add needs a name and --exec <command>, --preset <preset> or --file <definition.json>; guided input requires an interactive terminal", { remedy: `cotal service add ${name ?? "<name>"} --exec "<command>"`, remedyIsCommand: true });
 }
 
-/** Whether a start of `name` would launch a manager: its saved definition, or the preset it names,
- *  runs the manager adapter, and no manager that `up` recorded by PID runs already. */
-function launchesManager(space: string, root: string, name: string, store: ReturnType<typeof serviceDefinitionStore>): boolean {
+/** Whether a start or restart of `name` would launch a manager: its saved definition, or the preset
+ *  it names, runs the manager adapter. A start launches none while a live manager keeps its PID
+ *  record here, whether `up` recorded it by PID alone or a saved manager already runs. A restart of
+ *  a saved manager stops it and launches another, so it launches one even then. */
+function launchesManager(space: string, root: string, name: string, mode: string, store: ReturnType<typeof serviceDefinitionStore>): boolean {
   const saved = store.read(name)?.record.value.launch;
   if ((saved ? saved.type === "adapter" && saved.adapter : findServicePreset(name)?.adapter) !== STACK_ADAPTER.manager) return false;
   const manager = findServicePreset("manager");
+  if (mode === "restart" && (saved || manager && presetDefinitions(space, root, manager).length)) return true;
   return manager === undefined || recordedPresetProcess(space, root, manager) === undefined;
 }
 
@@ -96,9 +99,9 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
   const [mode = "list", suppliedName] = args.positionals;
   const target = { space, executionHost: "this-machine" };
   if (["start", "stop", "restart", "status", "logs", "install", "uninstall"].includes(mode)) {
-    // A user-auth space's manager is read as your signed-in, granted login, so a start without one
-    // is refused here, before a definition is saved or a child launched.
-    if ((mode === "start" || mode === "restart") && launchesManager(space, root, suppliedName!, store))
+    // A user-auth space's manager is read as your signed-in, granted login, so a start or restart
+    // without one is refused here, before a definition is saved, a manager stopped or a child launched.
+    if ((mode === "start" || mode === "restart") && launchesManager(space, root, suppliedName!, mode, store))
       await assertManagerLogin(root, space, commandName === "manager" ? `\`cotal manager ${mode}\`` : `\`cotal service ${mode} ${suppliedName}\``);
     const resolved = resolvePresetService(space, root, suppliedName!, mode, args.values);
     if (resolved?.recorded) return mode === "logs" && resolved.preset === "manager" ? recordedManagerLogs(resolved.requested, { ...resolved.recorded, state: "running" }, space, root, args.values, presentation, commandName) : recordedPresetProcessReport(resolved, resolved.recorded, space, mode, presentation, commandName);

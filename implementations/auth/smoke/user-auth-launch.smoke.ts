@@ -24,7 +24,8 @@
  *      or with one the IdP revoked, is refused AUTH_REQUIRED before anything is saved. With the revoked
  *      one, a bare `up` of the running stack and of the stopped stack leaves the manager unattempted,
  *      and a team boot resuming the stopped stack is refused AUTH_REQUIRED before any effect, each
- *      naming `cotal login --idp <base>`. A manager left
+ *      naming `cotal login --idp <base>`. Signed in again, the manager starts, and a `manager restart`
+ *      over it with the sign-in revoked is refused AUTH_REQUIRED before it stops anything. A manager left
  *      running after a sign-out is stopped by the folder's owner through `manager stop` and `down`.
  *      `supervise` is refused before it connects, under a `Mesh:` heading with a code and no boot
  *      line, from that stopped root, from a folder with no records (naming the folder that hosts the
@@ -34,7 +35,8 @@
  *      comes up and its native child carries the variable; with it unset, the line the refusal quotes
  *      names the TLS reason and ends in the step to set `NODE_EXTRA_CA_CERTS`, quoted whole. With its
  *      sign-in revoked at the IdP, and then with none, its `manager start` is refused AUTH_REQUIRED
- *      before any launch, naming `cotal login --idp <base>`.
+ *      before any launch, naming `cotal login --idp <base>`. Signed in again, its manager runs, and a
+ *      `manager restart` over it with that sign-in revoked is refused the same way and leaves it running.
  *   F. `cotal down` stops the auth service (space-scoped pid) with the broker; re-`up` WITHOUT
  *      --user-auth on a user-enabled root is refused fail-closed.
  *   G. `clean all`, and `reset space` on a stopped controller stack, name the IdP trust and the
@@ -788,6 +790,15 @@ try {
     const started = await cotal(["manager", "start"], { cwd: root2, env });
     check("signed in and granted, manager start starts it", started.status === 0 && existsSync(managerPid), started.out);
     const pid2 = Number(readFileSync(managerPid, "utf8").trim());
+    // A restart over that running manager, with the sign-in revoked, is refused before anything is stopped.
+    await revokeSignIn(loadIdpSession(home2, base)!.token);
+    const revokedRestart = await cotal(["manager", "restart", "--yes"], { cwd: root2, env });
+    const revokedRestartText = plain(revokedRestart.out);
+    check("with the sign-in revoked, manager restart over the running manager exits 2 with AUTH_REQUIRED, and Next signs in at that IdP, then restarts it",
+      revokedRestart.status === 2 && field(revokedRestart.out, "Code", "AUTH_REQUIRED") && revokedRestartText.includes(revokedRejection) &&
+        revokedRestartText.includes(`cotal login --idp ${base}, then \`cotal manager restart\``), revokedRestart.out);
+    check("…before anything was stopped: the same manager still runs",
+      readFileSync(managerPid, "utf8").trim() === String(pid2) && (() => { try { process.kill(pid2, 0); return true; } catch { return false; } })(), revokedRestart.out);
     deleteIdpSession(home2, base);
     const blocked = await cotal(["down", "--yes"], { cwd: root2, env, sandbox: sandbox2 });
     check("signed out, down names the manager's own stop first", blocked.status === 2 && field(blocked.out, "Code", "LIFECYCLE_BLOCKED") && plain(blocked.out).includes("cotal svc stop manager --instance"), blocked.out);
@@ -900,6 +911,22 @@ try {
       signedOutJoin.status === 2 && field(signedOutJoin.out, "Code", "AUTH_REQUIRED") && signedOutJoinText.includes("no user is signed in for this space; the manager was not attempted") &&
         signedOutJoinText.includes(`cotal login --idp ${base}, then \`cotal manager start\``), signedOutJoin.out);
     check("…and neither start left a manager running", !joinManagerRuns(), { pidFile: existsSync(joinManagerPid) ? readFileSync(joinManagerPid, "utf8") : "absent" });
+    // Signed in again, its manager runs; a restart over it with that sign-in revoked is refused the same
+    // way and leaves it running.
+    await establishIdpSession({ dir: joinHome, idpUrl: base, clientId: CLIENT_ID, onPrompt: (p: DeviceLoginPrompt) => void approve(p.userCode) });
+    const joinRunning = await cotal(["manager", "start"], { cwd: joinRoot, env: joinEnv });
+    check("signed in again, the participant's manager start starts it", joinRunning.status === 0 && joinManagerRuns(), joinRunning.out);
+    const joinRunningPid = readFileSync(joinManagerPid, "utf8").trim();
+    await revokeSignIn(loadIdpSession(joinHome, base)!.token);
+    const revokedJoinRestart = await cotal(["manager", "restart", "--yes"], { cwd: joinRoot, env: joinEnv });
+    const revokedJoinRestartText = plain(revokedJoinRestart.out);
+    check("with that sign-in revoked, the participant's manager restart exits 2 with AUTH_REQUIRED, and Next signs in at that IdP, then restarts it",
+      revokedJoinRestart.status === 2 && field(revokedJoinRestart.out, "Code", "AUTH_REQUIRED") && revokedJoinRestartText.includes("the IdP rejected this machine's sign-in, which has expired or was revoked; the manager was not attempted") &&
+        revokedJoinRestartText.includes(`cotal login --idp ${base}, then \`cotal manager restart\``), revokedJoinRestart.out);
+    check("…and leaves the running manager as it was", joinManagerRuns() && readFileSync(joinManagerPid, "utf8").trim() === joinRunningPid, revokedJoinRestart.out);
+    await establishIdpSession({ dir: joinHome, idpUrl: base, clientId: CLIENT_ID, onPrompt: (p: DeviceLoginPrompt) => void approve(p.userCode) });
+    const joinStopped = await cotal(["manager", "stop", "--yes"], { cwd: joinRoot, env: joinEnv });
+    check("signed in again, the participant stops it", joinStopped.status === 0 && await until(() => !joinManagerRuns()), joinStopped.out);
     const hostDown = await cotal(["down", "--yes"], { cwd: hostRoot, env: hostEnv, sandbox: hostSandbox });
     check("…and the TLS host stops", hostDown.status === 0, hostDown.out);
   }

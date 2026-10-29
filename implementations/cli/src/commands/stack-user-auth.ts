@@ -91,12 +91,13 @@ export function userLoginRequired(space: string, login: Awaited<ReturnType<typeo
 }
 
 /** Refuse a start of the manager of a user-auth space that `root` hosts while no signed-in, granted
- *  login exists: its readiness is read as that login, so it could not be confirmed. `manager start`,
- *  `up` and a team boot all start the manager behind this check. A space registered here from
+ *  login exists: its readiness is read as that login, so it could not be confirmed. `manager start`
+ *  and `restart`, `up` and a team boot all start the manager behind this check. A space registered here from
  *  another host needs the login alone, since its grant is not readable here. The cached login is
  *  then confirmed with its IdP, so one the IdP rejects as expired or revoked is refused the same way.
  *  Any other failure of that check, such as an IdP that does not answer, is left to the launch,
- *  which reports it as before. Runs before a definition is saved or a child launched. */
+ *  which reports it as before. Runs before a definition is saved, a running manager stopped or a
+ *  child launched. */
 export async function assertManagerLogin(root: string, space: string, then: string): Promise<void> {
   const registered = findMesh(space)?.userAuth;
   // The IdP the remedy names. A stopped stack, such as one a team boot resumes, has no registration,

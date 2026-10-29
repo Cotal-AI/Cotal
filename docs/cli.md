@@ -5001,9 +5001,10 @@ stopped manager saves it again with that option, and says so. A running one refu
 
 On a user-auth space this folder hosts, `start` and `restart` need your signed-in, granted login,
 as `cotal up` does for its manager. On a user-auth space registered here from another host, they
-need your sign-in. Before anything is saved or launched, they confirm the sign-in with its IdP.
-Without one, or when the IdP rejects it because it expired or was revoked, they refuse
-`AUTH_REQUIRED` (exit 2), and Next names `cotal login --idp <base>`, then the command again. Any
+need your sign-in. Before anything is saved, stopped or launched, they confirm the sign-in with its
+IdP. Without one, or when the IdP rejects it because it expired or was revoked, they refuse
+`AUTH_REQUIRED` (exit 2), and Next names `cotal login --idp <base>`, then the command again. A
+refused `restart` leaves a running manager as it was. Any
 other failure of that check, such as an IdP that does not answer, is left to the start. In a folder
 that hosts the space, `stop` and `cotal down` need no sign-in: the broker, the records and the
 process belong to this folder, so the stop reads the manager's own local receipt.
