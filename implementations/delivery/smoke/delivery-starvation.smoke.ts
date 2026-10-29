@@ -137,9 +137,8 @@ const credsPathF = join(dir, "delivery-f.creds");
 // be forced by a hard resource ceiling — every space's artifact Object Store was created at 4 GiB,
 // JetStream RESERVED the whole cap against the server's store the moment the space was provisioned,
 // and eight of them exceeded what one test broker could promise, so the suite failed with
-// "insufficient storage resources available" before a single cell ran. The artifact store now carries
-// `max_bytes: -1` and reserves nothing, so the ceiling is gone: the six spaces reserve 384 MiB, six
-// 64 MiB membership buckets, and an eighth space would no longer be refused for it.
+// "insufficient storage resources available" before a single cell ran. Artifact and membership stores
+// now carry `max_bytes: -1` and reserve nothing, so that empty-space ceiling is gone.
 //
 // The reuse stays because it was always sound on its own merits, which is the second reason below —
 // not because the suite still cannot afford eight spaces. `setupSpaceStreams` is called six times and
@@ -1521,10 +1520,9 @@ try {
   if (isProvisioningRefusal(gradedBeforeThrow, why)) {
     console.error(`  ✗ the BROKER refused to provision this suite's spaces: ${why}`);
     console.error(`     This is the test environment, not the daemon. This suite provisions SIX spaces (cells`);
-    console.error(`     G and H alias earlier ones rather than adding more), and each reserves a 64 MiB membership`);
-    console.error(`     bucket - 384 MiB in total - before a single cell runs. The artifact Object Store reserves`);
-    console.error(`     NOTHING (max_bytes -1), so a refusal here now means the store is genuinely out of room`);
-    console.error(`     rather than promised away to empty caps.`);
+    console.error(`     G and H alias earlier ones rather than adding more). Membership and artifact stores reserve`);
+    console.error(`     NOTHING (max_bytes -1), so a refusal here means the store is genuinely out of room rather`);
+    console.error(`     than promised away to empty per-space caps.`);
     console.error(`     The broker's JetStream directory is under TMPDIR, currently ${tmpdir()}.`);
     console.error(`     Point TMPDIR at a filesystem with room to spare (and NOT under the workstation root,`);
     console.error(`     which the daemon's own root walk would then pick up) and re-run before reading this`);

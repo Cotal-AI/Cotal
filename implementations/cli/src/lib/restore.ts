@@ -26,8 +26,7 @@ import {
   LEASE_TTL_MS,
   managerBucket,
   MANAGER_LEASE_TTL_MS,
-  membershipBucket,
-  MEMBERSHIP_MAX_BYTES,
+  membershipStoreDefinition,
   PRESENCE_STORAGE,
   presenceBucket,
   recordsBucket,
@@ -629,7 +628,8 @@ async function createOmittedInfrastructure(
     for (const stream of create) await jsm.streams.add(canonicalBackupStreamConfig(space, stream));
     const kvm = new Kvm(nc);
     await kvm.create(presenceBucket(space), { ttl: 6_000, storage: PRESENCE_STORAGE });
-    await kvm.create(membershipBucket(space), { history: 1, max_bytes: MEMBERSHIP_MAX_BYTES });
+    const membership = membershipStoreDefinition(space);
+    await kvm.create(membership.bucket, membership.createOptions);
     await kvm.create(deliveryBucket(space), { ttl: LEASE_TTL_MS });
     await kvm.create(managerBucket(space), { ttl: MANAGER_LEASE_TTL_MS });
     // The other endpoint stores are nonportable control state. Recreate them empty, with any workflow

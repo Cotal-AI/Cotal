@@ -28,10 +28,10 @@
  *     refused at a port another program holds names another `--server`, records no broker instance
  *     and pins nothing: `down --yes` stops nothing and the next `up` starts at another address. The
  *     refusal says the stack started no member. A running broker keeps its file store cap; a stopped
- *     one takes a new `--max-file-store`, and a recorded cap too small for the space's streams fails
- *     naming that cap and the flag. A cap equal to the membership bucket's reservation fails that way
- *     too, and one byte more starts. `status` then reads such a stack as stopped, with its last
- *     operation, and names up at the floor while the recorded cap is below it. Once a space holds
+ *     one takes a new `--max-file-store`. With no stream reservations, a recorded one-byte cap lets
+ *     the empty streams start, then delivery's first write fails and keeps the broker as a partial
+ *     start; stopping that broker lets a replacement cap apply. After replacement, `status` reads the
+ *     stack as stopped, with its last operation, and names bare up. Once a space holds
  *     more than its cap, `send` refuses `DEPENDENCY_UNAVAILABLE` naming the store and the cap,
  *     `status` shows the store full and leads Next with `history clear`, and `down` and `service stop
  *     stack-manager` refuse the same way before any stop, because the manager's stop needs an
@@ -185,7 +185,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { assertSmokeSandboxDown, createSuite, freePort, listenOn, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
 import { CotalEndpoint, mintCreds, mintLifecycleUid, newIdentity } from "@cotal-ai/core";
-import { agentLifecycleSecretFilePaths, canonicalLocalProcessPath, findMesh, getSpaceAuth, isCommandFailure, MIN_FILE_STORE, workspaceSecretStore, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, MANAGER_SHUTDOWN_INTENT, readServiceStopRequest, spaceSegment, stopReservationPath, acquireMaintenanceLock, releaseMaintenanceLock } from "@cotal-ai/workspace";
+import { agentLifecycleSecretFilePaths, canonicalLocalProcessPath, findMesh, getSpaceAuth, isCommandFailure, workspaceSecretStore, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, MANAGER_SHUTDOWN_INTENT, readServiceStopRequest, spaceSegment, stopReservationPath, acquireMaintenanceLock, releaseMaintenanceLock } from "@cotal-ai/workspace";
 
 const WT = resolve(import.meta.dirname, "..", "..", "..");
 const CLI = join(WT, "bin", "cotal.ts");
@@ -560,7 +560,8 @@ try {
     check("down --yes stops it", stopped.status === 0, shown(stopped));
   }
 
-  // 3c. A recorded file store cap too small for the space's streams, as an earlier release accepted.
+  // 3c. A recorded one-byte file store cap, as an earlier release accepted, starts empty streams
+  // without reservations. Delivery's first write fills it, so the broker is kept until a scoped down.
   {
     const space = "smallcap";
     const root = prepare(space);
@@ -575,44 +576,22 @@ try {
     writeFileSync(path, JSON.stringify({ ...journal, broker: { ...journal.broker, maxFileStore: 1 } }));
     const failed = cli(root, "up", "--no-manager", "--json");
     track(space);
-    check("bare up with a 1-byte recorded cap fails OPERATION_FAILED, exit 5, naming the cap and the flag that replaces it", failed.status === 5 && failed.env?.error?.code === "OPERATION_FAILED" && failed.env.error.message.includes("its JetStream file store cap (--max-file-store 1) has too little room for them") && Boolean(failed.env.error.remedy?.includes(`run \`cotal up --max-file-store <bytes>\` from ${root}`)), shown(failed));
+    check("bare up with a 1-byte recorded cap keeps the broker after delivery's first write fails: OPERATION_PARTIAL, exit 4, naming the full store and replacement-cap route", failed.status === 4 && failed.env?.error?.code === "OPERATION_PARTIAL" && failed.env.error.message.includes("started members were kept and nothing was retried") && failed.env.error.message.includes("is full at its --max-file-store cap of 1 bytes") && Boolean(failed.env.error.remedy?.includes("run `cotal down --yes` and `cotal up --max-file-store <bytes>` with a larger cap")), shown(failed));
+    const partialDown = cli(root, "down", "--yes", "--json");
+    check("down --yes stops the broker kept by the partial startup before its cap is changed", partialDown.status === 0, shown(partialDown));
     const fixed = cli(root, "up", "--no-manager", "--max-file-store", "134217728", "--json");
     track(space);
     check("up with a new cap on the stopped broker records it and starts", fixed.status === 0 && (JSON.parse(readFileSync(path, "utf8")) as { broker: { maxFileStore?: number } }).broker.maxFileStore === 134217728, shown(fixed));
     check("down --yes stops it", cli(root, "down", "--yes", "--json").status === 0);
-    // The membership bucket's reservation alone leaves no byte free, and the broker refuses the next stream.
-    const recorded = JSON.parse(readFileSync(path, "utf8")) as { broker: Record<string, unknown> };
-    writeFileSync(path, JSON.stringify({ ...recorded, broker: { ...recorded.broker, maxFileStore: MIN_FILE_STORE - 1 } }));
-    const reserved = cli(root, "up", "--no-manager", "--json");
-    track(space);
-    check(`a recorded cap of ${MIN_FILE_STORE - 1}, the membership bucket's reservation, fails OPERATION_FAILED, exit 5, naming ${MIN_FILE_STORE} as the least`, reserved.status === 5 && reserved.env?.error?.code === "OPERATION_FAILED" && Boolean(reserved.env.error.remedy?.includes(`with at least ${MIN_FILE_STORE} bytes`)), shown(reserved));
-    // Another space of this suite is selected, and a stopped folder's commands target the selection,
-    // so status names this stack with --space.
-    const capped = cli(root, "status", "--space", space, "--json");
-    const cappedSelected = capped.env?.result?.selected as { message?: string; storeCap?: number } | undefined;
-    check("status then says the stack is stopped after a failed up, shows the recorded cap and names up --max-file-store at the floor, not a bare up",
-      capped.status === 0 && Boolean(cappedSelected?.message?.includes(`"${space}" is stopped; its last operation, \`cotal up\`, failed`)) && cappedSelected?.storeCap === MIN_FILE_STORE - 1
-        && ((capped.env?.result?.hints ?? []) as string[]).some((hint) => hint.startsWith(`start it with \`cotal up --max-file-store ${MIN_FILE_STORE}\` or more in `)), shown(capped));
-    // With another space selected, the note on what this folder holds names the up that starts it.
+    // With another space selected, the note on what this folder holds names the bare up that starts it.
     const folderNote = (run: Run) => run.env?.warnings?.find((warning) => warning.code === "FOLDER_SPACE_NOT_RUNNING" && warning.target?.space === space);
-    const noted = cli(root, "status", "--json");
-    check(`with another space selected, the folder note names up --max-file-store ${MIN_FILE_STORE} or more after the failed up, not a bare up`,
-      noted.status === 0 && noted.env?.target?.space !== space && folderNote(noted)?.message === `this folder holds the stopped space "${space}"; restart it with \`cotal up --max-file-store ${MIN_FILE_STORE}\` or more`, { ...shown(noted), target: noted.env?.target, note: folderNote(noted) });
-    // Bare `cotal` there names the same up in its own line on what the folder holds, and never a bare one.
-    const entry = cli(root);
-    check(`bare cotal there names up --max-file-store ${MIN_FILE_STORE} or more in its folder note, and no bare up as this folder's start`,
-      entry.status === 0 && entry.stdout.includes(`\n${folderNote(noted)?.message}\n`) && !/^ {2}cotal up +Start this folder's space$/m.test(entry.stdout), { ...shown(entry), stdout: entry.stdout.slice(0, 1200) });
-    const floor = cli(root, "up", "--no-manager", "--max-file-store", String(MIN_FILE_STORE), "--json");
-    track(space);
-    check(`up --max-file-store ${MIN_FILE_STORE} starts the stack`, floor.status === 0, shown(floor));
-    check("down --yes stops it", cli(root, "down", "--yes", "--json").status === 0);
     const stoppedStatus = cli(root, "status", "--space", space, "--json");
-    const stoppedSelected = stoppedStatus.env?.result?.selected as { message?: string; storeCap?: number } | undefined;
+    const stoppedSelected = stoppedStatus.env?.result?.selected as { message?: string } | undefined;
     check("status then says the stack is stopped after a completed down, not prepared but not started, and names a bare up",
-      stoppedStatus.status === 0 && Boolean(stoppedSelected?.message?.includes(`"${space}" is stopped; its last operation, \`cotal down\`, completed`)) && stoppedSelected?.storeCap === undefined
+      stoppedStatus.status === 0 && Boolean(stoppedSelected?.message?.includes(`"${space}" is stopped; its last operation, \`cotal down\`, completed`))
         && ((stoppedStatus.env?.result?.hints ?? []) as string[]).some((hint) => hint.startsWith("start it again with `cotal up` in ")), shown(stoppedStatus));
     const notedDown = cli(root, "status", "--json");
-    check("with another space selected, the folder note names a bare up after a completed down whose cap is at the floor",
+    check("with another space selected, the folder note names a bare up after a completed down",
       notedDown.status === 0 && notedDown.env?.target?.space !== space && folderNote(notedDown)?.message === `this folder holds the stopped space "${space}"; restart it with \`cotal up\``, { ...shown(notedDown), target: notedDown.env?.target, note: folderNote(notedDown) });
   }
 

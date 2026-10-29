@@ -44,7 +44,6 @@ import {
   stackRunsUnderOtherHome,
   workspaceSecretStore,
   writeResult,
-  MIN_FILE_STORE,
   type MaintenanceLock,
   type OutputWarning,
   type Report,
@@ -1017,7 +1016,6 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
       // JetStream answers 10047, insufficient storage resources, when the file store cannot hold a
       // stream's reservation; the broker logs nothing about it.
       const noStorage = error instanceof JetStreamApiError && error.code === 10047;
-      const storeRemedy = `with at least ${MIN_FILE_STORE} bytes, the least the space's streams start on, plus room for messages`;
       throw new CommandFailure("failed", "OPERATION_FAILED", `the broker this command started could not create the space's streams${unserved.outOfFiles ? ", because it ran out of open files" : noStorage ? `, because its JetStream file store${brokerCap !== undefined ? ` cap (--max-file-store ${brokerCap})` : ""} has too little room for them` : ""}, so it was stopped again; nothing of the stack runs`, {
         target: { root, space, operation: journal.operation.id, members: journal.members, ...(unserved.log ? { brokerLog: unserved.log } : {}) },
         changed: [instanceProjection(unserved.stopped)],
@@ -1026,8 +1024,8 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
           ? `raise the open-file limit (ulimit -n) of the shell that runs \`cotal up\`, then run \`cotal up\` again from ${root}`
           : noStorage
             ? brokerCap !== undefined
-              ? `run \`cotal up --max-file-store <bytes>\` from ${root} ${storeRemedy}`
-              : `free space on the filesystem that holds ${brokerStore ?? join(root, ".cotal", "nats")}, or run \`cotal up --max-file-store <bytes>\` from ${root} ${storeRemedy}`
+              ? `run \`cotal up --max-file-store <bytes>\` from ${root} with a larger cap and room for messages`
+              : `free space on the filesystem that holds ${brokerStore ?? join(root, ".cotal", "nats")}, or run \`cotal up --max-file-store <bytes>\` from ${root} with room for messages`
             : `fix what the broker's log${unserved.log ? ` at ${unserved.log}` : ""} names, then run \`cotal up\` again from ${root}`,
       });
     }

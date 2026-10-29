@@ -1,5 +1,11 @@
 # @cotal-ai/core
 
+## 0.127.3
+
+### Patch Changes
+
+- 5ad71cb: Remove the 64 MiB reservation from each space's membership store, bound values per agent, reconcile legacy stores, and drop the CLI file-store floor.
+
 ## 0.127.2
 
 No changes in this release.
