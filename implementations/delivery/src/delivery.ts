@@ -697,6 +697,20 @@ async function runStartedDelivery(
     health.adopted();
   });
 
+  // A STOP THAT LANDS WHILE THE ACQUIRE IS IN FLIGHT IS HELD UNTIL ITS REPLY. The broker applies the
+  // create before this process reads the answer, so for that moment the row is on the broker while
+  // nothing here can give it back. A SIGTERM there found no handler and ended the process at once,
+  // leaving the create itself claiming the shard for the rest of the 30s bucket TTL. Only the reply
+  // says whether the shard is ours, so the signal is recorded here and run by the early stop below.
+  let signalledDuringAcquire: NodeJS.Signals | undefined;
+  const holdSignal = (signal: NodeJS.Signals) => (): void => { signalledDuringAcquire ??= signal; };
+  const holdSigint = holdSignal("SIGINT");
+  const holdSigterm = holdSignal("SIGTERM");
+  if (!held) {
+    process.on("SIGINT", holdSigint);
+    process.on("SIGTERM", holdSigterm);
+  }
+
   // Acquire the single-flight lease BEFORE binding the loops: a loud refusal-to-bind if another daemon
   // already holds this shard (two clients binding the same durable name SPLIT delivery). The bucket TTL
   // frees a crashed holder's lease so a fresh daemon re-acquires.
@@ -751,7 +765,9 @@ async function runStartedDelivery(
   // The handler cannot call `shutdown` (defined far below, over state that does not exist yet), so
   // it does the one thing that is always correct here and never wrong later: give the lease back if
   // it is provably ours, then exit. Once the real `shutdown` is installed it REPLACES this, and
-  // `stopping` makes the pair idempotent, so a signal arriving mid-swap cannot run both.
+  // `stopping` makes the pair idempotent, so a signal arriving mid-swap cannot run both. It replaces
+  // the hold armed before the acquire in turn, and runs a signal that hold recorded once the
+  // liveness record below exists, so the stop removes the record as well as the row.
   let stopping = false;
   let unavailable: string | undefined;
   /** What a held context lost when it closed itself, for its holder; unset on a deliberate close. */
@@ -798,9 +814,13 @@ async function runStartedDelivery(
   };
   const earlySigint = onSignal("SIGINT", earlyStop);
   const earlySigterm = onSignal("SIGTERM", earlyStop);
+  // On before off: removing a signal's last listener closes its handle, and a signal already caught
+  // but not yet dispatched is then dropped, so a stop sent during the acquire would be ignored.
   if (!held) {
     process.on("SIGINT", earlySigint);
     process.on("SIGTERM", earlySigterm);
+    process.off("SIGINT", holdSigint);
+    process.off("SIGTERM", holdSigterm);
   }
   // THE LIVENESS RECORD GOES HERE, AFTER THE ACQUIRE AND NOT BEFORE IT (#1528).
   //
@@ -892,6 +912,7 @@ async function runStartedDelivery(
       });
     }
     unrecordPid = recordDeliveryPid(root, space);
+    if (signalledDuringAcquire !== undefined) onSignal(signalledDuringAcquire, earlyStop)();
   }
   stopHeld = (cause, what) => {
     unavailable = `delivery context stopped (code 1): ${cause}`;
