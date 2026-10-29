@@ -402,21 +402,24 @@ try {
   const tSetup = performance.now();
   const seats: SeatSpec[] = [];
   const daemons: DaemonSpec[] = [];
-  const provCredsOf: string[] = [];
+  // A full pass can outlast the five-minute provisioner lifetime. Mint per space and phase.
   for (let s = 0; s < SPACES; s++) {
-    provCredsOf.push(await mintCreds(auths[s], newIdentity(), "provisioner"));
+    const creds = await mintCreds(auths[s], newIdentity(), "provisioner");
     // Dialled as `setupSpaceStreams` dials, so the provisioner's scoped inbox prefix applies.
-    const nc = await dialerFor(SERVERS)({ servers: SERVERS, ...standaloneConnectOpts({ creds: provCredsOf[s], tls: false }) });
+    const nc = await dialerFor(SERVERS)({ servers: SERVERS, ...standaloneConnectOpts({ creds, tls: false }) });
     const jsm = await jetstreamManager(nc);
     for (const definition of spaceMessageStreamConfigs(spaceNames[s])) await jsm.streams.add(definition);
     await nc.drain();
   }
   await step("+ message streams");
-  for (let s = 0; s < SPACES; s++) await setupSpaceStreams({ servers: SERVERS, space: spaceNames[s], creds: provCredsOf[s] });
+  for (let s = 0; s < SPACES; s++) {
+    const creds = await mintCreds(auths[s], newIdentity(), "provisioner");
+    await setupSpaceStreams({ servers: SERVERS, space: spaceNames[s], creds });
+  }
   await step("+ KV buckets, registries, object store");
   for (let s = 0; s < SPACES; s++) {
     const space = spaceNames[s], auth = auths[s];
-    const provCreds = provCredsOf[s];
+    const provCreds = await mintCreds(auth, newIdentity(), "provisioner");
     const prov = new CotalEndpoint({ space, servers: SERVERS, creds: provCreds, channels: [], consume: false, watchPresence: false, registerPresence: false, watchChannels: false, card: { name: "prov", role: "manager", kind: "endpoint" } });
     prov.on("error", () => {});
     await prov.start();
