@@ -1587,8 +1587,14 @@
   "ep:manager:spawn.supervise.restarts": "current:spawn --restarts --restart-window",
   "ep:manager:spawn.supervise.windowMs": "current:spawn --restarts --restart-window",
   "ep:manager:spawn.variant": "current:spawn --detach --variant",
-  "ep:manager:status": "current:status",
-  "ep:manager:status#ephemeral/manager.read": "current:status",
+  "ep:manager:status": [
+   "current:status",
+   "current:ps"
+  ],
+  "ep:manager:status#ephemeral/manager.read": [
+   "current:status",
+   "current:ps"
+  ],
   "ep:manager:stop": "current:stop --self",
   "ep:manager:stop#ephemeral/manager.self": "current:stop --self",
   "ep:manager:stop.graceful": "current:stop --self --force",
