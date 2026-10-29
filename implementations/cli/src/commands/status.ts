@@ -2049,18 +2049,17 @@ function nextActions(r: StatusResult): Section {
     else items.unshift({ command: `${cmd} down`, description: `${first}; then \`${cmd} up\` starts the broker again with the history it kept` });
   }
   // The broker refuses every write while the store is over its cap, so sends store nothing, and a
-  // stopped member starts again only once there is room. Making room purges the space's channel
-  // history. Raising the cap keeps it but needs the broker restarted, so the manager's own process is
-  // ended first where it runs, as a full store refuses its stop. These are the routes up and down name.
+  // stopped member starts again only once there is room. A larger cap makes that room and keeps the
+  // history, but needs the broker restarted, so the manager's own process is ended first where it
+  // runs, as a full store refuses its stop. This is the route up names. A history purge is not named:
+  // it frees only the channel history's bytes, which may leave the store over its cap.
   if (r.store?.state === "full" && r.selected.resolved) {
-    const { space, root } = r.selected;
+    const { root } = r.selected;
     const manager = r.stackManager;
     items.unshift(
-      { command: `${cmd} history clear --space ${space} --yes`, description: `Make room in the full store: this purges the space's channel history; --dms also purges its direct messages` },
-      ...(own && memberGone ? [{ command: `${cmd} up --root ${shellWord(root)}`, description: "Then restart this stack's stopped members from its recorded inputs" }] : []),
-      ...(manager ? [{ command: `kill -TERM ${manager.pid}`, description: "Or keep that history: end the manager on this host, as a full store refuses its stop; it stops its agents by its default policy" }] : []),
+      ...(manager ? [{ command: `kill -TERM ${manager.pid}`, description: "End the manager on this host, as a full store refuses its stop; it stops its agents by its default policy" }] : []),
       // `down` stops only the stack of the folder it runs in.
-      { command: `${cmd} down --yes`, description: `${manager ? "Then stop the other members" : "Or keep that history: stop the stack"}${own ? "" : `; run it in ${root}`}` },
+      { command: `${cmd} down --yes`, description: `${manager ? "Then stop the other members" : "Stop the stack"}${own ? "" : `; run it in ${root}`}` },
       { command: own ? `${cmd} up --max-file-store <bytes>` : `${cmd} up --root ${shellWord(root)} --max-file-store <bytes>`, description: "Then start it again with a larger cap; the store keeps the history" },
     );
   }
