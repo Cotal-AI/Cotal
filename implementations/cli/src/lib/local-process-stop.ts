@@ -23,6 +23,14 @@ export function processRecorded(component: LocalProcess, context: LocalProcessCo
   return existsSync(localProcessPath(component.pidFile, context)) || (component.artifacts ?? []).map((artifact) => localProcessPath(artifact, context)).some(existsSync);
 }
 
+/** The refusal of a pidfile whose content is not a pid. It names no process, so nothing is signalled
+ *  and the record is kept: no lookup can show that no process stands behind it. */
+export class UnattributableRecord extends Error {
+  constructor(readonly label: string, readonly path: string, content: string) {
+    super(`the ${label} pidfile at ${path} holds content that is not a pid (${JSON.stringify(content)}), so it names no process and cotal cannot tell whether a ${label} still runs; refusing to remove it or report a clean stop`);
+  }
+}
+
 export interface StopLocalProcessOptions {
   /** Runs while this caller holds the `.stopping` reservation, after exact target verification and
    * immediately before the stop request. Throwing aborts without signalling and preserves the pid record. */
@@ -134,9 +142,7 @@ export async function stopLocalProcess(
         stopped = true; // husk cleared in `finally`
         return true;
       }
-      throw new Error(
-        `${component.label} has an unattributable pidfile at ${pidPath} (${JSON.stringify(rawPid)}) - it may still front a running process; refusing to remove it or report a clean stop. Stop that process and remove the file manually.`,
-      );
+      throw new UnattributableRecord(component.label, pidPath, rawPid);
     }
     // #969 OPEN-VERIFY-TERMINATE: identity before signal. This is the path every manager, delivery
     // and user-auth stop takes, and the one `cotal down` uses for the BROKER, the web dashboard and

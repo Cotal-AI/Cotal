@@ -102,8 +102,9 @@ import { askManager, resolveControlTarget } from "../lib/control.js";
 import { connectOrExit, userViewAuthOrExit } from "../lib/connect.js";
 import { waitForEndpointUnreachable } from "../lib/endpoint-cut.js";
 import { captureSeatCheckpoint } from "../lib/seat-capture.js";
-import { processRecorded, stopInFlight, stopLocalProcess } from "../lib/local-process-stop.js";
+import { processRecorded, stopInFlight, stopLocalProcess, UnattributableRecord } from "../lib/local-process-stop.js";
 import { stopManager } from "../lib/manager-proc.js";
+import { shellWord } from "../lib/endpoint-errors.js";
 import { ensureDelivery, removeDeliveryCredentials, stopDelivery } from "../lib/delivery-proc.js";
 import { controllerStackRecorded, deliveryLeaseAfterStop, nothingRunning, sameDown, stackDown, stackRootElsewhere, validateStackDownArguments } from "./stack-down.js";
 import { noticeBetweenSteps } from "../lib/interrupt-notice.js";
@@ -558,6 +559,7 @@ async function downCommand(args: ParsedArgs): Promise<void> {
 
   let any = false;
   let allStopped = true;
+  const unattributable: UnattributableRecord[] = [];
   let deliveryLease: Awaited<ReturnType<typeof deliveryLeaseAfterStop>> | undefined;
   // A missing manager or delivery pidfile is not proof those daemons stopped. They renew leases
   // while they run, so a live lease with no pidfile refuses before the broker is stopped.
@@ -584,11 +586,21 @@ async function downCommand(args: ParsedArgs): Promise<void> {
       if (recorded) stopped.push(component.label);
     } catch (e) {
       allStopped = false;
+      if (e instanceof UnattributableRecord) unattributable.push(e);
       stderrLine("✗ ", `${(e as Error).message}`, c.red);
     }
   }
   if (!allStopped) {
     stderrLine("✗ ", "not cleanly stopped - keeping artifacts and the registry entry", c.red);
+    // A record that names no process is removed only by the operator, once they know no process of
+    // that component still runs here. Nothing cotal reads can show that, so the step says so first.
+    if (unattributable.length) console.log(`\n${renderReport({ sections: [{ title: "Next", blocks: [
+      { kind: "lines", lines: unattributable.map((record) => `The ${record.label} pidfile names no process, so cotal cannot check whether a ${record.label} still runs for this folder, and one that does not answer on the mesh may still be running. Confirm yourself that none runs before you remove that file.`) },
+      { kind: "commands", items: [
+        ...unattributable.map((record) => ({ command: `rm ${shellWord(record.path)}`, description: `Remove it once no ${record.label} runs for this folder` })),
+        { command: sameDown(args.values), description: "Then stop the stack" },
+      ] },
+    ] }] }, "rich", process.stdout)}`);
     await interrupt.between();
     interrupt.release();
     process.exitCode = 1;
