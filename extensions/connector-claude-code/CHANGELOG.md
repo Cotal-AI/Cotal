@@ -1,5 +1,12 @@
 # @cotal-ai/connector-claude-code
 
+## 0.121.2
+
+### Patch Changes
+
+- b02da28: Explain confirmed Claude Code hook deliveries when a later inbox read has no unread messages. The receipt names the latest handoff without returning message bodies again or changing acknowledgements.
+- c13e443: Keep Claude Code hook context below its inline output limit. Deliver only complete messages that fit, count the remainder, and leave omitted or oversized messages unacknowledged for the inbox or a later hook.
+
 ## 0.121.1
 
 No changes in this release.

@@ -1,5 +1,12 @@
 # @cotal-ai/connector-jcode
 
+## 0.121.2
+
+### Patch Changes
+
+- 1a32c3c: Retain SIGINT and SIGTERM in the host's final shutdown diagnostic so a pty manager can name the received signal without inventing its sender.
+- 758f03d: Name an OpenAI-compatible model-not-found refusal during Jcode startup even when the harness wraps it as an internal error. Keep provider output private.
+
 ## 0.121.1
 
 No changes in this release.

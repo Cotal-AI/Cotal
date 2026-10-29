@@ -1,5 +1,21 @@
 # @cotal-ai/manager
 
+## 0.121.2
+
+### Patch Changes
+
+- 9ff8f5a: Name `cotal attach --name <seat>` in backticks in the refusals for a Claude selection menu and for input that cannot be inspected.
+- 069204b: Refuse terminal text input at Claude selection menus with guidance to attach and use arrow keys, instead of confirming the highlighted answer.
+- Updated dependencies [af4b631]
+- Updated dependencies [3d07896]
+- Updated dependencies [1446ee9]
+- Updated dependencies [d98674a]
+- Updated dependencies [f450bfe]
+- Updated dependencies [ee93749]
+  - @cotal-ai/core@0.121.2
+  - @cotal-ai/workspace@0.121.2
+  - @cotal-ai/seat@0.121.2
+
 ## 0.121.1
 
 ### Patch Changes
