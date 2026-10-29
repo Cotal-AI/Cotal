@@ -2029,47 +2029,44 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         // The refresh IS the recovery command — a heal that didn't heal must not exit 0.
         if (!svc.ok) process.exitCode = 1;
       }
-      // Auth/user meshes also need their resident renewal owner. A same-root refresh is the normal
-      // repair command after a stale/missing manager, so ensure the delivery daemon + manager before
-      // claiming the running mesh is healthy. Open meshes have no auth creds or delivery daemon.
-      // Re-ensure the control plane on a refresh. The manager is ensured for every mode that reaches
-      // here (a heal after a dead/missing manager adopts `--runtime`); the delivery daemon self-gates
-      // to auth mode inside `ensureControlPlane`. Open meshes normally skip this (a bare refresh has
-      // nothing to heal that must be touched), but a `--runtime` request must be honored there too,
-      // not silently dropped.
-      let planeHealthy = true;
-      if (held.mode !== "open" || values.runtime) {
-        // Warn only when the manager is genuinely REUSED: a live delivery-aware (this-build) manager
-        // is kept as-is by `ensureManager`, so its runtime can't change. An old hosting manager (no
-        // delivery marker) is stopped and REPLACED by the ensure below carrying the requested runtime,
-        // so that's not a reuse - don't claim the runtime is fixed. A dead/absent manager is (re)started
-        // with it.
-        if (values.runtime) {
-          const live = managerRecordState(held.space);
-          if (live.state === "alive" && managerHasDeliveryMarker(live.pid!, held.space))
-            console.error(
-              c.dim(`! manager already running for "${held.space}" - its runtime is fixed at start; \`cotal down\` then \`cotal up --runtime ${values.runtime}\` to change it`),
-            );
-        }
-        // A repair replaces the manager, so it must carry the mesh's recorded exposure forward — a
-        // bare `cotal up` here has no `--host` of its own, and dropping it silently moves the attach
-        // face back to loopback while everything else keeps working.
-        // `wantTls` above is this branch's transport decision — the registry record reconciled
-        // against the live listener's INFO (a disagreement already exited). It is what the daemon
-        // must be launched with; #836 was this call dropping it.
-        const controlPlane = await startDeliveryWithBroker(held.space, server, wantTls, {
-          runtime: values.runtime,
-          attachHost: attachHostFor(held.space, values.host),
-          maxSessions: maxSessionsFor(held.space, maxSessions),
-          noManager,
-        });
-        if (!controlPlane) { process.exitCode = 1; planeHealthy = false; }
-        // #883: a refresh that HEALED a missing manager must say so — the summary line otherwise reads
-        // identically to a refresh that found everything already up, and the operator cannot tell which
-        // world they are in without a second command. Only here does a started manager mean one was
-        // missing: a launch starts its manager as a matter of course (#2480).
-        if (controlPlane?.started) console.log(c.green(`✓ restored in the background: manager (pid ${controlPlane.pid})`));
+      // Re-ensure the control plane on a refresh, in every mode, under the decision the first boot
+      // follows: the mesh owes a manager unless `--no-manager` was asked for, and the delivery daemon
+      // self-gates to auth mode inside `ensureControlPlane`. A same-root refresh is the normal repair
+      // command after a stale or missing manager, so a heal adopts `--runtime` and a degraded answer
+      // fails the refresh. An open refresh used to skip this unless it carried `--runtime`, so a bare
+      // one exited 0 over a manager record that the same refresh with `--runtime` reported degraded
+      // (#3892).
+      //
+      // Warn only when the manager is genuinely REUSED: a live delivery-aware (this-build) manager
+      // is kept as-is by `ensureManager`, so its runtime can't change. An old hosting manager (no
+      // delivery marker) is stopped and REPLACED by the ensure below carrying the requested runtime,
+      // so that's not a reuse - don't claim the runtime is fixed. A dead/absent manager is (re)started
+      // with it.
+      if (values.runtime) {
+        const live = managerRecordState(held.space);
+        if (live.state === "alive" && managerHasDeliveryMarker(live.pid!, held.space))
+          console.error(
+            c.dim(`! manager already running for "${held.space}" - its runtime is fixed at start; \`cotal down\` then \`cotal up --runtime ${values.runtime}\` to change it`),
+          );
       }
+      // A repair replaces the manager, so it must carry the mesh's recorded exposure forward — a
+      // bare `cotal up` here has no `--host` of its own, and dropping it silently moves the attach
+      // face back to loopback while everything else keeps working.
+      // `wantTls` above is this branch's transport decision — the registry record reconciled
+      // against the live listener's INFO (a disagreement already exited). It is what the daemon
+      // must be launched with; #836 was this call dropping it.
+      const controlPlane = await startDeliveryWithBroker(held.space, server, wantTls, {
+        runtime: values.runtime,
+        attachHost: attachHostFor(held.space, values.host),
+        maxSessions: maxSessionsFor(held.space, maxSessions),
+        noManager,
+      });
+      if (!controlPlane) process.exitCode = 1;
+      // #883: a refresh that HEALED a missing manager must say so — the summary line otherwise reads
+      // identically to a refresh that found everything already up, and the operator cannot tell which
+      // world they are in without a second command. Only here does a started manager mean one was
+      // missing: a launch starts its manager as a matter of course (#2480).
+      if (controlPlane?.started) console.log(c.green(`✓ restored in the background: manager (pid ${controlPlane.pid})`));
       // A broker was already answering here — this branch starts nothing, so it must not claim the
       // record as ours (see `Provenance`), and it passes only what this invocation decided.
       // `recordOurMesh` carries everything else (`tlsRequired`, the recorded host and session
@@ -2079,7 +2076,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       seedPersonaAfterUp(root);
       // The same Next a launch ends with: this mesh runs, so the steps are the ones that use and
       // stop it. A manager the refresh found or healed is what makes `spawn` one of them.
-      console.log(`\n${renderReport({ sections: [{ title: "Next", blocks: [{ kind: "commands", items: detachedNext({ manager: managerRecordState(held.space).state === "alive", controlPlane: planeHealthy, machineHome: canonicalRoot(root) === canonicalRoot(homedir()), ...(values.root ? { root } : {}) }, held.space) }] }] }, "rich", process.stdout)}`);
+      console.log(`\n${renderReport({ sections: [{ title: "Next", blocks: [{ kind: "commands", items: detachedNext({ manager: managerRecordState(held.space).state === "alive", controlPlane: controlPlane !== undefined, machineHome: canonicalRoot(root) === canonicalRoot(homedir()), ...(values.root ? { root } : {}) }, held.space) }] }] }, "rich", process.stdout)}`);
       return;
     }
     const who = held ? `mesh "${held.space}" (${held.root})` : "a broker not started here";
