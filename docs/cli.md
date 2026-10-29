@@ -1237,11 +1237,11 @@ open files, `up` names that log and that cause. A running broker keeps the open-
 with, so its next step is `cotal down --yes`, then a higher `ulimit -n`, then `cotal up`. When such a
 member exits before readiness while the space's store holds more than its recorded
 `--max-file-store` cap, `up` names the store and the cap, because the broker refuses every write
-until there is room, the delivery daemon's lease included. Its next step makes room with
-`cotal history clear --yes`, which purges the space's channel history, then runs `cotal up` again.
-To keep that history, it names `cotal down --yes` and `cotal up --max-file-store <bytes>` with a
-larger cap, after `kill -TERM <pid>` for a manager that still runs, as a full store refuses the
-manager's stop.
+until there is room, the delivery daemon's lease included. Its next step is `cotal down --yes` and
+`cotal up --max-file-store <bytes>` with a larger cap, which keeps the store's history, after
+`kill -TERM <pid>` for a manager that still runs, as a full store refuses the manager's stop. It
+does not name `cotal history clear`: a purge frees only the channel history's bytes, so it can leave
+the store over its cap, as on a new space whose cap is below the stack's own first writes.
 
 When the stack's broker process is stopped by a signal, such as SIGSTOP, it accepts connections and
 never answers, so `up` refuses `TARGET_UNAVAILABLE` before it writes anything or records the broker's
@@ -3608,11 +3608,10 @@ it can still read, so `history` holds only that. These warnings do not necessari
 
 When the space holds more bytes than the `--max-file-store` cap this machine recorded for its
 broker, the broker refuses every write, so the `Store` row reads `full` with the bytes stored, the
-cap and the store's path. The first Next is `cotal history clear --space <space> --yes`, which makes
-room by purging the space's channel history, followed by `cotal up --root <dir>` when a member of the
-stack stopped. To keep that history, the Next goes on as `up` does: `kill -TERM <pid>` for the stack's
-manager on this host, as a full store refuses its stop, then `cotal down --yes` and
-`cotal up --max-file-store <bytes>` with a larger cap. From another folder, the Next names the stack's
+cap and the store's path. Its Next names the route `up` names, which keeps the history:
+`kill -TERM <pid>` for the stack's manager on this host, as a full store refuses its stop, then
+`cotal down --yes` and `cotal up --max-file-store <bytes>` with a larger cap. It does not name
+`cotal history clear`, which can leave the store over its cap. From another folder, the Next names the stack's
 folder to run `cotal down --yes` in, and `up` carries `--root <dir>`. The `Delivery responder` row
 then says that the full
 store refuses the daemon's lease, so `up` starts the daemon only once there is room. The bytes are

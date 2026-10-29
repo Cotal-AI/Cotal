@@ -557,12 +557,14 @@ async function storeFullAfterStart(root: string, space: string): Promise<ReturnT
   return used === undefined ? undefined : storeFull(root, space, used);
 }
 
-/** The two ways out of a full store for an up whose member could not start: making room purges the
- *  space's channel history, and raising the cap keeps it but needs the broker restarted, so the
- *  manager's own process is ended first where it runs, as a full store refuses its stop. */
+/** The way out of a full store for an up whose member could not start: a larger cap, which keeps the
+ *  store's history but needs the broker restarted, so the manager's own process is ended first where
+ *  it runs, as a full store refuses its stop. It names no history purge: a purge frees only the
+ *  channel history's bytes, which may leave the store over its cap, as on a new space whose cap is
+ *  below the stack's own first writes. */
 function fullStoreUpRemedy(root: string, space: string): string {
   const pid = serviceInstances(space, STACK_DEFINITION.manager).map((row) => row.record.value).find((value) => observeServiceProcess(value) === "running")?.process?.pid;
-  return `from ${root}, make room with \`cotal history clear --yes\`, which purges all of this space's channel history, then run \`cotal up\` again; to keep that history, ${pid !== undefined ? `end the manager on this host with kill -TERM ${pid}, which stops its agents by its default policy, then ` : ""}run \`cotal down --yes\` and \`cotal up --max-file-store <bytes>\` with a larger cap`;
+  return `from ${root}, ${pid !== undefined ? `end the manager on this host with kill -TERM ${pid}, which stops its agents by its default policy, then ` : ""}run \`cotal down --yes\` and \`cotal up --max-file-store <bytes>\` with a larger cap; the store keeps its history`;
 }
 
 /** The running broker of an unregistered space: what an up stopped before registration leaves. */
