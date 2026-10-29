@@ -767,7 +767,8 @@ leaves the other space's `down` and its reads reaching this one. When the named 
 runs from another folder refuses `CONFLICT` as well. Its Next names
 `cotal up --space <name>` to start a separate space in this folder, and the `cotal down` that stops
 the other one in its own folder. A background boot also brings up the control plane (delivery daemon in auth
-mode, then the manager). `--no-manager` is the broker-only mode: it boots
+mode, then the manager). An open mesh runs no delivery daemon, also in a root that still holds a
+static stack's accounts. `--no-manager` is the broker-only mode: it boots
 the broker (and the delivery daemon in auth mode) and starts no manager, so there is no manager
 pidfile to leave stale. Authenticated starts and refreshes warn that no local process re-signs the
 daemon credentials and list their stored expiry times. A manager must renew the same secret store;
@@ -1762,7 +1763,8 @@ leave can race it. A refusal after that point (the manager refuses to prepare, a
 manager does not manage is live, or a seat cannot be checkpointed) starts the daemon again and
 leaves the mesh running and unfenced; a live unmanaged endpoint refuses `LIFECYCLE_BLOCKED`, exit 2,
 and names the endpoints. When the daemon cannot be started again, the refusal says so and names
-`cotal up`.
+`cotal up`. An open mesh runs no delivery daemon, so a refusal there starts none, also when the cut
+stopped one that an earlier `up` left running.
 It also refuses `LIFECYCLE_BLOCKED`, exit 2, before it stops anything, while a saved service in the
 space still runs or cannot be verified, because the service depends on the broker it would stop.
 The refusal names each one and the `cotal service stop <name> --instance <id> --space <space> --yes`

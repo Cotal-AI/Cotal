@@ -2030,8 +2030,8 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         if (!svc.ok) process.exitCode = 1;
       }
       // Re-ensure the control plane on a refresh, in every mode, under the decision the first boot
-      // follows: the mesh owes a manager unless `--no-manager` was asked for, and the delivery daemon
-      // self-gates to auth mode inside `ensureControlPlane`. A same-root refresh is the normal repair
+      // follows: the mesh owes a manager unless `--no-manager` was asked for, and a delivery daemon
+      // unless the recorded mode is open. A same-root refresh is the normal repair
       // command after a stale or missing manager, so a heal adopts `--runtime` and a degraded answer
       // fails the refresh. An open refresh used to skip this unless it carried `--runtime`, so a bare
       // one exited 0 over a manager record that the same refresh with `--runtime` reported degraded
@@ -2056,6 +2056,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       // against the live listener's INFO (a disagreement already exited). It is what the daemon
       // must be launched with; #836 was this call dropping it.
       const controlPlane = await startDeliveryWithBroker(held.space, server, wantTls, {
+        open: held.mode === "open",
         runtime: values.runtime,
         attachHost: attachHostFor(held.space, values.host),
         maxSessions: maxSessionsFor(held.space, maxSessions),
@@ -3855,6 +3856,8 @@ async function startDeliveryWithBroker(
     maxSessions?: number;
     /** #1417 broker-only mode: ensure the delivery daemon and not the manager. */
     noManager?: boolean;
+    /** The mesh is open, so no delivery daemon starts, whatever accounts the root holds. */
+    open?: boolean;
     /** #2469: the foreground owner's restart hook for a daemon this launch starts. */
     onDeliveryExit?: (code: number | null, signal: NodeJS.Signals | null) => void;
   },
@@ -4046,10 +4049,11 @@ async function serveReadyListener(l: {
   // plane (S9). startDeliveryWithBroker is HANDED the transport decision, so it does not depend on
   // the file at all.
   commitTransportPolicy(cotalRoot(), transport, l.quietBoot, server, { authTimeout: setup?.authTimeout, maxPayload: setup?.maxPayload });
-  // The delivery daemon self-gates on `.cotal/auth`, so an open mesh has none. Class-2 credential
-  // renewal is NOT wired here: the MANAGER is the renewal owner (it is resident in every mesh mode,
-  // where a foreground `up` process is not).
+  // An open mesh has no delivery daemon. Its mode is passed down because the root can still hold a
+  // static stack's accounts. Class-2 credential renewal is NOT wired here: the MANAGER is the
+  // renewal owner (it is resident in every mesh mode, where a foreground `up` process is not).
   const controlPlane = await startDeliveryWithBroker(space, server, transport.kind === "tls-required", {
+    open: setup === undefined,
     onDeliveryExit: l.onDeliveryExit,
     runtime: l.runtime,
     launch: l.launch,
