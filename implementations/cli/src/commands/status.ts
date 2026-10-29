@@ -175,8 +175,6 @@ export const statusFlags = [
   plainFlag,
 ] as const;
 
-type Proc = PidfileState;
-
 /** The mesh `spawn` would load personas from, resolved ONCE for the whole run.
  *
  *  Two sections need this answer — "This Folder" (to say whether its catalog is the one that
@@ -845,9 +843,9 @@ async function readFolder(root: string, selected: Selected, values: FlagValues<t
   }
   const context: LocalProcessContext = { root, space, userAuth: userDisk };
   const processes: ProcessRow[] = [];
-  let nats: Proc | undefined;
+  let nats: PidfileState | undefined;
   for (const component of localProcessSurface().filter((component) => localProcessVisible(component, context)).sort((a, b) => (a.order ?? 50) - (b.order ?? 50))) {
-    let state: Proc;
+    let state: PidfileState;
     try {
       state = pidfileState(localProcessPath(component.pidFile, context));
     } catch (e) {
@@ -990,7 +988,7 @@ function sameDir(a: string, b: string): boolean {
   return canonicalRoot(a) === canonicalRoot(b);
 }
 
-function processRow(name: string, p: Proc, detail: string | null): ProcessRow {
+function processRow(name: string, p: PidfileState, detail: string | null): ProcessRow {
   if (p.liveness === "alive") return { name, state: "running", pid: p.pid ?? null, detail };
   return { name, state: p.liveness === "unknown" ? "unknown" : "stopped", pid: p.pid ?? null, detail: p.note ?? null };
 }
@@ -1010,7 +1008,7 @@ function processRow(name: string, p: Proc, detail: string | null): ProcessRow {
  *
  *  A dead/stopped pid never reaches the probe at all (the early return below), so a stopped manager
  *  still reads as stopped, not `not-serving` — a dead pid is not a live pid that will not answer. */
-async function managerProcess(target: MeshTarget | undefined, state: Proc, space: string, gaps: Gaps): Promise<ProcessRow> {
+async function managerProcess(target: MeshTarget | undefined, state: PidfileState, space: string, gaps: Gaps): Promise<ProcessRow> {
   if (state.liveness !== "alive") return processRow("manager", state, null);
   const details: string[] = [];
   let deliveryAware = false;
