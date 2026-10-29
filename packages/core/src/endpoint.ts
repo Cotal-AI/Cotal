@@ -2911,6 +2911,7 @@ export class CotalEndpoint extends EventEmitter {
         deadlineMs,
         signal,
         commands: needed,
+        ...(opts.follow && command !== "goal-result" ? { optionalCommands: ["goal-result"] } : {}),
         ...(opts.instanceId !== undefined ? { instanceId: opts.instanceId } : {}),
         ...(opts.classInstanceId !== undefined ? { classInstanceId: opts.classInstanceId } : {}),
       });

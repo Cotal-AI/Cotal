@@ -328,6 +328,12 @@ console.log("describe REQUEST-BINDING (freelance HIGH #1):");
     resolveService(fakeNc(() => { throw new Error("transport must not be touched"); }), SPACE, ENDPOINT, CALLER, { commands: "mutate" as unknown as readonly string[] }), "failed-precondition");
   await rejects("a narrowed resolve refuses an invalid command token before transport", () =>
     resolveService(fakeNc(() => { throw new Error("transport must not be touched"); }), SPACE, ENDPOINT, CALLER, { commands: ["bad command"] }), "failed-precondition");
+  await rejects("optional commands refuse an empty list before transport", () =>
+    resolveService(fakeNc(() => { throw new Error("transport must not be touched"); }), SPACE, ENDPOINT, CALLER, { optionalCommands: [] }), "failed-precondition");
+  await rejects("optional commands refuse a non-array before transport", () =>
+    resolveService(fakeNc(() => { throw new Error("transport must not be touched"); }), SPACE, ENDPOINT, CALLER, { optionalCommands: "goal-result" as unknown as readonly string[] }), "failed-precondition");
+  await rejects("optional commands refuse an invalid token before transport", () =>
+    resolveService(fakeNc(() => { throw new Error("transport must not be touched"); }), SPACE, ENDPOINT, CALLER, { optionalCommands: ["bad command"] }), "failed-precondition");
 }
 
 // 9) The retry above is confined to reserved, read-only describe. A resolved command rides epCall

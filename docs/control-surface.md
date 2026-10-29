@@ -387,7 +387,9 @@ refused without being changed. So is a second cancel that arrives while a first 
 turn; a first that fails leaves the turn pending unless something ended it meanwhile. A workflow
 run sends it for the turn, ask attempt or escalation of a branch it cancelled.
 
-A followed mutation requires a manager whose attributed describe includes `goal-result`. Update
+A followed mutation requires a manager whose attributed describe includes `goal-result`. If it
+is absent, preflight refuses with `failed-precondition`, an upgrade notice and `not-executed`
+before submitting the mutation. Narrowed discovery preserves that refusal. Update
 the manager, issuer and client together before using that recovery path. Reloading an issuer alone
 cannot change an already-running participant manager. Recovery re-resolves the accepting instance's
 epoch, preserves the caller lifecycle and validates the result against the accepted goal and any
