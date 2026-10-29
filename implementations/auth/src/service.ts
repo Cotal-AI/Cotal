@@ -37,8 +37,9 @@ import { createToolResultConsentSigner, makeToolResultConsentRecorder, type Tool
  * against the pinned JWKS/issuer/audience; the agent arm presents an actorToken whose sha256 must
  * match a FRESH ledger row. Origin rejection, JSON-only bodies, the 64 KB bound, and no-CORS-ever
  * hold verbatim. Public views are channel-writer/channel-purger and the one-object transfer-writer
- * (admin-gated) and manager-caller (instance-bound, with no added command scope). Other views stay
- * loopback-only. The agent-secret arm may request only manager-caller on either face;
+ * (admin-gated) and manager-caller (instance-bound, with no added command scope). Host lifecycle
+ * activation and retirement stay capability-gated on the loopback face only. The agent-secret arm
+ * may request only manager-caller on either face;
  * failures are bucketed per peer (`--exchange-trusted-proxy` opts into the last X-Forwarded-For
  * hop as the peer key; otherwise the socket remote address) in a bounded LRU, under a global
  * concurrent-admission cap and a hard request deadline — all of it pools SEPARATE from the
@@ -157,6 +158,25 @@ export const CHAT_SESSION_PATHS = Object.freeze({ open: "/chat-session/open", be
 /** Loopback-only host route that finishes a managed lifecycle's terminal retirement after the host
  *  revoked its grant, when the remote manager that should have requested it is gone (#2070). */
 export const MANAGED_RETIRE_PATH = "/managed-lifecycle/retire";
+
+/** Loopback-only host route that asks this assigned account authority to activate one exact managed
+ *  lifecycle at its issued UID. The request repeats the assigned account key so a host that selects
+ *  the wrong account authority fails before lifecycle mutation (#5214). */
+export const MANAGED_ACTIVATE_PATH = "/managed-lifecycle/activate";
+
+/** The closed request accepted by {@link MANAGED_ACTIVATE_PATH}. */
+export interface ManagedLifecycleActivationRequest {
+  readonly accountPublicKey: string;
+  readonly owner: string;
+  readonly actor: string;
+  readonly lifecycleUid: string;
+}
+
+/** A completed exact activation. HTTP refusals use the native `{ error, code, outcome, details? }`
+ *  shape instead, so this result never reports an activation the authority did not complete. */
+export interface ManagedLifecycleActivationResult extends ManagedLifecycleActivationRequest {
+  readonly activated: true;
+}
 
 /** Loopback-only host route a platform calls BEFORE it enrolls or releases a managed agent for a
  *  remote manager (#1972 §2.2). The platform owns the writers; this door owns the decision. It
@@ -2879,6 +2899,8 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
       secrets,
       retireInteractiveLifecycle: plane.retireInteractiveLifecycle,
       retireManagedLifecycle: plane.retireManagedLifecycle,
+      activateManagedLifecycle: plane.activateManagedLifecycle,
+      accountPublicKey: keys.dataAccount.pub,
       cap,
       failures,
       badCaps,
@@ -3165,6 +3187,8 @@ interface HandlerCtx {
   secrets: SecretStore;
   retireInteractiveLifecycle: AuthAuthorityPlane["retireInteractiveLifecycle"];
   retireManagedLifecycle: AuthAuthorityPlane["retireManagedLifecycle"];
+  activateManagedLifecycle: AuthAuthorityPlane["activateManagedLifecycle"];
+  accountPublicKey: string;
   authorizeActor: ReturnType<typeof ledgerAuthorizeGrant>;
   cap: string;
   failures: number[];
@@ -3391,6 +3415,7 @@ const ROUTES = new Map<string, RouteHandler>([
   [SERVICE_ENDPOINT_AUTHORITY_PATH, (req, res, ctx) => handleServiceEndpointAuthority(req, res, ctx, LOOPBACK_POLICY)],
   [SERVICE_ENDPOINT_HOST_PATH, (req, res, ctx) => handleServiceEndpointHost(req, res, ctx, LOOPBACK_POLICY)],
   [INTERACTIVE_RETIRE_PATH, handleInteractiveLifecycleRetirement],
+  [MANAGED_ACTIVATE_PATH, handleManagedLifecycleActivation],
   [MANAGED_RETIRE_PATH, handleManagedLifecycleRetirement],
   [VERIFY_ENROLLMENT_PATH, handleVerifyManagedAgentEnrollment],
   [TOOL_RESULT_HUMAN_PROOF_PATH, handleToolResultHumanProof],
@@ -3404,7 +3429,7 @@ const ROUTES = new Map<string, RouteHandler>([
 async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCtx): Promise<void> {
   try {
     const route = ROUTES.get(req.url ?? "");
-    if (!route) return send(res, 404, { error: "unknown path - /health, /jwks, /exchange, /manager-service-authority, /manager-instances, /manager-service-authority/verify-enrollment, /interactive-lifecycle/retire, /managed-lifecycle/retire, /chat-session/open, /chat-session/bearer, /chat-session/retire" });
+    if (!route) return send(res, 404, { error: "unknown path - /health, /jwks, /exchange, /manager-service-authority, /manager-instances, /manager-service-authority/verify-enrollment, /interactive-lifecycle/retire, /managed-lifecycle/activate, /managed-lifecycle/retire, /chat-session/open, /chat-session/bearer, /chat-session/retire" });
     await route(req, res, ctx);
   } catch (e) {
     sendRequestError(res, e);
@@ -3489,6 +3514,73 @@ async function handleManagedLifecycleRetirement(
   } catch (e) {
     if (e instanceof EpEnvelopeError && e.code === "conflict") return send(res, 409, { error: e.message });
     throw e;
+  }
+}
+
+const MANAGED_ACTIVATE_KEYS = new Set(["accountPublicKey", "owner", "actor", "lifecycleUid"]);
+
+/** The separate host process's exact activation door. The capability selects this running auth
+ *  authority, while `accountPublicKey` binds the request to the account assignment the host meant
+ *  to address. Every route and parser refusal precedes the plane call. The plane then supplies the
+ *  existing readiness fence and UID-exact lifecycle semantics unchanged. */
+async function handleManagedLifecycleActivation(
+  req: IncomingMessage,
+  res: ServerResponse,
+  ctx: HandlerCtx,
+): Promise<void> {
+  const before = { outcome: "not-executed" } as const;
+  if (req.method !== "POST") return send(res, 405, { error: "POST only", code: "bad-request", ...before });
+  if (req.headers.origin !== undefined)
+    return send(res, 403, { error: "browser-origin requests are not served here", code: "permission-denied", ...before });
+  if (!/^application\/json\b/.test(req.headers["content-type"] ?? ""))
+    return send(res, 415, { error: "content-type must be application/json", code: "bad-request", ...before });
+  if (req.headers.authorization !== `Bearer ${ctx.cap}`)
+    return refuseCapability(res, ctx, "missing/invalid exchange capability - managed lifecycle activation is a loopback host action", { code: "unauthenticated", ...before });
+  let body: unknown;
+  try {
+    body = await readJsonBody(req);
+  } catch (e) {
+    if (e instanceof RequestBodyError)
+      return send(res, e.status, { error: e.message, code: "bad-request", ...before });
+    return send(res, 400, { error: e instanceof Error ? e.message : String(e), code: "bad-request", ...before });
+  }
+  const malformed = (why: string) => send(res, 400, { error: `managed lifecycle activation ${why}`, code: "bad-request", ...before });
+  if (body === null || typeof body !== "object" || Array.isArray(body))
+    return malformed("needs { accountPublicKey, owner, actor, lifecycleUid }");
+  for (const key of Object.keys(body))
+    if (!MANAGED_ACTIVATE_KEYS.has(key)) return malformed(`carries the unknown field "${key}"`);
+  const raw = body as Partial<Record<keyof ManagedLifecycleActivationRequest, unknown>>;
+  if (typeof raw.accountPublicKey !== "string" || typeof raw.owner !== "string" || typeof raw.actor !== "string" || typeof raw.lifecycleUid !== "string")
+    return malformed("needs string { accountPublicKey, owner, actor, lifecycleUid }");
+  if (raw.accountPublicKey !== ctx.accountPublicKey)
+    return send(res, 403, { error: "managed lifecycle activation names a foreign account authority", code: "permission-denied", ...before });
+  let target: { owner: string; actor: string; lifecycleUid: string };
+  try {
+    target = {
+      owner: assertDerivedOwnerToken(raw.owner),
+      actor: assertValidOwnerToken(raw.actor),
+      lifecycleUid: assertLifecycleToken(raw.lifecycleUid),
+    };
+  } catch (e) {
+    return malformed(e instanceof Error ? e.message : String(e));
+  }
+  try {
+    await ctx.activateManagedLifecycle(target);
+    const result: ManagedLifecycleActivationResult = { accountPublicKey: ctx.accountPublicKey, ...target, activated: true };
+    return send(res, 200, result);
+  } catch (e) {
+    if (e instanceof EpEnvelopeError)
+      return send(res, e.code === "already-exists" ? 409 : (REFUSAL_STATUS[e.code] ?? 500), {
+        error: e.message,
+        code: e.code,
+        outcome: e.outcome ?? "unknown",
+        ...(e.details !== undefined ? { details: e.details } : {}),
+      });
+    return send(res, 500, {
+      error: e instanceof Error ? e.message : String(e),
+      code: "internal",
+      outcome: "unknown",
+    });
   }
 }
 

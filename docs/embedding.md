@@ -254,7 +254,8 @@ absent. The reported path is kept byte for byte, whitespace included; an empty s
 |---|---|---|
 | `runAuthService(args, store?, options?)` | `@cotal-ai/auth` | boot the auth-service daemon; `store` injects the secret material, and `options` takes the daemon lifecycle hooks or [`interactiveManagerSelection`](#interactive-manager-primary). |
 | `runDelivery(args, store?, onStarted?)` | `@cotal-ai/delivery` | boot the delivery daemon; `store` injects the scoped `delivery` cred, and `onStarted` receives a `status()`/`close()` handle once it serves. |
-| `startAuthService(inputs)` | `@cotal-ai/auth` | start one account-scoped auth-service context and return an `AuthServiceHandle` with the loopback `url`, the per-start `cap`, `readiness`, `drain`, and idempotent `close`. `close` rejects when the context did not release its plane claim: the claim row was no longer its own, or the release write failed. The row then stays held, and the next start reclaims it through the liveness oracle. With the optional `publicFace` input it also serves the public exchange face and carries `publicUrl`. The optional `calloutLimits` input sets the auth callout's deadline, concurrency and slow-line limits ([callout deadlines](identity-and-auth.md#callout-deadlines)). With the optional `platformControl` input the handle also has `platformControlAuthority`, the in-process platform control door, `platformControlReadiness`, its read-only readiness read, `observeManagerGate`, the manager gate read a host composing the delegated user intent decisions passes them, and `activateManagedLifecycle`, the activation that host runs at a delegated launch's pinned lifecycle UID. With `platformControl.host` it also has `registerHostIncarnation`, which registers the host process's own endpoint instance and returns the incarnation a delegated execution pins, `observeHostGate`, the read of that endpoint's issuance gate, and `awaitHostFence`, which resolves once a later registration or barrier fences an incarnation. `runAuthService` remains the CLI entry. |
+| `startAuthService(inputs)` | `@cotal-ai/auth` | start one account-scoped auth-service context and return an `AuthServiceHandle` with the loopback `url`, the per-start `cap`, `readiness`, `drain`, and idempotent `close`. `close` rejects when the context did not release its plane claim: the claim row was no longer its own, or the release write failed. The row then stays held, and the next start reclaims it through the liveness oracle. With the optional `publicFace` input it also serves the public exchange face and carries `publicUrl`. The optional `calloutLimits` input sets the auth callout's deadline, concurrency and slow-line limits ([callout deadlines](identity-and-auth.md#callout-deadlines)). Every full hosted context serves the capability-gated `MANAGED_ACTIVATE_PATH` below, including a separate process with no `platformControl`. With the optional `platformControl` input the handle also has `platformControlAuthority`, the in-process platform control door, `platformControlReadiness`, its read-only readiness read, `observeManagerGate`, the manager gate read a host composing the delegated user intent decisions passes them, and `activateManagedLifecycle`, the same native activation used by the loopback door. With `platformControl.host` it also has `registerHostIncarnation`, which registers the host process's own endpoint instance and returns the incarnation a delegated execution pins, `observeHostGate`, the read of that endpoint's issuance gate, and `awaitHostFence`, which resolves once a later registration or barrier fences an incarnation. `runAuthService` remains the CLI entry. |
+| `MANAGED_ACTIVATE_PATH`, `ManagedLifecycleActivationRequest`, `ManagedLifecycleActivationResult` | `@cotal-ai/auth` | `POST /managed-lifecycle/activate` on the full auth service's loopback face. A separately hosted account authority accepts only `{ accountPublicKey, owner, actor, lifecycleUid }` with its per-start `Bearer <cap>`. The account key must equal that context's assigned data account. Success means the exact UID is active and returns the same coordinates plus `activated: true`. The public face and callout-only replicas do not serve it. |
 | `PlatformControlAuthorityRequest`, `PlatformControlInnerRequest`, `PlatformControlAuthorityResult`, `PlatformControlAssignment` *(types)* | `@cotal-ai/core` | the closed envelope, its inner request union, its result and the backend's assignment row for `platformControlAuthority`. `platformControlOwner` in `@cotal-ai/auth` derives the `p_` owner the door issues under. |
 | `startDeliveryService(inputs)` | `@cotal-ai/delivery` | start one account-scoped delivery instance and return a `HostedServiceHandle` with `readiness`, `drain`, and idempotent `close`. `close` rejects when its lease release does not commit or cannot be confirmed, or when another holder's lease row is still there after it. The process runner remains the CLI entry. |
 | `deliveryCredsKey(space, composition)`, `membershipRwCredsKey(space, composition)` | `@cotal-ai/workspace` | build the secret-store keys the delivery cred and the membership feed's rw cred are read/re-signed under. Keys are **per-space**: `space.<hex>/<kind>`. A hosted composition passes `{ injected: true }`. |
@@ -872,6 +873,34 @@ capability, closed body) and is never served on the public face. The managed gra
 revoked at that uid, or it answers 409. It runs the same `managedRetirementOpId(uid)` operation as
 the rail, and the rail and the door share one in-process flight, so a late participant request and
 the host call converge on one barrier.
+
+A separate host activates one exact managed lifecycle through the same full account auth service:
+`POST /managed-lifecycle/activate` (exported as `MANAGED_ACTIVATE_PATH`) with the `Bearer <cap>` from
+that account's `auth-service.json` and the closed body
+`{ accountPublicKey, owner, actor, lifecycleUid }`. This route is present on an ordinary separately
+hosted full auth service. It does not require `platformControl`; that option adds the equivalent
+in-process handle for a composition sharing the process. A callout-only replica has no HTTP listener
+or authority plane and cannot serve it.
+
+The repeated account key prevents a host routing error from asking one account authority to act on
+another account's target. It must equal the service's assigned data account before lifecycle work.
+The route is POST-only, refuses `Origin`, requires JSON and the per-start capability, rejects unknown
+fields, and is absent from the public exchange face. Parser and authority-selection refusals state
+`outcome: "not-executed"`. After dispatch, the native activation code, details and outcome are
+returned. A non-native failure reports `outcome: "unknown"`, never activation success.
+
+The operation calls the authority plane's existing fence before `activateLifecycleAtUid`. Success
+returns `{ accountPublicKey, owner, actor, lifecycleUid, activated: true }` only after the head is
+active at that UID and its issuance gate is open. The native lifecycle contract remains unchanged:
+
+| lifecycle state | answer |
+| --- | --- |
+| absent, or `retired` at another UID | activate this UID |
+| `active` at this UID with an open gate | idempotent success |
+| `active` at another UID | `already-exists` refusal |
+| `retiring` | lifecycle-blocked `failed-precondition` |
+| this UID frozen by retirement, or terminally retired | lifecycle-blocked refusal |
+| authority fenced or unavailable | `unavailable`; no success result |
 
 | lifecycle head | answer |
 | --- | --- |
