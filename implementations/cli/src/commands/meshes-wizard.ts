@@ -19,6 +19,7 @@ import {
   probeEnforcement,
   spacesAtRoot,
   tlsIntent,
+  tlsTrustFailure,
   userExchangeIssuer,
   verifyTarget,
   verifyUserExchange,
@@ -74,7 +75,12 @@ export function clackIO(): WizardIO {
     outro: (m) => p.outro(m),
     note: (body, title) => p.note(body, title),
     cancel: (m) => p.cancel(m),
-    log: { info: (m) => p.log.info(m), warn: (m) => p.log.warn(m), error: (m) => p.log.error(m) },
+    // Clack does not wrap a log line, so each is broken to the terminal here.
+    log: {
+      info: (m) => p.log.info(p.logLines(m, process.stdout)),
+      warn: (m) => p.log.warn(p.logLines(m, process.stdout)),
+      error: (m) => p.log.error(p.logLines(m, process.stdout)),
+    },
     spinner: () => {
       const s = p.spinner();
       return { start: (m) => s.start(m), stop: (m) => s.stop(m) };
@@ -141,12 +147,15 @@ export async function addWizard(seed: WizardSeed, cwd: string, io: WizardIO = cl
   let enforces: "auth" | "open" | "unreachable" = "unreachable";
   // The TLS intent of an address, from `--tls` or its scheme, as the flag form sources it.
   const tlsFor = (address: string) => tlsIntent(address, Boolean(seed.tls));
+  // After a refused address the question asks again with no example address, so the refusal's next
+  // step is the only one on screen.
+  let refused = false;
 
   for (;;) {
     if (!server) {
       server = await io.text({
           message: "Broker URL of the mesh you want to reach",
-          placeholder: "nats://100.90.12.34:4222",
+          ...(refused ? {} : { placeholder: "nats://100.90.12.34:4222" }),
           validate: (v) => {
             if (!v) return "Required - this is the address the mesh's broker listens on.";
             const r = checkServer(v, "--server");
@@ -159,20 +168,22 @@ export async function addWizard(seed: WizardSeed, cwd: string, io: WizardIO = cl
             // that question unreachable: the operator could never say yes to something the
             // validator had already rejected. TLS intent comes from `--tls` or the typed scheme.
             const d = checkDialPolicy(v, { tlsRequired: tlsFor(v), allowUnencryptedOverlay: true });
-            return d.ok ? undefined : d.message.replace(/^✗ /, "");
+            return d.ok ? undefined : withRemedy({ ...d, message: d.message.replace(/^✗ /, "") });
           },
         });
     } else {
       const pre = checkServer(server, "--server");
       if (!pre.ok) {
-        io.log.error(pre.message);
+        io.log.error(withRemedy(pre));
         server = undefined;
+        refused = true;
         continue;
       }
       const dial = checkDialPolicy(server, { tlsRequired: tlsFor(server), allowUnencryptedOverlay: true }); // candidate; the ask below decides
       if (!dial.ok) {
-        io.log.error(dial.message);
+        io.log.error(withRemedy(dial));
         server = undefined;
+        refused = true;
         continue;
       }
     }
@@ -199,28 +210,42 @@ export async function addWizard(seed: WizardSeed, cwd: string, io: WizardIO = cl
     // Re-checked with the REAL answer, so the decision is enforced by the same rule the flag form
     // uses rather than by the branch above happening to be right.
     const settled = checkDialPolicy(server, { tlsRequired: tlsFor(server), allowUnencryptedOverlay: ackedFor === server });
-    if (!settled.ok) { io.log.error(settled.message); server = undefined; continue; }
+    if (!settled.ok) { io.log.error(withRemedy(settled)); server = undefined; refused = true; continue; }
     overlayResidual = Boolean(settled.value.residual);
 
     const spin = io.spinner();
     spin.start(`Asking ${server} what it is`);
     enforces = await probeEnforcement(server);
+    // A TLS broker whose certificate this machine cannot verify fails the probe too, but it answered,
+    // so it gets the flag form's trust refusal rather than the choices for an address with no broker.
+    const untrusted = enforces === "unreachable" && tlsFor(server) ? await tlsTrustFailure(server) : undefined;
     spin.stop(
       enforces === "auth"
         ? `${ok("✓")} ${server} answered - it ${bold("requires credentials")}`
         : enforces === "open"
           ? `${ok("✓")} ${server} answered - it is ${bold("open")} (accepts anyone)`
-          : `${server} did not answer`,
+          : untrusted
+            ? `${server} answered, but its certificate is not trusted`
+            : `${server} did not answer`,
     );
     if (enforces !== "unreachable") break;
+    if (untrusted) io.log.error(untrusted);
 
+    // Node reads NODE_EXTRA_CA_CERTS only when it starts, so trusting the CA takes a new run, and the
+    // address is right: for a trust failure Cancel comes first.
     const next = await io.select({
-        message: "No broker answered there.",
-        options: [
-          { value: "retype", label: "Use a different address", hint: "typo, wrong port, VPN not up" },
-          { value: "anyway", label: "Register it anyway", hint: "the mesh is down right now; nothing is verified" },
-          { value: "cancel", label: "Cancel" },
-        ],
+        message: untrusted ? "This machine does not trust that broker's certificate." : "No broker answered there.",
+        options: untrusted
+          ? [
+              { value: "cancel", label: "Cancel", hint: "set NODE_EXTRA_CA_CERTS, then run this again" },
+              { value: "retype", label: "Use a different address" },
+              { value: "anyway", label: "Register it anyway", hint: "nothing is verified; dials fail without its CA" },
+            ]
+          : [
+              { value: "retype", label: "Use a different address", hint: "typo, wrong port, VPN not up" },
+              { value: "anyway", label: "Register it anyway", hint: "the mesh is down right now; nothing is verified" },
+              { value: "cancel", label: "Cancel" },
+            ],
       });
     if (next === "cancel") return cancelled(io);
     if (next === "anyway") {
@@ -494,6 +519,11 @@ async function askRoot(io: WizardIO, cwd: string, defaultTo: string | undefined)
     if (r.ok) return r.value;
     io.log.error(r.message);
   }
+}
+
+/** A refusal with its next step on the line under it, as the flag form prints the two. */
+function withRemedy(r: { message: string; remedy?: string }): string {
+  return r.remedy ? `${r.message}\n${r.remedy}` : r.message;
 }
 
 function cancelled(io: WizardIO, message = CANCELLED): false {
