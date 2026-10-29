@@ -1,5 +1,27 @@
 # @cotal-ai/cli
 
+## 0.127.5
+
+### Patch Changes
+
+- 6e9e9c0: `cotal up --detach` now wraps its `Started nats-server` line, its `✓ running in the background` line and a repair's `reopening the recorded store` line at spaces on a terminal, as other lines do. A path wider than the line keeps a line of its own and is never split, the summary's continuation lines start under its text, and `cotal down` stays whole. Off a terminal each is still one line on stdout, and exit codes are unchanged.
+- ad0e5a1: `cotal ps` on a static or open space whose manager registry lists no live manager, such as a legacy
+  stack started with `--no-manager`, now refuses `TARGET_UNAVAILABLE`, exit 2. It says that no
+  manager is registered, so none was asked, and that this does not show that no manager process runs.
+  It used to fail with the generic `OPERATION_FAILED`, exit 5, as if `ps` itself had failed. Scripts
+  that read exit 5 for this case now get exit 2. `cotal status <agent>` and the `attach` picker read
+  the same list and refuse the same way. The registry's own answer stays under `error.cause`, and a
+  controller stack keeps its own refusals.
+- 580afa4: `cotal up` over a manager pidfile that holds no pid no longer tells you to remove the file once
+  `cotal ps` finds no manager running. A manager that does not answer on the mesh, such as a stopped
+  one, still runs and owns the folder while `cotal ps` finds none, and following that step started a
+  second manager beside it. The degraded report and its Next now ask you to confirm yourself that no
+  manager runs for the folder before they name `rm <pidfile>`, in the words `cotal down` uses for the
+  same record. `up` still refuses to start over the file, keeps the broker running, and never removes
+  the file itself.
+- @cotal-ai/core@0.127.5
+  - @cotal-ai/workspace@0.127.5
+
 ## 0.127.4
 
 ### Patch Changes
