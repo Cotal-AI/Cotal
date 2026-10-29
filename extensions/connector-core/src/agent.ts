@@ -788,7 +788,7 @@ export class MeshAgent extends EventEmitter {
   /** Session-local channel degradation, independent of transport liveness. */
   get channelDeliveryIssue(): string | undefined {
     return this.dropUnsafe
-      ? "Channel drop tracking exhausted. Ambient channel traffic is suppressed until restart; live mentions on unmuted channels wake to pull their buffered body. Focus recall may be incomplete."
+      ? "Channel drop tracking exhausted. Ambient channel traffic is suppressed until restart; non-historical mentions on unmuted channels wake to pull their buffered body. Focus recall may be incomplete."
       : undefined;
   }
 

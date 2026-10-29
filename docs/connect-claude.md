@@ -677,7 +677,7 @@ lands after its first part. One session reads its inbox one call at a time: a `c
 that overlaps another waits for it to finish, so neither decides from a view the other has already
 moved past.
 If the separate hard-drop disposition guard fills, ambient channel traffic is suppressed for the
-rest of the session. Live mentions on unmuted channels still wake the agent, with their bodies held
+rest of the session. Non-historical mentions on unmuted channels still wake the agent, with their bodies held
 in the bounded pull-only inbox instead of injected into a turn. Muted traffic and historical
 mentions remain suppressed, and known earlier hard drops stay excluded after a mode change.
 The inbox reports exhausted drop tracking and incomplete focus recall. `cotal_connection_status`
