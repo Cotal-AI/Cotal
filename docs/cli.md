@@ -773,7 +773,8 @@ one, so a restore there leaves the other account's streams in the store it sets 
 [Backups](#backups)). This prevents new affected stores; it does not repair an
 open account where an older build already staged manager credential families. Those registrations
 can still refuse, and reconciliation requires liveness evidence that the open mesh cannot currently
-provide. Keep that store intact; upgrading alone does not recover that state.
+provide. A manager that stops on such a gate says this in its log, including that
+`cotal manager reconcile` refuses the gate. Keep that store intact; upgrading alone does not recover that state.
 `--no-manager` is the broker-only mode: it boots
 the broker (and the delivery daemon in auth mode) and starts no manager, so there is no manager
 pidfile to leave stale. Authenticated starts and refreshes warn that no local process re-signs the
