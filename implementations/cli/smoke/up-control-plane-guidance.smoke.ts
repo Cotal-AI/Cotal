@@ -48,11 +48,21 @@ try {
         suite.check("control-plane refusal keeps a nonzero exit", result.status === 1, output);
         suite.check("control-plane refusal preserves the cause and its own next step",
           output.includes(`! control plane degraded: the manager pidfile at ${pidfile} holds content that is not a pid ("garbage")`) &&
-          output.includes(`NEXT: find and stop that process, then remove \`${pidfile}\` by hand.`), output);
+          output.includes(`NEXT: once \`cotal ps --space ${space}\` finds no manager running, remove that file and re-run.`), output);
         suite.check("control-plane refusal never appends the fixed supervise remedy",
           !output.includes("start one with: cotal supervise"), output);
         suite.check("control-plane refusal states the spawn and retirement consequence",
-          output.includes("spawn and retirement require a functioning control plane"), output);
+          output.includes("Spawn and retirement require a functioning control plane."), output);
+        // `down` refuses that pidfile too, so Next removes it and runs the broker-only start again.
+        const next = plain(result.stdout).trimEnd().split("\n");
+        suite.check("a broker-only start's Next removes the pidfile and runs up --no-manager again, not a down that refuses it",
+          JSON.stringify(next.slice(next.lastIndexOf("Next") + 1).map((line) => line.trim().split(/ {2,}/))) ===
+            JSON.stringify([[`rm ${pidfile}`, `Remove the pidfile once \`cotal ps --space ${space}\` finds no manager running`], ["cotal up --no-manager", "Then refresh the stack without a manager"]]), output);
+        rmSync(pidfile);
+        const again = run("up", "--no-manager");
+        const againOutput = plain(again.stdout + again.stderr);
+        suite.check("that up --no-manager, once the pidfile is removed, refreshes the stack broker-only and exits 0",
+          again.status === 0 && againOutput.includes("already running") && !existsSync(pidfile) && !againOutput.includes("control plane degraded"), againOutput);
         suite.check("control-plane refusal does not claim the manager or delivery daemon started",
           !/✓.*(?:manager|delivery daemon)/.test(output), output);
       } else {
