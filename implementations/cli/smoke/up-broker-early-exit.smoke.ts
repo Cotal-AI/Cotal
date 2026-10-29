@@ -9,7 +9,8 @@
  * itself with SIGTERM. Nothing ever binds the port, and nothing is left running.
  *
  * `up --foreground` with the stand-in that exits 1 ends with exit 5, a failed run, not the broker's
- * own 1, and its line says the mesh was not recorded, as `cotal meshes` confirms.
+ * own 1. Its line says the broker exited before the mesh was recorded, as `cotal meshes` confirms,
+ * and its next step is the one a detached start gives, not the same `up` again.
  *
  * Run: pnpm smoke:up-broker-early-exit
  */
@@ -57,7 +58,8 @@ try {
   const foreground = spawnSync(process.execPath, [cli, "up", "--foreground", "--server", `nats://127.0.0.1:${await freePort()}`], { cwd: root, env, encoding: "utf8", timeout: 120_000 });
   const line = flat(foreground.stderr);
   suite.check("foreground: a broker that exits 1 ends up with exit 5, not its own 1", foreground.status === 5, `${foreground.status} ${line}`);
-  suite.check("foreground: its line names the exit and says the mesh was not recorded", line.includes(`✗ nats-server exited unexpectedly (code 1); the mesh "fg" was not recorded;`) && !line.includes("stays recorded"), line);
+  suite.check("foreground: its line names the exit and says it came before the mesh was recorded", line.includes(`✗ nats-server exited unexpectedly (code 1) before the mesh "fg" was recorded;`) && !line.includes("stays recorded"), line);
+  suite.check("foreground: its next step is the output above, then the file or PATH, not the same up", line.includes(`next: read the terminal output above, then fix ${join(scratch, "bin-code", "nats-server")} or take it off PATH so cotal uses its bundled nats-server, and run \`cotal up\` again`) && !line.includes("repair:"), line);
   const meshes = spawnSync(process.execPath, [cli, "meshes"], { cwd: root, env, encoding: "utf8", timeout: 60_000 });
   suite.check("foreground: no record was written for it", meshes.status === 0 && flat(meshes.stdout).includes("no meshes registered"), flat(`${meshes.stdout}${meshes.stderr}`));
 } finally {

@@ -2346,21 +2346,21 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       // racing a second broker into existence. Foreground stdio is inherited (its own log lines
       // are already on this terminal, above), so there is no `.cotal/nats.log` to name here.
       const detail = signal ? `signal ${signal}` : `code ${code}`;
+      const repair = `log: see the terminal output above; repair: \`cotal up --server ${server} --space ${space}\``;
       // Retention is read from the registry, not assumed: a broker that exits before it first
-      // answers was never recorded. A registry that cannot be read is not claimed either way, and
-      // the read cannot throw past this handler, which still has to exit.
-      let retention: string;
+      // answers was never recorded, and running the same `up` again only repeats that exit, so its
+      // step is the one a detached start gives. A registry that cannot be read is not claimed
+      // either way, and the read cannot throw past this handler, which still has to exit.
+      let outcome: string;
       try {
         const mine = findMesh(space);
-        retention = mine && mine.server === server && mine.root === cotalRoot() ? `the mesh "${space}" stays recorded (\`cotal meshes\` lists it offline)` : `the mesh "${space}" was not recorded`;
+        outcome = mine && mine.server === server && mine.root === cotalRoot()
+          ? `; the mesh "${space}" stays recorded (\`cotal meshes\` lists it offline); ${repair}`
+          : ` before the mesh "${space}" was recorded; next: ${listenerExitRemedy(natsServer, "the terminal output above")}`;
       } catch {
-        retention = `whether the mesh "${space}" stays recorded could not be read`;
+        outcome = `; whether the mesh "${space}" stays recorded could not be read; ${repair}`;
       }
-      console.error(
-        c.red(
-          `✗ nats-server exited unexpectedly (${detail}); ${retention}; log: see the terminal output above; repair: \`cotal up --server ${server} --space ${space}\``,
-        ),
-      );
+      console.error(c.red(`✗ nats-server exited unexpectedly (${detail})${outcome}`));
       // A foreground broker under `Restart=on-failure` must exit non-zero on a crash so the unit
       // restarts it; exiting 0 here (as an unconditional `code ?? 0` used to) looked like a clean
       // stop and left the unit sitting dead. A broker that exited 0, as after an external `down`,
@@ -3963,11 +3963,16 @@ function exitedBeforeReady(l: { child: ChildProcess; executable: NatsServer; ser
   const { exitCode, signalCode } = l.child;
   if (exitCode === null && signalCode === null) return undefined;
   const exit = exitCode !== null ? `exited with code ${exitCode}` : `was stopped by ${signalCode}`;
-  const { path, source } = l.executable;
   return new CommandFailure("failed", "OPERATION_FAILED", `${natsServerLabel(l.executable)} ${exit} before it answered at ${l.server}; see ${l.log}`, {
-    target: { executable: path, ...(exitCode !== null ? { exitCode } : { signal: signalCode }), server: l.server, log: l.log },
-    remedy: source === "path" ? `read ${l.log}, then fix ${path} or take it off PATH so cotal uses its bundled nats-server, and run \`cotal up\` again` : `read ${l.log}, then run \`cotal up\` again`,
+    target: { executable: l.executable.path, ...(exitCode !== null ? { exitCode } : { signal: signalCode }), server: l.server, log: l.log },
+    remedy: listenerExitRemedy(l.executable, l.log),
   });
+}
+
+/** The next step for a listener that exited before it answered: read its output, then fix a
+ *  nats-server found on PATH or take it off PATH, and start again. */
+function listenerExitRemedy(executable: NatsServer, log: string): string {
+  return executable.source === "path" ? `read ${log}, then fix ${executable.path} or take it off PATH so cotal uses its bundled nats-server, and run \`cotal up\` again` : `read ${log}, then run \`cotal up\` again`;
 }
 
 /**
