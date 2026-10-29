@@ -4530,6 +4530,13 @@ no manager process runs, because a manager that is still starting or cannot regi
 The registry's own answer stays under `error.cause`. A registry that could not be read is reported
 as it was.
 
+When no manager runs or is registered, the refusal's Next names the root of this machine's own stack
+for the space, as bare `cotal up` in that folder, because bare `up` in another project acts on that
+project's stack. When this machine only registered the space, records no stack for it, or reached
+it through a `--server` other than the broker its registration records, it cannot say where the
+stack runs. The Next then says to start the space's manager where its stack runs and names no local
+command.
+
 A raw `--creds` file is refused by `ps`, `stop`, `attach` and the other control commands, because
 that route mints no endpoint-caller triple; the project folder, or `--space` against the registry
 entry, is the route that does.
