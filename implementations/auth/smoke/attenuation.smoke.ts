@@ -108,11 +108,16 @@ try {
   );
   // `run` carries the whole spawn set, so a run holder hands on `spawn`; the converse stays refused.
   grantActor(dir, { owner: OWNER, actor: "runner", scope: ["run"], allowSubscribe: ["general"], allowPublish: ["general"] });
-  const fromRun = grantManagedActor(dir, { custody: { kind: "foreground" },
-    owner: OWNER, actor: "runkid", scope: ["spawn"], parent: `${OWNER}.runner`,
-    allowSubscribe: ["general"], allowPublish: ["general"], tokenHash: newActorToken().tokenHash, lifecycleUid: mintLifecycleUid(),
-  });
-  check("scope [spawn] delegates within a [run] spawner (run carries the spawn set)", fromRun.scope.includes("spawn"));
+  let fromRun: { scope: string[] } | undefined, fromRunError: unknown;
+  try {
+    fromRun = grantManagedActor(dir, { custody: { kind: "foreground" },
+      owner: OWNER, actor: "runkid", scope: ["spawn"], parent: `${OWNER}.runner`,
+      allowSubscribe: ["general"], allowPublish: ["general"], tokenHash: newActorToken().tokenHash, lifecycleUid: mintLifecycleUid(),
+    });
+  } catch (e) {
+    fromRunError = e;
+  }
+  check("scope [spawn] delegates within a [run] spawner (run carries the spawn set)", fromRun?.scope.includes("spawn") === true, fromRunError);
   rejects(
     "scope [run] is refused under a [spawn] spawner",
     () => grantManagedActor(dir, { custody: { kind: "foreground" },

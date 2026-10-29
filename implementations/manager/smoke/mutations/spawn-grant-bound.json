@@ -13,7 +13,7 @@
     "",
     "S1 drops the refusal, so a helper reads a channel its spawner cannot: the hole this closes. S2",
     "treats a caller with no issued generation as exempt. S3 treats evidence that does not resolve as",
-    "exempt. S4 stops clamping the callerAcl default. S5 gives a caller with no evidence that default.",
+    "exempt. S4 stops clamping the callerAcl default. S5 gives a caller with no evidence that default, which the bound then refuses, so a channel-less spawn fails.",
     "S6 ignores the evidence's standing, so an operator instrument is bounded like an agent."
   ],
   "mutations": [
@@ -50,7 +50,7 @@
       "file": "implementations/manager/src/manager.ts",
       "find": "        scoped = !personaNamesChannels && opts.callerAcl && bound.kind !== \"none\" ? {",
       "replace": "        scoped = !personaNamesChannels && opts.callerAcl ? {",
-      "expectRed": "with no callerAcl default"
+      "expectRed": "a channel-less persona still spawns for it"
     },
     {
       "name": "S6 ignore the evidence's standing",
