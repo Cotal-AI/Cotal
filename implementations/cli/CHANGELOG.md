@@ -1,5 +1,16 @@
 # @cotal-ai/cli
 
+## 0.124.3
+
+### Patch Changes
+
+- c071b0f: After an `up`, `team boot` or `down` that exited 3 with its outcome unconfirmed, the next `up` or `down` now warns that the earlier stack start or down ended with its outcome unconfirmed. It used to say an `up` was interrupted, which is still what it says after an operation that was interrupted.
+- 29db3c3: The fresh user-auth `team boot` refusal and its preparation steps in the CLI reference now name `cotal auth grant cli --sub <subject> --full`. The grant they named before left off `--full` and the three ACL lists, so `auth grant` refused it.
+- 30ef8cb: The `AUTH_REQUIRED` refusal for a missing or rejected sign-in now says what the refused command left undone. A `team boot`, which refuses before any write, says nothing was started or written, and a `manager restart` over a running manager says the running manager was left running. Both used to say the manager was not attempted, which bare `up`, `manager start` and a `manager restart` with no manager running still say.
+- 3f408a6: A `team boot` whose manifest does not match the recorded stopped stack now names only the settings that differ, each with its recorded and declared value, and adds a Next: the `broker.servers`, `broker.host` or `broker.auth` change that matches the stack, or a new space in another folder. `--json` carries the same detail and remedy.
+- @cotal-ai/core@0.124.3
+  - @cotal-ai/workspace@0.124.3
+
 ## 0.124.2
 
 ### Patch Changes
