@@ -7,8 +7,11 @@
  *      never a bare empty list
  *
  * Spawn-only `status --components` runs under `actor grant --full` after the admin ps
- * cells, then the admin grant is restored. Refusal of other spawn-only commands stays
- * in user-spawn.smoke.ts B1e.
+ * cells, then the admin grant is restored. That cell records the manager-caller exchange
+ * and requires the instance id this machine's live manager persisted. A call with the
+ * manager pidfile hidden stays serving and is not pinned. A live pid whose identity file
+ * is hidden is refused and names the instance that answered. Refusal of other
+ * spawn-only commands stays in user-spawn.smoke.ts B1e.
  * Gated: a RED here is C or the user-mode connect path broken.
  *
  * STEP 3 follows the product decision that a user-auth `ps` with no manager answering is not an
@@ -18,7 +21,7 @@
 import { execFileSync, spawn } from "node:child_process";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { betterAuth } from "better-auth";
 import { memoryAdapter } from "better-auth/adapters/memory";
@@ -98,6 +101,28 @@ type Run = {
   /** Descendants held the inherited pipes past the drain bound: `out` is a PREFIX, not the whole. */
   stdioTimedOut?: boolean;
 };
+/** The manager-instance.json whose instanceId is `instanceId`, under `dir`. */
+function managerIdentityPath(dir: string, instanceId: string): string | undefined {
+  const pending = [dir];
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (current === undefined || !existsSync(current)) continue;
+    for (const entry of readdirSync(current, { withFileTypes: true })) {
+      const path = join(current, entry.name);
+      if (entry.isDirectory()) pending.push(path);
+      else if (entry.isFile() && entry.name === "manager-instance.json") {
+        try {
+          const parsed = JSON.parse(readFileSync(path, "utf8")) as { instanceId?: unknown };
+          if (parsed.instanceId === instanceId) return path;
+        } catch {
+          // A record this cell cannot read is not the one it hides.
+        }
+      }
+    }
+  }
+  return undefined;
+}
+
 function cotal(args: string[], timeoutMs = 120_000): Promise<Run> {
   return new Promise((res) => {
     const options = {
@@ -333,14 +358,133 @@ try {
     const narrowed = await cotal(["actor", "grant", "cli", "--sub", sub, "--full", "--label", "spawn-only status"], 60_000);
     mustHaveRun(narrowed, "the spawn-only owner grant");
     check("the documented --full grant stores the spawn-only owner scope", narrowed.status === 0 && /^Actor grant stored$/m.test(narrowed.out), narrowed.out.slice(-300));
-    const components = await cotal(["status", "--components", "--space", SPACE], 30_000);
-    mustHaveRun(components, "spawn-only status --components");
-    const plain = components.out.replace(/\x1b\[[0-9;]*m/g, "");
-    const managerLine = plain.split("\n").find((line) => /^  manager /.test(line)) ?? plain.slice(-600);
-    console.log(`   spawn-only status --components (exit=${components.status}):\n` +
-      plain.split("\n").filter((line) => /Component Health|^  (manager|delivery|web|broker) /.test(line)).map((line) => `   | ${line}`).join("\n").slice(0, 1200));
-    check("spawn-only status --components exits 0", components.status === 0, managerLine);
-    check("spawn-only status --components manager row is serving", /^  manager {9,}serving /m.test(plain), managerLine);
+    const { canonicalLocalProcessPath, loadManagerInstanceIdentity, MANAGER_PIDFILE, userAuthStateDir } = await import("@cotal-ai/workspace");
+    const { loadAuthServiceInfo, saveAuthServiceInfo } = await import("../src/store-file.js");
+    const pidPath = canonicalLocalProcessPath(MANAGER_PIDFILE, { root, space: SPACE });
+    const pid = Number(readFileSync(pidPath, "utf8").trim());
+    const localId = loadManagerInstanceIdentity(root, SPACE)?.instanceId;
+    check("the live manager persists the instance status must pin", typeof localId === "string" && localId.length > 0, { pid, instanceId: localId ?? null });
+    const dir = userAuthStateDir(root, SPACE);
+    const info = loadAuthServiceInfo(dir);
+    if (!info) throw new Error(`fixture auth service info is missing at ${dir}`);
+    const exchanges: { view?: unknown; managerInstanceId?: unknown }[] = [];
+    const proxy = createServer(async (req, res) => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      const raw = Buffer.concat(chunks);
+      if ((req.url ?? "").startsWith("/exchange")) {
+        try {
+          const body = JSON.parse(raw.toString("utf8")) as { view?: unknown; managerInstanceId?: unknown };
+          exchanges.push({ view: body.view, managerInstanceId: body.managerInstanceId });
+        } catch {
+          exchanges.push({});
+        }
+      }
+      try {
+        const upstream = await fetch(new URL(req.url ?? "/", info.url), {
+          method: req.method,
+          headers: {
+            ...(req.headers["content-type"] ? { "content-type": String(req.headers["content-type"]) } : {}),
+            ...(req.headers.authorization ? { authorization: String(req.headers.authorization) } : {}),
+          },
+          body: req.method === "GET" || req.method === "HEAD" ? undefined : raw,
+        });
+        const bytes = Buffer.from(await upstream.arrayBuffer());
+        const type = upstream.headers.get("content-type");
+        res.writeHead(upstream.status, type ? { "content-type": type } : undefined);
+        res.end(bytes);
+      } catch (e) {
+        res.writeHead(502);
+        res.end(e instanceof Error ? e.message : String(e));
+      }
+    });
+    await new Promise<void>((resolve) => proxy.listen(0, "127.0.0.1", () => resolve()));
+    const bound = proxy.address();
+    if (bound === null || typeof bound === "string") throw new Error("the exchange recorder did not bind");
+    saveAuthServiceInfo(dir, { ...info, url: `http://127.0.0.1:${bound.port}` });
+    try {
+      const components = await cotal(["status", "--components", "--space", SPACE], 30_000);
+      mustHaveRun(components, "spawn-only status --components");
+      const plain = components.out.replace(/\x1b\[[0-9;]*m/g, "");
+      const managerLine = plain.split("\n").find((line) => /^  manager /.test(line)) ?? plain.slice(-600);
+      console.log(`   spawn-only status --components (exit=${components.status}):\n` +
+        plain.split("\n").filter((line) => /Component Health|^  (manager|delivery|web|broker) /.test(line)).map((line) => `   | ${line}`).join("\n").slice(0, 1200));
+      check("spawn-only status --components exits 0", components.status === 0, managerLine);
+      check("spawn-only status --components manager row is serving", /^  manager {9,}serving /m.test(plain), managerLine);
+      check("spawn-only status reports this machine's manager instance", typeof localId === "string" && plain.includes(`service instance ${localId}`), managerLine);
+      const pinned = exchanges.filter((body) => body.view === "manager-caller" && typeof body.managerInstanceId === "string" && body.managerInstanceId.length > 0 && body.managerInstanceId === localId);
+      check("spawn-only status pins the manager-caller exchange to this machine's manager", typeof localId === "string" && localId.length > 0 && pinned.length > 0, { localId: localId ?? null, exchanges });
+      const managerLineOf = (out: string): string => {
+        const plain = out.replace(/\x1b\[[0-9;]*m/g, "");
+        return plain.split("\n").find((line) => /^  manager /.test(line)) ?? plain.slice(-600);
+      };
+
+      exchanges.length = 0;
+      const hiddenPid = `${pidPath}.smoke-hidden`;
+      renameSync(pidPath, hiddenPid);
+      try {
+        const unpinned = await cotal(["status", "--components", "--space", SPACE], 30_000);
+        mustHaveRun(unpinned, "status with no local manager record");
+        const unpinnedPlain = unpinned.out.replace(/\x1b\[[0-9;]*m/g, "");
+        const unpinnedLine = managerLineOf(unpinned.out);
+        console.log(`   no local manager record (exit=${unpinned.status}): ${unpinnedLine}`);
+        check("no local manager record: components manager row is still serving", /^  manager {9,}serving /m.test(unpinnedPlain), unpinnedLine);
+        check("no local manager record: the row names the instance that answered", typeof localId === "string" && unpinnedPlain.includes(`service instance ${localId}`), unpinnedLine);
+        const caller = exchanges.filter((body) => body.view === "manager-caller");
+        check("no local manager record: the manager-caller exchange is not pinned", caller.length > 0 && caller.every((body) => body.managerInstanceId === undefined), caller);
+      } finally {
+        if (existsSync(hiddenPid)) renameSync(hiddenPid, pidPath);
+      }
+
+      const identityPath = typeof localId === "string" ? managerIdentityPath(join(root, ".cotal"), localId) : undefined;
+      check("the persisted manager identity file is on this root", typeof identityPath === "string", identityPath ?? null);
+      if (typeof identityPath === "string" && typeof localId === "string") {
+        exchanges.length = 0;
+        const hiddenIdentity = `${identityPath}.smoke-hidden`;
+        renameSync(identityPath, hiddenIdentity);
+        try {
+          const unknown = await cotal(["status", "--components", "--space", SPACE], 30_000);
+          mustHaveRun(unknown, "status with the manager identity hidden");
+          const unknownPlain = unknown.out.replace(/\x1b\[[0-9;]*m/g, "");
+          const unknownLine = managerLineOf(unknown.out);
+          console.log(`   identity hidden (exit=${unknown.status}): ${unknownLine}`);
+          check("a live manager whose instance id is not recorded is refused", /^  manager {9,}refused /m.test(unknownPlain), unknownLine);
+          check("a hidden identity is not reported as this process serving", !unknownPlain.includes(`service instance ${localId}`) && (unknownPlain.includes(`answered by manager instance ${localId}`) || unknownPlain.includes("serve probe refused")), unknownLine);
+          check("that row is not reported as serving", !/^  manager {9,}serving /m.test(unknownPlain), unknownLine);
+        } finally {
+          if (existsSync(hiddenIdentity)) renameSync(hiddenIdentity, identityPath);
+        }
+
+        const original = readFileSync(identityPath, "utf8");
+        const fakeId = localId.endsWith("xxxx") ? `${localId.slice(0, -4)}yyyy` : `${localId.slice(0, -4)}xxxx`;
+        const field = `"instanceId":"${localId}"`;
+        const spaced = `"instanceId": "${localId}"`;
+        const edited = original.includes(field)
+          ? original.replace(field, `"instanceId":"${fakeId}"`)
+          : original.includes(spaced)
+            ? original.replace(spaced, `"instanceId": "${fakeId}"`)
+            : undefined;
+        check("the identity file names this instance in one field", edited !== undefined && edited !== original, identityPath);
+        if (edited !== undefined && edited !== original) {
+          exchanges.length = 0;
+          writeFileSync(identityPath, edited);
+          try {
+            const mismatch = await cotal(["status", "--components", "--space", SPACE], 30_000);
+            mustHaveRun(mismatch, "status pinned to a different instance");
+            const mismatchPlain = mismatch.out.replace(/\x1b\[[0-9;]*m/g, "");
+            const mismatchLine = managerLineOf(mismatch.out);
+            console.log(`   other instance (exit=${mismatch.status}): ${mismatchLine}`);
+            check("a different persisted instance is not reported as this process serving", !/^  manager {9,}serving /m.test(mismatchPlain) && /^  manager {9,}refused /m.test(mismatchPlain), mismatchLine);
+            check("that probe pinned the other instance id", exchanges.some((body) => body.view === "manager-caller" && body.managerInstanceId === fakeId), exchanges);
+          } finally {
+            writeFileSync(identityPath, original);
+          }
+        }
+      }
+    } finally {
+      saveAuthServiceInfo(dir, info);
+      await new Promise<void>((resolve, reject) => proxy.close((err) => err ? reject(err) : resolve()));
+    }
   } finally {
     const restore = await cotal(["actor", "grant", "cli", "--sub", sub, "--full", "--scope", "spawn,role:default,admin", "--label", "ps human"], 60_000);
     mustHaveRun(restore, "restoring the fixture's admin grant after the spawn-only status cell");

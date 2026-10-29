@@ -3610,9 +3610,16 @@ subject when this machine holds a cached session for the entry's pinned IdP, or 
 login --idp <url>` line when it does not, with no network round trip either way. A locally
 provisioned space also shows the actor grant row; a discovered or registered remote entry reports
 the grant as not checkable on this machine, because the ledger runs where the space was
-provisioned. `--components` on a user-mode target probes delivery and the broker as that
-same signed-in login, never a static mint. The manager `status` probe uses the
-manager-caller view `cotal spawn` already exchanges for that login. A spawn holder
+provisioned. `--components` on a user-mode target probes delivery as that
+same signed-in login, never a static mint. The broker row only checks that the
+registered address is reachable. It does not present the login. The manager
+`status` probe uses the manager-caller view `cotal spawn` already exchanges for
+that login. When this machine's manager process is live, the exchange is pinned
+to the instance id that process persisted. If that id is not known, or a different
+instance answers, the row is refused and is not reported as this process serving.
+An answer names the instance that gave it. A probe refused before any answer
+says so, and does not invent an instance. When this machine has no manager process,
+an unpinned answer is reported as serving and the row names that instance. A spawn holder
 carries `status` on the pinned instance. `ps` and `slots` are not part of this probe
 and stay with `admin`. When the login or that view cannot supply a credential, the
 manager row says why instead of printing the broker's refusal of an unauthenticated probe.

@@ -61,6 +61,7 @@ import {
   isMeshRegistryError,
   isWorkspaceTargetError,
   jsonFlag,
+  loadManagerInstanceIdentity,
   loadSoleSpaceAuth,
   localProcessPath,
   localProcessVisible,
@@ -1025,7 +1026,10 @@ async function managerProcess(target: MeshTarget | undefined, state: Proc, space
   }
   const running = (extra?: string): ProcessRow => ({ name: "manager", state: "running", pid: state.pid ?? null, detail: [...details, ...(extra ? [extra] : [])].join(" · ") });
   if (!target) return running();
-  const endpoint = await managerEndpoint(target);
+  const localId = target.mode === "user" ? localManagerInstanceId(target.root, space) : undefined;
+  // A live pid whose instance is not on this root must not take an unpinned answer.
+  if (target.mode === "user" && localId === undefined) return running("service unchecked");
+  const endpoint = await managerEndpoint(target, localId);
   if (endpoint === "not-answering")
     return { name: "manager", state: "not-serving", pid: state.pid ?? null, detail: ["service endpoint not answering", ...details.filter((d) => d.startsWith("delivery-aware marker unreadable"))].join(" · ") };
   return running(endpoint === "unchecked" ? "service unchecked" : undefined);
@@ -1033,12 +1037,26 @@ async function managerProcess(target: MeshTarget | undefined, state: Proc, space
 
 type ManagerEndpoint = "answered" | "not-answering" | "unchecked";
 
-/** User-mode manager status goes through the same control call `cotal spawn` uses. */
-async function userManagerStatus(target: MeshTarget): Promise<ManagerServiceStatus> {
+/** The instance id this workspace root persisted for `space`. That is the id the manager's
+ *  own status reports. Absent when this root has never registered a manager. A malformed
+ *  record is not an id: status must not invent one. */
+function localManagerInstanceId(root: string, space: string): string | undefined {
+  try {
+    const id = loadManagerInstanceIdentity(root, space)?.instanceId;
+    return typeof id === "string" && id.length > 0 ? id : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** User-mode manager status goes through the same control call `cotal spawn` uses. `instanceId`
+ *  pins that call to this machine's manager. Without it, the exchange may select another live
+ *  manager of the same owner. */
+async function userManagerStatus(target: MeshTarget, instanceId?: string): Promise<ManagerServiceStatus> {
   const control = await resolveControlTarget(
     { space: target.space, server: target.server },
     "control-caller-privileged",
-    undefined,
+    instanceId,
     { onRefusal: "throw" },
   );
   const reply = await askManager(
@@ -1052,7 +1070,11 @@ async function userManagerStatus(target: MeshTarget): Promise<ManagerServiceStat
   );
   if (reply.ok !== true) {
     const message = "error" in reply && typeof reply.error === "string" ? reply.error : "manager status refused";
-    throw new EpEnvelopeError("unavailable", message);
+    // `unavailable` stays a reachability failure, as the static probe does. Anything else, including
+    // a manager that answered and refused, is a precondition. The reply's details stay on the error:
+    // a real no-answer carries the unanswered marker, and dropping it would report silence as a refusal.
+    const code = reply.code === "unavailable" ? "unavailable" : "failed-precondition";
+    throw new EpEnvelopeError(code, message, reply.details);
   }
   if (reply.data === undefined) throw new EpEnvelopeError("unavailable", "the manager status reply carried no data");
   return reply.data as ManagerServiceStatus;
@@ -1061,14 +1083,15 @@ async function userManagerStatus(target: MeshTarget): Promise<ManagerServiceStat
 /** One probe of the space's manager service endpoint. Only a definitive no-answer is
  *  `not-answering`; a refused probe or an `unavailable` user-mode credential is `unchecked`, so a
  *  failed probe never reads as a dead rail. The operator's credential calls the class rail, so with
- *  `instanceId` an answer from another manager instance is `unchecked` too. */
+ *  `instanceId` an answer from another manager instance is `unchecked` too. Omitting
+ *  `instanceId` leaves the answer unpinned, for a probe that is not attributing a local process. */
 async function managerEndpoint(target: MeshTarget, instanceId?: string): Promise<ManagerEndpoint> {
   try {
     let status: ManagerServiceStatus;
     if (target.mode === "user") {
       const credential = await componentCredential(target);
       if (credential.kind !== "user") return "unchecked";
-      status = await userManagerStatus(target);
+      status = await userManagerStatus(target, instanceId);
     } else {
       status = await managerServiceHealth(target, await staticServiceAuth(target.auth));
     }
@@ -1080,11 +1103,13 @@ async function managerEndpoint(target: MeshTarget, instanceId?: string): Promise
 
 /** A controller stack's manager is an owned service, and its instance record reads `running` while
  *  the process lives, a hung one included. So a running stack manager gets the probe the legacy
- *  manager row gets, and only an answer from its own native instance counts. */
+ *  manager row gets. In user mode only an answer from the instance this root persisted counts. */
 async function readStackManager(target: MeshTarget, services: OwnedServiceStatus): Promise<StatusResult["stackManager"]> {
   const row = services.instances?.find((item) => item.definition === STACK_DEFINITION.manager && item.observedProcess === "running");
   if (!row?.pid) return undefined;
-  return { instanceId: row.instanceId, pid: row.pid, endpoint: await managerEndpoint(target, row.nativeEndpoint?.instanceId) };
+  const pin = target.mode === "user" ? localManagerInstanceId(target.root, target.space) : row.nativeEndpoint?.instanceId;
+  if (target.mode === "user" && pin === undefined) return { instanceId: row.instanceId, pid: row.pid, endpoint: "unchecked" };
+  return { instanceId: row.instanceId, pid: row.pid, endpoint: await managerEndpoint(target, pin) };
 }
 
 /** The delivery row's responder detail (#1576). An unbound responder is not a footnote about a
@@ -2170,11 +2195,13 @@ function processVerdict(record: ReturnType<typeof processRecord>): ComponentVerd
  *
  *  USER MODE (the #1832 fix): the flip forbids static-minting on a user-auth mesh, and a
  *  credential-less probe of an authenticated broker is the raw `Authorization Violation` this used
- *  to print. So a user-mode target connects as the machine's signed-in login. Delivery and the
- *  broker stay on that login. `manager.status` does not: it publishes with the manager-caller view
- *  `cotal spawn` exchanges, which carries `status` when the actor holds `spawn`. When the login
- *  cannot be had (not signed in, service down, exchange refused), the components pass says so on
- *  the row instead of probing bare: a refused probe would be reporting the broker's answer to a
+ *  to print. So a user-mode target connects as the machine's signed-in login. Delivery stays on
+ *  that login. The broker row only checks that the registered address is reachable. It does not
+ *  present the login. `manager.status` does not use the login either: it publishes with the
+ *  manager-caller view `cotal spawn` exchanges, pinned to this machine's manager instance when a
+ *  running service row names it. That view carries `status` when the actor holds `spawn`. When the
+ *  login cannot be had (not signed in, service down, exchange refused), the components pass says so
+ *  on the row instead of probing bare: a refused probe would be reporting the broker's answer to a
  *  question nobody asked. */
 type ComponentCredential =
   | { kind: "static"; auth: SpaceAuth | undefined }
@@ -2388,9 +2415,25 @@ async function managerHealth(target: MeshTarget, context: LocalProcessContext, c
     // Static/open keeps the one-shot instrument on the same identity as its caller triple.
     // User mode calls manager status through the same control path `cotal spawn` uses.
     // The login bearer does not carry that command for a spawn holder.
+    // Pin only while this machine's manager process is live. With no live process, an
+    // unpinned answer is this row's own verdict and the facts below name its instance.
+    const liveLocal = record.kind === "live";
+    const localId = credential.kind === "user" && liveLocal ? localManagerInstanceId(context.root, target.space) : undefined;
     const served = credential.kind === "user"
-      ? await userManagerStatus(target)
+      ? await userManagerStatus(target, liveLocal ? localId : undefined)
       : await managerServiceHealth(target, await staticServiceAuth(credential.auth));
+    // A live local process is serving only when its persisted instance answered. An unknown
+    // id, or a different one, cannot be attributed: refused, not not-serving, and the remote
+    // runtime stays off this row. The facts name the instance that answered.
+    if (credential.kind === "user" && liveLocal && (localId === undefined || served.instanceId !== localId)) {
+      const answered = typeof served.instanceId === "string" && served.instanceId.length > 0 ? served.instanceId : undefined;
+      facts.push(answered === undefined
+        ? "the manager answer named no instance, so it is not this machine's manager"
+        : localId === undefined
+          ? `answered by manager instance ${answered}; this machine's manager instance is not known`
+          : `answered by manager instance ${answered}, not this machine's manager ${localId}`);
+      return { name: "manager", verdict: "refused", facts };
+    }
     facts.push(`service instance ${served.instanceId ?? "unreported"}`);
     facts.push(`runtime ${served.runtime ?? "unreported"}`);
     facts.push(...managerStopImpactFacts(served.stopImpact));
