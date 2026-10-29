@@ -11,6 +11,7 @@ import { createHash } from "node:crypto";
 import {
   EP_ERROR_CODES, isEpErrorCode, EpEnvelopeError,
   parseEndpointRequest, parseEndpointReply, parseEndpointEvent,
+  controlReplyFrom, controlReplyFromThrown,
   checkRequestSubjectAgreement, assertClassMatches, assertArgsValid, assertOutputValid, authDigest,
   epRequestSubject, parseEpSubject, type ParsedEpRequest,
   compileContractSchema, VOID_SCHEMA, VOID_SCHEMA_DIGEST, SCHEMA_PROFILE,
@@ -197,6 +198,13 @@ c("toEpError() carries the outcome the fence sets",
   new EpEnvelopeError("failed-precondition", "x", undefined, "not-executed").toEpError().outcome === "not-executed");
 c("...and omits it entirely on a caller-raised refusal, which is not a reply",
   !("outcome" in new EpEnvelopeError("internal", "x").toEpError()));
+c("controlReplyFrom preserves error.outcome when present",
+  controlReplyFrom(outcomeReply).outcome === "not-executed" && controlReplyFrom(execReply).outcome === "executed");
+c("controlReplyFrom omits outcome when the reply omitted it",
+  !("outcome" in controlReplyFrom(errReply)));
+c("controlReplyFromThrown preserves EpEnvelopeError.outcome when present and omits it when absent",
+  controlReplyFromThrown(new EpEnvelopeError("bad-request", "x", undefined, "not-executed"), "bad-request: x").outcome === "not-executed"
+  && !("outcome" in controlReplyFromThrown(new EpEnvelopeError("internal", "x"), "internal: x")));
 
 const ev = parseEndpointEvent({ v: 1, topic: "ev.ai_cotal_lifecycle.started", ts: 1720500000000, data: null });
 c("event parses (a null data field IS data)", ev.topic.startsWith("ev.") && ev.data === null);

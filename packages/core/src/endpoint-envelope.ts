@@ -152,19 +152,21 @@ export function controlReplyFrom(reply: EndpointReply): ControlReply {
     ok: false,
     error: renderLifecycleBlocked(error.message, error),
     code: error.code,
+    ...(error.outcome ? { outcome: error.outcome } : {}),
     ...(reply.data !== undefined ? { data: reply.data } : {}),
     ...(error.details ? { details: error.details } : {}),
   };
 }
 
 /** The {@link ControlReply} a caller hands on for an envelope error thrown instead of a reply. The
- *  caller keeps its own `message`; the code and details come from here, so a refusal that arrives
- *  as a throw is keyed on the same way as one that arrives as a reply. */
+ *  caller keeps its own `message`; the code, outcome, and details come from here, so a refusal that
+ *  arrives as a throw is keyed on the same way as one that arrives as a reply. */
 export function controlReplyFromThrown(e: EpEnvelopeError, message: string): ControlReply {
   return {
     ok: false,
     error: renderLifecycleBlocked(message, e),
     code: e.code,
+    ...(e.outcome ? { outcome: e.outcome } : {}),
     ...(e.details ? { details: e.details } : {}),
   };
 }

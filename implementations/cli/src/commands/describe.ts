@@ -163,7 +163,7 @@ export async function invokeCmd(args: ParsedArgs, commandName = "invoke"): Promi
     const nativeTarget = await resolveTarget(nc, space, service, values, remainingMs, selection.reference !== undefined);
     if (declaration.targeted !== (nativeTarget !== undefined) || nativeTarget && !declaration.modes.includes(nativeTarget.mode)) throw new CommandFailure("refused", "USAGE_INVALID", "the selected targeting mode does not match the endpoint's declared command", { target });
     const canonicalInput = input === undefined && !declaration.contract.input.validate(null) && declaration.contract.input.validate({}) ? {} : input ?? null;
-    if (!declaration.contract.input.validate(canonicalInput)) throw new CommandFailure("refused", "SCHEMA_INVALID", "arguments do not match the fetched native input contract; no command was published", { target, remedy: "read describe --json for the declared schema; the argument body is not echoed" });
+    if (!declaration.contract.input.validate(canonicalInput)) throw new CommandFailure("refused", "SCHEMA_INVALID", "arguments do not match the fetched native input contract; no command was published", { target, native: { code: "bad-request", outcome: "not-executed" }, remedy: "read describe --json for the declared schema; the argument body is not echoed" });
     // A static-root operator instrument can request only the manager. A paired caller file makes
     // this call to another endpoint when the selected command fits that file's mode.
     pairedCaller = connection.mode === "auth" && !callerCredential && !selection.reference && on === undefined && nativeTarget === undefined

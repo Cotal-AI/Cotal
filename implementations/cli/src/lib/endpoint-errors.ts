@@ -14,7 +14,8 @@ export class NativeReplyError extends Error {
 export function endpointFailure(error: unknown, target: Record<string, unknown>, mayHaveInvoked: boolean): CommandFailure {
   if (isCommandFailure(error)) return error.target === null ? new CommandFailure(error.outcome, error.code, error.message, { target, ...(error.remedy ? { remedy: error.remedy } : {}), ...(error.native ? { native: error.native } : {}), ...(error.changed ? { changed: error.changed } : {}), cause: error }) : error;
   if (isConnectRefusal(error)) return error.failure();
-  const native = error instanceof NativeReplyError ? { code: error.response.reply.error?.code, outcome: error.response.reply.error?.outcome, detail: { phase: error.phase, requestId: error.response.reply.id, responder: error.response.responder } } : error instanceof EpEnvelopeError ? { code: error.code, outcome: error.outcome } : undefined;
+  const invoked = mayHaveInvoked || error instanceof NativeReplyError && error.phase === "invocation";
+  const native = error instanceof NativeReplyError ? { code: error.response.reply.error?.code, outcome: error.response.reply.error?.outcome ?? (invoked ? "unknown" : undefined), detail: { phase: error.phase, requestId: error.response.reply.id, responder: error.response.responder } } : error instanceof EpEnvelopeError ? { code: error.code, outcome: error.outcome ?? (invoked ? "unknown" : undefined) } : undefined;
   // A contract read no instance answered: nothing serves the endpoint, or nothing reached this caller.
   if (!mayHaveInvoked && unansweredRequest(error)) {
     const endpoint = typeof target.endpoint === "string" ? target.endpoint : "the endpoint";

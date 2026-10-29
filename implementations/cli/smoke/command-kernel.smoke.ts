@@ -392,7 +392,18 @@ async function completionOut(positionals: string[]): Promise<string> {
   assert.equal(read.message, "no instance of com.example.reviews answered its contract read, so nothing is serving it or none could be reached", "the refusal says no instance answered");
   assert.equal(read.remedy, "start the service that serves com.example.reviews, then run the command again; `cotal service --space s` lists this space's services", "its Next names how to start what serves it");
   assert.equal(endpointFailure(silent, target, true).outcome, "unknown", "an unanswered call that may have run stays unknown");
+  assert.equal(endpointFailure(silent, target, true).native?.outcome, "unknown", "an unanswered invocation records native outcome unknown");
   assert.equal(endpointFailure(new EpEnvelopeError("deadline-exceeded", "the closure walk exhausted its budget"), target, false).code, "OPERATION_FAILED", "a deadline without the unanswered marker stays a failed read");
+  const { NativeReplyError } = await import("../src/lib/endpoint-errors.js");
+  const responder = { endpoint: "manager", instanceId: "i".repeat(26), epoch: 0 };
+  const omittedOutcomeReply = new NativeReplyError({ reply: { v: 1, id: "req-1", ok: false, error: { code: "not-found", message: "no agent \"no-such-agent\"" } }, responder }, "invocation");
+  assert.equal(endpointFailure(omittedOutcomeReply, target, true).native?.outcome, "unknown", "an invocation reply that omits error.outcome records native outcome unknown (SPEC 13.3)");
+  const notExecutedReply = new NativeReplyError({ reply: { v: 1, id: "req-2", ok: false, error: { code: "bad-request", message: "bad args", outcome: "not-executed" } }, responder }, "invocation");
+  assert.equal(endpointFailure(notExecutedReply, target, true).native?.outcome, "not-executed", "an invocation reply with not-executed preserves native outcome not-executed");
+  const executedReply = new NativeReplyError({ reply: { v: 1, id: "req-3", ok: false, error: { code: "internal", message: "handler failed", outcome: "executed" } }, responder }, "invocation");
+  assert.equal(endpointFailure(executedReply, target, true).native?.outcome, "executed", "an invocation reply with executed preserves native outcome executed");
+  const targetInspectionReply = new NativeReplyError({ reply: { v: 1, id: "req-4", ok: false, error: { code: "not-found", message: "no agent \"missing\"" } }, responder }, "target-inspection");
+  assert.equal(endpointFailure(targetInspectionReply, target, false).native?.outcome, undefined, "a pre-submit target-inspection reply without outcome does not claim the command ran");
 }
 
 // --- a paired caller's issuance intent reads back as `auth mint --endpoint` wrote it --------------
