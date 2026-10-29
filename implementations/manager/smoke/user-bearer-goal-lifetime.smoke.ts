@@ -68,6 +68,7 @@ import {
 } from "../../auth/src/index.js";
 import { Manager } from "../src/manager.js";
 import { saveSpaceAuth } from "../../../packages/workspace/src/auth-paths.js";
+import { workspaceSecretStore } from "@cotal-ai/workspace";
 import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal, killAndAwaitExit, emitSentinel } from "@cotal-ai/smoke-kit";
 
 let pass = 0;
@@ -138,12 +139,14 @@ async function main() {
   const releaseBroker = teardownOnSignal(broker, TEST_DIR);
 
   let mgr: InstanceType<typeof Manager> | undefined;
+  let compatManager: InstanceType<typeof Manager> | undefined;
   let calloutNc: NatsConnection | undefined;
   const endpoints: CotalEndpoint[] = [];
   const startEndpoint = async (ep: CotalEndpoint) => { endpoints.push(ep); await ep.start(); };
   const cleanup = async () => {
     const errors: unknown[] = [];
     for (const ep of endpoints) { try { await ep.stop(); } catch (e) { errors.push(e); } }
+    try { await compatManager?.stop({ withAgents: true }); } catch (e) { errors.push(e); }
     try { await mgr?.stop({ withAgents: true }); } catch (e) { errors.push(e); }
     try { await calloutNc?.close(); } catch (e) { errors.push(e); }
     try { await killAndAwaitExit(broker); } catch (e) { errors.push(e); }
@@ -394,23 +397,31 @@ async function main() {
     });
     await startEndpoint(epRetryCompat);
 
-    // The first real request carries a stale bind and is fenced by the real serve boundary.
-    // Its observed split changes the next native describe to the legacy view before re-resolve.
-    legacyView = false;
+    // Resolve an actual second manager, then remove only its own native serve handle. The
+    // unchanged request reaches the first manager and its real boundary fences the old bind.
+    await state.handle.stop();
+    const compatRoot = join(TEST_DIR, "compat-manager");
+    mkdirSync(join(compatRoot, ".cotal", "agents"), { recursive: true });
+    saveSpaceAuth(join(compatRoot, ".cotal", "auth"), auth);
+    compatManager = new Manager({ space: SPACE, servers: SERVERS, runtime: "pty", workspaceRoot: compatRoot, secretStore: workspaceSecretStore(WS_ROOT) });
+    await compatManager.start();
+    const resolvedCurrent = await epRetryCompat.describeService(BASELINE_LIFECYCLE_ENDPOINT);
+    const second = compatManager as unknown as { serviceServe: { nc: NatsConnection; handle: EpServeHandle }; managerInstanceId: string };
+    if (resolvedCurrent.responder.instanceId !== second.managerInstanceId || !resolvedCurrent.commands.has("goal-result"))
+      throw new Error("retry control did not resolve the actual modern second manager");
+    await second.serviceServe.handle.stop();
+    legacyView = true;
+    state.handle = serveEndpoint(state.nc, SPACE, state.grant, servedDefs, {
+      view: () => ({ commands: defs.map((def) => def.command).filter((command) => command !== "goal-result") }),
+    });
+    await state.nc.flush();
     let splits = 0, retrySubmits = 0;
-    epRetryCompat.on("split-recovered", () => { splits++; legacyView = true; });
+    epRetryCompat.on("split-recovered", () => { splits++; });
     const retryNc = (epRetryCompat as unknown as { nc: NatsConnection }).nc;
     const retryPublish = retryNc.publish.bind(retryNc);
     retryNc.publish = (subject, data, options) => {
       const parsed = parseEpSubject(subject);
-      if (parsed?.plane === "request" && parsed.command === "spawn") {
-        retrySubmits++;
-        if (retrySubmits === 1) {
-          const request = JSON.parse(new TextDecoder().decode(data));
-          request.bind = { instanceId: mgrIid, epoch: 999 };
-          data = new TextEncoder().encode(JSON.stringify(request));
-        }
-      }
+      if (parsed?.plane === "request" && parsed.command === "spawn") retrySubmits++;
       retryPublish(subject, data, options);
     };
 
