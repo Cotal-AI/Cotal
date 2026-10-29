@@ -1,5 +1,11 @@
 # @cotal-ai/pi
 
+## 0.125.0
+
+### Patch Changes
+
+- bd39e93: Keep supervised Pi seats out of the project-trust prompt without approving untrusted project resources, preserve saved Pi trust decisions, and report the prompt and directory when startup cannot continue.
+
 ## 0.124.3
 
 No changes in this release.
