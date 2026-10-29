@@ -67,6 +67,19 @@ Model variants, MCP sharing, and raw launch options are not implemented and fail
 forks the named Pi session.
 Persona files and `--model` are supported; an explicit spawn model wins over the persona file.
 
+## Project trust
+
+A supervised Pi seat has nobody at its terminal to answer **Trust project folder?**. The connector
+reads Pi's own saved trust decision. A saved approval or denial remains in force. A denial prints
+that project resources were skipped and how to review the decision. When project
+resources exist and Pi has no saved decision, that seat runs untrusted for this session only: Pi
+skips project `.pi` settings and resources and ancestor `.agents/skills`, and Cotal does not change
+Pi's trust store. The seat prints the directory and tells the operator to run `pi` there once in a
+foreground terminal to review and save a decision.
+
+A foreground launch keeps Pi's native interactive prompt. If startup stops before Pi creates its
+session, the manager's failure names **Trust project folder?** and the launch directory.
+
 ## Credits
 
 The original Pi integration and inbox-turn design were contributed by

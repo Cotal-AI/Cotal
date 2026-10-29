@@ -26,6 +26,21 @@ One standalone artifact supports three Pi-hosted surfaces:
 This release pins Pi `0.79.10`. The Cotal package requires Node 22.10; the separately
 installed Pi host requires Node 22.19 or newer.
 
+### Project trust
+
+A managed seat cannot ask a user to answer Pi's **Trust project folder?** prompt. The connector
+therefore reads Pi's saved trust decision for the launch directory. A saved approval keeps project
+resources enabled, and a saved denial remains denied and prints that project resources were skipped.
+With project resources but no saved decision, the seat chooses untrusted for that run only. Pi
+skips the directory's `.pi` resources and any ancestor `.agents/skills`; Cotal does not write Pi's
+trust store or approve project code.
+
+The seat prints `[cotal-pi/trust] Project resources in <directory> were skipped...` and tells the
+operator to run `pi` once in that directory in a foreground terminal to review and save trust. A
+foreground `cotal spawn` keeps Pi's native interactive choice. If Pi still stops at that native
+prompt before its session starts, the launch failure names **Trust project folder?** and the
+directory instead of reporting only a missing session-state file.
+
 ## Lifecycle
 
 The adapter sends peer traffic as Pi custom messages with `triggerTurn: true` and
