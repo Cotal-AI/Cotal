@@ -24,6 +24,8 @@
  * the auth service runs here, and a load generator sharing this event loop would be billed to the
  * auth service's own CPU and make the bottleneck unreadable. Credentials reach a child over stdin,
  * never argv.
+ * With multiple callout workers, response counts and handler samples cover every process, and CPU
+ * uses each process's post-warm-up baseline. Detailed reason logs remain primary-process-only.
  *
  * OFF-BOX LOAD. On a small host the children are the bottleneck: on a 2 vCPU VPS they cost about
  * three times what serving the connects costs, so past roughly half a core they starve the box and
@@ -116,6 +118,29 @@ const DELIVERY_SAMPLE = 64;
 const MAX_LATENCY_SAMPLES = 50_000;
 const enc = (s: string) => new TextEncoder().encode(s);
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** Responses and handler samples from one auth process in the measurement window. */
+interface CalloutStats { served: number; handlerMs: number[] }
+/** Wrap the callout's connection so each request is timed without touching the service. The
+ *  wrapper never reorders or delays: the stock arm serializes because its own `for await` body is
+ *  awaited inline, and the main arm pulls up to its own `maxInFlight`. This measures the handler,
+ *  NOT the time a request waited in the subscription buffer ahead of it — the client-side connect
+ *  latency below is what carries that queueing. */
+const timed = (nc: NatsConnection, stats: CalloutStats) => ({
+  subscribe(subject: string, opts?: { queue?: string }) {
+    const inner = nc.subscribe(subject, opts);
+    return (async function* () {
+      for await (const m of inner) {
+        const t0 = performance.now();
+        yield {
+          data: m.data,
+          headers: m.headers as never,
+          respond(d: Uint8Array) { stats.handlerMs.push(performance.now() - t0); stats.served++; return m.respond(d); },
+        };
+      }
+    })();
+  },
+});
 
 /** Nearest-rank percentile over an unsorted sample array. 0 samples reports NaN, never a 0 that
  *  would read as a fast run. */
@@ -297,7 +322,15 @@ async function runCalloutChild(): Promise<void> {
   const { startAuthCallout } = await import("../src/callout.js");
   const key = await importJWK(job.idpJwk, "EdDSA");
   const nc = await connect({ servers: job.servers, authenticator: credsAuthenticator(enc(job.calloutCreds)) });
-  startAuthCallout(nc as never, {
+  const stats: CalloutStats = { served: 0, handlerMs: [] };
+  const send = process.send?.bind(process);
+  if (!send) throw new Error("callout child requires its parent IPC channel");
+  process.on("message", (command) => {
+    if (command !== "reset" && command !== "sample") throw new Error("unknown callout measurement command");
+    if (command === "reset") { stats.served = 0; stats.handlerMs.length = 0; }
+    send({ command, ...stats });
+  });
+  startAuthCallout(timed(nc, stats) as never, {
     xkeySeed: job.xkeySeed,
     authAccount: job.authAccount,
     dataAccount: job.dataAccount,
@@ -563,29 +596,7 @@ const loadArm = async (): Promise<(nc: unknown, opts: StartAuthCalloutOpts) => {
 };
 
 // ---- callout latency instrumentation ------------------------------------------------------------
-/** Handler latency samples: yielded-to-the-service until the service called `respond`. */
-const handlerMs: number[] = [];
-let served = 0;
-/** Wrap the callout's connection so each request is timed without touching the service. The
- *  wrapper never reorders or delays: the stock arm serializes because its own `for await` body is
- *  awaited inline, and the main arm pulls up to its own `maxInFlight`. This measures the handler,
- *  NOT the time a request waited in the subscription buffer ahead of it — the client-side connect
- *  latency below is what carries that queueing. */
-const timed = (nc: NatsConnection) => ({
-  subscribe(subject: string, opts?: { queue?: string }) {
-    const inner = nc.subscribe(subject, opts);
-    return (async function* () {
-      for await (const m of inner) {
-        const t0 = performance.now();
-        yield {
-          data: m.data,
-          headers: m.headers as never,
-          respond(d: Uint8Array) { handlerMs.push(performance.now() - t0); served++; return m.respond(d); },
-        };
-      }
-    })();
-  },
-});
+const calloutStats: CalloutStats = { served: 0, handlerMs: [] };
 
 // ---- scenario knobs the service honours ----------------------------------------------------------
 /** When set, `recordIssuance` (the durable auth-ledger write) blocks until this resolves — the
@@ -603,6 +614,28 @@ const children: ChildProcess[] = [];
 /** The extra auth-callout service processes (`--callouts`), kept so their CPU can be read from
  *  /proc before they are killed. */
 const calloutChildren: ChildProcess[] = [];
+
+/** Each child acknowledges the warm-up reset and reports its own measured responses over IPC. */
+const sampleCalloutChild = (child: ChildProcess, command: "reset" | "sample"): Promise<CalloutStats> => new Promise((resolve, reject) => {
+  const cleanup = () => {
+    clearTimeout(timer);
+    child.off("message", onMessage);
+    child.off("error", onError);
+    child.off("exit", onExit);
+  };
+  const onError = (error: Error) => { cleanup(); reject(error); };
+  const onExit = (code: number | null) => onError(new Error(`callout child exited ${code} before ${command}`));
+  const onMessage = (message: CalloutStats & { command: string }) => {
+    if (message.command !== command) return;
+    cleanup();
+    resolve({ served: message.served, handlerMs: message.handlerMs });
+  };
+  const timer = setTimeout(() => onError(new Error(`callout child did not answer ${command} in 30s`)), 30_000).unref();
+  child.on("message", onMessage);
+  child.once("error", onError);
+  child.once("exit", onExit);
+  child.send(command, (error) => { if (error) onError(error); });
+});
 
 /** Hosts in deal order, and the share each takes: a host listed twice in `--load-host` takes twice
  *  the children. */
@@ -687,7 +720,7 @@ try {
 
   const startAuthCallout = await loadArm();
   calloutNc = await connect({ servers: SERVERS, authenticator: credsAuthenticator(enc(callout.calloutCreds)) });
-  startAuthCallout(timed(calloutNc), {
+  startAuthCallout(timed(calloutNc, calloutStats), {
     xkeySeed: callout.xkey.seed,
     authAccount: { pub: callout.account.pub, signingSeed: callout.account.signingSeed },
     dataAccount: { pub: auth.account.pub, signingSeed: auth.account.signingSeed },
@@ -714,17 +747,19 @@ try {
   const idpJwk = await exportJWK(publicKey);
   for (let i = 1; i < CALLOUTS; i++) {
     const child = spawn(process.execPath, [...process.execArgv, import.meta.filename, "callout"], {
-      stdio: ["pipe", "pipe", "inherit"],
+      stdio: ["pipe", "pipe", "inherit", "ipc"],
       env: { ...cleanEnv, DO_NOT_TRACK: "1", COTAL_TELEMETRY: "off" },
     });
     calloutChildren.push(child);
+    const input = child.stdin, output = child.stdout;
+    if (!input || !output) throw new Error("callout child requires stdin/stdout pipes");
     const ready = new Promise<void>((resolve, reject) => {
-      child.stdout.setEncoding("utf8");
-      child.stdout.on("data", (d: string) => { if (d.includes("READY")) resolve(); });
+      output.setEncoding("utf8");
+      output.on("data", (d: string) => { if (d.includes("READY")) resolve(); });
       child.on("exit", (c) => reject(new Error(`callout service child exited ${c} before serving`)));
       setTimeout(() => reject(new Error("callout service child did not report READY in 30s")), 30_000).unref();
     });
-    child.stdin.end(JSON.stringify({
+    input.end(JSON.stringify({
       servers: SERVERS, space, iss: ISS, idpJwk, uid: UID,
       calloutCreds: callout.calloutCreds, xkeySeed: callout.xkey.seed,
       authAccount: { pub: callout.account.pub, signingSeed: callout.account.signingSeed },
@@ -741,13 +776,15 @@ try {
   // Warm the path: the first callout after startup pays module/JIT warm-up that belongs to neither
   // arm's steady state, and on a loaded box can be dropped outright.
   await runLoad({ mode: "churn", servers: CHILD_SERVERS, sentinelCreds: callout.sentinelCreds, bearers: bearers.slice(0, 4), connectTimeoutMs: CONNECT_TIMEOUT_MS, ratePerSec: 4, seconds: 1 });
-  handlerMs.length = 0; served = 0; answers.length = 0;
+  calloutStats.handlerMs.length = 0; calloutStats.served = 0; answers.length = 0;
+  await Promise.all(calloutChildren.map((child) => sampleCalloutChild(child, "reset")));
   resetDeal();
   const broker0 = { ...brokerLog };
 
   const v0 = await varz();
   const genBusy0 = generators.map((g) => genBusyS(g.host));
   const brokerCpu0 = procCpuMs(srv.pid!);
+  const childCpu0 = calloutChildren.map((child) => procCpuMs(child.pid!));
   const selfCpu0 = process.cpuUsage();
   const t0 = performance.now();
   let result: ChildResult;
@@ -810,10 +847,15 @@ try {
   const loadS = result.loadMs / 1000;
   const selfCpu = process.cpuUsage(selfCpu0);
   const brokerCpuMs = procCpuMs(srv.pid!) - brokerCpu0;
-  // Every callout process is the auth service, so the total is this process plus the children.
-  // Their start baseline is 0: each was spawned for this run and does nothing else.
+  // All auth processes use post-warm-up CPU baselines; module load is outside the window.
   const authCpuMs = (selfCpu.user + selfCpu.system) / 1000
-    + calloutChildren.reduce((a, c) => a + (c.pid ? procCpuMs(c.pid) : 0), 0);
+    + calloutChildren.reduce((sum, child, i) => sum + procCpuMs(child.pid!) - childCpu0[i], 0);
+  const childStats = await Promise.all(calloutChildren.map((child) => sampleCalloutChild(child, "sample")));
+  const childServed = childStats.reduce((sum, stats) => sum + stats.served, 0);
+  const served = calloutStats.served + childServed;
+  const handlerMs = calloutStats.handlerMs.concat(childStats.flatMap((stats) => stats.handlerMs));
+  if (handlerMs.length !== served || served < result.ok)
+    throw new Error(`incomplete callout accounting: ${served} responses, ${handlerMs.length} handler samples, ${result.ok} successful connects`);
   const v1 = await varz();
 
   row("git sha", SHA);
@@ -839,6 +881,9 @@ try {
   row("achieved connect rate (/s)", result.ok / loadS);
   rows.push(["", ""]);
   row("callouts served (responded)", served);
+  row("callouts served (primary process)", calloutStats.served);
+  row("callouts served (child processes)", childServed);
+  row("callout handler samples (all processes)", handlerMs.length);
   row("callout handler p50 (ms)", n2(pct(handlerMs, 50)));
   row("callout handler p95 (ms)", n2(pct(handlerMs, 95)));
   row("callout handler p99 (ms)", n2(pct(handlerMs, 99)));
@@ -864,7 +909,7 @@ try {
     row(`generator host CPU (cores): ${g.host}`, `${n2((genBusy1[i] - genBusy0[i]) / elapsedS)} of ${g.cores}`);
   row("auth service CPU per callout (ms)", served ? authCpuMs / served : NaN);
   row("broker CPU per connect (ms)", result.attempts ? brokerCpuMs / result.attempts : NaN);
-  row("auth service RSS (MB)", process.memoryUsage().rss / 1048576);
+  row("auth service RSS (MB, primary process)", process.memoryUsage().rss / 1048576);
   row("broker RSS (MB)", procRssMb(srv.pid!));
   rows.push(["", ""]);
   row("broker total_connections delta", (v1.total_connections ?? 0) - (v0.total_connections ?? 0));
@@ -879,6 +924,7 @@ try {
     if (reason) denyReasons.set(reason, (denyReasons.get(reason) ?? 0) + 1);
   }
   for (const [k, v] of [...denyReasons].sort((a, b) => b[1] - a[1]).slice(0, 4)) row(`  callout deny: ${k}`, `${v} (of ${calloutLog.length} log lines)`);
+  row("callout diagnostics scope", "primary auth process only");
   row("callout log lines", calloutLog.length);
   rows.push(["", ""]);
   const reasoned = brokerLog.calloutReasons - broker0.calloutReasons;
