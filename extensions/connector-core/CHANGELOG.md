@@ -1,5 +1,11 @@
 # @cotal-ai/connector-core
 
+## 0.128.2
+
+### Patch Changes
+
+- 653c0cd: Recheck a managed agent's issued caller view after its parent's workflow permission is restored. Repair failed discovery before submitting the command, while preserving legacy-call caching and manager instance pinning.
+
 ## 0.128.1
 
 No changes in this release.

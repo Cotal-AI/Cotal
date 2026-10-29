@@ -1,5 +1,14 @@
 # @cotal-ai/auth
 
+## 0.128.2
+
+### Patch Changes
+
+- c8c7f68: Decide a manager renewal from the credential row that carries its closed set, and re-observe that renewal gate once before either renewal is signed.
+- @cotal-ai/core@0.128.2
+  - @cotal-ai/lang@0.128.2
+  - @cotal-ai/workspace@0.128.2
+
 ## 0.128.1
 
 ### Patch Changes
