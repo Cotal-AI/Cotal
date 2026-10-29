@@ -99,11 +99,11 @@ self-registers, then caches every contributed `kind:name`. Command metadata is c
 `--help`/completion; running a command or requesting a provider imports its owner lazily and
 uses the live object. Before that first import, the loader rebinds shared peers to the current
 host under the extension-prefix lock; version skew or an unbindable peer fails loudly.
-The repo's `@cotal-ai/web` dashboard and optional tmux/cmux/Orca/Herdr runtimes use this mechanism.
+The repo's `@cotal-ai/web` dashboard and optional tmux/cmux/Orca/Herdr/Paseo runtimes use this mechanism.
 Runtime resolution stays registry-driven and open-ended: a name with no registered/installed
 provider fails loud (never a fallback), and a third-party runtime installs under its own package
 name. The CLI does carry a small, non-authoritative map of the first-party runtime names
-(`orca`/`tmux`/`cmux`/`herdr`) to their `@cotal-ai/*` packages, used only to print an exact `cotal ext add`
+(`orca`/`tmux`/`cmux`/`herdr`/`paseo`) to their `@cotal-ai/*` packages, used only to print an exact `cotal ext add`
 hint for a known-but-uninstalled runtime and to list them in `cotal runtimes`; it never resolves or
 registers a provider.
 
@@ -211,7 +211,7 @@ agents exchange messages directly and choose their own work.
 - **Pluggable runtimes.** Spawning is abstracted behind a `Runtime` contract (like pm2 or
   docker for agent TUIs): **`pty`** ships built-in (the manager owns the pseudo-terminal
   in-process on every platform; watch or type via `cotal attach`; on Linux it still adopts
-  seats an earlier manager left under a detached custodian, and elsewhere `adopt` throws); **`tmux`**, **`cmux`**, **`orca`**, and **`herdr`** are
+  seats an earlier manager left under a detached custodian, and elsewhere `adopt` throws); **`tmux`**, **`cmux`**, **`orca`**, **`herdr`**, and **`paseo`** are
   extensions that put each teammate in its own native terminal surface (explicit opt-ins
   that throw when the extension isn't loaded, never a silent fallback); **byo** is the
   floor (a human's own terminal, tracked via presence); **host** (Agent SDK, true mid-turn

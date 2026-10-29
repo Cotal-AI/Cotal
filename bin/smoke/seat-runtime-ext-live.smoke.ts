@@ -182,14 +182,14 @@ try {
     preflightRefused(official, "no installed extension provides runtime \"tmux\" - install it with `cotal ext add @cotal-ai/tmux`"), official);
   const unknown = envelope(cli("spawn", "default", "-d", "--on", on, "--agent", "e2e", "--no-events", "--runtime", "nosuch", "--name", "none3", "--json").stdout);
   ok("a runtime nobody provides is refused as unknown, listing the known names",
-    preflightRefused(unknown, "unknown runtime \"nosuch\" (known: pty, orca, tmux, cmux, herdr) - install a provider with `cotal ext add <npm-package>`, or check the name"), unknown);
+    preflightRefused(unknown, "unknown runtime \"nosuch\" (known: pty, orca, tmux, cmux, herdr, paseo) - install a provider with `cotal ext add <npm-package>`, or check the name"), unknown);
 
   // 4. a live remove is honored for the next seat; the seat already on the runtime keeps it.
   const removed = cli("ext", "remove", "cotal-ext-seat-runtime");
   ok("the runtime extension is removed while the manager runs", removed.status === 0, removed.stderr.slice(-400));
   const late = envelope(cli("spawn", "default", "-d", "--on", on, "--agent", "e2e", "--no-events", "--runtime", "seat-fixture", "--name", "late", "--json").stdout);
   ok("after the remove, the next seat naming that runtime is refused even though the manager imported it earlier",
-    preflightRefused(late, "unknown runtime \"seat-fixture\" (known: pty, orca, tmux, cmux, herdr) - install a provider with `cotal ext add <npm-package>`, or check the name"), late);
+    preflightRefused(late, "unknown runtime \"seat-fixture\" (known: pty, orca, tmux, cmux, herdr, paseo) - install a provider with `cotal ext add <npm-package>`, or check the name"), late);
   const still = (envelope(cli("ps", "--json").stdout)?.result?.items ?? []) as { name: string; mode: string }[];
   ok("the seat already on the removed runtime is still listed on it", still.some((r) => r.name === "extseat" && r.mode === "seat-fixture"), still);
   const stopExt = cli("stop", "extseat", "--on", on);
