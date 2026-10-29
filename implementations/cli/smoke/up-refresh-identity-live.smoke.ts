@@ -32,7 +32,7 @@ const rootEnv = { ...process.env };
 for (const key of Object.keys(rootEnv)) if (key.startsWith("COTAL_")) delete rootEnv[key];
 
 let passed = 0;
-const EXPECTED_CHECKS = 29 + 9 + 13 + 5 + 14; // namedSpaceElsewhere + storeRecordRepair + preFieldWarning + foregroundCrashKeepsRecord
+const EXPECTED_CHECKS = 29 + 9 + 13 + 5 + 15; // namedSpaceElsewhere + storeRecordRepair + preFieldWarning + foregroundCrashKeepsRecord
 const check = (name: string, ok: boolean, detail?: unknown): void => {
   if (!ok) throw new Error(`FAIL: ${name}${detail === undefined ? "" : `\n${JSON.stringify(detail, null, 2)}`}`);
   passed++;
@@ -373,6 +373,7 @@ async function foregroundCrashKeepsRecord(): Promise<void> {
     check("...stderr names 'exited unexpectedly'", /exited unexpectedly/.test(stderr), stderr);
     check("...and 'stays recorded'", /stays recorded/.test(stderr), stderr);
     check("...and the repair command naming this space", stderr.includes(`cotal up --server ${fixture.server} --space ${space}`), stderr);
+    check("...in the recorded mesh's whole line, with no claim that the exit came before the record", stderr.includes(`✗ nats-server exited unexpectedly (signal SIGKILL); the mesh "${space}" stays recorded (\`cotal meshes\` lists it offline); log: see the terminal output above; repair: \`cotal up --server ${fixture.server} --space ${space}\``) && !stderr.includes("before the mesh"), stderr);
     const meshes = cotal(fixture, ["meshes"]);
     check("`cotal meshes` tags the crashed mesh offline", new RegExp(`${space}[^\n]*offline`).test(`${meshes.stdout}`), meshes.stdout);
 
