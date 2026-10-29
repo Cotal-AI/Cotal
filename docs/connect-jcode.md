@@ -166,7 +166,11 @@ must be added to the explicit classifier and its exact-count regression.
 An unacknowledged queued message does not prove an attached TUI's native turn has stopped.
 If that turn is busy, the connector tries a new API connection to the same private bridge and
 attaches the same session with its reported native busy state. When both steps succeed within the
-60-second recovery window, the server and running tool are preserved. If the bridge permanently
+60-second recovery window, the server and running tool are preserved. Messages the native session
+already accepted stay owned by that session rather than being sent again after reattach. After
+preserving the tree, a soft-interrupt timeout keeps those items reserved through the busy turn;
+it does not prove rejection. The turn boundary or another connection replacement releases the
+unanswered hold without acknowledging it, so owed work can be delivered later. If the bridge permanently
 refuses the connection or attach, or the window expires, the host ends with exit code 1 and stops
 the TUI and private server tree. Its terminal diagnostic names the same-bridge refusal or expired
 window and says it is ending the seat and stopping the tree. It does not launch a replacement tree

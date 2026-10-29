@@ -52,7 +52,7 @@ try {
     const cell = join(root, mode);
     mkdirSync(cell);
     const log = join(cell, "fake.jsonl");
-    const entries = (): Array<{ ev: string; pid?: number; mode?: string }> =>
+    const entries = (): Array<{ ev: string; pid?: number; mode?: string; content?: string; frame?: { req?: string; content?: string } }> =>
       existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)) : [];
     const space = `jcodebusy${mode}`;
     await seedChannelRegistry({ servers, space, file: { defaults: { replay: false }, channels: { team: { replay: false } } } });
@@ -75,7 +75,9 @@ try {
           FAKE_JCODE_LOG: log, FAKE_JCODE_DAEMON: "1", FAKE_JCODE_SESSION_STATE: join(cell, "session.json"),
           FAKE_JCODE_BUSY_MODEL: "1", FAKE_JCODE_BUSY_AFTER_READINESS: "1", FAKE_JCODE_BUSY_AFTER_READINESS_STATUS: "1",
           FAKE_JCODE_BUSY_HOLD_MS: "180000", FAKE_JCODE_STEER_BLACKHOLE: "1", FAKE_JCODE_SWALLOW_QUEUED_SEND: marker,
-          FAKE_JCODE_RECONNECT_HELLO: mode,
+          FAKE_JCODE_RECONNECT_HELLO: mode, FAKE_JCODE_REATTACH_BUSY: "1",
+          FAKE_JCODE_ACCEPT_BEFORE_RECOVERY: mode === "success" ? "ACCEPTED_NATIVE_COPY" : "",
+          FAKE_JCODE_BUSY_RELEASE_FILE: join(cell, "busy-release"),
           COTAL_SPACE: space, COTAL_SERVERS: servers, COTAL_ID: "busyseat", COTAL_NAME: "busyseat",
           COTAL_SUBSCRIBE: "team", COTAL_ALLOW_SUBSCRIBE: "team", COTAL_ALLOW_PUBLISH: "team",
           COTAL_JCODE_HOME: cell, COTAL_JCODE_TUI: "1", COTAL_JCODE_PROMPT: "Owned kickoff after busy window",
@@ -87,6 +89,10 @@ try {
       await waitFor("joined busy seat", () => Boolean(peer) && entries().some((entry) => entry.ev === "busy_after_readiness_status"));
       check(`${mode}: attached TUI and native daemon are live before the probe`, entries().some((entry) => entry.ev === "tui") && entries().some((entry) => entry.ev === "daemon") && child!.exitCode === null);
       const daemon = entries().find((entry) => entry.ev === "daemon")!.pid!;
+      if (mode === "success") {
+        await operator.unicast(peer!, "ACCEPTED_NATIVE_COPY");
+        await waitFor("native queued copy accepted before recovery", () => entries().some((entry) => entry.ev === "accepted_native_copy"));
+      }
       await operator.unicast(peer!, marker);
       if (mode === "success") {
         await waitFor("connection-only recovery", () => stderr.includes("recovered private Harness connection"));
@@ -97,6 +103,19 @@ try {
         check("spent acknowledgement recovery keeps the host alive", child.exitCode === null && child.signalCode === null);
         check("the unacknowledged batch remains explicitly owed", stderr.includes("automatic message(s) stay queued and UN-ACKED for redelivery"));
         check("a repeated timeout does not terminate the private daemon", alive(daemon));
+        const acceptedRequests = () => entries().filter((entry) => ["send_message", "soft_interrupt"].includes(entry.frame?.req ?? "") && entry.frame?.content?.includes("ACCEPTED_NATIVE_COPY"));
+        check("accepted native queued copy is not redriven by client-only recovery", acceptedRequests().length === 1);
+        const unanswered = "UNANSWERED_AFTER_PRESERVE";
+        const countUnanswered = () => entries().filter((entry) => entry.frame?.req === "soft_interrupt" && entry.frame.content?.includes(unanswered)).length;
+        await operator.unicast(peer!, unanswered);
+        await waitFor("unanswered post-preserve steer", () => countUnanswered() === 1);
+        await waitFor("post-preserve request timeout", () => stderr.split("soft interrupt failed").length >= 3, BRIDGE_RECOVERY_WINDOW_MS + 15_000);
+        await operator.unicast(peer!, "SECOND_POST_LATCH_WAKE");
+        await waitFor("new post-latch message gets its own steer", () => entries().some((entry) => entry.frame?.req === "soft_interrupt" && entry.frame.content?.includes("SECOND_POST_LATCH_WAKE")));
+        check("timed-out steer stays reserved during the same native busy turn", countUnanswered() === 1);
+        writeFileSync(join(cell, "busy-release"), "release");
+        await waitFor("unanswered batch redelivered at boundary", () => entries().some((entry) => entry.ev === "turn_run" && entry.content?.includes(unanswered)));
+        check("turn boundary releases unanswered work without losing delivery", entries().some((entry) => entry.ev === "turn_run" && entry.content?.includes(unanswered)));
       } else {
         await waitFor("connection-only recovery attempt", () => stderr.includes("replacing only the Harness API connection"));
         const began = Date.now();

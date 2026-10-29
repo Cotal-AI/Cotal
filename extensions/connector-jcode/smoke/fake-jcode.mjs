@@ -351,7 +351,10 @@ function runTurn(frame, socket) {
 }
 
 let helloCount = 0;
+const liveSockets = new Set();
 const server = createServer((socket) => {
+  liveSockets.add(socket);
+  socket.on("close", () => liveSockets.delete(socket));
   let buffered = "";
   socket.setEncoding("utf8");
   socket.on("data", (chunk) => {
@@ -437,7 +440,7 @@ const server = createServer((socket) => {
           sessionWorkingDir = frame.working_dir ?? storedSession()?.working_dir;
           saveSession({ session_id: frame.session_id, working_dir: sessionWorkingDir, transcript_bytes: 1 });
           writeJournal(frame.session_id);
-          reply({ ev: "attached", session: { session_id: frame.session_id, working_dir: sessionWorkingDir, status: "idle" } });
+          reply({ ev: "attached", session: { session_id: frame.session_id, working_dir: sessionWorkingDir, status: process.env.FAKE_JCODE_REATTACH_BUSY === "1" && turnBusy ? "working" : "idle" } });
           break;
         case "create_session":
           createdFresh = true;
@@ -485,6 +488,11 @@ const server = createServer((socket) => {
           // the frame and never answers it, so the client's request timeout is what ends the wait.
           // A fixture that replied with an error instead would exercise a different code path and
           // would leave the actual production shape ungraded.
+          if (process.env.FAKE_JCODE_ACCEPT_BEFORE_RECOVERY && [process.env.FAKE_JCODE_ACCEPT_BEFORE_RECOVERY, "SECOND_POST_LATCH_WAKE"].some((marker) => String(frame.content).includes(marker))) {
+            log({ ev: "accepted_native_copy", session_id: frame.session_id });
+            reply({ ev: "ok" });
+            break;
+          }
           if (process.env.FAKE_JCODE_STEER_BLACKHOLE === "1") {
             log({ ev: "steer_blackholed", session_id: frame.session_id });
             break;
@@ -568,7 +576,12 @@ const server = createServer((socket) => {
                 const finishBusy = () => {
                   turnBusy = false;
                   log({ ev: "busy_after_readiness_status", status: "idle", session_id: frame.session_id });
-                  event({ ev: "session_status", session_id: frame.session_id, status: "idle" });
+                  if (process.env.FAKE_JCODE_REATTACH_BUSY === "1") {
+                    // The native session outlives the original API socket. Its boundary is visible
+                    // to a reattached observer as well, as in the real preserved-session replay.
+                    for (const observer of liveSockets)
+                      observer.write(JSON.stringify({ v: 1, ev: "session_status", session_id: frame.session_id, status: "idle" }) + "\n");
+                  } else event({ ev: "session_status", session_id: frame.session_id, status: "idle" });
                   const afterBusy = queuedTurns.shift();
                   if (afterBusy) afterBusy();
                 };
