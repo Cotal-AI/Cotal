@@ -125,7 +125,7 @@ import { c } from "../ui.js";
 import { preparedCatalogDiagnostics } from "./sync.js";
 import { agentStatus } from "./agents.js";
 import { invalidEnvironmentValues } from "./config.js";
-import { onInstance } from "../lib/control.js";
+import { askManager, onInstance, resolveControlTarget } from "../lib/control.js";
 import { serviceDefinitionProjection, serviceDefinitionStore } from "../lib/service-definitions.js";
 import { instanceProjection, serviceInstances } from "../lib/service-instances.js";
 import { readinessAddressSurvivors } from "../lib/service-process.js";
@@ -1033,21 +1033,45 @@ async function managerProcess(target: MeshTarget | undefined, state: Proc, space
 
 type ManagerEndpoint = "answered" | "not-answering" | "unchecked";
 
+/** User-mode manager status goes through the same control call `cotal spawn` uses. */
+async function userManagerStatus(target: MeshTarget): Promise<ManagerServiceStatus> {
+  const control = await resolveControlTarget(
+    { space: target.space, server: target.server },
+    "control-caller-privileged",
+    undefined,
+    { onRefusal: "throw" },
+  );
+  const reply = await askManager(
+    control.space,
+    control.server,
+    "managerStatus",
+    undefined,
+    control.auth,
+    "owner",
+    3_000,
+  );
+  if (reply.ok !== true) {
+    const message = "error" in reply && typeof reply.error === "string" ? reply.error : "manager status refused";
+    throw new EpEnvelopeError("unavailable", message);
+  }
+  if (reply.data === undefined) throw new EpEnvelopeError("unavailable", "the manager status reply carried no data");
+  return reply.data as ManagerServiceStatus;
+}
+
 /** One probe of the space's manager service endpoint. Only a definitive no-answer is
  *  `not-answering`; a refused probe or an `unavailable` user-mode credential is `unchecked`, so a
  *  failed probe never reads as a dead rail. The operator's credential calls the class rail, so with
  *  `instanceId` an answer from another manager instance is `unchecked` too. */
 async function managerEndpoint(target: MeshTarget, instanceId?: string): Promise<ManagerEndpoint> {
   try {
-    let auth: ({ creds?: string } | { bearer: string; sentinelCreds: string }) & { caller: { owner: string; actor: string; uid: string } };
+    let status: ManagerServiceStatus;
     if (target.mode === "user") {
       const credential = await componentCredential(target);
       if (credential.kind !== "user") return "unchecked";
-      auth = { bearer: credential.bearer, sentinelCreds: credential.sentinelCreds, caller: credential.caller };
+      status = await userManagerStatus(target);
     } else {
-      auth = await staticServiceAuth(target.auth);
+      status = await managerServiceHealth(target, await staticServiceAuth(target.auth));
     }
-    const status = await managerServiceHealth(target, auth);
     return instanceId === undefined || status.instanceId === instanceId ? "answered" : "unchecked";
   } catch (e) {
     return e instanceof EpEnvelopeError && (unansweredRequest(e) || /service registry.*stream not found/i.test((e as Error).message)) ? "not-answering" : "unchecked";
@@ -2146,11 +2170,12 @@ function processVerdict(record: ReturnType<typeof processRecord>): ComponentVerd
  *
  *  USER MODE (the #1832 fix): the flip forbids static-minting on a user-auth mesh, and a
  *  credential-less probe of an authenticated broker is the raw `Authorization Violation` this used
- *  to print. So a user-mode target connects as the machine's signed-in login — the SAME credential
- *  `ps` and the bare-status live snapshot use (`userCredentials`, which also serves discovered
- *  spaces through the registry entry). When that credential cannot be had (not signed in, service
- *  down, exchange refused), the components pass says so on the row instead of probing bare: a
- *  refused probe would be reporting the broker's answer to a question nobody asked. */
+ *  to print. So a user-mode target connects as the machine's signed-in login. Delivery and the
+ *  broker stay on that login. `manager.status` does not: it publishes with the manager-caller view
+ *  `cotal spawn` exchanges, which carries `status` when the actor holds `spawn`. When the login
+ *  cannot be had (not signed in, service down, exchange refused), the components pass says so on
+ *  the row instead of probing bare: a refused probe would be reporting the broker's answer to a
+ *  question nobody asked. */
 type ComponentCredential =
   | { kind: "static"; auth: SpaceAuth | undefined }
   | { kind: "user"; bearer: string; sentinelCreds: string; caller: { owner: string; actor: string; uid: string } }
@@ -2360,17 +2385,12 @@ async function managerHealth(target: MeshTarget, context: LocalProcessContext, c
       if (lease) facts.push(`lease holder ${lease.holder}`, `lease pid ${lease.pid}`);
       else facts.push("lease absent");
     }
-    // The service caller triple is part of the manager's own authenticated control surface.  Keep
-    // the minted credential and the subject caller on the SAME identity; a mismatched random actor
-    // would turn an authorized manager into a false no-answer on static meshes.
-    // User mode: the SAME bearer the probe connected with answers the service rail, and the caller
-    // triple is the bearer's own principal (the comment above the triple read). Static/open: a
-    // fresh one-shot instrument, exactly as before.
-    const serviceAuth =
-      credential.kind === "user"
-        ? { bearer: credential.bearer, sentinelCreds: credential.sentinelCreds, caller: credential.caller }
-        : await staticServiceAuth(credential.auth);
-    const served = await managerServiceHealth(target, serviceAuth);
+    // Static/open keeps the one-shot instrument on the same identity as its caller triple.
+    // User mode calls manager status through the same control path `cotal spawn` uses.
+    // The login bearer does not carry that command for a spawn holder.
+    const served = credential.kind === "user"
+      ? await userManagerStatus(target)
+      : await managerServiceHealth(target, await staticServiceAuth(credential.auth));
     facts.push(`service instance ${served.instanceId ?? "unreported"}`);
     facts.push(`runtime ${served.runtime ?? "unreported"}`);
     facts.push(...managerStopImpactFacts(served.stopImpact));
