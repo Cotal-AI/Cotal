@@ -21,7 +21,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import { LAUNCH_MATERIAL_ENV, discardLaunchMaterial, loadAgentFile, peerLabel, readLaunchMaterial, writeLaunchMaterial } from "@cotal-ai/core";
-import { hasIdentity, configFromEnv, controlEndpoint, SUN_PATH_MAX_BYTES, ORIENTATION_BOOTSTRAP, CHANNEL_GUIDANCE, MESH_FIRST_STEER, WORKFLOW_STEER } from "@cotal-ai/connector-core";
+import { hasIdentity, configFromEnv, controlEndpoint, SUN_PATH_MAX_BYTES, briefing, type AgentConfig } from "@cotal-ai/connector-core";
 import { hermesUvCommand, spawnHermesGateway } from "./binary.js";
 import { startSidecar } from "./sidecar.js";
 import { HERMES_FORK_RECORD, hermesSeatHome, moveLegacyHermesFork } from "./seat-home.js";
@@ -113,7 +113,10 @@ const yamlStr = (s: string): string => `"${s.replace(/\\/g, "\\\\").replace(/"/g
  * Drops the cotal plugin into the profile's plugins dir, enables it + the cotal platform, and
  * turns approvals off (an autonomous spawned gateway has no human at the TUI to approve commands).
  */
-export function setupProfile(home: string, opts: { model: string | undefined; persona?: string }): void {
+export function setupProfile(
+  home: string,
+  opts: { model: string | undefined; persona?: string; config: Pick<AgentConfig, "name" | "role" | "space" | "feedbackKey"> },
+): void {
   // A managed profile is a temporary directory and reads nothing from ~/.hermes, so the model the
   // operator configured there is not a model this gateway has. With none resolved here, hermes
   // would pick a default of its own over a provider this profile may hold no key for, and that is
@@ -146,10 +149,10 @@ export function setupProfile(home: string, opts: { model: string | undefined; pe
   lines.push(`model: ${yamlStr(opts.model)}`);
   writeFileSync(join(home, "config.yaml"), lines.join("\n") + "\n");
 
-  // Persona → SOUL.md (Hermes' identity file) — the one place a system prompt can be set. Append the
-  // orientation bootstrap so the agent orients first; gated on persona so we don't clobber the default SOUL.
+  // Persona → SOUL.md (Hermes' identity file) — the one place a system prompt can be set, with the
+  // shared briefing after it; gated on persona so we don't clobber the default SOUL.
   if (opts.persona)
-    writeFileSync(join(home, "SOUL.md"), `${opts.persona.trim()}\n\n${ORIENTATION_BOOTSTRAP}\n\n${CHANNEL_GUIDANCE}\n\n${MESH_FIRST_STEER}\n\n${WORKFLOW_STEER}\n`);
+    writeFileSync(join(home, "SOUL.md"), `${opts.persona.trim()}\n\n${briefing(opts.config, "hermes")}\n`);
 }
 
 /** A major.minor as a sortable pair, or null when the string is not one. Compared numerically,
@@ -323,7 +326,7 @@ async function main(): Promise<void> {
   const moved = managed && moveLegacyHermesFork(config.space, config.name);
   if (moved) log(`moved this seat's --resume fork from ${moved} to ${home}`);
   if (adopt) setupAdoptedProfile(home, { persona });
-  else setupProfile(home, { model: process.env.HERMES_MODEL, persona });
+  else setupProfile(home, { model: process.env.HERMES_MODEL, persona, config });
 
   // `cotal spawn --resume`: fork before the seat joins the mesh, so a session that cannot be read is
   // refused while nothing has joined. A relaunch reuses the fork and does not read the source again.

@@ -49,15 +49,11 @@ import {
   eventPlaneStopped,
   EventWal,
   FileSubjectFrontier,
-  ORIENTATION_BOOTSTRAP,
-  MESH_FIRST_STEER,
-  WORKFLOW_STEER,
-  CHANNEL_GUIDANCE,
+  briefing,
   configFromEnv,
   controlFromEnv,
   envFlag,
   eventPlaneArmed,
-  feedbackLine,
   fmtChannel,
   fmtFrom,
   formatInjection,
@@ -289,11 +285,7 @@ function ensureRelayDirectory(endpoint: RelayEndpoint): void {
 }
 
 function instructions(config: AgentConfig, persona: string | undefined): string {
-  const mesh =
-    `You are connected to the Cotal mesh as "${config.name}"${config.role ? ` (role: ${config.role})` : ""} in space "${config.space}". ` +
-    `${ORIENTATION_BOOTSTRAP} ${feedbackLine(config)}${MESH_FIRST_STEER} ` +
-    `${WORKFLOW_STEER} ${CHANNEL_GUIDANCE} ` +
-    "Peer messages are delivered into your turns as blocks marked 📨. Reply with cotal_dm (privately, to the sender), cotal_send (to a channel), or cotal_anycast (to a role); use cotal_roster to see who is present and cotal_status to report what you are doing. Reply only when a reply is actually needed — silent acknowledgement is correct, and @-mention a peer only when you need that peer to act now.";
+  const mesh = briefing(config, "jcode");
   return persona ? `${persona}\n\n${mesh}` : mesh;
 }
 

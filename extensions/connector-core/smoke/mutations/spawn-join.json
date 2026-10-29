@@ -1,0 +1,49 @@
+{
+  "suite": [
+    "extensions/connector-core/smoke/spawn-args.smoke.ts"
+  ],
+  "guard": "cotal_spawn exposes join, bounds it by the caller's read ACL before invoke, and carries join plus the caller's own ACL into the manager's spawn command",
+  "command": "pnpm smoke:spawn-args",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/spawn-join.json",
+  "completionMarker": "SPAWN-ARGS SMOKE",
+  "why": [
+    "A helper spawned from a seat on #general started on no channel, with no argument on the peer",
+    "door to say otherwise, so its first cotal_send was refused and it fell back to DMs for",
+    "everything. The manager already accepted subscribe lists; the door never sent them.",
+    "",
+    "J1 drops join at the manager command boundary. J2 drops the caller's ACL, so a channel-less",
+    "persona is back to the empty grant. J3 removes the read-ACL bound, so a spawn could hand on a",
+    "channel the caller may not read itself. J4 hides join from every MCP host. Each is its own",
+    "user-visible failure with its own named cell."
+  ],
+  "mutations": [
+    {
+      "name": "J1 drop join at the manager command boundary",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "runtime: opts?.runtime, join: opts?.join, callerAcl:",
+      "replace": "runtime: opts?.runtime, callerAcl:",
+      "expectRed": "MeshAgent.spawn forwards join"
+    },
+    {
+      "name": "J2 drop the caller's ACL from the spawn command",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "join: opts?.join, callerAcl: { allowSubscribe: this.config.allowSubscribe, allowPublish: this.config.allowPublish } };",
+      "replace": "join: opts?.join };",
+      "expectRed": "the spawn carries the caller's own ACL as callerAcl"
+    },
+    {
+      "name": "J3 skip the read-ACL bound on join",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "      if (!channelInAllow(this.config.allowSubscribe, ch))\n        return { ok: false, error: `join:",
+      "replace": "      if (false)\n        return { ok: false, error: `join:",
+      "expectRed": "a join outside the caller's read ACL is refused before invoke"
+    },
+    {
+      "name": "J4 hide join from the published MCP schema",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "        join: z\n          .array(z.string())\n          .optional()\n          .describe(\"Channels the new peer joins at start, on top of what its persona file lists (e.g. ['general']). Concrete names only, each within YOUR read ACL (a spawn hands on only what you may read yourself; anything else is refused before launch). Omitted, a persona that lists no channel starts on none and its cotal_send with no channel is refused.\"),\n",
+      "replace": "",
+      "expectRed": "cotal_spawn schema exposes join"
+    }
+  ]
+}
