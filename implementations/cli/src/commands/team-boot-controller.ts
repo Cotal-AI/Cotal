@@ -113,8 +113,8 @@ export async function controllerTeamBoot(request: ControllerTeamBootRequest): Pr
     // before any effect. A fresh root cannot hold a login grant before its first enable, so its
     // refusal names the whole native preparation path rather than login alone.
     if (!binding && (await userLoginState(plan.root, plan.space)).state !== "ready")
-      throw new CommandFailure("refused", "AUTH_REQUIRED", "a user-auth team boot needs a prepared space with your granted login, and this root has none yet; nothing was written", { target: { root: plan.root, space: plan.space }, remedy: `cotal up --user-auth --idp <auth base URL>, then \`cotal login\`, then \`cotal auth grant cli --sub <subject>\`, then \`cotal down\`, then \`cotal team boot ${request.file}\`` });
-    await assertManagerLogin(plan.root, plan.space, codeSpan(`cotal team boot ${shellWord(request.file)}`));
+      throw new CommandFailure("refused", "AUTH_REQUIRED", "a user-auth team boot needs a prepared space with your granted login, and this root has none yet; nothing was written", { target: { root: plan.root, space: plan.space }, remedy: `cotal up --user-auth --idp <auth base URL>, then \`cotal login\`, then \`cotal auth grant cli --sub <subject> --full\`, then \`cotal down\`, then \`cotal team boot ${request.file}\`` });
+    await assertManagerLogin(plan.root, plan.space, codeSpan(`cotal team boot ${shellWord(request.file)}`), "nothing was started or written");
   }
   if (readMaintenanceJournal(plan.root)) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "this root retains a maintenance or recovery attempt; team boot cannot substitute an ordinary startup", { target: { root: plan.root, space: plan.space } });
   const lock = acquireMaintenanceLock(plan.root);

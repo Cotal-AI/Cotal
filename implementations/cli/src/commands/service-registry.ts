@@ -101,8 +101,12 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
   if (["start", "stop", "restart", "status", "logs", "install", "uninstall"].includes(mode)) {
     // A user-auth space's manager is read as your signed-in, granted login, so a start or restart
     // without one is refused here, before a definition is saved, a manager stopped or a child launched.
-    if ((mode === "start" || mode === "restart") && launchesManager(space, root, suppliedName!, mode, store))
-      await assertManagerLogin(root, space, commandName === "manager" ? `\`cotal manager ${mode}\`` : `\`cotal service ${mode} ${suppliedName}\``);
+    if ((mode === "start" || mode === "restart") && launchesManager(space, root, suppliedName!, mode, store)) {
+      // A refused restart stops nothing, so over a running manager it says that manager was left running.
+      const manager = findServicePreset("manager");
+      const running = mode === "restart" && manager !== undefined && recordedPresetProcess(space, root, manager) !== undefined;
+      await assertManagerLogin(root, space, commandName === "manager" ? `\`cotal manager ${mode}\`` : `\`cotal service ${mode} ${suppliedName}\``, running ? "the running manager was left running" : undefined);
+    }
     const resolved = resolvePresetService(space, root, suppliedName!, mode, args.values);
     if (resolved?.recorded) return mode === "logs" && resolved.preset === "manager" ? recordedManagerLogs(resolved.requested, { ...resolved.recorded, state: "running" }, space, root, args.values, presentation, commandName) : recordedPresetProcessReport(resolved, resolved.recorded, space, mode, presentation, commandName);
     if (resolved?.stopped) return recordedManagerLogs(resolved.requested, { ...resolved.stopped, state: "stopped" }, space, root, args.values, presentation, commandName);

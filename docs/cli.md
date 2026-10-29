@@ -3311,6 +3311,9 @@ refuses until the block is cleared. The next bare
 `up` or `down` settles the interrupted operation with an `OPERATION_SETTLED` warning. When the
 stack reached that operation's end anyway, every member running after an `up` or stopped after a
 `down`, the warning says it was interrupted and where the stack stands, without calling it failed.
+When that `up`, `team boot` or `down` ran to its end and exited 3 with its outcome unconfirmed, the
+warning says it ended with its outcome unconfirmed instead. The journal records a team boot's start
+as an `up`, so the warning calls either one a stack start.
 A running `stack-manager` gets one
 probe of its manager endpoint, and the selected space's `Manager` row reads `answering`,
 `not answering · stack-manager pid <pid>`, or `endpoint not checked` when the probe could not be
@@ -5021,8 +5024,9 @@ as `cotal up` does for its manager. On a user-auth space registered here from an
 need your sign-in. Before anything is saved, stopped or launched, they confirm the sign-in with its
 IdP. Without one, or when the IdP rejects it because it expired or was revoked, they refuse
 `AUTH_REQUIRED` (exit 2), and Next names `cotal login --idp <base>`, then the command again. A
-refused `restart` leaves a running manager as it was. Any
-other failure of that check, such as an IdP that does not answer, is left to the start. In a folder
+refused `restart` leaves a running manager as it was and says the running manager was left
+running. Any other failure of that check, such as an IdP that does not answer, is left to the start.
+In a folder
 that hosts the space, `stop` and `cotal down` need no sign-in: the broker, the records and the
 process belong to this folder, so the stop reads the manager's own local receipt.
 
@@ -8549,7 +8553,11 @@ A `team boot` in a root whose stack is up, with no `cotal down` since, refuses w
 `cotal team deploy <file>`, which adds the manifest's channels and agents to the running stack, or
 `cotal down` before the boot.
 A recorded stack resumes only after its last whole-stack stop completed and its manager was never
-attempted. Its broker inputs must be recorded, every applicable member must have its original
+attempted. The manifest's `broker.servers`, `broker.host` and `broker.auth` must match that stack.
+A manifest that differs refuses `CONFLICT` (exit 2) and names each setting that differs with its
+recorded and declared values. Its Next names the manifest change that matches the stack, or a new
+space in another folder prepared with `cotal space create <space>`.
+The stack's broker inputs must be recorded, every applicable member must have its original
 settled stopped record, and no supervisor, retained custody or earlier team boot may remain. A
 stack that an earlier team boot started refuses with `LIFECYCLE_BLOCKED`, and its Next names
 `cotal up` in the root, which starts that stack again, and `cotal team show <id>` with each earlier
@@ -8570,12 +8578,12 @@ disappears. These checks do not exclude an unrelated local process changing the 
 configuration stays inside the selected root's `.cotal` directory, even when its store is elsewhere.
 
 For a first user-auth team, prepare with `cotal up --user-auth --idp <url>`, then `cotal login`,
-explicitly grant the invoking user with `cotal auth grant cli --sub <subject>`, and run `cotal down`
-before `cotal team boot <file>`. Do not start the manager between preparation and that stop. Before
-any write, that boot confirms your sign-in with its IdP. Without one, or when the IdP rejects it
-because it expired or was revoked, it refuses `AUTH_REQUIRED` (exit 2), and Next names
-`cotal login --idp <base>`, then the team boot again. Any other failure of that check, such as an
-IdP that does not answer, is left to the boot. A
+explicitly grant the invoking user with `cotal auth grant cli --sub <subject> --full`, and run
+`cotal down` before `cotal team boot <file>`. Do not start the manager between preparation and that
+stop. Before any write, that boot confirms your sign-in with its IdP. Without one, or when the IdP
+rejects it because it expired or was revoked, it refuses `AUTH_REQUIRED` (exit 2), says nothing was
+started or written, and Next names `cotal login --idp <base>`, then the team boot again. Any other
+failure of that check, such as an IdP that does not answer, is left to the boot. A
 static-auth or open preparation uses `cotal up --no-manager` before `cotal down`. No implicit owner
 grant or borrowed caller is substituted. A previously attempted manager is never adopted.
 
