@@ -35,6 +35,10 @@
  * heartbeats), so the difference against a default run is what the per-seat watch costs;
  * `--watch-channels false` does the same for the channel-registry watch.
  *
+ * `--sublist-cache on|off` selects the native NATS subscription-result cache (default: on).
+ * Compare both settings with the same workload; disabling the cache may save memory while
+ * increasing matching CPU. This changes only the isolated smoke broker, not core defaults.
+ *
  * `--ram` adds the RAM profile. The broker's live heap and goroutines are read from its pprof
  * endpoint after a forced GC at each step of the build-up (empty, message streams, KV buckets and
  * registries, provisioned durables, delivery daemons, seats), so each step's delta is that part's
@@ -276,6 +280,9 @@ const SECONDS = num("seconds", "60");
 const HEARTBEAT = flag("heartbeat-ms", ""); // empty: the endpoint's own default
 const WATCH_PRESENCE = flag("watch-presence", "false") === "true";
 const WATCH_CHANNELS = flag("watch-channels", "true") !== "false";
+const SUBLIST_CACHE = flag("sublist-cache", argv.includes("--sublist-cache") ? undefined : "on");
+if (SUBLIST_CACHE !== "on" && SUBLIST_CACHE !== "off")
+  throw new Error("seat-idle-load: --sublist-cache must be on or off");
 const RAM = argv.includes("--ram");
 const NATS_BIN = process.env.NATS_SERVER_BIN ?? "nats-server";
 
@@ -320,7 +327,7 @@ const spaceNames = Array.from({ length: SPACES }, (_, i) => `idle-${tag}-${i}`);
 const accounts = await Promise.all(spaceNames.map((s) => createSpaceAccountAuth(brokerAuth, s)));
 const auths: SpaceAuth[] = accounts.map((a) => composeSpaceAuth(brokerAuth, a));
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
-writeFileSync(join(dir, "server.conf"), serverConfig(brokerAuth, accounts, { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }) + `\nhttp: 127.0.0.1:${MON_PORT}\n` + (RAM ? `prof_port: ${PROF_PORT}\n` : ""));
+writeFileSync(join(dir, "server.conf"), serverConfig(brokerAuth, accounts, { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }) + `\ndisable_sublist_cache: ${SUBLIST_CACHE === "off"}\nhttp: 127.0.0.1:${MON_PORT}\n` + (RAM ? `prof_port: ${PROF_PORT}\n` : ""));
 const srv = spawn(NATS_BIN, ["-c", join(dir, "server.conf")], { stdio: ["ignore", "ignore", "pipe"] });
 const releaseBroker = teardownOnSignal(srv, dir);
 // The broker's warnings and errors are part of the result (an fd limit, a slow consumer, a refused
@@ -500,6 +507,7 @@ try {
 
   row("git sha", SHA);
   row("nats-server", `${serverVersion} (${NATS_BIN})`);
+  row("subscription cache", SUBLIST_CACHE);
   row("host", `${availableParallelism()} cores, ${(totalmem() / 1073741824).toFixed(1)} GB`);
   row("shape", `${SEATS} seats in ${SPACES} space(s) of ${SPACE_SIZE}, ${seatKids.length} seat process(es), heartbeat ${HEARTBEAT ? `${HEARTBEAT}ms (override)` : "endpoint default"}, presence watch ${WATCH_PRESENCE ? "on" : "OFF"}, channel registry watch ${WATCH_CHANNELS ? "on" : "OFF"}`);
   row("setup (spaces + provisioning) (s)", setupS);
