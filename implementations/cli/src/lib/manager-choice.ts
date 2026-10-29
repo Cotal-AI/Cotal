@@ -3,6 +3,7 @@ import { BASELINE_LIFECYCLE_ENDPOINT, findCommand, invokeCommand, registry, remo
 import { CommandFailure, DEFAULT_MANAGER_NAME, codeSpan, instanceIdShaped, isCommandFailure, isConnectRefusal, renderReport, resolveMeshTarget, type Connection } from "@cotal-ai/workspace";
 import { askManager, liveManagerIds, onInstance, onInstanceId, reportedManagerHost, resolveControlTarget, type ControlAuth } from "./control.js";
 import { openEndpointConnection } from "./endpoint-client.js";
+import { commandWord } from "./leading-flags.js";
 import { shellWord } from "./endpoint-errors.js";
 import { displayCmd } from "./self-exec.js";
 import { openTransient } from "./transient.js";
@@ -261,10 +262,14 @@ const OFFLINE_RUN_VERBS = ["validate", "plan", "simulate", "turns", "yield", "re
 const hostedRunArgv = (argv: readonly string[]): boolean => {
   const end = argv.indexOf("--");
   const words = (end === -1 ? argv : argv.slice(0, end)).filter((word) => word !== "cotal");
-  const command = findCommand(registry.all<Command>("command"), words[0]);
-  if ((command?.name ?? words[0]) !== "run") return false;
+  // The dispatcher reads the command after leading output and global flags (commandWord).
+  // A remedy that looks only at words[0] would miss `cotal --json run` and suggest a name.
+  const word = commandWord(words);
+  const command = word === undefined ? undefined : findCommand(registry.all<Command>("command"), word);
+  if ((command?.name ?? word) !== "run") return false;
   if (words.includes("--local")) return false;
-  const verb = words[1];
+  const at = words.indexOf(word!);
+  const verb = words[at + 1];
   return verb === undefined || !OFFLINE_RUN_VERBS.includes(verb);
 };
 

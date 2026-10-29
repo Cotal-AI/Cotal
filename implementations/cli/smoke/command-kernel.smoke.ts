@@ -1469,6 +1469,17 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
     assert.equal(aliasRestated?.remedy, `rerun it on one: ${displayCmd()} r --json --on aaa1 or ${displayCmd()} r --json --on bbb2`, "a registered alias of run is pinned by instance id too");
     const showAlias = await managerChoiceFailure(refusal, async () => roster, ["r", "show", "run-1", "--json"]);
     assert.equal(showAlias?.remedy, `rerun it on one: ${displayCmd()} r show run-1 --json --on aaa1 or ${displayCmd()} r show run-1 --json --on bbb2`, "the alias keeps the instance id on show");
+    for (const argv of [["run", "start", "flow.ts"], ["run", "list"], ["r", "ps"], ["run", "amend", "run-1", "step"], ["--json", "run"], ["--json", "r", "resume", "run-1"], ["cotal", "--plain", "run", "show", "run-1"]]) {
+      const hosted = await managerChoiceFailure(refusal, async () => roster, argv);
+      assert.match(hosted?.remedy ?? "", /--on aaa1 or .+--on bbb2$/, `${argv.join(" ")} is a hosted run verb, so both pins are instance ids`);
+      assert.doesNotMatch(hosted?.remedy ?? "", /box-a\/orca/, `${argv.join(" ")} does not suggest the host/runtime selector`);
+    }
+    for (const argv of [["run", "validate", "flow.ts"], ["r", "plan", "flow.ts"], ["run", "simulate", "flow.ts"], ["run", "turns"], ["run", "yield", "turn-1"], ["run", "revoke", "run-1"], ["run", "check", "run-1", "flow.ts"], ["run", "show", "run-1", "--local"], ["--json", "run", "--local"]]) {
+      const offline = await managerChoiceFailure(refusal, async () => roster, argv);
+      assert.match(offline?.remedy ?? "", /--on box-a\/orca/, `${argv.join(" ")} is not a hosted run verb, so it keeps the short selector`);
+    }
+    const otherCommand = await managerChoiceFailure(refusal, async () => roster, ["--json", "ps"]);
+    assert.match(otherCommand?.remedy ?? "", /--on box-a\/orca/, "a leading flag on a command other than run still uses the short selector");
   } finally {
     if (priorRun === undefined) registry.unregister("command", "run");
   }
