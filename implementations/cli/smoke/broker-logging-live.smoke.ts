@@ -2,9 +2,9 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createConnection } from "node:net";
-import { chmodSync, closeSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, mkdirSync, readFileSync, readdirSync, readlinkSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { freePort, recordSmokeSandbox, assertSmokeSandboxDown } from "@cotal-ai/smoke-kit";
+import { freePort, recordSmokeSandbox, assertSmokeSandboxDown, emitSentinel } from "@cotal-ai/smoke-kit";
 import { assertScratchHeld, makeScratch } from "../../../bin/smoke/_scratch.js";
 import { readStackJournal } from "../src/lib/stack-journal.js";
 import { openBrokerLog } from "../src/commands/up.js";
@@ -56,6 +56,20 @@ const portOpen = () => new Promise<boolean>((done) => {
   socket.once("error", () => done(false));
   socket.setTimeout(500, () => { socket.destroy(); done(false); });
 });
+const brokerProcesses = () => readdirSync("/proc").filter((entry) => /^\d+$/.test(entry)).flatMap((entry) => {
+  try {
+    if (readFileSync(`/proc/${entry}/comm`, "utf8").trim() !== "nats-server") return [];
+    const status = readFileSync(`/proc/${entry}/status`, "utf8");
+    const state = /^State:\s+(\S+)/m.exec(status)?.[1] ?? "unknown";
+    const ppid = Number(/^PPid:\s+(\d+)/m.exec(status)?.[1]);
+    let executable: string | null = null;
+    try { executable = readlinkSync(`/proc/${entry}/exe`); } catch { /* A zombie has no executable link. */ }
+    const command = readFileSync(`/proc/${entry}/cmdline`, "utf8").split("\0").filter(Boolean);
+    return [{ pid: Number(entry), ppid, state, executable, belongsToRoot: command.some((arg) => arg.includes(root)) }];
+  } catch { return []; } // A process may exit while its record is read.
+});
+const traceBrokers = async (phase: string) => console.log(`BROKER_PROCESS_CENSUS ${JSON.stringify({ phase, at: new Date().toISOString(), observerPid: process.pid, endpoint: server, portOpen: await portOpen(), processes: brokerProcesses() })}`);
+
 const logs = () => readdirSync(dirname(logFile)).filter((name) => name === "broker.log" || name.startsWith("broker.log.")).sort();
 const connectBad = () => new Promise<void>((done) => {
   let settled = false;
@@ -70,6 +84,7 @@ const connectBad = () => new Promise<void>((done) => {
 });
 
 try {
+  await traceBrokers("before-start");
   const startupDiagnostics = join(root, ".cotal", "nats-startup.log");
   writeFileSync(startupDiagnostics, "prior diagnostics", { mode: 0o644 });
   const startupFd = openBrokerLog(startupDiagnostics);
@@ -81,6 +96,7 @@ try {
   const first = cliRun("up", "--root", root, "--open", "--no-manager", "--server", server, "--log-file", logFile, "--logfile-size-limit", "2048", "--logfile-max-num", "3");
   check("fresh default startup succeeds with native log options", first.status === 0, { stdout: first.stdout, stderr: first.stderr });
   check("fresh default startup serves the requested port", await portOpen());
+  await traceBrokers("first-running");
   check("generated open config contains all native logging directives", (() => {
     const text = readFileSync(join(root, ".cotal/server-open.conf"), "utf8");
     return text.includes(`log_file: ${JSON.stringify(logFile)}`) && text.includes("logfile_size_limit: 2048") && text.includes("logfile_max_num: 3");
@@ -92,28 +108,35 @@ try {
   check("first stop succeeds", stopped.status === 0, { stdout: stopped.stdout, stderr: stopped.stderr });
   check("native log is private after the broker stops", (statSync(logFile).mode & 0o777) === 0o600, (statSync(logFile).mode & 0o777).toString(8));
   check("first stop closes the broker port", !(await portOpen()));
+  await traceBrokers("first-stopped");
   const restarted = cliRun("up", "--no-manager");
   check("bare restart reuses persisted logging options", restarted.status === 0, { stdout: restarted.stdout, stderr: restarted.stderr });
   check("bare restart serves the requested port", await portOpen());
+  await traceBrokers("second-running");
 
   for (let i = 0; i < 300; i++) await connectBad();
   const rotated = logs();
   check("300 local connects leave exactly three stock log files", rotated.length === 3, rotated);
   const stoppedAgain = cliRun("down", "--yes");
   check("second stop succeeds", stoppedAgain.status === 0, { stdout: stoppedAgain.stdout, stderr: stoppedAgain.stderr });
+  await traceBrokers("second-stopped");
 
   for (const name of logs()) rmSync(join(dirname(logFile), name));
   writeFileSync(logFile, Buffer.alloc(4096, 120), { mode: 0o600 });
   const oversizedRestart = cliRun("up", "--no-manager");
   check("restart with a pre-existing oversized native log succeeds", oversizedRestart.status === 0, { stdout: oversizedRestart.stdout, stderr: oversizedRestart.stderr });
+  await traceBrokers("third-running");
   const startupRotated = logs();
   check("pre-existing oversized native log rotates at startup", startupRotated.length === 3 && startupRotated.filter((name) => name !== "broker.log").length === 2, startupRotated);
   const finalStop = cliRun("down", "--yes");
   check("final stop succeeds", finalStop.status === 0, { stdout: finalStop.stdout, stderr: finalStop.stderr });
+  await traceBrokers("final-stopped");
   console.log(`broker-logging-live smoke: OK (${checks} checks; rotation_count=${rotated.length}; startup_rotation_count=${startupRotated.length})`);
 } finally {
   const cleanup = cliRun("down", "--yes");
   if (cleanup.status !== 0 && await portOpen()) console.error(cleanup.stderr);
+  await traceBrokers("cleanup-stopped");
   process.umask(priorUmask);
   rmSync(scratch, { recursive: true, force: true });
 }
+emitSentinel({ passed: checks, failed: 0 });
