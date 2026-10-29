@@ -24,6 +24,7 @@ import type {
   MonitorRequest,
   NotifyRequest,
   ObserveRequest,
+  ParticipantRequest,
   SleepRequest,
   SpawnRequest,
   TurnRequest,
@@ -289,10 +290,25 @@ export class SimHandler implements EffectHandler {
 
   // ---- the handler ----------------------------------------------------------------------------
 
+  async participant(req: ParticipantRequest, ctx: EffectContext): Promise<AgentHandleValue> {
+    this.checkFault(ctx);
+    const name = req.name ?? "participant";
+    const n = this.nextOccurrence("participant", name);
+    const handle: AgentHandleValue = {
+      kind: "participant",
+      agent: `sim.participant.${name}${n === 0 ? "" : `-${n + 1}`}`,
+      persona: "participant",
+    };
+    this.agents.set(handle.agent, handle);
+    await ctx.bind({ simAgent: handle.agent });
+    return handle;
+  }
+
   async spawn(req: SpawnRequest, ctx: EffectContext): Promise<AgentHandleValue> {
     this.checkFault(ctx);
     const n = this.nextOccurrence("spawn", req.persona);
     const handle: AgentHandleValue = {
+      kind: "spawned",
       agent: `sim.${req.persona}${n === 0 ? "" : `-${n + 1}`}`,
       persona: req.persona,
       ...(req.worktree !== undefined ? { worktree: req.worktree } : {}),

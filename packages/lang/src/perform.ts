@@ -29,6 +29,7 @@ import {
   type EffectContext,
   type CheckpointRaw,
   type EventDescriptor,
+  type ParticipantRequest,
 } from "./effects.js";
 import type { RunOptions } from "./interpret.js";
 
@@ -743,6 +744,18 @@ export async function dispatchPrimitive(host: EffectHost, name: string, args: un
   if (spec.kind !== null && !HOLDABLE_KINDS.has(spec.kind) && atMostOnce(frame.keys.path)) throw notHoldable(spec.kind, frame.keys.path);
 
   switch (name) {
+    case "participant": {
+      const named = option(bag, "name");
+      const req: ParticipantRequest = named === undefined ? {} : { name: named as string };
+      return await performEffect(
+        host,
+        "participant",
+        req.name ?? "participant",
+        {},
+        async (ctx) => ({ ...await handler.participant(req, ctx), kind: "participant" as const }),
+        frame,
+      );
+    }
     case "spawn": {
       // The first argument is a persona name, or a record carrying the persona WITH its model
       // and variant. Only the persona was ever read, so the object form silently dropped model
@@ -846,7 +859,7 @@ export async function dispatchPrimitive(host: EffectHost, name: string, args: un
           role: req.role ?? null,
           join: (req.join ?? []).map((c) => c.channel),
         },
-        (ctx) => handler.spawn(req, ctx),
+        async (ctx) => ({ ...await handler.spawn(req, ctx), kind: "spawned" as const }),
         frame,
       );
     }
