@@ -457,7 +457,9 @@ it can still adopt and reap seats that an earlier manager launched under a detac
 custodian, so those seats drain under the new manager; it starts no new custodian. A custodian whose agent has exited exits a few seconds later on its own. `cotal manager seats`
 lists the custodians left on the machine, and `cotal manager seats --drain` retires the ones whose agent
 has exited while keeping every seat whose agent still runs ([cli.md](cli.md#seats)). The hidden
-`cotal seats` spelling still works. When a pty
+`cotal seats` spelling still works. A stop that stops its seats logs `seat reaped:` for a seat
+only after the runtime proves that seat exited. A seat whose stop was refused, or whose exit was
+not proved, is named in the shutdown error and has no reap line. When a pty
 agent exits on its own, in-process or under a custodian, the manager logs a `seat reaped:` line
 with the exit code and, for a signalled child, the signal number. The line ends with the last line
 the child printed that starts with a connector's `[cotal-<name>]` or `[cotal-<name>/<part>]`
