@@ -8,7 +8,7 @@ import { spawnSync } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { commandUsage, parseCommandArgs, registry, type Command } from "@cotal-ai/core";
+import { commandUsage, findCommand, parseCommandArgs, registry, type Command } from "@cotal-ai/core";
 import type { InstalledExtension } from "@cotal-ai/workspace";
 import "../src/index.js"; // self-register the CLI commands (for the completion check)
 import { complete } from "../src/commands/completion.js";
@@ -1460,6 +1460,29 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
     { name: "manager", instanceId: "bbb2", host: null, activity: null, runtime: null, terminal: null, since: null },
   ], "each manager carries what its presence reports, and nothing it does not; one without a name shows as <host>/<runtime>, and a presence that does not say whether a terminal attaches reports neither way");
   assert.equal(restated.remedy, `rerun it on one: ${displayCmd()} stop --name 'x y' --json --on box-a/orca or ${displayCmd()} stop --name 'x y' --json --on bbb2`, "the Next reruns the caller's own command with --on for each manager, by the shortest value that picks it");
+  const runRestated = await managerChoiceFailure(refusal, async () => roster, ["run", "--json"]);
+  assert.equal(runRestated?.remedy, `rerun it on one: ${displayCmd()} run --json --on aaa1 or ${displayCmd()} run --json --on bbb2`, "a hosted run verb is pinned by the instance id, which is the only --on that verb accepts");
+  const priorRun = findCommand(registry.all<Command>("command"), "run");
+  if (priorRun === undefined) registry.register({ kind: "command", name: "run", aliases: ["r"], summary: "fixture", run: async () => {} } as Command);
+  try {
+    const aliasRestated = await managerChoiceFailure(refusal, async () => roster, ["r", "--json"]);
+    assert.equal(aliasRestated?.remedy, `rerun it on one: ${displayCmd()} r --json --on aaa1 or ${displayCmd()} r --json --on bbb2`, "a registered alias of run is pinned by instance id too");
+    const showAlias = await managerChoiceFailure(refusal, async () => roster, ["r", "show", "run-1", "--json"]);
+    assert.equal(showAlias?.remedy, `rerun it on one: ${displayCmd()} r show run-1 --json --on aaa1 or ${displayCmd()} r show run-1 --json --on bbb2`, "the alias keeps the instance id on show");
+    for (const argv of [["run", "start", "flow.ts"], ["run", "list"], ["r", "ps"], ["run", "amend", "run-1", "step"], ["--json", "run"], ["--json", "r", "resume", "run-1"], ["cotal", "--plain", "run", "show", "run-1"]]) {
+      const hosted = await managerChoiceFailure(refusal, async () => roster, argv);
+      assert.match(hosted?.remedy ?? "", /--on aaa1 or .+--on bbb2$/, `${argv.join(" ")} is a hosted run verb, so both pins are instance ids`);
+      assert.doesNotMatch(hosted?.remedy ?? "", /box-a\/orca/, `${argv.join(" ")} does not suggest the host/runtime selector`);
+    }
+    for (const argv of [["run", "validate", "flow.ts"], ["r", "plan", "flow.ts"], ["run", "simulate", "flow.ts"], ["run", "turns"], ["run", "yield", "turn-1"], ["run", "revoke", "run-1"], ["run", "check", "run-1", "flow.ts"], ["run", "show", "run-1", "--local"], ["--json", "run", "--local"]]) {
+      const offline = await managerChoiceFailure(refusal, async () => roster, argv);
+      assert.match(offline?.remedy ?? "", /--on box-a\/orca/, `${argv.join(" ")} is not a hosted run verb, so it keeps the short selector`);
+    }
+    const otherCommand = await managerChoiceFailure(refusal, async () => roster, ["--json", "ps"]);
+    assert.match(otherCommand?.remedy ?? "", /--on box-a\/orca/, "a leading flag on a command other than run still uses the short selector");
+  } finally {
+    if (priorRun === undefined) registry.unregister("command", "run");
+  }
   const shown = renderReport(commandFailureReport(restated), "plain");
   assert.match(shown, /Live managers[\s\S]*Manager\s+Instance[\s\S]*box-a\/orca\s+aaa1\s+box-a\s+supervisor \(orca\)\s+2026-10-01T00:00:00\.000Z/, "the report lists each manager on its own row, by name first");
   const reported = [{ ...(roster[0] as unknown as { card: Record<string, unknown> }), card: { ...(roster[0] as unknown as { card: Record<string, unknown> }).card, meta: { host: "box-a", terminal: "none" } } }] as unknown as import("@cotal-ai/core").Presence[];
