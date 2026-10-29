@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { decode, fmtCreds, Types } from "@nats-io/jwt";
 import { credsAuthenticator } from "@nats-io/nats-core";
 import { createUser, fromSeed } from "@nats-io/nkeys";
+import { nativeNkeySigner } from "./nkey-signer.js";
 
 /**
  * A locally-generated agent identity (an nkey user keypair).
@@ -20,9 +21,10 @@ export interface Identity {
 }
 
 /** Generate a fresh user nkey identity locally. The seed is derived here and never
- *  leaves the generating process except as a creds file handed to its own agent. */
+ *  leaves the generating process except as a creds file handed to its own agent. NATS generates
+ *  the seed; the existing native signer derives its public key. */
 export function newIdentity(): Identity {
-  const kp = createUser();
+  const kp = nativeNkeySigner(createUser().getSeed());
   const seed = new TextDecoder().decode(kp.getSeed());
   return { id: kp.getPublicKey(), seed };
 }
