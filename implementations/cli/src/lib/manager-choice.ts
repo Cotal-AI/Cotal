@@ -1,5 +1,5 @@
 import type { Readable, Writable } from "node:stream";
-import { BASELINE_LIFECYCLE_ENDPOINT, invokeCommand, remoteManagerActors, resolveService, type Presence } from "@cotal-ai/core";
+import { BASELINE_LIFECYCLE_ENDPOINT, findCommand, invokeCommand, registry, remoteManagerActors, resolveService, type Command, type Presence } from "@cotal-ai/core";
 import { CommandFailure, DEFAULT_MANAGER_NAME, codeSpan, instanceIdShaped, isCommandFailure, isConnectRefusal, renderReport, resolveMeshTarget, type Connection } from "@cotal-ai/workspace";
 import { askManager, liveManagerIds, onInstance, onInstanceId, reportedManagerHost, resolveControlTarget, type ControlAuth } from "./control.js";
 import { openEndpointConnection } from "./endpoint-client.js";
@@ -254,15 +254,18 @@ export const rerunOn = (argv: readonly string[], selector: string): string => [d
 /** Hosted `cotal run` verbs take `--on` only as the full instance id `cotal ps` prints
  *  (docs/cli.md). A name or `<host>/<runtime>` that other commands accept is refused
  *  `USAGE_INVALID` there, so a remedy for those verbs must name the instance id.
- *  Local, offline and seat-only run commands take no `--on`, so they are left alone. */
+ *  The command word is the registered name or any alias the registry claims for it
+ *  (`r` in implementations/runtime/src/index.ts). Local, offline and seat-only run
+ *  commands take no `--on`, so they are left alone. */
+const OFFLINE_RUN_VERBS = ["validate", "plan", "simulate", "turns", "yield", "revoke", "check"];
 const hostedRunArgv = (argv: readonly string[]): boolean => {
   const end = argv.indexOf("--");
   const words = (end === -1 ? argv : argv.slice(0, end)).filter((word) => word !== "cotal");
-  const at = words.indexOf("run");
-  if (at !== 0) return false;
+  const command = findCommand(registry.all<Command>("command"), words[0]);
+  if ((command?.name ?? words[0]) !== "run") return false;
   if (words.includes("--local")) return false;
   const verb = words[1];
-  return verb === undefined || !["validate", "plan", "simulate", "turns", "yield", "revoke", "check"].includes(verb);
+  return verb === undefined || !OFFLINE_RUN_VERBS.includes(verb);
 };
 
 /** The command again on each manager. Hosted run verbs are pinned by instance id; every other

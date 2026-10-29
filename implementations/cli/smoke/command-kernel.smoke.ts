@@ -8,7 +8,7 @@ import { spawnSync } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { commandUsage, parseCommandArgs, registry, type Command } from "@cotal-ai/core";
+import { commandUsage, findCommand, parseCommandArgs, registry, type Command } from "@cotal-ai/core";
 import type { InstalledExtension } from "@cotal-ai/workspace";
 import "../src/index.js"; // self-register the CLI commands (for the completion check)
 import { complete } from "../src/commands/completion.js";
@@ -1462,6 +1462,16 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
   assert.equal(restated.remedy, `rerun it on one: ${displayCmd()} stop --name 'x y' --json --on box-a/orca or ${displayCmd()} stop --name 'x y' --json --on bbb2`, "the Next reruns the caller's own command with --on for each manager, by the shortest value that picks it");
   const runRestated = await managerChoiceFailure(refusal, async () => roster, ["run", "--json"]);
   assert.equal(runRestated?.remedy, `rerun it on one: ${displayCmd()} run --json --on aaa1 or ${displayCmd()} run --json --on bbb2`, "a hosted run verb is pinned by the instance id, which is the only --on that verb accepts");
+  const priorRun = findCommand(registry.all<Command>("command"), "run");
+  if (priorRun === undefined) registry.register({ kind: "command", name: "run", aliases: ["r"], summary: "fixture", run: async () => {} } as Command);
+  try {
+    const aliasRestated = await managerChoiceFailure(refusal, async () => roster, ["r", "--json"]);
+    assert.equal(aliasRestated?.remedy, `rerun it on one: ${displayCmd()} r --json --on aaa1 or ${displayCmd()} r --json --on bbb2`, "a registered alias of run is pinned by instance id too");
+    const showAlias = await managerChoiceFailure(refusal, async () => roster, ["r", "show", "run-1", "--json"]);
+    assert.equal(showAlias?.remedy, `rerun it on one: ${displayCmd()} r show run-1 --json --on aaa1 or ${displayCmd()} r show run-1 --json --on bbb2`, "the alias keeps the instance id on show");
+  } finally {
+    if (priorRun === undefined) registry.unregister("command", "run");
+  }
   const shown = renderReport(commandFailureReport(restated), "plain");
   assert.match(shown, /Live managers[\s\S]*Manager\s+Instance[\s\S]*box-a\/orca\s+aaa1\s+box-a\s+supervisor \(orca\)\s+2026-10-01T00:00:00\.000Z/, "the report lists each manager on its own row, by name first");
   const reported = [{ ...(roster[0] as unknown as { card: Record<string, unknown> }), card: { ...(roster[0] as unknown as { card: Record<string, unknown> }).card, meta: { host: "box-a", terminal: "none" } } }] as unknown as import("@cotal-ai/core").Presence[];
