@@ -5,7 +5,7 @@
 // converge inward and the cotal wordmark resolves. A seamless cream/gold loop:
 // it starts and ends on empty cream so frame 210 returns cleanly to frame 0.
 //
-// 210 frames @ 30fps. 1080x1080 square.
+// 1080x1080 square @ 30fps.
 //
 // Beats:
 //   Gather   (0–60):   scattered nodes ease onto the ring + fade in, staggered.
@@ -31,7 +31,7 @@ import {
   type Pt,
 } from "./shared";
 
-const DURATION = 210;
+export const HEADER_ASSEMBLE_DURATION = 210;
 
 // Composition center + the shared ring the agents snap onto.
 const C: Pt = { x: 540, y: 540 };
@@ -134,7 +134,7 @@ export const HeaderAssemble: React.FC = () => {
         style={{
           position: "absolute",
           inset: 0,
-          opacity: loopEnvelope(frame, DURATION),
+          opacity: loopEnvelope(frame, HEADER_ASSEMBLE_DURATION),
         }}
       >
         {/* Mesh hairlines — only present once gathering is essentially done. */}
