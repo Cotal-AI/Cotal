@@ -12,7 +12,7 @@
  * Run: pnpm smoke:service-commands
  */
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createSuite, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
@@ -35,6 +35,7 @@ type LocalProcess = import("@cotal-ai/workspace").LocalProcess;
 type ServicePreset = import("@cotal-ai/workspace").ServicePreset;
 const { cacheServicePreset, isCommandFailure, recordMesh } = await import("@cotal-ai/workspace");
 const { execWords } = await import("../../implementations/cli/src/lib/exec-words.js");
+const { serviceDefinitionStore } = await import("../../implementations/cli/src/lib/service-definitions.js");
 const { presetDefaultOptions, presetMaterialPath, servicePresetDefinition, servicePresetFlags } = await import("../../implementations/cli/src/lib/service-presets.js");
 await import("@cotal-ai/cli");
 await import("@cotal-ai/manager");
@@ -210,10 +211,9 @@ try {
   const PREPARED = "servicecommandsprep";
   const created = cotal(["space", "create", PREPARED, "--root", prepared]);
   check("space create prepares a second space, with no registered broker", created.status === 0, out(created));
-  const config = join(prepared, ".cotal", "nats.conf"), binary = join(home, "nats-server"), log = join(prepared, "broker.log");
+  const config = join(prepared, ".cotal", "nats.conf"), binary = join(home, "nats-server");
   writeFileSync(config, "port: 4222\n", { mode: 0o600 });
   writeFileSync(binary, "#!/bin/sh\n", { mode: 0o700 });
-  writeFileSync(log, "", { mode: 0o600 });
   const brokerRow = (() => {
     const run = cotal(["service", "--space", PREPARED, "--json"]);
     try { return (JSON.parse(run.stdout) as { result: { services: { name: string; next: string }[] } }).result.services.find((row) => row.name === "broker")?.next; }
@@ -231,7 +231,7 @@ try {
   check("  and that line, with each placeholder filled in, saves the broker the first time it runs", followed.status === 0 && out(followed).includes("Service definition saved"), out(followed));
 
   const brokerHelp = out(cotal(["service", "add", "b1", "--preset", "broker", "--space", PREPARED, "--help"]));
-  check("broker preset help shows --log-file as a file, described for a preset add", /--log-file <file> +absolute path of the existing nats-server log file this configuration's log_file names/.test(brokerHelp) && !brokerHelp.includes("prepared by `cotal up`"), brokerHelp);
+  check("broker preset help shows --log-file as a path, as `cotal up` does, described for a preset add", /--log-file <path> +absolute path of the nats-server log file this configuration's log_file names/.test(brokerHelp) && !brokerHelp.includes("prepared by `cotal up`"), brokerHelp);
   /** A broker add in the prepared space with these extra flags, as its JSON error, or the output when it has none. */
   const brokerAdd = (name: string, extra: string[]) => {
     const run = cotal(["service", "add", name, "--preset", "broker", "--space", PREPARED, "--config", config, "--binary", binary, "--server", fills["--server"]!, ...extra, "--json"]);
@@ -239,18 +239,18 @@ try {
     catch { return { status: run.status, error: out(run) }; }
   };
   const next = (name: string) => `see what each option takes with \`cotal service add ${name} --preset broker --help\``;
+  // The binary runs in `root`, so a relative --log-file is made absolute there, as `cotal up --log-file` makes it.
   const relativeLog = brokerAdd("b1", ["--log-file", "logs/broker.log"]);
-  check("a relative --log-file is refused as the other path options are, naming --log-file, with the help as its Next",
-    relativeLog.status === 1 && typeof relativeLog.error === "object" && relativeLog.error?.code === "SCHEMA_INVALID" && relativeLog.error.message === "the --log-file option must be an absolute path with no terminal controls" && relativeLog.error.remedy === next("b1"), relativeLog);
-  const absentLog = brokerAdd("b1", ["--log-file", join(prepared, "absent.log")]);
-  check("  and an absent --log-file is refused as a missing declared path", absentLog.status === 2 && typeof absentLog.error === "object" && absentLog.error?.code === "DEPENDENCY_UNAVAILABLE" && absentLog.error.message.startsWith("the declared adapter path --log-file is missing"), absentLog);
-  const savedLog = brokerAdd("b1", ["--log-file", log]);
-  check("  and an existing absolute --log-file is saved", savedLog.status === 0 && savedLog.error === undefined, savedLog);
-  const emptyLog = brokerAdd("b2", ["--log-file", ""]);
-  check("an empty --log-file is refused naming the flag typed, not the schema key, with the help as its Next",
-    emptyLog.status === 1 && typeof emptyLog.error === "object" && emptyLog.error?.code === "SCHEMA_INVALID" && emptyLog.error.message === "the service options do not match the installed adapter's closed schema at --log-file; option values were not printed" && emptyLog.error.remedy === next("b2"), emptyLog);
+  const savedLog = (() => { const launch = serviceDefinitionStore(PREPARED).read("b1")?.record.value.launch; return launch?.type === "adapter" ? launch.options.logFile : undefined; })();
+  const absolute = join(realpathSync(root), "logs", "broker.log");
+  check("a relative --log-file is saved absolute against the folder add runs in, and its file need not exist yet",
+    relativeLog.status === 0 && relativeLog.error === undefined && savedLog === absolute && !existsSync(absolute), { relativeLog, savedLog, absolute });
+  const emptyLog = brokerAdd("b2", ["--log-file", ""]), controlLog = brokerAdd("b2", ["--log-file", "logs/a\tb.log"]);
+  check("an empty --log-file, or one with a control character, is refused as `cotal up --log-file` refuses it",
+    [emptyLog, controlLog].every((run) => run.status === 1 && typeof run.error === "object" && run.error?.code === "USAGE_INVALID" && run.error.message === "--log-file must be a non-empty file path without control characters"), { emptyLog, controlLog });
   const emptyConfig = (() => { const run = cotal(["service", "add", "b2", "--preset", "broker", "--space", PREPARED, "--config", "", "--binary", binary, "--server", fills["--server"]!, "--json"]); try { return (JSON.parse(run.stdout) as { error: { message: string; remedy?: string } }).error; } catch { return out(run); } })();
-  check("  and another option's schema refusal reads the same way", typeof emptyConfig === "object" && emptyConfig.message.includes("closed schema at --config;") && emptyConfig.remedy === next("b2"), emptyConfig);
+  check("an empty --config is refused naming the flag typed, not the schema key, with the help as its Next",
+    typeof emptyConfig === "object" && emptyConfig.message === "the service options do not match the installed adapter's closed schema at --config; option values were not printed" && emptyConfig.remedy === next("b2"), emptyConfig);
 
   // ---- A preset name reaches the space's one service built on it, for show and remove too -------
   const manager = cotal(["service", "add", "m1", "--preset", "manager", "--space", SPACE]);

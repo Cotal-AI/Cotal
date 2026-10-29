@@ -1,6 +1,6 @@
 import { registry, type Command, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { cacheServicePreset, CommandFailure, extensionProvides, findMesh, isCommandFailure, loadExtensionsManifest, oneLine, segmentedKey, serviceMetadataDigest, spaceMaterialKey, verifiedExtensionServicePresets, type ServiceDefinitionInput, type ServicePreset, type ServicePresetDefault } from "@cotal-ai/workspace";
 import { installedExtensionsEnabled } from "../ext-loader.js";
 import { resolveServiceAdapter } from "./service-adapters.js";
@@ -49,6 +49,11 @@ function optionProperties(preset: ServicePreset) {
   return { adapter, properties: adapter.declaration.optionsSchema.properties as Record<string, Record<string, unknown>>, required: new Set((adapter.declaration.optionsSchema.required ?? []) as string[]) };
 }
 
+/** Options a preset takes as `cotal up --log-file` takes its path, by adapter: made absolute against
+ *  the folder the command runs in. They are not declared paths, so the file need not exist yet and a
+ *  stop never checks it. */
+const resolvedPaths: Readonly<Record<string, readonly string[]>> = { "nats-broker": ["logFile"] };
+
 /** The flag an adapter option takes: its name with each capital letter as a dash and that letter in
  *  lower case, so `logFile` is `--log-file`, as `cotal up` spells the same option. */
 export function presetFlagName(option: string): string {
@@ -72,7 +77,8 @@ export function servicePresetFlags(preset: ServicePreset): FlagSpec[] {
     const description = typeof schema.description === "string" ? schema.description : `add --preset ${preset.name}: declared ${option} option`;
     const fallback = preset.defaults?.[option];
     const marked = fallback ? `${description} (default: ${describeDefault(fallback)})` : required.has(option) && !description.includes("(required)") ? `${description} (required)` : description;
-    flags.push({ name, type: schema.type === "boolean" ? "boolean" : "string", ...(schema.type === "boolean" ? {} : { value: placeholder(adapter.declaration.paths?.[option], schema.type) }), description: marked });
+    const value = resolvedPaths[preset.adapter]?.includes(option) ? "<path>" : placeholder(adapter.declaration.paths?.[option], schema.type);
+    flags.push({ name, type: schema.type === "boolean" ? "boolean" : "string", ...(schema.type === "boolean" ? {} : { value }), description: marked });
     // A boolean whose schema admits only true, such as an explicit intent, has no valid negative form.
     if (schema.type === "boolean" && schema.const !== true && !(Array.isArray(schema.enum) && !schema.enum.includes(false))) flags.push({ name: `no-${name}`, type: "boolean", description: `add --preset ${preset.name}: set ${option} to false` });
   }
@@ -169,7 +175,10 @@ export function servicePresetDefinition(preset: ServicePreset, space: string, gi
     }
     if (value === undefined) continue;
     if (typeof value !== "string" || Buffer.byteLength(value, "utf8") > 256 * 1024) throw new CommandFailure("refused", "USAGE_INVALID", "a preset option exceeds its bounded string input; the value was not printed");
-    if (schema.type === "string") options[option] = value;
+    if (resolvedPaths[preset.adapter]?.includes(option)) {
+      if (!value.trim() || /[\u0000-\u001f\u007f]/u.test(value)) throw new CommandFailure("refused", "USAGE_INVALID", `--${name} must be a non-empty file path without control characters`);
+      options[option] = resolve(value);
+    } else if (schema.type === "string") options[option] = value;
     else {
       try { options[option] = JSON.parse(value); }
       catch { throw new CommandFailure("refused", "USAGE_INVALID", `--${name} is not valid JSON for its declared ${String(schema.type)} type; numeric values use JSON number syntax and bodies are not echoed`); }
