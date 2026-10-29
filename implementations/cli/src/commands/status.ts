@@ -1,4 +1,4 @@
-import { accessSync, constants, existsSync, readFileSync } from "node:fs";
+import { accessSync, constants, existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
@@ -75,6 +75,7 @@ import {
   probeWebReadiness,
   readCurrent,
   readMeshRegistry,
+  readPidfile,
   preparedRecordSkipped,
   readPreparedSpaces,
   readRenewalRecord,
@@ -2111,14 +2112,11 @@ function componentExit(components: readonly ComponentHealth[]): number {
 }
 
 function processRecord(template: string, context: LocalProcessContext): { kind: "absent" } | { kind: "unreadable"; error: string } | { kind: "dead"; pid: number } | { kind: "unattributable"; raw: string } | { kind: "live"; pid: number } | { kind: "unknown"; pid: number } {
-  let raw: string;
+  let raw: string | undefined;
   try {
-    raw = readFileSync(localProcessPath(template, context), "utf8").trim();
+    raw = readPidfile(localProcessPath(template, context));
   } catch (e) {
-    // A component removes its own record on exit, so the file can be gone by the time it is read:
-    // that is absence. An ambiguous record or any other failed read refuses this component's row,
-    // never the whole pass.
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") return { kind: "absent" };
+    // An ambiguous record or any failed read refuses this component's row, never the whole pass.
     return { kind: "unreadable", error: (e as Error).message };
   }
   if (!raw) return { kind: "absent" };

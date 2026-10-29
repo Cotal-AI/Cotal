@@ -331,6 +331,14 @@ if (!brokerDisplayOnly) {
   const plain = run(["status", ...server, "--plain", "--verbose"]);
   check("the report still prints, with the row named", plain.status === 4 && /nats:\s+pidfile unreadable/.test(plain.stdout) && /^Selected Mesh$/m.test(plain.stdout), shown(plain));
   check("stderr names the partial read", /PIDFILE|pidfile could not be read/.test(plain.stderr) && /status could not read one part/.test(plain.stderr), plain.stderr);
+  const webPid = join(home, ".cotal", "web.pid");
+  mkdirSync(webPid);
+  const components = run(["status", ...server, "--verbose", "--components"], { NO_COLOR: "1" });
+  check("--components reads component pidfiles through readPidfile and names the unreadable path",
+    components.status === 3 &&
+      components.stdout.includes(`pidfile unreadable · cannot read ${webPid}: EISDIR`) &&
+      components.stdout.includes(`web              refused · pidfile unreadable: cannot read ${webPid}: EISDIR`),
+    shown(components));
 }
 {
   const { home, run } = sandbox();
