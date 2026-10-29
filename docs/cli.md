@@ -482,9 +482,12 @@ start is refused with the name respelled in letters, digits, `-` and `_` as the 
 unknown `--harness` with the known ones and `cotal ext add <npm-package>`.
 
 A local space is prepared as `cotal space create` prepares it. A self-hosted space is one already
-registered with `cotal space add` or a signed-in catalog, whose root must be `--project`, or one
-`--connection-file` registers. Setup then seeds the `default` persona into
-`<project>/.cotal/agents`, the catalog `cotal spawn` reads for that space, records the application as
+registered with `cotal space add` or a signed-in catalog, or one `--connection-file` registers. A
+hand-added registration keeps its recorded root. On the first setup of a signed-in catalog space,
+`--project` binds its project root while its provider-owned sentinel credential stays under the
+machine-home catalog directory. A later setup must name the same project. Setup then seeds the
+`default` persona into `<project>/.cotal/agents`, the catalog `cotal spawn` reads for that space,
+records the application as
 the space's `harness` preference, runs the application's setup actions, and reconciles Cotal's
 skills. When you have no `harness` preference of your own, setup also records the application as
 yours, so a space you prepare later with `space create` uses it. A value you already set stays.

@@ -28,8 +28,13 @@ export interface MeshEntry {
   space: string;
   /** The broker URL, e.g. `nats://127.0.0.1:4222`. */
   server: string;
-  /** Absolute path whose `.cotal/{auth,agents}` hold this mesh's trust material + personas. */
+  /** Absolute project root for this mesh's personas. Catalog credentials may remain at catalogRoot. */
   root: string;
+  /** The machine-home catalog root that keeps a discovered space's provider-owned client material
+   *  after its project root is bound elsewhere. Present only on catalog entries. An unbound catalog
+   *  entry has `root === catalogRoot`; setup may move `root` to a project while this custody root and
+   *  `userAuth.sentinelCredsPath` stay unchanged. */
+  catalogRoot?: string;
   /** How the broker authenticates: static per-agent JWT creds (`auth`), none (`open`), or
    *  per-USER auth (`user`) — login + bearer through the space's auth service. `user` is its own
    *  connect path: it must never be treated as `auth` with missing creds, nor as `open`. */
@@ -489,6 +494,8 @@ function assertMeshEntryShape(entry: MeshEntry, file: string): void {
     throw new MeshRegistryError(file, `${file} is not a usable mesh record: mode "${entry.mode}" is not one of auth, open, user - restore the record or remove it`);
   if (entry.origin !== undefined && entry.origin !== "up" && entry.origin !== "manual" && entry.origin !== "catalog")
     throw new MeshRegistryError(file, `${file} is not a usable mesh record: origin "${entry.origin}" is not one of up, manual, catalog - restore the record or remove it`);
+  if (entry.catalogRoot !== undefined && (entry.origin !== "catalog" || typeof entry.catalogRoot !== "string" || entry.catalogRoot.length === 0 || !isAbsolute(entry.catalogRoot)))
+    throw new MeshRegistryError(file, `${file} is not a usable mesh record: catalogRoot is valid only as a non-empty absolute path on a catalog entry - restore the record or remove it`);
   if (entry.storeDir !== undefined && (typeof entry.storeDir !== "string" || entry.storeDir.length === 0 || !isAbsolute(entry.storeDir)))
     throw new MeshRegistryError(file, `${file} is not a usable mesh record: storeDir "${entry.storeDir}" is not a non-empty absolute path - restore the record or remove it`);
   try {
