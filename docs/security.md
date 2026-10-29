@@ -120,6 +120,8 @@ The guarantees, at a glance, each enforced by the broker per
   execution allow-list (PATH included, so connector binaries under `~/.local/bin` still resolve),
   the machine-wide `COTAL_*` operator knobs, connector-declared provider inputs, shared-MCP
   references, and only names explicitly added through `spawn.env` in the [config file](config.md).
+  CA-file paths `NODE_EXTRA_CA_CERTS` and `SSL_CERT_FILE` are forwarded too. TLS verification
+  overrides and key-log settings are not added to that boundary.
   It does not receive ambient host-session markers (`CLAUDE_CODE_CHILD_SESSION`, `CLAUDECODE`,
   `CLAUDE_CODE_ENTRYPOINT`, and the analogous names other hosts use to mark a nested session),
   temporary credentials, source-control tokens, or unrelated service secrets unless a persona or

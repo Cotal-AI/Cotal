@@ -283,6 +283,13 @@ deliberately supplied. A seat's transcript/resume behaviour is a property of the
 many layers up someone once ran `cotal up` inside an agent. Connection material is not in the
 environment at all (see [identity & auth](identity-and-auth.md)).
 
+The CA-file paths `NODE_EXTRA_CA_CERTS` and `SSL_CERT_FILE` also cross when set, so a seat
+can trust the private CA its manager uses. Set `NODE_EXTRA_CA_CERTS` before starting the manager:
+Node reads it at process startup. `SSL_CERT_FILE` applies only when the seat's runtime uses the
+OpenSSL or system CA store. Selecting that mode is separate configuration. The default boundary
+does not forward `NODE_OPTIONS`, `OPENSSL_CONF`, TLS key-log settings, or
+`NODE_TLS_REJECT_UNAUTHORIZED`. Certificate and hostname verification stay enabled.
+
 Enrollment inputs are launcher-only secrets. `spawn` removes both enrollment variable names from the
 connector's child environment, and `spawn.env` cannot list them.
 

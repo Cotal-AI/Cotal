@@ -59,6 +59,10 @@ const OS_ENV_ALLOW = [
   "TEMP",
   "TMPDIR",
   "TMP",
+  // Trust-store paths, not credentials or TLS verification overrides. Node reads the extra CA
+  // at process startup, so a seat must receive it before its connector first dials the broker.
+  "NODE_EXTRA_CA_CERTS",
+  "SSL_CERT_FILE",
   "XDG_CONFIG_HOME",
   "XDG_DATA_HOME",
   "XDG_STATE_HOME",

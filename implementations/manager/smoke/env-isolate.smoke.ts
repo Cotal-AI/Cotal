@@ -98,6 +98,17 @@ process.env.COTAL_CODEX_BIN = "/tmp/operator-codex-bin";
 const TELEMETRY_ENV = { DO_NOT_TRACK: "1", CI: "true", COTAL_TELEMETRY: "off", COTAL_TELEMETRY_DISABLED: "1", COTAL_TELEMETRY_URL: "http://intake.invalid/v1/telemetry" };
 Object.assign(process.env, TELEMETRY_ENV);
 
+// Distinct synthetic paths grade forwarding only. The live private-CA manager/seat
+// reproduction separately grades the TLS handshake with real PEM files.
+const TRUST_ENV = { NODE_EXTRA_CA_CERTS: "/tmp/parent-extra-ca.pem", SSL_CERT_FILE: "/tmp/parent-ca-bundle.pem" };
+Object.assign(process.env, TRUST_ENV);
+const UNSAFE_TLS_ENV = ["NODE_TLS_REJECT_UNAUTHORIZED", "NODE_OPTIONS", "OPENSSL_CONF", "SSLKEYLOGFILE"] as const;
+const savedUnsafeTls = new Map(UNSAFE_TLS_ENV.map((k) => [k, process.env[k]]));
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+process.env.NODE_OPTIONS = "--use-openssl-ca";
+process.env.OPENSSL_CONF = "/tmp/parent-openssl-config-must-not-cross";
+process.env.SSLKEYLOGFILE = "/tmp/parent-tls-keylog-must-not-cross";
+
 const cwd = process.cwd();
 
 /** Spawn `printenv` under a runtime with a connector-style spec, collect its env output, stop. */
@@ -180,6 +191,10 @@ function assertBoundary(label: string, out: string, opts: { explicit: boolean })
   check(`${homeVar} present`, new RegExp(`(^|\\n)${homeVar}=`).test(out));
   const dropped = Object.entries(TELEMETRY_ENV).filter(([k, v]) => !out.split(/\r?\n/).includes(`${k}=${v}`)).map(([k]) => k);
   check("the usage telemetry opt-outs, the intake and CI crossed", dropped.length === 0, dropped);
+  for (const [k, v] of Object.entries(TRUST_ENV))
+    check(`${k} trust path crossed`, out.split(/\r?\n/).includes(`${k}=${v}`));
+  for (const k of UNSAFE_TLS_ENV)
+    check(`${k} was not implicitly forwarded`, !new RegExp(`(^|\\n)${k}=`).test(out));
 }
 
 // pty — the default, always-available backend. Default launchEnv (no spawn.env) is the 0.30.1 leak.
@@ -230,5 +245,9 @@ delete process.env.OPENCODE_SERVER_URL;
 delete process.env.CODEX_HOME;
 delete process.env.PI_SESSION_ID;
 delete process.env.COTAL_CODEX_BIN;
+for (const [k, v] of savedUnsafeTls) {
+  if (v === undefined) delete process.env[k];
+  else process.env[k] = v;
+}
 console.log(`\nENV-BOUNDARY SMOKE ${failures === 0 ? "OK ✅" : "FAILED ❌"}`);
 process.exit(failures === 0 ? 0 : 1);
