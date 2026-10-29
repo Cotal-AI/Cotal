@@ -484,6 +484,30 @@ const server = createServer((socket) => {
           }
           break;
         case "soft_interrupt": {
+          const lateReply = process.env.FAKE_JCODE_STEER_LATE_REPLY_FILE;
+          if (lateReply) {
+            const timer = setInterval(() => {
+              if (!existsSync(lateReply)) return;
+              clearInterval(timer);
+              // An unrelated late ok must never settle this request by event kind alone.
+              socket.write(JSON.stringify({ v: 1, ev: "ok", reply_to: frame.id + 100000 }) + "\n");
+              if (process.env.FAKE_JCODE_STEER_LATE_ERROR === "1")
+                reply({ ev: "error", code: "invalid_request", message: "owned late refusal" });
+              else reply({ ev: "ok" });
+              log({ ev: "late_steer_reply", id: frame.id });
+            }, 10);
+            timer.unref();
+            break;
+          }
+          const refusal = process.env.FAKE_JCODE_STEER_REFUSE;
+          if (refusal && (refusal === "1" || String(frame.content).includes(refusal))
+            && !(process.env.FAKE_JCODE_STEER_REFUSE_EXCEPT && String(frame.content).includes(process.env.FAKE_JCODE_STEER_REFUSE_EXCEPT))) {
+            const refuse = () => reply({ ev: "error", code: "invalid_request", message: "owned fixture refuses soft interrupt" });
+            const delay = Number(process.env.FAKE_JCODE_STEER_REFUSE_DELAY_MS ?? "0");
+            if (delay > 0) setTimeout(refuse, delay);
+            else refuse();
+            break;
+          }
           // #1233: the measured failure is SILENCE, not a refusal and not a close. The bridge takes
           // the frame and never answers it, so the client's request timeout is what ends the wait.
           // A fixture that replied with an error instead would exercise a different code path and

@@ -8,6 +8,7 @@ import { HarnessError, JcodeClient, launchInstance, type ApiEvent, type Launched
 import { hardenPrivate, loadAgentFile, type PresenceCondition, type PresenceConditionCode } from "@cotal-ai/core";
 import { mirrorJcodeCredentials, shortSocketHome, type ShortSocketHome } from "./private-state.js";
 import { captureProcessIdentity, launchIdentityEnv, recordLaunch, stopOrphanedTree, stopPrivateTree, type ProcessIdentity } from "./private-lifecycle.js";
+import { connectSteerClient, softInterruptWithLateReply } from "./steer-replies.js";
 import { chooseSessionToResume, type ResumeCandidate } from "./session-resume.js";
 import { forkJcodeSession, jcodeSeatHome, markJcodeForkBriefed, type JcodeFork } from "./session-fork.js";
 import { activeModelRoute, bareModelId, describeRoute, effectiveProvider } from "./route-identity.js";
@@ -873,7 +874,7 @@ export async function runJcodeHost(): Promise<void> {
     // The recovery deadline still wins when one is set: it bounds the whole replacement window, and
     // a fixture knob must not be able to extend it past that.
     const perRequestMs = remaining() ?? requestTimeoutMs;
-    return JcodeClient.connect({ socketPath: instance.socketPath, ...(perRequestMs !== undefined ? { requestTimeoutMs: perRequestMs } : {}) });
+    return connectSteerClient(instance.socketPath, perRequestMs);
   };
 
   const launchTui = (): void => {
@@ -1275,8 +1276,14 @@ export async function runJcodeHost(): Promise<void> {
         // session took the text (the SDK's acceptance wait RESOLVES on timeout). Reserving here makes
         // the batch unselectable by any concurrent path without claiming it was accepted.
         const keys = items.map((item) => item.recvKey);
-        const release = reserveForHandover(keys);
-        if (!release) return;
+        const releaseReservation = reserveForHandover(keys);
+        if (!releaseReservation) return;
+        let dispose = (): void => {};
+        const release = (): void => {
+          dispose();
+          unansweredSteers.delete(release);
+          releaseReservation();
+        };
         // NOT gated, and this is a correctness point rather than an optimisation. The soft interrupt
         // goes out via the SDK's `requestOk`, whose reply is matched by `reply_to` against the
         // request's own id, so its acceptance is ALREADY correlated and cannot be satisfied by
@@ -1287,15 +1294,23 @@ export async function runJcodeHost(): Promise<void> {
         // timed out waiting for short/4KiB/64KiB DMs to reach the session before the turn ended. That
         // is the exact delivery this connector exists to provide, so the gate must not stand in front
         // of the one path that was never ambiguous.
-        const request = current.softInterrupt(sessionId, injection, false);
+        const pending = softInterruptWithLateReply(current, sessionId, injection, (accepted) => {
+          // The SDK emits a correlated reply as an event after its waiter times out. Only this
+          // still-owned request's positive reply promotes it; the normal turn boundary still acks.
+          if (!unansweredSteers.has(release) || client !== current) return;
+          if (accepted) promoteToSurfaced(keys);
+          release();
+        });
+        dispose = pending.dispose;
+        const request = pending.request;
         steerSettled = request.catch(() => {});
         try {
           await request;
         } catch (error) {
           // A request timeout drops only the SDK waiter. The same native session can apply the
-          // interrupt later, so after preserving it do not steer these keys again this busy turn.
+          // interrupt later, so do not hand these keys over again during this busy turn.
           // A boundary or connection replacement releases the hold without claiming acceptance.
-          if (nativeTreePreserved && client === current && sessionBusy()
+          if (client === current && sessionBusy()
             && error instanceof HarnessError && error.code === "timeout") {
             unansweredSteers.add(release);
           } else release();
@@ -1751,9 +1766,7 @@ export async function runJcodeHost(): Promise<void> {
         let replacement: JcodeClient | undefined;
         try {
           replacement = preserveInstance
-            ? await JcodeClient.connect({
-                socketPath: instance!.socketPath, requestTimeoutMs: Math.max(1, deadline - Date.now()),
-              })
+            ? await connectSteerClient(instance!.socketPath, Math.max(1, deadline - Date.now()))
             : await launchPrivateJcode(deadline);
           const attachRemaining = Math.max(1, deadline - Date.now());
           let attachDeadline: ReturnType<typeof setTimeout> | undefined;
