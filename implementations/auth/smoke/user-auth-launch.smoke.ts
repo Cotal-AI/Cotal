@@ -21,7 +21,10 @@
  *      refusal: a `Mesh:` heading, PERMISSION_DENIED, the refused credential and broker, and a Next
  *      naming the folder that hosts the space. No bare `Authorization Violation` line.
  *   E4. A prepared second root of the same space under its own home: `manager start` with no sign-in,
- *      or with one the IdP revoked, is refused AUTH_REQUIRED before anything is saved; a manager left
+ *      or with one the IdP revoked, is refused AUTH_REQUIRED before anything is saved. With the revoked
+ *      one, a bare `up` of the running stack and of the stopped stack leaves the manager unattempted,
+ *      and a team boot resuming the stopped stack is refused AUTH_REQUIRED before any effect, each
+ *      naming `cotal login --idp <base>`. A manager left
  *      running after a sign-out is stopped by the folder's owner through `manager stop` and `down`.
  *      `supervise` is refused before it connects, under a `Mesh:` heading with a code and no boot
  *      line, from that stopped root, from a folder with no records (naming the folder that hosts the
@@ -737,7 +740,8 @@ try {
     const root2 = await prepare(SPACE);
     const sandbox2 = second.roots[0]!.sandbox;
     const managerPid = join(root2, ".cotal", `manager.${spaceKey(SPACE)}.pid`);
-    const up2 = await cotal(["up", "-d", "--user-auth", "--idp", base, "--server", `nats://127.0.0.1:${await pickFreePort()}`], { cwd: root2, env });
+    const server2 = `nats://127.0.0.1:${await pickFreePort()}`;
+    const up2 = await cotal(["up", "-d", "--user-auth", "--idp", base, "--server", server2], { cwd: root2, env });
     check("with no sign-in, up starts the other members and names cotal login first",
       up2.status === 4 && field(up2.out, "Native code", "AUTH_REQUIRED") && plain(up2.out).includes(`\nNext\n  cotal login --idp ${base}, then`), up2.out);
     const refusedStart = await cotal(["manager", "start"], { cwd: root2, env });
@@ -761,6 +765,25 @@ try {
     const revokedShown = await cotal(["service", "show", "manager"], { cwd: root2, env });
     check("…before anything was saved or launched, so no manager runs",
       !revokedText.includes("saved manager") && revokedShown.status === 2 && field(revokedShown.out, "Code", "TARGET_NOT_FOUND") && !existsSync(managerPid), { start: revokedStart.out, show: revokedShown.out });
+    // `up` and a team boot start the manager behind the same confirmation, so neither attempts it.
+    const revokedRejection = "the IdP rejected this machine's sign-in, which has expired or was revoked; the manager was not attempted";
+    const revokedUp = await cotal(["up"], { cwd: root2, env });
+    check("with that sign-in, a bare up keeps the other members, does not attempt the manager, and Next signs in at that IdP, then runs up again",
+      revokedUp.status === 4 && field(revokedUp.out, "Native code", "AUTH_REQUIRED") && field(revokedUp.out, "Native detail", revokedRejection) &&
+        plain(revokedUp.out).includes(`\nNext\n  cotal login --idp ${base}, then run bare \`cotal up\` again`) && !existsSync(managerPid), revokedUp.out);
+    const stoppedForBoot = await cotal(["down", "--yes"], { cwd: root2, env, sandbox: sandbox2 });
+    check("…and down stops that stack, whose manager was never attempted", stoppedForBoot.status === 0, stoppedForBoot.out);
+    const teamFile = join(root2, "team.yaml");
+    writeFileSync(teamFile, `apiVersion: cotal/v1\nkind: Mesh\nspace: ${SPACE}\nbroker:\n  servers: ${server2}\n  auth: user\n  idp: ${base}\nchannels:\n  general:\n    description: The general channel.\n`);
+    const revokedBoot = await cotal(["team", "boot", teamFile], { cwd: root2, env });
+    const revokedBootText = plain(revokedBoot.out);
+    check("a team boot resuming it is refused AUTH_REQUIRED, exit 2, and Next signs in at that IdP, then boots the team again",
+      revokedBoot.status === 2 && field(revokedBoot.out, "Code", "AUTH_REQUIRED") && revokedBootText.includes(revokedRejection) &&
+        revokedBootText.includes(`cotal login --idp ${base}, then \`cotal team boot ${teamFile}\``), revokedBoot.out);
+    check("…before any effect: no broker answers and no manager runs", !(await isReachable(server2)) && !existsSync(managerPid), revokedBoot.out);
+    const restarted = await cotal(["up"], { cwd: root2, env });
+    check("a bare up of the stopped stack starts the other members and refuses the manager the same way",
+      restarted.status === 4 && field(restarted.out, "Native detail", revokedRejection) && plain(restarted.out).includes(`cotal login --idp ${base}, then run bare \`cotal up\` again`) && !existsSync(managerPid), restarted.out);
     await establishIdpSession({ dir: home2, idpUrl: base, clientId: CLIENT_ID, onPrompt: (p: DeviceLoginPrompt) => void approve(p.userCode) });
     const started = await cotal(["manager", "start"], { cwd: root2, env });
     check("signed in and granted, manager start starts it", started.status === 0 && existsSync(managerPid), started.out);

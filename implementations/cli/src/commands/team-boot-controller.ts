@@ -17,7 +17,7 @@ import { observeServiceProcess, serviceInstances } from "../lib/service-instance
 import { readStackJournal, STACK_DEFINITION, type StackJournal } from "../lib/stack-journal.js";
 import { writeFreshTeamAttempt, writeFreshTeamSummary } from "../lib/team-fresh.js";
 import { startControllerStack, stackMembersView, stackUpForegroundNotice } from "./stack-up.js";
-import { assertUserStackTransport, preflightUserStack, userLoginRequired, userLoginState } from "./stack-user-auth.js";
+import { assertManagerLogin, assertUserStackTransport, preflightUserStack, userLoginState } from "./stack-user-auth.js";
 import { controllerStackNative, holdForegroundStack, prepareFreshTeamBoot, prepareResumeTeamBoot, recheckFreshTeamBoot, type FreshTeamBootPlan } from "./up.js";
 import { recheckStackResume, stackResumeEligibility, type StackResumeBinding } from "../lib/stack-resume.js";
 import { shellWord } from "../lib/endpoint-errors.js";
@@ -108,15 +108,13 @@ export async function controllerTeamBoot(request: ControllerTeamBootRequest): Pr
     assertUserStackTransport(plan.server, plan.transport.kind === "tls-required");
     await preflightUserStack(plan.root, plan.space, plan.idp);
     // The manifest's agents launch from the manager, which a user stack reads and starts only as the
-    // invoking user's existing signed-in, granted login. Without it the boot could start everything
-    // except the team and leave its intent unsettled, so it refuses here before any effect.
-    const login = await userLoginState(plan.root, plan.space);
-    if (login.state !== "ready") {
-      // A fresh root cannot hold a login grant before its first enable, so the refusal names the
-      // whole native preparation path rather than login alone.
-      if (!binding) throw new CommandFailure("refused", "AUTH_REQUIRED", "a user-auth team boot needs a prepared space with your granted login, and this root has none yet; nothing was written", { target: { root: plan.root, space: plan.space }, remedy: `cotal up --user-auth --idp <auth base URL>, then \`cotal login\`, then \`cotal auth grant cli --sub <subject>\`, then \`cotal down\`, then \`cotal team boot ${request.file}\`` });
-      throw userLoginRequired(plan.space, login);
-    }
+    // invoking user's existing signed-in, granted login, confirmed with its IdP. Without it the boot
+    // could start everything except the team and leave its intent unsettled, so it refuses here
+    // before any effect. A fresh root cannot hold a login grant before its first enable, so its
+    // refusal names the whole native preparation path rather than login alone.
+    if (!binding && (await userLoginState(plan.root, plan.space)).state !== "ready")
+      throw new CommandFailure("refused", "AUTH_REQUIRED", "a user-auth team boot needs a prepared space with your granted login, and this root has none yet; nothing was written", { target: { root: plan.root, space: plan.space }, remedy: `cotal up --user-auth --idp <auth base URL>, then \`cotal login\`, then \`cotal auth grant cli --sub <subject>\`, then \`cotal down\`, then \`cotal team boot ${request.file}\`` });
+    await assertManagerLogin(plan.root, plan.space, codeSpan(`cotal team boot ${shellWord(request.file)}`));
   }
   if (readMaintenanceJournal(plan.root)) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "this root retains a maintenance or recovery attempt; team boot cannot substitute an ordinary startup", { target: { root: plan.root, space: plan.space } });
   const lock = acquireMaintenanceLock(plan.root);
