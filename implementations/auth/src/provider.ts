@@ -833,7 +833,8 @@ function carriesField(value: unknown, field: string): boolean {
 /** The registry entry's user-auth position for a REMOTE space, bound to the CALLER'S state dir the
  *  way {@link remoteUserCredentials} binds it. A discovered entry may bind a separate project root,
  *  while its sentinel stays under the catalog custody root. Both coordinates come from the same
- *  registry row and are checked here, so another root cannot borrow the entry. `undefined` when the
+ *  registry row. Existing catalog contexts and the bound project remain usable; another root cannot
+ *  borrow the entry. `undefined` when the
  *  registry holds no such remote entry. This is the ONE read of the entry's pins — connect and the
  *  offline status read consume the same trust position, so they cannot drift. */
 function remoteUserAuthEntry(
@@ -850,7 +851,7 @@ function remoteUserAuthEntry(
     typeof ua.sentinelCredsPath === "string" &&
     callerDir !== undefined &&
     custodyDir !== undefined &&
-    resolve(dir) === resolve(callerDir) &&
+    (resolve(dir) === resolve(callerDir) || resolve(dir) === resolve(custodyDir)) &&
     resolve(ua.sentinelCredsPath).startsWith(resolve(custodyDir) + sep);
   return bound ? (ua as UserAuthInfo & { remote: true; endpoints: { url: string }; sentinelCredsPath: string }) : undefined;
 }

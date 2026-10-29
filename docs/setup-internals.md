@@ -35,7 +35,8 @@ checks `space create` makes, which with setup's `again` reports a space already 
 at that root instead of refusing it; a local space also needs a `nats-server` to locate. A
 self-hosted space goes through `checkSelfHostedSpace`: a hand-added registration whose root is the
 project, a signed-in catalog registration that is already bound there or can bind there without
-moving its catalog credential custody, or a connection file `addFromBundle` will register.
+moving its catalog credential custody, or a connection file `addFromBundle` will register. Connections
+created before binding can still renew using the catalog credential context.
 
 `prepare` then writes, in order: the prepared space, registration or signed-in catalog project
 binding, the `default` persona in

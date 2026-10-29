@@ -28,7 +28,7 @@ export interface MeshEntry {
   space: string;
   /** The broker URL, e.g. `nats://127.0.0.1:4222`. */
   server: string;
-  /** Absolute path whose `.cotal/{auth,agents}` hold this mesh's trust material + personas. */
+  /** Absolute project root for this mesh's personas. Catalog credentials may remain at catalogRoot. */
   root: string;
   /** The machine-home catalog root that keeps a discovered space's provider-owned client material
    *  after its project root is bound elsewhere. Present only on catalog entries. An unbound catalog

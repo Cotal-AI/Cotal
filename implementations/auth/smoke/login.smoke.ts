@@ -397,6 +397,7 @@ console.log("C2) advertised space catalog cache");
 {
   let tokenRequests = 0;
   let catalogRequests = 0;
+  let credentialRequests = 0;
   let conditional = 0;
   let failCatalog = false;
   let invalidCatalog = false;
@@ -412,6 +413,11 @@ console.log("C2) advertised space catalog cache");
         ...(advertiseCatalog ? { link: `<${catalogBase}/spaces>; rel="https://cotal.ai/relations/space-catalog"` } : {}),
       });
       return void res.end(JSON.stringify({ token: "eyJhbGciOiJub25lIn0.eyJpc3MiOiJodHRwOi8vMTI3LjAuMC4xIiwic3ViIjoiY2F0LXVzZXIifQ." }));
+    }
+    if (req.url === "/exchange/exchange") {
+      credentialRequests++;
+      res.writeHead(200, { "content-type": "application/json" });
+      return void res.end(JSON.stringify({ token: "catalog-fixture-bearer" }));
     }
     if (req.url === "/spaces") {
       catalogRequests++;
@@ -481,6 +487,10 @@ console.log("C2) advertised space catalog cache");
     discoveredRequired?.policy?.events === "required", discoveredRequired);
   const boundProject = join(catalogDir, "bound-project");
   const originalCatalogRoot = discoveredRequired!.root;
+  const { userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
+  const cachedContext = { store: workspaceSecretStore(originalCatalogRoot), dir: userAuthStateDir(originalCatalogRoot, "shared_project"), space: "shared_project", actor: "cli" };
+  const beforeBinding = await cotalAuthProvider.userCredentials(cachedContext);
+  check("the original catalog credential context is usable before binding", beforeBinding.bearer === "catalog-fixture-bearer" && credentialRequests === 1);
   mkdirSync(boundProject);
   (await import("@cotal-ai/workspace")).recordMesh({ ...discoveredRequired!, root: boundProject, catalogRoot: originalCatalogRoot });
   await prepareCatalogTargets({ idpUrl: catalogIdp, force: true });
@@ -488,6 +498,14 @@ console.log("C2) advertised space catalog cache");
   check("catalog refresh preserves a bound project root and its separate catalog credential custody",
     refreshedBinding?.root === boundProject && refreshedBinding.catalogRoot === originalCatalogRoot &&
       refreshedBinding.userAuth?.sentinelCredsPath?.startsWith(originalCatalogRoot) === true, refreshedBinding);
+  const projectCredentials = await cotalAuthProvider.userCredentials({ ...cachedContext, store: workspaceSecretStore(boundProject), dir: userAuthStateDir(boundProject, "shared_project") });
+  check("the bound project mints with the retained catalog sentinel", projectCredentials.bearer === "catalog-fixture-bearer" && projectCredentials.sentinelCreds === beforeBinding.sentinelCreds && credentialRequests === 2);
+  const cachedStillWorks = await cotalAuthProvider.userCredentials(cachedContext).then((value) => value.bearer === "catalog-fixture-bearer", () => false);
+  check("an existing catalog credential context renews after project binding", cachedStillWorks && credentialRequests === 3);
+  const beforeForeign = credentialRequests;
+  const foreignRoot = join(catalogDir, "unrelated-project");
+  await rejects("an unrelated credential context cannot borrow the bound catalog entry", () => cotalAuthProvider.userCredentials({ ...cachedContext, store: workspaceSecretStore(foreignRoot), dir: userAuthStateDir(foreignRoot, "shared_project") }), "no user-auth material");
+  check("the unrelated context refusal precedes the exchange", credentialRequests === beforeForeign);
   const meshDir = join(catalogDir, "meshes");
   const meshTimes = new Map(readdirSync(meshDir).map((file) => [file, statSync(join(meshDir, file)).mtimeMs]));
   const warmTimes: number[] = [];
