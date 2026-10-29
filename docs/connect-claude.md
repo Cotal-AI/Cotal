@@ -676,9 +676,15 @@ A recalled message that already went out in part is read to its last part, even 
 lands after its first part. One session reads its inbox one call at a time: a `cotal_inbox` call
 that overlaps another waits for it to finish, so neither decides from a view the other has already
 moved past.
-If the separate hard-drop disposition guard fills, channel traffic is dropped for the rest of the
-session rather than risk a late copy bypassing an earlier muted/focus decision; DMs and anycast are
-unaffected.
+If the separate hard-drop disposition guard fills, ambient channel traffic is suppressed for the
+rest of the session. Live mentions on unmuted channels still wake the agent, with their bodies held
+in the bounded pull-only inbox instead of injected into a turn. Muted traffic and historical
+mentions remain suppressed, and known earlier hard drops stay excluded after a mode change.
+An unknown durable backstop copy stays suppressed because it may have arrived while muted;
+the mention fallback uses the live channel subscription, not a delayed or historical copy.
+The inbox reports exhausted drop tracking and incomplete focus recall. `cotal_connection_status`
+reports `degraded` with `channelDeliveryIssue`, even when the transport is live. Restarting clears
+this session-local degradation. DMs and anycast are unaffected.
 
 Attention is **advisory UX, not a boundary**: any peer can wake a dnd/focus agent by
 naming it, and `muted` means "I opted out of receiving", not "the channel is blocked";

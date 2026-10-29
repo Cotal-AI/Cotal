@@ -34,9 +34,10 @@ const err = (text: string): ToolResult => ({ text, isError: true });
 /** A local inbox read cannot establish that a session is receiving from the mesh. */
 function inboxConnectionWarning(agent: MeshAgent): string {
   const state = agent.connectionState;
-  if (state === "ready" || state === "stalled") return "";
+  const channelIssue = agent.channelDeliveryIssue;
+  if (state === "ready" || state === "stalled") return channelIssue ?? "";
   const issue = agent.connectionIssue;
-  return `Mesh connection is not ready (${state})${issue ? `: ${issue.slice(0, 500)}` : "."}\nLocally buffered messages are still readable; an empty buffer does not mean no new mesh messages.`;
+  return [channelIssue, `Mesh connection is not ready (${state})${issue ? `: ${issue.slice(0, 500)}` : "."}\nLocally buffered messages are still readable; an empty buffer does not mean no new mesh messages.`].filter(Boolean).join("\n");
 }
 
 /** Cap on the JSON text a generic endpoint tool returns into the session. */
@@ -752,7 +753,9 @@ export function cotalToolSpecs(
         "that keeps committing fresh arrivals while its oldest deliveries never come off reports " +
         "`stalled` rather than `ready`. `degraded` is bound while the transport is down or two or more " +
         "consecutive presence writes have failed. A live core NATS connection does not prove JetStream " +
-        "accepts writes; `connectionIssue` names the observed write failure. `connecting` is a live transport whose Cotal bind has not " +
+        "accepts writes; `connectionIssue` names the observed write failure. Exhausted channel drop tracking also reports " +
+        "`degraded`, with `channelDeliveryIssue` naming the session-local suppression and mention pull fallback. " +
+        "`connecting` is a live transport whose Cotal bind has not " +
         "finished. `disconnected` is neither. `stopped` means this session was shut down " +
         "deliberately and is terminal, which is not a fault. Also reports the buffered inbox count " +
         "and the time of the latest successful non-empty inbox drain when one has occurred. A " +
@@ -817,6 +820,7 @@ export function cotalToolSpecs(
               stopping: agent.stopping,
               bufferedCount: agent.inboxCount(),
               automaticCount: agent.inboxCount("automatic"),
+              ...(agent.channelDeliveryIssue ? { channelDeliveryIssue: agent.channelDeliveryIssue } : {}),
               ...issueField,
               ...presenceField,
               ...(lastDrainedAt !== undefined ? { lastDrainedAt: new Date(lastDrainedAt).toISOString() } : {}),
@@ -923,7 +927,7 @@ export function cotalToolSpecs(
       title: "Cotal: read incoming messages",
       description:
         "Read messages other agents have sent you since you last checked: channel broadcasts, direct messages, and role requests. It clears ONLY what it actually returns to you (nothing at all when peek is true), and one call carries at most a receivable window: direct messages and role requests first, then channel traffic, with replayed history last. Anything that does not fit stays buffered and is named in the reply, so call again for the next batch. A single message larger than one whole response is delivered in parts: once no smaller mail is waiting, each call carries the next part of it, a peek shows the current part without moving on, and the message is cleared only after its last part goes out. In focus mode it also pulls back the channel chatter held since you entered focus. " +
-        "When the connection is not ready, the reply says so and still returns locally buffered messages; an empty local buffer does not prove no new mesh messages exist.",
+        "When the connection is not ready, the reply says so and still returns locally buffered messages; an empty local buffer does not prove no new mesh messages exist. Exhausted channel drop tracking is reported even with an empty inbox; live mentions on unmuted channels wake to pull their buffered bodies while ambient traffic stays suppressed.",
       schema: {
         peek: z.boolean().optional().describe("If true, show messages without clearing them."),
       },

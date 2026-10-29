@@ -89,7 +89,7 @@ try {
   const ottoPrincipal = `${DEV_OWNER}.${ottoId.id}`;
   const ottoUid = mintLifecycleUid(); // one lifecycle uid per agent (SPEC §13.1)
   const pubbyUid = mintLifecycleUid();
-  const chACL = { subscribe: channels, allowSubscribe: [...channels, "fx51-durable"], allowPublish: channels };
+  const chACL = { subscribe: channels, allowSubscribe: [...channels, "fx51-durable"], allowPublish: [...channels, "fx51-durable"] };
   const ottoCreds = await provisionAgent(mgr, auth, ottoId, { ...chACL, role: "generalist", lifecycleUid: ottoUid });
   const pubbyCreds = await provisionAgent(mgr, auth, pubbyId, { ...chACL, lifecycleUid: pubbyUid });
   // A reader provisioned WITHOUT any durable-read grant: it cannot join fx51-durable's backstop, so
@@ -145,6 +145,9 @@ try {
   // must wait for it, else it grades a still-binding daemon. In-process daemons acquire + flip the
   // lease themselves (the CLI daemon does this in runStartedDelivery).
   await daemon.acquireDeliveryLease(0).then((rev) => daemon.markDeliveryLeaseReady(0, rev)).catch(() => {});
+  // listChannels enumerates retained traffic and cached channel registry rows. Seed an owned
+  // retained message so the durable health assertions actually select this channel.
+  await dagent.ep.multicast("owned durable health control", { channel: "fx51-durable" });
   let leaseReady = false;
   for (let i = 0; i < 30; i++) { if ((await dagent.ep.readDeliveryLease(0))?.ready === true) { leaseReady = true; break; } await sleep(500); }
   check("daemon lease reads ready:true (serving)", leaseReady);
