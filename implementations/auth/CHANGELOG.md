@@ -1,5 +1,18 @@
 # @cotal-ai/auth
 
+## 0.127.0
+
+### Minor Changes
+
+- 53fbd95: Allow an authorized personal native conversation to bind itself with `participant()` and receive hosted workflow turns through a finite exact-lifecycle lease without gaining manager seat custody.
+
+### Patch Changes
+
+- Updated dependencies [53fbd95]
+  - @cotal-ai/core@0.127.0
+  - @cotal-ai/lang@0.127.0
+  - @cotal-ai/workspace@0.127.0
+
 ## 0.126.3
 
 ### Patch Changes

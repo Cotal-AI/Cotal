@@ -1,5 +1,19 @@
 # @cotal-ai/connector-core
 
+## 0.127.0
+
+### Minor Changes
+
+- 53fbd95: Allow an authorized personal native conversation to bind itself with `participant()` and receive hosted workflow turns through a finite exact-lifecycle lease without gaining manager seat custody.
+
+### Patch Changes
+
+- e72bd0d: A foreground `cotal up` whose broker exits before the mesh is recorded now says the broker exited
+  before the mesh was recorded. Its next step is the one a detached start gives: read the output
+  above, fix a `nats-server` found on PATH or take it off PATH, and run `cotal up` again. It no longer
+  offers the same `up` as a repair, which only repeated the exit. A broker that exits after its mesh
+  was recorded keeps the line that says the mesh stays recorded and names the repair `up`.
+
 ## 0.126.3
 
 No changes in this release.
