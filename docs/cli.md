@@ -3979,8 +3979,11 @@ with the host's reason and `PERMISSION_DENIED` (exit 2). A host that fails or do
 [Agent files](agent-files.md). (`cotal start` was merged into `cotal spawn --detach`.)
 A managed spawn onto a manager from another Cotal release is refused before any request is sent
 when the manager's contract does not declare a field this CLI sends. The refusal names the field,
-calls it version skew, and gives this CLI's version. A field you leave unset is not sent, so it
-never causes that refusal.
+calls it version skew, and gives this CLI's version and the version that manager reports in its
+`status`. When the manager is older, it names `cotal update --self` on the manager's host and then
+`cotal manager restart`, or a CLI at the manager's version. When this CLI is older, it names
+`cotal update --self` here. A manager that reports no version is asked to run at this CLI's version.
+A field you leave unset is not sent, so it never causes that refusal.
 
 A manager has 50 seat slots, and each seat counts once. A slot is held by a managed seat (a row in
 that manager's `cotal ps`, including a seat still joining), by a reserved launch the manager accepted
