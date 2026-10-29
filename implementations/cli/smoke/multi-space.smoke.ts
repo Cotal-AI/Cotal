@@ -628,11 +628,11 @@ try {
     const hexStop = join(dot, `auth-service.${spaceKey("stopg")}.pid`);
     writeFileSync(hexStop, "not-a-pid");
     check("stopAuthService THROWS on a garbled record (never silently drops an unattributable signer)",
-      (await refusal(() => stopAuthService("stopg"))).includes("unattributable"));
+      (await refusal(() => stopAuthService("stopg"))).includes("names no process"));
     check("…and leaves the garbled record in place for manual inspection", existsSync(hexStop));
     writeFileSync(hexStop, "0");
     check("stopAuthService also refuses pid 0 (would signal the whole process group)",
-      (await refusal(() => stopAuthService("stopg"))).includes("unattributable") && existsSync(hexStop));
+      (await refusal(() => stopAuthService("stopg"))).includes("names no process") && existsSync(hexStop));
     rmSync(hexStop, { force: true });
     writeFileSync(hexStop, ""); // empty husk is safe to clear (nothing to signal)
     await stopAuthService("stopg");
@@ -655,7 +655,7 @@ try {
     writeFileSync(dpPid, bad);
     const msg = await refusal(() => stopLocalProcess(authComponent as never, dpCtx as never));
     check(`down/stopLocalProcess REFUSES an unattributable auth pidfile ${JSON.stringify(bad)} and PRESERVES it (no clean-report orphan)`,
-      msg.includes("unattributable") && existsSync(dpPid), { msg, kept: existsSync(dpPid) });
+      msg.includes("names no process") && existsSync(dpPid), { msg, kept: existsSync(dpPid) });
   }
   // An UNKNOWN probe result (a valid pid whose kill throws a non-ESRCH/non-EPERM error, e.g. EIO)
   // is NOT dead: stop must fail loud + preserve, never report the process gone and delete its
