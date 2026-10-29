@@ -1,5 +1,11 @@
 # @cotal-ai/connector-jcode
 
+## 0.127.2
+
+### Patch Changes
+
+- 2143556: Keep timed-out soft interrupts reserved during the native busy turn and recognize a late positive reply only for that request on the same connection. This prevents a queued-turn fallback from submitting the same accepted message again. Correlated refusals still use the fallback, unknown outcomes remain owed, and acknowledgements stay tied to successful turn completion.
+
 ## 0.127.1
 
 No changes in this release.
