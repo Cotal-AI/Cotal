@@ -1,7 +1,8 @@
 /** User-auth composition for the controller-owned stack. It reuses the native preparation that
  *  `up.ts` owns (`authSetup` through `prepareServer`), the auth package's `auth-service` adapter
- *  and child, the provider's own `service.ready({dir, pid})`, and the existing local login read
- *  (`userStatus`). It mints nothing, grants nothing and invents no endpoint.
+ *  and child, the provider's own `service.ready({dir, pid})`, the existing local login read
+ *  (`userStatus`), and the provider's `confirmLogin` before a manager start. It mints nothing,
+ *  grants nothing and invents no endpoint.
  *
  *  Limits kept from the native seams, never weakened:
  *  - The auth-service child serves only a registered plain loopback broker (`targetFor` in the
@@ -74,13 +75,15 @@ export async function userLoginState(root: string, space: string): Promise<{ sta
 
 /** The refusal a user stack reports when the manager cannot be attempted for want of a login.
  *  `then` is the step after the sign-in: a bare `up` again, or the manager command that was refused. */
-export function userLoginRequired(space: string, login: Awaited<ReturnType<typeof userLoginState>>, then = "run bare `cotal up` again"): CommandFailure {
+export function userLoginRequired(space: string, login: Awaited<ReturnType<typeof userLoginState>> | { state: "rejected"; idpUrl?: string }, then = "run bare `cotal up` again"): CommandFailure {
   const idp = "idpUrl" in login && login.idpUrl ? ` --idp ${login.idpUrl}` : "";
   const message = login.state === "not-granted"
     ? "the signed-in user has no granted interactive row for the CLI in this space; the manager was not attempted"
     : login.state === "unreadable"
       ? "this machine's login for the space could not be read; the manager was not attempted"
-      : "no user is signed in for this space; the manager was not attempted";
+      : login.state === "rejected"
+        ? "the IdP rejected this machine's sign-in, which has expired or was revoked; the manager was not attempted"
+        : "no user is signed in for this space; the manager was not attempted";
   const remedy = login.state === "not-granted"
     ? `ask the space owner to grant the CLI actor, then ${then}`
     : `cotal login${idp}, then ${then}`;
@@ -89,11 +92,24 @@ export function userLoginRequired(space: string, login: Awaited<ReturnType<typeo
 
 /** Refuse a start of the manager of a user-auth space that `root` hosts while no signed-in, granted
  *  login exists, as `up` does for its own manager: its readiness is read as that login, so it could
- *  not be confirmed. Runs before a definition is saved or a child launched. */
+ *  not be confirmed. A space registered here from another host needs the login alone, since its
+ *  grant is not readable here. The cached login is then confirmed with its IdP, so one the IdP
+ *  rejects as expired or revoked is refused the same way. Any other failure of that check, such as
+ *  an IdP that does not answer, is left to the launch, which reports it as before. Runs before a
+ *  definition is saved or a child launched. */
 export async function assertManagerLogin(root: string, space: string, then: string): Promise<void> {
-  if (!hasUserAuthState(root, space, { readOnly: true })) return;
-  const login = await userLoginState(root, space);
-  if (login.state !== "ready") throw userLoginRequired(space, login, then);
+  const registered = findMesh(space)?.userAuth;
+  if (registered?.remote !== true) {
+    if (!hasUserAuthState(root, space, { readOnly: true })) return;
+    const login = await userLoginState(root, space);
+    if (login.state !== "ready") throw userLoginRequired(space, login, then);
+  }
+  const provider = resolveAuthProvider();
+  if (!provider.confirmLogin) throw new CommandFailure("refused", "UNSUPPORTED", "the installed auth provider cannot confirm a login with its IdP; the manager was not attempted", { target: { space, provider: provider.name } });
+  let answer: "confirmed" | "signed-out" | "rejected";
+  try { answer = await provider.confirmLogin({ dir: userAuthStateDir(root, space, { readOnly: true }), space }); }
+  catch { return; }
+  if (answer !== "confirmed") throw userLoginRequired(space, { state: answer === "rejected" ? "rejected" : "absent", idpUrl: registered?.idp.url }, then);
 }
 
 /** The provisional registry metadata: the prepared trust pins only. No endpoint is copied from a

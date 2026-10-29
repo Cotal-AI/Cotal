@@ -249,7 +249,8 @@ try {
   check("  and that line, with each placeholder filled in, saves the broker the first time it runs", followed.status === 0 && out(followed).includes("Service definition saved"), out(followed));
 
   const brokerHelp = out(cotal(["service", "add", "b1", "--preset", "broker", "--space", PREPARED, "--help"]));
-  check("broker preset help shows --log-file as a path, as `cotal up` does, described for a preset add", /--log-file <path> +absolute path of the nats-server log file this configuration's log_file names/.test(brokerHelp) && !brokerHelp.includes("prepared by `cotal up`"), brokerHelp);
+  check("broker preset help shows --log-file as a path, as `cotal up` does, described for a preset add", /--log-file <path> +the nats-server log file this configuration's log_file names/.test(brokerHelp) && !brokerHelp.includes("prepared by `cotal up`"), brokerHelp);
+  check("broker preset help shows --server as a URL, as its refusal does", /--server <url> +the one broker URL this configuration serves/.test(brokerHelp), brokerHelp);
   /** A broker add in the prepared space with these extra flags, as its JSON error, or the output when it has none. */
   const brokerAdd = (name: string, extra: string[]) => {
     const run = cotal(["service", "add", name, "--preset", "broker", "--space", PREPARED, "--config", config, "--binary", binary, "--server", fills["--server"]!, ...extra, "--json"]);

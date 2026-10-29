@@ -21,7 +21,7 @@ import { resolve, sep } from "node:path";
 import { AGENT_LIFECYCLE_HELD, AgentGrantConflictError, EP_ERROR_CODES, EpEnvelopeError, agentLifecycleHeld, type AgentLifecycleRelease, type EpEffectOutcome, type EpErrorCode } from "@cotal-ai/core";
 import { parseServiceAuthorityEnvelope, parseServiceAuthorityRequest } from "@cotal-ai/core";
 import { readRemoteServiceAuthorityInfo, postRemoteServiceAuthority, serviceAuthorityUrl, withServiceAuthorityBudget, assertServiceViewFreshness } from "./service-authority-client.js";
-import { deleteIdpSpaceCatalog, fetchIdpJwt, hasIdpSessions, hasIdpSpaceCatalog, loadIdpSession, normalizeIdpUrl, prepareIdpSpaceCatalogs, probeIdpJwks, requireIdpSession } from "./login.js";
+import { deleteIdpSpaceCatalog, fetchIdpJwt, hasIdpSessions, hasIdpSpaceCatalog, IdpSessionRejectedError, loadIdpSession, normalizeIdpUrl, prepareIdpSpaceCatalogs, probeIdpJwks, requireIdpSession } from "./login.js";
 import { deriveOwnerForIdpSubject } from "./derive.js";
 import { findActorUnified, findInteractiveActor, hashActorToken, newActorToken, notGrantedReason, withManagedGrantTransaction } from "./ledger.js";
 import { userAuthTrustFingerprint, validateRetainedManagedAgent } from "./continuity.js";
@@ -622,6 +622,19 @@ export const cotalAuthProvider: AuthProvider = {
           }
         : "not-granted",
     };
+  },
+
+  async confirmLogin({ dir, space }) {
+    const idpUrl = loadPinnedIdp(dir)?.url ?? remoteUserAuthEntry(dir, space)?.idp.url;
+    if (!idpUrl) throw new Error(`space "${space}" has no user-auth material on this machine`);
+    const session = loadIdpSession(homeCotalDir(), idpUrl);
+    if (!session) return "signed-out";
+    try { await fetchIdpJwt(idpUrl, session.token); }
+    catch (e) {
+      if (e instanceof IdpSessionRejectedError) return "rejected";
+      throw e;
+    }
+    return "confirmed";
   },
 
   /** Spawn-path grant authorship: one atomic MANAGED-AGENT row (its own row space — never

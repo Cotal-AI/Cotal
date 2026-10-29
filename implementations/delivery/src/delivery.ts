@@ -649,6 +649,11 @@ async function runStartedDelivery(
     BROKER_GONE_MS,
     Number(process.env.COTAL_DELIVERY_BROKER_GONE_BACKSTOP_MS) || BROKER_GONE_MS * 4,
   );
+  /** How long after a drop a signalled stop waits for the redial before it releases the lease.
+   *  nats.js redials 2s after its previous dial, plus up to 1s of jitter over TLS, and the endpoint
+   *  waits the same 5s for its own credential swap's redial. Never longer than a serving daemon waits
+   *  for its broker. */
+  const REDIAL_WAIT_MS = Math.min(5_000, BROKER_GONE_MS);
   let stopHandler: ((code: number, cause?: string) => void) | undefined;
   let heldStartupFailure: Error | undefined;
   let stopHeld: ((cause: string, lost: string) => void) | undefined;
@@ -822,6 +827,13 @@ async function runStartedDelivery(
     process.off("SIGINT", holdSigint);
     process.off("SIGTERM", holdSigterm);
   }
+  /** Resolves once the transport reports connected again, or after `ms`. */
+  const transportBack = (ms: number): Promise<void> => new Promise<void>((resolve) => {
+    const done = () => { clearTimeout(timer); ep.off("transport", onTransport); resolve(); };
+    const onTransport = ({ connected }: { connected: boolean }) => { if (connected) done(); };
+    const timer = setTimeout(done, ms);
+    ep.on("transport", onTransport);
+  });
   // THE LIVENESS RECORD GOES HERE, AFTER THE ACQUIRE AND NOT BEFORE IT (#1528).
   //
   // The record answers "which process is this space's delivery daemon", and until this line this
@@ -875,12 +887,7 @@ async function runStartedDelivery(
         const generation = transportGeneration;
         const reconnected = async () => {
           const downSince = transportDownSince;
-          if (downSince !== undefined) await new Promise<void>((resolve) => {
-            const done = () => { clearTimeout(timer); ep.off("transport", onTransport); resolve(); };
-            const onTransport = ({ connected }: { connected: boolean }) => { if (connected) done(); };
-            const timer = setTimeout(done, downSince + BROKER_GONE_MS - Date.now());
-            ep.on("transport", onTransport);
-          });
+          if (downSince !== undefined) await transportBack(downSince + BROKER_GONE_MS - Date.now());
           return transportDownSince === undefined && transportGeneration !== generation && transportLateGeneration <= generation;
         };
         left = await release().catch(async (e) => { if (!await reconnected()) throw e; return release(); });
@@ -1109,15 +1116,23 @@ async function runStartedDelivery(
     health.stop();
     stopLeaseWatch?.();
     // THE RECORD GOES FIRST, AND SYNCHRONOUSLY. Everything below this line talks to a broker that
-    // may be dead and is bounded only by the 2s hard exit; a record left behind because a drain
+    // may be dead and is bounded only by the hard exit; a record left behind because a drain
     // hung is a record that outlives its process, which is this issue's defect re-entering through
     // the exit path. Removing it needs no broker, and waits only on a publish of the same record
     // that is in flight (#1238), so it runs before any of it.
     unrecordPid?.();
+    // A STOP THAT LANDS WHILE THE CONNECTION REDIALS WAITS FOR THE REDIAL. nats.js never answers a
+    // request written while the connection is down, so a release sent then was lost, and the hard
+    // exit ended the process with the row still claiming the shard. A credential swap redials on
+    // purpose: the manager `cotal up` starts next renews the daemon's credential within a second of
+    // its start, and nats.js holds that redial until 2s after the first dial. A stop in that window
+    // left `down` refusing and the next `up` waiting out the lease TTL.
+    const redialMs = transportDownSince === undefined ? 0 : Math.max(0, transportDownSince + REDIAL_WAIT_MS - Date.now());
     // Hard-exit fallback: a graceful release/stop talks to the broker, which may be DEAD (the broker-gone
     // exit path) — don't let that hang the process. Force exit if the graceful path doesn't finish quickly.
-    setTimeout(() => process.exit(code), 2000);
+    setTimeout(() => process.exit(code), redialMs + 2000);
     void (async () => {
+      if (redialMs > 0) await transportBack(redialMs);
       // THE LEASE GOES FIRST. Everything else here is this process's own teardown, which nobody is
       // waiting on; the lease row is the one piece of SHARED state, and while it survives no
       // replacement daemon can acquire the shard at all (the acquire is an atomic create, so it is

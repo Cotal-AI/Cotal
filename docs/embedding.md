@@ -85,6 +85,14 @@ The field is optional for provider compatibility. Its absence means the caller h
 authoritative grant answer. A status surface must preserve unknown or unavailable instead of
 inferring broad access from a bearer, successful exchange or broker ping.
 
+## Login confirmation
+
+`AuthProvider.confirmLogin` asks the space's IdP whether this machine's cached login still holds.
+It mints nothing. It answers `confirmed`, `signed-out` when no login is cached, or `rejected` when
+the IdP refused the cached one, and throws on any other failure. `cotal manager start` and
+`restart` call it on a user-auth space before they save or launch anything, and refuse
+`UNSUPPORTED` when the provider does not implement it.
+
 ## Account connection census
 
 `mintAccountCensusCreds` creates a host-only SYS user with at most five minutes of authority.

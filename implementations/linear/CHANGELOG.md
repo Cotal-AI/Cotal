@@ -1,5 +1,11 @@
 # @cotal-ai/linear
 
+## 0.121.7
+
+### Patch Changes
+
+- 9f84bea: `linearClusterDocument` and `linearClusterArtifacts` now build their single-document closure manifests and digests with `singleDocumentClosure` from `@cotal-ai/core`, matching the auth and manager service contracts. Every published artifact and digest is unchanged.
+
 ## 0.121.6
 
 No changes in this release.
