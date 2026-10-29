@@ -1,5 +1,34 @@
 # @cotal-ai/cli
 
+## 0.128.0
+
+### Patch Changes
+
+- 75e06da: When `cotal ps` refuses because no manager runs or is registered for the space, its next step now
+  names the root of this machine's own stack for the space, as bare `cotal up` in that folder. It used
+  to say bare `cotal up` with no folder, and run from another project that starts the other project's
+  manager. A space this machine only registered or records no stack for, or one reached through a
+  `--server` other than its recorded broker, gets a step that says to start the manager where the
+  space's stack runs and names no local command. `cotal status <agent>` and the `attach` picker share
+  the refusal. Its code, message, cause and exit 2 are unchanged.
+- 1f8bfe5: A restore made by an earlier release no longer has its cleanup delete another account's data without
+  consent. Such a restore recorded no other accounts, so its cleanup named none and deleted the store it
+  set aside, an open mesh's account included, with no `--discard-history`. `status`, the
+  `backup cleanup-fallback` preview and the cleanup now read that store while it is still the recorded
+  one and name the accounts the restore's auth mode rules out: every account but `$G` after an open
+  restore, and `$G` after a static or user one. The preview warns with `HISTORY_ONLY_IN_PREVIOUS_STORE`,
+  and `backup cleanup-fallback` and `clean restore-fallback` refuse and delete nothing unless
+  `--discard-history` is given. Which data account a static or user restore brought back is not
+  recorded, so another data account in that store is still not named.
+  
+  The exported restore-summary helpers now require the record's `mode`. Library callers that passed
+  only a partial record must pass the validated maintenance journal, including its mode. This is a
+  breaking TypeScript API change for those callers.
+- 1090d9b: `cotal up` now wraps four more start notes at spaces on a terminal, as other lines do: the note that it selected the space it started, the note that another space stays selected, `wrote default persona` and the note that a new project's space is named after its folder. A path wider than the line keeps a line of its own and is never split, and `cotal use <space>` stays whole. Off a terminal each is still one line on stdout, and exit codes are unchanged.
+- Updated dependencies [1f8bfe5]
+  - @cotal-ai/workspace@0.128.0
+  - @cotal-ai/core@0.128.0
+
 ## 0.127.5
 
 ### Patch Changes
