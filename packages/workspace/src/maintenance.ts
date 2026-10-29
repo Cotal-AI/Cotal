@@ -4124,17 +4124,29 @@ export function restoreReplacedNewerCut(record: LeftOutRecord): boolean {
   return record.launch?.previousCutNewer === true;
 }
 
+/** The other JetStream accounts whose streams a restore's launch records in the store it set aside,
+ *  such as an open mesh's account beside a static space's after both ran in one folder. A backup
+ *  holds one account, so that store holds their only copy. Empty when it recorded none. */
+export function restoreOtherAccounts(record: LeftOutRecord): string[] {
+  const recorded = record.launch?.otherAccounts;
+  return Array.isArray(recorded) ? recorded.filter((account): account is string => typeof account === "string") : [];
+}
+
 /** What a restore left only in the store it set aside. A registry restore left out every other
  *  stream, and a full restore whose launch names no workflow journal, of a user-mode artifact or one
  *  made before full backups held runs, left out the workflow runs. A full restore that replaced a
  *  newer cut ({@link restoreReplacedNewerCut}) also left out what was written after its artifact.
+ *  Any restore left out the streams of the other accounts in that store ({@link restoreOtherAccounts}).
  *  Undefined when it left out nothing. */
-export function restoreLeftOut(record: LeftOutRecord): "chat and DM history and workflow runs" | "workflow runs" | "newer chat and DM history and workflow runs" | "workflow runs and newer chat and DM history" | undefined {
-  if (record.restore.selection === "registry") return "chat and DM history and workflow runs";
+export function restoreLeftOut(record: LeftOutRecord): string | undefined {
+  const accounts = restoreOtherAccounts(record);
+  const theirs = accounts.length ? `streams of ${accounts.length === 1 ? "account" : "accounts"} ${accounts.join(", ")}` : undefined;
   const restored = record.launch?.restoredStreams;
   const runs = Array.isArray(restored) && restored.includes(wfjStreamName(record.space));
-  if (restoreReplacedNewerCut(record)) return runs ? "newer chat and DM history and workflow runs" : "workflow runs and newer chat and DM history";
-  return runs ? undefined : "workflow runs";
+  const own = record.restore.selection === "registry" ? "chat and DM history and workflow runs"
+    : restoreReplacedNewerCut(record) ? (runs ? "newer chat and DM history and workflow runs" : "workflow runs and newer chat and DM history")
+    : runs ? undefined : "workflow runs";
+  return own && theirs ? `${own} and the ${theirs}` : own ?? theirs;
 }
 
 /** A run a restore over a newer cut rolled back: its journal in the store the restore set aside goes
@@ -4163,8 +4175,9 @@ export function restoreRolledBackRuns(record: LeftOutRecord): { readonly runs: r
 export function restoreLeftOutReason(record: LeftOutRecord): string | undefined {
   const leftOut = restoreLeftOut(record);
   if (!leftOut) return undefined;
-  if (record.restore.selection === "registry") return "this restore was registry-only";
-  const why = [...(restoreReplacedNewerCut(record) ? ["was made before the state it replaced was preserved"] : []), ...(leftOut.startsWith("workflow runs") ? ["held no workflow runs"] : [])];
+  const accounts = restoreOtherAccounts(record).length ? ["held only one of the accounts in the store it replaced"] : [];
+  if (record.restore.selection === "registry") return `this restore was registry-only${accounts.length ? ` and its artifact ${accounts[0]}` : ""}`;
+  const why = [...(restoreReplacedNewerCut(record) ? ["was made before the state it replaced was preserved"] : []), ...(leftOut.startsWith("workflow runs") ? ["held no workflow runs"] : []), ...accounts];
   return `this restore's artifact ${why.join(" and ")}`;
 }
 

@@ -63,6 +63,7 @@ import {
   type RestoreReadyRecord,
   restoreLeftOut,
   restoreLeftOutReason,
+  restoreOtherAccounts,
 } from "../src/maintenance.js";
 import { wfjStreamName } from "@cotal-ai/core";
 
@@ -1270,6 +1271,37 @@ if (process.platform !== "win32") {
   check("the refused cleanup keeps the old source and the active journal", exists(fallback) && readMaintenanceJournal(p.root)?.state === "active");
   cleanupRestoreFallback(p.lock, "restore-runs", { discardHistory: true });
   check("discardHistory deletes it and retires the journal", !exists(fallback) && sameStoreIdentity(target, readStoreIdentity(p.store)) && readMaintenanceJournal(p.root) === undefined);
+  releaseMaintenanceLock(p.lock);
+}
+
+// A store that also held another account's streams, such as an open mesh's beside a static space's,
+// keeps their only copy once a restore of the space sets it aside, so deleting it needs the same
+// consent, and the refused cleanup keeps that account's streams.
+{
+  const p = ready("cleanup-accounts");
+  const fallback = join(p.root, "store.fallback");
+  prepareSamePathRestore(p.lock, { attemptId: "restore-accounts", targetPath: p.store, fallbackPath: fallback, claim: restoreClaim(), selection: "full" });
+  moveSamePathRestoreSource(p.lock);
+  mkdirSync(p.store);
+  bindRestoreTarget(p.lock);
+  const target = readStoreIdentity(p.store);
+  writeRestoreCommitIntent(p.lock, { server: "nats://127.0.0.1:4222", restoredStreams: [wfjStreamName("space-cleanup-accounts")], otherAccounts: ["$G"] });
+  const proof: RestoreListenerProof = {
+    attemptId: "restore-accounts", serverName: "restore-accounts-listener", serverNonce: "restore-accounts-nonce",
+    processOwner: owner("restore-accounts-owner", process.pid), serverEndpoint: normalEndpoint, target,
+  };
+  bindRestoreListener(p.lock, proof);
+  finalizeRestore(p.lock, proof);
+  const streams = join(fallback, "jetstream", "$G", "streams", "CHAT_space-cleanup-accounts");
+  mkdirSync(streams, { recursive: true });
+  const active = readMaintenanceJournal(p.root) as Parameters<typeof restoreLeftOut>[0];
+  check("the restore names the other account in the store it set aside", JSON.stringify(restoreOtherAccounts(active)) === '["$G"]');
+  check("it left out that account's streams, and says why", restoreLeftOut(active) === "streams of account $G"
+    && restoreLeftOutReason(active) === "this restore's artifact held only one of the accounts in the store it replaced");
+  check("with the runs left out too it names both", restoreLeftOut({ ...active, launch: { otherAccounts: ["$G", "AB"] } }) === "workflow runs and the streams of accounts $G, AB");
+  check("a registry restore gives both reasons", restoreLeftOutReason({ ...active, restore: { selection: "registry" } }) === "this restore was registry-only and its artifact held only one of the accounts in the store it replaced");
+  expectCode("its old source is not deleted without discardHistory", "cleanup-forbidden", () => cleanupRestoreFallback(p.lock, "restore-accounts"));
+  check("the refused cleanup keeps the other account's streams and the active journal", existsSync(streams) && exists(fallback) && readMaintenanceJournal(p.root)?.state === "active");
   releaseMaintenanceLock(p.lock);
 }
 

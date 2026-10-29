@@ -768,7 +768,9 @@ runs from another folder refuses `CONFLICT` as well. Its Next names
 the other one in its own folder. A background boot also brings up the control plane (delivery daemon in auth
 mode, then the manager). An open mesh runs no delivery daemon, also in a root that still holds a
 static stack's accounts, and its manager mints no credentials from those accounts, so static and
-open boots can alternate in one folder. This prevents new affected stores; it does not repair an
+open boots can alternate in one folder. Their store then holds both accounts, and a backup holds
+one, so a restore there leaves the other account's streams in the store it sets aside (see
+[Backups](#backups)). This prevents new affected stores; it does not repair an
 open account where an older build already staged manager credential families. Those registrations
 can still refuse, and reconciliation requires liveness evidence that the open mesh cannot currently
 provide. Keep that store intact; upgrading alone does not recover that state.
@@ -2450,8 +2452,10 @@ so its cleanup removes nothing and only retires the journal. A later `down --pre
 starts a new backup cycle. A registry restore leaves every other stream out, chat and DM history
 and workflow runs included. A full restore of an artifact with no workflow runs leaves the runs out,
 and a full restore of an artifact made before the state it replaced was preserved leaves out what
-was written after the artifact. In each case its old store holds the only copy of them. Its `--dry-run` warns with
-`HISTORY_ONLY_IN_PREVIOUS_STORE` and names what it left out, and the cleanup refuses
+was written after the artifact. A backup holds one account, so any restore also leaves out the
+streams of another account in the store it replaced, such as an open mesh's account beside a static
+space's after both ran in one folder. In each case its old store holds the only copy of them. Its `--dry-run` warns with
+`HISTORY_ONLY_IN_PREVIOUS_STORE` and names what it left out, with those accounts in `otherAccounts`, and the cleanup refuses
 `USAGE_INVALID` (exit 1) and deletes nothing unless `--discard-history` is given.
 That refusal names the flag and does not print the command help.
 Both review full paths and default to Cancel. Scripts need `--yes`; `--dry-run` reads the plan
@@ -2489,6 +2493,14 @@ an artifact made before the state it replaced was preserved, such as a backup ta
 `cotal up` and `down --preserve-state`, leaves out the chat and DM history and workflow runs written
 after the artifact. Its receipt says so with a `NEWER_HISTORY_NOT_RESTORED` warning that names the
 store it set aside, which holds their only copy, and its next step includes `--discard-history` too.
+When the store a restore replaced also held another account's streams, the receipt says they are not
+restored and names the accounts in `otherAccounts`. That is an `OTHER_ACCOUNTS_NOT_RESTORED` warning,
+or the warning above when the restore also left out history or workflow runs, and its next step
+includes `--discard-history` as well. `previousStore` names the store a restore set aside whenever
+that store holds the only copy of something the restore left out, and is null otherwise. A restore
+made by an earlier release recorded no other accounts, so its receipt, preview and cleanup do not
+name them. Before such a cleanup, list the previous store's `jetstream` folder: each folder there is
+one account.
 When that restore brought the workflow runs back, it also names each run it rolled back and each
 step that was answered after the artifact and is open again, and says that answer is only in the
 store it set aside. A reopened step accepts an answer again. `cotal status` and the
