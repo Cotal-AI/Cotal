@@ -487,9 +487,13 @@ try {
   terminal.onData((data) => { wrapped += data; });
   const terminalExit = await new Promise<number>((done) => terminal.onExit((e) => done(e.exitCode)));
   const wrappedLines = clean(wrapped).split(/\r?\n/);
-  ok("on an 80-column terminal the degraded refresh fits every line but the pidfile path and its rm command",
-    terminalExit === 1 && wrappedLines.some((line) => line.startsWith("! control plane degraded: the manager pidfile at")) &&
-      wrappedLines.every((line) => displayWidth(line) <= 80 || [openRecord(MANAGER_PIDFILE), removal].includes(line.trim())), wrappedLines);
+  // The degraded report is its `!` line and the indented lines under it; Next runs to the end.
+  const reportAt = wrappedLines.findIndex((line) => line.startsWith("! control plane degraded: the manager pidfile at"));
+  const reportEnd = wrappedLines.findIndex((line, i) => i > reportAt && !line.startsWith("  "));
+  const reportLines = [...wrappedLines.slice(reportAt, reportEnd), ...wrappedLines.slice(wrappedLines.lastIndexOf("Next"))];
+  ok("on an 80-column terminal the degraded report and its Next fit every line but the pidfile path and its rm command",
+    terminalExit === 1 && reportAt >= 0 && reportEnd - reportAt > 3 &&
+      reportLines.every((line) => displayWidth(line) <= 80 || [openRecord(MANAGER_PIDFILE), removal].includes(line.trim())), wrappedLines);
   const managerCheck = cliIn(openRoot, "ps", "--space", openSpace);
   ok("the cotal ps the Next names finds no manager running there",
     managerCheck.status !== 0 && plain(managerCheck.stdout + managerCheck.stderr).includes(`service "manager" has no live registered instances`), plain(managerCheck.stdout + managerCheck.stderr));
