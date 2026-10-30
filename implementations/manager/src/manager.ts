@@ -1027,10 +1027,12 @@ type ManagedEnrollment = Awaited<ReturnType<NonNullable<NonNullable<ManagerOptio
 
 /** What bounds the grant a spawn hands its helper on a static mesh (SPEC 13.15). Nothing for the
  *  manager's own composition root, an operator instrument or a spawner holding the admin set; no
- *  grant at all for a caller whose evidence does not resolve; otherwise the caller's evidence. */
+ *  grant at all for a caller whose evidence does not resolve; no spawn at all for a run that was
+ *  revoked or whose revocation marker cannot be read; otherwise the caller's evidence. */
 type StaticSpawnBound =
   | { kind: "exempt" }
   | { kind: "none"; reason: string }
+  | { kind: "refused"; reason: string }
   | { kind: "bounded"; caller: IssuedCaller; ceiling: IssuedSubjectPermissions; run?: string };
 
 const INLINE_PERSONA_KEYS = ["prompt", "role", "model", "variant", "description", "subscribe", "allowSubscribe", "allowPublish", "capabilities", "save"];
@@ -6595,6 +6597,16 @@ export class Manager {
     // expired or changed since: the admission recorded both the ceiling and the verdict.
     const admission = this.runHosting?.runAdmission(caller);
     if (admission !== undefined) {
+      // Read leader-served before each of the run's spawns, so a run revoked mid-step starts no
+      // helper, and a marker this manager cannot read refuses the spawn too.
+      let refusal: string | undefined;
+      try {
+        const revoked = await this.runHosting!.revocation(admission.runId);
+        if (revoked !== undefined) refusal = `run ${admission.runId} was revoked by ${revoked.by} (${revoked.reason}); a revoked run starts no helper (SPEC 14.8)`;
+      } catch (e) {
+        refusal = `run ${admission.runId}'s revocation marker could not be read (${rejectionText(e)}), so it starts no helper (SPEC 14.8)`;
+      }
+      if (refusal !== undefined) return { kind: "refused", reason: refusal };
       if (admission.spawnExempt) return { kind: "exempt" };
       if (!isIssuedCaller(admission.caller))
         return { kind: "none", reason: "its run was admitted with no issued generation, so it records no ceiling to bound a grant by" };
@@ -6619,6 +6631,7 @@ export class Manager {
    *  being bounded: a persona definition is bounded against its definer as a spawn is. */
   private spawnBoundRefusal(bound: StaticSpawnBound, grant: DelegatedGrant, armsEvents: boolean, door: "spawn" | "define-persona" = "spawn"): string | undefined {
     if (bound.kind === "exempt") return undefined;
+    if (bound.kind === "refused") return `${door}: ${bound.reason}`;
     let over: GrantOverreach[];
     let eventsOver: boolean;
     try {
@@ -6901,13 +6914,15 @@ export class Manager {
       ...(capabilities !== undefined ? { capabilities } : {}),
     }, events);
     if (boundRefusal) return { ok: false, error: boundRefusal };
+    // A run saves for the caller it was admitted for, whose catalog reads then find the copy.
+    const savedBy = authenticatedCaller === undefined ? undefined : this.runHosting?.admittedCaller(authenticatedCaller);
     // What a saved copy keeps: the grant just checked, without the helper's own event row, which each
     // later spawn derives for its own helper. The file names every channel field, so no later caller's
     // default fills one, and each later spawn of it is still bounded against that caller.
     const catalogCopy: AgentDef | undefined = inline?.save
       ? {
           name: ref,
-          owner: spawner === undefined ? undefined : this.personaOwner(spawner),
+          owner: savedBy !== undefined ? this.personaOwner(principalKey(savedBy.owner, savedBy.actor).key) : spawner === undefined ? undefined : this.personaOwner(spawner),
           role,
           model,
           variant,

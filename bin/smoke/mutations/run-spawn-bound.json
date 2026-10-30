@@ -2,14 +2,14 @@
   "suite": [
     "bin/smoke/run-host-live.smoke.ts"
   ],
-  "guard": "On a static mesh a hosted run's spawns are bounded by its admission (SPEC 14.8): a helper gets no channel or capability its starter's issued credential did not carry when the run was admitted, a starter that was an operator instrument or held the admin set is exempt and its admission records that, and the record carries the verdict through the store.",
+  "guard": "On a static mesh a hosted run's spawns are bounded by its admission (SPEC 14.8): a helper gets no channel or capability its starter's issued credential did not carry when the run was admitted, a starter that was an operator instrument or held the admin set is exempt and its admission records that, and the record carries the verdict through the store, and a run revoked mid-step starts no helper.",
   "command": "pnpm smoke:run-host-live",
   "completionMarker": "run-host-live.smoke:",
   "proveWith": "pnpm mutation-proof --config bin/smoke/mutations/run-spawn-bound.json",
   "why": [
     "A workflow run's spawns were exempt from the static spawn bound, so a caller holding run could start a run and spawn a helper the direct door refuses.",
     "The suite runs the manager and core from their built packages, so each mutant is seen through that build and afterRestore rebuilds so the restored source is the artifact again.",
-    "R1 exempts every run spawn, R2 writes the exemption for every starter, R3 ignores the recorded exemption, and R4 drops the field when the store's record is read back."
+    "R1 exempts every run spawn, R2 writes the exemption for every starter, R3 ignores the recorded exemption, and R4 drops the field when the store's record is read back, and R5 skips the revocation marker read before a run's spawn."
   ],
   "mutations": [
     {
@@ -47,6 +47,15 @@
       "afterRestore": "pnpm --filter cotal-ai... build",
       "expectRed": "its admission records the exemption, and the bounded starter's does not",
       "cell": "its admission records the exemption, and the bounded starter's does not"
+    },
+    {
+      "name": "R5 a revoked run's spawn is bounded as a live one",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      if (refusal !== undefined) return { kind: \"refused\", reason: refusal };\n",
+      "replace": "",
+      "afterRestore": "pnpm --filter cotal-ai... build",
+      "expectRed": "a spawn after its run was revoked is refused naming the revocation, and no helper starts",
+      "cell": "a spawn after its run was revoked is refused naming the revocation, and no helper starts"
     }
   ]
 }

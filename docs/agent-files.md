@@ -179,6 +179,6 @@ file for you to delete. No spawn can name a snapshot as its persona file.
 `save: true` also writes `.cotal/agents/<name>.md` under the requested name, for a persona worth
 reusing. The copy records the grant the spawn was checked against: every channel field, `[]`
 included, and the capabilities, without the helper's own event channel. Its owner is the spawner,
-as with `cotal_persona`. The write never replaces a file: a name the catalog already holds is
+as with `cotal_persona`, and a copy a workflow run saves is owned by the run's starter. The write never replaces a file: a name the catalog already holds is
 refused before anything starts, so spawn that persona by name or save under another name. Each
 later spawn of the copy is bounded against its own spawner.

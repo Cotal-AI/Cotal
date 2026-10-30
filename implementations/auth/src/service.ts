@@ -1057,9 +1057,9 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
     });
   // The served spawn requests a hosted enrollment may name (SPEC 13.6). A spawn request's subject
   // carries its caller and a per-call nonce, so it enrolls one helper: the first enrollment that
-  // names it takes it for its token digest, and only a retry of that enrollment, under the same
-  // digest and inside the window, is answered again.
-  const observedSpawnRequests = new Map<string, { expires: number; takenBy?: string }>();
+  // names it takes it for its helper and token digest, and only a retry of that enrollment, naming
+  // the same helper under the same digest inside the window, is answered again.
+  const observedSpawnRequests = new Map<string, { expires: number; takenBy?: { actor: string; tokenHash: string } }>();
   for (const subject of servedSpawnRequestSubjects(space))
     remoteIssuer.nc.subscribe(subject, {
       callback: (_err, msg) => {
@@ -1072,12 +1072,12 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
         if (!observedSpawnRequests.has(msg.subject)) observedSpawnRequests.set(msg.subject, { expires: now + OBSERVED_RUN_REQUEST_WINDOW_MS });
       },
     });
-  const takeObservedSpawnRequest = async (subject: string, tokenHash: string): Promise<boolean> => {
+  const takeObservedSpawnRequest = async (subject: string, enrollment: { actor: string; tokenHash: string }): Promise<boolean> => {
     await remoteIssuer.nc.flush();
     const observed = observedSpawnRequests.get(subject);
     if (observed === undefined || observed.expires <= Date.now()) return false;
-    observed.takenBy ??= tokenHash;
-    return observed.takenBy === tokenHash;
+    observed.takenBy ??= { actor: enrollment.actor, tokenHash: enrollment.tokenHash };
+    return observed.takenBy.actor === enrollment.actor && observed.takenBy.tokenHash === enrollment.tokenHash;
   };
   // A run's starter, read from its admission; a revoked run enrolls no helper.
   const readRunStarterAdmission = async (runId: string) => {

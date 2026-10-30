@@ -72,6 +72,9 @@ const names = [
   "U1 the verify door answers the caller it observed as the parent, again for a retry, and refuses another enrollment of that spawn",
   "U1 the verify door refuses a served spawn wider than its caller",
   "U1 the verify door refuses a run's helper wider than the grant its admission froze",
+  "U1 the verify door refuses an observed spawn's token digest under another actor",
+  "U1 an observed spawn enrolls one helper: its token digest under another actor is refused",
+  "U1 a run's saved persona is owned by the run's starter, and the run and the starter spawn it by name",
 ];
 let pass = 0, fail = 0;
 async function cell(index: number, fn: () => Promise<void>) {
@@ -227,7 +230,7 @@ try {
       assert.ok(reply.ok, reply.error?.message);
       const view = reply.data as RunStatusView;
       if ((stepKey === undefined && view.status?.state === wanted) || view.journal.some((r) => r.kind === "step" && r.state === wanted && (stepKey === undefined || r.step === stepKey))) return view;
-      if (view.status?.state === "failed") throw new Error("the real run failed before reaching its requested step");
+      if (view.status?.state === "failed") throw new Error(`the real run failed before reaching its requested step: ${view.status.failure?.message ?? "no recorded cause"}`);
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
     throw new Error(`run never reached ${wanted}`);
@@ -457,6 +460,47 @@ try {
     }
     assert.ok((await call(d, caller, "run-answer", { runId, stepKey: "/checkpoint:verifywiden#0", value: true })).ok);
     await readyStatus(d, caller, runId, "completed");
+  });
+  await cell(20, async () => {
+    assert.ok(d && caller);
+    // The same digest under another actor is another helper, so the observation it took refuses it.
+    const served = await observeSpawn(d.nc, caller, `oneactor${mintLifecycleUid()}`);
+    const request = remote.remoteManagedAgentEnrollmentRequest(state, "cli", proof, registered.processEpoch,
+      { actor: "oneactor", tokenHash: newActorToken().tokenHash, label: "oneactor", allowSubscribe: [] }, { served });
+    assert.equal((await verify(request)).parent, `${owner}.runner`);
+    const renamed = { ...request, requestId: `enroll${mintLifecycleUid()}`, target: { ...request.target, actor: "oneactor2", label: "oneactor2" } };
+    await assert.rejects(verify(renamed), /taken by another enrollment/);
+  });
+  await cell(21, async () => {
+    assert.ok(d && caller);
+    const servedRow = await observeSpawn(d.nc, caller, `onerow${mintLifecycleUid()}`);
+    const { tokenHash } = newActorToken();
+    const enroll = (actor: string) => post("/manager-service-authority", { idpToken, request: remote.remoteManagedAgentEnrollmentRequest(state, "cli", proof,
+      registered.processEpoch, { actor, tokenHash, label: actor, allowSubscribe: [] }, { served: servedRow }) });
+    await enroll("onerow");
+    assert.equal(findManagedActor(a.stateDir, owner, "onerow")?.parent, `${owner}.runner`);
+    await assert.rejects(enroll("onerow2"), /taken by another enrollment/);
+    assert.equal(findManagedActor(a.stateDir, owner, "onerow2"), undefined);
+  });
+  await cell(22, async () => {
+    assert.ok(d && caller);
+    // An inline persona names no harness, so the manager's default stands in for the fixture's pin.
+    process.env.COTAL_DEFAULT_AGENT = "u1-fixture";
+    try {
+      const started = await call(d, caller, "run-start", { source: 'await spawn({ name: "runsaved", prompt: "A helper a run saved.", save: true }, { events: false }); await spawn("runsaved", { events: false }); await checkpoint("saved", "Saved?");' });
+      assert.ok(started.ok, started.error?.message);
+      const runId = (started.data as { runId: string }).runId;
+      await readyStatus(d, caller, runId, "pending", "/checkpoint:saved#0");
+      assert.match(readFileSync(join(managerRoot, ".cotal", "agents", "runsaved.md"), "utf8"), new RegExp(`^owner: ${owner}\\.runner$`, "m"));
+      // While the run's helpers still hold the name, so the starter's helper is numbered beside them
+      // rather than waiting on their retirement.
+      const reply = await call(d, caller, "spawn", { name: "runsaved", agent: "u1-fixture", events: false });
+      assert.ok(reply.ok, reply.error?.message);
+      assert.ok((await call(d, caller, "run-answer", { runId, stepKey: "/checkpoint:saved#0", value: true })).ok);
+      await readyStatus(d, caller, runId, "completed");
+    } finally {
+      delete process.env.COTAL_DEFAULT_AGENT;
+    }
   });
   await cell(5, async () => {
     grantActor(a.stateDir, { owner, actor: "norun", scope: ["admin", "spawn"], allowSubscribe: [], allowPublish: [] });

@@ -89,9 +89,10 @@ export async function authorizeRemoteManagedAgentEnrollment(
 export async function resolveRemoteSpawner(args: {
   request: RemoteManagedAgentEnrollmentRequest;
   owner: string;
-  /** Takes the observation of a served spawn subject for one enrollment token digest: true for
-   *  the first taker and its retries, false for any other or for a subject never observed. */
-  takeObserved: (subject: string, tokenHash: string) => Promise<boolean>;
+  /** Takes the observation of a served spawn subject for one enrollment, named by its helper and
+   *  token digest: true for the first taker and its retries, false for any other or for a subject
+   *  never observed. */
+  takeObserved: (subject: string, enrollment: { actor: string; tokenHash: string }) => Promise<boolean>;
   readAdmission: (runId: string) => Promise<RunAdmission | undefined>;
 }): Promise<{ parent: string; run?: { runId: string; starter: { owner: string; actor: string }; delegation: RunDelegation } }> {
   const r = args.request;
@@ -100,7 +101,7 @@ export async function resolveRemoteSpawner(args: {
   if (!r.spawn.served.startsWith(`cotal.${r.space}.`) || parsed === null || parsed.plane !== "request" || parsed.endpoint !== "manager"
     || parsed.command !== "spawn" || parsed.target !== null || (parsed.route === "inst" && parsed.instanceId !== r.instanceId))
     throw new EpEnvelopeError("permission-denied", "a hosted enrollment's spawn must name a manager spawn request served on this instance");
-  if (!(await args.takeObserved(r.spawn.served, r.target.tokenHash)))
+  if (!(await args.takeObserved(r.spawn.served, r.target)))
     throw new EpEnvelopeError("permission-denied", "the issuing host did not observe this spawn request within its window, or it was taken by another enrollment (SPEC 13.6)");
   const caller = parsed.caller;
   if (caller.owner !== args.owner)

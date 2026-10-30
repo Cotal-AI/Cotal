@@ -30,7 +30,7 @@ const { connect } = await import("@nats-io/transport-node");
 const {
   createSpaceAuth, mintCreds, newIdentity, mintLifecycleUid, standaloneConnectOpts, setupSpaceStreams,
   probeConnect, resolveService, invokeCommand, DEV_OWNER, LANG_PROBLEM_DETAIL_KIND, principalKey,
-  openRecordsBucket, readCheckpointAnswer, recordCheckpointAnswer, newTakeoverId, RUN_ACTIVATION_WAIT_MS, RUN_LAUNCH_DEADLINE_MS,
+  openRecordsBucket, readCheckpointAnswer, recordCheckpointAnswer, newTakeoverId, runDriverCaller, RUN_ACTIVATION_WAIT_MS, RUN_LAUNCH_DEADLINE_MS,
   mintGeneration, mintAcceptedToken, withIssuerSession, readRunAdmission, EP_UNBOUND_CALLER_AUTHORITY,
   issuedPermitsSubject, issuedPermitsPattern, chatSubject, registry, eventChannel, LEASE_TTL_MS,
 } = await import("@cotal-ai/core");
@@ -314,6 +314,19 @@ try {
         stateOf(inlineWide.v) === "failed" && inlineWide.v?.status?.failure?.message.includes("capabilities admin") === true, inlineWide.v?.status);
       const within = await settledRun('const h = await spawn({ name: "inl-ok", prompt: "You answer.", capabilities: ["spawn"] });\nlog("seat", h.agent);\n', "inline-ok.cotal.js");
       c("an inline persona within the starter's ceiling launches and the run completes", stateOf(within.v) === "completed", within.v?.status);
+      // A run revoked while it is parked starts no helper: a spawn its driver makes afterwards is
+      // refused before anything is minted (SPEC 14.8). The spawn enters the manager with the
+      // driver's caller, as the served spawn above hands it in.
+      const parked = await call("run-start", { source: CHECKPOINT, file: "revoked-spawn.cotal.js" });
+      const parkedId = (parked.data as { runId?: string } | undefined)?.runId ?? "";
+      await until(async () => pending(await status(parkedId), "Ship it?") ? true : undefined, 15_000);
+      await (mgr as unknown as { runHosting: { revoke(runId: string, by: string, reason: string): Promise<unknown> } }).runHosting.revoke(parkedId, "operator", "withdrawn mid-run");
+      const driver = runDriverCaller(parkedId);
+      const revokedSpawn = await mgr!.startAgent({ name: "inl-revoked", agent: "run-answer-stub", persona: { prompt: "You answer." }, events: false },
+        principalKey(driver.owner, driver.actor).key, undefined, driver);
+      const seats = (mgr as unknown as { agents: Map<string, unknown> }).agents;
+      c("a spawn after its run was revoked is refused naming the revocation, and no helper starts",
+        revokedSpawn.ok === false && String(revokedSpawn.error).includes("was revoked by operator (withdrawn mid-run)") && !seats.has("inl-revoked"), revokedSpawn);
     } finally {
       delete process.env.COTAL_DEFAULT_AGENT;
     }
@@ -845,7 +858,7 @@ try { await delivery?.stop(); } catch { /* teardown */ }
   if (stillUp.running.length) console.log(`  ! seat processes still running after SIGKILL: ${stillUp.running.join(", ")}`);
 }
 
-const EXPECTED_CELLS = 83;
+const EXPECTED_CELLS = 84;
 if (pass + fail !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
   fail += 1;
