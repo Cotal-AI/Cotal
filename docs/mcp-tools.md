@@ -370,7 +370,7 @@ Define a new persona and save it as config (the manager writes .cotal/agents/<na
 
 - **Side-effect:** writes a persona file via the manager (becomes spawnable); posts one message ONLY if you pass `announce`.
 - **Available:** capability-gated like cotal_spawn.
-- Content only (`prompt`, `model`): role, ACLs, capabilities, and ownership have no slot here; they are policy. Defining is silent by default. `announce` is the only way it emits, and then only to the channel you name.
+- Writes content (`prompt`, `model`, role, agent and channel lists) and `capabilities`, which the manager checks against what you hold before it writes; ownership has no slot. Defining is silent by default. `announce` is the only way it emits, and then only to the channel you name.
 
 | Argument | Type | Required | Meaning |
 |---|---|---|---|

@@ -6871,13 +6871,11 @@ export class Manager {
     if (idErr) return { ok: false, error: opts.resolved ? `launch agent: ${idErr}` : `persona ${where}: ${idErr}` };
     // #966: a seat labelled `manager` that cannot spawn is a worker wearing a label, and the label
     // is what other agents ROUTE on (role is the anycast address). The gap is silent today because
-    // the mismatch is only discovered minutes in, when the seat first reaches for a worker. The
-    // persona write path takes content only (role/capabilities are POLICY, P6), so a peer-defined
-    // persona can never fix this by declaring the capability — the only honest outcomes are "the
-    // persona grants spawn" or "say so now". Refuse at accept, before any reserve/mint, naming the
-    // exact remediation for each author: an operator edits the file to add the grant; a peer that
-    // defined the persona over the wire must ask one, because capabilities cannot be declared over
-    // the wire by design. The check keys on the EFFECTIVE role (a spawn-time role: override wins
+    // the mismatch is only discovered minutes in, when the seat first reaches for a worker. Refuse
+    // at accept, before any reserve/mint, naming the remediation for each author: an operator edits
+    // the file to add the grant, and the persona's owner may redefine it with the grant only if the
+    // owner holds spawn, because define-persona bounds capabilities against the definer (P6). The
+    // check keys on the EFFECTIVE role (a spawn-time role: override wins
     // over the file, mirroring the resolution above), not the file's, so the label other agents
     // will actually see is the label that is held to account. `manager` is the label that MEANS
     // spawn-holding: naming it literally keeps this the narrow guard for the observed harm, not a
@@ -6897,8 +6895,8 @@ export class Manager {
         error:
           `persona "${ref}" would join with role "manager" but no spawn capability: it presents as a manager ` +
           `while being unable to seat workers, and it would discover that only on first use. ` +
-          `An operator adds \`capabilities: [spawn]\` to ${configPath}; a peer-defined persona ` +
-          `(cotal_persona) cannot declare capabilities by design — ask an operator to grant it.`,
+          `An operator adds \`capabilities: [spawn]\` to ${configPath}, or the persona's owner redefines it ` +
+          `with \`capabilities: [spawn]\` (cotal_persona) if the owner holds spawn.`,
       };
     // #581: the operator's per-role model allowlist, judged on the EFFECTIVE role and model resolved
     // above, before any reserve or mint. This is where the launch is performed, so no caller can

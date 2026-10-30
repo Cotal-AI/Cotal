@@ -2,9 +2,8 @@
  * PERSONA ROLE/CAPABILITY GUARD smoke (issue #966) — a seat labelled `manager` that cannot spawn
  * is refused at spawn-accept, loudly, instead of joining and failing silently on first use.
  *
- * THE DEFECT. `cotal_persona` takes content only (`name`/`prompt`/`model`); capabilities are POLICY
- * with no slot on the wire write path (P6 — `smoke:persona-input-closed` guards that closure, and
- * it names capabilities as exactly the vector it exists to catch). So every persona a peer defines
+ * THE DEFECT. `cotal_persona` writes `capabilities` only when its definer names them and holds them
+ * (P6: define-persona bounds them against the definer). So a persona a peer defines without them
  * lands with NO `capabilities:` line. `cotal_spawn` takes a free-form `role`, and nothing reconciles
  * the label with the grant: a wire-defined persona spawned with `role: "manager"` joins presenting
  * as a manager (role is the presence label AND the anycast address other agents route on) while its
@@ -21,7 +20,8 @@
  *      gap is real, and the spawn is where it must be caught.
  *   2. THE REFUSAL (the cell the mutation must redden). `cotal_spawn(name, role: "manager")` on
  *      that persona is REFUSED: `reply.ok === false`, naming the persona, the missing capability,
- *      and the remediation for BOTH authors (an operator edits the file; a peer must ask one).
+ *      and the remediation for BOTH authors (an operator edits the file; the persona's owner redefines
+ *      it with the grant only if the owner holds spawn).
  *   3. THE FILE'S OWN ROLE TOO. A persona file with `role: manager` in frontmatter and no
  *      capabilities is refused identically — the guard keys on the EFFECTIVE role, which the file
  *      supplies when no override is passed.
@@ -240,7 +240,7 @@ try {
   check("the persona file is on disk", existsSync(wireFile));
   const wireRaw = readFileSync(wireFile, "utf8");
   check(
-    "the wire-defined persona has NO capabilities line (the write path is content-only by design)",
+    "a definition that names no capabilities writes no capabilities line",
     !/^capabilities:/m.test(wireRaw),
   );
   check(
@@ -266,12 +266,12 @@ try {
   check("the refusal names the missing spawn capability", rt.includes("no spawn capability"), rt);
   check(
     "the refusal tells an operator the file remedy (capabilities: [spawn])",
-    rt.includes("capabilities: [spawn]"),
+    rt.includes(`An operator adds \`capabilities: [spawn]\` to ${wireFile}`),
     rt,
   );
   check(
-    "the refusal tells a peer author to ask an operator (it cannot self-serve the grant)",
-    rt.includes("ask an operator"),
+    "the refusal tells the persona's owner it can add the grant only if it holds spawn",
+    rt.includes("the persona's owner redefines it") && rt.includes("if the owner holds spawn"),
     rt,
   );
 
