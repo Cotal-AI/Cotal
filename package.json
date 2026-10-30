@@ -545,6 +545,8 @@
     "smoke:issued-space:live": "tsx packages/core/smoke/issued-space-live.smoke.ts",
     "smoke:issued-observe:live": "tsx packages/core/smoke/issued-observe-live.smoke.ts",
     "smoke:listing-issuance:live": "tsx packages/core/smoke/listing-issuance-live.smoke.ts",
+    "smoke:registry-answer:live": "pnpm --filter @cotal-ai/registry build && tsx implementations/registry/smoke/registry-answer-live.smoke.ts",
+    "smoke:registry-listing-e2e:live": "pnpm --filter @cotal-ai/registry build && tsx implementations/registry/smoke/registry-listing-e2e-live.smoke.ts",
     "smoke:issued-retention:live": "tsx packages/core/smoke/issued-retention-live.smoke.ts",
     "smoke:issued-store-binders": "tsx implementations/manager/smoke/issued-store-binders.smoke.ts",
     "smoke:issued-store-recreate": "tsx packages/core/smoke/issued-store-recreate.smoke.ts",
