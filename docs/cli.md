@@ -6822,7 +6822,11 @@ the verb exists to inspect); when neither a card nor the durable can be found, i
 `max_msgs_per_subject` / `discard` limits (`--json` prints the same facts as one object), followed
 by a bounded, unacked read of up to `--limit` (default 20) recent candidate message ids under the
 heading `recent candidate ids (from the ack floor; not proof of a hole)`, a list of what is
-there, not proof that nothing was lost.
+there, not proof that nothing was lost. Each plain candidate line prints `from=` with the sender
+principal parsed from the stored message subject, which the broker binds to the sender's
+credential, then `ts=`, then `label=` with the name and role the sender wrote in its own message.
+The label is the sender's claim and can name another agent; control characters and brackets in it
+print as spaces. `--json` keeps its earlier candidate lines.
 
 The verb needs the `admin` credential profile: it runs through the same static-mesh route as
 `cotal auth mint --profile admin`, and refuses a user-mode mesh, naming the retired static credential,

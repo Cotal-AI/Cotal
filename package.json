@@ -931,6 +931,7 @@
     "smoke:record-manager-pid-per-space": "tsx implementations/manager/smoke/record-manager-pid-per-space.smoke.ts",
     "smoke:agent-secret-segmentation": "tsx packages/workspace/smoke/agent-secret-segmentation.smoke.ts",
     "smoke:delivery-store-boundary": "tsx implementations/delivery/smoke/delivery-store-boundary.smoke.ts",
+    "smoke:deliver-pending-sender": "tsx implementations/delivery/smoke/deliver-pending-sender.smoke.ts",
     "smoke:sys-injection-evict": "tsx implementations/delivery/smoke/sys-injection-evict.smoke.ts",
     "smoke:delivery-injected-tenancy-admission": "tsx implementations/delivery/smoke/injected-tenancy-admission.smoke.ts",
     "smoke:sys-repair-honesty": "tsx implementations/delivery/smoke/sys-repair-honesty.smoke.ts",
