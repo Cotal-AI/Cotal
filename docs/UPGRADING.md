@@ -79,6 +79,10 @@ takes from its spawner are all measured. The operator's own commands, such as `c
   helper is parented to the run's starter and also stays within what the starter held when the run
   was admitted. Upgrade the issuing host before its participant managers: an older host refuses the
   new field on an enrollment.
+- A host platform that writes its own managed-agent grants after asking the `verify-enrollment`
+  door now gets `parent` in the answer, and the door refuses a helper wider than that parent. Record
+  `parent` on the grant you write, and fill a list the request leaves out from the parent's grant at
+  most, never from the owner's wider row.
 
 ## Multi-space host acknowledgments after 0.116.1
 

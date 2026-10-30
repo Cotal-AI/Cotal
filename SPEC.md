@@ -2101,14 +2101,16 @@ parent is the request's supervising actor unless the request carries `spawn: { s
 manager `spawn` request subject the participant served and, for a run's spawn, the run id. The host
 reads every manager `spawn` request subject published in the space and takes the caller from a
 subject it observed, never from the request's word: the broker locks the caller and a per-call nonce
-into that subject. Each observed subject answers one enrollment within the observation window; a
-subject the host did not observe, or already answered, MUST be refused with `permission-denied`, as
-MUST one whose caller belongs to another owner. Without `runId` the observed caller is the parent.
+into that subject. Each observed subject enrolls one helper: the first enrollment to name it within
+the observation window takes it for that enrollment's token digest, and a later request under the
+same digest is that enrollment retried and is answered again. A subject the host did not observe, or
+one taken under another digest, MUST be refused with `permission-denied`, as MUST one whose caller
+belongs to another owner. Without `runId` the observed caller is the parent.
 With it, the run MUST be admitted on the requesting instance and the caller MUST be that run's driver
 (§14.8); the parent is then the run's starter, and the admission's `delegation` bounds the helper as
 well. On the static path the manager bounds a helper by its caller's evidence instead (§13.15). A
 provisioning failure revokes the grant and releases the footprint before the refusal. An enrollment
-whose token digest matches the agent's standing grant is a retry of that enrollment and consumes no
+whose token digest matches the agent's standing grant is a retry of that enrollment and reads no
 observation: it walks the held grant through its parent's current delegation envelope and refuses
 as a fresh enrollment would when the grant falls outside it;
 otherwise it answers the held UID and provisions it again, and its failure leaves that grant in
@@ -2124,8 +2126,13 @@ decision alone from the auth service's loopback door
 `POST /manager-service-authority/verify-enrollment`, which carries the same loopback guards as the
 managed-retire door (POST only, no `Origin`, JSON, the per-start capability, a closed
 `{ owner, request }` body). That door MUST derive the caller's capability scope from its own ledger
-and MUST NOT accept a scope from the caller. It decides only: it mints nothing, writes nothing, and
-returns no secret.
+and MUST NOT accept a scope from the caller. For an enrollment it decides the parent as above, bounds
+the target by that parent through the ledger's delegation envelope and, for a run's spawn, by the
+admission's `delegation`, refuses an over-wide target, and answers `parent`. It measures a list the
+target omits as empty, so a host that fills an omitted list MUST fill it from no more than the
+parent's grant. The host MUST record the parent on the grant it writes, so that narrowing or revoking
+the parent reaches the helper. The door decides only: it mints nothing, writes nothing, and returns no
+secret.
 
 Two further host-owned kinds address the hosted runtime of an already-enrolled managed agent:
 `manager-managed-agent-runtime-create` and `manager-managed-agent-runtime-status`. Each carries the
@@ -6850,7 +6857,7 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 | --- | --- |
 | 2026-10-30 | **A terminal-started static seat is issued (§13.15).** A foreground spawn or a bare join on a static space minted an unissued credential, so its seat held no evidence and handed on no grant. The terminal now activates the seat's own §13.1 lifecycle and issues the credential against its gate. The generation's horizon is the expiry the person set, or `0xffffffff` (2106-02-07) when none; the credential is never renewed; and a clean exit retires the lifecycle and its issuances. Additive. |
 | 2026-10-30 | **A static spawn bounds the helper's role, and a static agent mint maps `role:<r>` (§13.15), breaking.** A static spawner could hand its helper any role, because the role was outside the bound. The bound now measures the role as the rows that bind its task-queue durable, and the agent mint grants those rows for each `role:<r>` token in the agent's capabilities as well as for its own role, so a spawner hands on a role it was given either way. A spawn that hands on a role its spawner was not given is refused, naming the `role:<r>` token. A user-auth mint is unchanged. No wire change. |
-| 2026-10-30 | **A hosted helper is bounded by the caller that asked for it (§13.6, §14.8), breaking.** A participant manager's enrollment made the manager the helper's ledger parent, so any agent of the owner that could reach the manager's `spawn` command got a helper bounded by the manager's grant. The enrollment request gains `spawn: { served, runId? }`. The issuing host reads every manager `spawn` request subject and makes the caller of an observed one the parent, or the run's starter for a run's spawn, and refuses a subject it did not observe or already answered. A hosted run's admission gains `delegation`, the starter's ledger row at admission, and the run's helpers must also fall within it. A host that predates the field refuses an enrollment carrying it, and a reader that predates `delegation` refuses an admission carrying it. |
+| 2026-10-30 | **A hosted helper is bounded by the caller that asked for it (§13.6, §14.8), breaking.** A participant manager's enrollment made the manager the helper's ledger parent, so any agent of the owner that could reach the manager's `spawn` command got a helper bounded by the manager's grant. The enrollment request gains `spawn: { served, runId? }`. The issuing host reads every manager `spawn` request subject and makes the caller of an observed one the parent, or the run's starter for a run's spawn. It refuses a subject it did not observe, or one another enrollment took, and answers a retry of the same enrollment again. A hosted run's admission gains `delegation`, the starter's ledger row at admission, and the run's helpers must also fall within it. The loopback `verify-enrollment` door decides the same parent and bound and answers `parent`, which a host platform that writes its own grants must record, filling an omitted list from no more than the parent's grant. A host that predates the field refuses an enrollment carrying it, and a reader that predates `delegation` refuses an admission carrying it. |
 | 2026-10-30 | **A hosted run's spawns are bounded by its admission (§13.15, §14.8), breaking.** A workflow run's spawns were exempt from the static spawn bound, so a caller holding `run` could start a run and spawn a helper the direct spawn door refuses. Each spawn a run makes on a static mesh is now bounded by the admitted ceiling at the admitted caller's coordinate, so a grant the caller gained after admission is never handed on. The admission gains `spawnExempt: true`, written when the caller was an operator instrument or held the admin set at admission; such a run's spawns stay exempt. A reader that predates the field refuses an admission carrying it. |
 | 2026-10-30 | **`spawn` takes an inline persona (§13.7).** An agent defines its helper on the spawn itself: the persona body, role, model, channels and capabilities, bounded as a catalog file is. The manager keeps the record in a private per-lifecycle snapshot written after the grant, refuses a restart once the snapshot changed, and removes it at retirement. `save: true` writes a create-only catalog copy of the checked grant under the requested name. `define-persona` takes `capabilities`, bounded against the definer before the write. The manager cluster advances to revision 44. Additive. |
 | 2026-10-30 | **A static spawn is bounded against the spawner's issued evidence (§13.15), breaking.** A caller that could spawn on a static space could hand its helper any channel or capability, because nothing compared the grant with what the caller held. The manager now resolves the caller's issued authority and refuses, by name, every channel and capability token the evidence does not cover, measured at the caller's own coordinate. A caller with no resolvable authority hands on no grant. Operator instruments and admin spawners are exempt. The helper's role and a workflow run's spawns are outside the bound in this revision. The user-auth ledger's own scope rule learns that `run` carries `spawn`. No wire change. |

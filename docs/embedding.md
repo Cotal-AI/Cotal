@@ -970,7 +970,12 @@ and asks the auth service for the decision at
 `@cotal-ai/auth`) with the `Bearer <cap>` from `auth-service.json` and only `{ owner, request }`. That
 door has the managed retirement door's guards, derives the caller's scope from the local ledger rather
 than the body, checks the manager gate and registration proof in-process, and answers
-`{ authorized: true, owner, actor, instanceId, serveEpoch }`. `authorizeRemoteManagedAgentEnrollment`
+`{ authorized: true, owner, actor, instanceId, serveEpoch, parent }`. `parent` is the ledger
+principal the helper is bounded by: the caller the auth service saw send the manager's `spawn`
+request, the run's starter for a run's spawn, or the manager. The door refuses a target wider than
+that parent's grant. It counts a list the target leaves out as empty, so the platform fills such a
+list from no more than the parent's grant and writes `parent` on the grant, so that narrowing or
+revoking the parent reaches the helper. A retry of the same enrollment gets the same answer. `authorizeRemoteManagedAgentEnrollment`
 and `authorizeRemoteManagedAgentPrepareRetirement` are exported too, for a host that composes the
 decision without the HTTP hop. Both require ledger scope `supervise`; `spawn` and `admin` do not
 imply it.

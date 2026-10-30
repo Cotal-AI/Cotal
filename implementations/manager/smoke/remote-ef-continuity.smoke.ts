@@ -228,7 +228,7 @@ try {
       const { payload } = await jwtVerify(body.idpToken, idpPair.publicKey, { issuer: IDP_ISS, audience: "cotal-services" });
       const callerOwner = deriveOwnerForIdpSubject(OWNER_SECRET, IDP_ISS, payload.sub);
       const scope = ledgerAuthorizeGrant(authDir)(callerOwner, body.request.actor).scope ?? [];
-      const verified = await plane.verifyManagedAgentEnrollment({ owner: callerOwner, scope, request: body.request });
+      const { request: verified } = await plane.verifyManagedAgentEnrollment({ owner: callerOwner, scope, request: body.request });
       fixtureHostEnrollments.push({ owner: callerOwner, actor: verified.target.actor, instanceId: verified.instanceId, serveEpoch: verified.serveEpoch });
       return send(501, { error: "fixture host verified enrollment; material issuance needs a callout sentinel and agent-bearer /exchange (next step)" });
     } catch (e) {

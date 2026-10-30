@@ -27,7 +27,7 @@ import {
   resolveService, invokeCommand, readRunAdmission, withIssuerSession, actorLedgerSource, importNativeSubjectPermissions,
   permissionsFor, connectionAcceptedToken, EP_UNBOUND_CALLER_AUTHORITY,
   type EpCaller, type RemoteManagerAuthorityMaterial, type RemoteRunAdmissionResult, type RemoteRunAttemptResult,
-  type RunStatusView, type EndpointReply,
+  type RunStatusView, type EndpointReply, type RemoteManagedAgentEnrollmentRequest,
   registry, RUN_HOST_KIND, COTAL_LANG_RUN_HOST, type RunHost,
   identityFromCreds, credsFromJwt,
   CotalEndpoint, type Connector, type LaunchOpts, type RuntimeProvider, type AgentHandle,
@@ -38,6 +38,7 @@ import {
   cotalAuthProvider, deriveOwnerForIdpSubject, ensurePinnedIdp, grantActor, loadOwnerSecret, startAuthService,
   findManagedActor, grantManagedActor, newActorToken, revokeManagedActor, ledgerActorSourceIsLive,
   loadCalloutAuth,
+  VERIFY_ENROLLMENT_PATH,
   type AuthServiceHandle,
 } from "../src/index.js";
 import { remoteManagerRegistrationProof } from "../src/authority-client.js";
@@ -68,6 +69,9 @@ const names = [
   "U1 an enrollment naming a spawn the host did not observe is refused",
   "U1 a run's helper is parented to the run's starter",
   "U1 a run's admission freezes its starter's grant and a later widening reaches no helper",
+  "U1 the verify door answers the caller it observed as the parent, again for a retry, and refuses another enrollment of that spawn",
+  "U1 the verify door refuses a served spawn wider than its caller",
+  "U1 the verify door refuses a run's helper wider than the grant its admission froze",
 ];
 let pass = 0, fail = 0;
 async function cell(index: number, fn: () => Promise<void>) {
@@ -405,6 +409,54 @@ try {
     } finally {
       grantManagedActor(a.stateDir, { custody: { kind: "foreground" }, ...row, tokenHash: row.tokenHash! });
     }
+  });
+  // A host platform that writes its own grants asks the loopback verify door, which decides the
+  // parent and the bound as the enrollment above does. Each observed request carries an empty body:
+  // the manager refuses it, and the host still saw who sent it.
+  const observeSpawn = async (nc: NatsConnection, from: EpCaller, nonce: string) => {
+    const served = epRequestSubject(a.space, { route: { mode: "inst", instanceId: state.instanceId }, endpoint: "manager", command: "spawn", caller: from, nonce });
+    nc.publish(served, new TextEncoder().encode("{}"));
+    await nc.flush();
+    return served;
+  };
+  const verify = (request: RemoteManagedAgentEnrollmentRequest) => post<{ parent?: string }>(VERIFY_ENROLLMENT_PATH, { owner, request });
+  await cell(17, async () => {
+    assert.ok(d && caller);
+    const served = await observeSpawn(d.nc, caller, `verify${mintLifecycleUid()}`);
+    const request = remote.remoteManagedAgentEnrollmentRequest(state, "cli", proof, registered.processEpoch,
+      { actor: "verified", tokenHash: newActorToken().tokenHash, label: "verified", allowSubscribe: [] }, { served });
+    assert.equal((await verify(request)).parent, `${owner}.runner`);
+    // The host platform retries the same request after a lost answer.
+    assert.equal((await verify(request)).parent, `${owner}.runner`);
+    const other = { ...request, requestId: `enroll${mintLifecycleUid()}`, target: { ...request.target, tokenHash: newActorToken().tokenHash } };
+    await assert.rejects(verify(other), /taken by another enrollment/);
+  });
+  await cell(18, async () => {
+    assert.ok(d && caller);
+    const served = await observeSpawn(d.nc, caller, `verifywide${mintLifecycleUid()}`);
+    const request = remote.remoteManagedAgentEnrollmentRequest(state, "cli", proof, registered.processEpoch,
+      { actor: "verifywide", tokenHash: newActorToken().tokenHash, label: "verifywide", allowSubscribe: [], allowPublish: ["secret"] }, { served });
+    await assert.rejects(verify(request), (error: Error) => /would exceed its spawner's grant/.test(error.message) && /post \[secret\]/.test(error.message));
+  });
+  await cell(19, async () => {
+    assert.ok(d && caller);
+    const started = await call(d, caller, "run-start", { source: 'await checkpoint("verifywiden", "Widen the starter?");' });
+    assert.ok(started.ok, started.error?.message);
+    const runId = (started.data as { runId: string }).runId;
+    await readyStatus(d, caller, runId, "pending", "/checkpoint:verifywiden#0");
+    // The starter gains `secret` after the run began, so only the admission's frozen grant refuses.
+    const row = findManagedActor(a.stateDir, owner, "runner")!;
+    grantManagedActor(a.stateDir, { custody: { kind: "foreground" }, ...row, allowPublish: [...row.allowPublish, "secret"], tokenHash: row.tokenHash! });
+    try {
+      const served = await observeSpawn(mediators.get(runId)!.nc, runDriverCaller(runId, owner), `verifyrun${mintLifecycleUid()}`);
+      const request = remote.remoteManagedAgentEnrollmentRequest(state, "cli", proof, registered.processEpoch,
+        { actor: "verifyrun", tokenHash: newActorToken().tokenHash, label: "verifyrun", allowSubscribe: [], allowPublish: ["secret"] }, { served, runId });
+      await assert.rejects(verify(request), /held when the run was admitted/);
+    } finally {
+      grantManagedActor(a.stateDir, { custody: { kind: "foreground" }, ...row, tokenHash: row.tokenHash! });
+    }
+    assert.ok((await call(d, caller, "run-answer", { runId, stepKey: "/checkpoint:verifywiden#0", value: true })).ok);
+    await readyStatus(d, caller, runId, "completed");
   });
   await cell(5, async () => {
     grantActor(a.stateDir, { owner, actor: "norun", scope: ["admin", "spawn"], allowSubscribe: [], allowPublish: [] });

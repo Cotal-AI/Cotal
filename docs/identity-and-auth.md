@@ -366,7 +366,13 @@ ledger, never taken from the body, so a host that forwarded a participant-suppli
 grant itself `supervise`. The door reads the manager gate and checks the registration proof inside
 the service process, so no signing material reaches the caller, and it returns
 `{ authorized: true, owner, actor, instanceId, serveEpoch }` or maps its refusal to 400, 401, 403,
-409, or 412. It decides only. A platform that intercepts these requests owns every write, and stock
+409, or 412. For an enrollment it also decides the helper's parent: the caller it saw send the
+manager's `spawn` request, the run's starter for a run's spawn, or the manager for an enrollment that
+names no spawn. It refuses a target wider than that parent's grant, or than the grant a run's
+admission froze, and adds `parent` to its answer. A list the target leaves out counts as empty, so
+the platform fills such a list from the parent's grant at most, and records `parent` on the grant it
+writes so that narrowing the parent reaches the helper. A retry of the same enrollment gets the same
+answer. It decides only. A platform that intercepts these requests owns every write, and stock
 `dispatchManagerAuthorityRequest` refuses both request kinds with `unimplemented` rather than
 answering a manager-lifecycle phase for an agent-lifecycle request. The same door decides the hosted
 runtime create and status kinds. For those it reads the manager actor's ledger row itself and returns

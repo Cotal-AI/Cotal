@@ -317,7 +317,7 @@ export interface AuthAuthorityPlane extends CalloutAuthority {
     owner: string;
     scope: string[];
     request: import("@cotal-ai/core").RemoteManagedAgentEnrollmentRequest;
-  }) => Promise<import("@cotal-ai/core").RemoteManagedAgentEnrollmentRequest>;
+  }) => Promise<{ request: import("@cotal-ai/core").RemoteManagedAgentEnrollmentRequest; parent: string }>;
   /** Authorize one host-owned managed-agent terminal release preparation (#1972 phase P0/P1). */
   verifyManagedAgentPrepareRetirement: (args: {
     owner: string;
@@ -1056,25 +1056,34 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
       },
     });
   // The served spawn requests a hosted enrollment may name (SPEC 13.6). A spawn request's subject
-  // carries its caller and a per-call nonce, so each one is answered at most once.
-  const observedSpawnRequests = new Map<string, number>();
+  // carries its caller and a per-call nonce, so it enrolls one helper: the first enrollment that
+  // names it takes it for its token digest, and only a retry of that enrollment, under the same
+  // digest and inside the window, is answered again.
+  const observedSpawnRequests = new Map<string, { expires: number; takenBy?: string }>();
   for (const subject of servedSpawnRequestSubjects(space))
     remoteIssuer.nc.subscribe(subject, {
       callback: (_err, msg) => {
         const now = Date.now();
-        for (const [seen, expires] of observedSpawnRequests) {
+        for (const [seen, { expires }] of observedSpawnRequests) {
           if (expires > now) break;
           observedSpawnRequests.delete(seen);
         }
-        observedSpawnRequests.delete(msg.subject);
-        observedSpawnRequests.set(msg.subject, now + OBSERVED_RUN_REQUEST_WINDOW_MS);
+        // A subject seen again keeps its first window and its taker.
+        if (!observedSpawnRequests.has(msg.subject)) observedSpawnRequests.set(msg.subject, { expires: now + OBSERVED_RUN_REQUEST_WINDOW_MS });
       },
     });
-  const takeObservedSpawnRequest = async (subject: string): Promise<boolean> => {
+  const takeObservedSpawnRequest = async (subject: string, tokenHash: string): Promise<boolean> => {
     await remoteIssuer.nc.flush();
-    const expires = observedSpawnRequests.get(subject);
-    observedSpawnRequests.delete(subject);
-    return expires !== undefined && expires > Date.now();
+    const observed = observedSpawnRequests.get(subject);
+    if (observed === undefined || observed.expires <= Date.now()) return false;
+    observed.takenBy ??= tokenHash;
+    return observed.takenBy === tokenHash;
+  };
+  // A run's starter, read from its admission; a revoked run enrolls no helper.
+  const readRunStarterAdmission = async (runId: string) => {
+    const view = await readRunAdmission(recordsJsm, space, "manager", runId);
+    if (view.revoked !== undefined) throw new EpEnvelopeError("permission-denied", `run ${runId} was revoked; a revoked run enrolls no helper`);
+    return view.admission;
   };
   // What a run's starter holds in the ledger when the run is admitted: the most its spawns hand on.
   const ledgerDelegation = (owner: string, actor: string): RunDelegation | undefined => {
@@ -1655,7 +1664,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
     },
     verifyManagedAgentEnrollment: async ({ owner, scope, request }) => {
       refuseIfFenced();
-      return authorizeRemoteManagedAgentEnrollment({
+      const r = await authorizeRemoteManagedAgentEnrollment({
         owner,
         scope,
         proofSecret: dataAccount.signingSeed,
@@ -1663,6 +1672,16 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
         request,
         observeManagerGate: observeLegacyManagerGate,
       });
+      // The host platform writes the grant, so this door decides its parent and bounds it as the
+      // enrollment below does: by the caller it observed asking, or the run's starter, through the
+      // ledger walk, and for a run also by the grant its admission froze (SPEC 13.6). A list the
+      // target omits is measured as empty.
+      const t = r.target;
+      const spawner = await resolveRemoteSpawner({ request: r, owner, takeObserved: takeObservedSpawnRequest, readAdmission: readRunStarterAdmission });
+      const helper = { owner, actor: t.actor, scope: t.capabilities ?? [], allowSubscribe: t.allowSubscribe ?? [], allowPublish: t.allowPublish ?? [], role: t.role };
+      if (spawner.run !== undefined) assertWithinRunDelegation(spawner.run.runId, spawner.run.starter, spawner.run.delegation, helper);
+      assertWithinSpawnerGrant(opts.dir, { ...helper, parent: spawner.parent }, "spawn");
+      return { request: r, parent: spawner.parent };
     },
     verifyManagedAgentPrepareRetirement: async ({ owner, scope, request }) => {
       refuseIfFenced();
@@ -1689,12 +1708,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
         // whose row stands answers from that row, whose parent was decided when it was written, so
         // it consumes no observation.
         const spawner = findManagedActor(opts.dir, owner, t.actor)?.tokenHash === t.tokenHash ? undefined : await resolveRemoteSpawner({
-          request: r, owner, takeObserved: takeObservedSpawnRequest,
-          readAdmission: async (runId) => {
-            const view = await readRunAdmission(recordsJsm, space, "manager", runId);
-            if (view.revoked !== undefined) throw new EpEnvelopeError("permission-denied", `run ${runId} was revoked; a revoked run enrolls no helper`);
-            return view.admission;
-          },
+          request: r, owner, takeObserved: takeObservedSpawnRequest, readAdmission: readRunStarterAdmission,
         });
         // ONE synchronous transaction for the read, the decision and the write, so an
         // enrollment in another process (or a provider grant) cannot land between them.
@@ -3725,7 +3739,7 @@ async function handleVerifyManagedAgentEnrollment(
       return send(res, 200, { authorized: true, ...decision });
     }
     if (request.kind === "manager-managed-agent-enrollment") {
-      const verified = await ctx.verifyManagedAgentEnrollment({
+      const { request: verified, parent } = await ctx.verifyManagedAgentEnrollment({
         owner,
         scope,
         request: raw.request as import("@cotal-ai/core").RemoteManagedAgentEnrollmentRequest,
@@ -3736,6 +3750,7 @@ async function handleVerifyManagedAgentEnrollment(
         actor: verified.target.actor,
         instanceId: verified.instanceId,
         serveEpoch: verified.serveEpoch,
+        parent,
       });
     }
     const verified = await ctx.verifyManagedAgentPrepareRetirement({
