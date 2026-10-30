@@ -78,3 +78,4 @@ export * from "./credential-actions.js";
 export * from "./endpoint-actions.js";
 export * from "./endpoint-caller.js";
 export * from "./system-signing-seed.js";
+export * from "./terminal-seat.js";

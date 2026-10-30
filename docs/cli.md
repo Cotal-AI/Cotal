@@ -3907,6 +3907,7 @@ there it runs the enrollment consumer above without redeeming anything. See
 | `--runtime <name>` | the serving manager's runtime | The terminal runtime for this one managed seat (`pty`, or an installed extension such as `tmux`). It needs `-d` or `--on`. A spawn in this terminal refuses it, because that spawn has no manager runtime to choose. `auto` is refused `USAGE_INVALID` before anything is sent. Which host checks any other name is described below this table. Other seats on that manager keep the runtime they already have |
 | `--restarts <n>`, `--restart-window <ms>` | none | Managed launches only, with `-d` or `--on`, and given together: the manager restarts the agent at most `<n>` times within `<ms>`. Each must be a positive integer |
 | `--live-only` | off | A spawn in this terminal only: skip the durable backstop |
+| `--expires-in <seconds>`, `--expires-at <unix-seconds>` | no expiry | A spawn in this terminal on a static mesh only, one or the other: when the seat's issued credential ends. Without either it has no expiry. It is never renewed, and it is retired when the seat leaves cleanly. Refused with `-d` or `--on`, whose manager renews its own seats, and on a user-auth or open mesh |
 | `--enrollment-file <private-file>` | none | With `--space`, for a spawn in this terminal: a private file holding one seat's enrollment URL (see above) |
 | `--dry-run` | off | Preview the launch without allocating an identity, provisioning anything or starting an application |
 | `--expect-owner <u_…>` | none | With `COTAL_MANAGED_HANDOFF_FILE` only, and required there: the owner the handoff must carry |
@@ -7179,6 +7180,7 @@ cotal join --link <url> | --token <t>
 | `--token <t>` | none | Join token |
 | `--lifecycle-uid <uid>` | none | Required with `--creds`: the lifecycle UID minted alongside the credential (`COTAL_LIFECYCLE_UID` works too). A credential's durable grants name exact lifecycle-keyed resources, so `join` refuses to invent one |
 | `--tls` | off | Connect over TLS |
+| `--expires-in <seconds>`, `--expires-at <unix-seconds>` | no expiry | A bare join on a static mesh only, one or the other: when the session's issued credential ends. Without either it has no expiry, and it is retired when you leave. Refused with `--link`, `--token` or `--creds`, and on a user-auth or open mesh |
 
 An interactive presence: join a space under your own name and role, without launching an agent
 harness. A `--link` supplies the where and the auth in one value. See

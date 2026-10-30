@@ -452,6 +452,8 @@ const baseCommands: Command[] = [
       { name: "token", type: "string", value: "<t>", description: "join token" },
       { name: "lifecycle-uid", type: "string", value: "<uid>", description: "lifecycle uid paired with --creds (minted with the credential at provision time)" },
       { name: "tls", type: "boolean", description: "connect over TLS" },
+      { name: "expires-in", type: "string", value: "<seconds>", description: "static mesh, bare join: end this session's credential after this many seconds; omitted, it has no expiry and ends when you leave" },
+      { name: "expires-at", type: "string", value: "<unix-seconds>", description: "static mesh, bare join: end this session's credential at this time; never with --expires-in" },
     ],
     run: join,
   },

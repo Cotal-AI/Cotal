@@ -60,10 +60,13 @@ takes from its spawner are all measured. The operator's own commands, such as `c
   with its event plane.
 - A spawner holding `capabilities: [run]` may hand on `spawn` as well as `run`. A token no agent mint
   uses, such as `machine-vitals`, is refused on a static mesh.
-- An agent started by foreground `cotal spawn`, `cotal join` or `cotal mint` carries no issued
-  evidence, so it hands on no grant. Its helpers start with no channels, no capabilities and no
-  event plane, and a spawn that asks for any of them is refused. Start such a spawner under a manager with `cotal spawn
-  --detach` instead.
+- An agent started by foreground `cotal spawn`, or a bare `cotal join` session, is now issued: it
+  holds evidence and hands on what its persona grants. Its credential has no expiry unless you pass
+  `--expires-in <seconds>` or `--expires-at <unix-seconds>`, is never renewed, and is retired when the
+  seat leaves cleanly. A seat started before the upgrade holds no evidence until it is started again.
+- A credential from `cotal auth mint` is still not issued, so an agent running on one hands on no
+  grant: its helpers start with no channels, no capabilities and no event plane. Start such a
+  spawner with `cotal spawn` instead.
 - A helper's role is measured too. A spawner hands on its own role, or a role named by a
   `role:<r>` token in its persona's `capabilities`, which now also binds that role's task queue. A
   manager persona that spawns workers of another role needs `role:<worker-role>` in its

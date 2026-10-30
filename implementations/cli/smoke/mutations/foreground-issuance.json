@@ -1,0 +1,39 @@
+{
+  "suite": [
+    "implementations/cli/smoke/foreground-issuance-live.smoke.ts"
+  ],
+  "guard": "a seat started by foreground cotal spawn on a static mesh is issued against its own lifecycle's gate, with the expiry the person set or the furthest horizon, and its clean exit retires that gate",
+  "command": "pnpm smoke:foreground-issuance:live",
+  "completionMarker": "FOREGROUND-ISSUANCE",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/foreground-issuance.json",
+  "why": [
+    "The suite runs the real CLI dispatch against a real broker, and reads the seat's accepted row under the seat's own credential, as its endpoint does.",
+    "The CLI imports its own source, so F1 and F2 need no build. The workspace helper is read from its built package, so F3 rebuilds it for the mutant and again after the restore.",
+    "F1 mints the seat unissued. F2 skips the gate's retirement on a clean exit, so the evidence outlives the seat. F3 ignores the person's expiry."
+  ],
+  "mutations": [
+    {
+      "name": "F1 the foreground seat is minted unissued",
+      "file": "implementations/cli/src/commands/spawn.ts",
+      "find": "          issued: issue.issued,\n          issuance: issue.issuance,\n",
+      "replace": "",
+      "expectRed": "its own credential reads its accepted row"
+    },
+    {
+      "name": "F2 a clean exit leaves the gate open",
+      "file": "implementations/cli/src/commands/spawn.ts",
+      "find": "    if (issuedSeat) await attemptCleanup(failed, \"issuance gate\", () => retireTerminalSeat({ server, space, tlsRequired: target.tlsRequired, auth }, issuedSeat));\n",
+      "replace": "",
+      "expectRed": "its evidence no longer resolves once its gate is retired"
+    },
+    {
+      "name": "F3 the person's expiry is ignored",
+      "file": "packages/workspace/src/terminal-seat.ts",
+      "find": "  const horizon = expiresAt ?? TERMINAL_SEAT_HORIZON_SEC;",
+      "replace": "  const horizon = TERMINAL_SEAT_HORIZON_SEC;",
+      "expectRed": "--expires-at is the generation's horizon",
+      "command": "pnpm --filter @cotal-ai/workspace build && pnpm smoke:foreground-issuance:live",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build"
+    }
+  ]
+}

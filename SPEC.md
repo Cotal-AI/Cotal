@@ -5260,7 +5260,13 @@ a resolution takes, because the horizon is checked again after the last read. A 
 on a generation by a static issuer (a static incarnation's credential, an operator instrument)
 expires no later than the horizon. A static incarnation's generation has a horizon 30 days after
 its issuance; each renewal of its credential is capped at it, none is minted at or after it, and
-the incarnation is respawned to continue. A run admitted under a generation keeps its ceiling in
+the incarnation is respawned to continue. An agent seat a terminal starts on a static space (a
+foreground spawn, a bare join) is issued against its own §13.1 lifecycle, activated before the mint
+with `terminal` as its minting authority. Its generation's horizon is the expiry the person set, or
+the furthest a generation can name (`0xffffffff`, 2106-02-07); its credential expires with it and is
+never renewed. When the seat leaves cleanly the terminal retires the lifecycle, retiring its
+issuances with the gate frozen, as a static terminal does. A seat that ends without a clean exit
+leaves its gate open, so its evidence resolves until its horizon. A run admitted under a generation keeps its ceiling in
 its admission (§14.8), so removing the generation's rows after the horizon ends no run.
 
 **Renewal.** A renewal of an issued credential keeps its generation only when the ceiling being
@@ -6842,6 +6848,7 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
+| 2026-10-30 | **A terminal-started static seat is issued (§13.15).** A foreground spawn or a bare join on a static space minted an unissued credential, so its seat held no evidence and handed on no grant. The terminal now activates the seat's own §13.1 lifecycle and issues the credential against its gate. The generation's horizon is the expiry the person set, or `0xffffffff` (2106-02-07) when none; the credential is never renewed; and a clean exit retires the lifecycle and its issuances. Additive. |
 | 2026-10-30 | **A static spawn bounds the helper's role, and a static agent mint maps `role:<r>` (§13.15), breaking.** A static spawner could hand its helper any role, because the role was outside the bound. The bound now measures the role as the rows that bind its task-queue durable, and the agent mint grants those rows for each `role:<r>` token in the agent's capabilities as well as for its own role, so a spawner hands on a role it was given either way. A spawn that hands on a role its spawner was not given is refused, naming the `role:<r>` token. A user-auth mint is unchanged. No wire change. |
 | 2026-10-30 | **A hosted helper is bounded by the caller that asked for it (§13.6, §14.8), breaking.** A participant manager's enrollment made the manager the helper's ledger parent, so any agent of the owner that could reach the manager's `spawn` command got a helper bounded by the manager's grant. The enrollment request gains `spawn: { served, runId? }`. The issuing host reads every manager `spawn` request subject and makes the caller of an observed one the parent, or the run's starter for a run's spawn, and refuses a subject it did not observe or already answered. A hosted run's admission gains `delegation`, the starter's ledger row at admission, and the run's helpers must also fall within it. A host that predates the field refuses an enrollment carrying it, and a reader that predates `delegation` refuses an admission carrying it. |
 | 2026-10-30 | **A hosted run's spawns are bounded by its admission (§13.15, §14.8), breaking.** A workflow run's spawns were exempt from the static spawn bound, so a caller holding `run` could start a run and spawn a helper the direct spawn door refuses. Each spawn a run makes on a static mesh is now bounded by the admitted ceiling at the admitted caller's coordinate, so a grant the caller gained after admission is never handed on. The admission gains `spawnExempt: true`, written when the caller was an operator instrument or held the admin set at admission; such a run's spawns stay exempt. A reader that predates the field refuses an admission carrying it. |

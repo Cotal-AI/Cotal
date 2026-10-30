@@ -21,7 +21,7 @@ import {
   type ParsedArgs,
   type SpaceAuth,
 } from "@cotal-ai/core";
-import { CommandFailure, credsSpace, findMesh, inputDisabledByFlag, isConnectRefusal, preflightOrThrow, reachableOrThrow, readCredsFile, refreshRegistrationPolicy, refuseStaticCredsForKnownUserAuth, resolveTargetOrThrow, connectUserControlOrThrow, endpointAuth, type Connection, type MeshEntry } from "@cotal-ai/workspace";
+import { CommandFailure, activateTerminalSeat, issueTerminalSeat, retireTerminalSeat, seatExpiryAt, credsSpace, findMesh, inputDisabledByFlag, isConnectRefusal, preflightOrThrow, reachableOrThrow, readCredsFile, refreshRegistrationPolicy, refuseStaticCredsForKnownUserAuth, resolveTargetOrThrow, connectUserControlOrThrow, endpointAuth, type Connection, type MeshEntry } from "@cotal-ai/workspace";
 import { credentialEnded } from "../lib/connect.js";
 import { resolveSpace } from "../lib/status.js";
 import { offlineRecipientNotice } from "../lib/offline-recipient.js";
@@ -80,7 +80,9 @@ export async function join(args: ParsedArgs): Promise<void> {
 }
 
 async function joinSpace(args: ParsedArgs): Promise<void> {
-  const values = args.values as { space?: string; name?: string; role?: string; channel?: string; server?: string; kind?: string; link?: string; token?: string; creds?: string; "lifecycle-uid"?: string; tls?: boolean };
+  const values = args.values as { space?: string; name?: string; role?: string; channel?: string; server?: string; kind?: string; link?: string; token?: string; creds?: string; "lifecycle-uid"?: string; tls?: boolean; "expires-in"?: string; "expires-at"?: string };
+  const expiresAt = seatExpiryAt(values);
+  const expiryRefusal = (why: string) => new CommandFailure("refused", "USAGE_INVALID", `--expires-in and --expires-at set the expiry of the credential a bare join mints on a static mesh; ${why}`, { remedy: "drop the flag", selfContained: true });
 
   // A join link carries server + auth + space; explicit flags still override it.
   let link: ReturnType<typeof parseJoinLink> | undefined;
@@ -136,10 +138,20 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
   let server: string;
   let userConnection: Connection | undefined;
   let mintedFrom: SpaceAuth | undefined;
+  // A self-minted session's issuance: the token its endpoint reads its generation with, and the
+  // retirement of its lifecycle's gate, which runs once when the session leaves.
+  let acceptedToken: string | undefined;
+  let retireSeat: (() => Promise<void>) | undefined;
+  const leaveSeat = async (): Promise<void> => {
+    const retire = retireSeat;
+    retireSeat = undefined;
+    if (retire) await retire().catch((e) => stderrLine("! ", `this session's issued credential was not retired: ${(e as Error).message}`, c.yellow));
+  };
   // An explicit connection (a join link, --token, or --creds) is taken at face value — that's the
   // escape hatch. Otherwise resolve the running mesh from any directory (server + trust material)
   // and self-mint, so a bare `cotal join` works outside the project instead of crashing credless.
   if (link || values.token || values.creds) {
+    if (expiresAt !== undefined) throw expiryRefusal("this join connects with a credential it was given");
     // With no space or broker named, the credential goes to the selected space or this folder's.
     space = values.space ?? link?.space ?? ((values.server ?? link?.servers) === undefined ? credsSpace(process.cwd())?.space : undefined) ?? resolveSpace(process.cwd());
     // The credential goes only to a broker the caller paired it with: `--server`, the link's own
@@ -184,6 +196,8 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
     } else {
       await preflightOrThrow(target); // one refusal if the mesh is down / won't auth, + stale-prune
     }
+    if (expiresAt !== undefined && (target.mode === "user" || !target.auth))
+      throw expiryRefusal(`mesh "${space}" ${target.mode === "user" ? "is a user-auth mesh, where the session's bearer comes from your login" : "is open and mints no credential"}`);
     if (target.mode !== "user" && target.auth) {
       const identity = newIdentity();
       // One lifecycle per join session (SPEC 13.1): the provisioned dm/dlv footprint, the minted
@@ -207,21 +221,35 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
       prov.on("error", () => {});
       const ignoreProvisionerWarning = () => {};
       prov.on("warning", ignoreProvisionerWarning); // same deliberate one-shot policy; the awaited operation owns the verdict
+      // The session's credential is an issuance (SPEC 13.15) whose evidence names this lifecycle's
+      // gate, which leaving retires.
+      const seatTarget = { server, space, tlsRequired: target.tlsRequired, auth: target.auth };
+      const thisSeat = { actor: identity.id, alias: identity.id, lifecycleUid };
       try {
         await prov.start();
+        await activateTerminalSeat(seatTarget, thisSeat);
+        retireSeat = () => retireTerminalSeat(seatTarget, thisSeat);
         // Live-only: a bare join isn't under a manager, so no durable Plane-3 backstop
         // (durableMembership:false) — the console reads live via its core-sub + receives DMs on its dm_<id>.
-        auth.creds = await provisionAgent(prov, target.auth, identity, {
-          subscribe: [channel],
-          allowSubscribe: [channel],
-          allowPublish: [channel],
-          role: values.role,
-          durableMembership: false,
-          lifecycleUid,
+        const spaceAuth = target.auth;
+        auth.creds = await issueTerminalSeat(seatTarget, thisSeat, expiresAt, (issue) => {
+          acceptedToken = issue.issued.acceptedToken;
+          return provisionAgent(prov, spaceAuth, identity, {
+            subscribe: [channel],
+            allowSubscribe: [channel],
+            allowPublish: [channel],
+            role: values.role,
+            durableMembership: false,
+            lifecycleUid,
+            expiresAt: issue.expiresAt,
+            issued: issue.issued,
+            issuance: issue.issuance,
+          });
         });
         mintedFrom = target.auth;
         await prov.stop();
       } catch (e) {
+        await leaveSeat();
         // The self-mint step runs BEFORE ep.start(), so its auth/provisioning failure must render
         // legibly too — same fail-fast gate, not a raw NATS error leaked through the on-error channel.
         throw joinAuthFailure(e, space) ?? e;
@@ -262,6 +290,7 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
     // Absent for a bare open/token join: the endpoint self-mints its per-session lifecycle at
     // construction. Set for auth joins: self-provisioned above, or --creds-paired (never invented).
     lifecycleUid,
+    ...(acceptedToken !== undefined ? { acceptedToken } : {}),
     channels: [channel],
     card: {
       ...(userConnection ? { owner: userConnection.epCaller!.owner, actor: userConnection.epCaller!.actor } : {}),
@@ -384,12 +413,14 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
     const failure = await lost;
     rl?.close();
     try { await ep.stop(); } catch { /* it ends either way */ }
+    await leaveSeat();
     throw failure;
   };
 
   try {
     await ep.start();
   } catch (e) {
+    await leaveSeat();
     // A bare `cotal join` binds a durable DM inbox nobody pre-created on an unprovisioned space;
     // surface that (and an auth reject) as ONE classified refusal, not a raw NATS stack.
     throw joinAuthFailure(e, space, values.creds ? lifecycleUid : undefined) ?? e;
@@ -401,6 +432,7 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
     print(c.dim("leaving…"));
     rl?.close();
     await ep.stop();
+    await leaveSeat();
     process.exit(code);
   };
   process.on("SIGINT", () => void shutdown(130));

@@ -19,7 +19,8 @@
  */
 import { assertOrdinaryNativeMutation, parseNativeUidCustody } from "./native-uid-custody.js";
 import { EpEnvelopeError, lifecycleBlocked } from "./endpoint-envelope.js";
-import { isCasLoss as isRawCasLoss } from "./endpoint-records.js";
+import { createRecordEntry, isCasLoss as isRawCasLoss, updateRecordEntry } from "./endpoint-records.js";
+import type { KV } from "@nats-io/kv";
 import { mintLifecycleUid, assertLifecycleToken } from "./subjects.js";
 import {
   type LifecycleMapping,
@@ -56,6 +57,20 @@ export interface LifecycleStateTransport {
   updateRecord(key: string, value: unknown, expectedRevision: number): Promise<number>;
   getAuth(key: string): Promise<LifecycleKvEntry | undefined>;
   putAuth(key: string, payload: Uint8Array, expectedRevision: number): Promise<number>;
+}
+
+/** The direct-KV transport over the records and auth stores, for an executor that holds one
+ *  lifecycle-executor connection pinned to the lifecycle it moves. It decides no sequencing. */
+export function kvLifecycleTransport(recordsKv: KV, authKv: KV): LifecycleStateTransport {
+  const entryOf = (e: { value: Uint8Array; revision: number; operation: string } | null): LifecycleKvEntry | undefined =>
+    e === null ? undefined : { value: e.value, revision: e.revision, operation: e.operation };
+  return {
+    getRecord: async (key) => entryOf(await recordsKv.get(key)),
+    createRecord: (key, value) => createRecordEntry(recordsKv, key, value),
+    updateRecord: (key, value, rev) => updateRecordEntry(recordsKv, key, value, rev),
+    getAuth: async (key) => entryOf(await authKv.get(key)),
+    putAuth: (key, payload, rev) => authKv.put(key, payload, { previousSeq: rev }),
+  };
 }
 
 // ---- candidate reads ------------------------------------------------------------------------

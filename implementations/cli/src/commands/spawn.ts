@@ -104,6 +104,10 @@ import {
   type SpaceMaterialComposition,
   recordOperationSpace,
   resolveMeshTarget,
+  activateTerminalSeat,
+  issueTerminalSeat,
+  retireTerminalSeat,
+  seatExpiryAt,
 } from "@cotal-ai/workspace";
 import { c, stderrLine } from "../ui.js";
 import { liveMeshNames } from "../lib/live-names.js";
@@ -419,6 +423,8 @@ export const spawnFlags = [
   jsonFlag, plainFlag,
   { name: "detach", type: "boolean", short: "d", description: "launch through a manager, await readiness and return without attaching" },
   { name: "live-only", type: "boolean", description: "foreground only: skip the durable backstop (no read-ACL row; messages missed while disconnected are not replayed)" },
+  { name: "expires-in", type: "string", value: "<seconds>", description: "foreground only, static mesh: end this seat's credential after this many seconds; omitted, it has no expiry and ends when the seat leaves cleanly" },
+  { name: "expires-at", type: "string", value: "<unix-seconds>", description: "foreground only, static mesh: end this seat's credential at this time; never with --expires-in" },
   { name: "file", type: "string", short: "f", value: "<persona-file>", description: "persona file on the execution host; never a manifest deploy or implicit upload" },
   { name: "dry-run", type: "boolean", description: "preview the launch without allocation, provisioning or starting an application" },
   { name: "enrollment-file", type: "string", value: "<private-file>", description: "foreground only: protected file holding this one seat's enrollment URL; never print or forward it" },
@@ -428,6 +434,14 @@ export const spawnFlags = [
   { name: "expect-owner", type: "string", value: "<u_…>", description: `with ${MANAGED_HANDOFF_FILE_ENV}: the owner the managed handoff must carry` },
   { name: "expect-lifecycle-uid", type: "string", value: "<uid>", description: `with ${MANAGED_HANDOFF_FILE_ENV}: the lifecycle UID the managed handoff must carry` },
 ] as const satisfies readonly FlagSpec[];
+
+/** The expiry a seat started in this terminal asked for, in unix seconds, or `undefined` for none.
+ *  A managed seat's credential is renewed by its manager, so the flags belong to this terminal. */
+function seatExpiry(values: { "expires-in"?: string; "expires-at"?: string }, direct: boolean): number | undefined {
+  if (!direct && (values["expires-in"] !== undefined || values["expires-at"] !== undefined))
+    throw new CommandFailure("refused", "USAGE_INVALID", "--expires-in and --expires-at set the expiry of a seat this terminal starts; a manager renews its own seats' credentials", { remedy: "drop the flag, or drop -d and --on to run the seat here" });
+  return seatExpiryAt(values);
+}
 
 /** Check the public mode and spelling before catalog preparation or identity allocation. */
 export function validateSpawnArguments(args: ParsedArgs): void {
@@ -461,6 +475,7 @@ export function validateSpawnArguments(args: ParsedArgs): void {
       throw new CommandFailure("refused", "USAGE_INVALID", `--${field} must be a positive safe integer`);
   }
   if (values["live-only"] && !direct) throw new CommandFailure("refused", "USAGE_INVALID", "--live-only belongs to direct foreground execution");
+  seatExpiry(values, direct);
   if (!values["dry-run"] && !direct && !values.detach && (values.json || values.plain || inputDisabledByFlag() || !process.stdin.isTTY || !process.stdout.isTTY))
     throw new CommandFailure("refused", "USAGE_INVALID", "attaching to a manager's launch needs usable input and output terminals before an identity is allocated", { remedy: "add -d to wait for readiness without attaching, or drop --on to run it in this terminal", selfContained: true });
   for (const field of ["harness", "agent", "model", "variant", "name"] as const) if (values[field] !== undefined && !values[field]!.trim())
@@ -1330,6 +1345,9 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // operator passed neither flag), so default it on here the way the old boolean did.
   const launchEvents = eventsRequired || events !== false;
   const { space, server, auth } = target;
+  // Only a static mesh's seat carries an issuance whose expiry the person sets here.
+  if ((values["expires-in"] !== undefined || values["expires-at"] !== undefined) && (target.mode === "user" || !auth))
+    throw new CommandFailure("refused", "USAGE_INVALID", `--expires-in and --expires-at set the expiry of a seat's issued credential on a static mesh, and mesh "${space}" is ${target.mode === "user" ? "a user-auth mesh, where the seat's bearer comes from your login" : "open and mints no credential"}`, { remedy: "drop the flag" });
 
   // Where the config lives: --config, else the positional <persona>, else the persona preference
   // (.cotal/agents/<name>.md under the TARGET mesh's root). With none, fall back to its `default`
@@ -1458,6 +1476,10 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // Open mode (no `.cotal/auth`): the session connects without creds, under an allocated id.
   let id: string | undefined;
   let credsPath: string | undefined;
+  // A static seat's issuance (SPEC 13.15): the token it reads its generation with, and the
+  // lifecycle whose gate the retirement closes.
+  let acceptedToken: string | undefined;
+  let seat: { actor: string; alias: string; lifecycleUid: string } | undefined;
   // The incarnation's lifecycle UID (SPEC 13.1), minted once per spawn: the launched endpoint binds
   // its lifecycle-keyed dm/dlv/chathist durables by it (auth modes pin the same names in the cred;
   // open mode still needs it for the durable names). A foreground spawn is one lifecycle. `let`
@@ -1527,6 +1549,10 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     // (byte-identical locally). The broker teardown mints its own credential, so a creds file that
     // cannot be removed must not leave the durables and ACL row behind.
     const failed: CleanupFailure[] = [];
+    // Retiring the seat's issuance gate ends its evidence, so a helper it spawned can no longer be
+    // bounded against a seat that has gone.
+    const issuedSeat = seat;
+    if (issuedSeat) await attemptCleanup(failed, "issuance gate", () => retireTerminalSeat({ server, space, tlsRequired: target.tlsRequired, auth }, issuedSeat));
     await attemptCleanup(failed, "creds secret", () => workspaceSecretStore(target.root).delete(agentSecretKeyForFile(credsFile, space)));
     await attemptCleanup(failed, "creds file", () => rmSync(credsFile, { force: true }));
     await attemptCleanup(failed, "broker teardown", () =>
@@ -1655,14 +1681,25 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     // core-subs without re-backfill). `--live-only` opts back out; on a mesh with no delivery
     // daemon the boot join itself reports live-only, ACL row or not.
     try {
-      const creds = await provisionAgent(prov, auth, identity, {
-        subscribe,
-        allowSubscribe,
-        allowPublish,
-        role,
-        capabilities: def.capabilities,
-        ...(values["live-only"] ? { durableMembership: false } : {}),
-        lifecycleUid,
+      // The seat's lifecycle is activated first, so the issuance can name its gate as the source of
+      // the evidence a helper's spawn is bounded by.
+      const seatTarget = { server, space, tlsRequired: target.tlsRequired, auth };
+      seat = { actor: identity.id, alias: name, lifecycleUid };
+      await activateTerminalSeat(seatTarget, seat);
+      const creds = await issueTerminalSeat(seatTarget, seat, seatExpiry(values, true), (issue) => {
+        acceptedToken = issue.issued.acceptedToken;
+        return provisionAgent(prov, auth, identity, {
+          subscribe,
+          allowSubscribe,
+          allowPublish,
+          role,
+          capabilities: def.capabilities,
+          ...(values["live-only"] ? { durableMembership: false } : {}),
+          lifecycleUid,
+          expiresAt: issue.expiresAt,
+          issued: issue.issued,
+          issuance: issue.issuance,
+        });
       });
       await prov.stop();
       // Store first (the source of truth), then materialize — the child's launch reads this FILE.
@@ -1700,6 +1737,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       role,
       id,
       creds: credsPath,
+      ...(acceptedToken !== undefined ? { acceptedToken } : {}),
       userAuth,
       lifecycleUid,
       servers: server,

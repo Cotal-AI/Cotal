@@ -13,6 +13,8 @@ import { dialerFor } from "./endpoint.js";
 import { epAuthBucket } from "./endpoint-binding.js";
 import { EpEnvelopeError } from "./endpoint-envelope.js";
 import { issuanceGateKey, parseIssuanceGate } from "./lifecycle-state.js";
+import { kvLifecycleTransport, type LifecycleStateTransport } from "./lifecycle-saga.js";
+import { recordsBucket } from "./endpoint-records.js";
 import { bindIssuedStores, type IssuedSourceRef, type IssuedStore } from "./issued-authority.js";
 import { credsClaims, newIdentity } from "./identity.js";
 import { credentialLifetime, mintCreds, type SpaceAuth } from "./provision.js";
@@ -65,6 +67,23 @@ async function openIssuerSession(args: IssuerSessionArgs, opts: { name?: string;
   } catch (e) {
     await nc.close().catch(() => {});
     throw e;
+  }
+}
+
+/** One §13.1 lifecycle operation on its own `lifecycle-executor` connection, pinned to one
+ *  incarnation's head, uid, gate, credential family and slot keys. It lives for the callback only. */
+export async function withLifecycleExecutorSession<T>(
+  args: IssuerSessionArgs,
+  pin: { owner: string; actor: string; lifecycleUid: string; alias: string },
+  fn: (t: LifecycleStateTransport) => Promise<T>,
+): Promise<T> {
+  const creds = await mintCreds(args.auth, newIdentity(), "lifecycle-executor", { lifecycleExecutor: pin });
+  const nc = await dialerFor(args.servers)({ servers: args.servers, ...standaloneConnectOpts({ creds, tls: args.tls }), reconnect: false, maxReconnectAttempts: 0 });
+  try {
+    const kvm = new Kvm(nc);
+    return await fn(kvLifecycleTransport(await kvm.open(recordsBucket(args.space)), await kvm.open(epAuthBucket(args.space))));
+  } finally {
+    await nc.drain().catch(() => nc.close());
   }
 }
 

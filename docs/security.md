@@ -144,8 +144,10 @@ The guarantees, at a glance, each enforced by the broker per
   static-auth mesh the measure is the caller's issued evidence, the ceiling its own credential was
   minted with ([SPEC 13.15](../SPEC.md#1315-issued-authority)), and `events.*` is measured like any
   other channel. A helper's own event plane is armed only when the spawner may post on its own. A caller whose evidence does not resolve hands on no grant. That includes
-  agents started by foreground `cotal spawn`, `cotal join` and `cotal mint`, whose credentials
-  carry no issued evidence. Operator instruments and admin spawners are exempt. A
+  an agent running on a credential from `cotal auth mint`, which is not issued. A seat started by
+  foreground `cotal spawn` or a bare `cotal join` is issued against its own lifecycle, with no
+  expiry unless the person sets one, and a clean exit retires it; a seat killed without a clean
+  exit keeps live evidence until that expiry. Operator instruments and admin spawners are exempt. A
   per-user-auth mesh checks the rule on its ledger, where any scope token the spawner's row lists
   can be handed on, `machine-vitals` included; a static spawner hands on only what an agent mint
   carries, so `machine-vitals` does not pass there. On the ledger every delegation must sit inside the
