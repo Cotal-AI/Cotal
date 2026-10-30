@@ -966,8 +966,26 @@ export async function provisionAgentDurables(
   if (opts.durableMembership !== false) {
     await provisioner.reissueAcl(principalKey(pr.owner, pr.actor).key, uid, allowSubscribe);
   }
-  if (opts.role) await provisioner.provisionTaskQueue(opts.role);
+  for (const role of taskRoles(opts.role, opts.capabilities)) await provisioner.provisionTaskQueue(role);
   return allowSubscribe;
+}
+
+const ROLE_CAPABILITY = /^role:([A-Za-z0-9_-]+)$/;
+
+/** The role a `role:<r>` capability token names, or `undefined` for any other token. */
+export function capabilityRole(token: string): string | undefined {
+  return ROLE_CAPABILITY.exec(token)?.[1];
+}
+
+/** The roles whose task queue an agent credential binds: its own role, and the role of each
+ *  `role:<r>` token in its capabilities, which lets it hand that role on (SPEC 13.15). */
+export function taskRoles(role: string | undefined, capabilities: readonly string[] | undefined): string[] {
+  const roles = new Set<string>(role ? [role] : []);
+  for (const token of capabilities ?? []) {
+    const r = capabilityRole(token);
+    if (r !== undefined) roles.add(r);
+  }
+  return [...roles];
 }
 
 
@@ -1507,7 +1525,7 @@ export function permissionsFor(
   const uid = assertLifecycleToken(pr.lifecycleUid);
   const chatHistD = chatHistDurable(pr.owner, pr.actor, uid), dmD = dmDurable(pr.owner, pr.actor, uid);
   const DLV = dlvStream(space), dlvD = dlvDurable(pr.owner, pr.actor, uid); // Plane-3 per-member delivery (bind-only)
-  const svcD = opts.role ? taskDurable(opts.role) : undefined;
+  const svcDs = taskRoles(opts.role, opts.capabilities).map(taskDurable);
   const pubAllow = [
     // peer publish — owner+actor identity + channel scope, built from the real builders. Default-deny:
     // ONLY the declared allowPublish channels (none by default) get a chat-publish grant.
@@ -1605,18 +1623,20 @@ export function permissionsFor(
     // by OMISSION (default-deny on the un-granted `KV_cotal_manager_*` stream + `$KV.cotal_manager_*.>`),
     // so do NOT add a broad `KV_*` / `$KV.<space>.>` grant that would silently re-open it.
   ];
-  if (svcD) {
-    // TASK consumer: BIND ONLY its own role's pre-created durable (svc_<role>). Like DM, the
-    // create-time filter_subject isn't reliably ACL-constrainable, so no create path is
-    // allowed — the privileged provisioner pre-creates svc_<role> filtered to svc.<role>.>.
-    // STREAM.INFO rides the SAME role gate as the bind rows: a role-less agent holds no TASK grant
-    // at all, so it can neither read the task stream's state nor enumerate its subjects.
-    pubAllow.push(
-      `$JS.API.STREAM.INFO.${TASK}`,
-      `$JS.API.CONSUMER.INFO.${TASK}.${svcD}`,
-      `$JS.API.CONSUMER.MSG.NEXT.${TASK}.${svcD}`,
-      `$JS.ACK.${TASK}.${svcD}.>`,
-    );
+  if (svcDs.length > 0) {
+    // TASK consumer: BIND ONLY the pre-created durable (svc_<role>) of its own role and of each
+    // `role:<r>` token it holds. Like DM, the create-time filter_subject isn't reliably
+    // ACL-constrainable, so no create path is allowed — the privileged provisioner pre-creates
+    // svc_<role> filtered to svc.<role>.>. STREAM.INFO rides the SAME role gate as the bind rows: a
+    // role-less agent holds no TASK grant at all, so it can neither read the task stream's state
+    // nor enumerate its subjects.
+    pubAllow.push(`$JS.API.STREAM.INFO.${TASK}`);
+    for (const svcD of svcDs)
+      pubAllow.push(
+        `$JS.API.CONSUMER.INFO.${TASK}.${svcD}`,
+        `$JS.API.CONSUMER.MSG.NEXT.${TASK}.${svcD}`,
+        `$JS.ACK.${TASK}.${svcD}.>`,
+      );
   }
   // Spawn / admin capability control reach rides the v0.4 ep rows below (the manager `ctl` rail is
   // deleted) — the spawn set (owner-mode manager lifecycle) and the admin instrument set

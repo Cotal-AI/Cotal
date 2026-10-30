@@ -71,6 +71,11 @@ console.log("role");
   ok("role:<r> as a capability token is held when the spawner holds that role", over(c, { capabilities: ["role:reviewer"] }).length === 0);
   const t = names(over(c, { capabilities: ["role:worker"] }));
   ok("role:<r> for another role is refused", same(t, ["capabilities:role:worker"]), t);
+  const tokened = evidence({ capabilities: ["role:worker"] });
+  ok("a spawner minted the role:<r> token hands that role on", over(tokened, { role: "worker" }).length === 0);
+  ok("and the token itself", over(tokened, { capabilities: ["role:worker"] }).length === 0);
+  const o2 = names(over(tokened, { role: "reviewer" }));
+  ok("but no other role", same(o2, ["role:reviewer"]), o2);
 }
 
 console.log("capabilities");

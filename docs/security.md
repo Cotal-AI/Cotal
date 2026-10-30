@@ -139,8 +139,8 @@ The guarantees, at a glance, each enforced by the broker per
   can still mint fresh creds); on a per-user-auth mesh it is held by the auth service (the callout
   stage) and by any running manager, which self-mints its supervisor cred and renewals from it
   ([identity & auth](identity-and-auth.md)).
-- **A spawner hands on only what it holds:** a caller that may spawn names its helper's channels
-  and capabilities, and the manager refuses any part the caller does not hold itself. On a
+- **A spawner hands on only what it holds:** a caller that may spawn names its helper's channels,
+  role and capabilities, and the manager refuses any part the caller does not hold itself. On a
   static-auth mesh the measure is the caller's issued evidence, the ceiling its own credential was
   minted with ([SPEC 13.15](../SPEC.md#1315-issued-authority)), and `events.*` is measured like any
   other channel. A helper's own event plane is armed only when the spawner may post on its own. A caller whose evidence does not resolve hands on no grant. That includes
@@ -150,9 +150,11 @@ The guarantees, at a glance, each enforced by the broker per
   can be handed on, `machine-vitals` included; a static spawner hands on only what an agent mint
   carries, so `machine-vitals` does not pass there. On the ledger every delegation must sit inside the
   spawner's own grant, checked by NATS-pattern containment along the whole chain, at the grant
-  write and again at every bearer exchange ([identity & auth](identity-and-auth.md)). On a static
-  mesh two things are not measured: the helper's role, and the spawns a workflow run makes, so a
-  caller that holds both `spawn` and `run` can reach through a run what the direct spawn refuses.
+  write and again at every bearer exchange ([identity & auth](identity-and-auth.md)). On a
+  participant manager the issuing host makes the agent that asked for the helper its ledger parent,
+  taking the caller from the spawn request it observed itself. A spawner hands on a role it was
+  given as its own or as a `role:<r>` token. A workflow run's spawns are bounded by what the run's
+  starter held when the run was admitted, so a grant the starter gains later is never handed on.
 - **`spawn` is host-launch authority:** launch options are a raw passthrough (no allow/deny
   list), so a persona holding `capabilities: [spawn]` can drive the connector's full launch
   surface on the manager host (Claude `--mcp-config`, `--add-dir`, permission flags; OpenCode

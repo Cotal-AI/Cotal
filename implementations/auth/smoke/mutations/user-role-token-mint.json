@@ -1,0 +1,22 @@
+{
+  "suite": [
+    "implementations/auth/smoke/views.smoke.ts"
+  ],
+  "guard": "on a user mesh a role:<r> scope token is delegation authority only and mints no task-queue row for the agent itself",
+  "command": "pnpm smoke:views",
+  "completionMarker": "views smoke:",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/auth/smoke/mutations/user-role-token-mint.json",
+  "why": [
+    "The agent mint grants task-queue rows for each role:<r> token in its capabilities, so a static spawner's evidence shows the roles it may hand on. A user mesh passes its ledger scope as those capabilities, and there the token only lets the ledger walk hand the role on. U1 passes the scope through unfiltered, so a user-mesh agent would bind every role its scope names.",
+    "views.smoke.ts imports the callout supplier by relative source path, so the mutated file is the file that runs and there is no build in the command."
+  ],
+  "mutations": [
+    {
+      "name": "U1 mint the user mesh's role tokens",
+      "file": "implementations/auth/src/permissions.ts",
+      "find": "    const minted = caps.filter((token) => capabilityRole(token) === undefined);",
+      "replace": "    const minted = caps;",
+      "expectRed": "a role:<r> scope token mints no task-queue row for that role on a user mesh"
+    }
+  ]
+}

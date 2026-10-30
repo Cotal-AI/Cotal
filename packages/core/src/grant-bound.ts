@@ -14,7 +14,7 @@
  * coordinate is subtracted first, so only the rows the field adds are tested, and the baseline
  * every agent receives (inbox, presence, DM, the endpoint baseline) never decides anything.
  */
-import { permissionsFor } from "./provision.js";
+import { capabilityRole, permissionsFor } from "./provision.js";
 import { issuedPermitsPattern, mintAcceptedToken, type IssuedEvidence, type IssuedSubjectPermissions } from "./issued-authority.js";
 import { presenceKeySubject, resolveReadAcl } from "./subjects.js";
 import type { EpCapability } from "./endpoint-grants.js";
@@ -50,10 +50,8 @@ export interface GrantOverreach {
 /** The capability tokens a spawner may hand on, besides `role:<r>`. */
 export const DELEGABLE_CAPABILITIES = Object.freeze(["spawn", "run", "admin"] as const);
 
-const ROLE_TOKEN = /^role:([A-Za-z0-9_-]+)$/;
-
 export function isDelegableCapability(token: string): boolean {
-  return (DELEGABLE_CAPABILITIES as readonly string[]).includes(token) || ROLE_TOKEN.test(token);
+  return (DELEGABLE_CAPABILITIES as readonly string[]).includes(token) || capabilityRole(token) !== undefined;
 }
 
 /** The ledger's token rule: a child token is within the parent's scope when the parent holds it, or
@@ -82,7 +80,7 @@ function partsOf(grant: DelegatedGrant): { part: GrantOverreach; project?: MintE
   for (const ch of grant.allowPublish ?? []) out.push({ part: { field: "allowPublish", value: ch }, project: { allowPublish: [ch] } });
   if (grant.role !== undefined) out.push({ part: { field: "role", value: grant.role }, project: { role: grant.role } });
   for (const token of grant.capabilities ?? []) {
-    const role = ROLE_TOKEN.exec(token)?.[1];
+    const role = capabilityRole(token);
     const project = role !== undefined ? { role } : isDelegableCapability(token) ? { capabilities: [token] } : undefined;
     out.push({ part: { field: "capabilities", value: token }, ...(project ? { project } : {}) });
   }

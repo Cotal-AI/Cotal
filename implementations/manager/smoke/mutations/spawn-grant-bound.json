@@ -14,7 +14,8 @@
     "S1 drops the refusal, so a helper reads a channel its spawner cannot: the hole this closes. S2",
     "treats a caller with no issued generation as exempt. S3 treats evidence that does not resolve as",
     "exempt. S4 stops clamping the callerAcl default. S5 gives a caller with no evidence that default, which the bound then refuses, so a channel-less spawn fails.",
-    "S6 ignores the evidence's standing, so an operator instrument is bounded like an agent. S7 leaves the helper's own event plane unmeasured."
+    "S6 ignores the evidence's standing, so an operator instrument is bounded like an agent. S7 leaves the helper's own event plane unmeasured.",
+    "S8 leaves the helper's role out of the bound, so a spawner hands on a role it was never given."
   ],
   "mutations": [
     {
@@ -65,6 +66,13 @@
       "find": "      eventsOver = armsEvents && (bound.kind === \"none\"",
       "replace": "      eventsOver = false && armsEvents && (bound.kind === \"none\"",
       "expectRed": "a spawner without its own event plane cannot arm a helper's"
+    },
+    {
+      "name": "S8 leave the helper's role unmeasured",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      ...(role !== undefined ? { role } : {}),\n      ...(capabilities !== undefined ? { capabilities } : {}),\n    }, events);",
+      "replace": "      ...(capabilities !== undefined ? { capabilities } : {}),\n    }, events);",
+      "expectRed": "a role the spawner holds no queue for is refused, naming the token that hands it on"
     }
   ]
 }

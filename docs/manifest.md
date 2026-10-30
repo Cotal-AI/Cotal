@@ -51,8 +51,8 @@ agents:
 Per-agent keys: `persona`, `agent` (harness override), `cwd`, `continuity`, `model`, `variant`,
 `launchOptions` (connector-specific options, merged per key over the persona's `launchOptions:`),
 `role`, `description`, `instructions`, `prompt`, `events` (`false` is `--no-events`), `capabilities` (`spawn`,
-[what it grants](identity-and-auth.md); on a per-user-auth mesh also `role:<r>`, so the
-agent may delegate that role when spawning; `admin` is never accepted from a manifest),
+[what it grants](identity-and-auth.md); also `role:<r>`, so the agent may hand that role to a
+helper it spawns; `admin` is never accepted from a manifest),
 `personaPermissions` (override the top-level policy). Model strings and variants pass to
 the harness as-is: for Claude use the short form (`opus`, `sonnet`) or the full id; for
 OpenCode use `provider/model` plus an optional variant (`cotal models --harness opencode`

@@ -64,8 +64,18 @@ takes from its spawner are all measured. The operator's own commands, such as `c
   evidence, so it hands on no grant. Its helpers start with no channels, no capabilities and no
   event plane, and a spawn that asks for any of them is refused. Start such a spawner under a manager with `cotal spawn
   --detach` instead.
+- A helper's role is measured too. A spawner hands on its own role, or a role named by a
+  `role:<r>` token in its persona's `capabilities`, which now also binds that role's task queue. A
+  manager persona that spawns workers of another role needs `role:<worker-role>` in its
+  capabilities. The refusal names the token.
+- A workflow run's spawns are bounded by what the agent that started the run held when the run was
+  admitted. A run started by an operator command or by an admin agent stays exempt.
 - A user-auth mesh keeps its ledger rule, except that a spawner whose scope holds `run` may now hand
-  on `spawn`.
+  on `spawn`. On a participant manager the issuing host now makes the agent that asked for a helper
+  its parent, so the helper is bounded by that agent's grant instead of the manager's. A run's
+  helper is parented to the run's starter and also stays within what the starter held when the run
+  was admitted. Upgrade the issuing host before its participant managers: an older host refuses the
+  new field on an enrollment.
 
 ## Multi-space host acknowledgments after 0.116.1
 

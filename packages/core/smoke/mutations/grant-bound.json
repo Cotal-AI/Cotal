@@ -17,7 +17,9 @@
     "stops testing publish rows. B4 forgets that run carries spawn. B5 mints a class rail for an",
     "instance pin. B6 reads role:<r> as an ordinary token, so a held role cannot be handed on.",
     "",
-    "I1 drops the issuer's guard, so a source-free manager-caller could be issued and read as an instrument."
+    "I1 drops the issuer's guard, so a source-free manager-caller could be issued and read as an instrument.",
+    "",
+    "B7 stops minting task-queue rows for a role:<r> token, so a spawner given the token holds no evidence of the role and cannot hand it on."
   ],
   "mutations": [
     {
@@ -68,6 +70,13 @@
       "find": "  if (seam.sources.length === 0 && !INSTRUMENT_PROFILES.has(profile) && !issuedPermitsPattern(permissions.publish, presenceKeySubject(space, pr.owner, pr.actor)))",
       "replace": "  if (false)",
       "expectRed": "a source-free non-instrument with no presence key of its own is refused before staging"
+    },
+    {
+      "name": "B7 the agent mint ignores role:<r> tokens",
+      "file": "packages/core/src/provision.ts",
+      "find": "  const svcDs = taskRoles(opts.role, opts.capabilities).map(taskDurable);",
+      "replace": "  const svcDs = taskRoles(opts.role, undefined).map(taskDurable);",
+      "expectRed": "a spawner minted the role:<r> token hands that role on"
     }
   ]
 }

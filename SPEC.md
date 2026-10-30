@@ -5344,11 +5344,14 @@ host's retirement barrier.
 **Delegation bound.** On a static space, a manager that mints a credential for an agent a caller
 spawned MUST first resolve that caller's issued authority and bound the grant it hands on against
 the evidence. The grant is every channel the helper may read, with its subscribe set folded in,
-every channel it may post to, and every capability token. Each part is projected through the agent
+every channel it may post to, its role, and every capability token. Each part is projected through the agent
 mint at the spawner's own coordinate, the projection of an empty grant is subtracted, and every
 remaining row MUST be covered by the evidence's `permissions` with no overlapping deny. A part
 whose projection adds no row is refused, so a token no agent mint maps is never read as an empty
-grant. `run` carries the whole `spawn` set, so a `run` holder may hand on `spawn`. The helper's own
+grant. `run` carries the whole `spawn` set, so a `run` holder may hand on `spawn`. A role, and a
+`role:<r>` token, project to the rows that bind the role's task-queue durable. An agent mint grants
+those rows for the agent's own role and for each `role:<r>` token in its capabilities, so a spawner
+hands on a role it was given either way. The helper's own
 event channel is minted after allocation, keyed on a principal that does not exist when the bound
 runs, so it is measured as the spawner's own: a spawn that arms the helper's event plane is within
 only when the evidence permits a publish on the spawner's own event channel. A caller whose
@@ -5357,11 +5360,12 @@ any part is refused. Two callers are exempt. One is an operator instrument, whos
 `sources` and does not permit a publish on its own presence key, which every agent mint carries.
 The other is a spawner whose evidence holds the admin set. A spawn the manager starts on its own
 behalf, with no caller, is not bounded. A spawn a hosted workflow run makes is bounded by the run's
-admission instead of by the driver's own credential (§14.8). In this revision the helper's role is
-outside the bound. A refusal names each part
-it refuses and happens before any name, credential or durable exists. A user-auth space bounds the same grant on its actor
-ledger, at the managed row's write and at every bearer exchange. There a scope token is within when
-the spawner's scope lists it, or when it is `spawn` and the scope lists `run`.
+admission instead of by the driver's own credential (§14.8). A refusal names each part it refuses
+and happens before any name, credential or durable exists. A user-auth space bounds the same grant
+on its actor ledger, at the managed row's write and at every bearer exchange. There a scope token is
+within when the spawner's scope lists it, or when it is `spawn` and the scope lists `run`, and a
+role needs the spawner's scope to list `role:<r>`. On a user-auth space a `role:<r>` scope token
+mints no task-queue row: the agent binds only its row's own role.
 
 **Compatibility.** A command whose semantics require the binding (this revision: `run-start`
 and `run-cancel`, §14.8, and `run-start-keyed` and `run-submission-status`, §14) MUST refuse a legacy-rail request
@@ -6838,6 +6842,7 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
+| 2026-10-30 | **A static spawn bounds the helper's role, and a static agent mint maps `role:<r>` (§13.15), breaking.** A static spawner could hand its helper any role, because the role was outside the bound. The bound now measures the role as the rows that bind its task-queue durable, and the agent mint grants those rows for each `role:<r>` token in the agent's capabilities as well as for its own role, so a spawner hands on a role it was given either way. A spawn that hands on a role its spawner was not given is refused, naming the `role:<r>` token. A user-auth mint is unchanged. No wire change. |
 | 2026-10-30 | **A hosted helper is bounded by the caller that asked for it (§13.6, §14.8), breaking.** A participant manager's enrollment made the manager the helper's ledger parent, so any agent of the owner that could reach the manager's `spawn` command got a helper bounded by the manager's grant. The enrollment request gains `spawn: { served, runId? }`. The issuing host reads every manager `spawn` request subject and makes the caller of an observed one the parent, or the run's starter for a run's spawn, and refuses a subject it did not observe or already answered. A hosted run's admission gains `delegation`, the starter's ledger row at admission, and the run's helpers must also fall within it. A host that predates the field refuses an enrollment carrying it, and a reader that predates `delegation` refuses an admission carrying it. |
 | 2026-10-30 | **A hosted run's spawns are bounded by its admission (§13.15, §14.8), breaking.** A workflow run's spawns were exempt from the static spawn bound, so a caller holding `run` could start a run and spawn a helper the direct spawn door refuses. Each spawn a run makes on a static mesh is now bounded by the admitted ceiling at the admitted caller's coordinate, so a grant the caller gained after admission is never handed on. The admission gains `spawnExempt: true`, written when the caller was an operator instrument or held the admin set at admission; such a run's spawns stay exempt. A reader that predates the field refuses an admission carrying it. |
 | 2026-10-30 | **`spawn` takes an inline persona (§13.7).** An agent defines its helper on the spawn itself: the persona body, role, model, channels and capabilities, bounded as a catalog file is. The manager keeps the record in a private per-lifecycle snapshot written after the grant, refuses a restart once the snapshot changed, and removes it at retirement. `save: true` writes a create-only catalog copy of the checked grant under the requested name. `define-persona` takes `capabilities`, bounded against the definer before the write. The manager cluster advances to revision 44. Additive. |

@@ -12,7 +12,7 @@
  * seat process starts. Run with: pnpm smoke:spawn-grant-bound
  */
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Manager } from "../src/manager.js";
@@ -66,6 +66,9 @@ persona("spawner", "capabilities: [spawn]\n");
 persona("runner", "capabilities: [run]\n");
 persona("vitals", "capabilities: [machine-vitals]\n");
 persona("helper", "");
+persona("worker", "role: worker\n");
+persona("deputy", "capabilities: [role:worker]\n");
+persona("dispatcher", "capabilities: [spawn, role:worker]\n");
 persona("silent", "allowSubscribe: []\n");
 
 const mgr = new Manager({ space, servers: SERVERS, runtime: "pty", workspaceRoot });
@@ -169,6 +172,27 @@ try {
     const acl = minted(h);
     const child = seatOf(String((h.data as { name?: string } | undefined)?.name));
     check("and the helper posts its own event channel", acl !== undefined && child !== undefined && posts(acl, eventChannel({ owner: DEV_OWNER, actor: child.id })), acl);
+  }
+
+  console.log("role");
+  {
+    const r = await spawnAs(caller, "worker");
+    check("a role the spawner holds no queue for is refused, naming the token that hands it on", refused(r, /role worker \(a spawner hands on a role it was given as its own or as the `role:worker` capability\)/), r);
+    const t = await spawnAs(caller, "deputy");
+    check("and so is the role:<r> token for it", refused(t, /capabilities role:worker/), t);
+    const d = await spawnAs(undefined, "dispatcher");
+    check("control: the composition root spawns a spawner holding role:worker", d.ok === true, d);
+    const seat = seatOf("dispatcher");
+    const raw = (() => {
+      const path = agentLifecycleSecretFilePaths(workspaceRoot, space, seat.name, seat.lifecycleUid).creds;
+      const jwt = readFileSync(path, "utf8").split("\n").find((l) => l && !l.startsWith("-") && l.split(".").length === 3)!;
+      return (JSON.parse(Buffer.from(jwt.split(".")[1]!, "base64url").toString("utf8")).nats?.pub?.allow ?? []) as string[];
+    })();
+    check("its credential binds the worker task queue", raw.some((s) => s.startsWith("$JS.API.CONSUMER.MSG.NEXT.") && s.endsWith(".svc_worker")), raw.filter((s) => s.includes("svc_")));
+    const w = await spawnAs(issuedCallerOf("dispatcher"), "worker");
+    check("it hands the role on", w.ok === true, w);
+    const dt = await spawnAs(issuedCallerOf("dispatcher"), "deputy");
+    check("and the role:worker token", dt.ok === true, dt);
   }
 
   console.log("no evidence");

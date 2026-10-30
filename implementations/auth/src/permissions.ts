@@ -5,7 +5,7 @@
  * enforces the token-specific invariants (derived owner, `act.scope` as the single capability authority)
  * and resolves the agent's channel ACL server-side, then hands core a `MintPrincipal`.
  */
-import { permissionsFor, assertDerivedOwnerToken, type MintPrincipal, type MintOpts } from "@cotal-ai/core";
+import { capabilityRole, permissionsFor, assertDerivedOwnerToken, type MintPrincipal, type MintOpts } from "@cotal-ai/core";
 import { VIEW_REQUIRED_SCOPE } from "./token.js";
 import type { UserTokenSession, ValidatedUserToken } from "./token.js";
 
@@ -192,9 +192,12 @@ export function calloutPermissions(
     // The ledger row's lifecycleUid rides the PRINCIPAL: core's agent arm mints the lifecycle-keyed
     // dm/dlv/chathist grant names from it (SPEC 13.1) and refuses to mint without one.
     const { scope: _rowScope, kind: _kind, parentHasRun: _parentHasRun, ...aclOpts } = acl;
+    // On a user mesh a `role:<r>` scope token is what the ledger walk lets this agent hand on. The
+    // agent itself binds only its row's own role queue, so the token mints no task-queue row here.
+    const minted = caps.filter((token) => capabilityRole(token) === undefined);
     const mint = (endpointCapabilities: NonNullable<MintOpts["endpointCapabilities"]> = []) => permissionsFor(
       "agent", t.space, { ...principal, lifecycleUid: acl.lifecycleUid },
-      { ...aclOpts, capabilities: caps, endpointCapabilities },
+      { ...aclOpts, capabilities: minted, endpointCapabilities },
     );
     if (!resolveEndpointCaller) return mint();
     return resolveEndpointCaller(t).then(({ capabilities, expiresAt, recheck }) => ({

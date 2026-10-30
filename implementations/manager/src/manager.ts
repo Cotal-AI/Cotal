@@ -6607,7 +6607,9 @@ export class Manager {
     }
     if (!over.length && !eventsOver) return undefined;
     const named = [
-      ...over.map((o) => `${o.field} ${o.value}`),
+      // A role is handed on by a spawner whose credential binds that role's task queue: its own
+      // role, or a `role:<r>` token in its capabilities.
+      ...over.map((o) => o.field === "role" ? `role ${o.value} (a spawner hands on a role it was given as its own or as the \`role:${o.value}\` capability)` : `${o.field} ${o.value}`),
       ...(eventsOver ? ["events (the helper's own event plane; pass events: false to spawn without it)"] : []),
     ].join(", ");
     if (door === "define-persona")
@@ -6872,6 +6874,7 @@ export class Manager {
     const boundRefusal = this.spawnBoundRefusal(bound, {
       allowSubscribe,
       ...(allowPublish !== undefined ? { allowPublish } : {}),
+      ...(role !== undefined ? { role } : {}),
       ...(capabilities !== undefined ? { capabilities } : {}),
     }, events);
     if (boundRefusal) return { ok: false, error: boundRefusal };
