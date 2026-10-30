@@ -5,7 +5,8 @@
  * descriptions that changesets writes into each package's changelog, so a release reads as more than a
  * list of one-line PR titles.
  *
- * Usage: node scripts/release-notes-detail.mjs <version>   (prints nothing if there are no summaries)
+ * Usage: node scripts/release-notes-detail.mjs <version> [--max-bytes=<n>]
+ * Missing version sections or sections without summaries fail with a diagnostic on stderr.
  *
  * Reads the `## <version>` section of every package CHANGELOG (the basic `@changesets/cli/changelog`
  * format: top-level `- <hash>: <summary>` bullets, plus `- Updated dependencies …` lines we skip).
@@ -40,6 +41,7 @@ for (const root of ["packages", "extensions", "implementations"]) {
 }
 
 const summaries = new Set();
+let foundSection = false;
 for (const file of changelogs) {
   const lines = readFileSync(file, "utf8").split("\n");
   let inSection = false;
@@ -47,6 +49,7 @@ for (const file of changelogs) {
     const line = lines[i];
     if (line.startsWith("## ")) {
       inSection = line.slice(3).trim() === version; // a `## <version>` header starts/ends a section
+      if (inSection) foundSection = true;
       continue;
     }
     if (!inSection) continue;
@@ -65,6 +68,15 @@ for (const file of changelogs) {
     while (body.length && body[body.length - 1].trim() === "") body.pop(); // drop trailing blanks
     summaries.add([first, ...body].join("\n"));
   }
+}
+
+if (!foundSection) {
+  process.stderr.write(`release-notes-detail.mjs: no changelog section for version ${JSON.stringify(version)}\n`);
+  process.exit(1);
+}
+if (!summaries.size) {
+  process.stderr.write(`release-notes-detail.mjs: no release summaries in changelog sections for version ${JSON.stringify(version)}\n`);
+  process.exit(1);
 }
 
 if (summaries.size) {
