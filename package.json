@@ -954,6 +954,7 @@
     "smoke:gate-inventory": "tsx bin/smoke/gate-inventory.smoke.ts",
     "smoke:workspace-import-exports": "tsx bin/smoke/workspace-import-exports.smoke.ts",
     "smoke:required-arg-seam": "tsx bin/smoke/required-arg-seam.smoke.ts",
+    "smoke:workspace-build-filters": "node scripts/workspace-build-filters.smoke.mjs",
     "smoke:ci-suites": "tsx bin/smoke/ci-suites.smoke.ts",
     "smoke:feed-agent": "pnpm --filter @cotal-ai/example-06-feed-agent test",
     "smoke:package-test-contract": "tsx bin/smoke/package-test-contract.smoke.ts",

@@ -25,6 +25,7 @@ import { liveShapedCommandReason } from "./mutation-command-safety.mjs";
 import { parseSuiteSources } from "./mutation-suite-metadata.mjs";
 import { gradeCellTarget } from "./mutation-cell-witness.mjs";
 import { emitSentinel } from "../bin/smoke/sentinel.mjs";
+import { workspaceBuildSelection } from "./workspace-build-filters.mjs";
 
 const FLAG_EXECUTE_DISCOVERED = "--execute-discovered";
 const FLAG_GRADABLE_ONLY = "--gradable-only";
@@ -1448,6 +1449,11 @@ for (const path of packageManifests) {
     if (typeof manifest.name === "string") manifestByName.set(manifest.name, { path, manifest });
   } catch { /* malformed manifests are diagnosed when their config is examined */ }
 }
+// Build selectors include development and peer edges; runtime entry reachability below does not.
+const buildDependencies = new Map([...manifestByName].map(([name, { manifest }]) => [name,
+  new Set(Object.keys({ ...manifest.dependencies, ...manifest.devDependencies,
+    ...manifest.optionalDependencies, ...manifest.peerDependencies })),
+]));
 const entryPackageCache = new Map();
 
 /** Package imports reachable from a declared repo entrypoint, plus first-party package dependencies. */
@@ -1557,11 +1563,8 @@ const buildsPackage = (command, name) => {
     if (tokens.includes("||")) continue;
     if (tokens[0] !== "pnpm") continue;
     if (tokens[1] !== undefined && isBuildScript(tokens[1])) return true;
-    const filter = tokens.findIndex((token) => token === "--filter" || token.startsWith("--filter="));
-    if (filter < 0) continue;
-    const value = tokens[filter].startsWith("--filter=") ? tokens[filter].slice(9) : tokens[filter + 1];
-    if (value?.replace(/\.\.\.$/, "") !== name) continue;
-    if (tokens.slice(filter + (tokens[filter].startsWith("--filter=") ? 1 : 2)).some(isBuildScript)) return true;
+    const selection = workspaceBuildSelection(tokens, buildDependencies);
+    if (selection.packages?.has(name) && selection.tokens.slice(1).some(isBuildScript)) return true;
   }
   return false;
 };

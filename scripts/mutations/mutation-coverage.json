@@ -190,9 +190,9 @@
     },
     {
       "name": "the pnpm --filter=value form is refused",
-      "file": "scripts/mutation-coverage.mjs",
-      "find": "    const value = tokens[filter].startsWith(\"--filter=\") ? tokens[filter].slice(9) : tokens[filter + 1];",
-      "replace": "    const value = tokens[filter + 1];",
+      "file": "scripts/workspace-build-filters.mjs",
+      "find": "    else if (token.startsWith(\"--filter=\")) selectors.push(token.slice(9));",
+      "replace": "    else if (token.startsWith(\"--filter=\")) selectors.push(\"\");",
       "expectRed": "the pnpm --filter=value build form is accepted",
       "cell": "the pnpm --filter=value build form is accepted"
     },
