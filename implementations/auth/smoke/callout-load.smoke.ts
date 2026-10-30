@@ -36,6 +36,8 @@
  * the child dials a loopback port on its own host, and SSH encrypts the inter-host leg.
  * The observed remote listener must be loopback-only. Remote jobs retain only PATH, HOME and
  * disabled-telemetry settings after login-shell tool resolution; credentials arrive on stdin.
+ * An optional --load-exec launcher retains its session environment (for example the systemd user
+ * bus); env -i clears that environment before the launcher executes the Node job.
  *
  *   pnpm smoke:callout-load --scenario burst --burst 500 \
  *     --load-host gen1,gen2 --load-dir /srv/cotal
@@ -758,7 +760,7 @@ const runLoad = (job: ChildJob): Promise<ChildResult> =>
     if (gen) job.servers = gen.servers!;
     const child = gen
       ? spawn("ssh", sshArgs(gen.host,
-          remoteJobCommand(gen.dir, `${LOAD_EXEC ? `${LOAD_EXEC} ` : ""}node --import tsx implementations/auth/smoke/callout-load.smoke.ts load`)),
+          remoteJobCommand(gen.dir, "node --import tsx implementations/auth/smoke/callout-load.smoke.ts load", LOAD_EXEC)),
           { stdio: ["pipe", "pipe", "inherit"], env: cleanEnv })
       : spawn(process.execPath, [...process.execArgv, import.meta.filename, "load"], {
           stdio: ["pipe", "pipe", "inherit"],
