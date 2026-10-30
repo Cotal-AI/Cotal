@@ -12,8 +12,9 @@
  * Run: pnpm smoke:once-handoff
  */
 import { spawn } from "node:child_process";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { mintLifecycleUid } from "@cotal-ai/core";
 import { MeshAgent } from "../src/agent.js";
 import { ONCE_EXIT_GRACE_MS, ONCE_HANDOFF_MS, onceHandoffState, registerOnceExit } from "../src/once.js";
@@ -257,7 +258,10 @@ globalThis.clearTimeout = realClearTimeout;
 console.log("\n8. a seat whose report cannot land exits its own process, even while its shutdown stalls");
 {
   const here = dirname(fileURLToPath(import.meta.url));
-  const child = spawn(join(resolve(here, "../../.."), "node_modules", ".bin", "tsx"), [join(here, "_once-exit-child.ts")], { stdio: ["ignore", "pipe", "pipe"] });
+  // Node runs the script itself, so the pid the bound kills is the seat's own. The tsx CLI runs it
+  // in a child of its own, which a SIGKILL to the CLI leaves running.
+  const tsx = pathToFileURL(createRequire(import.meta.url).resolve("tsx")).href;
+  const child = spawn(process.execPath, ["--import", tsx, join(here, "_once-exit-child.ts")], { stdio: ["ignore", "pipe", "pipe"] });
   let out = "", err = "";
   child.stdout.on("data", (b) => { out += String(b); });
   child.stderr.on("data", (b) => { err += String(b); });
