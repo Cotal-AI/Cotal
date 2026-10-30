@@ -21,3 +21,12 @@ workload or installed defaults, and a successful run is not upgrade qualificatio
 
 Keep source, workload and preparation fixed across comparison arms. Use ordinary runs for
 operating headroom; `--ram` invokes forced-GC profiling and perturbs memory residency.
+
+For GC and scavenger diagnostics, add `--go-trace`. It enables native Go `gctrace` and
+`scavtrace` only for the broker, preserving other inherited `GODEBUG` settings. The harness
+prints those lines with `broker-go utc_epoch_ms=<receipt time>`; the timestamp records when
+the parent received a line, not the exact collection time. Native trace fields depend on the
+broker's Go version. No memory cap or GC policy changes. Omit `--ram` to observe collections
+without the profiler forcing them, and keep traced runs separate from performance comparisons.
+
+`pnpm smoke:seat-idle-go-trace` runs native default and opt-in controls.
