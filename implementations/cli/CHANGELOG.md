@@ -1,5 +1,14 @@
 # @cotal-ai/cli
 
+## 0.131.3
+
+### Patch Changes
+
+- d5fbd2f: Fix two console detail problems. The agent detail's recent traffic cut each preview at a count of UTF-16 units, so a cut inside an emoji showed a replacement character. Previews now cut by terminal columns between whole characters, and a row that would overflow the card ends with `…`, so ASCII previews read as before. Closing a detail also sent the feed back to its newest message at the bottom, so you could not step back through older messages one detail at a time. The feed now keeps its selected message and scroll position across a detail, help and the DM lens. A channel or filter change still jumps to the newest.
+- 087f45c: Keep a `cotal console` roster seat's head row inside its box when a wide character such as a CJK ideograph meets the cut. The row ended with that character and its `…` one cell past the content, over the right padding, so at 80 columns a seat whose activity starts with CJK painted 21 cells in a 20-cell box. The row now ends at the last whole character that leaves room for the `…`, as an ASCII row already did.
+- @cotal-ai/core@0.131.3
+  - @cotal-ai/workspace@0.131.3
+
 ## 0.131.2
 
 ### Patch Changes
