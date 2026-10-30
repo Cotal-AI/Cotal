@@ -254,9 +254,24 @@ spawning it again is the caller's choice. A spawn that succeeds names the task's
 result, and `goal-result` reads its outcome. A helper with no deadline keeps its name and its
 seat slot until its task ends or it is despawned.
 
-Jcode, OpenCode and pi helpers can take a once task. Claude Code helpers cannot yet: a Claude
-session wakes for a relayed task while idle only with channels on, and the connector cannot
-confirm that for a session.
+Jcode, OpenCode and pi helpers can take a once task. A Claude Code helper takes one when its
+startup shows channels on: Claude's development-channels prompt, then its notice that `server:cotal`
+messages reach the session. Without both, the spawn fails at startup and names the reason, and the
+task is cancelled without running. When a Claude Code helper has to stop itself, it ends the
+`claude` process it was launched as. If it cannot prove that process is still the one launched, it
+leaves it running until a person or its runtime stops it.
+
+A manager that restarts can lose hold of a helper. If it restarted before the spawn's readiness
+verdict, the task is cancelled as never served. If it cannot take over a running helper, as on an
+open mesh, it never serves the task again: the task ends at its deadline, or as `uncertain` after
+one readiness window when it has none, and the reason says the helper may still be running. Once
+the task has ended, the helper is told to stop itself the next time it asks for its task.
+
+A Jcode helper runs some processes outside its own. Before its task is recorded as ended, the
+manager stops and rules out each one it can tie to the helper's launch: those that carry the
+launch's identity, their descendants, and the members of a process group one of them leads. A process
+that hides its environment and has left both its parent and its group cannot be tied to the launch,
+so it can outlive the task.
 
 Use a run when the work has several steps, or when a program needs the helper's answer.
 
