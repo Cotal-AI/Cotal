@@ -46,7 +46,7 @@ import { Manager } from "../src/manager.js";
 import { MANAGER_ENDPOINT } from "../src/manager-service-contract.js";
 import { GateReconcileRefused } from "../src/reconcile-gate.js";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal, killAndAwaitExit } from "@cotal-ai/smoke-kit";
 
 // ---------------------------------------------------------------------------
 // FIRST ACTION: scrub inherited COTAL_* and refuse the live host. This suite starts a manager
@@ -343,8 +343,7 @@ try {
   await mgr?.stop({ withAgents: true }).catch(() => {});
   await daemon?.stop().catch(() => {});
   for (const c of holderConns) await c.close().catch(() => {});
-  srv.kill("SIGTERM");
-  await wait(200);
+  await killAndAwaitExit(srv);
   rmSync(dir, { recursive: true, force: true });
   releaseBroker();
   delete process.env.COTAL_HOME;
