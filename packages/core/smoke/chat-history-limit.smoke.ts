@@ -196,6 +196,9 @@ try {
   check("...and its row is tombstoned", cappedRow?.record.leaveCursor !== undefined, cappedRow?.record);
   await membership.close();
   await nc.close();
+} catch (e) {
+  // A throw ends the phase, not the suite, so the open phase still runs and the summary prints.
+  check(`the auth phase ran without throwing: ${e instanceof Error ? e.message : String(e)}`, false, e instanceof Error ? e.stack : e);
 } finally {
   for (const ep of endpoints.splice(0)) await ep.stop().catch(() => {});
   await authBroker.stop();
@@ -302,6 +305,8 @@ try {
   const info = await (await jetstreamManager(nc2)).streams.info(chatStream(E));
   check("the age survives a broker restart, and a newer post is still kept", info.config.max_age === nanos(2 * MIN) && info.state.messages === 1, { max_age: info.config.max_age, messages: info.state.messages });
   await nc2.close();
+} catch (e) {
+  check(`the open phase ran without throwing: ${e instanceof Error ? e.message : String(e)}`, false, e instanceof Error ? e.stack : e);
 } finally {
   for (const ep of endpoints.splice(0)) await ep.stop().catch(() => {});
   await open.stop();

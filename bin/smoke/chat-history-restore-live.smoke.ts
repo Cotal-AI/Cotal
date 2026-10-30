@@ -94,6 +94,9 @@ const same = (a: ChatHistoryLimit, b: ChatHistoryLimit) => a.maxAgeMs === b.maxA
     const plane3 = await Promise.all([inboxStream(space), dlvStream(space)].map(async (name) => (await jsm.streams.info(name)).config));
     check("INBOX and DLV come back with their own bound", plane3.every((c) => c.max_msgs_per_subject === PLANE3_MAX_MSGS_PER_SUBJECT && c.max_age === 0), plane3.map((c) => [c.name, c.max_msgs_per_subject, c.max_age]));
     await rc.close();
+  } catch (e) {
+    // A throw ends the scenario, not the suite, so the next one still runs and the summary prints.
+    check(`the recorded-age scenario ran without throwing: ${e instanceof Error ? e.message : String(e)}`, false, e instanceof Error ? e.stack : e);
   } finally {
     if (up) s.run("down");
     s.cleanup();
@@ -141,6 +144,8 @@ const same = (a: ChatHistoryLimit, b: ChatHistoryLimit) => a.maxAgeMs === b.maxA
     check("the next start moves it to 30 days and 1000 per sender", next.status === 0 && same(limitOf(migrated.config), CHAT_HISTORY_DEFAULT), { up: s.shown(next), limit: limitOf(migrated.config) });
     check("...and says so", `${next.stdout}${next.stderr}`.includes("the broker now deletes posts older than 30d"), s.shown(next));
     check("...keeping the post that is newer than 30 days", migrated.state.messages === 1, migrated.state.messages);
+  } catch (e) {
+    check(`the legacy scenario ran without throwing: ${e instanceof Error ? e.message : String(e)}`, false, e instanceof Error ? e.stack : e);
   } finally {
     if (up) s.run("down");
     s.cleanup();
@@ -148,3 +153,5 @@ const same = (a: ChatHistoryLimit, b: ChatHistoryLimit) => a.maxAgeMs === b.maxA
 }
 
 finish();
+// A scenario that threw can leave a client connection retrying a broker that is gone.
+process.exit(process.exitCode ?? 0);
