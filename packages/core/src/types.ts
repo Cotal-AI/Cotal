@@ -432,6 +432,27 @@ export type CotalMessage =
       to?: never;
     });
 
+/** One channel's result in a pattern post (SPEC §7). `sent`: the broker stored the copy at `seq`.
+ *  `failed`: the broker refused the copy, so it is not stored. `unknown`: the publish ended without
+ *  an answer, so the copy may be stored under `id`. `not-attempted`: the post stopped before this
+ *  channel. */
+export interface PatternPostTarget {
+  channel: string;
+  /** The copy's message id, chosen before the first publish. */
+  id: string;
+  outcome: "sent" | "failed" | "unknown" | "not-attempted";
+  seq?: number;
+  duplicate?: boolean;
+  error?: string;
+}
+
+/** What a pattern post did: every matched channel, in the order the copies were published. An
+ *  empty list means the pattern matched no channel and nothing was sent. */
+export interface PatternPostReceipt {
+  pattern: string;
+  targets: PatternPostTarget[];
+}
+
 /** A history row the drain VERIFIED — the read-side counterpart of {@link CotalMessage}, and
  *  what `channelHistory` / `dmHistory` / `multiChannelHistory` return (#1413). Checked before
  *  the row is returned: a usable string `id`, a full `from` (`id` and `name` strings, `role` a

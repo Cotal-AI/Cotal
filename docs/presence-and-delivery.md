@@ -184,8 +184,10 @@ Every delivery message is addressed one of three ways
 
 ![Anycast: a message addressed to the reviewer role; one free reviewer instance claims it](../assets/anycast.webp)
 
-Channels are dotted and hierarchical (`team.backend`); publishing is always concrete,
-subscriptions may wildcard a subtree (`team.>`). Anycast is queued work: a task with no
+Channels are dotted and hierarchical (`team.backend`); every publish names one concrete channel,
+and a post to a pattern such as `team.>` is one copy per matching channel
+([channels & permissions](channels-and-permissions.md#wildcards)). Subscriptions may wildcard a
+subtree (`team.>`). Anycast is queued work: a task with no
 worker online *waits*; multiple online instances of a role load-balance; the task is
 removed once acked.
 

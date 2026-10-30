@@ -39,6 +39,7 @@ import {
   type AttentionMode,
   type ChannelMode,
   type CotalMessage,
+  type PatternPostReceipt,
   type GoalResultFact,
   turnNoticeFilter,
 } from "@cotal-ai/core";
@@ -2034,6 +2035,22 @@ export class MeshAgent extends EventEmitter {
     const clean = normalizeMentions(mentions);
     if (clean) await this.assertKnownMentions(clean);
     return this.ep.multicast(text, { channel, mentions: clean, ...this.stamp().stamp });
+  }
+
+  /** Post to a channel pattern (SPEC §7): one copy on each channel it matches, through
+   *  {@link CotalEndpoint.multicastPattern}. Mentions are refused before anything is sent: every copy
+   *  would carry them, and a named peer would be woken once per matched channel it can read. */
+  async sendPattern(text: string, pattern: string, mentions?: string[]): Promise<PatternPostReceipt> {
+    try {
+      await this.requireConnected();
+    } catch (error) {
+      throw new Error(`${(error as Error).message}. The message was not sent.`, { cause: error });
+    }
+    if (normalizeMentions(mentions))
+      throw new Error(
+        "mentions are refused on a pattern post: every copy would carry them, so each named peer would be woken once per matched channel. Mention on one channel by name. Nothing was sent",
+      );
+    return this.ep.multicastPattern(text, { pattern, ...this.stamp().stamp });
   }
 
   /**

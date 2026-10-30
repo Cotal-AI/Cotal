@@ -189,6 +189,7 @@
     "smoke:membership-observer-renewal": "tsx packages/core/smoke/membership-observer-renewal.smoke.ts",
     "smoke:channels": "tsx packages/core/smoke/channels.smoke.ts",
     "smoke:wildcard-backfill": "tsx packages/core/smoke/wildcard-backfill.smoke.ts",
+    "smoke:multicast-attributed": "tsx packages/core/smoke/multicast-attributed.smoke.ts",
     "smoke:channels:auth": "tsx packages/core/smoke/channels-auth.smoke.ts",
     "smoke:endpoint-permission-results:auth": "tsx packages/core/smoke/endpoint-permission-results.smoke.ts",
     "smoke:no-implicit-general": "tsx packages/core/smoke/no-implicit-general.smoke.ts",

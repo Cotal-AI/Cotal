@@ -55,6 +55,7 @@ import { isRestoredConsumer } from "./backup.js";
 import { ARTIFACT_PART_KIND, isArtifactPart } from "./artifact.js";
 import { assertValidKind } from "./agent-file.js";
 import { assertValidName } from "./resolve.js";
+import { isEventChannel } from "./event-channel.js";
 import { EVICT_PRINCIPALS_MAX } from "./evict.js";
 import { createSpaceStreams, dmDurableConfig, dlvDurableConfig, taskDurableConfig, fanoutDurableConfig, inboxReaderConfig, MAX_MSGS_PER_SUBJECT, MANAGER_LEASE_TTL_MS, MANAGER_LEASE_ATTEMPT_MS, TTL_RECONCILE_CANARY_KEY, PRESENCE_STORAGE } from "./streams.js";
 import {
@@ -101,6 +102,8 @@ import type {
   MembershipEntry,
   MembershipChange,
   MembershipSnapshot,
+  PatternPostReceipt,
+  PatternPostTarget,
   Plane3Entry,
 } from "./types.js";
 import {
@@ -224,6 +227,11 @@ export const MULTI_FILTER_BATCH = 1_000;
  *  issuing one read per channel: a space large enough to need batches must not get the fan-out back
  *  under another name. */
 export const MULTI_FILTER_READ_CONCURRENCY = 4;
+
+/** The most channels one pattern post may reach (SPEC §7). It bounds the publishes one send makes,
+ *  the receipt's length and the copies a peer on several matches receives. It is not a security
+ *  bound: the post ACL is. A pattern matching more is refused before anything is sent. */
+export const MAX_PATTERN_POST_CHANNELS = 32;
 
 /** A history reader's inactive threshold. It bounds only a reader whose delete never ran (its link
  *  dropped, or its process stopped), because every read deletes its readers when it ends. Five
@@ -2328,6 +2336,16 @@ export class CotalEndpoint extends EventEmitter {
     text: string,
     opts?: { channel?: string; parts?: Part[]; replyTo?: string; contextId?: string; mentions?: string[] },
   ): Promise<CotalMessage> {
+    const { msg } = await this.multicastAttributed(text, opts);
+    return msg;
+  }
+
+  /** Multicast, returning the JetStream publish ack alongside the message, as {@link unicastAttributed}
+   *  does: the broker stored the message at that sequence, which says nothing about who read it. */
+  async multicastAttributed(
+    text: string,
+    opts?: { channel?: string; parts?: Part[]; replyTo?: string; contextId?: string; mentions?: string[] },
+  ): Promise<{ msg: CotalMessage; ack: { seq: number; duplicate: boolean } }> {
     // Publish must target a concrete sub-channel — you can't broadcast to a
     // wildcard. Default to the first concrete channel we're on (channels[0] may
     // itself be a wildcard subscription like `team.>`). On no channels there is NO default: refuse
@@ -2353,8 +2371,91 @@ export class CotalEndpoint extends EventEmitter {
       replyTo: opts?.replyTo,
       contextId: opts?.contextId,
     };
-    await this.publishMsg(chatSubject(this.space, this.owner, this.actor, channel), msg);
-    return msg;
+    const ack = await this.publishMsg(chatSubject(this.space, this.owner, this.actor, channel), msg);
+    return { msg, ack };
+  }
+
+  /**
+   * Post to a channel pattern such as `review.>` (SPEC §7): one ordinary copy, with its own id, on
+   * each channel the pattern matches. The match set is read once, before the first copy: the
+   * channels with a registry entry or with retained posts. A channel that exists only as someone's
+   * subscription, or that appears after the read, gets no copy.
+   *
+   * Copies are published in channel order and the post stops at the first copy that is not stored
+   * or whose outcome is unknown. The receipt names every matched channel with its outcome, so a
+   * caller finishes by posting to the channels left, never by posting the pattern again, which would
+   * put a second copy on each channel already sent.
+   *
+   * Mentions are not accepted: every copy would carry them. The post ACL is the caller's to check
+   * (core holds none); the broker still authorizes every copy.
+   *
+   * @throws with nothing published when the pattern is malformed or concrete, discovery fails, a
+   *   match is an agent event channel, or more than {@link MAX_PATTERN_POST_CHANNELS} channels match.
+   */
+  async multicastPattern(
+    text: string,
+    opts: { pattern: string; parts?: Part[]; replyTo?: string; contextId?: string },
+  ): Promise<PatternPostReceipt> {
+    if (!this.js) throw new Error(this.notLiveMsg());
+    const { pattern } = opts;
+    assertValidChannel(pattern);
+    if (isConcreteChannel(pattern))
+      throw new Error(`"${pattern}" is one channel, not a pattern - post to it with multicast`);
+    const channels = await this.channelsMatching(pattern);
+    const events = channels.filter(isEventChannel);
+    if (events.length)
+      throw new Error(
+        `"${pattern}" matches agent event channels (${events.map((c) => `#${c}`).join(", ")}); nothing was sent - narrow the pattern`,
+      );
+    if (channels.length > MAX_PATTERN_POST_CHANNELS)
+      throw new Error(
+        `"${pattern}" matches ${channels.length} channels, more than the ${MAX_PATTERN_POST_CHANNELS} one post may reach; nothing was sent - narrow the pattern`,
+      );
+    const parts = opts.parts ?? [{ kind: "text", text }];
+    assertPartsSerializable(parts);
+    const targets: PatternPostTarget[] = channels.map((channel) => ({ channel, id: randomUUID(), outcome: "not-attempted" }));
+    for (const target of targets) {
+      const msg: CotalMessage = {
+        id: target.id,
+        ts: Date.now(),
+        space: this.space,
+        from: this.ref(),
+        channel: target.channel,
+        parts,
+        replyTo: opts.replyTo,
+        contextId: opts.contextId,
+      };
+      try {
+        const ack = await this.publishMsg(chatSubject(this.space, this.owner, this.actor, target.channel), msg);
+        Object.assign(target, { outcome: "sent", seq: ack.seq, duplicate: ack.duplicate });
+      } catch (error) {
+        Object.assign(target, { outcome: brokerRefused(error) ? "failed" : "unknown", error: (error as Error).message });
+        break;
+      }
+    }
+    return { pattern, targets };
+  }
+
+  /** The channels `pattern` matches, sorted: registry entries plus channels with retained posts.
+   *  An absent CHAT stream holds no posts; any other read failure throws, so a fan-out never runs
+   *  on a partial list. */
+  private async channelsMatching(pattern: string): Promise<string[]> {
+    if (!this.nc) throw new Error(this.notLiveMsg());
+    const found = new Set<string>();
+    try {
+      const info = await (await jetstreamManager(this.nc)).streams.info(chatStream(this.space), {
+        subjects_filter: chatSubject(this.space, "*", "*", pattern),
+      });
+      for (const subject of Object.keys(info.state.subjects ?? {})) {
+        const p = parseSubject(subject);
+        // The same surfacing-boundary rule as listChannels: a non-principal owner is an old-shape alias.
+        if (p?.kind === "chat" && isPrincipalOwnerToken(p.owner) && subjectMatches(pattern, p.rest)) found.add(p.rest);
+      }
+    } catch (e) {
+      if (!isJetStreamMissing(e, JetStreamApiCodes.StreamNotFound)) throw e;
+    }
+    for (const channel of this.channelConfigs.keys()) if (subjectMatches(pattern, channel)) found.add(channel);
+    return [...found].sort();
   }
 
   /** The broker's live `max_payload` — the CEILING a frame is measured against, not a budget for a
@@ -2545,8 +2646,8 @@ export class CotalEndpoint extends EventEmitter {
 
     const message = this.casEnvelope(opts);
     assertPartsSerializable(message.parts);
-    // Publish DIRECTLY rather than through publishMsg: this path must set the expectation and read
-    // the ack, and publishMsg deliberately does neither.
+    // Publish DIRECTLY rather than through publishMsg: this path must set the expectation, which
+    // publishMsg deliberately does not.
     const ack = await this.js.publish(
       chatSubject(this.space, this.owner, this.actor, opts.channel),
       JSON.stringify(message),
@@ -2587,21 +2688,8 @@ export class CotalEndpoint extends EventEmitter {
     // subject forge-locks recipient AND sender, so both are split into their tokens here.
     const recip = parsePrincipalKey(instanceId);
     if (!recip) throw new Error(`unicast: "${instanceId}" is not a valid recipient principal <owner>.<actor>`);
-    assertPartsSerializable(msg.parts);
-    // Publish DIRECTLY rather than through publishMsg, the way multicastExpecting does: this path
-    // must read the ack, and publishMsg deliberately discards it.
-    const subject = unicastSubject(this.space, recip.owner, recip.actor, this.owner, this.actor);
-    try {
-      const ack = await this.js.publish(subject, JSON.stringify(msg), { msgID: msg.id });
-      return { msg, ack: { seq: ack.seq, duplicate: ack.duplicate === true } };
-    } catch (error) {
-      if (error instanceof TimeoutError)
-        throw new Error(
-          `${error.message} publishing to ${JSON.stringify(subject)}. The send outcome is unknown: the broker may have stored the message. Check before resending.`,
-          { cause: error },
-        );
-      throw error;
-    }
+    const ack = await this.publishMsg(unicastSubject(this.space, recip.owner, recip.actor, this.owner, this.actor), msg);
+    return { msg, ack };
   }
 
   /** Anycast: deliver to ANY one instance of a service (role) — queue-group load balancing. */
@@ -2635,8 +2723,7 @@ export class CotalEndpoint extends EventEmitter {
       contextId: opts?.contextId,
     };
     assertPartsSerializable(msg.parts);
-    // Publish DIRECTLY rather than through publishMsg, the way unicastAttributed does: this path
-    // must read the ack, and publishMsg deliberately discards it.
+    // Publish directly, with the message id as the JetStream message id, and keep the ack.
     const ack = await this.js.publish(
       anycastSubject(this.space, service, this.owner, this.actor),
       JSON.stringify(msg),
@@ -4633,12 +4720,13 @@ export class CotalEndpoint extends EventEmitter {
       : "endpoint not started";
   }
 
-  private async publishMsg(subject: string, msg: CotalMessage): Promise<void> {
+  private async publishMsg(subject: string, msg: CotalMessage): Promise<{ seq: number; duplicate: boolean }> {
     if (!this.js) throw new Error(this.notLiveMsg());
     assertPartsSerializable(msg.parts);
     // msgID = message id → free server-side dedup across JetStream redelivery.
     try {
-      await this.js.publish(subject, JSON.stringify(msg), { msgID: msg.id });
+      const ack = await this.js.publish(subject, JSON.stringify(msg), { msgID: msg.id });
+      return { seq: ack.seq, duplicate: ack.duplicate === true };
     } catch (error) {
       if (error instanceof TimeoutError)
         throw new Error(
@@ -7821,6 +7909,15 @@ function subjectLabel(subjects: string[]): string {
  *  skip) so it never reaches the receiver's id-keyed machinery as `undefined`. */
 function isUsableMessageId(id: unknown): id is string {
   return typeof id === "string";
+}
+
+/** Whether a failed JetStream publish proves the message was not stored: the broker denied the
+ *  publish, or the stream answered with an error. Anything else, a timeout or a dropped connection
+ *  among them, leaves the outcome unknown. */
+function brokerRefused(error: unknown): boolean {
+  if (error instanceof JetStreamApiError) return true;
+  const denial = error instanceof PermissionViolationError ? error : (error as { cause?: unknown } | undefined)?.cause;
+  return denial instanceof PermissionViolationError && denial.operation === "publish";
 }
 
 /** Map an authenticated parsed-subject kind to the message class surfaced to "message" listeners.

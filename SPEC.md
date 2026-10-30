@@ -181,9 +181,10 @@ surfacing boundary (§9). Reference implementation: `parseSubject` in
 `packages/core/src/subjects.ts`.
 
 **Channel tokens.** A channel is dotted; each segment is sanitized. The literal wildcards
-`*` and `>` are preserved only as whole segments for subscription and allow-list patterns;
-`>` is valid only as the final segment. A publish target MUST be concrete, with no `*` or
-`>`; a subscription MAY be wildcard. A channel is at most 4096 characters in total
+`*` and `>` are preserved only as whole segments for subscription, allow-list and post patterns;
+`>` is valid only as the final segment. A publish subject MUST be concrete, with no `*` or
+`>`; a subscription MAY be wildcard. A post to a channel pattern is one concrete publish per
+matching channel (§7). A channel is at most 4096 characters in total
 (`MAX_CHANNEL_LENGTH`): every grant line a channel mints rides the minted credential's
 CONNECT line (§13.9), so an unbounded channel is an unbounded connect.
 
@@ -528,8 +529,8 @@ the class differently in different paths.
 
 Join subscribes the instance to the channel; leave unsubscribes it. A join target MUST be within
 the instance's read ACL (`allowSubscribe`, §9); a join outside it MUST be refused by the broker on
-subscribe. A client MUST NOT publish to wildcard channels, but a wildcard read ACL (`team.>`)
-authorizes subscribing to any one concrete channel under it **without enumerating channels in
+subscribe. A client MUST NOT publish to a wildcard subject (a post to a channel pattern is a set
+of concrete publishes, below), but a wildcard read ACL (`team.>`) authorizes subscribing to any one concrete channel under it **without enumerating channels in
 advance**. In the NATS binding, join is a native `sub.allow`-bounded core subscription to the
 channel subject and leave is the corresponding unsubscribe; **no privileged mediation is
 required**: the broker enforces every subscribe against `sub.allow`, so an instance whose ACL
@@ -602,6 +603,35 @@ membership cannot be established (for example no privileged writer is present), 
 **`joined live` with the durable backstop unestablished**: it MUST NOT be reported as `joined durable`,
 the live subscription remains active, and the durable shortfall MUST be surfaced as an exceptional
 delivery state (e.g. `durable backstop unavailable`), never silently.
+
+**Posting to a channel pattern.** A client MAY post to a channel pattern such as `review.>` by
+publishing one ordinary channel message to each concrete channel the pattern matches. Each copy is a
+separate message with its own `id` (§5) on its own concrete subject (§3), so delivery, history, the
+durable backstop and `@mention` routing treat it like any other post on that channel. The wire format
+is unchanged. A client that offers pattern posts:
+
+1. MUST validate the pattern under the channel grammar (§3), and MUST NOT treat a concrete channel
+   as a pattern.
+2. Where it enforces a post ACL, MUST refuse the post unless one `allowPublish` entry covers the
+   whole pattern, so every channel the pattern can match also matches that entry. A pattern that only
+   a union of entries covers is refused. The broker still authorizes each copy.
+3. MUST read the match set once, before the first copy: the channels with a registry entry or with
+   retained posts in `CHAT` (§8) that the pattern matches under the subscription rules of §3. A
+   channel created after the read, or one that exists only as a subscription, receives no copy. If
+   the read fails, the post MUST be refused with nothing published.
+4. MUST refuse the post with nothing published, naming the cause, when a matched channel is an agent
+   event channel (`events.<owner>.<actor>`) or when more than 32 channels match.
+5. MUST NOT carry `mentions`: every copy would carry them, and a mentioned peer would be woken once
+   per matched channel it can read (§4).
+6. MUST choose every copy's `id` before the first publish, publish the copies in a fixed order, and
+   stop at the first copy the broker refused or whose outcome is unknown.
+7. MUST report each matched channel's outcome: `sent` (stored, with its stream sequence), `failed`
+   (the broker refused the copy, so it is not stored), `unknown` (the publish ended without an
+   answer, so the copy may be stored under its `id`), or `not-attempted`. A pattern that matches no
+   channel is reported as such, with nothing published.
+
+Posting the pattern again after a partial post would put a second copy on every channel already
+sent, so a client finishes it by posting to the remaining channels by name.
 
 ---
 
@@ -6763,6 +6793,7 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
+| 2026-10-30 | **A client may post to a channel pattern (§3, §7), additive.** A post to a pattern such as `review.>` is one ordinary concrete publish per matching channel, each copy with its own `id`. The match set is read once from the channel registry and the retained `CHAT` subjects. Where a post ACL is enforced, one `allowPublish` entry must cover the whole pattern. The post is refused with nothing published when it matches an agent event channel or more than 32 channels, or carries `mentions`. Copies are published in a fixed order and the post stops at the first refused or unknown copy; each matched channel is reported as `sent`, `failed`, `unknown` or `not-attempted`. §3 now requires a concrete publish subject rather than a concrete publish target. No wire format change; `protocolVersion` unchanged. |
 | 2026-10-29 | **Manager connector status declares event-plane support (§13.7), additive.** Every `status.connectors` row now requires `eventPlane: boolean`, including rows built from the declared extension inventory before its package is imported. The fact is true only when the connector declares its event channel; it is never defaulted to true. The reference Manager cluster advances to revision 42. |
 | 2026-10-29 | **The Manager persona catalog has a typed removal command (§13.7), additive.** `remove-persona` rides the same `manager.persona` capability as `define-persona`, removes only the machine-local definition, refuses an unknown name, and accepts a safe filename stem even when it exceeds the current spawn-name limit. The reference Manager cluster advances to revision 41. |
 | 2026-10-28 | **A retiring lifecycle's fence is its ACL row (Appendix B).** The fence of the next entry lived only in one daemon's memory and was checked before a join wrote its row, so a join whose ACL lookup outlived the fence, a join from a still-connected seat after a daemon restart, or a join a quiesced predecessor finished after its successor's inventory each kept one row of a retired lifecycle. The manager now narrows the lifecycle's ACL row to an empty `allowSubscribe` before it asks for the inventory. The daemon re-reads that exact row before and after the write that creates a membership row, and removes the row and refuses the join when the channel is no longer within it. Other membership writes only update the revision they read. The daemon's own refusal and its wait for running writes stay, for a manager that does not narrow, as on a hosted daemon serving older managers. No wire change. |

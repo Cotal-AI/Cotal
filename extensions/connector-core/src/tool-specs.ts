@@ -9,7 +9,7 @@
  */
 import { execFileSync } from "node:child_process";
 import { z } from "zod";
-import { isConcreteChannel, channelInAllow, AmbiguousPeerError, peerLabel, assertLifecycleToken, isPermissionDenied, renderLifecycleBlocked, EpEnvelopeError, LANG_PROBLEM_DETAIL_KIND, formatAge, presenceAges, presenceText, type ControlReply, type PresenceStatus } from "@cotal-ai/core";
+import { isConcreteChannel, channelInAllow, patternInAllow, assertValidChannel, MAX_PATTERN_POST_CHANNELS, AmbiguousPeerError, peerLabel, assertLifecycleToken, isPermissionDenied, renderLifecycleBlocked, EpEnvelopeError, LANG_PROBLEM_DETAIL_KIND, formatAge, presenceAges, presenceText, type ControlReply, type PatternPostReceipt, type PresenceStatus } from "@cotal-ai/core";
 import { afterRecallMark, type MeshAgent, type InboxItem } from "./agent.js";
 // The neutralization and the per-item rendering live in `framing.ts`, one convention shared with
 // the auto-injected block, and are used here rather than restated. See that file for the rule.
@@ -686,6 +686,43 @@ export function defaultSendChannel(config: Pick<AgentConfig, "allowPublish" | "c
 const NO_POSTABLE_DEFAULT =
   "you may post to none of the channels you read, so there is no default and an omitted channel is refused - name one your post ACL allows (cotal_orientation lists them)";
 
+/** How `cotal_send` explains a pattern post, shared with the gateway's advertised text. */
+export const PATTERN_POST_HELP =
+  `A pattern such as team.> posts one copy to each channel it matches that has a registry entry or earlier posts, at most ${MAX_PATTERN_POST_CHANNELS}, and only when one of your post grants covers the whole pattern. Mentions are refused on a pattern.`;
+
+/** Why this connection may not post to `pattern`, or undefined when it may (SPEC §7). Where post
+ *  ACLs are enforced the whole pattern must sit inside ONE allowPublish entry. The broker would accept
+ *  each copy a union of entries covers, but a pattern only a union covers is refused here, so the
+ *  answer depends on the pattern and the grant and never on which channels exist. */
+export function patternPostRefusal(config: Pick<AgentConfig, "allowPublish" | "creds" | "userAuth">, pattern: string): string | undefined {
+  try {
+    assertValidChannel(pattern);
+  } catch (e) {
+    return (e as Error).message;
+  }
+  if (isAuthed(config) && !patternInAllow(config.allowPublish, pattern))
+    return `no single post grant covers ${pattern} (allowPublish: ${config.allowPublish.length ? config.allowPublish.map((c) => `#${c}`).join(", ") : "none"}) - post to the channels by name, or ask for a grant that covers the pattern`;
+  return undefined;
+}
+
+/** The text a pattern post reports: every matched channel and what happened to its copy. */
+export function renderPatternReceipt(receipt: PatternPostReceipt): ToolResult {
+  const { pattern, targets } = receipt;
+  if (!targets.length) return ok(`${pattern} matched no registered channel and no channel with retained posts; nothing sent.`);
+  const of = (outcome: PatternPostReceipt["targets"][number]["outcome"]) => targets.filter((t) => t.outcome === outcome);
+  const names = (ts: PatternPostReceipt["targets"]) => ts.map((t) => `#${t.channel}`).join(", ");
+  const [sent, failed, unknown, skipped] = [of("sent"), of("failed"), of("unknown"), of("not-attempted")];
+  const lines = [`Posted to ${sent.length} of ${targets.length} channels matching ${pattern}.`];
+  if (sent.length) lines.push(`Sent: ${names(sent)}.`);
+  if (sent.length === targets.length) return ok(lines.join("\n"));
+  for (const t of failed) lines.push(`Failed: #${t.channel}, refused by the broker and not stored (${t.error}).`);
+  for (const t of unknown) lines.push(`Unknown: #${t.channel}, the copy may be stored as id ${t.id} (${t.error}). Check that channel's history for it before posting there again.`);
+  if (skipped.length) lines.push(`Not attempted: ${names(skipped)}.`);
+  const left = [...failed, ...skipped];
+  if (left.length) lines.push(`Finish by posting to ${names(left)} by name. Do not post the pattern again: every channel already sent would get a second copy.`);
+  return err(lines.join("\n"));
+}
+
 /** The full Cotal tool set for a given config. Renderers iterate this; `source` names the
  *  hosting connector and is stamped onto outgoing feedback. An explicit env restricts feedback's
  *  Git lookup to its global config; omitted preserves process inheritance and repository lookup.
@@ -1107,14 +1144,15 @@ export function cotalToolSpecs(
     {
       name: "cotal_send",
       title: "Cotal: broadcast to a channel",
-      description: "Broadcast a message to everyone on a channel in your space.",
+      description:
+        "Broadcast a message to everyone on a channel in your space, or post one copy to each channel a pattern such as team.> matches.",
       schema: {
         text: z.string().describe("The message to broadcast."),
         channel: z
           .string()
           .optional()
           .describe(
-            `Channel to send on (${defaultChannel ? `default: ${defaultChannel}` : config.subscribe.some(isConcreteChannel) ? `REQUIRED: ${NO_POSTABLE_DEFAULT}` : "REQUIRED: you are on no channel, so there is no default and an omitted channel is refused - join one first"}). Concrete only, not a wildcard like team.>; reply on the channel you received a message on.`,
+            `Channel to send on (${defaultChannel ? `default: ${defaultChannel}` : config.subscribe.some(isConcreteChannel) ? `REQUIRED: ${NO_POSTABLE_DEFAULT}` : "REQUIRED: you are on no channel, so there is no default and an omitted channel is refused - join one first"}). ${PATTERN_POST_HELP} Reply on the channel you received a message on.`,
           ),
         mentions: z
           .array(z.string())
@@ -1125,6 +1163,11 @@ export function cotalToolSpecs(
       },
       async run(agent, config, { text: msg, channel, mentions }: { text: string; channel?: string; mentions?: string[] }) {
         try {
+          if (channel !== undefined && !isConcreteChannel(channel)) {
+            const refusal = patternPostRefusal(config, channel);
+            if (refusal) return err(`Couldn't send: ${refusal}. Nothing was sent.`);
+            return renderPatternReceipt(await agent.sendPattern(msg, channel, mentions));
+          }
           const joined = agent.joinedChannels();
           const target = channel ?? defaultSendChannel(config, joined);
           if (target === undefined && joined.some(isConcreteChannel)) return err(`Couldn't send: ${NO_POSTABLE_DEFAULT}.`);

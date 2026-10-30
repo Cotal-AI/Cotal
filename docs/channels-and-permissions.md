@@ -89,7 +89,16 @@ Every field name below is verified against [agent-files.md](agent-files.md) and
 
 ## Wildcards
 
-A **publish target is always concrete** (no `*`/`>`). **Subscriptions and ACLs may wildcard**:
+Every publish names **one concrete channel** (no `*`/`>`). **Subscriptions and ACLs may wildcard**:
 `team.*` (one level) or `team.>` (any depth). A `>` read grant is **read-all chat** in the space
 by design: it suits trusted/local deployments, not least privilege ([SPEC §3](../SPEC.md#3-subject-layout),
 [§9](../SPEC.md#9-nats--jetstream-security-and-authorization)).
+
+**Posting to a pattern.** `cotal_send` with a channel such as `team.>` posts one copy to each
+matching channel that has a registry entry or earlier posts. Each copy is an ordinary post with its
+own id. One `allowPublish` entry must cover the whole pattern: `allowPublish: [team.>]` may post to
+`team.>`, and `[team.a, team.b]` may not. A pattern that matches an agent's event channel or more than
+32 channels is refused with nothing sent, and so is a pattern post with mentions. The reply lists each
+matched channel as sent, failed, unknown or not attempted. To finish a partial post, post to the
+remaining channels by name; posting the pattern again would repeat the copies already sent
+([SPEC §7](../SPEC.md#7-channels)).

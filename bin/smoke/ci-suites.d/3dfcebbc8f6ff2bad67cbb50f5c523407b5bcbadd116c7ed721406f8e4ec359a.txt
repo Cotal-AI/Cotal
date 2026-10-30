@@ -1,0 +1,3 @@
+# multicastAttributed returns the stored sequence for a channel post, and unicastAttributed still
+# does for a DM after moving onto the shared publish path.
+smoke:multicast-attributed
