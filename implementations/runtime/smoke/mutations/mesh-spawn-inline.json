@@ -8,7 +8,7 @@
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/runtime/smoke/mutations/mesh-spawn-inline.json",
   "why": [
     "The suite imports the runtime's source, so no rebuild is needed around a mutant.",
-    "M1 drops the bind before submission, M2 drops the restatement in the acceptance bind, M3 drops the recorded-digest check on resume, M4 drops the adoption digest check, and M5 drops the persona record from the spawn args."
+    "M1 drops the bind before submission, M2 drops the restatement in the acceptance bind, M3 drops the recorded-digest check on resume, M4 drops the adoption digest check, M5 drops the persona record from the spawn args, and M6 defers the bind until after the submission went out, which the suite sees in the journal as it stood when the manager received the request."
   ],
   "mutations": [
     {
@@ -50,6 +50,14 @@
       "replace": "",
       "expectRed": "the manager is asked for the helper by name, with the definition as its persona record",
       "cell": "the manager is asked for the helper by name, with the definition as its persona record"
+    },
+    {
+      "name": "M6 the definition is bound only after the submission went out",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "        if (inline !== undefined && recordedInline === undefined) await ctx.bind({ inline });",
+      "replace": "        if (inline !== undefined && recordedInline === undefined) void delay(1000).then(() => ctx.bind({ inline }));",
+      "expectRed": "the definition and its digest are bound before the submission, with no goal yet",
+      "cell": "the definition and its digest are bound before the submission, with no goal yet"
     }
   ]
 }

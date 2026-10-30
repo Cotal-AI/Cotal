@@ -264,6 +264,9 @@ const goalCtx = await actionContext(nc, SPACE);
 const acceptances = new Map<string, Record<string, unknown>>();
 const spawnInvokes: string[] = [];                       // every spawn submission's goalId, in order
 const spawnPersonas = new Map<string, unknown>();         // goalId -> the `persona` record the submission carried
+/** The run whose spawn journal is read as each inline submission arrives, and what that read saw. */
+let receiptRun: string | undefined;
+const journalAtReceipt = new Map<string, JournalEntry[]>(); // goalId -> the step's journal when the manager got the request
 const allocations: Array<{ goalId: string; name: string; owner: string; actor: string; uid: string; persona: string }> = [];
 const despawns: Array<{ owner: string; actor: string; lifecycleUid: string; graceful: unknown }> = [];
 const placements: Array<{ goalId: string; cwd: string; head: string }> = [];
@@ -286,6 +289,7 @@ const spawnHandler = async (ctx: EpServeContext): Promise<unknown> => {
   const goalId = ctx.request.id;
   spawnInvokes.push(goalId);
   if (args.persona !== undefined) spawnPersonas.set(goalId, args.persona);
+  if (args.persona !== undefined && receiptRun !== undefined) journalAtReceipt.set(goalId, await journalEntries(receiptRun, "spawn"));
   const { fingerprint } = submissionFingerprint(ctx.request as unknown, ctx.subject);
   // Idempotent same-goalId retry: the recorded acceptance, never a second allocation.
   const prior = acceptances.get(goalId);
@@ -577,11 +581,13 @@ const journalEntries = async (runId: string, kind: string): Promise<JournalEntry
 // ── 1b) an inline persona travels whole and is journalled with its digest ─────────────────────
 {
   console.log("• 1b — an inline persona travels whole and is journalled with its digest");
+  receiptRun = "sp-1b";
   const out = await withDeadline(driven({
     space: SPACE, endpoint: EP, kv, runId: "sp-1b", lease: lease(),
     source: `const d = await spawn({ name: "inliner", prompt: "You check diffs.", allowPublish: ["t"] });\nlog("spawned", d.agent);`,
     handler: mk("sp-1b"),
   }), 30_000, "the inline spawning run");
+  receiptRun = undefined;
   c("an inline spawn completes", out?.status === "completed", JSON.stringify(out));
   const alloc = allocations.find((a) => a.persona === "inliner");
   c("the manager is asked for the helper by name, with the definition as its persona record",
@@ -591,9 +597,12 @@ const journalEntries = async (runId: string, kind: string): Promise<JournalEntry
   const binds = entries.filter((e) => e.state === "pending" && e.external !== undefined);
   const definition = { name: "inliner", prompt: "You check diffs.", allowPublish: ["t"] };
   const first = binds[0]?.external as { inline?: { definition?: unknown; digest?: unknown }; goalId?: unknown } | undefined;
+  // What the journal held when the manager received the request, so a bind after the submission fails.
+  const received = journalAtReceipt.get(alloc?.goalId ?? "")?.find((e) => e.state === "pending" && e.external !== undefined)?.external as { inline?: { digest?: unknown } } | undefined;
   c("the definition and its digest are bound before the submission, with no goal yet",
-    first?.goalId === undefined && JSON.stringify(first?.inline?.definition) === JSON.stringify(definition) && first?.inline?.digest === digest(definition),
-    JSON.stringify(first));
+    first?.goalId === undefined && JSON.stringify(first?.inline?.definition) === JSON.stringify(definition) && first?.inline?.digest === digest(definition)
+      && received?.inline?.digest === digest(definition),
+    JSON.stringify({ first, received }));
   const last = binds.at(-1)?.external as { inline?: { digest?: unknown }; goalId?: unknown } | undefined;
   c("and the acceptance bind restates them beside the goal", typeof last?.goalId === "string" && last?.inline?.digest === digest(definition), JSON.stringify(last));
 
