@@ -349,14 +349,14 @@ try {
       && await debtCleared(s8.once!.goalId), { r8, calls: retireCalls });
 
   console.log("\n13. a stop never waits on a goal write, and a seat's debt never clears before its exit and its proof");
-  // The next goal write the manager makes waits until released, or is refused, as a stalled or a
-  // refused publication would.
+  // With `stall`, the next goal write the manager makes waits until released, as a stalled
+  // publication would. With `refuse`, every goal write is refused until the gate is lifted.
   const G = manager as unknown as { assertGoalWriterEpochCurrent(epoch: number): Promise<void> };
   const realAssert = G.assertGoalWriterEpochCurrent.bind(manager);
   let gate: { mode: "stall" | "refuse"; hit: boolean; release?: () => void } | undefined;
   G.assertGoalWriterEpochCurrent = async (epoch: number) => {
     const g = gate;
-    if (g !== undefined && !g.hit) {
+    if (g !== undefined && (!g.hit || g.mode === "refuse")) {
       g.hit = true;
       if (g.mode === "refuse") throw new Error("injected: this goal write was refused");
       await new Promise<void>((resolve) => { g.release = resolve; });
@@ -376,12 +376,13 @@ try {
   check("...and the spawn's own terminal lands once the write goes through", stallTerm?.state === "uncertain", stallTerm);
 
   const s10 = await spawnOnce({ prompt: "never answered", once: { deadlineMs: 3_000 } });
+  // No goal write lands until the seat is seen gone, so a retried write's success cannot be what stops it.
   gate = { mode: "refuse", hit: false };
   check("a refused deadline write still stops the seat at its deadline", s10.seat !== undefined && await gone(s10.name!, s10.seat.handle) && gate.hit);
+  gate = undefined;
   const r10 = await resultOf(s10.once!.goalId, 20_000);
   check("...and the deadline terminal is written again while the manager runs",
     r10?.state === "failed" && (r10.data as { reason?: string }).reason === "turn-deadline" && await debtCleared(s10.once!.goalId), r10);
-  gate = undefined;
 
   const slowId = goalId("slow");
   const slowName = (await call("spawn", { name: "helper", agent: "once-slow-retire-stub", cwd: repoRoot, events: false, prompt: "never seen", once: { deadlineMs: -1 } }, { id: slowId })).data?.name as string | undefined;
