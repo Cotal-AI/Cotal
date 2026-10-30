@@ -44,8 +44,15 @@ function docBlocks(name, text) {
 const failures = [];
 for (const name of files) {
   const text = readFileSync(`${root}/${name}`, "utf8");
-  const line = (offset) => text.slice(0, offset).split("\n").length;
+  const line = (offset) => text.slice(0, offset).split(/\r\n|[\r\n\u2028\u2029]/).length;
   const blocks = docBlocks(name, text);
+  for (const block of blocks) {
+    const body = text.slice(block.start + 3, block.end);
+    if (!body.endsWith("*/")) failures.push(`${name}:${line(block.start)}: doc block is not closed`);
+    const nested = body.indexOf("/**");
+    if (nested !== -1)
+      failures.push(`${name}:${line(block.start + 3 + nested)}: doc block contains another doc opener; close the first block or escape the literal opener`);
+  }
   for (let i = 0; i + 1 < blocks.length; i++) {
     const [block, next] = [blocks[i], blocks[i + 1]];
     const before = text.slice(text.lastIndexOf("\n", block.start - 1) + 1, block.start);
@@ -57,7 +64,7 @@ for (const name of files) {
 
 if (failures.length) {
   console.error(
-    "Doc comment check failed. Move each block above the declaration it documents, merge it into the block below, or delete it:\n" +
+    "Doc comment check failed. Close each block, escape literal doc openers in its body, and place it above the declaration it documents:\n" +
       failures.map((line) => `  ${line}`).join("\n"),
   );
   process.exit(1);
