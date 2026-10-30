@@ -505,6 +505,18 @@ export const cotal: Plugin = async () => {
   let briefed = false;
   let surfaced: string[] = []; // receive keys surfaced into the current turn, acked on completion (per delivery, not count)
   let awaitingTurnEnd = false; // a turn is in flight → ignore a duplicate idle that isn't its end
+  // The turn ends this session has reported, counted when each event arrives and before any await.
+  // A submission compares the count across its send: a turn can end before the answer arrives. A
+  // turn counts once, at its first end after a start (`session.status` busy), so the idle that
+  // trails its error or its idle status is not counted again. 1.x events carry no log position, so
+  // this order is the one the plugin observes.
+  let turnEndsSeen = 0;
+  let turnStartedSinceEnd = false;
+  const noteTurnEnd = (): void => {
+    if (!turnStartedSinceEnd) return;
+    turnStartedSinceEnd = false;
+    turnEndsSeen += 1;
+  };
   let errorRetryTimer: ReturnType<typeof setTimeout> | undefined;
   let errorRetryMs = ERROR_RETRY_INITIAL_MS;
   let interruptIntent: { sessionID?: string; expires: number } | undefined;
@@ -1041,7 +1053,12 @@ export const cotal: Plugin = async () => {
       // Arm BEFORE the await: a turn-end signal can land before the server request resolves, and
       // completeTurn bails unless armed — arming after would drop it and wedge the agent.
       awaitingTurnEnd = true;
+      const endsAtSend = turnEndsSeen;
       await opencodeApi(`/session/${encodeURIComponent(id)}/prompt_async`, { method: "POST", body: JSON.stringify(body) }, 10_000);
+      // A turn that ended before this answer may be the once task's own turn, already over, or one
+      // the host ran meanwhile, and nothing here tells which. The task is sealed and reported rather
+      // than confirmed, so a later turn's end cannot yield it.
+      if (turnIds.length && turnEndsSeen !== endsAtSend) agent.releaseTurns(turnIds);
       // The submission landed with the run turns in its prompt — they are surfaced.
       if (turnIds.length) agent.commitSurfacedTurns(turnIds);
       // WHAT THIS TURN CARRIED, so the `session.error` arm can re-arm it if this turn fails instead
@@ -1400,6 +1417,7 @@ export const cotal: Plugin = async () => {
         case "session.idle": {
           const idleSession = event.properties.sessionID;
           if (!ours(idleSession)) return;
+          noteTurnEnd();
           // Order matters and is not stylistic: flush the turn's records FIRST, then close the run.
           // Both land on the holder's chain in the order they were enqueued, so closing first would
           // terminate a run the records that follow still belong to.
@@ -1419,9 +1437,11 @@ export const cotal: Plugin = async () => {
           const s = event.properties.status;
           // Presence only — session.idle owns ack + drive (so a duplicate idle can't mis-ack).
           if (s.type === "busy") {
+            turnStartedSinceEnd = true;
             busy = true;
             await safeStatus("working");
           } else if (s.type === "idle") {
+            noteTurnEnd();
             await safeStatus("idle");
           } else if (s.type === "retry") {
             await safeStatus("working", `retrying: ${s.message}`);
@@ -1433,6 +1453,7 @@ export const cotal: Plugin = async () => {
           // session-less one (id undefined) during an in-flight turn must still close it, else
           // `busy` stays stuck and every later push is buffered behind a turn that already failed.
           if (event.properties.sessionID && !ours(event.properties.sessionID)) return;
+          noteTurnEnd();
           if (!busy && !awaitingTurnEnd) return; // no turn to fail — stray error
           // WHICH `session.error`s ARE FAILED TURNS, decided here and stated rather than left to be
           // inferred, because that judgment is the whole of #596. Every error that reaches this line

@@ -266,6 +266,7 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
     const text = parts.join("\n\n");
     execution = "submitted";
     briefed = true;
+    const endAtSend = ended;
     // The turn can end before this POST answers: the event stream is a separate transport. The boot
     // text, run turns and persona it carries settle only on the answer, so until then no second
     // submission starts and `completeTurn` waits before it drives; either would send them again.
@@ -276,6 +277,11 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
           { method: "POST", body: JSON.stringify({ text, ...(system ? { system } : {}) }) },
           10_000,
         );
+        // An end recorded since the send is newer than the last turn's, because `ended` moves only
+        // forward. That turn may be the once task's own, already over, or one the host ran
+        // meanwhile, and nothing here tells which. The task is sealed and reported rather than
+        // confirmed, so a later turn's end cannot yield it.
+        if (turnIds.length && ended !== endAtSend) agent.releaseTurns(turnIds);
         if (turnIds.length) agent.commitSurfacedTurns(turnIds);
         if (system) primed = true;
         if (boot !== undefined) bootPrompt = undefined;
