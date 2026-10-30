@@ -45,6 +45,13 @@ class FakeAgent {
   peekInbox(scope: InboxScope = "all"): InboxItem[] {
     return this.items.filter((item) => scope === "all" || (scope === "pull-only") === false);
   }
+  inboxPreview(scope: InboxScope = "all"): InboxItem[] { return this.peekInbox(scope); }
+  async takeChosen(scope: InboxScope, choose: (preview: InboxItem[]) => readonly InboxItem[]): Promise<InboxItem[]> {
+    const live = new Set(this.peekInbox(scope).map((item) => item.recvKey));
+    return choose(this.peekInbox(scope)).filter((item) => live.has(item.recvKey));
+  }
+  inboxKeys(scope: InboxScope = "all"): string[] { return this.peekInbox(scope).map((item) => item.recvKey); }
+  heldTakes(): { count: number } { return { count: 0 }; }
   drainInboxDeliveries(ids: readonly string[]): ExactDrainResult {
     const wanted = new Set(ids);
     const items = this.items.filter((item) => wanted.has(item.recvKey));

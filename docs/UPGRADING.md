@@ -69,6 +69,9 @@ the task stream, the `cotal_anycast_<space>` bucket and the notice publish.
   read `waiting` until it acks them, and a cancel can find one already gone, so upgrade every role
   holder before you rely on status or cancel.
 - An open mesh is unchanged. It runs no delivery daemon, so it has no notices, status or cancel.
+- An SDK embedder that implements pi's `InboxSource` itself adds `inboxPreview` and `takeChosen`.
+  A `MeshAgent` has both. A host built on `MeshAgent` shows a role request only from what
+  `takeChosen` returns, because `peekInbox` never returns one still held for its take.
 
 ## Multi-space host acknowledgments after 0.116.1
 

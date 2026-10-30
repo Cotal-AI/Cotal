@@ -275,18 +275,22 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
     }
   };
 
-  /** Format the automatic batch WITHOUT acking it; the ids ride on THIS frame's delivery verdict. */
-  const surfaceAutomatic = (agent: MeshAgent, ev: HookEvent, reserved = 0): string | undefined => {
+  /** Format the automatic batch WITHOUT acking it; the ids ride on THIS frame's delivery verdict. A
+   *  role request is taken only when the batch carries it (SPEC §8.1). */
+  const surfaceAutomatic = async (agent: MeshAgent, ev: HookEvent, reserved = 0): Promise<string | undefined> => {
     if (deps.delivery === false) return undefined;
-    const pending = agent.peekInbox("automatic");
-    if (!pending.length) return undefined;
     const budget = HOOK_CONTEXT_CHARS - reserved - WAITING_NOTE_RESERVE - REPEAT_NOTE.length - 1;
-    const items: InboxItem[] = [];
-    for (const item of pending) {
-      const candidate = formatInjection([...items, item]);
-      if (candidate && candidate.length <= budget) items.push(item);
-    }
-    const remaining = pending.length - items.length;
+    const fitting = (pending: readonly InboxItem[]): InboxItem[] => {
+      const items: InboxItem[] = [];
+      for (const item of pending) {
+        const candidate = formatInjection([...items, item]);
+        if (candidate && candidate.length <= budget) items.push(item);
+      }
+      return items;
+    };
+    const items = await agent.takeChosen("automatic", fitting);
+    const remaining = agent.inboxCount("automatic") - items.length;
+    if (!items.length && !remaining) return undefined;
     const waiting = remaining
       ? `${remaining} Cotal message${remaining === 1 ? " is" : "s are"} still waiting. Read with cotal_inbox; messages too large for a hook remain there.`
       : undefined;
@@ -375,9 +379,8 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
           // Order matters: surfaceAutomatic creates this frame's inFlight record; surfaceTurns
           // extends it (or creates a message-less one), so it must evaluate second.
           const briefing = agent.channelBriefing();
-          if (deps.delivery !== false) await agent.takeDue("automatic");
           const reserved = (briefing?.length ?? 0) + (agent.peekPendingTurns()?.text.length ?? 0) + 4;
-          const parts = [briefing, surfaceAutomatic(agent, ev, reserved), surfaceTurns(agent, ev)].filter(Boolean);
+          const parts = [briefing, await surfaceAutomatic(agent, ev, reserved), surfaceTurns(agent, ev)].filter(Boolean);
           return withContext(parts.length ? parts.join("\n\n") : undefined);
         }
         case "UserPromptSubmit": {
@@ -389,10 +392,8 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
           // Run turns ride the same frame as peer messages: this is an injectable boundary, and
           // the frame's delivery verdict is what commits them as surfaced (arming the automatic
           // `done` at the coming Stop). surfaceAutomatic first — it creates the inFlight record.
-          // A role request is shown only once its take is recorded (SPEC §8.1), so ask for those first.
-          if (deps.delivery !== false) await agent.takeDue("automatic");
           const reserved = (agent.peekPendingTurns()?.text.length ?? 0) + 2;
-          const parts = [surfaceAutomatic(agent, ev, reserved), surfaceTurns(agent, ev)].filter(Boolean);
+          const parts = [await surfaceAutomatic(agent, ev, reserved), surfaceTurns(agent, ev)].filter(Boolean);
           return withContext(parts.length ? parts.join("\n\n") : undefined);
         }
         case "PreToolUse":

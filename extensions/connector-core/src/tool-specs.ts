@@ -10,7 +10,7 @@
 import { execFileSync } from "node:child_process";
 import { z } from "zod";
 import { isConcreteChannel, channelInAllow, AmbiguousPeerError, peerLabel, assertLifecycleToken, isPermissionDenied, renderLifecycleBlocked, EpEnvelopeError, LANG_PROBLEM_DETAIL_KIND, formatAge, presenceAges, presenceText, isAnycastSeq, type AnycastStatus, type ControlReply, type PresenceStatus } from "@cotal-ai/core";
-import { afterRecallMark, type MeshAgent, type InboxItem } from "./agent.js";
+import { afterRecallMark, type MeshAgent, type InboxItem, type InboxScope } from "./agent.js";
 // The neutralization and the per-item rendering live in `framing.ts`, one convention shared with
 // the auto-injected block, and are used here rather than restated. See that file for the rule.
 import { attributionSafe, fmtDeliveryItem, fmtItem, fmtFrom } from "./framing.js";
@@ -34,11 +34,16 @@ const err = (text: string): ToolResult => ({ text, isError: true });
 /** How many holders a `cotal_anycast` result names before it counts the rest. */
 const NAMED_HOLDERS = 8;
 
+/** A holder by name and id. Both reach this from peers or the record, so neither may break a line. */
+function holderLabel(h: { id: string; name: string }): string {
+  return `${attributionSafe(h.name)} (${attributionSafe(h.id)})`;
+}
+
 /** The holders of a role, by name and id, from one roster read; `when` says which read. */
 function holdersLine(holders: { id: string; name: string }[] | undefined, when = "at send"): string {
   if (holders === undefined) return `holders unknown ${when}: the presence view was not current`;
   if (!holders.length) return `0 holders online ${when}`;
-  const named = holders.slice(0, NAMED_HOLDERS).map((h) => `${h.name} (${h.id})`).join(", ");
+  const named = holders.slice(0, NAMED_HOLDERS).map(holderLabel).join(", ");
   const more = holders.length > NAMED_HOLDERS ? ` and ${holders.length - NAMED_HOLDERS} more` : "";
   return `${holders.length === 1 ? "holder" : "holders"} online ${when}: ${named}${more}`;
 }
@@ -47,7 +52,7 @@ const TAKEN_MEANS =
   "Taken means that holder's connector was about to show it to its agent, not that the agent read, ran or finished it.";
 
 function takenFollowUp(taker: { id: string; name: string }): string {
-  return `Ask ${taker.name} with cotal_dm about the work, or use cotal_run for work you need followed to the end.`;
+  return `Ask ${attributionSafe(taker.name)} with cotal_dm about the work, or use cotal_run for work you need followed to the end.`;
 }
 
 const UNKNOWN_OUTCOME =
@@ -56,7 +61,7 @@ const UNKNOWN_OUTCOME =
 function removalLine(status: Extract<AnycastStatus, { state: "cancelled" }>): string {
   if (status.removal === "deleted") return "It was removed from the queue before any holder took it.";
   if (status.removal === "already-gone")
-    return "It had already left the queue when the delivery daemon went to remove it, so a holder on an older connector may have taken it.";
+    return "It had already left the queue when the delivery daemon went to remove it: an earlier removal whose answer was lost may have taken it off, the queue may have been recreated, or a holder on an older connector, which records no take, may have taken it.";
   return "No holder can take it now; the delivery daemon has not finished removing it from the queue.";
 }
 
@@ -70,9 +75,9 @@ function renderAnycastStatus(status: AnycastStatus, holders?: { id: string; name
     return `Request seq ${seq} on @${status.role} is waiting on the queue, and no holder has taken it (${holdersLine(holders, "now")}). ` +
       `It may sit in a busy holder's buffer until that holder is free or its ack wait runs out. Cancel it with seq ${seq} and cancel: true.`;
   const before = status.previous
-    ? ` Before that, ${status.previous.name} (${status.previous.id}) took it and did not confirm it before its ack wait ran out, so ${status.previous.name} may also have started it.`
+    ? ` Before that, ${holderLabel(status.previous)} took it and did not confirm it before its ack wait ran out, so ${attributionSafe(status.previous.name)} may also have started it.`
     : "";
-  return `Request seq ${seq} on @${status.role} was taken by ${status.taker.name} (${status.taker.id}) at ${new Date(status.at).toISOString()}.${before} ` +
+  return `Request seq ${seq} on @${status.role} was taken by ${holderLabel(status.taker)} at ${new Date(status.at).toISOString()}.${before} ` +
     `${TAKEN_MEANS} ${takenFollowUp(status.taker)}`;
 }
 
@@ -81,7 +86,7 @@ function renderAnycastCancel(status: AnycastStatus): string {
   const seq = status.seq;
   if (status.state === "cancelled") return `Cancelled request seq ${seq} on @${status.role}. ${removalLine(status)}`;
   if (status.state === "taken")
-    return `Not cancelled: request seq ${seq} on @${status.role} was already taken by ${status.taker.name} (${status.taker.id}). ${TAKEN_MEANS} ${takenFollowUp(status.taker)}`;
+    return `Not cancelled: request seq ${seq} on @${status.role} was already taken by ${holderLabel(status.taker)}. ${TAKEN_MEANS} ${takenFollowUp(status.taker)}`;
   if (status.state === "unknown")
     return `Not cancelled: no request seq ${seq} from you is on the queue, and the delivery daemon holds no record of it. ${UNKNOWN_OUTCOME}`;
   return `Not cancelled: request seq ${seq} on @${status.role} is still waiting. Try the cancel again.`;
@@ -344,6 +349,8 @@ export function renderInbox(opts: {
    * each of its items is acked by receive key.
    */
   strictIds?: ReadonlySet<string>;
+  /** Receive keys this reply may show. Anything else is only named as held. */
+  only?: ReadonlySet<string>;
 }): InboxResponse {
   const budget = opts.budget ?? INBOX_WINDOW_CHARS;
   const peek = opts.peek ?? false;
@@ -403,6 +410,11 @@ export function renderInbox(opts: {
   for (const i of ordered) {
     const strict = strictIds.has(i.recvKey);
     if (strict && strictGap) continue;
+    // Outside `only` an item is held whatever it costs, and in the ordered lane that is a gap.
+    if (opts.only && !opts.only.has(i.recvKey)) {
+      strictGap ||= strict;
+      continue;
+    }
     const cost = itemCost(i);
     if (used + cost > budget) {
       // In the ordered lane even a message no response could carry whole is a gap: the mark would
@@ -436,6 +448,69 @@ export function renderInbox(opts: {
     text = assemble(shown, held, "full");
   }
   return { text, shown, held, stuck };
+}
+
+/** One inbox reply once the held role requests it carries are taken. `offered` is the buffer it was
+ *  rendered over and `buffered` what of the buffer may be shown now. `part` is the message whose
+ *  next part the reply carries when it carries no whole one, if the first pass took it. */
+interface TakenReply {
+  reply: InboxResponse;
+  offered: InboxItem[];
+  buffered: InboxItem[];
+  part?: InboxItem;
+}
+
+/** How many times one read chooses its reply again after a take of a request it chose is refused. */
+const READ_TAKE_ROUNDS = 8;
+
+/**
+ * Render one reply over the inbox preview, take the held role requests it carries (or the one it
+ * carries part of), then render it again over what may be shown now (SPEC §8.1). The second pass
+ * shows only what the first chose, so a reply never takes a request it does not show. It renders a
+ * subset of the first pass's items in the same order, so it fits wherever the first did. `extra`
+ * rides after the buffer and needs no take, such as focus recall.
+ */
+async function takeForReply(
+  agent: MeshAgent,
+  scope: InboxScope,
+  opts: Omit<Parameters<typeof renderInbox>[0], "items" | "only">,
+  extra: readonly InboxItem[] = [],
+): Promise<TakenReply> {
+  let pending: Set<string> | undefined;
+  let preview: InboxItem[] = [];
+  let chosen = new Set<string>();
+  let shown = new Set<string>();
+  let part: InboxItem | undefined;
+  let taken = new Set<string>();
+  for (let round = 0; round < READ_TAKE_ROUNDS; round++) {
+    const got = await agent.takeChosen(scope, (p) => {
+      // A read carries only what was pending when it began, so mail arriving meanwhile cannot push
+      // out a request an earlier round took.
+      pending ??= new Set(p.map((i) => i.recvKey));
+      preview = p.filter((i) => pending!.has(i.recvKey));
+      const first = renderInbox({ ...opts, items: [...preview, ...extra] });
+      shown = new Set(first.shown.map((i) => i.recvKey));
+      part = first.shown.length ? undefined : preview.find((i) => first.stuck.has(i.recvKey));
+      const picked = [...preview.filter((i) => shown.has(i.recvKey)), ...(part ? [part] : [])];
+      chosen = new Set(picked.map((i) => i.recvKey));
+      return picked;
+    });
+    taken = new Set(got.map((i) => i.recvKey));
+    // A refused take leaves room another message can use, so the reply is chosen again without it. A
+    // take still undecided ends the choosing, since choosing it again only repeats the wait.
+    const missed = [...chosen].filter((k) => !taken.has(k));
+    const open = new Set(agent.inboxPreview(scope).map((i) => i.recvKey));
+    if (!missed.length || missed.some((k) => open.has(k))) break;
+  }
+  // A chosen request whose take was refused or is still undecided leaves this reply entirely.
+  const live = new Set(agent.inboxKeys(scope));
+  const offered = preview.filter((i) => live.has(i.recvKey) && (!chosen.has(i.recvKey) || taken.has(i.recvKey)));
+  return {
+    reply: renderInbox({ ...opts, items: [...offered, ...extra], only: shown }),
+    offered,
+    buffered: agent.peekInbox(scope),
+    part: part && taken.has(part.recvKey) ? part : undefined,
+  };
 }
 
 /** How much the held-note is allowed to say, in the order it gives ground when the window is tight:
@@ -994,9 +1069,6 @@ export function cotalToolSpecs(
       },
       run: oneReadAtATime(async (agent, _config, { peek, scope }: { peek?: boolean; scope?: "pull-only" }, call) => {
         const inboxScope = scope ?? "all";
-        // A peek shows bodies too, so every read first records the take of each role request it
-        // could show (SPEC §8.1).
-        await agent.takeDue(inboxScope);
         // Asked at each clear, not once: the caller can go while this read waits for the one before
         // it or for focus recall, and what it never receives must stay for the next read.
         const keeps = () => peek === true || call?.signal?.aborted === true;
@@ -1011,9 +1083,8 @@ export function cotalToolSpecs(
         const automaticPending = scope ? agent.inboxCount("automatic") : 0;
         if (agent.attention !== "focus") {
           const warning = inboxConnectionWarning(agent);
-          const buffered = agent.peekInbox(inboxScope);
-          const { text, shown, held, stuck } = renderInbox({
-            items: buffered,
+          // A peek shows bodies too, so a peek takes what it shows like any read.
+          const { reply, offered, buffered, part: taken } = await takeForReply(agent, inboxScope, {
             peek,
             warning,
             head: (s) =>
@@ -1021,7 +1092,10 @@ export function cotalToolSpecs(
                 ? `${s.length} pull-only message${s.length === 1 ? "" : "s"} (cleared; automatic traffic remains connector-managed):`
                 : `${s.length} message${s.length === 1 ? "" : "s"}${peek ? " (peek: nothing cleared)" : ""}:`,
           });
-          if (!buffered.length)
+          const { text, shown, held, stuck } = reply;
+          if (!offered.length) {
+            // Asked again: a take this read asked for can have been held since.
+            const warning = inboxConnectionWarning(agent);
             return ok(
               [warning, scope
                 ? `No pull-only messages.${automaticPending ? ` ${automaticPending} connector-managed automatic message${automaticPending === 1 ? " is" : "s are"} still queued.` : ""}`
@@ -1029,11 +1103,12 @@ export function cotalToolSpecs(
                 : warning ? "Local inbox buffer is empty."
                   : (agent.connectionState === "ready" ? emptyInboxNote?.() : undefined) ?? "Inbox empty, no new messages."].filter(Boolean).join("\n\n"),
             );
+          }
           if (!shown.length) {
             const part = partReply({
               agent,
-              item: buffered.find((i) => stuck.has(i.recvKey)),
-              offered: buffered,
+              item: taken ?? buffered.find((i) => stuck.has(i.recvKey)),
+              offered,
               stuck,
               peek: keeps(),
               warning,
@@ -1055,9 +1130,6 @@ export function cotalToolSpecs(
         const before = new Set(agent.peekInbox("all").map((i) => i.recvKey));
         const underway = new Set([...(partOffsets.get(agent)?.keys() ?? [])].filter((k) => !before.has(k)));
         const recall = await agent.recallAmbient(underway);
-        // Read after recall, which can hand an id-less message back into the buffer (#662).
-        const buffered = agent.peekInbox(inboxScope);
-        const bufferedIds = new Set(buffered.map((i) => i.recvKey));
         // RECALL HAS TO ADVANCE, or windowing it starves it. Recall is re-derived from an unchanged
         // frontier on every call, so showing its first window and stopping there returned the same
         // prefix forever while the reply promised a next batch: measured as three identical replies
@@ -1104,8 +1176,8 @@ export function cotalToolSpecs(
         const warning = [connectionWarning, droppedNote(recall.droppedChannels), aheadNote(aheadWithheld)]
           .filter(Boolean)
           .join(" ");
-        const { text, shown: all, stuck } = renderInbox({
-          items: [...buffered, ...fresh],
+        // Taken after recall, which can hand an id-less message back into the buffer (#662).
+        const { reply, offered, buffered, part: taken } = await takeForReply(agent, inboxScope, {
           peek,
           warning,
           strictIds: new Set(clocked.map((i) => i.recvKey)),
@@ -1113,8 +1185,10 @@ export function cotalToolSpecs(
             scope
               ? `${s.length} message${s.length === 1 ? "" : "s"}. Buffered pull-only items were cleared; normal focus channel items are read-only recall:`
               : `${s.length} message${s.length === 1 ? "" : "s"}${peek ? " (peek: live buffer not cleared)" : ""} in focus mode; channel items are recall since you focused:`,
-        });
-        if (!buffered.length && !fresh.length && !recall.droppedChannels.length && !aheadWithheld.length)
+        }, fresh);
+        const bufferedIds = new Set(buffered.map((i) => i.recvKey));
+        const { text, shown: all, stuck } = reply;
+        if (!offered.length && !fresh.length && !recall.droppedChannels.length && !aheadWithheld.length)
           return ok(
             [connectionWarning, scope
               ? `No pull-only messages and no normal focus recall.${automaticPending ? ` ${automaticPending} connector-managed automatic message${automaticPending === 1 ? " is" : "s are"} still queued.` : ""}`
@@ -1126,12 +1200,13 @@ export function cotalToolSpecs(
           // ahead record, so the mark never passes a message that has not been handed over.
           const first = clocked[0];
           const item =
+            taken ??
             buffered.find((i) => stuck.has(i.recvKey)) ??
             (first && stuck.has(first.recvKey) ? first : aheadFresh.find((i) => stuck.has(i.recvKey)));
           const part = partReply({
             agent,
             item,
-            offered: [...buffered, ...fresh],
+            offered: [...offered, ...fresh],
             stuck,
             peek: keeps(),
             warning,

@@ -982,28 +982,29 @@ export const cotal: Plugin = async () => {
     try {
       const id = await ensureSession();
       if (!id) return; // no visible session yet, retry on the next event/wake
-      // RECHECKED AFTER THE AWAIT, because the guard above is a read and this is a resume. Session
-      // creation is a server round trip, so a drive admitted while the seat was running can park
-      // here and come back after `quiesce` has set `stopping` and published departure. Submitting
-      // then is the defect this change exists to stop, arriving through the one door that was
-      // already past the check rather than through a door that was never guarded. A reviewer
-      // reproduced it live by holding POST /session and disposing while a real DM was parked here.
-      // Nothing has been consumed at this point: `peekInbox` has not run and `surfaced` is unset, so
-      // returning leaves the batch in the inbox for a later wake IN THIS PROCESS. That is the whole
-      // of the promise. A batch still held when the seat tears down does not survive the process:
-      // measured, by restarting the identity on a fresh uid and then on the same one and finding the
-      // message was owed to neither. Durability across a stop is a delivery question, not this one.
-      // A role request is shown only once its take is recorded (SPEC §8.1); the recheck covers this await.
-      await agent.takeDue("automatic");
-      if (phaseClosed()) return;
-      const parts: { type: "text"; text: string }[] = [];
-      let ids: string[] = [];
       // COMPOSED, NOT CHOSEN BETWEEN, and that is what lets a wake arrive at ANY point relative to
       // the boot. The floor says the operator's prompt is the first turn this connector submits; a
       // wake says nothing more than "go and look", and its body is recovered by the pull it triggers
       // rather than carried here. Two claims that do not compete, so one turn answers both and
       // neither has to wait for the other. Choosing one and re-parking the other is the deadlock.
       const text = boot !== undefined && carried !== undefined ? `${boot}\n\n${carried}` : (boot ?? carried);
+      // A role request is shown only once its take is recorded (SPEC §8.1), so only a turn that
+      // carries the inbox takes one, and the recheck below covers this await too.
+      const items = text ? [] : await agent.takeChosen("automatic", (preview) => preview);
+      // RECHECKED AFTER THE AWAIT, because the guard above is a read and this is a resume. Session
+      // creation is a server round trip, so a drive admitted while the seat was running can park
+      // here and come back after `quiesce` has set `stopping` and published departure. Submitting
+      // then is the defect this change exists to stop, arriving through the one door that was
+      // already past the check rather than through a door that was never guarded. A reviewer
+      // reproduced it live by holding POST /session and disposing while a real DM was parked here.
+      // Nothing has been consumed at this point: a take acks nothing and `surfaced` is unset, so
+      // returning leaves the batch in the inbox for a later wake IN THIS PROCESS. That is the whole
+      // of the promise. A batch still held when the seat tears down does not survive the process:
+      // measured, by restarting the identity on a fresh uid and then on the same one and finding the
+      // message was owed to neither. Durability across a stop is a delivery question, not this one.
+      if (phaseClosed()) return;
+      const parts: { type: "text"; text: string }[] = [];
+      let ids: string[] = [];
       // Run turns ride the same composed submission; their ids commit as surfaced only once the
       // submission lands below (two-phase — a failed submit re-surfaces them, never a lie).
       let turnIds: string[] = [];
@@ -1011,7 +1012,6 @@ export const cotal: Plugin = async () => {
       if (text) {
         parts.push({ type: "text", text });
       } else {
-        const items = agent.peekInbox("automatic");
         if (items.length === 0 && !turnPeek) return;
         if (items.length > 0) {
           ids = items.map((i) => i.recvKey);

@@ -14,7 +14,7 @@ import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PresenceStatus } from "@cotal-ai/core";
-import type { MeshAgent } from "@cotal-ai/connector-core";
+import type { InboxItem, MeshAgent } from "@cotal-ai/connector-core";
 import { createClaudeTranscriptSource, createBoundClaudeTranscriptSource, readStartupTranscriptWhenReady } from "../src/agui-source.js";
 import { JsonlFileSource } from "@cotal-ai/connector-core";
 import { createClaudeHandle } from "../src/hooks.js";
@@ -258,6 +258,8 @@ try {
     setCondition: async () => {},
     channelBriefing: () => "",
     peekInbox: () => [],
+    takeChosen: async () => [],
+    inboxCount: () => 0,
     peekPendingTurns: () => undefined,
     pendingWake: () => 0,
   } as unknown as MeshAgent;
@@ -301,7 +303,37 @@ try {
     );
   }
 
-  check("every cell ran", pass + fail === 27, { ran: pass + fail, expected: 27 });
+  // The hook batch takes only the role requests it carries (SPEC §8.1). Two are too large for any
+  // hook, so they stay held and their senders can still cancel them.
+  const request = (id: string, text: string): InboxItem => ({
+    id, recvKey: id, ts: Date.now(), fromId: "peer", fromName: "peer", kind: "anycast", service: "worker", mentionsMe: false, historical: false, text,
+  });
+  const preview = [request("big1", "x".repeat(30_000)), request("small", "small request"), request("big2", "y".repeat(30_000))];
+  const chosen: string[][] = [];
+  const holder = {
+    setStatus: async () => {},
+    resetStatus: async () => {},
+    setAttention: async () => {},
+    setCondition: async () => {},
+    channelBriefing: () => "",
+    peekPendingTurns: () => undefined,
+    pendingWake: () => 0,
+    inboxCount: () => preview.length,
+    holdInFlight: () => true,
+    async takeChosen(_scope: string, choose: (items: InboxItem[]) => readonly InboxItem[]) {
+      const picked = choose(preview);
+      chosen.push(picked.map((i) => i.recvKey));
+      return [...picked];
+    },
+  } as unknown as MeshAgent;
+  const batch = await createClaudeHandle().handle(holder, { hook_event_name: "UserPromptSubmit" });
+  check(
+    "hook:the-batch-takes-only-the-requests-it-carries",
+    chosen.length === 1 && chosen[0]!.join() === "small" && JSON.stringify(batch).includes("small request"),
+    chosen,
+  );
+
+  check("every cell ran", pass + fail === 28, { ran: pass + fail, expected: 28 });
   console.log(`claude-start-source smoke: ${pass} passed, ${fail} failed`);
   process.exitCode = fail ? 1 : 0;
 } finally {

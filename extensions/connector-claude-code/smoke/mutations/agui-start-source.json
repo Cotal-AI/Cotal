@@ -93,6 +93,15 @@
       "command": "pnpm --filter @cotal-ai/connector-core build && pnpm smoke:claude-start-source",
       "afterRestore": "pnpm --filter @cotal-ai/connector-core build",
       "note": "Captures late instead of early: the boundary is re-read against the log's state AFTER the simulated mesh-wait window, so the appended record reads as already-consumed, the same silent drop the issue describes, reached from a different line than S7."
+    },
+    {
+      "name": "S10 the hook batch takes every held request in the preview instead of the ones it carries",
+      "file": "extensions/connector-claude-code/src/hooks.ts",
+      "find": "    const items = await agent.takeChosen(\"automatic\", fitting);",
+      "replace": "    const items = fitting(await agent.takeChosen(\"automatic\", (preview) => preview));",
+      "expectRed": "hook:the-batch-takes-only-the-requests-it-carries",
+      "cell": "hook:the-batch-takes-only-the-requests-it-carries",
+      "note": "The two requests too large for any hook are taken anyway, so their senders cannot cancel requests this session has not shown."
     }
   ]
 }

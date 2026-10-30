@@ -49,11 +49,13 @@ read checks it must apply. A conformant deployment may realize the backstop diff
 
 ## Anycast request records
 
-On an authenticated mesh the daemon also keeps the records behind anycast receipts
-([SPEC §8.1](../SPEC.md#81-anycast-request-status)). Just before a role holder's connector shows a
-role request, it asks the daemon on its own take subject to record the take. The daemon reads the
-request at that seq on the task stream and writes one row per request to the
-`cotal_anycast_<space>` bucket. A take and a cancel of one request race on that row's create and
+On an authenticated mesh the daemon also records which holder took each anycast request and which
+requests their senders cancelled ([SPEC §8.1](../SPEC.md#81-anycast-request-status)). Just before a
+role holder's connector shows a role request, it asks the daemon on its own take subject to record
+the take. The daemon reads the request at that seq on the task stream and writes one row per
+request to the `cotal_anycast_<space>` bucket. A take names the task stream's creation time as the
+holder saw it, and the daemon refuses one from a stream since recreated, because the new stream
+reuses seqs. A take and a cancel of one request race on that row's create and
 revision check, so only one of them wins. When a take wins, the daemon sends the request's sender a
 DM from its own principal naming the holder. It sends a second one when the request's ack wait ran
 out and a later delivery moved the take to another holder.

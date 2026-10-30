@@ -25,6 +25,24 @@ class FakeAgent extends EventEmitter {
     return this.items.filter((item) => scope === "all" || (scope === "pull-only") === this.pullOnly.has(item.id));
   }
 
+  // No role request is held here, so the preview is the inbox and a take changes nothing.
+  inboxPreview(scope: InboxScope = "all"): InboxItem[] {
+    return this.peekInbox(scope);
+  }
+
+  async takeChosen(scope: InboxScope, choose: (preview: InboxItem[]) => readonly InboxItem[]): Promise<InboxItem[]> {
+    const live = new Set(this.peekInbox(scope).map((item) => item.recvKey));
+    return choose(this.peekInbox(scope)).filter((item) => live.has(item.recvKey));
+  }
+
+  inboxKeys(scope: InboxScope = "all"): string[] {
+    return this.peekInbox(scope).map((item) => item.recvKey);
+  }
+
+  heldTakes(): { count: number } {
+    return { count: 0 };
+  }
+
   drainInbox(_limit?: number, scope: InboxScope = "all"): InboxItem[] {
     const selected = this.peekInbox(scope);
     return this.remove(selected.map((item) => item.id)).items;

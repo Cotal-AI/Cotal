@@ -66,6 +66,15 @@ class FakeMesh {
     return this.items.filter((value) => scope === "all" || (scope === "pull-only") === this.pullOnly.has(value.id));
   }
 
+  // No role request is held here, so the preview is the inbox and a take changes nothing.
+  inboxPreview(scope: InboxScope = "all"): InboxItem[] {
+    return this.peekInbox(scope);
+  }
+
+  async takeChosen(scope: InboxScope, choose: (preview: InboxItem[]) => readonly InboxItem[]): Promise<InboxItem[]> {
+    return [...choose(this.peekInbox(scope))];
+  }
+
   drainInbox(limit?: number): InboxItem[] {
     const count = limit && limit > 0 ? Math.min(limit, this.items.length) : this.items.length;
     const drained = this.items.splice(0, count);
@@ -292,6 +301,42 @@ const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve)
   driver.onSessionStart(context());
   ok(mesh.drained[0] === "echo", "only an own channel multicast is treated as an echo");
   ok(host.sent[0]?.details.ids.join() === "self-anycast", "self-selected anycast is surfaced");
+}
+
+// A batch carrying a held role request takes only that batch, then goes out (SPEC §8.1).
+{
+  class HeldMesh extends FakeMesh {
+    held: InboxItem[] = [];
+    chosen: string[][] = [];
+
+    override inboxPreview(scope: InboxScope = "all"): InboxItem[] {
+      return [...this.peekInbox(scope), ...(scope === "pull-only" ? [] : this.held)];
+    }
+
+    override async takeChosen(scope: InboxScope, choose: (preview: InboxItem[]) => readonly InboxItem[]): Promise<InboxItem[]> {
+      const picked = choose(this.inboxPreview(scope));
+      this.chosen.push(picked.map((value) => value.recvKey));
+      const keys = new Set(picked.map((value) => value.recvKey));
+      this.items.push(...this.held.filter((value) => keys.has(value.recvKey)));
+      this.held = this.held.filter((value) => !keys.has(value.recvKey));
+      return [...picked];
+    }
+  }
+  const mesh = new HeldMesh();
+  mesh.items = [item("dm")];
+  mesh.held = Array.from({ length: 40 }, (_, i) => item(`req${i}`, { kind: "anycast", service: "worker" }));
+  const host = new FakeHost();
+  const driver = new PiDriver(mesh as unknown as MeshAgent);
+  driver.bind(host);
+  driver.onSessionStart(context());
+  ok(host.sent.length === 0, "a batch holding a role request waits for its take before it goes out");
+  await new Promise((resolve) => setImmediate(resolve));
+  ok(mesh.chosen.length === 1 && mesh.chosen[0]!.length === 32, "the take covers only the 32 messages the batch carries");
+  ok(mesh.held.length === 9, "the role requests past the batch stay held and untaken");
+  ok(
+    host.sent.length === 1 && host.sent[0]!.details.ids.length === 32 && host.sent[0]!.details.ids[0] === "dm",
+    "the batch goes out once taken, carrying what it took",
+  );
 }
 
 // A buried own echo cannot let older pull-only traffic block a later DM.

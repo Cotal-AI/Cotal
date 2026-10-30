@@ -757,27 +757,37 @@ cancel.
 **Take.** A holder takes a request that its `svc_<role>` consumer delivered with a core request on
 `cotal.<space>.take.<role>.<owner>.<actor>`, for its own role and principal, whose reply subject is
 `<take subject>.reply.<uuid>`. The daemon drops a take with any other reply target unanswered. The
-body is `{ from: { id, name }, seq, id, count }`: `seq` is the request's `TASK_<space>` stream
-sequence, `id` is its `CotalMessage.id`, and `count` is the broker's delivery count for the copy the
-holder holds, 1 on the first delivery. The daemon takes the role from the subject and the holder
-from the subject's sender tokens, and refuses a body whose `from.id` is another principal. It reads
-the request stored at `seq` with `STREAM.MSG.GET`, a leader-served read, and reads the stream's
-creation time before and after it, retrying when a stream recreation fell between them. It answers
-`{ ok: true }` or `{ ok: false, code, error }`:
+body is `{ from: { id, name }, seq, id, count, epoch }`: `seq` is the request's `TASK_<space>`
+stream sequence, `id` is its `CotalMessage.id`, `count` is the broker's delivery count for the copy
+the holder holds, 1 on the first delivery, and `epoch` is the stream's creation time as the holder
+read it when it bound the consumer that delivered the copy. `from.name` is the holder's display
+name: well-formed UTF-16 on a single line of at most 128 characters, with no surrounding
+whitespace, `/` or `\`. The daemon takes the role from the subject and the holder from the subject's sender tokens, and refuses
+a body whose `from.id` is another principal or whose `from.name` breaks those rules. It reads the
+request stored at `seq` with `STREAM.MSG.GET`, a leader-served read, and reads the stream's creation
+time before and after it, retrying when a stream recreation fell between them. A take whose `epoch`
+is not that creation time is refused `mismatch`, so a copy from a stream since recreated cannot
+take a newer request stored at the same `seq`. It answers `{ ok: true }` or
+`{ ok: false, code, error }`:
 
 | `code` | Meaning | Holder |
 | --- | --- | --- |
 | `cancelled` | the sender cancelled the request | forgets its copy |
 | `taken` | a take at this delivery count or a later one holds the request | forgets its copy |
 | `gone` | nothing is stored at `seq`, and no cancel is recorded | forgets its copy |
-| `mismatch` | the request at `seq` is not this role and id, or the take is malformed | forgets its copy |
+| `mismatch` | the request at `seq` is not this role and id, the copy is from an older stream, or the take is malformed | forgets its copy |
 | `busy` | the daemon could not decide the take now | keeps its copy and asks again later |
 
-A holder MUST NOT show a role request until a take of the copy it holds returns `ok`. It forgets a
+A holder MUST NOT show a role request until a take of the copy it holds returns `ok`, and it takes
+a request only when it is about to show it, because a take ends the sender's chance to cancel. A
+host that shows part of its inbox chooses what it will show first and takes only the requests in
+that choice. A count, a wake or a preview that carries no body takes nothing. A holder forgets a
 refused copy without acking it: a cancelled request is already deleted, and one another holder took
 stays with that holder. It restarts the copy's ack wait (`+WPI`) before it asks, and once the take
 returns it shows the request only if it still holds that copy, with the same delivery count, an ack
-wait that has not run out, and no reconnect since it asked. Otherwise it takes the newer copy.
+wait that has not run out, and no reconnect since it asked. Otherwise it takes the newer copy. A
+request taken and not yet shown when the holder's connection drops is taken again before it is
+shown.
 
 **Record.** The daemon keeps one row per request in `cotal_anycast_<space>` (history 1, no TTL)
 under the key `r.<epoch>.<seq>`, where `<epoch>` is the `TASK_<space>` stream's creation time
@@ -809,7 +819,8 @@ recorded sender is another principal reads `unknown`. The reply `data` is one of
   the take moved from, and `at` is the time of the take in milliseconds.
 - `{ state: "cancelled", seq, role, removal }`: `removal` is `pending` while the daemon has not
   finished deleting the request, `deleted` once it has, and `already-gone` when the request had left
-  the queue before the daemon could delete it.
+  the queue before the daemon could delete it: an earlier delete whose reply was lost removed it,
+  the stream was recreated, or a holder that does not take acked it.
 - `{ state: "unknown", seq }`: there is no row, and nothing of the caller's is on the queue at
   `seq`.
 
@@ -828,7 +839,9 @@ sends the request's sender a DM from its own principal. The message has a text p
 for the row's transition counter `<rev>`, so a resend after a crash is dropped as a duplicate. The
 row keeps the notices it owes until each is published. A receiver MUST treat a DM as a notice only
 when its sender is the principal that holds the space's delivery lease; a DM from anyone else that
-carries the data part is an ordinary DM. A notice is not a question and needs no answer.
+carries the data part is an ordinary DM. The check is on the principal and not on the lease's
+incarnation, because a daemon that restarts sends the notices an earlier run left owed. A notice is
+not a question and needs no answer.
 
 **A holder that cannot take.** On an auth mesh a holder keeps a role request unshown and asks again
 later when its take gets no answer, a `busy` answer, an older daemon's answer that the take rail is
@@ -6882,7 +6895,7 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
-| 2026-10-30 | **Anycast request status (§3, §4, §8.1, Appendix B), additive.** In auth mode a holder takes a role request on `cotal.<space>.take.<role>.<owner>.<actor>` before it shows it, and the delivery daemon records the take in `cotal_anycast_<space>`, one CAS-fenced row per request keyed by the `TASK` stream's creation time and the request's sequence. The sender gets a DM notice from the daemon naming the holder that took the request, and a second notice when a redelivery moves the take to another holder. The new `anycastStatus` and `anycastCancel` ops on the `delivery` control service read and cancel the caller's own request by seq; a cancel succeeds only while the request waits. Agents with a role gain the take publish and its reply subscription. A holder on an auth mesh that cannot take holds the request unshown and reports why. An open mesh is unchanged and refuses status and cancel. |
+| 2026-10-30 | **Anycast request status (§3, §4, §8.1, Appendix B), additive.** In auth mode a holder takes a role request on `cotal.<space>.take.<role>.<owner>.<actor>` just before it shows it, and only the requests it is about to show, and the delivery daemon records the take in `cotal_anycast_<space>`, one CAS-fenced row per request keyed by the `TASK` stream's creation time and the request's sequence. The sender gets a DM notice from the daemon naming the holder that took the request, and a second notice when a redelivery moves the take to another holder. The new `anycastStatus` and `anycastCancel` ops on the `delivery` control service read and cancel the caller's own request by seq; a cancel succeeds only while the request waits. A take carries the `TASK` stream's creation time as the holder read it, and one from a stream since recreated is refused. Agents with a role gain the take publish and its reply subscription. A holder on an auth mesh that cannot take holds the request unshown and reports why. An open mesh is unchanged and refuses status and cancel. |
 | 2026-10-29 | **Manager connector status declares event-plane support (§13.7), additive.** Every `status.connectors` row now requires `eventPlane: boolean`, including rows built from the declared extension inventory before its package is imported. The fact is true only when the connector declares its event channel; it is never defaulted to true. The reference Manager cluster advances to revision 42. |
 | 2026-10-29 | **The Manager persona catalog has a typed removal command (§13.7), additive.** `remove-persona` rides the same `manager.persona` capability as `define-persona`, removes only the machine-local definition, refuses an unknown name, and accepts a safe filename stem even when it exceeds the current spawn-name limit. The reference Manager cluster advances to revision 41. |
 | 2026-10-28 | **A retiring lifecycle's fence is its ACL row (Appendix B).** The fence of the next entry lived only in one daemon's memory and was checked before a join wrote its row, so a join whose ACL lookup outlived the fence, a join from a still-connected seat after a daemon restart, or a join a quiesced predecessor finished after its successor's inventory each kept one row of a retired lifecycle. The manager now narrows the lifecycle's ACL row to an empty `allowSubscribe` before it asks for the inventory. The daemon re-reads that exact row before and after the write that creates a membership row, and removes the row and refuses the join when the channel is no longer within it. Other membership writes only update the revision they read. The daemon's own refusal and its wait for running writes stay, for a manager that does not narrow, as on a hosted daemon serving older managers. No wire change. |

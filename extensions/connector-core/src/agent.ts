@@ -201,6 +201,9 @@ interface Pending {
   take?: Delivery["take"];
   taking?: Promise<void>;
   takenCount?: number;
+  /** A take was recorded for it once, so a host may have shown it. Only such an entry is acked from
+   *  the held set by an exact drain. */
+  takenOnce?: boolean;
 }
 
 /** #662: the copies of one id-less channel message (by content) a focus episode has settled
@@ -255,7 +258,7 @@ export function afterRecallMark(a: RecallMark, b: RecallMark): boolean {
 /** How many pending messages one session buffers before the overflow valve in
  *  {@link MeshAgent.buffer} evicts. */
 const MAX_INBOX = 200;
-/** How long {@link MeshAgent.takeDue} waits for the delivery daemon before it lets a caller show
+/** How long {@link MeshAgent.takeChosen} waits for the delivery daemon before it lets a caller show
  *  what is already taken. A take not decided by then stays held for a later read. */
 const TAKE_WAIT_MS = 2_000;
 /** How long a role request whose take could not be decided waits before it is asked about again. */
@@ -469,12 +472,14 @@ export class MeshAgent extends EventEmitter {
 
   private inbox: Pending[] = [];
   /** Role requests delivered on an auth mesh whose take is not recorded for the copy held (SPEC §8.1).
-   *  They count toward a wake and are never shown: {@link takeDue} or a read of the inbox asks the
-   *  delivery daemon to record each take, and a recorded one moves the request to {@link inbox}. */
+   *  They count toward a wake and are never shown: {@link takeChosen} asks the delivery daemon to
+   *  record the take of each one a host chose to show, and a recorded one moves to {@link inbox}. */
   private gated: Pending[] = [];
   /** Why the last take could not be decided, when it could not, and when a held request may be
    *  asked about again. Reported by `cotal_inbox`. */
   private heldTake?: { reason: string; detail: string; retryAt: number };
+  /** Re-announces the held role requests once {@link heldTake} lets them be asked about again. */
+  private takeRetry?: ReturnType<typeof setTimeout>;
   /** Ids already SURFACED to the model (handled) — bounded, commit-aware dedup ACROSS a drain. The
    *  live↔durable transition window can deliver the two copies of one message far enough apart that the
    *  first is already drained (removed from {@link inbox}) when the second arrives; the pending-inbox
@@ -692,7 +697,12 @@ export class MeshAgent extends EventEmitter {
       if (this._stopping) return;
       if (this._transportConnected === e.connected) return;
       this._transportConnected = e.connected;
-      if (!e.connected) this.transportDrops++;
+      if (!e.connected) {
+        this.transportDrops++;
+        // This reader cannot vouch for a copy across a drop, so a role request taken and not yet
+        // handed to a host is taken again before it is shown.
+        for (const p of this.inbox.filter((x) => x.take && !this.inFlightIds.has(x.item.recvKey))) this.regate(p);
+      }
       this.emit("transport", e);
       // A notice lost while the transport was down can only matter to a turn this seat holds: the
       // manager repeats the notice for a turn the seat has not pulled yet. So only a holder pulls.
@@ -1049,6 +1059,8 @@ export class MeshAgent extends EventEmitter {
     this._stopping = true;
     this.emit("stopping");
     for (const key of [...this.renewals.keys()]) this.stopRenewal(key);
+    clearTimeout(this.takeRetry);
+    this.takeRetry = undefined;
     this.managerBearers.clear();
     if (this.turnRetryTimer !== undefined) {
       clearTimeout(this.turnRetryTimer);
@@ -1534,26 +1546,46 @@ export class MeshAgent extends EventEmitter {
   /** Return pending messages in stable receive order. Automatic delivery excludes quiet ambient;
    *  pull-only is the explicit cotal_inbox lane.
    *
-   *  A role request whose take is not yet recorded is never returned (SPEC §8.1). A read asks the
-   *  delivery daemon to record its take, and once it is recorded the request is re-announced on
-   *  `incoming`; a caller that can wait calls {@link takeDue} first and sees it on this read. */
+   *  A role request whose take is not yet recorded is never returned (SPEC §8.1): a host shows one
+   *  only through {@link takeChosen}. */
   peekInbox(scope: InboxScope = "all"): InboxItem[] {
     this.dropLapsedTakes();
-    void this.kickTakes(scope);
     return this.inbox.filter((p) => this.inScope(p, scope)).map((p) => p.item);
   }
 
-  /** Ask the delivery daemon to record the take of every held role request in `scope`, and wait up
-   *  to `waitMs` for the answers, so a {@link peekInbox} right after shows each request taken by
-   *  then. Call it just before showing the inbox: a take is a claim that this session's agent is
-   *  about to see the request, which ends its sender's chance to cancel it. Never throws. */
-  async takeDue(scope: InboxScope = "all", waitMs = TAKE_WAIT_MS): Promise<void> {
-    const runs = this.kickTakes(scope);
-    if (!runs.length) return;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const waited = new Promise<void>((resolve) => { timer = setTimeout(resolve, waitMs); timer.unref?.(); });
-    await Promise.race([Promise.allSettled(runs), waited]);
-    clearTimeout(timer);
+  /** Every pending message in scope as {@link peekInbox} will return it once the held role requests
+   *  that may be asked about now are taken, in that order. It is for choosing what to show, never for
+   *  showing: hand the choice to {@link takeChosen}. */
+  inboxPreview(scope: InboxScope = "all"): InboxItem[] {
+    this.dropLapsedTakes();
+    const askable = scope === "pull-only" ? [] : this.gated.filter((p) => p.taking !== undefined || this.mayAskTakes());
+    return [...this.inbox.filter((p) => this.inScope(p, scope)), ...askable].map((p) => p.item);
+  }
+
+  /** Choose what to show from {@link inboxPreview}, ask the delivery daemon to record the take of
+   *  each held role request in the choice, wait up to `waitMs` for the answers, and return the chosen
+   *  items that may be shown now, in the order chosen. A take is a claim that this session's agent is
+   *  about to see the request, which ends its sender's chance to cancel it, so call this just before
+   *  showing and choose only what will be shown. A request whose take is refused or not yet decided
+   *  is left out. Never throws. */
+  async takeChosen(
+    scope: InboxScope,
+    choose: (preview: InboxItem[]) => readonly InboxItem[],
+    waitMs = TAKE_WAIT_MS,
+  ): Promise<InboxItem[]> {
+    const chosen = choose(this.inboxPreview(scope));
+    const keys = new Set(chosen.map((i) => i.recvKey));
+    const runs = scope === "pull-only" ? [] : this.gated
+      .filter((p) => keys.has(p.item.recvKey) && (p.taking !== undefined || this.mayAskTakes()))
+      .map((p) => p.taking ?? this.startTake(p));
+    if (runs.length) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const waited = new Promise<void>((resolve) => { timer = setTimeout(resolve, waitMs); timer.unref?.(); });
+      await Promise.race([Promise.allSettled(runs), waited]);
+      clearTimeout(timer);
+    }
+    const showable = new Map(this.peekInbox(scope).map((i) => [i.recvKey, i]));
+    return chosen.flatMap((i) => showable.get(i.recvKey) ?? []);
   }
 
   /** How many role requests are held because their take could not be decided, and why. */
@@ -1562,13 +1594,9 @@ export class MeshAgent extends EventEmitter {
     return count && this.heldTake ? { count, detail: this.heldTake.detail } : { count };
   }
 
-  /** Start the take of every held role request in scope that is not already being taken. */
-  private kickTakes(scope: InboxScope): Promise<void>[] {
-    if (scope === "pull-only" || !this.gated.length) return [];
-    const retryHeld = !this.heldTake || Date.now() >= this.heldTake.retryAt;
-    return this.gated
-      .filter((p) => p.taking !== undefined || retryHeld)
-      .map((p) => p.taking ?? this.startTake(p));
+  /** Whether a held role request may be asked about now, or must wait out {@link heldTake}. */
+  private mayAskTakes(): boolean {
+    return !this.heldTake || Date.now() >= this.heldTake.retryAt;
   }
 
   private startTake(p: Pending): Promise<void> {
@@ -1577,7 +1605,7 @@ export class MeshAgent extends EventEmitter {
     return run;
   }
 
-  /** Take one held role request for the copy it holds, and show it only if it still holds that copy
+  /** Take one held role request for the copy it holds, and admit it only if it still holds that copy
    *  once the take is recorded: the same delivery, its ack wait not run out, the link not dropped. */
   private async runTake(p: Pending): Promise<void> {
     const take = p.take;
@@ -1598,6 +1626,7 @@ export class MeshAgent extends EventEmitter {
       const current = p.item.deliveryCount === count && this.transportDrops === drops && p.ownedUntil !== undefined && Date.now() < p.ownedUntil;
       if (!current) return; // a newer copy arrived meanwhile and needs its own take
       p.takenCount = count;
+      p.takenOnce = true;
       this.gated.splice(this.gated.indexOf(p), 1);
       this.noteDirected(p.item);
       this.admit(p);
@@ -1610,6 +1639,12 @@ export class MeshAgent extends EventEmitter {
     }
     const first = this.heldTake?.reason !== outcome.reason;
     this.heldTake = { reason: outcome.reason, detail: outcome.detail, retryAt: Date.now() + TAKE_RETRY_MS };
+    // Nothing asks about a held request on its own, so its host hears of it again when it may.
+    this.takeRetry ??= setTimeout(() => {
+      this.takeRetry = undefined;
+      for (const held of this.gated) this.emit("incoming", held.item);
+    }, TAKE_RETRY_MS);
+    this.takeRetry.unref?.();
     if (first && outcome.reason !== "daemon-busy") this.handleEndpointWarning(new Error(outcome.detail));
   }
 
@@ -1736,6 +1771,7 @@ export class MeshAgent extends EventEmitter {
 
   /** Return scoped pending messages and ack them — call only when they're actually surfaced. */
   drainInbox(limit?: number, scope: InboxScope = "all"): InboxItem[] {
+    this.dropLapsedTakes();
     const eligible = this.inbox.filter((p) => this.inScope(p, scope));
     const n = limit && limit > 0 ? Math.min(limit, eligible.length) : eligible.length;
     const selected = eligible.slice(0, n);
@@ -1768,9 +1804,11 @@ export class MeshAgent extends EventEmitter {
     const requested = [...new Set(keys)];
     const wanted = new Set(requested);
     // A role request the host surfaced can be back in the held set when its copy changed since. The
-    // host showed it, so its commit acks it from there too.
-    const regated = this.gated.filter((p) => wanted.has(p.item.recvKey));
-    if (regated.length) this.gated = this.gated.filter((p) => !wanted.has(p.item.recvKey));
+    // host showed it, so its commit acks it from there too. One never taken was never shown, so it
+    // stays held: it is not acked, marked handled or reported missing.
+    const regated = this.gated.filter((p) => wanted.has(p.item.recvKey) && p.takenOnce);
+    const unshown = new Set(this.gated.filter((p) => wanted.has(p.item.recvKey) && !p.takenOnce).map((p) => p.item.recvKey));
+    if (regated.length) this.gated = this.gated.filter((p) => !regated.includes(p));
     const selected = [...this.inbox.filter((p) => wanted.has(p.item.recvKey)), ...regated];
     this.noteAutomaticHeadProgress(selected);
     const present = new Set(selected.map((p) => p.item.recvKey));
@@ -1789,12 +1827,12 @@ export class MeshAgent extends EventEmitter {
       // markHandled already refuses, so skipping it here is the same at-least-once stance rather
       // than a new one. Recording the minted key itself would pollute handledIds with a string a
       // future REAL id could legitimately equal, arming the exact suppression this change removes.
-      if (!present.has(id) && !id.startsWith(`${this.recvKeySecret}.`)) {
+      if (!present.has(id) && !unshown.has(id) && !id.startsWith(`${this.recvKeySecret}.`)) {
         this.markHandled(id, pullOnly.get(id) ?? false);
         this.evictedClassifications.delete(id);
       }
     }
-    return { items, missingKeys: requested.filter((key) => !present.has(key)) };
+    return { items, missingKeys: requested.filter((key) => !present.has(key) && !unshown.has(key)) };
   }
 
   private commitPending(taken: Pending[]): InboxItem[] {
@@ -1824,7 +1862,7 @@ export class MeshAgent extends EventEmitter {
   }
 
   /** Receive keys of the pending messages in scope, role requests held for their take included,
-   *  for bookkeeping that shows no body. Unlike {@link peekInbox} it asks for no take. */
+   *  for bookkeeping that shows no body. */
   inboxKeys(scope: InboxScope = "all"): string[] {
     const held = scope === "pull-only" ? [] : this.gated;
     return [...this.inbox.filter((p) => this.inScope(p, scope)), ...held].map((p) => p.item.recvKey);
@@ -1845,10 +1883,9 @@ export class MeshAgent extends EventEmitter {
   inboxSnapshot(limit = 3): InboxSnapshot {
     if (!Number.isInteger(limit) || limit < 0 || limit > 8)
       throw new Error(`inbox preview limit must be a whole number from 0 to 8, got ${limit}`);
-    // A held role request is counted and never previewed: its body is shown only once its take is
-    // recorded, which this read asks for (SPEC §8.1).
+    // A held role request is counted and never previewed: its body is shown only once a host takes
+    // it to show it (SPEC §8.1).
     this.dropLapsedTakes();
-    void this.kickTakes("all");
     return { unread: this.inbox.length + this.gated.length, items: this.inbox.slice(0, limit).map((p) => ({ ...p.item })) };
   }
 

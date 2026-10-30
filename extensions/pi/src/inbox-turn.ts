@@ -2,6 +2,8 @@ import type { ExactDrainResult, InboxItem, InboxScope } from "./inbox-types.js";
 
 export interface InboxSource {
   peekInbox(scope?: InboxScope): InboxItem[];
+  inboxPreview(scope?: InboxScope): InboxItem[];
+  takeChosen(scope: InboxScope, choose: (preview: InboxItem[]) => readonly InboxItem[]): Promise<InboxItem[]>;
   drainInbox(limit?: number): InboxItem[];
   drainInboxDeliveries(keys: readonly string[]): ExactDrainResult;
 }
@@ -28,6 +30,12 @@ export class InboxTurn {
     return this.source.peekInbox(scope);
   }
 
+  /** Pending automatic traffic as it reads once the held role requests in it are taken: for deciding
+   *  whether to pump, never for showing. */
+  preview(): InboxItem[] {
+    return this.source.inboxPreview("automatic");
+  }
+
   /** Remove already-confirmed late duplicates by exact receive key, even behind pull-only traffic.
    *  #624: tombstones and selection address the DELIVERY (InboxItem.recvKey). An empty wire id is
    *  never a key, so two distinct id-less deliveries never cross-reserve or cross-tombstone each
@@ -45,15 +53,27 @@ export class InboxTurn {
     return ids.length;
   }
 
-  /** Select the next automatic FIFO batch after already-reserved receive keys. */
+  /** Select the next automatic FIFO batch after already-reserved receive keys. A role request in it
+   *  that is still held for its take is shown only through {@link take} (SPEC §8.1). */
   select(reserved: ReadonlySet<string>, limit: number): InboxItem[] {
     const selected: InboxItem[] = [];
-    for (const item of this.source.peekInbox("automatic")) {
+    for (const item of this.source.inboxPreview("automatic")) {
       if (reserved.has(item.recvKey)) continue;
       selected.push(item);
       if (selected.length >= limit) break;
     }
     return selected;
+  }
+
+  /** Whether a batch holds a role request still waiting for its take. */
+  holdsUntaken(batch: readonly InboxItem[]): boolean {
+    const showable = new Set(this.source.peekInbox("automatic").map((item) => item.recvKey));
+    return batch.some((item) => !showable.has(item.recvKey));
+  }
+
+  /** Take the held role requests in a batch, and return what of it may be shown now. */
+  take(batch: readonly InboxItem[]): Promise<InboxItem[]> {
+    return this.source.takeChosen("automatic", () => batch);
   }
 
   /** Commit provider-confirmed ids exactly; tombstone any already absent after overflow. */

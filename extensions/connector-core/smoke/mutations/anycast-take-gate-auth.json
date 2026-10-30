@@ -3,7 +3,7 @@
     "extensions/connector-core/smoke/anycast-take-gate-auth.smoke.ts"
   ],
   "command": "pnpm smoke:anycast-take-gate:auth",
-  "completionMarker": "COTAL_SMOKE_SENTINEL cells=31",
+  "completionMarker": "COTAL_SMOKE_SENTINEL cells=47",
   "mutations": [
     {
       "file": "extensions/connector-core/src/agent.ts",
@@ -32,6 +32,46 @@
       "replace": "          if (false)\n            return err(\"This is an open mesh",
       "expectRed": "3g on an open mesh status is refused, naming why",
       "cell": "3g on an open mesh status is refused, naming why"
+    },
+    {
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "      chosen = new Set(picked.map((i) => i.recvKey));\n      return picked;",
+      "replace": "      chosen = new Set(picked.map((i) => i.recvKey));\n      return p;",
+      "expectRed": "6c the requests it left still read waiting",
+      "cell": "6c the requests it left still read waiting",
+      "note": "The read takes every request in the preview instead of the ones its reply carries, so two requests it never showed can no longer be cancelled."
+    },
+    {
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "    if (!missed.length || missed.some((k) => open.has(k))) break;",
+      "replace": "    break;",
+      "expectRed": "6e the next read carries the one still waiting and never the cancelled one",
+      "cell": "6e the next read carries the one still waiting and never the cancelled one",
+      "note": "A refused take no longer frees its room, so a read whose first choice was cancelled carries nothing although the request behind it fits."
+    },
+    {
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "      .filter((p) => keys.has(p.item.recvKey) && (p.taking !== undefined || this.mayAskTakes()))",
+      "replace": "      .filter((p) => p.taking !== undefined || this.mayAskTakes())",
+      "expectRed": "6c the requests it left still read waiting",
+      "cell": "6c the requests it left still read waiting",
+      "note": "The take ignores the host's choice and takes every held request in scope."
+    },
+    {
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "        for (const p of this.inbox.filter((x) => x.take && !this.inFlightIds.has(x.item.recvKey))) this.regate(p);",
+      "replace": "        void 0;",
+      "expectRed": "7b when the link drops it is held again, not shown",
+      "cell": "7b when the link drops it is held again, not shown",
+      "note": "A request taken before the drop stays showable while the link is down, though this reader cannot vouch for its copy."
+    },
+    {
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    const regated = this.gated.filter((p) => wanted.has(p.item.recvKey) && p.takenOnce);",
+      "replace": "    const regated = this.gated.filter((p) => wanted.has(p.item.recvKey));",
+      "expectRed": "8a the drain returns nothing for it",
+      "cell": "8a the drain returns nothing for it",
+      "note": "An exact drain hands back and acks a held request that was never taken or shown, so its sender loses the cancel and its status never reads taken."
     }
   ]
 }

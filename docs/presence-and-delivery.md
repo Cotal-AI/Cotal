@@ -189,9 +189,12 @@ subscriptions may wildcard a subtree (`team.>`). Anycast is queued work: a task 
 worker online *waits*; multiple online instances of a role load-balance; the task is
 removed once acked.
 
-**Anycast receipts.** On an authenticated mesh a holder's connector asks the
+**Anycast request status.** On an authenticated mesh a holder's connector asks the
 [delivery daemon](delivery-daemon.md#anycast-request-records) to record its take of a role request
-just before it shows the request to its agent. The daemon then sends the sender a notice naming
+just before it shows the request to its agent. A connector that shows only part of its inbox takes
+only the requests it shows, so a request left for a later read can still be cancelled. A request
+taken just before the connection drops is taken again before it is shown. The daemon then sends the
+sender a notice naming
 that holder, and a second notice if the holder's ack wait ran out and another holder took the
 request. The sender can read the request's status by the seq its send returned, and can cancel it
 until a holder takes it; after that the cancel is refused and names the taker. A take means the

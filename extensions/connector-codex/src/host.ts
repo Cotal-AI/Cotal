@@ -630,9 +630,8 @@ export async function runCodexHost(): Promise<void> {
         parts.push(override);
       } else {
         // A role request is shown only once its take is recorded (SPEC §8.1).
-        await agent.takeDue("automatic");
+        const items = await agent.takeChosen("automatic", (preview) => preview);
         if (shuttingDown) return;
-        const items = agent.peekInbox("automatic");
         if (items.length === 0 && !turnPeek) return;
         if (items.length > 0) {
           ids = items.map((i) => i.recvKey);
@@ -682,9 +681,8 @@ export async function runCodexHost(): Promise<void> {
       for (;;) {
         const surfacedSet = new Set(surfaced);
         // `surfaced` holds receive keys, so an empty-id item already in the turn is not steered twice.
-        const items = agent
-          .peekInbox("automatic")
-          .filter((i) => !surfacedSet.has(i.recvKey) && (i.kind !== "channel" || i.mentionsMe));
+        const items = await agent.takeChosen("automatic", (preview) =>
+          preview.filter((i) => !surfacedSet.has(i.recvKey) && (i.kind !== "channel" || i.mentionsMe)));
         if (items.length === 0 || !driver.busy) return;
         const inj = formatInjection(items);
         if (!inj) return;

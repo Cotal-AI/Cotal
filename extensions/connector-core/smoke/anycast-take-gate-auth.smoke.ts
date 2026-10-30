@@ -2,8 +2,11 @@
  * The connector half of anycast request status, live (SPEC §8.1): on a JWT-auth broker with a real
  * delivery daemon, a MeshAgent holding a role shows a role request only once its take is recorded,
  * drops one its sender cancelled first without ever showing it, holds one nobody can record, and a
- * sending MeshAgent shows the daemon's notice as a notice. `cotal_anycast` is driven through its
- * spec for the send, status and cancel results and for the calls it must refuse.
+ * sending MeshAgent shows the daemon's notice as a notice. A read takes only the requests it shows,
+ * a request taken and not yet shown is taken again after a reconnect, and an exact drain acks no
+ * request that was never shown. `cotal_anycast` is driven through its spec for the send, status and
+ * cancel results and for the calls it must refuse, including a seq that names two of this session's
+ * requests after the role queue was recreated.
  *
  * Run: pnpm smoke:anycast-take-gate:auth   (needs `nats-server` on PATH; local-only)
  */
@@ -12,6 +15,8 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { connect, credsAuthenticator } from "@nats-io/transport-node";
+import { jetstreamManager } from "@nats-io/jetstream";
 import {
   ANYCAST_NOTICE_KEY,
   CotalEndpoint,
@@ -24,6 +29,7 @@ import {
   provisionAgent,
   serverConfig,
   setupSpaceStreams,
+  taskStream,
 } from "@cotal-ai/core";
 import { MeshAgent, type InboxItem } from "../src/agent.js";
 import type { AgentConfig } from "../src/config.js";
@@ -99,6 +105,8 @@ try {
     return { agent, config, incoming, tool, id: `${DEV_OWNER}.${ident.id}` };
   };
 
+  // Every role request a read could show, taken for that read, the way a host that shows it all does.
+  const takeAll = (agent: MeshAgent) => agent.takeChosen("all", (preview) => preview);
   const holder = await mkAgent("reviewer_x", "reviewer");
   const sender = await mkAgent("asker");
   await until(() => sender.agent.ep.getRoster().some((p) => p.card.id === holder.id), 8000);
@@ -116,9 +124,9 @@ try {
   check("1d the request reached the holder's connector", key !== undefined);
   check("1e it counts toward a wake while held", holder.agent.inboxWake() >= 1 && holder.agent.inboxScope(key!) === "automatic");
   check("1f a read before the take does not show it", !holder.agent.peekInbox().some((i) => i.recvKey === key));
-  await holder.agent.takeDue();
+  await takeAll(holder.agent);
   const shown = holder.agent.peekInbox().find((i) => i.recvKey === key);
-  check("1g after takeDue it is shown", shown !== undefined && shown.kind === "anycast" && shown.text === "review the gate please");
+  check("1g after its take it is shown", shown !== undefined && shown.kind === "anycast" && shown.text === "review the gate please");
   check("1h it was re-announced on incoming once taken", holder.incoming.filter((i) => i.recvKey === key).length >= 2);
   holder.agent.drainInboxDeliveries([key!]);
 
@@ -141,7 +149,7 @@ try {
   const key2 = await until(() => holder.agent.inboxKeys().find((k) => k !== key));
   const c2 = await run({ seq: seq2, cancel: true });
   check("2a the cancel wins before any take", c2.text.startsWith(`Cancelled request seq ${seq2}`) && c2.text.includes("removed from the queue"), c2.text);
-  await holder.agent.takeDue();
+  await takeAll(holder.agent);
   check("2b the holder never shows it", !holder.agent.peekInbox().some((i) => i.recvKey === key2));
   check("2c and drops its copy", !holder.agent.inboxKeys().includes(key2!));
   check("2d nor records it as asked of the holder", !(holder.agent as unknown as { unanswered: Map<string, unknown> }).unanswered.has(key2!));
@@ -187,16 +195,111 @@ try {
   await daemon.stop();
   const sent5 = await sender.agent.ep.anycastAttributed("reviewer", "while the daemon is down");
   const key5 = await until(() => holder.agent.inboxKeys().find((k) => k === sent5.msg.id));
-  await holder.agent.takeDue();
+  await takeAll(holder.agent);
   check("5a it is held, not shown", key5 !== undefined && !holder.agent.peekInbox().some((i) => i.recvKey === key5));
   check("5b the held count names the reason", holder.agent.heldTakes().count === 1 && /no delivery daemon/.test(holder.agent.heldTakes().detail ?? ""), holder.agent.heldTakes());
   const inbox5 = await holder.tool("cotal_inbox").run(holder.agent, holder.config, {});
   check("5c cotal_inbox says it is held and why", inbox5.text.includes("1 role request is held and not shown"), inbox5.text);
   daemon = await startDaemon();
   await sleep(10_500); // past the held retry delay
-  await holder.agent.takeDue();
+  await takeAll(holder.agent);
   check("5d once the daemon is back, the next read takes and shows it", holder.agent.peekInbox().some((i) => i.recvKey === key5));
   check("5e and nothing is held", holder.agent.heldTakes().count === 0);
+
+  // ── 6. a read takes only what it shows ────────────────────────────────────────────────────
+  console.log("[6] one cotal_inbox reply that can carry one of three large requests takes only that one");
+  const windowHolder = await mkAgent("window_x", "window");
+  await until(() => sender.agent.ep.getRoster().some((p) => p.card.id === windowHolder.id), 8000);
+  const wide: { seq: number; text: string }[] = [];
+  for (let i = 0; i < 3; i++) {
+    const text = `WINDOW-${i}:${"x".repeat(30_000)}`;
+    wide.push({ seq: (await sender.agent.ep.anycastAttributed("window", text)).ack.seq, text });
+  }
+  await until(() => windowHolder.agent.inboxKeys().length === 3 || undefined);
+  const windowReply = await windowHolder.tool("cotal_inbox").run(windowHolder.agent, windowHolder.config, {});
+  const carried = wide.filter((w) => windowReply.text.includes(w.text));
+  const left = wide.filter((w) => !windowReply.text.includes(w.text));
+  check("6a the reply carries one request and leaves two", carried.length === 1 && left.length === 2, { carried: carried.length, length: windowReply.text.length });
+  const carriedStatus = carried[0] ? await sender.agent.ep.anycastStatus(carried[0].seq) : undefined;
+  check("6b the request it carried reads taken", carriedStatus?.state === "taken", carriedStatus);
+  const leftStatus = await Promise.all(left.map((w) => sender.agent.ep.anycastStatus(w.seq)));
+  check("6c the requests it left still read waiting", leftStatus.length === 2 && leftStatus.every((st) => st.state === "waiting"), leftStatus);
+  const leftCancel = left[0] ? await sender.agent.ep.cancelAnycast(left[0].seq) : undefined;
+  check("6d and their sender can still cancel one", leftCancel?.state === "cancelled", leftCancel);
+  const nextReply = await windowHolder.tool("cotal_inbox").run(windowHolder.agent, windowHolder.config, {});
+  check(
+    "6e the next read carries the one still waiting and never the cancelled one",
+    left[1] !== undefined && nextReply.text.includes(left[1].text) && !nextReply.text.includes(left[0]!.text),
+    nextReply.text.slice(0, 300),
+  );
+
+  // ── 7. a reconnect between take and show ──────────────────────────────────────────────────
+  console.log("[7] a request taken and not yet shown is taken again after a reconnect");
+  const sent7 = await sender.agent.ep.anycastAttributed("reviewer", "taken just before the link drops");
+  const key7 = await until(() => holder.agent.inboxKeys().find((k) => k === sent7.msg.id));
+  const taken7 = await holder.agent.takeChosen("all", (preview) => preview.filter((i) => i.recvKey === key7));
+  check("7a it is taken for a read that has not shown it yet", taken7.some((i) => i.recvKey === key7));
+  let downPeek: boolean | undefined;
+  let downRead: Promise<{ text: string }> | undefined;
+  const onDrop = (e: { connected: boolean }) => {
+    if (e.connected || downPeek !== undefined) return;
+    downPeek = holder.agent.peekInbox().some((i) => i.recvKey === key7);
+    downRead = Promise.resolve(holder.tool("cotal_inbox").run(holder.agent, holder.config, { peek: true }));
+  };
+  holder.agent.on("transport", onDrop);
+  await holder.agent.reconnect();
+  holder.agent.off("transport", onDrop);
+  check("7b when the link drops it is held again, not shown", downPeek === false, { downPeek });
+  const downText = downRead ? (await downRead).text : "";
+  check("7c a read during the drop does not carry it", downRead !== undefined && !downText.includes("taken just before the link drops"), downText.slice(0, 300));
+  await until(() => holder.agent.connected || undefined, 10_000);
+  const read7 = await holder.tool("cotal_inbox").run(holder.agent, holder.config, {});
+  const status7 = await sender.agent.ep.anycastStatus(sent7.ack.seq);
+  check(
+    "7d after the reconnect a read takes it again and shows it",
+    read7.text.includes("taken just before the link drops") && status7.state === "taken" && status7.taker.id === holder.id,
+    { text: read7.text.slice(0, 300), status7 },
+  );
+
+  // ── 8. an exact drain of a request never shown ────────────────────────────────────────────
+  console.log("[8] an exact drain acks no role request that was never shown");
+  const sent8 = await sender.agent.ep.anycastAttributed("reviewer", "never shown before this drain");
+  const key8 = await until(() => holder.agent.inboxKeys().find((k) => k === sent8.msg.id));
+  const drained8 = holder.agent.drainInboxDeliveries([key8!]);
+  check("8a the drain returns nothing for it", drained8.items.length === 0, drained8.items.map((i) => i.text));
+  check("8b and does not report it missing", !drained8.missingKeys.includes(key8!), drained8.missingKeys);
+  await sleep(150);
+  const status8 = await sender.agent.ep.anycastStatus(sent8.ack.seq);
+  check("8c it still reads waiting", status8.state === "waiting", status8);
+  const shown8 = await takeAll(holder.agent);
+  check("8d it is still held, and a read shows it once taken", shown8.some((i) => i.recvKey === key8));
+  holder.agent.drainInboxDeliveries([key8!]);
+
+  // ── 9. one seq naming two of this session's requests ──────────────────────────────────────
+  // Last, because it deletes and recreates the TASK stream.
+  console.log("[9] a seq this session sent twice, across a queue recreation, is refused as ambiguous");
+  const sent6 = await run({ role: "reviewer", text: "before the queue is recreated" });
+  const seq6 = Number(/seq (\d+)/.exec(sent6.text)?.[1]);
+  const teardownIdent = newIdentity();
+  const teardownCreds = await mintCreds(auth, teardownIdent, "teardown", { lifecycleUid: mintLifecycleUid() });
+  const teardownNc = await connect({ servers, authenticator: credsAuthenticator(new TextEncoder().encode(teardownCreds)), inboxPrefix: `_INBOX_${teardownIdent.id}`, maxReconnectAttempts: 0 });
+  stops.push(() => teardownNc.close());
+  await (await jetstreamManager(teardownNc)).streams.delete(taskStream(space));
+  await setupSpaceStreams({ servers, space, creds: provCreds });
+  let reused = false;
+  for (let i = 0; i < seq6 && !reused; i++) {
+    const again = await run({ role: "reviewer", text: `after the recreation ${i}` });
+    reused = Number(/seq (\d+)/.exec(again.text)?.[1]) === seq6;
+  }
+  check("9a the recreated queue reused the seq", reused, { seq6 });
+  const ambiguous = await run({ seq: seq6 });
+  check(
+    "9b a status by that seq is refused as ambiguous",
+    ambiguous.isError === true && ambiguous.text.includes(`seq ${seq6} names 2 requests this session sent`) && ambiguous.text.includes("ambiguous"),
+    ambiguous.text,
+  );
+  const ambiguousCancel = await run({ seq: seq6, cancel: true });
+  check("9c and so is a cancel, which cancels nothing", ambiguousCancel.isError === true && ambiguousCancel.text.includes("nothing was asked or cancelled"), ambiguousCancel.text);
 } catch (e) {
   check(`scenario threw: ${(e as Error).stack ?? (e as Error).message}`, false);
 } finally {

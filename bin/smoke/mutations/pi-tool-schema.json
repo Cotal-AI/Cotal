@@ -79,6 +79,17 @@
       "command": "pnpm --filter @cotal-ai/pi... build && pnpm smoke:pi",
       "note": "Keeps the attempt bound and the attempt-count wording (the driver still stops retrying at the limit and still names the count) but reverts only the terminal clause back to the ordinary 'retained until a proven clean continuation completes' text, silently promising a continuation that will never come once the budget is spent. The attempts-spent cell's /intervention/i checks against both heldReason and the presence line redden, while the attempt-count assertion on the same line stays green, isolating the named cell.",
       "afterRestore": "pnpm --filter @cotal-ai/pi build"
+    },
+    {
+      "name": "P6 a batch holding a role request takes the whole preview instead of the batch it carries",
+      "file": "extensions/pi/src/driver.ts",
+      "find": "        void this.inbox.take(items).then((shown) => {",
+      "replace": "        void this.inbox.take(this.inbox.preview()).then((shown) => {",
+      "expectRed": "the take covers only the 32 messages the batch carries",
+      "cell": "the take covers only the 32 messages the batch carries",
+      "command": "pnpm --filter @cotal-ai/pi... build && pnpm smoke:pi",
+      "afterRestore": "pnpm --filter @cotal-ai/pi build",
+      "note": "The take reaches past the 32 messages the turn carries, so role requests the turn never shows lose their sender's cancel."
     }
   ]
 }
