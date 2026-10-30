@@ -1,5 +1,17 @@
 # @cotal-ai/cli
 
+## 0.132.0
+
+### Patch Changes
+
+- 7613605: Share comma-list parsing across spawn, mint and persona commands. Preserve absent flags, explicit empty overrides and each command's validation rules.
+- 2f0e7c8: Share dashboard bound-address formatting between the web service and CLI status, keeping IPv6 brackets, readiness URLs and the branded default unchanged.
+- Updated dependencies [5b197c0]
+- Updated dependencies [7613605]
+- Updated dependencies [2f0e7c8]
+  - @cotal-ai/workspace@0.132.0
+  - @cotal-ai/core@0.132.0
+
 ## 0.131.6
 
 ### Patch Changes
