@@ -572,6 +572,21 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   }, noSeed);
   check("personas list prints a YAML diagnostic as lines, with no escaped line breaks",
     unparseable.status === 0 && /⨯ unparseable .*at line 2, column 17:$/m.test(unparseable.stdout) && /^ {4}model: \[unclosed$/m.test(unparseable.stdout) && /^ {20}\^$/m.test(unparseable.stdout) && !unparseable.stdout.includes("\\u000a"), shown(unparseable));
+  // Only a catalog folder that does not exist lists as empty. One that cannot be read is refused, as
+  // `persona` refuses it. Root reads through the mode, so that cell runs only for an ordinary POSIX user.
+  const absent = cotal(["personas", "list"], (home) => mkdirSync(join(home, "..", ".cotal")), noSeed);
+  check("personas list reports no personas when the catalog folder does not exist", absent.status === 0 && absent.stdout.includes("no personas in "), shown(absent));
+  if (process.platform !== "win32" && process.getuid?.() !== 0) {
+    let agents = "";
+    const unreadable = cotal(["personas", "list"], (home) => {
+      persona(home);
+      agents = realpathSync(join(home, "..", ".cotal", "agents"));
+      chmodSync(agents, 0o000);
+    }, noSeed);
+    chmodSync(agents, 0o700);
+    check("personas list refuses an unreadable catalog folder with PERMISSION_DENIED, exit 2, naming it",
+      unreadable.status === 2 && unreadable.stderr.includes("PERMISSION_DENIED") && unreadable.stderr.includes(`cannot read persona catalog: ${agents}`) && !unreadable.stdout.includes("no personas"), shown(unreadable));
+  }
   // The preview was cut at 100 characters whatever the width, so a wide terminal lost its end.
   const longLine = `A reviewer persona whose one-line prompt runs past the old hundred-character cut ${"x".repeat(40)} END`;
   const wide = cotal(["personas", "list"], (home) => {

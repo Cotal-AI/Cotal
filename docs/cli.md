@@ -5049,10 +5049,12 @@ Plain confirmation uses numbered choices. Scripts and JSON removal require `--ye
 The legacy `personas` parser remains available during migration: `list [-v] [--running]`,
 `show`, `edit`, `new` and `rm --force`. Its `new` requires `--subscribe`, reads `--from -` from
 stdin, and overwrites an existing persona only with `--force`. Its local writes share the same
-draft validation and commit fence. Its `list` escapes control characters in the names, fields and
-bodies it prints, as `persona show` does, and shows each persona's description or first prompt line
-whole, wrapped to the terminal's width. Its `show` does the same on a terminal, under the file's
-path, and writes only the file, byte for byte, when its output is piped or redirected, so
+draft validation and commit fence. Its `list` refuses a catalog folder it cannot read with
+`PERMISSION_DENIED` (exit 2), as `persona` does, rather than reporting it empty, and still lists a
+persona file that does not parse as unparseable. It escapes control characters in the names,
+fields and bodies it prints, as `persona show` does, and shows each persona's description or first
+prompt line whole, wrapped to the terminal's width. Its `show` does the same on a terminal, under
+the file's path, and writes only the file, byte for byte, when its output is piped or redirected, so
 `personas show <name> > <file>` copies it. It refuses a missing persona, an invalid definition and a
 name no persona can have with the codes `persona show` uses. Only its explicit `--running` overlay
 connects to the mesh.
@@ -7568,8 +7570,10 @@ and not started offers its own. The broker keeps the others, so a persona that d
 offers none. A
 candidate that holds a control character, such as a persona file name with an escape sequence or a
 newline in it, is not offered. `persona` still lists that file with the characters escaped. A
-persona catalog folder that cannot be read fails the completion of a persona name, so the shell
-offers none, and with `COTAL_COMPLETE_DEBUG=1` it prints the folder. A record it skips, such as a
+persona catalog folder that cannot be read fails the completion of a persona name, or of a channel
+or role its personas declare, so the shell offers none, and with `COTAL_COMPLETE_DEBUG=1` it prints
+the folder. A persona file that does not parse fails a channel or role completion the same way, and
+that flag names the file, because the declared set would be incomplete. A record it skips, such as a
 prepared space record that does not parse, is named on stderr only under that flag too. The stubs
 discard stderr, so run the completion by hand to see it, as
 `COTAL_COMPLETE_DEBUG=1 cotal __complete persona show ''` does. The bash
