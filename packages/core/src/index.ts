@@ -8,6 +8,7 @@ export * from "./digest-id.js";
 export * from "./endpoint-auth-digest.js";
 export * from "./endpoint-grants.js";
 export * from "./endpoint-coverage.js";
+export * from "./registry-contract.js";
 export * from "./endpoint-envelope.js";
 export * from "./endpoint-records.js";
 export * from "./lifecycle-state.js";

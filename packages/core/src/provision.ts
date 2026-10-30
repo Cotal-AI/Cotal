@@ -96,8 +96,9 @@ import { assertServeGrantMintable, finalizeServeIssuance, type EpServeGrant, typ
 import { parseServiceConnectionBinding, type ServiceConnectionBinding } from "./service-gate.js";
 import { SERVICE_ACCESS_TTL_SECONDS } from "./service-authority-limits.js";
 import { effectsBindGrants, poolOwnerBindGrants, goalWriterGrants, sessionLedgerGrants, epAuthBucket, sessionsBucket, epcStreamName, endpointPlaneStreamNames, eptReqStreamName, eptStreamName, hardenedAuthorityStreamNames, timerWriterDurable, timerWriterGrants } from "./endpoint-binding.js";
-import { epsSubject, epCallerReplyFilter, assertGeneration, AUTH_ENDPOINT, EP_CMD_RETIRE_LIFECYCLE, type EpCaller, type IssuedCaller } from "./endpoint-subjects.js";
-import { acceptedReadGrant, acceptedBucket, importNativeSubjectPermissions, issuedBucket, issuedHorizon, issuedStoreStreamNames, writeAcceptedRow, type IssuanceSeam, type IssuedAuthorityRef } from "./issued-authority.js";
+import { epsSubject, epCallerReplyFilter, assertGeneration, isIssuedCaller, AUTH_ENDPOINT, EP_CMD_RETIRE_LIFECYCLE, type EpCaller, type IssuedCaller } from "./endpoint-subjects.js";
+import { acceptedReadGrant, acceptedBucket, importNativeSubjectPermissions, issuedBucket, issuedHorizon, issuedStoreStreamNames, prepareListing, writeAcceptedRow, type IssuanceSeam, type IssuedAuthorityRef, type ListingBinding, type ListingSeam, type PreparedListing } from "./issued-authority.js";
+import { REGISTRY_ENDPOINTS_GRANT } from "./registry-contract.js";
 import { admissionBucket, admissionKey, revocationKey } from "./run-admission.js";
 import { runSubmissionKey } from "./run-submission.js";
 import { runDriverGrants, runMediatorGrants, runOperatorGrants, type RunDriverGrantArgs, type RunOperatorGrantArgs } from "./run-driver-grants.js";
@@ -607,6 +608,15 @@ export async function createSpaceAuth(space: string): Promise<SpaceAuth> {
   return { ...broker, ...spaceAccount };
 }
 
+/** An issuance's binding on a mint (SPEC 13.15): the generation, the token naming its accepted
+ *  row, and whether the ceiling carries the registry's `endpoints` row. That flag is recorded with
+ *  the issuance so a renewal mints the same ceiling it was issued with. */
+export interface IssuedBinding {
+  readonly generation: string;
+  readonly acceptedToken: string;
+  readonly listing?: true;
+}
+
 /** Options shaping a minted user's permissions. */
 export interface MintOpts {
   /** The owner+actor principal to mint for. Omitted ⇒ the no-login dev default (owner `"local"`, actor
@@ -760,7 +770,14 @@ export interface MintOpts {
    *  learns the accepted generation by reading that one row after it connects. Taken by the
    *  profiles that hold caller rails (`agent`, the operator instruments); every other profile
    *  refuses it. */
-  issued?: { generation: string; acceptedToken: string };
+  issued?: IssuedBinding;
+  /** A LISTING generation (SPEC 13.15, "Listing issuance"): the credential keeps the legacy rail
+   *  for every row and gains exactly {@link listingGrantRows}. `agent` and `manager-caller` only,
+   *  and never beside {@link MintOpts.issued}, whose own generation carries the listing. */
+  listing?: ListingBinding;
+  /** The issuer handles a static `agent` mint decides its listing generation over. The horizon is
+   *  the credential's own expiry, so a mint with no expiry gets no listing generation. */
+  listingSeam?: ListingSeam;
   /** The durable half of an issuance, REQUIRED beside {@link MintOpts.issued} on {@link mintCreds}:
    *  the credential is built first, then its evidence is staged create-only, the existing
    *  finalizer runs, and the attempt activates by CAS at the revision the stage observed; only
@@ -988,10 +1005,11 @@ export async function mintCreds(
   // Serve rows are INTERNAL to mintCreds behind the §13.1 fence: the exported permissionsFor
   // refuses "endpoint-serve" (so a direct caller can never obtain unfenced serve rows), and only
   // this fenced path calls the row builder.
+  const validDates = userValidDates(profile, opts);
+  const listing = await prepareStaticListing(auth.space, profile, pr, opts, validDates.exp);
   const perms = profile === "endpoint-serve"
     ? endpointServePermissions(auth.space, pr, opts)
-    : permissionsFor(profile, auth.space, pr, opts);
-  const validDates = userValidDates(profile, opts);
+    : listing?.permissions ?? permissionsFor(profile, auth.space, pr, opts);
   const userJwt = await encodeUser(
     profile,
     fromPublic(identity.id),
@@ -1022,6 +1040,7 @@ export async function mintCreds(
         `would exceed the broker's CONNECT line and the connect would hang silently (issue #375)`,
     );
   }
+  await listing?.commit();
   await releaseIssuance(auth.space, profile, pr, opts, perms, validDates.exp, credentialIdOf(creds));
   // §13.1 mint fence for the serve credential: the credential is BUILT, but released only when its
   // NORMATIVE ledger row (holderPrincipal/lifecycleUid/sourceChain/state/exp + the currency
@@ -1054,6 +1073,23 @@ export async function mintCreds(
     });
   }
   return creds;
+}
+
+/** A static `agent` mint's listing generation (SPEC 13.15, "Listing issuance"), decided before the
+ *  credential is signed. Its horizon is the credential's own expiry, so a mint with none gets no
+ *  listing generation. Bound to no gate: the evidence's expiry is its liveness. */
+async function prepareStaticListing(space: string, profile: Profile, pr: MintPrincipal, opts: MintOpts, exp: number | undefined): Promise<PreparedListing | undefined> {
+  const seam = opts.listingSeam;
+  if (!seam) return undefined;
+  if (profile !== "agent") throw new Error(`mintCreds: a listing seam rides the static agent mint only, not "${profile}"`);
+  if (opts.issued || opts.listing) throw new Error("mintCreds: a listing seam decides the listing generation itself; opts.issued and opts.listing are refused beside it");
+  if (exp === undefined) return undefined;
+  if (!pr.lifecycleUid) throw new Error("mintCreds: a listing generation is lifecycle-keyed; mint with opts.lifecycleUid");
+  return prepareListing(
+    seam,
+    { space, owner: pr.owner, actor: pr.actor, uid: pr.lifecycleUid, connId: pr.connId, horizon: exp, sources: [], expiresAt: exp },
+    (binding) => permissionsFor(profile, space, pr, { ...opts, ...(binding ? { listing: binding } : {}) }),
+  );
 }
 
 /** The SPEC 13.15 issuance fence: an issuing mint persists the ceiling it is handing out BEFORE
@@ -1229,6 +1265,10 @@ export function permissionsFor(
   // the generation to, so `issued` on it is a misconfiguration refused here, never dropped.
   if (opts.issued && !ISSUABLE_PROFILES.has(profile))
     throw new Error(`permissionsFor: opts.issued binds caller rails and "${profile}" holds none; only ${[...ISSUABLE_PROFILES].join(", ")} mint issued authority (SPEC 13.15)`);
+  if (opts.listing && profile !== "agent" && profile !== "manager-caller")
+    throw new Error(`permissionsFor: a listing generation rides the agent and manager-caller views only, not "${profile}" (SPEC 13.15)`);
+  if (opts.listing && opts.issued)
+    throw new Error("permissionsFor: an issued credential lists under its own generation; a listing generation beside it is refused (SPEC 13.15)");
   if (isEnvironmentManagerProfile(profile)) return environmentManagerPermissions(profile, space, pr, opts.environmentManager);
   if (opts.environmentManager) throw new Error(`permissionsFor: environmentManager pins cannot ride ${profile}`);
   if (profile === "delivery") return deliveryPermissions(space, pr); // scoped server-side Plane-3 infra
@@ -1629,6 +1669,14 @@ export function permissionsFor(
   pubAllow.push(...baseline.pub);
   if (opts.issued) pubAllow.push(acceptedReadGrant(space, opts.issued.acceptedToken));
   const epSub: string[] = [...baseline.sub];
+  // The registry's listing question rides the issued rail (SPEC 13.17): under the credential's own
+  // generation when its issuance carries it, else under a listing generation.
+  if (opts.issued?.listing) pubAllow.push(...epRequestGrantRows(space, REGISTRY_ENDPOINTS_GRANT, epCaller));
+  if (opts.listing) {
+    const rows = listingGrantRows(space, epCaller, opts.listing);
+    pubAllow.push(...rows.pub);
+    epSub.push(...rows.sub);
+  }
   // BOTH HALVES OF THE ROLLUP, NOT JUST `pub`. `epCallerGrantRows` returns `{pub, sub}` and its
   // `sub` is the per-goal progress row its own docblock promises: "a goal-bearing capability
   // (spawn/launch) adds ONE per-endpoint epGoalProgressGrantRow - the caller may follow its OWN
@@ -1735,15 +1783,18 @@ function managerCallerPermissions(space: string, pr: MintPrincipal, opts: MintOp
   ];
   const caller = issuedCallerFor({ owner: pr.owner, actor: pr.actor, uid: assertLifecycleToken(pr.lifecycleUid) }, opts);
   const rows = epCallerGrantRows(space, instanceOnlyManagerCapabilities(ordinary, instanceId), caller);
+  const listing = opts.listing ? listingGrantRows(space, caller, opts.listing) : { pub: [], sub: [] };
   return {
     pub: {
       allow: [
         `$JS.API.DIRECT.GET.${epcStreamName(space)}.${spacePrefix(space)}.epc.>`,
         ...(opts.issued ? [acceptedReadGrant(space, opts.issued.acceptedToken)] : []),
         ...rows.pub,
+        ...(opts.issued?.listing ? epRequestGrantRows(space, REGISTRY_ENDPOINTS_GRANT, caller) : []),
+        ...listing.pub,
       ],
     },
-    sub: { allow: [`_INBOX_${pr.connId}.>`, ...rows.sub] },
+    sub: { allow: [`_INBOX_${pr.connId}.>`, ...rows.sub, ...listing.sub] },
   };
 }
 
@@ -2223,6 +2274,20 @@ function issuedCallerFor(triple: EpCaller, opts: MintOpts): EpCaller {
   if (!opts.issued) return triple;
   assertGeneration(opts.issued.acceptedToken, "acceptedToken");
   return { ...triple, generation: assertGeneration(opts.issued.generation) } as IssuedCaller;
+}
+
+/** The rows a listing generation adds to a legacy-rail credential (SPEC 13.15, "Listing
+ *  issuance"): the registry's `endpoints` request publish and its reply subscribe on `ep.v1`, and
+ *  the per-key read of the generation's accepted row. Exactly these: one caller value emits one
+ *  rail, so these are the only `ep.v1` rows such a credential holds. */
+export function listingGrantRows(space: string, caller: EpCaller, listing: ListingBinding): { pub: string[]; sub: string[] } {
+  if (isIssuedCaller(caller)) throw new Error("listingGrantRows: an issued caller lists under its own generation");
+  assertGeneration(listing.acceptedToken, "acceptedToken");
+  const issued = { owner: caller.owner, actor: caller.actor, uid: caller.uid, generation: assertGeneration(listing.generation) } as IssuedCaller;
+  return {
+    pub: [...epRequestGrantRows(space, REGISTRY_ENDPOINTS_GRANT, issued), acceptedReadGrant(space, listing.acceptedToken)],
+    sub: [epCallerReplyFilter(space, issued)],
+  };
 }
 
 /** ENDPOINT-SERVE (v0.4, SPEC §13.9 "Serve grants") — the per-instance serve credential:
