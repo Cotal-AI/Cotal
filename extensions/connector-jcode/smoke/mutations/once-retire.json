@@ -2,7 +2,7 @@
   "suite": [
     "extensions/connector-jcode/smoke/once-retire.smoke.ts"
   ],
-  "guard": "a once Jcode seat's launched tree is proved gone only by the evidence its host recorded under the seat's uid: never while the recorded host lives, every launch the uid recorded, a receipt that replays the proof, and live evidence never discarded; a launched process whose environment cannot be read is still tied to the launch by a parent already found or by a group a carrier leads, a signal reaches a group only when a carrier leads it and never a pid with another start token, and a found process whose entry cannot be read stops the proof",
+  "guard": "a once Jcode seat's launched tree is proved gone only by the evidence its host recorded under the seat's uid: never while the recorded host lives, every launch the uid recorded, a receipt that replays the proof, and live evidence never discarded; a launched process whose environment cannot be read is still tied to the launch by a parent already found or by a group a carrier leads, a signal reaches a group only when a carrier leads it and never a pid with another start token, and a found process whose entry cannot be read stops the proof, and a process is alive by one read of its entry, so a failed re-read never reads as an exit",
   "command": "pnpm smoke:jcode-once-retire",
   "completionMarker": "JCODE ONCE RETIRE SMOKE",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-jcode/smoke/mutations/once-retire.json",
@@ -18,7 +18,9 @@
     "that carries the identity, so a hidden child's own child outlives the proof. R9 signals every target's",
     "group, so a process outside the launch that joined a group a descendant leads is killed. R10 signals a pid",
     "without its start token, so a process that took a target's pid is killed. R11 reads an unreadable entry",
-    "as a process gone, so the receipt is written while it may still run."
+    "as a process gone, so the receipt is written while it may still run. R12 reads a process's",
+    "entry twice and takes a failed second read as an exit, so a launched process whose re-read fails is",
+    "dropped from the proof while it still runs."
   ],
   "mutations": [
     {
@@ -97,6 +99,13 @@
       "find": "    if (alive(p.pid)) throw new Error(`jcode connector: cannot read PID ${p.pid}'s process table entry to rule it out of a once launch`);\n",
       "replace": "",
       "expectRed": "a launched process whose process table entry cannot be read once found stops the proof"
+    },
+    {
+      "name": "R12 a failed re-read of a process entry counts as an exit",
+      "find": "  if (stat) return !stat.zombie;\n",
+      "replace": "  if (stat) {\n    try {\n      readFileSync(`/proc/${pid}/stat`, \"utf8\");\n    } catch {\n      return false;\n    }\n    return !stat.zombie;\n  }\n",
+      "file": "extensions/connector-jcode/src/private-lifecycle.ts",
+      "expectRed": "a launched process whose entry fails a re-read (synthetic EMFILE) is still stopped before the proof"
     }
   ]
 }

@@ -24,6 +24,8 @@ export interface ProcessStat extends ProcessIdentity {
   parentPid: number;
   /** The process group, which the process table shows for any process, readable environment or not. */
   group: number;
+  /** Set when the process has exited and waits for its parent to reap it (Linux). */
+  zombie?: true;
 }
 
 export function processStat(pid: number): ProcessStat | undefined {
@@ -36,7 +38,8 @@ export function processStat(pid: number): ProcessStat | undefined {
       const parentPid = Number(fields[1]);
       const group = Number(fields[2]);
       const start = fields[19];
-      return Number.isInteger(parentPid) && parentPid >= 0 && Number.isInteger(group) && group >= 0 && start ? { pid, parentPid, group, start } : undefined;
+      if (!(Number.isInteger(parentPid) && parentPid >= 0 && Number.isInteger(group) && group >= 0 && start)) return undefined;
+      return fields[0] === "Z" ? { pid, parentPid, group, start, zombie: true } : { pid, parentPid, group, start };
     }
     if (process.platform === "darwin" || process.platform.endsWith("bsd")) {
       const out = execFileSync("/bin/ps", ["-o", "ppid=", "-o", "pgid=", "-o", "lstart=", "-p", String(pid)], {
@@ -201,20 +204,11 @@ export function recordedTreePids(jcodeHome: string): number[] {
   return [...pids];
 }
 
+/** Whether `pid` runs, from one read of its process table entry. A zombie has exited. An entry that
+ * cannot be read is asked of the kernel, so a failed read never reads as an exit. */
 const alive = (pid: number): boolean => {
   const stat = processStat(pid);
-  if (stat) {
-    try {
-      if (process.platform === "linux") {
-        const raw = readFileSync(`/proc/${pid}/stat`, "utf8");
-        const after = raw.lastIndexOf(") ");
-        if (after >= 0 && raw.slice(after + 2).startsWith("Z ")) return false;
-      }
-    } catch {
-      return false;
-    }
-    return true;
-  }
+  if (stat) return !stat.zombie;
   try {
     process.kill(pid, 0);
     return true;
@@ -331,16 +325,16 @@ export function recordOnceLaunch(home: string, uid: string, record: LaunchRecord
   writeSecretFileAtomic(onceRecordPath(home, uid), `${JSON.stringify({ uid, host: record.host, launches: [...(prior?.launches ?? []), record.identity] })}\n`);
 }
 
-/** Whether a process a scan captured is still that process: its pid shows the captured start token.
- * A live process whose process table entry cannot be read throws, because nothing then rules it
- * out. */
+/** Whether a process a scan captured is still that process, decided by one read of its entry: the
+ * pid shows the captured start token and has not exited. A live process whose entry cannot be read
+ * throws, because nothing then rules it out. */
 function stillOwned(p: ProcessIdentity, readStat: (pid: number) => ProcessStat | undefined): boolean {
   const stat = readStat(p.pid);
   if (!stat) {
     if (alive(p.pid)) throw new Error(`jcode connector: cannot read PID ${p.pid}'s process table entry to rule it out of a once launch`);
     return false;
   }
-  return stat.start === p.start && alive(p.pid);
+  return stat.start === p.start && !stat.zombie;
 }
 
 /** The live processes a once seat's launches own: each process that carries one of the launch

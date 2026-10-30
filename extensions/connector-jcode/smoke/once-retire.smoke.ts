@@ -10,13 +10,15 @@
  * environment cannot be read is still stopped while its parent, its parent's parent, or a carrier's
  * group ties it to the launch. A signal goes to a group only when a carrier leads it, and never to a
  * pid that shows another start token. A launched process whose process table entry cannot be read
- * once it was found stops the proof.
+ * once it was found stops the proof, and one whose re-read fails (a synthetic EMFILE) is still stopped
+ * before the proof.
  *
  * Run: pnpm smoke:jcode-once-retire
  */
 import { randomBytes } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mintLifecycleUid } from "@cotal-ai/core";
@@ -241,6 +243,40 @@ try {
     check(`${label} whose process table entry cannot be read once found stops the proof`, refused?.startsWith("jcode") === true, refused);
     check("...its evidence is kept, and it is not signalled", evidence(lostUid).includes("launches") && living(lost.pid!));
   }
+
+  // A synthetic EMFILE: a launched process's entry fails the read made straight after a successful
+  // one, in the same synchronous step. The scan's own reads go through the seam and are not failed,
+  // so only a check that reads the entry twice meets the failure. The process ignores SIGTERM, so it
+  // is gone only if a check that still sees it running sends SIGKILL.
+  const fs = createRequire(import.meta.url)("node:fs") as typeof import("node:fs");
+  const realRead = fs.readFileSync;
+  let flakyPath: string | undefined, viaSeam = 0;
+  const justRead = new Set<string>();
+  fs.readFileSync = ((path: unknown, ...rest: unknown[]) => {
+    if (typeof path === "string" && path === flakyPath && viaSeam === 0) {
+      if (justRead.delete(path)) throw Object.assign(new Error(`EMFILE: too many open files, open '${path}'`), { code: "EMFILE" });
+      justRead.add(path);
+      queueMicrotask(() => justRead.delete(path));
+    }
+    return (realRead as (...a: unknown[]) => unknown)(path, ...rest);
+  }) as typeof fs.readFileSync;
+  syncBuiltinESMExports();
+  const seamStat = (pid: number) => { viaSeam++; try { return processStat(pid); } finally { viaSeam--; } };
+  const flakyUid = mintLifecycleUid(), flakyHost = sleeper(), flakyIdentity = nonce();
+  recordOnceLaunch(home, flakyUid, { identity: flakyIdentity, host: captureProcessIdentity(flakyHost.pid!) });
+  const flaky = attached("import signal, time\nsignal.signal(signal.SIGTERM, signal.SIG_IGN)\ntime.sleep(600)", flakyIdentity);
+  await poll(() => processStat(flaky.pid!) !== undefined);
+  process.kill(flakyHost.pid!, "SIGKILL");
+  await gone(flakyHost.pid!);
+  flakyPath = `/proc/${flaky.pid}/stat`;
+  // The module's own read meets the failure: its second read in one step fails.
+  check("control: a read of the entry straight after another fails (synthetic EMFILE)", processStat(flaky.pid!) !== undefined && processStat(flaky.pid!) === undefined);
+  let flakyProof = false;
+  try { await retireOnceTree(home, flakyUid, { gracefulWaitMs: 500, killWaitMs: 500, processStat: seamStat }); flakyProof = true; } catch (e) { console.log(`    (retire threw: ${(e as Error).message})`); }
+  flakyPath = undefined;
+  fs.readFileSync = realRead;
+  syncBuiltinESMExports();
+  check("a launched process whose entry fails a re-read (synthetic EMFILE) is still stopped before the proof", flakyProof && !living(flaky.pid!), { flakyProof, living: living(flaky.pid!) });
 
   console.log("\n6. a once launch carries its marker and needs a uid");
   const launch = jcodeConnector.buildLaunch({ space, name, servers: "nats://127.0.0.1:1", workspaceRoot: root, lifecycleUid: uid, once: true } as Parameters<typeof jcodeConnector.buildLaunch>[0]);
