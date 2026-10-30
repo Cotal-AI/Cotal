@@ -29,7 +29,7 @@ it; stopping preserves it so an operator can inspect why the session never conne
 |---|---|---|---|---|---|---|
 | Maturity | stable | beta | beta | alpha | beta | alpha |
 | Binds via | installed plugin + MCP server | in-process plugin (native runtime) | host-mode peer driving `codex app-server` | native Python plugin, socket-bridged | host-mode peer driving Jcode Harness API | native pi extension, in-process |
-| Install | `cotal setup` | none, just `opencode` on PATH (1.x or 2.x) | seeded with the CLI; needs an authenticated `codex` on PATH | BYO `uv` + `hermes-agent` `>=0.18,<0.22`; Unix only | seeded with the CLI; needs `jcode` 0.78.1+ on PATH | pi 0.79.10 (one copied file for interactive/SDK) |
+| Install | `cotal setup` | none, just `opencode` on PATH (1.x or 2.x) | seeded with the CLI; needs an authenticated `codex` on PATH | BYO `uv` + `hermes-agent` `>=0.18,<0.22`; Unix only | seeded with the CLI; needs `jcode` 0.78.1+ on PATH and Node 22.13+ (23.4+ on Node 23) | pi 0.79.10 (one copied file for interactive/SDK) |
 | Watch the real TUI | ✓ | ✓ | ✓ (attached to the mesh-driven thread) | ✗ (headless gateway) | ✓ (attached to the managed Jcode session) | ✓ |
 | Inbound delivery | managed hook drain + idle nudge; personal native inline delivery | injected as a turn | wakes a turn; directed messages steer connector-started turns; external turns defer delivery | fresh agent per message | injected as a Harness API turn; directed messages steer the live session | steered into the live turn |
 | Mid-turn steering | personal native sessions at supported boundaries | ✗ | ✓ (directed messages during connector-started turns) | none | ✓ (directed messages) | ✓ |
