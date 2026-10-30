@@ -1,5 +1,11 @@
 # @cotal-ai/web
 
+## 0.132.0
+
+### Patch Changes
+
+- 2f0e7c8: Share dashboard bound-address formatting between the web service and CLI status, keeping IPv6 brackets, readiness URLs and the branded default unchanged.
+
 ## 0.131.6
 
 No changes in this release.
