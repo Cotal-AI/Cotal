@@ -1,4 +1,4 @@
-import { lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
+import { accessSync, constants, lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { loadAgentFile, personaDir, utf16Problem, type AgentDef } from "@cotal-ai/core";
 import { codeSpan, CommandFailure, unsearchableFolder } from "@cotal-ai/workspace";
@@ -101,12 +101,14 @@ export function listPersonas(root: string): PersonaEntry[] {
 }
 
 /** {@link listPersonas}, except that only an absent directory is an empty catalog: one that exists
- *  and cannot be read throws, for a report that must not show it as empty. */
+ *  and cannot be read throws, for a report that must not show it as empty. So does one that lists
+ *  but cannot be searched, such as mode 0600, whose files cannot be opened however they are written. */
 export function readPersonas(root: string): PersonaEntry[] {
   const dir = personaDir(root);
   let files: string[];
   try {
     files = readdirSync(dir).filter((f) => f.endsWith(".md"));
+    accessSync(dir, constants.X_OK);
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === "ENOENT") return [];
     throw e;
