@@ -146,5 +146,5 @@ Set `COTAL_DEFAULT_AGENT=myagent` to make it the default for a bare `cotal spawn
 resolves through the same lazy-materialize path as the built-ins (in the CLI's launch preflight and in
 the manager), so a live `cotal up` will seed nothing extra: it imports your package, reads `requires`,
 and launches. For runtimes (how a node is hosted: pty/tmux/…) rather than harnesses, the same
-extension model applies via the `Runtime` contract; see [define a team](define-a-team.md) and
+extension model applies via the `Runtime` contract; see [define a team](define-a-team.mdx) and
 [the CLI reference](cli.md).

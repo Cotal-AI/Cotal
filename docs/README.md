@@ -25,13 +25,13 @@ Task dispatch:
 
 | Task | Page | First command / tool |
 |---|---|---|
-| Install + start a local mesh, non-interactive | [Configure a space](setup.md#automate-setup) | `npx cotal-ai setup --destination local --harness claude --project . --space main --no-input && npx cotal-ai up --detach` |
+| Install + start a local mesh, non-interactive | [Configure a space](setup.mdx#automate-setup) | `npx cotal-ai setup --destination local --harness claude --project . --space main --no-input && npx cotal-ai up --detach` |
 | Put an agent on the mesh | [Quickstart](getting-started.mdx) | `cotal spawn` |
 | Message peers from inside a session | [MCP tool catalog](mcp-tools.md) | `cotal_send` · `cotal_dm` · `cotal_anycast` |
 | Spawn / define / list a teammate at runtime | [MCP tool catalog](mcp-tools.md) | `cotal_spawn` · `cotal_persona` · `cotal_personas` |
-| Declare a team + channels in one file | [Define a team](define-a-team.md) | `cotal up -f cotal.yaml` |
+| Declare a team + channels in one file | [Define a team](define-a-team.mdx) | `cotal up -f cotal.yaml` |
 | Grant or audit channel access | [Channels & permissions](channels-and-permissions.md) | agent-file `allowPublish:` / `allowSubscribe:` |
-| Watch a live mesh | [Watch a mesh](watch-a-mesh.md) | configured `service` dashboard / `cotal console` |
+| Watch a live mesh | [Watch a mesh](watch-a-mesh.mdx) | configured `service` dashboard / `cotal console` |
 | Mint credentials (static mesh) | [Identity & auth](identity-and-auth.md) | `cotal auth mint <name> --profile agent` |
 | Sign in / grant a user's agents (user-auth mesh) | [Identity & auth](identity-and-auth.md) | `cotal login --idp <url>` · `cotal actor grant` |
 | Implement the wire in another language | [Build a client](build-a-client.md) | validate against [`cotal.schema.json`](../spec/cotal.schema.json) |
@@ -53,18 +53,21 @@ Task dispatch:
 
 | Doc | Answers |
 |---|---|
-| [Configure a space](setup.md) | How do I prepare a space, choose runtimes, or automate setup? |
+| [Configure a space](setup.mdx) | How do I prepare a space, choose runtimes, or automate setup? |
 | [Run a mesh](run-a-mesh.mdx) | How do I start, check, and stop a prepared local space? |
 | [Launch agents](launch-agents.mdx) | How do I choose a persona, connector, model, or runtime for an agent? |
-| [Define a team](define-a-team.md) | How do I declare a team in one `cotal.yaml` and launch it? |
+| [Define a team](define-a-team.mdx) | How do I declare a team in one `cotal.yaml` and launch it? |
 | [Register a mesh](register-a-mesh.mdx) | How do I select a mesh or register another machine's broker safely? |
-| [Watch a mesh](watch-a-mesh.md) | How do I watch agents in the terminal or browser? |
+| [Watch a mesh](watch-a-mesh.mdx) | Which view should I use to observe agents and messages? |
+| [Use the console](console.mdx) | How do I inspect a mesh from the terminal? |
+| [Use the web dashboard](web-dashboard.mdx) | How do I inspect a mesh from the browser? |
 | [Supervise a remote mesh](remote-supervision.mdx) | How do I separate broker and manager hosts or enroll remote agents? |
 | [Supervise the stack](supervise-processes.mdx) | How do I supervise services or monitor a detached stack? |
-| [Deploy](deploy.md) | How do I run agent teams against an external broker? |
+| [Deploy](deploy.mdx) | What are the container example's requirements and current limits? |
 | [Back up a mesh](backup-a-mesh.mdx) | How do I preserve, back up, and restore a supported mesh? |
 | [Recover a mesh](recover-a-mesh.mdx) | How do I diagnose failed services and recover a frozen gate? |
-| [Upgrading](UPGRADING.md) | How do I upgrade an existing deployment? |
+| [Upgrade Cotal](upgrade-cotal.mdx) | How do I plan, install, and verify an upgrade? |
+
 
 ### Connect agents
 
@@ -148,6 +151,7 @@ says at its top which parts have shipped.
 |---|---|
 | [Roadmap](roadmap.md) | What is deferred, and where each area is headed. |
 | [Release](release.md) | How we version and publish. |
+| [Upgrade history](UPGRADING.md) | Which release-specific migrations apply to an existing deployment? |
 | [Substrate stability](stability.md) | What can I build a product on, and what will the v0.4 cut break? |
 | [Setup internals](setup-internals.md) | How the `cotal setup` flow works. |
 | [Signer isolation](design/signer-isolation.md) | How the account signing seed moves off the manager uid. |

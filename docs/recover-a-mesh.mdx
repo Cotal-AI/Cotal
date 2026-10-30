@@ -1,125 +1,140 @@
 ---
 title: "Recover a mesh"
-description: "Diagnose service failures and recover stuck presence or a frozen registration gate."
+description: "Use status and logs to diagnose service failures, stuck presence, or a frozen registration gate."
 kind: "Informative"
 audience: "operators"
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
 
-Use the status report and project logs to identify a failed component, then follow the matching recovery procedure.
-For normal startup and shutdown, see [Run a mesh](run-a-mesh.mdx).
+Start with the status report, then follow the procedure for the failed component.
+For normal startup and shutdown, use [Run a mesh](run-a-mesh.mdx).
 
 ## Find the failure [#when-something-looks-absent]
 
-Permission denials are **loud, never silent**: an over-tight ACL rejects the endpoint call it
-refuses instead of returning an empty or incomplete result that looks successful, and a denial no
-call is waiting on, such as a refused subscription, shows up as a logged denial on the endpoint. Check
-`.cotal/manager.<key>.log`, `.cotal/delivery.<key>.log` (one pair per space, keyed as
-[Config](config.md#project-files) describes), and `.cotal/nats.log`; `cotal status` shows
-what is actually running. Those files live under the **project** `.cotal/`, not `~/.cotal`,
-unless the mesh root is the home directory. `cotal up --detach` redirects delivery and manager
-stdio onto those files, so an operator-created systemd unit around that launcher does not put
-the child logs in that unit's journal. `journalctl -u <unit>` can be empty while the crash
-reason is already in the project log. Manager log lines start with the UTC time they were
-written. The access rules are collected in
-[Channels & permissions](channels-and-permissions.md).
+Run `cotal status` to see which local components are running.
+Inspect these files under the mesh's project folder:
+
+| Log | Component |
+| --- | --- |
+| `.cotal/manager.<key>.log` | Manager. |
+| `.cotal/delivery.<key>.log` | Delivery daemon. |
+| `.cotal/nats.log` | Broker. |
+
+There is one manager and delivery log pair per space.
+[Project files](config.md#project-files) explains the space key.
+Manager lines begin with their UTC write time.
+
+These logs are under the project's `.cotal/`, not `~/.cotal`, unless the home directory is the mesh root.
+`cotal up --detach` redirects child output to those files.
+A systemd unit wrapping that launcher does not put the children's output into its journal, so `journalctl -u <unit>` can be empty while the project log contains the failure.
+
+Permission denials are reported explicitly.
+A refused endpoint call does not become an empty successful result, and refused subscriptions appear as logged denials.
+Check [channel permissions](channels-and-permissions.md) when a component runs but cannot read or subscribe.
 
 ## Recover stuck presence [#presence-write-stuck]
 
-Cotal creates the presence bucket in memory storage. Its records are liveness that every endpoint
-rewrites each heartbeat, so nothing is lost when a broker restart empties it, and nats-server's file
-store write latch cannot reach it. A broker stop removes the memory stream itself, so every `cotal up`,
-including the resume after `cotal down --preserve-state`, creates it again before any daemon starts.
-JetStream fixes a stream's storage class when it is created, so a presence bucket created file-backed
-by an older cotal stays file-backed until that stream is recreated.
+A legacy file-backed presence bucket can remain readable while refusing every write.
+After one full presence TTL of consecutive failures, a bound endpoint reports `presence-write-stuck`.
+Treat the roster as last-known while that condition remains active.
 
-A file-backed presence bucket can remain open and watchable while refusing every write. A bound
-endpoint reports this as `presence-write-stuck` after one full presence TTL of consecutive failures.
-The roster is last-known while that condition is active. Restarting the broker clears nats-server's
-in-memory store latch and preserves the JetStream root. Current credentials split the required stream
-authority: the `cotal up` provisioner can create the presence stream but cannot delete it, while the
-teardown credential can delete it but cannot recreate it. Cotal therefore reports the condition but
-does not attempt an unsafe partial delete-and-recreate. Stop and restart the broker to recover.
-A broker below nats-server 2.14.5 carries the latch (nats-server fixed it in 2.14.5). When `cotal up` starts or finds such a broker and the space's presence bucket is file-backed, it says so. A memory-backed bucket gets no warning. A broker below the SPEC §13.12 floor of 2.12 is refused at connect with the floor sentence.
+1. Review the [shutdown effects](run-a-mesh.mdx#stop-the-stack) for running agents.
+2. Stop and restart the broker through the deployment's normal ownership path.
+3. Check that presence writes and heartbeats resume.
+
+Restarting clears nats-server's in-memory file-store write latch and preserves the JetStream root.
+Do not delete the presence stream as a partial repair.
+The provisioner can create that stream but cannot delete it; teardown authority can delete it but cannot recreate it.
+Cotal reports the fault rather than attempting an unsafe delete-and-recreate sequence.
+
+Current Cotal creates presence in memory storage.
+Every endpoint rewrites its liveness record on each heartbeat, so losing those records on a broker restart loses no durable information.
+A broker stop removes the memory stream itself. Every `cotal up`, including a preserved-state resume, recreates it before starting daemons.
+JetStream fixes storage type at stream creation, so an older file-backed bucket stays file-backed until it is recreated.
+
+nats-server fixed the file-store latch in 2.14.5.
+Cotal warns when a broker below that version has a file-backed presence bucket; a memory-backed bucket receives no warning.
+A broker below the wire specification's 2.12 minimum is refused at connection.
 
 ## Check startup reconciliation [#static-reconciliation]
 
-On an authenticated manager start, unfinished static lifecycle rows reconcile while the control
-endpoint is already serving. The manager `status` response reports
-the `staticReconciliation` state, the last sweep counts, and each failed alias with its durable
-phase and literal disposition. `cotal status --components` reports the state and per-alias failure
-details. A sweep that stops before it plans any alias, for example on a slot row carrying a DEL or
-PURGE marker, reports the state `failed` with the reason in the last sweep's `error`, and
-`cotal status --components` prints it as `static sweep error=<reason>`. The next manager start
-collects the rows again. A failed exact terminal is retried in the same process after 1, 5,
-and 30 seconds. Each attempt re-reads the durable slot and re-enters the same deterministic terminal
-operation; the delays only schedule work and never release the lifecycle fence. The terminal's
-cleanup removes the lifecycle's credential file and its broker durables and read-ACL row as separate
-steps. A file that cannot be removed does not leave the broker footprint behind, and its failure
-keeps the alias held for the next attempt.
+On an authenticated manager start, unfinished static lifecycle operations reconcile after the control endpoint begins serving.
+Run `cotal status --components` to see the reconciliation state and failed aliases.
+The manager status response also includes `staticReconciliation` with its last sweep counts.
+Each failed alias reports its durable phase and disposition.
 
-On shutdown, the manager fences new reconciliation work and waits for an exact terminal that already
-started. The current serial sweep stops before its next alias, and startup cannot publish the manager
-service after `stop()` completes.
+| Report | Next action |
+| --- | --- |
+| `failed` with `static sweep error=<reason>` | Investigate the sweep's `error`, then restart the manager to collect its rows again. A DEL or PURGE slot marker can refuse planning before any alias is processed. |
+| An alias retry in progress | Leave the manager running. Its retries occur after 1, 5, and 30 seconds. |
+| `retry-exhausted` | Follow the reported remedy to restart the manager after addressing the failure. The new process derives a new retry budget from the durable row. |
+| `recovered` | The completed row remains visible until the next reconciliation sweep clears it. |
 
-The four-attempt budget is per manager process. An exhausted row stays held and reports
-`retry-exhausted` with the remedy to restart the manager. The next process derives a fresh budget
-from the still-authoritative durable row. A `recovered` row remains visible until the next static
-reconciliation sweep, then clears. This component reports reconciliation outcomes. It does not say
-whether footprint cleanup completed independently of the terminal result; that separate durable
-projection remains tracked by #1274.
+The initial attempt plus three retries gives four attempts per manager process.
+Each attempt re-reads the durable slot and resumes the same deterministic terminal operation.
+The delays schedule work; they do not release its lifecycle fence.
+
+Cleanup removes credential files, broker durables, and the read-ACL row as separate steps.
+An unremovable credential file does not leave the broker footprint behind, but its failure keeps the alias held for another attempt.
+On shutdown, the manager prevents new reconciliation, lets an already-started exact terminal finish, and stops the serial sweep before the next alias.
+After the manager has stopped, startup cannot publish its service.
+
+Reconciliation reports terminal outcomes. It does not independently prove that every footprint cleanup finished.
 
 ## Recover a frozen gate [#gate-recovery]
 
-A manager that dies mid-registration leaves its issuance gate *frozen* under that registration
-op. The freeze is correct: it stops two incarnations serving at once. The successor now completes
-that dead op on boot, using the same guard as [`cotal reconcile-gate`](cli.md#reconcile-gate): it
-acts only when the freeze-holder is affirmatively gone under a complete CONNZ sweep (`gone` and
-`sweepComplete=true`). If the dead op's spec write committed, it finishes that same freeze
-(promote and reopen at the committed registration revision). If the spec did not advance, it
-abort-reopens the gate (generation+1, processEpoch unchanged) and continues the normal takeover.
-Boot heal and the following re-registration use separate one-shot executor windows, so a large
-predecessor family cannot spend the takeover's credential lifetime. If that later registration
-still crosses a connection lifetime, it retries the same frozen operation with fresh authority
-and resumes verified-holder progress instead of freezing a new generation.
-A live holder, an incomplete sweep, or an unreachable delivery daemon still
-refuses. Silence is never evidence of death, and there is no TTL. If holder verification is
-interrupted, the frozen operation resumes from its durable, operation-and-gate-revision-bound
-progress after liveness is checked again. A later freeze cannot reuse that progress: the cursor
-binds the exact op, gate revision, and holder set. Use `cotal reconcile-gate` when the boot path cannot run
-(daemon down, a non-manager endpoint, or you want to lift the freeze without starting a manager). A spawn that hits the same frozen gate names that verb in the refusal
-(`blockedOp=registration`, the holding `opId`, `remedy=cotal reconcile-gate`) instead of a
-wait-timeout: the facts were always in the manager log; they now reach the spawn caller too.
+A manager that dies during registration can leave its issuance gate frozen.
+That gate prevents two incarnations from serving at once.
+A spawn refusal identifies the holding `opId`, `blockedOp=registration`, and `remedy=cotal reconcile-gate` instead of timing out without a remedy.
 
-Give reconciliation a **quiet manager**. Suspend systemd restart policies, watchdogs, health-check
-restart loops, and any other automation that can start or kill `cotal supervise` while boot healing or
-`cotal reconcile-gate` is running. Leave one recovery attempt in control until it finishes.
-Restarting the manager during the walk interrupts the current authority window. Durable progress makes
-that interruption resumable, but a quiet manager is still the fastest and safest incident procedure.
+<Callout type="warn" title="Keep one recovery attempt in control">
+
+Suspend systemd restart policies, watchdogs, health checks, and other automation that starts or kills the manager.
+Do not restart it while boot healing or `cotal reconcile-gate` is running.
+An interrupted attempt can resume durable progress, but repeated interruptions delay recovery.
+
+</Callout>
+
+Let the successor manager's normal startup heal the dead registration operation.
+If that boot cannot run, use [`cotal reconcile-gate`](cli.md#reconcile-gate).
+That command also covers a non-manager endpoint or recovery without starting a manager.
+
+Recovery requires a complete CONNZ sweep proving that the freeze-holder is gone: `gone` and `sweepComplete=true`.
+A live holder, an incomplete sweep, or an unreachable delivery daemon refuses recovery.
+Silence is not proof of death, and waiting out a TTL does not reopen the gate.
+
+The recovery result depends on the registration's durable state:
+
+- If the specification write committed, recovery promotes and reopens the same freeze at that revision.
+- Otherwise, it abort-reopens the gate with `generation+1`, keeps `processEpoch` unchanged, and continues takeover.
+
+Boot healing and re-registration use separate one-shot executor windows.
+Healing a large predecessor family cannot consume the takeover's credential lifetime.
+If re-registration outlasts a connection's credential lifetime, it retries the same frozen operation with fresh authority and retains verified-holder progress.
+An interrupted holder check resumes only after another liveness check.
+Its progress is bound to that operation, gate revision, and holder set, so a later freeze cannot reuse it.
 
 ## Replace the store as a last resort [#last-resort-jetstream-store-replacement]
 
 <Callout type="warn" title="Destructive recovery">
 
-Store replacement is not normal gate recovery, is never automatic, and is destructive to mesh history.
-Use it only after the retained store cannot be reconciled and after deciding that losing its durable
-contents is acceptable.
+Store replacement is never automatic and is not normal gate recovery.
+It removes JetStream message and control history and durable consumer state.
+Use it only after the retained store cannot be reconciled and you have accepted that loss.
+Agent session files outside JetStream remain, but their referenced mesh history does not.
 
 </Callout>
 
-1. Stop every actor touching the space: supervisor, watchdog, manager, delivery daemon, and broker.
-   Confirm that no Cotal or NATS process still has the store open.
-2. Preserve the stopped store before changing anything. Move `.cotal/nats` aside to a dated backup and
-   archive both `nats` and `auth`. Do not delete the only copy.
-3. Understand the loss: replacing the store removes JetStream message and control history and durable
-   consumer state. Agent session files stored outside JetStream remain, but the mesh history they
-   referenced does not.
-4. Start the broker against a new empty store, then start one manager. Wait until it reports
-   serving successfully.
-5. Repopulate the mesh only after that manager is healthy. Re-enable supervisors, watchdogs, and other
-   restart automation last.
+1. Stop the supervisor, watchdog, manager, delivery daemon, broker, and every other actor touching the space.
+   Confirm that no Cotal or NATS process has the store open.
+2. Preserve the stopped store. Move `.cotal/nats` to a dated backup and archive both `nats` and `auth`.
+   Keep the original copy.
+3. Start the broker against a new empty store, then start one manager.
+   Wait until that manager reports that it is serving.
+4. Repopulate the mesh only after the manager is healthy.
+   Re-enable supervisors, watchdogs, and restart automation last.
 
-Keep the preserved store until the incident is reviewed and any required forensic or manual recovery is
-complete. Restoring it later restores the old durable state, including the fault that led to this last
-resort, so do not swap it back into a live mesh casually.
+Keep the old store until the incident review and any forensic or manual recovery are complete.
+Restoring that store also restores its old durable state, including the original fault.
+Never swap it back into a live mesh casually.

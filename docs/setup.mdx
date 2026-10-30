@@ -1,11 +1,18 @@
-# Configure a space
+---
+title: "Configure a space"
+description: "Prepare a project, choose its agent application, and save its space settings."
+kind: "Informative"
+audience: "operators"
+---
 
-> Informative. For operators preparing a space.
+import { Card, Cards } from 'fumadocs-ui/components/card';
+import { Callout } from 'fumadocs-ui/components/callout';
 
 Use setup to choose where a space runs, which agent application it uses, and where its project files live.
-Setup saves those choices before a separate decision to start the space.
+Setup saves those choices without starting the space.
+Choose startup separately after preparation.
 
-## Prepare a space interactively
+## Prepare a space interactively [#prepare-a-space-interactively]
 
 Run this from the project folder:
 
@@ -13,11 +20,11 @@ Run this from the project folder:
 cotal setup --configure-only
 ```
 
-Choose the following:
+Set these choices in the guided flow:
 
 1. **Destination.** Local means this machine starts the space. Self-hosted means the space runs elsewhere and is registered here. Register it with `cotal space add` or provide a connection file from its operator. Cloud is in development and cannot be selected.
 2. **Agent application.** Choose an installed connector. Setup runs the connector's own setup steps when its application is available. This choice becomes the space's `harness` preference, which a bare `cotal spawn` uses.
-3. **Runtime.** The built-in `pty` runtime runs agents in terminals. Other runtimes include `tmux`, `cmux`, `orca`, and `herdr`. Setup shows which tools are installed and checks the runtimes you select. Leaving a runtime out does not uninstall it.
+3. **Runtime.** Keep the built-in `pty` runtime for a first run. Other choices include `tmux`, `cmux`, `orca`, and `herdr`. Setup shows installed tools and checks the runtimes you select. Leaving a runtime out does not uninstall it.
 4. **Project folder.** This is the space's root. Agent personas live in its `.cotal/agents` directory. Setup can create a missing folder.
 5. **Space name.** A local space defaults to the project folder's name.
 
@@ -31,7 +38,7 @@ The initial answer is No.
 An incomplete or uncertain startup leaves preparation saved and reports the stage that needs attention.
 Inspect that outcome before trying to start again.
 
-## Automate setup
+## Automate setup [#automate-setup]
 
 A script must supply every required choice as a flag:
 
@@ -55,7 +62,7 @@ To request startup and launch the default agent from setup, use `--start --detac
 Scripts must include `--detach` with `--start`.
 For the full flag and result contracts, see the [setup reference](cli.md#setup).
 
-## Customize the default agent
+## Customize the default agent [#customize-the-default-agent]
 
 Setup creates `.cotal/agents/default.md` in the project folder.
 Edit that file to change the persona's instructions, name, or role.
@@ -65,12 +72,15 @@ Its permissions let it join, create, read, and post to channels when needed.
 It also declares `spawn` and `run` capabilities, so it can manage teammates and start workflow runs on a static-auth mesh.
 See [Agent files](agent-files.md) for the fields and [Workflow runs](workflows.md#from-an-agent-session) for workflows.
 
-An older persona may lack these capabilities or permissions.
-Setup repairs only the byte-for-byte legacy default template with an empty publish ACL.
-It leaves edited personas unchanged, including existing defaults that already have wildcard publish access but only `spawn` capability.
-Follow the [capability update steps](workflows.md#if-cotal_run-is-missing) to enable workflows for one of those personas.
+<Callout title="Edited personas stay unchanged">
 
-## Add the guided team
+Setup repairs only the byte-for-byte legacy default template with an empty publish ACL.
+It preserves edited personas, including an older default with wildcard publish access and only the `spawn` capability.
+If that persona lacks workflow access, follow the [capability update steps](workflows.md#if-cotal_run-is-missing).
+
+</Callout>
+
+## Add the guided team [#add-the-guided-team]
 
 To add Cotal's demonstration personas to this space:
 
@@ -86,9 +96,9 @@ Start a prepared local space if it is not running, then launch one of the person
 cotal spawn david
 ```
 
-To define your own team, follow [Define a team](define-a-team.md).
+To define your own team, follow [Define a team](define-a-team.mdx).
 
-## Update preparation
+## Update preparation [#update-preparation]
 
 Running setup with the same choices is safe.
 It reports an existing prepared, started, or registered space and preserves your edited default persona.
@@ -97,7 +107,7 @@ A project root or space name held by a different space is a conflict.
 To create another local space, run `cotal space create <name>` in its own project folder.
 You do not need to repeat machine setup.
 See [Run a mesh](run-a-mesh.mdx) for defaults and space selection.
-Its [startup instructions](run-a-mesh.mdx#the-stack) also cover unauthenticated development spaces.
+Its [startup instructions](run-a-mesh.mdx#start-the-local-stack) also cover unauthenticated development spaces.
 For per-user sign-in and agent grants, follow [Identity](identity-and-auth.md#per-user-authentication).
 
 If you use `npx` without a global installation, interactive setup can offer to install `cotal-ai` globally.
@@ -105,12 +115,12 @@ Declining keeps subsequent command hints in `npx cotal-ai` form.
 The background services use their own resolved executable path.
 
 The browser dashboard ships with Cotal but needs a separate service definition and credential.
-Follow [Watch a mesh](watch-a-mesh.md#web-dashboard) before starting it.
+Follow [Watch a mesh](watch-a-mesh.mdx#web-dashboard) before starting it.
 It binds to loopback port 7799 by default.
 Its private browser link stays in the launching session's private record and is not printed in logs.
 The terminal console is available through `cotal console`.
 
-## Recover from a setup failure
+## Recover from a setup failure [#recover-from-a-setup-failure]
 
 Read the reported failure before trying setup again.
 The setup log is `<project>/.cotal/setup.log`.
@@ -124,9 +134,19 @@ Run `cotal status` to inspect saved preparation and running services.
 It does not start anything.
 For commands, flags, and exit codes, see the [CLI reference](cli.md).
 
-## Next steps
+## Next steps [#next-steps]
 
-- [Quickstart](getting-started.mdx). Start the prepared space and launch an agent.
-- [Connectors](connectors.md). Check setup requirements for your application.
-- [Run a mesh](run-a-mesh.mdx). Operate a space after setup.
-- [Define a team](define-a-team.md). Launch your own agents and channels together.
+<Cards>
+<Card title="Quickstart" href="getting-started.mdx">
+Start the prepared space and launch an agent.
+</Card>
+<Card title="Connectors" href="connectors.md">
+Check setup requirements for your application.
+</Card>
+<Card title="Run a mesh" href="run-a-mesh.mdx">
+Operate a space after setup.
+</Card>
+<Card title="Define a team" href="define-a-team.mdx">
+Launch your own agents and channels together.
+</Card>
+</Cards>

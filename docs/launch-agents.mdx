@@ -1,114 +1,156 @@
 ---
 title: "Launch agents"
-description: "Launch an agent and choose its persona, connector, model, and runtime."
+description: "Launch an agent through a manager, attach to its terminal, and choose its persona and runtime."
 kind: "Informative"
 audience: "operators"
 ---
 
-Launch one agent, attach to a detached agent, or choose its persona and runtime.
-First [start a mesh](run-a-mesh.mdx) and install a supported [connector](connectors.md).
-For a multi-agent manifest, see [Define a team](define-a-team.md).
+import { Callout } from 'fumadocs-ui/components/callout';
+
+Launch one agent into a running mesh, then attach to its terminal or leave it running without a view.
+First [start the mesh](run-a-mesh.mdx) and install the agent's [connector](connectors.md).
+Use [Define a team](define-a-team.mdx) for several agents and their channels in one manifest.
 
 ## Launch an agent [#spawning-agents]
 
+From the space's project folder, run:
+
 ```bash
-cotal spawn                        # foreground: your default agent, in this terminal
-cotal spawn reviewer --detach      # supervised: the manager runs it in a PTY
-cotal attach --name reviewer       # watch/type into a detached agent (Ctrl-] detaches)
-cotal ps                           # what the manager is running
-cotal stop --name reviewer         # stop one
+cotal spawn
 ```
 
-How a spawn resolves:
+Cotal asks a manager to launch the default persona, waits for readiness, and attaches this terminal to the allocated agent.
+The terminal needs usable input and output for that attachment.
+If your catalog contains a `reviewer` persona, launch it without opening its terminal:
 
-- **Persona.** `--config` takes an explicit reference or path. It overrides a positional persona name.
-  Without either, Cotal checks `COTAL_DEFAULT_PERSONA`, the space's saved persona, and the user's saved persona, in that order.
-  The final default is `default`, which uses `.cotal/agents/default.md`.
-  A positional name selects `.cotal/agents/<name>.md`.
-  See [Preferences](config.md#preferences) and [Agent files](agent-files.md).
-- **Harness.** An explicit `--agent` or `cotal_spawn` `agent` argument overrides the persona file's `agent:` pin.
-  If neither is set, the caller checks `COTAL_DEFAULT_AGENT`, the space's saved harness, and the user's saved harness.
-  If the caller has no preference, the manager applies its default.
-  See [Preferences](config.md#preferences) and [Connectors](connectors.md).
-  Connector guides cover [Claude](connect-claude.md), [OpenCode](connect-opencode.md),
-  [Hermes](connect-hermes.md), and [pi](connect-pi.md).
-- **Model.** `--model` overrides the persona file's `model:` (Claude: `opus` / `sonnet` or
-  a full id; OpenCode: `provider/model`). Connectors that expose a catalog report it via
-  `cotal models --agent opencode`: model ids plus available variants; pick one with
-  `--model provider/model --variant high`.
-- **Tools.** A spawned Claude Code agent gets the cotal tools plus the MCP servers the cotal
-  config shares, which first-run `cotal setup` fills with your own; narrow them per spawn with
-  `--share-tools` ([config](config.md)).
-- **Launch options.** `--opt key=value` (repeatable) passes a native harness flag straight
-  through; a persona or manifest `launchOptions:` mapping does the same declaratively (a
-  `--opt` wins per key). It is a **raw passthrough**, with no allow/deny list: Claude renders
-  each as `--key value` (a bare `--key` for an empty value), OpenCode merges them into its
-  agent config, and Hermes has no option surface so it fails loud. The trust boundary is the
-  `spawn` capability itself, not the flag set, so granting `spawn` is host-launch authority
-  ([security](security.md)). A key must be a plain flag name; malformed or prototype-polluting
-  keys are refused.
+```bash
+cotal spawn reviewer --detach
+cotal ps
+cotal attach reviewer
+cotal stop reviewer
+```
 
-Detach from an attached PTY with **Ctrl-]** (the agent keeps running); rebind it with
-`COTAL_DETACH_KEY=ctrl-<char>` when it clashes with a keybinding inside the agent's TUI.
+Check `cotal ps` for the agent's identity and the manager that owns it.
+If a launch succeeds but attachment fails, inspect that recorded agent and attach again.
+Do not launch a replacement just because the terminal view failed.
 
-## Choose a runtime
+To run the application directly in this terminal instead, use `cotal spawn --foreground`.
+That mode uses the native application rather than a managed terminal view; closing the terminal may end it.
+Use `--dry-run` to preview a launch without allocating an agent, provisioning credentials, or starting the application.
 
-The manager spawns into a **pty** by default. It spawns the PTY in-process on
-every platform, so replacing the manager worker closes its seats and the pty runtime gives no hot
-update. Any manager stop, bare `cotal down` included, stops and deprovisions those seats. A stopping
-manager refuses new spawns and first waits for the ones it already accepted, so their seats stop too. On Linux
-it can still adopt and reap seats that an earlier manager launched under a detached per-seat
-custodian, so those seats drain under the new manager; it starts no new custodian. A custodian whose agent has exited exits a few seconds later on its own. `cotal seats`
-lists the custodians left on the machine, and `cotal seats --drain` retires the ones whose agent
-has exited while keeping every seat whose agent still runs ([cli.md](cli.md#seats)). When a pty
-agent exits on its own, in-process or under a custodian, the manager logs a `seat reaped:` line
-with the exit code and, for a signalled child, the signal number. The line ends with the last line
-the child printed that starts with a connector's `[cotal-<name>]` or `[cotal-<name>/<part>]`
-prefix, cut to 240 characters, when it printed one. A custodian keeps the same record beside the
-seat's custody record, so a later reap of that seat, including one by a
-successor manager, reports how the child ended. When the custodian cannot write that record, it
-says why in the seat's `custodian.log`, and a later reap of a child that ended on its own reports
-the record as missing or unreadable. Optional runtimes are installed
-through the extension surface, for example `cotal ext add @cotal-ai/orca`, then selected with
-`--runtime orca` (similarly `@cotal-ai/tmux`, `@cotal-ai/cmux`, and `@cotal-ai/herdr`). They put teammates in native
-terminal surfaces rather than manager-owned PTYs. Those surfaces stream no exit, so the manager
-asks the runtime every five seconds whether a seat's process has ended, and frees a seat that ended
-on its own once the runtime proves the exit. Its `seat reaped:` line says the exit detail is
-unavailable from that runtime. While a launch waits for readiness the manager asks every second and
-once more when the readiness window closes, so a seat whose process ends before it joins the mesh is
-reported as exited on launch, with no last output, rather than as uncertain. A runtime that has not
-proved that last exit a second after the window closes leaves the launch uncertain. Runtime names are
-open-ended and resolved from the registry; a missing provider or app throws, never silently falls back
-([architecture](architecture.md)).
+### Choose the persona
 
-## Check connector availability
+A positional name such as `reviewer` selects `.cotal/agents/reviewer.md` in the target space's catalog.
+Without an explicit persona, Cotal checks `COTAL_DEFAULT_PERSONA`, the space's saved persona, and your saved persona, in that order.
+The final default is `default`, which selects `.cotal/agents/default.md`.
 
-`cotal status` prints the detailed setup, process, registry, and live mesh status. Its Machine
-section names the running CLI's source checkout, installed package root, or npx package root beside
-the version. It has one row per installed connector, which reports whether the executables that
-connector declares in `requires` are on PATH. Status, setup and the manager's preflight resolve them
-the same way: an entry written as a path is checked as given, and a directory never counts as the
-executable. A connector whose setup provider reports health adds its
-own rows above those. The Claude Code connector reports its plugin and its skills plugin, and a stale
-skills row names the installed and CLI versions it compared.
+Use `--file <persona-file>` for a file on the execution host.
+The path is not an implicit upload and cannot name a Mesh manifest.
+The older `--config` spelling is reserved for persisted internal callers.
+See [Agent files](agent-files.md) for the persona format and [Preferences](config.md#preferences) for saved defaults.
 
-Before reporting ready, the manager resolves every installed connector's declared harness
-binaries against its own environment. A missing binary does not stop unrelated manager work: boot
-continues, but prints a named `connector <name> unavailable` line and records that reason in the
-manager's `status` response. Available connector rows record the absolute paths boot resolved.
-A spawned seat and a seat resumed after `cotal down --preserve-state` both launch from those paths,
-and both are refused with the recorded reason when their connector's row is unavailable.
-`cotal models` takes the same rule and reports that reason in place of the catalog, so it agrees
-with a launch about a harness installed or removed after boot. The manager looks again only when it
-restarts. A connector registered after boot has no row, so spawn, resume and `cotal models` check
-its binaries on PATH when they run.
+### Choose the application
+
+Pass `--harness <connector>` to select an application for this launch.
+The explicit choice overrides the persona file's `agent:` pin.
+If neither is present, the caller checks `COTAL_DEFAULT_AGENT`, the space's saved harness, and your saved harness.
+When the caller supplies no preference, the manager applies its default.
+The legacy `--agent` spelling is also accepted, but cannot be combined with `--harness`.
+
+Follow the connector guide for [Claude](connect-claude.md), [OpenCode](connect-opencode.md), [Codex](connect-codex.md), [Hermes](connect-hermes.md), [Jcode](connect-jcode.md), or [pi](connect-pi.md).
+
+### Set launch options
+
+`--model` overrides the persona file's `model:` pin.
+Claude accepts aliases such as `opus` and `sonnet`, or a full model ID.
+OpenCode uses `provider/model`.
+For connectors with a catalog, run `cotal models --harness opencode` to inspect model IDs and variants.
+Select one with `--model provider/model --variant high`.
+
+A spawned Claude Code agent receives Cotal's tools and the MCP servers shared by your [configuration](config.md).
+Use `--share-tools` to narrow the shared servers for one launch.
+
+<Callout type="warn" title="Launch permission includes native options">
+
+`--opt key=value` passes a native application option through to the connector.
+It can be repeated, and overrides the same key in a persona or manifest's `launchOptions:` mapping.
+Keys must be plain flag names. Malformed and prototype-polluting keys are refused.
+There is no option allowlist: the `spawn` capability grants host-launch authority.
+See the [Security model](security.md).
+
+</Callout>
+
+Claude renders an option as `--key value`, or bare `--key` for an empty value.
+OpenCode merges options into its agent configuration.
+Hermes exposes no option mechanism and refuses them.
+
+## Choose a runtime [#choose-a-runtime]
+
+The built-in `pty` runtime runs seats inside the manager process on every supported platform.
+To use an extension runtime, install its provider and select it when configuring the manager.
+For example, `cotal ext add @cotal-ai/orca` installs the Orca provider.
+Other providers include `@cotal-ai/tmux`, `@cotal-ai/cmux`, and `@cotal-ai/herdr`.
+Runtime names come from the registry. A missing provider or application is refused rather than replaced with another runtime.
+
+<Callout type="warn" title="Stopping the manager stops its pty seats">
+
+The built-in `pty` runtime has no hot update.
+Replacing or stopping its manager closes and deprovisions its seats, including during bare `cotal down`.
+A stopping manager refuses new spawns and waits for already accepted launches before stopping those seats too.
+
+</Callout>
+
+Detach from a managed terminal with **Ctrl-]** to leave the agent running.
+Set `COTAL_DETACH_KEY=ctrl-<char>` if that conflicts with the application's keybindings.
+
+### Inspect an exited seat
+
+For a pty agent that exits on its own, the manager's `seat reaped:` log line includes its exit code and signal, when applicable.
+If the child printed a connector line beginning with `[cotal-<name>]` or `[cotal-<name>/<part>]`, the report includes its last such line, limited to 240 characters.
+
+On Linux, a manager can adopt and reap seats that an older manager left under detached per-seat custodians.
+It does not launch new custodians.
+A custodian exits a few seconds after its agent ends.
+Use `cotal seats` to list those custodians and `cotal seats --drain` to retire only ones whose agents have exited.
+A custodian keeps exit evidence beside the custody record, so a successor manager can report the same outcome.
+If the record cannot be written, the reason appears in `custodian.log`; a later reap reports missing or unreadable evidence.
+
+Extension runtimes use their application's terminal facilities and do not stream exit notifications.
+The manager checks their processes every five seconds and frees a seat only after the runtime proves it ended.
+The `seat reaped:` report then says exit detail is unavailable.
+During launch readiness, checks run every second and once more as the readiness window closes.
+A proven exit is reported as an exited launch without last-output text.
+If the runtime has not proved that exit one second after the window closes, the launch stays uncertain.
+See the [seat reference](cli.md#seats) for custody inspection.
+
+## Check connector availability [#check-connector-availability]
+
+Run `cotal status` before launching an agent.
+Its Machine section names the running installation and version.
+Connector rows show whether their declared executables are available on PATH.
+An explicit executable path is checked as given; a directory does not count as an executable.
+Connector setup providers can add health rows.
+Claude Code reports its plugin and skills plugin, including compared versions when the skills are stale.
+
+The manager checks installed connectors against its own environment when it starts.
+An unavailable connector does not prevent unrelated manager work.
+Its reason appears in the manager's status response and a `connector <name> unavailable` log line.
+Available rows record the absolute executable paths the manager found.
+
+Launches and preserved-state resumes use those recorded paths.
+`cotal models` reports the same unavailable reason, so installing or removing an application after boot does not silently change the manager's answer.
+Restart the manager to repeat its startup checks, after accounting for its running seats.
+A connector registered after startup has no recorded row, so launch, resume, and model lookup check PATH when called.
 
 ## Manage local personas [#personas-from-the-cli]
 
-`cotal persona` manages the selected local catalog offline: bare list, `show <name>`,
-`create <name> --file <persona.md>`, `edit <name>` and `remove <name> --yes`.
-Edits validate a private draft and refuse a changed source before promotion. Prepared spaces
-have a catalog before startup. `--json` and `--plain` are supported for finite reports.
+`cotal persona` lists the selected local catalog without contacting a broker.
+Use `show <name>` to read a persona, `create <name> --file <persona.md>` to add one, and `edit <name>` to edit it.
+`remove <name> --yes` deletes the local definition.
+Edits validate a private draft and refuse promotion if the source changed meanwhile.
+Prepared spaces have a catalog before startup.
+Use `--json` or `--plain` for finite reports.
+
 The legacy `personas` parser remains available during migration; its `--running` overlay is live.
-The runtime write is `cotal_persona`; the runtime read is `cotal_personas`, both over the wire
-with the manager's ownership checks. Fields: [agent files](agent-files.md).
+Inside an agent session, use `cotal_persona` to write a persona and `cotal_personas` to read the catalog through the manager's ownership checks.
+See [Agent files](agent-files.md) for the fields.

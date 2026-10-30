@@ -2894,7 +2894,7 @@ starts runs the same code through a hidden entry and prints no warning.
 | `--console-port <n>` | none | Protocol-console port |
 | `--console-host <host>` | loopback | Bind host for the console endpoint. Loopback keeps it machine-local; `cotal up` passes the address it bound the broker to, which is what lets the browser console reach this manager from another machine. `cotal attach` does not use this face: it redeems a mesh session grant over the broker |
 | `--max-sessions <n>` | 64 | Live-session ceiling. Each console pane and each `cotal attach` is one session, so size for agents × panes, not agent count. A capacity refusal names this flag. `cotal up --max-sessions` records the same number on the mesh so a later `supervise` started by repair or `spawn -f` keeps it |
-| `--roster <file>` | none | Declarative roster to boot at startup. See [Roster files](define-a-team.md#roster-files) |
+| `--roster <file>` | none | Declarative roster to boot at startup. See [Roster files](define-a-team.mdx#roster-files) |
 | `--launch <spec>` | none | Resolved manifest launch spec (from `up -f` / `spawn -f`) |
 | `--spawn <names>` | none | Comma-separated personas to pre-spawn at startup |
 
@@ -2906,7 +2906,7 @@ The manager is the agent supervisor and control plane: it answers `spawn --detac
 `attach`, and the `cotal_*` manager tools. `cotal up --detach` starts one for you; run `supervise`
 directly to recover a dead manager or drive a custom runtime. Default runtime is `pty`; install an
 optional provider first (`cotal ext add @cotal-ai/orca`, `@cotal-ai/tmux`, `@cotal-ai/cmux`, or `@cotal-ai/herdr`) and
-select it explicitly. A missing provider or app fails loudly; there is no fallback. See [Deploy](deploy.md).
+select it explicitly. A missing provider or app fails loudly; there is no fallback. See [Deploy](deploy.mdx).
 Boot inventory decides whether this process takes unpinned `spawn`/`launch` on the class rail:
 if every declared connector is unavailable, those commands stay on this instance rail only
 (`status` reports `classSpawn: false`). `describe` still answers on the class rail, so an
@@ -3643,7 +3643,7 @@ user-auth mesh it rides the read-only admin view over your login, which needs le
 same per-action instrument path as `cotal stop` and `cotal ps`, never the observer; a raw
 `--creds` file cannot drive it. `a` (or `:attach <agent>`) runs
 [`cotal attach`](#managed-seats) in place and returns to the console on detach. See
-[Watch a mesh](watch-a-mesh.md).
+[Watch a mesh](watch-a-mesh.mdx).
 
 <a id="web"></a>
 
@@ -4142,7 +4142,7 @@ user-auth mesh, `spawn -f` deploys over your own login (the deployer view, gated
 `spawn`): the manifest's agents land under your owner, a manifest claiming another owner is
 refused, and seeding new channels additionally needs scope `admin`. Both take
 `--dry-run` to print the plan without mutating anything. `topology` validates the manifest and
-renders its channel / role / ACL graph. See [Define a team](define-a-team.md) and the
+renders its channel / role / ACL graph. See [Define a team](define-a-team.mdx) and the
 [manifest reference](manifest.md).
 
 ## ext
@@ -5447,7 +5447,7 @@ settings. Omitting the host keeps the native loopback binding; port zero request
 console port. A declared `launch` also requires `launch-sha256`. It names an existing private
 resolved launch spec, pins its full SHA-256 and must name this space. The child parses those
 verified bytes before authority preparation and keeps that snapshot through startup. An optional
-`roster` names an existing [roster file](define-a-team.md#roster-files) by absolute path. Only its
+`roster` names an existing [roster file](define-a-team.mdx#roster-files) by absolute path. Only its
 owner or root may write it or its directory. The child parses it before startup, and each launch
 boots the agents it lists the way `supervise --roster` does. A resumed manager takes no roster.
 Saving these options does not prepare a manifest, provision an agent or prove that requested agents

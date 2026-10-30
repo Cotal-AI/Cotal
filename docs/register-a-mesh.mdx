@@ -1,166 +1,167 @@
 ---
 title: "Register a mesh"
-description: "Select a local mesh or register a remote broker with the required trust."
+description: "Choose the mesh a command targets and register remote brokers with verified trust."
 kind: "Informative"
 audience: "operators"
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
 
-Select which mesh a command targets, or register a mesh that runs on another machine.
-Prepare the mesh first with [Configure a space](setup.md).
-See [Supervise a remote mesh](remote-supervision.mdx) when you also need to run a manager on another host.
+Use the mesh registry to choose a space from any directory.
+Register a remote mesh before launching agents against it.
+For a new local space, start with [Configure a space](setup.mdx).
 
-## Select a mesh [#mesh-registry]
+## Choose a mesh [#mesh-registry]
 
-`cotal up` records each running mesh in a machine-local registry
-(`~/.cotal/meshes/space.<key>.json`, named by a case-safe hex encoding of the space: broker URL, the project root holding its creds and
-personas, and its mode). So a bare `cotal spawn <persona>` from *any* directory joins the
-running mesh with the right credentials instead of mistaking the cwd for a space:
+List the meshes this machine knows, then select one:
 
-- `cotal use <name>` sets the default from every directory, including inside another mesh's
-  project. `--space <name>` overrides it for one command.
-- When one broker has records for several spaces, `cotal up --space <name>` refreshes that named
-  space.
-- A refresh rewrites only what that command decided: the server, root and mode, the user-auth
-  endpoints, and an explicit `--host` or `--max-sessions`. Every other field, such as the TLS
-  requirement, is kept as the record stands when the refresh writes it, so a change another
-  command made during the refresh survives. If the record was removed during the refresh, `up`
-  fails instead of writing it back.
-- A selected space stays the target when its broker is down, so the command reports it not up,
-  and a selection that names a space no longer registered is refused with `TARGET_NOT_FOUND`.
-  Neither reaches another mesh.
-- With nothing selected, a project with its own `.cotal/` resolves to that project's mesh;
-  otherwise one running mesh is used automatically and several are an error.
-- `cotal meshes` lists them (a `*` marks the default); `cotal down` removes the entry.
-- `cotal space create <name> [--root <dir>]` names a space before it runs. It records the name
-  and root apart from the registry and makes `<root>/.cotal/`, and `cotal up` in that root starts
-  the space under that name. Until then a command that targets it refuses, naming the root.
+```bash
+cotal meshes
+cotal use <name>
+```
 
-The registry stores a *path*, never a secret; trust material stays in each project's
-`.cotal/auth`. If the mesh is down or won't take your creds, spawn fails with one
-sentence, never a raw NATS trace.
+The selected mesh becomes the default even inside another mesh's project folder.
+Pass `--space <name>` to target a different mesh for one command.
+A bare `cotal spawn <persona>` can then find the selected mesh's credentials and personas from any directory.
+
+A selected mesh stays selected when its broker is offline.
+Commands report that failure instead of connecting elsewhere.
+If the selected entry no longer exists, the command refuses with `TARGET_NOT_FOUND`.
+
+With no selection, Cotal first uses the current project's `.cotal/`.
+Outside a project, it uses the only running mesh or refuses an ambiguous choice when several are running.
+The `*` in `cotal meshes` marks the selected entry.
+
+`cotal up` records a local mesh's broker URL, project root, and authentication mode in `~/.cotal/meshes/space.<key>.json`.
+The key is a case-safe hex encoding of the space name.
+The registry stores paths and connection settings. Credentials stay under the project's `.cotal/auth`.
+
+To name a space before starting it, use `cotal space create <name> [--root <dir>]`.
+This prepares `<root>/.cotal/` separately from the running-mesh registry.
+Commands targeting that space refuse until it starts and name the root to use.
 
 ## Register a remote mesh [#meshes-you-did-not-start-here]
 
-A mesh running on another machine has no `cotal up` on this one, so register it by hand:
+Before registering, choose a [permitted broker address](#which-addresses-you-may-register) and obtain the required trust material from the operator.
+`--root` names the local folder containing that mesh's `.cotal/auth` and `.cotal/agents`.
+Cotal infers the authentication mode from that folder.
 
-```bash
-cotal space add optiplex --server nats://100.90.12.34:4222 --root ~/meshes/optiplex \
-  --allow-unencrypted-overlay      # see below: an overlay address needs this
-cotal space forget optiplex
-cotal meshes add            # guided: asks for the broker, probes it, offers what it finds
-```
+<Callout type="warn" title="A copied signer gives authority over the whole space">
 
-`space add` checks the broker and the trust before it writes, and on a terminal shows what it will
-trust and asks first. On a terminal, a bare `cotal meshes add` walks you through it: it probes the broker you name and
-reports whether it is open or requires credentials, offers the spaces the folder already holds
-credentials for, and shows the record before writing it. Scripts and agents keep the flag form -
-without a terminal nothing prompts.
+An authenticated space's `.cotal/auth` can contain its account signing seed.
+Anyone who reads that seed can mint identities, read retained channels and DMs, change ACLs, and keep issuing credentials.
+It makes the destination machine an authority for the mesh.
 
-`--root` is the local folder holding that mesh's `.cotal/auth` and `.cotal/agents` (its personas);
-the mode is inferred from what that folder holds.
-
-The instance identities of the manager and the user-auth service are not part of that folder.
-Each root keeps its own in `.cotal/space.<hex>/`, so `cotal supervise` or `cotal up --user-auth` in
-the root you copied the folder to starts an instance of its own. A root last run by an older Cotal
-still holds them in `.cotal/auth`, as `manager-instance.<hex>.json`, `manager-siblings.<hex>.json`
-and `space.<hex>/.cotal/auth/auth-instance.<hex>.json`. Delete those files from a copy of such a
-folder before the first `cotal supervise` or `cotal up` there. On the root itself, the first start
-moves each record to `.cotal/space.<hex>/`. It refuses and keeps both entries when either place
-holds a symlink or anything else that is not a regular file, or when the two places hold different
-records.
-
-<Callout type="warn" title="Copying signing authority">
-
-**Know what you are copying.** For an authenticated mesh that folder carries the space's account
-**signing seed**, which is the authority to mint any identity in the space. A machine holding it
-is a certificate authority for the mesh rather than a client of it: anyone who reads it can
-impersonate any agent, read every retained channel and DM, change ACLs, and keep issuing
-themselves credentials. There is no per-machine revocation; undoing it means rotating the signing
-key and re-minting every credential in the space. Copy it only to machines you would trust with
-the whole mesh. `cotal auth mint` on its own does not substitute here: registering an `auth` mesh needs
-signing material that composes, which a minted user credential is not. The
-broker is probed before the record is written, so a bad address or a credential that mesh will not
-accept fails at registration rather than at your first `spawn` (`--force` records it without verifying,
-useful when the mesh is simply down right now).
+Copy it only to a machine you trust with the entire space.
+There is no per-machine revocation. Removing that authority requires signing-key rotation and new credentials for the space.
+A credential minted by `cotal auth mint` does not replace the signing material required to register a static-auth mesh.
 
 </Callout>
 
+For a broker reached through your private overlay, run:
+
+```bash
+cotal space add optiplex --server nats://100.90.12.34:4222 --root ~/meshes/optiplex \
+  --allow-unencrypted-overlay
+```
+
+Replace the example address and folder with your broker's address and local trust folder.
+The flag records that you accept the connection's dependence on the overlay tunnel.
+Keep that tunnel active whenever you use the entry.
+
+Cotal checks the broker and its trust before writing the entry.
+On a terminal, it shows what it will trust and asks for confirmation.
+If the broker is offline, `--force` can save an unverified entry.
+It never bypasses the address restrictions.
+
+For guided registration, run:
+
+```bash
+cotal meshes add
+```
+
+The guided form probes the broker, reports whether it requires credentials, offers spaces already represented by the folder's credentials, and shows the record before saving it.
+Scripts use the explicit flags. Nothing prompts without a terminal.
+
+### Keep copied instance records separate
+
+Each root keeps its manager and user-auth service identities in `.cotal/space.<hex>/`.
+They are not part of the trust folder to share.
+Starting `cotal supervise` or `cotal up --user-auth` in another root creates that root's own instance.
+
+Older roots may still keep `manager-instance.<hex>.json`, `manager-siblings.<hex>.json`, and `space.<hex>/.cotal/auth/auth-instance.<hex>.json` under `.cotal/auth`.
+Remove those instance records from a copied folder before its first start.
+On the original root, the next start moves them to `.cotal/space.<hex>/`.
+The move refuses and keeps both entries if either path is a symlink, is not a regular file, or holds a conflicting record.
+
 ### Choose a permitted address [#which-addresses-you-may-register]
 
-Registering a mesh is how this machine starts sending agent credentials to a broker it does not
-run. NATS announces itself in plaintext before anyone authenticates, so an attacker on the path
-can pose as the broker and read the credential out of the connect unless the connection
-**requires TLS**, which is recorded on the entry and enforced on every dial through it.
+Registration determines where this machine may send agent credentials.
+NATS sends its first announcement before authentication, so an unprotected peer can impersonate the broker and collect those credentials.
+Choose one of these connection policies:
 
-What the record will require decides what you may register:
+- **Required TLS.** Set `--tls` or use a `tls://` URL. Hostnames and public addresses are accepted when the certificate chain and hostname identify the peer.
+  The TLS requirement is recorded and enforced on later connections.
+- **Loopback without TLS.** Use a loopback literal such as `127.0.0.0/8` or `::1`. A hostname is not accepted as a substitute.
+- **Private overlay without TLS.** Use a literal in `100.64.0.0/10` or `fd7a:115c:a1e0::/48` and pass `--allow-unencrypted-overlay`.
+  The tunnel provides protection; Cotal cannot check that it is active.
 
-- **Without required TLS**, the address is the gate: **loopback** (`127.0.0.0/8`, `::1`), or
-  **your private overlay** (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`) with
-  `--allow-unencrypted-overlay`. The tunnel provides the protection, and this command cannot check
-  its state. Hostnames are refused because the lookup would choose which machine receives your
-  credentials.
-- **With required TLS**, set `--tls` or use a `tls://` URL. The recorded scheme enforces the TLS
-  requirement. A **hostname or public address** is accepted because the certificate chain and
-  hostname check identify the peer. A registration whose broker cannot complete the handshake
-  fails unless you pass `--force`, which records the entry without verification.
+If the overlay tunnel is down, its address can be ordinary carrier-grade NAT and whoever answers may receive your credentials.
+The guided form asks you to accept that dependency too.
+Required TLS removes the need for that consent flag.
+For example, `cotal meshes add <space> --server nats://100.64.0.1 --tls` records required TLS without an overlay-consent prompt.
 
-Ordinary private ranges like `10.x` and `192.168.x` are refused in **both** modes. A café's wifi
-is private but does not belong to you, and no public CA issues certificates for those ranges. An
-address spelling changes nothing: `[::ffff:192.168.1.10]`, `3232235786`, `0300.0250.01.012`, and
-`192.168.257` all resolve to private addresses and receive the same refusal as the dotted form.
-`--force` exists for a mesh that is down. It never permits an unsafe credential destination.
+Ordinary private ranges such as `10.x` and `192.168.x` are refused in both modes.
+Alternate spellings do not change the result: `[::ffff:192.168.1.10]`, `3232235786`, `0300.0250.01.012`, and `192.168.257` are still private addresses.
+`--force` can skip a liveness check, but cannot authorize an unsafe credential destination.
+
+This policy applies to registration.
+An explicit `cotal join --creds --server <url>` does not consult the registry.
+Use it only with an address you would have registered.
 
 ### Register a hosted user-auth mesh [#registering-a-hosted-user-auth-mesh]
 
-A user-auth space's IdP pins are established where the mesh runs and are never guessed. Register
-one from **supplied** trust: `--user-auth-file bundle.json` (exported on the mesh's machine), or
-`--from https://auth.example`, which asks before it contacts the address at all, fetches the
-discovery document at `/.well-known/cotal-mesh` under that address over HTTPS, shows you the pins,
-and asks again before adopting them. A URL that already ends in `/.well-known/cotal-mesh` is
-fetched as given. Redirects are refused because a 302 can walk a pinned fetch down to
-plaintext or onto another host, and the pinned exchange must be an `https://` URL too. The one
-exception is an exchange on **this machine**, where nothing leaves the box: plain `http://` is
-accepted for a loopback *literal* (`127.0.0.1`, `::1`, and any spelling of them), but **not** for
-`localhost`, which a hosts entry or poisoned lookup could point elsewhere. Use the
-literal. Registration checks that the pinned exchange
-answers `/health` and `/jwks` as the pinned issuer. It also checks that the broker refuses a
-bare connect; that refusal is the pass. The bundle's sentinel credentials are written to a private (0600) file
-under the entry's root; the registry itself never carries the secret.
+Obtain the mesh's IdP pins from its operator.
+Use `--user-auth-file bundle.json` to load a supplied bundle, or `--from https://auth.example` to fetch the mesh's discovery document.
+The latter asks before contacting the origin, fetches `/.well-known/cotal-mesh`, displays the pins, and asks again before adopting them.
+A URL already ending in `/.well-known/cotal-mesh` is fetched as given.
 
-**Without required TLS**, an overlay address is **refused unless you accept the dependency
-explicitly**, with `--allow-unencrypted-overlay`. The address is not the guarantee: it is protected
-while the tunnel is up, and if the tunnel is down that range is ordinary carrier-grade NAT and
-whoever answers the dial receives your credentials. Only you can know which it is, so the command
-asks you to say so. Your acceptance is recorded on the mesh entry rather than printed and
-forgotten, and the guided form asks the same question instead of taking the flag.
+The fetch refuses redirects.
+The pinned exchange must use HTTPS, except for a loopback literal on this machine.
+Plain HTTP may use `127.0.0.1`, `::1`, or another spelling of a loopback literal, but not `localhost`.
+A name lookup must not decide where a plaintext exchange sends its proof.
 
-**With required TLS** (`--tls`, or a `tls://` URL) that consent is no longer asked for, and the
-flag is not needed: the handshake is what protects the connection, so the acceptance it stood in
-for has been replaced by proof rather than promise. `cotal meshes add <space> --server
-nats://100.64.0.1 --tls` registers an overlay address with no prompt, no flag and no recorded
-acceptance. This is the "the flag disappears once the broker can be served over TLS" case, and it
-has now arrived.
+Registration checks `/health` and `/jwks` against the pinned issuer.
+It also checks that the broker refuses a bare connection.
+That refusal is the expected result.
+The bundle's deny-all sentinel credential goes into a private `0600` file under the entry's root, not the registry.
 
-This gate is on **registration**. `cotal join --creds --server <url>` deliberately takes an
-explicit connection at face value and does not consult the registry, so it is not covered. Join
-that way only to an address you would have registered.
+## Maintain mesh entries
 
-The connection is still probed first, with the same second try at the longer budget the registry
-preflight uses, so a slow link reads as a connect that did not finish within that budget and a
-refused port reads as a broker that is not running.
+For a broker shared by several spaces, `cotal up --space <name>` refreshes only the named space.
+A refresh updates the server, root, mode, user-auth endpoints, and any explicit `--host` or `--max-sessions` setting.
+It preserves other current fields, including TLS policy and concurrent changes.
+If the entry was removed during the refresh, Cotal refuses instead of recreating it.
 
-Records added this way are removed only by something that names them. A failed liveness probe
-does not delete any record: an unreachable broker, local or registered by hand, is shown as
-`offline` in `cotal meshes`. A bare command does not count that offline record as running;
-name it with `--space` to restart it. `cotal down` / `cotal clean all` still drop an `up` record for the
-project they are tearing down, and they leave a hand-registered one alone even when `--root`
-pointed at that project. A `cotal up` for that space refuses outright unless it is that same
-endpoint: finding a broker already answering there is a refresh that starts nothing and leaves the
-record's provenance alone, while actually starting the broker for that space, server and root
-makes this machine the one running it, so the record becomes an ordinary local one that
-`cotal down` clears. The refusal names `cotal supervise --space <s> --server <url>` (plus `cotal
-deliver`) when the registered broker is on another host, and `cotal meshes rm` when it is local.
-`cotal meshes rm` drops it and re-registering with `--force` replaces it. `rm` only forgets a
-mesh. To stop one running here, use `cotal down`.
+A failed probe does not remove an entry.
+`cotal meshes` reports an unreachable broker as `offline`; name it with `--space` when you intend to restart it.
+The probe retries using the registry's longer preflight budget, so a timeout and a refused port have distinct reports.
+
+To forget a registered mesh, run:
+
+```bash
+cotal space forget optiplex
+```
+
+`cotal meshes rm` also forgets an entry. Neither command stops the broker.
+Use `cotal down` to stop a mesh running here.
+
+A hand-registered entry survives `cotal down` and `cotal clean all`, even if its root is the project being stopped.
+Those commands remove entries created by a local `up`.
+If `up` finds an already-running broker at the registered endpoint, it refreshes the entry without changing that provenance.
+If it starts the broker for that same space, endpoint, and root, the entry becomes locally owned and `down` clears it.
+
+An `up` targeting a hand-registered mesh refuses to start a different endpoint around it.
+For a remote broker, follow its remedy to run `cotal supervise --space <s> --server <url>` with delivery on the broker host.
+For a local entry, remove it with `cotal meshes rm` if it needs replacement.
+Re-registering with `--force` can replace an entry, but still applies its address restrictions.

@@ -988,7 +988,7 @@ their ownership; it is not a shipped pooled service.
 **Signer isolation needs an OS sandbox.** The default pty runtime
 runs agent children under the *same* OS uid and the *same* `workspaceRoot`, so mode-0600 on
 the trust records does not stop a hostile same-uid agent from reading their absolute paths. The reference
-[deploy](deploy.md) tree does not solve this: it mounts the signer into the agent's own container, so
+[deploy](deploy.mdx) tree does not solve this: it mounts the signer into the agent's own container, so
 its phase-1 boundary isolates agents from each other, not the signer from the agent. A hosted
 composition must run the manager/minter that holds the signer in a different uid, container, or mount
 namespace from the agent children, which mount no signer at all; that split is future
@@ -1189,7 +1189,7 @@ the remaining non-injectable rows are the explicit ambient `workspaceRoot`/cwd p
 - [Substrate stability](stability.md): what v0.3 and the 0.x packages guarantee, and the projected v0.4 break.
 - [Identity and auth](identity-and-auth.md): the profile matrix, the signer, and the IdP callout contract.
 - [Delivery daemon](delivery-daemon.md): the Plane-3 durable backstop.
-- [Deploy](deploy.md): the reference container against an external broker.
+- [Deploy](deploy.mdx): the reference container against an external broker.
 
 ## Hosted run revocation
 

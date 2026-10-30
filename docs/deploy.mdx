@@ -1,0 +1,145 @@
+---
+title: "Deploy agent teams"
+description: "Review the container example, its current build limitation, and the credentials it needs."
+kind: "Informative"
+audience: "operators"
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+The `deploy/` example describes containers that connect to an existing Cotal broker.
+It includes a team container with a manager and a single-agent container.
+Use this page to assess its requirements and trust boundary before adapting it.
+
+<Callout type="warn" title="The documented image build is unsupported">
+
+The Dockerfile runs `pnpm cotal setup` from a source checkout.
+The CLI refuses that checkout's attempt to seed operator-global connectors.
+The setup step reports `refusing to <action> the operator-global seed store at <path> for generation <version> from <origin> (<entry>)`, with action `reconcile` and origin `a source checkout`.
+
+That refusal was reproduced from a built checkout outside Docker; no image was built to confirm the complete Docker path.
+The example below is not a verified deployment procedure.
+For supported local operation, use [Run a mesh](run-a-mesh.mdx) and [Define a team](define-a-team.mdx).
+
+</Callout>
+
+## Inspect the deployment files [#what-the-deploy-tree-provides]
+
+The [deployment README](../deploy/README.md) contains the example's full local and production walkthrough.
+The image is configured through environment variables, roster files, and persona mounts.
+Changing the team does not require an image change.
+
+| File | Purpose |
+| --- | --- |
+| [`Dockerfile`](../deploy/docker/Dockerfile) | Bundles the Cotal, Claude Code, and OpenCode CLIs, attempts connector setup, and prepares Claude onboarding for unattended use. |
+| [`entrypoint.sh`](../deploy/docker/entrypoint.sh) | Waits for the external broker, then runs `cotal <cmd> --server $COTAL_SERVERS`. |
+| [`compose.yaml`](../deploy/docker/compose.yaml) | Defines a `team-a` manager with a roster and a `solo` agent. |
+| [`roster.example.yaml`](../deploy/docker/roster.example.yaml) | Provides a team roster to copy and edit. |
+
+The deployment tree does not run the broker.
+It also does not implement the README's later host-side per-agent credential provisioning or stronger sandbox options.
+The image bundles Claude Code and OpenCode only.
+It does not include `uv` or `hermes-agent`, so it cannot run Hermes agents.
+
+## Choose the container shape [#two-shapes]
+
+The container command selects its shape:
+
+- `supervise --space <s> --roster /workspace/roster.yaml` runs a manager and all roster agents in one container with the `pty` runtime.
+- `spawn <name> --foreground` runs one agent from `.cotal/agents/<name>.md`.
+
+A roster can mix `agent: claude` and `agent: opencode` entries.
+See [Roster files](define-a-team.mdx#roster-files) and [Agent files](agent-files.md) for their formats.
+
+## Prepare the external services [#prerequisites]
+
+The example needs Docker, a reachable broker, account signing material, and model credentials.
+The broker must run nats-server 2.12 or newer; older brokers are refused at connection.
+
+A local broker binds to loopback by default.
+For a broker reached by containers, start it with `cotal up --host 0.0.0.0` and keep authentication enabled.
+Use `nats://host.docker.internal:4222` for the host-machine example or a configured `tls://broker.host:4222` endpoint for a hosted broker.
+The container's `COTAL_SERVERS` must name an address it can reach.
+
+On the broker host, `cotal auth signer --out signer.json` exports account signing material without the operator key.
+Treat that signer as authority over its entire account, as described below.
+Provide a credential for each model provider used by the team's connectors.
+
+## Review the example workflow [#steps]
+
+The example starts with this image build from the repository root.
+It currently stops at the setup limitation above:
+
+```bash
+docker build -f deploy/docker/Dockerfile -t cotal-runner .
+```
+
+The compose example expects paths relative to `deploy/docker/`.
+Its inputs are `signer.json`, `team-a/roster.yaml`, and `team-a/agents/*.md`:
+
+```bash
+cp deploy/docker/roster.example.yaml deploy/docker/team-a/roster.yaml   # then edit; add agents + signer.json
+COTAL_SERVERS=tls://broker.host:4222 \
+CLAUDE_CODE_OAUTH_TOKEN=<token> OPENCODE_API_KEY=<key> \
+  docker compose -f deploy/docker/compose.yaml up team-a
+```
+
+The deployment README also describes a single `docker run` with explicit mounts and a local-broker variant.
+For an adapted deployment that is running, observe the team with `cotal console --plain --space <s>`.
+
+## Supply credentials from the host [#credential-flow]
+
+Broker authentication and model authentication use separate credentials.
+Both come from outside the container.
+
+<Callout type="warn" title="The signer grants authority over its account">
+
+Mount the stripped `signer.json` read-only at `/workspace/.cotal/auth/auth.json`.
+The example mints scoped per-agent credentials into the RAM-backed `/workspace/.cotal/auth/creds` directory.
+The operator root key stays outside the container.
+
+The stripped signer still gives full authority within its NATS account.
+It can mint admin credentials that read DMs and destructive profiles, not just agent credentials.
+Its account boundary prevents cross-tenant escalation, not damage within that account.
+
+</Callout>
+
+The supervisor forwards the named credential variables each connector declares, not its whole environment.
+For example, a Claude seat receives `CLAUDE_CODE_OAUTH_TOKEN` because the connector declares it.
+That rule does not forward every variable beginning with `CLAUDE_CODE_`.
+
+| Connector | Model credential |
+| --- | --- |
+| Claude Code | `CLAUDE_CODE_OAUTH_TOKEN`, obtained with `claude setup-token` on the host. |
+| OpenCode | The credential variable for the provider named in each agent's `model:`, such as `OPENCODE_API_KEY`, `OPENAI_API_KEY`, or `ANTHROPIC_API_KEY`. |
+
+A Claude token uses the host account's Claude Pro or Max subscription.
+Each application reads the provider variables it understands.
+
+Every configured secret can reach every agent in the team container.
+The container is the team's trust boundary; it does not isolate secrets between those agents.
+For per-agent isolation, use one agent per container, as the `solo` service does.
+
+## Check the mounted files [#container-layout]
+
+The working directory is `/workspace`:
+
+| Path | Mount | Contents |
+| --- | --- | --- |
+| `/workspace/.cotal/auth/auth.json` | Read-only | Stripped account signer. |
+| `/workspace/.cotal/agents/*.md` | Read-only | Personas. |
+| `/workspace/roster.yaml` | Read-only | Team roster. |
+| `/workspace/.cotal/auth/creds/` | tmpfs with `mode=01777` | Per-agent credentials held in RAM. |
+
+## Review the isolation boundary [#isolation]
+
+The example runs as non-root UID `10001`, drops all Linux capabilities, and uses an ephemeral writable filesystem.
+Host mounts are limited to the read-only inputs above and the credential tmpfs.
+Network egress includes the broker and each agent's model API.
+
+A fully read-only root filesystem or a sandbox runtime such as gVisor or Kata is a later hardening option, not part of this example's current guarantees.
+See [Identity and auth](identity-and-auth.md) for signer and account scoping.
+
+## Continue with connector setup [#see-also]
+
+Use [Connect Claude Code](connect-claude.md) or [Connect OpenCode](connect-opencode.md) for the application-specific prerequisites.

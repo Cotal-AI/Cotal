@@ -1,33 +1,44 @@
 ---
 title: "Supervise the stack"
-description: "Run the stack under systemd or monitor detached component health."
+description: "Choose process ownership under systemd and monitor actual component health."
 kind: "Informative"
 audience: "operators"
 ---
 
-Choose which processes your service manager owns, then monitor those processes and the mesh components separately.
-This guide uses systemd examples. Start with a [running mesh](run-a-mesh.mdx).
-For separate broker and manager hosts, see [Supervise a remote mesh](remote-supervision.mdx).
+import { Callout } from 'fumadocs-ui/components/callout';
 
-`cotal service install <name>` writes an owned systemd user unit for a saved direct-process
-service definition ([CLI reference](cli.md#service)). It is Linux only, and a preset such as the
-manager is not installed as a unit in this release. The units below remain the process models for
-the stack's components, and they are still **examples of process models**: copy them only after
-you decide which processes the unit should own.
+Use a service manager to restart the processes it owns, then check that the mesh components are serving.
+Start with [Run a mesh](run-a-mesh.mdx).
+For separate broker and manager hosts, see [Supervise a remote mesh](remote-supervision.mdx).
 
 ## Supervising the detached stack [#supervising-the-detached-stack]
 
-`cotal up` runs in the background by default; `cotal up --detach` names the same mode. It is a
-launcher: it starts the broker, delivery daemon, and manager, reports what started, then exits. Do not wrap it in a systemd service with `Type=oneshot` and
-`RemainAfterExit=yes` and treat `systemctl is-active` as stack health. That unit becomes `active
-(exited)` when the launcher exits successfully and stays active even if every detached process dies.
-When background `up` can identify itself as the unit's main process under the current native
-invocation, it prints a warning naming the unit and the `--foreground` remedy. The advisory does
-not change startup or rewrite a unit. Inherited terminal/scope metadata is not enough to claim
-that `up` is the unit's main process.
+`cotal up` runs in the background by default. `cotal up --detach` selects the same mode.
+It starts the broker, delivery daemon, and manager, reports startup, then exits.
+A successful launcher exit does not prove those processes are still running.
 
-For a single-host stack, use `cotal up --foreground` so systemd tracks a long-running
-process and restarts the stack if that process fails:
+<Callout type="warn" title="An active unit can contain a dead stack">
+
+A `Type=oneshot` unit with `RemainAfterExit=yes` stays `active (exited)` after its launcher succeeds.
+It can remain active after every detached component has died.
+Use a foreground launcher when systemd must own the stack's lifetime.
+Use a component check when you deliberately start the stack separately.
+
+</Callout>
+
+Cotal prints a warning when background startup can identify itself as the service unit's main process for the current invocation.
+The warning names the unit and `--foreground` remedy.
+It does not rewrite the unit or change startup.
+Inherited terminal or scope metadata alone does not prove that ownership.
+
+`cotal service install <name>` writes an owned systemd user unit for a saved direct-process service definition on Linux.
+It does not install the manager preset, broker, or sibling components as units in this release.
+The snippets below are examples of process ownership to adapt for your deployment, not a shipped stack installer.
+See the [service reference](cli.md#service) for supported definitions.
+
+## Keep a foreground stack running
+
+For one host, run a foreground launcher so systemd can restart it after failure:
 
 ```ini
 [Service]
@@ -38,41 +49,36 @@ Restart=on-failure
 RestartSec=5s
 ```
 
-An active unit then proves the foreground launcher and broker are still running, but it still does
-not prove that every child component serves. Pair it with the component check below. Also remember
-that `cotal up` starts a local manager as well as the broker and delivery daemon; run
-`cotal up --no-manager` (add the flag to the unit's `ExecStart` too) on a host intended to be
-broker-only, so the unit and the host agree.
+Set the working directory and binary path for the installation.
+If the host should run only the broker and delivery daemon, add `--no-manager` to `ExecStart`.
+Otherwise `up` also starts a local manager.
 
-Seats spawned by the built-in `pty` runtime run with `oom_score_adj` 500, so under memory
-pressure the kernel prefers a seat over the broker, manager and delivery daemon, which are left as
-they were started; the extension runtimes do not own the seat's process and get no preference.
+An active unit proves that the foreground launcher and broker are running.
+It does not prove that every child component serves requests.
+Pair it with the health check below.
 
-That `Type=simple` shape puts nats in the unit's cgroup with the foreground `up` process. A
-`Restart=always` (or `on-failure`) of **this** unit therefore restarts nats as well, so remote
-managers drop for the time it takes the broker to come back. Wrapping `cotal up --detach` in
-`Type=oneshot` with `RemainAfterExit=yes` does not move nats out of that cgroup. Detached
-spawn starts a new process group, not a new systemd cgroup, and the default
-`KillMode=control-group` still signals every process left in the service cgroup on stop or
-restart, including the nats PID. Escaping that cgroup needs an explicit unit setting such as
-`KillMode=process`, or a separate nats unit; this CLI does not ship that escape. The
-`Type=oneshot` unit below is a `cotal status --components` liveness check, not a
-`--detach` launcher. Neither trade is universal from
-`Type=simple` alone; it follows from which processes the unit actually owns. `cotal service
-install` writes a Linux unit only for a saved direct-process service definition, so the manager
-preset, the broker and its siblings get no unit from it. Pick the example that matches the
-ownership you want, and treat `systemctl is-active` as unit health, not mesh health.
+The broker and foreground launcher share the unit's systemd cgroup.
+Restarting the unit restarts the broker too, so remote managers lose their connection until the broker returns.
+Using a detached launcher does not move the broker out of that cgroup.
+A new process group is not a new systemd cgroup: the default `KillMode=control-group` still signals every process left in the service cgroup.
 
-A broker that crashes under that foreground `up` keeps its mesh record and exits non-zero, so the
-unit's restart takes the repair path against the recorded store rather than starting a second one.
+A separate broker unit or an explicit `KillMode=process` policy changes which processes systemd stops.
+Cotal does not configure that separation for you.
+Choose the ownership you need before copying a unit; `Type=simple` alone does not determine the whole recovery policy.
 
-A manager or delivery daemon that crashes keeps its lease until the bucket TTL removes it (10s for
-the manager, 30s for delivery). A repair `up` inside that window waits out the lease when it can show
-the holder is gone, so one run restores both processes. A lease that is renewed during the wait has
-a live holder, and the repair refuses it. See [`up`](cli.md#up).
+If the broker crashes under foreground `up`, the launcher retains its mesh record and exits nonzero.
+The unit restart repairs the recorded store rather than creating a second mesh.
+If the manager or delivery daemon crashes, its lease remains until expiry, normally 10 seconds for the manager and 30 seconds for delivery.
+A repair `up` can wait out that lease when it proves the holder is gone.
+It refuses if the lease is still renewed by a live holder.
 
-If the deployment deliberately uses `cotal up --detach` as a boot action, monitor observed state
-instead of the launcher's exit:
+Built-in `pty` seats run with `oom_score_adj` set to `500`.
+Under memory pressure, the kernel prefers them over the broker, manager, and delivery daemon, whose scores are unchanged.
+Extension runtimes do not own the seat process and apply no such preference.
+
+## Check detached component health
+
+If another boot action deliberately uses `cotal up --detach`, monitor the components instead of the launcher's exit:
 
 ```ini
 [Unit]
@@ -84,22 +90,34 @@ WorkingDirectory=/srv/cotal-mesh
 ExecStart=/usr/bin/cotal status --components --space main
 ```
 
-Run that check from a systemd timer or another monitor and alert on a nonzero exit. The command
-distinguishes `absent`, `not-serving`, and `refused` components and never treats a sibling's health as
-proof. Its delivery-process check is local to the broker host, so run it there. On a split topology,
-also probe the broker URL from the manager host and monitor the manager's own service there. A remote
-manager cannot observe the broker host's delivery PID, and an `active` unit on either host says
-nothing about the other host.
+Run the check from a systemd timer or another monitor and alert on a nonzero exit.
+It distinguishes `absent`, `not-serving`, and `refused` components.
+A sibling's health does not count as proof for the target component.
+This `Type=oneshot` unit is a health check, not a detached launcher.
 
-A legacy stack has no command that stops one of its parts without tearing down the mesh. To stop
-parts on their own, use a controller stack: a space prepared by this release with `cotal setup` or
-`cotal space create` starts as one, and `cotal service stop <name> --space <s> --yes` stops one of
-its services. An existing legacy root keeps its own launcher, and nothing moves it in place. A named
-`cotal down <name>` stops a saved service definition, such as a controller stack's `stack-manager`
-or a `web` service, and never one legacy component. Bare `cotal down` stops the whole stack, on a
-legacy root after first stopping the space's running services through the service controller, and
-leaves managed agents running as unmanaged OS processes, except pty seats, which stop with the
-manager. `cotal down --with-agents` is the previous reap. If a pinned manager has no
-spare-capability record, stop its managed agents explicitly before running that whole-stack
-command. A current manager always publishes the record, so it is absent only for an older manager,
-which may not understand the reap request.
+Run it on the broker host because delivery-process checks use that host's local PID.
+For separate hosts, also probe the broker from the manager host and monitor that manager's service.
+An active unit on one machine says nothing about another machine's processes.
+
+## Stop the intended service
+
+Spaces prepared by this release with `cotal setup` or `cotal space create` use the service controller.
+Stop one saved service with `cotal service stop <name> --space <s> --yes`.
+A named `cotal down <name>` also stops a saved service definition, such as `stack-manager` or `web`.
+
+Legacy roots keep their existing launcher.
+They have no command that stops one legacy component without stopping the whole stack.
+Bare `cotal down` first stops any service-controller services and then the legacy stack.
+
+<Callout type="warn" title="Check agent lifetime before shutdown">
+
+Bare `cotal down` leaves managed agents running as unmanaged OS processes, except built-in `pty` seats, which stop with their manager.
+Pass `--with-agents` to stop and deprovision the managed agents too.
+
+A pinned older manager may have no spare-capability record and may not understand the reap request.
+Stop its agents explicitly before whole-stack shutdown.
+Current managers always publish that record.
+
+</Callout>
+
+See [Stop the stack](run-a-mesh.mdx#stop-the-stack) for the shutdown procedure and refusal behavior.

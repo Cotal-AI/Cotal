@@ -68,7 +68,7 @@ console.log("✓ 2 — the index names the version and offers real page slugs");
   assert.match(quickstart.text, /cotal down --with-agents/);
   assert.match(quickstart.text, /deprovisions its managed agents/);
   assert.match(quickstart.text, /Read https:\/\/docs\.cotal\.ai\/prompt\.md, then set up Cotal/);
-  assert.match(quickstart.text, /\[Define a team\]\(define-a-team\.md\)/, "Card title and URL reach the installed tool");
+  assert.match(quickstart.text, /\[Define a team\]\(define-a-team\.mdx\)/, "Card title and URL reach the installed tool");
   assert.match(quickstart.text, /Choose several agents and their channels in one file/, "Card children reach the installed tool");
   assert.doesNotMatch(quickstart.text, /<(?:Card|Cards|Step|Steps|Callout)\b|^import /m);
 

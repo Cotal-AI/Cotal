@@ -92,7 +92,7 @@ people [sign in](#identity-and-access).
 
 Want the guided team? `cotal setup --demo` adds david (engineer), sven (guide) and me (the
 session you drive); then `cotal spawn david` and watch with `cotal watch` or `cotal console`.
-The [browser dashboard](docs/watch-a-mesh.md#web-dashboard) is configured separately as an owned
+The [browser dashboard](docs/watch-a-mesh.mdx#web-dashboard) is configured separately as an owned
 service with an explicit protected credential.
 
 > [!TIP]
@@ -188,7 +188,7 @@ The guide is [docs/workflows.md](docs/workflows.md). The language is defined in
 The separately configured `web` service observes presence, channels and the messages its explicit
 credential may read. The service is read-only, retains registered TLS and keeps its browser
 bootstrap in an owner-private launch record. User-auth caller handoff and OS installation are not
-supported. See [dashboard setup](docs/watch-a-mesh.md#web-dashboard) before starting it.
+supported. See [dashboard setup](docs/watch-a-mesh.mdx#web-dashboard) before starting it.
 Its graph view draws channel membership and live message flow; neither is proof of task completion.
 
 <div align="center">
@@ -211,7 +211,7 @@ Its graph view draws channel membership and live message flow; neither is proof 
 </div>
 
 Read-only and least-privilege (it self-mints a narrow cred, then drops the signing seed); the
-terminal `cotal console` watches the same space. See [docs/watch-a-mesh.md](docs/watch-a-mesh.md).
+terminal `cotal console` watches the same space. See [docs/watch-a-mesh.mdx](docs/watch-a-mesh.mdx).
 
 ## Examples
 

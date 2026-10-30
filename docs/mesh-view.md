@@ -3,7 +3,7 @@
 > **Reference**: TypeScript observer surfaces (`MeshView`) · **For:** integrators building a watch surface · **Wire contract:** [SPEC](../SPEC.md)
 
 `MeshView` is the shared model behind every surface that lets a human *watch* a live mesh: the
-terminal [console](watch-a-mesh.md), the plain stream, and the web dashboard. It defines what
+terminal [console](watch-a-mesh.mdx), the plain stream, and the web dashboard. It defines what
 those surfaces show and keeps them from drifting apart.
 
 **Reference-implementation boundary.** MeshView is an observer API. The wire remains the source of
@@ -18,7 +18,7 @@ Every surface is built on one **read-only observer**: a `CotalEndpoint` started 
 durables, reading the space through the live tap plus history and presence-watch. No surface opens
 its own NATS connection, and none re-implements the wire semantics. On an open mesh the console
 adds a second, presence-only endpoint under the observer's card the moment the operator sends, so
-agents can reply (see [watch a mesh](watch-a-mesh.md)); a pure-watch session stays the invisible
+agents can reply (see [watch a mesh](watch-a-mesh.mdx)); a pure-watch session stays the invisible
 observer.
 
 ## MeshView data
@@ -198,4 +198,4 @@ on the live surfaces, design intent until the wire grows to support them:
   (receives everything), so neither renders a badge. Only `dnd` and `focus` surface. A marker on
   every peer is noise, and the point of the signal is that it stands out.
 
-For the operator-facing walkthrough of these surfaces, see [Watch a mesh](watch-a-mesh.md).
+For the operator-facing walkthrough of these surfaces, see [Watch a mesh](watch-a-mesh.mdx).

@@ -458,7 +458,7 @@ A watch surface is a read-only observer: an endpoint that consumes without regis
 presence (invisible to peers) while watching everyone else's. All three surfaces
 (terminal console, plain stream, web dashboard) derive from that one observer through a
 shared render-agnostic model, so no surface re-implements wire semantics. The guide is
-[watch a mesh](watch-a-mesh.md); the model is [MeshView](mesh-view.md).
+[watch a mesh](watch-a-mesh.mdx); the model is [MeshView](mesh-view.md).
 
 ## Addressing
 

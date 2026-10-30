@@ -1,0 +1,49 @@
+---
+title: "Watch a mesh"
+description: "Choose a terminal display, line stream, or read-only browser dashboard for a running mesh."
+kind: "Informative"
+audience: "operators"
+---
+
+import { Card, Cards } from 'fumadocs-ui/components/card';
+
+Inspect agents, channels, and messages in a [running mesh](run-a-mesh.mdx).
+The displays use the same [MeshView](mesh-view.md) observer model.
+Choose one for your current task:
+
+<Cards>
+<Card title="Use the console" href="console.mdx">
+Inspect a space interactively, follow a chat stream, or use authorized operator controls.
+</Card>
+<Card title="Use the web dashboard" href="web-dashboard.mdx">
+Configure a read-only browser display with an explicit protected credential file.
+</Card>
+</Cards>
+
+## Terminal console [#terminal-console]
+
+Run `cotal console` for an interactive terminal display.
+A pipe or `--plain` selects the timestamped line stream for scripts and CI logs.
+The console ships with the CLI and can perform separately authorized operator actions.
+See [Use the console](console.mdx#terminal-console) for keys, controls, attachment, and reply behavior.
+
+## Web dashboard [#web-dashboard]
+
+Configure the `@cotal-ai/web` service before starting it with `cotal service start web`.
+The dashboard ships with `cotal-ai` and is seeded automatically, but it is separate from stack startup.
+It requires a registered static-auth root, a protected credential file, and explicit read-only intent.
+See [Use the web dashboard](web-dashboard.mdx#web-dashboard) for setup and private browser access.
+
+## Check visibility limits [#what-each-surface-can-see]
+
+The credential and display determine what you can see:
+
+| Display | Visibility |
+| --- | --- |
+| Console TUI | Requests admin observer access by default under auth. An explicit `--creds` file restricts observation to its grants. |
+| Console line stream | Shows only the chat subtree, even with an admin credential. |
+| Dashboard service | Uses the protected file you supply and its grants. It does not mint a replacement admin credential. |
+
+A chat-only credential hides DM views. A restricted read does not prove that a peer or DM is absent.
+Neither display starts the mesh's dependencies automatically.
+See [Identity](identity-and-auth.md) for observer and admin scopes and the [wire specification](../SPEC.md) for visibility guarantees.

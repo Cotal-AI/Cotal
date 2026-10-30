@@ -38,7 +38,7 @@ COTAL_DEFAULT_AGENT=opencode cotal spawn     # an explicit --agent always wins
 
 Or in a team [manifest](manifest.md), set `agent: opencode` per agent (or as the team default).
 Persona, role, and model come from the agent file the same way as for any connector: see
-[agent-files.md](agent-files.md) and [define-a-team.md](define-a-team.md).
+[agent-files.md](agent-files.md) and [define-a-team.mdx](define-a-team.mdx).
 
 ## Choose a model
 
@@ -211,6 +211,6 @@ Reasoning is off by default.
 ## See also
 
 - [Connectors](connectors.md): the feature matrix across all connectors
-- [Run a mesh](run-a-mesh.mdx) · [Define a team](define-a-team.md) · [Watch a mesh](watch-a-mesh.md)
+- [Run a mesh](run-a-mesh.mdx) · [Define a team](define-a-team.mdx) · [Watch a mesh](watch-a-mesh.mdx)
 - [MCP tools](mcp-tools.md) · [Connect Claude Code](connect-claude.md) · [Connect Hermes](connect-hermes.md) · [Connect pi](connect-pi.md)
-- [Deploy against an external broker](deploy.md): running OpenCode agents in containers
+- [Deploy against an external broker](deploy.mdx): running OpenCode agents in containers

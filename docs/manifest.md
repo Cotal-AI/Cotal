@@ -1,6 +1,6 @@
 # Mesh manifest (`cotal.yaml`)
 
-> **Reference**: every field of the mesh manifest. · **For:** operators · **Walkthrough:** [Define a team](define-a-team.md) · **ACL semantics:** [SPEC §9](../SPEC.md#9-nats--jetstream-security-and-authorization)
+> **Reference**: every field of the mesh manifest. · **For:** operators · **Walkthrough:** [Define a team](define-a-team.mdx) · **ACL semantics:** [SPEC §9](../SPEC.md#9-nats--jetstream-security-and-authorization)
 
 A manifest (`cotal.yaml`, `kind: Mesh`) describes a whole team (its channels, its agents,
 and who may read and post where) in one file. It is **channel-centric**: you list the
@@ -9,7 +9,7 @@ into one least-privilege credential per agent. The manifest is a convenience ove
 it adds no wire concepts. Today it is **single-space** (one `space:` per file).
 
 The lifecycle (`cotal topology view -f` / `up -f` / `spawn -f` / `down -f`), ownership,
-and teardown behavior are in the guide: [Define a team](define-a-team.md).
+and teardown behavior are in the guide: [Define a team](define-a-team.mdx).
 
 ## Top level
 

@@ -31,7 +31,7 @@ it; stopping preserves it so an operator can inspect why the session never conne
 | Models | `--model` | `--model` + catalog (`cotal models`) (1.x) + `--variant` | `--model` + catalog (`cotal models`) + `--variant` (reasoning effort) | any provider, via env | `--model` + `--variant` (reasoning effort) | `--model` |
 | Event plane (default on; `--no-events` opts out) | ✓ | ✓ (1.x); 2.x needs `--no-events` | ✓ | ✗ (requires `--no-events`) | ✓ | ✓ (completed messages) |
 | Local listener | stdio MCP, no listener | loopback, per-launch Basic secret | loopback MCP, per-host bearer | Unix socket, control token on the first frame | Unix socket, per-instance token | in-process, no listener |
-| Containers ([deploy](deploy.md)) | ✓ | ✓ | ✗ | ✗ | ✗ | ✗ |
+| Containers ([deploy](deploy.mdx)) | ✓ | ✓ | ✗ | ✗ | ✗ | ✗ |
 
 **Resume provenance.** The manager records the session a `--resume` seat forked on the seat's resume
 document, and `cotal ps --wide` and `--json` show it. Hermes and Jcode seats fork after they launch,

@@ -153,7 +153,7 @@ claude --mcp-config '{"mcpServers":{"cotal":{…}}}' \
   `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`), `ANTHROPIC_API_KEY` /
   `ANTHROPIC_AUTH_TOKEN`, and the cloud-provider flags plus their credential vars. Host-session
   markers (`CLAUDE_CODE_CHILD_SESSION`, `CLAUDECODE`) stay out so a nested seat still saves a
-  transcript. See [Deploy](deploy.md).
+  transcript. See [Deploy](deploy.mdx).
 - **Persona privacy.** The persona body is written to a private file and Claude receives only
   `--append-system-prompt-file <path>`. The body never appears in the spawned process argv. The
   carrier is a 0600 file inside a 0700 directory on POSIX, with equivalent owner-only ACL hardening

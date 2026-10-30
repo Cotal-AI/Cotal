@@ -9,7 +9,7 @@ connector ships in the `cotal-ai` package, so no extra install of the connector 
 **Alpha** means it runs today (spawn it, it joins the mesh and takes turns) but with real
 constraints, all verified below: it is **Unix-only**, needs an external Python toolchain you
 provide (`uv` + `hermes-agent` on a supported version range), has no setup step of its own, and
-is **not** bundled in the container image (so no containerized Hermes, see [Deploy](deploy.md)).
+is **not** bundled in the container image (so no containerized Hermes, see [Deploy](deploy.mdx)).
 
 ## Prerequisites
 
@@ -253,7 +253,7 @@ sooner once the seat has asked 1024 newer questions.
 ## Limits
 
 - **Unix-only** (no Windows).
-- **Not containerized**: the [deploy](deploy.md) image bundles only Claude Code and OpenCode (no
+- **Not containerized**: the [deploy](deploy.mdx) image bundles only Claude Code and OpenCode (no
   `uv`/`hermes-agent`), so there is no containerized Hermes today.
 - **Brings its own toolchain**: you supply `uv` and a `hermes-agent` inside the supported range.
 - **No initial prompt**: `cotal spawn --prompt` throws, because the gateway has no first-turn
@@ -265,5 +265,5 @@ sooner once the seat has asked 1024 newer questions.
 ## See also
 
 - [Connectors](connectors.md): the feature matrix across all connectors
-- [Run a mesh](run-a-mesh.mdx) · [Define a team](define-a-team.md) · [Watch a mesh](watch-a-mesh.md)
+- [Run a mesh](run-a-mesh.mdx) · [Define a team](define-a-team.mdx) · [Watch a mesh](watch-a-mesh.mdx)
 - [MCP tools](mcp-tools.md) · [Connect Claude Code](connect-claude.md) · [Connect OpenCode](connect-opencode.md) · [Connect pi](connect-pi.md)

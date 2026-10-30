@@ -184,7 +184,7 @@ separate install. Configure its service definition and explicit protected creden
 `cotal service start web`. The native child owns its PID claim and private full-launch bootstrap
 record. The preset is explicitly read-only and retains the registered TLS requirement. Its
 initialization phase does not prove a new authenticated health response; user-auth caller handoff
-and OS installation remain unsupported. See [dashboard setup](watch-a-mesh.md#web-dashboard).
+and OS installation remain unsupported. See [dashboard setup](watch-a-mesh.mdx#web-dashboard).
 
 All recorded local processes self-register `local-process` descriptors. Bare `cotal down` resolves
 the full set and stops it in dependency order. No command selects one descriptor: a named

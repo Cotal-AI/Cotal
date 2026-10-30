@@ -82,7 +82,7 @@ map to.
    checks use the trusted lifecycle mapping, not presence); a peer that omits `protocolVersion`
    reads as pre-0.4 and is not addressed on the control-surface rails
    ([SPEC §6](../SPEC.md#6-presence-and-discovery),
-   [§13.11](../SPEC.md#1311-the-hard-cut)). *See it:* run [`cotal console`](watch-a-mesh.md) and watch your endpoint appear
+   [§13.11](../SPEC.md#1311-the-hard-cut)). *See it:* run [`cotal console`](watch-a-mesh.mdx) and watch your endpoint appear
    in the roster and go stale when you stop heartbeating.
 
 5. **Multicast + channel join/replay**: [SPEC §7](../SPEC.md#7-channels). Publish to a concrete
@@ -131,7 +131,7 @@ TypeScript, driven through `tsx` and the reference endpoint; it is the reference
 implementation's regression harness, **not** a cross-language conformance runner. So for a
 client in another language, the interop scenario against a local `cotal up` mesh (with a
 reference agent as the other party; spawn one via [Launch agents](launch-agents.mdx) or
-[define-a-team.md](define-a-team.md)) is the current conformance test.
+[define-a-team.mdx](define-a-team.mdx)) is the current conformance test.
 
 ## What not to build
 

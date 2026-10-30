@@ -69,7 +69,7 @@ such as `"nope"` would never read as stale, so it would stay live after its key 
 `{"toString":null,"valueOf":null}` in a printed field would throw when converted and fail every
 reader's roster.
 Details: [SPEC §6](../SPEC.md#6-presence-and-discovery). The dashboard surfaces a stale view
-on the same header mark it uses for a refused poll ([watch a mesh](watch-a-mesh.md)).
+on the same header mark it uses for a refused poll ([watch a mesh](watch-a-mesh.mdx)).
 
 `CotalEndpoint.presenceView()` reports whether its local roster can support an absence verdict.
 `current` is usable, `unpopulated` means the current watch has not completed its initial snapshot,
@@ -310,4 +310,4 @@ knobs: [`cotal_status` / `cotal_channel_mode`](mcp-tools.md).
 - [Spaces & channels](spaces.md): the isolation boundary vs the topic axis.
 - [Delivery daemon](delivery-daemon.md): the durable backstop's three pieces.
 - [Identity & auth](identity-and-auth.md): who may publish and read where.
-- [Watch a mesh](watch-a-mesh.md): seeing presence and traffic live.
+- [Watch a mesh](watch-a-mesh.mdx): seeing presence and traffic live.

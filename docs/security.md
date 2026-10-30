@@ -37,7 +37,7 @@ Each adversary, what it can attempt, and what stops it (or why it is out of scop
   filesystem or process access to the account signer: the default single-host manager and container
   compositions do not isolate the signer from a same-uid agent, which could then mint `admin` and
   read any DM. Isolating it is a hosted-composition concern (see [Embedding Cotal](embedding.md) and
-  [Deploy](deploy.md)).
+  [Deploy](deploy.mdx)).
 - **Buggy or lazy receiver:** sender authenticity depends on the receiver enforcing the
   `from.id`-equals-subject-sender check; a client that skips it accepts spoofed senders. The
   check is therefore normative: receivers MUST reject on mismatch
@@ -125,7 +125,7 @@ The guarantees, at a glance, each enforced by the broker per
   temporary credentials, source-control tokens, or unrelated service secrets unless a persona or
   operator names them. Connector-declared auth vars still cross: a Claude seat receives
   `CLAUDE_CODE_OAUTH_TOKEN` (and the rest of that connector's documented credential set) so a
-  container with no Keychain can authenticate, which is the forwarding `docs/deploy.md` promises.
+  container with no Keychain can authenticate, which is the forwarding `docs/deploy.mdx` promises.
   This boundary does not confine files accessible through HOME or other supplied filesystem roots.
   Use a sandbox or VM when filesystem containment is required.
 - **Manager compromise:** the operator side is split into narrow, single-purpose profiles (there

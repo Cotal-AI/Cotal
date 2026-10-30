@@ -304,5 +304,5 @@ tightening the workspace over removing the sandbox.
 ## See also
 
 - [Connectors](connectors.md): the feature matrix across all connectors
-- [Run a mesh](run-a-mesh.mdx) · [Define a team](define-a-team.md) · [Watch a mesh](watch-a-mesh.md)
+- [Run a mesh](run-a-mesh.mdx) · [Define a team](define-a-team.mdx) · [Watch a mesh](watch-a-mesh.mdx)
 - [MCP tools](mcp-tools.md) · [Connect Claude Code](connect-claude.md) · [Connect OpenCode](connect-opencode.md)

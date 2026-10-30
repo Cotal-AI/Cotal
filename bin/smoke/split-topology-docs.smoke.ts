@@ -37,6 +37,11 @@ const operationGuides = [
 const operationGuideText = (await Promise.all(operationGuides.map(async (slug) =>
   (await readDocument(join(REPO, "docs", `${slug}.mdx`))).markdown,
 ))).join("\n\n");
+const guide = async (slug: string): Promise<string> =>
+  (await readDocument(join(REPO, "docs", `${slug}.mdx`))).markdown.replace(/\s+/g, " ");
+const remoteGuide = await guide("remote-supervision");
+const supervisionGuide = await guide("supervise-processes");
+const recoveryGuide = await guide("recover-a-mesh");
 const cli = read("docs/cli.md");
 const config = read("docs/config.md");
 const control = read("docs/control-surface.md");
@@ -68,7 +73,8 @@ check(
 );
 check(
   "claim 1: docs say live refresh does not rebind and hand-edit is not the fix",
-  operationGuideText.includes("`--host` is a boot flag, not a live rebind") &&
+  remoteGuide.includes("`--host` changes the next broker boot, not an already-running listener") &&
+    remoteGuide.includes("refreshes its record without rewriting that config or changing its listener") &&
     operationGuideText.includes("Do not edit `server.conf`") &&
     cli.includes("A live refresh (`✓ mesh already running`) does not rewrite `.cotal/auth/server.conf`") &&
     config.includes("<projectRoot>/.cotal/auth/server.conf") &&
@@ -82,7 +88,7 @@ check(
 // ── 2. up starts a manager by default; --no-manager is the explicit broker-only mode ──
 check(
   "claim 2: operator guide names the split (--no-manager boot, supervise --server) and each stack's manager stop",
-  operationGuideText.includes("A broker-only host is a first-class `up` mode") &&
+  remoteGuide.includes("`cotal up --no-manager` starts the broker and, in authenticated mode, delivery, with no local manager") &&
     operationGuideText.includes("cotal up --no-manager") &&
     operationGuideText.includes("`cotal service stop stack-manager --space <s> --yes`") &&
     operationGuideText.includes("A legacy stack has no command that stops only") &&
@@ -108,7 +114,7 @@ check(
   "claim 2: wait signal is supervise post-start, not detach stdout",
   operationGuideText.includes("Wait for `✓ manager up`") &&
     operationGuideText.includes("manager pidfile is live") &&
-    operationGuideText.includes("is not a safe teardown boundary") &&
+    remoteGuide.includes("not a teardown boundary or proof that manager startup has finished") &&
     operationGuideText.includes("`.cotal/manager.<spaceKey>.log`") &&
     !operationGuideText.includes("Wait for `✓ running in the background:` with `manager` listed") &&
     !operationGuideText.includes("`cotal status --components` to report `manager serving`") &&
@@ -141,7 +147,7 @@ check(
 );
 check(
   "claim 3: docs name project logs and empty journalctl for a oneshot wrapper",
-  operationGuideText.includes("Those files live under the **project** `.cotal/`, not `~/.cotal`") &&
+  recoveryGuide.includes("These logs are under the project's `.cotal/`, not `~/.cotal`") &&
     operationGuideText.includes("`journalctl -u <unit>` can be empty") &&
     delivery.includes("does not put those lines in that unit's journal"),
 );
@@ -151,8 +157,8 @@ check(
   "claim 4: CLI and operator guide refuse standalone deliver as the split repair",
   cli.includes("is not an independent repair") &&
     /the manager and[ \n]the daemon must address one credential store/.test(cli) &&
-    operationGuideText.includes("is not a repair for that split") &&
-    operationGuideText.includes("manager root A writing and the daemon reloading root B"),
+    remoteGuide.includes("Standalone `cotal deliver --creds` does not repair a split whose manager and daemon use different credential stores") &&
+    remoteGuide.includes("A manager on root A cannot renew the credential that a daemon reloads from root B"),
 );
 
 // ── 5. torn pairing names both pids; pin delete is not recovery ──────────────
@@ -177,22 +183,22 @@ check(
 check(
   "claim 6: docs state what `service install` covers and the example-unit cgroup tradeoff",
   operationGuideText.includes("`cotal service install <name>` writes an owned systemd user unit for a saved direct-process") &&
-    /a preset such as the\s+manager is not installed as a unit in this release/.test(operationGuideText) &&
+    supervisionGuide.includes("does not install the manager preset, broker, or sibling components as units in this release") &&
     !operationGuideText.includes("is the supported way to run the manager as a user service") &&
-    /writes a Linux unit only for a saved direct-process service definition, so the manager\s+preset, the broker and its siblings get no unit from it/.test(operationGuideText) &&
+    supervisionGuide.includes("saved direct-process service definition on Linux") &&
     !operationGuideText.includes("covers only the manager") &&
     !/(service\s+install`?|\binstalls?\b|\binstaller\b)[^.]{0,80}\bonly\s+the\s+manager\b|\bonly\s+the\s+manager\b[^.]{0,80}\b(install|unit)/i.test(operationGuideText) &&
-    operationGuideText.includes("examples of process models") &&
+    supervisionGuide.includes("examples of process ownership to adapt for your deployment, not a shipped stack installer") &&
     operationGuideText.includes("Type=simple") &&
-    operationGuideText.includes("nats in the unit's cgroup") &&
-    operationGuideText.includes("does not move nats out of that cgroup") &&
-    operationGuideText.includes("new process group, not a new systemd cgroup") &&
-    operationGuideText.includes("Neither trade is universal from") &&
+    supervisionGuide.includes("The broker and foreground launcher share the unit's systemd cgroup") &&
+    supervisionGuide.includes("Using a detached launcher does not move the broker out of that cgroup") &&
+    supervisionGuide.includes("A new process group is not a new systemd cgroup") &&
+    supervisionGuide.includes("`Type=simple` alone does not determine the whole recovery policy") &&
     operationGuideText.includes("`Type=simple` alone") &&
     operationGuideText.includes("KillMode=control-group") &&
-    operationGuideText.includes("this CLI does not ship that escape") &&
-    operationGuideText.includes("`cotal status --components` liveness check, not a") &&
-    operationGuideText.includes("`--detach` launcher") &&
+    supervisionGuide.includes("Cotal does not configure that separation for you") &&
+    supervisionGuide.includes("This `Type=oneshot` unit is a health check, not a detached launcher") &&
+    supervisionGuide.includes("cotal status --components --space main") &&
     !operationGuideText.includes("nats is orphaned outside the cgroup") &&
     !operationGuideText.includes("oneshot + `--detach` launcher") &&
     !operationGuideText.includes("There is no supported `cotal service install`"),

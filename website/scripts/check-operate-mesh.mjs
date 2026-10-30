@@ -20,7 +20,8 @@ const destinations = new Map([
   ['last-resort-jetstream-store-replacement', 'recover-a-mesh'],
   ['when-something-looks-absent', 'recover-a-mesh'],
 ]);
-const slugs = ['run-a-mesh', 'launch-agents', 'register-a-mesh', 'remote-supervision', 'supervise-processes', 'backup-a-mesh', 'recover-a-mesh'];
+const slugs = ['setup', 'run-a-mesh', 'launch-agents', 'define-a-team', 'register-a-mesh', 'watch-a-mesh', 'console', 'web-dashboard', 'remote-supervision', 'supervise-processes', 'deploy', 'backup-a-mesh', 'recover-a-mesh', 'upgrade-cotal'];
+const legacyAnchors = JSON.parse(readFileSync(new URL('./fixtures/operate-legacy-anchors.json', import.meta.url), 'utf8'));
 const attr = (node, name) => node.attrs?.find(attribute => attribute.name === name)?.value;
 const elements = (node, result = []) => {
   if (node.tagName) result.push(node);
@@ -29,6 +30,10 @@ const elements = (node, result = []) => {
 };
 const findArticle = tree => elements(tree).find(node => attr(node, 'id') === 'nd-page');
 const articles = new Map(slugs.map(slug => [slug, elements(findArticle(parse(artifact(`docs/${slug}/index.html`))))]));
+for (const [slug, ids] of Object.entries(legacyAnchors)) {
+  const nodes = articles.get(slug) ?? elements(findArticle(parse(artifact(`docs/${slug}/index.html`))));
+  for (const id of ids) assert.equal(nodes.filter(node => attr(node, 'id') === id).length, 1, `preserved fragment: ${slug}/#${id}`);
+}
 const local = articles.get('run-a-mesh');
 for (const id of ['the-stack', 'history', ...destinations.keys()]) {
   assert.equal(local.filter(node => attr(node, 'id') === id).length, 1, `legacy section exists once: ${id}`);
@@ -68,4 +73,4 @@ const visit = (nodes, path) => {
 };
 for (const section of navigation) visit(section.children, [section.title]);
 for (const slug of slugs) assert.equal(homes.get(`/docs/${slug}/`), 'Docs / Guides / Operate a mesh');
-console.log('check-operate-mesh: seven focused guides, 17 legacy anchors, forwarding links, Markdown and navigation verified');
+console.log(`check-operate-mesh: ${slugs.length} operator guides, ${Object.values(legacyAnchors).flat().length} preserved fragments, forwarding links, Markdown and navigation verified`);

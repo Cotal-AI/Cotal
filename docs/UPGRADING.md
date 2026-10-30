@@ -1,16 +1,15 @@
-# Upgrading a running deployment
+# Upgrade history
 
-> **Guide** (informative) · **For:** operators upgrading a mesh that already exists · **See also:** [Substrate stability](stability.md), [Run a mesh](run-a-mesh.mdx), [Identity and auth](identity-and-auth.md)
+> **Reference** (informative) · **For:** operators planning an upgrade · **See also:** [Upgrade Cotal](upgrade-cotal.mdx), [Substrate stability](stability.md)
 
-[Substrate stability](stability.md) tells you what the version numbers promise. This page is the
-other half: what to actually do when the deployment already exists, has credentials in it, and
-cannot simply be recreated. Every release that breaks a running deployment gets a section here,
-naming what migrates on its own, what does not, and the order to move the pieces in.
+This reference records the operator actions required by breaking releases.
+Follow [Upgrade Cotal](upgrade-cotal.mdx) for the overall procedure, then apply the sections that match your installed and target releases.
+Each release section states what migrates automatically, what needs manual work, and the component order for an existing deployment.
 
 ## The pre-1.0 upgrade contract
 
-The packages are pre-1.0, so a minor bump may break an API or an on-disk expectation. Four
-commitments make that survivable for someone with a fleet:
+The packages are pre-1.0, so a minor bump may break an API or an on-disk expectation. Follow these
+commitments when maintaining a fleet:
 
 - **Pin an exact version.** `0.N.P`, never `^0.N.P`. A range can pull a breaking minor in during an
   unrelated reinstall.
@@ -2180,7 +2179,7 @@ marks it read-only and hides delete; the server independently rejects that mutat
 alternate connection. The private session file holds the full-launch bootstrap; logs give its
 reference only. User-auth/open targets and OS installation remain unsupported in this route.
 Existing legacy process records are still observed, never silently adopted. An already-running
-legacy dashboard is not restarted or converted by loading metadata. See [dashboard setup](watch-a-mesh.md#web-dashboard).
+legacy dashboard is not restarted or converted by loading metadata. See [dashboard setup](watch-a-mesh.mdx#web-dashboard).
 
 ## Registered lifecycle retirement in 0.91.0
 
