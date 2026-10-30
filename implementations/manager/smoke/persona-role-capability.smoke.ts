@@ -305,6 +305,42 @@ try {
     { got: filesAfter, want: expected },
   );
 
+  // ---- 6. an inline persona through the tool: its model is audited as the manager records it ----
+  // The tool's own handler, a real MeshAgent on an issued credential, the real manager and a seat
+  // that joins. The MCP host's schema check is one layer up and has its own cells in spawn-args.
+  console.log("6. an inline persona through the tool, its pin audited as sent");
+  // Joined means the plain success result (neither no-join phrasing, no partial payload) and the
+  // seat's own presence on the roster, which the stub publishes once it connects.
+  const inlineSpawn = async (name: string, extra: Record<string, unknown>) => {
+    const r = await spawnTool.run(definer!, cfg, { name, agent: "p966-stub", events: false, ...extra });
+    const text = String(r.text ?? "");
+    let present = false;
+    for (let i = 0; i < 25 && !present; i++) {
+      present = (await definer!.readRoster()).roster.some((p) => p.card.name === name && p.status !== "offline");
+      if (!present) await sleep(200);
+    }
+    const joined = r.isError !== true && !text.includes("did not join") && !text.includes("has not joined") && (r as { structured?: unknown }).structured === undefined && present;
+    return { ...r, text, present, joined };
+  };
+  const landed = await inlineSpawn("p966-inline-pin", { persona: { prompt: "An inline helper.", model: "grok-4.6" } });
+  check(
+    "an inline spawn joins with its model recorded, and the result names the pin",
+    landed.joined && landed.text.includes('recorded model "grok-4.6"'),
+    landed,
+  );
+  const padded = await inlineSpawn("p966-inline-padded", { persona: { prompt: "An inline helper.", model: " grok-4.6 " } });
+  check(
+    "an accepted inline spawn whose model carries spaces joins and is not reported as a dropped pin",
+    padded.joined && padded.text.includes('recorded model " grok-4.6 "'),
+    padded,
+  );
+  const overridden2 = await inlineSpawn("p966-inline-override", { model: "sonnet", persona: { prompt: "An inline helper.", model: "grok-4.6" } });
+  check(
+    "a top-level model wins over the inline one, the seat joins, and the audit reads the winner",
+    overridden2.joined && overridden2.text.includes('recorded model "sonnet"'),
+    overridden2,
+  );
+
   console.log(`\n  ${pass} checks passed`);
   code = 0;
 } catch (e) {

@@ -14,6 +14,8 @@
     "schema, so a field the record has no slot for reaches the manager. C4 audits only the top-level",
     "model, so an inline model the manager did not record passes as a launched pin. C5 and C6 each drop",
     "cotal_persona's capabilities at one hop, so a definer's capabilities never reach the bound.",
+    "C7 trims the inline model for the audit while the record carries it as written, so a seat",
+    "that launched on the padded model the manager recorded is reported as a dropped pin.",
     "",
     "NOT PROVED HERE: the manager's own refusal of an unknown record key, which its suite proves."
   ],
@@ -42,7 +44,7 @@
     {
       "name": "C4 audit only the top-level model",
       "file": "extensions/connector-core/src/agent.ts",
-      "find": "const pinned = requested || opts?.persona?.model?.trim();",
+      "find": "const pinned = requested || opts?.persona?.model;",
       "replace": "const pinned = requested;",
       "expectRed": "an inline persona's model the manager did not record is refused like an override"
     },
@@ -59,6 +61,13 @@
       "find": "allowPublish, capabilities, announce });",
       "replace": "allowPublish, announce });",
       "expectRed": "cotal_persona forwards capabilities for the manager to bound"
+    },
+    {
+      "name": "C7 trim the inline model before its audit",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "const pinned = requested || opts?.persona?.model;",
+      "replace": "const pinned = requested || opts?.persona?.model?.trim();",
+      "expectRed": "an inline model the manager recorded as sent is not reported as a dropped pin"
     }
   ]
 }

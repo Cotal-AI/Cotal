@@ -384,6 +384,21 @@ const inlinePinReply = await inlinePin.spawn("helper", undefined, { persona: { p
 check("an inline persona's model the manager did not record is refused like an override",
   inlinePinReply.ok === false && /requested model "grok-4.6"/.test(inlinePinReply.error ?? "") && callsInlinePin.some((c) => c.command === "inspect"), inlinePinReply);
 check("the inline model is not sent again as a top-level override", !("model" in (spawnCall(callsInlinePin)?.args ?? {})), spawnCall(callsInlinePin)?.args);
+// The record is forwarded as written, so the audit compares the manager's pin with the model as sent.
+const paddedPin = new MeshAgent(cfg);
+record(paddedPin, " grok-4.6 ");
+const paddedReply = await paddedPin.spawn("helper", undefined, { persona: { prompt: "x", model: " grok-4.6 " } });
+check("an inline model the manager recorded as sent is not reported as a dropped pin",
+  paddedReply.ok === true && (paddedReply.data as { model?: string } | undefined)?.model === " grok-4.6 ", paddedReply);
+const inlineLanded = new MeshAgent(cfg);
+record(inlineLanded, "grok-4.6");
+const landedReply = await inlineLanded.spawn("helper", undefined, { persona: { prompt: "x", model: "grok-4.6" } });
+check("an inline model the manager recorded rides the spawn result", landedReply.ok === true && (landedReply.data as { model?: string } | undefined)?.model === "grok-4.6", landedReply);
+const overrideAgent = new MeshAgent(cfg);
+const callsOverride = record(overrideAgent, "sonnet");
+const overrideReply = await overrideAgent.spawn("helper", undefined, { model: "sonnet", persona: { prompt: "x", model: "grok-4.6" } });
+check("a top-level model wins over the inline one: both are sent, and the audit reads the top-level pin",
+  overrideReply.ok === true && spawnCall(callsOverride)?.args?.model === "sonnet" && (spawnCall(callsOverride)?.args?.persona as { model?: string } | undefined)?.model === "grok-4.6", overrideReply);
 
 // cotal_persona carries `capabilities` to the manager, which bounds them against the definer.
 const personaTool = cotalToolSpecs(cfg).find((s) => s.name === "cotal_persona") as
@@ -396,7 +411,7 @@ await personaTool?.run(definer, cfg, { name: "probe", prompt: "You probe.", capa
 const recDefine = callsDefine.find((c) => c.command === "define-persona");
 check("cotal_persona forwards capabilities for the manager to bound", JSON.stringify(recDefine?.args?.capabilities) === JSON.stringify(["spawn"]), recDefine?.args);
 
-const EXPECTED_CHECKS = 64;
+const EXPECTED_CHECKS = 67;
 if (checks !== EXPECTED_CHECKS) {
   failures++;
   console.log(`SUITE INCOMPLETE: ${checks} of ${EXPECTED_CHECKS} checks`);

@@ -2271,7 +2271,9 @@ export class MeshAgent extends EventEmitter {
     // There is no allocated name to inspect before acceptance. Preserve the submission's goal
     // rather than auditing the requested persona alias and discarding the unknown result.
     if ((reply.data as { submissionUnknown?: boolean } | undefined)?.submissionUnknown) return reply;
-    const pinned = requested || opts?.persona?.model?.trim();
+    // The record is forwarded as written and the manager records its model as written, so the
+    // inline model is audited as sent.
+    const pinned = requested || opts?.persona?.model;
     if (!pinned) return reply;
     // A requested pin that the manager did not record is the silent-drop failure (#972): the spawn
     // looks successful, the seat comes up on the harness default, and nothing in the spawn result
