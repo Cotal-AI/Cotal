@@ -93,21 +93,6 @@ console.log("capabilities");
   ok("an unknown token is refused, never read as an empty grant", same(u, ["capabilities:superuser"]), u);
 }
 
-console.log("endpoints");
-{
-  const INST = "inst0000000000000000000000a1";
-  const c = evidence({ endpointCapabilities: [{ endpoint: "linear", command: "search" }] });
-  ok("a command the spawner holds is within", over(c, { endpoints: [{ endpoint: "linear", commands: ["search"] }] }).length === 0);
-  const o = names(over(c, { endpoints: [{ endpoint: "linear", commands: ["search", "update"] }] }));
-  ok("a command the spawner lacks is named", same(o, ["endpoints:linear update"]), o);
-  const p = names(over(c, { endpoints: [{ endpoint: "linear", commands: ["search"], instanceId: INST }] }));
-  ok("an instance pin the spawner holds no rail for is refused", same(p, [`endpoints:linear search on ${INST}`]), p);
-  const pinned = evidence({ endpointCapabilities: [{ endpoint: "linear", command: "search", instanceId: INST, instanceOnly: true }] });
-  ok("the spawner's own instance pin is within", over(pinned, { endpoints: [{ endpoint: "linear", commands: ["search"], instanceId: INST }] }).length === 0);
-  const q = names(over(pinned, { endpoints: [{ endpoint: "linear", commands: ["search"] }] }));
-  ok("the class rail from an instance-pinned spawner is refused", same(q, ["endpoints:linear search"]), q);
-}
-
 console.log("ceiling modes");
 {
   const all: IssuedSubjectPermissions = { publish: { allow: { mode: "all" }, deny: [] }, subscribe: { allow: { mode: "all" }, deny: [] } };
@@ -123,8 +108,8 @@ console.log("ceiling modes");
 
 console.log("parts (no evidence)");
 {
-  const p = names(grantParts({ subscribe: ["review"], allowPublish: ["ops"], role: "worker", capabilities: ["spawn", "superuser"], endpoints: [{ endpoint: "linear", commands: ["search"] }] }));
-  ok("every part of a grant is named, an unknown token included", same(p, ["allowPublish:ops", "allowSubscribe:review", "capabilities:spawn", "capabilities:superuser", "endpoints:linear search", "role:worker"]), p);
+  const p = names(grantParts({ subscribe: ["review"], allowPublish: ["ops"], role: "worker", capabilities: ["spawn", "superuser"] }));
+  ok("every part of a grant is named, an unknown token included", same(p, ["allowPublish:ops", "allowSubscribe:review", "capabilities:spawn", "capabilities:superuser", "role:worker"]), p);
   ok("an empty grant has no parts", grantParts({}).length === 0);
 }
 

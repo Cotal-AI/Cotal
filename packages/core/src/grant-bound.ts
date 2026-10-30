@@ -17,16 +17,7 @@
 import { capabilityRole, permissionsFor } from "./provision.js";
 import { issuedPermitsPattern, mintAcceptedToken, type IssuedEvidence, type IssuedSubjectPermissions } from "./issued-authority.js";
 import { presenceKeySubject, resolveReadAcl } from "./subjects.js";
-import type { EpCapability } from "./endpoint-grants.js";
 import type { IssuedCaller } from "./endpoint-subjects.js";
-
-/** Untargeted access to commands on one endpoint, optionally pinned to one instance. A pinned grant
- *  reaches only that instance's rail. */
-export interface EndpointGrant {
-  readonly endpoint: string;
-  readonly commands: readonly string[];
-  readonly instanceId?: string;
-}
 
 /** What a spawner hands a helper. `subscribe` is the helper's read set after `join`; it is folded
  *  into the read ACL here the way provisioning folds it. */
@@ -36,10 +27,9 @@ export interface DelegatedGrant {
   readonly allowPublish?: readonly string[];
   readonly role?: string;
   readonly capabilities?: readonly string[];
-  readonly endpoints?: readonly EndpointGrant[];
 }
 
-export type DelegatedField = "allowSubscribe" | "allowPublish" | "role" | "capabilities" | "endpoints";
+export type DelegatedField = "allowSubscribe" | "allowPublish" | "role" | "capabilities";
 
 /** One part of a grant the spawner does not hold, named for the refusal. */
 export interface GrantOverreach {
@@ -60,15 +50,6 @@ export function capabilityWithin(parentScope: readonly string[], token: string):
   return parentScope.includes(token) || (token === "spawn" && parentScope.includes("run"));
 }
 
-/** The endpoint rows an {@link EndpointGrant} list mints: one capability per command, instance-only
- *  when the grant names an instance. */
-export function endpointGrantCapabilities(grants: readonly EndpointGrant[]): EpCapability[] {
-  return grants.flatMap((g) => g.commands.map((command): EpCapability =>
-    g.instanceId === undefined
-      ? { endpoint: g.endpoint, command }
-      : { endpoint: g.endpoint, command, instanceId: g.instanceId, instanceOnly: true }));
-}
-
 type MintExtra = Parameters<typeof permissionsFor>[3];
 
 /** Each part of a grant, with the mint options that project it alone. `project` is absent for a
@@ -84,11 +65,6 @@ function partsOf(grant: DelegatedGrant): { part: GrantOverreach; project?: MintE
     const project = role !== undefined ? { role } : isDelegableCapability(token) ? { capabilities: [token] } : undefined;
     out.push({ part: { field: "capabilities", value: token }, ...(project ? { project } : {}) });
   }
-  for (const cap of endpointGrantCapabilities(grant.endpoints ?? []))
-    out.push({
-      part: { field: "endpoints", value: `${cap.endpoint} ${cap.command}${cap.instanceId === undefined ? "" : ` on ${cap.instanceId}`}` },
-      project: { endpointCapabilities: [cap] },
-    });
   return out;
 }
 
@@ -100,9 +76,9 @@ export function grantParts(grant: DelegatedGrant): GrantOverreach[] {
 
 /**
  * Every part of `grant` that `ceiling` does not cover, for a static spawner `caller` whose issued
- * evidence is `ceiling`. Empty means the grant is within. Each channel, the role, each capability
- * token and each endpoint command is tested on its own, so a refusal names what overreached. A part
- * whose projection adds no row cannot be shown to be held and is refused, so an unknown token or an
+ * evidence is `ceiling`. Empty means the grant is within. Each channel, the role and each
+ * capability token is tested on its own, so a refusal names what overreached. A part whose
+ * projection adds no row cannot be shown to be held and is refused, so an unknown token or an
  * unmapped field fails closed. Throws on a malformed grant (a channel or token the mint refuses).
  */
 export function grantOverreach(

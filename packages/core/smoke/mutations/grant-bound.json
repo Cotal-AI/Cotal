@@ -14,8 +14,8 @@
     "",
     "B1 drops the subtraction, so the coordinate's own rows decide and every grant refuses. B2",
     "stops folding subscribe into the read ACL, so a subscribe-only grant escapes the bound. B3",
-    "stops testing publish rows. B4 forgets that run carries spawn. B5 mints a class rail for an",
-    "instance pin. B6 reads role:<r> as an ordinary token, so a held role cannot be handed on.",
+    "stops testing publish rows. B4 forgets that run carries spawn. B6 reads role:<r> as an ordinary",
+    "token, so a held role cannot be handed on.",
     "",
     "I1 drops the issuer's guard, so a source-free manager-caller could be issued and read as an instrument.",
     "",
@@ -49,13 +49,6 @@
       "find": "  return parentScope.includes(token) || (token === \"spawn\" && parentScope.includes(\"run\"));",
       "replace": "  return parentScope.includes(token);",
       "expectRed": "spawn is within run"
-    },
-    {
-      "name": "B5 mint a class rail beside an instance pin",
-      "file": "packages/core/src/grant-bound.ts",
-      "find": "      : { endpoint: g.endpoint, command, instanceId: g.instanceId, instanceOnly: true }));",
-      "replace": "      : { endpoint: g.endpoint, command, instanceId: g.instanceId }));",
-      "expectRed": "the spawner's own instance pin is within"
     },
     {
       "name": "B6 read role:<r> as an ordinary capability token",
