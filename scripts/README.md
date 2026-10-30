@@ -105,6 +105,11 @@ are handled alike. Build closures include development, optional and peer depende
 reader retains its own command-admission checks. `pnpm smoke:workspace-build-filters` exercises
 these forms through read-only metadata grading; it does not execute fixture commands or mutations.
 
+A native `ETIMEDOUT` result is reported as `command was killed at its timeout`, not as a
+failure to start. Missing executables and permission errors retain the startup diagnosis. Both
+remain unmeasurable; this distinction changes the reason, not the verdict or timeout budget.
+`pnpm smoke:failure-timeout-reason` checks native child results without executing mutations.
+
 `unparsed` means the suite command completed but did not prove how many cells it executed. A zero
 failure count without a total is not enough. The instrument grades only a number the suite printed:
 a tally, a checks-passed count, or a complete N/N fraction. Progress ticks are not an executed-cell
