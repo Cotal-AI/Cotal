@@ -2,14 +2,14 @@
   "suite": [
     "implementations/cli/smoke/foreground-issuance-live.smoke.ts"
   ],
-  "guard": "a seat started by foreground cotal spawn on a static mesh is issued against its own lifecycle's gate, with the expiry the person set or the furthest horizon, and its clean exit retires that gate",
+  "guard": "a seat started by foreground cotal spawn on a static mesh is issued against its own lifecycle's gate, with the expiry the person set or the furthest horizon, and its clean exit revokes that issuance and retires the gate",
   "command": "pnpm smoke:foreground-issuance:live",
   "completionMarker": "FOREGROUND-ISSUANCE",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/foreground-issuance.json",
   "why": [
     "The suite runs the real CLI dispatch against a real broker, and reads the seat's accepted row under the seat's own credential, as its endpoint does.",
-    "The CLI imports its own source, so F1 and F2 need no build. The workspace helper is read from its built package, so F3 rebuilds it for the mutant and again after the restore.",
-    "F1 mints the seat unissued. F2 skips the gate's retirement on a clean exit, so the evidence outlives the seat. F3 ignores the person's expiry."
+    "The CLI imports its own source, so F1 and F2 need no build. The workspace helper is read from its built package, so F3 and F4 rebuild it for the mutant and again after the restore.",
+    "F1 mints the seat unissued. F2 skips the seat's retirement on a clean exit, so the evidence outlives the seat. F3 ignores the person's expiry. F4 retires the gate but leaves the issuance active."
   ],
   "mutations": [
     {
@@ -24,7 +24,7 @@
       "file": "implementations/cli/src/commands/spawn.ts",
       "find": "    if (issuedSeat) await attemptCleanup(failed, \"issuance gate\", () => retireTerminalSeat({ server, space, tlsRequired: target.tlsRequired, auth }, issuedSeat));\n",
       "replace": "",
-      "expectRed": "its evidence no longer resolves once its gate is retired"
+      "expectRed": "its issuance is revoked once the seat leaves, so its evidence no longer resolves"
     },
     {
       "name": "F3 the person's expiry is ignored",
@@ -32,6 +32,15 @@
       "find": "  const horizon = expiresAt ?? TERMINAL_SEAT_HORIZON_SEC;",
       "replace": "  const horizon = TERMINAL_SEAT_HORIZON_SEC;",
       "expectRed": "--expires-at is the generation's horizon",
+      "command": "pnpm --filter @cotal-ai/workspace build && pnpm smoke:foreground-issuance:live",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build"
+    },
+    {
+      "name": "F4 the gate is retired with its issuance left active",
+      "file": "packages/workspace/src/terminal-seat.ts",
+      "find": "    await withIssuerSession({ servers: target.server, space: target.space, auth: target.auth, tls: target.tlsRequired }, (session) =>\n      session.store.retireSource({ space: target.space, bucket: epAuthBucket(target.space), key: `cred.${lifecycleUid}` }));\n",
+      "replace": "",
+      "expectRed": "its issuance is revoked once the seat leaves, so its evidence no longer resolves",
       "command": "pnpm --filter @cotal-ai/workspace build && pnpm smoke:foreground-issuance:live",
       "afterRestore": "pnpm --filter @cotal-ai/workspace build"
     }

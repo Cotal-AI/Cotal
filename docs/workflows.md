@@ -338,8 +338,10 @@ in channels; the manager's own reach never stands in for it. A request from a cr
 without an issuance is refused with `permission-denied` and a detail naming the caller. A run
 whose caller had no channels can still sleep, checkpoint and turn agents; its `wait` on a channel
 is refused at the effect. On a static mesh the same ceiling bounds what the run's spawns hand on:
-a helper gets no channel or capability the caller's credential did not carry when the run was
-admitted, and a grant the caller gains later is never handed on. A run started by an operator
+a helper gets no channel, role or capability the caller's credential did not carry when the run was
+admitted, and gets its own event plane only when that credential could post on the caller's own
+(`spawn(persona, { events: false })` starts it without one). A grant the caller gains later is never
+handed on. A run started by an operator
 instrument, or by a caller holding admin, is exempt, as that caller's own spawns are. On a
 participant manager of a user-auth mesh, the issuing host records the starter's ledger grant with
 the admission and enrolls each helper the run spawns under the starter. The helper must fall within

@@ -14,8 +14,8 @@
     {
       "name": "L1 plain set inclusion for scope",
       "file": "implementations/auth/src/ledger.ts",
-      "find": "    const overScope = child.scope.filter((s) => !capabilityWithin(parent.scope, s));",
-      "replace": "    const overScope = child.scope.filter((s) => !parent.scope.includes(s));",
+      "find": "  const overScope = child.scope.filter((s) => !capabilityWithin(parent.scope, s));",
+      "replace": "  const overScope = child.scope.filter((s) => !parent.scope.includes(s));",
       "expectRed": "scope [spawn] delegates within a [run] spawner (run carries the spawn set)"
     }
   ]

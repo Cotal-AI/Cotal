@@ -63,8 +63,9 @@ const workspaceRoot = join(scratch, "static");
 const agentsDir = join(workspaceRoot, ".cotal", "agents");
 mkdirSync(agentsDir, { recursive: true });
 const persona = (file: string, body: string) => writeFileSync(join(agentsDir, `${file}.md`), `---\nname: ${file}\n${body}---\nbody\n`);
-// The spawner: reads review and ops, posts review, may spawn. A narrower one reads and posts review.
-persona("lead", "allowSubscribe: [review, ops]\nallowPublish: [review]\ncapabilities: [spawn]\n");
+// The spawner: reads review and ops, posts review, may spawn, and hands on the scribe role. A
+// narrower one reads and posts review.
+persona("lead", "allowSubscribe: [review, ops]\nallowPublish: [review]\ncapabilities: [spawn, \"role:scribe\"]\n");
 persona("narrow", "allowSubscribe: [review]\nallowPublish: [review]\ncapabilities: [spawn]\n");
 
 /** A fake seat whose exit the cell fires: the real exit watcher subscribes through `attach`. */

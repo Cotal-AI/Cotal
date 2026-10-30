@@ -124,8 +124,8 @@
     {
       "name": "the closed parser lets an enrollment carry a caller-chosen lifecycle uid",
       "file": "packages/core/src/remote-manager-authority.ts",
-      "find": "    \"v\", \"kind\", \"space\", \"actor\", \"instanceId\", \"managerLifecycleUid\", \"requestId\",\n    \"registrationProof\", \"serveEpoch\", \"target\", \"identities\",\n  ]);",
-      "replace": "    \"v\", \"kind\", \"space\", \"actor\", \"instanceId\", \"managerLifecycleUid\", \"requestId\",\n    \"registrationProof\", \"serveEpoch\", \"target\", \"identities\", \"lifecycleUid\",\n  ]);",
+      "find": "    \"v\", \"kind\", \"space\", \"actor\", \"instanceId\", \"managerLifecycleUid\", \"requestId\",\n    \"registrationProof\", \"serveEpoch\", \"target\", \"spawn\", \"identities\",\n  ]);",
+      "replace": "    \"v\", \"kind\", \"space\", \"actor\", \"instanceId\", \"managerLifecycleUid\", \"requestId\",\n    \"registrationProof\", \"serveEpoch\", \"target\", \"spawn\", \"identities\", \"lifecycleUid\",\n  ]);",
       "command": "pnpm --filter @cotal-ai/core build && pnpm exec tsx implementations/auth/smoke/managed-agent-enrollment.smoke.ts",
       "afterRestore": "pnpm --filter @cotal-ai/core build",
       "expectRed": "FAIL: enrollment refuses an unknown top-level field",

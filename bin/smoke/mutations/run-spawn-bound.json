@@ -24,8 +24,8 @@
     {
       "name": "R2 every starter is recorded exempt at admission",
       "file": "implementations/manager/src/run-hosting.ts",
-      "find": "      // minutes after issue, and the run's spawns may come hours later.\n      ...(issuedSpawnerStanding(resolved.evidence) !== \"bounded\" ? { spawnExempt: true as const } : {}),",
-      "replace": "      // minutes after issue, and the run's spawns may come hours later.\n      ...({ spawnExempt: true as const }),",
+      "find": "      ...(issuedSpawnerStanding(resolved.evidence) !== \"bounded\" ? { spawnExempt: true as const } : {}),",
+      "replace": "      ...({ spawnExempt: true as const }),",
       "afterRestore": "pnpm --filter cotal-ai... build",
       "expectRed": "a run's spawn of a catalog persona wider than its starter is refused, naming the run and the channel",
       "cell": "a run's spawn of a catalog persona wider than its starter is refused, naming the run and the channel"
@@ -42,8 +42,8 @@
     {
       "name": "R4 the store's record loses the exemption on read",
       "file": "packages/core/src/run-admission.ts",
-      "find": "    ...(raw.spawnExempt === true ? { spawnExempt: true as const } : {}),\n  });",
-      "replace": "  });",
+      "find": "    ...(raw.spawnExempt === true ? { spawnExempt: true as const } : {}),\n",
+      "replace": "",
       "afterRestore": "pnpm --filter cotal-ai... build",
       "expectRed": "its admission records the exemption, and the bounded starter's does not",
       "cell": "its admission records the exemption, and the bounded starter's does not"

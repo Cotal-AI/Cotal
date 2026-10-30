@@ -8,7 +8,7 @@
  *   A. the seat is handed an accepted token, its credential reads its accepted row, and the evidence
  *      resolves with the seat's own gate as its one source and the furthest horizon as its expiry.
  *   B. the seat stands bounded, as an agent, never as an operator instrument.
- *   C. its clean exit retires the gate, so the evidence no longer resolves.
+ *   C. its clean exit revokes its issuance and retires its gate, so the evidence no longer resolves.
  *   D. `--expires-at` sets the generation's horizon and the credential's expiry.
  *   E. the expiry flags are refused for a managed launch.
  *
@@ -39,7 +39,7 @@ if (process.argv[2] === "worker") {
 const home = mkdtempSync(join(tmpdir(), "cotal-fg-issuance-home-"));
 const root = mkdtempSync(join(tmpdir(), "cotal-fg-issuance-root-"));
 process.env.COTAL_HOME = home;
-const { createSpaceAuth, credsClaims, dialerFor, issuedHorizon, issuedSpawnerStanding, mintCreds, newIdentity, readAcceptedRow, setupSpaceStreams, standaloneConnectOpts, withIssuerSession, DEV_OWNER } =
+const { createSpaceAuth, credsClaims, dialerFor, epAuthBucket, issuedHorizon, issuedSpawnerStanding, mintCreds, newIdentity, readAcceptedRow, setupSpaceStreams, standaloneConnectOpts, withIssuerSession, DEV_OWNER } =
   await import("@cotal-ai/core");
 const { authDir, recordMesh, saveSpaceAuth, TERMINAL_SEAT_HORIZON_SEC } = await import("@cotal-ai/workspace");
 const { bootBroker } = await import("../../manager/smoke/_boot-broker.js");
@@ -125,7 +125,10 @@ try {
   await stop(w);
   check("control: the seat left cleanly and its creds were retired", /retired creds for issued/.test(w.output), w.output);
   const after = ref.value ? await outcome(() => resolveRef(ref.value!)) : { error: "no ref" };
-  check("its evidence no longer resolves once its gate is retired", after.error !== undefined && /no longer live|retired/.test(after.error), after);
+  check("its issuance is revoked once the seat leaves, so its evidence no longer resolves", after.error !== undefined && /is revoked; only an active issuance authorizes/.test(after.error), after);
+  const gate = await outcome(() => withIssuerSession({ servers: broker.servers, space, auth, tls: false }, (s) =>
+    s.sourceIsLive({ space, bucket: epAuthBucket(space), key: `cred.${seat?.uid}` })));
+  check("and its lifecycle's gate is retired", gate.value === false, gate);
 
   console.log("D. an expiry the person sets");
   const at = Math.floor(Date.now() / 1000) + 7200;

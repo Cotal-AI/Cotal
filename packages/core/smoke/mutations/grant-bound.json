@@ -53,7 +53,7 @@
     {
       "name": "B6 read role:<r> as an ordinary capability token",
       "file": "packages/core/src/grant-bound.ts",
-      "find": "    const role = ROLE_TOKEN.exec(token)?.[1];",
+      "find": "    const role = capabilityRole(token);",
       "replace": "    const role = undefined as string | undefined;",
       "expectRed": "role:<r> as a capability token is held when the spawner holds that role"
     },

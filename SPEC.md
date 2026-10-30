@@ -6254,7 +6254,7 @@ addressed notices and is not channel publication; turn keeps its separately chec
 authority.
 
 **Spawn.** On a static mesh every spawn a hosted run makes is bounded by its admission (§13.15's
-spawn bound): the helper's channels, capabilities and own event plane must be held by `ceiling` at
+spawn bound): the helper's channels, role, capabilities and own event plane must be held by `ceiling` at
 the admitted caller's coordinate, so a grant the caller gained after admission is never handed on.
 `spawnExempt: true` is written at admission when the caller's evidence then classified it as an
 operator instrument or as holding the admin set, and the run's spawns are then exempt, as that

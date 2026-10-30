@@ -139,11 +139,13 @@ try {
   // An issued caller: the mint stages and releases its evidence over an issuer session before the
   // material exists, and the caller carries the generation so its requests ride `ep.v1`. The
   // evidence names no lifecycle source (this credential has no ledger family), so its liveness
-  // is the credential's own expiry.
+  // is the credential's own expiry. Like a seat spawned with its event plane, it posts its own
+  // event channel, and it holds the worker role as a capability, so a run it starts may hand both
+  // on (SPEC 14.8).
   const issued = { generation: mintGeneration(Math.floor(Date.now() / 1000) + 172_800), acceptedToken: mintAcceptedToken() };
   const caller: EpCallerT = { owner: DEV_OWNER, actor: id.id, uid, generation: issued.generation } as EpCallerT;
   const creds = await withIssuerSession({ servers: brokerA.servers, space: spaceA, auth, tls: false }, (s) =>
-    mintCreds(auth, id, "agent", { lifecycleUid: uid, capabilities: ["run"], expiresInSeconds: 3600, issued, issuance: { mode: "issue", store: s.store, accepted: s.accepted, sources: [] } }));
+    mintCreds(auth, id, "agent", { lifecycleUid: uid, capabilities: ["run", "role:worker"], allowPublish: [eventChannel({ owner: DEV_OWNER, actor: id.id })], expiresInSeconds: 3600, issued, issuance: { mode: "issue", store: s.store, accepted: s.accepted, sources: [] } }));
   nc = await connect({ servers: brokerA.servers, ...standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: 0 });
   const service = await resolveService(nc, spaceA, "manager", caller, { deadlineMs: 10_000 });
   const call = async (command: string, args?: Record<string, unknown>): Promise<ReplyT> =>
@@ -290,8 +292,9 @@ try {
 
   console.log("A2c. a run's spawns are bounded by what its starter held when the run was admitted");
   {
-    // The caller holds `run` and no channel. Its run hands on only that: `spawn`, which `run`
-    // carries, and no channel or other capability (SPEC 14.8).
+    // The caller holds `run`, the worker role and its own event plane, and no other channel. Its
+    // run hands on only that: `spawn`, which `run` carries, and no other channel or capability
+    // (SPEC 14.8).
     writeFileSync(join(wsA, ".cotal", "agents", "wide.md"), `---\nname: wide\nrole: worker\nagent: run-answer-stub\nallowPublish: [secret]\ncapabilities: []\n---\n`);
     const settledRun = async (source: string, file: string): Promise<{ runId: string; v: RunStatusViewT | undefined }> => {
       const r = await call("run-start", { source, file });
@@ -303,12 +306,12 @@ try {
     c("a run's spawn of a catalog persona wider than its starter is refused, naming the run and the channel",
       stateOf(wide.v) === "failed" && wide.v?.status?.failure?.message.includes(`more than run ${wide.runId}'s starter held when the run was admitted`) === true
         && wide.v?.status?.failure?.message.includes("allowPublish secret") === true, wide.v?.status);
-    const inlineWide = await settledRun('await spawn({ name: "inl-wide", prompt: "You answer.", capabilities: ["admin"] });\n', "inline-wide.cotal.js");
-    c("so is an inline persona asking for a capability the starter does not hold",
-      stateOf(inlineWide.v) === "failed" && inlineWide.v?.status?.failure?.message.includes("capabilities admin") === true, inlineWide.v?.status);
     // An inline persona names no harness, so the manager's default stands in for the stub's pin.
     process.env.COTAL_DEFAULT_AGENT = "run-answer-stub";
     try {
+      const inlineWide = await settledRun('await spawn({ name: "inl-wide", prompt: "You answer.", capabilities: ["admin"] });\n', "inline-wide.cotal.js");
+      c("so is an inline persona asking for a capability the starter does not hold",
+        stateOf(inlineWide.v) === "failed" && inlineWide.v?.status?.failure?.message.includes("capabilities admin") === true, inlineWide.v?.status);
       const within = await settledRun('const h = await spawn({ name: "inl-ok", prompt: "You answer.", capabilities: ["spawn"] });\nlog("seat", h.agent);\n', "inline-ok.cotal.js");
       c("an inline persona within the starter's ceiling launches and the run completes", stateOf(within.v) === "completed", within.v?.status);
     } finally {
