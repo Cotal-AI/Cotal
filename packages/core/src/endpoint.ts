@@ -46,9 +46,10 @@ import type { GoalResultFact } from "./endpoint-action.js";
 import { EpEnvelopeError, respondedButUnbound, replyRefusedBeforeEffect, replyTargetUnmapped, EP_BIND_REFUSED, type EpBindRefusedDetail } from "./endpoint-envelope.js";
 import { isRepeatSafeCommand } from "./endpoint-grants.js";
 import type { EpCaller, IssuedCaller } from "./endpoint-subjects.js";
-import { assertIdToken, assertGeneration, isIssuedCaller } from "./endpoint-subjects.js";
-import { importNativeSubjectPermissions, issuedCallerOfToken, issuedPermitsSubject, listingAcceptedToken, readAcceptedRow, type IssuedSubjectPermission } from "./issued-authority.js";
-import { REGISTRY_CONTRACTS, REGISTRY_ENDPOINT, REGISTRY_ENDPOINTS_COMMAND, type RegistryEndpointsInput, type RegistryEndpointsOutput } from "./registry-contract.js";
+import { assertIdToken, assertGeneration } from "./endpoint-subjects.js";
+import { importNativeSubjectPermissions, issuedPermitsSubject, readAcceptedRow, type IssuedSubjectPermission } from "./issued-authority.js";
+import { REGISTRY_ENDPOINT, REGISTRY_ENDPOINTS_COMMAND, type RegistryEndpointsInput, type RegistryEndpointsOutput } from "./registry-contract.js";
+import { listRegistryEndpoints, registryListingCaller } from "./registry-client.js";
 import type { EpVerbTarget, EpAttributedReply } from "./endpoint-verbs.js";
 import { lastKvEntries, liveKvEntries } from "./kv-scan.js";
 import { isConsumerAlreadyExists, isConsumerNotFound, isJetStreamMissing } from "./jetstream-missing.js";
@@ -2909,23 +2910,13 @@ export class CotalEndpoint extends EventEmitter {
    *  credential carries no listing binding, because it predates listing issuance or has no expiry. */
   async listingCaller(): Promise<IssuedCaller | undefined> {
     if (!this.nc) throw new Error(this.notLiveMsg());
-    const caller = this.serviceCaller();
-    if (isIssuedCaller(caller)) return caller;
-    if (this.presentedExp === undefined) return undefined;
-    try {
-      return await issuedCallerOfToken(this.nc, this.space, listingAcceptedToken(this.connId, this.presentedExp), caller);
-    } catch (e) {
-      // The broker refused the read: the credential holds no row for this token.
-      if (isPermissionDenied(e)) return undefined;
-      throw e;
-    }
+    return registryListingCaller(this.nc, this.space, this.serviceCaller(), { connId: this.connId, ...(this.presentedExp !== undefined ? { exp: this.presentedExp } : {}) });
   }
 
-  /** One page of the registry's `endpoints` answer (SPEC 13.20). The describe rides this
-   *  connection's own caller; the question rides the listing caller on an authed mesh. The registry
-   *  must serve the contract this client implements. A call the answering instance refused before
-   *  running (a class-queue split) is resolved and asked again, up to {@link BIND_SPLIT_REISSUES}
-   *  times. `unbound`: this credential carries no listing binding. */
+  /** One page of the registry's `endpoints` answer (SPEC 13.20) over this connection
+   *  ({@link listRegistryEndpoints}). The describe rides this connection's own caller; the question
+   *  rides the listing caller on an authed mesh. `unbound`: this credential carries no listing
+   *  binding. */
   async listEndpoints(input: RegistryEndpointsInput, opts: { deadlineMs?: number; signal?: AbortSignal } = {}): Promise<
     | { unbound: true }
     | { unbound?: false; reply: EpAttributedReply; page?: RegistryEndpointsOutput }
@@ -2934,23 +2925,26 @@ export class CotalEndpoint extends EventEmitter {
     const nc = this.nc;
     const listing = this.authed ? await this.listingCaller() : undefined;
     if (this.authed && listing === undefined) return { unbound: true };
-    const deadline = Date.now() + (opts.deadlineMs ?? 10_000);
-    const ours = REGISTRY_CONTRACTS[REGISTRY_ENDPOINTS_COMMAND]!;
-    let reply: EpAttributedReply | undefined;
-    for (let attempt = 0; attempt <= BIND_SPLIT_REISSUES && Date.now() < deadline; attempt++) {
-      const service = await resolveService(nc, this.space, REGISTRY_ENDPOINT, this.serviceCaller(), {
-        deadlineMs: deadline - Date.now(), signal: opts.signal, commands: [REGISTRY_ENDPOINTS_COMMAND],
-      });
-      const theirs = service.commands.get(REGISTRY_ENDPOINTS_COMMAND)!.contract;
-      if (theirs.input.closureDigest !== ours.input.closureDigest || theirs.output.closureDigest !== ours.output.closureDigest)
-        throw new EpEnvelopeError("contract-mismatch", `the registry serves a version of "${REGISTRY_ENDPOINTS_COMMAND}" this client does not implement; upgrade the client (SPEC 13.20)`);
-      reply = await invokeCommand(nc, this.space, service, REGISTRY_ENDPOINTS_COMMAND, { ...input }, {
-        deadlineMs: deadline - Date.now(), signal: opts.signal, ...(listing ? { caller: listing } : {}),
-      });
-      if (reply.reply.ok !== false || !replyRefusedBeforeEffect(reply.reply.error)) break;
-    }
-    if (reply === undefined) throw new EpEnvelopeError("deadline-exceeded", "the registry was not reached before the deadline");
-    return { reply, ...(reply.reply.ok === true ? { page: reply.reply.data as RegistryEndpointsOutput } : {}) };
+    return this.listEndpointsOver(nc, listing, input, opts);
+  }
+
+  /** Ask the registry over `nc` under `listing`: this connection, or another of this caller triple
+   *  such as a manager-call connection. The describe rides this connection, whose view holds the
+   *  registry's describe. Every endpoint the page lists has its cached describe dropped, so the next
+   *  describe of it reads the surface afresh. */
+  async listEndpointsOver(
+    nc: NatsConnection,
+    listing: IssuedCaller | undefined,
+    input: RegistryEndpointsInput,
+    opts: { deadlineMs?: number; signal?: AbortSignal } = {},
+  ): Promise<{ reply: EpAttributedReply; page?: RegistryEndpointsOutput }> {
+    if (!this.nc) throw new Error(this.notLiveMsg());
+    const own = this.nc;
+    const result = await listRegistryEndpoints(this.space, (deadlineMs, signal) => resolveService(own, this.space, REGISTRY_ENDPOINT, this.serviceCaller(), {
+      deadlineMs, signal, commands: [REGISTRY_ENDPOINTS_COMMAND],
+    }), { nc, ...(listing ? { caller: listing } : {}) }, input, opts);
+    for (const row of result.page?.rows ?? []) this.clearResolvedService(row.endpoint);
+    return result;
   }
 
   /** GENERIC v0.4 service invoke over this endpoint's own connection: resolve

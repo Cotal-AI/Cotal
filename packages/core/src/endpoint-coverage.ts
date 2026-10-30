@@ -4,8 +4,9 @@
  *
  * A NATS pattern tells two values at one token position apart only when it names one of them as a
  * literal there; `*` and `>` match every value alike. So the values a parameter position can take
- * fall into finitely many classes: each literal some allow or deny pattern names at that position,
- * plus one class for every other value. Testing one subject per combination of classes with
+ * fall into finitely many classes: each literal named at that position by an allow or deny pattern
+ * that can match a subject of the form, plus one class for every other value. A pattern that matches
+ * no subject of the form tells none of its values apart, so it adds no class. Testing one subject per combination of classes with
  * {@link issuedPermitsSubject} (deny wins) answers for every concrete subject, because each value
  * in a class gets the same verdict. The subjects are built by the same builders a client publishes
  * with, so the projection and the wire cannot disagree on where a parameter sits.
@@ -49,7 +50,13 @@ export interface CoveredForm {
  *  allows is refused for the command rather than answered in part. */
 export const COVERAGE_COMBINATION_LIMIT = 4096;
 
-export class CoverageLimitError extends Error {}
+/** A form needed more than the limit. `covered` says whether the ceiling admits at least one
+ *  subject of any of the command's forms, found by testing one subject per relevant allow pattern. */
+export class CoverageLimitError extends Error {
+  constructor(message: string, readonly covered: boolean) {
+    super(message);
+  }
+}
 
 /** Merge combinations that differ only at one parameter and together cover all its classes into one
  *  with `"*"` there, until none merge. The union of subjects is unchanged. */
@@ -156,6 +163,11 @@ function formsOf(space: string, endpoint: string, command: CoverageCommand, call
  * registered instance ids, tested as named classes so an `inst` row can name them. Returns only the
  * forms the ceiling admits at least once. Throws {@link CoverageLimitError} when a form would need
  * more than `limit` combinations.
+ *
+ * Over the limit, one subject per allow pattern that can match the form decides whether the form is
+ * covered: the pattern's literals at the parameter positions it names, and an unnamed value at every
+ * other. A deny that matches it matches every subject that allow pattern admits, because a deny can
+ * match an unnamed value only with a wildcard.
  */
 export function projectCommandCoverage(
   space: string,
@@ -163,9 +175,11 @@ export function projectCommandCoverage(
   args: { endpoint: string; command: CoverageCommand; caller: EpCaller; generation?: string; instances?: readonly string[] },
   limit = COVERAGE_COMBINATION_LIMIT,
 ): CoveredForm[] {
-  const patterns = publish.allow.mode === "patterns" ? [...publish.allow.patterns, ...publish.deny] : [...publish.deny];
-  const split = patterns.map((p) => p.split("."));
+  const allow = publish.allow.mode === "patterns" ? publish.allow.patterns.map((p) => p.split(".")) : [];
+  const deny = publish.deny.map((p) => p.split("."));
   const out: CoveredForm[] = [];
+  let over: string | undefined;
+  let overCovered = false;
   for (const form of formsOf(space, args.endpoint, args.command, args.caller, args.generation)) {
     // Locate each parameter by building once with distinct fresh values and finding them.
     const probe = {} as Record<CoverageParam, string>;
@@ -173,17 +187,37 @@ export function projectCommandCoverage(
     const probeTokens = form.build(probe).split(".");
     for (const p of form.params)
       if (probeTokens.indexOf(probe[p]) !== probeTokens.lastIndexOf(probe[p])) throw new Error(`coverage: the ${p} probe is not unique in its subject`);
+    const paramAt = new Map(form.params.map((p) => [probeTokens.indexOf(probe[p]), p]));
+    // Can the pattern match a subject of this form with valid parameter values?
+    const relevant = (t: string[]): boolean => {
+      const end = t[t.length - 1] === ">" ? t.length - 1 : t.length;
+      if (end === t.length ? t.length !== probeTokens.length : end >= probeTokens.length) return false;
+      for (let i = 0; i < end; i++) {
+        const p = paramAt.get(i);
+        if (t[i] !== "*" && (p === undefined ? t[i] !== probeTokens[i] : !valid(p, t[i]!))) return false;
+      }
+      return true;
+    };
+    const allowed = allow.filter(relevant);
+    const split = [...allowed, ...deny.filter(relevant)];
     const named = (at: number) => new Set(split.flatMap((t) => (t.length > at && t[at] !== "*" && t[at] !== ">" ? [t[at]!] : [])));
     const classes = form.params.map((p) => {
       const at = probeTokens.indexOf(probe[p]);
       const set = named(at);
       if (p === "instanceId") for (const i of args.instances ?? []) set.add(i);
       const literals = [...set].filter((v) => valid(p, v)).sort();
-      return { p, literals, fresh: freshValue(p, set) };
+      return { p, at, literals, fresh: freshValue(p, set) };
     });
     const total = classes.reduce((n, c) => n * (c.literals.length + 1), 1);
-    if (total > limit)
-      throw new CoverageLimitError(`${args.endpoint}.${args.command.name} needs ${total} combinations to project; the limit is ${limit}`);
+    if (total > limit) {
+      over ??= `${args.endpoint}.${args.command.name} needs ${total} combinations to project; the limit is ${limit}`;
+      const candidates: string[][] = publish.allow.mode === "all" ? [[]] : allowed;
+      overCovered ||= candidates.some((t) => issuedPermitsSubject(publish, form.build(Object.fromEntries(classes.map((c) => {
+        const v = t[c.at];
+        return [c.p, v !== undefined && v !== "*" && v !== ">" ? v : c.fresh];
+      })) as Record<CoverageParam, string>)));
+      continue;
+    }
     const covered: CoverageCombination[] = [];
     const walk = (i: number, values: Record<CoverageParam, string>, combo: CoverageCombination) => {
       if (i === classes.length) {
@@ -200,5 +234,6 @@ export function projectCommandCoverage(
       literals: Object.fromEntries(classes.map((c) => [c.p, c.literals])), covered: mergeCovered(covered, classes),
     });
   }
+  if (over !== undefined) throw new CoverageLimitError(over, overCovered || out.length > 0);
   return out;
 }

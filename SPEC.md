@@ -5855,19 +5855,26 @@ least one command on, and for each the request forms its recorded ceiling covers
   were read from the contract store and verified by digest (§13.7), `missing` when one is absent,
   and `invalid` when one does not verify. An instance whose spec row is deleted is not listed.
 - `commands` holds each declared command whose request forms the ceiling covers, as
-  `{ name, class, forms, instances? }`. `instances` is present only when some instances do not
-  declare the command. A form is `{ rail, route?, mode?, literals, covered }`, where `rail` is
+  `{ name, class, forms, instances? }`. Instances that declare one name with a different class,
+  targeting or mode set give one entry per declaration, each projected over the instances that
+  declare it. `instances` is present only when some instances do not declare that entry's
+  declaration. A form is `{ rail, route?, mode?, literals, covered }`, where `rail` is
   `ep`, `ep.v1` or `epj`. For each parameter position the form uses (`instanceId`, `targetOwner`,
-  `targetActor`, `targetUid`, `nonce`), `literals` lists the tokens the ceiling names there, plus
-  the registered instance ids at `instanceId`. `covered` lists the combinations the ceiling permits:
-  at each position a literal, `null` for any value the ceiling does not name, or `"*"` for every
-  value.
-- `unprojected` names the commands that have more than 4096 combinations and were not projected.
+  `targetActor`, `targetUid`, `nonce`), `literals` lists the tokens named there by the ceiling
+  patterns that can match a subject of the form, plus the ids of the instances that declare it at
+  `instanceId`.
+  `covered` lists the combinations the ceiling permits: at each position a literal, `null` for any
+  value those patterns do not name, or `"*"` for every value.
+- `unprojected` names the commands that have a form with more than 4096 combinations and that the
+  ceiling permits at least one request subject of. Their forms are not listed.
 
 The registry decides each combination by matching one representative subject against the ceiling
-with the native subject rules, allow and then deny. It leaves out an endpoint with no covered and no
-unprojected command, including one whose declarations it cannot read, so an answer never names an
-endpoint, command or form the ceiling does not cover.
+with the native subject rules, allow and then deny. For a form past the limit it builds one subject
+per allow pattern that can match the form, from the pattern's literals and from values no pattern
+names, and matches each against the ceiling the same way. The form is covered only when one of them
+is permitted. It leaves out an endpoint with no covered and no unprojected command, including one
+whose declarations it cannot read, so an answer never names an endpoint, command or form the
+ceiling does not cover.
 
 **The ceiling.** On a space with a permission system the request rides `ep.v1` (§13.15). The
 registry reads the ceiling recorded for the generation the broker pinned on the subject, with a
@@ -5878,12 +5885,23 @@ admits an effect. `source` is then `recorded-ceiling`, and the broker or the end
 refuse a listed command. On a space without a permission system the registry lists every registered
 endpoint with every declared command and empty `forms`, and `source` is `no-permission-system`.
 
+**Refusals.** A failed read of the caller's ceiling refuses with `permission-denied` when the
+generation is not live and with `unavailable` otherwise. A failed read of the space's records
+refuses with `unavailable`. Each refusal carries a fixed message that names no generation, key or
+endpoint, and the detail goes to the registry's own log. An instance whose stored declaration does
+not verify is `invalid` and does not fail the answer.
+
 **Paging.** Rows are in endpoint-name order. A page holds at most `limit` rows and is cut short to
 fit one broker message; `next` is then its last endpoint, and a page without `next` is the last. A
 single row that does not fit in one message refuses with `resource-exhausted`.
 
 **No answer.** A client that gets no answer from the registry reports that and lists nothing. It
 never builds a listing from `describe`, presence or another endpoint.
+
+**Client.** A client drops its cached `describe` of every endpoint a page lists, so its next
+`describe` of one reads the surface afresh. It may describe the registry on one connection and ask
+over another connection of the same caller triple, such as a manager-call connection whose view
+holds no registry `describe`; the answer is that connection's view.
 
 ---
 

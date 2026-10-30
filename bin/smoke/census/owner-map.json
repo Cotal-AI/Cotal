@@ -1736,6 +1736,8 @@
   "tool:cotal_endpoints": "pending:endpoints",
   "tool:cotal_endpoints.after": "pending:endpoints --after",
   "tool:cotal_endpoints.limit": "pending:endpoints --limit",
+  "tool:cotal_endpoints.view": "pending:endpoints --view",
+  "tool:cotal_endpoints.instance": "pending:endpoints --instance",
   "tool:cotal_docs": "current:docs",
   "tool:cotal_docs.page": "current:docs",
   "tool:cotal_docs.query": "current:docs --search",

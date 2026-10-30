@@ -403,7 +403,7 @@ Read the workspace persona catalog the manager owns (.cotal/agents). Omit `name`
 
 *list the endpoints you can call*
 
-List the endpoints registered in this space that this session can call, and for each one the commands its grants cover and the request forms they allow. The space's registry answers from the grants recorded when this session's credential was issued, so the broker or the endpoint can still refuse a listed command. Endpoints where this session holds no command are left out. Call cotal_describe for a command's input schema. A page holds up to 100 endpoints; pass the previous page's `next` as `after` for the next one.
+List the endpoints registered in this space that this session can call, and for each one the commands its grants cover and the request forms they allow. The space's registry answers from the grants recorded when this session's credential was issued, so the broker or the endpoint can still refuse a listed command. Endpoints where this session holds no command are left out, and so are endpoints whose command declarations cannot be read. A command whose grants are too many to list form by form is named under `unprojected`. On a user-auth mesh manager commands ride a separate manager-call credential; pass view="manager" to list what that credential can call. Call cotal_describe for a command's input schema. A page holds up to 100 endpoints; pass the previous page's `next` as `after` for the next one.
 
 - **Side-effect:** none; asks the space's registry which endpoints and commands your recorded grants cover.
 - **Available:** always; a credential with no listing binding is told so, and where no registry answers the tool says so and lists nothing.
@@ -413,6 +413,8 @@ List the endpoints registered in this space that this session can call, and for 
 |---|---|---|---|
 | `after` | string | no | The `next` value from the previous page. |
 | `limit` | number | no | Endpoints per page (default 100). |
+| `view` | `session` \| `manager` | no | `session` (default): this session's own credential. `manager`: its manager-call credential. |
+| `instance` | string | no | Manager view only: the manager instance whose call credential to use. |
 
 ## `cotal_describe`
 

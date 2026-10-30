@@ -39,10 +39,13 @@ try {
   const contracts = await contractStoreContext(nc, space);
   const exp = Math.floor(Date.now() / 1000) + 3600;
 
-  const command = (name: string) => ({ name, class: "ephemeral", targeted: false, capability: name, inputDigest: VOID_SCHEMA_DIGEST, outputDigest: VOID_SCHEMA_DIGEST });
+  /** An ephemeral command with no payload; `exact` makes it targeted in exact mode. */
+  const command = (name: string, exact = false) => ({
+    name, class: "ephemeral", capability: name, inputDigest: VOID_SCHEMA_DIGEST, outputDigest: VOID_SCHEMA_DIGEST, ...(exact ? { targeted: true, modes: ["exact"] } : { targeted: false }),
+  });
   /** Publish a cluster and return its closure digest. `publish: false` leaves the artifacts out. */
-  const cluster = async (urn: string, names: string[], publish = true) => {
-    const document = { urn, revision: 1, attributes: [], events: [], commands: names.map(command) };
+  const cluster = async (urn: string, names: string[], publish = true, exact = false) => {
+    const document = { urn, revision: 1, attributes: [], events: [], commands: names.map((n) => command(n, exact)) };
     const { manifest, closureDigest } = singleDocumentClosure(document);
     if (publish) for (const value of [document, manifest]) await publishContractArtifact(contracts, contractArtifactCanonicalBytes(value));
     return closureDigest;
@@ -53,7 +56,7 @@ try {
     await records.put(`svc.${token}.${instanceId}.status`, JSON.stringify({ epoch: 1, state: "ready", observedSpecRevision: 1 }));
   };
 
-  const [A1, A2, A3, B1, G1, D1] = [mintLifecycleUid(), mintLifecycleUid(), mintLifecycleUid(), mintLifecycleUid(), mintLifecycleUid(), mintLifecycleUid()];
+  const [A1, A2, A3, B1, G1, D1, E1, T1] = Array.from({ length: 8 }, () => mintLifecycleUid());
   await register("alpha.example", A1, await cluster("ai.example.alpha", ["read", "write"]));
   await register("alpha.example", A2, await cluster("ai.example.alpha.ro", ["read"]));
   await register("alpha.example", A3, await cluster("ai.example.alpha.next", ["read"], false));
@@ -61,6 +64,8 @@ try {
   await register("gamma.example", G1, await cluster("ai.example.gamma", ["look"], false));
   await register("delta.example", D1, await cluster("ai.example.delta", ["gone"]));
   await records.delete(`svc.delta_example.${D1}.spec`);
+  await register("epsilon.example", E1, await cluster("ai.example.epsilon", ["poke"]));
+  await register("eta.example", T1, await cluster("ai.example.eta", ["set"], true, true));
 
   const caller = { owner: DEV_OWNER, actor: newIdentity().id, uid: mintLifecycleUid() };
   const generation = mintGeneration(exp);
@@ -73,7 +78,8 @@ try {
   await store.release(await store.stage({ version: 1, ref, sources: [], permissions: importNativeSubjectPermissions({ pub: { allow: rows } }), expiresAt: exp }), async () => {});
 
   const reads = await natsRegistryReads(nc, space);
-  const authed: RegistryAnswerOptions = { space, mode: "authed", reads };
+  const logged: string[] = [];
+  const authed: RegistryAnswerOptions = { space, mode: "authed", reads, log: (line) => logged.push(line) };
   const ctxFor = (c: EpCaller, replyFits?: (data: unknown, ceiling: number) => boolean) => ({
     subject: parseEpSubject(epRequestSubject(space, { route: { mode: "one" }, endpoint: "registry", command: "endpoints", caller: c, nonce: randomBytes(16).toString("base64url") })) as ParsedEpRequest,
     ...(replyFits ? { replyFits } : {}),
@@ -117,15 +123,89 @@ try {
     suite.check("a page that would not fit in one reply is cut short with a cursor", tight.rows.length === 1 && tight.next === "alpha.example", tight.next);
   }
 
+  {
+    // Deny rows naming 64 instance ids and 64 nonces on epsilon's instance route put that form past
+    // the projection limit. Only a ceiling that also admits a subject of the command names it.
+    const over = async (allowEpsilon: boolean, denyAll = false) => {
+      const c = { ...caller, actor: newIdentity().id, uid: mintLifecycleUid() };
+      const g = mintGeneration(exp);
+      const ci = { ...c, generation: g } as EpCaller;
+      const deny = Array.from({ length: 64 }, () => epRequestSubject(space, {
+        route: { mode: "inst", instanceId: mintLifecycleUid() }, endpoint: "epsilon.example", command: "poke", caller: ci, nonce: randomBytes(16).toString("base64url"),
+      }));
+      // A trailing `>` after the command token on every route: each poke subject this caller can send.
+      if (denyAll)
+        for (const route of [{ mode: "one" }, { mode: "all" }, { mode: "inst", instanceId: E1 }] as const) {
+          const tokens = epRequestSubject(space, { route, endpoint: "epsilon.example", command: "poke", caller: ci, nonce: randomBytes(16).toString("base64url") }).split(".");
+          deny.push([...tokens.slice(0, tokens.indexOf("poke") + 1).map((t) => (t === E1 ? "*" : t)), ">"].join("."));
+        }
+      const allow = [
+        ...epRequestGrantRows(space, { endpoint: "beta.example", command: "ping" }, ci),
+        ...(allowEpsilon ? epRequestGrantRows(space, { endpoint: "epsilon.example", command: "poke" }, ci) : []),
+      ];
+      await store.release(await store.stage({ version: 1, ref: { space, ...c, generation: g }, sources: [], permissions: importNativeSubjectPermissions({ pub: { allow, deny } }), expiresAt: exp }), async () => {});
+      return (await answerEndpoints(authed, ctxFor(ci), {})).rows.find((r) => r.endpoint === "epsilon.example");
+    };
+    const denied = await over(false);
+    suite.check("a command past the projection limit that the ceiling admits no subject of is left out", denied === undefined, denied);
+    const admitted = await over(true);
+    suite.check("a command past the projection limit that the ceiling admits a subject of is named unprojected",
+      admitted?.unprojected?.join() === "poke" && admitted.commands.length === 0, admitted);
+    const wildDenied = await over(true, true);
+    suite.check("a command past the projection limit whose every subject a trailing-wildcard deny refuses is left out", wildDenied === undefined, wildDenied);
+  }
+
+  {
+    // Exact-target rows name 16 owners, actors and uids at the target positions eta's exact-mode
+    // command uses: 17^3 classes if every pattern counted, past the 4096 limit.
+    const exactRows = (endpoint: string, command: string, c: EpCaller, n: number) => Array.from({ length: n }, (_, i) => epRequestGrantRows(space, {
+      endpoint, command, target: { mode: "exact", tOwner: `own${i}`, tActor: `act${i}`, tUid: mintLifecycleUid() },
+    }, c)).flat();
+    const etaFor = async (rows: (c: EpCaller) => string[]) => {
+      const c = { ...caller, actor: newIdentity().id, uid: mintLifecycleUid() };
+      const g = mintGeneration(exp);
+      const ci = { ...c, generation: g } as EpCaller;
+      await store.release(await store.stage({ version: 1, ref: { space, ...c, generation: g }, sources: [], permissions: importNativeSubjectPermissions({ pub: { allow: rows(ci) } }), expiresAt: exp }), async () => {});
+      const answer = await answerEndpoints(authed, ctxFor(ci), {});
+      return { next: answer.next, eta: answer.rows.find((r) => r.endpoint === "eta.example") };
+    };
+    const unrelated = await etaFor((c) => [...epRequestGrantRows(space, { endpoint: "alpha.example", command: "read" }, c), ...exactRows("beta.example", "ping", c, 16)]);
+    suite.check("rows on another endpoint never make an endpoint the caller holds nothing on appear, even past the projection limit",
+      unrelated.eta === undefined && unrelated.next === undefined, unrelated);
+    const held = await etaFor((c) => [...exactRows("beta.example", "ping", c, 16), ...exactRows("eta.example", "set", c, 1)]);
+    suite.check("literals on another endpoint do not push a held command past the projection limit",
+      held.eta?.unprojected === undefined && held.eta?.commands.map((c) => c.name).join() === "set"
+        && held.eta.commands[0]!.forms.every((f) => f.literals.targetActor?.join() === "act0"), held.eta);
+    const many = await etaFor((c) => exactRows("eta.example", "set", c, 16));
+    suite.check("a held command past the projection limit is named unprojected", many.eta?.unprojected?.join() === "set" && many.eta.commands.length === 0, many.eta);
+  }
+
   const legacy = await refusal(() => answerEndpoints(authed, ctxFor(caller), {}));
   suite.check("a legacy-rail request on an authed mesh is refused as unbound caller authority",
     legacy instanceof EpEnvelopeError && legacy.code === "permission-denied" && legacy.details?.some((d) => (d as { kind?: string }).kind === EP_UNBOUND_CALLER_AUTHORITY) === true, legacy);
-  const unknown = await refusal(() => answerEndpoints(authed, ctxFor({ ...caller, generation: mintGeneration(exp) } as EpCaller), {}));
+  const unrecorded = mintGeneration(exp);
+  const unknown = await refusal(() => answerEndpoints(authed, ctxFor({ ...caller, generation: unrecorded } as EpCaller), {}));
   suite.check("a generation with no recorded evidence is an error, never an empty listing", unknown instanceof Error, unknown);
+  suite.check("a ceiling that cannot be read is refused with a message that names no generation or key",
+    unknown instanceof EpEnvelopeError && unknown.code === "permission-denied" && !unknown.message.includes(unrecorded) && !unknown.message.includes(caller.actor)
+      && logged.some((line) => line.includes(unrecorded)),
+    { error: unknown instanceof Error ? unknown.message : unknown, logged });
 
-  const open = await answerEndpoints({ space, mode: "open", reads }, ctxFor(caller), {});
+  {
+    // A spec row that does not parse fails the read; the caller's error names no endpoint or key.
+    const Z1 = mintLifecycleUid();
+    await records.put(`svc.zeta_example.${Z1}.spec`, JSON.stringify({ endpoint: "zeta.example" }));
+    const failed = await refusal(() => answerEndpoints(authed, ctxFor(issued), {}));
+    await records.delete(`svc.zeta_example.${Z1}.spec`);
+    suite.check("a records read that fails is refused with a message that names no endpoint or key",
+      failed instanceof EpEnvelopeError && failed.code === "unavailable" && !/zeta|svc\.|_example/.test(failed.message)
+        && logged.some((line) => line.includes("service record does not validate")),
+      { error: failed instanceof Error ? `${(failed as EpEnvelopeError).code}: ${failed.message}` : failed, logged });
+  }
+
+  const open = await answerEndpoints({ space, mode: "open", reads, log: (line) => logged.push(line) }, ctxFor(caller), {});
   suite.check("an open mesh lists every registered endpoint as callable",
-    open.source === "no-permission-system" && open.rows.map((r) => r.endpoint).join() === "alpha.example,beta.example,gamma.example"
+    open.source === "no-permission-system" && open.rows.map((r) => r.endpoint).join() === "alpha.example,beta.example,epsilon.example,eta.example,gamma.example"
       && open.rows.find((r) => r.endpoint === "gamma.example")?.instances[0]?.artifacts === "missing", open.rows.map((r) => r.endpoint));
 } finally {
   if (nc) await nc.close();

@@ -82,7 +82,11 @@ so the broker or the endpoint can still refuse a listed command. The answer says
 `no-permission-system`. Each endpoint row also lists its registered instances, the state each one
 recorded, and whether its command declarations verified. A page holds up to 100 endpoints. When
 the registry does not answer, the tool says so and lists nothing; it does not build a list from
-`describe` or presence. See [SPEC §13.20](../SPEC.md#1320-registry).
+`describe` or presence. A listing drops the session's cached `describe` of every endpoint it lists.
+On a user-auth mesh manager commands ride a separate manager-call credential, so
+`cotal_endpoints` with `view: "manager"` opens that credential as a manager call does and lists what
+it can call. A session whose bearer comes from its host has no manager-call credential, and the tool
+says so. See [SPEC §13.20](../SPEC.md#1320-registry).
 
 The manager's `vitals` command reports one invocation-time sample of host CPU count and load,
 available and total memory, and bounded local filesystem capacity. It is untargeted but resolves to

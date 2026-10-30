@@ -7,9 +7,11 @@ import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Kvm } from "@nats-io/kv";
 import {
-  CotalEndpoint, EpEnvelopeError, createSpaceAuth, isReachable, mintCreds, mintLifecycleUid, newIdentity, serverConfig, setupSpaceStreams,
-  withIssuerSession, type RegistryEndpointsOutput,
+  CotalEndpoint, DEV_OWNER, EpEnvelopeError, RECORD_KINDS, createSpaceAuth, dialerFor, isReachable, mintCreds, mintLifecycleUid, newIdentity, recordSpecKey,
+  recordsBucket, serverConfig, setupSpaceStreams, standaloneConnectOpts,
+  withIssuerSession, type EpCapability, type RegistryEndpointsOutput,
 } from "@cotal-ai/core";
 import { SMOKE_BROKER_TOKEN, createSuite, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { fixtureCluster, registerFixture, runRegistryFixture } from "./_fixture.js";
@@ -29,7 +31,7 @@ const log = openSync(join(dir, "broker.log"), "w");
 const broker = spawn("nats-server", ["-c", join(dir, "broker.conf")], { stdio: ["ignore", log, log] });
 const releaseBroker = teardownOnSignal(broker, dir);
 const endpoints: CotalEndpoint[] = [];
-let registry: { stop(): Promise<void> } | undefined;
+let registry: { stop(): Promise<void>; logged: string[] } | undefined;
 
 try {
   const provisioner = await mintCreds(auth, newIdentity(), "provisioner");
@@ -42,10 +44,10 @@ try {
   registry = await runRegistryFixture(mesh);
 
   const exp = Math.floor(Date.now() / 1000) + 3600;
-  const agent = async (opts: { listing: boolean; expiresAt?: number }) => {
+  const agent = async (opts: { listing: boolean; expiresAt?: number; extra?: EpCapability[] }) => {
     const identity = newIdentity();
     const lifecycleUid = mintLifecycleUid();
-    const mintOpts = { lifecycleUid, endpointCapabilities: [{ endpoint: "alpha.example", command: "read" }], ...(opts.expiresAt !== undefined ? { expiresAt: opts.expiresAt } : {}) };
+    const mintOpts = { lifecycleUid, endpointCapabilities: [{ endpoint: "alpha.example", command: "read" }, ...(opts.extra ?? [])], ...(opts.expiresAt !== undefined ? { expiresAt: opts.expiresAt } : {}) };
     const creds = opts.listing
       ? await withIssuerSession({ servers, space, auth, tls: false }, (session) => mintCreds(auth, identity, "agent", { ...mintOpts, listingSeam: session }))
       : await mintCreds(auth, identity, "agent", mintOpts);
@@ -82,6 +84,59 @@ try {
   const asked = await before.invokeService("registry", "endpoints", {}).catch((e: unknown) => e);
   suite.check("the legacy rail cannot ask the registry: the broker refuses the publish",
     asked instanceof EpEnvelopeError && asked.code === "permission-denied" && asked.outcome === "not-executed", asked instanceof Error ? asked.message : asked);
+
+  // Two theta instances declare `set`: the first by instance id untargeted, the second in owner mode.
+  const [plain, owned] = [mintLifecycleUid(), mintLifecycleUid()].sort();
+  await registerFixture(mesh, "theta.example", fixtureCluster("ai.example.theta", ["set"]), { instanceId: plain });
+  await registerFixture(mesh, "theta.example", fixtureCluster("ai.example.theta.owned", ["set"], ["owner"]), { instanceId: owned });
+  const thetaResult = await (await agent({ listing: true, expiresAt: exp, extra: [{ endpoint: "theta.example", command: "set", target: { mode: "owner", tOwner: DEV_OWNER } }] }))
+    .listEndpoints({}).catch((e: unknown) => e as Error);
+  const theta = thetaResult instanceof Error || thetaResult.unbound ? undefined : thetaResult.page?.rows.find((r) => r.endpoint === "theta.example");
+  suite.check("each declaration of a command is projected over the instances that declare it",
+    theta?.commands.length === 1 && theta.commands[0]!.instances?.join() === owned && theta.commands[0]!.forms.length > 0 && theta.commands[0]!.forms.every((f) => f.mode === "owner"),
+    thetaResult instanceof Error ? thetaResult.message : JSON.stringify(theta ?? (thetaResult.unbound ? "unbound" : thetaResult.reply.reply)));
+
+  // A zeta spec row that does not parse, written with the instance's own executor credential.
+  const Z1 = mintLifecycleUid();
+  const executor = await dialerFor(servers)({ servers, ...standaloneConnectOpts({
+    creds: await mintCreds(auth, newIdentity(), "endpoint-serve-executor", { endpointServeExecutor: { endpoint: "zeta.example", instanceId: Z1 } }), tls: false,
+  }) });
+  const zetaKey = recordSpecKey(RECORD_KINDS.svc, ["zeta.example", Z1]);
+  try {
+    const records = await new Kvm(executor).open(recordsBucket(space));
+    await records.put(zetaKey, JSON.stringify({ endpoint: "zeta.example" }));
+    const refused = await listed.listEndpoints({}).catch((e: unknown) => e as Error);
+    const error = refused instanceof Error || refused.unbound ? undefined : refused.reply.reply.error;
+    suite.check("a failed records read reaches the agent as a fixed refusal that names no endpoint or key, and its detail goes to the registry's log",
+      error?.code === "unavailable" && error.message === "the registry could not read the space's endpoint records; nothing is listed"
+        && registry!.logged.some((line) => line.includes("service record does not validate")),
+      { reply: refused instanceof Error ? refused.message : error, logged: registry!.logged });
+    await records.delete(zetaKey);
+  } finally {
+    await executor.close();
+  }
+
+  // The registry registers again under a new instance while the agent holds its old describe.
+  const described = (await listed.describeService("registry")).responder.instanceId;
+  await registry!.stop();
+  registry = await runRegistryFixture(mesh);
+  const cached = (await listed.describeService("registry")).responder.instanceId;
+  const relisted = await listed.listEndpoints({}).catch((e: unknown) => e as Error);
+  const fresh = await listed.describeService("registry").then((s) => s.responder.instanceId, (e: unknown) => (e as Error).message);
+  suite.check("a listing drops the cached describe of every endpoint it reports",
+    cached === described && !(relisted instanceof Error) && !relisted.unbound && relisted.page?.rows.some((r) => r.endpoint === "registry") === true && fresh !== described,
+    { described, cached, fresh, relisted: relisted instanceof Error ? relisted.message : "ok" });
+
+  // One delta instance verifies; the other's closure manifest digest holds bytes that do not. Last,
+  // because before the fix one corrupt artifact failed every later listing.
+  await registerFixture(mesh, "delta.example", fixtureCluster("ai.example.delta", ["poke"]));
+  await registerFixture(mesh, "delta.example", fixtureCluster("ai.example.delta.next", ["poke"]), { corrupt: true });
+  const deltaResult = await (await agent({ listing: true, expiresAt: exp, extra: [{ endpoint: "delta.example", command: "poke" }] })).listEndpoints({}).catch((e: unknown) => e as Error);
+  const delta = deltaResult instanceof Error || deltaResult.unbound ? undefined : deltaResult.page?.rows.find((r) => r.endpoint === "delta.example");
+  suite.check("an instance whose stored declaration does not verify is listed invalid, and the listing still answers",
+    delta?.instances.map((i) => i.artifacts).sort().join() === "invalid,verified" && delta.commands.map((c) => c.name).join() === "poke"
+      && delta.commands[0]!.instances?.join() === delta.instances.find((i) => i.artifacts === "verified")?.instanceId,
+    deltaResult instanceof Error ? deltaResult.message : JSON.stringify(deltaResult.unbound ? "unbound" : deltaResult.reply.reply));
 } finally {
   for (const ep of endpoints) await ep.stop().catch(() => {});
   await registry?.stop().catch(() => {});

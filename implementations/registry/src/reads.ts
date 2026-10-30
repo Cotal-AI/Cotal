@@ -9,6 +9,8 @@ import { Kvm } from "@nats-io/kv";
 import type { NatsConnection } from "@nats-io/transport-node";
 import {
   assertLifecycleToken,
+  ContractInvalidError,
+  ContractStoreCorruptError,
   contractStoreContext,
   EpEnvelopeError,
   endpointNameOf,
@@ -71,7 +73,14 @@ export async function natsRegistryReads(nc: NatsConnection, space: string): Prom
     },
     artifact: async (hex) => {
       if (artifacts.has(hex)) return artifacts.get(hex);
-      const bytes = await fetchContractArtifact(contracts, hex);
+      let bytes: Uint8Array | undefined;
+      try {
+        bytes = await fetchContractArtifact(contracts, hex, { lastOnly: true });
+      } catch (e) {
+        // Bytes at the digest that do not verify are an invalid declaration, not a failed read.
+        if (e instanceof ContractStoreCorruptError) throw new ContractInvalidError(e.message);
+        throw e;
+      }
       if (bytes === undefined) return undefined;
       const value = JSON.parse(dec.decode(bytes)) as unknown;
       artifacts.set(hex, value);

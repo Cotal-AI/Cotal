@@ -1867,23 +1867,29 @@ export function cotalToolSpecs(
       name: "cotal_endpoints",
       title: "Cotal: list the endpoints you can call",
       description:
-        "List the endpoints registered in this space that this session can call, and for each one the commands its grants cover and the request forms they allow. The space's registry answers from the grants recorded when this session's credential was issued, so the broker or the endpoint can still refuse a listed command. Endpoints where this session holds no command are left out. Call cotal_describe for a command's input schema. A page holds up to 100 endpoints; pass the previous page's `next` as `after` for the next one.",
+        "List the endpoints registered in this space that this session can call, and for each one the commands its grants cover and the request forms they allow. The space's registry answers from the grants recorded when this session's credential was issued, so the broker or the endpoint can still refuse a listed command. Endpoints where this session holds no command are left out, and so are endpoints whose command declarations cannot be read. A command whose grants are too many to list form by form is named under `unprojected`. On a user-auth mesh manager commands ride a separate manager-call credential; pass view=\"manager\" to list what that credential can call. Call cotal_describe for a command's input schema. A page holds up to 100 endpoints; pass the previous page's `next` as `after` for the next one.",
       schema: {
         after: z.string().min(1).max(128).optional().describe("The `next` value from the previous page."),
         limit: z.number().int().min(1).max(REGISTRY_PAGE_LIMIT).optional().describe(`Endpoints per page (default ${REGISTRY_PAGE_LIMIT}).`),
+        view: z.enum(["session", "manager"]).optional().describe("`session` (default): this session's own credential. `manager`: its manager-call credential."),
+        instance: z.string().min(1).max(64).optional().describe("Manager view only: the manager instance whose call credential to use."),
       },
-      async run(agent, _config, { after, limit }: { after?: string; limit?: number }) {
+      async run(agent, _config, { after, limit, view, instance }: { after?: string; limit?: number; view?: "session" | "manager"; instance?: string }) {
+        if (instance !== undefined && view !== "manager") return err("`instance` selects the manager for view=\"manager\" only.");
+        const label = view === "manager" ? "the manager-call credential" : "this session";
         try {
-          const r = await agent.ep.listEndpoints({ ...(after !== undefined ? { after } : {}), ...(limit !== undefined ? { limit } : {}) });
+          const input = { ...(after !== undefined ? { after } : {}), ...(limit !== undefined ? { limit } : {}) };
+          const r = view === "manager" ? await agent.listManagerEndpoints(input, instance) : await agent.ep.listEndpoints(input);
+          if ("none" in r) return err(`There is no manager view: ${r.none}.`);
           if (r.unbound)
-            return err("This credential has no listing binding, so the registry cannot list what it may call. A credential issued before the listing existed, or one with no expiry, has none; a new credential does.");
+            return err(`The credential of ${label} has no listing binding, so the registry cannot list what it may call. A credential issued before the listing existed, or one with no expiry, has none; a new credential does.`);
           if (r.reply.reply.ok !== true) {
             const e = r.reply.reply.error;
             return err(`The registry refused the listing: ${e?.code ?? "error"}: ${e?.message ?? "no message"}`);
           }
           const page = r.page!;
           const more = page.next !== undefined ? ` More endpoints follow; pass after="${page.next}".` : "";
-          return endpointData(`${page.rows.length} endpoints (source: ${page.source}).${more}`, page);
+          return endpointData(`${page.rows.length} endpoints ${label} can call (source: ${page.source}).${more}`, page);
         } catch (e) {
           if (e instanceof EpEnvelopeError && e.details?.some((d) => d.kind === EP_UNANSWERED))
             return err("The registry did not answer, so nothing is listed. The space may run no registry, or it is down; other tools are unaffected.");
