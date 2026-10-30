@@ -428,6 +428,7 @@
     "smoke:preflight": "tsx packages/workspace/smoke/preflight.smoke.ts",
     "smoke:pid-contract": "tsx packages/workspace/smoke/pid.smoke.ts",
     "smoke:absent-process-record": "tsx implementations/cli/smoke/absent-process-record.smoke.ts",
+    "smoke:process-record": "pnpm --filter @cotal-ai/workspace typecheck && tsx packages/workspace/smoke/process-record.smoke.ts",
     "smoke:team-stopped-attempt": "tsx implementations/cli/smoke/team-stopped-attempt.smoke.ts",
     "smoke:pid-identity": "pnpm --filter @cotal-ai/workspace... build && tsx packages/workspace/smoke/pid-identity.smoke.ts",
     "smoke:service-host-record": "tsx implementations/cli/smoke/service-host-record.smoke.ts",
