@@ -101,6 +101,11 @@ not the full gate or a replacement name for a smaller testing tier.
 
 ## Workspace commands
 
+`pnpm smoke:presence-render-census` puts each synthetic probe in a fresh private temporary
+directory under the scanned source roots and removes only that directory. Selected-probe mode
+uses the same ownership rule. Probe inputs are test scratch, not CLI source to commit or publish;
+the full suite checks that an existing file at the old fixed probe name survives both modes.
+
 `pnpm smoke:required-arg-seam --census` prints the actual classified call sites. Review each
 added or removed site before updating `required-arg-sites.json` and the total/smoke pins.
 The per-file counts detect a hidden site replaced by a call in another file, but not a
