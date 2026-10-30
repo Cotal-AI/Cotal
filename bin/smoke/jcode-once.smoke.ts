@@ -123,8 +123,15 @@ try {
   const spawnOnce = async (marker: string) => {
     const log = join(scratch, `${marker}.jsonl`);
     process.env.FAKE_JCODE_LOG = log;
-    const id = `jonce-${seq++}`.padEnd(43, "j");
-    const accepted = await call("spawn", { name: "helper", agent: "jcode", cwd: workspaceRoot, events: false, prompt: `do the ${marker} task`, once: {} }, id);
+    // While the previous seat named helper is still being retired, the manager refuses the name and
+    // says to retry. That refusal alone is retried, under a new id each time, for up to 30 s.
+    let id: string, accepted: Reply;
+    for (const end = Date.now() + 30_000; ;) {
+      id = `jonce-${seq++}`.padEnd(43, "j");
+      accepted = await call("spawn", { name: "helper", agent: "jcode", cwd: workspaceRoot, events: false, prompt: `do the ${marker} task`, once: {} }, id);
+      if (accepted.ok !== false || !/reserved pending retirement/.test(accepted.error?.message ?? "") || Date.now() >= end) break;
+      await wait(500);
+    }
     const name = accepted.data?.name as string | undefined;
     const seat = name !== undefined && await until(() => M.agents.has(name), 20_000) ? M.agents.get(name) : undefined;
     const terminal = await resultOf(id, 240_000);
