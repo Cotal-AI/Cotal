@@ -7,7 +7,8 @@
  * harness never acknowledges fails the task `delivery-unconfirmed` and is not sent again. A host
  * killed without its teardown leaves its Jcode tree running, and the task is not cancelled, nor the
  * seat's debt cleared, until the connector proves that tree gone by the identities the host
- * recorded under the seat's uid.
+ * recorded under the seat's uid. A once seat whose home holds an earlier same-name seat's session
+ * starts a fresh session and never lists or attaches that one.
  *
  * Run: pnpm smoke:jcode-once   (needs nats-server + node on PATH; Linux)
  */
@@ -84,7 +85,7 @@ saveSpaceAuth(authDir(workspaceRoot), auth);
 writeFileSync(join(workspaceRoot, ".cotal", "agents", "helper.md"), "---\nname: helper\nrole: worker\n---\n");
 // The fake reads its knobs from its environment, which a launch passes through only by name.
 writeFileSync(join(workspaceRoot, ".cotal", "config.json"), JSON.stringify({
-  spawn: { env: ["FAKE_JCODE_LOG", "FAKE_JCODE_DAEMON", "FAKE_JCODE_RUN_WITHOUT_ACCEPT_ON_CONTENT", "FAKE_JCODE_RUN_WITHOUT_ACCEPT_HOLD_FILE", "FAKE_JCODE_HOLD_TURN_ON_CONTENT", "FAKE_JCODE_HOLD_TURN_RELEASE_FILE"] },
+  spawn: { env: ["FAKE_JCODE_LOG", "FAKE_JCODE_DAEMON", "FAKE_JCODE_SESSION_STATE", "FAKE_JCODE_RUN_WITHOUT_ACCEPT_ON_CONTENT", "FAKE_JCODE_RUN_WITHOUT_ACCEPT_HOLD_FILE", "FAKE_JCODE_HOLD_TURN_ON_CONTENT", "FAKE_JCODE_HOLD_TURN_RELEASE_FILE"] },
 }));
 process.env.FAKE_JCODE_DAEMON = "1";
 
@@ -129,7 +130,7 @@ try {
     const terminal = await resultOf(id, 240_000);
     const readyAt = Date.now();
     const task = digestIdToken(`${id}:once`);
-    const entries = () => { try { return readFileSync(log, "utf8").trim().split("\n").map((l) => JSON.parse(l) as { ev: string; content?: string; pid?: number }); } catch { return []; } };
+    const entries = () => { try { return readFileSync(log, "utf8").trim().split("\n").map((l) => JSON.parse(l) as { ev: string; content?: string; pid?: number; req?: string; frame?: { req?: string } }); } catch { return []; } };
     const runsOf = () => entries().filter((e) => e.ev === "turn_run" && e.content?.includes(marker)).length;
     // The identities this seat's host recorded under its uid, read while the record is live.
     const identities = () => {
@@ -143,7 +144,7 @@ try {
       }
       return [];
     };
-    return { id, name, seat, terminal, readyAt, task, runsOf, identities };
+    return { id, name, seat, terminal, readyAt, task, runsOf, identities, entries };
   };
   const goneSeat = (name: string, seat: Seat) => until(() => seat.handle.status() === "exited" && M.agents.get(name) !== seat, 30_000);
   const debtCleared = (task: string) => until(async () => (await readGoalIndex(M.goalWriter.ctx, refOf(task))) === undefined, 60_000);
@@ -196,6 +197,20 @@ try {
   check("the task is cancelled `seat-exited`", rc?.state === "cancelled" && (rc.data as { reason?: string }).reason === "seat-exited", rc);
   check("...only after the tree the host left running is gone, by its recorded identities", idsC.length >= 1 && carriers(idsC).length === 0, { idsC, left: carriers(idsC) });
   check("...and the debt clears", await debtCleared(c.task));
+
+  console.log("\n4. a once seat whose home holds an earlier same-name seat's session starts a fresh one");
+  // The seat's home is keyed by space and name, so this seat lands where the seats above ran. The
+  // fake offers the session this file names, recorded for the seat's working directory, to any
+  // launch that lists sessions; a seat that is not a once seat attaches it.
+  process.env.FAKE_JCODE_SESSION_STATE = join(scratch, "earlier-session.json");
+  writeFileSync(process.env.FAKE_JCODE_SESSION_STATE, JSON.stringify({ session_id: "earlier-seat", working_dir: workspaceRoot, transcript_bytes: 4096 }));
+  const d = await spawnOnce("ONCE-FRESH");
+  delete process.env.FAKE_JCODE_SESSION_STATE;
+  const rd = await resultOf(d.task, 60_000);
+  const paths = d.entries().filter((e) => e.ev === "session_path").map((e) => e.req);
+  const listed = d.entries().some((e) => e.ev === "request" && e.frame?.req === "list_sessions");
+  check("the seat never lists its home's sessions, and creates its own instead of attaching the earlier one", !listed && paths.join() === "create_session", { listed, paths });
+  check("...and its task runs once and yields", rd?.state === "succeeded" && d.runsOf() === 1 && !!d.seat && await goneSeat(d.name!, d.seat), { rd, runs: d.runsOf() });
 } finally {
   for (const nc of conns) await nc.drain().catch(() => nc.close());
   await manager?.stop({ withAgents: true }).catch(() => {});
@@ -207,7 +222,7 @@ try {
   rmSync(scratch, { recursive: true, force: true });
 }
 
-const EXPECTED_CELLS = 13;
+const EXPECTED_CELLS = 15;
 console.log(`\n${fail === 0 && pass === EXPECTED_CELLS ? "JCODE ONCE SMOKE OK ✅" : "JCODE ONCE SMOKE FAILED"}  (${pass} passed, ${fail} failed)`);
 console.log(`COTAL_SMOKE_SENTINEL cells=${pass + fail} passed=${pass} failed=${fail}`);
 process.exit(fail === 0 && pass === EXPECTED_CELLS ? 0 : 1);

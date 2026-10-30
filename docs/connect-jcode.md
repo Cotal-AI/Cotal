@@ -94,7 +94,10 @@ largest transcript, since that is the session carrying the memory a restart woul
 away. A seat spawned under a fresh name keys a different home and starts with an
 empty transcript, so keep the same name when you want a replacement seat to continue where the
 previous one stopped. This automatic continuation is a relaunch of the seat's own private session;
-it is separate from `--resume`, which forks an outside session into the seat (below). The short
+it is separate from `--resume`, which forks an outside session into the seat (below). A once seat
+never continues a session: it starts a fresh one even when its home holds a session an earlier seat
+of the same name left, so that seat's task and history never reach it. An explicit `--resume` still
+forks the session it names. The short
 socket alias the connector derives from that home is reclaimed at every launch, so a name a stopped
 seat used stays launchable.
 

@@ -1,0 +1,25 @@
+{
+  "suite": [
+    "bin/smoke/jcode-once.smoke.ts"
+  ],
+  "guard": "a Jcode once seat starts a fresh session and never lists or attaches a session an earlier seat of the same name left in its home",
+  "command": "pnpm --filter @cotal-ai/connector-jcode build && pnpm smoke:jcode-once",
+  "afterRestore": "pnpm --filter @cotal-ai/connector-jcode build",
+  "completionMarker": "JCODE ONCE SMOKE",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/jcode-once-fresh.json",
+  "why": [
+    "A seat's Jcode home is keyed by space and name, so a once seat lands where an earlier seat of the",
+    "same name ran, and the host resumes the largest session it finds there (#789). For a once seat",
+    "that session is an earlier seat's, and its task and history reached the new task's model. F1",
+    "drops the once branch, so the host lists the home's sessions and attaches the earlier one."
+  ],
+  "mutations": [
+    {
+      "name": "F1 a once seat resumes the session an earlier same-name seat left",
+      "file": "extensions/connector-jcode/src/host.ts",
+      "find": "    } else if (onceUid !== undefined) {\n",
+      "replace": "    } else if (false) {\n",
+      "expectRed": "the seat never lists its home's sessions, and creates its own instead of attaching the earlier one"
+    }
+  ]
+}

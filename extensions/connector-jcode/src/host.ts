@@ -1968,6 +1968,10 @@ export async function runJcodeHost(): Promise<void> {
       // An operator fork names its session. It is never chosen by size among the home's others,
       // which may be left from an earlier seat of the same name.
       prior = { session_id: fork.forkId };
+    } else if (onceUid !== undefined) {
+      // A once seat is never restarted, so it has no session of its own to come back to. A session
+      // in its home is an earlier seat's of the same name, and that seat's task is not this one.
+      writeJcodeDiagnostic(`[cotal-jcode] a once seat starts a fresh session, never an earlier seat's\n`);
     } else if (isEmptyStoredSessionsDirectory(stored)) {
       writeJcodeDiagnostic(
         `[cotal-jcode] stored sessions directory is empty (${stored.path}); starting fresh without listing\n`,
