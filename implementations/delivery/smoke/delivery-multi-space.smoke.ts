@@ -64,6 +64,9 @@ const SECONDS = Number(process.env.COTAL_MSD_SECONDS ?? "30");
 const RATE = Number(process.env.COTAL_MSD_RATE ?? "2");
 if (MEASURE && (![SECONDS, RATE].every((n) => Number.isFinite(n) && n > 0)))
   throw new Error("COTAL_MSD_SECONDS and COTAL_MSD_RATE must be positive finite numbers");
+const scheduledPosts = Math.ceil(RATE * SECONDS);
+if (MEASURE && (!Number.isSafeInteger(scheduledPosts) || scheduledPosts < 1))
+  throw new Error("scheduled post count must be a positive safe integer");
 const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 async function until(test: () => boolean | Promise<boolean>, ms: number, step = 150): Promise<boolean> {
   const deadline = Date.now() + ms;
