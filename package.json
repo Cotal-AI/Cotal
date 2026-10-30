@@ -16,7 +16,7 @@
     "gen:tooldocs": "pnpm --filter @cotal-ai/connector-core... build && tsx scripts/generate-tool-docs.mjs",
     "gen:docsbundle": "node scripts/generate-docs-bundle.mjs",
     "gen:conformance": "tsx scripts/generate-conformance-corpus.ts",
-    "check:doc-comments": "node scripts/check-doc-comments.mjs",
+    "check:doc-comments": "node scripts/check-doc-comments.mjs && node scripts/check-doc-comments.smoke.mjs",
     "check:docs-voice": "node scripts/check-docs-voice.mjs",
     "check:docs-literals": "node scripts/check-docs-literals.mjs",
     "check:docs-site": "node website/scripts/sync-docs.mjs",
