@@ -162,7 +162,9 @@ body.
 The helper runs from a private snapshot, `.cotal/run/inline/<lifecycle-uid>.md`, written once the
 grant is made. It holds the body and the descriptive fields, never a grant. A crash restart refuses
 a snapshot that changed after the launch, and the manager deletes the snapshot when the helper
-retires. No spawn can name a snapshot as its persona file.
+retires. If that delete fails, a static mesh keeps the helper's name held and retries it on the
+next retirement attempt. An open or user-auth mesh logs the failure with the path and leaves the
+file for you to delete. No spawn can name a snapshot as its persona file.
 
 `save: true` also writes `.cotal/agents/<name>.md` under the requested name, for a persona worth
 reusing. The copy records the grant the spawn was checked against: every channel field, `[]`

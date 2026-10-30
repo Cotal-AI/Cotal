@@ -3756,7 +3756,9 @@ delegation bound (§13.15), and a top-level override still wins. The body is lit
 that starts with `---` names no field. The manager writes the record to a private snapshot keyed by
 the seat's lifecycle uid after the grant and before the launch, and the seat launches from it. An
 in-place restart MUST refuse a snapshot that changed after the launch, and the snapshot is removed
-when the lifecycle retires. A spawn that names a snapshot as its persona file MUST be refused. With
+when the lifecycle retires. A static manager whose removal fails keeps the name held and retries it
+with the retirement; an open or user-auth manager logs the failure and leaves the file. A spawn
+that names a snapshot as its persona file MUST be refused. With
 `save: true` the manager also writes a create-only catalog copy under the requested name. The copy
 holds the grant that was checked (every channel field named, `[]` included, and the capabilities),
 never the helper's own event channel, plus role, model, variant, description and body. A name the

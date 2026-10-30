@@ -383,6 +383,26 @@ try {
     check("and it leaves the file the write refused", existsSync(path) && readFileSync(path, "utf8") === planted);
   }
   {
+    // A crash between the refused write and its rollback, observed. The slot row alone then retires
+    // the lifecycle, and that retirement cannot tell the planted file from a snapshot its spawn wrote.
+    const planted = "planted at this path before the spawn wrote\n";
+    let accepted = { uid: "", actor: "" };
+    const internals = S.M as unknown as { trackDeprovision: (...args: unknown[]) => void };
+    const track = internals.trackDeprovision;
+    internals.trackDeprovision = () => {}; // the process died before its rollback's teardown ran
+    await spawnAs(undefined, "crashed", { persona: { prompt: "x" } }, {
+      onAccepted: (a: { lifecycleUid: string; identity: { id: string } }) => {
+        accepted = { uid: a.lifecycleUid, actor: a.identity.id };
+        writeFileSync(inlineSnapshotPath(workspaceRoot, a.lifecycleUid), planted);
+      },
+    });
+    internals.trackDeprovision = track;
+    const path = inlineSnapshotPath(workspaceRoot, accepted.uid);
+    check("control: the refused write left the planted file", existsSync(path) && readFileSync(path, "utf8") === planted);
+    await S.M.driveStaticRetirement({ id: accepted.actor, name: "crashed", lifecycleUid: accepted.uid }, true);
+    check("a retirement known only by the slot row removes a file planted at the uid's path, a stated limit", !existsSync(path));
+  }
+  {
     const before = snapshots(workspaceRoot);
     S.failLaunch.add("doomed");
     const r = await spawnAs(undefined, "doomed", { persona: { prompt: "x" } });
@@ -557,6 +577,18 @@ try {
     O.failLaunch.add("fragile");
     const r = await O.mgr.startAgent({ name: "fragile", agent: "smoke-inline", events: false, persona: { prompt: "x" } });
     check("an open-mesh spawn that fails after its snapshot removes it", !r.ok && snapshots(root).length === 0, snapshots(root));
+    // An open mesh runs no teardown that could retry: the failure is logged with the path, and the
+    // operator removes the file.
+    const stuck = okData(await O.mgr.startAgent({ name: "unremovable", agent: "smoke-inline", events: false, persona: { prompt: "x" } }));
+    const stuckPath = stuck ? inlineSnapshotPath(root, stuck.lifecycleUid) : "";
+    chmodSync(inlinePersonaDir(root), 0o500);
+    const { lines } = await errorsDuring(async () => {
+      O.seats.get("unremovable")!.exit();
+      await until(() => seatOf(O.M, "unremovable") === undefined);
+    });
+    chmodSync(inlinePersonaDir(root), 0o700);
+    check("an open-mesh retirement that cannot remove the snapshot logs its path and leaves the file", existsSync(stuckPath) && lines.some((l) => l.includes("could not be removed") && l.includes(stuckPath)), lines);
+    rmSync(stuckPath);
     const last = okData(await O.mgr.startAgent({ name: "last", agent: "smoke-inline", events: false, persona: { prompt: "x" } }));
     stoppable(O.mgr);
     const stopped = await O.mgr.stop({ withAgents: true }).then(() => "stopped", (e: unknown) => String(e));
@@ -618,6 +650,16 @@ try {
     const hosted = await U.mgr.startAgent({ name: "hosted", agent: "smoke-inline", events: false, persona: { prompt: "x" } }, spawner);
     check("control: the user-auth spawn settles on the grant's uid", okData(hosted)?.lifecycleUid === hostUid, hosted);
     check("a user-auth snapshot is keyed by the uid the grant settled on", JSON.stringify(snapshots(root)) === JSON.stringify([`${hostUid}.md`]) && seatOf(U.M, "hosted")?.launch.source.configPath === inlineSnapshotPath(root, hostUid), snapshots(root));
+    // The user-auth teardown does not remove snapshots, so a failed removal at the free is logged with
+    // the path and the operator removes the file.
+    const hostedPath = inlineSnapshotPath(root, hostUid);
+    chmodSync(inlinePersonaDir(root), 0o500);
+    const { lines } = await errorsDuring(async () => {
+      U.seats.get("hosted")!.exit();
+      await until(() => seatOf(U.M, "hosted") === undefined);
+    });
+    chmodSync(inlinePersonaDir(root), 0o700);
+    check("a user-auth retirement that cannot remove the snapshot logs its path and leaves the file", existsSync(hostedPath) && lines.some((l) => l.includes("could not be removed") && l.includes(hostedPath)), lines);
   }
 } finally {
   await stopBroker();
