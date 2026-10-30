@@ -699,7 +699,7 @@ function patternSendRefusal(pattern: string): string {
   } catch (e) {
     return `${(e as Error).message}. Nothing was sent.`;
   }
-  return `"${pattern}" is a pattern, and a post goes to one concrete channel. To reach the agents connected and following ${pattern} now, post once to one channel it matches. To reach several channels, post to each by name; cotal_channels lists them. Nothing was sent.`;
+  return `"${pattern}" is a pattern, and a post goes to one concrete channel. To reach the agents connected and following ${pattern} now, post once to one channel it matches. A pattern follow has no durable backstop, so a follower that is offline then may miss it. To reach several channels, post to each by name; cotal_channels lists them. Nothing was sent.`;
 }
 
 /** The full Cotal tool set for a given config. Renderers iterate this; `source` names the

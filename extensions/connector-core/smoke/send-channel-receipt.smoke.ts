@@ -393,6 +393,11 @@ const proto = MeshAgent.prototype as unknown as {
       refused.text,
     );
     check(
+      `the refusal for ${pattern} says a pattern follow has no durable backstop`,
+      refused.text.includes("A pattern follow has no durable backstop, so a follower that is offline then may miss it."),
+      refused.text,
+    );
+    check(
       `the refusal for ${pattern} says to post to each channel by name and where to list them`,
       refused.text.includes("post to each by name; cotal_channels lists them"),
       refused.text,

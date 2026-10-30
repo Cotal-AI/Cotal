@@ -30,6 +30,8 @@
     "",
     "N11 drops the grammar check, so a name that is not a legal pattern gets the pattern advice.",
     "",
+    "N12 drops the durable-backstop caveat from the refusal.",
+    "",
     "NO BUILD STEP: the suite imports ../src."
   ],
   "mutations": [
@@ -131,6 +133,15 @@
       "expectRed": "a wildcard that is not a legal pattern (team.>.x) gets the grammar error, not the pattern advice",
       "cell": "a wildcard that is not a legal pattern (team.>.x) gets the grammar error, not the pattern advice",
       "note": "The refusal would call team.>.x a pattern and suggest posting to a channel it matches, though nothing can match it."
+    },
+    {
+      "name": "N12 the refusal stops saying an offline follower may miss the post",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "A pattern follow has no durable backstop, so a follower that is offline then may miss it. ",
+      "replace": "",
+      "expectRed": "the refusal for team.> says a pattern follow has no durable backstop",
+      "cell": "the refusal for team.> says a pattern follow has no durable backstop",
+      "note": "A sender who posts once and leaves would assume offline followers got it."
     }
   ]
 }
