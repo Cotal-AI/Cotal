@@ -53,3 +53,16 @@ up to 30 more seconds for receiver completion. Counts and errors affect the exit
 has overhead, so use a separate correctness run. Repeated copies remain allowed. Receiver
 completion is not proof of empty broker queues. The test does not model hosted agents, connect
 auth callouts, subject churn or message ordering, and process RSS values are not additive.
+
+For a separate `host16` diagnostic, add `--cpu-profile-dir /absolute/new/private-directory`.
+The directory must not exist; its parent must exist. The actual delivery CLI child writes
+`delivery.cpuprofile` using Node's standard CPU profiler, covering startup through graceful exit.
+`broker.pprof` is a native CPU profile requested as posting begins for the smaller of 60 seconds
+and the rounded-up configured posting duration (at least one second). `broker-window.json`
+records request/response timestamps. The broker profiler listens only on loopback. No heap
+profile, forced GC or memory limit is enabled. Output remains outside fixture teardown.
+
+Both profiles add overhead and cover different intervals; do not compare diagnostic throughput
+with ordinary runs or treat full-child delivery samples as measured-window-only samples. Missing
+or failed profile output fails the diagnostic. Profile paths and stack metadata are private
+operator evidence, not production tenant telemetry.
