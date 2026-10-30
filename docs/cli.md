@@ -3197,6 +3197,12 @@ exits 0. A script, a `--json` caller and `--no-input` are not asked: the command
 in `error.remedy`, apart from `error.message`, and names the space and root it concerns under
 `target` when they are known, as for a prepared space that is not started.
 
+When this account cannot read a project folder's `.cotal/auth`, for example because it cannot enter the
+folder's `.cotal`, the spaces the folder holds are unknown. A command that would target that folder,
+including through `--server`, refuses with `DEPENDENCY_UNAVAILABLE`, exit 2, and names the folder and
+the read error. It does not name running spaces or pick another space. `--space <name>` still targets
+a space by name.
+
 `--creds <file>` presents that credential to `--server`. Without `--server`, it goes to the broker
 its space is registered at and keeps that registration's TLS requirement. The space is `--space`,
 else the selected space, else the space of the project the command runs in, else `main`. Inside a
