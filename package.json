@@ -654,6 +654,7 @@
     "smoke:supervise-registered-user": "tsx implementations/manager/smoke/supervise-registered-user.smoke.ts",
     "smoke:supervise-registered-user-authority": "tsx implementations/manager/smoke/supervise-registered-user-authority.smoke.ts",
     "smoke:seat-exit-cause": "tsx implementations/manager/smoke/seat-exit-cause.smoke.ts",
+    "smoke:exit-watch": "tsx implementations/manager/smoke/exit-watch.smoke.ts",
     "smoke:lease-loss-keeps-serving": "tsx implementations/manager/smoke/lease-loss-keeps-serving.smoke.ts",
     "smoke:serve-stop-outage": "tsx implementations/manager/smoke/serve-stop-outage.smoke.ts",
     "smoke:preserve-state": "tsx implementations/manager/smoke/preserve-state.smoke.ts",
