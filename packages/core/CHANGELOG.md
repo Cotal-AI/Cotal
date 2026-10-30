@@ -1,5 +1,12 @@
 # @cotal-ai/core
 
+## 0.129.3
+
+### Patch Changes
+
+- c6ddccc: Avoid eager native request-origin stack capture on endpoint connections. Request failures retain their error classes and causes, with less caller-origin stack context.
+- 565f465: Avoid known-ungranted watch cleanup deletes while preserving local stop, reconnect rearm and already-permitted immediate reclamation.
+
 ## 0.129.2
 
 No changes in this release.
