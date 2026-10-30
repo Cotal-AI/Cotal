@@ -250,9 +250,9 @@ The task ends in one of these ways:
   is cancelled or fails, with that reason.
 
 After a deadline or an early exit, the task may have run in part or in full. Nothing runs it again;
-spawning it again is the caller's choice. The spawn result names the task's goal, and
-`goal-result` reads its outcome. A helper with no deadline keeps its name and its seat slot until
-its task ends or it is despawned.
+spawning it again is the caller's choice. A spawn that succeeds names the task's goal in its
+result, and `goal-result` reads its outcome. A helper with no deadline keeps its name and its
+seat slot until its task ends or it is despawned.
 
 Jcode, OpenCode and pi helpers can take a once task. Claude Code helpers cannot yet: a Claude
 session wakes for a relayed task while idle only with channels on, and the connector cannot
