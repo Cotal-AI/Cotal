@@ -99,6 +99,12 @@ only configs its parent already had unchanged. A shallow checkout fetches the pa
 The run ends with the cell-count sentinel the CI shard grades: one cell per config and per stale
 entry.
 
+The coverage reader and fixture census share named workspace-filter selection. Matching quotes,
+`--filter=value`, multiple filters, and dependency (`pkg...`) or dependent (`...pkg`) closures
+are handled alike. Build closures include development, optional and peer dependencies. Each
+reader retains its own command-admission checks. `pnpm smoke:workspace-build-filters` exercises
+these forms through read-only metadata grading; it does not execute fixture commands or mutations.
+
 `unparsed` means the suite command completed but did not prove how many cells it executed. A zero
 failure count without a total is not enough. The instrument grades only a number the suite printed:
 a tally, a checks-passed count, or a complete N/N fraction. Progress ticks are not an executed-cell
