@@ -67,8 +67,8 @@
     {
       "name": "the sweep reads the settle but never produces it",
       "file": "implementations/manager/src/manager.ts",
-      "find": "    return expireCheckpoint(gw.ctx.kv, gw.ctx.js, gw.ctx.jsm, this.space, { ref: { endpoint: p.ref.endpoint, token: p.holdToken }, now: Date.now() });",
-      "replace": "    return readCheckpointSettle(gw.ctx.jsm, this.space, { endpoint: p.ref.endpoint, token: p.holdToken });",
+      "find": "    return expireCheckpoint(gw.ctx.kv, gw.ctx.js, gw.ctx.jsm, this.space, { ref: { endpoint: p.ref.endpoint, token: p.holdToken! }, now: Date.now() });",
+      "replace": "    return readCheckpointSettle(gw.ctx.jsm, this.space, { endpoint: p.ref.endpoint, token: p.holdToken! });",
       "expectRed": "the goal's terminal is the deadline deny, reason `turn-deadline`",
       "cell": "the goal's terminal is the deadline deny, reason `turn-deadline`",
       "note": "A read-only sweep waits for a settle nobody writes: the manager holds no grant to consume the broker's fire, so the settle it reads for is one it has to produce."

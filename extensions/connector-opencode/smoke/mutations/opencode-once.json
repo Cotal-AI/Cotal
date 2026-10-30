@@ -38,8 +38,8 @@
     {
       "name": "M3 a failed 2.x submission no longer releases the task it carried",
       "file": "extensions/connector-opencode/src/plugin2.ts",
-      "find": "        agent.releaseTurns(turnIds);\n        // An execution that started meanwhile",
-      "replace": "        // An execution that started meanwhile",
+      "find": "        agent.releaseTurns(turnIds);\n",
+      "replace": "",
       "expectRed": "2.x: a failed submission seals the task it carried"
     },
     {
