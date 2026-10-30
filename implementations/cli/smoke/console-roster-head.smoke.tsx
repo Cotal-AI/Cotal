@@ -252,7 +252,7 @@ console.log("3. closing a detail returns the roster to the seat and window it le
       await key("\r");
       return /name:\s+(\S+)/.exec(await frameWhere(frames, (f) => f.includes("agent detail")))?.[1];
     };
-    const back = async () => { await key("\x1b"); await frameWhere(frames, (f) => f.includes("roster ·")); return view(); };
+    const back = async () => { await key("\x1b"); await frameWhere(frames, (f) => f.includes("│ roster")); return view(); };
     try {
       await frameWhere(frames, (f) => f.includes("⚙ alpha"));
       await key("l");
