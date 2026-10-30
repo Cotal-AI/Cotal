@@ -1,0 +1,60 @@
+{
+  "suite": [
+    "extensions/connector-opencode/smoke/once-handoff.smoke.ts"
+  ],
+  "guard": "both OpenCode plugins hand a once task over at most once: the drive claims it right before the submission and releases it when the submission fails, and the 1.x plugin's teardown is the exit a once seat takes on its own",
+  "command": "pnpm smoke:opencode-once",
+  "completionMarker": "COTAL_SMOKE_SENTINEL",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-opencode/smoke/mutations/opencode-once.json",
+  "why": [
+    "CELLS NAMED BEFORE THE RUN.",
+    "",
+    "M1 and M3 drop the release from a failed submission. The task stays claimed, so it is neither",
+    "sealed nor reported, and the manager learns nothing until the handoff timer fires.",
+    "",
+    "M2 drops the 1.x claim. The release then seals nothing, the task stays offerable, and the error",
+    "retry sends it a second time: the duplicate run this feature exists to prevent.",
+    "",
+    "M4 drops the 2.x claim. A native prompt typed while the submission is in flight peeks the task as",
+    "still pending and carries it too.",
+    "",
+    "M5 drops the 1.x exit registration, so a once seat whose report cannot land has no teardown to run."
+  ],
+  "mutations": [
+    {
+      "name": "M1 a failed 1.x submission no longer releases the task it carried",
+      "file": "extensions/connector-opencode/src/plugin.ts",
+      "find": "      agent.releaseTurns(turnIds);\n      busy = false;",
+      "replace": "      busy = false;",
+      "expectRed": "1.x: a failed submission seals the task it carried"
+    },
+    {
+      "name": "M2 the 1.x drive sends the task without claiming it",
+      "file": "extensions/connector-opencode/src/plugin.ts",
+      "find": "      if (turnPeek && agent.claimTurns(turnPeek.goalIds)) {\n        turnIds = turnPeek.goalIds;\n        parts.push({ type: \"text\", text: turnPeek.text });",
+      "replace": "      if (turnPeek) {\n        turnIds = turnPeek.goalIds;\n        parts.push({ type: \"text\", text: turnPeek.text });",
+      "expectRed": "1.x: the retry after the failure does not submit the sealed task again"
+    },
+    {
+      "name": "M3 a failed 2.x submission no longer releases the task it carried",
+      "file": "extensions/connector-opencode/src/plugin2.ts",
+      "find": "        agent.releaseTurns(turnIds);\n        // An execution that started meanwhile",
+      "replace": "        // An execution that started meanwhile",
+      "expectRed": "2.x: a failed submission seals the task it carried"
+    },
+    {
+      "name": "M4 the 2.x drive sends the task without claiming it",
+      "file": "extensions/connector-opencode/src/plugin2.ts",
+      "find": "    if (turnPeek && agent.claimTurns(turnPeek.goalIds)) {\n      turnIds = turnPeek.goalIds;\n      parts.push(turnPeek.text);",
+      "replace": "    if (turnPeek) {\n      turnIds = turnPeek.goalIds;\n      parts.push(turnPeek.text);",
+      "expectRed": "2.x: a native prompt meanwhile does not carry the claimed task"
+    },
+    {
+      "name": "M5 the 1.x plugin registers no once exit",
+      "file": "extensions/connector-opencode/src/plugin.ts",
+      "find": "  registerOnceExit(() => void shutdown(1));\n",
+      "replace": "",
+      "expectRed": "1.x: the registered once exit runs the plugin's teardown and exits 1"
+    }
+  ]
+}

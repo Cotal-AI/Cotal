@@ -58,6 +58,7 @@ import {
   resolveEventsStateRoot,
   controlFromEnv,
   scrubLaunchMaterial,
+  registerOnceExit,
   type InboxItem,
   type PrincipalLock,
 } from "@cotal-ai/connector-core";
@@ -730,6 +731,9 @@ export const cotal: Plugin = async () => {
       process.exit(code);
     }
   };
+  // A once seat that must end itself, because its task's handoff could not be reported, leaves
+  // through the same teardown as every other stop.
+  registerOnceExit(() => void shutdown(1));
   if (control) {
     const handle = async (): Promise<Record<string, unknown>> => ({
       ok: false,
@@ -976,6 +980,8 @@ export const cotal: Plugin = async () => {
     // preconditions are met, and a pending wake waits in its slot until then.
     if (bootPrompt !== undefined && boot === undefined) return;
     driving = true;
+    // The turns this submission carries under a claim, released if it fails.
+    let turnIds: string[] = [];
     try {
       const id = await ensureSession();
       if (!id) return; // no visible session yet, retry on the next event/wake
@@ -1001,7 +1007,6 @@ export const cotal: Plugin = async () => {
       const text = boot !== undefined && carried !== undefined ? `${boot}\n\n${carried}` : (boot ?? carried);
       // Run turns ride the same composed submission; their ids commit as surfaced only once the
       // submission lands below (two-phase — a failed submit re-surfaces them, never a lie).
-      let turnIds: string[] = [];
       const turnPeek = agent.peekPendingTurns();
       if (text) {
         parts.push({ type: "text", text });
@@ -1014,20 +1019,24 @@ export const cotal: Plugin = async () => {
           if (inj) parts.push({ type: "text", text: inj });
         }
       }
-      if (turnPeek) {
-        turnIds = turnPeek.goalIds;
-        parts.push({ type: "text", text: turnPeek.text });
-      }
       // NOT marked consumed here. Setting the flag before the submission meant a throw below cost
       // the briefing permanently, on this turn and every later one.
       const brief = briefed ? undefined : agent.channelBriefing();
       if (brief) parts.unshift({ type: "text", text: brief });
-      if (parts.length === 0) return;
+      if (parts.length === 0 && !turnPeek) return;
       const body: { parts: typeof parts; system?: string } = { parts };
       // persona once, as system (no --append-system-prompt), with the shared briefing after it —
       // gated on persona so we never replace OpenCode's default system.
       if (!primed && persona) body.system = `${persona}\n\n${briefing(config, "opencode")}`;
       if (!surface(ids)) return; // at the in-flight ceiling: the batch stays queued for a later turn
+      // The turns' permit, after the last gate and right before the send with no await between: a
+      // once task another dispatch already took is left out, and a submission left with nothing to
+      // say is not sent.
+      if (turnPeek && agent.claimTurns(turnPeek.goalIds)) {
+        turnIds = turnPeek.goalIds;
+        parts.push({ type: "text", text: turnPeek.text });
+      }
+      if (!text && ids.length === 0 && turnIds.length === 0) { abandonSurfaced(); return; }
       busy = true;
       // Arm BEFORE the await: a turn-end signal can land before the server request resolves, and
       // completeTurn bails unless armed — arming after would drop it and wedge the agent.
@@ -1062,6 +1071,9 @@ export const cotal: Plugin = async () => {
       briefed = true;
       primed = true;
     } catch (e) {
+      // First, before any retry is scheduled: a once task in a submission that failed after it may
+      // have reached the server is sealed and reported, never sent again.
+      agent.releaseTurns(turnIds);
       busy = false;
       abandonSurfaced();
       awaitingTurnEnd = false;

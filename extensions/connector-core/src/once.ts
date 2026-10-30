@@ -7,6 +7,8 @@
  * takes at its dispatch site, right before the native send; confirmed is its native acceptance
  * ({@link MeshAgent.commitSurfacedTurns}); sealed is a dispatch it gave up on, or a claim that
  * outlived {@link ONCE_HANDOFF_MS}. The first of confirmed and sealed wins, and neither is undone.
+ * A dispatch whose send is its acceptance, such as a prompt hook that edits the prompt in place in
+ * the same synchronous step as its peek, confirms without a claim.
  *
  * The state lives in one registry per process, reached through a `Symbol.for` key, so every copy
  * of this module loaded in the process and every `MeshAgent` built again for the same seat read

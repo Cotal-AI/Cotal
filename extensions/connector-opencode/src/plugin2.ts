@@ -21,6 +21,7 @@ import {
   formatInjection,
   scrubLaunchMaterial,
   briefing,
+  registerOnceExit,
 } from "@cotal-ai/connector-core";
 import { modelRefusalSentence, computeInjection, settleWithin } from "./plugin.js";
 import type { OpenCode2Context, OpenCode2Event } from "./opencode2-types.js";
@@ -249,16 +250,20 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
         if (inj) parts.push(inj);
       }
     }
-    if (turnPeek) {
+    const brief = briefed ? undefined : agent.channelBriefing();
+    if (brief) parts.unshift(brief);
+    if (parts.length === 0 && !turnPeek) return;
+    const system = !primed && persona ? `${persona}\n\n${briefing(config, "opencode")}` : undefined;
+    if (!surface(ids)) return; // at the in-flight ceiling: the batch stays queued for a later turn
+    // The turns' permit, after the last gate and right before the send with no await between: a
+    // once task another dispatch already took is left out, and a submission left with nothing to
+    // say is not sent.
+    if (turnPeek && agent.claimTurns(turnPeek.goalIds)) {
       turnIds = turnPeek.goalIds;
       parts.push(turnPeek.text);
     }
-    const brief = briefed ? undefined : agent.channelBriefing();
-    if (brief) parts.unshift(brief);
-    if (parts.length === 0) return;
+    if (boot === undefined && override === undefined && ids.length === 0 && turnIds.length === 0) { abandonSurfaced(); return; }
     const text = parts.join("\n\n");
-    const system = !primed && persona ? `${persona}\n\n${briefing(config, "opencode")}` : undefined;
-    if (!surface(ids)) return; // at the in-flight ceiling: the batch stays queued for a later turn
     execution = "submitted";
     briefed = true;
     // The turn can end before this POST answers: the event stream is a separate transport. The boot
@@ -275,6 +280,9 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
         if (system) primed = true;
         if (boot !== undefined) bootPrompt = undefined;
       } catch (e) {
+        // A once task in a submission that failed after it may have reached the server is sealed and
+        // reported, never sent again.
+        agent.releaseTurns(turnIds);
         // An execution that started meanwhile still holds the session: only our submission is released.
         if (execution === "submitted") execution = undefined;
         abandonSurfaced();
@@ -449,9 +457,13 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
     await drive();
   })();
 
-  return async () => {
+  const teardown = async (): Promise<void> => {
     controller.abort();
     await settleWithin(eventLoop, EVENT_QUIESCE_MS, "opencode 2.x event loop at teardown");
     await agent.stop();
   };
+  // A once seat that must end itself, because its task's handoff could not be reported, runs the
+  // teardown and then exits; the host is not asked.
+  registerOnceExit(() => void teardown().finally(() => process.exit(1)));
+  return teardown;
 }

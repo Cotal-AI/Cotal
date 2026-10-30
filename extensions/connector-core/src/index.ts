@@ -22,3 +22,4 @@ export * from "./tools.js";
 export * from "./gateway.js";
 export * from "./control.js";
 export * from "./relay.js";
+export { registerOnceExit } from "./once.js";
