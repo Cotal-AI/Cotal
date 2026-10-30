@@ -1,9 +1,10 @@
 import { Fragment } from "react";
 import { Box, Text } from "ink";
 import { peerLabel, presenceText, type Presence } from "@cotal-ai/core";
+import { displayWidth } from "@cotal-ai/workspace";
 import type { FeedEntry } from "../mesh.js";
 import { activityAge, presenceFacts } from "../../ui.js";
-import { agentColor, STATUS, ago, fmtTime, wrapText } from "./theme.js";
+import { agentColor, STATUS, ago, clipText, fmtTime, wrapText } from "./theme.js";
 
 /** What the user drilled into — a feed row or a roster entry. */
 export type DetailTarget =
@@ -158,10 +159,16 @@ function AgentDetail({ agent, feed, width, managed }: { agent: Presence; feed: F
                   ? "@" + (e.toService ?? "?")
                   : (e.toNames ?? []).join(", ")
               : e.from.name;
+            const prefix = fmtTime(e.ts) + " " + head + peer + ": ";
+            // Cut by columns between whole characters: the text to at most `width - 24` columns, then,
+            // when the row would still overflow its `width - 2` (the card's border and padding take 6),
+            // to fit with an ellipsis, so the terminal's truncation never splits or straddles a wide one.
+            const room = width - 2 - displayWidth(prefix);
+            const text = clipText(e.text, Math.max(8, width - 24));
             return (
               <Text key={i} wrap="truncate-end">
-                <Text dimColor>{fmtTime(e.ts) + " " + head + peer + ": "}</Text>
-                {e.text.slice(0, Math.max(8, width - 24))}
+                <Text dimColor>{prefix}</Text>
+                {displayWidth(text) <= room ? text : clipText(text, room - 1) + "…"}
               </Text>
             );
           })

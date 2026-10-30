@@ -24,7 +24,7 @@ import { StatusBar } from "../src/console/ui/StatusBar.js";
 import { Detail, type DetailTarget } from "../src/console/ui/Detail.js";
 import { Topo, type TopoVariant } from "../src/console/ui/topo/Topo.js";
 import { MEMBERSHIP_STALE_MS } from "../src/console/ui/topo/model.js";
-import { sidePaneSize, wrapFacts, wrapText } from "../src/console/ui/theme.js";
+import { clipText, fmtTime, sidePaneSize, wrapFacts, wrapText } from "../src/console/ui/theme.js";
 import type { FeedEntry, MembershipView } from "../src/view/mesh-view.js";
 
 let pass = 0, fail = 0;
@@ -514,6 +514,119 @@ console.log("9. wide text wraps by terminal columns, so the feed paints all of i
     } finally {
       app.unmount(); app.cleanup();
     }
+  }
+}
+
+console.log("10. the agent detail's recent traffic cuts a preview by columns, between whole characters");
+// The preview was cut at a count of UTF-16 units, so a cut inside an emoji wrote U+FFFD.
+{
+  const sushi = "a" + "🍣".repeat(40) + "b";
+  const mixed = "deploy 🚀🎉👍🏽✅🔥🍣🇯🇵👩‍💻 done";
+  const ascii = "plain ASCII control: " + "x".repeat(30) + " " + "0123456789".repeat(7) + " END";
+  const family = "👨‍👩‍👧‍👦";
+  check("clipText keeps the whole clusters that fit the width",
+    clipText(sushi, 52) === "a" + "🍣".repeat(25) && clipText(family.repeat(2), 3) === family && clipText("é".repeat(3), 2) === "éé",
+    [clipText(sushi, 52), clipText(family.repeat(2), 3)]);
+  check("clipText gives nothing at no width and a short text whole",
+    clipText("abc", 0) === "" && clipText("abc", -1) === "" && clipText("abc", 3) === "abc" && clipText("", 4) === "");
+  const now = Date.now();
+  const agent: Presence = { card: { id: "local.cx", name: "cx", kind: "endpoint" }, status: "idle", ts: now };
+  const feed: FeedEntry[] = [["short", "ok"], ["ascii", ascii], ["mixed", mixed], ["sushi", sushi]].map(([id, text]) =>
+    ({ id, ts: now, from: agent.card, delivery: "multicast" as const, channel: "general", text }));
+  const prefix = fmtTime(now) + " → #general: ";
+  const lone = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+  for (const cols of [80, 47]) {
+    const painted = await paint(<Detail target={{ kind: "agent", agent }} feed={feed} width={cols} height={30} />, cols, 30);
+    const card = painted.trimEnd().split("\n");
+    const rows = card.slice(card.findLastIndex((l) => l.startsWith("╭")))
+      .filter((l) => l.includes(prefix)).map((l) => l.slice(3, -1).trimEnd());
+    const previews = rows.map((r) => r.slice(prefix.length));
+    check(`${cols} columns: four previews, none wider than the card's ${cols - 6}-column row`,
+      rows.length === 4 && rows.every((r) => displayWidth(r) <= cols - 6), rows);
+    check(`${cols} columns: no preview splits a character`, !painted.includes("�") && !lone.test(painted), previews);
+    check(`${cols} columns: each preview is its text whole, cut at the cap, or cut between characters with an ellipsis`,
+      previews.every((p, i) => {
+        const text = feed[feed.length - 1 - i].text;
+        const kept = p.slice(0, -1);
+        return p === text || p === clipText(text, cols - 28) || (p.endsWith("…") && clipText(text, displayWidth(kept)) === kept);
+      }), previews);
+    // Before, Ink's truncate-end cut the ASCII row to the card with its own ellipsis; the row reads the same.
+    check(`${cols} columns: ASCII previews read as before`,
+      previews[3] === "ok" && rows[2] === (prefix + ascii).slice(0, cols - 7) + "…", rows);
+  }
+}
+
+console.log("11. a detail returns the feed to the message and viewport it left");
+// The Feed unmounted while a detail was open and remounted on the newest entry at the bottom.
+{
+  class Observer extends EventEmitter {
+    space = "feed-place";
+    card = { id: "local.operator", name: "operator", kind: "endpoint", role: "operator" };
+    async start() {}
+    async stop() {}
+    getRoster(): Presence[] { return []; }
+    tap() {}
+    async listChannels() { return [{ channel: "general", messages: 5 }]; }
+    async channelHistory() {
+      return [1, 2, 3, 4, 5].map((n) => ({ id: "place-" + n, ts: Date.now() - 5000 + n,
+        from: { id: "local.cx", name: "cx" }, channel: "general", parts: [{ kind: "text", text: `m${n} ` + "word ".repeat(20) }] }));
+    }
+    async dmHistory() { return []; }
+    ref() { return this.card; }
+    async readMembership() { return { asOf: undefined, members: [] }; }
+    async watchMembership() { return { stop: async () => {} }; }
+  }
+  const stdin = new PassThrough() as unknown as NodeJS.ReadStream;
+  stdin.isTTY = true;
+  stdin.setRawMode = () => stdin;
+  stdin.ref = () => stdin;
+  stdin.unref = () => stdin;
+  const frames: string[] = [];
+  const stdout = new Writable({ write(c, _e, cb) { frames.push(strip(String(c))); cb(); } }) as unknown as NodeJS.WriteStream;
+  // A narrow 47x24 terminal: five messages of a head and three body rows overflow the feed's 10 rows.
+  stdout.columns = 47; stdout.rows = 24; stdout.isTTY = true;
+  const app = render(<App ep={new Observer() as unknown as CotalEndpoint} canWrite={false} canControl={false} />,
+    { stdin, stdout, debug: true, patchConsole: false, exitOnCtrlC: false });
+  const press = async (keys: string, marker: string) => {
+    frames.length = 0;
+    for (const k of keys) { stdin.write(k); await wait(40); }
+    await wait(100);
+    await waitForFrame(frames, marker, 5_000);
+    return frames.at(-1) ?? "";
+  };
+  const opened = async () => /body\s*│\n│\s+(m\d) /.exec(await press("\r", "message detail"))?.[1];
+  const feedPane = (frame: string) => {
+    const lines = frame.split("\n");
+    const at = lines.findIndex((l) => l.includes("feed · "));
+    return lines.slice(at, lines.findIndex((l, i) => i > at && l.startsWith("╰")) + 1).join("\n");
+  };
+  try {
+    await waitForFrame(frames, "m5 word", 5_000);
+    await press("JJJJJ", "feed · ");
+    const seen = [await opened()];
+    for (let i = 0; i < 3; i++) {
+      await press("\x1b", "feed · ");
+      await press("K", "feed · ");
+      seen.push(await opened());
+    }
+    check("K, Enter and Escape step back one message at a time", seen.join() === "m5,m4,m3,m2", seen);
+    await press("\x1b", "feed · ");
+    const before = feedPane(await press("kk", "↓"));
+    const inDetail = await opened();
+    const after = feedPane(await press("\x1b", "feed · "));
+    check("a scrolled viewport comes back unchanged after a detail", before.includes("more · G to follow") && after === before, { before, after });
+    check("a scroll keeps the selected message, and Enter opens it", inDetail === "m2", inDetail);
+    await press("?", "cotal console - help");
+    await press("x", "feed · ");
+    await press("d", "direct messages");
+    const back = feedPane(await press("d", "feed · "));
+    const reopened = await opened();
+    check("help and the DM lens also leave the feed where it was", back === before && reopened === "m2", { back, reopened });
+    await press("\x1b", "feed · ");
+    await press("]", "feed · general");
+    check("a channel change still jumps to the newest", (await opened()) === "m5");
+  } finally {
+    app.unmount(); app.cleanup();
   }
 }
 

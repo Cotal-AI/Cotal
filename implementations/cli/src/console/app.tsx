@@ -10,7 +10,7 @@ import { Tabs } from "./ui/Tabs.js";
 import { Tiles } from "./ui/Tiles.js";
 import { Roster, harnessTag } from "./ui/Roster.js";
 import { sidePaneSize } from "./ui/theme.js";
-import { Feed } from "./ui/Feed.js";
+import { Feed, useFeedView } from "./ui/Feed.js";
 import { NeedsYou } from "./ui/NeedsYou.js";
 import { Dm } from "./ui/Dm.js";
 import { Topo, type TopoVariant } from "./ui/topo/Topo.js";
@@ -89,6 +89,8 @@ export function App({
   const [compose, setCompose] = useState<ComposeTarget | null>(null);
   const [notice, setNotice] = useState<string | undefined>();
   const [attachTarget, setAttachTarget] = useState<{ name: string } | null>(null);
+  // Held here, not in the Feed, which unmounts while a detail or another full-screen view is open.
+  const feedView = useFeedView();
 
   const overlay = helpOpen || detail !== null;
   const blocked = overlay || search.active || palette.active || newAgent || confirm !== null || compose !== null;
@@ -598,6 +600,7 @@ export function App({
               onCompose={canWrite ? rosterCompose : undefined}
             />
             <Feed
+              view={feedView}
               entries={mesh.feed}
               activeChannel={activeChannel}
               query={search.query}

@@ -6582,7 +6582,9 @@ in them as its `\uXXXX` escape, so a message cannot clear the screen, retitle th
 a hyperlink. The TUI keeps a body's line breaks, and `--plain` prints each message on one line.
 The TUI wraps a body, and a roster seat's status facts, by terminal columns: a wide character such
 as a CJK ideograph or an emoji takes two, and a word wider than the pane breaks between characters,
-never inside one.
+never inside one. The agent detail's recent traffic cuts each preview by columns too, never inside
+a character, and a row that would overflow the card ends with `…`. Closing a detail returns the
+feed to the message and scroll position it showed.
 
 <a id="web"></a>
 
