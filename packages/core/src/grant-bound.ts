@@ -61,8 +61,7 @@ function partsOf(grant: DelegatedGrant): { part: GrantOverreach; project?: MintE
   for (const ch of grant.allowPublish ?? []) out.push({ part: { field: "allowPublish", value: ch }, project: { allowPublish: [ch] } });
   if (grant.role !== undefined) out.push({ part: { field: "role", value: grant.role }, project: { role: grant.role } });
   for (const token of grant.capabilities ?? []) {
-    const role = capabilityRole(token);
-    const project = role !== undefined ? { role } : isDelegableCapability(token) ? { capabilities: [token] } : undefined;
+    const project = isDelegableCapability(token) ? { capabilities: [token] } : undefined;
     out.push({ part: { field: "capabilities", value: token }, ...(project ? { project } : {}) });
   }
   return out;

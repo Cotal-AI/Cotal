@@ -14,8 +14,8 @@
     "",
     "B1 drops the subtraction, so the coordinate's own rows decide and every grant refuses. B2",
     "stops folding subscribe into the read ACL, so a subscribe-only grant escapes the bound. B3",
-    "stops testing publish rows. B4 forgets that run carries spawn. B6 reads role:<r> as an ordinary",
-    "token, so a held role cannot be handed on.",
+    "stops testing publish rows. B4 forgets that run carries spawn. B6 stops counting role:<r> as a",
+    "token a spawner may hand on, so a held role cannot be handed on as one.",
     "",
     "I1 drops the issuer's guard, so a source-free manager-caller could be issued and read as an instrument.",
     "",
@@ -51,10 +51,10 @@
       "expectRed": "spawn is within run"
     },
     {
-      "name": "B6 read role:<r> as an ordinary capability token",
+      "name": "B6 a role:<r> token is not a capability a spawner hands on",
       "file": "packages/core/src/grant-bound.ts",
-      "find": "    const role = capabilityRole(token);",
-      "replace": "    const role = undefined as string | undefined;",
+      "find": "  return (DELEGABLE_CAPABILITIES as readonly string[]).includes(token) || capabilityRole(token) !== undefined;",
+      "replace": "  return (DELEGABLE_CAPABILITIES as readonly string[]).includes(token);",
       "expectRed": "role:<r> as a capability token is held when the spawner holds that role"
     },
     {
