@@ -1,5 +1,11 @@
 # @cotal-ai/core
 
+## 0.131.5
+
+### Patch Changes
+
+- e78de30: Use native memory-backed state for temporary KV scan consumers while preserving backing record storage, fresh reads and completeness checks.
+
 ## 0.131.4
 
 No changes in this release.

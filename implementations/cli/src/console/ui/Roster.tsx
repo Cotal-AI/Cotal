@@ -166,12 +166,15 @@ export function Roster({
   const rowWidth = boxWidth - 6; // border (2) + padding (2) + indent (2)
   const heads = list.map((p) => headRows(p, harness?.get(p.card.id), rowWidth));
   const facts = list.map((p) => wrapFacts(statusLine(p), rowWidth));
+  const room = boxHeight - 3; // border (2) + title (1)
   const [start, end] = windowAround(
     list.map((_, i) => heads[i].length + facts[i].length),
     selClamped,
-    boxHeight - 3, // border (2) + title (1)
+    room,
   );
   const visible = list.slice(start, end);
+  // The whole seats the window leaves out, led by the title so a cut keeps them.
+  const left = [start ? "↑" + start : "", list.length - end > 0 ? "↓" + (list.length - end) : ""].filter(Boolean).join(" ");
 
   return (
     <Box
@@ -181,19 +184,24 @@ export function Roster({
       borderStyle="round"
       borderColor={isFocused ? "cyan" : "gray"}
       paddingX={1}
-      // A seat's rows never shrink, so one taller than the box (a short terminal, a long activity or
-      // condition) displaces the title and is then cut at the bottom, keeping its name row, rather than
-      // being squeezed or drawn over the panes below.
+      // A seat's rows never shrink, so one taller than the window (a short terminal, a long activity or
+      // condition) is cut at the bottom under the title rather than being squeezed or drawn over the
+      // panes below. A box with one row inside gives it to the seat's name row instead of the title.
       overflowY="hidden"
     >
-      <Text wrap="truncate-end">
-        <Text bold>roster</Text>
-        <Text dimColor>
-          {" · " + agents.length + " agent" + (agents.length === 1 ? "" : "s")}
-        </Text>
-        {endpoints.length ? <Text dimColor>{" · " + endpoints.length + " ep"}</Text> : null}
-        {q ? <Text color="yellow">{"  /" + query}</Text> : null}
-      </Text>
+      {room > 0 ? (
+        <Box flexShrink={0}>
+          <Text wrap="truncate-end">
+            <Text bold>roster</Text>
+            {left ? <Text color="yellow">{" " + left + " more"}</Text> : null}
+            <Text dimColor>
+              {" · " + agents.length + " agent" + (agents.length === 1 ? "" : "s")}
+            </Text>
+            {endpoints.length ? <Text dimColor>{" · " + endpoints.length + " ep"}</Text> : null}
+            {q ? <Text color="yellow">{"  /" + query}</Text> : null}
+          </Text>
+        </Box>
+      ) : null}
       {visible.length === 0 ? (
         <Text dimColor>{q ? "(no match)" : "(nobody present)"}</Text>
       ) : (

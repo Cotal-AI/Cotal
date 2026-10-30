@@ -6584,9 +6584,11 @@ The TUI wraps a body, and a roster seat's rows, by terminal columns: a wide char
 ideograph or an emoji takes two, and a word wider than the pane breaks between characters, never
 inside one. On a seat's head, the name, harness tag, activity, the activity's age and the progress
 or heartbeat age each start a new row when they do not fit on the current one, so a long name never
-hides them. The roster draws whole seats around the selected one. A seat taller than the pane shows
-only its first rows, which a long activity can cause below 80 columns, where the roster has at most
-five rows for seats.
+hides them. The roster draws whole seats around the selected one. When some do not fit, its title
+starts with how many whole seats are left out above and below the window, as in `roster ↑2 ↓1 more`,
+and `j` and `k` reach them. A seat taller than the pane shows only its first rows under the title,
+which a long activity can cause below 80 columns, where the roster has at most five rows for seats.
+The count leaves out those cut rows, since it counts whole seats.
 The agent detail's recent traffic cuts each preview by columns too, never inside a character, and a
 preview that leaves any of its text out ends with `…`. Closing a detail returns the feed to the
 message and scroll position it showed, and the roster to the seat it had selected, or to that row if
