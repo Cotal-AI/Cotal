@@ -41,7 +41,7 @@ agent that may post to none of the channels it reads has no default either.
 Each channel is `live` or `durable` ([SPEC §4](../SPEC.md#4-delivery-modes),
 [§7](../SPEC.md#7-channels)). **`live`** delivers only to peers subscribed at publish time
 (at-most-once). **`durable`** adds a per-member backstop so a busy or offline member still gets
-the post on its next turn (at-least-once within retention), provided by the
+the post on its next turn (at-least-once within the space's [history limit](#how-long-posts-are-kept)), provided by the
 [delivery daemon](delivery-daemon.md). One nuance: an **`@mention` can reach an authorized peer
 who isn't currently joined**; on a `live` channel a mention writes a durable copy to each
 mentioned target whose read ACL covers the channel, so "authorized to read" and "currently
@@ -73,6 +73,19 @@ regardless of the flag, so it hides history from a joiner's initial context, not
 can read the channel. Confidential content uses a DM or anycast, never a no-replay channel.
 A managed seat resumed from a preservation cut (`cotal down --preserve-state`, then `cotal up`)
 backfills only what was posted after the cut, while a fresh joiner backfills the retained window.
+
+## How long posts are kept
+
+A space keeps a channel post for 30 days, or until its sender has posted 1000 newer ones on that
+channel, whichever comes first ([SPEC §8](../SPEC.md#8-nats--jetstream-binding)). One limit holds
+for every channel in the space, and the broker deletes a post past either bound. An operator changes
+it with [`cotal history limit`](cli.md#history), by age, per-sender count or both. A lower limit
+deletes the posts it no longer keeps at once. `replayWindow` only bounds what a joiner is backfilled,
+so it cannot reach further back than the limit.
+
+The per-sender count means a busy sender's oldest posts on a channel go first, while other senders'
+posts from the same time stay. A durable member's copy of a post, once the delivery daemon has taken
+it, is not removed by the chat limit.
 
 ## Common tasks
 

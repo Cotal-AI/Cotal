@@ -229,8 +229,9 @@ per-message metadata (`MessageMeta` need not carry it); it MUST NOT assume one c
 - **`durable`** is `live` plus a per-subscriber durable backstop and is **at-least-once for
   current members within retention**: the message is also retained for each member and delivered on
   that member's next connection or turn, remaining pending until acked. A crash or `ack_wait` expiry
-  redelivers the durable copy. At-least-once is bounded by the channel's retention / `replayWindow`
-  (§7): a message evicted by retention before ack may be lost; the guarantee is not unbounded.
+  redelivers the durable copy. At-least-once is bounded by the space's chat history limit (§8): a
+  message the chat stream removes before its durable copy is taken may be lost, and the guarantee is
+  not unbounded. A durable copy already taken is not removed by that limit.
 
 Unicast (`to`) and anycast (`toService`) are at-least-once via their own DM/TASK consumers (§8);
 they have no channel membership and are not subject to the per-channel delivery-class mechanism. An
@@ -511,7 +512,7 @@ token.
 | Field | Type | Notes |
 | --- | --- | --- |
 | `replay` | boolean | history replay-on-join; overrides the space default |
-| `replayWindow` | string | backfill horizon matching `^\d+(s\|m\|h\|d)$`, e.g. `"24h"` |
+| `replayWindow` | string | backfill horizon matching `^\d+(s\|m\|h\|d)$`, e.g. `"24h"`; it bounds what a backfill reads and removes nothing, so it cannot reach past the chat history limit (§8) |
 | `deliveryClass` | `live` \| `durable` | per-channel delivery class (§4); overrides the space default |
 | `description` | string | one-line purpose; max 200 chars |
 | `instructions` | string | advisory usage text; max 2000 chars |
@@ -612,9 +613,22 @@ mode.
 
 | Stream | Captures | Retention | Required config |
 | --- | --- | --- | --- |
-| `CHAT_<space>` | `cotal.<space>.chat.>` | Limits | file storage, `max_msgs_per_subject=1000`, `discard=Old`, `allow_direct=true` |
+| `CHAT_<space>` | `cotal.<space>.chat.>` | Limits | file storage, `max_age` and `max_msgs_per_subject` from the chat history limit below, `discard=Old`, `allow_msg_ttl=false`, `allow_direct=true` |
 | `DM_<space>` | `cotal.<space>.inst.>` | Limits | file storage, no Direct Get |
 | `TASK_<space>` | `cotal.<space>.svc.>` | WorkQueue | file storage, no Direct Get |
+
+**Chat history limit.** One limit per space sets how long `CHAT_<space>` keeps a channel post: until
+the post is older than the limit's age (`max_age`), or until its sender has posted the limit's count
+(`max_msgs_per_subject`) newer ones on that channel, whichever comes first. A chat subject is one
+sender on one channel, so the count holds per sender per channel. The broker removes a post past
+either bound, and lowering the limit on a live stream removes the posts past the new one at once. A
+new space starts at 30 days and 1000 per sender. An operator MAY set an age from 2 minutes (the
+stream's duplicate window) to 3650 days in whole seconds, and a count of at least 1; the limit MUST
+NOT be set to no age. A stream created before the limit was configurable holds no age and 1000 per
+sender, and a reader MUST accept that pair and any other count with no age. `allow_msg_ttl` stays
+false on the stream: once on it cannot be turned off, and a per-message TTL of `never` escapes
+`max_age`. Copies the Plane 3 backstop already took into its own streams are bounded by those
+streams, not by this limit.
 
 **Resume transfer bucket.** A manager instance that receives a carried resume transcript holds one
 JetStream Object Store bucket, `cotal_xfer_<space>_<instanceId>` (stream
@@ -6760,6 +6774,7 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
+| 2026-10-30 | **The chat stream's history limit is configurable per space (§4, §7, §8).** `CHAT_<space>` keeps a post until it is older than the space's age or its sender has posted the space's count of newer ones on that channel, whichever comes first. A new space starts at 30 days and 1000 per sender. A stream with no age and any count, as every stream before this change was created, stays valid. The durable guarantee is bounded by this limit, and `replayWindow` is a read horizon that removes nothing. The reference implementation moves a stream still on no age and 1000 per sender to the default when `cotal up` starts its broker, which deletes posts older than 30 days. |
 | 2026-10-29 | **Manager connector status declares event-plane support (§13.7), additive.** Every `status.connectors` row now requires `eventPlane: boolean`, including rows built from the declared extension inventory before its package is imported. The fact is true only when the connector declares its event channel; it is never defaulted to true. The reference Manager cluster advances to revision 42. |
 | 2026-10-29 | **The Manager persona catalog has a typed removal command (§13.7), additive.** `remove-persona` rides the same `manager.persona` capability as `define-persona`, removes only the machine-local definition, refuses an unknown name, and accepts a safe filename stem even when it exceeds the current spawn-name limit. The reference Manager cluster advances to revision 41. |
 | 2026-10-28 | **A retiring lifecycle's fence is its ACL row (Appendix B).** The fence of the next entry lived only in one daemon's memory and was checked before a join wrote its row, so a join whose ACL lookup outlived the fence, a join from a still-connected seat after a daemon restart, or a join a quiesced predecessor finished after its successor's inventory each kept one row of a retired lifecycle. The manager now narrows the lifecycle's ACL row to an empty `allowSubscribe` before it asks for the inventory. The daemon re-reads that exact row before and after the write that creates a membership row, and removes the row and refuses the join when the channel is no longer within it. Other membership writes only update the revision they read. The daemon's own refusal and its wait for running writes stay, for a manager that does not narrow, as on a hosted daemon serving older managers. No wire change. |

@@ -1,0 +1,37 @@
+{
+  "suite": [
+    "bin/smoke/chat-history-restore-live.smoke.ts"
+  ],
+  "guard": "A restore holds the chat stream at the recorded count and no age through every check of the restored state, then sets the age the backup recorded on the target and reads it back.",
+  "command": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/cli build && pnpm smoke:chat-history-restore:live",
+  "completionMarker": "COTAL_SMOKE_SENTINEL",
+  "progressPattern": "^  [✓✗] ",
+  "minTicks": 14,
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/chat-history-restore.json",
+  "why": [
+    "The suite drives `tsx bin/cotal.ts`, which loads core and the CLI from their built dist, so each mutation",
+    "rebuilds both and `afterRestore` rebuilds them from the restored source. The first scenario's posts are older",
+    "than the recorded age when the restore checks them, so a restore that set the age first would watch the broker",
+    "delete them during its own checks."
+  ],
+  "mutations": [
+    {
+      "name": "the restore stages the chat stream at the recorded age",
+      "file": "packages/core/src/backup-config.ts",
+      "find": "  return { maxAgeMs: 0, perSender: recorded.perSender };",
+      "replace": "  return { maxAgeMs: recorded.maxAgeMs, perSender: recorded.perSender };",
+      "expectRed": "a restore whose posts are older than the recorded age passes its checks",
+      "cell": "a restore whose posts are older than the recorded age passes its checks",
+      "afterRestore": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "the restore never sets the recorded age",
+      "file": "implementations/cli/src/lib/restore.ts",
+      "find": "    if (chatRecord && wanted.includes(chatRecord.stream)) await applyRecordedChatAge(broker, journal.space, chatRecord);\n",
+      "replace": "",
+      "expectRed": "...then holds the recorded age and count",
+      "cell": "...then holds the recorded age and count",
+      "afterRestore": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/cli build"
+    }
+  ]
+}

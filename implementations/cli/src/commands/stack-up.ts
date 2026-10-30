@@ -13,7 +13,7 @@ import { homedir } from "node:os";
 import { isIP } from "node:net";
 import { basename, join, resolve } from "node:path";
 import { JetStreamApiCodes, JetStreamApiError } from "@nats-io/jetstream";
-import { awaitDeadDeliveryLease, deliveryLeaseHolderFor, isJetStreamMissing, isReachable, LEASE_TTL_MS, mintCreds, newIdentity, openPrivateAppend, type BrokerTransport, type ParsedArgs } from "@cotal-ai/core";
+import { awaitDeadDeliveryLease, deliveryLeaseHolderFor, describeChatHistory, formatChatAge, isJetStreamMissing, isReachable, LEASE_TTL_MS, mintCreds, newIdentity, openPrivateAppend, type BrokerTransport, type ChatHistoryChange, type ParsedArgs } from "@cotal-ai/core";
 import {
   CommandFailure,
   accountInventory,
@@ -80,8 +80,9 @@ export interface StackUpNative {
   /** `userAuth` asks the native `authSetup` user arm (`prepareServer`) and must return its private
    *  `user` material; any other mode must return none. */
   prepareBroker(opts: { transport: BrokerTransport; server: string; space: string; open: boolean; userAuth?: { idpUrl?: string }; host?: string; storeDir?: string; existingStore?: ExistingStorePin; maxFileStore?: number; logFile?: string; logfileSizeLimit?: number; logfileMaxNum?: number; authTimeout?: number; maxPayload?: number; channels?: string; seed?: unknown }): Promise<{ root: string; server: string; space: string; storeDir: string; transport: BrokerTransport; setup?: { creds: string; wsPort: number }; user?: StackUserPrepared; confPath: string; bin: string; source: "path" | "bundled"; version: string | null; seedFile?: unknown; authTimeout?: number; maxPayload?: number }>;
-  /** `recreateIssuedStores` is the `--recreate-issued-stores` backup directory, for a fresh broker only. */
-  initializeStreams(server: string, space: string, setup: { creds: string } | undefined, seedFile: unknown, recreateIssuedStores?: string): Promise<void>;
+  /** `recreateIssuedStores` is the `--recreate-issued-stores` backup directory, for a fresh broker
+   *  only. Returns the chat history limit it moved off the legacy pair, if it moved one. */
+  initializeStreams(server: string, space: string, setup: { creds: string } | undefined, seedFile: unknown, recreateIssuedStores?: string): Promise<ChatHistoryChange | undefined>;
   /** On a broker the stack reuses, create the space's streams again when every one of them is gone,
    *  as after `cotal space delete`, and say whether it did. */
   recreateDeletedStreams(opts: { root: string; space: string; server: string; mode: StackMode; channels?: string; seed?: unknown }): Promise<boolean>;
@@ -195,6 +196,8 @@ export interface StackUpResult {
   brokerExecutable?: NatsServer;
   /** This call created the space's streams again on the running broker it reused. */
   streamsRecreated?: true;
+  /** The chat history limit this call's broker start moved off the legacy pair. */
+  chatHistory?: ChatHistoryChange;
   /** The system-account rotation this call made before it prepared the broker. */
   rotation?: { generation: number; expiresAt: string | null };
   /** The recorded store, when another space also uses it. */
@@ -451,12 +454,18 @@ export function keptOnUp(space: string, kept: string): string {
   return `"${space}" up; "${kept}" stays selected for commands run outside this folder - \`cotal use ${space}\` to switch`;
 }
 
+/** What `cotal up` says when its broker start moved a space's chat stream off the legacy history
+ *  limit. It names the new policy; whether any post was old enough to be deleted is not read. */
+export function chatHistoryMigratedNotice(space: string, change: ChatHistoryChange): string {
+  return `the chat history limit of space ${space} moved from ${describeChatHistory(change.from)} to ${describeChatHistory(change.to)}; the broker now deletes posts older than ${formatChatAge(change.to.maxAgeMs)}`;
+}
+
 /** `cotal up`'s controller route: start, seed the default persona into the root, then write its
  *  own receipt, which names the saved services it does not start. The stack is up by then, so a
  *  persona that cannot be written, or saved services that cannot be listed, is a warning. */
 export async function stackUp(request: StackUpRequest, native: StackUpNative): Promise<void> {
   const before = usableSelection();
-  const { journal, changed, allReused, admittedRestore, settled, brokerExecutable, streamsRecreated, rotation, storeShared, storeMissing } = await startControllerStack(request, native);
+  const { journal, changed, allReused, admittedRestore, settled, brokerExecutable, streamsRecreated, chatHistory, rotation, storeShared, storeMissing } = await startControllerStack(request, native);
   const { root, space, server, mode } = journal;
   const managed = journal.members.some((row) => row.role === "manager" && (row.state === "started" || row.state === "reused"));
   // The receipt says when the start selected its space, and when another space stays selected.
@@ -465,6 +474,7 @@ export async function stackUp(request: StackUpRequest, native: StackUpNative): P
   const selected = current === space && before !== space;
   const written: { what: string; path: string }[] = [];
   const warnings: OutputWarning[] = settled ? [{ code: "OPERATION_SETTLED", target: { root, space, operation: settled.operation.id }, message: stackSettlementNotice(settled) }] : [];
+  if (chatHistory) warnings.push({ code: "CHAT_HISTORY_MIGRATED", target: { root, space, stream: chatHistory.stream }, message: chatHistoryMigratedNotice(space, chatHistory) });
   if (storeMissing) warnings.push({ code: "STORE_MISSING", target: { root, space, storeDir: storeMissing }, message: missingStoreWarning(storeMissing) });
   if (storeShared) warnings.push({ code: "STORE_SHARED", target: { root, space, storeDir: storeShared.path, otherSpaces: storeShared.tenants }, message: sharedStoreWarning(storeShared.path, storeShared.tenants) });
   // Damage the broker found while it restored its stored files is logged by now.
@@ -818,6 +828,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
   let startedBroker: { definition: ServiceDefinitionSnapshot; id: string } | undefined;
   let brokerExecutable: NatsServer | undefined;
   let streamsRecreated = false;
+  let chatHistory: ChatHistoryChange | undefined;
   let launch: { path: string; sha256: string } | undefined;
   // Only a broker this call starts gets the space's streams created.
   let brokerReused = false;
@@ -896,7 +907,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
       // The broker's own stream and registry setup, on the native space path, after it serves.
       failedRole = "broker";
       failedStage = "broker-streams";
-      await native.initializeStreams(server, space, prepared.setup, prepared.seedFile, request.recreateIssuedStores);
+      chatHistory = await native.initializeStreams(server, space, prepared.setup, prepared.seedFile, request.recreateIssuedStores);
       failedStage = "broker-registration";
       // A user registration is recorded here, before its auth service exists, because the native
       // auth-service child resolves a registered user target. It carries only the prepared trust
@@ -1069,7 +1080,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
       : "the user stack's other members were already running and were reused; the manager was not attempted because no signed-in, granted login exists. This is not whole-stack readiness", { target: detail, changed, native: { code: "AUTH_REQUIRED", outcome: "refused", detail: loginBlock.message }, ...(loginBlock.remedy ? { remedy: loginBlock.remedy } : {}) });
   }
   const allReused = journal.members.every((row) => row.state === "reused" || row.state === "not-attempted");
-  return { journal, changed, allReused, ...(storeTenants.length ? { storeShared: { path: storePath, tenants: storeTenants } } : {}), ...(storeMissing && !brokerReused ? { storeMissing: storePath } : {}), ...(launch ? { launch } : {}), ...(admittedRestore ? { admittedRestore } : {}), ...(settled ? { settled } : {}), ...(brokerExecutable ? { brokerExecutable } : {}), ...(streamsRecreated ? { streamsRecreated: true as const } : {}), ...(rotation ? { rotation } : {}) };
+  return { journal, changed, allReused, ...(storeTenants.length ? { storeShared: { path: storePath, tenants: storeTenants } } : {}), ...(storeMissing && !brokerReused ? { storeMissing: storePath } : {}), ...(launch ? { launch } : {}), ...(admittedRestore ? { admittedRestore } : {}), ...(settled ? { settled } : {}), ...(brokerExecutable ? { brokerExecutable } : {}), ...(streamsRecreated ? { streamsRecreated: true as const } : {}), ...(chatHistory ? { chatHistory } : {}), ...(rotation ? { rotation } : {}) };
 }
 
 /** Stop a broker this call started, through its exact kernel stop, and read whether its log says it

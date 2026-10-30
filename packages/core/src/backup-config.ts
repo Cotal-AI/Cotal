@@ -174,10 +174,74 @@ export type CanonicalBackupStreamConfig = Pick<
   compression: typeof StoreCompression.None;
 };
 
-const DEFAULT_DUPLICATE_WINDOW = nanos(2 * 60 * 1000);
-export const BACKUP_MAX_MSGS_PER_SUBJECT = 1000;
+const DEFAULT_DUPLICATE_WINDOW_MS = 2 * 60 * 1000;
+const DEFAULT_DUPLICATE_WINDOW = nanos(DEFAULT_DUPLICATE_WINDOW_MS);
+/** Per-subject cap on the INBOX and DLV streams, where a subject is one member lifecycle across
+ *  every channel: the newest copies kept for it, delivered ones included, since the reader acks an
+ *  entry without deleting it. A delivery bound, independent of {@link ChatHistoryLimit}. */
+export const PLANE3_MAX_MSGS_PER_SUBJECT = 1000;
 export const BACKUP_PLANE3_DEDUP_WINDOW_MS = 2 * 60 * 60 * 1000;
 const PLANE3_DUPLICATE_WINDOW = nanos(BACKUP_PLANE3_DEDUP_WINDOW_MS);
+
+/** How long the chat stream keeps a channel post (SPEC §8): until it is older than `maxAgeMs`,
+ *  or until its sender has posted `perSender` newer ones on that channel, whichever comes first.
+ *  One limit per space, enforced by the broker as the stream's `max_age` and
+ *  `max_msgs_per_subject`; a chat subject is one sender on one channel. */
+export interface ChatHistoryLimit {
+  /** `max_age` in milliseconds. 0 is no age limit, which only a stream this code did not set holds. */
+  maxAgeMs: number;
+  /** `max_msgs_per_subject`. */
+  perSender: number;
+}
+
+/** The limit a new space's chat stream is created with. */
+export const CHAT_HISTORY_DEFAULT: Readonly<ChatHistoryLimit> = Object.freeze({ maxAgeMs: 30 * 86_400_000, perSender: 1000 });
+/** The limit every chat stream carried before it was configurable. `cotal up` moves a stream that
+ *  still holds exactly this pair to {@link CHAT_HISTORY_DEFAULT}, which expires its older posts. */
+export const LEGACY_CHAT_HISTORY: Readonly<ChatHistoryLimit> = Object.freeze({ maxAgeMs: 0, perSender: 1000 });
+/** The shortest age an operator may set: the stream's duplicate window, which the broker requires
+ *  `max_age` not to undercut. */
+export const CHAT_HISTORY_MIN_AGE_MS = DEFAULT_DUPLICATE_WINDOW_MS;
+export const CHAT_HISTORY_MAX_AGE_MS = 3650 * 86_400_000;
+
+/** Why an operator may not set `limit`, or undefined when it may. The age is whole seconds so its
+ *  nanosecond `max_age` stays an exact integer. */
+export function chatHistoryLimitProblem(limit: ChatHistoryLimit): string | undefined {
+  if (!Number.isSafeInteger(limit.perSender) || limit.perSender < 1)
+    return `the per-sender count must be a whole number of at least 1, not ${limit.perSender}`;
+  if (!Number.isSafeInteger(limit.maxAgeMs) || limit.maxAgeMs % 1000 !== 0)
+    return "the age must be a whole number of seconds";
+  if (limit.maxAgeMs < CHAT_HISTORY_MIN_AGE_MS) return "the age must be at least 2m, the chat stream's duplicate window";
+  if (limit.maxAgeMs > CHAT_HISTORY_MAX_AGE_MS) return "the age must be at most 3650d";
+  return undefined;
+}
+
+/** A limit a chat stream may hold: one an operator may set, or no age with a valid count, which a
+ *  stream from before the limit was configurable holds. */
+export function isAcceptedChatHistory(limit: ChatHistoryLimit): boolean {
+  if (limit.maxAgeMs === 0) return Number.isSafeInteger(limit.perSender) && limit.perSender >= 1;
+  return chatHistoryLimitProblem(limit) === undefined;
+}
+
+export function isLegacyChatHistory(limit: ChatHistoryLimit): boolean {
+  return limit.maxAgeMs === LEGACY_CHAT_HISTORY.maxAgeMs && limit.perSender === LEGACY_CHAT_HISTORY.perSender;
+}
+
+/** The limit a chat stream config holds, read from its `max_age` and `max_msgs_per_subject`. */
+export function chatHistoryLimitOf(config: Readonly<Record<string, unknown>>): ChatHistoryLimit {
+  const age = config.max_age ?? 0, count = config.max_msgs_per_subject;
+  return { maxAgeMs: typeof age === "number" ? age / 1_000_000 : Number.NaN, perSender: typeof count === "number" ? count : Number.NaN };
+}
+
+/** The limit a restore holds the chat stream at while it checks the restored state: the artifact's
+ *  recorded count and no age, so nothing expires before the messages, bytes and sequences are
+ *  compared. The recorded age is applied after the last check. The recorded limit is checked here
+ *  first, so staging never admits a limit no stream may hold. */
+export function chatHistoryRestoreStaging(recorded: ChatHistoryLimit): ChatHistoryLimit {
+  if (!isAcceptedChatHistory(recorded))
+    throw new Error(`the backup records a chat history limit no stream may hold: max_age ${recorded.maxAgeMs}ms, ${recorded.perSender} per sender`);
+  return { maxAgeMs: 0, perSender: recorded.perSender };
+}
 
 function baseConfig(name: string, subjects: string[]): CanonicalBackupStreamConfig {
   return {
@@ -214,13 +278,19 @@ export function spaceStreamCreationBase(name: string, subjects: string[]): Canon
 }
 
 /** Current canonical config for one of the backed-up streams. Restore callers must use this config,
- * not the config embedded in untrusted snapshot bytes. */
-export function canonicalBackupStreamConfig(space: string, stream: string): CanonicalBackupStreamConfig {
+ * not the config embedded in untrusted snapshot bytes. `chat` sets the chat stream's history limit
+ * and is ignored for every other stream; callers validate it. */
+export function canonicalBackupStreamConfig(
+  space: string,
+  stream: string,
+  chat: Readonly<ChatHistoryLimit> = CHAT_HISTORY_DEFAULT,
+): CanonicalBackupStreamConfig {
   const p = spacePrefix(space);
   if (stream === chatStream(space)) {
     return {
       ...baseConfig(stream, [`${p}.chat.>`]),
-      max_msgs_per_subject: BACKUP_MAX_MSGS_PER_SUBJECT,
+      max_age: nanos(chat.maxAgeMs),
+      max_msgs_per_subject: chat.perSender,
       allow_direct: true,
     };
   }
@@ -231,14 +301,14 @@ export function canonicalBackupStreamConfig(space: string, stream: string): Cano
   if (stream === inboxStream(space)) {
     return {
       ...baseConfig(stream, [`${p}.dinbox.>`]),
-      max_msgs_per_subject: BACKUP_MAX_MSGS_PER_SUBJECT,
+      max_msgs_per_subject: PLANE3_MAX_MSGS_PER_SUBJECT,
       duplicate_window: PLANE3_DUPLICATE_WINDOW,
     };
   }
   if (stream === dlvStream(space)) {
     return {
       ...baseConfig(stream, [`${p}.dlv.>`]),
-      max_msgs_per_subject: BACKUP_MAX_MSGS_PER_SUBJECT,
+      max_msgs_per_subject: PLANE3_MAX_MSGS_PER_SUBJECT,
       duplicate_window: PLANE3_DUPLICATE_WINDOW,
     };
   }
@@ -312,13 +382,24 @@ function normalize(value: unknown): unknown {
 }
 
 /** Validate every active and security-sensitive stream setting, including explicit rejection of
- * mirrors, sources, transforms, republish, placement, sealing, metadata, and future active features. */
+ * mirrors, sources, transforms, republish, placement, sealing, metadata, and future active features.
+ * The chat stream's history limit is the one setting that varies: it is read from `actual` and must
+ * be one a stream may hold ({@link isAcceptedChatHistory}). A restore that is still checking the
+ * state it restored passes `restoreStagingFor`, the limit its artifact recorded, and the config must
+ * then hold that limit's staging form exactly ({@link chatHistoryRestoreStaging}). */
 export function validateCanonicalBackupStreamConfig(
   space: string,
   stream: string,
   actual: Readonly<Record<string, unknown>>,
+  opts: { restoreStagingFor?: ChatHistoryLimit } = {},
 ): CanonicalBackupStreamConfig {
-  const expected = canonicalBackupStreamConfig(space, stream);
+  let chat: ChatHistoryLimit | undefined;
+  if (stream === chatStream(space)) {
+    chat = opts.restoreStagingFor ? chatHistoryRestoreStaging(opts.restoreStagingFor) : chatHistoryLimitOf(actual);
+    if (!opts.restoreStagingFor && !isAcceptedChatHistory(chat))
+      throw new Error(`${stream} config is not canonical: max_age=${JSON.stringify(actual.max_age)}, max_msgs_per_subject=${JSON.stringify(actual.max_msgs_per_subject)} is not a chat history limit`);
+  }
+  const expected = canonicalBackupStreamConfig(space, stream, chat);
   const known = new Set([...Object.keys(expected), ...Object.keys(INERT_CONFIG_DEFAULTS)]);
   const unknown = Object.keys(actual).filter((key) => !known.has(key));
   if (unknown.length) throw new Error(`${stream} config has unsupported fields: ${unknown.sort().join(", ")}`);

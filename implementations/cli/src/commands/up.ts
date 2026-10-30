@@ -40,6 +40,7 @@ import {
   mintMembershipObserverCreds,
   newIdentity,
   setupSpaceStreams,
+  type ChatHistoryChange,
   removeIssuedStoresBeforeRetention,
   IssuedStoreBeforeRetentionError,
   IssuedStoreRecreateRefusal,
@@ -251,6 +252,7 @@ import {
   type ExistingStorePin,
   type StackUpNative,
   unparsableDaemonCredsNotice,
+  chatHistoryMigratedNotice,
 } from "./stack-up.js";
 import { handOverStartupNotice, noticeOnInterrupt, releaseStartupNotice } from "../lib/interrupt-notice.js";
 import { settleInterruptedLaunches } from "../lib/service-process.js";
@@ -4027,7 +4029,8 @@ async function serveReadyListener(l: {
   if (l.resumeAttempt) await recreateMemoryBuckets(server, space, setup);
   else {
     try {
-      await postStart(server, space, setup, l.seedFile, l.recreateIssuedStores);
+      const chatHistory = await postStart(server, space, setup, l.seedFile, l.recreateIssuedStores);
+      if (chatHistory) console.error(c.yellow(`! ${chatHistoryMigratedNotice(space, chatHistory)}`));
     } catch (e) {
       await stopFailedListener(child);
       throw e;
@@ -4918,10 +4921,11 @@ async function postStart(
   setup?: { creds: string },
   seedFile?: ChannelRegistryFile,
   recreateIssuedStores?: string,
-): Promise<void> {
+): Promise<ChatHistoryChange | undefined> {
   if (recreateIssuedStores !== undefined) await recreateIssuedStoresBeforeSetup(server, space, setup !== undefined, recreateIssuedStores);
+  let chatHistory: ChatHistoryChange | undefined;
   try {
-    await setupSpaceStreams({ servers: server, space, creds: setup?.creds });
+    ({ chatHistory } = await setupSpaceStreams({ servers: server, space, creds: setup?.creds }));
   } catch (error) {
     // Nothing of the stack runs yet, and the caller stops this broker again, so this is a refusal.
     if (error instanceof IssuedStoreBeforeRetentionError)
@@ -4947,6 +4951,7 @@ async function postStart(
     if (!(error instanceof UndecodableRegistryEntry)) throw error;
     throw new CommandFailure("refused", "CONFLICT", error.message, { target: { space }, remedy: "read the key and replace the value; the bytes were left as they are" });
   }
+  return chatHistory;
 }
 
 /** `--recreate-issued-stores`: on the broker this boot just started, before any issuer or resolver

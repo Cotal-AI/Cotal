@@ -1,0 +1,86 @@
+{
+  "suite": [
+    "packages/core/smoke/chat-history-limit.smoke.ts"
+  ],
+  "guard": "The chat stream's history limit: the provisioner may update the chat stream and no other message stream, `cotal up` moves only the legacy pair, a broker refusal of the update is not reported as an unknown outcome, recall reads the stream's own limits and its head, and durable catch-up tombstones only on the per-sender rule, reading the channel's oldest post through its own consumer.",
+  "command": "pnpm smoke:chat-history-limit",
+  "completionMarker": "chat-history-limit:",
+  "progressPattern": "^  [✓✗] ",
+  "minTicks": 40,
+  "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/mutations/chat-history-limit.json",
+  "why": [
+    "The suite imports core from `src`, so no build is needed and each mutant is what the suite runs. Every cell",
+    "runs against a live broker, so a mutation is graded by the broker's own permission checks, expiry and stored",
+    "config. Each mutation reddens a different named cell."
+  ],
+  "mutations": [
+    {
+      "name": "the provisioner loses its chat stream update grant",
+      "file": "packages/core/src/provision.ts",
+      "find": "  const streamReconcile = [...ttlStreams, OBJ, CHAT].map((s) => `$JS.API.STREAM.UPDATE.${s}`);",
+      "replace": "  const streamReconcile = [...ttlStreams, OBJ].map((s) => `$JS.API.STREAM.UPDATE.${s}`);",
+      "expectRed": "cotal up's setup, as the provisioner, moves a legacy chat stream to 30 days and 1000 per sender",
+      "cell": "cotal up's setup, as the provisioner, moves a legacy chat stream to 30 days and 1000 per sender",
+      "note": "Without the grant every authed space dies on a permissions violation at its first start on this release."
+    },
+    {
+      "name": "the grant is widened to the DM stream",
+      "file": "packages/core/src/provision.ts",
+      "find": "  const streamReconcile = [...ttlStreams, OBJ, CHAT].map((s) => `$JS.API.STREAM.UPDATE.${s}`);",
+      "replace": "  const streamReconcile = [...ttlStreams, OBJ, CHAT, DM].map((s) => `$JS.API.STREAM.UPDATE.${s}`);",
+      "expectRed": "the provisioner may not update DM_",
+      "cell": "the provisioner may not update DM_<space>"
+    },
+    {
+      "name": "cotal up moves any limit, not only the legacy pair",
+      "file": "packages/core/src/streams.ts",
+      "find": "  if (!isLegacyChatHistory(chatHistoryLimitOf(config as unknown as Record<string, unknown>))) return undefined;\n",
+      "replace": "",
+      "expectRed": "cotal up leaves an operator's limit as it is",
+      "cell": "cotal up leaves an operator's limit as it is",
+      "note": "The mutant still migrates the legacy pair, so only the cell that runs setup over an operator's limit sees it overwritten."
+    },
+    {
+      "name": "a permission refusal of the update is reported as an unknown outcome",
+      "file": "packages/core/src/streams.ts",
+      "find": "    if (e instanceof JetStreamApiError || isPublishPermissionDenied(e)) throw e;",
+      "replace": "    if (e instanceof JetStreamApiError) throw e;",
+      "expectRed": "a credential without the update grant is refused, not reported as an unknown outcome",
+      "cell": "a credential without the update grant is refused, not reported as an unknown outcome"
+    },
+    {
+      "name": "the head rule enters durable catch-up",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    const evicted = (await this.chatRetainedLoss(subject, fromSeqExcl, () => this.oldestRetainedThrough(name, subject))).capEvicted;",
+      "replace": "    const evicted = ((l) => l.capEvicted || l.headPassed)(await this.chatRetainedLoss(subject, fromSeqExcl, () => this.oldestRetainedThrough(name, subject)));",
+      "expectRed": "a join whose window the stream head passed, with nothing of its channel removed, activates",
+      "cell": "a join whose window the stream head passed, with nothing of its channel removed, activates",
+      "note": "Another channel's removals would then tombstone a join that lost nothing."
+    },
+    {
+      "name": "the daemon reads the oldest post through the agent reader and swallows its failure, as before",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    const evicted = (await this.chatRetainedLoss(subject, fromSeqExcl, () => this.oldestRetainedThrough(name, subject))).capEvicted;",
+      "replace": "    const evicted = (await this.chatRetainedLoss(subject, fromSeqExcl, async () => (await this.collectHistory(subject, { seq: 1 }, { limit: 1 }).catch(() => []))[0]?.seq)).capEvicted;",
+      "expectRed": "a join whose window lost a sender's posts to the per-sender count is refused as durable",
+      "cell": "a join whose window lost a sender's posts to the per-sender count is refused as durable",
+      "note": "The delivery daemon holds no lifecycleUid, so the agent reader refuses it; swallowed, the eviction is never seen and the join is reported complete."
+    },
+    {
+      "name": "recall ignores the stream head",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    return { messages: collected, seqs, dropped: loss.capEvicted || loss.headPassed, unanswered: false };",
+      "replace": "    return { messages: collected, seqs, dropped: loss.capEvicted, unanswered: false };",
+      "expectRed": "recall reports a channel whose posts are all gone, with the stream head past the watermark",
+      "cell": "recall reports a channel whose posts are all gone, with the stream head past the watermark"
+    },
+    {
+      "name": "recall judges the count against the compiled 1000, not the stream's limit",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    const cap = info.config.max_msgs_per_subject;\n    let maxPerSubject = 0;",
+      "replace": "    const cap = 1000;\n    let maxPerSubject = 0;",
+      "expectRed": "recall reports a channel where a sender passed the stream's per-sender count",
+      "cell": "recall reports a channel where a sender passed the stream's per-sender count"
+    }
+  ]
+}

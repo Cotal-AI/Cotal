@@ -103,7 +103,9 @@ The guarantees, at a glance, each enforced by the broker per
   every message for this; here it is reserved as signed envelopes.)
 - **Availability:** an authenticated peer can flood any channel or inbox it may write to. v0
   relies on coarse NATS account limits (connections, subscriptions, payload and storage caps)
-  and adds no per-agent application-level rate limiting.
+  and adds no per-agent application-level rate limiting. The chat history limit counts posts per
+  sender on each channel, so a flood removes the flooder's own older posts there and leaves other
+  senders' posts in place until they reach the space's age.
 - **Replay by a peer:** a peer may re-send its own prior messages; v0 defines no protocol-level
   nonce or idempotency key. It cannot replay as another agent (subject binding still holds).
 - **Static agent credential revocation:** on a static-auth mesh, a *manager-spawned* agent cred

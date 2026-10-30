@@ -56,7 +56,7 @@ import { ARTIFACT_PART_KIND, isArtifactPart } from "./artifact.js";
 import { assertValidKind } from "./agent-file.js";
 import { assertValidName } from "./resolve.js";
 import { EVICT_PRINCIPALS_MAX } from "./evict.js";
-import { createSpaceStreams, dmDurableConfig, dlvDurableConfig, taskDurableConfig, fanoutDurableConfig, inboxReaderConfig, MAX_MSGS_PER_SUBJECT, MANAGER_LEASE_TTL_MS, MANAGER_LEASE_ATTEMPT_MS, TTL_RECONCILE_CANARY_KEY, PRESENCE_STORAGE } from "./streams.js";
+import { createSpaceStreams, dmDurableConfig, dlvDurableConfig, taskDurableConfig, fanoutDurableConfig, inboxReaderConfig, MANAGER_LEASE_TTL_MS, MANAGER_LEASE_ATTEMPT_MS, TTL_RECONCILE_CANARY_KEY, PRESENCE_STORAGE } from "./streams.js";
 import {
   jetstream,
   jetstreamManager,
@@ -5445,12 +5445,6 @@ export class CotalEndpoint extends EventEmitter {
   ): Promise<{ copied: number; evicted: boolean }> {
     if (!this.js || !this.jsm || toSeqIncl <= fromSeqExcl) return { copied: 0, evicted: false };
     const subject = chatSubject(this.space, "*", "*", channel);
-    // Eviction = a message in `(joinCursor, …]` on THIS channel's subject aged out under discard=Old.
-    // Judged PER-SUBJECT (reuse channelDropped: oldest-retained-for-subject vs the watermark, only at
-    // the per-subject cap), NOT against the stream-global joinCursor+1 — other channels' traffic
-    // inflates the global seq, so a naive "first delivered seq > joinCursor+1" false-positives on any
-    // busy multi-channel space (impl-review HIGH-2). A true eviction → durableJoin reports durable:false.
-    const evicted = await this.channelDropped(subject, fromSeqExcl);
     // Consumer NAME must be JetStream-safe (no `.`) AND collision-free: use the principal DASH-form
     // (`<owner>-<actor>`, `-` reserved as the sole separator), NOT `token(owner)` — `token()` maps the
     // dot-form `.`→`_`, which is NOT collision-free (`_` is legal inside a token, so `a.b_c` and `a_b.c`
@@ -5459,6 +5453,17 @@ export class CotalEndpoint extends EventEmitter {
     // delete/recreate a predecessor's in-flight catch-up consumer — the uid disambiguates.
     const cuP = parsePrincipalKey(owner);
     const name = `cu_${cuP ? lifecycleNameKey(cuP.owner, cuP.actor, lifecycleUid) : `${token(owner)}-${lifecycleUid}`}_${generation}`;
+    // Eviction = a message in `(joinCursor, …]` on THIS channel's subject aged out under discard=Old.
+    // Judged PER-SUBJECT (chatRetainedLoss: oldest-retained-for-subject vs the watermark, only at
+    // the per-subject cap), NOT against the stream-global joinCursor+1 — other channels' traffic
+    // inflates the global seq, so a naive "first delivered seq > joinCursor+1" false-positives on any
+    // busy multi-channel space (impl-review HIGH-2). A true eviction → durableJoin reports durable:false.
+    // `headPassed` is deliberately not used: it is possible loss from any channel, and a post the
+    // stream's age removed is outside retention, which bounds the durable guarantee (SPEC §4). A
+    // failed read throws, leaving the pending row to retry over the same window.
+    // The daemon holds no lifecycle-keyed history reader, so it reads the channel's oldest post
+    // through this catch-up's own consumer name.
+    const evicted = (await this.chatRetainedLoss(subject, fromSeqExcl, () => this.oldestRetainedThrough(name, subject))).capEvicted;
     await this.deleteConsumerIfPresent(chatStream(this.space), name);
     await this.jsm.consumers.add(chatStream(this.space), {
       name, filter_subject: subject, ack_policy: AckPolicy.None, mem_storage: true,
@@ -7166,10 +7171,11 @@ export class CotalEndpoint extends EventEmitter {
   /**
    * Replay-gated pull of a channel's retained ambient from `sinceSeq` (exclusive) forward — the
    * focus-recall read behind `cotal_inbox`. Returns the messages (NOT emitted — this is a pull,
-   * not a push into context) plus `dropped: true` when the window is not complete: either the
-   * channel's earliest *retained* message is already newer than the watermark (some ambient aged
-   * out of the per-subject window), or replay is off for the channel below. Either way the caller
-   * must say so rather than silently reporting an empty, complete window. `seqs[i]` is the chat
+   * not a push into context) plus `dropped: true` when the window may not be complete: the stream's
+   * limits may have removed posts after the watermark ({@link chatRetainedLoss}: a sender's
+   * per-sender eviction, or the stream's oldest post already past the watermark), or replay is off
+   * for the channel below. Either way the caller must say so rather than silently reporting an
+   * empty, complete window. `seqs[i]` is the chat
    * stream sequence of `messages[i]`, the one identity two identical messages do not share.
    * `unanswered` is true when no history read answered (replay is off, or the read failed), so
    * `messages` says nothing about what the channel retains.
@@ -7215,44 +7221,63 @@ export class CotalEndpoint extends EventEmitter {
       collected.push(authenticatedMessage(msg, parsed));
       seqs.push(sm.seq);
     }
-    const dropped = await this.channelDropped(subject, sinceSeq);
-    return { messages: collected, seqs, dropped, unanswered: false };
-  }
-
-  /** Did focus recall on `subject` miss ambient that aged out past the watermark? Ambient is only
-   *  ever discarded once a sender-subject reaches {@link MAX_MSGS_PER_SUBJECT} (`DiscardPolicy.Old`);
-   *  below the cap nothing was evicted, so the window is complete — return false without crying
-   *  wolf. At the cap, the surviving oldest seq decides: if it already postdates the watermark, the
-   *  eviction reached into the "since you focused" window. (Avoids the false positive of comparing a
-   *  per-subject oldest against the stream-global frontier, which fires on any other channel's
-   *  traffic.) */
-  private async channelDropped(subject: string, sinceSeq: number): Promise<boolean> {
-    if (!this.jsm) return false;
-    let maxPerSubject = 0;
+    let loss: { capEvicted: boolean; headPassed: boolean };
     try {
-      const info = await this.jsm.streams.info(chatStream(this.space), { subjects_filter: subject });
-      for (const count of Object.values(info.state.subjects ?? {}))
-        maxPerSubject = Math.max(maxPerSubject, count);
+      loss = await this.chatRetainedLoss(subject, sinceSeq, async () => (await this.collectHistory(subject, { seq: 1 }, { limit: 1 }))[0]?.seq);
     } catch (e) {
-      if ((e as { code?: number }).code !== 404) this.emit("error", e as Error);
-      return false; // stream/subject missing — nothing retained, nothing dropped
-    }
-    if (maxPerSubject < MAX_MSGS_PER_SUBJECT) return false; // never hit the cap ⇒ never evicted
-    const oldest = await this.channelOldestSeq(subject);
-    return oldest !== undefined && oldest > sinceSeq + 1;
-  }
-
-  /** Sequence of the earliest message still retained on a channel subject (any sender), or
-   *  undefined if nothing is retained. One message through the contained {@link collectHistory} —
-   *  used for the recall drop marker. */
-  private async channelOldestSeq(subject: string): Promise<number | undefined> {
-    if (!this.jsm) return undefined;
-    try {
-      const [first] = await this.collectHistory(subject, { seq: 1 }, { limit: 1 });
-      return first?.seq;
-    } catch (e) {
+      // Completeness could not be read, so the read is reported as unanswered: nothing settles on it.
       this.emit("error", e as Error);
-      return undefined;
+      if (isPermissionDenied(e)) throw e;
+      return { messages: [], seqs: [], dropped: true, unanswered: true };
+    }
+    return { messages: collected, seqs, dropped: loss.capEvicted || loss.headPassed, unanswered: false };
+  }
+
+  /** What the chat stream's limits may have removed from `subject` after `sinceSeq`, read from the
+   *  stream's own config rather than a compiled default. Throws when it cannot read, so no caller
+   *  takes an unread stream for a complete one.
+   *
+   *  `capEvicted`: a sender on the channel is at the stream's per-sender limit and the channel's
+   *  oldest retained post is already past the watermark, so that sender's eviction reached into the
+   *  window. Judged per channel, never against the stream-global frontier, which any other
+   *  channel's traffic moves.
+   *
+   *  `headPassed`: the stream's oldest retained post is past the watermark, so every post up to it
+   *  is gone, from this channel or any other. Age expiry and a purge both move the head; another
+   *  channel's removals can therefore set this when this channel lost nothing, and a hole behind a
+   *  retained older post never sets it. It reports possible loss, not proof.
+   *
+   *  `oldestRetainedSeq` reads the channel's earliest retained post through a consumer the caller may
+   *  create: an agent's lifecycle-keyed history reader, or the delivery daemon's catch-up consumer. */
+  private async chatRetainedLoss(subject: string, sinceSeq: number, oldestRetainedSeq: () => Promise<number | undefined>): Promise<{ capEvicted: boolean; headPassed: boolean }> {
+    if (!this.jsm) throw new Error(this.notLiveMsg());
+    const info = await this.jsm.streams.info(chatStream(this.space), { subjects_filter: subject });
+    const headPassed = info.state.first_seq > sinceSeq + 1;
+    const cap = info.config.max_msgs_per_subject;
+    let maxPerSubject = 0;
+    for (const count of Object.values(info.state.subjects ?? {})) maxPerSubject = Math.max(maxPerSubject, count);
+    if (cap < 1 || maxPerSubject < cap) return { capEvicted: false, headPassed }; // no sender at the cap ⇒ none evicted
+    const oldest = await oldestRetainedSeq();
+    return { capEvicted: oldest !== undefined && oldest > sinceSeq + 1, headPassed };
+  }
+
+  /** The earliest message `subject` still retains, read through the short-lived consumer `name`, or
+   *  undefined when it retains none. */
+  private async oldestRetainedThrough(name: string, subject: string): Promise<number | undefined> {
+    if (!this.js || !this.jsm) throw new Error(this.notLiveMsg());
+    const stream = chatStream(this.space);
+    await this.deleteConsumerIfPresent(stream, name);
+    await this.jsm.consumers.add(stream, {
+      name, filter_subject: subject, ack_policy: AckPolicy.None, mem_storage: true,
+      inactive_threshold: nanos(30_000), deliver_policy: DeliverPolicy.All,
+    });
+    try {
+      const consumer = await this.js.consumers.get(stream, name);
+      if ((await consumer.info()).num_pending === 0) return undefined;
+      for await (const m of await consumer.fetch({ max_messages: 1, expires: 5_000 })) return m.seq;
+      throw new Error(`the oldest retained message on ${subject} was not delivered`);
+    } finally {
+      await this.deleteConsumerIfPresent(stream, name);
     }
   }
 
