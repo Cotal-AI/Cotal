@@ -65,6 +65,13 @@ const journal: CoverageCommand = { name: "issue-sync", class: "journal", targete
   suite.check("an issued row covers the ep.v1 form and no legacy form", forms.length === 1 && find(forms, "ep.v1", "one") !== undefined, forms);
 }
 {
+  const pinned = nonce();
+  const forms = projectCommandCoverage(space, perm([`${p}.ep.one.linear.issue-get.${callerBlock}.${pinned}`]), { endpoint, command: untargeted, caller });
+  const one = find(forms, "ep", "one");
+  suite.check("a nonce literal is its own class: only that nonce is covered",
+    one?.covered.length === 1 && one.covered[0]?.nonce === pinned && one.literals.nonce?.join() === pinned, one);
+}
+{
   const forms = projectCommandCoverage(space, perm("all"), { endpoint, command: untargeted, caller });
   suite.check("an unrestricted ceiling covers every route", ["one", "all", "inst"].every((r) => find(forms, "ep", r) !== undefined), forms);
   suite.check("a none ceiling covers nothing", projectCommandCoverage(space, perm("none"), { endpoint, command: untargeted, caller }).length === 0);
@@ -88,12 +95,14 @@ const uids = [mintLifecycleUid(), mintLifecycleUid()];
 const instances = [I1, I2, I3];
 const pick = <T>(xs: readonly T[]): T => xs[randomBytes(1)[0]! % xs.length]!;
 const chance = (n: number) => randomBytes(1)[0]! < 256 * n;
-const fresh = (param: CoverageParam) => param === "instanceId" || param === "targetUid" ? mintLifecycleUid() : `zz${randomBytes(4).toString("hex")}`;
+const nonces = [nonce(), nonce()];
+const fresh = (param: CoverageParam) => param === "nonce" ? nonce() : param === "instanceId" || param === "targetUid" ? mintLifecycleUid() : `zz${randomBytes(4).toString("hex")}`;
 const valueOf = (param: CoverageParam, pool: boolean): string =>
-  !pool ? fresh(param) : param === "instanceId" ? pick(instances) : param === "targetOwner" ? pick(owners) : param === "targetActor" ? pick(actors) : pick(uids);
+  !pool ? fresh(param) : param === "nonce" ? pick(nonces) : param === "instanceId" ? pick(instances) : param === "targetOwner" ? pick(owners) : param === "targetActor" ? pick(actors) : pick(uids);
 const paramsOf = (mode: EpAuthzMode | undefined, route: string | undefined): CoverageParam[] => [
   ...(route === "inst" ? ["instanceId" as const] : []),
   ...(mode === undefined || mode === "self" ? [] : mode === "exact" || mode === "handle" ? ["targetOwner", "targetActor", "targetUid"] as const : ["targetOwner"] as const),
+  ...(route === undefined ? [] : ["nonce" as const]),
 ];
 const command: CoverageCommand = { name: "issue-set", class: "journal", targeted: true, modes: ["owner", "exact"] };
 type Shape = { rail: "ep" | "ep.v1" | "epj"; route?: "one" | "all" | "inst"; mode: EpAuthzMode };
@@ -105,7 +114,7 @@ const subjectOf = (s: Shape, v: Record<CoverageParam, string>): string => {
   const target: EpTarget = s.mode === "exact" ? { mode: "exact", tOwner: v.targetOwner, tActor: v.targetActor, tUid: v.targetUid } : { mode: s.mode as "owner", tOwner: v.targetOwner };
   if (s.rail === "epj") return epjSubject(space, { endpoint, command: command.name, target, caller });
   const c = s.rail === "ep.v1" ? ({ ...caller, generation } as EpCaller) : caller;
-  return epRequestSubject(space, { route: s.route === "inst" ? { mode: "inst", instanceId: v.instanceId } : { mode: s.route! }, endpoint, command: command.name, target, caller: c, nonce: nonce() });
+  return epRequestSubject(space, { route: s.route === "inst" ? { mode: "inst", instanceId: v.instanceId } : { mode: s.route! }, endpoint, command: command.name, target, caller: c, nonce: v.nonce });
 };
 const randomPattern = (): string => {
   const s = pick(shapes);

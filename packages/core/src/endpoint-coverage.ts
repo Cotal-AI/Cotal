@@ -13,7 +13,7 @@
 import { randomBytes } from "node:crypto";
 import type { EpClass } from "./endpoint-envelope.js";
 import {
-  assertBoundedOwner, epjSubject, epRequestSubject, type EpAuthzMode, type EpCaller, type EpRoute, type EpTarget,
+  assertBoundedOwner, assertNonce, epjSubject, epRequestSubject, type EpAuthzMode, type EpCaller, type EpRoute, type EpTarget,
 } from "./endpoint-subjects.js";
 import { issuedPermitsSubject, type IssuedSubjectPermission } from "./issued-authority.js";
 import { assertLifecycleToken, mintLifecycleUid } from "./subjects.js";
@@ -26,9 +26,9 @@ export interface CoverageCommand {
   readonly modes?: readonly EpAuthzMode[];
 }
 
-/** A parameter position in a request form. The nonce is not one: a client always publishes a
- *  fresh one, so only the "any other value" class of the nonce is ever tested. */
-export type CoverageParam = "instanceId" | "targetOwner" | "targetActor" | "targetUid";
+/** A parameter position in a request form. The nonce is one like any other: a pattern that names a
+ *  nonce literal splits it into classes the same way. */
+export type CoverageParam = "instanceId" | "targetOwner" | "targetActor" | "targetUid" | "nonce";
 
 /** A combination of classes: each parameter's literal, `null` for every value the form's
  *  `literals` does not name at that parameter, or `"*"` for every value at all (no literal is a
@@ -87,6 +87,7 @@ const VALIDATE: Record<CoverageParam, (v: string) => unknown> = {
   targetOwner: (v) => assertBoundedOwner(v, "target owner"),
   targetActor: (v) => assertBoundedOwner(v, "target actor"),
   targetUid: (v) => assertLifecycleToken(v, "target lifecycleUid"),
+  nonce: (v) => assertNonce(v),
 };
 
 function valid(param: CoverageParam, v: string): boolean {
@@ -101,14 +102,8 @@ function valid(param: CoverageParam, v: string): boolean {
 /** A value the parameter's grammar admits and no pattern names at its position. */
 function freshValue(param: CoverageParam, named: ReadonlySet<string>): string {
   for (;;) {
-    const v = param === "instanceId" || param === "targetUid" ? mintLifecycleUid() : `zcov${randomBytes(8).toString("hex")}`;
-    if (!named.has(v)) return v;
-  }
-}
-
-function freshNonce(named: ReadonlySet<string>): string {
-  for (;;) {
-    const v = randomBytes(16).toString("base64url");
+    const v = param === "nonce" ? randomBytes(16).toString("base64url")
+      : param === "instanceId" || param === "targetUid" ? mintLifecycleUid() : `zcov${randomBytes(8).toString("hex")}`;
     if (!named.has(v)) return v;
   }
 }
@@ -124,7 +119,7 @@ interface Form {
   route?: EpRoute["mode"];
   mode?: EpAuthzMode;
   params: readonly CoverageParam[];
-  build(values: Record<CoverageParam, string>, nonce: string): string;
+  build(values: Record<CoverageParam, string>): string;
 }
 
 function formsOf(space: string, endpoint: string, command: CoverageCommand, caller: EpCaller, generation: string | undefined): Form[] {
@@ -136,12 +131,12 @@ function formsOf(space: string, endpoint: string, command: CoverageCommand, call
     const targetParams = mode === undefined ? [] : PARAMS_OF_MODE[mode];
     for (const [rail, c] of callers) {
       for (const route of ["one", "all", "inst"] as const) {
-        const params = route === "inst" ? ["instanceId" as const, ...targetParams] : targetParams;
+        const params: CoverageParam[] = [...(route === "inst" ? ["instanceId" as const] : []), ...targetParams, "nonce"];
         forms.push({
           rail, route, ...(mode !== undefined ? { mode } : {}), params,
-          build: (v, nonce) => epRequestSubject(space, {
+          build: (v) => epRequestSubject(space, {
             route: route === "inst" ? { mode: "inst", instanceId: v.instanceId } : { mode: route },
-            endpoint, command: command.name, ...(mode !== undefined ? { target: targetOf(mode, v) } : {}), caller: c, nonce,
+            endpoint, command: command.name, ...(mode !== undefined ? { target: targetOf(mode, v) } : {}), caller: c, nonce: v.nonce,
           }),
         });
       }
@@ -175,10 +170,9 @@ export function projectCommandCoverage(
     // Locate each parameter by building once with distinct fresh values and finding them.
     const probe = {} as Record<CoverageParam, string>;
     for (const p of form.params) probe[p] = freshValue(p, new Set(Object.values(probe)));
-    const probeTokens = form.build(probe, freshNonce(new Set())).split(".");
+    const probeTokens = form.build(probe).split(".");
     for (const p of form.params)
       if (probeTokens.indexOf(probe[p]) !== probeTokens.lastIndexOf(probe[p])) throw new Error(`coverage: the ${p} probe is not unique in its subject`);
-    const nonceAt = form.rail === "epj" ? -1 : probeTokens.length - 1;
     const named = (at: number) => new Set(split.flatMap((t) => (t.length > at && t[at] !== "*" && t[at] !== ">" ? [t[at]!] : [])));
     const classes = form.params.map((p) => {
       const at = probeTokens.indexOf(probe[p]);
@@ -190,11 +184,10 @@ export function projectCommandCoverage(
     const total = classes.reduce((n, c) => n * (c.literals.length + 1), 1);
     if (total > limit)
       throw new CoverageLimitError(`${args.endpoint}.${args.command.name} needs ${total} combinations to project; the limit is ${limit}`);
-    const nonce = nonceAt < 0 ? "" : freshNonce(named(nonceAt));
     const covered: CoverageCombination[] = [];
     const walk = (i: number, values: Record<CoverageParam, string>, combo: CoverageCombination) => {
       if (i === classes.length) {
-        if (issuedPermitsSubject(publish, form.build(values, nonce))) covered.push({ ...combo });
+        if (issuedPermitsSubject(publish, form.build(values))) covered.push({ ...combo });
         return;
       }
       const c = classes[i]!;
