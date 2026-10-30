@@ -1,13 +1,15 @@
 /**
  * The shared `bootDeliveryDaemon` fixture holds its delivery lease the way the shipped daemon does,
- * and lets it go cleanly. Every cell drives the fixture itself against a real JWT broker; the lease
- * row is read back from the bucket, never inferred from the fixture's own bookkeeping.
+ * and lets it go cleanly. Lease cells drive the fixture against a real JWT broker and read the row
+ * back from the bucket. The separate admin-wait controls use held and refused attempts to check the
+ * shipped wait helper's cadence and deadline; they are not broker-reconnect reproductions.
  *
  *   1. It renews: the row's revision advances and stays owned across more than one renew interval.
  *   2. A renew that fails stops renewing and does not throw: the row moves to another writer, the
  *      fixture's next renew CAS is refused, and the fixture never writes the row again.
  *   3. `stop()` during an in-flight renew waits for that renew, then releases the row by CAS.
  *   4. `stop()` does not release a row it no longer owns.
+ *   5. The admin wait retries promptly, preserves refusals and sends nothing after its deadline.
  *
  * Run: pnpm smoke:boot-delivery-lease
  */
@@ -15,7 +17,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSpaceAuth, mintCreds, newIdentity, openDeliveryRegistry, leaseKey, setupSpaceStreams, standaloneConnectOpts } from "@cotal-ai/core";
-import { connect } from "@nats-io/transport-node";
+import { connect, TimeoutError } from "@nats-io/transport-node";
+import { untilDeliveryAdminAnswers } from "../src/endpoint-evict.js";
 import { bootBroker } from "./_boot-broker.js";
 import { bootDeliveryDaemon } from "./_boot-delivery.js";
 import { workspaceSecretStore } from "@cotal-ai/workspace";
@@ -106,6 +109,52 @@ try {
     c("the other writer's row survives the fixture's stop()", kept !== undefined && kept.info.holder === "someone-else" && kept.revision === takenAt, kept);
     await kv.delete(leaseKey(0));
   }
+
+  console.log("5. an unanswered admin rail is retried promptly without weakening the deadline");
+  {
+    let attempts = 0;
+    const delays: number[] = [];
+    const result = await untilDeliveryAdminAnswers(10_000, async (requestMs) => {
+      requestMs(15_000);
+      if (++attempts < 3) throw new TimeoutError();
+      return "answered";
+    }, (_reason, delayMs) => { delays.push(delayMs); });
+    c("the first retry is immediate and the next uses one second, without backoff",
+      result === "answered" && attempts === 3 && delays.length === 2 && delays[0] === 0 && delays[1] === 1_000, { attempts, delays });
+  }
+  {
+    const refused = new Error("permission denied");
+    let attempts = 0, retries = 0;
+    let error: unknown;
+    try {
+      await untilDeliveryAdminAnswers(10_000, async () => { attempts++; throw refused; }, () => { retries++; });
+    } catch (e) { error = e; }
+    c("a non-retryable error is rethrown unchanged after one attempt, with no retry", error === refused && attempts === 1 && retries === 0);
+  }
+  {
+    let attempts = 0, retries = 0;
+    let cap = 0;
+    let error: unknown;
+    try {
+      await untilDeliveryAdminAnswers(0, async (requestMs) => { attempts++; cap = requestMs(15_000); throw new TimeoutError(); }, () => { retries++; });
+    } catch (e) { error = e; }
+    c("a zero wait remains one attempt at the supplied request cap", error instanceof TimeoutError && attempts === 1 && retries === 0 && cap === 15_000);
+  }
+  {
+    let lateRequests = 0;
+    let lateBudgetChecked = false;
+    let error: unknown;
+    try {
+      await untilDeliveryAdminAnswers(60, async (requestMs) => {
+        await wait(120);
+        lateBudgetChecked = true;
+        requestMs(15_000);
+        lateRequests++;
+      }, () => {});
+    } catch (e) { error = e; }
+    await wait(100);
+    c("the wait expires during a held attempt and its late request cannot be sent", error instanceof TimeoutError && lateBudgetChecked && lateRequests === 0);
+  }
 } catch (e) {
   fail++;
   console.log("  ✗ FAIL: threw", (e as Error).stack ?? String(e));
@@ -116,7 +165,7 @@ await reader?.drain().catch(() => reader?.close());
 await broker.stop().catch(() => undefined);
 rmSync(ws, { recursive: true, force: true });
 
-const EXPECTED_CELLS = 7;
+const EXPECTED_CELLS = 11;
 if (pass + fail !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
   fail += 1;
