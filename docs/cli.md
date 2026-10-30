@@ -3200,8 +3200,11 @@ in `error.remedy`, apart from `error.message`, and names the space and root it c
 When this account cannot read a project folder's `.cotal/auth`, for example because it cannot enter the
 folder's `.cotal`, the spaces the folder holds are unknown. A command that would target that folder,
 including through `--server`, refuses with `DEPENDENCY_UNAVAILABLE`, exit 2, and names the folder and
-the read error. It does not name running spaces or pick another space. `--space <name>` still targets
-a space by name.
+the read error. When a folder on the way to `.cotal/auth` cannot be entered, the next step names that
+folder rather than `.cotal/auth`. The same refusal names each account record in `.cotal/auth` that
+will not load, such as an `auth.json` that is not JSON, and says to repair or remove it. It does not
+name running spaces or pick another space, and it changes no file. `--space <name>` still targets a
+space by name.
 
 `--creds <file>` presents that credential to `--server`. Without `--server`, it goes to the broker
 its space is registered at and keeps that registration's TLS requirement. The space is `--space`,

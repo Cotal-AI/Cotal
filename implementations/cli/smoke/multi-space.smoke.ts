@@ -542,6 +542,9 @@ try {
     chmodSync(authDir(unreadable), 0o700);
     check("an unreadable .cotal/auth resolves to a typed unreadable-auth, not a raw EACCES",
       isWorkspaceTargetError(unreadErr) && (unreadErr as { code: string }).code === "unreadable-auth", (unreadErr as Error)?.message);
+    const authRemedy = isWorkspaceTargetError(unreadErr) ? workspaceErrorParts({ kind: "target", error: unreadErr }).remedy ?? "" : "";
+    check("…whose next step names .cotal/auth itself, the folder this account cannot read",
+      authRemedy.includes(`make ${authDir(unreadable)} a folder this account can read`) && authRemedy.includes("--space <name>"), authRemedy);
 
     // A `.cotal` this account cannot enter hides `.cotal/auth` from `existsSync`. Read as absent, the
     // inventory found no tenants, the legacy record's EACCES became a corrupt `auth.json`, and every
@@ -561,9 +564,50 @@ try {
         isWorkspaceTargetError(err) && err.code === "unreadable-auth" && rendered !== undefined &&
           rendered.message.includes(unreadable) && rendered.message.includes("EACCES") && !rendered.message.includes("multiple meshes") &&
           !rendered.message.includes("undefined") && (rendered.remedy ?? "").includes("--space <name>"), rendered ?? (err as Error)?.message);
+      // The account cannot enter `.cotal`, so making `.cotal/auth` readable is not a step it can take.
+      check(`…and its next step names the ${how} .cotal it cannot enter, not .cotal/auth`,
+        (rendered?.remedy ?? "").includes(`this account cannot enter ${cotal}, `) && !(rendered?.remedy ?? "").includes(authDir(unreadable)), rendered?.remedy);
     }
+
+    // A `.cotal/auth` at 0600 lists its names but opens no record, so the missing `auth.json` fails
+    // its stat on permission. That is the folder's mode, not a record that will not load.
+    const listable = await makeRoot("listable", []);
+    roots.push(listable);
+    chmodSync(authDir(listable), 0o600);
+    const listErrs: [string, unknown][] = [];
+    for (const [how, flags] of [["local", {}], ["--server", { server: "nats://127.0.0.1:4999" }]] as const) {
+      try { resolveMeshTarget(listable, flags); } catch (e) { listErrs.push([how, e]); }
+    }
+    chmodSync(authDir(listable), 0o700);
+    for (const [how, err] of listErrs) {
+      const rendered = isWorkspaceTargetError(err) ? workspaceErrorParts({ kind: "target", error: err }) : undefined;
+      check(`a ${how} target whose .cotal/auth lists but cannot be searched is refused as unreadable, naming no record`,
+        isWorkspaceTargetError(err) && err.code === "unreadable-auth" && err.details.records === undefined && rendered !== undefined &&
+          !rendered.message.includes("will not load") && (rendered.remedy ?? "").includes(`make ${authDir(listable)} a folder this account can read`), rendered ?? (err as Error)?.message);
+    }
+    check("…and both the local and the --server target refused", listErrs.length === 2, listErrs.length);
   } else {
     check("unreadable-auth-dir resolver check skipped (needs a non-root POSIX runner)", true);
+  }
+
+  console.log("\n23b) an account record that will not load is refused by path, not as several running meshes");
+  // A readable `auth.json` or account record that is not JSON used to count as a corrupt tenant, and
+  // the resolver refused as an ambiguity with no candidates: "multiple meshes running: ".
+  for (const [label, file] of [["corrupt-legacy", "auth.json"], ["corrupt-account", `account.${spaceKey("cc")}.json`]] as const) {
+    const root = await makeRoot(label, []);
+    roots.push(root);
+    const record = join(authDir(root), file);
+    writeFileSync(record, "not json");
+    for (const [how, flags] of [["local", {}], ["--server", { server: "nats://127.0.0.1:4999" }]] as const) {
+      let err: unknown;
+      try { resolveMeshTarget(root, flags); } catch (e) { err = e; }
+      const rendered = isWorkspaceTargetError(err) ? workspaceErrorParts({ kind: "target", error: err }) : undefined;
+      check(`a ${how} target whose ${file} will not load is unreadable-auth naming that record, not an empty ambiguity`,
+        isWorkspaceTargetError(err) && err.code === "unreadable-auth" && rendered !== undefined &&
+          rendered.message.includes(`(${record})`) && !rendered.message.includes("multiple meshes") &&
+          (rendered.remedy ?? "").includes("repair or remove that record") && (rendered.remedy ?? "").includes("--space <name>"), rendered ?? (err as Error)?.message);
+    }
+    check(`…and the refused ${file} is left as it was`, readFileSync(record, "utf8") === "not json");
   }
 
   console.log("\n24) the REAL reclaimDeadLegacyPid: dead/empty reclaimed, but garbled or LIVE legacy fails loud (never orphan an unattributable signer)");
