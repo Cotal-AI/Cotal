@@ -27,3 +27,21 @@ not permanent loss. This mode does not verify live copies, payload integrity or 
 ID tracking costs O(posts × members) memory and extra callback work. Use it as a separate
 correctness workload; do not compare its CPU or memory numbers with ordinary load runs.
 `pnpm smoke:delivery-coverage` runs the accounting controls without starting a broker.
+
+## Active multi-space measurement
+
+`COTAL_MSD_SECONDS=30 COTAL_MSD_RATE=2 pnpm smoke:delivery-multi-space --measure --measure-shape host16 --sublist-cache off`
+runs the built delivery CLI against one native broker with 16 separate accounts and three members
+per space. It reads every account's ready delivery lease before starting members; the host-up
+message alone can describe partial startup. Use `--sublist-cache on` for the cache-enabled arm. `--measure-shape single16` selects
+16 delivery processes; the default `all` runs the historical 1/4/16/shared/single comparison on
+reused stores. Select one shape per invocation for fresh-state comparisons. The broker comes from
+`PATH`; pin its binary there when comparing runs.
+
+`MSD_RESULT` reports broker and delivery CPU seconds and RSS in MiB, elapsed window and per-space
+accepted publishes, copies and endpoint errors. Measurements include a five-second allowance and
+up to 30 more seconds for receiver completion. Counts and errors affect the exit status. Add
+`--verify-delivery` for the same per-recipient acknowledged-ID checks as fanout-load; its tracking
+has overhead, so use a separate correctness run. Repeated copies remain allowed. Receiver
+completion is not proof of empty broker queues. The test does not model hosted agents, connect
+auth callouts, subject churn or message ordering, and process RSS values are not additive.
