@@ -266,9 +266,11 @@ try {
     "failed.smoke.ts": `${failedFive}\n(1 passed, 0 failed)`,
   };
   for (const [file, output] of Object.entries(outputs)) writeFileSync(join(filesDir, file), `console.log(${JSON.stringify(output)});\n`);
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  for (const key of Object.keys(env)) if (key.startsWith("COTAL_")) delete env[key];
   const result = await runFiles({
     cwd: ROOT, dir: relative(ROOT, filesDir), files: Object.keys(outputs), excluded: {},
-    env: { ...process.env, COTAL_TEST_JOBS: "1" },
+    env: { ...env, COTAL_TEST_JOBS: "1" },
   });
   check("native runFiles: count survives legacy", result.results[0]?.ok === true && result.results[0].cells === 5, result.results[0]);
   check("native runFiles: empty legacy does not erase canonical cells", result.results[1]?.ok === true && result.results[1].cells === 5, result.results[1]);
