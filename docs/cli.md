@@ -3197,8 +3197,8 @@ exits 0. A script, a `--json` caller and `--no-input` are not asked: the command
 in `error.remedy`, apart from `error.message`, and names the space and root it concerns under
 `target` when they are known, as for a prepared space that is not started.
 
-When this account cannot read a project folder's `.cotal/auth`, for example because it cannot enter the
-folder's `.cotal`, the spaces the folder holds are unknown. A command that would target that folder,
+When this account cannot read or enter a project folder's `.cotal/auth`, for example because it cannot
+enter the folder's `.cotal`, the spaces the folder holds are unknown. A command that would target that folder,
 including through `--server`, refuses with `DEPENDENCY_UNAVAILABLE`, exit 2, and names the folder and
 the read error. When a folder on the way to `.cotal/auth` cannot be entered, the next step names that
 folder rather than `.cotal/auth`. The same refusal names each account record in `.cotal/auth` that

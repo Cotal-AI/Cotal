@@ -78,14 +78,14 @@ function targetErrorParts(err: MeshTargetError): WorkspaceErrorParts {
         ? parts(`registry entry "${d.space}" points at ${d.root}, whose auth is now for "${d.found}"`, `re-register it with \`cotal meshes add ${d.space} --server <url> --root <dir>\` (\`--force\` replaces), or \`cotal meshes rm ${d.space}\``)
         : parts(`registry entry "${d.space}" points at ${d.root}, whose auth is now for "${d.found}"; stale entry removed`, "re-run `cotal up` or check `cotal meshes`");
     case "unreadable-auth":
-      // With no space, the root's trust folder itself could not be read, or holds an account record
-      // that will not load, so it names no space. A folder above it this account cannot enter is named
-      // with no chmod, as it may belong to another account.
+      // With no space, the root's trust folder itself could not be read or entered, or holds an
+      // account record that will not load, so it names no space. A folder above it this account
+      // cannot enter is named with no chmod, as it may belong to another account.
       if (d.space === undefined && d.records !== undefined)
         return parts(`the trust material under ${d.root} holds ${d.records.length === 1 ? "an account record" : `${d.records.length} account records`} that will not load (${d.records.map(oneLine).join(", ")}), so which spaces it holds is unknown`, `repair or remove ${d.records.length === 1 ? "that record" : "those records"}, or name a space with \`--space <name>\``);
       if (d.space === undefined)
         return parts(`the trust material under ${d.root} cannot be read (${err.message}), so which spaces it holds is unknown`, d.folder === undefined
-          ? `make ${join(d.root!, ".cotal", "auth")} a folder this account can read, or name a space with \`--space <name>\``
+          ? `make ${join(d.root!, ".cotal", "auth")} a folder this account can read and enter, or name a space with \`--space <name>\``
           : `this account cannot enter ${d.folder}, which holds the trust material; get access to that folder from its owner, or name a space with \`--space <name>\``);
       return parts(`space "${d.space}"'s trust material under ${d.root} will not load (${err.message})`, "repair or remove the account record, then re-run `cotal up`");
     case "not-started": {
