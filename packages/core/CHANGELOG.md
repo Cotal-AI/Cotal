@@ -1,5 +1,12 @@
 # @cotal-ai/core
 
+## 0.130.0
+
+### Minor Changes
+
+- 025d175: Build trusted auth request-observation filters through the same core request head as actual endpoint requests. Existing observed commands, routes and rails are unchanged. The focused source census ignores comment prose while still rejecting literal rail construction outside core.
+- 27250e3: Validate presence updates before changing endpoint state or publishing reader-invalid fields. Export `assertPresenceRow` alongside the existing reader predicate, using one shared shape check and field-named TypeErrors without coercion.
+
 ## 0.129.9
 
 ### Patch Changes
