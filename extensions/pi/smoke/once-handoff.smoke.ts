@@ -5,7 +5,9 @@
  * when Pi starts that batch, and confirms the task on the provider's clean answer. A batch Pi does
  * not confirm, because it never started or its turn ended unclean, is held: its once task is sealed
  * and reported, and the automatic continuation does not send it again. The extension registers the
- * driver's shutdown as the exit a once seat takes when its report cannot land.
+ * driver's shutdown as the exit a once seat takes when its report cannot land. With the session's
+ * context cleared, that exit shuts down the next session Pi starts, and connector-core's forced exit
+ * ends the process if none starts.
  *
  * Run: pnpm smoke:pi-once
  */
@@ -169,6 +171,36 @@ console.log("\n4. the extension registers the driver's shutdown as the once exit
   registry()?.exit?.();
   check("calling it shuts the Pi session down", ctx.shutdowns === 1, ctx.shutdowns);
   await handlers.get("session_shutdown")!({ reason: "quit" }, ctx);
+}
+
+console.log("\n5. with the session's context cleared, the once exit shuts down the next session Pi starts");
+{
+  const keys = Object.keys(process.env).filter((k) => k.startsWith("COTAL_"));
+  for (const k of keys) delete process.env[k];
+  Object.assign(process.env, { COTAL_SPACE: "smoke", COTAL_NAME: "pi-cleared", COTAL_SERVERS: "nats://127.0.0.1:1" });
+  const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
+  const api = {
+    sendMessage() {}, registerMessageRenderer() {}, registerTool() {},
+    on(name: string, fn: (event: unknown, ctx: unknown) => unknown) { handlers.set(name, fn); },
+  } as unknown as ExtensionAPI;
+  await cotalMesh(api);
+  const session = (id: string) => {
+    const ctx = {
+      shutdowns: 0, hasUI: false, ui: { notify() {} }, isIdle: () => true,
+      shutdown() { ctx.shutdowns++; },
+      sessionManager: { getSessionId: () => id, getSessionFile: () => undefined },
+    };
+    return ctx;
+  };
+  const first = session("s1");
+  await handlers.get("agent_start")!({}, first);
+  await handlers.get("session_shutdown")!({ reason: "new" }, first);
+  registry()?.exit?.();
+  check("the cleared session is not shut down again", first.shutdowns === 0, first.shutdowns);
+  const next = session("s2");
+  await handlers.get("agent_start")!({}, next);
+  check("the next session Pi starts is shut down", next.shutdowns === 1, next.shutdowns);
+  await handlers.get("session_shutdown")!({ reason: "quit" }, next);
 }
 
 console.log(fail === 0 ? `\nPI ONCE SMOKE PASSED ✅ (${pass} checks)` : `\nPI ONCE SMOKE FAILED ❌ (${pass} passed, ${fail} failed)`);

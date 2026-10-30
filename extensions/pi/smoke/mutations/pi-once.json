@@ -20,7 +20,10 @@
     "",
     "M4 lets the continuation resend a held batch without the permit: the duplicate run.",
     "",
-    "M5 drops the exit registration, so a once seat whose report cannot land has no shutdown to run."
+    "M5 drops the exit registration, so a once seat whose report cannot land has no shutdown to run.",
+    "",
+    "M6 drops the shutdown a session start takes once the driver is shutting down, so a once exit that found",
+    "the context cleared ends no later session."
   ],
   "mutations": [
     {
@@ -57,6 +60,13 @@
       "find": "  registerOnceExit(() => driver.requestShutdown());\n",
       "replace": "",
       "expectRed": "calling it shuts the Pi session down"
+    },
+    {
+      "name": "M6 a once exit with the context cleared shuts down no later session",
+      "file": "extensions/pi/src/driver.ts",
+      "find": "  onAgentStart(context: PiContextLike): void {\n    this.context = context;\n    if (this._state === \"shuttingDown\") {\n      context.shutdown();\n      return;\n    }\n",
+      "replace": "  onAgentStart(context: PiContextLike): void {\n    this.context = context;\n",
+      "expectRed": "the next session Pi starts is shut down"
     }
   ]
 }
