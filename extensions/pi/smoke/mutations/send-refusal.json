@@ -1,0 +1,29 @@
+{
+  "suite": [
+    "extensions/pi/smoke/send-refusal.smoke.ts"
+  ],
+  "guard": "pi's cotal_send returns the shared refusal for a pattern or a name that is no channel, without touching the mesh agent",
+  "command": "pnpm smoke:pi-send-refusal",
+  "completionMarker": "PI-SEND-REFUSAL SMOKE",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/pi/smoke/mutations/send-refusal.json",
+  "why": [
+    "pi registers the shared tool specs, so it advertises the shared channel text. Its wrapper used",
+    "to answer a pattern first with its own \"is not a concrete channel\" line, so a pi session never",
+    "saw the two ways to reach a family that the text promises.",
+    "",
+    "PS1 puts that wrapper check back.",
+    "",
+    "NO BUILD STEP: the suite imports ../src/tools.js."
+  ],
+  "mutations": [
+    {
+      "name": "PS1 pi refuses a non-concrete channel with its own line before the shared handler",
+      "file": "extensions/pi/src/tools.ts",
+      "find": "        if (spec.name === \"cotal_send\" && typeof args.channel === \"string\") args.channel = args.channel.replace(/^#+/, \"\");\n",
+      "replace": "        if (spec.name === \"cotal_send\" && typeof args.channel === \"string\") {\n          args.channel = args.channel.replace(/^#+/, \"\");\n          if (!isConcreteChannel(args.channel as string)) return { content: [{ type: \"text\", text: `⚠ ${JSON.stringify(args.channel)} is not a concrete channel` }], details: undefined };\n        }\n",
+      "expectRed": "pi refuses team.> with the shared pattern refusal, naming both ways",
+      "cell": "pi refuses team.> with the shared pattern refusal, naming both ways",
+      "note": "The cold review's live defect: the pi wrapper's own line, with neither way to reach a family."
+    }
+  ]
+}
