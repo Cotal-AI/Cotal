@@ -43,7 +43,7 @@ What this page does not promise is a rolling upgrade. Nothing in the current lin
 authority versions, so where broker and manager run separately there is a window in which the mesh
 is down. The sections below give that window's shape so it can be scheduled rather than endured.
 
-## Channel posts expire at 30 days after 0.128.6
+## Channel posts expire at 30 days after 0.131.1
 
 A space now keeps a channel post for 30 days, or until its sender has posted 1000 newer ones on
 that channel, whichever comes first. Earlier releases kept each sender's newest 1000 posts on each
