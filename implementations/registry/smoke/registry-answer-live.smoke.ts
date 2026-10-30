@@ -125,7 +125,8 @@ try {
 
   {
     // Deny rows naming 64 instance ids and 64 nonces on epsilon's instance route put that form past
-    // the projection limit. Only a ceiling that also admits a subject of the command names it.
+    // the projection limit. Only a ceiling that also admits a subject of the command names it. The
+    // allowed rows include E1's instance route, so that form's witness is a subject the deny must refuse.
     const over = async (allowEpsilon: boolean, denyAll = false) => {
       const c = { ...caller, actor: newIdentity().id, uid: mintLifecycleUid() };
       const g = mintGeneration(exp);
@@ -141,7 +142,7 @@ try {
         }
       const allow = [
         ...epRequestGrantRows(space, { endpoint: "beta.example", command: "ping" }, ci),
-        ...(allowEpsilon ? epRequestGrantRows(space, { endpoint: "epsilon.example", command: "poke" }, ci) : []),
+        ...(allowEpsilon ? epRequestGrantRows(space, { endpoint: "epsilon.example", command: "poke", instanceId: E1 }, ci) : []),
       ];
       await store.release(await store.stage({ version: 1, ref: { space, ...c, generation: g }, sources: [], permissions: importNativeSubjectPermissions({ pub: { allow, deny } }), expiresAt: exp }), async () => {});
       return (await answerEndpoints(authed, ctxFor(ci), {})).rows.find((r) => r.endpoint === "epsilon.example");

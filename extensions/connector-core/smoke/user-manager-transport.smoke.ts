@@ -1030,13 +1030,13 @@ try {
   check("actual child stop over wire succeeded for worker 1", despawn1.ok === true, despawn1);
 
   const despawn2 = await realAgent.despawn("producer_worker_2", { graceful: false });
-  // #5040: four manager calls (two spawns, two despawns) on one legacy-rail credential. The broker
-  // refused the accepted-row read once; the seat remembered the verdict for the credential and did
-  // not ask again on the other three dials.
+  // #5040: one legacy-rail credential, dialed by the manager-view listing in 1E and by four manager
+  // calls (two spawns, two despawns). The broker refused the accepted-row read once; the seat
+  // remembered the verdict for the credential and did not ask again on the other dials.
   {
     const refusedReads = readFileSync(brokerLog, "utf8").split("\n")
       .filter((l) => l.includes("Publish Violation") && l.includes("KV_cotal_accepted") && l.includes(`-${AGENT_ACTOR}"`)).length;
-    check("a legacy-rail seat asks the broker for its accepted row once per credential, not once per manager call (4 calls, 1 refused read)",
+    check("a legacy-rail seat asks the broker for its accepted row once per credential, not once per manager call (a listing and 4 calls, 1 refused read)",
       refusedReads === 1, `refused accepted-row reads for ${AGENT_ACTOR}: ${refusedReads}`);
   }
   check("actual child stop over wire succeeded for worker 2", despawn2.ok === true, despawn2);
