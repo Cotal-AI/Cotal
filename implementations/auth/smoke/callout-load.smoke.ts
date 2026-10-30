@@ -31,13 +31,12 @@
  * three times what serving the connects costs, so past roughly half a core they starve the box and
  * the run reports broker `authentication timeout` refusals that measure the generator rather than
  * the service. `--load-host` runs the same children on other machines over ssh, with the job still
- * on stdin, which leaves the broker and the auth service alone on the host under test. It needs
- * `--listen <addr>:<port>`, because a child on another machine cannot reach `127.0.0.1` — and the
- * port is given rather than picked so an operator exposing a non-loopback address can put the
- * firewall rule up BEFORE the listener exists. Monitoring stays on loopback either way.
+ * on stdin, which leaves the broker and the auth service alone on the host under test. Each host
+ * gets one OpenSSH remote-forward master: the broker stays on a loopback-only plaintext listener,
+ * the child dials a loopback port on its own host, and SSH encrypts the inter-host leg.
  *
  *   pnpm smoke:callout-load --scenario burst --burst 500 \
- *     --listen 203.0.113.7:34222 --load-host gen1,gen2 --load-dir /srv/cotal
+ *     --load-host gen1,gen2 --load-dir /srv/cotal
  *
  * The main arm runs at the production connect limits unless `--connect-limits <actor>,<owner>,<host>`
  * (connects a minute) sets others. A capacity run sets them above its offered rate: the harness signs
@@ -384,14 +383,6 @@ const USERS = num("users", "64");
  *  host that actually runs them, which off-box is not this one, so it is applied after the
  *  generators have been probed. */
 const LOAD_PROCS_ASKED = Math.max(1, num("load-procs", "4"));
-/** `<addr>:<port>` that off-box load children dial. Absent, the broker binds loopback on a free
- *  port and nothing outside this host can reach it. Given, the listener binds `0.0.0.0` and this
- *  address is what the children are told — the listener has to answer on loopback too, because the
- *  auth callout and this process reach the broker there, and in production the service under test
- *  IS co-located with its broker. Routing its own traffic over the NIC would measure a different
- *  system. The port is given rather than picked so that an operator widening the bind can put a
- *  firewall rule up BEFORE the listener exists. */
-const LISTEN = flag("listen", "");
 /** ssh destinations that run the `load` children, comma-separated. Absent, they run here.
  *
  *  An entry may carry its own checkout as `target=/abs/path`, because two generators are often two
@@ -414,19 +405,9 @@ const LOAD_DIR = flag("load-dir", "");
  *  bounds the OFFERED rate, so a run under one reports a generator-bound rate, never a ceiling;
  *  the slice's `cpu.stat` `throttled_usec` is how to tell which happened. */
 const LOAD_EXEC = flag("load-exec", "");
-if (LOAD_HOSTS.length && !LISTEN)
-  throw new Error("callout-load: --load-host needs --listen <addr>:<port>; a load child on another machine cannot reach 127.0.0.1");
 if (LOAD_HOSTS.length && !LOAD_DIR && LOAD_HOSTS.some((h) => !h.includes("=")))
   throw new Error("callout-load: --load-host needs --load-dir, or a `target=/abs/path` entry, for every generator");
 if (LOAD_DIR && !LOAD_DIR.startsWith("/")) throw new Error(`callout-load: --load-dir must be absolute, got ${LOAD_DIR}`);
-/** The parsed `--listen`. Undefined keeps the loopback-plus-free-port default, which is the only
- *  shape that exposes nothing. */
-const listen = ((): { host: string; port: number } | undefined => {
-  if (!LISTEN) return undefined;
-  const m = /^(.+):(\d+)$/.exec(LISTEN);
-  if (!m) throw new Error(`callout-load: --listen must be <addr>:<port>, got ${LISTEN}`);
-  return { host: m[1], port: Number(m[2]) };
-})();
 /** How many auth-callout service PROCESSES to run behind the queue group. The service is
  *  single-threaded, so this is the only way its throughput crosses one core. */
 const CALLOUTS = Math.max(1, num("callouts", "1"));
@@ -476,7 +457,12 @@ const procRssMb = (pid: number): number => {
 // ---- load generators ---------------------------------------------------------------------------
 /** Single-quote one argument for a shell. */
 const shq = (a: string): string => `'${a.replace(/'/g, `'\\''`)}'`;
-const SSH_OPTS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=15"];
+const SSH_OPTS = [
+  "-o", "BatchMode=yes",
+  "-o", "ConnectTimeout=15",
+  "-o", "StrictHostKeyChecking=yes",
+  "-o", "ForwardAgent=no",
+];
 /** ssh argv that runs `cmd` in a LOGIN shell on `host`.
  *
  *  ssh joins everything after the destination with spaces and hands the result to the remote login
@@ -486,7 +472,7 @@ const SSH_OPTS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=15"];
  *  already-quoted word. The login shell is what puts the generator's own toolchain on PATH. */
 const sshArgs = (host: string, cmd: string): string[] => [...SSH_OPTS, host, `sh -lc ${shq(cmd)}`];
 /** A generator host, its checkout, and the core count the `--load-procs` cap reads from it. */
-interface LoadGenerator { host: string; dir: string; cores: number }
+interface LoadGenerator { host: string; dir: string; cores: number; servers?: string }
 /** Probe every generator once, before anything is measured. A generator on a different commit is a
  *  different client library and so a different measurement: a mismatch refuses the run rather than
  *  reporting it, the same rule the stock arm's pinned blob follows. The core count comes from here
@@ -495,6 +481,7 @@ const generators: LoadGenerator[] = LOAD_HOSTS.map((entry) => {
   const eq = entry.indexOf("=");
   const host = eq < 0 ? entry : entry.slice(0, eq);
   const dir = eq < 0 ? LOAD_DIR : entry.slice(eq + 1);
+  if (!host || host.startsWith("-")) throw new Error(`callout-load: invalid generator SSH destination ${JSON.stringify(host)}`);
   if (!dir.startsWith("/")) throw new Error(`callout-load: generator ${host} needs an absolute checkout path, got ${dir}`);
   let out: string;
   try {
@@ -502,10 +489,13 @@ const generators: LoadGenerator[] = LOAD_HOSTS.map((entry) => {
   } catch (e) {
     throw new Error(`callout-load: generator ${host} failed the preflight in ${dir}: ${e instanceof Error ? e.message : String(e)}`);
   }
-  const [sha, cores] = out.trim().split("\n");
+  const [sha, coresText, ...extra] = out.trim().split("\n");
   if (sha !== SHA)
     throw new Error(`callout-load: generator ${host} has ${dir} at ${sha}, this process is ${SHA} - a generator on another commit is a different client library`);
-  return { host, dir, cores: Number(cores) };
+  const cores = Number(coresText);
+  if (!Number.isSafeInteger(cores) || cores < 1 || extra.length)
+    throw new Error(`callout-load: generator ${host} returned an invalid core count from nproc: ${JSON.stringify(out.trim())}`);
+  return { host, dir, cores };
 });
 // One host listed twice for weighting is still one machine, so its cores count once.
 const genCores = [...new Map(generators.map((g) => [g.host, g.cores])).values()].reduce((a, c) => a + c, 0);
@@ -520,16 +510,11 @@ const genBusyS = (host: string): number => {
 
 // ---- space, callout account, broker -----------------------------------------------------------
 const space = `load-${randomUUID().slice(0, 8)}`;
-const PORT = listen ? listen.port : await pickFreePort();
-/** Where the client listener binds: loopback, or every interface when `--listen` asked for an
- *  off-box generator. nats-server takes one bind address, and loopback is not optional here (see
- *  `LISTEN`), so widening means `0.0.0.0` and the allowlist belongs in the operator's firewall. */
-const BIND = listen ? "0.0.0.0" : "127.0.0.1";
+const PORT = await pickFreePort();
+const BIND = "127.0.0.1";
 const MON_PORT = await pickFreePort();
 /** What THIS host dials: the auth callout and the readiness probe, always over loopback. */
 const SERVERS = `nats://127.0.0.1:${PORT}`;
-/** What a load child dials. The same loopback address until `--listen` names a reachable one. */
-const CHILD_SERVERS = listen ? `nats://${listen.host}:${PORT}` : SERVERS;
 const auth = await createSpaceAuth(space);
 const callout = await createCalloutAuth({ space, operatorSeed: auth.operator.seed, accountPub: auth.account.pub });
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
@@ -611,6 +596,8 @@ const ANSWER_LINE = /^auth callout: level=(\w+) outcome=(\w+) .* total_ms=(\d+)/
 
 let calloutNc: NatsConnection | undefined;
 const children: ChildProcess[] = [];
+/** Long-lived SSH transports own the encrypted remote forwards independently of load children. */
+const sshTransports: ChildProcess[] = [];
 /** The extra auth-callout service processes (`--callouts`), kept so their CPU can be read from
  *  /proc before they are killed. */
 const calloutChildren: ChildProcess[] = [];
@@ -661,6 +648,55 @@ const dealGenerator = (): LoadGenerator => {
 /** Forget the warm-up child's deal, so the measured phase starts from an even board. */
 const resetDeal = (): void => { for (const h of genDealt.keys()) genDealt.set(h, 0); };
 
+/** Start one OpenSSH remote-forward master for a generator. The allocated listener is loopback-only
+ *  on the generator and forwards to the broker's loopback listener. `cat` reads no job material and
+ *  exits on EOF during cleanup. Host-key checking is mandatory and agent forwarding is disabled. */
+const startTunnel = (gen: LoadGenerator): Promise<string> => new Promise((resolve, reject) => {
+  const ssh = spawn("ssh", [
+    ...SSH_OPTS,
+    "-o", "ExitOnForwardFailure=yes",
+    "-o", "ServerAliveInterval=15",
+    "-o", "ServerAliveCountMax=2",
+    "-o", "LogLevel=verbose",
+    "-T",
+    "-R", `127.0.0.1:0:127.0.0.1:${PORT}`,
+    gen.host,
+    "cat",
+  ], { stdio: ["pipe", "ignore", "pipe"], env: cleanEnv });
+  sshTransports.push(ssh);
+  let stderr = "";
+  let settled = false;
+  const cleanup = () => {
+    clearTimeout(timer);
+    ssh.off("error", onError);
+    ssh.off("exit", onExit);
+  };
+  const fail = (error: Error) => {
+    if (settled) return;
+    settled = true;
+    cleanup();
+    try { ssh.kill("SIGKILL"); } catch { /* already gone */ }
+    reject(error);
+  };
+  const onError = (error: Error) => fail(new Error(`callout-load: generator ${gen.host} SSH tunnel failed: ${error.message}`));
+  const onExit = (code: number | null) => fail(new Error(`callout-load: generator ${gen.host} SSH tunnel exited ${code} before readiness: ${stderr.trim()}`));
+  const timer = setTimeout(() => fail(new Error(`callout-load: generator ${gen.host} SSH tunnel did not allocate a remote port in 15s: ${stderr.trim()}`)), 15_000);
+  ssh.once("error", onError);
+  ssh.once("exit", onExit);
+  ssh.stderr!.setEncoding("utf8");
+  ssh.stderr!.on("data", (d: string) => {
+    stderr += d;
+    const match = /Allocated port (\d+) for remote forward to 127\.0\.0\.1:\d+/.exec(stderr);
+    if (!match || settled) return;
+    const port = Number(match[1]);
+    if (!Number.isSafeInteger(port) || port < 1 || port > 65535)
+      return fail(new Error(`callout-load: generator ${gen.host} SSH tunnel returned an invalid port: ${match[1]}`));
+    settled = true;
+    cleanup();
+    resolve(`nats://127.0.0.1:${port}`);
+  });
+});
+
 /** Run one load child. Its job (which carries credentials) goes over stdin, never argv.
  *
  *  Off-box it is the same file, the same `load` argv and the same job on stdin, reached by ssh:
@@ -670,6 +706,7 @@ const resetDeal = (): void => { for (const h of genDealt.keys()) genDealt.set(h,
 const runLoad = (job: ChildJob): Promise<ChildResult> =>
   new Promise((resolve, reject) => {
     const gen = generators.length ? dealGenerator() : undefined;
+    if (gen) job.servers = gen.servers!;
     const child = gen
       ? spawn("ssh", sshArgs(gen.host,
           `cd ${shq(gen.dir)} && DO_NOT_TRACK=1 COTAL_TELEMETRY=off exec ${LOAD_EXEC ? `${LOAD_EXEC} ` : ""}node --import tsx implementations/auth/smoke/callout-load.smoke.ts load`),
@@ -773,17 +810,24 @@ try {
   // and the IdP's own signing cost cannot be mistaken for callout cost.
   const bearers = await Promise.all(Array.from({ length: USERS }, (_, i) => mintBearer(`agent_${i}`)));
 
+  if (generators.length) {
+    const tunnels = new Map<string, string>();
+    for (const gen of genHosts) tunnels.set(gen.host, await startTunnel(gen));
+    for (const gen of generators) gen.servers = tunnels.get(gen.host)!;
+  }
+
   // Warm the path: the first callout after startup pays module/JIT warm-up that belongs to neither
   // arm's steady state, and on a loaded box can be dropped outright.
-  await runLoad({ mode: "churn", servers: CHILD_SERVERS, sentinelCreds: callout.sentinelCreds, bearers: bearers.slice(0, 4), connectTimeoutMs: CONNECT_TIMEOUT_MS, ratePerSec: 4, seconds: 1 });
+  await runLoad({ mode: "churn", servers: SERVERS, sentinelCreds: callout.sentinelCreds, bearers: bearers.slice(0, 4), connectTimeoutMs: CONNECT_TIMEOUT_MS, ratePerSec: 4, seconds: 1 });
   calloutStats.handlerMs.length = 0; calloutStats.served = 0; answers.length = 0;
   await Promise.all(calloutChildren.map((child) => sampleCalloutChild(child, "reset")));
   resetDeal();
   const broker0 = { ...brokerLog };
 
   const v0 = await varz();
-  const genBusy0 = generators.map((g) => genBusyS(g.host));
+  const genBusy0 = genHosts.map((g) => genBusyS(g.host));
   const brokerCpu0 = procCpuMs(srv.pid!);
+  const sshCpu0 = sshTransports.map((child) => procCpuMs(child.pid!));
   const childCpu0 = calloutChildren.map((child) => procCpuMs(child.pid!));
   const selfCpu0 = process.cpuUsage();
   const t0 = performance.now();
@@ -795,10 +839,10 @@ try {
     const secs = SCENARIO === "burst" ? 1 : SECONDS;
     const procs = Math.min(LOAD_PROCS, Math.max(1, Math.ceil(offered / 25)));
     result = merge(await Promise.all(Array.from({ length: procs }, () =>
-      runLoad({ mode: "churn", servers: CHILD_SERVERS, sentinelCreds: callout.sentinelCreds, bearers, connectTimeoutMs: CONNECT_TIMEOUT_MS, ratePerSec: offered / procs, seconds: secs }))));
+      runLoad({ mode: "churn", servers: SERVERS, sentinelCreds: callout.sentinelCreds, bearers, connectTimeoutMs: CONNECT_TIMEOUT_MS, ratePerSec: offered / procs, seconds: secs }))));
     note = `${procs} load process(es), ${offered}/s offered for ${secs}s`;
   } else if (SCENARIO === "idle-seats") {
-    result = await runLoad({ mode: "seats", servers: CHILD_SERVERS, sentinelCreds: callout.sentinelCreds, bearers, connectTimeoutMs: CONNECT_TIMEOUT_MS, seats: SEATS, pollMs: POLL_MS, seconds: SECONDS });
+    result = await runLoad({ mode: "seats", servers: SERVERS, sentinelCreds: callout.sentinelCreds, bearers, connectTimeoutMs: CONNECT_TIMEOUT_MS, seats: SEATS, pollMs: POLL_MS, seconds: SECONDS });
     note = `${SEATS} seats, one reconnect per ${POLL_MS}ms each, ${SECONDS}s`;
   } else if (SCENARIO === "expired-bearer") {
     // One actor loops with an EXPIRED bearer while the steady load runs: the question is what a
@@ -811,15 +855,15 @@ try {
       throw new Error(`callout-load: --scenario expired-bearer needs at least 2 load processes (one drives the expired loop); --load-procs resolved to ${LOAD_PROCS}`);
     const procs = Math.min(LOAD_PROCS - 1, Math.max(1, Math.ceil(RATE / 25)));
     const [good, bad] = await Promise.all([
-      Promise.all(Array.from({ length: procs }, () => runLoad({ mode: "churn", servers: CHILD_SERVERS, sentinelCreds: callout.sentinelCreds, bearers, connectTimeoutMs: CONNECT_TIMEOUT_MS, ratePerSec: RATE / procs, seconds: SECONDS }))),
-      runLoad({ mode: "churn", servers: CHILD_SERVERS, sentinelCreds: callout.sentinelCreds, bearers: [expired], connectTimeoutMs: CONNECT_TIMEOUT_MS, ratePerSec: 20, seconds: SECONDS }),
+      Promise.all(Array.from({ length: procs }, () => runLoad({ mode: "churn", servers: SERVERS, sentinelCreds: callout.sentinelCreds, bearers, connectTimeoutMs: CONNECT_TIMEOUT_MS, ratePerSec: RATE / procs, seconds: SECONDS }))),
+      runLoad({ mode: "churn", servers: SERVERS, sentinelCreds: callout.sentinelCreds, bearers: [expired], connectTimeoutMs: CONNECT_TIMEOUT_MS, ratePerSec: 20, seconds: SECONDS }),
     ]);
     result = merge([...good, bad]);
     note = `${RATE}/s valid + 20/s expired-bearer loop for ${SECONDS}s`;
   } else if (SCENARIO === "ledger-stall") {
     const procs = Math.min(LOAD_PROCS, Math.max(1, Math.ceil(RATE / 25)));
     const load = Promise.all(Array.from({ length: procs }, () =>
-      runLoad({ mode: "churn", servers: CHILD_SERVERS, sentinelCreds: callout.sentinelCreds, bearers, connectTimeoutMs: CONNECT_TIMEOUT_MS, ratePerSec: RATE / procs, seconds: SECONDS })));
+      runLoad({ mode: "churn", servers: SERVERS, sentinelCreds: callout.sentinelCreds, bearers, connectTimeoutMs: CONNECT_TIMEOUT_MS, ratePerSec: RATE / procs, seconds: SECONDS })));
     // Stall the ledger in the middle of the run, so the table carries both sides of the stall.
     await wait((SECONDS * 1000) / 3);
     let release!: () => void;
@@ -832,7 +876,7 @@ try {
     note = `${RATE}/s for ${SECONDS}s, auth ledger stalled ${STALL_MS}ms starting at t=${((SECONDS * 1000) / 3 / 1000).toFixed(1)}s`;
   } else if (SCENARIO === "msgrate") {
     result = await runLoad({
-      mode: "hold", servers: CHILD_SERVERS, sentinelCreds: callout.sentinelCreds, bearers,
+      mode: "hold", servers: SERVERS, sentinelCreds: callout.sentinelCreds, bearers,
       connectTimeoutMs: CONNECT_TIMEOUT_MS, endpoints: ENDPOINTS, seconds: SECONDS,
       subSubject: chatSubject(space, "*", "*", CHANNEL),
       pubSubjects: bearers.map((_, i) => chatSubject(space, OWNER, `agent_${i}`, CHANNEL)),
@@ -843,7 +887,7 @@ try {
   }
 
   const elapsedS = (performance.now() - t0) / 1000;
-  const genBusy1 = generators.map((g) => genBusyS(g.host));
+  const genBusy1 = genHosts.map((g) => genBusyS(g.host));
   const loadS = result.loadMs / 1000;
   const selfCpu = process.cpuUsage(selfCpu0);
   const brokerCpuMs = procCpuMs(srv.pid!) - brokerCpu0;
@@ -861,9 +905,9 @@ try {
   row("git sha", SHA);
   row("nats-server", `${serverVersion} (${NATS_BIN})`);
   row("scenario", `${SCENARIO} — ${note}`);
-  row("broker listen", listen ? `${BIND}:${PORT} - children dial ${CHILD_SERVERS}, this host ${SERVERS}` : `${SERVERS} (loopback, free port)`);
+  row("broker listen", `${SERVERS} (loopback, free port)`);
   row("load generator", generators.length
-    ? `${generators.map((g) => `${g.host} (${g.cores} cores, ${g.dir})`).join(", ")} over ssh${LOAD_EXEC ? `, under \`${LOAD_EXEC}\`` : ""}`
+    ? `${generators.map((g) => `${g.host} (${g.cores} cores, ${g.dir}, ${g.servers})`).join(", ")} over SSH remote forwards${LOAD_EXEC ? `, under \`${LOAD_EXEC}\`` : ""}`
     : "co-located with the broker and the auth service");
   row("arm", ARM === "main" ? "main (native Ed25519 signer, maxInFlight 32)" : `stock ${STOCK_REF} (pure-JS signer, serial)`);
   row("auth callout processes", CALLOUTS);
@@ -904,9 +948,13 @@ try {
   row("auth service CPU (cores, all processes)", authCpuMs / 1000 / elapsedS);
   row("broker CPU (cores)", brokerCpuMs / 1000 / elapsedS);
   row("load generators CPU (cores)", result.cpuMs / 1000 / elapsedS);
-  // The children's own CPU is not the generator host's: a row is valid when the HOST had headroom.
-  for (const [i, g] of [...new Map(generators.map((g, i) => [g.host, { i, g }])).values()].map((v) => [v.i, v.g] as const))
-    row(`generator host CPU (cores): ${g.host}`, `${n2((genBusy1[i] - genBusy0[i]) / elapsedS)} of ${g.cores}`);
+  const sshCpuMs = sshTransports.reduce((sum, child, i) => sum + procCpuMs(child.pid!) - sshCpu0[i], 0);
+  row("SSH transport CPU (cores, local clients)", sshCpuMs / 1000 / elapsedS);
+  // The children's self CPU is the remote generator cost. Host CPU also includes the remote sshd
+  // transport half and unrelated host work, so it stays a separate headroom reading rather than
+  // being added to the generator row or mislabelled as isolated SSH CPU.
+  for (const [i, g] of genHosts.entries())
+    row(`generator host total CPU (cores): ${g.host}`, `${n2((genBusy1[i] - genBusy0[i]) / elapsedS)} of ${g.cores}`);
   row("auth service CPU per callout (ms)", served ? authCpuMs / served : NaN);
   row("broker CPU per connect (ms)", result.attempts ? brokerCpuMs / result.attempts : NaN);
   row("auth service RSS (MB, primary process)", process.memoryUsage().rss / 1048576);
@@ -958,6 +1006,10 @@ try {
   process.exitCode = 1;
 } finally {
   for (const c of [...children, ...calloutChildren]) { try { c.kill("SIGKILL"); } catch { /* already gone */ } }
+  for (const ssh of sshTransports) {
+    try { ssh.stdin?.end(); } catch { /* already gone */ }
+    try { ssh.kill("SIGTERM"); } catch { /* already gone */ }
+  }
   try { await calloutNc?.close(); } catch { /* closing a dead conn is not a result */ }
   srv.kill("SIGKILL");
   rmSync(dir, { recursive: true, force: true });
