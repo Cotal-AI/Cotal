@@ -542,6 +542,7 @@
     "smoke:ep-binding": "tsx packages/core/smoke/endpoint-binding.smoke.ts",
     "smoke:issued-space": "tsx packages/core/smoke/issued-space.smoke.ts",
     "smoke:issued-space:live": "tsx packages/core/smoke/issued-space-live.smoke.ts",
+    "smoke:issued-observe:live": "tsx packages/core/smoke/issued-observe-live.smoke.ts",
     "smoke:issued-retention:live": "tsx packages/core/smoke/issued-retention-live.smoke.ts",
     "smoke:issued-store-binders": "tsx implementations/manager/smoke/issued-store-binders.smoke.ts",
     "smoke:issued-store-recreate": "tsx packages/core/smoke/issued-store-recreate.smoke.ts",

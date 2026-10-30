@@ -360,6 +360,11 @@ export interface IssuedStore {
    *  linearization point, and the horizon is checked again after it. A failed read on either side
    *  is a refusal, never an absence of revocation. */
   resolve(ref: IssuedAuthorityRef, sourceIsLive: (source: IssuedSourceRef) => Promise<boolean>, now?: () => number): Promise<IssuedResolution>;
+  /** A DISCLOSURE read: every check {@link resolve} makes except the source loop, which only the
+   *  source's own owner can attest. It reports the recorded ceiling of a live generation and
+   *  authorizes nothing, so it never admits an effect or feeds a resolution (the registry's
+   *  `endpoints` listing is its one reader). */
+  observe(ref: IssuedAuthorityRef, now?: () => number): Promise<IssuedResolution>;
   /** Retire every issuance indexed under one source that is still before its horizon. The caller
    *  freezes the source gate FIRST. */
   retireSource(source: IssuedSourceRef): Promise<number>;
@@ -541,6 +546,19 @@ export function openIssuedStore(kv: KV, jsm: JetStreamManager, space: string): I
       if (after.state !== "active" || after.revision !== before.revision)
         throw new EpEnvelopeError("permission-denied", `generation ${ref.generation} changed during resolution; refused (SPEC 13.15)`);
       // Every read above happened before the horizon, so none of them can have read a re-created key.
+      liveHorizon(ref.generation, now());
+      return Object.freeze({ evidence, revision: after.revision });
+    },
+    async observe(ref: IssuedAuthorityRef, now: () => number = nowSec): Promise<IssuedResolution> {
+      liveHorizon(ref.generation, now());
+      const { evidence, digest } = await readEvidence(ref);
+      const before = await readAttempt(ref, digest);
+      if (before.state !== "active") throw new EpEnvelopeError("permission-denied", `generation ${ref.generation} is ${before.state} (SPEC 13.15)`);
+      if (evidence.expiresAt !== undefined && now() >= evidence.expiresAt)
+        throw new EpEnvelopeError("permission-denied", `generation ${ref.generation} expired at ${evidence.expiresAt} (SPEC 13.15)`);
+      const after = await readAttempt(ref, digest);
+      if (after.state !== "active" || after.revision !== before.revision)
+        throw new EpEnvelopeError("permission-denied", `generation ${ref.generation} changed during the read; refused (SPEC 13.15)`);
       liveHorizon(ref.generation, now());
       return Object.freeze({ evidence, revision: after.revision });
     },
