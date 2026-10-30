@@ -212,6 +212,7 @@
     "smoke:creds-supply-expiry": "tsx packages/core/smoke/creds-supply-expiry-auth.smoke.ts",
     "smoke:reconnect-fence-close": "tsx packages/core/smoke/reconnect-fence-close.smoke.ts",
     "smoke:transport-ping-defaults": "tsx packages/core/smoke/transport-ping-defaults.smoke.ts",
+    "smoke:native-request-errors": "tsx packages/core/smoke/native-request-errors.smoke.ts",
     "smoke:standing-renewal": "tsx packages/core/smoke/standing-renewal-auth.smoke.ts",
     "smoke:seat-creds-renewal": "tsx extensions/connector-core/smoke/seat-creds-renewal.smoke.ts",
     "smoke:doctor-auth": "tsx implementations/cli/smoke/doctor-auth.smoke.ts",

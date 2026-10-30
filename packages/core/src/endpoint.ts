@@ -1675,6 +1675,8 @@ export class CotalEndpoint extends EventEmitter {
     let watchDeletePermission: IssuedSubjectPermission | undefined;
     this.nc = await dialerFor(this.servers)({
       servers: this.servers,
+      // Keep native failures without eagerly capturing a request-origin stack on every operation.
+      noAsyncTraces: true,
       // In USER MODE the connection `name` carries the client-chosen inbox nonce (= connId) the callout
       // scopes `_INBOX_<connId>.>` on (see EndpointOptions.bearer); otherwise it's the display handle.
       name: this.userMode ? this.connId : `cotal:${this.card.name}`,

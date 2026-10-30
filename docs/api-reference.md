@@ -58,6 +58,15 @@ It covers build-time validators and the authority a host supplies to control a
 selected manager. For a hosted agent integration, read the
 [remote MCP gateway](embedding.md#remote-mcp-gateway) contract.
 
+### Endpoint request diagnostics
+
+`CotalEndpoint` enables the native NATS `noAsyncTraces` option to avoid capturing
+extra request-origin error stacks on successful operations. Failed requests still
+reject with native error classes and causes. Their stacks describe the failure
+site but may omit the caller that began an asynchronous request. Authentication,
+authorization and timeout deadlines are unchanged. Direct native dials and
+standalone helpers retain their existing diagnostic defaults.
+
 ## Agent tools
 
 The [MCP tool catalog](mcp-tools.md) lists tool arguments and side effects. A
