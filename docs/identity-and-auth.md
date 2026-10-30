@@ -179,7 +179,8 @@ without the listing rows. An issued credential asks on its own generation instea
 manager spawns on a static mesh, and an interactive `manager-caller` view, carry the `endpoints`
 row from their first issuance. A credential issued before this release has no listing rows, and
 `cotal_endpoints` reports that it has no listing binding until the agent connects again or is
-respawned.
+respawned. An issued `manager-caller` view that reconnects under the same nonce renews the ceiling
+its generation recorded, so one issued before this release keeps connecting without the row.
 
 ## Declared capabilities
 

@@ -25,7 +25,7 @@ import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import {
   issuedUserCaller, mintCreds, mintLifecycleUid, newIdentity, setupSpaceStreams, standaloneConnectOpts,
   resolveService, invokeCommand, readRunAdmission, withIssuerSession, actorLedgerSource, importNativeSubjectPermissions,
-  permissionsFor, connectionAcceptedToken, EP_UNBOUND_CALLER_AUTHORITY,
+  permissionsFor, connectionAcceptedToken, mintGeneration, writeAcceptedRow, EP_UNBOUND_CALLER_AUTHORITY,
   type EpCaller, type RemoteManagerAuthorityMaterial, type RemoteRunAdmissionResult, type RemoteRunAttemptResult,
   type RunStatusView, type EndpointReply,
   registry, RUN_HOST_KIND, COTAL_LANG_RUN_HOST, type RunHost,
@@ -63,6 +63,7 @@ const names = [
   "U1 direct parent grant is read afresh at callout mint",
   "U1 absent malformed foreign and self parent cannot issue",
   "U1 seat-started run spawns only its owner and cross-owner launch is broker refused",
+  "U1 same nonce renews a generation issued before the listing row existed",
 ];
 let pass = 0, fail = 0;
 async function cell(index: number, fn: () => Promise<void>) {
@@ -285,7 +286,7 @@ try {
       const ref = { space: a.space, ...caller! };
       const evidence = (await session.store.resolve(ref, async (source) => ledgerActorSourceIsLive(a.stateDir)(source))).evidence;
       const expected = permissionsFor("manager-caller", a.space, { owner, actor: "runner", connId: d!.nonce, lifecycleUid: uid },
-        { capabilities: ["spawn", "run"], lifecycleUid: uid, managerInstanceId: state.instanceId, issued: { generation: caller!.generation, acceptedToken: connectionAcceptedToken(d!.nonce) } });
+        { capabilities: ["spawn", "run"], lifecycleUid: uid, managerInstanceId: state.instanceId, issued: { generation: caller!.generation, acceptedToken: connectionAcceptedToken(d!.nonce), listing: true } });
       assert.deepEqual(evidence.permissions, importNativeSubjectPermissions(expected));
       assert.ok(signed.has(d!.nonce), "passive witness must observe this connection's signed reply");
       const actual = signed.get(d!.nonce)!;
@@ -403,6 +404,26 @@ try {
     grantManagedActor(a.stateDir, { custody: { kind: "foreground" }, ...row, scope: ["run"], tokenHash: row.tokenHash! });
     await assert.rejects(dial("runner", grant.actorToken, d.nonce), /Authorization Violation/);
     grantManagedActor(a.stateDir, { custody: { kind: "foreground" }, ...row, tokenHash: row.tokenHash! });
+  });
+  await cell(12, async () => {
+    // The generation and accepted row a callout without the listing row issued for this nonce.
+    const nonce = mintLifecycleUid();
+    const generation = mintGeneration(Math.floor(Date.now() / 1000) + 600);
+    const ref = { space: a.space, owner, actor: "runner", uid, generation };
+    const acceptedToken = connectionAcceptedToken(nonce);
+    const before = permissionsFor("manager-caller", a.space, { owner, actor: "runner", connId: nonce, lifecycleUid: uid },
+      { capabilities: ["spawn", "run"], lifecycleUid: uid, managerInstanceId: state.instanceId, issued: { generation, acceptedToken } });
+    await withIssuerSession({ servers: fx.servers, space: a.space, auth: a.auth, tls: false }, async (session) => {
+      const prepared = await session.store.stage({ version: 1, ref, sources: [actorLedgerSource(a.space, owner, "runner", uid)],
+        permissions: importNativeSubjectPermissions(before), expiresAt: Math.floor(Date.now() / 1000) + 600 });
+      await session.store.release(prepared, async () => {});
+      await writeAcceptedRow(session.accepted, acceptedToken, ref);
+    });
+    const again = await dial("runner", grant.actorToken, nonce);
+    assert.deepEqual(await issuedUserCaller(again.nc, a.space, nonce, { owner, actor: "runner", uid }), { owner, actor: "runner", uid, generation });
+    assert.ok(signed.has(nonce), "passive witness must observe this connection's signed reply");
+    const actual = signed.get(nonce)!;
+    assert.deepEqual(importNativeSubjectPermissions({ pub: actual.pub, sub: actual.sub }), importNativeSubjectPermissions(before));
   });
   await cell(7, async () => {
     assert.ok(caller);

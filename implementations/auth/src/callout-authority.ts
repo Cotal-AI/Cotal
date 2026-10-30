@@ -203,7 +203,15 @@ export function calloutAuthority(deps: CalloutAuthorityDeps): CalloutAuthority {
         const ref = row.ref;
         if (row.version !== 1 || ref === undefined || ref.space !== space || ref.owner !== owner || ref.actor !== actor || ref.uid !== uid)
           throw new Error("callout permissions: this connection's accepted row names another issued reference; reconnect under a new nonce");
-        const perms = mint({ generation: ref.generation, acceptedToken, listing: true });
+        // A generation issued before the listing row existed renews its recorded ceiling, without it.
+        const listed = mint({ generation: ref.generation, acceptedToken, listing: true });
+        try {
+          await session.store.confirm(ref, importNativeSubjectPermissions(listed));
+          return listed;
+        } catch (e) {
+          if (!(e instanceof EpEnvelopeError && e.code === "failed-precondition")) throw e;
+        }
+        const perms = mint({ generation: ref.generation, acceptedToken });
         await session.store.confirm(ref, importNativeSubjectPermissions(perms));
         return perms;
       });
