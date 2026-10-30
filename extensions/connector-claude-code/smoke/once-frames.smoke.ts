@@ -11,7 +11,7 @@
  * synthesized frames over a scripted endpoint. Run: pnpm smoke:claude-once-frames
  */
 import { MeshAgent } from "@cotal-ai/connector-core";
-import type { AgentConfig, HookEvent } from "@cotal-ai/connector-core";
+import type { AgentConfig, HookEvent, InboxItem } from "@cotal-ai/connector-core";
 import { mintLifecycleUid } from "@cotal-ai/core";
 import { HOOK_CONTEXT_CHARS, createClaudeHandle } from "../src/hooks.js";
 
@@ -107,6 +107,19 @@ console.log("\n2. the budget: the task comes first, and what does not fit beside
   plain.onReply(ev3, true, true);
   await tick();
   check("a task that cannot fit the frame is not put on it and stays unclaimed", !TASK.test(text3) && huge.state() === "pending" && huge.reports.length === 0, { length: text3.length, state: huge.state() });
+  // One pending peer message, with no room beside a task that fits the frame alone.
+  const wrapper = (await seat("p")).agent.peekPendingTurns()!.text.length - 1;
+  const crowded = await seat("p".repeat(HOOK_CONTEXT_CHARS - wrapper - 50));
+  const message: InboxItem = { id: "m1", recvKey: "m1", ts: 1, fromId: "local.BOB", fromName: "bob", kind: "dm", mentionsMe: false, historical: false, text: "x".repeat(4_000) };
+  const inbox = crowded.agent.peekInbox.bind(crowded.agent);
+  crowded.agent.peekInbox = (scope) => scope === "automatic" ? [message] : inbox(scope);
+  const ev5 = frame("UserPromptSubmit");
+  const text5 = contextOf(await plain.handle(crowded.agent, ev5));
+  plain.onReply(ev5, true, true);
+  await tick();
+  check("a pending message with no room beside a task that fits alone stays waiting, and the task rides the frame within the cap",
+    TASK.test(text5) && !text5.includes("xxxxx") && !text5.includes("still waiting") && text5.length <= HOOK_CONTEXT_CHARS && crowded.state() === "confirmed",
+    { length: text5.length, state: crowded.state(), start: text5.slice(0, 80) });
   const refused = await seat();
   refused.agent.claimTurns = () => false;
   const ev4 = frame("UserPromptSubmit");
@@ -129,8 +142,25 @@ for (const end of ["Stop", "StopFailure", "SessionEnd", "SessionStart"]) {
   check(`${end} before the verdict seals the claimed task; the late receipt leaves it sealed, reported once`,
     s.state() === "sealed" && s.reports.join() === "o1", { state: s.state(), reports: s.reports });
 }
+{
+  // The new session's advisory writes are still pending when the old frame's receipt lands.
+  const s = await seat();
+  const claude = createClaudeHandle();
+  const ev = frame("UserPromptSubmit");
+  await claude.handle(s.agent, ev);
+  let release!: () => void;
+  s.agent.setModel = () => new Promise<void>((resolve) => { release = resolve; });
+  const replacing = claude.handle(s.agent, { ...frame("SessionStart"), source: "resume", model: "changed" });
+  await tick();
+  claude.onReply(ev, true, true);
+  release();
+  await replacing;
+  await tick();
+  check("a receipt that lands while a new session's writes are pending finds the old task sealed, reported once",
+    s.state() === "sealed" && s.reports.join() === "o1", { state: s.state(), reports: s.reports });
+}
 
-const EXPECTED_CELLS = 12;
+const EXPECTED_CELLS = 14;
 const ran = pass + fail;
 console.log(`\nonce-frames.smoke: ${pass} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {

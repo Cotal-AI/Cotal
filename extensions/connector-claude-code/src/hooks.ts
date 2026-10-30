@@ -310,7 +310,8 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
       ? `${remaining} Cotal message${remaining === 1 ? " is" : "s are"} still waiting. Read with cotal_inbox; messages too large for a hook remain there.`
       : undefined;
     const body = formatInjection(items);
-    if (!body) return waiting;
+    // A note with no room beside what the frame already carries stays out; a later frame says it.
+    if (!body) return waiting !== undefined && waiting.length <= HOOK_CONTEXT_CHARS - reserved ? waiting : undefined;
     const ids = items.map((i) => i.recvKey);
     // These stay in the inbox until the verdict, so the overflow valve could otherwise ack one out
     // from under us mid-delivery — unrecoverable, since an acked id is never redelivered. If the
@@ -389,7 +390,10 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
     const event = ev.hook_event_name ?? "";
     try {
       switch (event) {
+        // A new session replaces the one an earlier frame's once task rode on. That task is sealed
+        // before anything here awaits, so a late receipt for the old frame cannot confirm it.
         case "SessionStart": {
+          sealAwaiting();
           // `source` is the runtime's explicit new-vs-retained discriminator. A startup prompt may
           // already be in the file before this hook; resume/fork/clear/compact must still adopt at the
           // current boundary and never republish history. The holder carries the value opaquely to
@@ -422,9 +426,6 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
           }
           // Boot push: the orientation card, a one-line note per subscribed channel (if the
           // registry has loaded), plus any messages waiting and any turn. All advisory context.
-          // A new session replaces the one an earlier frame's once task rode on, so that task is
-          // sealed before the push.
-          sealAwaiting();
           const card = await orientation();
           return injectFrame(agent, ev, event, [card, agent.channelBriefing()]);
         }

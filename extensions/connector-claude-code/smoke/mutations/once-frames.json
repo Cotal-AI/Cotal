@@ -12,7 +12,8 @@
     "F1 confirms a task on a delivered frame with no handoff receipt. F2 to F4 drop the seal at Stop and",
     "StopFailure, SessionEnd and SessionStart, so a late receipt confirms a task whose turn ended. F5",
     "puts every extra on the frame whether it fits beside the task or not. F6 sends the task when its",
-    "claim failed."
+    "claim failed. F7 lets a waiting note with no room",
+    "beside the task push the task off the frame."
   ],
   "mutations": [
     {
@@ -39,8 +40,8 @@
     {
       "name": "F4 a new session leaves the old session's task awaiting its verdict",
       "file": "extensions/connector-claude-code/src/hooks.ts",
-      "find": "          sealAwaiting();\n          const card = await orientation();\n",
-      "replace": "          const card = await orientation();\n",
+      "find": "        case \"SessionStart\": {\n          sealAwaiting();\n",
+      "replace": "        case \"SessionStart\": {\n",
       "expectRed": "SessionStart before the verdict seals the claimed task; the late receipt leaves it sealed, reported once"
     },
     {
@@ -56,6 +57,13 @@
       "find": "      if (text.length <= HOOK_CONTEXT_CHARS && agent.claimTurns(peek.goalIds)) {\n",
       "replace": "      if (text.length <= HOOK_CONTEXT_CHARS && (agent.claimTurns(peek.goalIds) || true)) {\n",
       "expectRed": "a claim that fails leaves the frame without the task and the task unclaimed"
+    },
+    {
+      "name": "F7 a waiting note with no room beside the task still rides the frame",
+      "file": "extensions/connector-claude-code/src/hooks.ts",
+      "find": "    if (!body) return waiting !== undefined && waiting.length <= HOOK_CONTEXT_CHARS - reserved ? waiting : undefined;\n",
+      "replace": "    if (!body) return waiting;\n",
+      "expectRed": "a pending message with no room beside a task that fits alone stays waiting, and the task rides the frame within the cap"
     }
   ]
 }
