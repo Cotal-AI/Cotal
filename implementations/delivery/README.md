@@ -43,7 +43,8 @@ per space. It reads every account's ready delivery lease before starting members
 message alone can describe partial startup. Use `--sublist-cache on` for the cache-enabled arm. `--measure-shape single16` selects
 16 delivery processes; the default `all` runs the historical 1/4/16/shared/single comparison on
 reused stores. Select one shape per invocation for fresh-state comparisons. The broker comes from
-`PATH`; pin its binary there when comparing runs.
+`PATH`; pin its binary there when comparing runs. Duration and rate must be positive finite
+numbers whose rounded-up product is a positive safe integer; validation precedes broker setup.
 
 `MSD_RESULT` reports broker and delivery CPU seconds and RSS in MiB, elapsed window and per-space
 accepted publishes, copies and endpoint errors. Measurements include a five-second allowance and
