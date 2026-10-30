@@ -7,6 +7,8 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isReachable, seedChannelRegistry } from "@cotal-ai/core";
 import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal, teardownPathOnSignal } from "@cotal-ai/smoke-kit";
+import { captureProcessIdentity } from "../src/private-lifecycle.js";
+import { jcodeSeatHome } from "../src/session-fork.js";
 
 // #839: a startup/readiness failure must not return (and let the manager retire the seat's mesh
 // credential) while the private Jcode daemon tree it launched is still executing. The fake bridge
@@ -292,7 +294,9 @@ try {
     ),
   );
   check("hangup control starts with a live private daemon and MCP child", alive(hungupDaemon.pid) && alive(hungupDaemon.mcp), hungupDaemon);
-  hungup.child.kill("SIGHUP");
+  const hungupLaunch = JSON.parse(readFileSync(join(jcodeSeatHome(root, "jcodelife", "lifehup"), "cotal-launch.json"), "utf8")) as { host: { pid: number; start: string } };
+  check("hangup targets the recorded host rather than its tsx launcher", captureProcessIdentity(hungupLaunch.host.pid).start === hungupLaunch.host.start);
+  process.kill(hungupLaunch.host.pid, "SIGHUP");
   await Promise.race([once(hungup.child, "exit"), sleep(30_000)]);
   check("terminal hangup exits cleanly", hungup.child.exitCode === 0, { code: hungup.child.exitCode, signal: hungup.child.signalCode });
   check("terminal hangup retains its initiating signal diagnostic", hungup.stderr().trim().endsWith("[cotal-jcode] received SIGHUP; shutting down; signal sender unavailable from Node.js"), hungup.stderr());
