@@ -6798,8 +6798,11 @@ not prune a locally saved mesh registration.
 Candidates are read without acknowledging DMs. The transient read consumer is
 deleted after the bounded pass; an unconfirmed cleanup or candidate read is
 reported as partial. Candidate IDs are not evidence of delivery, a missing
-message or complete history. Recipient contents are not printed. The retained
-`deliver pending` spelling keeps its earlier output shape.
+message or complete history. Each candidate's `from` is the sender principal
+parsed from its stored message subject, which the broker binds to the sender's
+credential. The sender's own card is not printed, and a candidate that cannot
+be decoded is withheld and reported as partial. Recipient contents are not
+printed. The retained `deliver pending` spelling keeps its earlier output shape.
 
 ## deliver
 
