@@ -43,6 +43,11 @@ Durations are a whole number and one unit (`ms`, `s`, `m`, `h` or `d`): `"500ms"
 duration is refused before the run starts (L2034).
 `permits` meter `turns` and `wallClock` on this host; `supervise` is `{ restarts, window? }`
 (default window `10m`) and restarts the process in place until that budget is spent.
+`spawn`'s first argument is a catalog persona name, `{ persona, model?, variant? }`, or an inline
+persona: `{ name, prompt, role?, model?, variant?, description?, subscribe?, allowSubscribe?,
+allowPublish?, capabilities?, save? }`. An inline persona defines the helper in the program, so
+there is no file to write first. The whole definition is hashed and journalled, so editing any field
+of it on a resumed run diverges. `save: true` also writes it to the catalog for later spawns by name.
 `events: false` starts a seat without an event plane, which a connector that publishes none
 (Hermes) needs. `runtime` names the terminal runtime of this one seat. Omitted, the seat uses the
 serving manager's runtime.

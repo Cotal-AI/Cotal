@@ -413,7 +413,12 @@ journal recorded. `channel()` and `run()` are pure primitives: they build a valu
 | `conclave` | `conclave(members, fn, { name, channel? }) -> result` | scope `conclave` | required |
 | `once` | `once(fn, { name }) -> value` | scope `once` | required |
 
-`persona` in `spawn` is a persona name, or a record `{ persona, model?, variant? }`.
+`persona` in `spawn` is a persona name, a record `{ persona, model?, variant? }`, or an **inline
+persona**: `{ name, prompt, role?, model?, variant?, description?, subscribe?, allowSubscribe?,
+allowPublish?, capabilities?, save? }`. A record with `prompt` is inline and a record with `persona`
+names the catalog. An inline record is closed: one that also names `persona`, carries another key,
+names no `name`, has a blank `prompt`, a string field that is blank, a list that is not of strings, or a
+`save` that is not a boolean is refused (L3049) before the step key is minted.
 
 ### 6.2 Step names
 
@@ -445,7 +450,7 @@ implementation's option suite edits each one on a resumed run and requires exact
 | Effect | Projection |
 | --- | --- |
 | `participant` | `{}` |
-| `spawn` | `{ persona, model, variant, worktree, role, join: [channel names] }`, plus `cwd` when the option bag carries it and `placement: { endpoint, instanceId }` when the option bag carries it |
+| `spawn` | `{ persona, model, variant, worktree, role, join: [channel names] }`, plus `cwd` when the option bag carries it, `placement: { endpoint, instanceId }` when the option bag carries it, and `inline`, the whole definition as written, for an inline persona |
 | `turn` | `{ agent, deadline }` |
 | `ask` | `{ agent, schema, deadline, attempts }` |
 | `checkpoint` | `{ prompt, schema, timeout }`, plus `{ onExpiry: "escalate", to }` when and only when `onExpiry` is `"escalate"` |
@@ -465,6 +470,10 @@ asks a different question. And `onExpiry` is hashed **only** at `escalate`, beca
 mints a second effect (a different question that MUST diverge). `permits`, `supervise`, `onFork`
 and `events` on `spawn` are policy over a result and are never hashed. `runtime` is the same kind of
 policy: it names the terminal runtime of this one seat, and omitted leaves the serving manager's own.
+
+For an inline persona, `persona` is its `name` and `model` and `variant` are its own. The definition
+holds only the keys the program wrote, so an omitted list and an empty one hash differently, and a
+catalog spawn adds no `inline` key, so its hash is unchanged.
 
 `cwd` and `placement` were added after runs were recorded without them, so a spawn that omits both
 hashes the six-key object it hashed before. Adding or removing `cwd` or `placement`, or changing the
@@ -486,7 +495,9 @@ keys in a placement record are not projected, and key order never matters (§4.4
   agent without an event plane, for a connector that publishes none, and omitted leaves the host's
   default; `runtime` names the terminal runtime of this one seat, and omitted leaves the serving
   manager's own. A runtime the serving manager cannot resolve refuses the spawn and starts nothing.
-  Two agents MUST NOT share a worktree concurrently (L3022, L4008).
+  Two agents MUST NOT share a worktree concurrently (L3022, L4008). An inline persona is bound into
+  the entry's `external` as `inline: { definition, digest }` before anything is submitted, and every
+  later bind of the step restates it, so a resume submits the definition it recorded.
 - **`turn`** wakes an agent for one turn; it reads its own channels and speaks for itself. The
   result is its yield status: `done`, `blocked`, or `handoff` (with `to`), and `at`. The handler
   reports a handoff to an agent outside the run as L4005, one across worktrees as L4004, an elapsed
@@ -1130,6 +1141,11 @@ never looks up are **orphans**, and what happens to each depends on what it did:
 | a scope (§7) | the **Orphaned on migrate** verdict in its §7 row |
 | any other kind | **rejected** (L5015): a kind with no policy is not waved through |
 
+A seat adopted under an override goes to the edited program's next spawn of the same persona name,
+and only when that spawn's inline definition has the recorded digest: a catalog seat goes only to a
+catalog spawn, and an inline seat only to a spawn of the same definition. Any other spawn of that name
+is refused, and the hand-over stays queued.
+
 A divergence inside a reached step is a rejection naming the step (L5001); an edit inside a losing
 arm of a recorded `race` diverges through the branch digest (§10.6). The decision is filed as a
 `migration` record (SPEC.md §14) whose id is a digest of the report itself, so a walk re-run after
@@ -1229,6 +1245,7 @@ time, L5xxx durability, L6xxx simulation.
 | L3046 | `waitUntil` needs a cadence and a deadline |
 | L3047 | `waitUntil` cadence is zero, or does not divide its deadline usefully |
 | L3048 | `spawn` placement is not an endpoint and instanceId pair |
+| L3049 | `spawn` inline persona is malformed |
 | L4001 | Permit exhausted |
 | L4002 | Agent down |
 | L4003 | Turn deadline elapsed |
@@ -1331,3 +1348,4 @@ answer; simulation is a tool, not part of this language, and this document does 
 | 2026-10-20 | Clarification with no change in meaning: §6.1 lists `spawn`'s `cwd` and `placement`, and §6.4 states that each is hashed only when the option bag carries it, `placement` as `{ endpoint, instanceId }`. A spawn that omits both keeps its six-key hash. The reference has hashed this way since lang 0.50.0. |
 | 2026-10-24 | An effect `once` does not admit, called in its body or in a function the body calls by name, is refused by the validator with L2033 (§7.8), and L4028 stays the run's refusal of one the validator could not see. Measured before it: `once(async () => { await sleep("1s") })`, directly and through a named helper, passed `validate` and a hosted start and then failed every run with L4028. |
 | 2026-10-24 | A literal that is not a duration, written where the language reads one, is refused by the validator with L2034 (§4.6). Measured before it: `sleep("5")`, `sleep(5000)`, `sleep("1.5s")`, `sleep("")`, a `checkpoint` `timeout` of `"PT5M"`, a `waitUntil` `every` of `"1.5s"` and `duration("5")` passed `validate` and a hosted start, and each run then failed when it reached the call. |
+| 2026-10-30 | `spawn` takes an inline persona, `{ name, prompt, role?, model?, variant?, description?, subscribe?, allowSubscribe?, allowPublish?, capabilities?, save? }`, as its first argument (§6.1). The record is closed and a malformed one is refused before the step key is minted (L3049). The whole definition is hashed as `inline` and a catalog spawn's hash is unchanged (§6.4). The definition and its digest are bound into the entry before submission (§6.5), and a migration hands an adopted seat only to a spawn of the same definition (§11.2). |

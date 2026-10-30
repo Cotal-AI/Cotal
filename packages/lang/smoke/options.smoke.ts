@@ -565,4 +565,83 @@ const NOT_A_HANDLER_FIELD: Readonly<Record<string, string>> = {
     caught.journal.entries().map((e) => `${e.kind}:${e.name}:${e.status}`));
 }
 
+// ---- 8) an inline persona is the identity, so every field of it is hashed -----------------------
+
+/**
+ * `spawn({ name, prompt, ... })` defines the helper in the program. The definition reaches the
+ * handler whole, it is hashed whole, so editing any field of it on a resumed run diverges, and an
+ * omitted list and an empty one are two definitions. A malformed record is refused before a key is
+ * minted, so nothing is journalled for it.
+ */
+{
+  const capture: Record<string, unknown>[] = [];
+  const spy = (inner: EffectHandler): EffectHandler =>
+    ({
+      ...inner,
+      now: () => inner.now(),
+      spawn: async (req: Record<string, unknown>, ctx: EffectContext) => {
+        capture.push(req);
+        return (inner as unknown as { spawn: (r: unknown, c: EffectContext) => Promise<unknown> }).spawn(req, ctx);
+      },
+    }) as unknown as EffectHandler;
+  const BASE = 'name: "helper", prompt: "You review diffs.", role: "reviewer", model: "m1", variant: "high", description: "d", subscribe: ["t"], allowSubscribe: ["t"], allowPublish: ["t"], capabilities: ["spawn"], save: false';
+  const src = (fields: string) => `await spawn({ ${fields} }, { name: "helper" });\n`;
+  const live = await run(src(BASE), { runId: "o-inline", handler: spy(new SimHandler({})) });
+  const req = capture[0] as { persona?: string; inline?: Record<string, unknown>; model?: string };
+  ok("an inline spawn forwards its definition whole", JSON.stringify(req?.inline) === JSON.stringify({
+    name: "helper", prompt: "You review diffs.", role: "reviewer", model: "m1", variant: "high", description: "d",
+    subscribe: ["t"], allowSubscribe: ["t"], allowPublish: ["t"], capabilities: ["spawn"], save: false,
+  }), req);
+  ok("and names the helper as its persona, with no catalog model override", req?.persona === "helper" && req?.model === undefined, req);
+  const entry = live.journal.entries().find((e) => e.kind === "spawn");
+  ok("its input hash is the catalog projection plus the definition, byte for byte", entry?.inputHash === digest({
+    persona: "helper", model: "m1", variant: "high", worktree: null, role: null, join: [], inline: req?.inline,
+  }), entry?.inputHash);
+
+  const diverges = async (label: string, edited: string): Promise<boolean> => {
+    try {
+      await resume(src(edited), live.journal, { runId: "o-inline", pins: live.pins, handler: new SimHandler({}) });
+      return false;
+    } catch (e) {
+      if (!(e instanceof RunDivergence)) throw new Error(`FAIL: ${label} threw something other than divergence - ${String(e)}`);
+      return true;
+    }
+  };
+  ok("an unchanged definition resumes clean", !(await diverges("unchanged", BASE)));
+  const edits: [string, string][] = [
+    ["prompt", BASE.replace("You review diffs.", "You write tests.")],
+    ["role", BASE.replace('role: "reviewer"', 'role: "writer"')],
+    ["model", BASE.replace('model: "m1"', 'model: "m2"')],
+    ["variant", BASE.replace('variant: "high"', 'variant: "low"')],
+    ["description", BASE.replace('description: "d"', 'description: "e"')],
+    ["subscribe", BASE.replace('subscribe: ["t"], allowSubscribe', 'subscribe: [], allowSubscribe')],
+    ["allowSubscribe", BASE.replace('allowSubscribe: ["t"]', 'allowSubscribe: ["t", "u"]')],
+    ["allowPublish", BASE.replace('allowPublish: ["t"]', "allowPublish: []")],
+    ["capabilities", BASE.replace('capabilities: ["spawn"]', "capabilities: []")],
+    ["save", BASE.replace("save: false", "save: true")],
+    ["an omitted list", BASE.replace(', capabilities: ["spawn"]', "")],
+  ];
+  const stayed: string[] = [];
+  for (const [field, edited] of edits) if (!(await diverges(field, edited))) stayed.push(field);
+  ok("editing any field of the definition diverges, an omitted list included", stayed.length === 0, stayed);
+
+  const bad: [string, string, string][] = [
+    ["a record naming both a catalog persona and a prompt", 'persona: "p", name: "helper", prompt: "x"', "also names a catalog persona"],
+    ["a field an inline persona does not have", 'name: "helper", prompt: "x", config: "/etc/x"', "`config`, which an inline persona has no field for"],
+    ["no name", 'prompt: "x"', "names no helper"],
+    ["a blank prompt", 'name: "helper", prompt: "  "', "has no prompt"],
+    ["a list that is not of strings", 'name: "helper", prompt: "x", allowPublish: [1]', "`allowPublish` must be a list of strings"],
+    ["a save that is not a boolean", 'name: "helper", prompt: "x", save: "yes"', "`save` must be true or false"],
+  ];
+  const wrong: string[] = [];
+  for (const [label, fields, says] of bad) {
+    const e = await run(src(fields), { runId: "o-inline-bad", handler: new SimHandler({}) })
+      .then(() => undefined, (x: unknown) => x as { code?: string; message?: string });
+    if (e?.code !== "L3049" || !String(e?.message).includes(says)) wrong.push(`${label}: ${JSON.stringify(e)}`);
+  }
+  ok("a malformed inline persona is refused as L3049, naming what is wrong", wrong.length === 0, wrong);
+  const caught = await run(`try { await spawn({ ${bad[0]![1]} }, { name: "helper" }); } catch (e) { }\n`, { runId: "o-inline-nojournal", handler: new SimHandler({}) });
+  ok("and the refusal journals nothing", caught.journal.entries().length === 0, caught.journal.entries().map((e) => `${e.kind}:${e.name}`));
+}
+
 console.log(`options.smoke: ${pass} checks passed`);

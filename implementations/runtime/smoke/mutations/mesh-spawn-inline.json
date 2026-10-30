@@ -1,0 +1,55 @@
+{
+  "suite": [
+    "implementations/runtime/smoke/mesh-spawn.smoke.ts"
+  ],
+  "guard": "An inline persona in a workflow spawn reaches the manager whole as its persona record, is bound into the step with its digest before anything is submitted and restated by the acceptance bind, a resume never submits a definition other than the one it recorded, and a migration hands an adopted seat only to a spawn of the same definition.",
+  "command": "pnpm smoke:runtime-mesh-spawn",
+  "completionMarker": "mesh-spawn.smoke:",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/runtime/smoke/mutations/mesh-spawn-inline.json",
+  "why": [
+    "The suite imports the runtime's source, so no rebuild is needed around a mutant.",
+    "M1 drops the bind before submission, M2 drops the restatement in the acceptance bind, M3 drops the recorded-digest check on resume, M4 drops the adoption digest check, and M5 drops the persona record from the spawn args."
+  ],
+  "mutations": [
+    {
+      "name": "M1 the definition is not bound before submission",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "        if (inline !== undefined && recordedInline === undefined) await ctx.bind({ inline });",
+      "replace": "",
+      "expectRed": "the definition and its digest are bound before the submission, with no goal yet",
+      "cell": "the definition and its digest are bound before the submission, with no goal yet"
+    },
+    {
+      "name": "M2 the acceptance bind drops the definition",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "          ...(resolution !== undefined ? { resolution } : {}),\n          ...(inline !== undefined ? { inline } : {}),",
+      "replace": "          ...(resolution !== undefined ? { resolution } : {}),",
+      "expectRed": "and the acceptance bind restates them beside the goal",
+      "cell": "and the acceptance bind restates them beside the goal"
+    },
+    {
+      "name": "M3 a resume submits a recorded definition that differs from the program's",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "    if (recordedInline !== undefined && recordedInline.digest !== inlineDigest)\n      throw new Error(",
+      "replace": "    if (false)\n      throw new Error(",
+      "expectRed": "a resume whose recorded definition differs from the program's is refused",
+      "cell": "a resume whose recorded definition differs from the program's is refused"
+    },
+    {
+      "name": "M4 an adopted seat goes to a spawn of another definition",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "      if (adoptedInline?.digest !== inlineDigest)\n        throw new Error(",
+      "replace": "      if (false)\n        throw new Error(",
+      "expectRed": "an adopted inline seat is refused to a spawn of another definition",
+      "cell": "an adopted inline seat is refused to a spawn of another definition"
+    },
+    {
+      "name": "M5 the spawn args drop the persona record",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "    ...(req.inline !== undefined ? { persona: Object.fromEntries(Object.entries(req.inline).filter(([k]) => k !== \"name\")) } : {}),",
+      "replace": "",
+      "expectRed": "the manager is asked for the helper by name, with the definition as its persona record",
+      "cell": "the manager is asked for the helper by name, with the definition as its persona record"
+    }
+  ]
+}

@@ -115,6 +115,7 @@ import {
   type CheckpointRaw,
   type CheckpointRequest,
   type EffectContext,
+  type InlineSpawnDefinition,
   type JournalEntry,
   type MonitorRequest,
   type NotifyRequest,
@@ -124,6 +125,7 @@ import {
   type SpawnRequest,
   type TurnRequest,
   type TurnResultValue,
+  digest,
   journalEntryKeyString,
   stepKeyString,
 } from "@cotal-ai/lang";
@@ -1428,6 +1430,14 @@ export class MeshHandler {
         throw new EffectError("L4000", "spawn", `spawn(${req.persona}) requested placement ${req.placement.instanceId} but the accepted seat's recorded host is ${typeof floor?.host === "string" ? floor.host : "unrecorded"}; an adopted or resumed seat cannot be moved by a new request`);
     };
     if (ext !== undefined) checkRecordedPlacement(ext);
+    // An inline persona is bound with its digest before anything is submitted, and every later bind
+    // restates it, so a resume submits the definition it recorded and a migration hands a seat only
+    // to a spawn of the same definition. The input hash already ties the two; this checks it.
+    const inlineDigest = req.inline === undefined ? undefined : digest(req.inline);
+    const recordedInline = readInlineBinding(recorded?.inline);
+    if (recordedInline !== undefined && recordedInline.digest !== inlineDigest)
+      throw new Error(`spawn(${req.persona}): the journal recorded an inline definition with digest ${recordedInline.digest}, and this spawn's is ${inlineDigest ?? "a catalog persona"}; a resume never submits another definition than the one it recorded`);
+    let inline = recordedInline ?? (req.inline === undefined ? undefined : { definition: req.inline, digest: inlineDigest! });
     // A budget this host cannot meter is refused before anything is submitted: accepting it and
     // enforcing nothing would be the silent no-op the effect table exists to prevent.
     const permits = req.permits !== undefined ? readPermits(req.permits, req.persona) : undefined;
@@ -1450,12 +1460,17 @@ export class MeshHandler {
         throw new Error(`spawn(${req.persona}): the migrated seat's entry carries no readable handle or goal; a garbled hand-over is refused rather than minted over`);
       if (req.worktree !== undefined && handle.worktree !== req.worktree)
         throw new Error(`spawn(${req.persona}) asks for worktree "${req.worktree}" but the seat the migration hands it holds ${handle.worktree === undefined ? "none" : `"${handle.worktree}"`}; an adopted seat keeps its tree, so the edited program names that tree or none`);
+      const adoptedInline = readInlineBinding(floor?.inline);
+      if (adoptedInline?.digest !== inlineDigest)
+        throw new Error(`spawn(${req.persona}) is ${inlineDigest === undefined ? "a catalog spawn" : `an inline definition with digest ${inlineDigest}`}, but the seat the migration hands it was spawned from ${adoptedInline === undefined ? "a catalog persona" : `an inline definition with digest ${adoptedInline.digest}`}; an adopted seat keeps its definition, so the edited program spawns that same definition, or the migration releases the seat`);
+      inline = adoptedInline;
       checkRecordedPlacement(floor);
       // Refused validation leaves the hand-over queued; claim it before the first await.
       adoptions!.shift();
       ext = {
         goalId: adopted.requestId,
         ...(floor !== undefined ? pickAcceptanceFloor(floor) : {}),
+        ...(inline !== undefined ? { inline } : {}),
         ...(typeof floor?.host === "string" ? { host: floor.host } : {}),
         ...(handle.worktree !== undefined ? { worktree: handle.worktree } : {}),
         ...(req.onFork !== undefined ? { onFork: req.onFork } : {}),
@@ -1476,6 +1491,9 @@ export class MeshHandler {
         // resolve recorded and cannot drift under a re-resolve. A spawn naming no cwd has nothing
         // to resolve and skips both the invoke and the bind, so its behaviour is unchanged.
         let resolution = readCwdResolution(recorded?.resolution);
+        // PERSIST BEFORE SUBMITTING, as the resolution below is: the definition a resume submits is
+        // the one this bind recorded.
+        if (inline !== undefined && recordedInline === undefined) await ctx.bind({ inline });
         try {
           const command = req.cwd !== undefined && resolution === undefined ? "resolve-cwd" : "spawn";
           const service = await this.manager(command, req.placement?.instanceId);
@@ -1485,11 +1503,11 @@ export class MeshHandler {
             // PERSIST BEFORE SUBMITTING. The resolution is what phase B dispatches and what a
             // resume re-reads; binding it after the submission would leave a crash in between with
             // a launched seat whose directory no record names.
-            await ctx.bind({ resolution });
+            await ctx.bind({ ...(inline !== undefined ? { inline } : {}), resolution });
           }
           const spawnService = service.commands.has("spawn") ? service : await this.manager("spawn", req.placement?.instanceId);
           reply = await this.invokeManager(spawnService, "spawn",
-            spawnArgs(resolution === undefined ? req : { ...req, cwd: resolution.cwd }), {
+            spawnArgs({ ...req, ...(inline !== undefined ? { inline: inline.definition } : {}), ...(resolution !== undefined ? { cwd: resolution.cwd } : {}) }), {
               id: goalId,
               deadlineMs: SPAWN_ACCEPT_DEADLINE_MS,
             });
@@ -1527,6 +1545,7 @@ export class MeshHandler {
           // `bind` REPLACES the external record, so the phase-A resolution is re-stated here or the
           // acceptance bind would erase it and a resume would re-resolve against a moved target.
           ...(resolution !== undefined ? { resolution } : {}),
+          ...(inline !== undefined ? { inline } : {}),
           ...(req.worktree !== undefined ? { worktree: req.worktree } : {}),
           ...(req.onFork !== undefined ? { onFork: req.onFork } : {}),
           ...(req.permits !== undefined ? { permits: req.permits } : {}),
@@ -3008,6 +3027,8 @@ function readCwdResolution(value: unknown): CwdResolution | undefined {
 export function spawnArgs(req: SpawnRequest): Record<string, unknown> {
   return {
     name: req.persona,
+    // An inline persona travels as the manager's `persona` record, whose `name` is the spawn's own.
+    ...(req.inline !== undefined ? { persona: Object.fromEntries(Object.entries(req.inline).filter(([k]) => k !== "name")) } : {}),
     ...(req.model !== undefined ? { model: req.model } : {}),
     ...(req.variant !== undefined ? { variant: req.variant } : {}),
     // #1616 item 5: the cwd dispatched here is ALREADY the canonical form, resolved by the serving
@@ -3021,6 +3042,17 @@ export function spawnArgs(req: SpawnRequest): Record<string, unknown> {
     ...(req.events !== undefined ? { events: req.events } : {}),
     ...(req.runtime !== undefined ? { runtime: req.runtime } : {}),
   };
+}
+
+/** An inline binding read back off a journal entry, or `undefined` when the entry has none. A
+ *  binding that is present but unreadable is refused, never read as a catalog spawn. */
+function readInlineBinding(value: unknown): { definition: InlineSpawnDefinition; digest: string } | undefined {
+  if (value === undefined) return undefined;
+  const r = value as { definition?: unknown; digest?: unknown } | null;
+  if (r === null || typeof r !== "object" || typeof r.digest !== "string" || r.definition === null || typeof r.definition !== "object"
+    || digest(r.definition) !== r.digest)
+    throw new Error(`a journalled inline persona binding is unreadable or does not match its digest (${JSON.stringify(value)?.slice(0, 120)}); refused rather than read as a catalog spawn`);
+  return { definition: r.definition as InlineSpawnDefinition, digest: r.digest };
 }
 
 /** The acceptance-floor fields worth binding: the allocated identity a discharge despawns by, and

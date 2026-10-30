@@ -29,6 +29,7 @@ import {
   type EffectContext,
   type CheckpointRaw,
   type EventDescriptor,
+  type InlineSpawnDefinition,
   type ParticipantRequest,
 } from "./effects.js";
 import type { RunOptions } from "./interpret.js";
@@ -90,6 +91,48 @@ function isPlacementPair(v: unknown): v is { endpoint: string; instanceId: strin
  * record is shown with the keys it actually carried, because the commonest case is a pair with one
  * half missing and the author needs to see which half.
  */
+const INLINE_STRINGS = ["role", "model", "variant", "description"] as const;
+const INLINE_LISTS = ["subscribe", "allowSubscribe", "allowPublish", "capabilities"] as const;
+const INLINE_KEYS: readonly string[] = ["name", "prompt", ...INLINE_STRINGS, ...INLINE_LISTS, "save"];
+
+/**
+ * The inline persona a `spawn`'s first argument carries, or `undefined` for a catalog spawn (§6.1).
+ * A record with `prompt` is inline; a record with `persona` names the catalog. The record is closed
+ * and checked here, before the step key is minted, so a malformed definition is never hashed or
+ * journalled. The copy holds only the keys the program wrote, so omitting a list and writing `[]`
+ * stay different definitions, as they are to the manager.
+ */
+function inlineDefinition(subject: unknown): InlineSpawnDefinition | undefined {
+  if (subject === null || typeof subject !== "object" || Array.isArray(subject) || !("prompt" in subject)) return undefined;
+  const r = subject as Record<string, unknown>;
+  const refuse = (why: string): never => {
+    throw new RuntimeFault("L3049", `spawn's inline persona ${why}`);
+  };
+  if ("persona" in r) refuse("also names a catalog persona: a record with `prompt` defines the helper and a record with `persona` names a saved one, so pass one or the other");
+  const unknown = Object.keys(r).filter((k) => !INLINE_KEYS.includes(k));
+  if (unknown.length) refuse(`carries ${unknown.map((k) => `\`${k}\``).join(", ")}, which an inline persona has no field for; its fields are ${INLINE_KEYS.join(", ")}`);
+  const nonBlank = (v: unknown): boolean => typeof v === "string" && v.trim() !== "";
+  if (!nonBlank(r.name)) refuse("names no helper: `name` must be a non-empty string");
+  if (!nonBlank(r.prompt)) refuse("has no prompt: `prompt` must be a non-empty string, the helper's persona body");
+  const out: Record<string, unknown> = { name: r.name, prompt: r.prompt };
+  for (const k of INLINE_STRINGS) {
+    if (r[k] === undefined) continue;
+    if (!nonBlank(r[k])) refuse(`\`${k}\` must be a non-empty string when present`);
+    out[k] = r[k];
+  }
+  for (const k of INLINE_LISTS) {
+    if (r[k] === undefined) continue;
+    if (!Array.isArray(r[k]) || !(r[k] as unknown[]).every((c) => typeof c === "string"))
+      refuse(`\`${k}\` must be a list of strings when present`);
+    out[k] = [...(r[k] as string[])];
+  }
+  if (r.save !== undefined) {
+    if (typeof r.save !== "boolean") refuse("`save` must be true or false when present");
+    out.save = r.save;
+  }
+  return deepFreeze(out) as unknown as InlineSpawnDefinition;
+}
+
 function describePlacement(v: unknown): string {
   if (v === null) return "null";
   if (Array.isArray(v)) return `an array (${JSON.stringify(v)}); placement is a record, not a positional pair`;
@@ -763,7 +806,8 @@ export async function dispatchPrimitive(host: EffectHost, name: string, args: un
       // handler was never told which model to run. This was missed by an audit that exercised
       // only the string form, which is the same defect one level up.
       const spawnSubject = args[0];
-      const named = typeof spawnSubject === "string" ? spawnSubject : option(spawnSubject, "persona");
+      const inline = inlineDefinition(spawnSubject);
+      const named = typeof spawnSubject === "string" ? spawnSubject : inline?.name ?? option(spawnSubject, "persona");
       // `String(undefined)` is the literal persona "undefined", and it was reaching the input hash,
       // the step name and the handler. A missing persona is `undefined` crossing an effect
       // boundary, which is what L3041 names.
@@ -801,6 +845,8 @@ export async function dispatchPrimitive(host: EffectHost, name: string, args: un
         );
       const model = typeof spawnSubject === "string" ? undefined : (option(spawnSubject, "model") as string | undefined);
       const variant = typeof spawnSubject === "string" ? undefined : (option(spawnSubject, "variant") as string | undefined);
+      // `inline` already holds the definition's model and variant, so `req.model` and `req.variant`
+      // stay what a catalog spawn's overrides are: absent for an inline one.
       // Every accepted option is forwarded, including the four that are policy rather than
       // identity. Dropping them here would be silent: the validator accepts `permits`, so an
       // author who writes a budget gets no error and no budget. They are deliberately absent
@@ -808,8 +854,9 @@ export async function dispatchPrimitive(host: EffectHost, name: string, args: un
       // recorded fact, so they are reapplied from current source on resume rather than hashed.
       const req = {
         persona,
-        ...(model !== undefined ? { model } : {}),
-        ...(variant !== undefined ? { variant } : {}),
+        ...(inline !== undefined ? { inline } : {}),
+        ...(inline === undefined && model !== undefined ? { model } : {}),
+        ...(inline === undefined && variant !== undefined ? { variant } : {}),
         ...(option(bag, "cwd") !== undefined ? { cwd: option(bag, "cwd") as string } : {}),
         // The VALIDATED value, not a second `option()` read cast into the pair type. The cast was
         // the whole defect: it asserted the shape the projection then relied on, and TypeScript
@@ -858,6 +905,9 @@ export async function dispatchPrimitive(host: EffectHost, name: string, args: un
           worktree: req.worktree ?? null,
           role: req.role ?? null,
           join: (req.join ?? []).map((c) => c.channel),
+          // An inline persona IS the identity, so the whole definition is hashed. A catalog spawn
+          // adds no key, so its recorded hash is unchanged.
+          ...(inline !== undefined ? { inline } : {}),
         },
         async (ctx) => ({ ...await handler.spawn(req, ctx), kind: "spawned" as const }),
         frame,

@@ -99,8 +99,27 @@ export interface NotifyFact {
 
 // ---- requests --------------------------------------------------------------------------------
 
+/** An inline persona: the helper's whole definition, written in the program instead of read from
+ *  the manager's catalog (§6.1). Closed, and holding only the keys the program wrote. */
+export interface InlineSpawnDefinition {
+  readonly name: string;
+  readonly prompt: string;
+  readonly role?: string;
+  readonly model?: string;
+  readonly variant?: string;
+  readonly description?: string;
+  readonly subscribe?: readonly string[];
+  readonly allowSubscribe?: readonly string[];
+  readonly allowPublish?: readonly string[];
+  readonly capabilities?: readonly string[];
+  readonly save?: boolean;
+}
+
 export interface SpawnRequest {
+  /** The catalog persona, or an inline persona's `name`. */
   readonly persona: string;
+  /** Present for an inline spawn. `model` and `variant` are then the definition's own. */
+  readonly inline?: InlineSpawnDefinition;
   readonly model?: string;
   readonly variant?: string;
   /** Existing absolute directory on the serving manager's host. Separate from logical worktree identity. */
