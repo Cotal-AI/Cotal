@@ -105,6 +105,13 @@ are handled alike. Build closures include development, optional and peer depende
 reader retains its own command-admission checks. `pnpm smoke:workspace-build-filters` exercises
 these forms through read-only metadata grading; it does not execute fixture commands or mutations.
 
+Built-output witnesses read package tsconfigs through TypeScript, including JSONC and inherited
+options. Missing configs provide no mapping; unreadable or invalid configs fail with their path
+and compiler diagnostic. The effective config must declare `rootDir` and `outDir`, locally or
+through `extends`; unsupported inferred layouts are refused rather than guessed.
+`pnpm smoke:mutation-tsconfig` compares these mappings with `tsc --showConfig` without executing
+fixture commands.
+
 Metadata validation reuses the current TypeScript parse of each normalized file path while its
 source text is unchanged. A changed source replaces that cached parse. Each config reads its
 suites lazily once, preserving validation order; file reads are not memoized across configs.

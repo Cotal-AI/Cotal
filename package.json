@@ -957,6 +957,7 @@
     "smoke:workspace-build-filters": "node scripts/workspace-build-filters.smoke.mjs",
     "smoke:failure-timeout-reason": "node scripts/mutation-failure-signature.smoke.mjs",
     "smoke:mutation-parse-cache": "node scripts/mutation-parse-cache.smoke.mjs",
+    "smoke:mutation-tsconfig": "node scripts/mutation-tsconfig.smoke.mjs",
     "smoke:ci-suites": "tsx bin/smoke/ci-suites.smoke.ts",
     "smoke:feed-agent": "pnpm --filter @cotal-ai/example-06-feed-agent test",
     "smoke:package-test-contract": "tsx bin/smoke/package-test-contract.smoke.ts",
