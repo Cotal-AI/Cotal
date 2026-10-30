@@ -51,6 +51,10 @@
  * Seats run in CHILD PROCESSES (`--seat-procs`), never in this process, so the broker's CPU and the
  * seats' CPU stay separately readable from /proc. Credentials reach a child over IPC, never argv.
  *
+ * Phase breadcrumbs use `seat-idle-load phase=<name> utc_epoch_ms=<epoch> elapsed_ms=<monotonic>`
+ * on stderr. They mark only completed transitions, with `up` and `failed` on
+ * `all_seat_starts_settled`.
+ *
  * Run (needs nats-server 2.15.1 on PATH or NATS_SERVER_BIN, and an fd limit above 2N):
  *   ulimit -n 65536; pnpm -C packages/core smoke:seat-idle-load --seats 500 --space-size 10 [--ram]
  */
@@ -371,6 +375,14 @@ const ask = (child: ChildProcess, cmd: ChildCmd, key: string): Promise<Record<st
   child.send(cmd);
 });
 
+const phaseOrigin = performance.now();
+const phase = (name: string, detail = "") => console.error(`seat-idle-load phase=${name} utc_epoch_ms=${Date.now()} elapsed_ms=${Math.round(performance.now() - phaseOrigin)}${detail}`);
+let teardownStarted = false;
+const startTeardown = () => {
+  if (teardownStarted) return;
+  teardownStarted = true;
+  phase("teardown_start");
+};
 const rows: Array<[string, string]> = [];
 const row = (k: string, v: string | number) => rows.push([k, typeof v === "number" ? (Number.isInteger(v) ? String(v) : Math.abs(v) >= 100 ? v.toFixed(1) : v.toFixed(3)) : v]);
 const n2 = (x: number) => (Number.isFinite(x) ? x.toFixed(2) : "n/a");
@@ -437,12 +449,14 @@ try {
   }
   const setupS = (performance.now() - tSetup) / 1000;
   await step("+ seat durables and ACL rows");
+  phase("setup_done");
 
   // ---- delivery daemons -------------------------------------------------------------------------
   let daemonReady!: () => void;
   const daemonUp = new Promise<void>((r) => { daemonReady = r; });
   const daemon = startChild({ kind: "daemons", servers: SERVERS, daemons }, (m) => { if (m.ready) daemonReady(); });
   await guard(daemonUp);
+  phase("delivery_ready");
   console.error(`  … ${SPACES} delivery daemon(s) ready`);
   await wait(2000);
   const base = { rss: procRssMb(srv.pid!), varz: await monitor("/varz"), jsz: await monitor<Jsz>("/jsz") };
@@ -474,6 +488,7 @@ try {
   const seatsUp = upReports.reduce((a, m) => a + (m.up as number), 0);
   const seatsFailed = upReports.reduce((a, m) => a + (m.failed as number), 0);
   const startErrors = upReports.flatMap((m) => m.firstErrors as string[]).slice(0, 5);
+  phase("all_seat_starts_settled", ` up=${seatsUp} failed=${seatsFailed}`);
 
   // ---- settle, then the measured idle window ------------------------------------------------------
   await wait(SETTLE_S * 1000);
@@ -482,11 +497,13 @@ try {
   const b0 = procCpuMs(srv.pid!), d0 = procCpuMs(daemon.pid!), s0 = seatKids.map((c) => procCpuMs(c.pid!));
   const box0 = boxCpu();
   const t0 = performance.now();
+  phase("window_start");
   // Sample the rosters mid-window too, so a run that is degrading shows it, not just its end.
   await wait((SECONDS * 1000) / 2);
   const mid = (await guard(Promise.all(seatKids.map((c) => ask(c, { cmd: "sample" }, "sample"))))).map((m) => m.sample as SeatSample);
   await wait((SECONDS * 1000) / 2);
   const winS = (performance.now() - t0) / 1000;
+  phase("window_end");
   const brokerCpuMs = procCpuMs(srv.pid!) - b0, daemonCpuMs = procCpuMs(daemon.pid!) - d0;
   const seatCpuMs = seatKids.reduce((a, c, i) => a + procCpuMs(c.pid!) - s0[i], 0);
   const box1 = boxCpu();
@@ -636,12 +653,14 @@ try {
     console.log("");
   }
 
+  startTeardown();
   stopping = true;
   await Promise.all([...seatKids, daemon].map((c) => ask(c, { cmd: "stop" }, "stopped").catch(() => undefined)));
 } catch (e) {
   console.error("  ✗ seat-idle-load threw:", (e as Error).stack ?? (e as Error).message);
   process.exitCode = 1;
 } finally {
+  startTeardown();
   stopping = true;
   for (const c of children) { try { c.kill("SIGKILL"); } catch { /* already gone */ } }
   // A broker killed without waiting can still be writing its store after the dir is removed, and
@@ -649,6 +668,7 @@ try {
   await killAndAwaitExit(srv, "SIGKILL");
   rmSync(dir, { recursive: true, force: true });
   releaseBroker(); // last: ownership is held until this teardown has actually finished
+  phase("teardown_end");
   await new Promise<void>((r) => { process.stdout.write("", () => r()); });
   process.exit(process.exitCode ?? 0);
 }
