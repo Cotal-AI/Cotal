@@ -384,8 +384,8 @@ const proto = MeshAgent.prototype as unknown as {
       { refused, calls },
     );
     check(
-      `the refusal for ${pattern} says one post to a channel it matches reaches its followers`,
-      refused.text.includes(`To reach agents that follow ${pattern}, post once to one channel it matches.`),
+      `the refusal for ${pattern} says one post to a channel it matches reaches its connected followers`,
+      refused.text.includes(`To reach the agents connected and following ${pattern} now, post once to one channel it matches.`),
       refused.text,
     );
     check(
@@ -394,12 +394,20 @@ const proto = MeshAgent.prototype as unknown as {
       refused.text,
     );
   }
+  for (const [bad, grammar] of [["team.>.x", "'>' is only valid as the last segment"], ["team. >", "must be a NATS-safe token"]] as const) {
+    const refused = await send.run(agent, cfg, { text: "hi", channel: bad });
+    check(
+      `a wildcard that is not a legal pattern (${bad}) gets the grammar error, not the pattern advice`,
+      refused.isError === true && calls.length === 0 && refused.text.includes(grammar) && refused.text.includes("Nothing was sent.") && !refused.text.includes("is a pattern"),
+      { refused, calls },
+    );
+  }
   const sent = await send.run(agent, cfg, { text: "hi", channel: "team.announce" });
   check("a channel the pattern matches still sends", !sent.isError && calls.includes("send team.announce"), { sent, calls });
   const described = (send.schema.shape.channel as { description?: string } | undefined)?.description ?? "";
   check(
     "the advertised channel text names both ways to reach a family",
-    described.includes("post once to one channel it matches, such as team.announce") && described.includes("post to each by name (cotal_channels lists them)"),
+    described.includes("To reach the agents connected and following team.> now, post once to one channel it matches, such as team.announce") && described.includes("post to each by name (cotal_channels lists them)"),
     described,
   );
 }

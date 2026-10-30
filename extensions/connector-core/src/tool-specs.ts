@@ -9,7 +9,7 @@
  */
 import { execFileSync } from "node:child_process";
 import { z } from "zod";
-import { isConcreteChannel, channelInAllow, AmbiguousPeerError, peerLabel, assertLifecycleToken, isPermissionDenied, renderLifecycleBlocked, EpEnvelopeError, LANG_PROBLEM_DETAIL_KIND, formatAge, presenceAges, presenceText, type ControlReply, type PresenceStatus } from "@cotal-ai/core";
+import { isConcreteChannel, assertValidChannel, channelInAllow,AmbiguousPeerError, peerLabel, assertLifecycleToken, isPermissionDenied, renderLifecycleBlocked, EpEnvelopeError, LANG_PROBLEM_DETAIL_KIND, formatAge, presenceAges, presenceText, type ControlReply, type PresenceStatus } from "@cotal-ai/core";
 import { afterRecallMark, type MeshAgent, type InboxItem } from "./agent.js";
 // The neutralization and the per-item rendering live in `framing.ts`, one convention shared with
 // the auto-injected block, and are used here rather than restated. See that file for the rule.
@@ -689,11 +689,17 @@ const NO_POSTABLE_DEFAULT =
 /** How to reach a channel family, since every publish names one concrete channel (SPEC §3). The
  *  advertised `channel` text of `cotal_send`, here and in the gateway. */
 export const PATTERN_SEND_HELP =
-  "A pattern such as team.> is refused. To reach agents that follow team.>, post once to one channel it matches, such as team.announce; to reach several channels, post to each by name (cotal_channels lists them).";
+  "A pattern such as team.> is refused. To reach the agents connected and following team.> now, post once to one channel it matches, such as team.announce; to reach several channels, post to each by name (cotal_channels lists them).";
 
-/** The refusal for a pattern given as `cotal_send`'s channel, returned before anything is read or sent. */
+/** The refusal for a wildcard given as `cotal_send`'s channel, returned before anything is read or
+ *  sent. A name that is not a legal pattern either gets the grammar error instead. */
 function patternSendRefusal(pattern: string): string {
-  return `"${pattern}" is a pattern, and a post goes to one concrete channel. To reach agents that follow ${pattern}, post once to one channel it matches. To reach several channels, post to each by name; cotal_channels lists them. Nothing was sent.`;
+  try {
+    assertValidChannel(pattern);
+  } catch (e) {
+    return `${(e as Error).message}. Nothing was sent.`;
+  }
+  return `"${pattern}" is a pattern, and a post goes to one concrete channel. To reach the agents connected and following ${pattern} now, post once to one channel it matches. To reach several channels, post to each by name; cotal_channels lists them. Nothing was sent.`;
 }
 
 /** The full Cotal tool set for a given config. Renderers iterate this; `source` names the

@@ -28,6 +28,8 @@
     "",
     "N10 drops both ways from the advertised channel text.",
     "",
+    "N11 drops the grammar check, so a name that is not a legal pattern gets the pattern advice.",
+    "",
     "NO BUILD STEP: the suite imports ../src."
   ],
   "mutations": [
@@ -106,10 +108,10 @@
     {
       "name": "N9 the refusal stops naming one post to a channel the pattern matches",
       "file": "extensions/connector-core/src/tool-specs.ts",
-      "find": "To reach agents that follow ${pattern}, post once to one channel it matches. ",
+      "find": "To reach the agents connected and following ${pattern} now, post once to one channel it matches. ",
       "replace": "",
-      "expectRed": "the refusal for team.> says one post to a channel it matches reaches its followers",
-      "cell": "the refusal for team.> says one post to a channel it matches reaches its followers",
+      "expectRed": "the refusal for team.> says one post to a channel it matches reaches its connected followers",
+      "cell": "the refusal for team.> says one post to a channel it matches reaches its connected followers",
       "note": "The refusal would still refuse but would teach only the per-channel way."
     },
     {
@@ -120,6 +122,15 @@
       "expectRed": "the advertised channel text names both ways to reach a family",
       "cell": "the advertised channel text names both ways to reach a family",
       "note": "An agent reading the tool schema would learn of the refusal only by hitting it."
+    },
+    {
+      "name": "N11 a wildcard that is not a legal pattern gets the pattern advice",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "  try {\n    assertValidChannel(pattern);\n  } catch (e) {\n    return `${(e as Error).message}. Nothing was sent.`;\n  }\n",
+      "replace": "",
+      "expectRed": "a wildcard that is not a legal pattern (team.>.x) gets the grammar error, not the pattern advice",
+      "cell": "a wildcard that is not a legal pattern (team.>.x) gets the grammar error, not the pattern advice",
+      "note": "The refusal would call team.>.x a pattern and suggest posting to a channel it matches, though nothing can match it."
     }
   ]
 }
