@@ -2,10 +2,11 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join, resolve } from "node:path";
 import { userJcodeHome } from "@1jehuang/jcode-sdk";
-import { registry, type Connector, type LaunchOpts, type LaunchSpec, type ModelCatalog, type ModelInfo } from "@cotal-ai/core";
+import { registry, type Connector, type LaunchOpts, type LaunchSpec, type ModelCatalog, type ModelInfo, type OnceSeat } from "@cotal-ai/core";
 import { aclEnv, connectorLaunchOptions, controlEndpoint, eventChannel, launchArmsEvents, launchEnv, materialEnv } from "@cotal-ai/connector-core";
 import { parse as parseToml } from "smol-toml";
 import { JCODE_READINESS_TIMEOUT_MS } from "./readiness-bound.js";
+import { discardOnceReceipt, retireOnceTree } from "./private-lifecycle.js";
 import { jcodeForkRecordPath, jcodeSeatHome, ownedJcodeFork, readJcodeForkSource } from "./session-fork.js";
 
 const FROM_BUILD = import.meta.url.includes("/dist/");
@@ -120,6 +121,15 @@ export const jcodeConnector: Connector = {
   // `--resume` forks the named session from the operator's Jcode home into the seat's private home
   // before its instance starts (session-fork.ts). The seat owns the copy; the source is only read.
   supportsResume: true,
+  // The host wakes the session for a run turn and hands a once task over at most once. A once
+  // seat's Jcode server outlives its host when the host dies without teardown, so its exit is not
+  // the end of the task until retireAfterExit proves that tree gone.
+  supportsTurnRelay: true,
+  async retireAfterExit(seat: OnceSeat) {
+    const home = jcodeSeatHome(seat.workspaceRoot, seat.space, seat.name);
+    await retireOnceTree(home, seat.lifecycleUid);
+    return { discard: async () => discardOnceReceipt(home, seat.lifecycleUid) };
+  },
   eventChannel,
   listModels: listJcodeModels,
   launchHint: "starting Jcode and joining the mesh (first boot can take several minutes)",
@@ -156,6 +166,12 @@ export const jcodeConnector: Connector = {
     if (opts.role) env.COTAL_ROLE = opts.role;
     if (opts.id) env.COTAL_ID = opts.id;
     if (opts.lifecycleUid) env.COTAL_LIFECYCLE_UID = opts.lifecycleUid;
+    // A once seat records every native launch under its uid, so its tree can be proved gone after
+    // its host exits.
+    if (opts.once) {
+      if (!opts.lifecycleUid) throw new Error("jcode connector: a once seat needs its lifecycle uid to record what it launches");
+      env.COTAL_JCODE_ONCE = "1";
+    }
     if (opts.backfillFloor !== undefined) env.COTAL_BACKFILL_FLOOR = String(opts.backfillFloor);
     if (opts.acceptedToken) env.COTAL_ACCEPTED_TOKEN = opts.acceptedToken;
     // Like Codex, the TUI decision belongs to the process that builds this launch. A foreground

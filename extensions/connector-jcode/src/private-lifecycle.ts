@@ -1,8 +1,8 @@
 import { randomBytes } from "node:crypto";
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync, readdirSync, rmSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
-import { writePrivateRecord } from "@cotal-ai/core";
+import { writePrivateRecord, writeSecretFileAtomic } from "@cotal-ai/core";
 
 /** Exact teardown of one seat's private Jcode process tree (#839).
  *
@@ -283,6 +283,93 @@ export function readLaunchRecord(home: string): LaunchRecord | undefined {
   const host = record?.host;
   if (typeof identity !== "string" || !identity) return undefined;
   return isPid(host?.pid) && typeof host?.start === "string" && host.start ? { identity, host: { pid: host.pid, start: host.start } } : undefined;
+}
+
+/** A once seat's launch evidence, keyed by its lifecycle uid rather than by its name, so a same-name
+ * successor's launches never overwrite it: the host that launched, and every launch identity it
+ * used, a bridge relaunch included. A proof of retirement replaces it with a receipt, which stays
+ * until the manager has cleared the seat's debt and discards it. */
+type OnceRecord = { uid: string; host: ProcessIdentity; launches: string[] } | { uid: string; retired: true };
+
+const LIFECYCLE_UID = /^[a-z0-9]{26,32}$/u;
+
+function onceRecordPath(home: string, uid: string): string {
+  if (!LIFECYCLE_UID.test(uid)) throw new Error(`jcode connector: "${uid}" is not a lifecycle uid`);
+  return join(home, `cotal-once-${uid}.json`);
+}
+
+/** The uid's record, or `undefined` when there is none. A record that is not well formed throws. */
+function readOnceRecord(home: string, uid: string): OnceRecord | undefined {
+  const path = onceRecordPath(home, uid);
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+  const r = JSON.parse(raw) as { uid?: unknown; retired?: unknown; host?: { pid?: unknown; start?: unknown }; launches?: unknown };
+  if (r?.uid !== uid) throw new Error(`jcode connector: ${path} does not name once seat ${uid}`);
+  if (r.retired === true) return { uid, retired: true };
+  const launches = r.launches;
+  if (!isPid(r.host?.pid) || typeof r.host?.start !== "string" || !r.host.start
+    || !Array.isArray(launches) || launches.length === 0 || !launches.every((v) => typeof v === "string" && v.length > 0))
+    throw new Error(`jcode connector: ${path} is not well formed`);
+  return { uid, host: { pid: r.host.pid as number, start: r.host.start }, launches };
+}
+
+/** Add one native launch to a once seat's evidence, before the launch creates anything. */
+export function recordOnceLaunch(home: string, uid: string, record: LaunchRecord): void {
+  const prior = readOnceRecord(home, uid);
+  if (prior && "retired" in prior) throw new Error(`jcode connector: once seat ${uid} was already proved retired — refusing to launch under it again`);
+  if (prior && (prior.host.pid !== record.host.pid || prior.host.start !== record.host.start))
+    throw new Error(`jcode connector: once seat ${uid} was launched by another host — refusing to launch under it`);
+  writeSecretFileAtomic(onceRecordPath(home, uid), `${JSON.stringify({ uid, host: record.host, launches: [...(prior?.launches ?? []), record.identity] })}\n`);
+}
+
+function onceSurvivors(launches: readonly string[], probe: ProcessIdentityProbe): number[] {
+  return launches
+    .flatMap((identity) => captureLaunchProcesses(identity, probe))
+    .filter((identity) => identity.pid !== process.pid && processMatches(identity) && alive(identity.pid))
+    .map((identity) => identity.pid);
+}
+
+/** Prove that nothing a once seat launched outside its host still runs, stopping what its evidence
+ * proves it launched. Returns only with that proof, recorded as a receipt so a later call gives the
+ * same answer; throws when there is no evidence, when the recorded host PID is alive (the host, or a
+ * process that reused its PID), or when a launched process survives. Signals only processes that
+ * carry one of the uid's launch identities and match their captured start token. */
+export async function retireOnceTree(
+  home: string,
+  uid: string,
+  opts: { gracefulWaitMs?: number; killWaitMs?: number; identityProbe?: ProcessIdentityProbe } = {},
+): Promise<void> {
+  const { gracefulWaitMs = 3_000, killWaitMs = 2_000, identityProbe = processIdentityProbe } = opts;
+  const record = readOnceRecord(home, uid);
+  if (!record) throw new Error(`jcode connector: once seat ${uid} has no launch evidence in ${home} — its processes cannot be proved gone`);
+  if ("retired" in record) return;
+  if (alive(record.host.pid))
+    throw new Error(`jcode connector: once seat ${uid}'s recorded host PID ${record.host.pid} is alive — its processes cannot be proved gone`);
+  const targets = onceSurvivors(record.launches, identityProbe);
+  if (targets.length) {
+    signalTree(targets, "SIGTERM");
+    if (!(await waitGone(targets, gracefulWaitMs))) {
+      signalTree(targets.filter(alive), "SIGKILL");
+      await waitGone(targets, killWaitMs);
+    }
+  }
+  const left = onceSurvivors(record.launches, identityProbe);
+  if (left.length) throw new Error(`jcode connector: once seat ${uid}'s Jcode processes survived teardown (pids ${left.join(", ")})`);
+  writeSecretFileAtomic(onceRecordPath(home, uid), `${JSON.stringify({ uid, retired: true })}\n`);
+}
+
+/** Remove a once seat's retirement receipt, after its manager cleared the debt. Live evidence is
+ * never removed here. */
+export function discardOnceReceipt(home: string, uid: string): void {
+  const record = readOnceRecord(home, uid);
+  if (!record) return;
+  if (!("retired" in record)) throw new Error(`jcode connector: once seat ${uid}'s evidence is not a retirement receipt — refusing to discard it`);
+  rmSync(onceRecordPath(home, uid), { force: true });
 }
 
 export interface StopOrphanedTreeOptions {

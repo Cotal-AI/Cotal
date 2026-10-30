@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { HarnessError, JcodeClient, launchInstance, type ApiEvent, type LaunchedInstance } from "@1jehuang/jcode-sdk";
 import { hardenPrivate, loadAgentFile, type PresenceCondition, type PresenceConditionCode } from "@cotal-ai/core";
 import { mirrorJcodeCredentials, shortSocketHome, type ShortSocketHome } from "./private-state.js";
-import { captureProcessIdentity, launchIdentityEnv, recordLaunch, stopOrphanedTree, stopPrivateTree, type ProcessIdentity } from "./private-lifecycle.js";
+import { captureProcessIdentity, launchIdentityEnv, recordLaunch, recordOnceLaunch, stopOrphanedTree, stopPrivateTree, type ProcessIdentity } from "./private-lifecycle.js";
 import { connectSteerClient, softInterruptWithLateReply } from "./steer-replies.js";
 import { chooseSessionToResume, type ResumeCandidate } from "./session-resume.js";
 import { forkJcodeSession, jcodeSeatHome, markJcodeForkBriefed, type JcodeFork } from "./session-fork.js";
@@ -58,6 +58,7 @@ import {
   fmtFrom,
   formatInjection,
   parseToolArgs,
+  registerOnceExit,
   scrubLaunchMaterial,
   startControlServer,
   cotalToolSpecs,
@@ -397,6 +398,10 @@ export async function runJcodeHost(): Promise<void> {
   const binary = process.env.COTAL_JCODE_BIN?.trim() || "jcode";
   const tuiOverride = envFlag(process.env, "COTAL_JCODE_TUI");
   const bootPrompt = process.env.COTAL_JCODE_PROMPT?.trim();
+  // A once seat records each native launch under its uid, and stops its Jcode tree before anything
+  // else when it exits, so neither a stalled teardown nor its own death leaves the task running.
+  const onceUid = process.env.COTAL_JCODE_ONCE === "1" ? config.lifecycleUid : undefined;
+  if (process.env.COTAL_JCODE_ONCE === "1" && !onceUid) throw new Error("jcode connector: a once seat has no lifecycle uid");
   // Startup owns the kickoff until the Harness request is invoked. Any return before that boundary
   // is provably unsent and safe to defer; after invocation acceptance is not knowable, so it is
   // consumed and never guessed back into the queue.
@@ -831,6 +836,7 @@ export async function runJcodeHost(): Promise<void> {
     // Written before the tree exists so a launch that dies mid-spawn still names what it may have
     // created. The next launch of this home reads it to tell an orphan from a live seat (#1211).
     recordLaunch(home, { identity: launchBound.value, host: captureProcessIdentity(process.pid) });
+    if (onceUid) recordOnceLaunch(home, onceUid, { identity: launchBound.value, host: captureProcessIdentity(process.pid) });
     instance = await launchInstance({
       binary,
       jcodeHome: socketHome.jcodeHome,
@@ -882,6 +888,17 @@ export async function runJcodeHost(): Promise<void> {
   const shutdown = async (code = 0, signal?: "SIGINT" | "SIGTERM"): Promise<void> => {
     if (stopping) return;
     stopping = true;
+    // A once seat's tree goes first, before the event joins, the broker or the client close can hold
+    // the teardown. What this misses, its manager's retireAfterExit finds.
+    let exit = code;
+    if (onceUid) {
+      try {
+        await stopPrivateJcode({ skipClientClose: true });
+      } catch (error) {
+        writeJcodeDiagnostic(`[cotal-jcode] ${(error as Error).message}\n`);
+        exit = 1;
+      }
+    }
     agent.releaseInFlight(surfacedIds);
     surfacedIds = [];
     for (const batch of heldReservations) agent.releaseInFlight([...batch]);
@@ -897,7 +914,6 @@ export async function runJcodeHost(): Promise<void> {
       /* already gone */
     }
     await retireRelay(relayServer, relay);
-    let exit = code;
     try {
       closeEventRun();
       await events?.settled();
@@ -1124,6 +1140,10 @@ export async function runJcodeHost(): Promise<void> {
         // Read before this send exists: while a lapsed send is still open, an acknowledgement may
         // be that send's, and it cannot prove the Harness took these run turns.
         const attributable = unsettledLapsedDispatches === 0 && !acceptanceSuspectUntilBridgeReplaced;
+        // The turns' permit, after the gate's wait and right before the send: a once task its
+        // manager settled meanwhile, or a seat that began stopping, sends nothing.
+        if (stopping || !agent.claimTurns(turnIds))
+          throw new Error("the once task ended, or the seat began stopping, while its send waited at the dispatch gate; nothing was sent");
         const dispatched = turnClient!.run(sessionId!, parts.join("\n\n"), { autoApprove: true });
         // Keep a failed dispatch from surfacing as an unhandled rejection while it is only being
         // raced below; the handle returned from this gate is what actually reports it.
@@ -1159,6 +1179,9 @@ export async function runJcodeHost(): Promise<void> {
         } finally {
           turnClient!.off("message_accepted", noteAccepted);
         }
+        // A once task this send cannot show the Harness took is never offered again: it is sealed
+        // and reported, and a late acceptance confirms nothing.
+        if (!attributable || !acknowledgedHere) agent.releaseTurns(turnIds);
         // LEAVING THE GATE UNACKNOWLEDGED IS A DEBT, NOT A CLEAN EXIT. This send is still open and
         // can still emit its acceptance after the next dispatch has begun, which is precisely how a
         // reviewer produced an acknowledgement for a send that never received one. Releasing the
@@ -1927,6 +1950,8 @@ export async function runJcodeHost(): Promise<void> {
 
   process.on("SIGINT", () => void shutdown(0, "SIGINT"));
   process.on("SIGTERM", () => void shutdown(0, "SIGTERM"));
+  // A once seat that must end itself, because its task's handoff could not be reported.
+  registerOnceExit(() => void shutdown(1));
 
   try {
     client = await launchPrivateJcode();
