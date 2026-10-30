@@ -1,5 +1,15 @@
 # @cotal-ai/cli
 
+## 0.129.3
+
+### Patch Changes
+
+- d968671: Wait long enough for a static chat session's retirement answer. With the delivery daemon stopped, closing `cotal chat` now reports the retirement pending and names the daemon (exit 4) instead of timing out as an unknown outcome that blamed the manager.
+- Updated dependencies [c6ddccc]
+- Updated dependencies [565f465]
+  - @cotal-ai/core@0.129.3
+  - @cotal-ai/workspace@0.129.3
+
 ## 0.129.2
 
 ### Patch Changes
