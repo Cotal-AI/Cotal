@@ -1,0 +1,2 @@
+# Shared request observer construction and parser-backed source census.
+smoke:issued-rail-sources
