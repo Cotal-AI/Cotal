@@ -1,5 +1,13 @@
 # @cotal-ai/delivery
 
+## 0.131.1
+
+### Patch Changes
+
+- ec53685: Name the sender principal from the stored subject in plain-text `deliver pending` candidate lines, and print the sender's own name and role after it as a sanitized label. The legacy JSON output is unchanged.
+- @cotal-ai/core@0.131.1
+  - @cotal-ai/workspace@0.131.1
+
 ## 0.131.0
 
 ### Patch Changes
