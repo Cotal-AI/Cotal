@@ -131,12 +131,14 @@ try {
   const up = cotal(["up", "--detach", "--space", SPACE, "--server", SERVER]);
   check("up --detach starts the authenticated stack", up.status === 0, out(up));
   if (process.platform !== "win32") {
+    // Only an alive record can prove the expected daemon; other states fail these cells.
+    // Match command text privately and report only the state if the match fails.
     const managerRecord = managerRecordState(SPACE, root);
-    const manager = managerRecord.state === "absent" ? "" : managerRecord.command ?? "";
-    check("up starts the manager as the hidden `__daemon-manager --space <s> --server <url>`", manager.includes(` __daemon-manager --space ${SPACE} --server ${SERVER}`), manager);
+    const manager = managerRecord.state === "alive" ? managerRecord.command ?? "" : "";
+    check("up starts the manager as the hidden `__daemon-manager --space <s> --server <url>`", manager.includes(` __daemon-manager --space ${SPACE} --server ${SERVER}`), { state: managerRecord.state });
     const deliveryRecord = readProcessRecord(canonicalLocalProcessPath(DELIVERY_PIDFILE, { root, space: SPACE }), () => true);
-    const delivery = deliveryRecord.state === "absent" ? "" : deliveryRecord.command ?? "";
-    check("up starts the delivery daemon as the hidden `__daemon-deliver --space <s> --server <url>`", delivery.includes(` __daemon-deliver --space ${SPACE} --server ${SERVER}`), delivery);
+    const delivery = deliveryRecord.state === "alive" ? deliveryRecord.command ?? "" : "";
+    check("up starts the delivery daemon as the hidden `__daemon-deliver --space <s> --server <url>`", delivery.includes(` __daemon-deliver --space ${SPACE} --server ${SERVER}`), { state: deliveryRecord.state });
     // The twins are the deprecated entries without the warning, so up's own daemon logs never carry it.
     const logs = [MANAGER_LOGFILE, DELIVERY_LOGFILE].map((file) => readFileSync(canonicalLocalProcessPath(file, { root, space: SPACE }), "utf8"));
     check("up's own daemons print no deprecation warning", logs.every((log) => !log.includes("is deprecated and will be removed")), logs.map((log) => log.slice(-600)));
