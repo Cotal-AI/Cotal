@@ -39,6 +39,10 @@
  * Compare both settings with the same workload; disabling the cache may save memory while
  * increasing matching CPU. This changes only the isolated smoke broker, not core defaults.
  *
+ * `--go-trace` emits native broker GC/scavenger lines with parent receipt timestamps. It changes
+ * no memory limit or GC policy; use it without `--ram` to avoid the profiler's forced collections.
+ * Trace output adds diagnostic overhead and is not an ordinary performance sample.
+ *
  * `--ram` adds the RAM profile. The broker's live heap and goroutines are read from its pprof
  * endpoint after a forced GC at each step of the build-up (empty, message streams, KV buckets and
  * registries, provisioned durables, delivery daemons, seats), so each step's delta is that part's
@@ -292,6 +296,7 @@ const SUBLIST_CACHE = flag("sublist-cache", argv.includes("--sublist-cache") ? u
 if (SUBLIST_CACHE !== "on" && SUBLIST_CACHE !== "off")
   throw new Error("seat-idle-load: --sublist-cache must be on or off");
 const RAM = argv.includes("--ram");
+const GO_TRACE = argv.includes("--go-trace");
 const NATS_BIN = process.env.NATS_SERVER_BIN ?? "nats-server";
 
 const REPO = execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8", cwd: import.meta.dirname }).trim();
@@ -338,7 +343,11 @@ const accounts = await Promise.all(spaceNames.map((s) => createSpaceAccountAuth(
 const auths: SpaceAuth[] = accounts.map((a) => composeSpaceAuth(brokerAuth, a));
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 writeFileSync(join(dir, "server.conf"), serverConfig(brokerAuth, accounts, { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }) + `\ndisable_sublist_cache: ${SUBLIST_CACHE === "off"}\nhttp: 127.0.0.1:${MON_PORT}\n` + (RAM ? `prof_port: ${PROF_PORT}\n` : ""));
-const srv = spawn(NATS_BIN, ["-c", join(dir, "server.conf")], { stdio: ["ignore", "ignore", "pipe"] });
+const srv = spawn(NATS_BIN, ["-c", join(dir, "server.conf")], {
+  stdio: ["ignore", "ignore", "pipe"],
+  // Scope runtime diagnostics to the broker; esbuild is also a Go program.
+  ...(GO_TRACE ? { env: { ...process.env, GODEBUG: [process.env.GODEBUG, "gctrace=1", "scavtrace=1"].filter(Boolean).join(",") } } : {}),
+});
 const releaseBroker = teardownOnSignal(srv, dir);
 // The broker's warnings and errors are part of the result (an fd limit, a slow consumer, a refused
 // JetStream asset); its info lines are not.
@@ -348,7 +357,10 @@ srv.stderr!.setEncoding("utf8");
 srv.stderr!.on("data", (d: string) => {
   const lines = (brokerPartial + d).split("\n");
   brokerPartial = lines.pop() ?? "";
-  for (const l of lines) if (/\[(WRN|ERR|FTL)\]/.test(l)) { if (brokerWarnings.length < 2000) brokerWarnings.push(l); if (brokerWarnings.length <= 5) console.error(`  broker: ${l}`); }
+  for (const l of lines) {
+    if (GO_TRACE && /^(gc \d+ @|scav \d+ KiB)/.test(l)) console.error(`broker-go utc_epoch_ms=${Date.now()} ${l}`);
+    if (/\[(WRN|ERR|FTL)\]/.test(l)) { if (brokerWarnings.length < 2000) brokerWarnings.push(l); if (brokerWarnings.length <= 5) console.error(`  broker: ${l}`); }
+  }
 });
 
 const monitor = async <T = Record<string, number>>(path: string): Promise<T> => (await (await fetch(`http://127.0.0.1:${MON_PORT}${path}`)).json()) as T;
@@ -534,6 +546,7 @@ try {
   row("git sha", SHA);
   row("nats-server", `${serverVersion} (${NATS_BIN})`);
   row("subscription cache", SUBLIST_CACHE);
+  row("broker Go trace", GO_TRACE ? "on (diagnostic overhead)" : "off");
   row("host", `${availableParallelism()} cores, ${(totalmem() / 1073741824).toFixed(1)} GB`);
   row("shape", `${SEATS} seats in ${SPACES} space(s) of ${SPACE_SIZE}, ${seatKids.length} seat process(es), heartbeat ${HEARTBEAT ? `${HEARTBEAT}ms (override)` : "endpoint default"}, presence watch ${WATCH_PRESENCE ? "on" : "OFF"}, channel registry watch ${WATCH_CHANNELS ? "on" : "OFF"}`);
   row("setup (spaces + provisioning) (s)", setupS);
