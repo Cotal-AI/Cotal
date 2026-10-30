@@ -1,5 +1,11 @@
 # @cotal-ai/core
 
+## 0.129.9
+
+### Patch Changes
+
+- 1a59b0a: Discard native stored-message provenance at ephemeral endpoint ingress before parsing, authorization, dispatch or replies. Direct requests retain their existing headers and admission checks; read grants are unchanged.
+
 ## 0.129.8
 
 No changes in this release.
