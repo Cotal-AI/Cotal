@@ -63,11 +63,12 @@ export async function checkSpawnConclave(c: Check): Promise<void> {
     await manager.start();
     const id = newIdentity();
     const uid = mintLifecycleUid();
-    const issued = { generation: mintGeneration(Math.floor(Date.now() / 1000) + 3600), acceptedToken: mintAcceptedToken() };
+    const expiresAt = Math.floor(Date.now() / 1000) + 3600;
+    const issued = { generation: mintGeneration(expiresAt), acceptedToken: mintAcceptedToken() };
     const caller: IssuedCaller = { owner: DEV_OWNER, actor: id.id, uid, generation: issued.generation };
     const creds = await withIssuerSession({ servers: broker.servers, space, auth, tls: false }, (s) =>
       mintCreds(auth, id, "agent", { lifecycleUid: uid, capabilities: ["run"], allowSubscribe: [">"], allowPublish: [">"],
-        expiresInSeconds: 3600, issued, issuance: { mode: "issue", store: s.store, accepted: s.accepted, sources: [] } }));
+        expiresAt, issued, issuance: { mode: "issue", store: s.store, accepted: s.accepted, sources: [] } }));
     callerNc = await connect({ servers: broker.servers, ...standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: 0 });
     const service = await resolveService(callerNc, space, "manager", caller);
     const call = async (command: string, args?: Record<string, unknown>): Promise<EndpointReply> =>
