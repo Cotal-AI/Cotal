@@ -10,9 +10,9 @@
     "Reached suites used to pin 18 while the shipped document served 20. Restating the count is the",
     "defect class: correct the day it is written, wrong after the next served command.",
     "",
-    "M2 restores revision 42 after native personal turn participation changes the shipped surface.",
-    "The new command ships with revision 43, while revision 42 retains the connector event-plane",
-    "fact and revision 41 retains persona removal. The named revision cell runs after the service has",
+    "M2 restores revision 43 after the inline spawn persona changes the shipped surface. The closed",
+    "spawn input ships with revision 44, while revision 43 retains native turn participation, 42 the",
+    "connector event-plane fact and 41 persona removal. The named revision cell runs after the service has",
     "actual shipped document.",
     "",
     "M3 re-introduces the module-scope compile (#1323): every CLI invocation paid ~1.8 CPU-seconds",
@@ -31,12 +31,12 @@
       "cell": "the resolved surface matches the shipped cluster document"
     },
     {
-      "name": "M2 keep revision 42 after native turn participation lands",
+      "name": "M2 keep revision 43 after the inline spawn persona lands",
       "file": "implementations/manager/src/manager-service-contract.ts",
-      "find": "  return buildClusterDocument(MANAGER_CLUSTER_URN, 43, ROWS);",
-      "replace": "  return buildClusterDocument(MANAGER_CLUSTER_URN, 42, ROWS);",
-      "expectRed": "native turn participation advances the manager cluster revision and retains persona removal, connector event-plane facts and existing commands",
-      "cell": "native turn participation advances the manager cluster revision and retains persona removal, connector event-plane facts and existing commands"
+      "find": "  return buildClusterDocument(MANAGER_CLUSTER_URN, 44, ROWS);",
+      "replace": "  return buildClusterDocument(MANAGER_CLUSTER_URN, 43, ROWS);",
+      "expectRed": "the inline spawn persona advances the manager cluster revision and retains native turn participation, persona removal, connector event-plane facts and existing commands",
+      "cell": "the inline spawn persona advances the manager cluster revision and retains native turn participation, persona removal, connector event-plane facts and existing commands"
     },
     {
       "name": "M3 compile every contract pair at module scope again",

@@ -2,7 +2,7 @@ import { createHash, randomUUID, randomBytes } from "node:crypto";
 import { hostname } from "node:os";
 import { credsAuthenticator } from "@nats-io/transport-node";
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
-import { isAbsolute, join, dirname, resolve } from "node:path";
+import { isAbsolute, join, dirname, resolve, sep } from "node:path";
 import { parse as parseYaml } from "yaml";
 import Headless from "@xterm/headless";
 import {
@@ -26,6 +26,7 @@ import {
   parseSecretStoreIdentity,
   sameSecretStoreIdentity,
   agentFilePath,
+  assertValidChannel,
   clearSpaceHistory,
   dialerFor,
   connectorServers,
@@ -109,7 +110,7 @@ import { AttachEndpoint, type SessionEstablishment } from "./attach-endpoint.js"
 import { DELIVERY_ADMIN_BOOT_WAIT_MS, isUnansweredDeliveryAdmin, makeManagerEndpointEvictionEvidence, makeManagerEndpointHolderEvictor, untilDeliveryAdminAnswers, withScopedEndpoint } from "./endpoint-evict.js";
 import { makeManagerHolderLivenessProbe } from "./holder-liveness.js";
 import { GateReconcileRefused, reconcileEndpointGate } from "./reconcile-gate.js";
-import { launchSpecForRun, materializePersona, launchAgentToStartOpts, parseLaunchSpec, persistLaunchSpec, readContinuityAssignment, writeContinuityAssignment, type ContinuityAssignment } from "./launch.js";
+import { inlinePersonaDir, inlineSnapshotPath, launchSpecForRun, materializePersona, launchAgentToStartOpts, writeInlineSnapshot, parseLaunchSpec, persistLaunchSpec, readContinuityAssignment, writeContinuityAssignment, type ContinuityAssignment } from "./launch.js";
 import { authorizeLaunch, authorizeNamedControl } from "./authorize.js";
 import { controlShutdown } from "./control-shutdown.js";
 import { RunHosting } from "./run-hosting.js";
@@ -684,7 +685,8 @@ export type FreeSlotCause =
   | "resume-session-rebind-failed"
   | "carried-fork-refused"
   | "resume-custody-unrecorded"
-  | "supervise-record-failed";
+  | "supervise-record-failed"
+  | "inline-snapshot-changed";
 
 /** Operator-facing phrasing per cause. Kept beside the union so adding a member without a sentence
  *  is a type error rather than a blank in the log. The stop family's sentences carry the principal
@@ -701,6 +703,7 @@ const FREE_SLOT_CAUSE_TEXT: Record<Exclude<FreeSlotCause, FreeSlotStopCause>, st
   "carried-fork-refused": "this manager stopped it: it recorded no fork of the carried transcript",
   "resume-custody-unrecorded": "this manager stopped it: its custody reference could not be recorded on resume",
   "supervise-record-failed": "this manager stopped it: its supervise policy could not be recorded for a manager restart",
+  "inline-snapshot-changed": "this manager retired it instead of restarting it: its inline persona snapshot changed after launch",
 };
 
 /** The stop family's sentences — the same job {@link FREE_SLOT_CAUSE_TEXT} does for the string
@@ -757,6 +760,8 @@ export interface ManagerResumeAgent {
     cwd: string;
     source:
       | { kind: "persona"; ref: string; configPath: string; configSha256: string }
+      // An inline persona's seat: `ref` is the requested name and `configPath` its lifecycle's snapshot.
+      | { kind: "inline"; ref: string; configPath: string; configSha256: string }
       | { kind: "manifest"; runId?: string; requested: string; hash: string; configPath: string; configSha256: string; manifestSha256?: string };
     model?: string;
     variant?: string;
@@ -844,13 +849,34 @@ export interface ManagerResumeResult {
   error?: string;
 }
 
+/** An inline persona (SPEC 13.7): the helper's definition, carried on the spawn instead of read
+ *  from the catalog. `prompt` is the persona body, never the first-turn kickoff. A channel field
+ *  that is omitted and one that is `[]` stay apart, as in a file. `save` also writes a create-only
+ *  catalog copy under the requested name. */
+export interface InlinePersona {
+  prompt: string;
+  role?: string;
+  model?: string;
+  variant?: string;
+  description?: string;
+  subscribe?: string[];
+  allowSubscribe?: string[];
+  allowPublish?: string[];
+  capabilities?: string[];
+  save?: boolean;
+}
+
 /** A spawn request, typed. The control-plane `start` op parses one of these out of an
  *  untyped request; roster boot constructs them directly. Both funnel into {@link Manager.startAgent}. */
 export interface StartAgentOpts {
   /** The persona REF to spawn — a filename in `.cotal/agents` (the unique spawn key), discovered as
    *  `.cotal/agents/<name>.md`. NOT the mesh identity: the spawned peer presents under the file's
-   *  own `name:` (auto-numbered on collision). The file must exist (no silent default-ACL fallback). */
+   *  own `name:` (auto-numbered on collision). The file must exist (no silent default-ACL fallback).
+   *  With {@link persona}, the helper's own name instead, numbered on collision the same way. */
   name: string;
+  /** An inline persona in place of a catalog file. It takes no `config` or `identity`. Validated
+   *  where it is read, so a direct call meets the same refusals as the served door. */
+  persona?: InlinePersona;
   /** Connector / agent type — resolved from the registry. Outranks the persona pin and every default (see `resolveAgentType`). */
   agent?: string;
   /** Detached caller's default connector, kept separate from an explicit flag so the persona file
@@ -991,6 +1017,53 @@ type StaticSpawnBound =
   | { kind: "exempt" }
   | { kind: "none"; reason: string }
   | { kind: "bounded"; caller: IssuedCaller; ceiling: IssuedSubjectPermissions };
+
+const INLINE_PERSONA_KEYS = ["prompt", "role", "model", "variant", "description", "subscribe", "allowSubscribe", "allowPublish", "capabilities", "save"];
+
+/** Read an inline persona into the definition a catalog file would load as, refusing what a file
+ *  load refuses plus any shape the closed record does not take. The body is literal text: nothing in
+ *  it becomes a field, so a body that starts with `---` stays body. */
+function inlinePersonaDef(name: string, raw: unknown): { def: AgentDef; save: boolean } {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) throw new Error("persona: expected an object");
+  const rec = raw as Record<string, unknown>;
+  const extra = Object.keys(rec).filter((k) => !INLINE_PERSONA_KEYS.includes(k));
+  if (extra.length) throw new Error(`persona: unknown key ${extra[0]}; it takes ${INLINE_PERSONA_KEYS.join(", ")}`);
+  const text = (k: string): string | undefined => {
+    const v = rec[k];
+    if (v === undefined) return undefined;
+    if (typeof v !== "string" || !v.trim()) throw new Error(`persona.${k}: expected a non-blank string`);
+    return v;
+  };
+  const list = (k: string): string[] | undefined => {
+    const v = rec[k];
+    if (v === undefined) return undefined;
+    if (!Array.isArray(v) || v.some((x) => typeof x !== "string")) throw new Error(`persona.${k}: expected an array of strings`);
+    return [...v] as string[];
+  };
+  const prompt = text("prompt");
+  if (prompt === undefined) throw new Error("persona.prompt: required; it is the persona body");
+  if (rec.save !== undefined && typeof rec.save !== "boolean") throw new Error("persona.save: expected a boolean");
+  const def: AgentDef = {
+    name,
+    persona: prompt.trim(),
+    role: text("role"),
+    model: text("model"),
+    variant: text("variant"),
+    description: text("description"),
+    subscribe: list("subscribe"),
+    allowSubscribe: list("allowSubscribe"),
+    allowPublish: list("allowPublish"),
+    capabilities: list("capabilities"),
+  };
+  // The checks a file load makes on these fields: channel names, and the read set within the read ACL.
+  try {
+    for (const ch of [...(def.subscribe ?? []), ...(def.allowSubscribe ?? []), ...(def.allowPublish ?? [])]) assertValidChannel(ch);
+    resolveReadAcl(def.subscribe ?? [], def.allowSubscribe);
+  } catch (e) {
+    throw new Error(`persona: ${rejectionText(e)}`);
+  }
+  return { def, save: rec.save === true };
+}
 
 /** A user-mode spawn's provisioning options. Both arms take this one declaration because
  *  {@link Manager.provisionUserAgent} forwards it to {@link Manager.enrollUserAgent} on the
@@ -3161,6 +3234,8 @@ export class Manager {
       return `imperative launch options have no non-secret durable source (${entry.launch.unresolvedLaunchOptionKeys.join(", ")})`;
     if (!entry.dependencies.some((path) => resolve(path) === resolve(entry.launch.source.configPath)))
       return `launch config is not declared as a retained dependency: ${entry.launch.source.configPath}`;
+    if (entry.launch.source.kind === "inline" && resolve(entry.launch.source.configPath) !== resolve(inlineSnapshotPath(this.workspaceRoot, entry.identity.lifecycleUid)))
+      return `inline persona snapshot ${entry.launch.source.configPath} is not this lifecycle's snapshot path`;
     if (entry.launch.source.kind === "manifest" && entry.launch.source.runId) {
       const specPath = join(this.workspaceRoot, ".cotal", "run", `${entry.launch.source.runId}.json`);
       if (!entry.dependencies.some((path) => resolve(path) === resolve(specPath)))
@@ -5035,8 +5110,23 @@ export class Manager {
     // process is already gone, so this must never block the slot free or throw into the caller — it runs
     // detached, and a failure is logged loudly (never swallowed), not retried. The `agents` guard above
     // makes this fire exactly once per agent across every free path (despawn / self-stop / reap / exit).
-    if (!a.suppressCleanup && (this.maintenanceState === "active" || acceptedBeforeFence))
+    if (!a.suppressCleanup && (this.maintenanceState === "active" || acceptedBeforeFence)) {
+      // An inline seat's snapshot goes with the seat on every mesh. An open mesh runs no teardown
+      // below, and a preservation cut suppresses this, so a resumed seat still finds its snapshot.
+      if (a.launch.source.kind === "inline") this.dropInlineSnapshot(a.name, a.lifecycleUid);
       this.trackDeprovision(target);
+    }
+  }
+
+  /** Remove one lifecycle's inline snapshot by the path its uid derives, never by a recorded one, so a
+   *  resume inventory cannot point the removal at another file. A failure is logged: the slot free
+   *  that calls this must not throw. */
+  private dropInlineSnapshot(name: string, lifecycleUid: string): void {
+    try {
+      rmSync(inlineSnapshotPath(this.workspaceRoot, lifecycleUid), { force: true });
+    } catch (e) {
+      console.error(`! ${name}: its inline persona snapshot could not be removed: ${rejectionText(e)}`);
+    }
   }
 
   /** A live agent's teardown target, built field by field so the rest of its record (handle, seed,
@@ -5641,6 +5731,22 @@ export class Manager {
     throw new Error(`replacement did not prove session ${expected} (${last})`);
   }
 
+  /** Why an inline seat's snapshot no longer matches its launch, or `undefined` when it does or the
+   *  seat is not inline: it must still be a private regular file with the recorded digest. */
+  private inlineSnapshotChange(a: ManagedAgent): string | undefined {
+    const source = a.launch.source;
+    if (source.kind !== "inline") return undefined;
+    try {
+      const st = lstatSync(source.configPath);
+      if (!st.isFile() || st.isSymbolicLink()) return `its inline persona snapshot ${source.configPath} is not a regular file`;
+      if (process.platform !== "win32" && (st.mode & 0o077) !== 0) return `its inline persona snapshot ${source.configPath} is readable by others`;
+      if (this.fileDigest(source.configPath) !== source.configSha256) return `its inline persona snapshot ${source.configPath} changed after launch`;
+    } catch (e) {
+      return `its inline persona snapshot is unavailable: ${rejectionText(e)}`;
+    }
+    return undefined;
+  }
+
   /** Restart one managed process in place. Identity, lifecycle, credentials, durables, children,
    *  and the manager row remain owned; only the process handle/control endpoint change. Budget
    *  comes from `restart.policy` when spawn carried `supervise`; otherwise the Pi session-recovery
@@ -5661,6 +5767,18 @@ export class Manager {
       console.error(`! ${a.name}: ${supervised ? "supervised" : "Pi"} crash loop (${restart.crashes.length} crashes in ${windowMs / 1000}s) - retiring the managed seat`);
       restart.armed = false;
       this.freeSlot(a, true, supervised ? "supervise-crash-loop" : "pi-crash-loop");
+      this.reapChildrenOf(this.managedPrincipal(a));
+      release();
+      return;
+    }
+    // An inline seat relaunches from its snapshot, so one that changed after launch would start a
+    // session its spawn never accepted. Every in-place restart passes here; the resume cut and a
+    // successor's restart check the same digest in inventoryReferenceError.
+    const changed = this.inlineSnapshotChange(a);
+    if (changed) {
+      console.error(`! ${a.name}: ${changed} - retiring the managed seat instead of restarting it`);
+      restart.armed = false;
+      this.freeSlot(a, true, "inline-snapshot-changed");
       this.reapChildrenOf(this.managedPrincipal(a));
       release();
       return;
@@ -5934,6 +6052,8 @@ export class Manager {
         role: args.role as string | undefined,
         config: args.config as string | undefined,
         identity: args.identity as string | undefined,
+        // Passed as sent: spawnPersona validates the record, the one place every door reads it.
+        persona: args.persona as InlinePersona | undefined,
         model: args.model as string | undefined,
         variant: args.variant as string | undefined,
         launchOptions: args.launchOptions as Record<string, unknown> | undefined,
@@ -6298,10 +6418,14 @@ export class Manager {
    *  `resolve-agent` read: a detached resume locates the session it carries with the connector this
    *  names, so the two doors must not drift (#2899). */
   private async spawnPersona(
-    opts: Pick<StartAgentOpts, "name" | "config" | "agent" | "defaultAgent" | "resolved">,
+    opts: Pick<StartAgentOpts, "name" | "config" | "identity" | "agent" | "defaultAgent" | "resolved" | "persona">,
     spawner: string | undefined,
     authenticatedCaller: EpCaller | undefined,
-  ): Promise<{ ref: string; configPath: string; def: AgentDef | undefined; agent: string } | { error: string; code?: "bad-request" }> {
+  ): Promise<
+    | { ref: string; configPath: string; def: AgentDef | undefined; agent: string; inline?: undefined }
+    | { ref: string; configPath?: undefined; def: AgentDef; agent: string; inline: { save: boolean } }
+    | { error: string; code?: "bad-request" }
+  > {
     // Both config-taking wire commands and direct/roster starts enter here before interpreting
     // a path. A resolved manifest is host-built authority over its own materialized resource,
     // never a wire-supplied config override (the public schemas accept no `resolved` field).
@@ -6314,6 +6438,35 @@ export class Manager {
     // filename (unique on disk); two files can't collide on the key.
     const ref = opts.name.trim();
     if (!ref) return { error: "name required" };
+    // An inline persona is its own definition, read here like a file so every later check sees a
+    // def. It has no file until its snapshot is written, once the seat's lifecycle uid is final.
+    if (opts.persona !== undefined) {
+      if (opts.resolved || opts.config !== undefined || opts.identity !== undefined)
+        return { error: "persona: an inline persona names the helper itself, so it takes no config, identity or manifest launch", code: "bad-request" };
+      const refErr = this.nameError(ref);
+      if (refErr) return { error: refErr };
+      let inline: { def: AgentDef; save: boolean };
+      try {
+        inline = inlinePersonaDef(ref, opts.persona);
+      } catch (e) {
+        return { error: rejectionText(e), code: "bad-request" };
+      }
+      // A save under a name the catalog already holds is refused here, before anything is allocated,
+      // so the refusal starts nothing. The create-only write after the grant settles a race.
+      if (inline.save) {
+        const target = agentFilePath(this.workspaceRoot, ref);
+        let taken = true;
+        try {
+          lstatSync(target);
+        } catch (e) {
+          if ((e as NodeJS.ErrnoException).code !== "ENOENT") return { error: `persona.save: ${rejectionText(e)}` };
+          taken = false;
+        }
+        if (taken)
+          return { error: `persona.save: the catalog already holds a persona named "${ref}" (${target}). Spawn that persona by name, or pick another name to save this one under` };
+      }
+      return { ref, def: inline.def, agent: resolveAgentType({ flag: opts.agent, pin: undefined, callerDefault: opts.defaultAgent }), inline: { save: inline.save } };
+    }
     // A bare ref maps to `.cotal/agents/<ref>.md`, so it must be a safe token (no path traversal); a
     // `--config` path is validated by existsSync below instead.
     if (!opts.config) {
@@ -6337,6 +6490,11 @@ export class Manager {
       if (!existsSync(configPath))
         return { error: `no persona "${ref}" in the catalog of manager ${this.managerInstanceId} on host ${hostname()}: ${configPath} not found; create it there` };
     }
+    // An inline snapshot belongs to its own seat's lifecycle, which removes it at retirement and
+    // refuses a restart once it changed, so no other launch may read it. Compared after symlinks
+    // resolve, for a config path and a catalog entry alike.
+    if (!opts.resolved && this.insideInlineDir(configPath))
+      return { error: `${configPath} is an inline persona's snapshot, which belongs to the seat it was written for; spawn a saved persona by name, or pass the persona inline` };
 
     // Load the persona ONCE, here, ahead of the connector choice. The file's `agent:` pin feeds the
     // harness resolution below; the spawn path's identity/ACL profile block consumes the SAME def (no
@@ -6363,6 +6521,16 @@ export class Manager {
       }
     }
     return { ref, configPath, def, agent: resolveAgentType({ flag: opts.agent, pin: def?.agent, callerDefault: opts.defaultAgent }) };
+  }
+
+  /** Whether a persona path resolves into the inline snapshot directory, the directory itself
+   *  included. A directory that does not exist holds nothing. */
+  private insideInlineDir(path: string): boolean {
+    const dir = inlinePersonaDir(this.workspaceRoot);
+    if (!existsSync(dir)) return false;
+    const real = realpathSync(path);
+    const realDir = realpathSync(dir);
+    return real === realDir || real.startsWith(realDir + sep);
   }
 
   /**
@@ -6440,7 +6608,11 @@ export class Manager {
     }
     const persona = await this.spawnPersona(opts, spawner, authenticatedCaller);
     if ("error" in persona) return { ok: false, error: persona.error, ...(persona.code ? { code: persona.code } : {}) };
-    const { ref, configPath, def, agent } = persona;
+    const { ref, def, agent, inline } = persona;
+    // An inline persona's file is its snapshot, written once the lifecycle uid is final; until then
+    // a refusal names the persona instead of a path.
+    let configPath = persona.configPath;
+    const where = configPath ?? `inline persona "${ref}"`;
 
     // Materialize the requested connector up front — the ONE async step in the spawn path (a lazy
     // `cotal ext` manifest import on the published binary). It runs BEFORE the capacity/reserve span
@@ -6576,6 +6748,8 @@ export class Manager {
     let variant = opts.variant;
     let launchOptions = opts.launchOptions;
     let prompt = opts.prompt;
+    // The read set the persona and the overrides name, before `join` adds to it: what a saved copy keeps.
+    let ownSubscribe: string[] | undefined;
     if (opts.resolved) {
       // A manifest launch is the access + identity authority: imperative overrides arriving
       // alongside `resolved` are a caller contract error, not something to merge (no fallbacks).
@@ -6627,6 +6801,7 @@ export class Manager {
         return { ok: false, error: `callerAcl: ${rejectionText(e)}` };
       }
       const base = opts.subscribe ?? def.subscribe;
+      ownSubscribe = base;
       subscribe = opts.join?.length ? [...new Set([...(base ?? []), ...opts.join])] : base;
       allowSubscribe = opts.allowSubscribe ?? def.allowSubscribe ?? scoped?.allowSubscribe ?? [];
       allowPublish = opts.allowPublish ?? def.allowPublish ?? scoped?.allowPublish;
@@ -6644,7 +6819,7 @@ export class Manager {
     try {
       allowSubscribe = resolveReadAcl(subscribe ?? [], allowSubscribe);
     } catch (e) {
-      return { ok: false, error: opts.resolved ? `launch agent: ${rejectionText(e)}` : `persona ${configPath}: ${rejectionText(e)}` };
+      return { ok: false, error: opts.resolved ? `launch agent: ${rejectionText(e)}` : `persona ${where}: ${rejectionText(e)}` };
     }
     // The AG-UI event plane is on unless the launch explicitly opted out. A connector that cannot
     // emit one is refused further down, before anything is minted.
@@ -6659,12 +6834,30 @@ export class Manager {
       ...(capabilities !== undefined ? { capabilities } : {}),
     }, events);
     if (boundRefusal) return { ok: false, error: boundRefusal };
+    // What a saved copy keeps: the grant just checked, without the helper's own event row, which each
+    // later spawn derives for its own helper. The file names every channel field, so no later caller's
+    // default fills one, and each later spawn of it is still bounded against that caller.
+    const catalogCopy: AgentDef | undefined = inline?.save
+      ? {
+          name: ref,
+          owner: spawner === undefined ? undefined : this.personaOwner(spawner),
+          role,
+          model,
+          variant,
+          description: def?.description,
+          persona: def?.persona,
+          subscribe: [...(ownSubscribe ?? [])],
+          allowSubscribe: [...allowSubscribe],
+          allowPublish: [...(allowPublish ?? [])],
+          capabilities: capabilities?.length ? [...capabilities] : undefined,
+        }
+      : undefined;
     // Checked after every path has resolved its selectors: a direct `startAgent` call skips the
     // `start` op's checks, and no connector may receive a blank one (#2862).
     if (model !== undefined && !model.trim()) return { ok: false, error: "model: must not be empty" };
     if (variant !== undefined && !variant.trim()) return { ok: false, error: "variant: must not be empty" };
     const idErr = this.nameError(identityName);
-    if (idErr) return { ok: false, error: opts.resolved ? `launch agent: ${idErr}` : `persona ${configPath}: ${idErr}` };
+    if (idErr) return { ok: false, error: opts.resolved ? `launch agent: ${idErr}` : `persona ${where}: ${idErr}` };
     // #966: a seat labelled `manager` that cannot spawn is a worker wearing a label, and the label
     // is what other agents ROUTE on (role is the anycast address). The gap is silent today because
     // the mismatch is only discovered minutes in, when the seat first reaches for a worker. The
@@ -6680,6 +6873,13 @@ export class Manager {
     // vocabulary any caller can trigger with a synonym (roles are free-form and mostly
     // non-manager: this workspace's own catalog carries worker/reviewer/orchestrator seats with no
     // spawn grant, all legitimate).
+    if (role === "manager" && !capabilities?.includes("spawn") && inline)
+      return {
+        ok: false,
+        error:
+          `inline persona "${ref}" would join with role "manager" but no spawn capability: it presents as a manager ` +
+          `while being unable to seat workers. Add \`capabilities: [spawn]\` to the inline persona (a spawner hands on only what it holds), or give it another role.`,
+      };
     if (role === "manager" && !capabilities?.includes("spawn"))
       return {
         ok: false,
@@ -6694,7 +6894,7 @@ export class Manager {
     // skip it, and a definition pinned to a stale model (or to none) is refused here instead of
     // serving on it.
     const policyRefusal = modelPolicyRefusal(cotalConfig, {
-      persona: opts.resolved ? `manifest agent "${ref}"` : `persona "${ref}" (${configPath})`,
+      persona: opts.resolved ? `manifest agent "${ref}"` : configPath ? `persona "${ref}" (${configPath})` : where,
       role, model, variant,
       // A manifest launch carries its own declared model/variant in these options
       // (launchAgentToStartOpts), so there they are the definition's field, never a flag.
@@ -6802,6 +7002,9 @@ export class Manager {
     let provisioned: TeardownTarget | undefined;
     // A carried resume's seat-private home, removed by the finally unless a live seat took it.
     let seatHome: string | undefined;
+    // An inline persona's snapshot, once this spawn wrote it: removed by the finally unless a live
+    // seat took it. A write that failed sets nothing, so the finally never removes a file it did not make.
+    let snapshot: string | undefined;
     // Taken right before the try so its finally is the only release; a refusal belongs above the
     // allocation, where there is no name to give back.
     hooks?.onEffect?.();
@@ -7002,6 +7205,15 @@ export class Manager {
       // The realpath the admission check above already resolved (#385 item 2) — never re-resolved here,
       // so the admission refusal and the launch cwd can never disagree on the same request.
       const cwd = resolvedCwd ?? this.workspaceRoot;
+      // An inline persona's snapshot, and its catalog copy when saved, are written here: after the
+      // grant (the static issuance, the user-auth ledger, a hosted enrollment that may replace the
+      // uid) and before launch, so a refused grant leaves neither file and the snapshot carries the
+      // final uid. A copy that loses a create race throws, and the finally rolls the grant back.
+      if (inline) {
+        configPath = snapshot = writeInlineSnapshot(this.workspaceRoot, lifecycleUid, { name, role: def.role, model: def.model, variant: def.variant, description: def.description, body: def.persona });
+        if (catalogCopy) saveAgentFile(agentFilePath(this.workspaceRoot, ref), catalogCopy, { createOnly: true });
+      }
+      if (configPath === undefined) throw new Error("internal: the persona file is missing at launch");
       const configSha256 = this.fileDigest(configPath);
       const manifestPath = opts.launchRef
         ? join(this.workspaceRoot, ".cotal", "run", `${opts.launchRef.runId}.json`)
@@ -7100,7 +7312,9 @@ export class Manager {
                 configSha256,
                 manifestSha256,
               }
-            : { kind: "persona", ref: opts.config ? identityName : ref, configPath, configSha256 },
+            : inline
+              ? { kind: "inline", ref, configPath, configSha256 }
+              : { kind: "persona", ref: opts.config ? identityName : ref, configPath, configSha256 },
           cwd,
           model,
           variant,
@@ -7157,6 +7371,7 @@ export class Manager {
       // orphan-rollback in `finally` no longer applies to it.
       provisioned = undefined;
       seatHome = undefined;
+      snapshot = undefined;
       // #159 B1: reply on a REAL outcome, not a timer. Wait for the agent to actually join the mesh
       // (presence) → started, the child to exit → failed (with its last output; already reaped), or
       // neither in time → uncertain. `✓ started` therefore means "it joined", never just "a process
@@ -7268,6 +7483,7 @@ export class Manager {
       this.reserved.delete(name);
       this.reservedLive.delete(name);
       if (seatHome) rmSync(seatHome, { recursive: true, force: true });
+      if (snapshot) rmSync(snapshot, { force: true });
       // Minted but never handed to a live slot (buildLaunch / runtime.spawn threw after mint) → tear the
       // orphan down (detached, fail-loud) so a failed spawn leaves no creds/durables behind (#159 B).
       if (provisioned) {
@@ -10641,6 +10857,10 @@ export class Manager {
         await attemptCleanup(failed, `secret ${creds}`, () => secrets.delete(agentSecretKeyForFile(creds, this.space)));
         await attemptCleanup(failed, `file ${creds}`, () => rmSync(creds, { force: true }));
       }
+      // The lifecycle's inline snapshot, if it had one. Keyed by the uid, so a boot sweep or a
+      // reconcile that knows only the slot row removes it too.
+      const snapshot = inlineSnapshotPath(this.workspaceRoot, a.lifecycleUid);
+      await attemptCleanup(failed, `file ${snapshot}`, () => rmSync(snapshot, { force: true }));
       await attemptCleanup(failed, "broker teardown", async () => {
         try {
           const accounting = await this.deprovisionBroker(a);

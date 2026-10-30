@@ -1,0 +1,98 @@
+{
+  "suite": [
+    "implementations/manager/smoke/spawn-inline-persona.smoke.ts"
+  ],
+  "guard": "an inline persona is validated and bounded like a file, written only after the grant, launched from its own snapshot, and removed with its seat; a saved copy keeps the checked grant",
+  "command": "pnpm smoke:spawn-inline-persona",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/mutations/spawn-inline-persona.json",
+  "completionMarker": "SPAWN-INLINE-PERSONA SMOKE",
+  "why": [
+    "N1 opens the closed record. N2 lets another launch read a seat's snapshot. N3 lets a clash reach",
+    "allocation, so it refuses after the spawn started. N4 writes the catalog copy before the grant, so",
+    "a refused user-auth grant still leaves a reusable persona behind. N5 saves the record's omissions,",
+    "so a later spawner's own default fills the copy. N6 restarts a seat from a changed snapshot.",
+    "N7, N8 and N9 each drop one removal: the live slot free (the only one an open mesh has), the",
+    "static retirement terminal (the one a boot sweep reaches), and the spawn's own rollback (the only",
+    "one an open mesh's failed launch has). N10 lets a resume inventory point a seat at another file.",
+    "N11 keys the snapshot by the uid the spawn allocated, which a hosted enrollment replaces."
+  ],
+  "mutations": [
+    {
+      "name": "N1 accept an unknown key in the record",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "  if (extra.length) throw new Error(`persona: unknown key ${extra[0]}; it takes ${INLINE_PERSONA_KEYS.join(\", \")}`);\n",
+      "replace": "",
+      "expectRed": "an unknown key in the persona is refused by name"
+    },
+    {
+      "name": "N2 let a spawn name a snapshot as its persona file",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    if (!opts.resolved && this.insideInlineDir(configPath))\n",
+      "replace": "    if (false && !opts.resolved && this.insideInlineDir(configPath))\n",
+      "expectRed": "a config path at a live snapshot is refused"
+    },
+    {
+      "name": "N3 drop the clash check before allocation",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "        if (taken)\n          return { error: `persona.save:",
+      "replace": "        if (false)\n          return { error: `persona.save:",
+      "expectRed": "a save under a name the catalog holds is refused, naming both exits"
+    },
+    {
+      "name": "N4 save the catalog copy before the grant",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    if (boundRefusal) return { ok: false, error: boundRefusal };\n",
+      "replace": "    if (boundRefusal) return { ok: false, error: boundRefusal };\n    if (inline?.save) saveAgentFile(agentFilePath(this.workspaceRoot, ref), { name: ref, subscribe: [] }, { createOnly: true });\n",
+      "expectRed": "a refused user-auth grant leaves no catalog file"
+    },
+    {
+      "name": "N5 save the record's omissions instead of the checked grant",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "          subscribe: [...(ownSubscribe ?? [])],\n          allowSubscribe: [...allowSubscribe],\n          allowPublish: [...(allowPublish ?? [])],\n",
+      "replace": "          subscribe: def?.subscribe ?? [],\n          allowSubscribe: def?.allowSubscribe,\n          allowPublish: def?.allowPublish,\n",
+      "expectRed": "a later narrower spawner is refused the channels the saved copy names"
+    },
+    {
+      "name": "N6 restart an inline seat without checking its snapshot",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    const changed = this.inlineSnapshotChange(a);\n",
+      "replace": "    const changed = undefined as string | undefined;\n",
+      "expectRed": "a changed snapshot retires a supervised inline seat instead of restarting it"
+    },
+    {
+      "name": "N7 keep the snapshot when the live slot frees",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      if (a.launch.source.kind === \"inline\") this.dropInlineSnapshot(a.name, a.lifecycleUid);\n",
+      "replace": "",
+      "expectRed": "an open-mesh inline seat's snapshot goes when its seat exits"
+    },
+    {
+      "name": "N8 keep the snapshot at the static retirement terminal",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      await attemptCleanup(failed, `file ${snapshot}`, () => rmSync(snapshot, { force: true }));\n",
+      "replace": "",
+      "expectRed": "the static retirement terminal removes a snapshot by its lifecycle uid"
+    },
+    {
+      "name": "N9 keep the snapshot when the spawn rolls back",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      if (snapshot) rmSync(snapshot, { force: true });\n",
+      "replace": "",
+      "expectRed": "an open-mesh spawn that fails after its snapshot removes it"
+    },
+    {
+      "name": "N10 accept a resume entry whose snapshot is another path",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    if (entry.launch.source.kind === \"inline\" && resolve(entry.launch.source.configPath) !== resolve(inlineSnapshotPath(this.workspaceRoot, entry.identity.lifecycleUid)))\n",
+      "replace": "    if (false)\n",
+      "expectRed": "a resume entry whose inline snapshot is not its lifecycle's path is refused"
+    },
+    {
+      "name": "N11 key the snapshot by the allocated uid instead of the granted one",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "        configPath = snapshot = writeInlineSnapshot(this.workspaceRoot, lifecycleUid, {",
+      "replace": "        configPath = snapshot = writeInlineSnapshot(this.workspaceRoot, agentTriple.uid, {",
+      "expectRed": "a user-auth snapshot is keyed by the uid the grant settled on"
+    }
+  ]
+}

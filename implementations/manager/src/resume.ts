@@ -55,6 +55,13 @@ const source = z.discriminatedUnion("kind", [
     configPath: path,
     configSha256: digest,
   }),
+  // An inline persona's seat, launched from its lifecycle's snapshot.
+  z.strictObject({
+    kind: z.literal("inline"),
+    ref: label,
+    configPath: path,
+    configSha256: digest,
+  }),
   z.strictObject({
     kind: z.literal("manifest"),
     runId: label,

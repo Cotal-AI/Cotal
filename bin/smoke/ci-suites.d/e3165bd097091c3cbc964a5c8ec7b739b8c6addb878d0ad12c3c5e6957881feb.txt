@@ -1,0 +1,3 @@
+# An inline persona on spawn: validated and bounded like a file, written to a private snapshot only
+# after the grant, launched from it and removed with the seat; a saved copy keeps the checked grant.
+smoke:spawn-inline-persona

@@ -30,7 +30,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import type { EndpointKind } from "./types.js";
 import { assertValidName } from "./resolve.js";
-import { writePrivateRecord } from "./secret-fs.js";
+import { createPrivateRecord, writePrivateRecord } from "./secret-fs.js";
 import { utf16Problem } from "./text-encoding.js";
 import { assertValidChannel, assertValidOwnerToken, channelInAllow, isConcreteChannel, resolveReadAcl } from "./subjects.js";
 
@@ -284,8 +284,9 @@ export function parseAgentFileSource(src: string, path: string): AgentDef {
  *  the set frontmatter fields followed by the persona body. Round-trips through the
  *  parser; creates parent dirs. The runtime persona-definition path uses this to
  *  persist a peer-defined agent as config. The file is written 0o600 and never through a
- *  symlink ({@link writePrivateRecord}). */
-export function saveAgentFile(path: string, def: AgentDef): void {
+ *  symlink ({@link writePrivateRecord}). `createOnly` refuses a name that already exists, a symlink
+ *  included, and leaves it as it was ({@link createPrivateRecord}). */
+export function saveAgentFile(path: string, def: AgentDef, opts: { createOnly?: boolean } = {}): void {
   if (!def.name) throw new Error('saveAgentFile: "name" is required');
   assertValidName(def.name);
   if (def.kind !== undefined) assertValidKind(def.kind, "saveAgentFile");
@@ -334,7 +335,7 @@ export function saveAgentFile(path: string, def: AgentDef): void {
   const frontmatter = stringifyYaml(fm, { lineWidth: 0 }).trimEnd();
   const body = def.persona ? `${def.persona.trim()}\n` : "";
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  writePrivateRecord(path, `---\n${frontmatter}\n---\n\n${body}`);
+  (opts.createOnly ? createPrivateRecord : writePrivateRecord)(path, `---\n${frontmatter}\n---\n\n${body}`);
 }
 
 /** Content a peer may name on `define-persona`. Policy (`capabilities`, `owner`) has no slot. */

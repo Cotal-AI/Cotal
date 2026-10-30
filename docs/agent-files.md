@@ -144,3 +144,29 @@ current admin grant. A hosted run uses its admitted caller for that decision. A 
 card refuses as not-found before connector loading or enrollment, including an explicit
 config path. Unowned operator files remain launchable. Manifest launches retain their
 separate owner authorization.
+
+## Inline personas
+
+A spawn can carry its helper's persona itself, in a `persona` record on the manager's `spawn`
+command: `prompt` (the persona body), `role`, `model`, `variant`, `description`, `subscribe`,
+`allowSubscribe`, `allowPublish`, `capabilities` and `save`. The spawn's own `prompt` is still the
+first turn the helper receives. `name` is the helper's name, and a live name gets a number as a
+persona identity does. A spawn with `persona` takes no `config` or `identity`.
+
+The manager reads the record as it reads a file. The same channel checks apply, the same spawn
+flags override it, and the same bound limits it to what the spawner holds
+([security](security.md)). A record that names no channel field takes the spawner's own channels,
+and one that names `[]` gets none. The body is plain text: a body that starts with `---` is still
+body.
+
+The helper runs from a private snapshot, `.cotal/run/inline/<lifecycle-uid>.md`, written once the
+grant is made. It holds the body and the descriptive fields, never a grant. A crash restart refuses
+a snapshot that changed after the launch, and the manager deletes the snapshot when the helper
+retires. No spawn can name a snapshot as its persona file.
+
+`save: true` also writes `.cotal/agents/<name>.md` under the requested name, for a persona worth
+reusing. The copy records the grant the spawn was checked against: every channel field, `[]`
+included, and the capabilities, without the helper's own event channel. Its owner is the spawner,
+as with `cotal_persona`. The write never replaces a file: a name the catalog already holds is
+refused before anything starts, so spawn that persona by name or save under another name. Each
+later spawn of the copy is bounded against its own spawner.

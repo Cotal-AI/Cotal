@@ -7,10 +7,12 @@
  *
  * The spawner is minted the way a foreground seat would be once issued: an agent credential with
  * `spawn`, reading and posting `review`, its evidence recorded with no source and a fixed expiry.
+ * The same door carries an inline persona (SPEC 13.7): the bound reads the record, and a repeated
+ * goal returns its first acceptance instead of a second spawn.
  * Run with: pnpm smoke:spawn-grant-door
  */
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
@@ -33,6 +35,7 @@ import {
 } from "@cotal-ai/core";
 import { agentLifecycleSecretFilePaths, authDir, recordMesh, saveSpaceAuth } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
+import { inlinePersonaDir, inlineSnapshotPath } from "../src/launch.js";
 import { MANAGER_ENDPOINT } from "../src/manager-service-contract.js";
 import { bootBroker } from "./_boot-broker.js";
 
@@ -91,16 +94,17 @@ try {
   const caller = { owner: DEV_OWNER, actor: identity.id, uid, generation: issued.generation } as IssuedCaller;
   nc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: 0 });
   const svc = await resolveService(nc, space, MANAGER_ENDPOINT, caller, { deadlineMs: 8_000 });
-  const spawn = async (name: string): Promise<{ ok: boolean; message: string; outcome?: string }> => {
+  const spawn = async (name: string, extra: Record<string, unknown> = {}, id?: string): Promise<{ ok: boolean; message: string; outcome?: string; data?: { name?: string; uid?: string; goalId?: string } }> => {
     try {
-      const r = await invokeCommand(nc!, space, svc, "spawn", { name, agent: "smoke-door", events: false }, { deadlineMs: 20_000 });
-      const reply = (r as { reply?: { ok?: boolean; error?: { message?: string; outcome?: string } } }).reply;
-      return { ok: reply?.ok === true, message: reply?.error?.message ?? "", outcome: reply?.error?.outcome };
+      const r = await invokeCommand(nc!, space, svc, "spawn", { name, agent: "smoke-door", events: false, ...extra }, { deadlineMs: 20_000, ...(id ? { id } : {}) });
+      const reply = (r as { reply?: { ok?: boolean; data?: { name?: string; uid?: string; goalId?: string }; error?: { message?: string; outcome?: string } } }).reply;
+      return { ok: reply?.ok === true, message: reply?.error?.message ?? "", outcome: reply?.error?.outcome, data: reply?.data };
     } catch (e) {
       const err = e as { message?: string; outcome?: string };
       return { ok: false, message: err.message ?? String(e), outcome: err.outcome };
     }
   };
+  const snapshots = () => (existsSync(inlinePersonaDir(root)) ? readdirSync(inlinePersonaDir(root)) : []);
   const seats = () => [...(mgr as unknown as { agents: Map<string, { name: string; lifecycleUid: string }> }).agents.values()];
 
   console.log("served spawn door");
@@ -114,6 +118,28 @@ try {
   for (let i = 0; i < 200 && !seats().some((a) => a.name === "inside"); i++) await new Promise((r) => setTimeout(r, 100));
   const seat = seats().find((a) => a.name === "inside");
   check("control: and its seat was minted", seat !== undefined && existsSync(agentLifecycleSecretFilePaths(root, space, "inside", seat.lifecycleUid).creds), seats().map((a) => a.name));
+
+  console.log("inline persona through the served door");
+  const record = { prompt: "You review.", allowSubscribe: ["review"], allowPublish: ["review"] };
+  const over = await spawn("overreach", { persona: { prompt: "x", allowSubscribe: ["general"] } });
+  check("an inline record wider than the spawner is refused at the door, naming the part", !over.ok && /more than the spawner holds: allowSubscribe general/.test(over.message), over);
+  check("the refusal says it did not run, and wrote no snapshot", over.outcome === "not-executed" && snapshots().length === 0, { over, snapshots: snapshots() });
+  const withConfig = await spawn("confused", { persona: record, config: join(root, ".cotal", "agents", "inside.md") });
+  check("an inline record with config is refused at the door", !withConfig.ok && /takes no config, identity or manifest launch/.test(withConfig.message), withConfig);
+  const withIdentity = await spawn("confused", { persona: record, identity: "someone" });
+  check("an inline record with identity is refused at the door", !withIdentity.ok && /takes no config, identity or manifest launch/.test(withIdentity.message), withIdentity);
+  const goal = randomUUID();
+  const first = await spawn("notes", { persona: { ...record, save: true } }, goal);
+  check("an inline record inside the spawner's grant is accepted", first.ok && first.data?.name === "notes", first);
+  // The door replies at acceptance, before provisioning: the terminal shows in the seat, the snapshot and the copy.
+  for (let i = 0; i < 200 && !(seats().some((a) => a.name === "notes") && existsSync(join(root, ".cotal", "agents", "notes.md"))); i++) await new Promise((r) => setTimeout(r, 100));
+  const notes = seats().find((a) => a.name === "notes");
+  check("its seat runs from its snapshot and its copy is saved", notes !== undefined && existsSync(inlineSnapshotPath(root, notes.lifecycleUid)) && existsSync(join(root, ".cotal", "agents", "notes.md")), { seats: seats().map((a) => a.name), snapshots: snapshots() });
+  const again = await spawn("notes", { persona: { ...record, save: true } }, goal);
+  check("the same goal again returns its first acceptance", again.ok && again.data?.uid !== undefined && again.data.uid === first.data?.uid, again);
+  check("and starts no second seat and no second snapshot", seats().filter((a) => a.name.startsWith("notes")).length === 1 && snapshots().length === 1, { seats: seats().map((a) => a.name), snapshots: snapshots() });
+  const changed = await spawn("notes", { persona: { ...record, prompt: "changed", save: true } }, goal);
+  check("the same goal with a changed record is refused", !changed.ok && seats().filter((a) => a.name.startsWith("notes")).length === 1, changed);
 } finally {
   await nc?.drain().catch(() => nc?.close());
   await mgr?.stop({ withAgents: true }).catch(() => {});

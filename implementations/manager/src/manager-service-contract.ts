@@ -498,6 +498,25 @@ const SPAWN_INPUT_SCHEMA = {
     events: { type: "boolean" },
     cwd: nonBlank(),
     prompt: nonBlank(),
+    // An inline persona: the helper's definition, carried here instead of read from the catalog.
+    // Its `prompt` is the persona body; the `prompt` above stays the first-turn kickoff.
+    persona: {
+      type: "object",
+      additionalProperties: false,
+      required: ["prompt"],
+      properties: {
+        prompt: nonBlank(),
+        role: nonBlank(),
+        model: nonBlank(),
+        variant: nonBlank(),
+        description: nonBlank(),
+        subscribe: { type: "array", items: { type: "string" } },
+        allowSubscribe: { type: "array", items: { type: "string" } },
+        allowPublish: { type: "array", items: { type: "string" } },
+        capabilities: { type: "array", items: { type: "string" } },
+        save: { type: "boolean" },
+      },
+    },
     subscribe: { type: "array", items: { type: "string" } },
     allowSubscribe: { type: "array", items: { type: "string" } },
     allowPublish: { type: "array", items: { type: "string" } },
@@ -1428,9 +1447,12 @@ export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: Compile
  *  declared extension inventory before its connector package is imported.
  *
  *  43 = `turn-participate` authorizes an exact personal native lifecycle for a finite self-only
- *  workflow turn lease without creating a managed seat or granting terminal custody. */
+ *  workflow turn lease without creating a managed seat or granting terminal custody.
+ *
+ *  44 = `spawn` takes an inline `persona` record. The spawn input schema is closed, so a
+ *  revision-43 contract rejects it. */
 export function managerClusterDocument(): ClusterDocument {
-  return buildClusterDocument(MANAGER_CLUSTER_URN, 43, ROWS);
+  return buildClusterDocument(MANAGER_CLUSTER_URN, 44, ROWS);
 }
 
 /** Revision, count, and names from the shipped cluster document. Reached smokes derive surface pins from this. */

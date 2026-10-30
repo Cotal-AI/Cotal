@@ -34,7 +34,8 @@ status, so an agent that wants it lists it (the personas `cotal setup` seeds do)
 channel also has no default send channel: `cotal_send` without an explicit `channel` is refused
 until it joins one. On a mesh that enforces ACLs, the default is the first channel the agent reads
 and may post to, so a read-only channel such as an announcements feed is never the default. An
-agent that may post to none of the channels it reads has no default either.
+agent that may post to none of the channels it reads has no default either. A spawn's inline
+persona follows the same rule ([agent files](agent-files.md#inline-personas)).
 
 ## Delivery classes
 

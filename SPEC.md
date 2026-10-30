@@ -3745,6 +3745,25 @@ declared extension inventory before the package is imported. A missing declarati
 as true. A client that knows the space requires events can therefore refuse a connector with
 `eventPlane: false` before spawn. The launch path's existing policy refusal remains authoritative.
 
+**Manager inline persona.** The reference manager's `spawn` input takes an optional closed `persona`
+record: `prompt` (required, the persona body), `role`, `model`, `variant`, `description`,
+`subscribe`, `allowSubscribe`, `allowPublish`, `capabilities` and `save`. The top-level `prompt`
+stays the first-turn kickoff. With `persona`, `name` is the helper's name, numbered on a collision
+as a persona identity is, and the request MUST NOT carry `config` or `identity`. The manager MUST
+read the record as it reads a catalog file: the same validation, the same rule that a record naming
+no channel field takes the caller's default while one that names `[]` takes none, the same
+delegation bound (§13.15), and a top-level override still wins. The body is literal text, so a body
+that starts with `---` names no field. The manager writes the record to a private snapshot keyed by
+the seat's lifecycle uid after the grant and before the launch, and the seat launches from it. An
+in-place restart MUST refuse a snapshot that changed after the launch, and the snapshot is removed
+when the lifecycle retires. A spawn that names a snapshot as its persona file MUST be refused. With
+`save: true` the manager also writes a create-only catalog copy under the requested name. The copy
+holds the grant that was checked (every channel field named, `[]` included, and the capabilities),
+never the helper's own event channel, plus role, model, variant, description and body. A name the
+catalog already holds is refused before anything starts, and a refused grant leaves neither file.
+Revision 44 of the manager cluster adds the field; the spawn input is closed, so a revision-43
+contract rejects it.
+
 **Effect.** A command declaration carries `effect`, one of `read` or `write`.
 
 **Reachability.** `effect` is reachable only under `protocol.v: 2` (*Version*, below). A responder
@@ -6784,6 +6803,7 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
+| 2026-10-30 | **`spawn` takes an inline persona (§13.7).** An agent defines its helper on the spawn itself: the persona body, role, model, channels and capabilities, bounded as a catalog file is. The manager keeps the record in a private per-lifecycle snapshot written after the grant, refuses a restart once the snapshot changed, and removes it at retirement. `save: true` writes a create-only catalog copy of the checked grant under the requested name. The manager cluster advances to revision 44. Additive. |
 | 2026-10-30 | **A static spawn is bounded against the spawner's issued evidence (§13.15), breaking.** A caller that could spawn on a static space could hand its helper any channel or capability, because nothing compared the grant with what the caller held. The manager now resolves the caller's issued authority and refuses, by name, every channel and capability token the evidence does not cover, measured at the caller's own coordinate. A caller with no resolvable authority hands on no grant. Operator instruments and admin spawners are exempt. The helper's role and a workflow run's spawns are outside the bound in this revision. The user-auth ledger's own scope rule learns that `run` carries `spawn`. No wire change. |
 | 2026-10-29 | **Manager connector status declares event-plane support (§13.7), additive.** Every `status.connectors` row now requires `eventPlane: boolean`, including rows built from the declared extension inventory before its package is imported. The fact is true only when the connector declares its event channel; it is never defaulted to true. The reference Manager cluster advances to revision 42. |
 | 2026-10-29 | **The Manager persona catalog has a typed removal command (§13.7), additive.** `remove-persona` rides the same `manager.persona` capability as `define-persona`, removes only the machine-local definition, refuses an unknown name, and accepts a safe filename stem even when it exceeds the current spawn-name limit. The reference Manager cluster advances to revision 41. |

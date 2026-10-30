@@ -177,6 +177,43 @@ export function materializePersona(root: string, runId: string, a: MeshLaunchAge
   return path;
 }
 
+/** The snapshots unsaved inline personas launch from (SPEC 13.7). No spawn may name a file here. */
+export function inlinePersonaDir(root: string): string {
+  return join(root, ".cotal", "run", "inline");
+}
+
+/** One lifecycle's inline persona snapshot. The path is keyed by the lifecycle uid, so the file is
+ *  that lifecycle's, as its lifecycle-keyed credential file is. */
+export function inlineSnapshotPath(root: string, lifecycleUid: string): string {
+  return join(inlinePersonaDir(root), `${lifecycleUid}.md`);
+}
+
+/** Write the snapshot an unsaved inline persona launches from, create-only and 0600, and return its
+ *  path. Like {@link materializePersona} it carries only what a connector reads, after a generated
+ *  artifact header, and never an access field: the grant comes from the spawn. The body follows the
+ *  frontmatter, so a body that starts with `---` reads back as body. */
+export function writeInlineSnapshot(
+  root: string,
+  lifecycleUid: string,
+  p: { name: string; role?: string; model?: string; variant?: string; description?: string; body?: string },
+): string {
+  const dir = ensureDirNoSymlink(root, ".cotal", "run", "inline");
+  const path = resolve(dir, `${lifecycleUid}.md`);
+  if (dirname(path) !== dir) throw new Error(`unsafe lifecycle uid "${lifecycleUid}" - snapshot path escapes ${dir}`);
+  const fm = ["---", `name: ${p.name}`];
+  if (p.role) fm.push(`role: ${scalar(p.role)}`);
+  if (p.model) fm.push(`model: ${scalar(p.model)}`);
+  if (p.variant) fm.push(`variant: ${scalar(p.variant)}`);
+  if (p.description) fm.push(`description: ${scalar(p.description)}`);
+  fm.push("---", "");
+  const header = `<!-- Generated runtime artifact: the inline persona of lifecycle ${lifecycleUid}, written by its spawn. Do NOT edit - the seat refuses a changed snapshot on restart, and the file is deleted when the seat retires. It is not a reusable persona and carries no access authority. -->`;
+  const body = p.body ? `${p.body.trim()}\n` : "";
+  // Create-only (`wx` never follows a link planted at the path): the uid is fresh, so a file already
+  // there is not this spawn's to replace.
+  writeFileSync(path, `${fm.join("\n")}${header}\n\n${body}`, { mode: 0o600, flag: "wx" });
+  return path;
+}
+
 /** Build the manager spawn opts for a launch agent: identity/role/model/variant + the resolved object
  *  (which carries the ACL authority) + the materialized configPath. */
 export function launchAgentToStartOpts(a: MeshLaunchAgent, configPath: string, owner?: string, runId?: string): {
