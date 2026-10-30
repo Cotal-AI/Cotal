@@ -33,7 +33,7 @@ records the `ENOENT` it fails with.
 
 Stock 0.58 already has a child-side bootstrap that adopts host-issued material without shared
 files: the one-time enrollment redeem (`docs/identity-and-auth.md` "Enrollment redeem",
-`docs/cli.md` `COTAL_ENROLLMENT_FILE`). A foreground `cotal spawn` redeems one URL, registers the
+`docs/cli.mdx` `COTAL_ENROLLMENT_FILE`). A foreground `cotal spawn` redeems one URL, registers the
 returned mesh in its own home (`implementations/cli/src/commands/spawn.ts:489-595`), writes the
 returned token and sentinel to its own 0600 files, preflights the existing
 `agent-bearer --exchange-url` arm, and launches the connector with the returned `lifecycleUid`

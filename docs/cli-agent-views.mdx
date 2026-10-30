@@ -1,0 +1,451 @@
+---
+title: "Agent view reference"
+description: "Launch previews, named agent status, and recorded team deployment and removal evidence."
+kind: Reference
+audience: operators
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+These commands report launch previews, current manager observations, and retained team receipts.
+
+## Persona previews [#persona-previews]
+
+`spawn --file/-f <persona-file>` selects a persona, not a team manifest. It cannot be combined
+with a positional persona or the persisted internal `--config` spelling. A bare filename is
+still a file, including when it has no extension. Managed paths remain relative to the manager's
+workspace and are read on that execution host. No file upload is implied. Direct foreground
+execution reads its local file. A supported Mesh-manifest shape returns a schema refusal with
+the literal `cotal team deploy <file>` remedy, before agent allocation.
+
+`spawn --dry-run` never refreshes the catalog, repairs stale registrations, imports connector code,
+connects to the broker, redeems enrollment, provisions or allocates an agent. The managed preview
+is currently partial: it retains requested selectors but cannot resolve host-local persona and
+cwd facts offline. It does not substitute the caller's files. With `--foreground`, the preview
+resolves the local persona, harness precedence and physical working directory. Binary, login,
+model-policy and live authority checks are labeled not performed.
+
+`spawn --foreground --enrollment-file <private-file> --space <name>` uses the existing one-seat
+foreground enrollment path. The file is opened with protected ownership/mode and bounded input
+checks; its URL is not printed, copied into the child environment or persisted by this input
+adapter. It does not supply a managed enrollment authority path. Dry-run does not read or redeem
+the enrollment file. On Windows the file must be a regular file; its owner, mode and links are not
+checked.
+
+## Managed launch view [#managed-launch-view]
+
+`spawn [<persona>]` now uses the manager and attaches after its native readiness result. The
+attachment is pinned to the attributed accepting manager and the allocated identity/incarnation,
+not a second display-name guess. `--detach/-d` returns a finite JSON/plain-capable receipt after
+the same readiness result. The terminal receipt shows the full lifecycle, original request, accepted goal where reported,
+role and model request separately from any provider acceptance claim. Its Next section names the actual agent, space and accepting manager
+in attach/status commands when their tokens are safe shell words; it otherwise retains
+placeholders beside the full identity fields. Without usable input/output terminals, default attachment refuses
+before allocation and names detached or direct execution. A shell tool's inherited parent PTY
+is not enough.
+
+`--harness/-H`, `--model/-m`, `--name/-n`, `--prompt/-p` and `--cwd/-C` retain their declared
+meanings. The legacy `--agent` spelling remains accepted; using both harness spellings refuses.
+Public persona-file launches use the same managed route. Team manifests use `team boot` or
+`team deploy`. Protected internal launch children retain their direct route.
+
+`--foreground` runs the native application directly. It does not support a structured receipt,
+manager pin or manager control credential. Native exit or terminal loss may end that process;
+no detachable-view or reboot-survival claim applies. Protected internal handoff/enrollment
+children keep their existing direct execution and native authorization checks.
+
+<Callout type="warn">
+
+If the agent joins but attachment fails, the result is partial with its original identity and
+manager. No second launch occurs. A view exit sends no stop request. This route does not offer
+no-manager startup choices or imperative planning.
+
+</Callout>
+
+
+## Named agent status [#named-agent-status]
+
+`cotal status <agent>` reads the authorized manager census and separates Identity,
+Execution, Mesh and Last reported activity. JSON has `identity`, `execution`, `mesh`
+and `activity` fields; missing optional observations are null with source annotations.
+`--on <manager-instance>` restricts the read. It takes no `--all` or `--components`.
+A requested model is not provider-confirmed. Connector-reported provider
+information is labeled exact or name-matched under the same proof. A new manager
+row marks a roster observation exact only when its principal and lifecycle UID
+match the managed seat and its presence view is current. Older or mismatched rows leave exact presence
+and activity null and label any name-matched values separately. A verified
+condition and its reported start appear with activity; an unverified condition
+stays in a separate name-match field. A waiting observation is not a measured
+blocked duration, and a work event is not task completion. Attach and stop
+hints retain the answering manager's instance when it is a valid native id.
+
+A same-name match on several managers refuses as ambiguous. An unanswered manager leaves
+the search partial; no matching row in that partial read is not proof the agent is gone.
+The command starts, stops and attaches nothing.
+
+
+## Recorded team views [#recorded-team-views]
+
+```bash
+cotal team [--json | --plain]
+cotal team show <id> [--json | --plain]
+cotal team check <file> [--graph] [--json | --plain]
+cotal team boot <file> [--dry-run | --foreground]
+cotal team deploy <file> [--runtime <name>] [--dry-run]
+cotal team remove <full-deployment-id> [--dry-run] [--yes]
+```
+
+### Recorded launch evidence
+
+`team` (`t`) reads fresh launch summaries, additive ownership ledgers and their
+root-local attempt records at the selected local root. When native `up -f` returns from its broker start, it writes a creation-only fresh
+summary with its full run ID, initial broker PID, declared agent/channel names
+and the initial control-plane, auth-service and delivery-responder results.
+Older summaries without a broker PID, auth-mode pin or responder observation
+remain readable; `team show` labels their absent facts not recorded and
+reports partial. A PID
+or a responder bound when boot returned is not current process or listener
+ownership proof. A private create-only fresh boot attempt is written and fsynced
+before the launch spec and broker start. A returned summary is also published create-only and
+fsynced; an intent without a matching auth-mode-pinned summary showing a
+returned control plane, auth service and (for auth mode) bound delivery
+responder stays unsettled and
+blocks a later fresh boot. `team show <id>` and the team inventory expose the original intent without
+claiming whether its broker started. `team show` displays up to 100 declared names from a
+summary and retains the complete list in JSON; none are claimed to have joined. A missing
+or refused summary after boot is not a reason to boot again.
+The inventory stays partial because older fresh boots may have no summary. The
+terminal lists up to 100 records; JSON retains all readable records. Its Next column
+says inspect the stack for a fresh record or review the native scoped teardown plan for an
+additive ledger; neither row grants permission to stop anything. A fresh summary is
+not an additive ownership ledger or evidence that an agent joined, and it does not establish
+current process health. `team show <id>` identifies the recorded root and planned whole-stack
+`cotal down --space <recorded-space>` route for a fresh summary. A controller stack uses its
+stack journal and guarded whole-stack stop. The legacy bare stop at a root without that journal
+does not use the whole-set impact controller. This summary grants neither route stop authority.
+
+### Additive deployment records
+
+For an additive record, `team show` prints up to 100 full recorded agent identities
+and lifecycle UIDs where the ledger has them, with the full validated ledger in JSON,
+without claiming those agents are still live. Its follow-up uses
+`down -f <file> --run <id> --dry-run` from the recorded root. The file is a required argument,
+but the full run ID selects the ledger; an edited manifest is not new teardown authority. Review
+the native plan before a separate apply. Listing ownership does not confer permission to stop
+anything. One guarded `team deploy <file>` route accepts a
+channel-only manifest whose declared cards are all absent and explicitly set
+`deliveryClass: live`. It refuses agents, runtime requests, defaults,
+broker bind changes, access edges, existing cards,
+re-apply, registered broker lists and unresolved prior attempts before an effect.
+It selects the exact registered root, single broker address, auth mode and TLS
+requirement, then holds the local maintenance lock. The original user bearer and its deployer and writer
+views must name the same owner and actor. A refused view stops before the
+intent; no static or broader caller is substituted. A scoped writer uses one
+non-reconnecting broker connection and KV create-only on the existing bucket,
+never the legacy merge-and-put path. The private intent is published and synced
+before any create. Every channel has a synced submitted step before the native
+request and a synced accepted revision after its returned acknowledgement.
+The returned receipt matches every declared channel and both steps. A missing
+acknowledgement or receipt leaves the attempt unsettled; no create is retried.
+If closing the writer connection fails after the receipt is confirmed, the result
+keeps the confirmed revisions and warns about the close. A returned receipt
+proves only historical created revisions, not the current
+cards, readers or removal authority. `team show <id>` presents one row per
+returned channel; incomplete attempts show their submitted/accepted steps.
+The JSON result retains both forms of evidence. Team inventory and status
+show returned versus unsettled state. Additive broker addresses in reports
+omit URL user info, queries and fragments; the protected intent keeps the
+exact connection target. Invalid or orphan steps stay visible and
+blocking. Guarded channel-only card removal uses the returned create revisions as described below.
+Completion reads those receipts locally; it does not query the broker or guess ownership from an
+edited manifest. Channel apply emits one finite rich, JSON or plain result.
+
+### Agent deployment apply
+
+The agent route accepts one to 100 all-new agents on a registered static-auth
+or open mesh, optionally with up to 100 new channel cards that explicitly use
+live delivery. Defaults, bind changes and stale waivers refuse. User-auth agent
+apply refuses before inline persistence. The route selects a manager through an attributed status read,
+then pins credential issuance and every subsequent request to that full instance.
+It requires native execution and a matching runtime; it never starts a replacement
+manager. `--runtime` overrides the manifest's requested runtime but does not
+install or switch a provider.
+
+A mixed deployment also requires every requested application to appear available
+in that manager's connector inventory. This is a startup observation, not proof
+that a later launch will succeed. A separate deployer reader checks the requested
+channel keys, and a separately scoped writer uses one non-reconnecting connection
+for native KV create-only. Manager credentials are not used as channel authority.
+Existing cards refuse; no patch, adoption or legacy merge-and-put occurs.
+
+One private intent records all channels, ordered resolved agent hashes and the
+manager before effects. Channels are created first, with submitted and accepted
+revision steps synced before continuing. Each agent's original request is synced
+before submission, its native allocation before goal following, and its matched
+joined result before the next agent. A joined result must match the accepted
+name, principal, lifecycle, harness and runtime. Unreadable or unknown phases
+remain unsettled and are not replayed. The full receipt is saved only when both
+channel and agent sequences match the original intent.
+
+A later failure retains earlier channel creates, allocations and joins without
+rollback. Writer-close uncertainty is reported separately from returned native
+receipts. The finite JSON/plain/rich report distinguishes those receipts from
+current health and task completion. `team show` exposes both native journals,
+including partial channel creates when a later launch did not complete. Inventory,
+status, down and reset distinguish returned mixed deployments from unsettled
+attempts. Retained verification and guarded removal use the paths below.
+
+### Fresh boot preview
+
+`team boot <file> --dry-run` shows the resolved fresh topology, its target root,
+requested applications, roles, models and channels with declared delivery,
+replay and window settings. Absent channel settings are not inferred from a
+saved registry that this preview does not read. An open manifest with an
+explicit durable default or channel declaration is warned as unsupported:
+its native fresh apply refuses before effects because open mode starts no
+delivery daemon. Direct `up -f --dry-run` refuses the same contradiction.
+It reads the local control
+directory, recorded spaces, maintenance journal, the selected manager PID record,
+possibly live process records, the root's additive deployment ledgers and
+attempts, and fresh boot attempts/summaries, plus selected-space service
+definitions, instances, supervisor receipts and retained native attempts. An
+unreadable additive or fresh record is listed rather than treated as absent.
+The team inventory separately lists unsettled fresh and additive attempts
+and returned agent/channel receipts. `team show <id>` distinguishes those
+historical records without inferring current card or broker state. Bare
+`down --dry-run`, `team deploy --dry-run` and both reset previews expose the
+relevant retained additive IDs and unreadable paths. The legacy bare `down`,
+`down --preserve-state`, fresh `team boot` and `reset store` refuse unsettled
+intents and unremoved agent/channel receipts before effects. A complete matched
+static agent-retirement receipt releases only its original deployment's blocker.
+This is a known-blocker guard,
+not complete broker ownership. The service records belong to the workstation's selected-space store,
+not necessarily this boot root; their recorded
+state does not establish live ownership. A dead manager record remains visible,
+not proof that a later boot may replace it. For a concrete candidate broker
+address, the preview also lists other local registrations with that exact
+address. A match blocks fresh apply; no match does not prove exclusivity against
+aliases or remote tenants. A host-derived candidate leaves this comparison not
+checked.
+Where the manifest supplies a broker URL or uses the default without a host override,
+it makes a credless reachability probe. A failed probe is not proof of absence on a
+TLS-first listener. The result is partial: port binding, exclusive local ownership,
+installed providers, credentials, grants and startup readiness have not been checked.
+It writes no record and starts nothing.
+
+### Fresh boot apply
+
+`team boot <file>` requires a prepared local root and starts its environment through the service
+controller. A root without a stack journal takes the fresh static-auth or open route. An eligible
+stopped stack can resume in static-auth, open or user-auth mode. The manifest's channels seed the broker. The stack's own manager
+starts its agents from a launch spec pinned by digest. One rich, JSON or plain receipt includes
+the controller members and requested topology. Agent joins are not checked, so the receipt is
+partial. The fresh attempt and summary are launch records, not stop authority. No additive
+ownership ledger is created; `cotal down` uses the stack journal and each member's native lifecycle.
+
+Before writes it checks the selected root, auth mode, broker address, runtime, connectors and
+retained ownership records. A journal, legacy PID record, possibly live component, service instance,
+supervisor receipt, native attempt, additive ledger or unsettled fresh attempt blocks a fresh boot.
+Unreadable records are never treated as absent. The lock protects local preparation, and ownership
+and bind checks run again before startup. A bind probe releases its socket and does not reserve
+the address. A later failure keeps its attempt and any started members, reports the known partial
+or unknown outcome and never repeats effects. A failed summary write also keeps the running stack.
+
+`team boot --foreground` holds the stack's lifetime in the terminal. Ctrl-C or SIGTERM invokes the
+same guarded whole-stack stop as bare `cotal down`, without force killing members. Terminal loss
+or an external kill is not a confirmed stop. Foreground apply takes neither JSON nor plain output;
+a dry-run remains a finite preview. It does not establish native apply readiness or platform support.
+`up -f --foreground` still refuses on its retained launcher path.
+
+### Stopped-stack resume
+
+A recorded stack resumes only after its last whole-stack stop completed and its manager was never
+attempted. Its broker inputs must be recorded, every applicable member must have its original
+settled stopped record, and no supervisor, retained custody or earlier team boot may remain. The
+broker requires its kernel-exit receipt. Auth and delivery use their settled process stop and
+released custody; that is not proof of credential, lease or authority retirement. A generic
+process stop now records a `process-exit` receipt on the stopped instance when that stop signalled
+the pinned process and saw it exit. `service stop --json` and `service status --json` expose it as
+`processStop`, including the stop request, original process identity, signal and observation time.
+Human stop and status reports show the recorded signal, request and exit observation time, or
+`Process stop evidence: not recorded`. This is retained evidence, not a new signal from a repeated
+stop. An instance that was already gone gets `processStop: null`. Resume does not yet require this receipt. The resume receipt
+identifies the prior stop and each member's evidence. Changed records refuse under the lock.
+A journal without recorded broker inputs cannot take this route. Restart it once with its original
+existing `--store-dir` and its original `--max-file-store` and `--host`, if set, then run `cotal down`
+before the team boot. Omitting those values is safe only when the original start set neither.
+Preparation rechecks that explicit old store's directory identity instead of recreating it if it
+disappears. These checks do not exclude an unrelated local process changing the path. Open broker
+configuration stays inside the selected root's `.cotal` directory, even when its store is elsewhere.
+
+For a first user-auth team, prepare with `cotal up --user-auth --idp <url>`, then `cotal login`,
+explicitly grant the invoking user with `cotal auth grant cli --sub <subject>`, and run `cotal down`
+before `cotal team boot <file>`. Do not start the manager between preparation and that stop. A
+static-auth or open preparation uses `cotal up --no-manager` before `cotal down`. No implicit owner
+grant or borrowed caller is substituted. A previously attempted manager is never adopted.
+Windows cannot apply, because the stack's process services need Linux machine and boot identity.
+
+`--space` must agree with the manifest. Hand-registered and discovered spaces are not local boot
+targets. Public broker addresses and fresh-attempt views omit URL user info, queries and fragments;
+the private intent keeps the target. Native warnings and failures remain on stderr. Installed
+extensions may produce their own output outside the finite result.
+
+### Additive deployment verification
+
+`team deploy <file> --dry-run` resolves the manifest and personas and requires a
+registration for the declared space in this root. It shows the declared
+channel delivery/replay/window values separately from its non-atomic live
+registry classification. If the selected running mesh is open, an explicit
+durable channel declaration is warned as unsupported by its missing delivery
+daemon; the read-only preview remains available. Additive deploy does not
+seed manifest-wide defaults. For an existing
+unmanaged card, it names only explicitly declared fields that differ from the live value, never the live
+instructions or description body. No declaration authorizes overwriting a
+saved card.
+It makes scoped, TLS-bound
+native reads of the presence and channel-registry buckets. A complete presence
+scan can prove an empty roster; a failed or malformed scan refuses rather than
+classifying absence. It classifies channel cards against the registry and agents
+against a unique prior ledger for the same manifest content. The derived membership
+feed, when readable, shows a lower bound of other readers, not authorization.
+These observations are non-atomic and do not reserve names or prove that a manager,
+runtime, connector, channel writer or launch grant will be ready. An unregistered or
+only prepared space refuses. `--runtime` changes the requested runtime; `--allow-stale`
+is apply-only and refuses in preview. Apply accepts all-new live channel-only
+manifests, or bounded all-new agent and mixed manifests on static/open meshes
+through one native manager. An identical settled channel-only deployment returns
+a no-op only after its recorded target and every original create revision match
+leader-served native reads. It reuses that full deployment ID without issuing a
+channel writer, creating an intent or changing cards. Missing or changed cards,
+ambiguous or unsettled attempts, and removed ownership cannot become this no-op.
+Nothing is repaired or adopted. The result names its observation time; it does
+not establish current readers or health.
+For an identical settled agent or mixed deployment, reapply verifies the original manager and every
+original incarnation. Static-auth uses active live slots; open meshes use the pinned manager's exact
+identity and lifecycle rows. Mixed cards must retain their original create revisions and content.
+Missing, retired or replaced agents refuse; nothing is relaunched or adopted. Persona drift refuses
+unless `--allow-stale <names>` names the stale agents. Those agents keep their old policy and receive
+a warning; the waiver never restarts or updates them. The no-op records an observation time and
+labels its ordered reads non-atomic. Unsettled, ambiguous or removed ownership cannot become that
+no-op. User-auth agent launch and retained verification remain unsupported.
+Runtime requests must match the original incarnations; no runtime or manager replacement is inferred.
+
+### Agent retirement
+
+`team remove <full-deployment-id> [--dry-run] [--yes]` can retire a returned
+static-auth agent-only deployment with at most 100 original incarnations. It
+requires the original registered root, broker, TLS mode and exact manager.
+The revision-32 native `slots` query checks each recorded name, principal and
+lifecycle UID. A successor, omitted slot or unconfirmed transition refuses
+before a stop. A dry-run only reads this impact; apply requires a default-cancel
+terminal confirmation or `--yes` in scripts.
+
+Under the root maintenance lock, apply records one private synced removal intent
+bound to the original creation receipt. Each necessary stop has a synced original
+request marker and an expected principal/UID guard. An accepted stop is not
+completion. The CLI observes that same incarnation under a 30-second loop budget, in addition
+to each native read's request bound, checking
+its native retired slot, retired lifecycle head and cleanup-complete fact. It
+retains both revisions and the answering manager epoch before continuing. An
+already retired incarnation needs no repeated stop. A missing row, successor,
+interruption or observation failure stops the sequence without retrying effects.
+
+Only a complete matching retirement sequence yields the create-only full removal
+receipt. Earlier confirmed retirements and stop requests remain in rich/plain/JSON
+output on a partial or unknown result. An unsettled removal intent stays blocking
+and is never resumed by repeating its effects. `team show` keeps its original creation and removal
+journals, and inventory/status/down/reset distinguish historical retired receipts.
+The full receipt releases only this deployment's known additive blocker, not any
+other service, broker, shared-root or process guard. It never authorizes stopping
+current alias holders. No channel, broker, service or remote account is removed.
+
+### Channel-card removal
+
+`team remove <full-deployment-id>` also removes the registry cards of a returned channel-only
+deployment, with `--dry-run` for a read-only preview and `--yes` for scripted apply. It pins the
+original receipt, root, broker, auth mode and TLS requirement, and refuses changed card revisions,
+conflicting retained ownership or unreadable records. The preview discloses delivery and replay
+fallback to space defaults and removal of description/instructions. A derived membership feed is
+display-only and never authorizes or blocks this metadata change.
+
+Apply records a private intent before any delete. Each card delete is conditioned on its original
+create revision, then read back as a later removal marker. Already absent cards name the remover
+unknown. Missing acknowledgements remain unknown with a blocking intent and no retry. A complete
+receipt releases only that deployment's retained blocker. History, grants and readers are unchanged;
+the channel stays addressable and no reader exclusivity or complete cleanup is claimed. Repeating a
+completed removal returns its historical receipt without deleting a later same-name card. A new
+card intent records the registry stream's name and creation time.
+
+### Unsettled removal reconciliation
+
+`team remove <full-deployment-id>` on an unsettled removal intent reconciles it from native
+observation instead of refusing. `--dry-run` shows each original member's classification, and
+`--yes` records only what the observation proves. It never sends a stop or delete, never repeats
+an unknown action and never continues a member that was not submitted; that member is reported
+unattempted and keeps the deployment blocking.
+
+- A card whose delete was submitted without a confirmed outcome is read with the deployer view
+  from the registry stream the intent names, between two stream identity reads. A later removal
+  marker, or no message at all, records `observed-removed` with the remover unknown, and it counts
+  toward the receipt. A later value records `observed-superseded`; that card is not owned and the
+  deployment stays blocking. A card still at its create revision stays unknown, because the
+  original conditioned delete could still be applied. An older revision, a revision past the
+  stream's last sequence or a recreated stream refuses. A read failure is never treated as absence.
+  An intent written before stream binding keeps its submitted cards unknown.
+- An incarnation whose stop was submitted without a confirmed outcome is read with the privileged
+  control instrument, which holds no stop or attach rows, from the original manager's exact-name slots. Only the original lifecycle
+  UID's retired slot and head with cleanup complete record a retirement, under the original stop
+  request. A terminal in progress stays open. A live original, an active slot with no live process,
+  a retired slot without cleanup proof and an alias that now names a successor stay unknown. No
+  process or presence absence settles anything. Open and user-auth deployments are unsupported.
+- A mixed deployment reconciles retirement first. Its card intent is observed only after a
+  complete retirement receipt, and a retirement settled by reconciliation does not start a card
+  phase.
+
+A receipt is written only when every original member settles as removed or retired. The
+receipt then releases that deployment's blocker as an ordinary removal receipt does.
+
+### Legacy removal preview
+
+`team remove <full-deployment-id> --dry-run` can also select a validated legacy ledger. It refuses a
+fresh boot ID or a changed root, broker, auth mode or TLS requirement. The old ledger removal path
+cannot adopt a new receipt. For a legacy ledger, a scoped deployer read asks the serving manager for a bounded native PS
+snapshot and compares recorded IDs, names and lifecycle UIDs. It reads current
+KV revisions for ledger-named channels without exposing their descriptions or
+instructions; an unavailable registry read refuses rather than treating cards
+as absent. The old ledger has no creation revisions, so a current revision and a
+matching name do not authorize deletion. It also reads the derived membership
+feed when available and shows other observed members on owned channels; that feed
+is display-only and cannot authorize channel removal. A missing or unusable manager
+PS refuses rather than calling owned agents absent. On a user-auth mesh a deployer view the
+identity provider refuses is `PERMISSION_DENIED` (exit 2), with the provider's sentence as the
+remedy. An unavailable membership feed
+stays explicitly unknown. Other retained or unreadable additive attempts under
+the root are shown separately; their effects are not attributed to this ledger.
+These native reads are not atomic. The preview changes nothing and cannot
+authorize a stop. Legacy removal still refuses effects, including with `--yes`. Agent retirement
+remains static-auth only. Channel-only metadata removal uses the existing scoped writer on static
+or user-auth meshes, or the open mesh's bare connection; it grants no new access.
+
+### Mixed deployment removal
+
+A returned static mixed deployment uses one preview, confirmation and maintenance lock. It first
+retires the original agent incarnations through their native manager. Only a complete retirement
+receipt permits fresh card checks and deletes conditioned on the original creation revisions.
+Both receipts are required to release the deployment's blocker. A partial or unknown phase stops
+there without replaying its effects. An interrupted transition can continue only after complete
+retirement and before any card-removal intent exists. Open and user-auth mixed removal refuse.
+
+### Manifest file checks
+
+`team check <file>` resolves the native manifest and referenced personas without a broker.
+It lists declared per-channel delivery class, replay and replay window without claiming an
+absent field's live registry value; the native seed may merge over saved metadata.
+`--graph` shows effective channel access edges from merged agent policies, marking persona-inherited
+channels that have no manifest card. It also shows each agent's role, capabilities and whether
+capabilities came from the manifest, a persona or neither. Terminal tables show up to 100
+rows of each kind. The JSON result includes all resolved sources, merged policies,
+inherited scopes and, when requested, the channel graph, without persona bodies,
+kickoff prompts or opaque launch-option values.
+This file check does not prove live authorization, installed applications or launch readiness.
+These read views do not apply a boot, an additive deployment or a removal.

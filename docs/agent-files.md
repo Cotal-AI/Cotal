@@ -102,7 +102,7 @@ should point at the source (the repo's docs, a URL), not assert them.
 `cotal_persona(name, prompt, model?, role?, agent?, subscribe?, allowSubscribe?, allowPublish?, announce?)` sends a persona to the manager, which
 writes the same file; a later `cotal_spawn(name, role?, agent?, model?, variant?)` brings
 it online, so a peer can mint a teammate with no hand-written file
-([tool catalog](mcp-tools.md)). The write path takes **content** (`model` /
+([tool catalog](mcp-tools.mdx)). The write path takes **content** (`model` /
 `persona`, plus optional role, agent, and channel grants). A prompt that is already a
 complete agent file (its own `---` frontmatter) is **merged** into one block: grants,
 role, and agent from that block survive, and explicit tool arguments such as `model` win.
@@ -127,7 +127,7 @@ catalog within a workspace, and `cotal_spawn` on a name that does not exist fail
 The operator-side counterpart is `cotal persona` (bare list, show, create, edit and remove). It reads
 and writes the selected space root's files offline. Complete file input preserves every field and
 source byte. An editor draft validates before promotion and refuses concurrent local CLI changes
-([CLI](cli.md#persona)).
+([CLI](cli-agents.mdx#persona)).
 
 On a user-auth mesh, spawning owned persona content requires its creator principal or a
 current admin grant. A hosted run uses its admitted caller for that decision. A foreign

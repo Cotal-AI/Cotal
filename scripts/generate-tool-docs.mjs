@@ -1,4 +1,4 @@
-// Generate docs/mcp-tools.md from the live cotal_* tool specs (run: pnpm gen:tooldocs,
+// Generate docs/mcp-tools.mdx from the live cotal_* tool specs (run: pnpm gen:tooldocs,
 // which invokes this through tsx so the TS import below resolves).
 //
 // The names, titles, descriptions, and argument schemas come straight from
@@ -11,9 +11,10 @@ import { writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { cotalToolSpecs } from "../extensions/connector-core/src/tool-specs.ts";
+import { markdownToMdx } from "@cotal-ai/docs-content/generate";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const out = join(here, "..", "docs", "mcp-tools.md");
+const out = join(here, "..", "docs", "mcp-tools.mdx");
 
 // A representative config: open-mode-ish (no creds ⇒ the capability-gated tools are
 // included and marked below), subscribed to `general` so channel-defaulted arguments render a
@@ -198,12 +199,6 @@ for (const s of specs) if (!ANNOTATIONS[s.name]) throw new Error(`missing annota
 for (const n of Object.keys(ANNOTATIONS)) if (!specNames.has(n)) throw new Error(`orphaned annotation ${n} — the tool no longer exists`);
 
 const lines = [];
-lines.push("# MCP tool catalog");
-lines.push("");
-lines.push(
-  "> **Reference**: the `cotal_*` tool surface every connected agent gets. · **For:** agents and operators · **Generated** from [`tool-specs.ts`](../extensions/connector-core/src/tool-specs.ts) by `pnpm gen:tooldocs`; do not edit by hand.",
-);
-lines.push("");
 lines.push(
   "The tools are defined once, platform-neutrally, in `@cotal-ai/connector-core` and rendered onto each host's native tool API (an MCP server for [Claude Code](connect-claude.mdx) and [Codex](connect-codex.mdx), native plugin tools for [OpenCode](connect-opencode.mdx), [Hermes](connect-hermes.mdx), and [pi](connect-pi.mdx)), so the surface cannot drift across connectors. Argument defaults shown below are rendered for an agent subscribed to `general`; an agent reads only the channels its persona lists, so one that lists none has no default channel at all and `cotal_send` requires an explicit `channel`. Channel-scoped calls are bounded by your ACLs ([channels & permissions](channels-and-permissions.md)).",
 );
@@ -221,7 +216,7 @@ lines.push("|---|---|---|");
 for (const s of specs) {
   const a = ANNOTATIONS[s.name];
   const short = s.title.replace(/^Cotal: /, "");
-  lines.push(`| [\`${s.name}\`](#${s.name.replace(/_/g, "")}) | ${short} | ${a.effect} |`);
+  lines.push(`| [\`${s.name}\`](#${s.name}) | ${short} | ${a.effect} |`);
 }
 lines.push("");
 
@@ -252,7 +247,7 @@ for (const s of specs) {
     lines.push("|---|---|---|---|");
     for (const [arg, zodType] of Object.entries(shape)) {
       const d = describeArg(arg, zodType);
-      lines.push(`| \`${arg}\` | ${d.type} | ${d.optional ? "no" : "yes"} | ${d.description.replace(/\n/g, " ")} |`);
+      lines.push(`| \`${arg}\` | ${d.type} | ${d.optional ? "no" : "yes"} | ${d.description.replace(/\n/g, " ").replace(/(?<!\\)\|/g, "\\|")} |`);
     }
     lines.push("");
   } else {
@@ -261,7 +256,7 @@ for (const s of specs) {
   }
   if (s.name === "cotal_dm") {
     lines.push(
-      "On success the tool answers `DM stored as seq <N> for <name> (recipient was <status> at send; delivery not confirmed).`, appending ` duplicate publication.` when the publish was a duplicate. `delivery not confirmed` is the strongest claim the sender can make: the stored sequence proves the broker accepted the message, the status names the recipient's roster state a moment before the publish, and neither is proof the recipient ever read it. When the recipient was `offline`, the answer adds `<name> is offline: the DM is delivered when <name> reconnects, and a new agent spawned as <name> does not receive it.` The DM durable belongs to the recipient's lifecycle ([SPEC §8](../SPEC.md#8-nats--jetstream-binding)), so the same session receives the DM when it comes back, and a new spawn under that name starts after it. When `to` names a peer with no roster row that sent you a DM or anycast, such as a one-shot [`cotal send`](cli.md#send), the DM goes to that sender's id and the status reads `recipient had no roster row at send`. The space's DM history keeps the DM, so an operator's DM view shows it, but it may never reach an inbox. A name that two such senders share is refused with their ids.",
+      "On success the tool answers `DM stored as seq <N> for <name> (recipient was <status> at send; delivery not confirmed).`, appending ` duplicate publication.` when the publish was a duplicate. `delivery not confirmed` is the strongest claim the sender can make: the stored sequence proves the broker accepted the message, the status names the recipient's roster state a moment before the publish, and neither is proof the recipient ever read it. When the recipient was `offline`, the answer adds `<name> is offline: the DM is delivered when <name> reconnects, and a new agent spawned as <name> does not receive it.` The DM durable belongs to the recipient's lifecycle ([SPEC §8](../SPEC.md#8-nats--jetstream-binding)), so the same session receives the DM when it comes back, and a new spawn under that name starts after it. When `to` names a peer with no roster row that sent you a DM or anycast, such as a one-shot [`cotal send`](cli-messaging.mdx#send), the DM goes to that sender's id and the status reads `recipient had no roster row at send`. The space's DM history keeps the DM, so an operator's DM view shows it, but it may never reach an inbox. A name that two such senders share is refused with their ids.",
     );
     lines.push("");
   }
@@ -280,5 +275,16 @@ lines.push(
 );
 lines.push("");
 
-writeFileSync(out, lines.join("\n"));
+lines.push("Generated from [`tool-specs.ts`](../extensions/connector-core/src/tool-specs.ts) by `pnpm gen:tooldocs`.");
+const metadata = [
+  "---",
+  "title: MCP tool catalog",
+  "description: Arguments, availability, and effects of the Cotal tools exposed to agent sessions.",
+  "kind: Reference",
+  "audience: agents and operators",
+  "---",
+  "",
+  "",
+].join("\n");
+writeFileSync(out, metadata + markdownToMdx(lines.join("\n")));
 console.log(`gen:tooldocs — wrote ${out} (${specs.length} tools)`);

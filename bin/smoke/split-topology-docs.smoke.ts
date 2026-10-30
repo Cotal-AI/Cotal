@@ -42,7 +42,9 @@ const guide = async (slug: string): Promise<string> =>
 const remoteGuide = await guide("remote-supervision");
 const supervisionGuide = await guide("supervise-processes");
 const recoveryGuide = await guide("recover-a-mesh");
-const cli = read("docs/cli.md");
+const cli = (await Promise.all([
+  "cli-startup", "cli-shutdown", "cli-processes", "cli-services", "cli-selection", "cli-agent-control",
+].map(async slug => (await readDocument(join(REPO, "docs", `${slug}.mdx`))).markdown))).join("\n\n");
 const config = read("docs/config.md");
 const control = read("docs/control-surface.md");
 const delivery = read("docs/delivery-daemon.md");
@@ -95,7 +97,7 @@ check(
     ![operationGuideText, control].some((page) => page.includes("cotal down manager")) &&
     !cli.includes("`cotal down manager` first") &&
     operationGuideText.includes("cotal supervise --space main --server") &&
-    cli.includes("`--no-manager` is the broker-only mode") &&
+    cli.includes("| `--no-manager` | off | Broker-only boot:") &&
     control.includes("Only one manager per space") &&
     control.includes("cotal supervise"),
 );
@@ -119,7 +121,8 @@ check(
     !operationGuideText.includes("Wait for `✓ running in the background:` with `manager` listed") &&
     !operationGuideText.includes("`cotal status --components` to report `manager serving`") &&
     cli.includes("wait for `.cotal/manager.<spaceKey>.log` to contain `✓ manager up`") &&
-    cli.includes("pidfile liveness, not a teardown boundary") &&
+    cli.includes("A listed manager indicates pidfile liveness") &&
+    cli.includes("does not define teardown scope") &&
     control.includes("after `✓ manager up` in"),
 );
 check(

@@ -52,7 +52,7 @@ its public user/account and serving server to the local pins without a system cr
 It is not an effective permission ceiling, issued generation, lifecycle or apply authorization.
 An unavailable or denied service does not trigger another credential or server fallback.
 `cotal auth mint <name> --profile <agent|observer|admin>` is the out-of-band path; spawn calls
-the same library ([CLI](cli.md)). The out-of-band profiles carry no default TTL: pass
+the same library ([CLI](cli.mdx)). The out-of-band profiles carry no default TTL: pass
 `--expires-in <seconds>` (or `--expires-at`) for a bounded credential, which a
 standing-renewal consumer requires. `cotal doctor auth` reports an unbounded credential as a
 finding. `--identity <creds>` reuses a file's nkey and principal,
@@ -745,4 +745,4 @@ permission-builder and principal-tag checks. Broker admission remains a separate
 The intent selects coordinates; it is no wire grant, accepted-generation proof or live lifecycle
 check. Arbitrary raw files, different profiles and issued-generation files are not reinterpreted.
 User-auth issuance and managed launch remain unsupported. See
-[the CLI limits](cli.md#endpoint-caller-credentials).
+[the CLI limits](cli-auth.mdx#endpoint-caller-credentials).

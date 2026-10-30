@@ -27,8 +27,8 @@ Task dispatch:
 |---|---|---|
 | Install + start a local mesh, non-interactive | [Configure a space](setup.mdx#automate-setup) | `npx cotal-ai setup --destination local --harness claude --project . --space main --no-input && npx cotal-ai up --detach` |
 | Put an agent on the mesh | [Quickstart](getting-started.mdx) | `cotal spawn` |
-| Message peers from inside a session | [MCP tool catalog](mcp-tools.md) | `cotal_send` · `cotal_dm` · `cotal_anycast` |
-| Spawn / define / list a teammate at runtime | [MCP tool catalog](mcp-tools.md) | `cotal_spawn` · `cotal_persona` · `cotal_personas` |
+| Message peers from inside a session | [MCP tool catalog](mcp-tools.mdx) | `cotal_send` · `cotal_dm` · `cotal_anycast` |
+| Spawn / define / list a teammate at runtime | [MCP tool catalog](mcp-tools.mdx) | `cotal_spawn` · `cotal_persona` · `cotal_personas` |
 | Declare a team + channels in one file | [Define a team](define-a-team.mdx) | `cotal up -f cotal.yaml` |
 | Grant or audit channel access | [Channels & permissions](channels-and-permissions.md) | agent-file `allowPublish:` / `allowSubscribe:` |
 | Watch a live mesh | [Watch a mesh](watch-a-mesh.mdx) | configured `service` dashboard / `cotal console` |
@@ -148,8 +148,9 @@ Task dispatch:
 
 | Doc | Answers |
 |---|---|
-| [CLI](cli.md) | Every `cotal` command and its flags. |
-| [MCP tool catalog](mcp-tools.md) | Every `cotal_*` tool an agent gets, with inputs and side-effects. |
+| [API reference](overview.mdx) | Which commands, tools, and configuration references are available? |
+| [CLI](cli.mdx) | Every `cotal` command and its flags. |
+| [MCP tool catalog](mcp-tools.mdx) | Every `cotal_*` tool an agent gets, with inputs and side-effects. |
 | [Agent files](agent-files.md) | Every field of `.cotal/agents/<name>.md`. |
 | [Mesh manifest](manifest.md) | Every field of `cotal.yaml`. |
 | [Channels & permissions](channels-and-permissions.md) | The three access verbs and how to grant them. |
@@ -157,6 +158,29 @@ Task dispatch:
 | [MeshView](mesh-view.md) | The observer model behind console and web (reference implementation). |
 | [Glossary](glossary.md) | Definitions of every term. |
 | [cotal-lang card](lang-card.md) | The one-page cotal-lang card: effects and results, the await rule, branch keys, top refusals. |
+
+### CLI command reference
+
+| Reference | Covers |
+|---|---|
+| [CLI usage](cli-usage.mdx) | Command discovery, global flags, structured receipts, and exit codes. |
+| [CLI installation](cli-installation.mdx) | Setup, software updates, installed extensions, preferences, completion, and feedback. |
+| [CLI startup](cli-startup.mdx) | Local stack startup, controller recovery, authentication modes, and manifest startup. |
+| [CLI shutdown](cli-shutdown.mdx) | Stack and service stops, process identity checks, preservation, cleanup, and reset. |
+| [CLI backups](cli-backups.mdx) | Offline artifacts, integrity checks, restore recovery, and retained seat checkpoints. |
+| [CLI spaces](cli-selection.mdx) | Space preparation, registration, target selection, discovery, and infrastructure diagnostics. |
+| [Agent launch reference](cli-agents.mdx) | Launch modes, persona definitions, model catalogs, runtimes, and retained PTY seats. |
+| [Agent view reference](cli-agent-views.mdx) | Launch previews, named agent status, and recorded team deployment and removal evidence. |
+| [Agent terminal control](cli-agent-control.mdx) | Managed seat census, terminal attachment, input receipts, and native agent stops. |
+| [Local service reference](cli-services.mdx) | Saved local services, native adapters, daemon compatibility entries, and service readiness limits. |
+| [Process supervision](cli-processes.mdx) | Manager compatibility entry, owned direct processes, systemd user units, and service logs. |
+| [Manager maintenance](cli-maintenance.mdx) | Guarded issuance-gate repair, retained seat maintenance, and native manager stop impact. |
+| [Linear integration](cli-integrations.mdx) | Linear account configuration, native MCP operations, endpoint serving, and service lifecycle. |
+| [CLI endpoints](cli-endpoints.mdx) | Presence, local endpoint references, contract authoring, native invocation, and guarded removal. |
+| [CLI messaging](cli-messaging.mdx) | One-shot messages, live chat, channel policy, retained history, and pending direct messages. |
+| [CLI observation](cli-observation.mdx) | Read-only activity feeds, the operator console, and the dashboard service. |
+| [CLI authentication](cli-auth.mdx) | Static credentials, endpoint callers, account sessions, actor grants, and credential diagnosis. |
+| [CLI workflow runs](cli-runs.mdx) | Hosted and local workflow runs, recorded state, pause answers, offline checks, and seat turns. |
 
 ## Specification
 

@@ -1,0 +1,233 @@
+---
+title: "Manager maintenance"
+description: "Guarded issuance-gate repair, retained seat maintenance, and native manager stop impact."
+kind: Reference
+audience: operators
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+`manager` provides retained-seat inspection and guarded issuance-gate repair.
+
+## `manager reconcile` [#reconcile-gate]
+
+```bash
+cotal manager reconcile [--space <s>] [--server <url>] [--endpoint <e>] [--instance <id>] [--yes|--dry-run] [--json|--plain]
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--space <s>` | this folder's auth space | Space the frozen gate lives in |
+| `--server <url>` | the local mesh | Broker URL |
+| `--endpoint <e>` | `manager` | Endpoint whose gate is frozen |
+| `--instance <id>` | this folder's persisted manager instance | Instance id |
+| `--yes` | ask and default to cancellation | Confirm this selected gate repair outside a terminal |
+| `--dry-run` | off | Resolve the local coordinate without minting or checking native guards |
+| `--json`, `--plain` | terminal report | Finite structured receipt or plain shared report |
+
+### Frozen gate recovery
+
+A manager restart killed after deregistration begins but before the new
+incarnation finishes leaves the endpoint's issuance gate *frozen*, held by a
+process that no longer exists. The freeze is what stops two incarnations serving at once, which is
+correct. The successor manager now completes that dead registration itself on boot, including on
+the remote user-auth path. A foreign remote manager blocked by this gate also asks the host to repair
+it before one registration retry. Both use the same guard this command uses: they act only when the freeze-holder is affirmatively gone under a complete
+CONNZ sweep (`gone` and `sweepComplete=true`). If that registration's spec write already committed,
+it finishes the same freeze at the committed registration revision. If the spec did not advance, it
+abort-reopens the gate at generation+1 with processEpoch unchanged and continues the normal takeover.
+Live, unknown, unestablishable, and
+wrong-op-kind still refuse; there is no TTL.
+
+Use this command when the automatic path cannot run: the delivery daemon is down, the repair targets a
+non-manager endpoint, or you want to lift the freeze without starting a manager. It checks that the
+holder really is gone, then finishes the dead operation the same way as the
+interrupted restart would have: revoke the old credentials, evict their holders with verification,
+and reopen the gate.
+
+The command revokes the old credentials 16 at a time. It then verifies the holders' eviction in
+shared sweeps of up to 256 holders on the delivery daemon. Each sweep scans the broker a fixed number
+of times and kicks live connections 16 at a time, so holders that are already gone add almost
+nothing and live ones add one broker round trip per 16 connections. The daemon must serve the
+`evictPrincipals` verb; an older daemon refuses it and the gate stays frozen.
+
+Each sweep durably records the holders it verified before the next sweep starts. If a holder is not
+verified gone, the command leaves the gate frozen with those records kept. An interrupted sweep
+records nothing, and the sweeps before it stay recorded. A retry still repeats the freeze-holder
+liveness check, then skips only progress bound to the same registration operation, frozen-gate
+revision, and holder set.
+The output reports holders completed before this attempt, completed now, and still remaining. A new
+freeze or changed holder set starts from zero. Cursor cleanup happens only after reopen; a retained
+cursor is harmless because its old gate revision cannot authorize a later freeze. The governance slot
+release after the reopen is cleanup in the same way: a slot it fails to release does not fail the
+repair, because the reopened gate is already past the slot's generation.
+
+### Gate repair refusals
+
+A refusal identifies the guard that blocked repair:
+
+| Refusal | What it means | What to do |
+|---|---|---|
+| `holder-alive` | The freeze-holder still has a live connection: a manager *is* running | Stop that process first. Reconciling would evict a live manager's credentials |
+| `holder-unknown` | The connection sweep could not prove the holder absent | Not safe to proceed: an unprovable holder is treated as a live one. Re-run once the broker answers completely |
+| `liveness-unestablishable` | The delivery daemon gave no verdict: it was unreachable, timed out, or refused | Act on the delivery lease line in the refusal (below). Silence is never read as death |
+| `not-frozen` / `no-gate` | The gate is open, or there is no gate at that coordinate | Nothing to repair: check `--endpoint` / `--instance` |
+| `wrong-op-kind` | Frozen under a takeover or retirement, not a registration | Out of scope for this command; it will not reinterpret another operation's intent |
+| `eviction-unverified` | The holder looked gone but eviction could not be verified | The gate is left frozen, unchanged. Investigate the broker before retrying |
+| `raced` | A newer manager moved the gate mid-repair | Re-run `cotal doctor` and look again |
+
+### Delivery lease observations
+
+When the daemon gives no verdict, the refusal also reads the delivery lease (`lease.0`) and names
+what is blocking the rail:
+
+| Lease reading | What to do |
+|---|---|
+| absent | No daemon is running. Start it (`cotal up` runs it) and re-run |
+| unreadable | The daemon cannot be named, so do not assume none is running. Fix the lease read, then re-run |
+| held, not ready | That holder claimed the shard and has not bound its rails. Wait for it, or stop it so its lease lapses |
+| held, ready, no answer | The query may have gone to another daemon still subscribed to the rail, such as a stopped one whose lease lapsed. Re-run before stopping anything. If no run gets an answer, stop any other delivery daemon for the space, then stop or restart the holder |
+| changed hands | The holder took the shard after the query was sent, so it was never asked. Re-run before stopping anything |
+
+The command reads the lease before it sends the query and again after the query fails. It names a
+holder as the blocker only when the same run of the same daemon held the lease both times, and two
+rows from a daemon too old to record its run never count as the same run. Even then a ready holder
+may not have been asked: the rail is queue-grouped, so any daemon still subscribed to it can take
+the query. A row whose times are not valid dates reads as unreadable.
+
+A daemon that answered and refused keeps its own reason, followed by the same lease line. The lease
+line names the holder, whether it is ready, the space account that holds the lease bucket, when that
+holder acquired the shard, and when the row was last written. A ready holder rewrites the row on
+every renewal and keeps its acquisition time, which only a successful acquisition sets. A row
+written by a daemon that predates the acquisition time reports it as unknown. The lease reads never
+change the outcome: the gate stays frozen and the command exits 2. A manager's boot self-heal uses
+the same check and reports the same line.
+
+`raced` means the repair's own reopen lost its compare-and-set and wrote nothing. A reopen whose
+outcome is unknown, such as one whose acknowledgement was lost, fails with an `unavailable` error
+that says it may have committed. Re-run the command: it refuses `not-frozen` if that reopen landed and
+finishes the repair if it did not.
+
+<Callout type="warn">
+
+There is no `--force`, and no path that discards gate state: the only way this reopens a gate is by
+proving the holder is gone and then completing the operation properly.
+
+</Callout>
+
+### Governance slot after repair
+
+ A registration takes the
+endpoint-wide governance slot before it publishes its spec, and holds it until its gate reopens. An
+instance that died between those two points leaves the slot held with no registration behind it.
+This command does not write that slot and never has; the registration path is its only writer. What
+the reopen does is advance the holder's gate past the generation the slot is stamped with, which is
+what marks the slot abandoned. The next registration for that endpoint then reclaims it as part of
+its ordinary start. So the repair here is still one command followed by starting the manager, and
+the slot needs no separate step.
+
+
+## Manager maintenance [#manager-maintenance]
+
+`cotal manager`, also `cotal mgr`, shows its two scoped operations. The group and its operations
+support `--json` and `--plain` through the shared reports. Neither operation installs connectors
+or starts a manager.
+
+`manager seats` lists retained local PTY custody records. `--drain --dry-run` reads the census
+without submitting a drain. A real drain reviews the local store and defaults to cancellation;
+scripts require `--drain --yes`. Its scope is all safely childless records in that store when
+the native pass runs, not a frozen list from the review. Each native reap rechecks process
+creation identity. Live children stay. An unresolved preflight blocks draining; a partial read
+returns exit 4. An unconfirmed effect during a submitted drain returns exit 3 and keeps confirmed
+removals in the result. Raw native diagnostic bodies are omitted.
+
+`manager reconcile` uses the existing guarded issuance-gate repair from the owning local mesh
+root. It resolves the registered broker without an alternate-target fallback and preserves its
+TLS requirement across repair, liveness and eviction connections. It requires that root's auth
+material and verified holder liveness. Review defaults to cancellation; scripts require `--yes`.
+`--dry-run` checks only the local coordinate and issues no credential or native guard query.
+
+A pre-effect native guard refusal returns exit 2. Its error names the guard's condition and keeps
+the guard's own sentence as its native cause, which names the freeze-holder and the next step.
+A failure after the repair may have submitted
+work returns exit 3, without replaying mutations or hiding possible revocation/eviction progress.
+Re-observe that gate and its operation-bound durable cursor before another explicit repair.
+The final receipt reports the native operation and before/after coordinates, not a running-manager
+verdict. A reopened gate with retained cursor cleanup returns exit 4.
+
+
+## Manager stop impact [#manager-stop-impact]
+
+The native manager status contract includes its selected `lifecycleUid` and a caller-scoped `stopImpact` observation. It lists
+visible managed principals and lifecycle IDs, their runtime modes and the seat actions a default
+stop or `--with-agents` would request. In-process PTYs without a release hook stop by default;
+releasable seats lose manager custody. Preservation or pending resume uses the native retained-state
+policy instead. None of these labels confirms seat exit, authority retirement or cleanup. From
+manager cluster revision 33, a manager that is not `active` and holds a preservation inventory also
+reports `preservation`: the attempt and the inventory digest a preserved-exit stop names. A
+preserved-exit stop request carries that binding with `withAgents: false`; the manager accepts it
+only when it is fully preserved, whole-manager and quiescent, and its result is
+`preserved-exit-returned`. The open-space local receipt keeps its revision-32 shape.
+
+The manager resolves visibility through the same fresh owner/admin policy as `ps`. An
+`owner-filtered` observation is not the full manager impact, even if its rows happen to match a
+count. A refused stop reports the selected manager, visibility, maintenance state and pending-work
+counts that blocked its preflight, without exposing other owners' agent rows. Owner-filtered
+visibility blocks the stop. Whole-manager visibility requires the stack operator or an authorized
+admin-scoped caller; the command never substitutes one. No stop policy is accepted while any blocker remains. This is
+an observation at the reported time, not a reservation, permission to stop or a guarantee that the
+set cannot change. Older managers can omit it; the native service adapter refuses when the
+required process/lifecycle correlation is absent. Generic process launch/stop still refuses managers.
+
+### Native manager service definition
+
+The `manager` service preset uses the `manager-service` adapter. It requires the selected registered
+`root` and an explicit installed `runtime`; an optional `server` can repeat the registered broker.
+The optional `console-port`, `console-host`, `ws-port` and `max-sessions` pass explicit native
+settings. Omitting the host keeps the native loopback binding; port zero requests an allocated
+console port. A declared `launch` also requires `launch-sha256`. It names an existing private
+resolved launch spec, pins its full SHA-256 and must name this space. The child parses those
+verified bytes before authority preparation and keeps that snapshot through startup. An optional
+`roster` names an existing [roster file](define-a-team.mdx#roster-files) by absolute path. Only its
+owner or root may write it or its directory. The child parses it before startup, and each launch
+boots the agents it lists the way `supervise --roster` does. A resumed manager takes no roster.
+Saving these options does not prepare a manifest, provision an agent or prove that requested agents
+joined. Saving it starts nothing and grants no authority. Its native child starts no broker or
+delivery daemon, does not adopt an existing legacy manager, and never prints its private console URL.
+It declares one instance per definition and runs in the background or with `start --foreground`.
+It is not OS-supervised installation or platform parity.
+
+### Manager service startup proof
+
+The real child exclusively claims its creation-pinned native PID custody before hosted authority
+preparation or local endpoint initialization. That starting record is not readiness; another existing slot is not adopted or reclaimed.
+It binds its actual native identity before endpoint construction. A startup phase appears only
+after native start, settled custody and signal handlers. On authenticated meshes the adapter also
+requires a current status response pinned to that native instance and epoch, with the same process
+lifecycle UID. It preserves the invoking managed-seat caller, registered root/broker and required
+TLS. Missing caller support refuses without an operator substitution. The completed status read's
+own admission is excluded from stop impact; other admitted work remains counted.
+
+An open mesh uses the pinned child's private request-bound local observation. Its service, launch,
+request and both process creation identities must match, and its registration must match the
+launch identity. Output labels this a child-local receipt, not a broker-attributed endpoint
+response. A retained stop handoff blocks readiness adoption on either route instead of treating
+a live PID as a new serving launch.
+
+### Manager service stop policy
+
+A real `service stop` or `restart` reads complete caller-visible impact before confirmation.
+`--with-agents` requests native agent stops, not generic descendant signalling. An interactive
+confirmation defaults to cancel and shows every affected identity, lifecycle and requested seat
+action. Scripts require `--yes`. The offline `--dry-run` still imports no provider and performs no
+native impact query; it is not stop authorization.
+
+The native stop reserves its original PID custody without reclaiming an existing reservation.
+It rechecks the confirmed scope, binds the full service/launch/stop request and both process creation
+identities, and uses the existing native shutdown intent for agent reap. The child rechecks the
+same complete scope before accepting. Changed or incomplete scope refuses without a broader policy.
+The controller requires immutable accepted/returned evidence and the original process exit before
+recording a native stopped state. An unconfirmed request retains its reservation and never escalates
+to force kill, restarts, or treats PID disappearance as completion. Reported cleanup remains not
+checked. Retained native-policy markers prevent a metadata change from selecting generic signals,
+and an unconfirmed native stop cannot be forgotten just because its process disappeared. Legacy shutdown refuses the native child rather than bypassing that boundary.

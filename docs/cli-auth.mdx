@@ -1,0 +1,349 @@
+---
+title: CLI authentication
+description: Static credentials, endpoint callers, account sessions, actor grants, and credential diagnosis.
+kind: Reference
+audience: operators
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+Static minting requires local signing authority. Account sign-in and actor grants are separate, and diagnostic reports state which local claims they checked.
+
+## auth mint [#auth-mint]
+
+```bash
+cotal auth mint <name> [--profile agent|observer|admin] [--out <private-file>] [--json|--plain]
+cotal auth mint <name> --provision [--role <role>] [--space <space>] [--server <url>]
+cotal auth mint <name> [--expires-in <seconds> | --expires-at <unix-seconds>]
+cotal auth mint <name> --identity <private-creds> --out <private-file>
+cotal auth mint <name> --endpoint <class> --out <private-file> [--channels <a,b>] [--expires-in <seconds>]
+```
+
+The fixed-profile forms use the existing native static credential profiles. No generic host
+profile is exposed.
+Open and per-user-auth spaces refuse; a cached login does not replace signing authority. The
+resolved root supplies the persona ACL, signer and default storage together. A root that cannot be
+resolved refuses with its next step, such as `cotal up`. Conflicting current-folder and
+selected-root accounts refuse before issuance.
+
+### Credential profiles
+
+`agent` is the default profile. Its channel ACLs and role come from the selected root's persona
+when present; explicit `--allow-subscribe`, `--allow-publish` and `--role` override them. An empty
+ACL flag means no explicit entries. The native read-ACL resolver still enforces boot membership.
+Observer and admin have fixed native scope and reject agent ACL, role and provisioning flags
+rather than implying those inputs narrowed anything.
+
+### Private credential output
+
+The default credential is created through its canonical secret-store kind. An existing label is
+not overwritten. Use another label or an explicit private output. Explicit exports stay outside
+managed `.cotal` and workstation state. A pre-existing explicit output must be an owned private
+native credential matching the nkey deliberately supplied through `--identity`; unrelated files
+and identities refuse. New outputs use create-only publication. The output's directories follow
+the [`space create`](cli-selection.mdx#selecting-a-space) path rule, which also accepts a root-owned sticky directory
+such as `/tmp`, and the file is owner-only. Unsupported platforms refuse rather than weakening it.
+
+`--identity` reuses the native nkey. The out-of-band agent mint reports its newly allocated
+lifecycle UID, with a warning that it did not reuse the old inbox/delivery footprint. Use that
+reported UID for the resulting client; do not infer it from the label or assume the old UID was
+preserved. No private nkey or JWT appears in a receipt.
+
+### Provisioning
+
+Without `--provision`, fixed-profile minting writes credentials only. `--provision` uses one native provisioner
+connection to pre-create that lifecycle's bind-only DM/delivery and role footprint. It performs
+the authenticated preflight against the same recorded broker and TLS requirement, without
+pruning a registration. An acknowledgement proves neither a joined agent nor task completion.
+A partial or unknown result retains the allocated public identity and lifecycle for diagnosis
+and does not retry the mint.
+
+Lifetime inputs use native seconds. The receipt reports the resulting JWT expiry, rather than
+promising a default lifetime. `--expires-in` and `--expires-at` are mutually exclusive. JSON is
+one finite document; plain output uses the same public receipt. Signing material is exported by
+[auth signer](cli-endpoints.mdx#account-signer-export), not a signer flag on mint. The old top-level `mint` spelling
+is refused with the literal namespace replacement.
+
+<Callout type="warn" title="Static mint principal in this implementation">
+
+The current fixed-profile mint receipt reports `local.<actor>` through `DEV_OWNER`, including
+for static-auth credentials. [SPEC §2](../SPEC.md#2-identity) requires a derived owner token in an
+authenticated deployment and permits `local` for open development mode. The receipt describes
+this implementation; it does not change that wire requirement.
+
+</Callout>
+
+## Endpoint caller credentials [#endpoint-caller-credentials]
+
+`--endpoint` is a separate closed mode, not an ACL override on an observer or admin profile. It
+requires a private `--out` in an existing protected physical parent outside managed state. Only
+`--channels`, `--expires-in`, space/server and presentation flags combine with it. An empty or
+omitted channel list grants no explicit read/post channels. Supplied channels deliberately enter
+both ACLs, as in the native standalone Linear caller form. No persona ACL or role is inferred.
+
+The same static-root/account checks run first. The existing native control instrument then resolves
+a live endpoint and digest-verifies its visible command surface. This issuer accepts only nonempty,
+bounded untargeted synchronous ephemeral surfaces. A targeted, journaled or action command refuses
+the whole issuance before footprint work; unsupported rows are not silently dropped. The result
+records the observed responder and contract digests, not a promise that every future incarnation
+has the same implementation. The caller is scoped to the class's observed command names, not that
+single answering instance.
+
+The native agent provisioner creates the new lifecycle's bind-only footprint and additional endpoint
+request rows. No spawn, run or admin capability is added. The ordinary native agent baseline remains;
+this is not a new hand-written permission profile or a managed-seat launch adapter. User-auth/open
+spaces still refuse. The selected broker's required TLS is retained for discovery and provisioning.
+
+### Issuance records
+
+An immutable owner-private `<out>.issuance.json` intent precedes the first footprint operation.
+It contains public identity/lifecycle, requested scope and contract coordinates, never credentials.
+Its presence is not a grant or successful submission receipt. An existing output or retained intent
+blocks another issuance, even if no output was published. Partial/unknown provisioning retains that
+original intent and does not replay the native call. Success reports native footprint acknowledgement
+and the exact privately published file; provisioning is not presence, task completion or cleanup.
+Temporary provisioner close is reported separately and can leave a partial result.
+
+Rich/plain receipts show the actual caller/lifecycle, described endpoint owner and responder,
+explicit channel scope and native expiry. Command tables show at most 40 rows with an omission
+count; JSON retains every command and contract digest. The local issuance request is not a broker
+request acknowledgement.
+
+No credential bytes or environment-export recipe are printed. Endpoint describe/invoke consume
+this paired file under the same registered static root:
+
+```bash
+cotal ep describe ep:<class> --space <space> --creds /absolute/private/caller.creds
+cotal ep invoke ep:<class> <command> --space <space> --creds /absolute/private/caller.creds --args '<json>'
+```
+
+### Paired caller validation
+
+The matching `<private-file>.issuance.json` stays beside the credential. The consumer checks both
+protected snapshots and validates the selected root's full static trust chain.
+
+The native JWT signature, matching user seed, current validity window, account and current delegated signing key
+are checked before connecting. A retained older signing key is not guessed from a different root.
+The caller coordinates and recorded commands must reproduce the signed publish/subscribe/response
+permissions and principal tags through the native builder. The unsigned local intent selects that
+comparison; it grants nothing and proves no submission, lifecycle currency or completion. Original
+responder/contract metadata remains an issuance observation, not an instance or future-code pin.
+
+The connection retains registered TLS and uses only that file. Its broker admission is separate
+from local checks. Invocation accepts only an included untargeted synchronous ephemeral method
+from the fresh digest-verified surface. A changed targeted, journaled or action shape refuses before
+publication. Instance pins, scatter, admin, agent targeting and goal-follow flags are unsupported
+for this caller mode. Calls do not repair a binding, switch authority or resubmit an unknown effect.
+`--server`, when supplied, must repeat the registered broker. Target/reference selection is
+read-only, including when a paired file is selected. Receipts retain the public caller binding;
+describe shows methods outside the file scope without granting them. Issuance next steps keep
+explicit file selection instead of switching back to the normal operator instrument.
+
+Arbitrary raw files, issued-generation files and different native profiles are not interpreted as
+this standalone caller. User-auth issuance and managed static launch are not supported.
+
+## Account login [#login]
+
+```bash
+cotal login --idp <auth base URL> [--client-id <id>] [--plain]
+cotal logout --idp <auth base URL>
+```
+
+Signs you in to a per-user-auth mesh's IdP (device code flow) and caches the session; run it
+once per machine. `--plain` presents the approval prompt and signed-in result without color.
+Device approval is still interactive and has no native noninteractive or JSON result in this
+client; `--no-input` refuses before starting a provider request. The IdP URL must use `https://`.
+Plain `http://` is accepted only on a loopback IP literal such as `127.0.0.1` or `::1`, for an IdP on this machine. `localhost` is refused because it
+is a name: a hosts entry would choose the IdP. It prints your IdP subject, the id the operator
+grants against. When the trusted
+`/token` response advertises a same-origin space catalog, login validates and records that account's
+spaces immediately. After a
+login, every command on that mesh works under your identity: each connect takes a fresh IdP
+proof, exchanges it locally for a short-lived bearer, and is authorized against the actor
+ledger at connect time. A provider that cannot be reached, or that stops answering, refuses with
+`DEPENDENCY_UNAVAILABLE` (exit 2) and caches no session. `logout` revokes the IdP session, clears
+its cache, and removes only that
+account's discovered registry entries. See
+[identity & auth](identity-and-auth.md).
+
+## actor [#actor]
+
+```bash
+# an upsert of the WHOLE row: name all three ACL flags, or pass --full for the wide defaults below
+cotal actor grant <actor> --sub <IdP subject> --scope a,b --allow-subscribe a,b --allow-publish a,b [--role <r>] [--label <l>]
+cotal actor grant <actor> --sub <IdP subject> --full [--scope a,b] [--allow-subscribe a,b] [--allow-publish a,b] [--role <r>] [--label <l>]
+cotal actor revoke <actor> (--sub <IdP subject> | --owner <u_…>)
+cotal actor list
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--space <s>` | the resolved mesh | Space whose ledger to manage |
+| `--sub <subject>` | none | The IdP subject (shown by `cotal login`) the actor belongs to |
+| `--owner <u_…>` | none | The derived owner token (alternative to `--sub`) |
+| `--full` | off | Fill each ACL flag left off with its wide default; without it, `grant` refuses unless all three are named |
+| `--scope <a,b>` | `spawn,role:default` with `--full` | Capability scope (`''` = none; `spawn` = may run agents; `role:<r>` = may delegate role r; `admin` = cross-agent control; `supervise` = eligible for the closed remote manager-service view when the host enables it) |
+| `--allow-subscribe <a,b>` | `>` (all channels) with `--full` | Channel read ACL; the user's envelope, their agents can never read beyond it |
+| `--allow-publish <a,b>` | `>` (all channels) with `--full` | Channel post ACL; also the envelope for their agents' posting |
+| `--role <r>` | none | Role (scopes the task-queue consumer) |
+| `--label <l>` | none | Display label for `actor list` (never the IdP subject) |
+| `--parent <owner.actor>` | none | Audit link to the spawning principal. An operator grant is the authority, so the link does not narrow the row |
+
+The actor ledger is the single authorization source of a user-auth space: no row, no access.
+`actor list`, `grant` and `revoke` resolve their space and root as `auth grants`, `auth grant` and
+`auth revoke` do, and refuse the same way. With no space to resolve they refuse with a next step,
+such as `cotal up`, rather than assume one, and a root that does not hold the space's user-auth
+ledger refuses `list` rather than report no rows. On a static or open space the refusal says that
+actor grants apply only to a space started with `cotal up --user-auth`.
+A usage error refuses with exit 1 before any space or authority is read, and one refusal names every
+missing input: `--sub` or `--owner`, and for `grant` the ACL flags left off without `--full`.
+
+### Whole-row grants
+
+`grant --full` is the full envelope (all channels; scope `spawn,role:default`, so it may spawn and may delegate the default role). A
+`grant` that leaves off `--scope`, `--allow-subscribe` or `--allow-publish` without `--full` is
+refused and writes nothing. A re-grant replaces the whole row. A capability addition must include
+every field: the new scope plus the row's current read set, post set, role and label
+(`cotal actor list` shows what a row holds). Under `--full`, a field left off does not stay as it
+was: it reverts to the wide default in the table above.
+
+### Lifecycle retirement
+
+A re-grant retires the current interactive lifecycle through the running auth
+service before it rotates the row, so copied bearers cannot cross an authorization update. If that
+retirement cannot be confirmed, the row is left unchanged and the command fails with the recovery
+action. `revoke` uses the same retirement before deleting the row, which lets a later grant create a
+real successor instead of colliding with a live predecessor. `supervise` is separate from `spawn` and `admin`: it only makes a signed-in
+person eligible for the host-provided closed remote manager-service view; it does not grant
+management of another owner or a general host profile. `revoke` denies the next exchange and
+the next connect with no restart, and evicts the principal's live connections. It reports
+`verified gone` only when the delivery daemon's eviction result names the principal and shows a
+complete scan with no connection left; any other result prints `live-connection eviction INCOMPLETE`
+with its counts, or with the reason the result was not accepted. Managed-agent rows
+(written by the spawn path) live in a disjoint row space this command never touches. See
+[identity & auth](identity-and-auth.md).
+
+## doctor [#doctor]
+
+```bash
+cotal doctor auth [--space <space>] [--fix] [--json|--plain]
+```
+
+This inspects the current root's local credential claims and recorded renewal state. It does not
+prove current broker authorization, daemon adoption, connected agents or task progress. The shared
+report keeps full credential paths and public issue/expiry metadata; JSON retains all diagnostic
+rows without JWTs, seeds, fingerprints or raw parser/renewal error bodies. On a root that holds several
+spaces, `--space` names one; it defaults to the sole space. Without `--space`, a root with several
+spaces refuses with `TARGET_AMBIGUOUS` (exit 2) and names them. In a folder whose root holds no space,
+the report is partial (exit 4) and its next step is to run it in a space's root, which `cotal space`
+lists.
+
+### Diagnosis limits
+
+Plain diagnosis starts no repair or connection. A required legacy credential or user-auth directory
+migration refuses instead of silently moving files or reading canonical absence as an empty scope.
+A credential with no expiry claim is a finding whatever its kind, since a copy stays valid until its
+signer rotates. `--fix` re-signs only the static daemon credentials, so an unbounded agent credential,
+such as one `auth mint` wrote without `--expires-in` or `--expires-at`, stays a finding until it is
+replaced with a bounded one.
+Missing local signing trust is not inferred to mean an open or healthy mesh. An unreadable renewal
+record prevents a complete healthy verdict. Locally ordered older incarnation files are labeled as
+file observations, never proof of a live successor or permission to delete or respawn an agent.
+
+### Supported repair
+
+`--fix` explicitly permits native local material migration and the supported static daemon re-sign
+phase. Its path-move and re-sign acknowledgements are retained separately. It holds the native
+renewal lease when using the broker and refuses another holder. Offline repair is labeled as
+uncoordinated; an authenticated preflight failure is not called an offline target. User-auth roots
+cannot receive a static-signer repair fallback. No system account is rotated and no agent is
+respawned or silently given a new identity.
+
+A local re-sign does not erase a recorded broker refusal or claim that a daemon adopted it.
+A recorded refusal names the space's manager, the renewal owner, as the next step. A pre-per-space
+`.cotal/renewal.json` names no space, so it is reported as a leftover and never read as the space's
+verdict.
+Remaining findings, incomplete audit reads and partial/unknown repair outcomes keep classified
+finite receipts. Inspect the original renewal owner and lifecycle rather than repeating a mutation
+or creating replacement agents merely to obtain a different report.
+
+## Account screens [#account-screens]
+
+Bare `login` chooses a known provider from cached account metadata or registered spaces. When
+none is known, an interactive terminal asks for the provider auth URL. `--idp` selects it directly.
+The device-approval link and code are written only to stderr. Session tokens are never printed.
+The sign-in receipt separates account identity from each space's grants. This client's device
+flow requires approval and refuses `--no-input` before requesting a device session.
+
+Bare `logout` chooses among cached providers. A single cached provider is unambiguous; scripts
+with multiple providers must select one with `--idp`. `logout --json` and `--plain` report the
+same result. No cached session is a local no-op, not proof that all provider sessions are gone.
+Revocation must return before local cleanup. If revocation is unconfirmed the login is retained
+for retry; a later cleanup failure is partial and keeps the confirmed server outcome.
+
+`endpoints --json` and `endpoints --plain` show the authorized live presence snapshot, including
+agents and infrastructure. This legacy live read is labeled as presence, not a saved-reference
+inventory or proof that a service registration is active. Native contract resolution remains a
+separate read.
+
+## Authority [#authority]
+
+Bare `auth` reports only safe cached provider metadata. It does not verify a session online,
+turn a sign-in into a grant, or print tokens. Its next steps name the `--space` you gave or the
+space a bare command resolves; with no space they point to `cotal space`. `auth grants` reads the
+selected root's authoritative user-auth actor ledger; a root without its owner secret and pinned IdP
+refuses rather than reporting an empty authoritative list. A static or open space has no such ledger
+on any machine, so there `auth grants`, `auth grant` and `auth revoke` refuse with `UNSUPPORTED` and
+say that actor grants apply only to a space started with `cotal up --user-auth`. A space that cannot
+be resolved refuses with its next step, such as `cotal up` or `cotal space`.
+
+`auth grant <actor>` and `auth revoke <actor>` use the existing local operator authority path.
+Choose `--sub` or `--owner`, never both. Grant requires explicit scope/read/post lists unless
+`--full` deliberately selects the native wide defaults. These usage errors refuse with exit 1 before
+the space or its authority is read, and one refusal names every missing input. Re-grant/revoke
+retain predecessor lifecycle retirement and concurrent-row checks before replacing or deleting
+authority. A retirement that did not run, because the auth service is not running, refused the
+connection or answered that the retirement did not run, is refused (exit 2) with the actor row
+unchanged and the recovery named, usually `cotal up`. Any other failed retirement request may have
+started the retirement, so it is unknown (exit 3) and is not retried. Grant
+rows in reports contain scope and ACL metadata, not token hashes or secret material.
+
+Revocation receipts separate committed deny-new from the delivery daemon's live-eviction notice.
+They do not claim all related processes stopped. An interrupted mutation is unknown and is not
+retried. Neither grant management nor actor reads install connector packages. Grant management
+does not issue credentials, export signers or act on capability handles. Re-grant and revoke retire
+the predecessor interactive lifecycle as described above.
+
+## Internal commands [#plumbing]
+
+`cotal __complete <words…>` is the internal entry the shell-completion stubs call to emit candidates
+for the current command line; you never run it directly. `cotal agent-bearer` is machine-facing
+plumbing on user-auth meshes: spawned agents exec it to print a fresh short-lived bearer from their
+spawn-time secret; you never run it directly either. Its local arm uses `--dir` to discover the
+capability-gated loopback service. A remotely enrolled, already-granted agent instead receives
+`--exchange-url <https://base>` in its launch argv: that arm sends `{owner, actor, actorToken}` to the
+pinned public exchange with no local capability, follows no redirects, and refuses every non-HTTPS
+URL because the actor token is the credential in the request body. Because a seat execs it on every
+bearer refresh, it skips the connector-seed boot gate entirely: it reads one 0600 token file,
+exchanges it and prints the bearer without consulting or writing the operator-global seed store, so
+a newer store generation cannot refuse a live seat's refresh. `--manager-call` asks for the
+instance-bound `manager-caller` view; `--manager-instance <id>` selects an explicit live candidate,
+and an owner with more than one live candidate is refused with their ids until it names one.
+That mode still prints only the raw token and does not update `--health-file`. A spawn runs it once as the agent auth
+preflight. When it fails there without printing a sentence of its own, the refusal names the cause: the 30 second
+timeout, the signal that killed it, or its exit code. (`cotal start` is a removed tombstone: it
+errors and points you to `cotal spawn --detach`.)
+
+`cotal app-identity` is plumbing for a Claude app conversation on a local mesh, and you never run it
+directly either. The Claude connector's local server runs `cotal app-identity provision --name <name>`
+when a conversation connects. It picks the mesh as `cotal spawn` does (`--space` selects one), and
+answers `{"ok":false,"taken":true}` when a peer with that name is live, so the server tries another
+name. Otherwise it prints one JSON line: the launch env the connector reads and the reference that
+`retire` takes. The channels and role come from the mesh's default persona. On a mesh with static
+credentials it provisions the identity's own delivery durables and writes its credential to a 0600
+file in a new temporary directory; the credential never appears on stdout. A record beside it names
+the identity, the mesh and the process that asked. `cotal app-identity retire --dir <dir>` removes
+the identity's broker footprint, then the files and the directory. When the broker is not answering
+it keeps them. Each provision also retires the directories whose owning process has exited, which
+covers a host killed before it could retire. A mesh that uses per-user sign-in is refused. Like
+`agent-bearer`, it skips the connector-seed boot gate.

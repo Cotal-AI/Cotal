@@ -1,0 +1,415 @@
+---
+title: "Process supervision"
+description: "Manager compatibility entry, owned direct processes, systemd user units, and service logs."
+kind: Reference
+audience: operators
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+The process controller records custody, readiness, and stop evidence for each service instance.
+
+## supervise [#supervise]
+
+```bash
+cotal supervise [--execution runtime|none] [--runtime <name>] [--space <s>] [--server <url>] [--spawn <names>]
+```
+
+`supervise` is a deprecated entry kept for existing units, scripts and containers, and help and
+completion omit it. It accepts the same flags and prints a warning on every run naming the
+`manager` service preset and the release that removes it; see
+[deprecated daemon entries](UPGRADING.md#deprecated-daemon-entries). The manager that `cotal up`
+starts runs the same code through a hidden entry and prints no warning.
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--space <s>` | this folder's auth space | Space to supervise. On a root that hosts several spaces, name one of them here |
+| `--server <url>` | hosting mesh, or matching registered mesh | Broker URL. A registered mesh supplies it when omitted; a different explicit value is refused before anything is dialed. |
+| `--runtime <name>` | `pty` | Agent runtime (`pty` built in; extension runtimes are explicit-only) |
+| `--execution runtime\|none` | `runtime` | NONE is a genuine hosting user-auth control instance with no Runtime, connector inspection, workload or terminal execution |
+| `--console-port <n>` | none | Protocol-console port |
+| `--console-host <host>` | loopback | Bind host for the console endpoint. Loopback keeps it machine-local; `cotal up` passes the address it bound the broker to, which lets the browser console reach this manager from another machine. `cotal attach` does not use this face: it redeems a mesh session grant over the broker |
+| `--max-sessions <n>` | 64 | Live-session ceiling. Each console pane and each `cotal attach` is one session, so size for agents × panes, not agent count. A capacity refusal names this flag. `cotal up --max-sessions` records the same number on the mesh so a later `supervise` started by repair or a retained legacy manifest launcher keeps it |
+| `--roster <file>` | none | Declarative roster to boot at startup. See [Roster files](define-a-team.mdx#roster-files) |
+| `--launch <spec>` | none | Resolved manifest launch spec (from `up -f` / `spawn -f`) |
+| `--spawn <names>` | none | Comma-separated personas to pre-spawn at startup |
+
+`--ws-port`, `--resume-attempt` and `--resume-commit-token` are passed by `cotal up` when it starts
+the manager, for the console session client and for resuming preserved seats. They are not for
+direct use.
+
+The manager is the agent supervisor and control plane: it answers `spawn --detach`, `stop`, `ps`,
+`attach`, and the `cotal_*` manager tools. `cotal up --detach` starts one for you; run `supervise`
+directly to recover a dead manager or drive a custom runtime. Default runtime is `pty`; install an
+optional provider first (`cotal ext add @cotal-ai/orca`, `@cotal-ai/tmux`, `@cotal-ai/cmux`, or `@cotal-ai/herdr`) and
+select it explicitly. A missing provider or app fails loudly; there is no fallback. See [Deploy](deploy.mdx).
+Boot inventory decides whether this process takes unpinned `spawn`/`launch` on the class rail:
+if every declared connector is unavailable, those commands stay on this instance rail only
+(`status` reports `classSpawn: false`). `describe` still answers on the class rail, so an
+unpinned spawn can bind-fence against a skip member; re-issue, or pin `--on`. A partial
+inventory keeps the class rail and names `--on` on a harness refusal, because sibling
+inventories are not readable from the serve credential. See [control surface](control-surface.md#instance-routing).
+
+### Control-only execution
+
+Use `--execution none` only for a fresh control instance in an existing hosting user-auth root.
+It requires that space's signing trust, provider pin and user-mode mesh record, without remote
+manager authority. It rejects `--runtime`, startup workload flags and participant registrations
+before resolving a Runtime or connector. The mode needs no connector seeding. An existing
+unclassified identity or retained workload refuses admission; a recorded NONE instance cannot
+restart as runtime. Do not delete identity or capability files to change modes.
+
+NONE retains native registration, status and the selected Manager's empty managed-seat ps.
+It does not adopt foreground agents, roster peers or HTTP-hosted sessions. Workload operations
+still need an explicitly selected execution-owning participant Manager and its existing authority.
+Starting a control instance does not enable an auth service's interactive local-primary policy.
+NONE also refuses model inspection and caller-driven persona, purge, transcript, preservation,
+resume, cancellation, turn-yield and self-stop writes. It starts no transcript receiver or sweep.
+Its native registration, lease, renewal, session-ledger and goal maintenance can still write.
+
+Local runtime startup now records identity and execution mode during admission. A later failed
+authentication or registration can leave those files classified as runtime. Invalid supervise
+arguments refuse before connector seeding, with one error line rather than seeding first.
+
+### Manager successor recovery
+
+Normal `SIGINT`/`SIGTERM` uses the sparing stop policy. The manager stops seats bound to its process,
+releases seats the runtime can leave running, and applies the retained-state policy to preserved seats.
+For a seat selected for stop, the runtime must prove exit before the manager releases authority. A stop that
+cannot prove exit fails loud and keeps manager authority instead of reporting a clean shutdown while
+an orphan still holds broker rails. When the runtime refuses the stop itself, the shutdown fails at
+once and its error names the refusal as `stop failed: <message>`. After an abrupt manager death, the same logical successor
+terminalizes only its own durable static slots, verify-evicts the predecessor's broker principal,
+records that result in the lifecycle's caller-readable audit detail, reaps the predecessor's seat
+process through the runtime's custody reference recorded on the slot (the pty runtime verifies the
+process start identity in its seat record, so a reused pid is never signalled), and only then
+retires the lifecycle and frees the alias. A seat whose spawn carried `supervise` with restarts left
+is restarted instead of retired: the successor reaps any seat the slot still names, relaunches it
+under the same name, lifecycle uid, credential, persona and cwd, and counts the restart against the
+policy. A seat on a runtime that can adopt a live seat (tmux) and still running when the successor
+starts is adopted in place: the successor checks that the recorded tmux server, window and pane are
+the ones the slot names and that the pane's process still runs, then manages that seat again under
+its existing credential, without a restart. Both paths read the record the manager writes to
+`.cotal/seat-records/<space>/<name>.json` once a supervised or adoptable seat is ready, rewrites at
+every restart and credential renewal, and removes when the seat is freed. A spent budget, a missing
+record, an expired credential, a persona file or credential that no longer matches the record, or
+an adoptable seat whose pane has exited retires the lifecycle as above. A runtime that custodies its seats reserves that
+reference before it launches one, and the manager records it on the slot's first durable row, so a
+manager that dies part-way through a spawn also leaves a seat its successor can address. A
+same-lifecycle restart or a resume records the new seat's reference on the slot the same way, and
+when the slot does not take it the restart or resume fails and stops any seat it started, so the
+slot never names a seat that has already exited while its replacement runs. A resumed seat keeps
+its retained credentials, so the resume frees it only once its exit is proved; a seat whose stop
+cannot be proved stays managed, and the resume's error says so, naming a stop the runtime refused
+as `stop failed: <message>`. A spawn
+that launched its seat and then failed is rolled back by the manager that launched it, and that
+rollback reaps the seat through the same reserved reference before the lifecycle retires. Missing or unverified broker evidence keeps the slot
+terminalizing, and so does a runtime that cannot reap by reference. While the name stays held, a
+same-name spawn or a resume re-drives that teardown with the same recorded reference, so it reaps
+the seat again or keeps the name held.
+
+### Participant manager authority
+
+A `meshes add --mode user` entry is a **participant** registration, not hosting authority. A
+participant may run `supervise` only when the host advertises the remote manager authority service
+and the signed-in actor has the dedicated `supervise` ledger scope. The CLI obtains the closed,
+loopback-only `manager-service` view; `spawn` and `admin` do not substitute for that scope. The
+host issues the manager's public-nkey JWT material through its lifecycle-bound prepare → activate
+→ renew protocol, never by handing the participant a signer or static provisioner credential.
+The host also performs instance-scoped eviction and guarded gate reconciliation. A remote manager
+refreshes its short-lived registration executor before clean deregistration, so a long-running
+process removes its service row on `SIGINT` or `SIGTERM`. After an unclean stop, the same instance
+verify-evicts its superseded family and advances the process epoch. If an abandoned frozen gate
+holds the manager governance slot, a different supervise-scoped manager asks the host to reconcile
+that holder after a complete gone verdict, then retries its registration once.
+
+A remote supervise never uses local signing trust: with host-issued authority in hand, the
+manager mints from that authority alone and consults local records only to refuse a conflict,
+namely the supervised space's own trust records under the cwd root. A root that hosts another
+static space beside the sign-in is a normal configuration and is never read as this space's
+trust.
+
+The broker URL in the registry entry decides the transport. A remote broker is often published
+over a `wss://` edge rather than a raw `nats://` port, and `supervise` dials whichever scheme the
+record holds, starting with the manager-authority registration it runs before the manager exists.
+The record also decides whether that registration requires TLS, so a participant never downgrades
+the credential exchange to a plaintext connection the registry did not describe.
+
+Without that advertised host service or scope, `supervise` refuses before it starts a manager.
+Direct `cotal spawn --foreground` launches one foreground agent. Detached agents require the
+space host's authority service and a `supervise` grant. If a running remote manager loses
+renewal, it reports degraded state and refuses unsafe new starts and restarts; live agents are not
+silently replaced. Do not run `cotal down` or `cotal up` on a participant machine to repair this
+condition.
+
+
+## Owned process services [#owned-process-services]
+
+Preset inventory checks the selected installed declaration without importing provider code. It
+shows declared foreground/multi-instance capabilities, process versus endpoint readiness, and
+native-request-bound versus direct-process stop policy. Missing, skewed or unreadable metadata
+leaves the inventory partial, with unknown capability fields. Passing metadata checks is not
+proof that an application, dependency or service is ready. Linux direct-process
+instances can use the owned systemd user-unit route described below. An adapter
+does not acquire that mechanism from its name or preset.
+
+### Platform custody requirements
+
+The direct-process driver pins Linux machine/boot IDs and process start ticks.
+macOS and Windows still refuse: their generic process custody needs a stable
+machine, boot, owner and subsecond creation pin before any signal is safe.
+The existing macOS `ps -o lstart` timestamp has only second precision, so
+hashing it would not distinguish a PID reused within that second.
+
+### Supervisor observations
+
+Instance reports separate recorded supervisor policy from supervisor discovery, which remains not
+checked by this direct-process driver. A recorded `none` means no supervisor assigned by this
+controller. It is not proof that an external unit cannot supervise or restart the process.
+A retained supervisor receipt binds its definition revision, full instance, machine and OS user.
+Its file view hashes only the recorded physical unit, without printing its body or environment.
+Matching bytes are not loaded/active state or enabled-autostart proof. Missing, modified or
+unreadable unit files do not turn a receipt into an uninstalled service. Direct start/stop/remove
+refuse while such a receipt is retained; they do not launch beside a unit or implicitly uninstall
+it. `service status` can read an unchanged recorded systemd user unit on the same host through
+one bounded exact-unit query. It checks the returned physical fragment and reports native state,
+main-PID attribution, invocation, reload need and presence of unverified drop-ins. Missing or
+ambiguous observations stay partial. It neither prints unit/environment contents nor discovers
+ownership from names or cwd. This observation proves neither endpoint readiness nor effective
+login/reboot autostart. Inventory and direct-process dry-runs perform no OS query;
+Linux native-unit removal dry-runs make one bounded exact-unit status read.
+### Unit installation
+
+On Linux, `service install <name> --instance <full-id> --dry-run` asks the
+systemd user manager for its config directory, then renders a
+bounded direct-process unit and private environment candidates and reports
+their paths and digests without printing their bytes or the inherited `PATH`.
+With no existing instance, the inspection checks the declared process,
+durable CLI entry and user manager, then reports that apply would allocate a
+stopped full ID; it
+invents neither an ID nor a unit candidate. On macOS the same preview renders
+a bounded LaunchAgent plist candidate for a settled stopped direct-process
+instance, with its label, path and digest but not its body or inherited `PATH`.
+It checks the `Library/LaunchAgents` segments without following symlinks;
+it does not query a launchd domain, load a job or enable autostart. An existing
+plist remains unattributed. With no instance it reports a possible stopped-ID
+allocation, not a plist. macOS install apply refuses, because it has no native
+controller or custody records.
+Linux bare install allocates that stopped full ID only after its source validation;
+it does not start a process. If later installation fails, the allocation is
+reported as a changed resource rather than hidden or retried.
+The unit environment pins an absolute-entry `PATH` from this invocation;
+relative or empty entries refuse rather than acquiring another working
+directory at boot. It requires a settled stopped instance, its current
+definition revision and no recorded supervisor, host environment reference or
+credential reference. An existing unit at that path remains unattributed, not
+owned. The directory's parent ownership, private seed, receipt intent, loaded
+unit and autostart are not established; the preview is partial and authorizes
+no install. Linux apply retains a per-step intent before exclusive private file
+writes, isolated connector seeding, a bounded private-tree fingerprint, user
+manager reload, enable without `--now`, and the exact supervisor receipt. It
+returns the full instance and observed unit-file state, not a process-readiness
+or effective reboot-autostart claim.
+### Uncertain native attempts
+
+A retained installation or removal intent blocks a new install and is reported
+as partial by `service status` with its exact unit path, private-store path,
+current step and last acknowledged step. A bounded native read for each retained install, removal or start/stop/reseed
+action distinguishes an unchanged physical unit fragment from a name-only
+status when the file is missing or modified. It also classifies the private
+directory without inspecting its children. None of these reads permits an
+effect to resume. It cannot
+authorize a blind retry. A changed
+pre-effect target leaves a planned step and a partial receipt; an unconfirmed
+submitted effect is unknown and is never automatically repeated.
+`service remove` refuses while any native attempt names the definition. There is no
+explicit reconciliation for an uncertain attempt.
+### Unit removal
+
+`service uninstall <name> --instance <full-id> --dry-run` reads only a matching recorded systemd unit,
+its private-store directory and one native status snapshot. A retained native
+action, or missing, modified or foreign receipt files, refuses. An owned private
+directory does not prove its descendants unchanged. A separate unexposed
+removal candidate requires a bounded no-follow fingerprint of the complete
+private tree to match the install receipt. Changed content is preserved and
+removal refuses. The preview does not reserve a stopped unit, enable state or
+removal authority; its report remains partial. Linux apply requires the exact
+unchanged loaded inactive unit and private tree, with `--yes` in scripts or a
+scoped terminal confirmation. It disables autostart, removes only the pinned
+unit and private tree, reloads the user manager, then removes the supervisor
+receipt. The definition and stopped instance record remain.
+
+### Native unit lifecycle
+
+A retained native start, stop or reseed action is reported as partial by
+`service status`; it does not authorize another request. Native start and stop
+require the exact owned receipt and current native unit observation. An older
+private store is reseeded while the unit is stopped, with a separate retained
+action and refreshed generation/tree digest before start. An unconfirmed seed
+is never retried. Restart uses the same exact stop and subsequent start; if
+start does not confirm, the stopped original remains in its result.
+Uninstall retains a step before disable, exact unit unlink, reload, private
+tree removal and receipt deletion. A non-confirming step remains visible in
+`service status`; a missing unit alone never clears its attempt.
+
+### Private unit entry
+
+The private unit entry resolves only its built-in command and validates the explicit controller
+home, space, definition and full instance before any extension overlay, repair or package load.
+It refuses an inherited managed-spawn handoff without reading or deleting that file.
+Before native replacement, it requires the recorded private seed generation,
+executable provenance and absence of unfinished seed markers; it never reseeds
+that store at boot. For a
+recorded direct-process unit it also requires no retained installation or
+removal intent, the current native unit invocation and matching physical
+fragment before replacing itself with the saved executable. It does not fork a detached
+wrapper or retry execution. A starting record does not establish successful replacement or
+readiness; an interrupted replacement remains unknown. A later unit invocation refuses an
+unsettled starting, stopping or unknown attempt instead of replacing its request.
+Install dry-run makes only the bounded native directory read above; uninstall
+dry-run reads the exact recorded unit and private-store directory. Neither
+allocates an instance, enables autostart nor removes a receipt or unit.
+
+### Direct process lifecycle
+
+Process definitions support `service start/stop/restart/status/logs <name>`. The driver currently
+requires Linux stable machine identity, boot identity and readable process-creation tokens. It
+refuses another platform instead of using PID-only ownership. It launches executable and argv
+separately without a shell. No broker, manager or other dependency is started implicitly.
+
+Instance IDs are assigned once and printed in full. With several records, scripts need
+`--instance <full-id>`; a terminal can choose from those IDs. `start --new-instance` explicitly
+requests another process-driver instance. Otherwise one serving instance is a no-op and an
+unresolved prior launch blocks another allocation. A launch that failed before its child existed
+is recorded as failed, not unresolved. A stopped instance retains its logical ID
+and receives a new launch request. Unknown startup retains its receipt and is not resubmitted.
+
+Only safe base environment names and the definition's selected `envRefs` are passed. A declared
+protected credential file is forwarded to that program as the `COTAL_CREDS` path, not credential
+bytes. Control credentials are not inherited wholesale. The program still runs as the current
+OS user; this is not a process sandbox. Native managers require their service adapter and
+agent-impact guards and are refused by generic process launch/stop.
+
+### Adapter declarations
+
+Adapter definitions use the same owned direct-child controller. The local-process provider
+adds a service ABI declaration and launch/readiness hooks. Its closed option schema supports
+bounded objects, arrays and scalar fields, with no schema references, regular expressions,
+coercion, defaults or unknown-option removal. Every object closes its declared fields. An
+unsupported schema refuses rather than being widened. A declared path option and its ancestors
+follow the [`space create`](cli-selection.mdx#selecting-a-space) rule for other local writers; a private file stays
+owner-only.
+
+The provider declares foreground, multi-instance and log capabilities. An explicit start records
+its definition revision, full instance, launch request and adapter package/version/declaration
+fingerprint before loading provider code. The launch hook receives the definition's `envRefs`
+names, never their values, and returns executable, argv and working directory separately. It must not launch children, mint credentials or start dependencies while
+planning. A changed adapter is not adopted by a retained instance. Native stop declarations add
+closed impact and terminal hooks; a missing hook refuses instead of using generic signals. The
+manager's adapter supplies its own native policy and receipts. A preset is not installed under an
+OS supervisor.
+
+Readiness hooks receive the pinned process and a bounded cancellation signal. Ready observations
+must match that process and carry a current observation time. An endpoint-serving declaration
+also returns its checked native class, instance, principal, lifecycle and epoch. The adapter must
+correlate those native coordinates with its owned launch using its supported authority; a matching
+name or successful HTTP request is insufficient. Reports preserve those coordinates and their
+observation time. Local status does not refresh them or promote them to current live authorization.
+A failed or timed-out hook retains an unknown receipt and is not retried. A cancellation signal
+does not prove third-party code stopped working.
+
+Extension removal checks retained service records in every local service space, including spaces
+absent from the mesh-selection registry. Live, foreign, unreadable or unresolved instances block
+removal. A starting intent and the extension writer lock prevent an uninstall from crossing the
+controller's final provider check. Providers still run as the current OS user, not in a sandbox.
+
+### Process readiness
+
+Process readiness reports a live creation-pinned direct process as Running. HTTP readiness uses
+a bounded loopback request with credentials omitted and redirects disabled. Its success is
+Reachable, not proof that the child owns that listener or serves a native endpoint. Status labels
+the stored readiness observation and its time separately from the current process observation.
+
+### Process stop policy
+
+Stop and restart default to cancellation in a terminal and need `--yes` in scripts. The selected
+record revision and creation identity are checked before signals, including escalation. A reused
+PID is never signalled as the old process. Restart holds the definition operation across the
+confirmed old-process exit and one replacement launch. An unconfirmed stop cannot cause a
+replacement. `--dry-run` creates no instance and sends no process signal.
+
+### Foreground process lifetime
+
+`start --foreground` is an owned foreground process, not an attachable view. It rejects JSON and
+cannot adopt an already running background instance into the terminal. Before allocation it prints
+the terminal lifetime and output policy. Native auth and Linear presets use their installed signal
+handlers through this same flow; neither endpoint readiness nor native cleanup is inferred from
+process exit. A foreground manager stops through the same request-bound native stop as
+`service stop`, keeping its agents: the SIGINT or SIGTERM the CLI receives is the confirmation.
+Ctrl-C also reaches the native child, which ignores a signal that carries no stop request and
+prints one warning line for it.
+Native service child boot never repairs or seeds connector packages. Background stdout/stderr
+go to owner-private logs. `logs --tail <1..1000>` reads a bounded tail; omitted earlier bytes make
+the result partial. Foreground output is not captured there. Log text is not promised to be
+secret-redacted. Live following uses the bounded read-only stream described below.
+
+### Systemd journal logs
+
+For a recorded systemd user unit, logs use its saved original invocation, boot and OS user,
+not the native manager's current invocation. Finite tails read at most 1 MiB and 1000 records.
+Individual native JSON records are capped at 256 KiB. Native journal cursors and microsecond
+wall/monotonic timestamps are kept; binary or repeated message values stay native JSON. Missing
+invocation evidence refuses without substituting an old direct-child file. Native diagnostics are
+withheld, not suppressed by the query; their presence makes a finite result partial.
+
+Journal following freezes those same selectors. It reports oversized, incomplete or unattributed
+records as gaps and emits native cursors, rather than inventing a sequence. Ctrl-C closes only the
+owned journal reader. It never signals the service or adopts a later invocation. This scope includes
+readable process-origin messages, not every user-manager lifecycle diagnostic. Journal access and
+retention may omit messages, and an empty result does not prove there was no output or work.
+Journald must retain an accessible per-user journal; no alternate file, privilege escalation or
+remote log service is used. These are authorized local logs and can contain secrets.
+
+### Descendant process limits
+
+<Callout type="warn">
+
+The process driver tracks its direct child, not arbitrary descendants a program creates. A
+stopped/direct-process-gone observation must not be interpreted as proof that all external work
+or descendant processes ended. The generic direct-process driver supplies no service presets or agent-aware manager control.
+Owned systemd user units use the separate native-unit controller described above. Non-Linux
+lifecycle parity and full preset integration with OS supervisors remain unsupported.
+
+</Callout>
+
+### Direct child file logs
+
+`service logs <name> --instance <id> --follow` follows that private file without controlling the
+service. JSON emits log snapshot/event/connection/gap/error/end records. Events carry native file
+identity and byte offsets, not a manufactured global sequence. Initial tails and reader backlog
+are bounded at 1 MiB and chunks at 16384 bytes, with explicit gaps for omissions, replacement or
+truncation. Instance-generation changes are attributed. UTF-8 decoding can replace invalid bytes
+and is labeled accordingly. Output backpressure pauses the reader instead of growing a buffer
+without bounds. Ctrl-C, termination and closed output end the view, not the service.
+
+### Unsupported auth lifecycle commands
+
+`auth retire <full-lifecycle-uid> [--space <space>] [--yes]` validates the native UID and resolves
+the selected auth target. The CLI then refuses unsupported caller context: the registered
+auth endpoint requires the requester's own current serve identity/gate, which the standalone CLI
+does not provide. It neither borrows a manager identity nor substitutes the interactive/managed
+loopback host doors. `--yes` cannot create authority, and no retirement request is sent.
+
+`auth redeem <private-handle-file> [--space <space>]` selects the existing local auth target and
+refuses with `UNSUPPORTED` because its conferring-handle redemption path is not exposed. It does
+not read the file, consume a handle or issue credentials. Session grants, agent enrollment and
+parsing an unverified handle are not substituted for that authority.
+
+### Scoped help
+
+Nested help follows declared command words, for example `cotal help auth handle inspect`.
+Aliases resolve within their declared parent. Help reads cached metadata and imports no provider,
+starts no service and opens no credential file. A command's `-h` selects the deepest declared
+mode before its data arguments; it does not execute that mode. Scoped options refer to the
+command's shared flag definitions. Completion uses the same declared subgroups and option names,
+without treating an option's value as another command word.

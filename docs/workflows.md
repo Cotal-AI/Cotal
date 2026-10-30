@@ -285,7 +285,7 @@ would file and that this invocation filed nothing. An answer is recorded under t
 manager knows from the caller's credential: a managed agent by its name, anyone else by their
 principal. The request
 carries no name. An agent with `capabilities: [run]` has the same five verbs as the `cotal_run`
-tool ([MCP tools](mcp-tools.md)), so a program can be written and started from inside a session.
+tool ([MCP tools](mcp-tools.mdx)), so a program can be written and started from inside a session.
 A `start` or `resume` answers once the run's record is written, within a bounded wait; a manager
 that is still taking back a predecessor's runs at boot refuses both with `unavailable`, and a
 retry a moment later is the whole remedy.

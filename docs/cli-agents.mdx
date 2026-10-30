@@ -1,0 +1,407 @@
+---
+title: "Agent launch reference"
+description: "Launch modes, persona definitions, model catalogs, runtimes, and retained PTY seats."
+kind: Reference
+audience: operators
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+`spawn`, `models`, `persona`, `runtimes`, and `seats` describe agent launches and local catalogs.
+
+## spawn [#spawn]
+
+```bash
+cotal spawn [<persona>] [--detach | --foreground] [--name <n>] [--harness <a>] [--model <m>] [--variant <v>] [--prompt <text>] [--cwd <dir>]
+cotal spawn --file <persona-file> [--dry-run]
+cotal team deploy <cotal.yaml> [--dry-run]
+```
+
+A launch uses the manager and attaches after readiness by default. `--detach/-d` returns after
+readiness. `--foreground` runs the native application directly. Launch previews and receipt limits
+are described in [Agent and team views](cli-agent-views.mdx#managed-launch-view).
+
+### Launch options
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--space <s>` | resolved mesh | Target space |
+| `--server <url>` | registry entry | Broker URL override. A retained legacy manifest launcher applies this to `broker.servers` and requires a valid URL with no embedded credentials |
+| `--creds <path>` | none | Retained credential flag. Raw credentials alone cannot supply supported Manager control authority; the resolver requires an endpoint-caller triple |
+| `--name <n>` | persona's `name:` | Presence-name override (does not choose the persona) |
+| `--file <persona-file>`, `-f` | none | Persona file on the execution host. Cannot be combined with a positional persona or internal `--config`. Managed files are read on the manager host, without upload |
+| `--config <persona-or-path>` | none | Reserved for persisted internal handoff and enrollment callers. Public launches use a positional catalog name or `--file` |
+| `--harness <a>`, `-H` | persona's `agent:`, else the [`harness` preference](config.md#preferences), else `claude` | Connector type (`claude`, `opencode`, `jcode`, `hermes`, and so on). Legacy `--agent` remains accepted; combining the spellings refuses |
+| `--role <r>` | persona's `role:` | Role override |
+| `--model <m>` | persona's `model:` | Model override |
+| `--variant <v>` | persona's `variant:` | Model variant override (connector-defined; e.g. OpenCode reasoning tiers) |
+| `--cwd <dir>`, `-C` | serving manager's workspace root; direct foreground uses this cwd | Working directory for the agent. A managed relative path resolves against the manager's workspace root. A missing directory on that execution host refuses before launch |
+| `--prompt <text>` | none | Initial prompt auto-submitted at start |
+| `--opt <k=v>` | none | Connector-specific launch option, repeatable. Wins per key over the persona's `launchOptions:`; a connector with no option surface refuses it |
+| `--resume <id>` | none | Fork an existing session id into the mesh; only connectors that declare resume support accept it (see [the matrix](connectors.mdx)). The manager records the source session id, and `ps --wide` shows it. With `--detach --on <instance>`, a Claude session held on this host is carried to that instance first ([Resume a session](connect-claude.mdx#resume-a-session)); carrying one needs `--on` |
+| `--no-events` | event plane on where supported | Opt out of the session's structured event plane (`--events` only restates the default) |
+| `--share-tools <sel>` | none | Share named operator MCP servers with the agent |
+| `--subscribe <a,b>` | persona's | Channel read-set override; `""` clears it |
+| `--allow-subscribe <a,b>` | = subscribe | Read-ACL override; `""` sets it to the read set |
+| `--allow-publish <a,b>` | deny | Post-ACL override; `""` clears it |
+| `--detach`, `-d` | off | Launch through the manager and return after readiness without attaching. Reattach with `cotal attach` |
+| `--foreground` | off | Run the native application directly. Takes no structured receipt, manager pin, or control credential |
+| `--restarts <n>`, `--restart-window <ms>` | none | Managed restart policy. Both are required together and must be positive safe integers |
+| `--json`, `--plain` | terminal report | Finite detached receipts or previews. Default terminal attachment refuses these modes |
+| `--live-only` | off | Direct foreground only. Skip the durable backstop and its read-ACL row; disconnected messages are not replayed |
+| `--enrollment-file <private-file>` | none | Direct foreground only, with explicit `--space`. Protected one-seat enrollment input |
+| `--on <instance>` | class anycast | Pin a managed launch to a full manager instance ID as printed by `ps`. An empty pin or a direct foreground pin refuses |
+| `--dry-run` | off | Preview without allocation, provisioning, or application startup |
+| `--allow-stale <a,b>`, `--runtime <name>` | none | Refused by public `spawn`. Manifest stale waivers and runtime overrides belong to `team deploy <file>` |
+| `--expect-owner <u_…>` | none | With `COTAL_MANAGED_HANDOFF_FILE` only, and required there: the owner the handoff must carry |
+| `--expect-lifecycle-uid <uid>` | none | With `COTAL_MANAGED_HANDOFF_FILE` only, and required there: the lifecycle UID the handoff must carry |
+
+### Foreground actor allocation
+
+On a user-auth mesh, an ordinary direct foreground spawn without `--name` allocates the first free actor
+in the persona's series: `default_agent`, `default_agent_2`, `default_agent_3`, and so on. Held
+local material and existing grants are occupied, even when no presence is visible. Allocation
+preserves the existing session and its credentials. An explicit `--name`, a signed enrollment,
+and a managed handoff pin an identity and refuse a collision instead of renaming it. Authorization,
+network and malformed-provisioning failures are not reasons to try another name.
+
+### Foreground enrollment
+
+For a foreground spawn onto a remote user-auth mesh, a launcher may supply a one-time enrollment
+instead of a cached human login. Prefer a private file:
+
+```bash
+COTAL_ENROLLMENT_FILE=/run/secrets/cotal-enrollment \
+  cotal spawn --config ./seat.md --space main
+```
+
+The file contains only the enrollment URL, ending with at most one line terminator, and must be
+mode `0600` on POSIX. An orchestrator that cannot mount a file may set `COTAL_ENROLLMENT_URL`
+instead; that value is redeemed byte for byte, so a trailing newline in it is refused. Setting both
+is refused. Enrollment input
+requires `--space` and applies only to a foreground persona spawn. If the mesh is not registered yet,
+the enrollment response must carry the stock user-bundle fields and the command needs
+`--config <persona-file>` because there is no local remote-mesh persona catalog to read. The client
+redeems the URL once, registers the returned mesh material, exchanges the returned actor token at the
+pinned auth service, and removes both enrollment variables before starting any child process. A
+registered mesh whose record pins no exchange URL is refused before the URL is redeemed, so the
+enrollment stays unspent; re-register the mesh with `cotal meshes add <space> --from <url> --mode user`.
+
+<Callout type="warn">
+
+A cached login for the same IdP and an enrollment are conflicting proofs, so the command refuses
+rather than choosing one. An invalid enrollment never falls back to login provisioning. Unknown,
+expired, revoked, and already-used enrollments all produce one response: ask the owner for a fresh
+one. See [Enrollment redeem](identity-and-auth.md#enrollment-redeem) for the HTTP contract.
+
+</Callout>
+
+### Managed handoff
+
+A runtime that starts a managed seat outside the manager's filesystem hands the child a managed
+handoff instead: one `0600` file named by `COTAL_MANAGED_HANDOFF_FILE`, carrying the lifecycle the
+manager already enrolled. The runtime builds the command with `delegatedSeatCommand`:
+
+```bash
+COTAL_MANAGED_HANDOFF_FILE=/run/seat/handoff.json \
+  cotal spawn --config ./seat.md --space main --name <actor> --agent claude \
+    --expect-owner <owner> --expect-lifecycle-uid <uid>
+```
+
+The `cotal` entry reads the file, deletes it and drops the variable before it parses flags, prints
+help or loads extensions, so every outcome leaves no file. The variable is read under any letter
+case; spellings that name different files are refused after every one of them was deleted. The
+spawn then refuses a malformed handoff, or one whose space, owner, actor or lifecycle UID differs
+from `--space`, `--expect-owner`, `--name` and `--expect-lifecycle-uid`, before any broker
+connection or exchange request. Every refusal on this path names the field and never a value from
+the handoff. The registration's server, exchange and enforcement checks, the local state this
+machine keeps for the space (its mesh record, user-auth state and agent secret files), target
+resolution, the policy refresh, the broker preflight and the agent auth preflight quote the space,
+the server, the exchange URL, the actor or a path named for one of them in their own diagnostics and
+in the filesystem errors under them. For a handoff each prints one fixed sentence that names the
+field and the phase instead, whether its check fails or an error is thrown. When the agent auth
+preflight's rollback then fails to remove a secret or file, that sentence is followed by the names of
+the cleanup steps that failed, without their errors. The event-plane policy
+refusals name the handoff's space field. An actor outside `[A-Za-z0-9_]` and a space that cannot
+name local state, such as `..`, are refused as malformed before any plane. A handoff conflicts with
+the enrollment variables, `--detach`, `-f` and `--creds`, and needs `--config <persona-file>`. From
+there it runs the enrollment consumer above without redeeming anything. See
+[Delegated seats](embedding-delegated-seats.mdx#delegated-seats-outside-the-managers-filesystem).
+
+### Event channels
+
+Each session uses its connector's **event plane** by default: a stream of structured events
+describing what the agent did, rather than the prose it wrote, on a channel of its own. The channel is named after
+the agent's principal, `events.<owner>.<actor>`, never after its display name, because two live
+agents are allowed to share a display name and would then share a stream. The launch grants publish
+rights on that channel alone, foreground and detached alike. On an open mesh, which issues no
+credentials, the launch still allocates the agent an id, so the channel names a stable actor.
+`--no-events` is the explicit opt-out unless the selected registration says
+`policy: { events: "required" }`. Required policy makes the
+event arm and grant mandatory, so `--no-events` and connectors without an event plane are refused.
+
+The launch decision and the grant are separate on purpose. Holding publish rights on a channel is
+not a request to publish to it, so writing an event channel into an agent file's `allowPublish`
+does not override `--no-events`.
+
+### Persona resolution
+
+The persona is selected by an explicit `--file`, a positional reference, the
+[`persona` preference](config.md#preferences), then `default`. Persisted internal callers use
+`--config` ahead of the positional reference. A bare catalog name is loaded from the target mesh's `.cotal/agents/`. A reference that contains a path separator or
+ends in `.md` is loaded from that file. A relative path resolves against the mesh root, except that
+direct foreground enrollment or a managed handoff resolves its internal `--config` against the working directory.
+Managed persona and cwd paths belong to the serving manager's execution host. Public `--file` always
+names a file, including a bare filename with no extension. A missing
+persona is refused with the catalog directory or the file that was checked. A missing `default`
+persona also names the command that writes one: `cotal up` in the root of a space this machine
+started, or `cotal persona create default` for any other space. The launch flags
+override the file. On a user-auth mesh the
+effective name is also the agent's actor token, so it must match the token grammar (no `-`); the
+spawn is refused with that explanation before any request is sent. Direct `--foreground` runs the native application on your terminal. Default spawn and `--detach`
+hand the launch to the manager. Both modes get the
+durable backstop on a mesh that runs the delivery daemon; `--live-only` skips it for a foreground
+spawn (messages posted while it is disconnected are then not replayed). A foreground exit retires
+the agent's creds and broker footprint, like a manager despawn. On a static-auth mesh, a spawn that
+fails after its footprint exists, for example because the creds directory cannot be written,
+retires that footprint the same way before it exits with the error. The creds and the footprint are
+removed as separate steps, so a creds file that cannot be deleted does not leave the broker durables
+behind, and the failed steps are reported together. On a user-auth mesh the two arms
+differ: a spawn against a mesh this machine provisioned revokes the actor row on exit, while a
+remote spawn (an enrollment or the advertised provisioning endpoint) removes only this machine's
+credential files; its grant stays until the mesh operator revokes it, and the launch line says
+which arm you are on. A spawn through the advertised provisioning endpoint against a record that
+pins no exchange URL is refused before the grant is requested, so no credential lands on this
+machine. A foreground `--share-tools` selection that names a server the config does not declare is
+refused before anything is provisioned. A managed spawn is an
+**action**: the manager accepts it and returns the allocated identity, then the CLI
+follows that goal to readiness before attaching or returning a detached receipt (see [the control surface](control-surface.md)).
+See [Connect Claude Code](connect-claude.mdx) and [Agent files](agent-files.md). Team manifests use
+[`team deploy`](cli-agent-views.mdx#recorded-team-views), while public `spawn -f` selects a persona file. (`cotal start` was merged into `cotal spawn --detach`.)
+A `--detach` spawn onto a manager from another Cotal release is refused before any request is sent
+when the manager's contract does not declare a field this CLI sends. The refusal names the field,
+calls it version skew, and gives this CLI's version. A field you leave unset is not sent, so it
+never causes that refusal.
+
+### Manager capacity
+
+A manager has 50 seat slots, and each seat counts once. A slot is held by a managed seat (a row in
+that manager's `cotal ps`, including a seat still joining), by a reserved launch the manager accepted
+but has not started a process for, or by a cooling hold. A seat that ends within 10 seconds of
+starting leaves its slot cooling until those 10 seconds pass, unless an operator stopped it. Such a
+seat holds only that cooling slot, even while its launch is still reporting the failure. A spawn
+refused at the limit states that split and whether waiting can free a slot:
+
+```text
+at capacity (50 of 50 slots: 49 managed, 0 reserved, 1 cooling); waiting frees a cooling slot in 7s, or despawn one
+```
+
+A cooling slot frees at the stated time. A launch that has not settled frees its slot only if it
+fails, and a managed seat frees its slot only when it stops. The refusal counts a launch as pending
+only while it holds a slot, so a launch whose seat already ended is not counted. The roster counts
+presence, which also includes peers no manager owns, so its total is a different number.
+
+### Launches from a managed seat
+
+Run from a managed seat's own shell on a static or open mesh, `cotal spawn --detach` launches as
+that seat when it targets the seat's own space. When `COTAL_SPACE` is set, a launch without
+`--space` targets that space. The CLI reads the seat's
+launch identity (`COTAL_NAME`, `COTAL_ID`, `COTAL_LIFECYCLE_UID`, `COTAL_SPACE`, and on a static
+mesh the seat's own credential), so the manager records the seat as the spawner, the same as for
+the seat's `cotal_spawn` tool. On a static mesh that credential also proves the seat's space, so a
+launch without `COTAL_SPACE` still runs as the seat, and a target space holding no credential for
+the seat is refused. An open mesh acts as the seat only when `COTAL_SPACE` names its space. The
+seat can then stop the child with `cotal_despawn`, and the manager stops the child when the seat
+exits. On a static mesh a seat whose agent file lacks `capabilities: [spawn]` is refused, because
+its credential holds no spawn subject.
+`--on <instance>` keeps its pin: the seat's own credential has no instance route, so on a static
+mesh the CLI mints a one-shot `manager-caller` view for the seat, pinned to that instance and
+carrying the spawn subject only when the seat's credential holds it. On an open mesh the call keeps
+the TLS requirement the mesh records. A managed-seat launch refuses a `--creds` override,
+an unsupported or missing seat caller, and an unregistered target context.
+It does not substitute an operator caller. User-auth seat callers are unsupported on this route.
+
+### Foreground lifecycle isolation
+
+Foreground user-mode launches serialize their local actor material. A duplicate refuses
+without replacing the first launch's files. A new local-user foreground launch also refuses
+an existing grant before rotating it. Departure cleanup is conditional on the launch's token
+and lifecycle generation, so an earlier launch cannot revoke a successor's grant. Remote
+provisioning remains the mesh operator's authority and can reissue material before the
+client observes an existing same-host consumer.
+
+
+## models [#models]
+
+```bash
+cotal models [--json | --plain] [-H | --harness <connector>] [--refresh] [--on <manager-instance>]
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--space <s>` / `--server <url>` / `--creds <path>` | resolved mesh | Which manager to reach |
+| `--harness <connector>`, `-H` | all registered applications | Application whose catalog to list |
+| `--on <manager-instance>` | native selection | Ask only the named manager instance. An unavailable or unauthorized pin refuses without choosing another. |
+| `--refresh` | off | Ask the connector to refresh its provider cache |
+| `--json` / `-j` | off | One JSON document: `result.items` holds each catalog as returned; the requested manager ID, answering ID and answering epoch are separate |
+| `--plain` | off | The same report without color |
+
+Asks the selected manager for each application's model catalog (model ids plus their variants)
+for connectors that expose one. OpenCode and Codex query harness/provider surfaces; Jcode reads
+providers that enable `model_catalog = true` in the operator Jcode `config.toml`. Jcode's listed
+effort tiers render as `<tiers> (declared, not provider-verified)`, and launch can still refuse one.
+A connector without a catalog says so with `supported: false`, and one whose install has no
+catalog it can list, such as OpenCode 2.x, gives the reason in `unavailable`; neither is a failed
+read. A connector whose catalog could not be read, or that the manager could not load, makes the
+read `partial` (exit 4) with one `MODEL_CATALOG_UNREADABLE` warning naming its cause. The
+screen points to that warning without repeating it inline. The remedy is to correct the stated
+cause before retrying; a refresh cannot repair missing connector configuration. A manager-level
+refusal is reported separately. A connector whose harness the manager did not find at boot
+reports the reason boot recorded, as a spawn does, so restart the manager after installing it. Pick
+a result with `cotal spawn --model <id> --variant <v>`, where `<id>` is the model id as the catalog
+printed it. OpenCode and Codex ids are the full
+`provider/model`; Jcode ids are bare (`opus-5`, not `cliproxy/opus-5`), because the provider is
+selected by the operator's Jcode config and a prefixed id is refused at launch with the bare form
+named.
+
+
+## persona [#persona]
+
+```bash
+cotal persona [--json|--plain]
+cotal persona show <name> [--json|--plain]
+cotal persona create <name> --file <persona.md>
+cotal persona create <name> --prompt <text> --subscribe <a,b>
+cotal persona edit <name>
+cotal persona remove <name> --yes
+```
+
+`p` aliases `persona`; `persona rm` aliases `persona remove`. Without `--on`, these commands manage the
+selected space's local `.cotal/agents` catalog without connecting, refreshing a remote catalog,
+or seeding connectors. `--space` and `--server` select the same root used by launch. A prepared
+space has an offline catalog before it is started. Failed target resolution never falls back
+to the current directory. Exact-manager `--on` supports list, show, and create under the native ownership policy. Remote
+edit and removal refuse without changing the local catalog.
+
+Creation accepts one of `--file/-f` (a complete [agent file](agent-files.md)), `--prompt`, or
+`--from` (body file, or `-` for explicit stdin). Complete files validate all supported fields,
+must name the requested persona and keep their original bytes. They cannot be combined with
+`--role`, `--model` or `--subscribe`. Body input requires an explicit `--subscribe` declaration,
+including `--subscribe ""` for no channels, and accepts `--role` and `--model`.
+Creation refuses an existing definition. Mutation receipts contain names and paths, not bodies.
+
+Editing opens a private draft using the editor preference (`VISUAL`, then `EDITOR`, then saved
+preferences). A successful editor exit and valid definition are required before saving. A changed
+or removed source refuses with `CONFLICT` (exit 2), leaving the current definition intact. Local
+CLI create, edit and remove share a per-persona lock during comparison and commit, not while an
+editor or confirmation is open. Manager and external writes do not participate in that lock.
+`--json` and `--no-input` refuse editing before an editor opens.
+
+List, show and mutation receipts support one-document `--json` and line-oriented `--plain`.
+Show explicitly returns the full definition and source. List does not return the body or launch
+options. A malformed entry produces a partial inventory (exit 4); an unreadable catalog refuses
+rather than reporting it empty. Remove asks with cancellation as the default in a terminal.
+Plain confirmation uses numbered choices. Scripts and JSON removal require `--yes/-y`.
+
+The legacy `personas` parser remains available during migration: `list [-v] [--running]`,
+`show`, `edit`, `new` and `rm --force`. Its `new` requires `--subscribe`, reads `--from -` from
+stdin, and overwrites an existing persona only with `--force`. Its local writes share the same
+draft validation and commit fence. Only its explicit `--running` overlay connects to the mesh.
+
+### Personas on an exact manager [#personas-on-an-exact-manager]
+
+`persona --on <full-manager-instance>` lists that manager's authorized catalog.
+`persona show <name> --on <id>` reads a card only when its native ownership policy allows it.
+A name-only row does not grant access to its instructions or permission to redefine it.
+These operations never substitute the local catalog or another manager.
+
+`persona create <name> --on <id>` accepts one of `--file`, `--prompt` or `--from`, with
+`--from -` as explicit piped input. Leading frontmatter follows the native persona merge:
+the supplied name wins, explicit model/role/application and channel fields override the file,
+and the manager preserves existing ownership and redefinition policy. Inputs are bounded to
+1 MiB and must be valid UTF-8. A malformed leading block refuses before the remote request.
+
+The remote wire accepts name, body, model, role, application, initial read channels and read/post
+ACLs. `--harness`, `--subscribe`, `--allow-subscribe` and `--allow-publish` name those fields.
+Other frontmatter, including kind, tags, description, attention settings, variant, launch options,
+capabilities and owner, refuses as unsupported instead of being silently discarded. Remote edit
+and removal are not native wire operations and refuse; no local file is changed instead.
+
+Creation is silent unless `--announce <concrete-channel>` is supplied. Announcement preparation
+must resolve to the same space, root and account context before the write. A confirmed save and
+a later denied or unconfirmed announcement produce a partial receipt retaining the save. Do not
+repeat the definition to recover an announcement; read the channel first. A stored announcement
+is not delivery, a spawned agent or task completion. Finite JSON/plain receipts keep the requested
+and answering manager, epoch and original request, without printing the creation input body. Rich results offer
+follow-up show or spawn commands with the original exact manager pin; a suggested launch still
+requires the caller's native spawn authority.
+
+
+## runtimes [#runtimes]
+
+```bash
+cotal runtimes [--json | --plain]
+```
+
+Lists every agent runtime the manager can spawn through: the built-in `pty`, the official providers
+(`orca`, `tmux`, `cmux`, `herdr`), and any custom provider installed via `cotal ext add`. Each installed
+provider is probed so you can see what is actually reachable on this machine before selecting it:
+
+```
+RUNTIME  STATE                  PACKAGE
+pty      built in
+orca     installed · reachable  @cotal-ai/orca
+tmux     not installed          @cotal-ai/tmux
+cmux     not installed          @cotal-ai/cmux
+herdr    not installed          @cotal-ai/herdr
+add one that is not installed with `cotal ext add <package>`
+```
+
+`installed · reachable` / `unreachable` is the provider's own `available()` probe; `not installed`
+means it is a known runtime you can add with `cotal ext add` and the package shown. `--json` writes
+one document whose `result.items` are `{name, state, package, reachable, error}`, with `state` one of
+`built-in`, `installed` or `not-installed` and `reachable` null when the provider was not asked. An installed provider
+whose package fails to load is shown with its error and makes the read `partial` (exit 4). The command
+reads this machine only, so its `target` is null. Selecting an unknown or uninstalled runtime
+via `up` or `team deploy --runtime <name>` fails loud and, for a known one, points at the exact `cotal ext add`
+package. There is no silent fallback to `pty`.
+
+
+## seats [#seats]
+
+```bash
+cotal manager seats [--drain [--yes | --dry-run]] [--json | --plain]
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--drain` | off | Retire every safely childless seat. Live children stay. Confirmation defaults to cancellation |
+| `--dry-run` | off | With `--drain`, read the census without submitting a drain |
+| `--yes` | off | With `--drain`, confirm outside an interactive terminal |
+| `--json`, `--plain` | terminal report | Finite shared output |
+
+The hidden `cotal seats` spelling remains available with the same maintenance validation.
+The public command is `cotal manager seats`.
+
+The pty runtime used to start a detached custodian process for every Linux seat. It now spawns
+in-process, but custodians that an earlier manager started keep running, and one whose agent has
+exited stays resident while a manager still holds its connection. This command lists the custody
+records under `COTAL_SEAT_ROOT` (default `~/.cotal/seats`), one line per seat:
+
+| State | Meaning |
+|---|---|
+| `live-child` | The agent process still runs. The seat is never signalled, and a manager can still adopt it |
+| `childless` | The agent has exited, or the record comes from an earlier boot. `--drain` retires the seat |
+| `drained` | `--drain` proved the custodian and the agent gone and removed the record |
+| `refused` | The record cannot be read, carries no start or boot identity, this host publishes no boot identity, or the reap could not prove the processes gone. The record stays on disk |
+
+A drain signals only a custodian whose recorded start identity still matches the live process, so
+a reused pid is never touched. No process outlives a reboot, so a record from an earlier boot is
+reported childless and `--drain` removes it without signalling anything. A record with no start or
+boot identity is refused with or without `--drain`, and is never reported as running or exited.
+On a host that publishes no boot identity (`/proc/sys/kernel/random/boot_id`) every record is
+refused the same way, because no record can be tied to this boot.
+That refusal and an unreadable record signal nothing. A refusal from the reap itself can come after the drain already
+sent `SIGKILL` to the custodian. Its detail names the pid or process group the reap could not prove
+gone, so check those processes before you retry. The command exits non-zero when any record is
+refused. It is Linux-only and throws on other platforms.

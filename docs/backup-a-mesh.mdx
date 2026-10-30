@@ -8,7 +8,7 @@ audience: "operators"
 import { Callout } from 'fumadocs-ui/components/callout';
 
 Create a consistent offline backup while the mesh is stopped.
-Use the [backup and restore reference](cli.md#backups) for the complete artifact and recovery contract.
+Use the [backup and restore reference](cli-backups.mdx#backups) for the complete artifact and recovery contract.
 
 <Callout type="warn" title="Controller stacks cannot be preserved">
 
@@ -103,4 +103,4 @@ If finalization fails, the committed gate and retained cleanup suppression remai
 Missing commit evidence, interrupted finalization, a live recorded endpoint despite missing pidfiles, or ambiguous ownership proof refuses recovery.
 
 Do not erase the journal or start another listener to bypass that refusal.
-Follow the [backup recovery reference](cli.md#backups) for artifact validation, fallback, disaster consent, and degraded recovery.
+Follow the [backup recovery reference](cli-backups.mdx#backups) for artifact validation, fallback, disaster consent, and degraded recovery.

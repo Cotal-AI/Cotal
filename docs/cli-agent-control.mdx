@@ -1,0 +1,402 @@
+---
+title: "Agent terminal control"
+description: "Managed seat census, terminal attachment, input receipts, and native agent stops."
+kind: Reference
+audience: operators
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Managed seat control uses the running manager's native endpoint commands.
+
+## Managed seats [#managed-seats]
+
+```bash
+cotal ps [--json | --plain] [--on <instance>] [--wide] [--slots] [--space <s>]
+cotal stop <agent> [--force] [--on <instance>] [--space <s>]
+cotal attach <agent> [--on <instance>] [--no-reconnect] [--space <s>]
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--space <s>` / `--server <url>` / `--creds <path>` | resolved mesh | Which manager to reach |
+| `--name <n>` | none | Flag form of the managed agent positional for stop or attach. One target source is required |
+| `--on <instance>` | class anycast (`ps`: class scatter) | Pin to one manager instance id (multi-manager space); takes the whole id as `ps` prints it, not a prefix. An empty value (`--on ""`, an unset shell variable) is refused, never treated as absent. A roster principal id (`local.…`) is refused with a message naming the instance id `ps` prints |
+| `--wide` (`ps`) | off | Print each seat as a labeled record that adds the operational facts the manager records: the provider the connector reported serving the model, `cwd`, `pid`, spawner, lifecycle uid, the owning manager's instance id and host, and for a `--resume` seat the session it forked (`forked from <id>`, with the source title and transcript SHA-256 once a Hermes or Jcode seat has recorded its fork; a carried Claude session prints `forked from <host>:<id>` with its title, SHA-256 and `carried <time>`, the time its bytes reached the manager). Model and requested variant stay in the identity row rather than printing twice. A fact the manager did not record (for example a runtime with no real process, or a connector that reported no provider) prints nothing, never a placeholder |
+| `--json` / `-j` (`ps`) | off | One JSON document (see below). Mutually exclusive with `--wide` and `--plain` |
+| `--plain` (`ps`) | off | The same report without color or marks |
+| `--slots` (`ps`) | off | List the durable static slot rows this manager owns instead of live seats, through the `slots` command. Mutually exclusive with `--wide`. A row that is not in the live roster still prints, with `LIVE` false; a retired row never prints |
+| `--no-reconnect` (`attach`) | off | End the attach when its session ends, instead of re-establishing it. For scripts that want one run and one exit code |
+
+### Control credentials
+
+On a controller stack started with `--no-manager`, `ps` refuses `TARGET_UNAVAILABLE`: no manager
+runs, so there are no managed agents to list. Bare `cotal up` adds the manager.
+
+A raw `--creds` file is refused by `ps`, `stop`, `attach` and the other control commands, because
+that route mints no endpoint-caller triple; the project folder, or `--space` against the registry
+entry, is the route that does.
+
+### Seat JSON envelope
+
+The human `ps` report is presentation text and is not a stable parsing target. Scripts use `--json`,
+one envelope whose `result` is:
+
+| Field | Meaning |
+|---|---|
+| `kind` | `seats`, or `slots` with `--slots` |
+| `items` | Each seat (or slot) row as its manager returned it, unchanged |
+| `managers` | Each manager instance asked: `{instanceId, state}`, where `state` is `answered`, `silent` (registered, no answer within the deadline, with the `liveness` this command established), `refused` (with its `error` and `code`) or `contract-mismatch` |
+
+`target` is `{space, scope: "all-managers"}` for the class scatter, and
+`{space, scope: "manager", managerInstanceId}` for `--on` or a user-auth mesh. A manager that is not
+`answered` makes the read `partial` (exit 4), with a `MANAGER_SILENT`, `MANAGER_REFUSED` or
+`MANAGER_CONTRACT_MISMATCH` warning naming it.
+
+`--slots --wide` is refused: `--slots` lists durable static slot rows, `--wide` prints live seat facts, and the two answer different questions. Across a multi-manager scatter, `--slots` prints each manager's rows under its own instance header, the same way the plain `ps` scatter does.
+
+A revision-32 manager also supports a bounded native `slots` query through
+`endpoint invoke manager slots --on <instance> --args '{"names":["worker"],"includeRetired":true}'`.
+It point-reads up to 100 distinct aliases and can return their retired slot/head and
+cleanup observations. The default `ps --slots` query is unchanged and excludes retired
+rows. Omitted aliases, live-map absence and stop acknowledgements are not retirement
+proof. Match the returned principal and lifecycle UID before interpreting any terminal.
+
+### Seat observations
+
+These are operator clients over the running manager's control plane. The default row includes the
+connector, model pin, optional requested variant, and runtime as operational descriptors for the
+managed row. They do not make a shared display name a unique protocol identity; use `--json` when
+unambiguous owner+actor attribution is required. An omitted variant means no override was requested;
+Cotal does not invent an effective provider default it cannot observe. `ps` also prints two state
+facts per managed agent, because they answer different questions: the process fact from the manager's
+own runtime handle (`running` with its uptime, or `exited` with how long it ran), and the mesh fact
+from the roster (`idle` / `working` / `waiting` / `mesh offline`, or `not in roster` when the seat has
+no presence row at all: a seat that has not joined yet, or one that never did). When the seat's
+connector relays a harness-reported condition, the mesh fact carries its code and how long it has
+held, so a seat whose turn died on a provider rate limit reads `waiting (rate_limit for 40m)` rather
+than a bare `waiting`, and `--json` carries the whole `condition` object. When the connector reports
+the seat's last work event (presence `activeAt`), the mesh fact ends with its age, such as
+`· active 3s ago`, and `--json` carries `activeAt`. A seat whose turn stopped advancing keeps
+heartbeating, so its presence row stays fresh and this age is what shows the stall. A seat can be
+`running` and `mesh offline` at once: the process is alive and its presence has lapsed. That row says
+how long, as in `mesh offline for <age>` with an age such as `3.5h`, counted from the seat's last
+presence heartbeat, which `--json` carries as `offlineSince` (epoch ms). The age is read only from
+the seat's own presence record, matched on its principal and lifecycle uid, so a same-named peer or
+an older lifecycle never dates it. The manager log names each managed seat that is offline on the
+mesh while its slot is held
+(`seat offline on the mesh: <name> - last heartbeat <time>; process <state>`), including one its
+watch first sees offline after a reconnect, and each one that comes back
+(`seat back on the mesh: <name>`), so a watchdog that only checks process liveness has a line to
+act on. The manager does not reap or re-key such a seat. The mesh fact is only a verdict while the
+manager's own presence watch is fresh: when that watch has been silent past the liveness window, or
+has not replayed the bucket yet, every row prints `mesh unknown` with the reason instead (`--json`
+carries it as `meshView: stale | unpopulated`), because `offline` and `not in roster` would then
+describe the manager's watch rather than the seat. The manager rebinds a watch that goes
+silent under a live connection on its own, so `mesh unknown` normally clears within a liveness window.
+On a user-auth mesh `ps` also renders each managed agent's last credential-refresh outcome, fail-closed.
+
+### Manager routing
+
+On a static-auth or open mesh, bare `ps` is a class scatter. It freezes the live manager class from
+the records registry, merges every registered instance's agents grouped and attributed per
+instance, and a non-answering instance is shown as `registered, no answer within the deadline`
+(never silently omitted). A refused list or a missing answer makes the census incomplete: rows
+from other instances remain visible, but `ps` prints an incomplete-census warning on stderr and
+exits 4 (`partial`), including with `--json`. Those rows are not a complete seat count. A contract
+mismatch prints one plain comparison of the requested and served input/output digest pairs and
+advises aligning manager versions. The no-answer label means only that the instance is registered
+and did not answer. It does not say the host is down, because a dead host never deregisters itself and a
+live one can be slow; if it is gone, deregister it.
+`--on <instance>` pins the read to one exact instance id instead. A wrong pin fails loud
+rather than falling through: a well-formed id that no live manager carries is reported as
+`manager instance <id> did not answer` (nothing else is asked), and a credential without that
+instance's rail is reported as refused by the broker, not as an unresponsive manager. A manager
+that answers with a refusal is shown with its own cause; "no manager reachable" is said only when
+nothing answered at all. If the scatter's own registry read fails (the freeze or the reconcile),
+`ps` says the manager registry could not be read rather than pronouncing on the managers, which
+may all be up.
+
+### Versioned endpoint rails
+
+A reachability verdict applies to the endpoint rail used by the request. An issued caller rides the
+versioned `ep.v1` rail, a separate subject space from the legacy `ep` rail, and an endpoint serves
+both (SPEC 13.15). A manager older than the versioned rail serves `ep` alone, so it can be running,
+registered and answering while an issued caller's request reaches nobody. Silence on `ep.v1` is
+reported as `no manager answered on the <rail> rail` with `ep.v1` as the rail, and names both causes
+it is consistent with: no manager running, or one older than the rail. The CLI cannot tell them
+apart, because the service registry records no package version, so check whether a manager is
+running and, if it is, its version. The same scoping applies to `cotal run`'s hosted verbs, which
+drop the `--local` suggestion there, since `--local` drives the run from the calling process and
+names the caller as its answerer.
+
+### Seat locality
+
+`stop` and `attach` route by seat locality. A seat can only be stopped or attached by the
+manager actually running it, and the class queue does not know which one that is. So on a
+static/open mesh both verbs first ask every registered instance which one hosts the named seat, then
+address that instance directly. This happens by default; you do not need `--on`.
+
+`--on <instance>` remains the override, for when you already know where the seat lives or the
+lookup itself is degraded. On a **user-auth mesh**, the exchange selects one authorized manager
+for a short-lived `manager-caller` view. `--on` requests a specific instance. Without it, a command
+run from a managed seat's shell selects the manager that launched the seat (`COTAL_MANAGER_INSTANCE`),
+and any other caller's selection must be unique. Discovery and the command use that instance route.
+The caller gains no registry read or scatter permission. An absent, ambiguous or unauthorized
+selection refuses before sending the command. With several of your managers live, the refusal lists
+their instance ids so you can pass one to `--on`. By default, when every manager you registered has
+exited, the refusal says to start one with [`supervise`](cli-processes.mdx#supervise); the command is not sent to the local manager.
+
+A trusted hosted composition may opt into an [interactive local primary](embedding-manager.mdx#interactive-manager-primary).
+Under that policy, unpinned human control selects the genuine local Manager up front, even when your
+own remote Manager is live; an unavailable local Manager refuses without remote substitution. This
+affects all interactive Manager verbs, not only `ps`. Select your remote Manager explicitly for its
+spawn, run or terminal operations. Explicit pins and managed-seat launching bindings keep their rules.
+There is no user flag for the policy, and stock `up` and recovery defaults do not enable it.
+
+A seat is reported as **not found** only when every reachable instance answered for itself. An
+instance that stayed silent past the deadline, or that refused the read rather than answering, said
+nothing about which seats it hosts, so the seat may be running on it. That case reports that the
+location could not be established, names the instances that did not answer, and states outright
+that it is not a report that the seat is gone. Read it as unknown and retry with
+`--on <instance>`; a retry loop that treats it as "already gone" stops looking for a seat that is
+still running. A single manager cannot tell "hosted elsewhere" from "does not exist": it answers
+`not-found` for both, which is why the search asks all of them and why an incomplete search
+concludes nothing.
+On a user-auth mesh, `cotal ps` reports what one authorized manager knows about your agents
+(an instance-addressed read against its in-memory roster, owner-filtered). It does **not** report
+other manager instances or establish whether they are reachable. Completeness across a
+multi-manager user-auth space is not claimed.
+A manager that does not answer fails the command outright (`TARGET_UNAVAILABLE`, exit 2), rather
+than printing an empty list that could be read as "no agents". Your ledger row needs the `admin` scope to
+reach `ps` at all; `spawn` alone is refused by the broker (the ep tier boundary). A broker-refused
+read keeps that refusal and adds the documented scope requirement and `cotal auth grants` remedy.
+The broker does not identify whether the missing permission is for the route, command or target;
+the CLI does not substitute another caller or retry on a different route.
+
+### Terminal attachment
+
+`attach` streams and drives an agent's terminal on the `pty` runtime; detach with the escape key
+(Ctrl-] by default; see the [`detach-key` preference](config.md#preferences)). The key is recognised
+as the legacy control byte and as the kitty keyboard protocol and xterm modifyOtherKeys encodings of
+the same press, so a terminal with either protocol enabled detaches too. It does so over a one-use, holder-bound
+mesh session ([SPEC](../SPEC.md) §13.6): the manager replies with a signed session grant (never a
+`127.0.0.1` URL), the CLI redeems it once over the broker, and the browser console (`cotal console`)
+drives the same session. `stop` and `attach` need a running manager to talk to. On a static mesh
+they are cross-agent admin operations. On a user-auth mesh, your own agents (any agent under your
+owner) need only the `spawn` scope; another owner's agent needs `admin` on your ledger row
+([identity & auth](identity-and-auth.md)). Launch detached agents with [`spawn --detach`](cli-agents.mdx#spawn).
+
+### Attachment reconnection
+
+`attach` reconnects when the link dies. A session lives on a network link, and a laptop that
+sleeps, a VPN that drops or a wifi handover kills it. When that happens `attach` prints
+`[cotal: connection lost, reconnecting]` on stderr and starts asking the manager for a new session:
+a fresh grant, a fresh per-session credential, a fresh connection, so every attempt re-runs the same
+authorization the first attach did. On success it prints `[cotal: reconnected]`, the manager repaints
+the seat's current screen the way it does for any attach, and you carry on in the same terminal.
+Retries wait 1s, 2s, 5s, 10s, then 30s, for as long as the seat exists. The detach key is read the
+whole time the loop runs, the waits and the attempts alike, so a reconnect never traps you: press it
+while a session is being established and the attach ends there, and a session that lands behind the
+press is handed back to the manager rather than left holding a slot. Everything else you type while
+there is no session is dropped rather than queued, so keystrokes aimed at a terminal that turned out
+to be frozen, Ctrl-C included, are not delivered to the agent by a reconnect you did not know had
+happened. That starts before the first session, not at the first reconnect: at a terminal, `attach`
+reads and drops what you type while it is still resolving the mesh, so a key struck at a prompt that
+has not come up yet does not reach the agent when it does.
+The terminal is in raw mode for the whole reconnect, including when the link died before the first
+session finished opening, so the detach key works there too instead of echoing as `^]`.
+
+A **pipe** carries script input. For example, `printf 'ls\n' | cotal attach --name web` is
+buffered until the session opens. Buffering continues across reconnects, so
+`tail -f log | cotal attach --name web` does not lose the part of its feed written while the link was
+down. Only a terminal gets the reader; `--no-reconnect` keeps the old behaviour on both.
+
+It stops on its own when reconnecting cannot help, and says why: a manager that refuses the attach
+exits non-zero with the manager's own message, and a reconnect that finds the seat no longer there
+(despawned, or its agent exited while the link was down) exits cleanly with `seat <name> is gone`.
+It stops the same way on a refusal the CLI raises itself, such as a broker that denies the request.
+A local connect refusal that retrying cannot fix, such as a static-auth mesh whose seed is now
+missing, also exits non-zero with the refusal's own sentence. A broker that is still unreachable
+keeps the loop trying in silence.
+A refusal that could still pass, such as a manager at its session ceiling, is relayed in the
+manager's own words while the loop keeps trying, once per refusal rather than once per attempt.
+Pressing the detach key ends the view with `Detached`. A remote terminal-session end, including
+process exit or manager shutdown, prints `Attach session ended`. Neither report claims the agent
+is still running or that its cleanup completed. Use `cotal ps` to check its current state.
+`--no-reconnect` restores the single-session behaviour.
+
+Each reconnect also hands the abandoned session back to the manager, over the first link that can
+carry the message, so an attach that flaps does not eat the manager's session slots one outage at a
+time. If that message never gets a link, the attach says so when it ends. The live-session ceiling
+defaults to 64 concurrent sessions (`--max-sessions`); the browser console opens one session per
+pane, so a dashboard over a large mesh should size for agents × panes. Hitting the ceiling refuses
+before a credential is minted and names `--max-sessions`.
+
+### Session grant redemption
+
+Which mesh `attach` resolves also decides **how it redeems the grant**. On a registered open mesh
+there is no local seed. The CLI connects bare, the same way other control commands already do, and
+the session rail is the caller rail that a real open-mode connection already reaches. Telling the
+operator to re-register the root is false: the registered root is already the contract. On a
+static-auth mesh the grant is still redeemed by minting a short-lived
+session-scoped credential from the seed at the root the mesh resolved to, never from a `.cotal`
+found by walking up from whichever directory you happen to be standing in. The difference is not
+hypothetical: `~/.cotal` exists on every install because the mesh registry lives there, so a command
+run anywhere under your home directory but outside a project used to mint from your home
+directory's trust and present it to a broker that trusts a different chain, which surfaced as a
+bare authorization failure that named nothing. A directory that does hold another chain for the
+same space is now reported on the way past, and not obeyed:
+
+```text
+! this directory resolves to /Users/you, whose .cotal/auth holds a DIFFERENT trust chain for space "team".
+  attach used /Users/you/projects/app, the root this mesh resolved to. The other one is not being used, and is worth a look.
+```
+
+When a **static-auth** mesh holds no seed at the resolved root, `attach` refuses and names what it
+resolved, the broker and the root, instead of describing a directory it did not use and instead of
+taking the open-mode path. An authenticated registry entry with a missing seed is still
+authenticated. On a USER-AUTH mesh `attach` reads no seed. It sends your login and the session grant to
+the auth service, which issues a `session-caller` bearer only if your owner and actor hold that
+session. The connection it opens expires with the session grant.
+
+### Console authority
+
+Terminal bytes stream over the mesh; the manager's own HTTP/WS face serves the console. That endpoint binds
+**loopback by default**, so nothing is exposed by accident; `cotal up --host <addr>` passes its bind
+address down, which is what lets you reach the browser console (`cotal console`) for an agent whose manager runs on another machine.
+`attach` does not use that face: it redeems a signed mesh session grant over the broker instead (see above), so it reaches a
+remote manager regardless of the bind address. A
+bare `cotal supervise` and an embedded manager stay machine-local. Set it directly with
+`supervise --console-host <host>`.
+
+That address is **recorded on the mesh** and carried forward, because it is a decision rather than
+something later commands can work out for themselves (a broker dial address is not a manager bind
+address). Every later manager launch for the same mesh reuses it, including a same-root `cotal up` repair,
+an adopted preserved or restored listener, and a retained legacy manifest deployment. A manager replacement
+does not quietly move a reachable attach face back to loopback. Passing `--host` again overrides it,
+so you can widen or narrow exposure whenever you like; a mesh that never asked stays loopback-only
+and records nothing.
+
+Because that face mints terminal read and write authority for every managed agent's browser session, it is credentialed in two
+tiers. A mesh caller receives a **ticket** bound to the single agent the manager just authorized,
+single-use and short-lived, so one authorized attach can never be re-pointed at someone else's
+agent. The **console token** is the operator's own, reaches every agent, and is printed only to the
+manager's output. The roster, the live feed, and the PTY stream all answer `401` without one; the
+static console shell is served openly, since it describes no agent.
+
+
+## input [#input]
+
+```bash
+cotal input <agent> <text> [--no-enter] [--on <instance>] [--space <s>]
+cotal input --name <n> --text <text> [--no-enter] [--on <instance>] [--space <s>]
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--space <s>` / `--server <url>` / `--creds <path>` | resolved mesh | Which manager to reach |
+| `--name <n>` | | Managed agent to type into (required) |
+| `--text <text>` | | The text to type, taken verbatim (required) |
+| `--no-enter` | off | Type the text and stop there, without pressing Enter |
+| `--on <instance>` | class anycast | Pin to one manager instance id using the same rules as [`attach`](#managed-seats) |
+
+`input` writes text into a running agent's terminal and returns a receipt from one authorized call.
+[`attach`](#managed-seats) holds a live terminal session open.
+
+A line beginning with `/` is an application command handled through its terminal input. It is not
+a mesh chat message. Ordinary text can also be typed.
+
+```bash
+cotal input --name reviewer --text "/compact"          # ask the harness to compact its context
+cotal input --name reviewer --text "/model opus"       # switch its model
+cotal input --name reviewer --text "hold on that PR"   # ordinary typing works too
+```
+
+### Input quoting
+
+ `--text` takes a value, so a payload starting with `/` survives as written. A payload
+starting with a dash needs the `=` form, because the shell-style `--text --foo` is ambiguous and is
+refused rather than guessed:
+
+```bash
+cotal input --name reviewer --text=--verbose          # dash-leading text: use --text=<value>
+```
+
+Enter is requested by default. A terminal write receipt does not establish application consumption.
+`--no-enter` types the text and leaves it sitting at the prompt, which is how you stage a line and
+send it later.
+
+Nothing comes back but a `Terminal input written` receipt. It names the agent, space and manager,
+the bytes the manager reported writing (counting the trailing carriage return) and whether Enter was
+requested. It confirms the write to the terminal only. Whatever the agent does next shows up where
+its output already goes: the mesh, its transcript, or an `attach`.
+
+<Callout type="warn">
+
+A write the manager cannot confirm, such as a terminal write that failed partway, exits 3 with
+`Outcome unconfirmed` and is not typed again. Part of the text may already be at the prompt, so check
+the seat before you send it again.
+
+</Callout>
+
+### Input authority
+
+`input` is operator-only and has narrower grants than `stop` or `attach`. Those two are granted to
+anything holding `spawn`, so an agent can stop and attach to seats under its own owner. `input` is
+not: it is granted only to operator credentials, which on a user-auth mesh means your ledger row
+needs the `admin` scope, the same scope [`ps`](#managed-seats) already needs there. The reason is
+that a write into a terminal is control of whatever is running in it, and on a user-auth mesh the
+own-owner rule covers every seat under you, not only the ones you launched: a `spawn`-scoped agent
+could otherwise type into a sibling it never started. Seat locality is still resolved for you.
+
+Only the `pty` runtime can be typed into. The external terminal runtimes (`tmux`, `cmux`, `orca`,
+`herdr`) attach to a process they do not own, so they have no input stream for it and the command
+refuses by name rather than dropping the keystroke.
+
+
+## Terminal input receipts [#terminal-input-receipts]
+
+`input <agent> <text>` writes through the selected manager's native input command.
+Use `--text` when the value begins with a dash; do not combine duplicate positional and flag
+sources. `--no-enter` omits the trailing Enter request. JSON and plain receipts identify the
+answering manager and its reported byte count without repeating the input body. An acknowledgment
+is not proof of application consumption or task completion. Unknown results are not retried.
+Managed-launch failures retain native request and accepted-goal identifiers when a reply supplied
+them, including when following that accepted goal failed. No identifier is invented for a silent
+submission, and a missing effect outcome is not a proved pre-execution refusal.
+
+Goal observation keeps the caller's authorized route. A class caller reads its original goal on
+that class route; an explicit `--on` or credential-bound instance stays pinned. Learning the
+accepting instance ID does not confer an instance route or cause another launch. The native
+follower verifies the returned fact against the original caller and goal. A launch the manager
+refuses before its first effect, such as a missing persona file or connector, carries
+`not-executed`. The CLI reports it `refused` with exit 2 and prints the manager's reason, which
+names the file it looked for. A failure after the manager reserved the name or wrote a launch file
+keeps its native outcome, and the CLI never reclassifies it from its message.
+
+
+## Stopping an agent [#stopping-an-agent]
+
+`stop <agent>` requests graceful native despawn. `--force` requests the existing
+`graceful:false` contract; it does not grant authority or bypass incarnation checks.
+`stop --self` uses only a verified managed seat caller and its attributed manager. It accepts no
+other target or credential. Missing, mismatched and unsupported user-auth seat context refuses
+without switching to the operator. JSON and plain modes show the acknowledged native result,
+not a separate measurement of process exit. Stop and input do not seed connector installations.
+
+Failed name resolution refuses before a stop, terminal input or first attach is submitted. The
+receipt retains the inspect error and responding manager. It records local pre-submission proof
+without inventing a native effect outcome.
+
+When the manager refuses a stop, terminal input or first attach before anything ran, for example
+because the agent is not running or the caller may not control it, its reply carries
+`not-executed`. The CLI reports `refused` with exit 2, names the agent and prints the manager's
+reason on one line. A failure after an effect may have started, such as a terminal write the
+runtime rejected, stays `unknown` with exit 3, still shows the manager's reason, and is not retried.
+
+### Managed restart policy
+
+Managed imperative spawn accepts `--restarts <n> --restart-window <ms>` as a pair, using the
+existing native `supervise` object. Both values must be positive safe integers. Direct foreground
+launch and the legacy manifest form reject these flags instead of ignoring them.

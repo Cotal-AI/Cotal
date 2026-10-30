@@ -1,0 +1,530 @@
+---
+title: CLI spaces
+description: Space preparation, registration, target selection, discovery, and infrastructure diagnostics.
+kind: Reference
+audience: operators
+---
+
+`space` manages this machine's space records. `use` selects a default target across directories.
+`status` reads infrastructure and local records without starting or repairing components.
+
+## space [#selecting-a-space]
+
+```bash
+cotal space [--json|--plain]
+cotal space show [<name>] [--json|--plain]
+cotal space add <name> --server <url> [--root <dir>] [--mode auth|open] [--tls] [--allow-unencrypted-overlay] [--force] [-y|--yes]
+cotal space add [<name>] (-f|--file <bundle.json> | --from <https url>) [--root <dir>] [--server <url>] [--force] [-y|--yes]
+cotal space create <name> [--root <dir>]
+cotal space forget <name>
+cotal space delete <name> [--dry-run] [-y|--yes] [--json|--plain]
+cotal use [<space>] [--json|--plain]
+```
+
+### Space inventory
+
+`space` lists recorded spaces with each broker's state, server, mode, origin
+(`started here`, `registered` or `discovered`) and root, with the selected one marked. It probes
+each broker that this machine started or that was registered by hand, and reports one that does not
+answer as `unreachable`; its registration stays. A discovered space is never dialed by a listing and
+reads `not checked`. `space show [<name>]` shows one space in full, the selected one when no name is
+given, and probes only that broker. Neither writes anything.
+
+`--json` writes one document. `space` gives `current` (the selected space or null),
+`currentRecorded`, `items` and `prepared`; each item is the row `cotal status --json` gives under
+`meshes.items`: `space`, `server`, `mode`, `root`, `origin`, `tlsRequired`, `eventsRequired`,
+`current`, `check` (`reachable`, `unreachable` or `not-checked`) and `catalog`. `space show` adds
+`recordedAt`, `attachHost`, `maxSessions`, `storeDir`, `unencryptedOverlay`, the login pins of a
+user-auth space under `userAuth` and the catalog's `id`, `slug`, `kind` and `role`. It leaves
+credential paths out. A name that is not registered is refused with `TARGET_NOT_FOUND`, exit 2, and
+so is a bare `space show` with nothing selected. Each entry under `prepared` has `space`, `root`,
+`preparedAt` and `current`, and `space show` of a prepared space gives those with the kind
+`prepared-space`.
+
+### Registration
+
+`space add` registers a space that runs elsewhere, so `--space` and `use` can reach it. With
+`--server`, the trust comes from `--root`'s `.cotal/auth`, and the mode is `auth` when that folder
+holds the space's trust, `open` otherwise. With `--file`, a user-auth connection bundle exported
+where the space runs supplies the login pins and the server, unless `--server` names another
+address for that broker; `--from` fetches the space's discovery
+document instead, after you agree to the fetch, and needs a terminal. Before anything is written,
+`space add` checks that the address may carry credentials, that the trust composes, that the
+broker enforces the mode, and that the credentials open the space; a user-auth space's exchange
+must answer as the issuer it pins. On a terminal it then shows what it will trust and asks; `--yes`
+skips that question, but not the confirmation of fetched pins. It never changes the selection.
+
+A refusal writes nothing and carries its code: `USAGE_INVALID` or `SCHEMA_INVALID` (exit 1) for
+input, and `CONFLICT`, `TARGET_UNAVAILABLE`, `DEPENDENCY_UNAVAILABLE`, `UNSUPPORTED`,
+`AUTH_REQUIRED` or `PERMISSION_DENIED` (exit 2) for what the checks found. A name that is already
+registered is a `CONFLICT`. `--force` replaces a registration added by hand, never one this machine
+started or a catalog lists, and adds a `--server` space without checking its broker, which suits a
+space that is down right now; a user-auth space is always checked. Declining the question is a
+`no-op` with a `USER_CANCELLED` warning. `--json` gives the registration under `space`, in the
+shape `space show` gives, with `verified` and `replaced`.
+
+### Local preparation
+
+`space create <name>` prepares a space to start on this machine. It records the name and the root,
+which is `--root` or this folder, and makes `<root>/.cotal/`; `cotal up` in that root then starts the
+space under that name and drops the prepared record. It also writes the `default` persona into
+`<root>/.cotal/agents` when the root has none, as setup does, and leaves one you edited as it is.
+`--json` lists the files it wrote under `result.written`. The project and its ancestors must be physical
+directories owned by you or root, with no symlinks. World write refuses. Group write is allowed only
+on a directory you own whose group is your user private group, the Debian and Ubuntu default, and
+that has no extended ACL. On Linux, `getent` must show that the group is your primary group, lists
+no other member and is no other account's primary group, and `getfacl` must show no ACL entries
+beyond the base ones. That account list counts only when `/etc/nsswitch.conf` names `files` and
+`systemd` alone for passwd and group. A directory source such as LDAP or SSSD can list part of its
+accounts, so with one configured, group write refuses. `getent` and `getfacl` run from your PATH
+with a 2 second limit each, so the first check in a process can take a few seconds. A proven group
+holds for the life of the process. When a read is unavailable, group write refuses; install the
+`acl` package for `getfacl`, or remove group write. Root-owned sticky temporary directories are
+allowed. New control directories use mode 0700. An unsafe existing path refuses before the
+prepared record is written, without changing its permissions. The refusal names the path, the
+reason and a remedy such as `chmod g-w <path>`. It starts nothing and leaves the
+selection as it is. It refuses with `CONFLICT` a name that is registered or prepared, a folder that is already a
+space's root, and the home folder, whose `.cotal` holds this machine's own records. `space` lists
+prepared spaces under their own heading, and `space show` and `use` accept one. A command that
+targets a prepared space refuses with `TARGET_UNAVAILABLE`, exit 2, naming the root to start it in,
+and so does `cotal up --space <name>` run from another folder. `cotal up --space <name>` in a folder
+that is already another space's root refuses with `CONFLICT`, exit 2. `space add` refuses a prepared
+name.
+
+### Forgetting a local record
+
+`space forget <name>` removes a registration this machine keeps. It stops nothing, deletes nothing on
+the broker, and keeps the files under its root. It refuses a space this machine is running with
+`LIFECYCLE_BLOCKED`, because `cotal down` stops it and drops the record, and a discovered space with
+`CONFLICT`, because its catalog keeps it. A space whose root holds its stack journal counts as
+running while any stack member's process may still run. The refusal names one such member and
+writes nothing: the registration, the selection and the root's files stay. A member whose process
+is gone without its stop receipt does not block, and the result warns with `STACK_MEMBER_UNSETTLED`
+that it was never stopped cleanly. A prepared space is forgotten the same way, and the `.cotal/`
+that `space create` made stays. Forgetting the selected space clears the selection.
+`status` in a forgotten space's root then selects no space and probes no broker.
+
+### Live deletion preview
+
+`space delete <name> --dry-run` reads the registered broker in open or static-auth mode.
+It requires the broker's mode to match the registration, and a static connection must
+confirm its current account and user identity. It reports the known first-party
+streams and bucket backing streams as present or absent, the broker-observed
+transfer-stream targets under a second exact-name grant in static mode, and the
+entries in the presence bucket. Both static connections must confirm their own
+identity and the same broker server ID. A failed or incomplete native read refuses
+instead of showing missing resources as absent. The snapshot is non-atomic and presence is not an
+authoritative liveness or membership check. User-auth deletion inventory and apply
+are not supported. The dry-run removes no live or local state, and a read that covers its whole scope
+exits 0. A space that is prepared and not running, including one stopped with `cotal down`, has no
+live broker to read or delete from: `space delete` refuses it with `TARGET_UNAVAILABLE`, exit 2,
+naming the root to start it in, and `space forget` removes only its local record.
+
+On a space this machine started, the apply refuses `LIFECYCLE_BLOCKED` while the space's own stack
+still runs here, before any broker connection. On a controller root that is any service instance of
+the space other than its broker, and on a legacy root any recorded daemon other than the broker.
+Deleting the streams under them leaves a stack that can neither start nor stop. The refusal names
+the running services and `cotal down`, then `cotal reset store <space> --yes` on a controller root or
+`cotal clean store --force` on a legacy one to remove the stored streams. The dry-run shows the same
+refusal as a warning.
+
+### Live deletion
+
+Bare `space delete <name>` displays that impact on an interactive terminal and requires
+typing the exact space name. A script supplies the exact positional name with `--yes`;
+`--json` without `--yes` refuses before a connection. After confirmation the command
+reads the broker again and refuses if the stream states, transfer names, presence
+identities, registration, trust or broker identity changed. It opens a separately
+minted exact-target connection, checks each stream state again before the first delete,
+and submits one deletion at a time. A native acknowledgement is reported as deleted;
+prior absence is separate, and the receipt lists only the groups that have a name. It then checks each target's stream info and enumerates
+transfer names again. A surviving or newly observed resource produces a partial
+outcome if deletions were acknowledged; an incomplete post-read stays unknown.
+A refused or unconfirmed delete stops the sequence without retry, reporting
+acknowledged names and refused, unknown or remaining targets. This is not atomic:
+a live process can recreate a stream after the final read. The result
+does not claim that processes stopped, or remove registrations, credentials or local
+files. Open-mode impact and receipt label that any broker client can delete the space.
+`space forget` is not a substitute for live deletion.
+
+### Default selection
+
+`use <space>` changes only the target selection. It starts nothing and does not probe the broker.
+Stopped and prepared spaces are valid selections. A later command reports when its selected target
+is unavailable. Reselecting the same space is a `no-op`. An unknown name refuses
+`TARGET_NOT_FOUND`, exit 2, and leaves the selection unchanged.
+
+Bare `use` reports the selection. If a selection no longer names a registered or prepared space,
+`use` and `space` report `SELECTION_NOT_REGISTERED`. The stale selection remains until `use`
+changes it. Selection applies from every directory, including another mesh's project.
+
+### Target resolution
+
+A command run without `--space` targets the selection. When the selected space's broker is down it
+refuses with `TARGET_UNAVAILABLE`, exit 2, and when the selection names a space no longer registered
+it refuses with `TARGET_NOT_FOUND`. Neither reaches another mesh.
+
+With nothing selected, a command run in a project targets the space registered for that project's
+root. A root with no registration whose `.cotal/` holds the stack journal `cotal up` writes is
+refused with `TARGET_UNAVAILABLE`, exit 2, naming the broker the journal recorded and the root to run
+`cotal up` in. That is the state after an `up` that failed to start or a `space forget`, and the
+command never dials the default address instead. `status` there reads the machine, selects no space
+and probes no broker.
+
+With no `--space`, `--server` or `--creds`, nothing selected and no project in the folder, a command
+that several running spaces could serve asks which one when it runs in a terminal. The answer is the
+target of that one run, and the selection stays as it is; cancelling the question does nothing and
+exits 0. A script, a `--json` caller and `--no-input` are not asked: the command refuses with
+`TARGET_AMBIGUOUS`, exit 2, naming the running spaces. Every refusal of a target puts what to run next
+in `error.remedy`, apart from `error.message`.
+
+A manifest's `space:` is the target of native `up --file` and the team
+check/boot/deploy routes. A `--space` that names another space is refused before
+anything is written. The old `spawn -f` manifest spelling no longer deploys;
+`team deploy` applies all-new live channel-only manifests or bounded
+static/open agent and mixed manifests. An identical settled deployment can be verified again without recreating its members.
+Adopting unrelated state or patching an existing deployment is unsupported.
+
+`cotal meshes` still lists, registers and drops meshes. `space`, `space add`, `space create` and
+`space forget` replace it, and its `--json` lines are the old shape. A bare `meshes add` on a terminal is still the
+guided form.
+
+
+## meshes [#mesh-registry]
+
+```bash
+cotal meshes [--json]
+cotal meshes add                      # guided, on a terminal
+cotal meshes add <space> --server <url> [--root <dir>] [--mode auth|open|user] [--tls] [--allow-unencrypted-overlay] [--force]
+cotal meshes add <space> --mode user (--user-auth-file <bundle.json> | --from <https url>)
+cotal meshes rm <space> [<space> …] [--force]
+cotal sync [--idp <auth base URL>] [--json|--plain]
+cotal status [--json|--plain] [--all] [-v|--verbose] [--space <s>] [--server <url>]
+cotal status --components [--space <s>] [--server <url>]
+```
+
+Everyday command forms use positional agent names, such as `cotal attach <name>` and `cotal stop <name>`.
+For one-shot messages, choose one destination with `--to/-t`, `--channel/-c` or `--role/-r`:
+`cotal send -t reviewer "Please inspect the patch"`. Message receipts do not repeat the body.
+They distinguish storage from delivery and say that no reply listener remains active.
+
+Bare `cotal` and `cotal help` show a compact list of useful actions. Use `cotal help --all` for
+the full command catalogue. `cotal cfg` is the shorthand for `cotal config`. Its default view
+shows effective values and sources; `config --verbose` adds the storage path and revision.
+
+### Registry output
+
+`meshes` lists the meshes this machine knows; a `*` marks the `current` default a bare
+`cotal spawn` joins. Entries learned from a signed-in account are marked `discovered`. Their
+registration trust is stored under the account's private auth state, and the registry contains no
+session token or sentinel credential bytes. Commands resolve the catalog `slug`; a different human
+`name` is rendered only as a label.
+
+`meshes --json` prints one JSON object per recorded mesh per line: `space`, `server`, `mode`,
+`root`, `default` (the `*`), and `origin` (`up`, `manual`, or `catalog` for a discovered entry). A
+local or hand-registered entry also carries `offline`. A discovered entry is never probed, so it has
+no `offline` field. `tlsRequired`, `events: "required"` and a discovered entry's `catalogName` appear
+only when the record has them. An empty registry prints nothing and exits 0. The note about a default
+that matches no record goes to stderr, so stdout carries only rows, on a first run too. The table is
+presentation and is not a stable parsing target. `meshes add` and `meshes rm` refuse `--json`.
+
+### Unreadable records
+
+A registry record this build cannot use is refused by name, never rendered and never skipped. One
+that does not parse, or is missing a field every consumer reads (`server`, `mode`, `root`, `ts`,
+`space`), makes every registry command exit 1 with the file's path and what is wrong with it.
+Remove the file or restore the record; nothing repairs or invents a field for you. A registry
+directory that exists but cannot be read, such as one without read permission or a regular file in
+its place, also makes every command that reads the registry exit 1 with its path and the read
+error. Only an absent directory is an empty registry. A record removed between listing and reading
+is omitted from that listing. A keyed read also treats a record removed during its read as absent;
+parse, shape and other read failures still refuse by name. Recording or removing a mesh also sweeps
+the directory for an older-format record of the same space. Any error listing the directory for
+that sweep, other than an absent directory, fails the operation with that error.
+An unknown `--space` names the missing registration and points to `cotal space`, which also
+lists prepared spaces.
+
+### Account catalogs
+
+An IdP may advertise a same-origin space catalog during login. Cotal reads the complete snapshot and
+adds every valid registration without a separate `meshes add`. A snapshot younger than five seconds
+is used without a request. After that, commands that resolve a mesh target conditionally refresh the
+saved catalogs. An operation targeting a discovered space refreshes only that space's account and
+refuses if that account fails. Operations targeting local or manually registered meshes refresh every
+account, print one warning for each failure, and continue. `cotal status` refreshes every account,
+never refuses on a refresh failure, and lists each account as `fresh`, `updated`, `not-modified`,
+`no-catalog`, or `failed` with its error. With no cached sign-in, catalog preparation reads without
+creating a control directory or lock. An explicit IdP without a cached login refuses with
+`AUTH_REQUIRED`. An unreadable sign-in or catalog cache refuses with `DEPENDENCY_UNAVAILABLE`
+before refresh or registry application. Both exit 2 and leave the cache untouched; diagnostics
+name the path without printing cache contents or parser excerpts.
+`cotal sync` bypasses freshness and reports added, changed, removed, unchanged, and name collisions. `--idp` limits it to one signed-in account. It never connects
+to a broker. `--json` gives each account under `accounts` with its `idp`, `state`, `catalog`, the
+five name lists, `selectionCleared` and `error`. An account whose catalog could not be refreshed keeps
+its last snapshot and is named in a `CATALOG_UNAVAILABLE` warning, so the result is partial, exit 4;
+when no account could be refreshed, `sync` refuses with `DEPENDENCY_UNAVAILABLE`, exit 2.
+
+The registry is updated under the same lock that guards the catalog cache, so a command never lists
+a discovered space set that another command is still writing. The cache records a fetched snapshot
+as not yet applied before the first registry write and as applied after the last. If a command dies
+or is stopped in between, the next command applies that snapshot again before it can use it, with
+no request inside the freshness window.
+
+The shared dispatcher applies this preparation to every command that declares both `--space` and
+`--server` as mesh-target flags, including commands registered by other packages and commands that
+declare their own equivalent flag objects. Daemon and startup commands that use those names only as
+configuration explicitly opt out. Registry-local `meshes add` and `meshes rm` never refresh a catalog.
+While the registry holds a record this build cannot use, the preparation neither refreshes nor
+applies a catalog, so the command's own checks run first. A snapshot left unapplied is applied by the
+next preparation after the record is restored or removed. A command that resolves its target through
+the registry still refuses the record by name.
+
+### Legacy registration
+
+On a terminal, `meshes add` guides registration when the space or `--server` is missing. It asks
+for the broker URL, probes the broker, and reports whether it is open or requires credentials.
+It offers the spaces whose credentials exist under `--root`, reports the broker mode, and shows
+the complete record before writing. A broker that does not answer or an already registered name
+produces a choice in the guided flow. Command-line inputs are retained without another question.
+Without a terminal, the flag form's validation applies and there are no questions.
+`COTAL_NO_PROMPT=1` also suppresses prompts.
+
+`cotal up` and `cotal down` maintain their own records. `meshes add` registers a mesh they cannot
+speak for: one running on another machine, a shared broker, a hosted space. `--root` is the folder
+whose `.cotal/auth` holds that mesh's credentials and whose `.cotal/agents` holds its personas.
+The default is the project you run it in. The registry stores that path, never a secret. `--mode`
+defaults to `auth` when the root holds the space's account record and to `open` otherwise. The
+broker is probed before anything is recorded, so a wrong address, or credentials that mesh will
+not accept, fails here instead of at the first `spawn`; `--force` records without verifying (and
+replaces an existing record).
+
+### Registration trust
+
+A hostname or public address is registrable only when the connection requires TLS. Pass
+`--tls`, or use a `tls://` URL. The scheme is recorded as enforced intent, so every later dial
+through the record demands the handshake (and `meshes add tls://…` against a plaintext broker is
+refused at registration). Without required TLS the fence admits loopback literals, and
+private-overlay literals only with `--allow-unencrypted-overlay`, which records your acceptance that
+the overlay is protected only while its tunnel is up ([Register a mesh](register-a-mesh.mdx#which-addresses-you-may-register)). RFC1918 addresses are refused in both modes because a cafe LAN is private but does not belong to you.
+
+A **user-auth** mesh registers from supplied pinned trust, never guessed: `--user-auth-file`
+takes the bundle exported where the mesh runs; `--from` asks before it dials the address at all,
+then fetches the `/.well-known/cotal-mesh` discovery document under that address (HTTPS only; a URL
+that already ends in that path is fetched as given), displays the pins, and asks again before
+adopting them. The document must parse as JSON under any content type the host serves it with; an
+answer that does not is refused with the URL and the content type that came back. Neither fetch follows redirects: a 302 can move a pinned fetch
+onto plaintext or onto another host, so it is refused rather than followed, and the pinned
+exchange must itself be an `https://` URL, except for an exchange on this machine, where plain
+`http://` is accepted for a loopback *literal* (`127.0.0.1`, `::1`, any spelling of them) but not
+for `localhost`, which is a name rather than an address. Registration verifies that the exchange
+answers `/health` and `/jwks` as the pinned issuer. It also verifies that the broker refuses a bare
+connect; that auth-required refusal is the pass. The sentinel credentials land in a 0600 file under
+the entry's root; the registry records only the path.
+
+### Registry ownership
+
+`meshes rm` drops records. It never stops a mesh. For a mesh running on this machine `cotal down`
+is the right verb, and `rm` says so unless you pass `--force`. A broker record that cannot be proven
+stopped counts as running, as it does for `clean`. A hand-added record is removed by
+`meshes rm`, by an `add --force` replacement, or by a `cotal up` that actually starts the broker for that same space, server and root, which becomes that
+mesh and so takes the record over (a `cotal up` for that space anywhere else refuses instead).
+Nothing that merely *infers* a record is stale from a dead broker touches it: an
+unreachable broker is listed `offline` and stays, whether `cotal up` or `cotal meshes add`
+wrote the record; a foreground `up` whose broker exits unexpectedly keeps its record the same way.
+A bare command does not treat that offline record as a running mesh;
+name it with `--space` to restart it. When a bare control command resolves its target, it probes the
+recorded brokers once, and its mode check and its connect both read that one result. `cotal down` / `cotal clean all` still drop an `up` record for the project
+they tear down; a hand-added one they leave alone even when it shares a root, because nothing
+on this machine could write it back.
+
+A discovered entry belongs to the normalized IdP origin and proved subject that supplied it. Local
+teardown, cleanup, and liveness pruning do not remove it. A manual or locally started entry with the
+same name wins and remains untouched; that discovered name is reported as a collision. Logging out
+removes only the discovered entries owned by that account.
+
+### Required event planes
+
+`cotal meshes` and `cotal status` print `events: required` for a registration carrying
+`policy: { events: "required" }`. On that space, foreground spawn, detached spawn and manager
+starts that host a native harness cannot opt out or launch without an event plane. `--no-events` is refused with
+the space named. A connector without an event plane is refused with both the space and connector
+named. A session whose own grant omits `events.<owner>.<actor>` is refused before joining and the
+message names a full-row `actor grant` repair. A running seat whose event plane stops keeps running
+and keeps its mesh connection on that space as on any other; the connector re-establishes the plane
+itself and reports every failure with the delay before the next attempt. A seat the manager resumes
+from a preserved cut meets the same rules as a fresh
+spawn: a seat retained with `--no-events`, or on a connector without an event plane, is refused, and
+a resumed seat carries the requirement in its launch material.
+
+`join`, one-shot sends and passive protocol views host no native harness turns. They publish no
+AG-UI runs, regardless of who drives their input. Required events do not turn terminal messages
+into agent runs or copy channel and DM text into an event stream. This launch policy is not an
+additional broker authorization boundary. The broker still enforces each endpoint's grants.
+
+## status
+
+### Report scope
+
+Status starts with This machine, groups registrations under Brokers, then shows the selected
+space, this folder's maintenance journal under Maintenance when it holds one (its state, attempt
+and next step; `maintenance` in JSON), unsettled fresh and additive attempts in this folder when present, owned
+service records and useful commands under Next. Connection state, local process state and service replies
+remain separate observations. Other registrations say Not checked unless `--all` reads them.
+Use `status --verbose` for installation paths, extension records and the detailed local diagnostics.
+The default report does not include the agent roster; use `ps` or `who`.
+The deployment-attempt section lists at most 100 fresh and 100 additive
+local IDs, their returned/unsettled state and unreadable paths, with full
+readable coordinates in JSON.
+It appears only when there is something to inspect. A missing fresh summary
+does not prove the original broker never started; an additive intent does not
+prove which resources changed. This read grants neither retry nor stop
+authority. If the folder inherits
+the machine's home `.cotal`, status warns that unqualified `up` refuses instead of starting
+there. Prepare the intended folder first with
+`space create <space> --root .`; `up --root .` then names it.
+
+Owned services use the saved controller definitions and instance records for the selected space.
+Full instance IDs and execution hosts stay visible. Process observations and historical readiness
+are separate columns; neither a saved serving state nor a supervisor receipt becomes a fresh
+endpoint response or OS unit-state check. Legacy PID-file rows are labeled separately. On a root
+whose controller stack serves the selected space, its members are the `stack-` rows here, the
+legacy rows and the stored-state hint are omitted, and when the stack does not answer, Next offers
+`cotal up --root <root>`. Unreadable
+service record families make the report partial instead of becoming empty lists. Warnings retain
+a classified cause code, such as unsupported host observation, without native diagnostic bodies. These reads
+import no provider and start, stop, adopt or repair nothing. `--all` extends broker checks; this
+local owned-service section retains its explicit selected-space scope.
+
+The verbose report expands the machine, extension, folder, recorded-mesh, and selected-mesh
+sections. It includes the installed `cotal-ai` version, NATS, named integrations, extension
+versions, this folder's `.cotal/`, and the selected mesh's connection, delivery responder, channels,
+and membership feed. Hints follow the observations. `cotal ps` lists managed seats separately.
+Stale Claude skills and out-of-date `.agents` skills recommend
+`cotal setup --skills`, not unscoped `cotal setup`. `status` takes `--space` / `--server` to pick the
+mesh to inspect; it starts nothing.
+
+### Broker probes
+
+Status displays broker addresses without URL user information, query parameters or fragments,
+including component facts. Saved addresses and connection inputs are unchanged. An address that
+cannot be displayed safely is `null` in JSON, `unavailable` in text, and names a
+`BROKER_ADDRESS_INVALID` warning with a partial result. Its broker component is refused.
+
+Only the selected mesh is checked. Its row in the recorded meshes dials its address with its
+recorded TLS requirement, and every other row reads `not checked`. `--all` checks every recorded
+mesh, including discovered ones, each with its own recorded TLS requirement.
+
+### JSON report
+
+`status --json` writes one envelope whose `target` is `{space, scope}`, where `space` is the selected
+space or `null` and `scope` is `selected` or `all`. Its `result` is the report the text draws:
+
+| Field | Holds |
+|---|---|
+| `kind` | `infrastructure` |
+| `machine` | `version`, `install` (`kind` and `root`), `nats` (`path`, `bundled` or `missing`), `integrations` (each `{name, state, text}` a connector's setup reports), `connectors` (each `{name, requires, missing}`), `skills` (`state`: `current`, `not-installed`, `behind` or `unreadable`), and `web` (`installed`, `url` and the error of each when it could not be read) |
+| `extensions` | `root` and `items`, each `{package, label, version}` |
+| `folder` | `root`, `auth` (`state`: `space`, `spaces`, `none` or `unreadable`), `personas` (`root`, `default`: `valid`, `invalid`, `missing` or `unreadable`, `demo` and `error`), `launches` (whether a bare spawn launches from this folder's catalog; `null` when no mesh resolves), `processes` (each `{name, state, pid, detail}`, `state` one of `running`, `stopped`, `not-serving`, `unknown` or `unreadable`) and `storedState` |
+| `meshes` | `current`, `unreadable` (the registry directory, a record or the current-mesh pointer that could not be read, or a pointer that is empty, each as `{file, error}`), `items` (each with `space`, `server`, `mode`, `root`, `origin`, `tlsRequired`, `eventsRequired`, `current` and `check`: `reachable`, `unreachable` or `not-checked`) and `catalogs` (each `{idp, state, error}`) |
+| `selected` | `{resolved: false, code, message}` when no mesh resolves (`code` is `registry-unreadable` when the registry directory or a record could not be read); otherwise the target's fields, `connection` (`ok` or the reason it failed; on a user-auth mesh `reachable` or `unreachable`), `login`, `deliveryResponder` (`bound`, `unbound`, `stale` or `unknown`), `snapshot`, `channels` and `membershipFeed` |
+| `services` | Selected-space local owned records: `space`, `state` (`read`, `partial` or `not-checked`), non-atomic `observedAt`, public definition/instance projections and explicit scope. An unreadable family is `null`; stored readiness is historical. Older serialized snapshots may omit this observation, which is not an empty inventory. |
+| `hints` | The hints, in the order the report prints them |
+
+### Partial reads
+
+An unreachable broker, a stopped process or an unbound responder is a state the report names, and
+`status` exits 0. A part it cannot read is named on its row and as a warning, and the run is
+`partial` with exit 4: a PID record, the folder's trust material, the delivery-aware marker, the
+connectors, the skills bundle, the web records, a persona catalog, the mesh
+registry or one of its records, the current-mesh pointer, a user-auth login, or the selected mesh's
+channels or its owned service definition/instance records. Only an absent catalog, registry or pointer reads as empty or unset; an empty pointer is
+named too. A registry directory or record that cannot be read also leaves the selected mesh
+unresolved, because resolution refuses it, and the readable records are still listed. A corrupt or
+unreadable extensions manifest is refused while loading the command surface, before this report
+can run. The manager
+row asks the service endpoint once: a live process that does
+not answer is `not serving`, and a probe that could not be made leaves the row
+`running · service unchecked`.
+
+### Local records
+
+The local auth reader uses a stripped signer only when both split trust records are absent.
+The load refuses dangling and looping links at either record even when an older stripped signer is present.
+A process row whose PID record exists but cannot be read, or exists under both its current and a
+pre-upgrade name, reads `pidfile unreadable` with the error, and the other rows still print. A live
+manager whose delivery-aware marker cannot be read keeps its row and names the failure as
+`delivery-aware marker unreadable` with the error. The `Web process` row
+prints the address the selected mesh's dashboard recorded once it was listening, while the PID in
+its `web.pid` is alive. The dashboard that holds `web.pid` picks the record. A dashboard started with
+`cotal service start` writes its session record beside its service startup receipt, and status finds
+that record through the web service instance whose recorded process is that PID. Any other holder is
+read from `web.session`. Neither record is read in place of the other. A `web.pid`, session record or
+service instance record that exists but cannot be read is named on the row with the error.
+Otherwise it reads `down`, or `not installed` without the web
+extension. Status and the `cotal setup` card count the web extension as installed only when a
+package in the extensions manifest provides `web` and that package is on disk. A web package record
+that cannot be read, is not JSON or has no `version` is named on the `Web extension` row and on the
+card's web row, after the dashboard's address when it is listening and beside an unreadable
+`web.pid` or session record. The `Web process` row still prints, and reads `down` unless the
+dashboard is listening.
+
+### Account state
+
+If a refresh fails, `status` may still show the kept catalog bytes for diagnosis. It labels them
+stale with the last successful snapshot timestamp and the refresh error. It never calls that state
+synchronized or online. If a selected discovered space vanishes from a successful snapshot, the
+selection is cleared and the command reports that no default is selected.
+
+For a user-auth mesh the selected-mesh section reports the login `status` works as: the signed-in
+subject when this machine holds a cached session for the entry's pinned IdP, or the exact `cotal
+login --idp <url>` line when it does not, with no network round trip either way. A locally
+provisioned space also shows the actor grant row; a discovered or registered remote entry reports
+the grant as not checkable on this machine, because the ledger runs where the space was
+provisioned. `--components` on a user-mode target probes as that same signed-in login (`ps`'s
+credential), never a static mint; when the login cannot supply a credential, the row says why
+instead of printing the broker's refusal of an unauthenticated probe.
+
+Persona rows name the catalog they describe. If this folder and the selected mesh use different
+catalogs, status names both and marks which one spawn launches from. A green `default` means the file
+passes the same agent-file loader spawn uses; a present but invalid file is reported as invalid.
+
+### Component health
+
+`cotal status --components` prints the report, then probes each component's own control interface.
+It accepts no `--json`, `--plain`, or `--all`. A PID, lease, or successful sibling probe does not
+establish that a component serves. Each component reports `serving`, `absent`, `not-serving`, or
+`refused` for each component and exits `0`, `1`, `2`, or `3` respectively (the highest observed
+state wins). That exit replaces the report's own, so a partial report followed by a clean pass exits
+0:
+
+- **manager**: local PID record, its liveness-lease holder and PID, then the manager's own typed
+  `status` service reachability from this host. Manager builds that do not report static
+  reconciliation say `static reconciliation not reported by this manager build`; the line stays
+  visible even when the manager is otherwise `serving`.
+- **delivery**: local PID record, its ready lease (`ready` is the daemon's own bound-control
+  signal), and the latest `renewal.<spaceKey>.json` adoption verdict, the record of the space the
+  command was asked about, keyed per space the way the pidfiles are. A re-signed credential and a
+  broker-accepted adoption stay distinct facts. A root-only `renewal.json` left by an older build
+  names no space and is never read as any space's verdict (`doctor auth` names it as a leftover).
+- **web**: local PID record, then the `/api/meta` response at the address the dashboard recorded
+  once it was listening, which must name the same PID. The holder of `web.pid` picks the record, as
+  on the `Web process` row: a service-run dashboard's own session record, found through its web
+  service instance and named on the row as `service instance <id>`, or `web.session` for any other
+  holder. The probe presents the readiness nonce recorded beside that address, the one credential
+  the dashboard accepts on `/api/meta`. The probe follows no redirect. An answer with a status
+  outside 2xx, a 3xx included, is `not-serving`, and the row names that status, such as `HTTP 401`.
+  A live PID with no recorded address (the dashboard is still writing it, or an earlier build
+  started it), or an unrecognizable process record, is `refused`, not a green default-port guess. A
+  session record or service instance record that exists but cannot be read is also `refused`, and
+  the row names the read error.
+- **broker**: the registered mesh URL dialed from this host with its recorded TLS requirement.
+
+`absent` means Cotal has no live local component record (or has a stale record); `not-serving`
+means the component record is live but its service/readiness surface did not answer or is not ready.
+Those are intentionally separate exit cases. A failed or unreadable probe is `refused`, never an
+absent component or a clean zero. A PID record that exists but cannot be read, or exists under both
+its current and a pre-upgrade name, refuses only its own row. A record that its component removes
+while the pass runs reads as `absent`.
+
+Each component prints on one line. A control character inside a reported reason, such as a newline
+in a stored row's field name, prints as its `\uXXXX` escape.

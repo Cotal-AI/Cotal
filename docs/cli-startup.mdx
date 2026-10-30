@@ -1,0 +1,432 @@
+---
+title: CLI startup
+description: Local stack startup, controller recovery, authentication modes, and manifest startup.
+kind: Reference
+audience: operators
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+`up` starts or refreshes a local broker and its control plane. Its default mode runs in the
+background. A prepared root uses the stack controller; existing legacy roots keep their launcher.
+
+## up [#up]
+
+```bash
+cotal up [--foreground|--detach] [--open] [--space <s>] [--root <prepared-dir>] [--server <url>] [--channels <path>] [--runtime <name>]
+cotal up --user-auth --idp <url> [--exchange-public-port <n> --exchange-public-url <https://…> [--exchange-trusted-proxy]]
+         [--advertised-server <url>] [--agent-provisioning-url <https://…>]
+cotal up --tls-cert <cert.pem> --tls-key <key.pem>   # serve broker TLS (both, or neither)
+cotal up --restore <dir> [--restore-only registry] [--accept-missing-source]
+cotal up --file <cotal.yaml> [--dry-run] [--runtime <name>]
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--server <url>` | auto (free local port) | Listen URL override: one `nats://` or `tls://` URL with a host, without credentials, path, query or fragment. Any other value refuses `USAGE_INVALID` before anything is written. A controller stack's broker also needs one IP literal that is not a wildcard, which `up` checks before it writes the stack journal. With `--file`, it overrides the manifest's `broker.servers` and follows that field's rules instead: a valid URL with no embedded credentials |
+| `--host <host>` | none | Bind host override for a **fresh** broker boot: an IP or hostname only, never a URL (that is `--server`) and never `host:port` (the port comes from `--server` or its default); a URL or port-bearing value is refused pointing at the right flag. With no `--server`, the broker URL is derived from it, so `--host <addr>` alone is enough to make a mesh reachable at that address; a `--host`/`--server` pair naming different addresses is refused. A wildcard bind (`0.0.0.0`, `::`) keeps a dialable loopback URL. Recorded on the mesh and reused by every later manager launch, so a repair or resume keeps remote [`attach`](cli-agent-control.mdx#managed-seats) working. A live refresh (`✓ mesh already running`) does not rewrite `.cotal/auth/server.conf` or rebind nats; stop the broker, then re-run `up --host` |
+| `--space <s>` | the folder's space | Space name |
+| `--root <prepared-dir>` | current folder's workspace | Use an existing local project's own `.cotal` root rather than inheriting one from the invoking folder. An absent, inherited or symlinked `.cotal`, or the machine's home store, refuses before startup. Prepare a new folder with `space create <space> --root <dir>` first. Relative file, restore, channels, TLS and store paths remain relative to the invoking folder. The native `up` selection rule still applies after startup. |
+| `--store-dir <dir>` | none | JetStream store directory (recorded; a repair up reuses it) |
+| `--max-file-store <bytes>` | nats-server's dynamic cap | JetStream file storage cap in bytes (a positive integer, no unit suffix). Without it nats-server sizes the store at start as three quarters of the free space on its filesystem. The cap is fixed at broker start: a running broker cannot change it (`cotal down` first), `down --preserve-state` keeps it for the resume, and a resume with a different value is refused. Not accepted with `--file` |
+| `--channels <path>` | `.cotal/channels.json` if present | Channel-registry seed file (JSON). An explicit path that is missing is an error |
+| `--restore <dir>` | none | Restore a completed offline backup before exposing the normal listener |
+| `--restore-only registry` | artifact selection | Restore only the registry component |
+| `--accept-missing-source` | off | Explicit disaster consent when the inode-bound preserved source is absent |
+| `--accept-stale-checkpoint` | off | Explicit consent to resume a seat whose checkpoint was captured outside its recorded recency horizon |
+| `--open` | off (auth) | Unauthenticated dev mesh: no JWT, no ACLs |
+| `--user-auth` | off | Per-user auth: people `cotal login`; connects are authorized against the actor ledger |
+| `--idp <url>` | none | With `--user-auth`: the IdP auth base URL to pin on first enable. A later run may omit it or pass any spelling that normalizes to the pinned URL, such as one with a trailing slash; a different IdP is refused. With `--file`, overrides the manifest's `broker.idp` under the same rules: https (or http on a loopback IP literal), with no credentials, query or fragment |
+| `--exchange-public-port <n>` | none | With `--user-auth`: add the public exchange face on this loopback port, for an HTTPS reverse proxy to forward to |
+| `--exchange-public-url <https://…>` | none | With `--exchange-public-port`: advertise the reverse proxy's HTTPS URL in discovery |
+| `--exchange-trusted-proxy` | off | With `--exchange-public-port`: attribute public failure buckets to the last `X-Forwarded-For` hop. Enable only when the listener is reachable solely through a trusted proxy; otherwise the socket address is used |
+| `--advertised-server <url>` | `--server` | With `--exchange-public-port`: the broker address the public discovery bundle tells participants to dial, such as a `wss://` address behind your proxy. Must be a `nats://`, `tls://`, `ws://` or `wss://` URL |
+| `--agent-provisioning-url <https://…>` | none | With `--exchange-public-port`: the deployment's agent-provisioning endpoint the public bundle advertises. A participant's `cotal spawn` on a remote user-auth mesh sends its login bearer there to provision the agent; without one, that spawn needs a one-time enrollment ([Supervise a remote mesh](remote-supervision.mdx#remote-supervised-seats-by-enrollment)). HTTPS only |
+| `--detach` | on | Run in the background, which is also the no-flag default |
+| `--foreground` | off | Keep native stack lifetime in this terminal. Required when a systemd or launchd unit supervises `up` itself. Refused with `--detach`, `--file`, `--json`, or `--plain` |
+| `--tls-cert <path>` | none | PEM certificate to serve TLS with. Must be given together with `--tls-key`. Before starting the broker, Cotal checks readability, private-key mode, key/certificate match, the validity window, and host coverage. `nats-server` accepts an expired certificate and leaves the failure to clients, so Cotal performs these checks first. The decision is recorded; a later bare `cotal up` keeps serving TLS |
+| `--tls-key <path>` | none | PEM private key for `--tls-cert`. Refused if group- or other-readable (tighten to `600`) |
+| `--file <cotal.yaml>`, `-f` | none | Launch a whole mesh from a manifest |
+| `--dry-run` | off | With `--file`: print the plan, mutate nothing. A preview from an unprepared folder under the machine home reads that folder's empty policy rather than inheriting the home store; applying there requires `space create` first. |
+| `--runtime <name>` | `pty` (or the manifest's, with `--file`) | Agent runtime for the mesh manager (`pty` built in; others are installed extensions, explicit-only). Resolved + probed before the broker starts; an uninstalled/unreachable runtime fails loud. Without `--file`, that refusal is `DEPENDENCY_UNAVAILABLE` (exit 2) before anything is written, and for a known runtime the remedy names the `cotal ext add <pkg>` to run. With `--file`, overrides the manifest's runtime |
+| `--max-sessions <n>` | 64 | Live-session ceiling for the mesh manager. Each console pane and each `cotal attach` is one session, so size for agents × panes, not agent count. Recorded on the mesh and reused by every later manager launch, so a repair or resume does not silently drop back to 64. A running manager cannot change it: `cotal down` first, then `cotal up --max-sessions <n>` |
+| `--no-manager` | off | Broker-only boot: start the broker and, in auth mode, the delivery daemon, and no local manager. A refresh under the flag of a mesh whose manager is live refuses rather than keeping or stopping it. For a controller stack, use `cotal service stop stack-manager --space <s> --yes` first. A legacy stack has no command that stops only its manager: `cotal down` stops the whole stack, then `cotal up --no-manager --space <s>` starts it broker-only. Cannot be combined with `--runtime`, `--max-sessions`, or an agent-declaring manifest |
+| `--rotate-sys` | off | Rotate the space's system account and re-mint its two `$SYS` creds. Needs a stopped mesh; refused with `--open` |
+| `--json`, `--plain` | off | A finite controller-stack receipt. Refused on the retained manifest, recovery, and legacy paths, and with `--foreground` |
+
+### Target resolution
+
+`up` starts a local `nats-server` with JetStream. Auth mode is the default and adds JWT
+authentication and per-agent ACLs. The mesh registration lets spawn find the space from any directory.
+`--detach` names the default background mode. `--foreground` binds native stack lifetime to this
+terminal. Conflicting modes refuse before setup or connector seeding.
+
+An unqualified `up` refuses before seeding when its folder inherits the machine home's `.cotal`.
+The project route is `space create <space> --root .`, followed by `up --root .`. Running from the
+home folder instead targets the home stack. If `--root` names another prepared project, that
+project's bare `cotal down` stops its stack. `down --space` does not replace that root scope.
+
+Without `--space`, selection follows this order:
+
+1. The space named by the folder's auth account.
+2. The space recorded by its stack or running mesh.
+3. The space prepared at that root.
+4. `main`.
+
+A second `up` in the same folder uses the same space. Multiple spaces named by the stack and
+registrations refuse with `CONFLICT` and require `--space`. Without `--server`, an occupied
+default address causes selection of a free port. Later starts of the same space at the same root
+reuse its recorded URL. An explicit `--server` refuses on collision.
+
+### Control plane
+
+Background startup also starts delivery in auth mode, then the manager. `--no-manager` starts
+the broker and, in auth mode, delivery without creating a manager pidfile. A refresh with
+`--no-manager` refuses while a manager is live. A controller stack's manager can first be stopped
+with `cotal service stop stack-manager --space <s> --yes`. A legacy stack requires whole-stack
+`cotal down`, then `cotal up --no-manager --space <s>`.
+
+If a manager starts, wait for `.cotal/manager.<spaceKey>.log` to contain `✓ manager up`.
+For split supervision, stop that manager by the appropriate route above before
+[`supervise`](cli-processes.mdx#supervise) targets the remote broker.
+See [Supervise a remote mesh](remote-supervision.mdx).
+
+`cotal up --detach` prints `✓ running in the background:` with the components actually started.
+A listed manager indicates pidfile liveness and does not define teardown scope. At the machine
+home, the next command is `cotal down --preserve-state`, because bare down refuses that root.
+With `--no-manager`, the next command is `cotal up` first, because preservation needs a manager.
+
+### Foreground lifetime
+
+On POSIX, the foreground broker has its own session and process group. Terminal Ctrl-C reaches
+the CLI owner. The owner uses the same manager stop and agent-reporting rules as bare
+[`down`](cli-shutdown.mdx#down), then stops the remaining stack. A refused manager stop prints its refusal and
+reap route and leaves the manager, broker, delivery, and auth service running. A second interrupt
+during teardown does not start another stop. Windows retains its console signal behavior.
+
+### Default persona
+
+An `up` that starts or refreshes a space on this machine writes the `default` persona into
+`<root>/.cotal/agents` when the root has none, so a bare `cotal spawn` has a persona to launch. A
+space prepared or started before it had one gets it on its next `up`, and a persona you edited is
+left as it is. A controller stack lists the write under `result.written` and in its report, and the
+retained launcher prints the path it wrote. If the write fails, the stack stays up and the failure
+is a warning. A controller recovery or restore leaves the persona to the next `up`.
+
+### Registration ownership
+
+A space name belongs to one registered mesh. `up` refuses a name that another live mesh holds. It
+takes over a name whose broker is not running, and when that registration belonged to another root
+it prints that root and its broker address. It refuses instead when that root holds a restore or a
+preserved cut in its maintenance journal: finish that attempt from its root, or start this stack
+under another `--space`. It also keeps the name, and names that root, when the root or its journal
+cannot be read, for example when access to a parent folder is denied, or when the recorded root is
+not an absolute path. A recorded root matches this one only by the folder it resolves to on disk, so
+a path such as `<this root>/link/..` whose link leads through an unreadable folder keeps its name
+like any root that cannot be read. A root counts as gone only when it no longer exists or is not a
+directory. A readable root with no maintenance journal also gives up its name. Each of these
+refusals ends `refused` with exit 2, on a controller stack and on the retained launcher, and shows
+its reason and the next step, such as `cotal meshes rm <space>` for a root that is not an absolute
+path.
+
+### External supervisors
+
+A foreground `up` holds the root's maintenance lock only while it starts the stack. A bare
+`cotal down` from another terminal can then stop the stack; the foreground `up` sees the completed
+stop or preserve, prints `Foreground stack released` and exits 0. A systemd unit that runs
+`up --foreground` should set `KillMode=mixed`, so the stop signal reaches only `cotal up`, which runs
+the guarded stack stop, and a `TimeoutStopSec` long enough for that stop. The default
+`control-group` mode signals every member at the same time, and a manager signalled directly does
+not stop through its request-bound stop.
+
+### File protection
+
+The generated broker configuration is owner-private (`0600`) in open and authenticated modes,
+even with a group-writable umask. `up` creates `.cotal` and the broker store owner-private (`0700`)
+too. An existing directory keeps its mode. The broker log `.cotal/nats.log` and the auth service,
+delivery and manager logs are created owner-private as well, and the process records `up` writes, such as
+`.cotal/nats.pid` and its identity pin, are created `0600` under a fresh name that is never opened
+through a symlink, then renamed into place. The pid record and identity pin of a native service
+instance are published the same way. A file Cotal writes in place under `~/.cotal` or a
+project's `.cotal`, such as a generated configuration, a credential, a process marker, a persona,
+a seat record or one of those logs, is never written through a symlink.
+A file you own is set to `0600` through the open file. A symlink, a file another user owns or a name
+that is not a regular file is refused and left unchanged. A private directory is set to `0700`
+through its path, which follows a symlink; this step does not refuse a symlinked `~/.cotal` or
+`.cotal`.
+On Windows the owner and symlink checks do not
+apply, because POSIX modes are not that platform's protection model; the file is opened with mode
+`0600` and private secrets are locked down by their access list. Local records under `~/.cotal`
+and a project's `.cotal`, such as the stack journal, service records and deployment attempts, use
+the same model there. A store directory Cotal creates gets the private access list, and a record is
+written like a private secret. Reading a record or checking its path does not check an owner, a mode
+or an access list, and does not refuse a link: a symlink or junction is followed. Size limits, the
+record schema, the regular-file check and the refusal of a link inside a record store's own
+directories still apply. When a service path check refuses a path, the refusal names the option,
+the path that failed, and its owner and mode. A whole-stack failure shows that sentence as its
+native detail.
+
+### Controller startup
+
+A fresh prepared static-auth, open or plain-loopback user-auth root starts through the service
+controller. It records its mode, definitions and full instance IDs in the private
+`.cotal/stack-controller.json` journal. Static-auth startup prepares trust and configuration, starts
+the broker, initializes native streams, then starts delivery and the optional manager. Open startup
+prepares an unauthenticated broker and streams, then the optional manager; it creates no delivery
+service or credential. Each member reports its own readiness; the result does not prove agent or
+task readiness. `--json` returns one
+stack receipt and `--plain` returns a line-oriented report. Partial startup keeps confirmed members
+and reports them; unknown operations are retained and never retried automatically. A failure while
+initializing streams or recording the broker registration is attributed to the broker, not the next
+unstarted member. The failure target names that stage. Typed JetStream API errors retain their
+numeric code and status without copying the server's description or changing the unknown outcome.
+
+A journal root always keeps that controller route and its recorded mode and broker address, even
+when a completed stop removed its mesh registration. Bare `up` reuses that address; an explicit
+conflicting `--server` or `--open` refuses before effects. Legacy-only options refuse rather than switching launchers.
+`up --file`, recovery and existing legacy roots retain their native paths; those paths refuse the
+new JSON/plain flags. A legacy root is one with no stack journal that is neither prepared nor
+registered for the controller, such as a folder an earlier release started and a normal `down` then
+unregistered. Plain `cotal up` there starts it again on its retained launcher, with its identity,
+store and history. `space create` in such a folder refuses `CONFLICT` and names that `cotal up`.
+A controller `up` checks that the space is prepared or locally started at its root before it writes
+trust, configuration, a definition, an instance or the journal; a refusal there leaves the folder as
+it was. When a completed stop and `space forget` removed that record,
+`cotal space create <space> --root <root>` prepares the same space at its root again, and `up`
+starts it from its journal. Schema apply is not supported. Fresh `team boot` uses the controller
+route described below. Recovery re-entry keeps its recorded mode.
+
+### Controller recovery
+
+A whole-stack `up` or `down` takes the root's maintenance lock before it reads the journal. While
+another whole-stack or maintenance command holds it, the command refuses `LIFECYCLE_BLOCKED` and
+names that command's pid. A crashed member, or an `up` or `down` killed before it recorded its
+outcome, is settled by the next bare `up` or `down` from process evidence. A member whose recorded
+process (pid and start time) is gone is recorded as failed, the earlier operation is recorded as
+failed, and the command continues with an `OPERATION_SETTLED` warning. A member that is still
+running is kept: `up` reuses it and `down` stops it. A member whose process cannot be established,
+or one with a stop that was requested and never confirmed, refuses `LIFECYCLE_BLOCKED` and names
+`cotal service status <definition> --instance <id> --space <space>`.
+
+#### Unconfirmed manager stops
+
+A manager stop whose request
+was published and never confirmed keeps the manager's record `stopping` under that request, also
+after its process exits. After a `down` that ends this way, the next bare `up` or `down` refuses
+`LIFECYCLE_BLOCKED` and names the instance and the original request. `service start`, `restart` and
+`stop` refuse it `LIFECYCLE_BLOCKED`, exit 2, before any readiness probe, stop request or record write.
+The earlier stop's outcome stays unknown. When the launch's
+request file does not read as its own, the refusal reports that it is unknown whether a stop was
+published. A manager record that an earlier release left `unknown` while its launch still holds a
+stop request is recorded `stopping` under that request when its process is gone. Its exit is never
+recorded as a crash, and no `up`, `down` or `service` command relaunches it, removes its record or
+removes the stack's registration. No command in this release clears such a stop.
+
+#### Definition replacement
+
+When `up` redefines a member because its launch options changed, the journal records the
+replacement's instance and launch request before the old instance is retired, and the new
+definition's revision before the replacement launches. After an `up` cut off in between, the next
+bare `up` or `down` adopts the replacement only when its record carries that launch request and
+revision for the same operation; `down` stops it and `up` reuses it. Any other instance record
+refuses `CONFLICT`, and nothing is adopted. A preserve or resume that
+never recorded its outcome stays with its own maintenance attempt. A member that exits before
+readiness is recorded as failed with its exit code, and the refusal names its log with
+`cotal service logs <definition> --instance <id> --space <space>`.
+
+Before it launches a broker, the controller binds the recorded broker address once. When another
+process holds it, `up` refuses `CONFLICT`, names the address and the bind error, and launches
+nothing; the stack keeps its recorded address. A text `up` prints one `Starting <definition>` line
+on stderr before each member it starts, with the readiness timeout it waits for. A started stack's
+Next offers `cotal spawn`, or `cotal up` to add the manager after `--no-manager`, and `cotal down`.
+
+<Callout type="warn" title="Controller preservation is unsupported">
+
+On a controller root, `down --preserve-state` refuses `UNSUPPORTED` (exit 2) in this release, in
+every stack mode. It refuses while validating its arguments, before the confirmation and before any
+stop, write or manager request. Plain `down` stops the stack and keeps its store, channels and
+history for the next `up`. Preserving a controller-owned stack returns in a later release.
+`backup create`, `backup restore` and `up --restore` need a preserved cut, so they refuse the same
+way on a controller root (see [Backups](cli-backups.mdx#backups)).
+
+</Callout>
+
+### User-auth controller
+
+User-auth controller startup requires a plain loopback IP and an auth provider with read-only
+server preflight. A first enable checks the required IdP and its JWKS before creating maintenance
+state, a stack journal, trust or credentials. Missing or invalid inputs are usage refusals; an
+unavailable JWKS is a dependency refusal. Malformed IdP inputs are not echoed. An explicit `--idp`
+is also compared with the recorded pin before maintenance state changes, even while the broker is
+running. A different IdP refuses without refreshing members or rewriting their journal. The controller
+checks again under its lock, and the provider repeats its authoritative checks during preparation,
+before any member launches. Later races or failures retain their records and are not rolled back.
+It starts the broker, initializes streams, records provisional public trust metadata, then starts
+the `stack-auth` service. Only that exact process's provider readiness supplies the final endpoints.
+Delivery uses the same hosting-root authority as native startup. No user caller is replaced by a
+static or borrowed caller.
+
+The manager requires an existing signed-in, granted CLI login. First enable can therefore start
+the other members and return partial `OPERATION_PARTIAL` with native cause `AUTH_REQUIRED`, while
+leaving the manager unattempted. Sign in with `cotal login`, obtain the required grant, then run
+bare `cotal up` to continue that known partial operation. `--no-manager` omits that member and its
+login requirement. Unknown outcomes are never continued or replayed. Public exchange faces and
+TLS-required or remote user-auth brokers still require the retained native route.
+
+The journal reads earlier three-member auth/open records with an unattempted auth-service row.
+Its next write records all four roles. It neither adopts legacy processes nor converts a mode.
+
+### Startup readiness
+
+A repair `up` on a mesh whose broker died reopens the store its record names, and refuses a
+different `--store-dir` rather than silently opening a second store.
+
+The generated `.cotal/auth/server.conf` is written on a real broker boot and is not an
+operator-owned config. `--host` changes that file only when nats is actually started. A unit
+restart that leaves an answering listener in place is a refresh, not a rebind.
+
+On an existing mesh, `cotal up` reconciles the presence and lease bucket TTLs. It writes a reserved
+canary and waits for the bucket to expire it before reporting success. If the broker accepts the
+stream update but the backing store does not persist or enforce it, `up` exits nonzero with a TTL
+persistence error instead of trusting the value returned by stream info. A refresh that restores a
+missing manager waits for that process to come up, then says so with its pid (`✓ restored in the
+background: manager (pid N)`). A manager that `up` starts and that exits at boot instead is reported
+as `! control plane degraded:` with the path of its log, and `up` then exits nonzero, whether it was a
+refresh, a first `--detach` boot or `up --file`. The same happens when another
+`cotal supervise` takes over the manager pidfile before the started process comes up. A legacy
+refresh that finds everything already running prints only the `✓ mesh "<space>" already running`
+line. A controller refresh prints its members under `Controller stack already running`, and its JSON
+result is a no-op unless it wrote the default persona. Neither lists a role the stack's mode does not use, such as auth on a
+static-auth stack. A first
+boot starts its manager without the restore line.
+
+A manager or delivery daemon that is killed, or a daemon that exits because its broker went away,
+cannot release its lease. The row stays until the bucket TTL removes it: 10s for the manager and
+30s for delivery. A repair `up` inside that window waits out the row when it can show the holder is
+gone, then starts the replacement, so one run restores the control plane. For the manager, the row
+must name this workspace root and a pid that is not running on this host; the new manager logs
+`which is not running on this host; waiting` and the seconds left. For delivery, no daemon may be
+recorded running in this folder and the row must be held by the credential this folder gave its
+previous daemon; `up` prints `shard 0 is still leased to this folder's previous delivery daemon`.
+The wait never writes the lease. A row that is written again while `up` waits has a live holder, so
+the start is refused and `up` exits nonzero. A row held by any other process is refused at once,
+as before.
+
+A delivery daemon that `up` launched and that exits before it is ready fails the start. The error
+quotes the failure the daemon logged during this launch and names its log,
+`.cotal/delivery.<spaceKey>.log`. It describes a lease held elsewhere only when the daemon logged
+no failure. A daemon start that fails on a root whose maintenance journal holds a restore or a
+preserved cut never suggests `clean store`, because that store holds the restored or preserved
+data. Check the root with `cotal status` first.
+
+A full restore recreates the delivery daemon's durables from their checkpoints, at their recorded
+start sequence. The daemon binds such a restored durable when it otherwise matches its own
+configuration, so a restored store starts. A durable that differs in any other setting still
+refuses.
+
+
+### Native user-auth service
+
+`--user-auth --idp <url>` starts the space's auth service alongside the broker: the NATS
+auth callout plus its capability-gated local exchange, and optionally the closed public exchange
+face configured by the three `--exchange-*` flags above. The service is torn down with `cotal down`,
+and a re-run of `cotal up` heals a dead service on a running broker. `up` waits for the service to
+finish binding: while the daemon it launched (or found running) stays alive, the wait extends past
+the base 15s up to 60s; a daemon that exits is refused at once with "exited before becoming ready",
+and one alive past 60s is refused as "alive and still starting" (wedged), naming the pid record and
+the service log. `--user-auth` and `--open`
+contradict each other and are refused loudly; a running broker cannot change auth mode
+without a `cotal down` first. See [identity & auth](identity-and-auth.md).
+
+### System-account rotation
+
+`--rotate-sys` renews the two `$SYS` credentials (`membership-observer`, `connection-evictor`).
+They carry a 30-day expiry and nothing re-signs them in place, because the system-account seed is
+never persisted, so they are renewed by issuing a **new system account** under the same broker
+operator and minting fresh creds against it. A plain re-`up` does **not** do this: it reuses the
+existing trust record, and its `$SYS` creds along with it.
+
+Rotation keeps the data account, account signing key, agent credentials, and JetStream store.
+Every broker that loads the rotated configuration retires the old system account, including any
+out-of-band copies of its `$SYS` credentials. Earlier full backups then refuse restoration.
+Rotation requires a broker restart on the rewritten configuration and therefore runs at boot:
+
+```bash
+cotal down
+cotal up --rotate-sys --detach     # agents reconnect; nothing is re-provisioned
+cotal doctor auth                  # both $SYS creds healthy again, 30 days out
+```
+
+A rotation is a stopped, fresh boot, and anything that is not one refuses it, all for the same reason
+(the on-disk material and the broker it runs on must never end up on different generations):
+
+- a live mesh, because the running broker would keep serving the retired account;
+- an open mesh, whether that comes from `--open` or from `broker.auth: false` in a manifest, which
+  has no system account at all;
+- `--restore`, because reinstating a trust root and superseding it in one command leaves no way to
+  say which authority the mesh came up on;
+- an unfinished restore or resume attempt on this root, including one `cotal up` would recover on
+  its own, because those paths can adopt a live listener and return without booting a broker;
+- a root that hosts more than one space, because the system account lives in the shared broker
+  record and a rotation would retire every tenant's, while the root holds one `$SYS` cred pair
+  pinned to one data account.
+
+Rotation has two further limits:
+
+- **The retirement is config-load-bound.** Old `$SYS` creds are refused by any broker that loads the
+  rotated config. A stale `nats-server` still running the *previous* config in memory would keep
+  honouring them, so stop every broker for this root first. `--rotate-sys` refuses if this root's
+  mesh is recorded as running, if anything unidentified is answering at the address it was given, or
+  if the root's pid file names a live (or unreadable) process. Those are Cotal's own ownership
+  records, not a scan of the process table: a `nats-server` you started by hand against this root's
+  `server.conf` on some other port writes none of them and will not be seen. Do not run one.
+- **It invalidates earlier full backups.** A full artifact binds to the trust chain it was taken
+  against, and that commitment covers the operator JWT and the system account. Every full backup
+  taken before a rotation refuses to restore afterwards. On a supported legacy root, take a new
+  `down --preserve-state` cut before running `cotal backup create <dir>`.
+  Creation requires the stopped cut to be `ready`; controller roots are unsupported.
+  See [CLI backups](cli-backups.mdx#backups). `cotal up --restore` names this case when the data account still matches.
+
+The commit is not atomic (a trust-record write plus two credential writes), so an interrupted
+rotation leaves the record ahead of the creds. That split is detected rather than silent: every
+`cotal up` on an auth mesh, and every `cotal doctor auth`, compares each `$SYS` cred's issuer against
+the persisted record and names the retired account. `up` warns rather than refusing, because these
+creds power the membership graph and live eviction, both of which degrade fail-soft; the mesh is not
+worth taking down over them. Re-running the rotation heals it, at the cost of one generation.
+
+While those creds are expired the mesh keeps delivering messages, but the
+[membership feed](delivery-daemon.md) and live connection eviction stay down; `cotal doctor auth`
+and the manager's log both name the credential and this repair.
+
+
+## Manifest deploys [#manifest-deploys]
+
+A `cotal.yaml` manifest declares channels, personas, roles, and ACLs for a mesh. Current team
+commands distinguish fresh startup from additive deployment:
+
+```bash
+cotal team check cotal.yaml --graph   # validate and view the declared access graph
+cotal team boot cotal.yaml --dry-run  # preview fresh startup
+cotal team deploy cotal.yaml          # add supported new resources to a running mesh
+cotal team remove <deployment-id> --dry-run   # preview scoped removal
+cotal up --file cotal.yaml            # retained native manifest startup
+cotal down --file cotal.yaml          # retained legacy deploy teardown; --run pins one run
+cotal topology view --file cotal.yaml # validate and view the graph without changes
+```
+
+`up --file` starts a new broker and applies the manifest. Its `--dry-run` form prints the plan
+without mutation. `team boot` provides the current fresh-team route. `team deploy` targets an
+already reachable mesh and supports all-new live channel-only manifests, plus bounded static-auth
+or open agent and mixed manifests. Existing resources are not adopted or patched as an implicit
+reapply. Both team apply routes offer `--dry-run`.
+
+On a user-auth mesh, channel-only deployment uses the logged-in caller's deployer and channel-writer
+views. Both must name the same owner and actor. Agent and mixed deployment require the supported
+static-auth or open route. The former `spawn --file cotal.yaml` manifest form no longer deploys.
+`spawn --file` now selects a persona file on the execution host and directs Mesh manifests to
+`team deploy`.
+
+The retained `down --file` and `down --run` forms act on a legacy deployment ledger.
+They do not stop the whole mesh. `topology` remains a read-only manifest validator and graph view
+for channels, roles, and ACLs. See [Define a team](define-a-team.mdx) and the
+[manifest reference](manifest.md) for team command limits and ownership receipts.

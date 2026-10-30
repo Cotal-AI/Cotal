@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { parse } from 'parse5';
-import { lexer, walkTokens } from 'marked';
+import { assertPlainMarkdown } from './assert-plain-markdown.mjs';
 import { connectorIcons } from '../src/lib/connector-icons.mjs';
 
 const artifact = path => readFileSync(new URL(`../dist/${path}`, import.meta.url), 'utf8');
@@ -26,12 +26,7 @@ for (const slug of [...guides, ...references]) {
     assert.equal(nodes.filter(node => attr(node, 'id') === id).length, 1, `preserved fragment: ${slug}/#${id}`);
   const markdown = artifact(`docs/${slug}.md`);
   assert(markdown.startsWith('# '), `Markdown title: ${slug}`);
-  const prose = [];
-  walkTokens(lexer(markdown), token => {
-    if (token.type === 'html' || (token.type === 'text' && !token.tokens)) prose.push(token.raw);
-  });
-  assert(!/^import |^export |<\/?(?:Cards?|Steps?|Tabs?|Callout)\b/m.test(prose.join('\n')), `complete plain Markdown: ${slug}`);
-  assert(!markdown.includes('\0'), `Markdown has no NUL: ${slug}`);
+  assertPlainMarkdown(markdown, slug);
   assert(!/^> \*\*Guide\*\*|^> Informative/m.test(markdown), `classification stays in metadata: ${slug}`);
 }
 for (const [slug, nodes] of articles) {

@@ -24,12 +24,12 @@ Import supported components by their original names from Fumadocs UI:
 
 | Module | Components | Markdown export |
 | --- | --- | --- |
-| `fumadocs-ui/components/card` | `Cards`, `Card` | Linked card title and complete body. |
+| `fumadocs-ui/components/card` | `Cards`, `Card` | Linked title or an unlinked group title, with the complete body. |
 | `fumadocs-ui/components/steps` | `Steps`, `Step` | All authored headings, instructions, and code. |
 | `fumadocs-ui/components/tabs` | `Tabs`, `Tab` | Every tab label and body, including inactive tabs. |
 | `fumadocs-ui/components/callout` | `Callout` | Warning type, optional title, and complete body in a blockquote. |
 
-Use string props for card `title` and `href`, tab `value`, and callout `type` and `title`.
+Use string props for card `title`, optional `href`, tab `value`, and callout `type` and `title`.
 Tabs also support a static string array in `items`, an integer `defaultIndex`, a string `groupId`, and a boolean `persist`.
 Each `items` entry must match its `Tab` value in order.
 Code fences use Fumadocs' native code-block copy control and export unchanged.
@@ -49,3 +49,8 @@ Neither build resolves dependencies through the other installation.
 pnpm --filter @cotal-ai/docs-content typecheck
 pnpm --filter @cotal-ai/docs-content test
 ```
+## Generated MDX
+
+`markdownToMdx` from `@cotal-ai/docs-content/generate` serializes generated Markdown with the native remark MDX writer.
+HTML-shaped placeholders remain literal text. Code, tables, and links retain their Markdown meaning.
+The generator module is separate from `readDocument` and imports no website framework.

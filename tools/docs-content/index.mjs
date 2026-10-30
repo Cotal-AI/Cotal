@@ -105,8 +105,9 @@ function semanticComponents(path) {
           const attrs = attributes(node, path);
           if (node.name === 'Card') {
             const title = requiredText(attrs, 'title', node, path);
-            const href = requiredText(attrs, 'href', node, path);
-            replaceSource(file, node, s => `[${escapeLabel(title)}](${linkTarget(href)})\n\n${s.inner(node).trim()}\n\n`);
+            const href = attrs.href === undefined ? undefined : requiredText(attrs, 'href', node, path);
+            const label = href ? `[${escapeLabel(title)}](${linkTarget(href)})` : `**${escapeLabel(title)}**`;
+            replaceSource(file, node, s => `${label}\n\n${s.inner(node).trim()}\n\n`);
           } else if (node.name === 'Tab') {
             if (parent?.name !== 'Tabs') fail(path, node, 'Tab must be a direct child of Tabs');
             const label = requiredText(attrs, 'value', node, path);

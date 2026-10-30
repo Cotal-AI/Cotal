@@ -59,7 +59,7 @@ its name-keyed `inspect` command, so an authorized targeted call does not need t
 same trust chain, so there is nothing the built-ins can reach that a described contract cannot. The registered
 `auth` endpoint is describable the same way `manager` is: `cotal describe auth` lists
 `retire-lifecycle` and its exact-mode target shape.
-See [SPEC §13.7](../SPEC.md#137-contracts-and-discovery) and [cli.md](cli.md).
+See [SPEC §13.7](../SPEC.md#137-contracts-and-discovery) and [cli.mdx](cli.mdx).
 
 The manager's `vitals` command reports one invocation-time sample of host CPU count and load,
 available and total memory, and bounded local filesystem capacity. It is untargeted but resolves to
@@ -431,7 +431,7 @@ prints it).
 `status` become a **scatter** across every registered instance: the caller freezes the
 expected set from the service registry, invokes each under a shared deadline, and merges the
 results with per-instance attribution. A non-answering instance is labelled as registered
-with no answer within the deadline, never silently omitted. See [SPEC §13.5](../SPEC.md#135-verbs) (scatter) and [cli.md](cli.md).
+with no answer within the deadline, never silently omitted. See [SPEC §13.5](../SPEC.md#135-verbs) (scatter) and [cli.mdx](cli.mdx).
 
 The expected set comes from the **registry**, which records registration rather than liveness.
 An instance that crashes never deregisters, so it stays in the set and the gather has nothing
@@ -478,7 +478,7 @@ and exits without deregistering, leaving the successor's registration alone.
 A restart that died *mid-registration* is a different residue: the issuance gate stays frozen under
 that op. The successor completes the dead registration on boot when the freeze-holder is
 affirmatively gone under a complete CONNZ sweep (the same composition as
-[`cotal reconcile-gate`](cli.md#reconcile-gate)). A committed spec write is finished under that
+[`cotal reconcile-gate`](cli-maintenance.mdx#reconcile-gate)). A committed spec write is finished under that
 same freeze; only a definite no-commit abort-reopens and then runs the normal takeover.
 Once that reopen commits, the registration has completed: a governance slot it then fails to release
 is left behind the live generation, as on a normal registration, and does not fail the restart.
@@ -497,7 +497,7 @@ an ordinary start and needs no operator step.
 A slot whose holder's gate is still at the stamped generation is a registration that is genuinely in
 flight, and it keeps refusing. The two states read differently only in the holder's gate coordinate,
 so reopening that gate is what separates them: the holder's own restart heals it on boot, and
-[`cotal reconcile-gate`](cli.md#reconcile-gate) is the operator's route when the boot path cannot
+[`cotal reconcile-gate`](cli-maintenance.mdx#reconcile-gate) is the operator's route when the boot path cannot
 run. The registration path is the slot's only writer, and neither repair command writes it.
 A registration that cannot read the holder's gate at all refuses, because an unreadable gate does
 not distinguish the two states either. Each of these refusals carries
@@ -509,7 +509,7 @@ condition a gate repair can clear.
 
 For the instance that cannot cooperate, an operator names it:
 `cotal endpoint deregister <endpoint> <full-instance-id>`
-([cli.md](cli.md#endpoint-deregister)). It removes the
+([cli.mdx](cli-endpoints.mdx#endpoint-deregister)). It removes the
 record only on the same evidence `cotal ps` acts on: the broker reporting nothing subscribed on
 that instance's own rail. It refuses if the instance answers a describe, refuses if the probe could
 not run at all, and refuses if the instance is merely quiet, because a hung process still holds its
@@ -536,7 +536,7 @@ silent loss; a late attach still repaints the full screen from a replayed termin
 snapshot. Close, expiry, target despawn, and a manager restart are distinct, surfaced end
 states: a restarted manager's successor refuses the old epoch's sessions. `cotal attach`
 reconnects when its link dies by asking the manager for a new session
-([CLI](cli.md#managed-seats)).
+([CLI](cli-agent-control.mdx#managed-seats)).
 
 ## Seat input
 
@@ -574,7 +574,7 @@ from "not right now". Both refusals carry `not-executed`, because nothing was ty
 runtime rejects once delivery has started states no outcome, so a caller reads it as `unknown`.
 The manager's other control refusals follow the same rule: one raised before the command's first
 effect, such as a denied caller, a stale target or a missing persona file, carries `not-executed`.
-See [cli.md](cli.md#input).
+See [cli.mdx](cli-agent-control.mdx#input).
 
 ## Grants
 
@@ -597,5 +597,5 @@ the host issues a remote manager through its `transferReader` authority operatio
 ## See also
 
 - [Architecture](architecture.md), where the manager and the wire fit in the whole system.
-- [CLI](cli.md), for `describe`, `invoke`, `spawn`, `ps`, `status`, `attach`, and `input`.
+- [CLI](cli.mdx), for `describe`, `invoke`, `spawn`, `ps`, `status`, `attach`, and `input`.
 - [SPEC §13](../SPEC.md#13-endpoint-control-surface-v04), the normative contract.

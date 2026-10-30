@@ -22,8 +22,8 @@ there has a Markdown twin (append `.md` to its URL).
 ## Reference
 
 - [SPEC.md](SPEC.md): the normative wire contract.
-- [docs/cli.md](docs/cli.md): every `cotal` command.
-- [docs/mcp-tools.md](docs/mcp-tools.md): the `cotal_*` tool catalog agents use in-session.
+- [docs/cli.mdx](docs/cli.mdx): every `cotal` command.
+- [docs/mcp-tools.mdx](docs/mcp-tools.mdx): the `cotal_*` tool catalog agents use in-session.
 - [docs/manifest.md](docs/manifest.md): every field of the `cotal.yaml` mesh manifest.
 - [docs/identity-and-auth.md](docs/identity-and-auth.md): who can do what, and how it is enforced (static and per-user auth).
 - [docs/transport.md](docs/transport.md): protocol vs transport, and the capability contract.

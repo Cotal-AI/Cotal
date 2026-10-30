@@ -7,13 +7,14 @@
   "scripts": {
     "sync": "node scripts/sync-docs.mjs",
     "dev": "npm run sync && next dev --webpack",
-    "build": "npm run sync && next build --webpack && node scripts/export.mjs && node scripts/check-dist.mjs && node scripts/check-migration.mjs && node scripts/check-start-here.mjs && node scripts/check-operate-mesh.mjs && node scripts/check-connect-agents.mjs && node scripts/check-build-integrations.mjs",
+    "build": "npm run sync && next build --webpack && node scripts/export.mjs && node scripts/check-dist.mjs && node scripts/check-migration.mjs && node scripts/check-start-here.mjs && node scripts/check-operate-mesh.mjs && node scripts/check-connect-agents.mjs && node scripts/check-build-integrations.mjs && node scripts/check-api-reference.mjs && node scripts/assert-plain-markdown.test.mjs",
     "typecheck": "npm run sync && fumadocs-mdx && next typegen && tsc --noEmit",
     "preview": "wrangler pages dev",
     "postinstall": "fumadocs-mdx",
     "check:runtime": "node scripts/check-runtime.mjs"
   },
   "dependencies": {
+    "@cotal-ai/docs-content": "file:../tools/docs-content",
     "@tailwindcss/postcss": "^4.1.0",
     "fumadocs-core": "^16.17.9",
     "fumadocs-mdx": "^15.4.10",
@@ -30,7 +31,6 @@
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "tailwindcss": "^4.1.0",
-    "@cotal-ai/docs-content": "file:../tools/docs-content",
     "zod": "^4.4.3"
   },
   "devDependencies": {

@@ -1,0 +1,422 @@
+---
+title: CLI reference
+description: Find command syntax, flags, receipts, and limits for the Cotal CLI.
+kind: Reference
+audience: operators
+---
+
+import { Card, Cards } from 'fumadocs-ui/components/card';
+
+Use `cotal help <command>` for the flags supported by your installed version.
+For a first local mesh, start with the [Quickstart](getting-started.mdx).
+
+## Choose a reference
+
+<Cards>
+<Card title="Workstation">
+
+- [CLI usage](cli-usage.mdx)
+- [CLI installation](cli-installation.mdx)
+- [CLI spaces](cli-selection.mdx)
+
+</Card>
+<Card title="Mesh lifecycle">
+
+- [CLI startup](cli-startup.mdx)
+- [CLI shutdown](cli-shutdown.mdx)
+- [CLI backups](cli-backups.mdx)
+
+</Card>
+<Card title="Agents">
+
+- [Agent launch reference](cli-agents.mdx)
+- [Agent terminal control](cli-agent-control.mdx)
+- [Agent view reference](cli-agent-views.mdx)
+
+</Card>
+<Card title="Services">
+
+- [Local service reference](cli-services.mdx)
+- [Process supervision](cli-processes.mdx)
+- [Manager maintenance](cli-maintenance.mdx)
+- [Linear integration](cli-integrations.mdx)
+
+</Card>
+<Card title="Communication">
+
+- [CLI endpoints](cli-endpoints.mdx)
+- [CLI messaging](cli-messaging.mdx)
+- [CLI observation](cli-observation.mdx)
+
+</Card>
+<Card title="Authority and workflows">
+
+- [CLI authentication](cli-auth.mdx)
+- [CLI workflow runs](cli-runs.mdx)
+
+</Card>
+</Cards>
+
+## Find a command
+
+Each entry links to its full syntax and behavior.
+
+### Running it [#running-it]
+
+[CLI usage](cli-usage.mdx#running-it)
+
+### Structured output [#structured-output]
+
+[CLI usage](cli-usage.mdx#structured-output)
+
+### Commands [#commands]
+
+[CLI usage](cli-usage.mdx#commands)
+
+### setup [#setup]
+
+[CLI installation](cli-installation.mdx#setup)
+
+### update [#update]
+
+[CLI installation](cli-installation.mdx#update)
+
+### up [#up]
+
+[CLI startup](cli-startup.mdx#up)
+
+### down [#down]
+
+[CLI shutdown](cli-shutdown.mdx#down)
+
+### clean [#clean]
+
+[CLI shutdown](cli-shutdown.mdx#clean)
+
+### reset [#reset]
+
+[CLI shutdown](cli-shutdown.mdx#reset)
+
+### Backups [#backups]
+
+[CLI backups](cli-backups.mdx#backups)
+
+### Selecting a space [#selecting-a-space]
+
+[CLI spaces](cli-selection.mdx#selecting-a-space)
+
+### Mesh registry [#mesh-registry]
+
+[CLI spaces](cli-selection.mdx#mesh-registry)
+
+### spawn [#spawn]
+
+[Agent launch reference](cli-agents.mdx#spawn)
+
+### models [#models]
+
+[Agent launch reference](cli-agents.mdx#models)
+
+### endpoints [#endpoints]
+
+[CLI endpoints](cli-endpoints.mdx#endpoints)
+
+### who [#who]
+
+[CLI endpoints](cli-endpoints.mdx#who)
+
+### whoami [#whoami]
+
+[CLI endpoints](cli-endpoints.mdx#whoami)
+
+### Handle inspection [#handle-inspection]
+
+[CLI endpoints](cli-endpoints.mdx#handle-inspection)
+
+### Account signer export [#account-signer-export]
+
+[CLI endpoints](cli-endpoints.mdx#account-signer-export)
+
+### Endpoint authoring [#endpoint-authoring]
+
+[CLI endpoints](cli-endpoints.mdx#endpoint-authoring)
+
+### Endpoint control [#endpoint-control]
+
+[CLI endpoints](cli-endpoints.mdx#endpoint-control)
+
+### Managed seats [#managed-seats]
+
+[Agent terminal control](cli-agent-control.mdx#managed-seats)
+
+### input [#input]
+
+[Agent terminal control](cli-agent-control.mdx#input)
+
+### persona [#persona]
+
+[Agent launch reference](cli-agents.mdx#persona)
+
+### supervise [#supervise]
+
+[Process supervision](cli-processes.mdx#supervise)
+
+### service [#service]
+
+[Local service reference](cli-services.mdx#service)
+
+### Adding a service [#adding-a-service]
+
+[Local service reference](cli-services.mdx#adding-a-service)
+
+### Running a service [#running-a-service]
+
+[Local service reference](cli-services.mdx#running-a-service)
+
+### reconcile-gate [#reconcile-gate]
+
+[Manager maintenance](cli-maintenance.mdx#reconcile-gate)
+
+### endpoint deregister [#endpoint-deregister]
+
+[CLI endpoints](cli-endpoints.mdx#endpoint-deregister)
+
+### runtimes [#runtimes]
+
+[Agent launch reference](cli-agents.mdx#runtimes)
+
+### seats [#seats]
+
+[Agent launch reference](cli-agents.mdx#seats)
+
+### send [#send]
+
+[CLI messaging](cli-messaging.mdx#send)
+
+### chat [#chat]
+
+[CLI messaging](cli-messaging.mdx#chat)
+
+### The --stdio protocol [#the---stdio-protocol]
+
+[CLI messaging](cli-messaging.mdx#the---stdio-protocol)
+
+### channel [#channel]
+
+[CLI messaging](cli-messaging.mdx#channel)
+
+### history [#history]
+
+[CLI messaging](cli-messaging.mdx#history)
+
+### console [#console]
+
+[CLI observation](cli-observation.mdx#console)
+
+### Web dashboard [#web-dashboard]
+
+[CLI observation](cli-observation.mdx#web-dashboard)
+
+### linear [#linear]
+
+[Linear integration](cli-integrations.mdx#linear)
+
+### Serving the endpoint [#serving-the-endpoint]
+
+[Linear integration](cli-integrations.mdx#serving-the-endpoint)
+
+### Callers [#callers]
+
+[Linear integration](cli-integrations.mdx#callers)
+
+### pending [#pending]
+
+[CLI messaging](cli-messaging.mdx#pending)
+
+### deliver [#deliver]
+
+[Local service reference](cli-services.mdx#deliver)
+
+### auth mint [#auth-mint]
+
+[CLI authentication](cli-auth.mdx#auth-mint)
+
+### Endpoint caller credentials [#endpoint-caller-credentials]
+
+[CLI authentication](cli-auth.mdx#endpoint-caller-credentials)
+
+### Login [#login]
+
+[CLI authentication](cli-auth.mdx#login)
+
+### actor [#actor]
+
+[CLI authentication](cli-auth.mdx#actor)
+
+### doctor [#doctor]
+
+[CLI authentication](cli-auth.mdx#doctor)
+
+### join [#join]
+
+[CLI installation](cli-installation.mdx#join)
+
+### Manifest deploys [#manifest-deploys]
+
+[CLI startup](cli-startup.mdx#manifest-deploys)
+
+### ext [#ext]
+
+[CLI installation](cli-installation.mdx#ext)
+
+### Built-in connectors are seeded extensions [#built-in-connectors-are-seeded-extensions]
+
+[CLI installation](cli-installation.mdx#built-in-connectors-are-seeded-extensions)
+
+### docs [#docs]
+
+[CLI installation](cli-installation.mdx#docs)
+
+### config [#config]
+
+[CLI installation](cli-installation.mdx#config)
+
+### completion [#completion]
+
+[CLI installation](cli-installation.mdx#completion)
+
+### feedback [#feedback]
+
+[CLI installation](cli-installation.mdx#feedback)
+
+### run [#run]
+
+[CLI workflow runs](cli-runs.mdx#run)
+
+### Server daemons [#server-daemons]
+
+[Local service reference](cli-services.mdx#server-daemons)
+
+### Plumbing [#plumbing]
+
+[CLI authentication](cli-auth.mdx#plumbing)
+
+### watch [#watch]
+
+[CLI observation](cli-observation.mdx#watch)
+
+### Named agent status [#named-agent-status]
+
+[Agent view reference](cli-agent-views.mdx#named-agent-status)
+
+### Manager maintenance [#manager-maintenance]
+
+[Manager maintenance](cli-maintenance.mdx#manager-maintenance)
+
+### Workflow command forms [#workflow-command-forms]
+
+[CLI workflow runs](cli-runs.mdx#workflow-command-forms)
+
+### Update availability [#update-availability]
+
+[CLI installation](cli-installation.mdx#update-availability)
+
+### Account screens [#account-screens]
+
+[CLI authentication](cli-auth.mdx#account-screens)
+
+### Managed launch view [#managed-launch-view]
+
+[Agent view reference](cli-agent-views.mdx#managed-launch-view)
+
+### Observer stream [#observer-stream]
+
+[CLI observation](cli-observation.mdx#observer-stream)
+
+### Recorded team views [#recorded-team-views]
+
+[Agent view reference](cli-agent-views.mdx#recorded-team-views)
+
+### Terminal input receipts [#terminal-input-receipts]
+
+[Agent terminal control](cli-agent-control.mdx#terminal-input-receipts)
+
+### Stopping an agent [#stopping-an-agent]
+
+[Agent terminal control](cli-agent-control.mdx#stopping-an-agent)
+
+### Native endpoint reports [#native-endpoint-reports]
+
+[CLI endpoints](cli-endpoints.mdx#native-endpoint-reports)
+
+### Watch views [#watch-views]
+
+[CLI observation](cli-observation.mdx#watch-views)
+
+### Authority [#authority]
+
+[CLI authentication](cli-auth.mdx#authority)
+
+### Saved endpoint references [#saved-endpoint-references]
+
+[CLI endpoints](cli-endpoints.mdx#saved-endpoint-references)
+
+### Local service definitions [#local-service-definitions]
+
+[Local service reference](cli-services.mdx#local-service-definitions)
+
+### Service presets [#service-presets]
+
+[Local service reference](cli-services.mdx#service-presets)
+
+### Native Linear service [#native-linear-service]
+
+[Linear integration](cli-integrations.mdx#native-linear-service)
+
+### Native auth service [#native-auth-service]
+
+[Local service reference](cli-services.mdx#native-auth-service)
+
+### Manager stop impact [#manager-stop-impact]
+
+[Manager maintenance](cli-maintenance.mdx#manager-stop-impact)
+
+### Resolving endpoint targets [#resolving-endpoint-targets]
+
+[CLI endpoints](cli-endpoints.mdx#resolving-endpoint-targets)
+
+### Declared capabilities that remain gated [#declared-capabilities-that-remain-gated]
+
+[CLI endpoints](cli-endpoints.mdx#declared-capabilities-that-remain-gated)
+
+### Clearing retained history [#clearing-retained-history]
+
+[CLI messaging](cli-messaging.mdx#clearing-retained-history)
+
+### Following an endpoint action [#following-an-endpoint-action]
+
+[CLI endpoints](cli-endpoints.mdx#following-an-endpoint-action)
+
+### Unconfirmed requests [#unconfirmed-requests]
+
+[CLI endpoints](cli-endpoints.mdx#unconfirmed-requests)
+
+### Persona previews [#persona-previews]
+
+[Agent view reference](cli-agent-views.mdx#persona-previews)
+
+### Owned process services [#owned-process-services]
+
+[Process supervision](cli-processes.mdx#owned-process-services)
+
+### Endpoint class scatters [#endpoint-class-scatters]
+
+[CLI endpoints](cli-endpoints.mdx#endpoint-class-scatters)
+
+### Personas on an exact manager [#personas-on-an-exact-manager]
+
+[Agent launch reference](cli-agents.mdx#personas-on-an-exact-manager)
+
+### Dashboard command [#web]
+
+[Dashboard command reference](cli-observation.mdx#web)

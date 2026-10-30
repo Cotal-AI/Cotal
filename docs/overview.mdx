@@ -1,0 +1,54 @@
+---
+title: API reference
+description: Find Cotal CLI commands, agent tools, configuration fields, and data models.
+kind: Reference
+audience: operators and integrators
+---
+
+import { Card, Cards } from 'fumadocs-ui/components/card';
+
+Use the CLI from a terminal or the `cotal_*` tools inside a connected agent session.
+These references describe the TypeScript implementation.
+The [wire specification](../SPEC.md) defines the protocol.
+
+## Commands
+
+<Cards>
+  <Card title="CLI reference" href="cli.mdx">
+    Look up command syntax, flags, receipts, and limits by topic.
+  </Card>
+  <Card title="MCP tool catalog" href="mcp-tools.mdx">
+    Look up tool arguments, availability, and effects on the mesh.
+  </Card>
+</Cards>
+
+## Configuration
+
+<Cards>
+  <Card title="Agent files" href="agent-files.md">
+    Define a persona's identity, model, capabilities, and channel access.
+  </Card>
+  <Card title="Mesh manifest" href="manifest.md">
+    Look up the fields in a cotal.yaml team definition.
+  </Card>
+  <Card title="Configuration" href="config.md">
+    Find workstation preferences, environment variables, and storage paths.
+  </Card>
+  <Card title="Channels and permissions" href="channels-and-permissions.md">
+    Look up read, publish, and channel-administration permissions.
+  </Card>
+</Cards>
+
+## Models
+
+<Cards>
+  <Card title="MeshView" href="mesh-view.md">
+    Inspect the observer model used by terminal and browser views.
+  </Card>
+  <Card title="cotal-lang card" href="lang-card.md">
+    Look up workflow effects, results, and common refusals.
+  </Card>
+  <Card title="Glossary" href="glossary.md">
+    Find definitions of protocol and implementation terms.
+  </Card>
+</Cards>

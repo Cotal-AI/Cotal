@@ -69,7 +69,20 @@ const navigation = [
     group('Project', ['roadmap', 'release', 'stability', 'setup-internals', 'UPGRADING'].map(name => page(`docs/${name}.md`))),
   ] },
   { section: 'api-reference', title: 'API Reference', children: [
-    group('Reference', ['cli', 'mcp-tools', 'agent-files', 'manifest', 'channels-and-permissions', 'config', 'mesh-view', 'lang-card', 'glossary'].map(name => page(`docs/${name}.md`))),
+    page('docs/overview.mdx'),
+    group('CLI', [
+      page('docs/cli.mdx'),
+      group('Workstation', ['cli-usage', 'cli-installation', 'cli-selection'].map(name => page(`docs/${name}.mdx`))),
+      group('Mesh lifecycle', ['cli-startup', 'cli-shutdown', 'cli-backups'].map(name => page(`docs/${name}.mdx`))),
+      group('Agents', ['cli-agents', 'cli-agent-control', 'cli-agent-views'].map(name => page(`docs/${name}.mdx`))),
+      group('Services', ['cli-services', 'cli-processes', 'cli-maintenance', 'cli-integrations'].map(name => page(`docs/${name}.mdx`))),
+      group('Communication', ['cli-endpoints', 'cli-messaging', 'cli-observation'].map(name => page(`docs/${name}.mdx`))),
+      page('docs/cli-auth.mdx'),
+      page('docs/cli-runs.mdx'),
+    ]),
+    group('Agent tools', [page('docs/mcp-tools.mdx')]),
+    group('Configuration', ['agent-files', 'manifest', 'channels-and-permissions', 'config'].map(name => page(`docs/${name}.md`))),
+    group('Models', ['mesh-view', 'lang-card', 'glossary'].map(name => page(`docs/${name}.md`))),
   ] },
 ];
 const publications = [];
@@ -367,7 +380,7 @@ const publishedNavigation = navigation.map(section => {
 writeFileSync(join(genDir, 'navigation.mjs'), `// @ts-check\n/** @type {import('../lib/navigation').NavigationSection[]} */\nexport const navigation = ${JSON.stringify(publishedNavigation, null, 2)};\n`);
 writeFileSync(join(genDir, 'pages.json'), JSON.stringify(pages, null, 2));
 writeFileSync(join(genDir, 'routes.json'), JSON.stringify(pages.map(({slug,url}) => ({slug,url}))));
-const redirects = ['/ /docs/what-is-cotal/ 301', '/docs /docs/what-is-cotal/ 301', '/docs/ /docs/what-is-cotal/ 301', '/api-reference /api-reference/cli/ 301', '/api-reference/ /api-reference/cli/ 301', '/agent-frameworks /docs/connect-pi/ 301', '/agent-frameworks/ /docs/connect-pi/ 301', '/agent-frameworks.md /docs/connect-pi.md 301'];
+const redirects = ['/ /docs/what-is-cotal/ 301', '/docs /docs/what-is-cotal/ 301', '/docs/ /docs/what-is-cotal/ 301', '/api-reference /api-reference/overview/ 301', '/api-reference/ /api-reference/overview/ 301', '/agent-frameworks /docs/connect-pi/ 301', '/agent-frameworks/ /docs/connect-pi/ 301', '/agent-frameworks.md /docs/connect-pi.md 301'];
 for (const page of pages) redirects.push(`/${page.slug} ${page.url} 301`, `/${page.slug}/ ${page.url} 301`, `/${page.slug}.md ${page.url.slice(0, -1)}.md 301`);
 writeFileSync(join(pubDir, '_redirects'), redirects.join('\n') + '\n');
 for (const page of pages) {

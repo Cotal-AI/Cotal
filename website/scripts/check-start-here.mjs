@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { assertPlainMarkdown } from './assert-plain-markdown.mjs';
 
 const artifact = (path) =>
   readFileSync(new URL(`../dist/${path}`, import.meta.url), 'utf8');
@@ -41,10 +42,7 @@ for (const slug of [
   'setup',
 ]) {
   const markdown = artifact(`docs/${slug}.md`);
-  assert(
-    !/<(?:Steps?|Cards?|Tabs?|Callout|AgentPrompt)\b|^import |^export /m.test(markdown),
-    `plain Markdown: ${slug}`,
-  );
+  assertPlainMarkdown(markdown, slug);
 }
 for (const slug of ['what-is-cotal', 'installation', 'getting-started', 'examples']) {
   const source = readFileSync(new URL(`../../docs/${slug}.mdx`, import.meta.url), 'utf8');
@@ -102,6 +100,8 @@ assert.equal(
   'Docs / Guides / Build integrations',
 );
 const reference = new Set([
+  'overview',
+  ...Object.values(JSON.parse(readFileSync(new URL('./fixtures/cli-fragments.json', import.meta.url), 'utf8'))),
   'cli',
   'mcp-tools',
   'agent-files',

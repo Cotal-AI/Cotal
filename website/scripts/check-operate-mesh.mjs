@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { parse } from 'parse5';
+import { assertPlainMarkdown } from './assert-plain-markdown.mjs';
 
 const artifact = path => readFileSync(new URL(`../dist/${path}`, import.meta.url), 'utf8');
 const destinations = new Map([
@@ -57,7 +58,7 @@ for (const [slug, nodes] of articles) {
   }
   const markdown = artifact(`docs/${slug}.md`);
   assert(markdown.startsWith('# '), `Markdown has its title: ${slug}`);
-  assert(!/^import |^export |<\/?(?:Cards?|Steps?|Tabs?|Callout)\b|\0/m.test(markdown), `complete plain Markdown: ${slug}`);
+  assertPlainMarkdown(markdown, slug);
   assert(!/^> \*\*Guide\*\*|^> Informative/m.test(markdown), `classification stays in metadata: ${slug}`);
 }
 const { navigation } = await import('../src/generated/navigation.mjs');

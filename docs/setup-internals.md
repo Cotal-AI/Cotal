@@ -309,4 +309,4 @@ a SIGKILL mid-run is detected on the next boot (fail loud → `ext seed --repair
 interrupted connector before it clears the evidence). Seed children are authenticated (they carry the
 live lock's nonce + parent PID, not a bare env flag) and record a liveness marker so a post-crash repair
 refuses to race an orphaned installer. `ext seed --reset` quarantines corrupt manifest/authority state
-aside and rebuilds. See [cli.md `ext`](cli.md#ext) for the operator-facing flags.
+aside and rebuilds. See [cli.mdx `ext`](cli-installation.mdx#ext) for the operator-facing flags.

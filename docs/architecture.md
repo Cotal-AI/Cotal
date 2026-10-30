@@ -146,7 +146,7 @@ files are create-only, and accepted/returned evidence plus the original process 
 for a stopped record. A missing terminal remains unknown; generic signal escalation is not a
 native stop substitute. Reservations are not reclaimed. Lease, registration and family cleanup
 still remain not checked in the receipt. The service layer stays workstation-local and adds no
-wire authority. See [CLI services](cli.md#owned-process-services).
+wire authority. See [CLI services](cli-processes.mdx#owned-process-services).
 
 The auth-service adapter loads its existing prepared native projection and claims its per-space
 PID custody in the real child. Its startup phase follows native plane initialization and signal
@@ -325,7 +325,7 @@ Every coding-agent integration exposes the same four surfaces:
 | Inbound, push | wake-and-inject into the live session |
 
 The shared runtime lives in [`@cotal-ai/connector-core`](../extensions/connector-core):
-the mesh agent, the [`cotal_*` tool surface](mcp-tools.md) (defined once in its tool
+the mesh agent, the [`cotal_*` tool surface](mcp-tools.mdx) (defined once in its tool
 specs, so it cannot drift across hosts), and the delivery buffer with its attention
 policy. Each adapter is a thin client
 over it that binds to its host's native mechanism: an installed plugin + MCP server for
@@ -434,7 +434,7 @@ laterally; the manager only births and configures them.
   attach still repaints the full screen from a replayed snapshot of a headless terminal
   mirror (including alternate-screen TUIs). If the manager restarts, its successor refuses
   the old session. `cotal attach` reconnects when its link dies by asking the manager for a new
-  session ([CLI](cli.md#managed-seats)).
+  session ([CLI](cli-agent-control.mdx#managed-seats)).
 - **The manager's console face is a separate, credentialed surface.** The manager still
   serves the browser console over local HTTP: the static page plus the roster, the live feed,
   and the route that mints the browser's own session. It binds loopback unless the operator

@@ -6,12 +6,26 @@ import test from 'node:test';
 import { unified } from 'unified';
 import remarkParse from 'remark-parse';
 import { readDocument, discoverDocuments } from './index.mjs';
+import { markdownToMdx } from './generate.mjs';
 
 const metadata = '---\ntitle: Try Cotal\ndescription: Run a local mesh.\nkind: Informative\naudience: First-time users\n---\n\n';
 const imports = `import { Card, Cards } from 'fumadocs-ui/components/card';
 import { Steps, Step } from 'fumadocs-ui/components/steps';
 import { Tabs, Tab } from 'fumadocs-ui/components/tabs';
 import { Callout } from 'fumadocs-ui/components/callout';\n\n`;
+
+test('generates literal-safe MDX with native Markdown serialization', async t => {
+  const markdown = 'Use <name> and {caller} as literal text.\n\n| Input | Meaning |\n|---|---|\n| `a \\| b` | A {choice}. |\n\n```js\nconst x = { value: "<name>" };\n```\n\nRead [the spec](../SPEC.md#2-identity).\n';
+  const body = markdownToMdx(markdown);
+  const doc = await readDocument(await fixture(t, body));
+  const tree = unified().use(remarkParse).parse(doc.markdown);
+  const text = JSON.stringify(tree);
+  assert(text.includes('Use <name> and {caller} as literal text.'));
+  assert(doc.markdown.includes('const x = { value: "<name>" };'));
+  assert(doc.markdown.includes('../SPEC.md#2-identity'));
+  assert(doc.markdown.includes('a \\| b'));
+  assert.equal(markdownToMdx(markdown), body);
+});
 async function fixture(t, body, ext = 'mdx') {
   const dir = await mkdtemp(join(tmpdir(), 'cotal-docs-content-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
@@ -19,6 +33,15 @@ async function fixture(t, body, ext = 'mdx') {
   await writeFile(path, ext === 'mdx' ? metadata + body : body);
   return path;
 }
+
+test('exports native Card groups without a destination and retains child links', async t => {
+  const path = await fixture(t, imports + '<Cards>\n<Card title="Mesh lifecycle">\n\n- [Start](cli-startup.mdx)\n- [Stop](cli-shutdown.mdx)\n\n</Card>\n</Cards>');
+  const doc = await readDocument(path);
+  assert(doc.markdown.includes('**Mesh lifecycle**'));
+  assert(doc.markdown.includes('[Start](cli-startup.mdx)'));
+  assert(doc.markdown.includes('[Stop](cli-shutdown.mdx)'));
+  await assert.rejects(readDocument(await fixture(t, imports + '<Card title="Empty" href="" />')), /static href/);
+});
 
 test('exports complete component content with native Markdown processing', async t => {
   const path = await fixture(t, imports + `<Cards>

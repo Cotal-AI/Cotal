@@ -86,7 +86,7 @@ nothing. A rebind that lands on a bucket with no keys is current knowledge for a
 does not register (nobody is present), and a wipe for one that does (its own key is missing too):
 the latter re-publishes itself and lets the delivery of that record make the view current.
 `cotal ps` prints `mesh unknown` with the reason, never a liveness word, for a row whose
-manager reports a view that is not `current` ([cli.md](cli.md)).
+manager reports a view that is not `current` ([cli.mdx](cli.mdx)).
 
 Presence publishing is also monitored separately from the watch. One refused heartbeat remains a
 recoverable warning. If consecutive writes keep failing for a full presence TTL, the endpoint raises
@@ -222,7 +222,7 @@ it may never reach an inbox. The stored sequence
 is a fact about the stream; the status-at-send words are a fact about the roster a moment
 before publish; retention (how long the durable holds it, whether a same-name respawn
 inherits it) is a third, separate fact, covered below and inspectable with
-[`cotal deliver pending`](cli.md#deliver).
+[`cotal deliver pending`](cli-services.mdx#deliver).
 
 A recipient's connector acknowledges a DM only once it has handed it to the session. When the
 session is busy and its bounded local inbox fills with directed mail, the oldest DM is evicted
@@ -303,7 +303,7 @@ only shapes when the receiving agent's session is interrupted. It is mirrored in
 presence as advisory observability ("locally muted #deploys; DM to reach"), never read
 back into delivery. Semantics and tables:
 [Connect Claude](connect-claude.mdx#attention); the concrete
-knobs: [`cotal_status` / `cotal_channel_mode`](mcp-tools.md).
+knobs: [`cotal_status` / `cotal_channel_mode`](mcp-tools.mdx).
 
 ## Related
 

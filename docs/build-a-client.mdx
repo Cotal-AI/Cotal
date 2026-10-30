@@ -61,7 +61,7 @@ A standing-renewal consumer requires an expiry.
 To keep an existing nkey, use `--identity <creds>` when re-minting, while adopting the new lifecycle UID.
 
 The credential binds the client's principal and channel grants.
-See [Identity and auth](identity-and-auth.md), [auth mint](cli.md#auth-mint), and [SPEC section 2](../SPEC.md#2-identity).
+See [Identity and auth](identity-and-auth.md), [auth mint](cli-auth.mdx#auth-mint), and [SPEC section 2](../SPEC.md#2-identity).
 
 ## Implement in this order [#build-order]
 
@@ -210,4 +210,4 @@ For another transport, implement the [binding capability contract](transport.md)
 
 Keep process scheduling and supervision in separate tooling.
 A wire client connects, announces itself, and exchanges messages as a peer.
-The [manager](run-a-mesh.mdx) and [MCP tools](mcp-tools.md) provide the reference implementation's launch and supervision features.
+The [manager](run-a-mesh.mdx) and [MCP tools](mcp-tools.mdx) provide the reference implementation's launch and supervision features.

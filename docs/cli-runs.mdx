@@ -1,0 +1,185 @@
+---
+title: CLI workflow runs
+description: Hosted and local workflow runs, recorded state, pause answers, offline checks, and seat turns.
+kind: Reference
+audience: operators
+---
+
+Workflow commands operate recorded runs and durable step journals. A run receipt records acceptance; it does not establish live agent progress or task completion.
+
+## run [#run]
+
+`run` operates durable workflow runs written in cotal-lang. `r` is its shorthand.
+
+```bash
+cotal run start --file <program> [--timeout <dur>] [--local --admit-read <channels> --admit-publish <channels>] [--on <instance>]
+cotal run resume <runId> [--local --file <program>] [--on <instance>]
+cotal run ps [--endpoint <ep>] [--json] [--on <instance>]
+cotal run ps --page --on <instance> [--limit <n>] [--cursor <cursor>] [--endpoint <ep>]
+cotal run journal <runId> [--endpoint <ep>] [--json] [--on <instance>]
+cotal run answer <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>] [--on <instance>]
+cotal run amend <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>] [--on <instance>]
+cotal run revoke <runId> --local --by <who> --reason <text> [--endpoint <ep>]
+cotal run migrate <runId> --local --file <program> [--endpoint <ep>]
+```
+
+Hosted and local broker commands take `--space <s>`, `--server <url>` and `--creds <path>` to select
+the mesh and credential, subject to the local signing requirements below. Offline commands reject
+mesh and caller selection. Seat commands use the launched seat's own caller context.
+
+### Manager selection
+
+Hosted run verbs accept `--on <manager-instance>` to choose one full manager id
+as `cotal ps` prints it. A managed seat defaults to the manager that launched
+it; an unbound user-auth caller with several managers must choose one. Without
+`--on` its call is refused with exit 2 before any request, and the refusal names
+each live manager.
+`--on` does not apply to local, offline or seat-only run commands, and a failed
+pin never falls back to another manager. Rich run reports label an explicit pin
+as the requested manager, and the JSON target carries `requestedManagerInstance`.
+Follow-up commands printed by the CLI retain the same explicit pin and fill
+in a returned run ID only when it matches the native run-token shape. Keep the
+pin on later status, answer and resume calls.
+
+### Run activation
+
+`start` hands the program to the selected manager. The manager validates it, mints the run ID,
+drives the program in its own process, and answers with the ID once the run is recorded. The
+record never takes a caller-supplied run ID. A program that does not validate is refused with
+every problem listed. Source is accepted as a positional file or through `--file`, never both.
+
+`resume` asks the manager to take an existing run back and continue from its journal. Hosted
+resume uses the recorded program and refuses `--file`. Neither hosted verb accepts `--endpoint`;
+the manager records runs under its own endpoint. `--timeout` sets the default checkpoint timeout
+for a drive, with a default of `1h`.
+
+### Recorded state
+
+Bare `run`, `run list`, and `run ps` list authorized run records. `run show` and `run journal`
+read one run's recorded state, open requests, and journal. These are inspection commands.
+The text detail view shows open questions and the last 20 journal rows. Text output is presentation
+and is not a stable parsing target.
+
+`--json` produces one finite result envelope, both for hosted reads and for `ps` or `journal`
+with `--local`. Lists retain their rows in `result.items`. Detail results retain the full returned
+status and journal in `result.view`, including answer and amendment metadata that the bounded
+text table does not render. `--plain` uses the same report without terminal styling.
+
+A list row carries `runId`, `endpoint`, and, when recorded, `state`, `holder`, `epoch`,
+`journalHigh`, `forkedFrom`, `startedAt`, and `programHash`. A run with no recorded program has
+no `programHash`. `revoked` and `revocationUnreadable` distinguish revocation observations from
+the record's state. An unreadable list marker produces `REVOCATION_NOT_CHECKED` and a partial
+result, exit 4. It does not establish that the run may continue.
+
+A journal row is an `activation` or a `step`. Step rows carry the canonical `step` key, `effect`
+kind, `name`, `state`, `outcome`, `startedAt`, and, once recorded, `status`, `errorCode`, and
+`endedAt`. Times use epoch milliseconds. An open pause adds `asks`, `deadlineAt`, and, when
+present, `addressee`. A checkpoint also retains its armed `onExpiry`. A checkpoint opened before
+that field was recorded has none.
+
+A settled checkpoint or `ask` with an accepted answer retains `answer`, including its value,
+answerer, optional artifact, time, and answer ID. `amendments` follow the store's committed order;
+the last amendment is the latest recorded position. Expired pauses and ordinary steps have no
+answer. The accepted answer remains the one the run acted on.
+
+Hosted start, resume, answer, and amend also support finite JSON and plain receipts. Their
+JSON result has `kind: "run-receipt"`, the `action`, and the native returned `result`.
+The local drive, local mutations, and local checks retain native output and refuse `--json`
+and `--plain` rather than claiming structured receipts.
+
+### Diagnostic pages
+
+`ps --page`, which is not in release 0.88.0 or earlier, asks one manager for a single bounded
+diagnostic JSON page instead of the full list:
+`--limit` takes 1 to 16 rows (default 8), and `--cursor` continues a scan from a returned
+`nextCursor`. It requires `--on` and refuses `--local`, and a page proves neither absence nor
+ownership ([Diagnostic inventory](workflows.md#diagnostic-inventory)).
+
+### Revocation
+
+`revoke` writes the run's revocation marker from the project folder. It requires `--local`,
+`--by`, and `--reason`. Revocation is separate from task cancellation.
+See [Workflow admission](workflows.md).
+
+### Pause answers
+
+`answer` resolves an open
+checkpoint through the manager, presenting as the holder that armed it; the manager records the
+answerer from your credential, so no `--by` is taken there. A settled step refuses a second
+`answer`. `amend` records a changed position on a settled checkpoint or `ask`: it files a new
+answer beside the accepted one, naming it, and the journal lists it under the step. The pause stays
+settled and the run keeps the answer it acted on. A step that is still open or settled without an
+answer refuses an amend. A spawned seat may amend only an answer recorded under its own name.
+
+### Migration check
+
+`migrate` runs the migrate check of an
+edited program against a run's journal, from this terminal under a read credential (the check grammar selects `--local`; the manager serves no run-migrate command): it prints whether the migration is admissible,
+every orphaned step with its verdict and code, and exits 0 on admissible and non-zero on not. It
+writes nothing: the commit that would file the migration is not reachable yet, and the report
+says so. `migrate` refuses `--adopt`, `--release` and `--discard-approvals`, since they decide what a
+commit does and the check files nothing.
+
+### Local drive
+
+`--local` drives in this process instead, under a run credential minted from the project folder's trust material, with a separate
+mediator credential and connection for the drive, and is the path on a bare broker with no manager or for a run with no recorded program
+(`cotal run resume <runId> --local --file <program>`); `answer --local` and `amend --local` take
+`--by <who>`, and `start --local` requires `--admit-read` and `--admit-publish` (comma-separated
+patterns or `none`), the run's channel ceiling. A lone `--creds` file cannot supply both driver and mediator roles.
+
+On a user-auth mesh the host's own manager refuses the family by name, and `--local` has no credential
+there. A participant's manager started with `cotal supervise` hosts a logged-in user's runs through
+its issuing host: the auth callout issues the user's manager connection, and hosted broker commands use
+the versioned rail under that issuance.
+[User-auth run start](design/user-auth-run-start.md)
+records the path. The guide is [workflows](workflows.md).
+
+## Workflow command forms [#workflow-command-forms]
+
+`cotal run` (or `cotal r`) lists the authorized workflow records. `run show <run-id>` reads
+recorded state, open requests and the last 20 journal rows. Its JSON result contains the full
+returned status and journal. Revoked admission and unreadable revocation markers remain distinct
+from the record's state. Neither a record nor a receipt is a live agent-progress report.
+
+```bash
+cotal r
+cotal r start ./workflow.cotal.js
+cotal r show <run-id> --json
+cotal r resume <run-id>
+cotal r answer <run-id> '<step-key>' --value '<json>'
+cotal r amend <run-id> '<step-key>' --value '<json>'
+cotal r check <run-id> ./edited.cotal.js
+cotal r revoke <run-id> --local --by <actor> --reason '<text>'
+```
+
+Start accepts a positional source file, or the `--file` form above. Resume uses the host's recorded program. Hosted answers
+and amendments are attributed to the authenticated caller, never a supplied name. Check reads
+the recorded journal through the existing local check; it commits no migration. Revocation keeps
+the existing local trust and explicit actor and reason requirements and does not cancel a task.
+Hosted start, resume, answer and amend have JSON and plain receipts. The local drive and local
+check retain their native output rather than claiming an unsupported structured format.
+
+### Offline commands
+
+```bash
+cotal r validate ./workflow.cotal.js
+cotal r plan ./workflow.cotal.js
+cotal r simulate ./workflow.cotal.js --handler ./results.json
+```
+
+These three forms are offline and reject mesh or caller selection. Validation checks the
+language. Plan lists validated static call sites in source order; it does not evaluate branches,
+loop counts or an execution schedule. Simulation uses the native simulator with a JSON results
+script. It executes no JavaScript handler and invents no unscripted outcome. A simulation does
+not establish live authority, installed applications or readiness. All three support JSON and
+plain output and contact no broker.
+
+### Seat turns
+
+Inside a manager-launched static or open seat, `run turns` reads that seat's assigned turns and
+`run yield <turn-id> --status <done|blocked|handoff>` reports an outcome. Handoff also requires
+`--to <agent>`; `--note <text>` carries context. The native launcher supplies the caller context.
+These forms verify the seat's own credential and manager, never substitute an operator caller,
+and refuse user-auth self impersonation. They skip operator catalog and installation repair.
+Yielding one turn does not complete the entire workflow.

@@ -8,7 +8,7 @@
   "claude-plugin/cotal/dist/mcp.cjs": {
     "home-path": {
       "count": 2,
-      "reason": "docs/cli.md macOS home path examples carried in the bundled docs"
+      "reason": "CLI reference macOS home path examples carried in the bundled docs"
     },
     "shared-ipv4": {
       "count": 2,
@@ -19,12 +19,6 @@
     "home-path": {
       "count": 2,
       "reason": "container user home configuration"
-    }
-  },
-  "docs/cli.md": {
-    "home-path": {
-      "count": 2,
-      "reason": "macOS home path examples"
     }
   },
   "docs/register-a-mesh.mdx": {
@@ -175,6 +169,12 @@
     "home-path": {
       "count": 1,
       "reason": "attribution scrubber fixture"
+    }
+  },
+  "docs/cli-agent-control.mdx": {
+    "home-path": {
+      "count": 2,
+      "reason": "macOS home path examples"
     }
   }
 }

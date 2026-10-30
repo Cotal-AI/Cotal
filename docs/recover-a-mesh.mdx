@@ -97,7 +97,7 @@ An interrupted attempt can resume durable progress, but repeated interruptions d
 </Callout>
 
 Let the successor manager's normal startup heal the dead registration operation.
-If that boot cannot run, use [`cotal reconcile-gate`](cli.md#reconcile-gate).
+If that boot cannot run, use [`cotal reconcile-gate`](cli-maintenance.mdx#reconcile-gate).
 That command also covers a non-manager endpoint or recovery without starting a manager.
 
 Recovery requires a complete CONNZ sweep proving that the freeze-holder is gone: `gone` and `sweepComplete=true`.

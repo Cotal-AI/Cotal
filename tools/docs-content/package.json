@@ -5,6 +5,10 @@
   "type": "module",
   "description": "Build-only documentation metadata and semantic Markdown exports.",
   "exports": {
+    "./generate": {
+      "types": "./generate.d.ts",
+      "import": "./generate.mjs"
+    },
     ".": {
       "types": "./index.d.ts",
       "import": "./index.mjs"
@@ -12,11 +16,13 @@
   },
   "files": [
     "index.mjs",
-    "index.d.ts"
+    "index.d.ts",
+    "generate.mjs",
+    "generate.d.ts"
   ],
   "scripts": {
-    "build": "node --check index.mjs",
-    "typecheck": "tsc --noEmit --allowJs --checkJs --module NodeNext --moduleResolution NodeNext --target ES2022 --skipLibCheck index.mjs",
+    "build": "node --check index.mjs && node --check generate.mjs",
+    "typecheck": "tsc --noEmit --allowJs --checkJs --module NodeNext --moduleResolution NodeNext --target ES2022 --skipLibCheck index.mjs generate.mjs",
     "test": "node --test test.mjs"
   },
   "dependencies": {
@@ -24,6 +30,7 @@
     "remark-gfm": "^4.0.1",
     "remark-mdx": "^3.1.1",
     "remark-parse": "^11.0.0",
+    "remark-stringify": "^11.0.0",
     "unified": "^11.0.5"
   },
   "devDependencies": {
