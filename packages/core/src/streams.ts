@@ -11,7 +11,7 @@ import {
   type StreamConfig,
 } from "@nats-io/jetstream";
 import { randomUUID } from "node:crypto";
-import { credsAuthenticator, tokenAuthenticator, nanos, type NatsConnection } from "@nats-io/transport-node";
+import { tokenAuthenticator, nanos, type NatsConnection } from "@nats-io/transport-node";
 import { dialerFor, isPublishPermissionDenied } from "./endpoint.js";
 import { Kvm } from "@nats-io/kv";
 import { Objm } from "@nats-io/obj";
@@ -50,6 +50,7 @@ import {
 } from "./subjects.js";
 import type { KV } from "@nats-io/kv";
 import { idFromCreds } from "./identity.js";
+import { nativeCredsAuthenticator } from "./creds-authenticator.js";
 import { requireBrokerFloor } from "./broker-floor.js";
 import { isConsumerNotFound, isStreamNotFound } from "./jetstream-missing.js";
 import { isCasLoss } from "./endpoint-records.js";
@@ -216,16 +217,14 @@ export function standaloneConnectOpts(auth: StandaloneAuth): Record<string, unkn
     return {
       name: nonce,
       inboxPrefix: `_INBOX_${nonce}`,
-      authenticator: [credsAuthenticator(new TextEncoder().encode(auth.sentinelCreds)), tokenAuthenticator(auth.bearer)],
+      authenticator: [nativeCredsAuthenticator(auth.sentinelCreds), tokenAuthenticator(auth.bearer)],
       ...tlsOpt,
     };
   }
   const creds = auth.creds;
   if (!creds) return { ...tlsOpt };
   return {
-    authenticator: typeof creds === "function"
-      ? (nonce?: string) => credsAuthenticator(new TextEncoder().encode(creds()))(nonce)
-      : credsAuthenticator(new TextEncoder().encode(creds)),
+    authenticator: nativeCredsAuthenticator(creds),
     inboxPrefix: `_INBOX_${idFromCreds(typeof creds === "function" ? creds() : creds)}`,
     ...tlsOpt,
   };

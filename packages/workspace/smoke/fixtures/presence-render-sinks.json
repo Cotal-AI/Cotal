@@ -3276,7 +3276,7 @@
     {
       "path": "implementations/cli/src/chat/static-session.ts",
       "kind": "derived-output",
-      "anchor": "askPinned(mesh, \"chatSessionRetire\", { alias: slot.alias, actor: slot.actor, lifecycleUid: slot.lifecycleUid }, managerInstanceId)",
+      "anchor": "askPinned(mesh, \"chatSessionRetire\", { alias: slot.alias, actor: slot.actor, lifecycleUid: slot.lifecycleUid }, managerInstanceId, undefined, STATIC_CHAT_RETIRE_TIMEOUT_MS)",
       "class": "non-render/control",
       "rationale": "Static chat control path: asks the pinned manager to retire the chat session; no presence is rendered."
     },
@@ -3304,7 +3304,7 @@
     {
       "path": "implementations/cli/src/chat/static-session.ts",
       "kind": "derived-output",
-      "anchor": "askManager(mesh.space, mesh.server, op, args, auth, \"owner\", undefined, instanceId !== undefined ? { instanceId } : undefined)",
+      "anchor": "askManager(mesh.space, mesh.server, op, args, auth, \"owner\", timeoutMs, instanceId !== undefined ? { instanceId } : undefined)",
       "class": "non-render/control",
       "rationale": "Static chat control path: asks the pinned space's manager; no presence is rendered."
     },

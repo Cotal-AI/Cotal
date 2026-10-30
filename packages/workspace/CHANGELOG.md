@@ -1,5 +1,143 @@
 # @cotal-ai/workspace
 
+## 0.131.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.131.1
+
+## 0.131.0
+
+### Minor Changes
+
+- 0e65b6f: `ProcessRecord` carries only the fields its state has. A missing or empty record is `absent` and carries nothing. A record that is not a pid is `unattributable` and carries that content. `dead` and `unknown` carry the pid. `alive` and `foreign` carry the pid and, when the command line was read, the command. A caller that reads `pid` on an absent or unattributable record, or `content` on any other state, fails to compile. `readProcessRecord` already returned these shapes, and its results are unchanged. The manager and delivery refusals name the same pid they named before.
+
+### Patch Changes
+
+- daff420: Inspect user-auth state-directory and provider-pin entries without following symlinks at those entries. Regular pins still count. The directory/pin entry checks treat ENOENT as absence and propagate other inspection errors; this does not change ancestor-path or auth-directory enumeration behavior.
+- Updated dependencies [f7c2c28]
+  - @cotal-ai/core@0.131.0
+
+## 0.130.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.130.2
+
+## 0.130.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.130.1
+
+## 0.130.0
+
+### Patch Changes
+
+- Updated dependencies [025d175]
+- Updated dependencies [27250e3]
+  - @cotal-ai/core@0.130.0
+
+## 0.129.9
+
+### Patch Changes
+
+- b94f83a: Say that a project's trust folder must be one this account can read and enter. A `.cotal/auth` that
+  lists its files but cannot be entered, such as one at mode 0600, is refused with
+  `DEPENDENCY_UNAVAILABLE`, and its next step said only to make it a folder this account can read,
+  which a folder at 0600 already is. The next step now says to make it a folder this account can read
+  and enter, or to name a space with `--space <name>`. The error code, the folder named, and every
+  other next step are unchanged.
+- Updated dependencies [1a59b0a]
+  - @cotal-ai/core@0.129.9
+
+## 0.129.8
+
+### Patch Changes
+
+- 43b7cb9: Report a project's unusable trust folder truthfully. A readable account record in a project folder's
+  `.cotal/auth` that will not load, such as an `auth.json` that is not JSON, made a command that would
+  target that folder refuse with `TARGET_AMBIGUOUS` and the empty message `multiple meshes running: `,
+  with no mesh running. It now refuses with `DEPENDENCY_UNAVAILABLE`, names each such record by path,
+  and says to repair or remove it or to name a space with `--space <name>`. This includes the
+  `--server` path. A `.cotal/auth` that lists its files but cannot be searched, such as one at mode
+  0600, refused the same empty way and is now refused as a folder this account cannot read. When this
+  account cannot enter a folder on the way to `.cotal/auth`, such as the project's `.cotal`, the next
+  step now names that folder instead of saying to make `.cotal/auth` readable. Several valid account records, explicit `--space`, a selected space, and missing or
+  readable projects are unchanged, and no record or mode is changed.
+- @cotal-ai/core@0.129.8
+
+## 0.129.7
+
+### Patch Changes
+
+- 853005f: Stop reporting an unreadable project folder as several running meshes. When this account cannot read a
+  project folder's `.cotal/auth`, for example because it cannot enter the folder's `.cotal`, a command
+  that would target that folder used to refuse with `TARGET_AMBIGUOUS` and the empty message
+  `multiple meshes running: `. It now refuses with `DEPENDENCY_UNAVAILABLE` and names the folder and the
+  read error, with `--space <name>` as the next step. This includes the `--server` path. The account
+  inventory now treats only a missing auth folder as empty; any other read failure propagates. An
+  unreadable `.cotal/auth` no longer renders as `space "undefined"`. Explicit `--space`, a selected
+  space, and readable or absent projects are unchanged.
+- @cotal-ai/core@0.129.7
+
+## 0.129.6
+
+### Patch Changes
+
+- @cotal-ai/core@0.129.6
+
+## 0.129.5
+
+### Patch Changes
+
+- @cotal-ai/core@0.129.5
+
+## 0.129.4
+
+### Patch Changes
+
+- @cotal-ai/core@0.129.4
+
+## 0.129.3
+
+### Patch Changes
+
+- Updated dependencies [c6ddccc]
+- Updated dependencies [565f465]
+  - @cotal-ai/core@0.129.3
+
+## 0.129.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.129.2
+
+## 0.129.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.129.1
+
+## 0.129.0
+
+### Patch Changes
+
+- de421cd: `cotal doctor auth --space <space>` for a space that was prepared and never started now says to start it with `cotal up` first, instead of telling the user to run the same command in the folder they are already in. From another folder, that step names the space's root with `--root`, quoted for a shell. The refusal and its exit code are unchanged.
+- @cotal-ai/core@0.129.0
+
+## 0.128.7
+
+### Patch Changes
+
+- @cotal-ai/core@0.128.7
+
+## 0.128.6
+
+### Patch Changes
+
+- @cotal-ai/core@0.128.6
+
 ## 0.128.5
 
 ### Patch Changes

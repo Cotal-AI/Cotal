@@ -39,7 +39,10 @@
  * start a broker there. On Linux, two cells hold one by a client connection's local end instead,
  * open and then in TIME-WAIT, with nothing listening, and need the refusal to say which.
  * A refusal that names the whole fix, such as a nats:// address where the root's recorded policy or
- * --tls-cert serves TLS, prints no help after it. Those cells need `openssl` on PATH.
+ * --tls-cert serves TLS, prints no help after it. Those cells need `openssl` on PATH. `up -f` binds a
+ * single broker address, so a `broker.servers` or `--server` that lists two URLs refuses USAGE_INVALID
+ * with its fix and names neither address, where it used to fail with a bare `Invalid URL`. A listed
+ * entry with credentials keeps its own refusal, and `topology view` still reads the list.
  *
  * Run: pnpm smoke:up-usage-refusal
  */
@@ -369,6 +372,51 @@ try {
       check(`up refuses ${label} with its fix and no help, exit 1`, r.status === 1 && r.stdout === "" && r.stderr.includes(message) && r.stderr.includes(remedy) && !/Usage|Options/.test(r.stderr), shown(r));
     }
     check("the refusals leave the recorded policy as it was and start no broker", readFileSync(policyFile, "utf8") === policy && !started(root) && !started(plainRoot), readdirSync(join(root, ".cotal")));
+  }
+
+  // `up -f` binds a single broker address, so a list in broker.servers or --server refuses before
+  // anything parses it as one URL, where it used to fail with a bare `Invalid URL` and an unknown
+  // outcome. Each entry is still checked first, and topology view still reads the list. A second
+  // listener holds the other address, so a regression that took either entry cannot start a broker.
+  {
+    const other = createServer((socket) => socket.on("error", () => {}));
+    const second = await new Promise<number>((resolve) => other.listen(0, "127.0.0.1", () => resolve((other.address() as AddressInfo).port)));
+    const project = realpathSync(mkdtempSync(join(tmpdir(), "cotal-up-usage-list-")));
+    roots.push(project);
+    const [one, list] = [`nats://127.0.0.1:${held}`, `nats://127.0.0.1:${held},nats://127.0.0.1:${second}`];
+    const secret = `nats://listuser:listsecret@127.0.0.1:${second}`;
+    const manifest = (servers: string) => `apiVersion: cotal/v1\nkind: Mesh\nspace: upusagelist\nbroker:\n  servers: "${servers}"\nchannels: {}\n`;
+    writeFileSync(join(project, "single.yaml"), manifest(one));
+    writeFileSync(join(project, "list.yaml"), manifest(list));
+    writeFileSync(join(project, "secret.yaml"), manifest(`${one},${secret}`));
+    const files = "list.yaml,secret.yaml,single.yaml";
+    const fromFile = { message: "broker.servers lists 2 broker URLs, and up -f binds a single broker address; nothing was started or written", remedy: "set broker.servers in list.yaml to the one URL the new broker listens on" };
+    const fromFlag = { message: "--server lists 2 broker URLs, and up -f binds a single broker address; nothing was started or written", remedy: "pass one --server URL for the new broker to listen on" };
+    for (const { label, args, expected } of [
+      { label: "a manifest whose broker.servers lists two URLs", args: ["-f", "list.yaml", "--dry-run"], expected: fromFile },
+      { label: "a manifest whose broker.servers lists two URLs, applied", args: ["-f", "list.yaml"], expected: fromFile },
+      { label: "a --server that lists two URLs", args: ["-f", "single.yaml", "--server", list, "--dry-run"], expected: fromFlag },
+    ]) {
+      const r = run(["up", ...args], project);
+      check(`up ${args.join(" ")}: ${label} refuses USAGE_INVALID with its fix and no help, exit 1, naming no address`,
+        r.status === 1 && r.stdout === "" && r.stderr.includes(expected.message) && r.stderr.includes(expected.remedy) && !/Invalid URL|Usage|Options/.test(r.stderr) && !r.stderr.includes(String(second)), shown(r));
+    }
+    for (const { label, args, message } of [
+      { label: "broker.servers", args: ["-f", "secret.yaml", "--dry-run"], message: "broker.servers entry 2 must not embed credentials" },
+      { label: "--server", args: ["-f", "single.yaml", "--server", `${one},${secret}`, "--dry-run"], message: "--server must not embed credentials" },
+    ]) {
+      const r = run(["up", ...args], project);
+      check(`a list in ${label} whose second entry embeds credentials keeps that entry's refusal, exit 1, without the secret`,
+        r.status === 1 && r.stderr.includes(message) && !/lists 2 broker URLs/.test(r.stderr) && !`${r.stdout}${r.stderr}`.includes("listsecret"), shown(r));
+    }
+    const single = run(["up", "-f", "single.yaml", "--dry-run"], project);
+    check("up -f --dry-run of a manifest naming one URL still prints its plan, exit 0", single.status === 0 && single.stdout.includes(`at ${one} `) && /Dry run - nothing was changed/.test(single.stdout), shown(single));
+    const override = run(["up", "-f", "list.yaml", "--server", one, "--dry-run"], project);
+    check("one --server over a listed broker.servers is the address the plan binds, exit 0", override.status === 0 && override.stdout.includes(`at ${one} `), shown(override));
+    const topology = run(["topology", "view", "-f", "list.yaml"], project);
+    check("topology view -f still reads the listed broker.servers, exit 0", topology.status === 0 && topology.stdout.includes(`broker: ${list} `), shown(topology));
+    check("the refusals wrote nothing in the project and started no broker", readdirSync(project).sort().join(",") === files && !started(project), readdirSync(project));
+    other.close();
   }
   if (process.platform !== "win32" && process.getuid?.() !== 0) {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "cotal-up-usage-read-")));

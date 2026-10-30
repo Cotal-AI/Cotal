@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, readFileSync, realpathSync, type Stats } from "node:fs";
+import { accessSync, constants, existsSync, lstatSync, readFileSync, realpathSync, type Stats } from "node:fs";
 import { join } from "node:path";
 import { boundedValue, DEFAULT_SERVER, DEFAULT_SPACE, personaDir, type SpaceAuth } from "@cotal-ai/core";
 import { accountInventory, authDir, cotalDirLink, findCotalRoot, hasUserAuthState, listSpaceAccounts, loadSpaceAuth, movedRootRemedy, rootPathProblem, soleSpaceOf, stackJournalPath, stackJournalRoot, userAuthSpacesOnDisk } from "./auth-paths.js";
@@ -16,7 +16,7 @@ import {
   type MeshEntry,
   type UserAuthInfo,
 } from "./mesh-registry.js";
-import { ProtectedRecordStore, shellPath } from "./protected-records.js";
+import { ProtectedRecordStore, shellPath, unsearchableFolder } from "./protected-records.js";
 import { rootNamesNoSpace } from "./space.js";
 import { codeSpan } from "./text-wrap.js";
 
@@ -127,9 +127,14 @@ export interface MeshTargetErrorDetails {
    *  RECORDED meshes a caller can select by name: the running meshes of the bare fallback, or the
    *  registrations one folder's broker hosts, so a caller that must act on each (rather than print
    *  them) reads each by name and decides for it. Absent for every other ambiguity: several tenants
-   *  on one root's disk, or an unreadable account record, name no registration to act on, and there
-   *  the refusal stands. */
+   *  on one root's disk name no registration to act on, and there the refusal stands. */
   spaces?: string[];
+  /** For `unreadable-auth` with no space: the first folder on the way to the root's trust folder that
+   *  this account cannot enter, when a permission error kept that folder from being read. */
+  folder?: string;
+  /** For `unreadable-auth` with no space: the account records in the root's trust folder that will
+   *  not load, by path. */
+  records?: string[];
   /** What the caller asked for that didn't match (e.g. an unknown `--space`). */
   requested?: string;
   /** For `unknown-space`: the name came from the `cotal use` selection, not from `--space`. */
@@ -216,6 +221,35 @@ function loadTrustOrThrow(root: string, space: string): SpaceAuth | undefined {
   }
 }
 
+/** ROOT's on-disk account inventory, or `unreadable-auth` naming the root when its trust folder
+ *  cannot be read or holds an account record that will not load. Either way the spaces it holds are
+ *  unknown, which is not several of them. */
+function rootInventory(root: string): { spaces: string[]; corrupt: string[] } {
+  // `accountInventory`'s readdir can THROW (EACCES/ELOOP on `.cotal/auth`): it lets that propagate
+  // so the broker-wide guards fail CLOSED, but the resolver is a presentation surface and must
+  // convert it to a typed error, or `status`/`spawn` crash on the raw throw. An unreadable auth dir
+  // is unreadable trust. A permission error names the folder above it this account cannot enter.
+  const dir = authDir(root);
+  let inv: { spaces: string[]; corrupt: string[] };
+  try {
+    inv = accountInventory(dir);
+    // A folder that lists but cannot be searched, such as mode 0600, opens none of its records
+    // however they are written, so they are not corrupt.
+    if (inv.corrupt.length > 0) accessSync(dir, constants.X_OK);
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    const folder = code === "EACCES" || code === "EPERM" ? unsearchableFolder(dir) : undefined;
+    throw new MeshTargetError("unreadable-auth", (e as Error).message, { root, ...(folder === undefined ? {} : { folder }) }, { cause: e });
+  }
+  if (inv.corrupt.length > 0)
+    throw new MeshTargetError(
+      "unreadable-auth",
+      `${root} holds ${inv.corrupt.length} unreadable account record(s) (${inv.corrupt.join(", ")}) - the tenant list is uncertain; repair or remove them`,
+      { root, records: inv.corrupt.map((name) => join(dir, name)) },
+    );
+  return inv;
+}
+
 /** Refuse to resolve a single mesh when ROOT's on-disk account inventory says it hosts more than
  *  one tenant (or an unreadable one). The disk is the tenant authority ahead of the registry: a
  *  broker with several account records is several tenants even if only one is registered, so any
@@ -223,22 +257,7 @@ function loadTrustOrThrow(root: string, space: string): SpaceAuth | undefined {
  *  must refuse here. `--space` is the way to name one. A root with 0 or 1 accounts (open or
  *  single-tenant) passes untouched. */
 function assertRootIsSingleTenant(root: string): void {
-  // `accountInventory`'s readdir can THROW (EACCES/ELOOP on `.cotal/auth`): it lets that propagate
-  // so the broker-wide guards fail CLOSED, but the resolver is a presentation surface and must
-  // convert it to a typed error, or `status`/`spawn` crash on the raw throw. An unreadable auth dir
-  // is unreadable trust.
-  let inv: { spaces: string[]; corrupt: string[] };
-  try {
-    inv = accountInventory(authDir(root));
-  } catch (e) {
-    throw new MeshTargetError("unreadable-auth", (e as Error).message, { root });
-  }
-  if (inv.corrupt.length > 0)
-    throw new MeshTargetError(
-      "ambiguous-target",
-      `${root} holds ${inv.corrupt.length} unreadable account record(s) (${inv.corrupt.join(", ")}) - the tenant list is uncertain; repair or remove them`,
-      { root },
-    );
+  const inv = rootInventory(root);
   if (inv.spaces.length > 1)
     throw new MeshTargetError(
       "ambiguous-target",
@@ -304,15 +323,19 @@ export function targetFromEntry(m: MeshEntry, server: string, source: MeshTarget
 }
 
 function localTarget(root: string, server: string, source: MeshTarget["source"], readOnly = false): MeshTarget {
-  // No registry entry and no explicit space, so the root itself must name exactly one space;
-  // `soleSpaceOf` fails loud rather than picking one when it holds several (or the tenant list is
-  // unreadable). Surface that as a catchable target error so a caller like `status` reports it as an
-  // ambiguous target instead of crashing on an uncaught throw. A root with no trust yet names the
-  // space `cotal space create` prepared there, as `cotal up` there starts it.
+  // No registry entry and no explicit space, so the root itself must name exactly one space. A trust
+  // folder that cannot be read, or holds a record that will not load, refuses as such first; then
+  // `soleSpaceOf` fails loud rather than picking one when it holds several. Surface that as a
+  // catchable target error so a caller like `status` reports it as an ambiguous target instead of
+  // crashing on an uncaught throw. A root with no trust yet names the space `cotal space create`
+  // prepared there, as `cotal up` there starts it.
+  rootInventory(root);
   let space: string;
   try {
     space = soleSpaceOf(authDir(root)) ?? preparedSpaceAt(root)?.space ?? DEFAULT_SPACE;
   } catch (e) {
+    // A trust folder this account cannot read names no space at all, which is not several of them.
+    if ((e as NodeJS.ErrnoException).syscall !== undefined) throw new MeshTargetError("unreadable-auth", (e as Error).message, { root }, { cause: e });
     throw new MeshTargetError("ambiguous-target", (e as Error).message, { root });
   }
   const auth = loadTrustOrThrow(root, space);
@@ -380,6 +403,15 @@ export function preparedLifecycle(root: string, space: string): PreparedLifecycl
   if (unsettled) return { state: "unsettled", lastOperation: `${codeSpan(`cotal ${unsettled}`)}, with no recorded outcome`, unsettled, ...(stopped ? { stopped } : {}) };
   if (stopped) return { state: "stopped", lastOperation: `${stopped.operation}, ${stopped.outcome}`, stopped };
   return { state: "prepared", lastOperation: null };
+}
+
+/** Whether a `not-started` refusal names a prepared space whose root exists and whose stack never
+ *  launched a member: not one that is stopped or unsettled (its journal names members a manager may
+ *  still hold), not a root whose stack runs under another Cotal home, and not a root whose journal
+ *  or account names a space this home never prepared. */
+export function preparedNeverStarted(d: MeshTargetErrorDetails): d is MeshTargetErrorDetails & { space: string; root: string } {
+  return typeof d.space === "string" && typeof d.root === "string" && d.rootMissing !== true &&
+    d.stopped === undefined && d.unsettled === undefined && d.home === undefined && d.stackSpace === undefined;
 }
 
 const OPERATION: Record<string, string> = { up: codeSpan("cotal up"), down: codeSpan("cotal down"), preserve: `a preserving ${codeSpan("cotal down")}`, resume: "a resume" };

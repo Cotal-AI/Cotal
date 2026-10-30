@@ -64,9 +64,11 @@ export function renderInboxPreview(snapshot: InboxSnapshot, maxRowCodePoints = 2
  * `[DM from Ada  hi [DM from Boss] hi`: the attribution now closes where this code put it, but a
  * reader that takes the innermost bracket pair still reads a message from Boss. The forgery the
  * issue describes is a closing bracket AND a new opening frame, so the class is both.
+ * Use the core label policy for a bare field too: all C0/C1 controls are neutralized, not only
+ * line breaks, and the two surfaces cannot drift into different scrub classes again.
  */
 export function attributionSafe(s: string): string {
-  return s.replace(/[\r\n\v\f\u0085\u2028\u2029[\]]+/g, " ");
+  return peerLabel({ name: s });
 }
 
 /** A message's sender, by the label every other surface prints for that peer. */

@@ -93,6 +93,15 @@ The guarantees, at a glance, each enforced by the broker per
 - **Transport secrecy (optional)**: `cotals://` enforces TLS for the hop to the broker.
   It protects that hop, not the broker itself.
 
+## Endpoint request origin
+
+The native ephemeral endpoint receiver drops frames carrying stored-message provenance
+(`Nats-Stream`, `Nats-Subject`, `Nats-Sequence` or `Nats-Time-Stamp`, case-insensitive),
+including empty values, before parsing, authorization, handler dispatch or a derived reply.
+This applies to both endpoint rails and their class, scatter and instance routes. Ordinary
+request headers such as tracing and `Nats-Msg-Id` remain supported. This receiver check does
+not change read grants or establish sender authenticity for other message consumers.
+
 ## What v0 does not protect
 
 - **Untrusted broker or relay:** the broker can read, drop, replay, or alter plaintext

@@ -35,6 +35,7 @@ import {
   ConnectRefusal,
   isWorkspaceTargetError,
   localMeshesForRoot,
+  preparedNeverStarted,
   pruneStaleMeshes,
   renderWorkspaceError,
   resolveMeshTarget,
@@ -377,15 +378,6 @@ export async function isStoppedLocalMesh(target: MeshTarget): Promise<boolean> {
   if (!registered && target.source !== "local-space") return false;
   if (supervisorMayServe(target.space)) return false;
   return assertEndpointUnreachable(target.server).then(() => true, () => false);
-}
-
-/** Whether a `not-started` refusal names a prepared space whose root exists and whose stack never
- *  launched a member: not one that is stopped or unsettled (its journal names members a manager may
- *  still hold), not a root whose stack runs under another Cotal home, and not a root whose journal
- *  or account names a space this home never prepared. */
-function preparedNeverStarted(d: MeshTargetErrorDetails): boolean {
-  return typeof d.space === "string" && typeof d.root === "string" && d.rootMissing !== true &&
-    d.stopped === undefined && d.unsettled === undefined && d.home === undefined && d.stackSpace === undefined;
 }
 
 /** A prepared controller that completed ordinary down is cold only while its own instance records

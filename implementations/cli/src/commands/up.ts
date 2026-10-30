@@ -585,6 +585,21 @@ function serverExample(server: string): string {
   return `--server ${/^tls:/i.test(server) ? "tls" : "nats"}://127.0.0.1:${valid ? Number(port) : "<port>"}`;
 }
 
+/** The refusal of a manifest start whose effective `--server` or `broker.servers` lists more than
+ *  one URL, or undefined when it names one. The start binds one new local broker to one address, so
+ *  it does not pick an entry. The manifest still validates with a list, which `topology view` shows.
+ *  The message counts the entries and never repeats them, as one may carry a credential. */
+function bindListRefusal(command: string, file: string, space: string, server: string | undefined, servers: string | undefined): CommandFailure | undefined {
+  const count = (server ?? servers)?.split(",").filter((entry) => entry.trim()).length ?? 0;
+  if (count < 2) return undefined;
+  const source = server !== undefined ? "--server" : "broker.servers";
+  return new CommandFailure("refused", "USAGE_INVALID", `${source} lists ${count} broker URLs, and ${command} binds a single broker address; nothing was started or written`, {
+    target: { space, path: resolve(file), source, entries: count },
+    remedy: server !== undefined ? "pass one --server URL for the new broker to listen on" : `set broker.servers in ${file} to the one URL the new broker listens on`,
+    selfContained: true,
+  });
+}
+
 /** The local stack's own clients cannot reach a broker on an IPv6 address, so neither flag may name one. */
 const IPV6_UNSERVED = (flag: string): string => `${flag} names an IPv6 address, and the local stack's own clients cannot reach a broker there`;
 
@@ -3392,6 +3407,8 @@ export async function prepareFreshTeamBoot(file: string, opts: { space: string; 
   if (idpProblem) throw new CommandFailure("refused", "SCHEMA_INVALID", idpProblem, { target: { space: opts.space } });
   const serverProblems = opts.server === undefined ? [] : serverUrlProblems(opts.server, "--server");
   if (serverProblems.length) throw new CommandFailure("refused", "SCHEMA_INVALID", serverProblems.join("; "), { target: { space: opts.space } });
+  const list = bindListRefusal("team boot", file, opts.space, opts.server, prepared.manifest.broker?.servers);
+  if (list) throw list;
   const { prepared: eff, hostSource, serverSource } = applyUpOverrides(prepared, flags);
   const m = eff.manifest;
   const host = m.broker?.host ?? "127.0.0.1";
@@ -3548,6 +3565,9 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
     for (const problem of serverProblems) stderrLine("✗ ", `${problem}`, c.red);
     process.exit(1);
   }
+  // Each entry of a list is checked above; the start still needs one address, before any parse of it.
+  const list = bindListRefusal(opts.freshTeamBoot ? "team boot" : "up -f", file, prepared.manifest.space, opts.server, prepared.manifest.broker?.servers);
+  if (list) throw list;
   // Apply CLI overrides to one effective manifest (flag > manifest > default) so render + seed +
   // broker + launch all agree on the same values.
   const { prepared: eff, hostSource, serverSource } = applyUpOverrides(prepared, opts);

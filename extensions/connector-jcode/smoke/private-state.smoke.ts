@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { copyFileSync, constants, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { copyCredentialFile, ensurePinnedPrivateDirectory, jcodeCredentialMirrorInventory, mirrorJcodeCredentials, removeCredentialMirror, shortSocketHome, unlinkThroughSwappedPinForTest } from "../src/private-state.js";
 
 let pass = 0;
@@ -11,6 +12,11 @@ const check = (name: string, condition: boolean, actual?: unknown): void => {
   console.log(`  ✓ ${name}`);
 };
 const mode = (path: string) => statSync(path).mode & 0o777;
+const cursorAccessToken = (path: string) => {
+  const db = new DatabaseSync(path, { readOnly: true });
+  try { return db.prepare("SELECT value FROM ItemTable WHERE key = ?").get("cursorAuth/accessToken")?.value; }
+  finally { db.close(); }
+};
 const leafKind = (path: string): { kind: "file" | "dir" | "other" | "absent"; bytes: string | null } => {
   try {
     const st = lstatSync(path);
@@ -76,7 +82,12 @@ try {
   mkdirSync(join(sources.externalHome, ".config", "Cursor", "User", "globalStorage"), { recursive: true, mode: 0o700 });
   mkdirSync(sources.jcodeHome, { recursive: true, mode: 0o700 });
   writeFileSync(direct, "first-token", { mode: 0o600 });
-  writeFileSync(external, "cursor-store", { mode: 0o600 });
+  writeFileSync(external, "", { mode: 0o600 });
+  const cursor = new DatabaseSync(external);
+  try {
+    cursor.exec("CREATE TABLE ItemTable (key TEXT PRIMARY KEY, value BLOB)");
+    cursor.prepare("INSERT INTO ItemTable VALUES (?, ?)").run("cursorAuth/accessToken", "cursor-store");
+  } finally { cursor.close(); }
   writeFileSync(join(sources.appConfigDir, "subscription.env"), "JCODE_TOKEN=first", { mode: 0o600 });
   mkdirSync(home, { recursive: true, mode: 0o700 });
   // Model the legacy SDK output that caused #768. Launch must replace it rather than silently
@@ -94,7 +105,7 @@ try {
   const copiedDirect = join(home, "auth.json");
   check(
     "external auth mirror is copied rather than symlinked",
-    firstMirrorError === undefined && !lstatSync(copiedExternal).isSymbolicLink() && lstatSync(copiedExternal).isFile() && readFileSync(copiedExternal, "utf8") === "cursor-store",
+    firstMirrorError === undefined && !lstatSync(copiedExternal).isSymbolicLink() && lstatSync(copiedExternal).isFile() && cursorAccessToken(copiedExternal) === "cursor-store",
     firstMirrorError instanceof Error ? firstMirrorError.message : copiedExternal,
   );
   check("copied external auth file is owner-only", mode(copiedExternal) === 0o600, { mode: mode(copiedExternal).toString(8) });

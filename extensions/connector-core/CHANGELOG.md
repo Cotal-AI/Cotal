@@ -1,5 +1,75 @@
 # @cotal-ai/connector-core
 
+## 0.131.1
+
+No changes in this release.
+
+## 0.131.0
+
+No changes in this release.
+
+## 0.130.2
+
+No changes in this release.
+
+## 0.130.1
+
+### Patch Changes
+
+- 3e057b0: Use core's existing peer-label sanitizer for attribution fields. Channel and kind framing now neutralize all C0/C1 controls consistently with roster labels, while preserving ordinary Unicode, spacing and the existing bracket/line-break handling.
+
+## 0.130.0
+
+No changes in this release.
+
+## 0.129.9
+
+No changes in this release.
+
+## 0.129.8
+
+No changes in this release.
+
+## 0.129.7
+
+No changes in this release.
+
+## 0.129.6
+
+No changes in this release.
+
+## 0.129.5
+
+No changes in this release.
+
+## 0.129.4
+
+No changes in this release.
+
+## 0.129.3
+
+No changes in this release.
+
+## 0.129.2
+
+No changes in this release.
+
+## 0.129.1
+
+No changes in this release.
+
+## 0.129.0
+
+No changes in this release.
+
+## 0.128.7
+
+No changes in this release.
+
+## 0.128.6
+
+No changes in this release.
+
 ## 0.128.5
 
 ### Patch Changes

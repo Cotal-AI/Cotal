@@ -8048,7 +8048,7 @@ export class Manager {
   private watchExit(a: ManagedAgent): void {
     const handle = a.handle;
     const current = (): boolean => this.agents.get(a.name) === a && a.handle === handle;
-    const watched = watchProvedExit(handle, () => { if (current()) this.onAgentExit(a); }, current);
+    const watched = watchProvedExit(handle, () => this.onAgentExit(a), current);
     if (!watched)
       console.error(`! ${a.name}: runtime "${handle.kind}" cannot prove a child exit (AgentHandle.waitForExit is not implemented) - it stays managed after it exits, until it is stopped`);
   }
@@ -10529,6 +10529,8 @@ export class Manager {
       servers: this.servers ?? DEFAULT_SERVER,
       auth: this.auth!,
       log: (line) => console.error(`static retirement ${a.name}: ${line}`),
+      // A daemon credential reload briefly removes its responder while it reconnects.
+      unreachableWaitMs: DEPROVISION_TIMEOUT_MS,
     });
     const cleanup = async (): Promise<void> => {
       // SPEC 13.15: every issuance bound to this incarnation's ledger family is retired here,

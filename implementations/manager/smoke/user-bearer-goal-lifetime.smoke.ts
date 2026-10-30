@@ -2,10 +2,12 @@
  * USER-BEARER GOAL LIFETIME & RECONNECT SMOKE SUITE
  *
  * Validates the mediated goal recovery contract across:
- *   1. POSITIVE CONTROL: 60s user bearer follows 4.5s delayed spawn to completion.
+ *   1. POSITIVE CONTROL: 60s user bearer follows a 4.5s delayed spawn after slow submission;
+ *      the native acceptance supplies the manager's readiness budget, not total startup wall time.
  *   2. COMPATIBILITY GATE: Unsupported manager (lacking goal-result) is refused before effects
  *      with failed-precondition, while non-follow commands remain usable. Exactly 0 mutation submits.
- *   3. STOP CLEANUP: ep.stop() cancels owned follow waits promptly with unavailable, clearing timers.
+ *   3. STOP CLEANUP: after observed native acceptance, ep.stop() cancels owned follow waits
+ *      promptly with unavailable, clearing timers; slow submission cannot race a fixed sleep.
  *   4. LOOKUP REFUSAL PROVENANCE: Post-accept goal-result read refusal does NOT copy
  *      outcome:not-executed or EP_BIND_REFUSED onto the spawn outcome; preserves acceptance.
  *   5. FINGERPRINT & DIGEST VALIDATION: Reconciled fact must match accepted goalId and fingerprint.
@@ -286,7 +288,8 @@ async function main() {
     writeFileSync(join(WS_ROOT, ".cotal", "agents", "stop-user.md"), "---\nname: stop-user\nrole: worker\n---\n");
 
     mgr = new Manager({ space: SPACE, servers: SERVERS, runtime: "pty", workspaceRoot: WS_ROOT });
-    (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = 10_000;
+    const readinessBudgetMs = 10_000;
+    (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = readinessBudgetMs;
     await mgr.start();
     const mgrIid = (mgr as unknown as { managerInstanceId: string }).managerInstanceId;
     check("manager booted and registered instanceId", typeof mgrIid === "string" && mgrIid.length > 0);
@@ -320,21 +323,27 @@ async function main() {
     });
     await startEndpoint(ep1);
 
-    let posGoalId = "";
-    const posStart = Date.now();
+    let posGoalId = "", posReadinessBudget: unknown;
+    let posAcceptedAt = 0;
+    const posStart = performance.now();
     const posReply = await ep1.followServiceGoal(
       BASELINE_LIFECYCLE_ENDPOINT,
       async () => {
+        // Slow preparation is separate from the manager's post-acceptance readiness budget.
+        await new Promise((r) => setTimeout(r, 6000));
         const r = await ep1.invokeService(BASELINE_LIFECYCLE_ENDPOINT, "spawn", { name: "pos-user", agent: "delayed-join", events: false });
+        posAcceptedAt = performance.now();
         posGoalId = (r.reply.data as Record<string, unknown>)?.goalId as string;
+        posReadinessBudget = (r.reply.data as Record<string, unknown>)?.readinessDeadlineMs;
         return r;
       },
       15_000,
     );
-    const posDuration = Date.now() - posStart;
+    const posDuration = performance.now() - posStart;
     check("POSITIVE: followServiceGoal resolves ok: true", posReply.reply.ok === true, posReply.reply);
     check("POSITIVE: followServiceGoal returns allocated identity", (posReply.reply.data as Record<string, unknown>)?.name === "pos-user");
-    check("POSITIVE: resolved in ~5.5s (within deadline window)", posDuration < 10_000, { posDuration });
+    check("POSITIVE: native acceptance carries the manager's readiness budget", posReadinessBudget === readinessBudgetMs, { posReadinessBudget, readinessBudgetMs });
+    check("POSITIVE: slow submission is separate from the readiness budget", posAcceptedAt - posStart >= 6000, { submissionMs: posAcceptedAt - posStart, posDuration });
     await ep1.stop();
 
     // ==================================================================
@@ -526,14 +535,37 @@ async function main() {
     });
     await startEndpoint(epStop);
 
+    type StopAcceptance = { goalId: string; attributed: EpAttributedReply; at: number };
+    let observeStopAcceptance!: (value: StopAcceptance) => void;
+    const stopAcceptanceP = new Promise<StopAcceptance>((resolve) => { observeStopAcceptance = resolve; });
+    const stopSubmitStart = performance.now();
     const stopFollowP = epStop.followServiceGoal(
       BASELINE_LIFECYCLE_ENDPOINT,
-      async () => epStop.invokeService(BASELINE_LIFECYCLE_ENDPOINT, "spawn", { name: "stop-user", agent: "delayed-join", events: false }),
+      async () => {
+        // Deliberately exceed the old one-second sleep without consuming host CPU.
+        await new Promise((r) => setTimeout(r, 1500));
+        return epStop.invokeService(BASELINE_LIFECYCLE_ENDPOINT, "spawn", { name: "stop-user", agent: "delayed-join", events: false });
+      },
       20_000,
+      {
+        // This public callback runs only after the follower has processed native acceptance.
+        // Supply no terminal fact: this cell must settle by stop, not by reconciliation.
+        reconcile: async (goalId, attributed) => {
+          observeStopAcceptance({ goalId, attributed, at: performance.now() });
+          return undefined;
+        },
+      },
     );
 
-    // Give follow time to submit and arm progress wait
-    await new Promise((r) => setTimeout(r, 1000));
+    const acceptedStop = await Promise.race([
+      stopAcceptanceP,
+      stopFollowP.then(() => { throw new Error("STOP fixture settled before observing native acceptance"); }),
+    ]);
+    check("STOP: observes attributed native goal acceptance before stopping", acceptedStop.attributed.reply.ok === true
+      && acceptedStop.attributed.responder.instanceId === mgrIid
+      && acceptedStop.goalId.length > 0
+      && (acceptedStop.attributed.reply.data as Record<string, unknown>)?.goalId === acceptedStop.goalId);
+    check("STOP: submission exceeded the old fixed sleep", acceptedStop.at - stopSubmitStart >= 1500, { submissionMs: acceptedStop.at - stopSubmitStart });
     const stopT0 = Date.now();
     await epStop.stop();
     const stopResult = await stopFollowP;
@@ -1109,7 +1141,7 @@ async function main() {
     await cleanup();
   }
 
-  if (pass + fail !== 75) throw new Error(`lifetime suite executed ${pass + fail} checks, expected 75`);
+  if (pass + fail !== 78) throw new Error(`lifetime suite executed ${pass + fail} checks, expected 78`);
   console.log(`\nSmoke suite completed: ${pass} passed, ${fail} failed.`);
   emitSentinel({ passed: pass, failed: fail });
   if (fail > 0) process.exitCode = 1;
