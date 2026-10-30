@@ -10,6 +10,14 @@ nonzero exit status remain part of the result. The legacy per-row sentinel forma
 installation. It needs registry access and runs on Linux. Run shard tests on an isolated CI host
 or in a PID namespace: the shard's initial orphan-process sweep is not limited to its own suite.
 
+## Live broker suites
+
+The Linux live job runs `smoke:no-manager-credential-warning:live` with its usual NATS 2.12.12
+binary. `smoke:broker-logging:live` requires NATS 2.15.1 and receives a separately downloaded,
+checksum-verified binary through `COTAL_BROKER_LOG_NATS`. This does not replace the broker on
+PATH for other suites. To run the logging suite locally, set that variable to the absolute path
+of a NATS 2.15.1 binary after building the workspace.
+
 ## Shard assignment
 
 `ci-suite-costs.json` records each suite's measured CI duration and pins it to a shard. A suite
