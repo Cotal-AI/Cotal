@@ -10,9 +10,9 @@
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createSuite, formatSentinel as kitFormat, parseSentinel as kitParse } from "@cotal-ai/smoke-kit";
+import { createSuite, runFiles, formatSentinel as kitFormat, parseSentinel as kitParse } from "@cotal-ai/smoke-kit";
 import { liveShapedCommandReason } from "../../scripts/mutation-command-safety.mjs";
 import { formatSentinel, parseSentinel } from "./sentinel.mjs";
 
@@ -215,7 +215,78 @@ check(
   parseSentinel("docs said 12 ok, 0 failed yesterday\n") === null,
 );
 
-const EXPECTED = 32;
+// Structured terminal records outrank legacy banners; the latest structured record wins.
+const five = formatSentinel({ passed: 5, failed: 0 });
+const failedFive = formatSentinel({ passed: 4, failed: 1 });
+const empty = formatSentinel({ passed: 0, failed: 0 });
+const skip = "COTAL_SMOKE_SENTINEL skipped=fixture platform";
+const fiveResult = { cells: 5, passed: 5, failed: 0, kind: "canonical" };
+const failedResult = { cells: 5, passed: 4, failed: 1, kind: "canonical" };
+const emptyResult = { cells: 0, passed: 0, failed: 0, kind: "canonical" };
+const skipResult = { cells: 0, passed: 0, failed: 0, kind: "skipped", reason: "fixture platform" };
+const precedence = [
+  ["canonical alone", five, fiveResult],
+  ["canonical after legacy", `(1 passed, 0 failed)\n${five}`, fiveResult],
+  ["canonical before legacy", `${five}\n(1 passed, 0 failed)`, fiveResult],
+  ["canonical before empty legacy", `${five}\n(0 passed, 0 failed)`, fiveResult],
+  ["failed canonical before passing legacy", `${failedFive}\n(1 passed, 0 failed)`, failedResult],
+  ["empty canonical before passing legacy", `${empty}\n(5 passed, 0 failed)`, emptyResult],
+  ["latest canonical", `${failedFive}\n${five}`, fiveResult],
+  ["latest legacy without structured records", "(5 passed, 0 failed)\n(2 passed, 1 failed)", { cells: 3, passed: 2, failed: 1, kind: "legacy" }],
+  ["skip before legacy", `${skip}\n(5 passed, 0 failed)`, skipResult],
+  ["skip after canonical", `${five}\n${skip}`, skipResult],
+  ["canonical after skip", `${skip}\n${five}`, fiveResult],
+  ["canonical after skip then legacy", `${skip}\n${five}\n(0 passed, 0 failed)`, fiveResult],
+  ["skip after failed canonical then legacy", `${failedFive}\n${skip}\n(5 passed, 0 failed)`, skipResult],
+] as const;
+for (const [name, input, expected] of precedence) {
+  for (const [copy, parse] of [["node", parseSentinel], ["smoke-kit", kitParse]] as const) {
+    const actual = parse(input);
+    check(`${copy}: ${name}`, JSON.stringify(actual) === JSON.stringify(expected), { actual, expected });
+  }
+}
+
+const shardPrecedence = [
+  ["canonical count survives legacy", `${five}\n(1 passed, 0 failed)`, 0, /passed \(1 smokes, 5 cells\)/],
+  ["canonical count survives empty legacy", `${five}\n(0 passed, 0 failed)`, 0, /passed \(1 smokes, 5 cells\)/],
+  ["empty canonical is not rescued by legacy", `${empty}\n(5 passed, 0 failed)`, 1, /FAILED at: pnpm smoke:precedence \(zero cells\)/],
+  ["structured skip survives legacy", `${skip}\n(5 passed, 0 failed)`, 0, /passed \(1 smokes, 0 cells, 1 skipped\)/],
+] as const;
+for (const [name, output, status, pattern] of shardPrecedence) {
+  const result = runShippedShard({ "smoke:precedence": `node -e ${JSON.stringify(`console.log(${JSON.stringify(output)})`)}` });
+  check(`native shard: ${name}`, !result.timedOut && result.status === status && pattern.test(result.out), result.out.slice(-600));
+}
+
+// runFiles launches actual child files; none of these fixture files exits nonzero.
+const filesDir = mkdtempSync(join(ROOT, ".sentinel-precedence-"));
+try {
+  const outputs = {
+    "count.smoke.ts": `${five}\n(1 passed, 0 failed)`,
+    "zero-tail.smoke.ts": `${five}\n(0 passed, 0 failed)`,
+    "failed.smoke.ts": `${failedFive}\n(1 passed, 0 failed)`,
+  };
+  for (const [file, output] of Object.entries(outputs)) writeFileSync(join(filesDir, file), `console.log(${JSON.stringify(output)});\n`);
+  const result = await runFiles({
+    cwd: ROOT, dir: relative(ROOT, filesDir), files: Object.keys(outputs), excluded: {},
+    env: { ...process.env, COTAL_TEST_JOBS: "1" },
+  });
+  check("native runFiles: count survives legacy", result.results[0]?.ok === true && result.results[0].cells === 5, result.results[0]);
+  check("native runFiles: empty legacy does not erase canonical cells", result.results[1]?.ok === true && result.results[1].cells === 5, result.results[1]);
+  check("native runFiles: passing legacy does not hide failed canonical cells", result.results[2]?.ok === false && result.results[2].cells === 5 && result.results[2].failed === 1, result.results[2]);
+  check("native runFiles: the failed canonical makes the complete run fail", !result.ok && result.results.length === 3, result.results);
+} finally {
+  rmSync(filesDir, { recursive: true, force: true });
+}
+
+for (const path of ["./sentinel.mjs", "../../packages/smoke-kit/src/sentinel.ts"]) {
+  const module = new URL(path, import.meta.url).href;
+  const result = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e",
+    `import { skipSuite } from ${JSON.stringify(module)}; skipSuite(${JSON.stringify("fixture platform\n(5 passed, 0 failed)")});`,
+  ], { cwd: ROOT, env: process.env, encoding: "utf8", timeout: 10_000 });
+  check(`${path}: skipSuite still refuses a multiline reason`, result.status !== 0 && result.stderr.includes("skipSuite reason must read back"), result.stderr.slice(-500));
+}
+
+const EXPECTED = 68;
   check(
     `every cell ran - ${EXPECTED} before this sentinel cell, so a cell that stops existing is not mistaken for one that passed`,
     passed() + failed() === EXPECTED,
