@@ -19,9 +19,10 @@ import { connect } from "@nats-io/transport-node";
 import {
   createSpaceAuth, mintCreds, newIdentity, mintLifecycleUid, standaloneConnectOpts, setupSpaceStreams,
   DEV_OWNER, digestIdToken, epCall, invokeCommand, resolveService, readAcceptedRow, readGoalResult, readGoalIndex, registry,
-  type AgentHandle, type Connector, type EpCaller, type IssuedCaller, type LaunchOpts, type LaunchSpec,
+  type AgentHandle, type Connector, type EpCaller, type IssuedCaller, type LaunchOpts, type LaunchSpec, type OnceSeat,
 } from "@cotal-ai/core";
 import { authDir, saveSpaceAuth, agentLifecycleSecretFilePaths, workspaceSecretStore } from "@cotal-ai/workspace";
+import "@cotal-ai/connector-claude-code";
 import { Manager } from "../src/manager.js";
 import { MANAGER_ENDPOINT, MANAGER_CONTRACTS } from "../src/manager-service-contract.js";
 import { bootBroker } from "./_boot-broker.js";
@@ -77,7 +78,24 @@ const noRelayStub: Connector = {
   kind: "connector", name: "once-norelay-stub", requires: ["node"], supportsPrompt: true, turnRelayRefusal: "it cannot be woken while idle",
   buildLaunch: (o): LaunchSpec => ({ command: "node", args: [STUB], env: envFor(o) }),
 };
-for (const c of [relayStub, lateStub, silentStub, noRelayStub]) registry.register(c);
+// Launches nothing outside its seat, but answers retireAfterExit as a connector that does would:
+// it cannot prove its first seat's processes gone the first time it is asked.
+const retireCalls: Array<{ seat: OnceSeat; indexed: boolean; ended: boolean }> = [];
+const discarded: string[] = [];
+const launchedOnce = new Map<string, boolean | undefined>();
+let retireRefusals = 1;
+/** What the task's records showed when the connector was asked: its index entry, and its terminal. */
+let probe: (() => Promise<{ indexed: boolean; ended: boolean }>) | undefined;
+const retireStub: Connector = {
+  kind: "connector", name: "once-retire-stub", requires: ["node"], supportsPrompt: true, supportsTurnRelay: true,
+  buildLaunch: (o): LaunchSpec => { launchedOnce.set(o.name, o.once); return { command: "node", args: [STUB], env: envFor(o) }; },
+  async retireAfterExit(seat) {
+    retireCalls.push({ seat, ...((await probe?.()) ?? { indexed: false, ended: false }) });
+    if (retireRefusals-- > 0) throw new Error("its launched tree is still running");
+    return { discard: async () => { discarded.push(seat.lifecycleUid); } };
+  },
+};
+for (const c of [relayStub, lateStub, silentStub, noRelayStub, retireStub]) registry.register(c);
 
 let manager: Manager | undefined;
 let delivery: Awaited<ReturnType<typeof bootDeliveryDaemon>> | undefined;
@@ -171,6 +189,12 @@ try {
   const noRelay = await call("spawn", { name: "helper", agent: "once-norelay-stub", cwd: repoRoot, events: false, prompt: "x", once: {} }, { id: goalId("nr") });
   check("a connector without the turn relay is refused, with its own reason",
     noRelay.ok === false && /once-norelay-stub connector cannot take a once task: it cannot be woken while idle/.test(errorText(noRelay)), noRelay);
+  // The admission check the spawn door runs, on the real Claude registration: the refusal does not
+  // depend on the launch's channel flag, which every managed Claude launch sets.
+  const claudeRefusal = (manager as unknown as { onceRefusal(c: Connector, r: { kind: string }, l: Record<string, unknown>, s: undefined, h: object): string | undefined })
+    .onceRefusal(registry.resolve<Connector>("connector", "claude"), { kind: "pty" }, { prompt: "x", once: {} }, undefined, { onOnce: () => undefined });
+  check("a Claude seat is refused, saying why: it cannot confirm that its session can be woken while idle",
+    /^once: the claude connector cannot take a once task: it can take one only when its session can be woken while idle, which needs channels on/.test(claudeRefusal ?? ""), claudeRefusal);
   const supervised = await call("spawn", { name: "helper", agent: "once-stub", cwd: repoRoot, events: false, prompt: "x", once: {}, supervise: { restarts: 1, windowMs: 60_000 } }, { id: goalId("sv") });
   check("once with supervise is refused: a once seat is never restarted", supervised.ok === false && /never restarted/.test(errorText(supervised)), supervised);
   const tooLong = await call("spawn", { name: "helper", agent: "once-stub", cwd: repoRoot, events: false, prompt: "\u0001".repeat(20_000), once: {} }, { id: goalId("tl") });
@@ -216,7 +240,7 @@ try {
   check("the short-deadline once spawn succeeds", s2.terminal?.state === "succeeded" && s2.once?.deadlineAt !== undefined, s2.terminal);
   const denied = await resultOf(s2.once!.goalId, 30_000);
   check("the task's terminal is the deadline deny", denied?.state === "failed" && (denied.data as { reason?: string }).reason === "turn-deadline", denied);
-  check("...and the seat is gone", await gone(s2.name!, s2.seat!.handle));
+  check("...and the seat is gone at its deadline", await gone(s2.name!, s2.seat!.handle));
   check("...and its debt clears at the exit", await debtCleared(s2.once!.goalId));
 
   console.log("\n6. no deadline (-1): no expiry, until the spawner's despawn ends it");
@@ -247,7 +271,7 @@ try {
   const u4 = await side4.invoke("turn-unconfirmed", { goalId: s4.once!.goalId });
   const r4 = await readGoalResult(actx, refOf(s4.once!.goalId));
   check("the report commits the task failed `delivery-unconfirmed`", u4.ok === true && u4.data?.state === "failed" && (r4?.data as { reason?: string } | undefined)?.reason === "delivery-unconfirmed", { u4, r4 });
-  check("...and the seat is gone", await gone(s4.name!, s4.seat!.handle));
+  check("...and the reporting seat is gone", await gone(s4.name!, s4.seat!.handle));
   const u4b = await side4.invoke("turn-unconfirmed", { goalId: s4.once!.goalId });
   check("a report from the stopped seat's credential changes nothing: that credential is retiring", u4b.ok === false && /retiring/.test(errorText(u4b)) && (await readGoalResult(actx, refOf(s4.once!.goalId)))?.state === "failed", u4b);
   const controlSeat = M.agents.get(controlName)!;
@@ -271,7 +295,7 @@ try {
   const r6 = await resultOf(taskOf(s6.id), 10_000);
   check("the task fails at its deadline", r6?.state === "failed" && (r6.data as { reason?: string }).reason === "turn-deadline", r6);
   check("...the spawn is cancelled, as a deliberate stop mid-launch is", s6.terminal?.state === "cancelled", s6.terminal);
-  check("...and the seat is gone", s6.seat !== undefined && await gone(s6.name!, s6.seat.handle));
+  check("...and the slow seat is gone", s6.seat !== undefined && await gone(s6.name!, s6.seat.handle));
 
   console.log("\n11. the original spawn retried after a lost reply: one allocation, one task");
   const rid = goalId("retry");
@@ -285,6 +309,29 @@ try {
   const rTurns = rSide === undefined ? [] : await rSide.pull();
   check("...one seat holds one task", rOnce !== undefined && rTurns.length === 1 && rTurns[0]!.goalId === rOnce.goalId && [...M.agents.keys()].filter((n) => n === first.data?.name).length === 1, { rTurns, rOnce });
   if (rSeat) await call("despawn", {}, { target: { actor: rSeat.id, lifecycleUid: rSeat.lifecycleUid, mode: "any" } });
+
+  console.log("\n12. a connector that launches outside its seat: the debt clears only on its proof that the launch is gone");
+  const s7 = await spawnOnce({ agent: "once-retire-stub", prompt: "leaves a tree", once: {} });
+  const side7 = await seatSide(s7.name!, s7.seat!);
+  const probeOf = (goal: string) => async () => ({ indexed: (await readGoalIndex(actx, refOf(goal))) !== undefined, ended: (await readGoalResult(actx, refOf(goal))) !== undefined });
+  probe = probeOf(s7.once!.goalId);
+  check("the launch is told it is a once seat, so it can record what it launches", launchedOnce.get(s7.name!) === true, [...launchedOnce]);
+  await side7.invoke("turn-yield", { goalId: s7.once!.goalId, status: "done" });
+  check("the yield stops the seat", await gone(s7.name!, s7.seat!.handle));
+  await until(() => retireCalls.length >= 1, 10_000);
+  check("its exit asks the connector, naming the seat it launched",
+    retireCalls[0]?.seat.name === s7.name && retireCalls[0]?.seat.lifecycleUid === s7.seat!.lifecycleUid && retireCalls[0]?.seat.space === space && retireCalls[0]?.seat.workspaceRoot === workspaceRoot, retireCalls);
+  await wait(1_000);
+  check("a refused proof keeps the debt", retireCalls.length === 1 && (await readGoalIndex(actx, refOf(s7.once!.goalId))) !== undefined);
+  check("...and the turn sweep asks again, and the debt clears on the proof", await debtCleared(s7.once!.goalId) && retireCalls.length === 2 && retireCalls[1]!.indexed, retireCalls.length);
+  check("...after which the proof's receipt is discarded", await until(() => discarded.includes(s7.seat!.lifecycleUid), 5_000));
+  const s8 = await spawnOnce({ agent: "once-retire-stub", prompt: "dies first", once: {} });
+  probe = probeOf(s8.once!.goalId);
+  process.kill(s8.seat!.handle.pid!, "SIGKILL");
+  const r8 = await resultOf(s8.once!.goalId, 20_000);
+  check("a seat that dies first: its task is cancelled only once the connector proved the launch gone",
+    r8?.state === "cancelled" && retireCalls.at(-1)?.seat.lifecycleUid === s8.seat!.lifecycleUid && retireCalls.at(-1)?.ended === false
+      && await debtCleared(s8.once!.goalId), { r8, calls: retireCalls });
 } finally {
   for (const nc of seatConns) await nc.drain().catch(() => nc.close());
   await runnerNc?.drain().catch(() => runnerNc?.close());
@@ -295,7 +342,7 @@ try {
   await broker.stop().catch(() => {});
 }
 
-const EXPECTED_CELLS = 40;
+const EXPECTED_CELLS = 48;
 console.log(`\n${fail === 0 && pass === EXPECTED_CELLS ? "SPAWN ONCE SMOKE OK ✅" : "SPAWN ONCE SMOKE FAILED"}  (${pass} passed, ${fail} failed)`);
 if (pass + fail !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);

@@ -76,6 +76,10 @@ export interface LaunchOpts {
    *  {@link Connector.supportsPrompt}, so a prompt on a connector that cannot deliver one is
    *  refused before any provisioning. */
   prompt?: string;
+  /** This seat is started for one `once` task, which the manager relays to it as a turn. A
+   *  connector that launches processes outside the seat's own process records them from launch on,
+   *  so {@link Connector.retireAfterExit} can prove them gone. */
+  once?: boolean;
   /** An OPAQUE prior-session handle to FORK FROM when launching — never reused, never resolved by
    *  core. Like `creds` / `configPath`, this is a HOST-LOCAL pointer (into e.g. `~/.claude`), NOT a
    *  portable value like `model`: it only means something on the machine that produced it. A
@@ -143,6 +147,16 @@ export interface LaunchOpts {
    *  A connector can declare native startup choices for that directory. A foreground launch runs
    *  in the operator's terminal and omits it. */
   cwd?: string;
+}
+
+/** The `once` seat a {@link Connector.retireAfterExit} call is about: the launch inputs that
+ *  locate what the connector recorded for it. */
+export interface OnceSeat {
+  space: string;
+  name: string;
+  lifecycleUid: string;
+  /** The manager's workspace root, as {@link LaunchOpts.workspaceRoot} carried it at launch. */
+  workspaceRoot: string;
 }
 
 /** A recipe for starting an agent as a mesh node — command, args, and extra env. */
@@ -328,6 +342,13 @@ export interface Connector extends Extension {
   /** Why this connector cannot take a relayed turn, in a clause the manager appends to its
    *  refusal of a `once` spawn. Only meaningful without {@link supportsTurnRelay}. */
   readonly turnRelayRefusal?: string;
+  /** For a `once` seat whose process has exited: prove that nothing the connector launched outside
+   *  that process is still running, stopping what it can prove it launched. Resolves only with that
+   *  proof, and again with the same proof when asked after it was given; throws whenever it cannot
+   *  prove it, and the manager keeps the task's debt and asks again. The manager calls `discard`
+   *  once the debt is cleared. A connector whose seat launches nothing outside its own process does
+   *  not implement it. */
+  retireAfterExit?(seat: OnceSeat): Promise<{ discard(): Promise<void> }>;
   /**
    * Connector-specific upper bound for reaching mesh presence after its process is launched.
    *

@@ -13,7 +13,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -38,6 +38,7 @@ const CELLS = [
   "the successor cancels the task with no deadline `seat-exited` once its reconcile rules the seat out",
   "...and the task with a deadline the same way, without waiting for that deadline",
   "...and drops both tasks' index entries",
+  "...after the successor asked the connector the task names to prove each seat's launch gone, and discarded each proof after its clear",
   "the original spawn retried after the restart starts no second seat and no second task",
 ];
 let pass = 0, fail = 0;
@@ -148,6 +149,15 @@ try {
   await until(async () => (timed = await resultOf(tasks.timed)) !== undefined, 30_000);
   check("...and the task with a deadline the same way, without waiting for that deadline", timed?.state === "cancelled" && timed.data?.reason === "seat-exited", timed);
   check("...and drops both tasks' index entries", await until(async () => !(await indexed(tasks.open)) && !(await indexed(tasks.timed)), 30_000));
+  const uids = await Promise.all(Object.values(spawnIds).map(async (id) => ((await resultOf(id))?.data as { lifecycleUid?: string } | undefined)?.lifecycleUid));
+  const retireLog = () => { try { return readFileSync(join(root, "retire.log"), "utf8").trim().split("\n").map((l) => JSON.parse(l) as { retire?: string; discard?: string; name?: string; manager: number }); } catch { return []; } };
+  const log = retireLog();
+  check("...after the successor asked the connector the task names to prove each seat's launch gone, and discarded each proof after its clear",
+    uids.every((uid) => uid !== undefined
+      && log.some((e) => e.retire === uid && e.manager === successor.manager.managerPid)
+      && log.findIndex((e) => e.discard === uid) > log.findIndex((e) => e.retire === uid))
+      && log.every((e) => e.manager === successor.manager.managerPid),
+    { uids, log });
 
   const retried = await call("spawn", spawnArgs("open"), spawnIds.open);
   await wait(3_000);
