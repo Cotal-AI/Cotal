@@ -1,6 +1,6 @@
 /**
  * Delivery fan-out LOAD harness — what one channel message costs the delivery daemon, per member.
- * Capacity, not correctness.
+ * Default measurements report aggregate counts; optional verification checks recipient coverage.
  *
  * Boots a private operator-mode nats-server serving one space (one data account under one broker
  * operator, the hosted shape), starts the REAL hosted delivery service (`startDeliveryService`, the
@@ -16,8 +16,8 @@
  * Every post costs the daemon a Plane-3 fan-out: the writer reads it off CHAT, scans the members
  * registry, and writes one copy per eligible member into the mixed inbox; the trusted reader then
  * re-authorizes each copy and transfers it into the member's DLV store, which the member pumps and
- * acks. Members ack every durable copy on receipt, as a seat that surfaced it would, so nothing
- * redelivers and the run measures the delivery path rather than a backlog.
+ * acks. Members ack every durable copy on receipt, as a seat that surfaced it would.
+ * Durable redelivery remains legal and can still occur.
  *
  * What it reports: messages posted, the daemon's CPU per message and per message per member, how
  * far behind the daemon is when posting stops and how long it takes to catch up (a daemon that
@@ -27,6 +27,15 @@
  *
  * Members and the poster run in CHILD PROCESSES, and the daemon in its own, so the daemon's CPU is
  * read from /proc without the members' work in it. Credentials reach a child over IPC, never argv.
+ *
+ * `--verify-delivery` retains acknowledged publish IDs and each member's durable IDs, then
+ * checks coverage separately for every recipient (and no self-delivery to the poster). Missing or
+ * unconfirmed IDs, failed members, publish errors or endpoint errors at the sample make the run
+ * exit nonzero. A publish timeout has unknown outcome; an unconfirmed ID is not proof of foreign
+ * traffic. Missing IDs describe the sample cutoff, not permanent loss or future redeliveries.
+ * Repeated durable copies are reported, not rejected: the transport is at-least-once. This does
+ * not check live delivery, payload integrity or ordering. The extra O(posts × members) memory and
+ * callback work make this a separate correctness workload, not a comparable performance sample.
  *
  * `--ram` adds the RAM cost of what a post leaves behind. The broker's live heap is read from its
  * pprof endpoint after a forced GC before the posts and after the drain, so the difference per
@@ -54,6 +63,7 @@ import { deliveryCredsKey, membershipObserverCredsKey, membershipRwCredsKey } fr
 import { SMOKE_BROKER_TOKEN, brokerHeap, heapSnapshotTop, killAndAwaitExit, procMem, teardownOnSignal, type BrokerHeap } from "@cotal-ai/smoke-kit";
 import { startDeliveryService } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
+import { deliveryCoverage } from "./_delivery-coverage.js";
 
 // ---------------------------------------------------------------------------------------------
 // shared shapes
@@ -61,14 +71,15 @@ import { pickFreePort } from "./_free-port.js";
 
 /** One provisioned member. Carries its credential, so it travels over IPC only. */
 interface MemberSpec { id: string; name: string; uid: string; creds: string }
-interface MemberJob { kind: "members"; servers: string; space: string; members: MemberSpec[]; concurrency: number }
+interface MemberJob { kind: "members"; servers: string; space: string; members: MemberSpec[]; concurrency: number; verifyDelivery: boolean; posterId: string }
 interface DaemonJob {
   kind: "daemon"; servers: string; space: string; accountPub: string; stateDir: string;
   /** The hosted store's three entries, keyed as the daemon reads them. */
   secrets: Record<string, string>;
 }
+interface MemberCoverage extends ReturnType<typeof deliveryCoverage> { member: string }
 /** What a member child reports. Latencies are post-to-durable-copy, in ms. */
-interface MemberSample { up: number; failed: number; live: number; durable: number; durableLatencies: number[]; posted: number; postErrors: number; errors: number; firstErrors: string[] }
+interface MemberSample { coverage?: MemberCoverage[]; up: number; failed: number; live: number; durable: number; durableLatencies: number[]; posted: number; postErrors: number; errors: number; firstErrors: string[] }
 
 // Scrub any ambient COTAL_* before anything is handed to a child. Whatever runs this harness may
 // itself be a managed agent session, and its COTAL_SERVERS / credential variables name a LIVE mesh.
@@ -101,6 +112,8 @@ async function runMembers(job: MemberJob): Promise<void> {
   const eps: CotalEndpoint[] = [];
   let up = 0, failed = 0, live = 0, durable = 0, posted = 0, postErrors = 0, errors = 0;
   const durableLatencies: number[] = [];
+  const received = job.verifyDelivery ? new Map(job.members.map((s) => [s.id, new Map<string, number>()])) : undefined;
+  const postedIds: string[] = [];
   const firstErrors: string[] = [];
   const note = (e: Error) => { errors++; if (firstErrors.length < 5) firstErrors.push(e.message.slice(0, 200)); };
   const queue = [...job.members];
@@ -112,11 +125,13 @@ async function runMembers(job: MemberJob): Promise<void> {
         space: job.space, servers: job.servers, creds: s.creds, lifecycleUid: s.uid, channels: [CHANNEL],
         card: { id: s.id, name: s.name, role: ROLE, kind: "agent", meta: { connector: "claude-code", model: "claude-opus-5-5", host: "seat-host", cwd: "/home/user/project" } },
       });
+      const receivedIds = received?.get(s.id);
       ep.on("error", note);
       ep.on("warning", note);
       ep.on("message", (m: CotalMessage, d: { durable: boolean; ack(): void }) => {
         if (d.durable) {
           durable++;
+          if (receivedIds) receivedIds.set(m.id, (receivedIds.get(m.id) ?? 0) + 1);
           if (durableLatencies.length < MAX_LATENCY_SAMPLES) durableLatencies.push(Date.now() - m.ts);
           // A seat acks a durable copy once it has surfaced it; this one surfaces it on receipt.
           d.ack();
@@ -128,9 +143,9 @@ async function runMembers(job: MemberJob): Promise<void> {
   await ipcSend({ allUp: true, up, failed, firstErrors });
 
   for (;;) {
-    const cmd = await nextJob<{ cmd: "post"; rate: number; seconds: number } | { cmd: "reset" } | { cmd: "sample" } | { cmd: "stop" }>();
+    const cmd = await nextJob<{ cmd: "post"; rate: number; seconds: number } | { cmd: "reset" } | { cmd: "sample"; postedIds?: string[] } | { cmd: "stop" }>();
     if (cmd.cmd === "stop") break;
-    if (cmd.cmd === "reset") { live = 0; durable = 0; durableLatencies.length = 0; await ipcSend({ reset: true }); continue; }
+    if (cmd.cmd === "reset") { live = 0; durable = 0; durableLatencies.length = 0; for (const ids of received?.values() ?? []) ids.clear(); await ipcSend({ reset: true }); continue; }
     if (cmd.cmd === "post") {
       // Offer posts on a fixed schedule; a slow publish ack must not slow the OFFERED rate.
       const poster = eps[0];
@@ -142,16 +157,21 @@ async function runMembers(job: MemberJob): Promise<void> {
         const due = Math.min(total, Math.floor(((performance.now() - t0) / 1000) * cmd.rate) + 1);
         while (issued < due) {
           issued++;
-          const p = poster.multicast(`${POST_TEXT} #${issued}`, { channel: CHANNEL }).then(() => { posted++; }, (e: Error) => { postErrors++; note(e); }).finally(() => inflight.delete(p));
+          const p = poster.multicast(`${POST_TEXT} #${issued}`, { channel: CHANNEL }).then((m) => { posted++; if (job.verifyDelivery) postedIds.push(m.id); }, (e: Error) => { postErrors++; note(e); }).finally(() => inflight.delete(p));
           inflight.add(p);
         }
         await wait(5);
       }
       await Promise.allSettled([...inflight]);
-      await ipcSend({ posted: { posted, postErrors, ms: performance.now() - t0 } });
+      await ipcSend({ posted: { posted, postErrors, ms: performance.now() - t0, ...(job.verifyDelivery ? { postedIds } : {}) } });
       continue;
     }
-    await ipcSend({ sample: { up, failed, live, durable, durableLatencies, posted, postErrors, errors, firstErrors } satisfies MemberSample });
+    let coverage: MemberCoverage[] | undefined;
+    if (received) {
+      if (!cmd.postedIds) throw new Error("delivery verification requires acknowledged publish IDs");
+      coverage = job.members.map((s) => ({ member: s.name, ...deliveryCoverage(s.id === job.posterId ? [] : cmd.postedIds!, received.get(s.id)!) }));
+    }
+    await ipcSend({ sample: { up, failed, live, durable, durableLatencies, posted, postErrors, errors, firstErrors, ...(coverage ? { coverage } : {}) } satisfies MemberSample });
   }
   await Promise.all(eps.map((ep) => ep.stop().catch(() => {})));
   await ipcSend({ stopped: true });
@@ -225,6 +245,7 @@ const SUBLIST_CACHE = flag("sublist-cache", argv.includes("--sublist-cache") ? u
 if (SUBLIST_CACHE !== "on" && SUBLIST_CACHE !== "off")
   throw new Error("fanout-load: --sublist-cache must be on or off");
 const RAM = argv.includes("--ram");
+const VERIFY_DELIVERY = argv.includes("--verify-delivery");
 /** Seconds to wait after the drain before reading the broker's retained heap. */
 const RAM_WAIT_S = num("ram-wait", "30");
 
@@ -308,7 +329,7 @@ const startChild = (job: MemberJob | DaemonJob): ChildProcess => {
   child.send(job);
   return child;
 };
-type Cmd = { cmd: "post"; rate: number; seconds: number } | { cmd: "reset" } | { cmd: "sample" } | { cmd: "snapshot"; path: string } | { cmd: "stop" };
+type Cmd = { cmd: "post"; rate: number; seconds: number } | { cmd: "reset" } | { cmd: "sample"; postedIds?: string[] } | { cmd: "snapshot"; path: string } | { cmd: "stop" };
 const ask = (child: ChildProcess, cmd: Cmd | undefined, key: string): Promise<Record<string, unknown>> => guard(new Promise((resolve) => {
   const on = (m: Record<string, unknown>) => { if (key in m) { child.off("message", on); resolve(m); } };
   child.on("message", on);
@@ -364,7 +385,7 @@ try {
   const per = Math.ceil(rest.length / MEMBER_PROCS);
   for (let p = 0; p < MEMBER_PROCS; p++) if (rest.slice(p * per, (p + 1) * per).length) groups.push(rest.slice(p * per, (p + 1) * per));
   const ups = await Promise.all(groups.map((g) => {
-    const kid = startChild({ kind: "members", servers: SERVERS, space, members: g, concurrency: 8 });
+    const kid = startChild({ kind: "members", servers: SERVERS, space, members: g, concurrency: 8, verifyDelivery: VERIFY_DELIVERY, posterId: members[0].id });
     kids.push(kid);
     return ask(kid, undefined, "allUp");
   }));
@@ -386,7 +407,7 @@ try {
   const d0 = procCpuMs(daemon.pid!), b0 = procCpuMs(srv.pid!), w0 = procWriteBytes(srv.pid!), rss0 = procRssMb(srv.pid!);
   const k0 = kids.map((k) => procCpuMs(k.pid!));
   const t0 = performance.now();
-  const postReport = (await ask(poster, { cmd: "post", rate: RATE, seconds: SECONDS }, "posted")).posted as { posted: number; postErrors: number; ms: number };
+  const postReport = (await ask(poster, { cmd: "post", rate: RATE, seconds: SECONDS }, "posted")).posted as { posted: number; postErrors: number; ms: number; postedIds?: string[] };
   const postS = (performance.now() - t0) / 1000;
   const atStop = backlog(await streams());
   // Drain: the daemon's work is done when both its durables have nothing pending.
@@ -406,7 +427,7 @@ try {
   // Let the final DLV copies reach the members without adding this tail to the CPU window.
   await wait(1000);
   const s1 = await streams();
-  const samples = (await Promise.all(kids.map((k) => ask(k, { cmd: "sample" }, "sample")))).map((m) => m.sample as MemberSample);
+  const samples = (await Promise.all(kids.map((k) => ask(k, { cmd: "sample", ...(VERIFY_DELIVERY ? { postedIds: postReport.postedIds } : {}) }, "sample")))).map((m) => m.sample as MemberSample);
 
   const posted = postReport.posted;
   const recipients = membersUp - 1; // the fan-out never backstops the sender's own post
@@ -418,6 +439,7 @@ try {
   row("git sha", SHA);
   row("nats-server", `${serverVersion} (${NATS_BIN})`);
   row("subscription cache", SUBLIST_CACHE);
+  row("delivery ID verification", VERIFY_DELIVERY ? "on (extra tracking overhead)" : "off (aggregate counts only)");
   row("host", `${availableParallelism()} cores, ${(totalmem() / 1073741824).toFixed(1)} GB`);
   row("shape", `1 space, durable channel #${CHANNEL}, ${membersUp} members up (${membersFailed} failed), ${kids.length} member process(es)`);
   row("offered", `${RATE} posts/s for ${SECONDS}s by one member`);
@@ -429,6 +451,15 @@ try {
   row("daemon throughput (posts fanned out /s)", drainedAt ? posted / endS : NaN);
   row("durable copies delivered / expected", `${durableGot} / ${posted * recipients}`);
   row("live copies delivered", liveGot);
+  if (VERIFY_DELIVERY) {
+    const coverage = samples.flatMap((s) => s.coverage ?? []);
+    const passed = posted > 0 && postReport.postedIds?.length === posted && coverage.length === MEMBERS && membersFailed === 0 && postReport.postErrors === 0
+      && samples.every((s) => s.errors === 0) && coverage.every((s) => s.missing === 0 && s.unexpected === 0);
+    row("durable recipient coverage", passed ? "PASS" : "FAIL");
+    row("members checked / configured", `${coverage.length} / ${MEMBERS}`);
+    for (const s of coverage) row(`  ${s.member} distinct/expected/missing/unconfirmed/repeated`, `${s.distinct} / ${s.expected} / ${s.missing} / ${s.unexpected} / ${s.repeated}`);
+    if (!passed) process.exitCode = 1;
+  }
   row("durable latency p50 / p95 / p99 (ms)", `${n2(pct(lat, 50))} / ${n2(pct(lat, 95))} / ${n2(pct(lat, 99))}`);
   rows.push(["", ""]);
   row("daemon idle CPU (cores)", daemonIdleCoresMs);
