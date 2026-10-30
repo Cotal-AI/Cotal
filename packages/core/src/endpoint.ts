@@ -46,8 +46,9 @@ import type { GoalResultFact } from "./endpoint-action.js";
 import { EpEnvelopeError, respondedButUnbound, replyRefusedBeforeEffect, replyTargetUnmapped, EP_BIND_REFUSED, type EpBindRefusedDetail } from "./endpoint-envelope.js";
 import { isRepeatSafeCommand } from "./endpoint-grants.js";
 import type { EpCaller, IssuedCaller } from "./endpoint-subjects.js";
-import { assertIdToken, assertGeneration } from "./endpoint-subjects.js";
-import { readAcceptedRow } from "./issued-authority.js";
+import { assertIdToken, assertGeneration, isIssuedCaller } from "./endpoint-subjects.js";
+import { issuedCallerOfToken, listingAcceptedToken, readAcceptedRow } from "./issued-authority.js";
+import { REGISTRY_CONTRACTS, REGISTRY_ENDPOINT, REGISTRY_ENDPOINTS_COMMAND, type RegistryEndpointsInput, type RegistryEndpointsOutput } from "./registry-contract.js";
 import type { EpVerbTarget, EpAttributedReply } from "./endpoint-verbs.js";
 import { lastKvEntries, liveKvEntries } from "./kv-scan.js";
 import { isConsumerAlreadyExists, isConsumerNotFound, isJetStreamMissing } from "./jetstream-missing.js";
@@ -597,6 +598,10 @@ export class CotalEndpoint extends EventEmitter {
   private readonly bearerSource?: () => Promise<string>;
   /** The freshest bearer — what every (re)connect attempt presents. */
   private currentBearer?: string;
+  /** The expiry, in seconds, of the credential the latest connect attempt presented. The issuer
+   *  keys a listing generation on it (SPEC 13.15), so a listing reads the row bound to the
+   *  credential the broker admitted, never one adopted since. */
+  private presentedExp?: number;
   /** Cancels the armed bearer renewal or retry. */
   private cancelBearerRenewal?: () => void;
   /** Consecutive failed bearer renewals: the retry's step, and whether this run of failures has
@@ -1289,6 +1294,20 @@ export class CotalEndpoint extends EventEmitter {
     return creds;
   }
 
+  /** The connect attempt's credential getters: what {@link credsForWire} and {@link bearerForWire}
+   *  return, with its expiry recorded as {@link presentedExp}. */
+  private presentCreds(): string {
+    const creds = this.credsForWire();
+    this.presentedExp = credsClaims(creds).exp;
+    return creds;
+  }
+
+  private presentBearer(): string {
+    const bearer = this.bearerForWire();
+    this.presentedExp = bearerExpiryMs(bearer) / 1000;
+    return bearer;
+  }
+
   /** The cached credential, checked. Handed to nats.js as the authenticator's source on EVERY auth
    *  mode (renewed or static), so each (re)connect attempt — ours or the library's — re-reads a
    *  CHECKED value. A refusal throws out of the authenticator, which nats-core turns into a closed
@@ -1697,7 +1716,7 @@ export class CotalEndpoint extends EventEmitter {
       // and dialed ANONYMOUSLY, so the broker answered `Authorization Violation` and the real fault
       // (an empty credential) was never named. Routing it into the checked getter fails it loud
       // instead. Anonymous access stays reachable the only way it should be: by passing no creds.
-      ...authOpts({ token: this.token, user: this.user, pass: this.pass, creds: this.currentCreds !== undefined || this.credsSource ? () => this.credsForWire() : undefined, bearer: this.userMode ? () => this.bearerForWire() : undefined, sentinelCreds: this.sentinelCreds, tls: this.tls }),
+      ...authOpts({ token: this.token, user: this.user, pass: this.pass, creds: this.currentCreds !== undefined || this.credsSource ? () => this.presentCreds() : undefined, bearer: this.userMode ? () => this.presentBearer() : undefined, sentinelCreds: this.sentinelCreds, tls: this.tls }),
     });
     // SPEC §13.12: the control surface requires nats-server >= 2.12; this runs on every
     // fresh connection, including the reconnects the library performs on its own here.
@@ -2864,6 +2883,56 @@ export class CotalEndpoint extends EventEmitter {
     const svc = await resolveService(this.nc, this.space, endpoint, this.serviceCaller(), { deadlineMs: opts.deadlineMs ?? 10_000, signal: opts.signal, ...(opts.instanceId !== undefined ? { instanceId: opts.instanceId } : {}) });
     if (opts.instanceId === undefined) this.resolvedServices.set(endpoint, svc);
     return svc;
+  }
+
+  /** The caller a registry listing rides (SPEC 13.15). An issued connection lists as itself. Any
+   *  other connection reads the listing generation the issuer bound to the credential it presented,
+   *  under the token its connection id and that credential's expiry derive. `undefined`: that
+   *  credential carries no listing binding, because it predates listing issuance or has no expiry. */
+  async listingCaller(): Promise<IssuedCaller | undefined> {
+    if (!this.nc) throw new Error(this.notLiveMsg());
+    const caller = this.serviceCaller();
+    if (isIssuedCaller(caller)) return caller;
+    if (this.presentedExp === undefined) return undefined;
+    try {
+      return await issuedCallerOfToken(this.nc, this.space, listingAcceptedToken(this.connId, this.presentedExp), caller);
+    } catch (e) {
+      // The broker refused the read: the credential holds no row for this token.
+      if (isPermissionDenied(e)) return undefined;
+      throw e;
+    }
+  }
+
+  /** One page of the registry's `endpoints` answer (SPEC 13.20). The describe rides this
+   *  connection's own caller; the question rides the listing caller on an authed mesh. The registry
+   *  must serve the contract this client implements. A call the answering instance refused before
+   *  running (a class-queue split) is resolved and asked again, up to {@link BIND_SPLIT_REISSUES}
+   *  times. `unbound`: this credential carries no listing binding. */
+  async listEndpoints(input: RegistryEndpointsInput, opts: { deadlineMs?: number; signal?: AbortSignal } = {}): Promise<
+    | { unbound: true }
+    | { unbound?: false; reply: EpAttributedReply; page?: RegistryEndpointsOutput }
+  > {
+    if (!this.nc) throw new Error(this.notLiveMsg());
+    const nc = this.nc;
+    const listing = this.authed ? await this.listingCaller() : undefined;
+    if (this.authed && listing === undefined) return { unbound: true };
+    const deadline = Date.now() + (opts.deadlineMs ?? 10_000);
+    const ours = REGISTRY_CONTRACTS[REGISTRY_ENDPOINTS_COMMAND]!;
+    let reply: EpAttributedReply | undefined;
+    for (let attempt = 0; attempt <= BIND_SPLIT_REISSUES && Date.now() < deadline; attempt++) {
+      const service = await resolveService(nc, this.space, REGISTRY_ENDPOINT, this.serviceCaller(), {
+        deadlineMs: deadline - Date.now(), signal: opts.signal, commands: [REGISTRY_ENDPOINTS_COMMAND],
+      });
+      const theirs = service.commands.get(REGISTRY_ENDPOINTS_COMMAND)!.contract;
+      if (theirs.input.closureDigest !== ours.input.closureDigest || theirs.output.closureDigest !== ours.output.closureDigest)
+        throw new EpEnvelopeError("contract-mismatch", `the registry serves a version of "${REGISTRY_ENDPOINTS_COMMAND}" this client does not implement; upgrade the client (SPEC 13.20)`);
+      reply = await invokeCommand(nc, this.space, service, REGISTRY_ENDPOINTS_COMMAND, { ...input }, {
+        deadlineMs: deadline - Date.now(), signal: opts.signal, ...(listing ? { caller: listing } : {}),
+      });
+      if (reply.reply.ok !== false || !replyRefusedBeforeEffect(reply.reply.error)) break;
+    }
+    if (reply === undefined) throw new EpEnvelopeError("deadline-exceeded", "the registry was not reached before the deadline");
+    return { reply, ...(reply.reply.ok === true ? { page: reply.reply.data as RegistryEndpointsOutput } : {}) };
   }
 
   /** GENERIC v0.4 service invoke over this endpoint's own connection: resolve

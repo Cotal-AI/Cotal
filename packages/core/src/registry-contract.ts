@@ -1,5 +1,5 @@
 /**
- * The registry's wire contract (SPEC 13.17). `registry` is a registered endpoint that answers
+ * The registry's wire contract (SPEC 13.20). `registry` is a registered endpoint that answers
  * discovery questions: one untargeted, ephemeral, read-only command per question, each behind its
  * own capability so the broker checks a grant per question. Every answer is `{ rows, next?, source }`,
  * paged by `{ limit?, after? }`. This revision has one question, `endpoints`: the registered
