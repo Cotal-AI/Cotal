@@ -124,6 +124,53 @@ try {
   check("an empty state dir (crashed enable) is NOT user-auth", hasUserAuthState(solo, "halfspace") === false);
   for (const space of ["alpha", "beta"]) check(`…and neither is "${space}" on the multi-space root`, hasUserAuthState(multi, space) === false);
 
+  console.log("\n3a) user-auth markers describe entries, not symlink targets");
+  const markerChecksStart = pass;
+  for (const pin of ["idp.json", "callout.json"]) {
+    const markerRoot = mkdtempSync(join(tmpdir(), "cotal-marker-"));
+    roots.push(markerRoot);
+    const state = userAuthStateDir(markerRoot, "marker");
+    mkdirSync(state, { recursive: true });
+    const marker = join(state, pin);
+    const markerState = (label: string, expected: boolean) => {
+      check(`${pin}: ${label} has the expected user-auth marker`, hasUserAuthState(markerRoot, "marker") === expected);
+      check(`${pin}: ${label} has the expected user-auth inventory`,
+        userAuthSpacesOnDisk(authDir(markerRoot)).join(",") === (expected ? "marker" : ""));
+    };
+    markerState("absent pin", false);
+    writeFileSync(marker, "{}");
+    markerState("regular pin", true);
+    rmSync(marker);
+    mkdirSync(marker);
+    markerState("directory at pin name", false);
+    rmSync(marker, { recursive: true });
+    const outside = join(markerRoot, "outside.json");
+    writeFileSync(outside, "{}");
+    symlinkSync(outside, marker);
+    markerState("symlink to a file outside the state dir", false);
+    const otherPin = join(state, pin === "idp.json" ? "callout.json" : "idp.json");
+    writeFileSync(otherPin, "{}");
+    markerState("symlink beside a regular provider pin", true);
+    rmSync(otherPin);
+    rmSync(marker);
+    symlinkSync(markerRoot, marker, "dir");
+    markerState("symlink to a directory", false);
+    rmSync(marker);
+    symlinkSync(join(markerRoot, "missing.json"), marker);
+    markerState("dangling symlink", false);
+    rmSync(marker);
+    symlinkSync(marker, marker);
+    markerState("self-referential symlink", false);
+    rmSync(marker);
+    writeFileSync(marker, "{}");
+    const outsideState = join(markerRoot, "outside-state");
+    renameSync(state, outsideState);
+    symlinkSync(outsideState, state, "dir");
+    markerState("symlinked state directory holding a regular pin", false);
+  }
+
+  check("all 36 provider-marker matrix assertions ran", pass - markerChecksStart === 36);
+
   console.log("\n4) an unreadable account record makes the guard refuse (fail-closed), never undercount");
   const corrupt = await makeRoot("corrupt", ["one"]);
   roots.push(corrupt);
@@ -246,8 +293,10 @@ try {
     writeFileSync(join(eaDir, "idp.json"), "{}");
     chmodSync(eaDir, 0o000);
     const eaMsg = await refusal(() => hasUserAuthState(ea, "solo3"));
+    const inventoryMsg = await refusal(() => userAuthSpacesOnDisk(authDir(ea)));
     chmodSync(eaDir, 0o700);
     check("an EACCES on the pin THROWS (never reads as static mode)", eaMsg.includes("EACCES"), eaMsg);
+    check("an EACCES on the pin THROWS during inventory", inventoryMsg.includes("EACCES"), inventoryMsg);
     check("…and reads user-auth again once readable", hasUserAuthState(ea, "solo3") === true);
   } else {
     console.log("\n11) (skipped: chmod-000 semantics need a non-root POSIX runner)");
