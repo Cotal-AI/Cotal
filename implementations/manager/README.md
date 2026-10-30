@@ -21,6 +21,13 @@ See [docs/architecture.md](../../docs/architecture.md) (*Manager supervision*) a
 measures the real connector MCP processes on Linux. Build the CLI closure first and use a short,
 private `TMPDIR` for the per-seat Unix sockets. These processes exclude the model harness.
 
+Real seats use the stock `seat.cjs` entry, including its compile-cache setup.
+`--real-entry direct` selects the older `mcp.cjs` entry for an explicit comparison;
+`MSL_RESULT.seatEntry` and the printed header identify the arm. Each run gives children a fresh
+private HOME, so the first seat starts with an empty cache and later seats can reuse it.
+`NODE_COMPILE_CACHE` and `NODE_DISABLE_COMPILE_CACHE` must be unset for real-seat runs.
+Direct-entry results do not establish the stock-launcher limit.
+
 `--process-memory` emits `MSL_RESULT` JSON at each step and a counted `MSL_DONE` summary.
 It reads RSS/PSS/USS without heap snapshots or forced GC. Before and after the idle window,
 it calls the manager's authenticated `ps` command and matches every successful spawn's ID and
