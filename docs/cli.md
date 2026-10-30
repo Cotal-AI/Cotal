@@ -1260,7 +1260,8 @@ Next offers `cotal spawn --space <space>`, or `cotal up` to add the manager afte
 and `cotal down`. The spawn carries `--space` because `up` keeps an existing selection, so a bare
 `cotal spawn` can target another space. Run from another folder, as `up --root <root>` is, the Next
 says to run `cotal down` from the root, because `down` stops only the stack of the folder it runs in,
-and it offers `cotal up --root <root>` to add the manager. When another space stays selected, the
+and it offers `cotal up --root <root>` to add the manager, with `<root>` quoted when a shell would
+split it. When another space stays selected, the
 receipt says so and names `cotal use <space>`, as a legacy `up` does. When no registered or prepared space is
 selected, `up` selects the space it started and says so.
 The receipt also names each service saved for the space that `up` does not start, such as one

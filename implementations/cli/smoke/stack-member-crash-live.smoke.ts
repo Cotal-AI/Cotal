@@ -6,8 +6,9 @@
  *  1. `status` leads its Next with `cotal up --root <root>`, which restarts the stopped member. The
  *     project folder's name needs shell quoting. This hint, the `chmod u+w` a persona catalog that
  *     cannot be written names, the `space create --root` that `status` names after a forget, the
- *     home screen's `up --root` row for a space prepared there, and the `space create --adopt`
- *     remedy once the folder is moved all quote it, so each pastes as one word. Before that, with the
+ *     home screen's `up --root` row for a space prepared there, the `up --root` that the Next of an
+ *     `up --root --no-manager` from another folder offers, and the `space create --adopt` remedy
+ *     once the folder is moved all quote it, so each pastes as one word. Before that, with the
  *     stack running, `status --server` at an address nothing answers at offers no restart and names
  *     that address and the recorded broker.
  *  2. `ps` refuses: no manager is running for this space, and its Next names bare `cotal up`.
@@ -107,6 +108,11 @@ try {
   chmodSync(agents, agentsMode);
   const chmod = /make it writable with `chmod u\+w (.+?)` to change its personas/.exec(readOnly.out)?.[1];
   check("a persona catalog that cannot be written names chmod u+w with the folder quoted", readOnly.status === 2 && shellWords(chmod) === `${agents}\n`, { chmod, out: readOnly.out });
+  const away = cliIn(base, "up", "--root", root, "--no-manager", "--server", `nats://127.0.0.1:${PORT}`);
+  const addManager = /^ {2}cotal up --root (.+?) {2,}Add the manager to this stack$/m.exec(away.out)?.[1];
+  check("up --root --no-manager from another folder quotes that folder in the up --root its Next offers", away.status === 0 && shellWords(addManager) === `${root}\n`, { addManager, out: away.out });
+  const awayDown = cli("down", "--yes");
+  check("...and down --yes in that folder stops it", awayDown.status === 0, awayDown.out);
   const up = cli("up", "--server", `nats://127.0.0.1:${PORT}`);
   check("up starts its controller stack", up.status === 0, up.out);
   let answered = false;
