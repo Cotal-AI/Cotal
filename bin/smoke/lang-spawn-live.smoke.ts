@@ -15,7 +15,8 @@
  *   2  a losing race branch's REAL seat is released by the driver's own sweep.
  *   3  spawn→conclave flow-through: the handle a REAL spawn minted resolves through the seat's
  *      own presence row, a membership row is written for exactly that incarnation, and the close
- *      tombstones it and deletes the minted channel's registry row.
+ *      tombstones it and deletes the minted channel's registry row. This leg uses real authenticated
+ *      issuance and public checkpoints, then observes the exact lifecycle's final retirement.
  *   4  monitor + wait(down) flow-through: a run parks on a REAL seat's down-event, the manager
  *      tears the seat down mid-run, its presence lapses, and the died branch wins the race.
  *   5  turn flow-through: a run's turn is relayed through the REAL manager, the suite plays the
@@ -46,7 +47,7 @@ const {
   probeConnect, registry, DEV_OWNER, openRecordsBucket, eventChannel,
   timerWriterContext, timerWriterConsumerConfig, timerWriterDurable, armCheckpointTimer,
   eptReqStreamName, replayRunJournal, newTakeoverId, resolveService, invokeCommand,
-  setupSpaceStreams, openMembersRegistry, openChannelRegistry, listMembers, readChannelConfig,
+  setupSpaceStreams,
   actionContext, readGoalResult,
 } = await import("@cotal-ai/core");
 type LaunchOptsT = import("@cotal-ai/core").LaunchOpts;
@@ -59,6 +60,7 @@ const { recordMesh } = await import("@cotal-ai/workspace");
 const { Manager } = await import("@cotal-ai/manager");
 const { MeshHandler, EpfSettleWatcher, startRun, resolveCheckpoint } = await import("@cotal-ai/runtime");
 const { launchEnv } = await import("@cotal-ai/connector-core"); // the OS env allow-list a real connector supplies
+const { checkSpawnConclave } = await import("./lang-spawn-live-conclave.js");
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -85,15 +87,16 @@ for (const n of ["wf1", "wf2", "wf3", "wf4", "wf5", "wf6"])
 // resolves `succeeded` off its presence join — a REAL process, not a scripted verdict.
 const coreDist = join(import.meta.dirname, "..", "..", "packages", "core", "dist", "index.js");
 const JOIN_CHILD = [
-  "const{pathToFileURL}=require('node:url');",
+  "const{pathToFileURL}=require('node:url');const{readFileSync}=require('node:fs');",
   "import(pathToFileURL(process.env.CORE_DIST).href).then(async({CotalEndpoint})=>{",
-  "const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.COTAL_SERVERS,lifecycleUid:process.env.COTAL_LIFECYCLE_UID||undefined,channels:[],consume:false,registerPresence:true,watchPresence:false,card:{id:process.env.COTAL_ID||undefined,name:process.env.COTAL_NAME,kind:'agent'}});",
+  "const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.COTAL_SERVERS,creds:process.env.COTAL_CREDS?readFileSync(process.env.COTAL_CREDS,'utf8'):undefined,lifecycleUid:process.env.COTAL_LIFECYCLE_UID||undefined,channels:[],consume:false,registerPresence:true,watchPresence:false,card:{id:process.env.COTAL_ID||undefined,name:process.env.COTAL_NAME,kind:'agent'}});",
   "ep.on('error',()=>{});await ep.start();setInterval(()=>{},1<<30);});",
 ].join("");
 const envJoin = (o: LaunchOptsT): Record<string, string> => ({
   ...launchEnv(), CORE_DIST: coreDist,
   COTAL_SPACE: o.space, COTAL_SERVERS: String(o.servers ?? SERVER),
   COTAL_ID: o.id ?? "", COTAL_LIFECYCLE_UID: o.lifecycleUid ?? "", COTAL_NAME: o.name,
+  ...(o.creds !== undefined ? { COTAL_CREDS: o.creds } : {}),
 });
 const joinCon: ConnectorT = { kind: "connector", name: "join", requires: ["node"], eventChannel, buildLaunch: (o): LaunchSpecT => ({ command: process.execPath, args: ["-e", JOIN_CHILD], env: envJoin(o) }) };
 registry.register(joinCon);
@@ -207,39 +210,9 @@ log("winner", out.index);
     c("and no seat of either completed run is left behind", !names.some((n) => n.startsWith("wf")), names);
   }
 
-  // ── 3) spawn→conclave flow-through: a REAL seat's presence resolves its membership ──────────
-  {
-    console.log("• 3 — a conclave joins a real seat off its own presence, and releases it");
-    const source = `
-const d = await spawn("wf3");
-const r = await conclave([d], async (room) => { log("room", room.channel); return room.channel; }, { name: "standup" });
-log("done", r);
-`;
-    const out = await startRun(js, jsm, {
-      space: SPACE, endpoint: "manager", kv, runId: "ls-3", lease: lease(),
-      source, handler: mk("ls-3"),
-    });
-    c("the conclave run completes", out.status === "completed", JSON.stringify(out));
-    const spawnEntry = (await entriesOf("ls-3", "spawn")).find((e) => e.state === "settled");
-    const handle = String((spawnEntry?.result as { agent?: unknown } | undefined)?.agent ?? "");
-    const uid = handle.slice(handle.lastIndexOf("#") + 1);
-    const entries = await entriesOf("ls-3", "conclave");
-    const settled = entries.find((e) => e.state === "settled");
-    c("the conclave entry settles ok with the closed fact", settled?.status === "ok" && settled?.closed === true,
-      { status: settled?.status, closed: settled?.closed });
-    const plan = entries.filter((e) => e.state === "pending").at(-1)?.external as
-      { channel?: string; members?: Array<{ uid?: string; principal?: string }> } | undefined;
-    c("the plan pinned the REAL seat's incarnation, resolved from its own presence row",
-      plan?.members?.length === 1 && plan.members[0]?.uid === uid && uid.length >= 26,
-      JSON.stringify(plan));
-    const rows = await listMembers(await openMembersRegistry(nc, SPACE), { channel: plan?.channel ?? "" });
-    c("one membership row was written for the seat and tombstoned by the close",
-      rows.length === 1 && rows[0]?.lifecycleUid === uid && rows[0]?.leaveCursor !== undefined
-        && rows[0]?.owner === plan?.members?.[0]?.principal,
-      JSON.stringify(rows));
-    c("the minted channel's registry row is gone after the close",
-      (await readChannelConfig(await openChannelRegistry(nc, SPACE), plan?.channel ?? "")) === undefined);
-  }
+  // ── 3) a real authenticated seat writes, closes and retires its membership ────────────────
+  console.log("• 3 — a conclave joins a real seat off its own presence, and releases it");
+  await checkSpawnConclave(c);
 
   // ── 4) monitor + wait(down) flow-through: a REAL seat's death observed off its own presence ─
   {
@@ -527,7 +500,7 @@ log("got", v.estimate);`,
   pumpState.over = true;
   await pump;
   await nc.drain().catch(() => undefined);
-  const EXPECTED_CELLS = 37;
+  const EXPECTED_CELLS = 47;
   if (pass + fail !== EXPECTED_CELLS) {
     console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
     fail += 1;
