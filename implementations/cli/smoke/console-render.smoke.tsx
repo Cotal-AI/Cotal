@@ -554,6 +554,39 @@ console.log("10. the agent detail's recent traffic cuts a preview by columns, be
     check(`${cols} columns: ASCII previews read as before`,
       previews[3] === "ok" && rows[2] === (prefix + ascii).slice(0, cols - 7) + "…", rows);
   }
+  // A preview cut to the cap that then fit the row showed no ellipsis: at 80 columns, after the
+  // 23-column `8:00:30 PM → #general: `, the sushi row ended in 25 whole emoji with nothing to say the
+  // rest was left out, and at 47 columns the CJK row did the same.
+  const at = new Date(2026, 0, 1, 20, 0, 30).getTime();
+  const shown = async (cols: number, entry: Partial<FeedEntry>, texts: string[]): Promise<string[]> => {
+    const entries = texts.map((text, i) =>
+      ({ id: "r" + i, ts: at, from: agent.card, delivery: "multicast" as const, ...entry, text }));
+    const head = fmtTime(at) + " → " + (entry.channel ? "#" + entry.channel : (entry.toNames ?? []).join(", ")) + ": ";
+    const painted = await paint(<Detail target={{ kind: "agent", agent }} feed={entries} width={cols} height={30} />, cols, 30);
+    const card = painted.trimEnd().split("\n");
+    return card.slice(card.findLastIndex((l) => l.startsWith("╭")))
+      .filter((l) => l.includes(head.slice(0, -2))).map((l) => l.slice(3, -1).trimEnd()).reverse();
+  };
+  const m1 = "这是一个用于测试控制台终端换行的很长中文句子它没有任何空格因此必须在字符之间断开才能完整显示全部内容";
+  const probe = "ascii-probe-" + "0123456789".repeat(6);
+  for (const cols of [80, 47]) {
+    const cap = cols - 28;
+    const wide = { channel: "c".repeat(17 - displayWidth(fmtTime(at))) };
+    const head = fmtTime(at) + " → #" + wide.channel + ": ";
+    const want = cols === 80 ? ["a" + "🍣".repeat(24) + "…", m1.slice(0, 25) + "…"] : ["a" + "🍣".repeat(8) + "…", m1.slice(0, 8) + "…"];
+    const journey = (await shown(cols, wide, [sushi, m1])).map((r) => r.slice(head.length));
+    check(`${cols} columns: after a 23-column prefix, a wide preview that leaves text out ends with an ellipsis`,
+      displayWidth(head) === 23 && JSON.stringify(journey) === JSON.stringify(want), { journey, want });
+    const short = { channel: "g" };
+    const fit = "f".repeat(cap - 1) + "Z";
+    const cut = (await shown(cols, short, [probe, fit, fit + "!", "ok", ""])).map((r) => r.slice(fmtTime(at).length + 7));
+    check(`${cols} columns: after a short prefix, an ASCII cut ends with an ellipsis within the ${cap}-column cap; an exact fit, a short and an empty text stay whole`,
+      JSON.stringify(cut) === JSON.stringify([probe.slice(0, cap - 1) + "…", fit, fit.slice(0, cap - 1) + "…", "ok", ""]), cut);
+    const noRoom = { delivery: "unicast" as const, channel: undefined, toNames: ["n".repeat(cols - 11 - displayWidth(fmtTime(at)))] };
+    const full = await shown(cols, noRoom, ["x", "🍣🍣"]);
+    check(`${cols} columns: with no room after the prefix, each row still fits the card and ends with an ellipsis`,
+      full.length === 2 && full.every((r) => displayWidth(r) <= cols - 6 && r.endsWith("…") && !r.includes("🍣")), full);
+  }
 }
 
 console.log("11. a detail returns the feed to the message and viewport it left");

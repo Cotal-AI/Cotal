@@ -160,15 +160,16 @@ function AgentDetail({ agent, feed, width, managed }: { agent: Presence; feed: F
                   : (e.toNames ?? []).join(", ")
               : e.from.name;
             const prefix = fmtTime(e.ts) + " " + head + peer + ": ";
-            // Cut by columns between whole characters: the text to at most `width - 24` columns, then,
-            // when the row would still overflow its `width - 2` (the card's border and padding take 6),
-            // to fit with an ellipsis, so the terminal's truncation never splits or straddles a wide one.
-            const room = width - 2 - displayWidth(prefix);
-            const text = clipText(e.text, Math.max(8, width - 24));
+            // Cut by columns between whole characters, to at most `width - 24` columns and to what the
+            // row's `width - 2` (the card's border and padding take 6) leaves after the prefix. A preview
+            // that leaves any text out ends with an ellipsis inside that room, so the terminal's
+            // truncation never splits or straddles a wide one.
+            const room = Math.min(Math.max(8, width - 24), width - 2 - displayWidth(prefix));
+            const text = clipText(e.text, room);
             return (
               <Text key={i} wrap="truncate-end">
                 <Text dimColor>{prefix}</Text>
-                {displayWidth(text) <= room ? text : clipText(text, room - 1) + "…"}
+                {text === e.text ? text : clipText(text, room - 1) + "…"}
               </Text>
             );
           })
