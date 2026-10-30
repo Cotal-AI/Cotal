@@ -126,6 +126,26 @@ try {
     }),
     "scope [run] beyond [spawn]",
   );
+  // Only tokens the mesh reads are delegable: a parent that lists an unknown token cannot hand it on.
+  grantActor(dir, { owner: OWNER, actor: "oddparent", scope: ["spawn", "machine-vitals", "frobnicate"], allowSubscribe: ["general"], allowPublish: ["general"] });
+  let vitalsKid: { scope: string[] } | undefined, vitalsError: unknown;
+  try {
+    vitalsKid = grantManagedActor(dir, { custody: { kind: "foreground" },
+      owner: OWNER, actor: "vitalskid", scope: ["machine-vitals"], parent: `${OWNER}.oddparent`,
+      allowSubscribe: ["general"], allowPublish: [], tokenHash: newActorToken().tokenHash, lifecycleUid: mintLifecycleUid(),
+    });
+  } catch (e) {
+    vitalsError = e;
+  }
+  check("a token the mesh reads delegates when the parent holds it (machine-vitals)", vitalsKid?.scope.includes("machine-vitals") === true, vitalsError);
+  rejects(
+    "an unknown token is refused even when the parent lists it",
+    () => grantManagedActor(dir, { custody: { kind: "foreground" },
+      owner: OWNER, actor: "oddkid", scope: ["frobnicate"], parent: `${OWNER}.oddparent`,
+      allowSubscribe: ["general"], allowPublish: [], tokenHash: newActorToken().tokenHash, lifecycleUid: mintLifecycleUid(),
+    }),
+    "scope [frobnicate] beyond",
+  );
   rejects(
     "a cross-owner delegation is refused (agents live under their spawner's owner)",
     () => grantManagedActor(dir, { custody: { kind: "foreground" },

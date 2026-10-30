@@ -44,6 +44,7 @@ import {
   assertValidOwnerToken,
   capabilityWithin,
   eventChannel,
+  MANAGER_VITALS_SCOPE,
   mintLifecycleUid,
   mkSecretDir,
   parseActorLedgerSource,
@@ -339,6 +340,12 @@ function rawGrantInteractive(dir: string, row: Omit<ActorRow, "grantedAt">): Act
   return full;
 }
 
+/** The scope tokens a spawner may hand on: the ones the auth service and the manager read. Any
+ *  other token is never within, even when the parent lists it, so a delegation cannot carry a
+ *  string the mesh gives no meaning today and might give one later. */
+const DELEGABLE_SCOPE: ReadonlySet<string> = new Set(["admin", "run", "spawn", "supervise", MANAGER_VITALS_SCOPE]);
+const ROLE_SCOPE = /^role:[A-Za-z0-9_-]+$/;
+
 /** Delegation attenuation — the ENVELOPE rule: everything under an owner stays within the
  *  spawner's own grant. A spawn-scoped actor can delegate only a SUBSET of what it holds — channel
  *  ACLs by NATS-pattern containment ({@link patternInAllow}), capability scope by set inclusion —
@@ -387,8 +394,8 @@ export function assertWithinSpawnerGrant(
         `agent "${childKey}" cannot be delegated by spawner "${parentKey}" of a different owner - cross-owner spawns are operator (admin) launches only`,
       );
     // `run` carries the whole spawn set, so a run holder hands on `spawn` too (the token rule core
-    // shares with the static bound).
-    const overScope = child.scope.filter((s) => !capabilityWithin(parent.scope, s));
+    // shares with the static bound). A token outside the delegable set is refused outright.
+    const overScope = child.scope.filter((s) => !((DELEGABLE_SCOPE.has(s) || ROLE_SCOPE.test(s)) && capabilityWithin(parent.scope, s)));
     const overSub = child.allowSubscribe.filter((ch) => !patternInAllow(parent.allowSubscribe, ch));
     // A spawner that may post its own events may hand each child that child's own event channel
     // and no other. The channel names the child, so it reaches nothing the spawner holds, and the

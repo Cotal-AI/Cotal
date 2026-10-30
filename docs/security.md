@@ -149,7 +149,8 @@ The guarantees, at a glance, each enforced by the broker per
   per-user-auth mesh checks the same rule on its ledger: every delegation must sit inside the
   spawner's own grant, checked by NATS-pattern containment along the whole chain, at the grant
   write and again at every bearer exchange ([identity & auth](identity-and-auth.md)). On a static
-  mesh the helper's role is not measured.
+  mesh two things are not measured: the helper's role, and the spawns a workflow run makes, so a
+  caller that holds both `spawn` and `run` can reach through a run what the direct spawn refuses.
 - **`spawn` is host-launch authority:** launch options are a raw passthrough (no allow/deny
   list), so a persona holding `capabilities: [spawn]` can drive the connector's full launch
   surface on the manager host (Claude `--mcp-config`, `--add-dir`, permission flags; OpenCode

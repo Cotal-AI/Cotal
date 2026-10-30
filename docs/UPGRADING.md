@@ -61,8 +61,11 @@ takes from its spawner are all measured. The operator's own commands, such as `c
   evidence, so it hands on no grant. Its helpers start with no channels and no capabilities, and a
   persona that names any is refused. Start such a spawner under a manager with `cotal spawn
   --detach` instead.
-- A user-auth mesh keeps its ledger rule, except that a spawner whose scope holds `run` may now hand
-  on `spawn`.
+- A user-auth mesh keeps its ledger rule with two changes. A spawner whose scope holds `run` may now
+  hand on `spawn`. A scope token the mesh does not read, anything other than `admin`, `run`,
+  `spawn`, `supervise`, `machine-vitals` and `role:<r>`, is no longer handed on. A managed agent
+  that already carries such a token under a spawner without `admin` is refused at its next bearer
+  refresh, so respawn it without the token.
 
 ## Multi-space host acknowledgments after 0.116.1
 
