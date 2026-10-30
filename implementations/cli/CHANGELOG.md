@@ -1,5 +1,13 @@
 # @cotal-ai/cli
 
+## 0.130.2
+
+### Patch Changes
+
+- 75721a2: Wrap console text by terminal columns. The feed, DM thread, detail body and roster status facts counted UTF-16 units, so CJK text made rows twice the pane width and lost the cut-off half, and an odd width split an emoji into two replacement characters. Rows now use the display width the CLI already measures elsewhere and break between grapheme clusters. ASCII wrapping is unchanged.
+- @cotal-ai/core@0.130.2
+  - @cotal-ai/workspace@0.130.2
+
 ## 0.130.1
 
 ### Patch Changes
