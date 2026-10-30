@@ -15,6 +15,9 @@
  * manager and runtime, the unaudited pin and `cotal ps --on <manager>`, in the text and in the
  * structured content the MCP renderer sends. A refusal there read as "nothing was spawned", and the
  * caller's retry started a second seat on the same work.
+ *
+ * An inline `persona` rides whole to the manager through a closed schema, and its `model` is audited
+ * like the override. `cotal_persona` carries `capabilities` for the manager to bound.
  */
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -359,7 +362,41 @@ const callsWild = record(wild);
 const wildReply = await wild.spawn("helper", undefined, { join: ["team.>"] });
 check("a wildcard join is refused before invoke", wildReply.ok === false && /concrete channel/.test(wildReply.error ?? "") && callsWild.length === 0, wildReply);
 
-const EXPECTED_CHECKS = 54;
+// The inline persona rides whole to the manager, which validates and bounds it as it does a file.
+// The tool's schema is closed, so a field the record has no slot for (`config`, `owner`) is refused
+// before anything is sent, and the persona body cannot be empty.
+const personaShape = spawnTool?.schema.shape.persona as { safeParse: (value: unknown) => { success: boolean } } | undefined;
+check("cotal_spawn schema exposes the inline persona", personaShape !== undefined);
+check("the inline persona schema takes the documented record", personaShape?.safeParse({ prompt: "You review diffs.", role: "reviewer", allowPublish: [], capabilities: ["spawn"], save: true }).success === true);
+check("the inline persona schema refuses a field it has no slot for", personaShape?.safeParse({ prompt: "x", config: "/etc/passwd" }).success === false && personaShape?.safeParse({ prompt: "x", owner: "u_x.someone" }).success === false);
+check("the inline persona schema refuses an empty body", personaShape?.safeParse({ prompt: "" }).success === false);
+const inline = { prompt: "You review diffs.", role: "reviewer", subscribe: ["general"], allowPublish: [], capabilities: ["spawn"] };
+const inlineAgent = new MeshAgent(reader);
+const callsInline = record(inlineAgent);
+await spawnTool?.run(inlineAgent, reader, { name: "helper", persona: inline, prompt: "Review the diff." });
+const recInline = spawnCall(callsInline);
+check("cotal_spawn tool forwards the inline persona whole, beside its first-turn prompt",
+  JSON.stringify(recInline?.args?.persona) === JSON.stringify(inline) && recInline?.args?.prompt === "Review the diff." && recInline?.args?.name === "helper", recInline?.args);
+check("name-only persona stays absent", spawnCall(callsPlain)?.args?.persona === undefined, spawnCall(callsPlain)?.args);
+const inlinePin = new MeshAgent(cfg);
+const callsInlinePin = record(inlinePin);
+const inlinePinReply = await inlinePin.spawn("helper", undefined, { persona: { prompt: "x", model: "grok-4.6" } });
+check("an inline persona's model the manager did not record is refused like an override",
+  inlinePinReply.ok === false && /requested model "grok-4.6"/.test(inlinePinReply.error ?? "") && callsInlinePin.some((c) => c.command === "inspect"), inlinePinReply);
+check("the inline model is not sent again as a top-level override", !("model" in (spawnCall(callsInlinePin)?.args ?? {})), spawnCall(callsInlinePin)?.args);
+
+// cotal_persona carries `capabilities` to the manager, which bounds them against the definer.
+const personaTool = cotalToolSpecs(cfg).find((s) => s.name === "cotal_persona") as
+  | { schema: { shape: Record<string, unknown> }; run: (agent: MeshAgent, config: AgentConfig, args: Record<string, unknown>) => Promise<{ text: string; isError?: boolean }> }
+  | undefined;
+check("cotal_persona schema exposes capabilities", personaTool !== undefined && "capabilities" in personaTool.schema.shape);
+const definer = new MeshAgent(cfg);
+const callsDefine = record(definer);
+await personaTool?.run(definer, cfg, { name: "probe", prompt: "You probe.", capabilities: ["spawn"] });
+const recDefine = callsDefine.find((c) => c.command === "define-persona");
+check("cotal_persona forwards capabilities for the manager to bound", JSON.stringify(recDefine?.args?.capabilities) === JSON.stringify(["spawn"]), recDefine?.args);
+
+const EXPECTED_CHECKS = 64;
 if (checks !== EXPECTED_CHECKS) {
   failures++;
   console.log(`SUITE INCOMPLETE: ${checks} of ${EXPECTED_CHECKS} checks`);

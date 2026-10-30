@@ -9,7 +9,7 @@
  */
 import { execFileSync } from "node:child_process";
 import { z } from "zod";
-import { isConcreteChannel, channelInAllow, AmbiguousPeerError, peerLabel, assertLifecycleToken, isPermissionDenied, renderLifecycleBlocked, EpEnvelopeError, LANG_PROBLEM_DETAIL_KIND, formatAge, presenceAges, presenceText, type ControlReply, type PresenceStatus } from "@cotal-ai/core";
+import { isConcreteChannel, channelInAllow, AmbiguousPeerError, peerLabel, assertLifecycleToken, isPermissionDenied, renderLifecycleBlocked, EpEnvelopeError, LANG_PROBLEM_DETAIL_KIND, formatAge, presenceAges, presenceText, type ControlReply, type InlinePersona, type PresenceStatus } from "@cotal-ai/core";
 import { afterRecallMark, type MeshAgent, type InboxItem } from "./agent.js";
 // The neutralization and the per-item rendering live in `framing.ts`, one convention shared with
 // the auto-injected block, and are used here rather than restated. See that file for the rule.
@@ -1444,9 +1444,25 @@ export function cotalToolSpecs(
       name: "cotal_spawn",
       title: "Cotal: spawn a new teammate",
       description:
-        "Ask the manager to start a new peer endpoint in your space. It joins the mesh as a lateral peer and, under the cmux runtime, appears in its own tab. A Cotal peer is a real, addressable process the user can watch; you can reach it by DM, find it on the roster, and coordinate with it later. Use it for teammate work that should stay visible on the mesh. Pass `prompt` when it should begin immediately; the connector auto-submits that prompt as its first turn. When you first bring a team online, if the live web dashboard is down, suggest `cotal watch` for a live terminal view. The dashboard service is configured and started separately; do not install or launch it implicitly. A partial result means the seat started but its requested model pin could not be read back: it names the seat and the `cotal ps --on <manager>` command that shows the pin, and spawning again would start a second agent. Channels: the new peer may read and post what its persona file allows; a persona that names no channel at all is scoped to your own allowances. It starts on NO channel unless you pass `join`, so pass the channel you are working on when it should see that traffic and post there (e.g. `join: [\"general\"]`).",
+        "Ask the manager to start a new peer endpoint in your space. A spawn has two prompts: `persona.prompt` says who the helper is, and `prompt` is the first message it works on. Usually you define the helper here with `persona` and a `name`. Pass `persona.save: true` only for a broad persona worth reusing; to spawn a persona already in the catalog, pass its filename as `name` and no `persona`. Channels and capabilities you give the helper must be ones you hold; on a mesh that checks grants, a spawn that asks for more is refused, and the refusal names each part you do not hold. The new peer joins the mesh as a lateral peer and, under the cmux runtime, appears in its own tab. A Cotal peer is a real, addressable process the user can watch; you can reach it by DM, find it on the roster, and coordinate with it later. Use it for teammate work that should stay visible on the mesh. Pass `prompt` when it should begin immediately; the connector auto-submits that prompt as its first turn. When you first bring a team online, if the live web dashboard is down, suggest `cotal watch` for a live terminal view. The dashboard service is configured and started separately; do not install or launch it implicitly. A partial result means the seat started but its requested model pin could not be read back: it names the seat and the `cotal ps --on <manager>` command that shows the pin, and spawning again would start a second agent. Channels: the new peer may read and post what its persona allows; a persona that names no channel at all is scoped to your own allowances. It starts on NO channel unless you pass `join`, so pass the channel you are working on when it should see that traffic and post there (e.g. `join: [\"general\"]`).",
       schema: {
-        name: z.string().describe("Which persona to spawn: the persona FILENAME in .cotal/agents (e.g. `review-critic`), without the .md. The new peer joins under the persona's own `name:` (auto-numbered with an underscore, e.g. socrates_2, if that's taken). Fails if no such persona file exists; spawn an existing persona, don't invent a name."),
+        name: z.string().describe("With `persona`, the new helper's name (auto-numbered with an underscore, e.g. reviewer_2, if that's taken). Without it, which catalog persona to spawn: the persona FILENAME in .cotal/agents (e.g. `review-critic`), without the .md; the peer joins under the persona's own `name:`, and an unknown name fails."),
+        persona: z
+          .object({
+            prompt: z.string().min(1).describe("Who the helper is: its persona body, as a persona file's body would be. Its first message is the top-level `prompt`."),
+            role: z.string().min(1).optional().describe("The helper's role (e.g. reviewer). The top-level `role` wins."),
+            model: z.string().min(1).optional().describe("The helper's model. The top-level `model` wins. The spawn fails if the manager does not record this pin."),
+            variant: z.string().min(1).optional().describe("The helper's model variant. The top-level `variant` wins."),
+            description: z.string().min(1).optional().describe("A one-line description, shown in the catalog when the persona is saved."),
+            subscribe: z.array(z.string()).optional().describe("Channels the helper reads at start. Omit every channel field to take your own read and post grants; pass [] for none."),
+            allowSubscribe: z.array(z.string()).optional().describe("Channels the helper may read. Each must be one you may read."),
+            allowPublish: z.array(z.string()).optional().describe("Channels the helper may post to. Each must be one you may post to."),
+            capabilities: z.array(z.string()).optional().describe("Capabilities to hand on, such as spawn or run. Each must be one you hold."),
+            save: z.boolean().optional().describe("Also save this persona to the catalog under `name`, for a broad persona worth reusing. A name already in the catalog is refused before anything starts."),
+          })
+          .strict()
+          .optional()
+          .describe("Define the helper on this spawn instead of from a catalog file: `prompt` (who it is), with optional `role`, `model`, `variant`, `description`, `subscribe`, `allowSubscribe`, `allowPublish`, `capabilities` and `save`. Not saved unless `save` is true."),
         join: z
           .array(z.string())
           .optional()
@@ -1463,7 +1479,7 @@ export function cotalToolSpecs(
           .string()
           .optional()
           .describe(
-            "Optional role for the new peer (e.g. worker, reviewer); overrides the persona file's role. A role of `manager` requires the persona to carry capabilities: [spawn]: a seat that presents as a manager but cannot spawn is refused at spawn time. Ask an operator to add the grant to the persona file (a persona you defined with cotal_persona cannot declare it itself).",
+            "Optional role for the new peer (e.g. worker, reviewer); overrides the persona's role. A role of `manager` requires the helper to hold `spawn`, from `persona.capabilities` or its catalog file: a seat that presents as a manager but cannot spawn is refused at spawn time. You can hand on `spawn` only if you hold it.",
           ),
         agent: z
           .string()
@@ -1511,9 +1527,9 @@ export function cotalToolSpecs(
         // boundary. Resume lives only on the operator CLI (`cotal spawn --resume`, foreground or
         // --detach); a peer-facing, capability-gated resume is deferred (see #159).
       },
-      async run(agent, _config, { name, instance, role, agent: agentType, model, variant, launchOptions, cwd, prompt, events, runtime, join }: { name: string; instance?: string; role?: string; agent?: string; model?: string; variant?: string; launchOptions?: Record<string, unknown>; cwd?: string; prompt?: string; events?: boolean; runtime?: string; join?: string[] }) {
+      async run(agent, _config, { name, persona, instance, role, agent: agentType, model, variant, launchOptions, cwd, prompt, events, runtime, join }: { name: string; persona?: InlinePersona; instance?: string; role?: string; agent?: string; model?: string; variant?: string; launchOptions?: Record<string, unknown>; cwd?: string; prompt?: string; events?: boolean; runtime?: string; join?: string[] }) {
         try {
-          const reply = await agent.spawn(name, role, { agent: agentType, model, variant, launchOptions, cwd, prompt, events, runtime, instance, join });
+          const reply = await agent.spawn(name, role, { agent: agentType, model, variant, launchOptions, cwd, prompt, events, runtime, instance, join, persona });
           // An uncertain launch is still managed and may yet join. Reported as an error it reads as a
           // failed launch, and the caller's retry starts a second agent on the same work.
           const pending = reply.code === "uncertain";
@@ -1749,7 +1765,7 @@ export function cotalToolSpecs(
       name: "cotal_persona",
       title: "Cotal: define a persona",
       description:
-        "Define a new persona and save it as config (the manager writes .cotal/agents/<name>.md). It stays silent unless you pass `announce` with a channel. Afterwards cotal_spawn(name) launches a real agent wearing this persona/model. A prompt that is already a complete agent file (its own --- frontmatter) is merged into one block: grants, role, and agent from that block survive, and explicit arguments such as model win. A malformed leading frontmatter block is refused rather than wrapped. Pass `instance` to save on one full manager instance in a multi-manager space; a failed pin never falls back.",
+        "Define a new persona and save it as config (the manager writes .cotal/agents/<name>.md). Use it for a broad persona worth reusing; for a one-off helper, pass `persona` to cotal_spawn instead. It stays silent unless you pass `announce` with a channel. Afterwards cotal_spawn(name) launches a real agent wearing this persona/model. A prompt that is already a complete agent file (its own --- frontmatter) is merged into one block: grants, role, and agent from that block survive, and explicit arguments such as model win. A malformed leading frontmatter block is refused rather than wrapped. Pass `instance` to save on one full manager instance in a multi-manager space; a failed pin never falls back.",
       schema: {
         name: z
           .string()
@@ -1763,6 +1779,7 @@ export function cotalToolSpecs(
         subscribe: z.array(z.string()).optional().describe("Optional active read set written into the persona file. Wins over subscribe: in the prompt's frontmatter."),
         allowSubscribe: z.array(z.string()).optional().describe("Optional read ACL written into the persona file. Wins over allowSubscribe: in the prompt's frontmatter."),
         allowPublish: z.array(z.string()).optional().describe("Optional post ACL written into the persona file. Wins over allowPublish: in the prompt's frontmatter."),
+        capabilities: z.array(z.string()).optional().describe("Optional capabilities written into the persona file, such as spawn or run. Each must be one you hold; the manager refuses anything more and writes nothing. A redefine that omits it keeps the saved list, which is checked the same way; pass [] to clear it. Capabilities in the prompt's frontmatter are dropped."),
         announce: z
           .string()
           .optional()
@@ -1773,7 +1790,7 @@ export function cotalToolSpecs(
       async run(
         agent,
         _config,
-        { name, prompt, instance, model, role, agent: agentType, subscribe, allowSubscribe, allowPublish, announce }: {
+        { name, prompt, instance, model, role, agent: agentType, subscribe, allowSubscribe, allowPublish, capabilities, announce }: {
           name: string;
           prompt: string;
           instance?: string;
@@ -1783,11 +1800,12 @@ export function cotalToolSpecs(
           subscribe?: string[];
           allowSubscribe?: string[];
           allowPublish?: string[];
+          capabilities?: string[];
           announce?: string;
         },
       ) {
         try {
-          const reply = await agent.definePersona({ name, prompt, instance, model, role, agent: agentType, subscribe, allowSubscribe, allowPublish, announce });
+          const reply = await agent.definePersona({ name, prompt, instance, model, role, agent: agentType, subscribe, allowSubscribe, allowPublish, capabilities, announce });
           if (reply.definitionOutcome === "unknown") {
             const readback = `cotal_personas(name="${name}"${instance === undefined ? "" : `, instance="${instance}"`})`;
             const message = `The definition outcome for persona \`${name}\` is unknown: ${reply.error ?? "the manager reply was not observed"}. ` +

@@ -20,15 +20,15 @@
     {
       "name": "J1 drop join at the manager command boundary",
       "file": "extensions/connector-core/src/agent.ts",
-      "find": "runtime: opts?.runtime, join: opts?.join, callerAcl:",
-      "replace": "runtime: opts?.runtime, callerAcl:",
+      "find": "runtime: opts?.runtime, join: opts?.join, persona: opts?.persona, callerAcl:",
+      "replace": "runtime: opts?.runtime, persona: opts?.persona, callerAcl:",
       "expectRed": "MeshAgent.spawn forwards join"
     },
     {
       "name": "J2 drop the caller's ACL from the spawn command",
       "file": "extensions/connector-core/src/agent.ts",
-      "find": "join: opts?.join, callerAcl: { allowSubscribe: this.config.allowSubscribe, allowPublish: this.config.allowPublish } };",
-      "replace": "join: opts?.join };",
+      "find": "persona: opts?.persona, callerAcl: { allowSubscribe: this.config.allowSubscribe, allowPublish: this.config.allowPublish } };",
+      "replace": "persona: opts?.persona };",
       "expectRed": "the spawn carries the caller's own ACL as callerAcl"
     },
     {

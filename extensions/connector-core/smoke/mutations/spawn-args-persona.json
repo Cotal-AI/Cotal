@@ -1,0 +1,64 @@
+{
+  "suite": [
+    "extensions/connector-core/smoke/spawn-args.smoke.ts"
+  ],
+  "guard": "cotal_spawn forwards an inline persona whole through a closed schema and audits its model like an override, and cotal_persona forwards capabilities",
+  "command": "pnpm smoke:spawn-args",
+  "completionMarker": "SPAWN-ARGS SMOKE",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/spawn-args-persona.json",
+  "why": [
+    "The suite imports MeshAgent and the tool specs by relative source path, so the bytes mutated are",
+    "the bytes graded; its core imports are values the mutations do not touch, or erased types.",
+    "C1 and C2 each drop the inline persona at one hop, the agent's spawn arguments and the tool's",
+    "handoff, so the manager would spawn a catalog persona by the helper's name. C3 opens the closed",
+    "schema, so a field the record has no slot for reaches the manager. C4 audits only the top-level",
+    "model, so an inline model the manager did not record passes as a launched pin. C5 and C6 each drop",
+    "cotal_persona's capabilities at one hop, so a definer's capabilities never reach the bound.",
+    "",
+    "NOT PROVED HERE: the manager's own refusal of an unknown record key, which its suite proves."
+  ],
+  "mutations": [
+    {
+      "name": "C1 drop the inline persona from the spawn arguments",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "join: opts?.join, persona: opts?.persona, callerAcl",
+      "replace": "join: opts?.join, callerAcl",
+      "expectRed": "cotal_spawn tool forwards the inline persona whole, beside its first-turn prompt"
+    },
+    {
+      "name": "C2 drop the inline persona from the tool's handoff",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "runtime, instance, join, persona });",
+      "replace": "runtime, instance, join });",
+      "expectRed": "cotal_spawn tool forwards the inline persona whole, beside its first-turn prompt"
+    },
+    {
+      "name": "C3 open the inline persona schema",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "          .strict()\n          .optional()\n          .describe(\"Define the helper",
+      "replace": "          .optional()\n          .describe(\"Define the helper",
+      "expectRed": "the inline persona schema refuses a field it has no slot for"
+    },
+    {
+      "name": "C4 audit only the top-level model",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "const pinned = requested || opts?.persona?.model?.trim();",
+      "replace": "const pinned = requested;",
+      "expectRed": "an inline persona's model the manager did not record is refused like an override"
+    },
+    {
+      "name": "C5 drop capabilities from the define-persona arguments",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "      capabilities: def.capabilities,\n    };\n    const reply = await this.managerInvoke(\"define-persona\"",
+      "replace": "    };\n    const reply = await this.managerInvoke(\"define-persona\"",
+      "expectRed": "cotal_persona forwards capabilities for the manager to bound"
+    },
+    {
+      "name": "C6 drop capabilities from cotal_persona's handoff",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "allowPublish, capabilities, announce });",
+      "replace": "allowPublish, announce });",
+      "expectRed": "cotal_persona forwards capabilities for the manager to bound"
+    }
+  ]
+}

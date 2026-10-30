@@ -20,15 +20,15 @@
     {
       "name": "A1 drop the kickoff prompt at the manager command boundary",
       "file": "extensions/connector-core/src/agent.ts",
-      "find": "    const args = { name, role, agent: opts?.agent, model: requested || undefined, variant: opts?.variant, launchOptions: opts?.launchOptions, cwd: opts?.cwd, prompt: opts?.prompt, events: opts?.events, runtime: opts?.runtime, join: opts?.join, callerAcl: { allowSubscribe: this.config.allowSubscribe, allowPublish: this.config.allowPublish } };",
-      "replace": "    const args = { name, role, agent: opts?.agent, model: requested || undefined, variant: opts?.variant, launchOptions: opts?.launchOptions, cwd: opts?.cwd, events: opts?.events, runtime: opts?.runtime, join: opts?.join, callerAcl: { allowSubscribe: this.config.allowSubscribe, allowPublish: this.config.allowPublish } };",
+      "find": "    const args = { name, role, agent: opts?.agent, model: requested || undefined, variant: opts?.variant, launchOptions: opts?.launchOptions, cwd: opts?.cwd, prompt: opts?.prompt, events: opts?.events, runtime: opts?.runtime, join: opts?.join, persona: opts?.persona, callerAcl: { allowSubscribe: this.config.allowSubscribe, allowPublish: this.config.allowPublish } };",
+      "replace": "    const args = { name, role, agent: opts?.agent, model: requested || undefined, variant: opts?.variant, launchOptions: opts?.launchOptions, cwd: opts?.cwd, events: opts?.events, runtime: opts?.runtime, join: opts?.join, persona: opts?.persona, callerAcl: { allowSubscribe: this.config.allowSubscribe, allowPublish: this.config.allowPublish } };",
       "expectRed": "kickoff prompt forwarded"
     },
     {
       "name": "A2 the MCP tool accepts prompt but silently omits it from MeshAgent.spawn",
       "file": "extensions/connector-core/src/tool-specs.ts",
-      "find": "          const reply = await agent.spawn(name, role, { agent: agentType, model, variant, launchOptions, cwd, prompt, events, runtime, instance, join });",
-      "replace": "          const reply = await agent.spawn(name, role, { agent: agentType, model, variant, launchOptions, cwd, events, runtime, instance, join });",
+      "find": "          const reply = await agent.spawn(name, role, { agent: agentType, model, variant, launchOptions, cwd, prompt, events, runtime, instance, join, persona });",
+      "replace": "          const reply = await agent.spawn(name, role, { agent: agentType, model, variant, launchOptions, cwd, events, runtime, instance, join, persona });",
       "expectRed": "cotal_spawn tool forwards the kickoff prompt"
     },
     {

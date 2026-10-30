@@ -106,7 +106,9 @@ should point at the source (the repo's docs, a URL), not assert them.
 
 ## Defining one at runtime
 
-`cotal_persona(name, prompt, model?, role?, agent?, subscribe?, allowSubscribe?, allowPublish?, announce?)` sends a persona to the manager, which
+For a one-off helper, pass its persona on the spawn ([inline personas](#inline-personas)). Define a
+persona when a broad one is worth reusing.
+`cotal_persona(name, prompt, model?, role?, agent?, subscribe?, allowSubscribe?, allowPublish?, capabilities?, announce?)` sends a persona to the manager, which
 writes the same file; a later `cotal_spawn(name, role?, agent?, model?, variant?, join?)` brings
 it online, so a peer can mint a teammate with no hand-written file
 ([tool catalog](mcp-tools.md)). A persona that names no channel field at all is scoped to
@@ -152,11 +154,14 @@ separate owner authorization.
 
 ## Inline personas
 
-A spawn can carry its helper's persona itself, in a `persona` record on the manager's `spawn`
-command: `prompt` (the persona body), `role`, `model`, `variant`, `description`, `subscribe`,
+A spawn can carry its helper's persona itself. An agent passes it as the `persona` argument of
+`cotal_spawn`, which forwards it as a `persona` record on the manager's `spawn` command. The record
+holds `prompt` (the persona body), `role`, `model`, `variant`, `description`, `subscribe`,
 `allowSubscribe`, `allowPublish`, `capabilities` and `save`. The spawn's own `prompt` is still the
 first turn the helper receives. `name` is the helper's name, and a live name gets a number as a
-persona identity does. A spawn with `persona` takes no `config` or `identity`.
+persona identity does. A spawn with `persona` takes no `config` or `identity`. The connector checks
+an inline `model` as it checks a `model` argument: if the manager did not record that pin, the
+spawn reports an error and says the seat may already be live.
 
 The manager reads the record as it reads a file. The same channel checks apply, the same spawn
 flags override it, and the same bound limits it to what the spawner holds

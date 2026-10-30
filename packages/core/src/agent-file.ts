@@ -338,6 +338,23 @@ export function saveAgentFile(path: string, def: AgentDef, opts: { createOnly?: 
   (opts.createOnly ? createPrivateRecord : writePrivateRecord)(path, `---\n${frontmatter}\n---\n\n${body}`);
 }
 
+/** An inline persona (SPEC 13.7): the helper's definition, carried on the spawn instead of read
+ *  from the catalog. `prompt` is the persona body, never the first-turn kickoff. A channel field
+ *  that is omitted and one that is `[]` stay apart, as in a file. `save` also writes a create-only
+ *  catalog copy under the requested name. */
+export interface InlinePersona {
+  prompt: string;
+  role?: string;
+  model?: string;
+  variant?: string;
+  description?: string;
+  subscribe?: string[];
+  allowSubscribe?: string[];
+  allowPublish?: string[];
+  capabilities?: string[];
+  save?: boolean;
+}
+
 /** What a peer may name on `define-persona`: content, plus `capabilities`, which the manager bounds
  *  against the definer before it writes. `owner` has no slot. */
 export type WirePersonaArgs = {
