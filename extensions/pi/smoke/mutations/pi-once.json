@@ -2,7 +2,7 @@
   "suite": [
     "extensions/pi/smoke/once-handoff.smoke.ts"
   ],
-  "guard": "the Pi driver hands a once task over at most once: it claims the task into one batch, stops the handoff timer when Pi starts that batch, seals and reports the task when the batch is held, and never sends a held once batch again; the extension's once exit is the driver's shutdown",
+  "guard": "the Pi driver hands a once task over at most once: it claims the task into one batch, stops the handoff timer when Pi starts that batch, seals and reports the task when the batch is held, and never sends a held once batch again; the extension's once exit is the driver's shutdown, and in a process of its own a seat whose report cannot land exits, with its session live or cleared",
   "command": "pnpm smoke:pi-once",
   "completionMarker": "COTAL_SMOKE_SENTINEL",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/pi/smoke/mutations/pi-once.json",
@@ -23,7 +23,8 @@
     "M5 drops the exit registration, so a once seat whose report cannot land has no shutdown to run.",
     "",
     "M6 drops the shutdown a session start takes once the driver is shutting down, so a once exit that found",
-    "the context cleared ends no later session."
+    "the context cleared ends no later session. M7 registers an exit",
+    "that does nothing, so a live session a once exit should end is never shut down."
   ],
   "mutations": [
     {
@@ -67,6 +68,13 @@
       "find": "  onAgentStart(context: PiContextLike): void {\n    this.context = context;\n    if (this._state === \"shuttingDown\") {\n      context.shutdown();\n      return;\n    }\n",
       "replace": "  onAgentStart(context: PiContextLike): void {\n    this.context = context;\n",
       "expectRed": "the next session Pi starts is shut down"
+    },
+    {
+      "name": "M7 the extension's once exit does nothing",
+      "file": "extensions/pi/src/extension.ts",
+      "find": "  registerOnceExit(() => driver.requestShutdown());\n",
+      "replace": "  registerOnceExit(() => {});\n",
+      "expectRed": "with its session live, the exit shuts the Pi session down and the process exits with code 1"
     }
   ]
 }

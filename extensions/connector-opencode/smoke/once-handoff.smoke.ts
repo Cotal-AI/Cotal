@@ -5,7 +5,9 @@
  * confirms it when the submission lands, and releases it when the submission fails, which seals it
  * and reports `turn-unconfirmed`. A claimed task is not offered to a native prompt meanwhile, and a
  * native prompt that carries a pending task confirms it. Each plugin registers its own teardown as
- * the exit a once seat takes when its report cannot land.
+ * the exit a once seat takes when its report cannot land. Each plugin also runs in a process of its
+ * own whose failed submission's report cannot land, because the broker carries no manager: its own
+ * teardown ends that process with code 1, before connector-core's forced exit would.
  *
  * A turn can end before the submission's answer arrives, because the events come over another
  * transport. That end may be the task's own turn or one the host ran meanwhile, and neither
@@ -21,11 +23,13 @@
  * Run: pnpm smoke:opencode-once
  */
 import { spawn } from "node:child_process";
+import { createRequire } from "node:module";
 import { createServer as createHttpServer } from "node:http";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { once } from "node:events";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { CotalEndpoint, isReachable, mintLifecycleUid } from "@cotal-ai/core";
 import { MeshAgent } from "@cotal-ai/connector-core";
 import { bootPlugin, bootPlugin2, fakeOpenCode2Context, disposeInProcess } from "./_boot-plugin.js";
@@ -152,6 +156,38 @@ const seatEnv = (name: string, uid: string) => {
   });
 };
 const TASK = "started this seat for one task";
+// connector-core's ONCE_EXIT_GRACE_MS: a seat's process exits this long after its exit starts.
+const EXIT_GRACE_MS = 10_000;
+type ExitRun = { code: number | null; signal: NodeJS.Signals | null; at: number; marks: Record<string, number>; err: string } | undefined;
+/** One seat in a process of its own (`_once-exit-child.ts <mode>`), on a broker with no manager.
+ *  Resolves once its output has closed, with its exit code and signal, when it exited, and the
+ *  marks it printed, each with the time it was printed. */
+const exitChild = (mode: string, env: Record<string, string>): Promise<ExitRun> => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  // Node runs the script itself, so the pid the bound kills is the seat's own. The tsx CLI runs it
+  // in a child of its own, which a SIGKILL to the CLI leaves running.
+  const tsx = pathToFileURL(createRequire(import.meta.url).resolve("tsx")).href;
+  const child = spawn(process.execPath, ["--import", tsx, join(here, "_once-exit-child.ts"), mode], {
+    env: { PATH: process.env.PATH, HOME: process.env.HOME, TMPDIR: process.env.TMPDIR, ...env }, stdio: ["ignore", "pipe", "pipe"],
+  });
+  let out = "", err = "";
+  child.stdout!.on("data", (b) => (out += String(b)));
+  child.stderr!.on("data", (b) => (err += String(b)));
+  return new Promise((r) => {
+    // A child the bound or the suite's own exit outlived is killed by its pid, and its cell fails.
+    const stop = () => { try { process.kill(child.pid!, "SIGKILL"); } catch { /* already gone */ } };
+    const timer = setTimeout(() => { stop(); r(undefined); }, 200_000);
+    process.once("exit", stop);
+    let exited: { code: number | null; signal: NodeJS.Signals | null; at: number } | undefined;
+    child.once("exit", (code, signal) => { exited = { code, signal, at: Date.now() }; });
+    child.once("close", () => {
+      clearTimeout(timer);
+      process.off("exit", stop);
+      console.log(`    (${mode}: exit ${JSON.stringify(exited)}, marks ${out.trim().replace(/\n/g, ", ")})`);
+      r(exited && { ...exited, marks: Object.fromEntries([...out.matchAll(/^([A-Z]+) (\d+)$/gm)].map((m) => [m[1]!, Number(m[2])])), err: err.slice(-800) });
+    });
+  });
+};
 const pub = new CotalEndpoint({ space, servers, card: { name: "Pubby", kind: "agent", id: "pubby" }, channels: [] });
 pub.on("error", () => {});
 
@@ -161,6 +197,15 @@ let dispose2: (() => Promise<void>) | void = undefined;
 try {
   await awaitBrokerReady(() => isReachable(servers), { servers, attempts: 50, delayMs: 200 });
   await pub.start();
+  // Each plugin in a process of its own whose report cannot land: started now, graded at the end.
+  const exits = (["1x", "2x"] as const).map((gen) => ({
+    gen,
+    run: exitChild(gen, {
+      COTAL_NAME: `Exit${gen}`, COTAL_ID: `exit${gen}`, COTAL_SPACE: space, COTAL_SERVERS: servers, COTAL_ROLE: "generalist",
+      COTAL_LIFECYCLE_UID: mintLifecycleUid(), COTAL_MANAGER_INSTANCE: managerInstance,
+      OPENCODE_SERVER_USERNAME: "opencode", OPENCODE_SERVER_PASSWORD: "test-secret",
+    }),
+  }));
 
   // ── 1.x
   const uid = mintLifecycleUid();
@@ -466,6 +511,13 @@ try {
   await until(() => !pub.getRoster().some((p) => p.card.name === "Duo" && p.status !== "offline"));
   check("2.x: the registered once exit runs the plugin's teardown and exits 1", exitCodes2[0] === 1 && !pub.getRoster().some((p) => p.card.name === "Duo" && p.status !== "offline"), { exitCodes2 });
   dispose2 = undefined;
+
+  for (const { gen, run } of exits) {
+    const r = await run;
+    check(gen === "1x" ? "1.x: a seat whose report cannot land is ended by the plugin's own teardown, before the forced exit, with code 1" : "2.x: a seat whose report cannot land is ended by the plugin's own teardown, before the forced exit, with code 1",
+      r?.code === 1 && r.signal === null && r.marks.SEALED !== undefined && r.marks.EXIT !== undefined && r.marks.SEALED <= r.marks.EXIT
+        && r.marks.EXIT <= r.at && r.at - r.marks.EXIT < EXIT_GRACE_MS - 1_000, r);
+  }
 } finally {
   await disposeInProcess(hooks).catch(() => undefined);
   await dispose2?.().catch(() => undefined);

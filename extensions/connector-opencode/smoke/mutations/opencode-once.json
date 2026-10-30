@@ -2,7 +2,7 @@
   "suite": [
     "extensions/connector-opencode/smoke/once-handoff.smoke.ts"
   ],
-  "guard": "both OpenCode plugins hand a once task over at most once: the drive claims it right before the submission, releases it when the submission fails or a turn ended before its answer, and the 1.x plugin's teardown is the exit a once seat takes on its own",
+  "guard": "both OpenCode plugins hand a once task over at most once: the drive claims it right before the submission, releases it when the submission fails or a turn ended before its answer, and the 1.x plugin's teardown is the exit a once seat takes on its own, and in a process of its own each plugin's teardown ends a seat whose report cannot land",
   "command": "pnpm smoke:opencode-once",
   "completionMarker": "COTAL_SMOKE_SENTINEL",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-opencode/smoke/mutations/opencode-once.json",
@@ -25,7 +25,9 @@
     "overtake. M8 and M9 miss the end an idle status or an error reports. M10 counts the ends from",
     "before the send, so a stale end seals a task that was delivered. M11 drops the 2.x exit",
     "registration, as M5 does for 1.x. M13 confirms a 1.x task whose session was replaced while its",
-    "answer was held, and M14 lets a 2.x end with no log position pass unnoticed."
+    "answer was held, and M14 lets a 2.x end with no log position pass unnoticed. M15 and M16",
+    "register an exit that does nothing, so a seat in its own process whose report cannot land waits for",
+    "connector-core's forced exit."
   ],
   "mutations": [
     {
@@ -125,6 +127,20 @@
       "find": "        if (turnIds.length && (ended !== endAtSend || unorderedEnds !== unorderedAtSend)) agent.releaseTurns(turnIds);\n",
       "replace": "        if (turnIds.length && ended !== endAtSend) agent.releaseTurns(turnIds);\n",
       "expectRed": "2.x: an end with no log position, before the answer, seals the task, and no turn yields it"
+    },
+    {
+      "name": "M15 the 1.x plugin's once exit does nothing",
+      "file": "extensions/connector-opencode/src/plugin.ts",
+      "find": "  registerOnceExit(() => void shutdown(1));\n",
+      "replace": "  registerOnceExit(() => {});\n",
+      "expectRed": "1.x: a seat whose report cannot land is ended by the plugin's own teardown, before the forced exit, with code 1"
+    },
+    {
+      "name": "M16 the 2.x plugin's once exit does nothing",
+      "file": "extensions/connector-opencode/src/plugin2.ts",
+      "find": "  registerOnceExit(() => void teardown().finally(() => process.exit(1)));\n",
+      "replace": "  registerOnceExit(() => {});\n",
+      "expectRed": "2.x: a seat whose report cannot land is ended by the plugin's own teardown, before the forced exit, with code 1"
     }
   ]
 }

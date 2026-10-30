@@ -7,11 +7,21 @@
  * and reported, and the automatic continuation does not send it again. The extension registers the
  * driver's shutdown as the exit a once seat takes when its report cannot land. With the session's
  * context cleared, that exit shuts down the next session Pi starts, and connector-core's forced exit
- * ends the process if none starts.
+ * ends the process if none starts. Both run in a process of their own, on a broker with no manager:
+ * Pi takes the batch and never starts it, the driver's start timeout holds the batch and seals the
+ * task, its report cannot land, and the process exits with code 1 with its session live or its
+ * context cleared.
  *
  * Run: pnpm smoke:pi-once
  */
-import { mintLifecycleUid } from "@cotal-ai/core";
+import { spawn } from "node:child_process";
+import { createRequire } from "node:module";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { isReachable, mintLifecycleUid } from "@cotal-ai/core";
+import { SMOKE_BROKER_TOKEN, awaitBrokerReady, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { MeshAgent, type AgentConfig } from "@cotal-ai/connector-core";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { PiDriver, type CotalBatchDetails, type PiContextLike, type PiHost } from "../src/driver.js";
@@ -40,6 +50,39 @@ globalThis.clearTimeout = ((h: unknown) => {
   if (c) { c.cleared = true; return; }
   realClearTimeout(h as ReturnType<typeof setTimeout>);
 }) as typeof clearTimeout;
+
+// connector-core's ONCE_EXIT_GRACE_MS: a seat's process exits this long after its exit starts.
+const EXIT_GRACE_MS = 10_000;
+type ExitRun = { code: number | null; signal: NodeJS.Signals | null; at: number; marks: Record<string, number>; err: string } | undefined;
+/** One seat in a process of its own (`_once-exit-child.ts <mode>`), on a broker with no manager.
+ *  Resolves once its output has closed, with its exit code and signal, when it exited, and the
+ *  marks it printed, each with the time it was printed. */
+const exitChild = (mode: string, env: Record<string, string>): Promise<ExitRun> => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  // Node runs the script itself, so the pid the bound kills is the seat's own. The tsx CLI runs it
+  // in a child of its own, which a SIGKILL to the CLI leaves running.
+  const tsx = pathToFileURL(createRequire(import.meta.url).resolve("tsx")).href;
+  const child = spawn(process.execPath, ["--import", tsx, join(here, "_once-exit-child.ts"), mode], {
+    env: { PATH: process.env.PATH, HOME: process.env.HOME, TMPDIR: process.env.TMPDIR, ...env }, stdio: ["ignore", "pipe", "pipe"],
+  });
+  let out = "", err = "";
+  child.stdout!.on("data", (b) => (out += String(b)));
+  child.stderr!.on("data", (b) => (err += String(b)));
+  return new Promise((r) => {
+    // A child the bound or the suite's own exit outlived is killed by its pid, and its cell fails.
+    const stop = () => { try { process.kill(child.pid!, "SIGKILL"); } catch { /* already gone */ } };
+    const timer = setTimeout(() => { stop(); r(undefined); }, 200_000);
+    process.once("exit", stop);
+    let exited: { code: number | null; signal: NodeJS.Signals | null; at: number } | undefined;
+    child.once("exit", (code, signal) => { exited = { code, signal, at: Date.now() }; });
+    child.once("close", () => {
+      clearTimeout(timer);
+      process.off("exit", stop);
+      console.log(`    (${mode}: exit ${JSON.stringify(exited)}, marks ${out.trim().replace(/\n/g, ", ")})`);
+      r(exited && { ...exited, marks: Object.fromEntries([...out.matchAll(/^([A-Z]+) (\d+)$/gm)].map((m) => [m[1]!, Number(m[2])])), err: err.slice(-800) });
+    });
+  });
+};
 
 const registry = () => (globalThis as Record<symbol, { handoffs: Map<string, { state: string }>; exit?: () => void }>)[Symbol.for("cotal.once-handoff")];
 const stateOf = (uid: string, goalId: string) => registry()?.handoffs.get(`${uid}:${goalId}`)?.state ?? "pending";
@@ -201,6 +244,34 @@ console.log("\n5. with the session's context cleared, the once exit shuts down t
   await handlers.get("agent_start")!({}, next);
   check("the next session Pi starts is shut down", next.shutdowns === 1, next.shutdowns);
   await handlers.get("session_shutdown")!({ reason: "quit" }, next);
+}
+
+console.log("\n6. a seat whose report cannot land ends its own process, with its session live or cleared");
+{
+  const port = await freePort();
+  const servers = `nats://127.0.0.1:${port}`;
+  const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
+  const srv = spawn("nats-server", ["-js", "-p", String(port), "-sd", join(dir, "js")], { stdio: "ignore" });
+  const releaseBroker = teardownOnSignal(srv, dir);
+  try {
+    await awaitBrokerReady(() => isReachable(servers), { servers, attempts: 50, delayMs: 200 });
+    const managerInstance = mintLifecycleUid();
+    const [live, cleared] = await Promise.all(["live", "cleared"].map((mode) => exitChild(mode, {
+      COTAL_SPACE: "smoke", COTAL_NAME: `pi-exit-${mode}`, COTAL_SERVERS: servers,
+      COTAL_LIFECYCLE_UID: mintLifecycleUid(), COTAL_MANAGER_INSTANCE: managerInstance,
+    })));
+    const m = (r: ExitRun) => r?.marks ?? {};
+    const ordered = (r: ExitRun, marks: string[]) => marks.every((k, i) => m(r)[k] !== undefined && (i === 0 || m(r)[marks[i - 1]!]! <= m(r)[k]!));
+    check("with its session live, the exit shuts the Pi session down and the process exits with code 1", live?.code === 1 && live.signal === null && ordered(live, ["SENT", "SEALED", "EXIT", "SHUTDOWN"]), live);
+    const lapse = cleared ? cleared.at - (m(cleared).EXIT ?? Infinity) : undefined;
+    check("with its context cleared and no next session, the process exits with code 1 one grace period after the exit", cleared?.code === 1 && cleared.signal === null && ordered(cleared, ["SENT", "CLEARED", "SEALED", "EXIT"]) && m(cleared).SHUTDOWN === undefined
+      && lapse !== undefined && lapse >= EXIT_GRACE_MS - 500 && lapse < EXIT_GRACE_MS + 5_000, { cleared, lapse });
+  } finally {
+    srv.kill("SIGKILL");
+    await sleep(150);
+    rmSync(dir, { recursive: true, force: true });
+    releaseBroker();
+  }
 }
 
 console.log(fail === 0 ? `\nPI ONCE SMOKE PASSED ✅ (${pass} checks)` : `\nPI ONCE SMOKE FAILED ❌ (${pass} passed, ${fail} failed)`);
