@@ -7,17 +7,12 @@ import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { NatsConnection } from "@nats-io/transport-node";
-import { Kvm, type KV } from "@nats-io/kv";
 import {
-  CotalEndpoint, DEV_OWNER, EpEnvelopeError, dialerFor, standaloneConnectOpts, SERVICE_READY, VOID_SCHEMA_DIGEST, authorizeServeGrant, contractArtifactCanonicalBytes, contractStoreContext,
-  createSpaceAuth, endpointRegistrationBarrier, epAuthBucket, isReachable, mintCreds, mintLifecycleUid, newIdentity, principalKey, provisionEndpointGateOpen, publishContractArtifact, readEndpointGateGeneration, recordsBucket,
-  registerServiceInstance, registryClusterArtifacts, registryContractArtifactValues, serveIssuanceGateKv, serverConfig, setupSpaceStreams,
-  singleDocumentClosure, withIssuerSession, writeServiceStatus, type EpServeGrant, type Identity, type RegistryEndpointsOutput,
-  type ServiceNameAuthority, type SpaceAuth,
+  CotalEndpoint, EpEnvelopeError, createSpaceAuth, isReachable, mintCreds, mintLifecycleUid, newIdentity, serverConfig, setupSpaceStreams,
+  withIssuerSession, type RegistryEndpointsOutput,
 } from "@cotal-ai/core";
 import { SMOKE_BROKER_TOKEN, createSuite, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
-import { natsRegistryReads, serveRegistry } from "../src/index.js";
+import { fixtureCluster, registerFixture, runRegistryFixture } from "./_fixture.js";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 
 const suite = createSuite();
@@ -28,51 +23,13 @@ const servers = `nats://127.0.0.1:${port}`;
 const storeDir = join(dir, "nats");
 mkdirSync(storeDir, { recursive: true });
 const auth = await createSpaceAuth(space);
+const mesh = { auth, servers, space };
 writeFileSync(join(dir, "broker.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port, storeDir }));
 const log = openSync(join(dir, "broker.log"), "w");
 const broker = spawn("nats-server", ["-c", join(dir, "broker.conf")], { stdio: ["ignore", log, log] });
 const releaseBroker = teardownOnSignal(broker, dir);
-const conns: NatsConnection[] = [];
 const endpoints: CotalEndpoint[] = [];
-const dial = async (creds: string) => {
-  const nc = await dialerFor(servers)({ servers, ...standaloneConnectOpts({ creds, tls: false }) });
-  conns.push(nc);
-  return nc;
-};
-
-/** Register one instance of `endpoint` as an operator does on a static mesh, and return the serve
- *  grant and credential. */
-async function register(a: SpaceAuth, endpoint: string, document: unknown, extra: unknown[]): Promise<{ grant: EpServeGrant; creds: string; identity: Identity }> {
-  const { manifest, closureDigest } = singleDocumentClosure(document);
-  const store = new Map<string, unknown>([[closureDigest, manifest], [(manifest as { root: string }).root, document]]);
-  const readClusterArtifact = (digest: string): unknown => store.get(digest);
-  const authority: ServiceNameAuthority = { authorize: (name, owner) => ({ authorized: name === endpoint && owner === DEV_OWNER, revision: 0 }) };
-  const instanceId = mintLifecycleUid();
-  const identity = newIdentity();
-  const nc = await dial(await mintCreds(a, newIdentity(), "endpoint-serve-executor", { endpointServeExecutor: { endpoint, instanceId } }));
-  const kvm = new Kvm(nc);
-  const recordsKv: KV = await kvm.open(recordsBucket(space));
-  const authKv: KV = await kvm.open(epAuthBucket(space));
-  const ctx = await contractStoreContext(nc, space);
-  for (const value of [...extra, document, manifest]) await publishContractArtifact(ctx, contractArtifactCanonicalBytes(value));
-  await provisionEndpointGateOpen(authKv, { endpoint, instanceId, principal: principalKey(DEV_OWNER, identity.id).key });
-  const barrier = endpointRegistrationBarrier(authKv, space, { endpoint, instanceId, opId: mintLifecycleUid() });
-  const { registrationRevision } = await registerServiceInstance(recordsKv, {
-    space, spec: { endpoint, owner: DEV_OWNER, clusterDigests: [closureDigest], protocol: { v: 1 } }, instanceId, registrant: { owner: DEV_OWNER },
-    authority, barrier, readClusterArtifact, observeHolderGeneration: (holder) => readEndpointGateGeneration(authKv, { endpoint, instanceId: holder }),
-  });
-  const fence = serveIssuanceGateKv(authKv, space, { endpoint, instanceId });
-  const epoch = (await fence.observe())!.processEpoch;
-  const readProcessEpoch = async () => (await fence.observe())!.processEpoch;
-  const grant = await authorizeServeGrant(recordsKv, { space, endpoint, instanceId, epoch, holder: { owner: DEV_OWNER }, authority, readClusterArtifact, readProcessEpoch });
-  await writeServiceStatus(recordsKv, { endpoint, instanceId, epoch, status: { state: SERVICE_READY, epoch, observedSpecRevision: registrationRevision }, readProcessEpoch });
-  const creds = await mintCreds(a, identity, "endpoint-serve", { serveIssuance: fence, endpointServe: grant });
-  await nc.drain();
-  return { grant, creds, identity };
-}
-
-const command = (name: string) => ({ name, class: "ephemeral", targeted: false, capability: name, inputDigest: VOID_SCHEMA_DIGEST, outputDigest: VOID_SCHEMA_DIGEST });
-const cluster = (urn: string, names: string[]) => ({ urn, revision: 1, attributes: [], events: [], commands: names.map(command) });
+let registry: { stop(): Promise<void> } | undefined;
 
 try {
   const provisioner = await mintCreds(auth, newIdentity(), "provisioner");
@@ -80,12 +37,9 @@ try {
   if (broker.exitCode !== null) throw new Error(`broker exited: ${readFileSync(join(dir, "broker.log"), "utf8")}`);
   await setupSpaceStreams({ servers, space, creds: provisioner });
 
-  await register(auth, "alpha.example", cluster("ai.example.alpha", ["read", "write"]), []);
-  await register(auth, "beta.example", cluster("ai.example.beta", ["ping"]), []);
-  const { document } = registryClusterArtifacts();
-  const registry = await register(auth, "registry", document, registryContractArtifactValues());
-  const reads = await natsRegistryReads(await dial(await mintCreds(auth, newIdentity(), "registry-reader")), space);
-  const served = serveRegistry(await dial(registry.creds), registry.grant, { space, mode: "authed", reads });
+  await registerFixture(mesh, "alpha.example", fixtureCluster("ai.example.alpha", ["read", "write"]));
+  await registerFixture(mesh, "beta.example", fixtureCluster("ai.example.beta", ["ping"]));
+  registry = await runRegistryFixture(mesh);
 
   const exp = Math.floor(Date.now() / 1000) + 3600;
   const agent = async (opts: { listing: boolean; expiresAt?: number }) => {
@@ -128,11 +82,9 @@ try {
   const asked = await before.invokeService("registry", "endpoints", {}).catch((e: unknown) => e);
   suite.check("the legacy rail cannot ask the registry: the broker refuses the publish",
     asked instanceof EpEnvelopeError && asked.code === "permission-denied" && asked.outcome === "not-executed", asked instanceof Error ? asked.message : asked);
-
-  await served.stop();
 } finally {
   for (const ep of endpoints) await ep.stop().catch(() => {});
-  for (const nc of conns) await nc.close().catch(() => {});
+  await registry?.stop().catch(() => {});
   await killAndAwaitExit(broker);
   rmSync(dir, { recursive: true, force: true });
   releaseBroker();
