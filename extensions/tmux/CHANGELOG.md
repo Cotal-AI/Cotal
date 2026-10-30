@@ -1,5 +1,11 @@
 # @cotal-ai/tmux
 
+## 0.129.6
+
+### Patch Changes
+
+- 52542f7: Preserve tmux's failure reason when creating a session, selecting a window or sending text and keys. Driver errors name the operation and retain the failed call as their cause; session-creation refusals also reach runtime spawn callers.
+
 ## 0.129.5
 
 No changes in this release.
