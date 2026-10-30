@@ -20,7 +20,9 @@ See [docs/identity-and-auth.md](../../docs/identity-and-auth.md) and the
 `--client-signing nats` uses the stock NATS credential authenticator in the load children.
 `--client-signing native` uses core's existing native signer for those children through the
 public NATS authenticator interface, with the same JWT, public key, nonce signature and bearer.
-The service is unchanged. Each child confirms the selected backend in its result; a mismatched
+`--client-signing core` drives the shipped `standaloneConnectOpts` path on each attempt, including
+credential parsing and temporary native signer creation and cleanup. It does not reuse the
+test-only native signer. The service is unchanged. Each child confirms the selected backend in its result; a mismatched
 child refuses the run.
 
 Native signing is a separate benchmark configuration for investigating generator overhead,
