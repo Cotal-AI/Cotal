@@ -29,7 +29,8 @@ interface OnceProcess {
   timedOut?: (uid: string, goalId: string) => void;
   /** The adapter's graceful shutdown, started before the forced exit. */
   exit?: OnceExit;
-  exiting?: boolean;
+  /** The exit in flight or done; a declined one is cleared. */
+  exiting?: Promise<boolean>;
 }
 
 const KEY = Symbol.for("cotal.once-handoff");
@@ -114,15 +115,25 @@ export function registerOnceExit(fn: OnceExit): void {
 /** End this seat: start the adapter's graceful shutdown, then exit this process after
  *  {@link ONCE_EXIT_GRACE_MS} whatever that shutdown is doing. Its manager proves the exit, and the
  *  exit settles the task. A shutdown that answers false declines: no forced exit is armed, this
- *  process keeps running, and the caller keeps reporting. Resolves whether the seat is ending. */
-export async function exitOnceSeat(): Promise<boolean> {
+ *  process keeps running, and the caller keeps reporting. Resolves whether the seat is ending; a
+ *  call while an exit is in flight gets that exit's answer. */
+export function exitOnceSeat(): Promise<boolean> {
   const p = proc();
-  if (p.exiting) return true;
-  p.exiting = true;
+  if (p.exiting) return p.exiting;
+  const exiting = askOnceExit(p.exit).then((ending) => {
+    if (!ending) { p.exiting = undefined; return false; }
+    setTimeout(() => process.exit(1), ONCE_EXIT_GRACE_MS);
+    return true;
+  });
+  p.exiting = exiting;
+  return exiting;
+}
+
+/** Whether the adapter's shutdown says the seat is ending: anything but false does, a throw included,
+ *  and a promise does unless it answers false or rejects. */
+async function askOnceExit(exit: OnceExit | undefined): Promise<boolean> {
   let ending: void | boolean | Promise<boolean> | undefined;
-  try { ending = p.exit?.(); } catch { ending = undefined; }
+  try { ending = exit?.(); } catch { return true; }
   if (ending instanceof Promise) ending = await ending.catch(() => false);
-  if (ending === false) { p.exiting = false; return false; }
-  setTimeout(() => process.exit(1), ONCE_EXIT_GRACE_MS);
-  return true;
+  return ending !== false;
 }

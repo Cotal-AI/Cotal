@@ -71,14 +71,14 @@
     {
       "name": "M8 a seat whose shutdown stalls is never forced out",
       "file": "extensions/connector-core/src/once.ts",
-      "find": "  setTimeout(() => process.exit(1), ONCE_EXIT_GRACE_MS);\n",
+      "find": "    setTimeout(() => process.exit(1), ONCE_EXIT_GRACE_MS);\n",
       "replace": "",
       "expectRed": "its shutdown starts, and the process exits one grace period later with its teardown still holding the event loop"
     },
     {
       "name": "M9 a declined exit arms the forced exit anyway",
       "file": "extensions/connector-core/src/once.ts",
-      "find": "  if (ending === false) { p.exiting = false; return false; }\n",
+      "find": "    if (!ending) { p.exiting = undefined; return false; }\n",
       "replace": "",
       "expectRed": "an exit that answers false declines: no forced exit is armed, and the next end asks the exit again"
     },
@@ -123,6 +123,13 @@
       "find": "        if (once !== undefined && !surfaced && this.options.onceClaimBound) this.boundOnceClaim(t.goalId);\n",
       "replace": "",
       "expectRed": "the pull arms the bound"
+    },
+    {
+      "name": "M16 an end that overlaps an exit in flight is told the seat is ending",
+      "file": "extensions/connector-core/src/once.ts",
+      "find": "  if (p.exiting) return p.exiting;\n",
+      "replace": "  if (p.exiting) return Promise.resolve(true);\n",
+      "expectRed": "two ends that overlap share one exit: it is asked once, and its decline reaches both callers"
     }
   ]
 }

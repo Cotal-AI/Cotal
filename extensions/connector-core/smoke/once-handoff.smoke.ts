@@ -288,7 +288,7 @@ globalThis.clearTimeout = realClearTimeout;
 console.log("\n7b. a seat that cannot end itself declines its exit, keeps reporting, and is never forced out");
 {
   // The process registry's exit latch, reset between cells: cell 7 left it set.
-  const registry = (globalThis as unknown as Record<symbol, { exiting?: boolean }>)[Symbol.for("cotal.once-handoff")]!;
+  const registry = (globalThis as unknown as Record<symbol, { exiting?: Promise<boolean> }>)[Symbol.for("cotal.once-handoff")]!;
   const graceTimers: number[] = [];
   const withGraceCaptured = async <T>(fn: () => Promise<T>): Promise<T> => {
     globalThis.setTimeout = ((f: () => void, ms?: number, ...rest: unknown[]) => {
@@ -298,7 +298,7 @@ console.log("\n7b. a seat that cannot end itself declines its exit, keeps report
     try { return await fn(); } finally { globalThis.setTimeout = realSetTimeout; }
   };
   const answers = async (exit: () => void | boolean | Promise<boolean>) => withGraceCaptured(async () => {
-    registry.exiting = false;
+    registry.exiting = undefined;
     graceTimers.length = 0;
     registerOnceExit(exit);
     return { ending: await exitOnceSeat(), forced: graceTimers.length };
@@ -318,6 +318,15 @@ console.log("\n7b. a seat that cannot end itself declines its exit, keeps report
   check("a promise that answers false or rejects declines; a throw, true, or no answer ends the seat with its forced exit armed",
     cases.asyncFalse.ending === false && cases.asyncFalse.forced === 0 && cases.rejects.ending === false && cases.rejects.forced === 0
       && [cases.throws, cases.asyncTrue, cases.plain].every((c) => c.ending === true && c.forced === 1), cases);
+  // A stop pull and a report's fallback can both end the seat while Claude's exit is still reading
+  // the parent.
+  let overlapAsked = 0;
+  registry.exiting = undefined;
+  graceTimers.length = 0;
+  registerOnceExit(() => { overlapAsked++; return new Promise<boolean>((resolve) => realSetTimeout(() => resolve(false), 50)); });
+  const overlap = await withGraceCaptured(() => Promise.all([exitOnceSeat(), exitOnceSeat()]));
+  check("two ends that overlap share one exit: it is asked once, and its decline reaches both callers",
+    overlap.every((ending) => ending === false) && overlapAsked === 1 && graceTimers.length === 0, { overlap, overlapAsked, forced: graceTimers.length });
 
   // The report loop on a fake clock: backoff waits run at once and advance it. The clock starts
   // after the claim, so every wait it sees is the loop's: the backoff cap and the forced exit's
@@ -328,7 +337,7 @@ console.log("\n7b. a seat that cannot end itself declines its exit, keeps report
   loop.state.unconfirmed = [...Array.from({ length: 30 }, () => ({ ok: false, code: "unavailable" })), { ok: true }];
   await loop.poll();
   loop.a.claimTurns(["o9"]);
-  registry.exiting = false;
+  registry.exiting = undefined;
   let exitAsks = 0;
   registerOnceExit(() => { exitAsks++; return false; });
   const delays: number[] = [];
@@ -362,7 +371,7 @@ console.log("\n7b. a seat that cannot end itself declines its exit, keeps report
   stopping.state.unconfirmed = Array.from({ length: 200 }, () => ({ ok: false, code: "unavailable" }));
   await stopping.poll();
   stopping.a.claimTurns(["o10"]);
-  registry.exiting = false;
+  registry.exiting = undefined;
   registerOnceExit(() => false);
   let stopClock = realNow();
   Date.now = () => stopClock;
@@ -391,7 +400,7 @@ console.log("\n7b. a seat that cannot end itself declines its exit, keeps report
   told.state.stop = true;
   let stopAsks = 0;
   const first = await withGraceCaptured(async () => {
-    registry.exiting = false;
+    registry.exiting = undefined;
     graceTimers.length = 0;
     registerOnceExit(() => { stopAsks++; return false; });
     await told.poll();
@@ -403,7 +412,7 @@ console.log("\n7b. a seat that cannot end itself declines its exit, keeps report
   check("a pull answered `stop` asks the seat's exit; a declined one leaves the seat running, and the next `stop` asks again",
     first.asks === 2 && first.forced === 0, first);
   const ended = await withGraceCaptured(async () => {
-    registry.exiting = false;
+    registry.exiting = undefined;
     graceTimers.length = 0;
     let graceful = 0;
     registerOnceExit(() => { graceful++; });
@@ -424,13 +433,13 @@ console.log("\n7b. a seat that cannot end itself declines its exit, keeps report
   (idle.a as unknown as { armTurnRelay(): void }).armTurnRelay();
   await tick();
   idle.state.stop = true;
-  registry.exiting = false;
+  registry.exiting = undefined;
   let idleAsks = 0;
   registerOnceExit(() => { idleAsks++; return false; });
   notice?.();
   await tick();
   check("a seat holding no turn pulls on the manager's notice, and the `stop` it gets asks its exit", notice !== undefined && idle.a.activeTurnCount() === 0 && idleAsks === 1, { armed: notice !== undefined, idleAsks });
-  registry.exiting = false;
+  registry.exiting = undefined;
 }
 
 console.log("\n8. a seat whose report cannot land exits its own process, even while its shutdown stalls");
@@ -456,7 +465,7 @@ console.log("\n8. a seat whose report cannot land exits its own process, even wh
     exit?.code === 1 && Number.isFinite(graceful) && lapse !== undefined && lapse >= ONCE_EXIT_GRACE_MS - 500 && lapse < ONCE_EXIT_GRACE_MS + 5_000,
     { exit, lapse, out, err: err.slice(-800) });
 }
-const EXPECTED_CELLS = 36;
+const EXPECTED_CELLS = 37;
 console.log(`\n${fail === 0 && pass === EXPECTED_CELLS ? "ONCE HANDOFF SMOKE OK ✅" : "ONCE HANDOFF SMOKE FAILED"}  (${pass} passed, ${fail} failed)`);
 if (pass + fail !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
