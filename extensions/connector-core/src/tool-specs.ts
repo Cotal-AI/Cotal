@@ -349,7 +349,9 @@ export function renderInbox(opts: {
    * each of its items is acked by receive key.
    */
   strictIds?: ReadonlySet<string>;
-  /** Receive keys this reply may show. Anything else is only named as held. */
+  /** Receive keys this reply may show, from an earlier render of the same items in the same order,
+   *  so what it shows of the ordered lane is still an unbroken prefix. Anything else is only named
+   *  as held. */
   only?: ReadonlySet<string>;
 }): InboxResponse {
   const budget = opts.budget ?? INBOX_WINDOW_CHARS;
@@ -410,11 +412,7 @@ export function renderInbox(opts: {
   for (const i of ordered) {
     const strict = strictIds.has(i.recvKey);
     if (strict && strictGap) continue;
-    // Outside `only` an item is held whatever it costs, and in the ordered lane that is a gap.
-    if (opts.only && !opts.only.has(i.recvKey)) {
-      strictGap ||= strict;
-      continue;
-    }
+    if (opts.only && !opts.only.has(i.recvKey)) continue;
     const cost = itemCost(i);
     if (used + cost > budget) {
       // In the ordered lane even a message no response could carry whole is a gap: the mark would
