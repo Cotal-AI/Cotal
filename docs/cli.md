@@ -5040,7 +5040,9 @@ refuse it with `PERMISSION_DENIED`, and the list marks it unreadable and names i
 List, show and mutation receipts support one-document `--json` and line-oriented `--plain`.
 Show explicitly returns the full definition and source. List does not return the body or launch
 options. A malformed entry produces a partial inventory (exit 4); an unreadable catalog refuses
-with `PERMISSION_DENIED` (exit 2) rather than reporting it empty. Its next step is
+with `PERMISSION_DENIED` (exit 2) rather than reporting it empty. A catalog folder that lists its
+file names but cannot be searched, such as one set to mode 0600, is refused the same way, empty or
+not, and its personas are not reported as malformed. Its next step is
 `chmod u+rx <folder>` only for a catalog folder you own whose mode denies you read or search. A
 folder above the catalog that you cannot enter is named instead, and a catalog folder another
 account owns says to ask its owner. Other read errors get no next step, and the CLI never changes a

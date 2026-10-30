@@ -28,6 +28,7 @@
 import { strict as assert } from "node:assert";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import type { CommandFailure } from "@cotal-ai/workspace";
 import { makeScratch } from "../../../bin/smoke/_scratch.js";
 
 // Isolate the machine-home AND the temp root before importing anything that resolves a root.
@@ -56,6 +57,7 @@ let loadAgentFile!: typeof import("@cotal-ai/core").loadAgentFile;
 let listPersonas!: typeof import("../src/lib/personas.js").listPersonas;
 let personas!: typeof import("../src/commands/personas.js").personas;
 let personasComplete!: typeof import("../src/commands/personas.js").personasComplete;
+let persona!: typeof import("../src/commands/persona.js").persona;
 let spawnComplete!: typeof import("../src/commands/spawn.js").spawnComplete;
 let sendComplete!: typeof import("../src/commands/send.js").sendComplete;
 let mint!: typeof import("../src/commands/mint.js").mint;
@@ -71,6 +73,7 @@ try {
   ({ agentFilePath, loadAgentFile } = await import("@cotal-ai/core"));
   ({ listPersonas } = await import("../src/lib/personas.js"));
   ({ personas, personasComplete } = await import("../src/commands/personas.js"));
+  ({ persona } = await import("../src/commands/persona.js"));
   ({ spawnComplete } = await import("../src/commands/spawn.js"));
   ({ sendComplete } = await import("../src/commands/send.js"));
   ({ mint } = await import("../src/commands/mint.js"));
@@ -140,6 +143,24 @@ async function captureMint(positionals: string[], values: Record<string, unknown
   return lines.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
 }
 
+/** Run `cotal persona --json` for real: the envelope it wrote, or the refusal it threw for the CLI
+ *  kernel to print. The exit code a partial result sets is put back, so it does not end the suite. */
+async function personaJson(values: { space?: string }): Promise<{ envelope?: { outcome?: string; warnings?: { code: string; target?: { name?: string } }[] }; failure?: CommandFailure }> {
+  const out: string[] = [];
+  const realWrite = process.stdout.write, exitCode = process.exitCode;
+  process.stdout.write = ((chunk: string | Uint8Array) => (out.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8")), true)) as typeof process.stdout.write;
+  try {
+    await persona({ values: { ...values, json: true }, positionals: [], raw: [] });
+    return { envelope: JSON.parse(out.join("")) };
+  } catch (error) {
+    if (isCommandFailure(error)) return { failure: error };
+    throw error;
+  } finally {
+    process.stdout.write = realWrite;
+    process.exitCode = exitCode;
+  }
+}
+
 /** Persona names out of a captured listing: printed flush-left, descriptions indented under them. */
 function personaNamesFrom(out: string): string[] {
   return [...new Set(
@@ -184,7 +205,7 @@ async function captureCmd(
 // MESH and CWD are disjoint in every dimension — persona names, roles, and channels — so a wrong
 // answer NAMES itself rather than merely failing an expectation. A suite whose two sides overlap
 // cannot tell "read the right root" from "read either root".
-let MESH!: string, CWD!: string, ALPHA!: string, BETA!: string;
+let MESH!: string, CWD!: string, ALPHA!: string, BETA!: string, EMPTY!: string;
 try {
   MESH = project("mesh", [
     { name: "mesh-default", role: "mesh-reviewer", channel: "mesh-alpha" },
@@ -196,6 +217,7 @@ try {
   ]);
   ALPHA = project("alpha", [{ name: "alpha-only", role: "alpha-role", channel: "alpha-chan" }]);
   BETA = project("beta", [{ name: "beta-only", role: "beta-role", channel: "beta-chan" }]);
+  EMPTY = project("empty", []);
 } catch (e) { cleanScratch(e); }
 
 const entry = (space: string, root: string, server: string) =>
@@ -268,7 +290,44 @@ try {
         owned?.code === "PERMISSION_DENIED" && owned.message === `cannot read persona catalog: ${agents}` &&
           owned.remedy === "another account owns this folder; ask its owner to let this account read it", owned && { message: owned.message, remedy: owned.remedy });
     } else console.log("  - no folder another account owns and this account cannot list; that cell did not run");
+
+    // A catalog folder at mode 0600 lists its file names but opens none of them. Empty or not, it is
+    // refused as an unreadable one is, with the chmod, rather than listing valid personas as
+    // unparseable, and the run leaves its mode as it was.
+    recordMesh(entry("empty", EMPTY, "nats://127.0.0.1:4303"));
+    for (const [label, root, space] of [["populated", ALPHA, "alpha"], ["empty", EMPTY, "empty"]] as const) {
+      const dir = join(realpathSync(root), ".cotal", "agents"), was = statSync(dir).mode & 0o7777;
+      const message = `cannot read persona catalog: ${dir}`, remedy = `make it readable by you with \`chmod u+rx ${dir}\``;
+      const thrown = (complete: () => unknown) => { try { complete(); return undefined; } catch (error) { return (error as Error).message; } };
+      chmodSync(dir, 0o600);
+      let listed: Awaited<ReturnType<typeof refusal>>, json: Awaited<ReturnType<typeof personaJson>>, names: string | undefined, roles: string | undefined, left: number;
+      try {
+        listed = await captureList({ space }).then(() => undefined, (error: unknown) => (isCommandFailure(error) ? error : undefined));
+        json = await personaJson({ space });
+        names = thrown(() => personasComplete(["--space", space, "show", ""]));
+        roles = thrown(() => spawnComplete(["--space", space, "--role", ""]));
+        left = statSync(dir).mode & 0o777;
+      } finally { chmodSync(dir, was); }
+      check(`search-denied ${label} catalog: personas list refuses it with the chmod`,
+        listed?.code === "PERMISSION_DENIED" && listed.message === message && listed.remedy === remedy, listed && { message: listed.message, remedy: listed.remedy });
+      check(`search-denied ${label} catalog: persona --json refuses it with the chmod, not as unparseable personas`,
+        json.failure?.code === "PERMISSION_DENIED" && json.failure.message === message && json.failure.remedy === remedy, json.failure ? { message: json.failure.message, remedy: json.failure.remedy } : json.envelope);
+      check(`search-denied ${label} catalog: name and role completion fail and name the catalog`,
+        names === `cannot read the persona catalog ${dir}: permission denied` && roles === names, { names, roles });
+      check(`search-denied ${label} catalog: its mode is left as it was`, left === 0o600, left.toString(8));
+    }
   }
+
+  // A file that does not parse, in a catalog that can be read, is still listed by name as unparseable
+  // beside the personas that do parse.
+  const broken = join(realpathSync(ALPHA), ".cotal", "agents", "broken.md");
+  writeFileSync(broken, "not a persona\n");
+  let malformedList: string, malformed: Awaited<ReturnType<typeof personaJson>>;
+  try { malformedList = await captureList({ space: "alpha" }); malformed = await personaJson({ space: "alpha" }); } finally { unlinkSync(broken); }
+  check("malformed file: personas list names it unparseable and still lists the persona that parses",
+    /^broken +⨯ unparseable agent file .*broken\.md: missing "---" frontmatter block$/m.test(malformedList) && /^alpha-only /m.test(malformedList), malformedList);
+  check("malformed file: persona --json is partial with one SCHEMA_INVALID warning naming it",
+    malformed.envelope?.outcome === "partial" && malformed.envelope.warnings?.map((w) => `${w.code} ${w.target?.name}`).join() === "SCHEMA_INVALID broken", malformed.envelope ?? malformed.failure?.message);
 
   // 3. COMPLETERS. argv EXCLUDES the command name (same convention as spawn-from-anywhere's
   // `spawnComplete([""])`); the trailing "" is the word being completed.
