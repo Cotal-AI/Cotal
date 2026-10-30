@@ -53,7 +53,7 @@ const {
   accountInventory, assertSingleSpaceBroker, authDir, agentCredsRoot, brokerAuthPath, hasUserAuthState,
   isWorkspaceTargetError, listSpaceAccounts, loadMeshes, loadSpaceAccountAuth, loadSpaceAuth, localProcessPath,
   recordMesh, removeMesh, resolveMeshTarget, saveBrokerAuth, saveSpaceAccountAuth, soleSpaceOf, spaceAccountPath,
-  spaceKey, userAuthSpacesOnDisk, userAuthStateDir,
+  spaceKey, userAuthSpacesOnDisk, userAuthStateDir, workspaceErrorParts,
 } = await import("@cotal-ai/workspace");
 const { down } = await import("../src/commands/down.js");
 const { clean } = await import("../src/commands/clean.js");
@@ -123,6 +123,53 @@ try {
   mkdirSync(userAuthStateDir(solo, "halfspace"), { recursive: true });
   check("an empty state dir (crashed enable) is NOT user-auth", hasUserAuthState(solo, "halfspace") === false);
   for (const space of ["alpha", "beta"]) check(`…and neither is "${space}" on the multi-space root`, hasUserAuthState(multi, space) === false);
+
+  console.log("\n3a) user-auth markers describe entries, not symlink targets");
+  const markerChecksStart = pass;
+  for (const pin of ["idp.json", "callout.json"]) {
+    const markerRoot = mkdtempSync(join(tmpdir(), "cotal-marker-"));
+    roots.push(markerRoot);
+    const state = userAuthStateDir(markerRoot, "marker");
+    mkdirSync(state, { recursive: true });
+    const marker = join(state, pin);
+    const markerState = (label: string, expected: boolean) => {
+      check(`${pin}: ${label} has the expected user-auth marker`, hasUserAuthState(markerRoot, "marker") === expected);
+      check(`${pin}: ${label} has the expected user-auth inventory`,
+        userAuthSpacesOnDisk(authDir(markerRoot)).join(",") === (expected ? "marker" : ""));
+    };
+    markerState("absent pin", false);
+    writeFileSync(marker, "{}");
+    markerState("regular pin", true);
+    rmSync(marker);
+    mkdirSync(marker);
+    markerState("directory at pin name", false);
+    rmSync(marker, { recursive: true });
+    const outside = join(markerRoot, "outside.json");
+    writeFileSync(outside, "{}");
+    symlinkSync(outside, marker);
+    markerState("symlink to a file outside the state dir", false);
+    const otherPin = join(state, pin === "idp.json" ? "callout.json" : "idp.json");
+    writeFileSync(otherPin, "{}");
+    markerState("symlink beside a regular provider pin", true);
+    rmSync(otherPin);
+    rmSync(marker);
+    symlinkSync(markerRoot, marker, "dir");
+    markerState("symlink to a directory", false);
+    rmSync(marker);
+    symlinkSync(join(markerRoot, "missing.json"), marker);
+    markerState("dangling symlink", false);
+    rmSync(marker);
+    symlinkSync(marker, marker);
+    markerState("self-referential symlink", false);
+    rmSync(marker);
+    writeFileSync(marker, "{}");
+    const outsideState = join(markerRoot, "outside-state");
+    renameSync(state, outsideState);
+    symlinkSync(outsideState, state, "dir");
+    markerState("symlinked state directory holding a regular pin", false);
+  }
+
+  check("all 36 provider-marker matrix assertions ran", pass - markerChecksStart === 36);
 
   console.log("\n4) an unreadable account record makes the guard refuse (fail-closed), never undercount");
   const corrupt = await makeRoot("corrupt", ["one"]);
@@ -246,8 +293,10 @@ try {
     writeFileSync(join(eaDir, "idp.json"), "{}");
     chmodSync(eaDir, 0o000);
     const eaMsg = await refusal(() => hasUserAuthState(ea, "solo3"));
+    const inventoryMsg = await refusal(() => userAuthSpacesOnDisk(authDir(ea)));
     chmodSync(eaDir, 0o700);
     check("an EACCES on the pin THROWS (never reads as static mode)", eaMsg.includes("EACCES"), eaMsg);
+    check("an EACCES on the pin THROWS during inventory", inventoryMsg.includes("EACCES"), inventoryMsg);
     check("…and reads user-auth again once readable", hasUserAuthState(ea, "solo3") === true);
   } else {
     console.log("\n11) (skipped: chmod-000 semantics need a non-root POSIX runner)");
@@ -542,8 +591,72 @@ try {
     chmodSync(authDir(unreadable), 0o700);
     check("an unreadable .cotal/auth resolves to a typed unreadable-auth, not a raw EACCES",
       isWorkspaceTargetError(unreadErr) && (unreadErr as { code: string }).code === "unreadable-auth", (unreadErr as Error)?.message);
+    const authRemedy = isWorkspaceTargetError(unreadErr) ? workspaceErrorParts({ kind: "target", error: unreadErr }).remedy ?? "" : "";
+    check("…whose next step names .cotal/auth itself, the folder this account cannot read or enter",
+      authRemedy.includes(`make ${authDir(unreadable)} a folder this account can read and enter, `) && authRemedy.includes("--space <name>"), authRemedy);
+
+    // A `.cotal` this account cannot enter hides `.cotal/auth` from `existsSync`. Read as absent, the
+    // inventory found no tenants, the legacy record's EACCES became a corrupt `auth.json`, and every
+    // read here refused as an ambiguity with no candidates: "multiple meshes running: ".
+    const cotal = join(unreadable, ".cotal");
+    chmodSync(cotal, 0o000);
+    let invErr: unknown, localErr: unknown, serverErr: unknown;
+    try { accountInventory(authDir(unreadable)); } catch (e) { invErr = e; }
+    try { resolveMeshTarget(unreadable, {}); } catch (e) { localErr = e; }
+    try { resolveMeshTarget(unreadable, { server: "nats://127.0.0.1:4999" }); } catch (e) { serverErr = e; }
+    chmodSync(cotal, 0o700);
+    check("the inventory of an auth dir behind a .cotal it cannot enter throws EACCES, never reads as absent",
+      (invErr as NodeJS.ErrnoException | undefined)?.code === "EACCES", (invErr as Error)?.message);
+    for (const [how, err] of [["local", localErr], ["--server", serverErr]] as const) {
+      const rendered = isWorkspaceTargetError(err) ? workspaceErrorParts({ kind: "target", error: err }) : undefined;
+      check(`a ${how} target behind a .cotal it cannot enter is unreadable-auth naming the root, not an empty ambiguity`,
+        isWorkspaceTargetError(err) && err.code === "unreadable-auth" && rendered !== undefined &&
+          rendered.message.includes(unreadable) && rendered.message.includes("EACCES") && !rendered.message.includes("multiple meshes") &&
+          !rendered.message.includes("undefined") && (rendered.remedy ?? "").includes("--space <name>"), rendered ?? (err as Error)?.message);
+      // The account cannot enter `.cotal`, so making `.cotal/auth` readable is not a step it can take.
+      check(`…and its next step names the ${how} .cotal it cannot enter, not .cotal/auth`,
+        (rendered?.remedy ?? "").includes(`this account cannot enter ${cotal}, `) && !(rendered?.remedy ?? "").includes(authDir(unreadable)), rendered?.remedy);
+    }
+
+    // A `.cotal/auth` at 0600 lists its names but opens no record, so the missing `auth.json` fails
+    // its stat on permission. That is the folder's mode, not a record that will not load.
+    const listable = await makeRoot("listable", []);
+    roots.push(listable);
+    chmodSync(authDir(listable), 0o600);
+    const listErrs: [string, unknown][] = [];
+    for (const [how, flags] of [["local", {}], ["--server", { server: "nats://127.0.0.1:4999" }]] as const) {
+      try { resolveMeshTarget(listable, flags); } catch (e) { listErrs.push([how, e]); }
+    }
+    chmodSync(authDir(listable), 0o700);
+    for (const [how, err] of listErrs) {
+      const rendered = isWorkspaceTargetError(err) ? workspaceErrorParts({ kind: "target", error: err }) : undefined;
+      check(`a ${how} target whose .cotal/auth lists but cannot be searched is refused as unreadable, naming no record`,
+        isWorkspaceTargetError(err) && err.code === "unreadable-auth" && err.details.records === undefined && rendered !== undefined &&
+          !rendered.message.includes("will not load") && (rendered.remedy ?? "").includes(`make ${authDir(listable)} a folder this account can read and enter, `), rendered ?? (err as Error)?.message);
+    }
+    check("…and both the local and the --server target refused", listErrs.length === 2, listErrs.length);
   } else {
     check("unreadable-auth-dir resolver check skipped (needs a non-root POSIX runner)", true);
+  }
+
+  console.log("\n23b) an account record that will not load is refused by path, not as several running meshes");
+  // A readable `auth.json` or account record that is not JSON used to count as a corrupt tenant, and
+  // the resolver refused as an ambiguity with no candidates: "multiple meshes running: ".
+  for (const [label, file] of [["corrupt-legacy", "auth.json"], ["corrupt-account", `account.${spaceKey("cc")}.json`]] as const) {
+    const root = await makeRoot(label, []);
+    roots.push(root);
+    const record = join(authDir(root), file);
+    writeFileSync(record, "not json");
+    for (const [how, flags] of [["local", {}], ["--server", { server: "nats://127.0.0.1:4999" }]] as const) {
+      let err: unknown;
+      try { resolveMeshTarget(root, flags); } catch (e) { err = e; }
+      const rendered = isWorkspaceTargetError(err) ? workspaceErrorParts({ kind: "target", error: err }) : undefined;
+      check(`a ${how} target whose ${file} will not load is unreadable-auth naming that record, not an empty ambiguity`,
+        isWorkspaceTargetError(err) && err.code === "unreadable-auth" && rendered !== undefined &&
+          rendered.message.includes(`(${record})`) && !rendered.message.includes("multiple meshes") &&
+          (rendered.remedy ?? "").includes("repair or remove that record") && (rendered.remedy ?? "").includes("--space <name>"), rendered ?? (err as Error)?.message);
+    }
+    check(`…and the refused ${file} is left as it was`, readFileSync(record, "utf8") === "not json");
   }
 
   console.log("\n24) the REAL reclaimDeadLegacyPid: dead/empty reclaimed, but garbled or LIVE legacy fails loud (never orphan an unattributable signer)");

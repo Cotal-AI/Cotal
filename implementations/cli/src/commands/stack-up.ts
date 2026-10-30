@@ -503,7 +503,7 @@ export async function stackUp(request: StackUpRequest, native: StackUpNative): P
     const elsewhere = request.invokedRoot !== undefined && request.invokedRoot !== canonicalRoot(root);
     const next: Report["sections"] = request.foreground ? [] : [{ title: "Next", blocks: [{ kind: "commands", items: [
       // A bare spawn targets the selected space, which this up does not change when one is set.
-      managed ? { command: `cotal spawn --space ${space}`, description: "Launch your default agent" } : { command: elsewhere ? `cotal up --root ${root}` : "cotal up", description: "Add the manager to this stack" },
+      managed ? { command: `cotal spawn --space ${space}`, description: "Launch your default agent" } : { command: elsewhere ? `cotal up --root ${shellWord(root)}` : "cotal up", description: "Add the manager to this stack" },
       { command: "cotal down", description: elsewhere ? `Stop every recorded member; run it from ${root}` : "Stop every recorded member" },
     ] }] }];
     const selection = keptCurrent ? keptOnUp(space, keptCurrent) : selected ? selectedOnUp(space) : undefined;

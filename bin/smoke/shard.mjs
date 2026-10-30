@@ -208,7 +208,8 @@ async function main() {
     const scope = randomUUID();
     // Keep the runner's existing inherited test configuration, including caller-supplied pins.
     process.env.SMOKE_BROKER_SCOPE = scope;
-    const r = await runSuite(bin, args);
+    // Suppress pnpm's own progress rows, which the legacy sentinel reader could count as cells.
+    const r = await runSuite(bin, ["--silent", ...args]);
     // Reap before deciding the exit status, but claim only this suite's brokers. Another run's owner
     // can exit while this suite is active, so arrival after the pre-sweep does not establish ownership.
     const after = reapSmokeBrokers({ scope });

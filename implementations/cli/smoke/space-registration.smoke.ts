@@ -445,12 +445,14 @@ setCurrent("keep");
     // can write, where the broker's and the manager's receipts carry native evidence.
     const doneRoot = stack("stackdone", "auth", { delivery: member("stackdone", "stack-delivery", gonePid, true) }, "stopped");
     brokerDefinition("stackdone", doneRoot);
+    const doneJournal = readFileSync(stackJournalPath(doneRoot), "utf8");
     const settled = await json(["space", "forget", "stackdone"]);
     check("a space whose stack stopped with its receipts is forgotten",
       settled.status === 0 && settled.env?.result.kind === "space-forgotten" && settled.env.result.origin === "up" && findMesh("stackdone") === undefined &&
         settled.env.warnings.length === 0, shown(settled));
     check("...and the stack definitions saved for its root are removed, so another folder can start the name",
       JSON.stringify(settled.env?.result.releasedDefinitions) === JSON.stringify(["stack-broker"]) && serviceDefinitionStore("stackdone").read("stack-broker") === undefined, shown(settled));
+    check("...and the stack journal, whose delivery instance forget did not remove, is left as it was", readFileSync(stackJournalPath(doneRoot), "utf8") === doneJournal, shown(settled));
 
     // A prepared space releases the definitions saved for its own root, and only those.
     const prepRoot = realpathSync.native(projectRoot("prepdone")), otherRoot = realpathSync.native(projectRoot("prepother"));

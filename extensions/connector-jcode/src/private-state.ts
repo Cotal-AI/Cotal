@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { userAppConfigDir, userJcodeHome } from "@1jehuang/jcode-sdk";
 import { hardenPrivate } from "@cotal-ai/core";
+import { copyCursorCredentials, CURSOR_DATABASE_FILES } from "./cursor-credentials.js";
 
 const MAX_API_SOCKET_BYTES = 100;
 const JCODE_CREDENTIAL_FILES = [
@@ -22,12 +23,7 @@ const EXTERNAL_CREDENTIAL_FILES = [
   ".cursor/auth.json",
   ".config/cursor/auth.json",
   "AppData/Roaming/Cursor/auth.json",
-  ".config/Cursor/User/globalStorage/state.vscdb",
-  ".config/cursor/User/globalStorage/state.vscdb",
-  "Library/Application Support/Cursor/User/globalStorage/state.vscdb",
-  "Library/Application Support/cursor/User/globalStorage/state.vscdb",
-  "AppData/Roaming/Cursor/User/globalStorage/state.vscdb",
-  "AppData/Roaming/cursor/User/globalStorage/state.vscdb",
+  ...CURSOR_DATABASE_FILES,
   ".config/github-copilot/hosts.json",
   ".config/github-copilot/apps.json",
   ".copilot/config.json",
@@ -436,7 +432,10 @@ export function copyCredentialFile(home: string, source: string, destinationRela
     const tempName = `.${randomBytes(6).toString("hex")}.tmp`;
     const temp = pin.leaf(tempName);
     try {
-      copyFileSync(source, temp, constants.COPYFILE_EXCL);
+      if (CURSOR_DATABASE_FILES.some(path => join("external", path) === destinationRelative))
+        copyCursorCredentials(source, temp);
+      else
+        copyFileSync(source, temp, constants.COPYFILE_EXCL);
       hardenPrivate(temp, "file");
       renameSync(temp, pin.leaf(base));
     } finally {

@@ -1,5 +1,73 @@
 # @cotal-ai/connector-jcode
 
+## 0.131.1
+
+No changes in this release.
+
+## 0.131.0
+
+No changes in this release.
+
+## 0.130.2
+
+No changes in this release.
+
+## 0.130.1
+
+No changes in this release.
+
+## 0.130.0
+
+No changes in this release.
+
+## 0.129.9
+
+No changes in this release.
+
+## 0.129.8
+
+No changes in this release.
+
+## 0.129.7
+
+No changes in this release.
+
+## 0.129.6
+
+No changes in this release.
+
+## 0.129.5
+
+No changes in this release.
+
+## 0.129.4
+
+No changes in this release.
+
+## 0.129.3
+
+No changes in this release.
+
+## 0.129.2
+
+No changes in this release.
+
+## 0.129.1
+
+No changes in this release.
+
+## 0.129.0
+
+### Minor Changes
+
+- cf5d83e: Require Node 22.13 or later for the Jcode connector (23.4 or later on Node 23). Cursor credential mirrors now contain only the three values used by Jcode, instead of copying the entire editor-state database into every seat. Read-only SQLite queries include committed WAL updates; private atomic publication, login rotation and removal are preserved. Existing full mirrors are replaced when their seats next launch. Provider selection and external-auth consent are unchanged.
+
+## 0.128.7
+
+### Patch Changes
+
+- 7e34db3: Report the Cotal release loaded by Codex's HTTP MCP server and Jcode's stdio MCP bridge in standard `serverInfo.version`, instead of `0.0.0`. The value comes from the bundled release, not a CLI installed on disk; updating files does not change the version reported by an already-running process.
+
 ## 0.128.6
 
 No changes in this release.

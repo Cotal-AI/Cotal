@@ -92,9 +92,13 @@ left to the broker's five-minute inactive threshold.
 The reference client's presence and channel-registry watches follow the same rule: their ordered
 consumer is deleted when the endpoint stops, when a silent presence watch is rebound, and when a
 manual reconnect retires a live connection, and a bind still in flight at that moment retires its
-watch instead of installing it. A profile without the delete grant has that delete refused, and the
-broker removes the consumer at its inactive threshold. The watches of a connection that closed on
-its own are left to that threshold too.
+watch instead of installing it. Cleanup first disarms local delivery. When the connection's
+presented credentials are known to exclude the consumer-delete subject, cleanup sends no delete
+request and leaves the consumer to the broker's inactive threshold. Unknown credential context
+still sends the request for the broker to enforce, and a refused delete leaves the consumer to
+that threshold. Already-permitted deletes still reclaim consumers immediately. The watches of a
+connection that closed on its own are left to that threshold too. This does not change
+SDK-internal ordered-consumer recovery.
 
 The v0.4 endpoint control surface pins this binding to **nats-server >= 2.12**: it relies on
 native message schedules (durable timers), atomic create-CAS and counters, with no degraded

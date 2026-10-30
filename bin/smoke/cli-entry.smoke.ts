@@ -572,6 +572,47 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   }, noSeed);
   check("personas list prints a YAML diagnostic as lines, with no escaped line breaks",
     unparseable.status === 0 && /⨯ unparseable .*at line 2, column 17:$/m.test(unparseable.stdout) && /^ {4}model: \[unclosed$/m.test(unparseable.stdout) && /^ {20}\^$/m.test(unparseable.stdout) && !unparseable.stdout.includes("\\u000a"), shown(unparseable));
+  // Only a catalog folder that does not exist lists as empty. One that cannot be read is refused, as
+  // `persona` refuses it, under the space it read. A folder this account owns whose mode denies it is
+  // given the chmod that lets it read, and the run leaves the mode as it was. Any other read error
+  // gets no next step. Root reads through the mode, so those cells run only for an ordinary POSIX user.
+  const absent = cotal(["personas", "list"], (home) => mkdirSync(join(home, "..", ".cotal")), noSeed);
+  check("personas list reports no personas when the catalog folder does not exist", absent.status === 0 && absent.stdout.includes("no personas in "), shown(absent));
+  if (process.platform !== "win32" && process.getuid?.() !== 0) {
+    let agents = "", mode = "";
+    const locked = (home: string) => {
+      persona(home);
+      agents = realpathSync(join(home, "..", ".cotal", "agents"));
+      chmodSync(agents, 0o000);
+    };
+    const unlock = () => { mode = (statSync(agents).mode & 0o777).toString(8); chmodSync(agents, 0o700); };
+    const envelope = (r: Run) => { try { return JSON.parse(r.stdout) as { target?: { space?: string }; error?: { code?: string; message?: string; remedy?: string } }; } catch { return {}; } };
+    const unreadable = cotal(["personas", "list"], locked, noSeed);
+    unlock();
+    const space = /^Mesh: (\S+)$/m.exec(unreadable.stderr)?.[1];
+    check("personas list refuses an unreadable catalog folder with PERMISSION_DENIED, exit 2, naming it, its space and the chmod, and leaves its mode",
+      unreadable.status === 2 && unreadable.stderr.includes("PERMISSION_DENIED") && unreadable.stderr.includes(`cannot read persona catalog: ${agents}`) && space !== undefined &&
+        /^ {2}Space: +(\S+)$/m.exec(unreadable.stderr)?.[1] === space && unreadable.stderr.includes(`\nNext\n  make it readable by you with \`chmod u+rx ${agents}\``) && mode === "0" && !unreadable.stdout.includes("no personas"), { ...shown(unreadable), mode });
+    const listed = cotal(["persona", "--json"], locked, noSeed);
+    unlock();
+    const refused = envelope(listed);
+    check("persona --json gives an unreadable catalog folder it owns the chmod that lets it read, naming its space, and leaves its mode",
+      listed.status === 2 && refused.error?.code === "PERMISSION_DENIED" && refused.error.message === `cannot read persona catalog: ${agents}` &&
+        refused.error.remedy === `make it readable by you with \`chmod u+rx ${agents}\`` && typeof refused.target?.space === "string" && refused.target.space !== "" && mode === "0", { ...shown(listed), mode });
+    // A link whose name is longer than a file name can be fails the read with ENAMETOOLONG, which no chmod fixes.
+    let link = "";
+    const tooLong = (home: string) => {
+      mkdirSync(join(home, "..", ".cotal"));
+      link = join(realpathSync(join(home, "..", ".cotal")), "agents");
+      symlinkSync("n".repeat(300), link);
+    };
+    const other = cotal(["persona", "--json"], tooLong, noSeed), otherError = envelope(other).error;
+    check("persona --json refuses a catalog folder it cannot read for another reason with PERMISSION_DENIED and no next step",
+      other.status === 2 && otherError?.code === "PERMISSION_DENIED" && otherError.message === `cannot read persona catalog: ${link}` && otherError.remedy === undefined, shown(other));
+    const otherList = cotal(["personas", "list"], tooLong, noSeed);
+    check("personas list refuses a catalog folder it cannot read for another reason with no next step",
+      otherList.status === 2 && otherList.stderr.includes(`cannot read persona catalog: ${link}`) && !otherList.stderr.includes("Next") && !otherList.stderr.includes("chmod"), shown(otherList));
+  }
   // The preview was cut at 100 characters whatever the width, so a wide terminal lost its end.
   const longLine = `A reviewer persona whose one-line prompt runs past the old hundred-character cut ${"x".repeat(40)} END`;
   const wide = cotal(["personas", "list"], (home) => {
