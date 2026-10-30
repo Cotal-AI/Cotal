@@ -1,3 +1,4 @@
+import pages from '../src/generated/routes.json';
 // Cloudflare Pages middleware: content negotiation for agents.
 // A request to a canonical page URL (e.g. /spec/) carrying `Accept: text/markdown`
 // is served the page's Markdown twin instead of HTML — same URL, no .md suffix
@@ -63,7 +64,8 @@ export const onRequest = async (context: Ctx): Promise<Response> => {
     prefersMarkdown(request.headers.get('accept')) &&
     !slug.includes('.')
   ) {
-    const twin = slug ? `/${slug}.md` : '/llms.txt';
+    const page = pages.find(page => page.slug === slug || page.url === `/${slug}/`);
+    const twin = slug ? (page ? `${page.url.slice(0, -1)}.md` : `/${slug}.md`) : '/llms.txt';
     const md = await env.ASSETS.fetch(new URL(twin, url.origin));
     if (md.ok) {
       const body = await md.text();
@@ -80,6 +82,18 @@ export const onRequest = async (context: Ctx): Promise<Response> => {
   }
 
   const response = await next();
+  if (request.method === 'GET' && slug.endsWith('.md') && response.ok) {
+    const body = await response.text();
+    const out = new Response(body, response);
+    out.headers.set('content-type', 'text/markdown; charset=utf-8');
+    out.headers.set('x-markdown-tokens', String(Math.ceil(body.length / 4)));
+    return out;
+  }
+  if (pages.some(page => page.url === `/${slug}/`)) {
+    const out = new Response(response.body, response);
+    out.headers.append('vary', 'Accept');
+    return out;
+  }
   if (url.pathname === '/') {
     const out = new Response(response.body, response);
     out.headers.set(

@@ -30,15 +30,15 @@ for (const cmd of ['npx cotal-ai setup --destination local --harness claude --pr
 // The Quickstart ships the interactive prompt card on the page, and its
 // Markdown twin (plus the llms dumps) must stay clean Markdown: the plain
 // fence restored, no component tag leaking through.
-const quickstartHtml = readFileSync(join(dist, 'getting-started', 'index.html'), 'utf8');
+const quickstartHtml = readFileSync(join(dist, 'docs', 'getting-started', 'index.html'), 'utf8');
 if (!quickstartHtml.includes('agent-prompt')) fail('quickstart lost its prompt card');
-const quickstartTwin = readFileSync(join(dist, 'getting-started.md'), 'utf8');
+const quickstartTwin = readFileSync(join(dist, 'docs/getting-started.md'), 'utf8');
 if (!quickstartTwin.includes('prompt.md, then set up Cotal'))
   fail('quickstart twin lost the setup prompt');
 for (const cmd of ['npx cotal-ai setup --destination local --harness claude --project . --space main --no-input', 'npx cotal-ai up --root . --space main --detach']) {
   if (!quickstartTwin.includes(cmd)) fail(`quickstart lost the runbook command: ${cmd}`);
 }
-for (const f of ['getting-started.md', 'llms-full.txt', 'llms-small.txt']) {
+for (const f of ['docs/getting-started.md', 'llms-full.txt', 'llms-small.txt']) {
   if (readFileSync(join(dist, f), 'utf8').includes('AgentPrompt'))
     fail(`AgentPrompt component leaked into ${f}`);
 }
@@ -81,7 +81,7 @@ function scan(dir) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const p = join(dir, entry.name);
     if (entry.isDirectory()) {
-      if (entry.name !== '_astro' && entry.name !== 'pagefind') scan(p);
+      if (entry.name !== '_next') scan(p);
       continue;
     }
     if (!/\.(html|md|txt)$/.test(entry.name)) continue;

@@ -54,22 +54,22 @@ Two ways to get the raw Markdown for a single page:
 **1. Append `.md` to the path.**
 
 ```sh
-curl https://docs.cotal.ai/spec.md
+curl https://docs.cotal.ai/docs/spec.md
 ```
 
 **2. Send an `Accept: text/markdown` header to the canonical URL.**
 
 ```sh
-curl -H "Accept: text/markdown" https://docs.cotal.ai/spec/
+curl -H "Accept: text/markdown" https://docs.cotal.ai/docs/spec/
 ```
 
 Both return the same Markdown. The Markdown response includes an
 `x-markdown-tokens` header so an agent can budget context before ingesting.
-On the landing page (`/`), which has no Markdown twin of its own,
+At the site root (`/`),
 `Accept: text/markdown` returns the [`/llms.txt`](/llms.txt) index.
 
 Every HTML page also advertises its Markdown twin in `<head>`:
 
 ```html
-<link rel="alternate" type="text/markdown" href="/spec.md" />
+<link rel="alternate" type="text/markdown" href="/docs/spec.md" />
 ```

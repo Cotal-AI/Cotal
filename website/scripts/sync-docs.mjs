@@ -1,7 +1,7 @@
-// Sync the repo's canonical Markdown (/docs/*.md + /SPEC.md) into Starlight's
+// Sync the repo's canonical Markdown (/docs/*.md + /SPEC.md) into Fumadocs's
 // content collection. The repo files stay the single source of truth; this only
 // derives a frontmatter title from the H1 each page opens with and a description
-// from the first paragraph, and rewrites cross-links to Starlight routes. Generated
+// from the first paragraph, and rewrites cross-links to Fumadocs routes. Generated
 // files are git-ignored (see .gitignore).
 //
 // The group map below IS the site's information architecture. It publishes the same
@@ -22,7 +22,7 @@ import { PROMPT_FENCE } from '../src/prompt.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..', '..');
-const outDir = join(here, '..', 'src', 'content', 'docs');
+const outDir = join(here, '..', 'content');
 const genDir = join(here, '..', 'src', 'generated');
 const pubDir = join(here, '..', 'public');
 
@@ -36,7 +36,7 @@ const blobPath = new URL(`${GITHUB_BLOB}/`).pathname;
 // src/prompt.js; the fence in docs/getting-started.md must match it exactly.
 const QUICKSTART_SRC = 'docs/getting-started.md';
 
-// Map a source basename (no extension) to its Starlight slug. README is the docs
+// Map a source basename (no extension) to its Fumadocs slug. README is the docs
 // index (its front-door content lives on the generated landing page), so it is
 // excluded from the sync and links to it go to the site root.
 const slugFor = (name) => name.toLowerCase();
@@ -108,11 +108,12 @@ const groups = [
   },
 ];
 
+const sectionFor = (rel) => groups.find(g => g.files.includes(rel))?.label === 'Reference' ? 'api-reference' : 'docs';
 const sources = groups.flatMap((g) => g.files);
 
 // Slugs we publish, keyed by source path so a design note cannot take the route of a
 // published page that shares its name.
-const knownSlugs = new Map(sources.map((rel) => [rel, slugFor(basename(rel).replace(/\.md$/, ''))]));
+const knownSlugs = new Map(sources.map((rel) => [rel, `${sectionFor(rel)}/${slugFor(basename(rel).replace(/\.md$/, ''))}`]));
 
 // The site publishes only SPEC.md and top-level docs pages, so one of these the group map
 // leaves out is drift, and every other repo file stays on GitHub.
@@ -121,7 +122,7 @@ const isSitePage = (rel) => rel === 'SPEC.md' || /^docs\/[^/]+\.md$/.test(rel);
 // Rewrite repo-relative links to site routes. Every link is first resolved as a URL
 // against its source file's GitHub address (sources live at different depths:
 // docs/*.md vs the root SPEC.md), then its path, percent-decoded, is mapped:
-//   a group-map source        → the published Starlight slug (docs/README.md → /)
+//   a group-map source        → the published Fumadocs slug (docs/README.md → /)
 //   spec/cotal.schema.json    → the published /cotal.schema.json
 //   assets/*                  → /assets/* (copied into public/ below)
 //   anything else in the repo → GitHub
@@ -239,7 +240,7 @@ function rewriteLinks(md, rel, extensions) {
 }
 
 // The title comes from the lexed first block, so a `#` comment in a code fence is never read as the
-// H1. Starlight renders the title itself, so the H1 is dropped from the body. The lexer measures its
+// H1. Fumadocs renders the title itself, so the H1 is dropped from the body. The lexer measures its
 // spans in the text after turning CR and CRLF into LF, so the body is cut from that same text.
 function splitH1(md, rel) {
   const lf = md.replace(/\r\n?/g, '\n');
@@ -303,6 +304,7 @@ for (const rel of sources) if (!indexed.has(rel)) throw new Error(`in the group 
 // Clean generated markdown (keep hand-authored .mdx like index.mdx; the
 // generated getting-started.mdx is ours to remove).
 mkdirSync(outDir, { recursive: true });
+for (const section of ['docs', 'api-reference']) rmSync(join(outDir, section), { recursive: true, force: true });
 for (const f of readdirSync(outDir)) {
   if (f.endsWith('.md') || f === 'getting-started.mdx') rmSync(join(outDir, f));
 }
@@ -317,9 +319,7 @@ copyFileSync(join(repoRoot, 'spec', 'cotal.schema.json'), join(pubDir, 'cotal.sc
 // never drift from the one people audit on GitHub.
 copyFileSync(join(repoRoot, 'install.sh'), join(pubDir, 'install.sh'));
 
-const sidebar = [];
 for (const group of groups) {
-  const items = [];
   for (const rel of group.files) {
     const src = join(repoRoot, rel);
     const name = basename(rel).replace(/\.md$/, '');
@@ -335,16 +335,15 @@ for (const group of groups) {
       if (!md.includes(PROMPT_FENCE))
         throw new Error(`quickstart prompt fence not found: ${rel} drifted from src/prompt.js`);
       md = md.replace(PROMPT_FENCE, '<AgentPrompt />');
-      imports = "import AgentPrompt from '../../components/AgentPrompt.astro';\n\n";
+      imports = "import { AgentPrompt } from '@/components/agent-prompt';\n\n";
       ext = 'mdx';
     }
-    writeFileSync(join(outDir, `${slug}.${ext}`), fm + imports + md);
-    items.push({ label: title, slug });
+    const section = sectionFor(rel);
+    mkdirSync(join(outDir, section), { recursive: true });
+    writeFileSync(join(outDir, section, `${slug}.${ext}`), fm + imports + md);
   }
-  sidebar.push({ label: group.label, items });
 }
 
-writeFileSync(join(genDir, 'sidebar.json'), JSON.stringify(sidebar, null, 2) + '\n');
 
 // Copy every image the pages reference into public/. copyFileSync throws on a
 // missing source, so a dead image link fails the sync instead of 404ing live.
@@ -410,5 +409,48 @@ writeFileSync(
 );
 
 console.log(
-  `sync-docs: wrote ${sources.length} pages + sidebar.json + cotal.schema.json + ${assetRefs.size} images + ${skills.length} skills`,
+  `sync-docs: wrote ${sources.length} pages + cotal.schema.json + ${assetRefs.size} images + ${skills.length} skills`,
 );
+
+// The manifest drives static exports, navigation and legacy redirects.
+for (const section of ['docs', 'api-reference']) {
+  rmSync(join(pubDir, section), { recursive: true, force: true });
+}
+const pages = sources.map(rel => {
+  const slug = slugFor(basename(rel).replace(/\.md$/, ''));
+  const { title, body } = splitH1(readFileSync(join(repoRoot, rel), 'utf8'), rel);
+  return { slug, title, section: sectionFor(rel), url: `/${sectionFor(rel)}/${slug}/`,
+    markdown: `# ${title}\n\n${rewriteLinks(body, rel, [gfm()])}` };
+});
+const agents = readFileSync(join(here, '../src/content/docs/docs-for-agents.mdx'), 'utf8');
+const agentsBody = agents.replace(/^---[\s\S]*?---\s*/, '').replace(/\/([a-z-]+)(\/|\.md)/g, (match, slug, end) => {
+  const page = pages.find(p => p.slug === slug);
+  return page ? page.url.slice(0, -1) + end : match;
+});
+writeFileSync(join(outDir, 'docs/docs-for-agents.md'), '---\ntitle: Docs for agents\ndescription: How agents consume Cotal documentation.\n---\n' + agentsBody);
+pages.push({ slug: 'docs-for-agents', title: 'Docs for agents', section: 'docs', url: '/docs/docs-for-agents/', markdown: '# Docs for agents\n\n' + agentsBody });
+for (const section of ['docs', 'api-reference']) {
+  const order = [];
+  for (const group of groups.filter(g => (g.label === 'Reference') === (section === 'api-reference'))) {
+    order.push(`---${group.label}---`, ...group.files.map(rel => slugFor(basename(rel).replace(/\.md$/, ''))));
+  }
+  if (section === 'docs') order.push('---For agents---', 'docs-for-agents');
+  writeFileSync(join(outDir, section, 'meta.json'), JSON.stringify({ title: section === 'docs' ? 'Docs' : 'API Reference', root: true, pages: order }, null, 2));
+}
+writeFileSync(join(genDir, 'pages.json'), JSON.stringify(pages, null, 2));
+writeFileSync(join(genDir, 'routes.json'), JSON.stringify(pages.map(({slug,url}) => ({slug,url}))));
+const redirects = ['/ /docs/what-is-cotal/ 301', '/docs /docs/what-is-cotal/ 301', '/docs/ /docs/what-is-cotal/ 301', '/api-reference /api-reference/cli/ 301', '/api-reference/ /api-reference/cli/ 301', '/agent-frameworks /docs/connect-pi/ 301', '/agent-frameworks/ /docs/connect-pi/ 301', '/agent-frameworks.md /docs/connect-pi.md 301'];
+for (const page of pages) redirects.push(`/${page.slug} ${page.url} 301`, `/${page.slug}/ ${page.url} 301`, `/${page.slug}.md ${page.url.slice(0, -1)}.md 301`);
+writeFileSync(join(pubDir, '_redirects'), redirects.join('\n') + '\n');
+for (const page of pages) {
+  const file = join(pubDir, page.url.slice(1, -1) + '.md');
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, page.markdown);
+}
+const origin = 'https://docs.cotal.ai';
+writeFileSync(join(pubDir, 'llms.txt'), '# Cotal\n\nA standard wire interface for agents over NATS + JetStream. The normative wire specification wins where other pages disagree. Roadmap content is not shipped behavior.\n\n- [All documentation](https://docs.cotal.ai/llms-full.txt)\n- [Compact documentation](https://docs.cotal.ai/llms-small.txt)\n- [Agent setup prompt](https://docs.cotal.ai/prompt.md)\n- [Message schema](https://docs.cotal.ai/cotal.schema.json)\n\n' + pages.map(p => `- [${p.title}](${origin}${p.url.slice(0, -1)}.md)`).join('\n') + '\n');
+for (const [name, subset] of [['full', pages], ['small', pages.filter(p => !['release', 'setup-internals', 'roadmap'].includes(p.slug))]]) {
+  writeFileSync(join(pubDir, `llms-${name}.txt`), subset.map(p => `Source: ${origin}${p.url}\n\n${p.markdown}`).join('\n\n'));
+}
+writeFileSync(join(pubDir, 'sitemap.xml'), '<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">' + pages.map(p => `<url><loc>${origin}${p.url}</loc></url>`).join('') + '</urlset>');
+writeFileSync(join(pubDir, 'sitemap-index.xml'), '<?xml version="1.0" encoding="UTF-8"?><sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><sitemap><loc>https://docs.cotal.ai/sitemap.xml</loc></sitemap></sitemapindex>');

@@ -1,0 +1,9 @@
+@import 'tailwindcss';
+@import 'fumadocs-ui/css/neutral.css';
+@import 'fumadocs-ui/css/preset.css';
+@theme { --color-fd-primary: #85651d; }
+.dark { --color-fd-primary: #e9c46a; }
+body { font-family: Arial, Helvetica, sans-serif; }
+.agent-prompt { display: flex; align-items: center; gap: 1rem; width: 100%; padding: 1rem; border: 1px solid var(--color-fd-border); border-radius: .75rem; text-align: left; background: var(--color-fd-muted); }
+.agent-prompt code { flex: 1; white-space: normal; }
+.agent-prompt:focus-visible { outline: 2px solid var(--color-fd-primary); outline-offset: 3px; }

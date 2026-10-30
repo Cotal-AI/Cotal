@@ -26,3 +26,15 @@ public/.well-known/agent-skills/index.json
 # Every skill dir here is generated EXCEPT cotal-setup/, which is authored in place and committed.
 public/.well-known/agent-skills/*/
 !public/.well-known/agent-skills/cotal-setup/
+
+.next/
+out/
+.source/
+content/
+*.tsbuildinfo
+next-env.d.ts
+public/docs/
+public/api-reference/
+public/llms*.txt
+public/sitemap*.xml
+public/_redirects
