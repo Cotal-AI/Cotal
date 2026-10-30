@@ -20,7 +20,7 @@
     {
       "name": "drop the reply for the numbered Yes-first trust layout",
       "file": "extensions/connector-claude-code/src/trust.ts",
-      "find": "  Object.freeze({ prompt: \"❯ 1. Yes, I trust this folder\\n2. No, exit\", key: \"Enter\" as const, optional: true }),\n",
+      "find": "  Object.freeze({ prompt: \"\u276f 1. Yes, I trust this folder\\n2. No, exit\", key: \"Enter\" as const, optional: true }),\n",
       "replace": "",
       "expectRed": "core: real Claude 2.1.232 trust dialog gets one Enter on the selected Yes",
       "cell": "core: real Claude 2.1.232 trust dialog gets one Enter on the selected Yes",
@@ -31,8 +31,8 @@
     {
       "name": "answer the numbered trust layout while the cursor is on No, exit",
       "file": "extensions/connector-claude-code/src/trust.ts",
-      "find": "\"❯ 1. Yes, I trust this folder\\n2. No, exit\"",
-      "replace": "\"1. Yes, I trust this folder\\n❯ 2. No, exit\"",
+      "find": "\"\u276f 1. Yes, I trust this folder\\n2. No, exit\"",
+      "replace": "\"1. Yes, I trust this folder\\n\u276f 2. No, exit\"",
       "expectRed": "core: numbered trust layout with the cursor on No, exit gets no key",
       "cell": "core: numbered trust layout with the cursor on No, exit gets no key",
       "command": "pnpm --filter @cotal-ai/connector-claude-code build && pnpm exec tsx implementations/manager/smoke/claude-workspace-trust.smoke.ts",
@@ -130,8 +130,8 @@
     {
       "name": "core: the ready screen gets Enter",
       "file": "packages/core/src/startup-confirm.ts",
-      "find": "      return { done: true };",
-      "replace": "      return { key: \"Enter\", done: true };",
+      "find": "      this.#outcome = \"ready\";\n      return { done: true };",
+      "replace": "      this.#outcome = \"ready\";\n      return { key: \"Enter\", done: true };",
       "expectRed": "core: real Claude 2.1.301 ready screen in default mode completes with no key",
       "cell": "core: real Claude 2.1.301 ready screen in default mode completes with no key",
       "command": "pnpm --filter @cotal-ai/core... build && pnpm exec tsx implementations/manager/smoke/claude-workspace-trust.smoke.ts",
@@ -196,8 +196,8 @@
     {
       "name": "seat: the ready screen gets Enter",
       "file": "packages/seat/src/startup-confirm.ts",
-      "find": "      return { done: true };",
-      "replace": "      return { key: \"Enter\", done: true };",
+      "find": "      this.#outcome = \"ready\";\n      return { done: true };",
+      "replace": "      this.#outcome = \"ready\";\n      return { key: \"Enter\", done: true };",
       "expectRed": "seat: real Claude 2.1.301 ready screen in default mode completes with no key",
       "cell": "seat: real Claude 2.1.301 ready screen in default mode completes with no key",
       "command": "pnpm --filter @cotal-ai/seat... build && pnpm exec tsx implementations/manager/smoke/claude-workspace-trust.smoke.ts",
@@ -302,6 +302,105 @@
       "command": "pnpm --filter @cotal-ai/connector-claude-code... build && pnpm exec tsx implementations/manager/smoke/claude-workspace-trust.smoke.ts",
       "completionMarker": "CLAUDE WORKSPACE TRUST CELLS COMPLETE",
       "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... build"
+    },
+    {
+      "name": "N1 the core sequence confirms on any screen after the Enter",
+      "file": "packages/core/src/startup-confirm.ts",
+      "find": "      if (!lines.some((line, i) => (line + (lines[i + 1] ?? \"\")).includes(this.#notice!))) return undefined;\n",
+      "replace": "",
+      "expectRed": "core: a once launch's gate gets one Enter, and only the notice on a later screen confirms it",
+      "cell": "core: a once launch's gate gets one Enter, and only the notice on a later screen confirms it",
+      "command": "pnpm --filter @cotal-ai/core --filter @cotal-ai/seat --filter @cotal-ai/connector-claude-code build && pnpm exec tsx implementations/manager/smoke/claude-workspace-trust.smoke.ts",
+      "completionMarker": "CLAUDE WORKSPACE TRUST CELLS COMPLETE",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "N2 the seat sequence confirms on any screen after the Enter",
+      "file": "packages/seat/src/startup-confirm.ts",
+      "find": "      if (!lines.some((line, i) => (line + (lines[i + 1] ?? \"\")).includes(this.#notice!))) return undefined;\n",
+      "replace": "",
+      "expectRed": "seat: a once launch's gate gets one Enter, and only the notice on a later screen confirms it",
+      "cell": "seat: a once launch's gate gets one Enter, and only the notice on a later screen confirms it",
+      "command": "pnpm --filter @cotal-ai/core --filter @cotal-ai/seat --filter @cotal-ai/connector-claude-code build && pnpm exec tsx implementations/manager/smoke/claude-workspace-trust.smoke.ts",
+      "completionMarker": "CLAUDE WORKSPACE TRUST CELLS COMPLETE",
+      "afterRestore": "pnpm --filter @cotal-ai/seat build"
+    },
+    {
+      "name": "N3 the core watch gives the notice no bound of its own",
+      "file": "packages/core/src/startup-confirm.ts",
+      "find": "            if (sequence.awaitingNotice && !noticeBound) { noticeBound = true; deadline = Date.now() + CONFIRM_TIMEOUT_MS; }\n",
+      "replace": "            if (sequence.awaitingNotice && !noticeBound) { noticeBound = true; }\n",
+      "expectRed": "seat gate and core watch: the notice confirms inside its own bound from the Enter, past the gate's bound",
+      "cell": "seat gate and core watch: the notice confirms inside its own bound from the Enter, past the gate's bound",
+      "command": "pnpm --filter @cotal-ai/core --filter @cotal-ai/seat --filter @cotal-ai/connector-claude-code build && pnpm exec tsx implementations/manager/smoke/claude-workspace-trust.smoke.ts",
+      "completionMarker": "CLAUDE WORKSPACE TRUST CELLS COMPLETE",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "N4 the seat gate gives the notice no bound of its own",
+      "file": "packages/seat/src/startup-confirm.ts",
+      "find": "          if (!awaiting && this.sequence!.awaitingNotice) { deadline = Date.now() + CONFIRM_TIMEOUT_MS; bound(this.notice); }\n",
+      "replace": "",
+      "expectRed": "seat gate and core watch: the notice confirms inside its own bound from the Enter, past the gate's bound",
+      "cell": "seat gate and core watch: the notice confirms inside its own bound from the Enter, past the gate's bound",
+      "command": "pnpm --filter @cotal-ai/core --filter @cotal-ai/seat --filter @cotal-ai/connector-claude-code build && pnpm exec tsx implementations/manager/smoke/claude-workspace-trust.smoke.ts",
+      "completionMarker": "CLAUDE WORKSPACE TRUST CELLS COMPLETE",
+      "afterRestore": "pnpm --filter @cotal-ai/seat build"
+    },
+    {
+      "name": "N5 a seat gate disarmed before its watch ended keeps no outcome",
+      "file": "packages/seat/src/startup-confirm.ts",
+      "find": "    if (this.#outcome === \"pending\") this.#outcome = \"failed\";\n    this.active = false;\n",
+      "replace": "    this.active = false;\n",
+      "expectRed": "seat gate: a gate disarmed while its notice is awaited records failed, never confirmed",
+      "cell": "seat gate: a gate disarmed while its notice is awaited records failed, never confirmed",
+      "command": "pnpm --filter @cotal-ai/core --filter @cotal-ai/seat --filter @cotal-ai/connector-claude-code build && pnpm exec tsx implementations/manager/smoke/claude-workspace-trust.smoke.ts",
+      "completionMarker": "CLAUDE WORKSPACE TRUST CELLS COMPLETE",
+      "afterRestore": "pnpm --filter @cotal-ai/seat build"
+    },
+    {
+      "name": "N6 the core watch reports a gone child as failed",
+      "file": "packages/core/src/startup-confirm.ts",
+      "find": "if (screen === undefined) { pane.settled?.(\"exited\"); return; }",
+      "replace": "if (screen === undefined) { pane.settled?.(\"failed\"); return; }",
+      "expectRed": "core watch: a child gone while its notice is awaited ends exited, with no failure",
+      "cell": "core watch: a child gone while its notice is awaited ends exited, with no failure",
+      "command": "pnpm --filter @cotal-ai/core --filter @cotal-ai/seat --filter @cotal-ai/connector-claude-code build && pnpm exec tsx implementations/manager/smoke/claude-workspace-trust.smoke.ts",
+      "completionMarker": "CLAUDE WORKSPACE TRUST CELLS COMPLETE",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "N7 every Claude launch waits for the channel notice",
+      "file": "extensions/connector-claude-code/src/extension.ts",
+      "find": "      ...(opts.once ? { confirmNotice: `messages from ${CHANNEL_REF} inject directly in this session` } : {}),\n",
+      "replace": "      confirmNotice: `messages from ${CHANNEL_REF} inject directly in this session`,\n",
+      "expectRed": "only a once Claude launch waits for the channel notice, and a once seat needs it confirmed",
+      "cell": "only a once Claude launch waits for the channel notice, and a once seat needs it confirmed",
+      "command": "pnpm --filter @cotal-ai/core --filter @cotal-ai/seat --filter @cotal-ai/connector-claude-code build && pnpm exec tsx implementations/manager/smoke/claude-workspace-trust.smoke.ts",
+      "completionMarker": "CLAUDE WORKSPACE TRUST CELLS COMPLETE",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code build"
+    },
+    {
+      "name": "N8 the core sequence misses a notice its pane wrapped",
+      "file": "packages/core/src/startup-confirm.ts",
+      "find": "(line + (lines[i + 1] ?? \"\")).includes(this.#notice!)",
+      "replace": "line.includes(this.#notice!)",
+      "expectRed": "core: a notice its pane wrapped onto two lines still confirms",
+      "cell": "core: a notice its pane wrapped onto two lines still confirms",
+      "command": "pnpm --filter @cotal-ai/core --filter @cotal-ai/seat --filter @cotal-ai/connector-claude-code build && pnpm exec tsx implementations/manager/smoke/claude-workspace-trust.smoke.ts",
+      "completionMarker": "CLAUDE WORKSPACE TRUST CELLS COMPLETE",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "N9 the seat sequence misses a notice its pane wrapped",
+      "file": "packages/seat/src/startup-confirm.ts",
+      "find": "(line + (lines[i + 1] ?? \"\")).includes(this.#notice!)",
+      "replace": "line.includes(this.#notice!)",
+      "expectRed": "seat: a notice its pane wrapped onto two lines still confirms",
+      "cell": "seat: a notice its pane wrapped onto two lines still confirms",
+      "command": "pnpm --filter @cotal-ai/core --filter @cotal-ai/seat --filter @cotal-ai/connector-claude-code build && pnpm exec tsx implementations/manager/smoke/claude-workspace-trust.smoke.ts",
+      "completionMarker": "CLAUDE WORKSPACE TRUST CELLS COMPLETE",
+      "afterRestore": "pnpm --filter @cotal-ai/seat build"
     }
   ]
 }

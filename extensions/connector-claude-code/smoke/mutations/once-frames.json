@@ -1,0 +1,61 @@
+{
+  "suite": [
+    "extensions/connector-claude-code/smoke/once-frames.smoke.ts"
+  ],
+  "guard": "a once task rides a Claude hook frame first, is claimed once its text is fixed, confirms only on the relay's handoff receipt, and is sealed by every turn or session end before that receipt",
+  "command": "pnpm smoke:claude-once-frames",
+  "completionMarker": "once-frames.smoke:",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-claude-code/smoke/mutations/once-frames.json",
+  "why": [
+    "CELLS NAMED BEFORE THE RUN.",
+    "",
+    "F1 confirms a task on a delivered frame with no handoff receipt. F2 to F4 drop the seal at Stop and",
+    "StopFailure, SessionEnd and SessionStart, so a late receipt confirms a task whose turn ended. F5",
+    "puts every extra on the frame whether it fits beside the task or not. F6 sends the task when its",
+    "claim failed."
+  ],
+  "mutations": [
+    {
+      "name": "F1 a delivered frame confirms the task without the handoff receipt",
+      "file": "extensions/connector-claude-code/src/hooks.ts",
+      "find": "      if (delivered && handoff && pending.length === onceIds.length) agent.commitSurfacedTurns(onceIds);\n",
+      "replace": "      if (delivered && pending.length === onceIds.length) agent.commitSurfacedTurns(onceIds);\n",
+      "expectRed": "a delivered frame from a relay with no handoff receipt seals the task and reports it once"
+    },
+    {
+      "name": "F2 Stop leaves a claimed task awaiting its verdict",
+      "file": "extensions/connector-claude-code/src/hooks.ts",
+      "find": "        case \"StopFailure\": // turn died on an API error \u2014 Stop won't fire, so reset here too\n          sealAwaiting();\n",
+      "replace": "        case \"StopFailure\": // turn died on an API error \u2014 Stop won't fire, so reset here too\n",
+      "expectRed": "Stop before the verdict seals the claimed task; the late receipt leaves it sealed, reported once"
+    },
+    {
+      "name": "F3 SessionEnd leaves a claimed task awaiting its verdict",
+      "file": "extensions/connector-claude-code/src/hooks.ts",
+      "find": "        case \"SessionEnd\":\n          sealAwaiting();\n",
+      "replace": "        case \"SessionEnd\":\n",
+      "expectRed": "SessionEnd before the verdict seals the claimed task; the late receipt leaves it sealed, reported once"
+    },
+    {
+      "name": "F4 a new session leaves the old session's task awaiting its verdict",
+      "file": "extensions/connector-claude-code/src/hooks.ts",
+      "find": "          // A new session replaces the one an earlier frame's once task rode on.\n          sealAwaiting();\n",
+      "replace": "",
+      "expectRed": "SessionStart before the verdict seals the claimed task; the late receipt leaves it sealed, reported once"
+    },
+    {
+      "name": "F5 every extra rides the frame, whether it fits beside the task or not",
+      "file": "extensions/connector-claude-code/src/hooks.ts",
+      "find": "      for (const x of extras) if (x && join([...kept, x, peek.text]).length <= HOOK_CONTEXT_CHARS) kept.push(x);\n",
+      "replace": "      for (const x of extras) if (x) kept.push(x);\n",
+      "expectRed": "a card that does not fit beside the task is left out of the frame, and the task rides it within the cap"
+    },
+    {
+      "name": "F6 the task rides the frame when its claim failed",
+      "file": "extensions/connector-claude-code/src/hooks.ts",
+      "find": "      if (text.length <= HOOK_CONTEXT_CHARS && agent.claimTurns(peek.goalIds)) {\n",
+      "replace": "      if (text.length <= HOOK_CONTEXT_CHARS && (agent.claimTurns(peek.goalIds) || true)) {\n",
+      "expectRed": "a claim that fails leaves the frame without the task and the task unclaimed"
+    }
+  ]
+}

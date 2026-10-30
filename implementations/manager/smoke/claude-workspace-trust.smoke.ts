@@ -330,6 +330,166 @@ async function choiceCells(final: string, replies: readonly StartupReply[], read
       assert.deepEqual(failures, [`Cotal startup confirmation failed: ${reason}`]);
     }
   });
+}
+
+/** A once launch's channel notice in both sequence copies and both watches. The gate's Enter does not
+ * end the watch: only the notice on a later screen confirms it, within a bound counted from that Enter. */
+async function noticeCells(final: string, replies: readonly StartupReply[], ready: readonly string[], blockers: readonly StartupBlocker[], notice: string): Promise<void> {
+  // The input screen under Claude's banner for an admitted channel (its text in Claude 2.1.314), and
+  // a screen showing the notice alone.
+  const NOTICE_SCREEN = CLEAR + `  Channels (experimental) ${notice} · restart without --dangerously-load-development-channels to stop\r\n\r\n${CLAUDE_READY.replace(/^\x1b\[2J\x1b\[H/, "")}`;
+  const NOTICE_ONLY = CLEAR + `  ${notice}`;
+  const reason = blockers.find((blocker) => blocker.prompt === BLOCKER_SCREENS[2][2])?.reason ?? assert.fail("no Bypass Permissions blocker declared");
+  for (const [impl, Sequence] of [["core", CoreSequence], ["seat", SeatSequence]] as const) {
+    await cell(`${impl}: a once launch's gate gets one Enter, and only the notice on a later screen confirms it`, async () => {
+      const screen = new Screen();
+      const sequence = new Sequence(final, replies, ready, blockers, notice);
+      await screen.write(CLEAR + CLAUDE_CHANNELS);
+      assert.deepEqual(sequence.observe(screen.read()), { key: "Enter", done: false });
+      assert.equal(sequence.awaitingNotice, true);
+      assert.equal(sequence.observe(screen.read()), undefined, "the gate still on screen gets no second Enter");
+      await screen.write(CLAUDE_READY);
+      assert.equal(sequence.observe(screen.read()), undefined);
+      assert.equal(sequence.observe(screen.read()), undefined, "the input screen does not end the watch after the Enter");
+      assert.equal(sequence.outcome, undefined);
+      await screen.write(NOTICE_SCREEN);
+      assert.deepEqual(sequence.observe(screen.read()), { done: true });
+      assert.equal(sequence.outcome, "confirmed");
+      assert.equal(sequence.awaitingNotice, false);
+      assert.equal(sequence.observe(screen.read()), undefined, "nothing after the notice");
+    });
+    await cell(`${impl}: the notice before any gate confirms nothing, and the input screen still ends the watch as ready`, async () => {
+      const screen = new Screen();
+      const sequence = new Sequence(final, replies, ready, blockers, notice);
+      await screen.write(NOTICE_ONLY);
+      assert.equal(sequence.observe(screen.read()), undefined);
+      assert.equal(sequence.observe(screen.read()), undefined);
+      assert.equal(sequence.outcome, undefined);
+      await screen.write(CLAUDE_READY);
+      assert.equal(sequence.observe(screen.read()), undefined);
+      assert.deepEqual(sequence.observe(screen.read()), { done: true });
+      assert.equal(sequence.outcome, "ready", "a startup that skips the gate is ready, never confirmed");
+    });
+    await cell(`${impl}: a blocker after the gate's Enter gets no key, and the notice confirms once it is gone`, async () => {
+      const screen = new Screen();
+      const sequence = new Sequence(final, replies, ready, blockers, notice);
+      await screen.write(CLEAR + CLAUDE_CHANNELS);
+      assert.deepEqual(sequence.observe(screen.read()), { key: "Enter", done: false });
+      await screen.write(CLAUDE_BYPASS);
+      assert.equal(sequence.observe(screen.read()), undefined);
+      assert.equal(sequence.blocked, reason);
+      await screen.write(NOTICE_SCREEN);
+      assert.deepEqual(sequence.observe(screen.read()), { done: true });
+      assert.equal(sequence.outcome, "confirmed");
+    });
+    await cell(`${impl}: a notice its pane wrapped onto two lines still confirms`, async () => {
+      const screen = new Screen();
+      const sequence = new Sequence(final, replies, ready, blockers, notice);
+      await screen.write(CLEAR + CLAUDE_CHANNELS);
+      assert.deepEqual(sequence.observe(screen.read()), { key: "Enter", done: false });
+      // Claude's banner as a narrow pane wraps it, between two words of the notice.
+      const words = `Channels (experimental) ${notice} · restart without --dangerously-load-development-channels to stop`.split(" ");
+      const cut = words.indexOf("directly");
+      await screen.write(CLEAR + `  ${words.slice(0, cut).join(" ")}\r\n  ${words.slice(cut).join(" ")}`);
+      assert.deepEqual(sequence.observe(screen.read()), { done: true });
+      assert.equal(sequence.outcome, "confirmed");
+    });
+    await cell(`${impl}: malformed notices are refused`, () => {
+      assert.throws(() => new Sequence(final, replies, ready, blockers, ""));
+      assert.throws(() => new Sequence(final, replies, ready, blockers, " \x1b[0m "));
+      assert.throws(() => new Sequence(final, replies, ready, blockers, 1 as unknown as string));
+      assert.throws(() => new Sequence(final, replies, ready, blockers, "x".repeat(1025)));
+    });
+  }
+
+  // Each watch reads a screen that paints the gate after `gateAt`, and on the gate's Enter paints the
+  // input screen, then the notice after `noticeAfter` (never when undefined). `gone` makes reads
+  // answer undefined, `broken` makes them throw, both from the Enter on.
+  type Run = { gateAt: number; noticeAfter?: number; gone?: boolean; broken?: boolean; until: number; disarmAt?: number };
+  type Watch = { pressed: string[]; failures: string[]; outcome: () => string | undefined; failedAt: number | undefined; enteredAt: number | undefined };
+  const drive = async (run: Run, arm: (read: () => string | undefined, key: (key: "Down" | "Enter") => void, w: Watch) => () => void): Promise<Watch> => {
+    const screen = new Screen();
+    await screen.write(CLEAR);
+    const start = Date.now();
+    const w: Watch = { pressed: [], failures: [], outcome: () => undefined, failedAt: undefined, enteredAt: undefined };
+    const gate = setTimeout(() => void screen.write(CLEAR + CLAUDE_CHANNELS), run.gateAt);
+    let noticeTimer: ReturnType<typeof setTimeout> | undefined;
+    const stop = arm(() => {
+      if (w.enteredAt !== undefined && run.gone) return undefined;
+      if (w.enteredAt !== undefined && run.broken) throw new Error("screen read failed");
+      return screen.read();
+    }, (key) => {
+      w.pressed.push(key);
+      if (key !== "Enter" || w.enteredAt !== undefined) return;
+      w.enteredAt = Date.now() - start;
+      void screen.write(CLAUDE_READY);
+      if (run.noticeAfter !== undefined) noticeTimer = setTimeout(() => void screen.write(NOTICE_SCREEN), run.noticeAfter);
+    }, w);
+    const disarm = run.disarmAt === undefined ? undefined : setTimeout(stop, run.disarmAt);
+    for (let waited = 0; waited < run.until && w.failures.length === 0 && w.outcome() !== "confirmed"; waited += 100) await sleep(100);
+    if (w.failures.length) w.failedAt = Date.now() - start;
+    await sleep(500);
+    clearTimeout(gate); clearTimeout(noticeTimer); clearTimeout(disarm);
+    stop();
+    return w;
+  };
+  const seatGate = (read: () => string | undefined, key: (key: "Down" | "Enter") => void, w: Watch) => {
+    const gate = new StartupConfirmGate(final, replies, ready, blockers, notice);
+    w.outcome = () => gate.outcome;
+    // The seat gate's pane reads a mirror that is always there; a gone child disarms it instead.
+    gate.arm(new ConnectorDiagnosticReader(), { report: (message) => w.failures.push(message), stop: () => {} }, { read: () => read() ?? "", key });
+    return () => gate.disarm();
+  };
+  const coreWatch = (read: () => string | undefined, key: (key: "Down" | "Enter") => void, w: Watch) => {
+    let open = true;
+    let outcome: string | undefined;
+    w.outcome = () => outcome;
+    confirmWatch(final, replies, ready, blockers, notice)({
+      read: () => open ? read() : undefined,
+      enter: () => key("Enter"), down: () => key("Down"), fail: (message) => w.failures.push(message),
+      settled: (value) => { outcome ??= value; },
+    });
+    return () => { open = false; };
+  };
+  const watches = [["seat gate", seatGate], ["core watch", coreWatch]] as const;
+  const noticeFailure = `Cotal startup confirmation failed: notice ${JSON.stringify(notice)} did not appear within 15000ms of answering ${JSON.stringify(final)}.`;
+  // The gate is painted 8 s in and the notice 12 s after its Enter: past the first 15 s, inside the
+  // notice's own bound. Without the notice the failure comes 15 s after the Enter, never at 15 s.
+  await cell("seat gate and core watch: the notice confirms inside its own bound from the Enter, past the gate's bound", async () => {
+    const runs = await Promise.all(watches.map(([, arm]) => drive({ gateAt: 8_000, noticeAfter: 12_000, until: 26_000 }, arm)));
+    for (const w of runs) {
+      assert.deepEqual(w.pressed, ["Enter"], "one Enter, on the gate");
+      assert.deepEqual(w.failures, []);
+      assert.equal(w.outcome(), "confirmed");
+    }
+  });
+  await cell("seat gate and core watch: a gate answered without its notice fails 15 s after the Enter, naming the notice", async () => {
+    const runs = await Promise.all(watches.map(([, arm]) => drive({ gateAt: 8_000, until: 30_000 }, arm)));
+    for (const w of runs) {
+      assert.deepEqual(w.pressed, ["Enter"], "one Enter, on the gate");
+      assert.deepEqual(w.failures, [noticeFailure]);
+      assert.equal(w.outcome(), "failed");
+      assert.ok(w.enteredAt !== undefined && w.failedAt !== undefined && w.failedAt - w.enteredAt >= 14_500, `the bound counts from the Enter (entered ${w.enteredAt}ms, failed ${w.failedAt}ms)`);
+    }
+  });
+  await cell("core watch: a child gone while its notice is awaited ends exited, with no failure", async () => {
+    const w = await drive({ gateAt: 0, gone: true, until: 3_000 }, coreWatch);
+    assert.deepEqual(w.pressed, ["Enter"]);
+    assert.deepEqual(w.failures, []);
+    assert.equal(w.outcome(), "exited");
+  });
+  await cell("core watch: a screen read that fails while the notice is awaited ends failed", async () => {
+    const w = await drive({ gateAt: 0, broken: true, until: 3_000 }, coreWatch);
+    assert.deepEqual(w.pressed, ["Enter"]);
+    assert.deepEqual(w.failures, ["Cotal startup confirmation failed: screen read failed"]);
+    assert.equal(w.outcome(), "failed");
+  });
+  await cell("seat gate: a gate disarmed while its notice is awaited records failed, never confirmed", async () => {
+    const w = await drive({ gateAt: 0, noticeAfter: 3_000, disarmAt: 1_500, until: 5_000 }, seatGate);
+    assert.deepEqual(w.pressed, ["Enter"]);
+    assert.deepEqual(w.failures, []);
+    assert.equal(w.outcome(), "failed", "a notice painted after the disarm does not change the outcome");
+  });
   console.log("CLAUDE WORKSPACE TRUST CELLS COMPLETE");
   assert.equal(cellFailures.length, 0, cellFailures.join("\n"));
 }
@@ -339,11 +499,12 @@ try {
   assert.equal(readFileSync(state, "utf8"), initial, "connector construction never rewrites host trust state");
   assert.ok(spec.confirmBefore?.length, "managed untrusted cwd declares native startup choices");
   const foreground = claudeConnector.buildLaunch(opts);
+  const onceSpec = claudeConnector.buildLaunch({ ...opts, cwd, once: true });
   assert.equal(foreground.confirmBefore, undefined, "foreground workspace trust stays interactive");
   assert.equal(spec.env?.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, "1", "native test traffic suppression reaches the actual child");
   assert.ok(!spec.args.includes("--dangerously-skip-permissions"));
   assert.equal(spec.args[spec.args.indexOf("--permission-mode") + 1], "default");
-  discardLaunchArtifacts(spec.artifacts); discardLaunchArtifacts(foreground.artifacts);
+  discardLaunchArtifacts(spec.artifacts); discardLaunchArtifacts(foreground.artifacts); discardLaunchArtifacts(onceSpec.artifacts);
   console.log("PASS managed launch configuration and foreground preservation");
   await cell("every Claude launch declares its input screen as ready", () => {
     assert.deepEqual(spec.confirmReady, ["(shift+tab to cycle)", "? for shortcuts"]);
@@ -353,7 +514,15 @@ try {
     assert.deepEqual(spec.confirmBlockers?.map((blocker) => blocker.prompt), BLOCKER_SCREENS.map(([, , prompt]) => prompt));
     assert.deepEqual(foreground.confirmBlockers, spec.confirmBlockers, "a launch with no workspace declares them too");
   });
+  await cell("only a once Claude launch waits for the channel notice, and a once seat needs it confirmed", () => {
+    assert.equal(spec.confirmNotice, undefined, "an ordinary launch ends its watch on the gate's Enter");
+    assert.equal(foreground.confirmNotice, undefined);
+    assert.equal(onceSpec.confirmNotice, "messages from server:cotal inject directly in this session");
+    assert.ok(claudeConnector.onceNeedsConfirmed, "the connector declares that a once seat needs a confirmed startup");
+    assert.deepEqual([onceSpec.confirm, onceSpec.confirmBefore, onceSpec.confirmReady, onceSpec.confirmBlockers], [spec.confirm, spec.confirmBefore, spec.confirmReady, spec.confirmBlockers]);
+  });
   await choiceCells(spec.confirm!, spec.confirmBefore!, spec.confirmReady!, spec.confirmBlockers!);
+  await noticeCells(onceSpec.confirm!, onceSpec.confirmBefore!, onceSpec.confirmReady!, onceSpec.confirmBlockers!, onceSpec.confirmNotice!);
 
   if (process.argv.includes("--live")) {
     const binary = cotalOriginal.get("COTAL_TEST_CLAUDE_BINARY");

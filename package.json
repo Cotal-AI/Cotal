@@ -274,6 +274,8 @@
     "smoke:turn-intake": "tsx extensions/connector-core/smoke/turn-intake.smoke.ts",
     "smoke:once-handoff": "tsx extensions/connector-core/smoke/once-handoff.smoke.ts",
     "smoke:claude-turn-frames": "tsx extensions/connector-claude-code/smoke/turn-frames.smoke.ts",
+    "smoke:claude-once-frames": "tsx extensions/connector-claude-code/smoke/once-frames.smoke.ts",
+    "smoke:claude-once-exit": "tsx extensions/connector-claude-code/smoke/once-exit.smoke.ts",
     "smoke:claude-plane-reestablish": "pnpm --filter @cotal-ai/connector-core build && tsx extensions/connector-claude-code/smoke/plane-reestablish.smoke.ts",
     "smoke:transport-liveness": "tsx extensions/connector-core/smoke/transport-liveness.smoke.ts",
     "smoke:transport-liveness:broker": "tsx extensions/connector-core/smoke/transport-liveness-broker.smoke.ts",

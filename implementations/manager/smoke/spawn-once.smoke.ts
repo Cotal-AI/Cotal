@@ -14,12 +14,12 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { connect } from "@nats-io/transport-node";
 import {
   createSpaceAuth, mintCreds, newIdentity, mintLifecycleUid, standaloneConnectOpts, setupSpaceStreams,
   DEV_OWNER, digestIdToken, epCall, invokeCommand, resolveService, readAcceptedRow, readGoalResult, readGoalIndex, registry,
-  type AgentHandle, type Connector, type EpCaller, type IssuedCaller, type LaunchOpts, type LaunchSpec, type OnceSeat,
+  type AgentHandle, type Connector, type EpCaller, type IssuedCaller, type LaunchOpts, type LaunchSpec, type OnceSeat, type Runtime,
 } from "@cotal-ai/core";
 import { authDir, saveSpaceAuth, agentLifecycleSecretFilePaths, workspaceSecretStore } from "@cotal-ai/workspace";
 import "@cotal-ai/connector-claude-code";
@@ -110,7 +110,29 @@ const slowRetireStub: Connector = {
     return { discard: async () => { discarded.push(seat.lifecycleUid); } };
   },
 };
-for (const c of [relayStub, lateStub, silentStub, noRelayStub, retireStub, slowRetireStub]) registry.register(c);
+// Needs a confirmed startup, as Claude does. Its child paints a prompt and, on the prompt's Enter,
+// its input screen with the notice (`confirmed`) or without it (`silent`); `ready` paints the input
+// screen with no prompt. Each then joins as the stub, two seconds in.
+let startupMode: "confirmed" | "silent" | "ready" = "confirmed";
+const startupChild = (mode: string): string => `
+const show = (text) => process.stdout.write("\\x1b[2J\\x1b[H" + text + "\\r\\n");
+const join = () => { process.stdin.pause(); setTimeout(() => import(${JSON.stringify(pathToFileURL(STUB).href)}), 2000); };
+if (${JSON.stringify(mode)} === "ready") { show("input ready"); join(); }
+else {
+  show("LOAD THE CHANNEL\\r\\nEnter to confirm");
+  process.stdin.setRawMode(true);
+  process.stdin.resume();
+  process.stdin.once("data", () => { show(${JSON.stringify(mode)} === "confirmed" ? "THE CHANNEL IS LIVE\\r\\ninput ready" : "input ready"); join(); });
+}`;
+const confirmStub: Connector = {
+  kind: "connector", name: "once-confirm-stub", requires: ["node"], supportsPrompt: true, supportsTurnRelay: true,
+  onceNeedsConfirmed: "its startup did not show the channel",
+  buildLaunch: (o): LaunchSpec => ({
+    command: "node", args: ["--input-type=module", "-e", startupChild(startupMode)], env: envFor(o),
+    confirm: "LOAD THE CHANNEL", confirmNotice: "THE CHANNEL IS LIVE", confirmReady: ["input ready"],
+  }),
+};
+for (const c of [relayStub, lateStub, silentStub, noRelayStub, retireStub, slowRetireStub, confirmStub]) registry.register(c);
 
 let manager: Manager | undefined;
 let delivery: Awaited<ReturnType<typeof bootDeliveryDaemon>> | undefined;
@@ -204,12 +226,27 @@ try {
   const noRelay = await call("spawn", { name: "helper", agent: "once-norelay-stub", cwd: repoRoot, events: false, prompt: "x", once: {} }, { id: goalId("nr") });
   check("a connector without the turn relay is refused, with its own reason",
     noRelay.ok === false && /once-norelay-stub connector cannot take a once task: it cannot be woken while idle/.test(errorText(noRelay)), noRelay);
-  // The admission check the spawn door runs, on the real Claude registration: the refusal does not
-  // depend on the launch's channel flag, which every managed Claude launch sets.
-  const claudeRefusal = (manager as unknown as { onceRefusal(c: Connector, r: { kind: string }, l: Record<string, unknown>, s: undefined, h: object): string | undefined })
-    .onceRefusal(registry.resolve<Connector>("connector", "claude"), { kind: "pty" }, { prompt: "x", once: {} }, undefined, { onOnce: () => undefined });
-  check("a Claude seat is refused, saying why: it cannot confirm that its session can be woken while idle",
-    /^once: the claude connector cannot take a once task: it can take one only when its session can be woken while idle, which needs channels on/.test(claudeRefusal ?? ""), claudeRefusal);
+  // The admission check the spawn door runs, on the real Claude registration and on stubs.
+  const refusal = (c: Connector, runtime: Partial<Runtime> & { kind: string }, once: { deadlineMs?: number }, prompt = "x") =>
+    (manager as unknown as { onceRefusal(c: Connector, r: object, l: Record<string, unknown>, s: undefined, h: object): string | undefined })
+      .onceRefusal(c, runtime, { prompt, once }, undefined, { onOnce: () => undefined });
+  const claude = registry.resolve<Connector>("connector", "claude");
+  const claudeOnCustody = refusal(claude, { kind: "custody" }, {});
+  check("a Claude seat on a runtime that does not report how its startup ended is refused, naming the runtime",
+    claudeOnCustody === `once: runtime "custody" does not report how a seat's startup ended, which a once seat on the claude connector needs`, claudeOnCustody);
+  const claudeOnPty = refusal(claude, { kind: "pty", reportsStartupOutcome: true }, {});
+  check("...and admitted on one that does", claudeOnPty === undefined, claudeOnPty);
+  // The connector's turn frame: the refusal names what the task renders to, so the limit can be set
+  // to that size and one under it, with and without a deadline.
+  const framed = (limit: number): Connector => ({ ...relayStub, name: "once-frame-stub", turnFrameLimit: limit });
+  const fits = [{}, { deadlineMs: 60_000 }].map((once) => {
+    const size = Number(/renders to (\d+) characters, over 1\)$/.exec(refusal(framed(1), { kind: "pty" }, once, "y".repeat(500)) ?? "")?.[1]);
+    return { once, size, exact: refusal(framed(size), { kind: "pty" }, once, "y".repeat(500)), over: refusal(framed(size - 1), { kind: "pty" }, once, "y".repeat(500)) };
+  });
+  check("a task that renders to the connector's turn frame exactly is admitted, with and without a deadline",
+    fits.every((f) => f.size > 500 && f.exact === undefined) && fits[1]!.size > fits[0]!.size, fits);
+  check("...and one character over it is refused, naming both sizes",
+    fits.every((f) => f.over === `once: the prompt is too long for one once-frame-stub turn (the task renders to ${f.size} characters, over ${f.size - 1})`), fits);
   const supervised = await call("spawn", { name: "helper", agent: "once-stub", cwd: repoRoot, events: false, prompt: "x", once: {}, supervise: { restarts: 1, windowMs: 60_000 } }, { id: goalId("sv") });
   check("once with supervise is refused: a once seat is never restarted", supervised.ok === false && /never restarted/.test(errorText(supervised)), supervised);
   const tooLong = await call("spawn", { name: "helper", agent: "once-stub", cwd: repoRoot, events: false, prompt: "\u0001".repeat(20_000), once: {} }, { id: goalId("tl") });
@@ -400,6 +437,62 @@ try {
     slowRetireCalls[0]?.seatRunning === false && slowRetireCalls[0]?.seat.lifecycleUid === slowSeat?.lifecycleUid && slowRetireCalls[0]?.indexed === true, slowRetireCalls);
   check("...and the debt clears on its proof, which is then discarded",
     await debtCleared(slowTask) && slowRetireCalls.length === 2 && await until(() => discarded.includes(slowSeat!.lifecycleUid), 5_000), slowRetireCalls.length);
+
+  console.log("\n14. a connector that needs a confirmed startup: its task is served only after the prompt and its notice");
+  const errorOf = (t: { data?: unknown } | undefined) => String((t?.data as { error?: string } | undefined)?.error);
+  const reasonOf = (t: { data?: unknown } | undefined) => (t?.data as { reason?: string } | undefined)?.reason;
+  const opened: string[] = [];
+  const O = manager as unknown as { openOnceDelivery(ref: { goalId: string }): void };
+  const realOpen = O.openOnceDelivery.bind(manager);
+  O.openOnceDelivery = (ref) => { opened.push(ref.goalId); realOpen(ref as Parameters<typeof realOpen>[0]); };
+
+  startupMode = "confirmed";
+  const c1 = await spawnOnce({ agent: "once-confirm-stub", prompt: "confirmed", once: {} });
+  const cSide1 = c1.seat === undefined ? undefined : await seatSide(c1.name!, c1.seat);
+  let cTurns1 = cSide1 === undefined ? [] : await cSide1.pull();
+  if (cTurns1.length === 0 && cSide1 !== undefined) { await wait(1_000); cTurns1 = await cSide1.pull(); }
+  check("a startup that answered the prompt and then showed the notice succeeds, and its seat is served the task",
+    c1.terminal?.state === "succeeded" && cTurns1.length === 1 && cTurns1[0]!.goalId === c1.once?.goalId && opened.includes(c1.once!.goalId), { terminal: c1.terminal, cTurns1 });
+  if (c1.once !== undefined) await cSide1?.invoke("turn-yield", { goalId: c1.once.goalId, status: "done" });
+  check("...and its yield stops the seat", c1.seat !== undefined && await gone(c1.name!, c1.seat.handle));
+
+  startupMode = "ready";
+  const c2 = await spawnOnce({ agent: "once-confirm-stub", prompt: "no prompt", once: {} });
+  const r2 = await resultOf(taskOf(c2.id), 20_000);
+  check("a startup that opened its input screen without the prompt fails, saying why",
+    c2.terminal?.state === "failed" && errorOf(c2.terminal) === `${c2.name} joined, but its startup did not show the channel: its startup watch opened its input screen without the prompt, so it cannot take a once task`, c2.terminal);
+  check("...its task, never served, is cancelled `launch-failed`, and its seat is gone with its debt cleared",
+    r2?.state === "cancelled" && reasonOf(r2) === "launch-failed" && !opened.includes(taskOf(c2.id))
+      && c2.seat !== undefined && await gone(c2.name!, c2.seat.handle) && await debtCleared(taskOf(c2.id)), r2);
+
+  startupMode = "silent";
+  const silentId = goalId("silent");
+  const silentName = (await call("spawn", { name: "helper", agent: "once-confirm-stub", cwd: repoRoot, events: false, prompt: "no notice", once: {} }, { id: silentId })).data?.name as string | undefined;
+  const silentSeat = silentName !== undefined && await until(() => M.agents.has(silentName), 15_000) ? M.agents.get(silentName) : undefined;
+  const silentSide = silentSeat === undefined ? undefined : await seatSide(silentName!, silentSeat);
+  await wait(5_000); // the prompt answered and the seat joined; its notice never comes
+  const silentEarly = silentSide === undefined ? undefined : await silentSide.pull();
+  check("while the notice is awaited the seat has joined, but its pull finds no task", silentEarly !== undefined && silentEarly.length === 0, silentEarly);
+  const silentTerm = await resultOf(silentId, 45_000);
+  const rSilent = await resultOf(taskOf(silentId), 10_000);
+  check("a prompt answered with no notice after it fails the spawn at the notice's bound, saying why",
+    silentTerm?.state === "failed" && errorOf(silentTerm) === `${silentName} joined, but its startup did not show the channel: its startup watch failed, so it cannot take a once task`, silentTerm);
+  check("...its task, never served, is cancelled `launch-failed`, and its seat is gone",
+    rSilent?.state === "cancelled" && reasonOf(rSilent) === "launch-failed" && !opened.includes(taskOf(silentId))
+      && silentSeat !== undefined && await gone(silentName!, silentSeat.handle), rSilent);
+
+  startupMode = "confirmed";
+  const lostId = goalId("lost");
+  const lostName = (await call("spawn", { name: "helper", agent: "once-confirm-stub", cwd: repoRoot, events: false, prompt: "terminal refused", once: {} }, { id: lostId })).data?.name as string | undefined;
+  const lostSeat = lostName !== undefined && await until(() => M.agents.has(lostName), 15_000) ? M.agents.get(lostName) : undefined;
+  // From launch on, no goal write lands until the seat is seen gone: the succeeded terminal is refused.
+  gate = { mode: "refuse", hit: false };
+  check("a confirmed spawn whose succeeded terminal cannot be written never serves its task: its seat is stopped",
+    lostSeat !== undefined && await gone(lostName!, lostSeat.handle) && gate.hit && !opened.includes(taskOf(lostId)), { hit: gate.hit, opened });
+  gate = undefined;
+  const rLost = await resultOf(taskOf(lostId), 20_000);
+  check("...and its task is cancelled `launch-failed` once goal writes land again",
+    rLost?.state === "cancelled" && reasonOf(rLost) === "launch-failed" && (await readGoalResult(actx, refOf(lostId)))?.state !== "succeeded", rLost);
 } finally {
   for (const nc of seatConns) await nc.drain().catch(() => nc.close());
   await runnerNc?.drain().catch(() => runnerNc?.close());
@@ -410,7 +503,7 @@ try {
   await broker.stop().catch(() => {});
 }
 
-const EXPECTED_CELLS = 55;
+const EXPECTED_CELLS = 67;
 console.log(`\n${fail === 0 && pass === EXPECTED_CELLS ? "SPAWN ONCE SMOKE OK ✅" : "SPAWN ONCE SMOKE FAILED"}  (${pass} passed, ${fail} failed)`);
 if (pass + fail !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);

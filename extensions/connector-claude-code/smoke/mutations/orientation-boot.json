@@ -28,16 +28,16 @@
     {
       "name": "K1 the session start drops the card",
       "file": "extensions/connector-claude-code/src/hooks.ts",
-      "find": "const parts = [card, briefing, surfaceAutomatic(agent, ev, reserved),",
-      "replace": "const parts = [briefing, surfaceAutomatic(agent, ev, reserved),",
+      "find": "return injectFrame(agent, ev, event, [card, agent.channelBriefing()]);",
+      "replace": "return injectFrame(agent, ev, event, [agent.channelBriefing()]);",
       "expectRed": "a bound session start hands over the orientation card",
       "cell": "a bound session start hands over the orientation card"
     },
     {
       "name": "K2 an owed card is never delivered",
       "file": "extensions/connector-claude-code/src/hooks.ts",
-      "find": "const parts = [card, surfaceAutomatic(agent, ev, reserved),",
-      "replace": "const parts = [surfaceAutomatic(agent, ev, reserved),",
+      "find": "return injectFrame(agent, ev, event, [card]);",
+      "replace": "return injectFrame(agent, ev, event, []);",
       "expectRed": "an unbound session start owes the card to the next prompt",
       "cell": "an unbound session start owes the card to the next prompt"
     },
@@ -52,16 +52,16 @@
     {
       "name": "K4 the session start leaves the card out of the hook budget",
       "file": "extensions/connector-claude-code/src/hooks.ts",
-      "find": "const reserved = (card?.length ?? 0) + (briefing?.length ?? 0) +",
-      "replace": "const reserved = (briefing?.length ?? 0) +",
+      "find": "const reserved = extras.reduce((n, x) => n + (x?.length ?? 0) + 2, 0) +",
+      "replace": "const reserved = extras.slice(1).reduce((n, x) => n + (x?.length ?? 0) + 2, 0) +",
       "expectRed": "a session start with a full inbox keeps the card and fits the budget",
       "cell": "a session start with a full inbox keeps the card and fits the budget"
     },
     {
       "name": "K5 the owed prompt leaves the card out of the hook budget",
       "file": "extensions/connector-claude-code/src/hooks.ts",
-      "find": "const reserved = (card?.length ?? 0) + (agent.peekPendingTurns()?.text.length ?? 0) + 4;",
-      "replace": "const reserved = (agent.peekPendingTurns()?.text.length ?? 0) + 4;",
+      "find": "const reserved = extras.reduce((n, x) => n + (x?.length ?? 0) + 2, 0) +",
+      "replace": "const reserved = extras.slice(0, -1).reduce((n, x) => n + (x?.length ?? 0) + 2, 0) +",
       "expectRed": "an owed card with a full inbox is kept and fits the budget",
       "cell": "an owed card with a full inbox is kept and fits the budget"
     }

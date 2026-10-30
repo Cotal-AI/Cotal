@@ -17,7 +17,13 @@
     "processes are gone. S8 stops a seat that never joined only after its spawn's terminal is",
     "published, so a stalled publish leaves it running. S9 drops a deadline whose terminal write was",
     "refused, and S10 leaves that seat running past its deadline. S11 settles a never-served task's",
-    "debt at the readiness verdict, before the seat's exit and its connector's proof."
+    "debt at the readiness verdict, before the seat's exit and its connector's proof.",
+    "",
+    "S12 admits a Claude-style connector on a runtime that cannot report its startup outcome, so the",
+    "seat's task would be served on no evidence of channels. S13 and S14 move the turn-frame bound one",
+    "character each way, and S15 measures the task without the deadline line it can carry. S16 serves a",
+    "seat whose startup skipped the channel prompt, S17 serves it at its join before its notice, and",
+    "S18 serves a task whose spawn has no succeeded terminal, which a successor reads as never served."
   ],
   "mutations": [
     {
@@ -96,6 +102,55 @@
       "find": "        if (this.onceWatched.has(goalKey(onceRef))) void this.commitOnceCancel(",
       "replace": "        if (false) void this.commitOnceCancel(",
       "expectRed": "a seat that never joins: its task is cancelled at once, and its debt is kept while its process still runs"
+    },
+    {
+      "name": "S12 a connector that needs a confirmed startup is admitted on a runtime that cannot report it",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    if (connector.onceNeedsConfirmed !== undefined && !runtime.reportsStartupOutcome)\n      return `once: runtime \"${runtime.kind}\" does not report how a seat's startup ended, which a once seat on the ${connector.name} connector needs`;\n",
+      "replace": "",
+      "expectRed": "a Claude seat on a runtime that does not report how its startup ended is refused, naming the runtime"
+    },
+    {
+      "name": "S13 a task that fits the turn frame exactly is refused",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      if (text.length > connector.turnFrameLimit)\n",
+      "replace": "      if (text.length >= connector.turnFrameLimit)\n",
+      "expectRed": "a task that renders to the connector's turn frame exactly is admitted, with and without a deadline"
+    },
+    {
+      "name": "S14 a task one character over the turn frame is admitted",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      if (text.length > connector.turnFrameLimit)\n",
+      "replace": "      if (text.length > connector.turnFrameLimit + 1)\n",
+      "expectRed": "...and one character over it is refused, naming both sizes"
+    },
+    {
+      "name": "S15 the turn frame is measured without the deadline line",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "payload, spawner: this.spawnerName(spawner), ...(launch.once!.deadlineMs !== undefined ? { deadlineAt: MAX_SCHEDULE_MS } : {}) });",
+      "replace": "payload, spawner: this.spawnerName(spawner) });",
+      "expectRed": "a task that renders to the connector's turn frame exactly is admitted, with and without a deadline"
+    },
+    {
+      "name": "S16 a startup that skipped the prompt serves the task",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "        if (startup !== \"confirmed\") {\n",
+      "replace": "        if (startup !== \"confirmed\" && startup !== \"ready\") {\n",
+      "expectRed": "a startup that opened its input screen without the prompt fails, saying why"
+    },
+    {
+      "name": "S17 the readiness verdict does not wait for the startup outcome",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "        const startup = await this.awaitStartupOutcome(managed, launchedAt, readinessTimeoutMs);\n",
+      "replace": "        const startup = \"confirmed\" as StartupOutcome;\n",
+      "expectRed": "while the notice is awaited the seat has joined, but its pull finds no task"
+    },
+    {
+      "name": "S18 the task is served before its spawn's succeeded terminal is written",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      if (onceTask && committed === true) this.openOnceDelivery(onceTask.ref);\n      else if (onceTask) {\n",
+      "replace": "      if (onceTask) this.openOnceDelivery(onceTask.ref);\n      if (onceTask && committed !== true) {\n",
+      "expectRed": "a confirmed spawn whose succeeded terminal cannot be written never serves its task: its seat is stopped"
     }
   ]
 }
