@@ -1,0 +1,70 @@
+{
+  "suite": [
+    "implementations/manager/smoke/spawn-once.smoke.ts"
+  ],
+  "guard": "a once spawn's task ends its seat, every way the seat ends first settles the task, the seat takes no other turn, admission refuses what cannot carry a once task, and a connector's retirement proof gates the debt",
+  "command": "pnpm smoke:spawn-once",
+  "completionMarker": "SPAWN ONCE SMOKE",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/mutations/spawn-once.json",
+  "why": [
+    "CELLS NAMED BEFORE THE RUN.",
+    "",
+    "S1 and S2 keep the seat running after its task yielded or reached its deadline: the helper this",
+    "feature exists to end. S3 lets a run hand a once seat a second turn. S4 admits a connector that",
+    "cannot be woken for the task, which then sits until its deadline. S5 leaves a task whose seat",
+    "was despawned open, with nothing left to end it. S6 leaves a seat that never joined running with",
+    "nothing to do. S7 clears the debt without the connector's proof that the seat's launched",
+    "processes are gone."
+  ],
+  "mutations": [
+    {
+      "name": "S1 a yield no longer stops the seat",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    if (p.once) this.endOnceSeat(p, `yielded ${status}`);\n",
+      "replace": "",
+      "expectRed": "the seat is gone: its process exited and its slot was freed"
+    },
+    {
+      "name": "S2 the deadline no longer stops the seat",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      if (p.once) this.endOnceSeat(p, \"turn-deadline\");\n",
+      "replace": "",
+      "expectRed": "...and the seat is gone at its deadline"
+    },
+    {
+      "name": "S3 a once seat accepts a second turn",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    if (target.kind === \"managed\" && target.agent.once)\n",
+      "replace": "    if (false)\n",
+      "expectRed": "a second turn to a once seat is refused"
+    },
+    {
+      "name": "S4 a connector without the relay is admitted",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    if (!connector.supportsTurnRelay)\n",
+      "replace": "    if (false)\n",
+      "expectRed": "a connector without the turn relay is refused, with its own reason"
+    },
+    {
+      "name": "S5 the proved exit no longer cancels the task",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      if ((await readGoalResult(gw.ctx, owed.ref)) === undefined) {\n        await this.assertGoalWriterEpochCurrent(epoch);",
+      "replace": "      if (false) {\n        await this.assertGoalWriterEpochCurrent(epoch);",
+      "expectRed": "a despawn ends it: the task is cancelled `despawned` at the proved exit"
+    },
+    {
+      "name": "S6 a seat that never joined is left running",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "        if (managed.once) this.stopOnceSeat(managed, \"readiness-timeout\");\n",
+      "replace": "",
+      "expectRed": "...and the seat is stopped, never left running with nothing to do"
+    },
+    {
+      "name": "S7 the debt clears without the connector's proof",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      const retired = owed.retire === undefined ? undefined : await this.retireOnceSeat(owed.retire);",
+      "replace": "      const retired = undefined as { discard(): Promise<void> } | undefined;",
+      "expectRed": "a refused proof keeps the debt"
+    }
+  ]
+}

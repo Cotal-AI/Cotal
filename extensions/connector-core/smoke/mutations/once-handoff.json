@@ -1,0 +1,70 @@
+{
+  "suite": [
+    "extensions/connector-core/smoke/once-handoff.smoke.ts"
+  ],
+  "guard": "a once task is handed to the harness at most once per seat process: the claim is a permit, a seal is final, a claimed or sealed task is offered to no one, a settled task takes no permit, the handoff timer measures the dispatch only, and a report that cannot land ends the seat",
+  "command": "pnpm smoke:once-handoff",
+  "completionMarker": "ONCE HANDOFF SMOKE",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/once-handoff.json",
+  "why": [
+    "CELLS NAMED BEFORE THE RUN.",
+    "",
+    "M1 lets a second caller holding the same stale peek take the permit: two sends of one task.",
+    "M2 lets a late acceptance confirm a sealed task, so an automatic yield follows for a task the",
+    "manager already failed. M3 offers a claimed task again, so a held task is sent twice. M4 and M5",
+    "let a send queued behind a gate claim a task its manager settled meanwhile. M6 keeps the timer",
+    "running after the dispatch left, so a slow response seals a task the harness has. M7 leaves a",
+    "seat whose report cannot land running, with the task open and nothing to end it."
+  ],
+  "mutations": [
+    {
+      "name": "M1 the claim takes a task that is no longer pending",
+      "file": "extensions/connector-core/src/once.ts",
+      "find": "  if (goalIds.some((id) => onceHandoffState(uid, id) !== \"pending\")) return false;\n",
+      "replace": "",
+      "expectRed": "the first claim succeeds and the second, from the same stale peek, takes nothing"
+    },
+    {
+      "name": "M2 an acceptance confirms a sealed task",
+      "file": "extensions/connector-core/src/once.ts",
+      "find": "  if (h?.state === \"sealed\") return false;\n",
+      "replace": "",
+      "expectRed": "a late acceptance after the seal surfaces nothing, so no automatic yield follows"
+    },
+    {
+      "name": "M3 a claimed task is offered again",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    return t.once === undefined || onceHandoffState(this.onceUid(), t.goalId) === \"pending\";",
+      "replace": "    return t.once === undefined || onceHandoffState(this.onceUid(), t.goalId) !== \"sealed\";",
+      "expectRed": "a claimed task is offered by no peek and wakes nothing, so a held task drives no blank retry"
+    },
+    {
+      "name": "M4 a settle seals only a claimed task",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    if (t.once !== undefined) endOnceHandoff(this.onceUid(), t.goalId);",
+      "replace": "    if (t.once !== undefined) sealOnceHandoff(this.onceUid(), t.goalId);",
+      "expectRed": "the settle ends the handoff, and a dispatch queued behind a gate is refused its permit"
+    },
+    {
+      "name": "M5 the claim treats a settled once task as a run turn",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "(this.activeTurns.get(id) ?? this.settledTurns.get(id))?.once !== undefined",
+      "replace": "this.activeTurns.get(id)?.once !== undefined",
+      "expectRed": "the settle ends the handoff, and a dispatch queued behind a gate is refused its permit"
+    },
+    {
+      "name": "M6 noting the dispatch leaves the handoff timer running",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    for (const id of goalIds) if (this.activeTurns.get(id)?.once !== undefined) stopOnceHandoffTimer(this.onceUid(), id);\n",
+      "replace": "",
+      "expectRed": "noting the dispatch stops the timer, so a slow first response is never ended by it"
+    },
+    {
+      "name": "M7 a report that never lands leaves the seat running",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    exitOnceSeat();\n",
+      "replace": "",
+      "expectRed": "a report that cannot land within the bound starts the seat's graceful shutdown and then exits its process"
+    }
+  ]
+}

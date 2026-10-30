@@ -1,0 +1,54 @@
+{
+  "suite": [
+    "extensions/connector-jcode/smoke/once-retire.smoke.ts"
+  ],
+  "guard": "a once Jcode seat's launched tree is proved gone only by the evidence its host recorded under the seat's uid: never while the recorded host lives, every launch the uid recorded, a receipt that replays the proof, and live evidence never discarded",
+  "command": "pnpm smoke:jcode-once-retire",
+  "completionMarker": "JCODE ONCE RETIRE SMOKE",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-jcode/smoke/mutations/once-retire.json",
+  "why": [
+    "CELLS NAMED BEFORE THE RUN.",
+    "",
+    "R1 proves a seat retired while its recorded host still runs, and signals that host's tree. R2",
+    "keeps only the latest launch, so a bridge relaunch's first tree is never stopped. R3 writes no",
+    "receipt, so a manager that crashes after the proof and before its clear can never get it back.",
+    "R4 discards live evidence. R5 never tells the host it is a once seat, so it records nothing."
+  ],
+  "mutations": [
+    {
+      "name": "R1 a live recorded host no longer refuses the proof",
+      "file": "extensions/connector-jcode/src/private-lifecycle.ts",
+      "find": "  if (alive(record.host.pid))\n    throw new Error(`jcode connector: once seat ${uid}'s recorded host PID ${record.host.pid} is alive — its processes cannot be proved gone`);\n",
+      "replace": "",
+      "expectRed": "a live recorded host refuses the proof"
+    },
+    {
+      "name": "R2 the evidence keeps only the latest launch",
+      "file": "extensions/connector-jcode/src/private-lifecycle.ts",
+      "find": "launches: [...(prior?.launches ?? []), record.identity]",
+      "replace": "launches: [record.identity]",
+      "expectRed": "...after stopping both launches' processes"
+    },
+    {
+      "name": "R3 the proof writes no receipt",
+      "file": "extensions/connector-jcode/src/private-lifecycle.ts",
+      "find": "  writeSecretFileAtomic(onceRecordPath(home, uid), `${JSON.stringify({ uid, retired: true })}\\n`);\n",
+      "replace": "",
+      "expectRed": "the proof is kept as a receipt"
+    },
+    {
+      "name": "R4 live evidence is discarded",
+      "file": "extensions/connector-jcode/src/private-lifecycle.ts",
+      "find": "  if (!(\"retired\" in record)) throw new Error(`jcode connector: once seat ${uid}'s evidence is not a retirement receipt — refusing to discard it`);\n",
+      "replace": "",
+      "expectRed": "live evidence is not discarded"
+    },
+    {
+      "name": "R5 a once launch does not tell the host",
+      "file": "extensions/connector-jcode/src/extension.ts",
+      "find": "      env.COTAL_JCODE_ONCE = \"1\";\n",
+      "replace": "",
+      "expectRed": "a once launch tells the host it is a once seat"
+    }
+  ]
+}

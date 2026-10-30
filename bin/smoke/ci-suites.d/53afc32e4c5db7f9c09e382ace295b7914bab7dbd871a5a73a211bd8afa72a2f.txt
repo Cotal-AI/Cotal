@@ -1,0 +1,2 @@
+# The Pi driver hands a once task over at most once and never resends a held once batch.
+smoke:pi-once

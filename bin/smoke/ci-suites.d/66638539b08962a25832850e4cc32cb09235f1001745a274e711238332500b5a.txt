@@ -1,0 +1,2 @@
+# A once task across a manager crash: the successor settles each task once its reconcile rules the seat out, after the connector proves the launch gone.
+smoke:spawn-once-restart
