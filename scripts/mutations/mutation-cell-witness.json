@@ -16,7 +16,7 @@
     {
       "name": "the cell-target check is never called, so a self-fed cell is accepted again",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "      assertCellObserves(suites, mutation, readSuite);",
+      "find": "      check(() => assertCellObserves(suites, mutation, readSuite));",
       "replace": "      void assertCellObserves;",
       "expectRed": "a mutation whose named cell observes nothing outside the suite text is refused",
       "cell": "a mutation whose named cell observes nothing outside the suite text is refused"

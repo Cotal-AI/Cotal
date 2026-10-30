@@ -87,13 +87,21 @@ cell total. It exits non-zero after the full selection and reports the checkout 
 enumerated, examined, graded, refused-with-reason, unparsed, command-failed, recorded, and
 stale-records configs.
 
+Validation reports every independent refusal within each config. Unparseable JSON, an unresolved
+suite, or a missing mutations array ends that config. Malformed mutation fields skip that entry's
+witness checks, not later entries. Invalid command or path-list metadata skips reachability checks;
+other independent checks still run. Refusal and sentinel totals count configs, not reasons.
+`pnpm smoke:mutation-refusals` exercises this reporting without executing config commands.
+
 `pnpm smoke:mutation-metadata` runs that validation in CI. It passes `--gradable-only` with no
 paths, so every tracked config is validated, none is executed, and an unrecorded refusal fails the
 gate. The refusals already on main when the gate was added are listed in `scripts/mutation-coverage.recorded.json`,
-each pinned to the sha256 of its parsed config and the refusal it drew, and a discovered run reports
-them as `RECORDED`. A named run does not read that file. The list only shrinks. An entry fails the
-gate when it is not in the parent commit's copy of the file, or once its config is accepted, changes,
-is refused for another reason, or is no longer tracked: remove the entry, and fix the config if it is
+each pinned to the sha256 of its parsed config and the first refusal it drew. A discovered run
+compares that first refusal for compatibility and prints every reason as `RECORDED`. Additional
+reasons are visible but are not separately pinned. A named run does not read that file. The list
+only shrinks. An entry fails the gate when it is not in the parent commit's copy of the file, or
+once its config is accepted, changes, draws a different first refusal, or is no longer tracked:
+remove the entry, and fix the config if it is
 still refused. On a pull request the parent is the base branch. The commit that adds the file may pin
 only configs its parent already had unchanged. A shallow checkout fetches the parent from `origin`.
 The run ends with the cell-count sentinel the CI shard grades: one cell per config and per stale

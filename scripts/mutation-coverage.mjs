@@ -1836,40 +1836,57 @@ const parseSummary = (cfg, output) => {
 const validate = (path, cfg) => {
   const gradesTool = cfg.grades === "tool";
   const suites = parseSuiteSources(process.cwd(), path, cfg.suite);
-  if (typeof cfg.command !== "string" || cfg.command === "") throw new Error('is missing "command"');
-  if (!Array.isArray(cfg.mutations)) throw new Error('is missing a "mutations" array');
+  const reasons = [];
+  let canCheckReachability = typeof cfg.command === "string" && cfg.command !== "";
+  if (!canCheckReachability) reasons.push('is missing "command"');
+  if (!Array.isArray(cfg.mutations)) {
+    reasons.push('is missing a "mutations" array');
+    return { gradesTool, suites, reasons };
+  }
   if (cfg.completionMarker !== undefined && (typeof cfg.completionMarker !== "string" || cfg.completionMarker === "")) {
-    throw new Error('"completionMarker" must be a non-empty string');
+    reasons.push('"completionMarker" must be a non-empty string');
   }
   if (cfg.progressPattern !== undefined) {
-    if (typeof cfg.progressPattern !== "string" || cfg.progressPattern === "") throw new Error('"progressPattern" must be a non-empty regular expression string');
-    try { new RegExp(cfg.progressPattern, "gm"); } catch (error) { throw new Error(`"progressPattern" is invalid: ${error.message}`); }
+    if (typeof cfg.progressPattern !== "string" || cfg.progressPattern === "") reasons.push('"progressPattern" must be a non-empty regular expression string');
+    else try { new RegExp(cfg.progressPattern, "gm"); } catch (error) { reasons.push(`"progressPattern" is invalid: ${error.message}`); }
   }
   if (cfg.minTicks !== undefined && (!Number.isInteger(cfg.minTicks) || cfg.minTicks < 1)) {
-    throw new Error('"minTicks" must be a positive integer');
+    reasons.push('"minTicks" must be a positive integer');
   }
   for (const key of ["assembles", "executes"]) {
-    if (cfg[key] !== undefined && !validStringArray(cfg[key])) throw new Error(`"${key}" must be an array of non-empty repo paths`);
+    if (cfg[key] !== undefined && !validStringArray(cfg[key])) {
+      reasons.push(`"${key}" must be an array of non-empty repo paths`);
+      canCheckReachability = false;
+    }
   }
+  const check = (fn) => {
+    try { fn(); } catch (error) { reasons.push(error instanceof Error ? error.message : String(error)); }
+  };
   const suiteSources = new Map();
   const readSuite = (suite) => {
     if (!suiteSources.has(suite)) suiteSources.set(suite, readFileSync(suite, "utf8"));
     return suiteSources.get(suite);
   };
   const required = gradesTool ? REQUIRED.filter((key) => key !== "cell") : REQUIRED;
-  for (const mutation of cfg.mutations) {
+  for (const [index, mutation] of cfg.mutations.entries()) {
+    if (mutation === null || typeof mutation !== "object" || Array.isArray(mutation)) {
+      reasons.push(`mutation at index ${index} must be an object`);
+      continue;
+    }
+    const before = reasons.length;
     for (const key of required) {
-      if (typeof mutation[key] !== "string" || mutation[key] === "") throw new Error(`mutation "${mutation.name ?? "(unnamed)"}" is missing "${key}"`);
+      if (typeof mutation[key] !== "string" || mutation[key] === "") reasons.push(`mutation "${mutation.name ?? "(unnamed)"}" is missing "${key}"`);
     }
     for (const key of REQUIRED_MAY_BE_EMPTY) {
-      if (typeof mutation[key] !== "string") throw new Error(`mutation "${mutation.name ?? "(unnamed)"}" is missing "${key}"`);
+      if (typeof mutation[key] !== "string") reasons.push(`mutation "${mutation.name ?? "(unnamed)"}" is missing "${key}"`);
     }
-    if (!gradesTool) {
-      assertGradable(path, cfg, suites, mutation, readSuite);
-      assertCellObserves(suites, mutation, readSuite);
+    // A malformed entry has no meaningful witness; it must not hide the next entry.
+    if (!gradesTool && reasons.length === before) {
+      if (canCheckReachability) check(() => assertGradable(path, cfg, suites, mutation, readSuite));
+      check(() => assertCellObserves(suites, mutation, readSuite));
     }
   }
-  return { gradesTool, suites };
+  return { gradesTool, suites, reasons };
 };
 
 for (const path of configs) {
@@ -1878,23 +1895,27 @@ for (const path of configs) {
   let gradesTool;
   let suites;
   let sha256;
+  let reasons;
   try {
     cfg = JSON.parse(readFileSync(path, "utf8"));
     sha256 = createHash("sha256").update(JSON.stringify(cfg)).digest("hex");
-    ({ gradesTool, suites } = validate(path, cfg));
+    ({ gradesTool, suites, reasons } = validate(path, cfg));
   } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
+    reasons = [error instanceof Error ? error.message : String(error)];
+  }
+  if (reasons.length) {
     const pin = recordedPins.get(path);
+    // Legacy pins record the first refusal. Keep that comparison, but print every reason.
     // A config that was never read or parsed has no hash, so no pin can match it.
     const pinnedContent = sha256 !== undefined && pin?.sha256 === sha256;
-    if (pinnedContent && pin.refusal === reason) {
+    if (pinnedContent && pin.refusal === reasons[0]) {
       recorded.push(path);
-      console.error(`RECORDED ${path}: ${reason}`);
+      for (const reason of reasons) console.error(`RECORDED ${path}: ${reason}`);
       continue;
     }
     if (pin) staleRecords.push([path, pinnedContent ? "is refused for a different reason than recorded" : "changed since its refusal was recorded"]);
-    refusals.push([path, reason]);
-    console.error(`REFUSED ${path}: ${reason}`);
+    refusals.push([path, reasons]);
+    for (const reason of reasons) console.error(`REFUSED ${path}: ${reason}`);
     continue;
   }
   if (recordedPins.has(path)) staleRecords.push([path, "is accepted now"]);
@@ -1995,7 +2016,7 @@ if (tools.length) {
 }
 if (refusals.length) {
   console.error("\nRefused configs:");
-  for (const [path, reason] of refusals) console.error(`  ${path}: ${reason}`);
+  for (const [path, reasons] of refusals) for (const reason of reasons) console.error(`  ${path}: ${reason}`);
 }
 for (const path of recordedPins.keys()) {
   if (!configs.includes(path)) staleRecords.push([path, "is not a tracked mutation config"]);

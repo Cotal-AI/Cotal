@@ -956,6 +956,7 @@
     "smoke:failure-timeout-reason": "node scripts/mutation-failure-signature.smoke.mjs",
     "smoke:mutation-parse-cache": "node scripts/mutation-parse-cache.smoke.mjs",
     "smoke:mutation-tsconfig": "node scripts/mutation-tsconfig.smoke.mjs",
+    "smoke:mutation-refusals": "node scripts/mutation-refusals.smoke.mjs",
     "smoke:gate-invocations": "node scripts/gate-invocations.smoke.mjs",
     "smoke:broker-stop-order": "tsx scripts/broker-stop-order.smoke.mjs",
     "smoke:ci-suites": "tsx bin/smoke/ci-suites.smoke.ts",
