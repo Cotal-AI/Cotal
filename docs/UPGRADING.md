@@ -69,6 +69,10 @@ the task stream, the `cotal_anycast_<space>` bucket and the notice publish.
   read `waiting` until it acks them, and a cancel can find one already gone, so upgrade every role
   holder before you rely on status or cancel.
 - An open mesh is unchanged. It runs no delivery daemon, so it has no notices, status or cancel.
+- Before you delete or recreate a space's task stream, stop every delivery daemon that serves the
+  space and wait until each has exited and its broker connection has closed. A cancel's delete names
+  only the stream and the seq, so one still in flight when the stream is recreated removes the
+  request the new stream stores at that seq, and the cancel reads `deleted`.
 - An SDK embedder that implements pi's `InboxSource` itself adds `inboxPreview` and `takeChosen`.
   A `MeshAgent` has both. A host built on `MeshAgent` shows a role request only from what
   `takeChosen` returns, because `peekInbox` never returns one still held for its take.
