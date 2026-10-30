@@ -7,21 +7,13 @@ other half: what to actually do when the deployment already exists, has credenti
 cannot simply be recreated. Every release that breaks a running deployment gets a section here,
 naming what migrates on its own, what does not, and the order to move the pieces in.
 
-## Jcode launches stop on a Cursor database they cannot read cleanly
+## Jcode reports an unreadable Cursor database as `cursor_state_unreadable`
 
-A Jcode seat still mirrors only the auth rows of Cursor's `User/globalStorage/state.vscdb`, and now
-reads them in one read-only transaction that creates nothing in Cursor's directory
-([Connect Jcode](connect-jcode.md)). Some databases that used to launch now stop the launch with
-`cursor_state_unreadable`:
-
-- A WAL-mode database without its `-wal` and `-shm` files. The previous reader created them in
-  Cursor's directory.
-- A database where one of the keys holds a value that is not text or is larger than 16 KB. The
-  previous reader copied it as is.
-
-A database the previous reader failed on, such as one that is not SQLite or one Cursor held locked,
-reported `private_state`. It now reports `cursor_state_unreadable` with a reason, after waiting up to
-2 seconds for a lock.
+A Jcode launch that cannot read Cursor's `User/globalStorage/state.vscdb` used to stop with
+`private_state`. It now stops with `cursor_state_unreadable` and a reason, after waiting up to
+2 seconds for a lock Cursor holds ([Connect Jcode](connect-jcode.md)). One database that used to
+launch now stops: one where a value under an auth key Jcode reads is not text or is larger than
+16 KB. The previous reader copied that value as is.
 
 ## Bounded multi-space startup
 

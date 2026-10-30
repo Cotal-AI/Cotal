@@ -52,8 +52,6 @@ export class JcodeSessionsUnwritableFailure extends Error {
 
 export type CursorStateUnreadableReason =
   | "not_sqlite"
-  | "journal_mode"
-  | "wal_sidecar_missing"
   | "locked"
   | "hot_journal"
   | "corrupt"

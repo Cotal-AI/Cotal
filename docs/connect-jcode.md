@@ -155,16 +155,20 @@ the operator's Cursor machine id with Cursor requests and can show the operator'
 uses the two tokens only when the file's own path is trusted for `cursor_vscdb`, and nothing trusts a
 seat's mirrored path unless someone adds it.
 
-The read is one transaction that waits at most 2 seconds for a lock Cursor holds, and it creates
-nothing in Cursor's directory. A blank value counts as missing. A database with none of the keys
-removes the seat's copy, as a missing file does. A database the connector cannot read stops the
-launch with `cursor_state_unreadable` and leaves the seat's files as they were: a file that is not
-SQLite, an unknown journal mode, a write Cursor did not finish (a hot journal), a lock held past the
-wait, no `ItemTable`, or a value under one of the keys that is not text or is larger than 16 KB. A
-WAL-mode database must have its `-wal` and `-shm` files beside it, because a read-only open without
-them would create them in Cursor's directory. Without them the launch stops with the same code. The
-source path follows the rule every mirrored file follows: a link to a regular file is read at its
-target, and a directory counts as missing.
+The read is one read-only SQLite transaction in whatever journal mode Cursor uses, and it waits at
+most 2 seconds for a lock Cursor holds. The source path follows the rule every mirrored file follows:
+a link to a regular file is read at its target, and a directory counts as missing. A blank value
+counts as missing. A database with none of the keys removes the seat's copy, as a missing file does.
+A database the connector cannot read stops the launch with `cursor_state_unreadable` and leaves the
+seat's files as they were: a file that is not SQLite, a damaged database, a write Cursor did not
+finish (a hot journal), a lock held past the wait, no `ItemTable`, or a value under one of the keys
+that is not text or is larger than 16 KB.
+
+When Cursor has closed a WAL-mode database, its `-wal` and `-shm` files are gone. The read-only open
+creates them again beside the database, as any SQLite reader does, and they stay after the read. They
+are SQLite's own coordination files, and the next time Cursor closes the database it removes them.
+The connector does not delete them, because Cursor could open the database between the read and the
+delete.
 
 A seat home made by a release that copied the whole file keeps that copy until its next successful
 launch replaces it. A retired seat home that never launches again keeps its copy.

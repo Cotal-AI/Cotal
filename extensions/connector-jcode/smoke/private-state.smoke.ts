@@ -497,26 +497,40 @@ try {
     check("a live WAL source publishes its uncheckpointed commit", isExtractOf(live.destination, cursorValues("new")), readExtract(live.destination));
     check("reading a live WAL source changes neither the main file nor the -wal", unchangedExceptShm, { liveBefore, liveAfter });
 
+    // A closed WAL database has no -wal or -shm. SQLite's read-only open creates them, as any reader
+    // does, and the database itself must stay as it was.
     const closed = cursorCase("wal-closed");
     writeCursorDb(closed.source, cursorValues("v1"), "wal").close();
-    seedPrevious(closed);
-    const closedDir = snapshotDir(dirname(closed.source));
-    const closedError = mirrorError(() => closed.mirror());
-    check("a WAL source without its -wal and -shm refuses and writes nothing", refusedCleanly(closed, closedError, "wal_sidecar_missing"), String(closedError));
-    check("that refusal creates no sidecar beside Cursor's file", snapshotDir(dirname(closed.source)) === closedDir);
-    writeFileSync(`${closed.source}-wal`, "");
-    check("a WAL source with a -wal and no -shm refuses", reasonOf(mirrorError(() => closed.mirror())) === "wal_sidecar_missing" && !existsSync(`${closed.source}-shm`));
-    rmSync(`${closed.source}-wal`);
-    writeFileSync(`${closed.source}-shm`, "");
-    check("a WAL source with a -shm and no -wal refuses", reasonOf(mirrorError(() => closed.mirror())) === "wal_sidecar_missing" && !existsSync(`${closed.source}-wal`));
+    const closedBefore = JSON.parse(snapshotDir(dirname(closed.source))) as unknown[];
+    closed.mirror();
+    const closedAfter = JSON.parse(snapshotDir(dirname(closed.source))) as [string, ...unknown[]][];
+    check("a closed WAL source is read like any other", isExtractOf(closed.destination, cursorValues("v1")), readExtract(closed.destination));
+    check(
+      "reading it leaves the database as it was and adds nothing but SQLite's own -wal and -shm",
+      JSON.stringify(closedAfter.filter(([name]) => name === "state.vscdb")) === JSON.stringify(closedBefore) &&
+        closedAfter.every(([name]) => ["state.vscdb", "state.vscdb-wal", "state.vscdb-shm"].includes(name)),
+      { closedBefore, closedAfter },
+    );
+    // A Cursor that died leaves its last commits in a -wal with no -shm. The read must include them.
+    const crashedWal = cursorCase("wal-without-shm");
+    const crashedTarget = join(root, "cursor-crashed-wal", "state.vscdb");
+    const crashedWriter = writeCursorDb(crashedTarget, cursorValues("old"), "wal");
+    const crashedUpdate = crashedWriter.prepare("INSERT INTO ItemTable (key, value) VALUES (?, ?)");
+    for (const [key, value] of Object.entries(cursorValues("new"))) crashedUpdate.run(key, value);
+    mkdirSync(dirname(crashedWal.source), { recursive: true, mode: 0o700 });
+    copyFileSync(crashedTarget, crashedWal.source);
+    copyFileSync(`${crashedTarget}-wal`, `${crashedWal.source}-wal`);
+    crashedWriter.close();
+    crashedWal.mirror();
+    check("a -wal left without its -shm is read with the commits it holds", isExtractOf(crashedWal.destination, cursorValues("new")), readExtract(crashedWal.destination));
 
-    const odd = cursorCase("journal-mode");
+    const odd = cursorCase("odd-header");
     writeCursorDb(odd.source).close();
     const oddFd = openSync(odd.source, "r+");
     writeSync(oddFd, Buffer.from([3, 3]), 0, 2, 18);
     closeSync(oddFd);
     seedPrevious(odd);
-    check("a header that names neither journal mode refuses", refusedCleanly(odd, mirrorError(() => odd.mirror()), "journal_mode"));
+    check("a header SQLite does not accept refuses as not SQLite", refusedCleanly(odd, mirrorError(() => odd.mirror()), "not_sqlite"));
 
     const text = cursorCase("not-sqlite");
     mkdirSync(dirname(text.source), { recursive: true, mode: 0o700 });
@@ -606,11 +620,29 @@ try {
     writeCursorDb(strayTarget, cursorValues("v1"), "wal").close();
     mkdirSync(dirname(stray.source), { recursive: true, mode: 0o700 });
     symlinkSync(strayTarget, stray.source);
-    writeFileSync(`${stray.source}-wal`, "");
-    writeFileSync(`${stray.source}-shm`, "");
-    seedPrevious(stray);
-    const strayDir = snapshotDir(dirname(strayTarget));
-    check("sidecars named after the link do not stand in for the target's", refusedCleanly(stray, mirrorError(() => stray.mirror()), "wal_sidecar_missing") && snapshotDir(dirname(strayTarget)) === strayDir);
+    writeFileSync(`${stray.source}-wal`, "not a WAL");
+    writeFileSync(`${stray.source}-shm`, "not a wal-index");
+    const strayLinkDir = snapshotDir(dirname(stray.source));
+    stray.mirror();
+    check(
+      "a linked source uses the target's own -wal and -shm and leaves files named after the link alone",
+      isExtractOf(stray.destination, cursorValues("v1")) && snapshotDir(dirname(stray.source)) === strayLinkDir,
+      readExtract(stray.destination),
+    );
+
+    const linkedText = cursorCase("linked-not-sqlite");
+    const linkedTextTarget = join(root, "cursor-linked-text-target", "state.vscdb");
+    mkdirSync(dirname(linkedTextTarget), { recursive: true, mode: 0o700 });
+    writeFileSync(linkedTextTarget, "cursor-store", { mode: 0o600 });
+    mkdirSync(dirname(linkedText.source), { recursive: true, mode: 0o700 });
+    symlinkSync(linkedTextTarget, linkedText.source);
+    seedPrevious(linkedText);
+    const linkedTextError = mirrorError(() => linkedText.mirror());
+    check(
+      "a linked source's refusal names its path under the home and never the link's target",
+      refusedCleanly(linkedText, linkedTextError, "not_sqlite") && !String(linkedTextError).includes(dirname(linkedTextTarget)),
+      String(linkedTextError),
+    );
 
     const folder = cursorCase("directory");
     mkdirSync(folder.source, { recursive: true, mode: 0o700 });

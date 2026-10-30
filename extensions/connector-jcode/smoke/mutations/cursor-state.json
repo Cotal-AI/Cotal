@@ -2,7 +2,7 @@
   "suite": [
     "extensions/connector-jcode/smoke/private-state.smoke.ts"
   ],
-  "guard": "A Jcode seat gets a fresh extract of the four Cursor keys Jcode reads, read consistently without touching Cursor's directory, and every unreadable source refuses the launch before anything is written",
+  "guard": "A Jcode seat gets a fresh extract of the four Cursor keys Jcode reads, through one read-only SQLite transaction in whatever journal mode Cursor uses, and every unreadable source refuses the launch before anything is written",
   "command": "pnpm smoke:jcode-private-state",
   "progressPattern": "✓",
   "minTicks": 19,
@@ -20,30 +20,22 @@
       "file": "extensions/connector-jcode/src/private-state.ts",
       "find": "  const cursorStates = inventory\n    .filter((entry) => entry.family === \"cursor-state\")\n    .map((entry) => ({ entry, values: readCursorState(entry.source, relative(sources.externalHome, entry.source)) }));\n  for (const entry of inventory) if (entry.family !== \"cursor-state\") copyCredentialFile(home, entry.source, entry.destinationRelative);",
       "replace": "  for (const entry of inventory) if (entry.family !== \"cursor-state\") copyCredentialFile(home, entry.source, entry.destinationRelative);\n  const cursorStates = inventory\n    .filter((entry) => entry.family === \"cursor-state\")\n    .map((entry) => ({ entry, values: readCursorState(entry.source, relative(sources.externalHome, entry.source)) }));",
-      "expectRed": "a WAL source without its -wal and -shm refuses and writes nothing",
-      "cell": "a WAL source without its -wal and -shm refuses and writes nothing"
-    },
-    {
-      "name": "a WAL database without its sidecars is opened anyway",
-      "file": "extensions/connector-jcode/src/private-state.ts",
-      "find": "  if (wal && !(isRegularFile(`${target}-wal`) && isRegularFile(`${target}-shm`))) throw unreadable(\"wal_sidecar_missing\");",
-      "replace": "  if (false) throw unreadable(\"wal_sidecar_missing\");",
-      "expectRed": "a WAL source without its -wal and -shm refuses and writes nothing",
-      "cell": "a WAL source without its -wal and -shm refuses and writes nothing"
-    },
-    {
-      "name": "an unknown journal mode is not refused",
-      "file": "extensions/connector-jcode/src/private-state.ts",
-      "find": "  if (!wal && !(header[18] === 1 && header[19] === 1)) throw unreadable(\"journal_mode\");",
-      "replace": "  if (false) throw unreadable(\"journal_mode\");",
-      "expectRed": "a header that names neither journal mode refuses",
-      "cell": "a header that names neither journal mode refuses"
+      "expectRed": "a plain-text source refuses as not SQLite instead of being copied",
+      "cell": "a plain-text source refuses as not SQLite instead of being copied"
     },
     {
       "name": "a hot journal is not named",
       "file": "extensions/connector-jcode/src/private-state.ts",
       "find": "  if (code === 776) return \"hot_journal\";",
       "replace": "  if (code === -1) return \"hot_journal\";",
+      "expectRed": "a hot journal beside a rollback source refuses and stays in place",
+      "cell": "a hot journal beside a rollback source refuses and stays in place"
+    },
+    {
+      "name": "Cursor's database is opened read-write",
+      "file": "extensions/connector-jcode/src/private-state.ts",
+      "find": "    db = new DatabaseSync(source, { readOnly: true });",
+      "replace": "    db = new DatabaseSync(source);",
       "expectRed": "a hot journal beside a rollback source refuses and stays in place",
       "cell": "a hot journal beside a rollback source refuses and stays in place"
     },
@@ -86,14 +78,6 @@
       "replace": "      values.set(key, row.value);",
       "expectRed": "blank values count as missing, so four of them remove the destination",
       "cell": "blank values count as missing, so four of them remove the destination"
-    },
-    {
-      "name": "sidecars are judged at the link instead of its target",
-      "file": "extensions/connector-jcode/src/private-state.ts",
-      "find": "  const target = realpathSync(source);",
-      "replace": "  const target = source;",
-      "expectRed": "a linked source is read at its target, where its live sidecars are",
-      "cell": "a linked source is read at its target, where its live sidecars are"
     },
     {
       "name": "Cursor refusals are wrapped as private_state",

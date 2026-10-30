@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { closeSync, constants, copyFileSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readSync, realpathSync, renameSync, rmSync, rmdirSync, statSync, symlinkSync, unlinkSync, type Dirent } from "node:fs";
+import { closeSync, constants, copyFileSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, renameSync, rmSync, rmdirSync, statSync, symlinkSync, unlinkSync, type Dirent } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -49,7 +49,6 @@ const CURSOR_STATE_KEYS = ["cursorAuth/accessToken", "cursorAuth/refreshToken", 
 const CURSOR_STATE_BUSY_MS = 2000;
 /** The real values are a few hundred bytes. A larger one under these keys is not a credential. */
 const CURSOR_STATE_VALUE_MAX_BYTES = 16 * 1024;
-const SQLITE_MAGIC = Buffer.from("SQLite format 3\0", "latin1");
 
 function assertRelative(relativePath: string): void {
   if (isAbsolute(relativePath) || relativePath.split(/[\\/]+/u).includes(".."))
@@ -544,15 +543,6 @@ export function jcodeCredentialMirrorInventory(home: string, sources: Credential
   return inventory;
 }
 
-function isRegularFile(path: string): boolean {
-  try {
-    return lstatSync(path).isFile();
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
-    throw error;
-  }
-}
-
 function sqliteReason(code: number): CursorStateUnreadableReason {
   if (code === 776) return "hot_journal"; // SQLITE_READONLY_ROLLBACK: a crashed write a read-only open cannot undo
   switch (code & 0xff) {
@@ -582,29 +572,14 @@ function readCursorState(source: string, sourceRelative: string): Map<string, st
   if (!stats.isFile()) return undefined;
   const unreadable = (reason: CursorStateUnreadableReason, code?: number) => new JcodeCursorStateUnreadable(sourceRelative, reason, code);
 
-  // Resolve once. SQLite finds -wal and -shm beside the file it opens, so the header, the sidecar
-  // check and the open all name the target, never the allowlisted link.
-  const target = realpathSync(source);
-  if (!isRegularFile(target)) return undefined;
-  const header = Buffer.alloc(100);
-  const fd = openSync(target, constants.O_RDONLY);
-  let length: number;
-  try {
-    length = readSync(fd, header, 0, header.length, 0);
-  } finally {
-    closeSync(fd);
-  }
-  if (length < header.length || !header.subarray(0, SQLITE_MAGIC.length).equals(SQLITE_MAGIC)) throw unreadable("not_sqlite");
-  // Header bytes 18 and 19: 1 for a rollback journal, 2 for WAL.
-  const wal = header[18] === 2 && header[19] === 2;
-  if (!wal && !(header[18] === 1 && header[19] === 1)) throw unreadable("journal_mode");
-  // A read-only open of a WAL database without its -wal and -shm creates them in Cursor's directory,
-  // and a read that skips SQLite's locking can return rows from two commits.
-  if (wal && !(isRegularFile(`${target}-wal`) && isRegularFile(`${target}-shm`))) throw unreadable("wal_sidecar_missing");
-
+  // A plain read-only open in whatever journal mode Cursor uses. SQLite follows a link to the real
+  // file and keeps its -journal, -wal and -shm beside that file. On a WAL database whose -wal and -shm
+  // are absent it creates them there, as every SQLite reader does, and leaves them after a read-only
+  // close. They are SQLite's coordination files; Cursor's next close removes them. Deleting them here
+  // could race a Cursor that opens the database in between.
   let db: DatabaseSync | undefined;
   try {
-    db = new DatabaseSync(target, { readOnly: true });
+    db = new DatabaseSync(source, { readOnly: true });
     db.exec(`PRAGMA busy_timeout = ${CURSOR_STATE_BUSY_MS}`);
     db.exec("BEGIN");
     if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'ItemTable'").get()) throw unreadable("no_item_table");
