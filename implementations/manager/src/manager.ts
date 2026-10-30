@@ -1627,6 +1627,12 @@ export class Manager {
    *  exit is proved, or it was never served), so it is cancelled if it has no terminal and its index
    *  entry is dropped. A settle that fails stays here and the turn sweep retries it. */
   private readonly onceSettles = new Map<string, { ref: GoalRef; reason: string; flight?: Promise<void> }>();
+  /** Once tasks a predecessor accepted, by seat uid, until this incarnation binds the seat or
+   *  proves it gone. `readinessMs` bounds how long a seat no reconcile here can account for is
+   *  waited for. */
+  private readonly onceInherited = new Map<string, { ref: GoalRef; seat: { name: string; owner: string; actor: string; uid: string }; deadlineAt?: number; readinessMs: number }>();
+  /** When the goal reconcile finished: the start of an inherited once task's wait for its seat. */
+  private goalReconcileDoneAt = 0;
   /** Process start, for the served `status` uptime. */
   private readonly startedAtMs = Date.now();
   /** Connector harness paths resolved ONCE at boot. Missing binaries do not stop unrelated manager
@@ -9424,6 +9430,7 @@ export class Manager {
       console.error(`! goal-index boot reconcile failed: ${rejectionText(e)} - accepted goals from a predecessor may stay unsettled until the next restart`);
     } finally {
       this.goalReconcileDone = true;
+      this.goalReconcileDoneAt = Date.now();
       // A seat that pulled during the window was refused, and a predecessor may have died before
       // its notice went out, so every seat holding a rebuilt turn is told once.
       const seats = new Map([...this.pendingTurns.values()].map((p) => [`${p.seat.owner}.${p.seat.actor}.${p.seat.uid}`, p.seat]));
@@ -10292,7 +10299,7 @@ export class Manager {
    *  terminals AND drops settled answers once their retry window has passed, so a stop while the
    *  second is still owed would leave one entry per turn for the process lifetime. */
   private maybeStopTurnSweep(): void {
-    if (this.pendingTurns.size > 0 || this.onceSettles.size > 0) return;
+    if (this.pendingTurns.size > 0 || this.onceSettles.size > 0 || this.onceInherited.size > 0) return;
     // An acceptance with no `settled` yet is the in-flight deadline commit: pending was the
     // latch and is already gone, the terminal CAS has not returned, and a concurrent sweep
     // tick used to clear the map here, so rememberSettledTurn no-op'd and a late yield heard
@@ -10336,6 +10343,7 @@ export class Manager {
     }
     for (const p of heads.values()) if (p.pulledAt === undefined) this.noticeSeatTurns(p.seat);
     for (const owed of [...this.onceSettles.values()]) if (!owed.flight) void this.settleOnceTurn(owed.ref, owed.reason);
+    if (this.onceInherited.size > 0) await this.settleInheritedOnce().catch((e) => console.error(`! inherited once tasks: ${rejectionText(e)}`));
     for (const p of [...this.pendingTurns.values()]) {
       if (p.deadlineAt === undefined || now < p.deadlineAt) continue;
       try {
@@ -10356,12 +10364,19 @@ export class Manager {
     if (!gw) return;
     const status = await readGoalStatus(gw.ctx, entry.ref);
     if (status === undefined) return; // index points at no goal record: a dead pointer, left for honesty
-    if (GOAL_TERMINAL_STATES.includes(status.value.state)) { await clearGoalIndex(gw.ctx, entry.ref); return; }
+    const parsed = entry.note !== undefined ? parseTurnNote(entry.note) : undefined;
+    const ownOnce = parsed?.once === true && entry.iid === this.managerInstanceId && entry.allocated?.owner !== undefined;
+    if (GOAL_TERMINAL_STATES.includes(status.value.state)) {
+      // A once task's entry is its seat's debt until that seat's exit is proved, so it outlives
+      // the terminal: the stop the predecessor owed may never have landed.
+      if (ownOnce) await this.inheritOnce(entry.ref, entry.allocated!, parsed!);
+      else await clearGoalIndex(gw.ctx, entry.ref);
+      return;
+    }
     if (entry.iid !== this.managerInstanceId) {
       console.error(`turn reconcile ${entry.ref.goalId}: accepted by instance "${entry.iid}", not this incarnation "${this.managerInstanceId}"; left for its owner (never a cross-instance settle)`);
       return;
     }
-    const parsed = entry.note !== undefined ? parseTurnNote(entry.note) : undefined;
     if (entry.allocated?.owner === undefined || parsed === undefined) {
       console.error(`turn reconcile ${entry.ref.goalId}: the relay record is garbled (no floor naming the seat's owner, or an unparseable note); left unsettled`);
       return;
@@ -10384,7 +10399,8 @@ export class Manager {
       holdEpoch: parsed.holdEpoch,
       ...(parsed.deadlineAt !== undefined ? { deadlineAt: parsed.deadlineAt, holdToken: parsed.holdToken ?? turnHoldToken(entry.ref.goalId) } : {}),
       ...(parsed.handoffFrom !== undefined ? { handoffFrom: parsed.handoffFrom } : {}),
-      ...(parsed.once ? { once: { deliverable: true } } : {}),
+      // An inherited once task is served again only once its seat is bound to this incarnation.
+      ...(parsed.once ? { once: { deliverable: false } } : {}),
     };
     // The hold is the relay's bounded ending, minted AFTER the index entry and the goal record,
     // so a crash between them leaves a goal with no hold: nothing could ever settle it, and the
@@ -10414,7 +10430,8 @@ export class Manager {
     // terminal then carried `agentDownAt`, so the run raised L4002 for a seat that was alive the
     // whole time where the reference says L4003. The reap hook is the only honest writer of that
     // fact: it fires when a managed seat actually dies.
-    console.error(`turn reconcile ${p.goalId}: pending relay to ${p.seat.name}/${p.seat.uid} adopted (deadline ${p.deadlineAt})`);
+    console.error(`turn reconcile ${p.goalId}: pending relay to ${p.seat.name}/${p.seat.uid} adopted (deadline ${p.deadlineAt ?? "none"})`);
+    if (parsed.once) await this.inheritOnce(entry.ref, entry.allocated, parsed);
     this.ensureTurnSweep();
   }
 
@@ -10582,6 +10599,75 @@ export class Manager {
       this.ensureTurnSweep();
     }
     this.maybeStopTurnSweep();
+  }
+
+  /** Record a once task a predecessor accepted, and bind its seat if this incarnation already
+   *  adopted it. The static adoption and the goal reconcile run in either order, so each side
+   *  binds what the other has already found. */
+  private async inheritOnce(ref: GoalRef, allocated: NonNullable<GoalIndexEntry["allocated"]>, note: TurnNote): Promise<void> {
+    this.onceInherited.set(allocated.uid, {
+      ref, seat: { name: allocated.name, owner: allocated.owner!, actor: allocated.actor, uid: allocated.uid },
+      ...(note.deadlineAt !== undefined ? { deadlineAt: note.deadlineAt } : {}),
+      readinessMs: allocated.readinessDeadlineMs ?? this.readinessTimeoutMs,
+    });
+    const a = this.findManagedByTarget({ owner: allocated.owner!, actor: allocated.actor, lifecycleUid: allocated.uid });
+    if (a !== undefined) await this.bindOnceSeat(a);
+    this.ensureTurnSweep();
+  }
+
+  /** Make an adopted seat a once seat again: its exit settles its task, and the task is served to
+   *  it. A task that ended before the restart owes the stop the predecessor may not have made. */
+  private async bindOnceSeat(a: ManagedAgent): Promise<void> {
+    const inherited = this.onceInherited.get(a.lifecycleUid);
+    if (inherited === undefined || a.once !== undefined) return;
+    this.onceInherited.delete(a.lifecycleUid);
+    a.once = { ref: inherited.ref };
+    this.watchOnceExit(a);
+    const p = this.pendingTurns.get(goalKey(inherited.ref));
+    if (p?.once) {
+      p.once.deliverable = true;
+      this.noticeSeatTurns(p.seat);
+      return;
+    }
+    const ended = this.goalWriter ? await readGoalResult(this.goalWriter.ctx, inherited.ref) : undefined;
+    if (ended !== undefined) this.stopOnceSeat(a, "turn-ended");
+  }
+
+  /** Inherited once tasks whose seat is not bound here. On a static mesh the boot reconcile adopts
+   *  every seat it can and reaps the rest by their custody reference, so once it has finished with
+   *  a seat's slot, an unbound seat is proved gone. A manager that adopts no seats cannot reach the
+   *  old seat or prove its exit: it does not serve the task to it, a task with a deadline ends at
+   *  that deadline, and one without is settled `uncertain` after one readiness window. */
+  private async settleInheritedOnce(): Promise<void> {
+    const gw = this.goalWriter;
+    if (!gw || !this.goalReconcileDone) return;
+    const adopts = this.auth !== undefined && !this.userMode;
+    for (const [uid, d] of [...this.onceInherited]) {
+      const live = this.findManagedByTarget({ owner: d.seat.owner, actor: d.seat.actor, lifecycleUid: uid });
+      if (live !== undefined) { await this.bindOnceSeat(live); continue; }
+      if (adopts) {
+        const reconciling = this.staticReconcileSweepsInFlight > 0
+          || [...this.staticReconcileItems.values()].some((i) => i.lifecycleUid === uid && i.disposition !== "recovered");
+        if (reconciling) continue;
+        this.onceInherited.delete(uid);
+        void this.settleOnceTurn(d.ref, "seat-exited");
+        continue;
+      }
+      if ((await readGoalResult(gw.ctx, d.ref)) !== undefined) {
+        this.onceInherited.delete(uid);
+        await clearGoalIndex(gw.ctx, d.ref);
+        continue;
+      }
+      if (d.deadlineAt !== undefined || Date.now() - this.goalReconcileDoneAt < d.readinessMs) continue;
+      this.onceInherited.delete(uid);
+      const key = goalKey(d.ref);
+      this.pendingTurns.delete(key);
+      this.markTurnLatchDropped(key);
+      try {
+        await settleGoalUncertain(gw.ctx, { ref: d.ref, now: Date.now(), committer: { instanceId: this.managerInstanceId, epoch: this.serviceServe?.grant.epoch ?? 0 }, reason: "the manager restarted and could not reach the seat; the task may have run in part or in full" });
+        await clearGoalIndex(gw.ctx, d.ref);
+      } catch (e) { console.error(`! inherited once task ${d.ref.goalId}: ${rejectionText(e)}`); }
+    }
   }
 
   /** Settle race: a despawn MID-GOAL drives the goal's cancel terminal - transition to
@@ -10816,6 +10902,7 @@ export class Manager {
     this.agents.set(entry.name, managed);
     this.watchExit(managed);
     console.error(`! ${entry.name}: adopted the seat its previous manager left (${row.runtime.kind}:${row.runtime.id})`);
+    await this.bindOnceSeat(managed);
     // A credential that came close to its expiry while no manager ran is renewed now, not at the
     // next pass.
     const health = inspectCredHealth(stored).state;

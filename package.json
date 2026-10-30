@@ -1008,6 +1008,7 @@
     "smoke:seat-input": "tsx implementations/manager/smoke/seat-input-live.smoke.ts",
     "smoke:turn-relay-auth": "tsx implementations/manager/smoke/turn-relay-auth.smoke.ts",
     "smoke:spawn-once": "tsx implementations/manager/smoke/spawn-once.smoke.ts",
+    "smoke:spawn-once-restart": "tsx implementations/manager/smoke/spawn-once-restart.smoke.ts",
     "smoke:ep-rail-failure": "tsx implementations/cli/smoke/ep-rail-failure.smoke.ts",
     "smoke:bind-fence:live": "tsx implementations/cli/smoke/bind-fence-live.smoke.ts",
     "smoke:agui-codex-map": "tsx extensions/connector-codex/smoke/agui-map.smoke.ts",
