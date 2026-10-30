@@ -471,8 +471,11 @@ try {
     ["comma", ",", []], ["trimmed", " review , , ops ", ["review", "ops"]],
     ["literal", "none", ["none"]],
   ];
+  const childEnv: NodeJS.ProcessEnv = { ...process.env, HOME: home, DO_NOT_TRACK: "1" };
+  for (const key of Object.keys(childEnv)) if (key.startsWith("COTAL_")) delete childEnv[key];
+  childEnv.COTAL_HOME = home;
   const native = (args: string[]) => spawnSync(process.execPath, [binary, ...args], {
-    cwd: MESH, env: process.env, encoding: "utf8", timeout: 30_000,
+    cwd: MESH, env: childEnv, encoding: "utf8", timeout: 30_000,
   });
   for (const [label, raw, expected] of cases) {
     for (const verb of ["persona", "personas"] as const) {
