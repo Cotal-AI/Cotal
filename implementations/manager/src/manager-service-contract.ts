@@ -666,13 +666,15 @@ const TURN_PENDING_OUTPUT_SCHEMA = {
       type: "array",
       items: {
         type: "object", additionalProperties: false,
-        // A `once` task with no deadline has no `deadlineAt`; its absence means no expiry.
+        // `once` marks a once seat's task, which the seat hands to its harness at most once. Only
+        // that task may omit `deadlineAt`, and its absence means no expiry.
         required: ["goalId", "payload", "acceptedAt"],
         properties: {
           goalId: { type: "string" },
           payload: { type: "string" },
           acceptedAt: { type: "integer", minimum: 0 },
           deadlineAt: { type: "integer", minimum: 1 },
+          once: { const: true },
         },
       },
     },
@@ -1436,8 +1438,8 @@ export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: Compile
  *  43 = `turn-participate` authorizes an exact personal native lifecycle for a finite self-only
  *  workflow turn lease without creating a managed seat or granting terminal custody.
  *
- *  44 = `once` on `spawn`: the spawn input grows `once` (`deadlineMs`), a `turn-pending` row's
- *  `deadlineAt` becomes optional (a once task with no deadline never expires), and the new
+ *  44 = `once` on `spawn`: the spawn input grows `once` (`deadlineMs`), a `turn-pending` row gains
+ *  `once` and its `deadlineAt` becomes optional (a once task with no deadline never expires), and the new
  *  `turn-unconfirmed` command lets a once seat report an unconfirmed handoff of its task. */
 export function managerClusterDocument(): ClusterDocument {
   return buildClusterDocument(MANAGER_CLUSTER_URN, 44, ROWS);

@@ -152,7 +152,7 @@ try {
     const service = await resolveService(nc, space, MANAGER_ENDPOINT, triple);
     const invoke = (command: string, args?: Record<string, unknown>) =>
       invokeCommand(nc, space, service, command, args, { target: { mode: "self" }, deadlineMs: 10_000 }).then((r) => r.reply as Reply, asValue);
-    const pull = async () => ((await invoke("turn-pending")).data?.turns ?? []) as Array<{ goalId: string; payload: string; acceptedAt: number; deadlineAt?: number }>;
+    const pull = async () => ((await invoke("turn-pending")).data?.turns ?? []) as Array<{ goalId: string; payload: string; acceptedAt: number; deadlineAt?: number; once?: true }>;
     return { invoke, pull };
   };
   /** The seat is gone: its process exited and its slot was freed. */
@@ -195,7 +195,7 @@ try {
   // Delivery opens at the readiness verdict; the notice that follows it can trail the pull here.
   if (turns1.length === 0) { await wait(1_000); turns1 = await side1.pull(); }
   const payload1 = turns1[0] === undefined ? undefined : JSON.parse(turns1[0].payload) as Record<string, unknown>;
-  check("the seat is served exactly one turn, the task, with its deadline", turns1.length === 1 && turns1[0]!.goalId === s1.once?.goalId && turns1[0]!.deadlineAt === s1.once?.deadlineAt, turns1);
+  check("the seat is served exactly one turn, the task, marked once and carrying its deadline", turns1.length === 1 && turns1[0]!.goalId === s1.once?.goalId && turns1[0]!.once === true && turns1[0]!.deadlineAt === s1.once?.deadlineAt, turns1);
   check("a prompt shaped like a run payload stays text: it is the context, and adds no ask, checkpoint or once field",
     payload1?.context === jsonPrompt && payload1.ask === undefined && payload1.checkpoint === undefined
       && (payload1.once as { spawner?: string }).spawner !== "someone-else", payload1);

@@ -9976,7 +9976,7 @@ export class Manager {
 
   /** The seat's pull: every pending turn addressed to the CALLER's incarnation, oldest first.
    *  The uid is part of the address — a successor seat never receives a predecessor's turn. */
-  private turnPendingFor(c: { owner: string; actor: string; uid: string }): { turns: { goalId: string; payload: string; acceptedAt: number; deadlineAt?: number }[]; notices: true } {
+  private turnPendingFor(c: { owner: string; actor: string; uid: string }): { turns: { goalId: string; payload: string; acceptedAt: number; deadlineAt?: number; once?: true }[]; notices: true } {
     // AN EMPTY LIST IS AN ANSWER, so it must not be given before the index is rebuilt. Between
     // registration and `reconcileGoalIndex`, `pendingTurns` holds nothing a predecessor accepted,
     // and a seat that pulls in that window is told authoritatively that it has no turn. The seat
@@ -9999,7 +9999,7 @@ export class Manager {
       .sort((x, y) => x.acceptedAt - y.acceptedAt)
       .slice(0, 1);
     for (const p of head) p.pulledAt ??= now;
-    const turns = head.map((p) => ({ goalId: p.goalId, payload: p.payload, acceptedAt: p.acceptedAt, ...(p.deadlineAt !== undefined ? { deadlineAt: p.deadlineAt } : {}) }));
+    const turns = head.map((p) => ({ goalId: p.goalId, payload: p.payload, acceptedAt: p.acceptedAt, ...(p.deadlineAt !== undefined ? { deadlineAt: p.deadlineAt } : {}), ...(p.once ? { once: true as const } : {}) }));
     return { turns, notices: true };
   }
 
