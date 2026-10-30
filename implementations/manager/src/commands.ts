@@ -515,13 +515,14 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
         // the host knows nothing about.
         ...(provider.enrollRemoteManagedAgent
           ? {
-              enrollManagedAgent: async ({ target }) => {
+              enrollManagedAgent: async ({ target, spawn }) => {
                 const request = remoteManagedAgentEnrollmentRequest(
                   state,
                   "cli",
                   retainedRegistrationProof,
                   registered.processEpoch,
                   target,
+                  spawn,
                 );
                 const result = await provider.enrollRemoteManagedAgent!({ ...providerCall, request });
                 return remoteManagedAgentEnrollmentMaterial(result, request);

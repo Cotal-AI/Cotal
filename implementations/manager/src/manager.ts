@@ -114,7 +114,7 @@ import { GateReconcileRefused, reconcileEndpointGate } from "./reconcile-gate.js
 import { inlinePersonaDir, inlineSnapshotPath, launchSpecForRun, materializePersona, launchAgentToStartOpts, removeInlineSnapshot, writeInlineSnapshot, parseLaunchSpec, persistLaunchSpec, readContinuityAssignment, writeContinuityAssignment, type ContinuityAssignment } from "./launch.js";
 import { authorizeLaunch, authorizeNamedControl } from "./authorize.js";
 import { controlShutdown } from "./control-shutdown.js";
-import { RunHosting } from "./run-hosting.js";
+import { RunHosting, servedRequestSubject } from "./run-hosting.js";
 import { enrolledAcl } from "./remote-authority.js";
 import { rejectionText } from "./rejection-text.js";
 import { controlSession } from "./control-session.js";
@@ -593,6 +593,10 @@ export interface ManagerOptions {
         allowSubscribe?: string[];
         allowPublish?: string[];
       };
+      /** The served spawn request this enrollment answers, when a caller asked for it. The host
+       *  makes the caller it saw publish that subject the helper's parent, or the run's starter for
+       *  a run's spawn (SPEC 13.6). */
+      spawn?: { served: string; runId?: string };
     }) => Promise<{
       owner: string;
       actor: string;
@@ -920,6 +924,10 @@ export interface StartAgentOpts {
    *  ignored. The spawner's event channel is never inherited (the seat mints its own below).
    *  Imperative-only, rejected with `resolved`. */
   callerAcl?: { allowSubscribe: string[]; allowPublish: string[] };
+  /** The request subject the served `spawn` door answered. A hosted enrollment forwards it, and the
+   *  issuing host makes the caller it saw publish that subject the helper's parent (SPEC 13.6).
+   *  Set by the served door only. */
+  served?: string;
   /** Names of the operator's configured MCP servers this agent gets (absent → all declared for the
    *  connector — the pre-merge manager behavior; `[]` → none). */
   shareTools?: readonly string[];
@@ -1068,6 +1076,8 @@ interface ProvisionUserAgentOpts {
    *  alone reads the retirement tombstones), and the returned `lifecycleUid` is that value. */
   lifecycleUid: string;
   delegatedIntent?: StartAgentOpts["delegatedIntent"];
+  /** The served spawn this enrollment answers, which the hosted arm forwards. */
+  spawnRequest?: { served: string; runId?: string };
   /** Called once the host's enrollment answer passed the owner, actor and uid checks, before any
    *  later step, so a caller that must hold the enrolled uid holds it whatever fails after. */
   onEnrolled?: (enrolled: Pick<ProvisionedUserAgent, "owner" | "lifecycleUid" | "files">) => void;
@@ -4348,7 +4358,7 @@ export class Manager {
       // follows owner-domain reach on a user mesh. Resolve the caller's admin tier once for
       // the residual cross-owner case; opStart decides before connector resolution or grant
       // mutation. Static meshes resolve true and nothing changes.
-      spawn: (ctx) => this.loggedSpawnRefusal(ctx, () => this.serveGated(ctx, async () => this.serveSpawnGoal(ctx, async (h) => this.opStart(args(ctx), callerOf(ctx), await this.epAdminReach(ctx.subject.caller), h, ctx.subject.route, ctx.subject.caller)))),
+      spawn: (ctx) => this.loggedSpawnRefusal(ctx, () => this.serveGated(ctx, async () => this.serveSpawnGoal(ctx, async (h) => this.opStart(args(ctx), callerOf(ctx), await this.epAdminReach(ctx.subject.caller), h, ctx.subject.route, ctx.subject.caller, servedRequestSubject(this.space, ctx))))),
       despawn: (ctx) => this.serveGated(ctx, async () => {
         const a = targetAgent(ctx);
         const denied = await this.authorizeNamed(a, callerOf(ctx), await this.epAnyModeAdmin(ctx), ctx.subject.caller);
@@ -4696,6 +4706,13 @@ export class Manager {
       .finally(() => this.releaseLifecycle());
   }
 
+  /** The served spawn a hosted enrollment forwards. A run's spawn also names its run, so the host
+   *  bounds the helper by what the run's starter held when the run was admitted (SPEC 14.8). */
+  private servedSpawnRequest(served: string, caller: EpCaller | undefined): { served: string; runId?: string } {
+    const run = caller !== undefined ? this.runHosting?.runAdmission(caller) : undefined;
+    return { served, ...(run !== undefined ? { runId: run.runId } : {}) };
+  }
+
   /** USER-MODE spawn provisioning (the gate-1 counterpart to the static mint block): resolve the
    *  OWNER (ctl caller's principal, or the manifest's stamped owner — never a payload field),
    *  pre-create the principal-keyed durables + ACL row on the ephemeral provisioner, author the
@@ -4872,6 +4889,7 @@ export class Manager {
           allowSubscribe: opts.allowSubscribe,
           ...(opts.allowPublish !== undefined ? { allowPublish: opts.allowPublish } : {}),
         },
+        ...(opts.spawnRequest !== undefined ? { spawn: opts.spawnRequest } : {}),
       });
       if (material.actor !== name)
         throw new Error(`the host enrolled actor "${material.actor}", not the requested "${name}"`);
@@ -5967,7 +5985,7 @@ export class Manager {
   }
 
   /** Parse an untyped control-plane `start` request into {@link StartAgentOpts}. */
-  private opStart(args: Record<string, unknown>, caller: string, admin: boolean, hooks?: SpawnHooks, route: "one" | "all" | "inst" = "inst", authenticatedCaller?: EpCaller): Promise<ControlReply> {
+  private opStart(args: Record<string, unknown>, caller: string, admin: boolean, hooks?: SpawnHooks, route: "one" | "all" | "inst" = "inst", authenticatedCaller?: EpCaller, served?: string): Promise<ControlReply> {
     // Opaque launch options, when present, must be a mapping — a raw control message could send a
     // scalar/array (the CLI never does). Core doesn't interpret the keys; the connector validates them.
     if (args.launchOptions !== undefined && (typeof args.launchOptions !== "object" || args.launchOptions === null || Array.isArray(args.launchOptions)))
@@ -6077,6 +6095,7 @@ export class Manager {
         ...(supervise !== undefined ? { supervise } : {}),
         ...(typeof args.runtime === "string" ? { runtime: args.runtime.trim() } : {}),
         route,
+        ...(served !== undefined ? { served } : {}),
       },
       caller,
       hooks,
@@ -7130,6 +7149,7 @@ export class Manager {
           label: ref,
           lifecycleUid,
           delegatedIntent: opts.delegatedIntent,
+          ...(opts.served !== undefined ? { spawnRequest: this.servedSpawnRequest(opts.served, authenticatedCaller) } : {}),
           // Hold the name at the UID the host enrolled for the intent's user before any later local
           // step runs, so no later failure, its refusal included, releases a lifecycle that only that
           // user's retirement intent retires.

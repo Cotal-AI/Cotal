@@ -363,6 +363,11 @@ export interface RemoteManagedAgentEnrollmentRequest {
     allowSubscribe?: string[];
     allowPublish?: string[];
   };
+  /** The spawn request this enrollment answers, when a caller asked for it: the request subject the
+   *  manager served, and the run whose driver sent it. The host bounds the helper by the caller it
+   *  observed publishing that subject, never by this field's word. Absent for a spawn the manager
+   *  starts on its own behalf, whose parent is the manager. */
+  spawn?: { served: string; runId?: string };
   identities: RemoteManagerAuthorityRequest["identities"];
 }
 
@@ -639,18 +644,34 @@ export function parseRemoteManagedAgentEnrollmentRequest(raw: unknown): RemoteMa
   const o = raw as Record<string, unknown>;
   const allowed = new Set([
     "v", "kind", "space", "actor", "instanceId", "managerLifecycleUid", "requestId",
-    "registrationProof", "serveEpoch", "target", "identities",
+    "registrationProof", "serveEpoch", "target", "spawn", "identities",
   ]);
   for (const key of Object.keys(o))
     if (!allowed.has(key)) enrollmentError(what, `carries unknown field ${JSON.stringify(key)} (the protocol is closed)`);
   const envelope = parseManagedAgentEnvelope(o, what, "manager-managed-agent-enrollment");
   const target = parseLaunchTarget(o.target, what, true);
+  const spawn = o.spawn === undefined ? undefined : parseEnrollmentSpawn(o.spawn, what);
   return {
     v: 1,
     kind: "manager-managed-agent-enrollment",
     ...envelope,
     target: { ...target, tokenHash: parseTokenHash((o.target as Record<string, unknown>).tokenHash, what) },
+    ...(spawn !== undefined ? { spawn } : {}),
   };
+}
+
+/** The served spawn an enrollment answers: a request subject and, for a run's spawn, its run id.
+ *  Only the shape is checked here; the host checks the subject against what it observed. */
+function parseEnrollmentSpawn(value: unknown, what: string): { served: string; runId?: string } {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) enrollmentError(what, "spawn must be an object when present");
+  const v = value as Record<string, unknown>;
+  for (const key of Object.keys(v))
+    if (key !== "served" && key !== "runId") enrollmentError(what, `spawn carries unknown field ${JSON.stringify(key)} (the protocol is closed)`);
+  if (typeof v.served !== "string" || v.served.length === 0 || v.served.length > 512 || !v.served.startsWith("cotal."))
+    enrollmentError(what, "spawn.served must be the served request subject");
+  if (v.runId !== undefined && (typeof v.runId !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(v.runId)))
+    enrollmentError(what, "spawn.runId must be a run id token when present");
+  return { served: v.served as string, ...(v.runId !== undefined ? { runId: v.runId as string } : {}) };
 }
 
 /** The digest, never the secret: a request that carried the plaintext standing token would put an

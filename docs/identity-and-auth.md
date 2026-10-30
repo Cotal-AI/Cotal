@@ -685,6 +685,12 @@ child that child's own event channel, `events.<owner>.<child>`, and no other. It
 it reaches nothing the spawner holds, and the spawner's own event channel is still checked against
 its parent.
 
+On a participant manager the issuing host enrolls each helper, and the spawner is whoever asked the
+manager for it. The manager forwards the `spawn` request subject it served. The host has read that
+subject itself, so it takes the caller from what it saw and never from the manager's word, and
+answers each request once. A helper a workflow run spawns has the run's starter as its parent, and
+also stays within what the starter held when the run was admitted.
+
 **Control ops ride your own login**, gated by ledger scope. `spawn` covers launching,
 `ps`, and stop/attach of the agents under **your own owner**: the owner is the
 administrative boundary of its own subtree, so you (and your agents) manage what you own

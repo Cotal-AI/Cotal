@@ -2096,11 +2096,21 @@ These two operations mutate host-owned storage, so an implementation that owns n
 refuse them with `unimplemented` rather than answering a manager-lifecycle phase for them. An auth
 service that owns the actor ledger and the space's provisioning authority answers both itself, after
 the same decision. Its enrollment writes the managed grant at a fresh host-minted lifecycle UID with
-the request's supervising actor as the grant's parent, so the ledger's delegation envelope bounds it,
-and then provisions that UID's durables; a provisioning failure revokes the grant and releases the
-footprint before the refusal. An enrollment whose token digest matches the agent's standing grant is
-a retry of that enrollment: it walks the held grant through the supervising actor's current
-delegation envelope and refuses as a fresh enrollment would when the grant falls outside it;
+a parent the ledger's delegation envelope bounds it by, and then provisions that UID's durables. The
+parent is the request's supervising actor unless the request carries `spawn: { served, runId? }`, the
+manager `spawn` request subject the participant served and, for a run's spawn, the run id. The host
+reads every manager `spawn` request subject published in the space and takes the caller from a
+subject it observed, never from the request's word: the broker locks the caller and a per-call nonce
+into that subject. Each observed subject answers one enrollment within the observation window; a
+subject the host did not observe, or already answered, MUST be refused with `permission-denied`, as
+MUST one whose caller belongs to another owner. Without `runId` the observed caller is the parent.
+With it, the run MUST be admitted on the requesting instance and the caller MUST be that run's driver
+(§14.8); the parent is then the run's starter, and the admission's `delegation` bounds the helper as
+well. On the static path the manager bounds a helper by its caller's evidence instead (§13.15). A
+provisioning failure revokes the grant and releases the footprint before the refusal. An enrollment
+whose token digest matches the agent's standing grant is a retry of that enrollment and consumes no
+observation: it walks the held grant through its parent's current delegation envelope and refuses
+as a fresh enrollment would when the grant falls outside it;
 otherwise it answers the held UID and provisions it again, and its failure leaves that grant in
 place. While the agent holds a grant with another digest, enrollment MUST be refused
 with `conflict` until that lifecycle's retirement is prepared, so a successor never takes a running
@@ -6211,7 +6221,7 @@ recorded once per run, and never widened afterwards.
 **The record.** Before the driver is launched and before a successful start reply, the hosting
 endpoint writes `admission.v1.<endpoint>.<runId>` in `cotal_admission_<space>`, create-only,
 under a one-shot `run-admitter` credential pinned to that one run:
-`{ version: 1, space, endpoint, runId, instanceId, caller, ceiling, provenance, admittedAt, spawnExempt? }`.
+`{ version: 1, space, endpoint, runId, instanceId, caller, ceiling, provenance, admittedAt, spawnExempt?, delegation? }`.
 The store is write-once per key at the broker (§13.12: one message per subject under `discard:
 new`, no rollup header, no message delete, no purge), so the admitter's own key row can neither
 replace the admission nor remove it once written, and a marker, once written, stays.
@@ -6242,6 +6252,15 @@ caller's own are. The verdict is recorded rather than re-derived because an inst
 expires minutes after issue and a run's spawns may come hours later. An admission without the field
 is bounded. A reader that predates the field refuses an admission carrying it as an unsupported
 field.
+
+On a user-auth mesh the issuing host bounds a hosted run's spawns through the ledger. When it admits
+a run for a participant manager it writes `delegation: { scope, allowSubscribe, allowPublish }`, the
+starter's ledger row as it stands at admission, and omits it when the starter has no row. Each
+helper the run spawns is enrolled with the starter as its parent (§13.6) and MUST fall within both
+the starter's current row, through the ledger walk, and `delegation`, by the same per-link rule, so a
+grant the starter gained after the run began is never handed on. A `delegation` whose scope holds
+`admin` bounds nothing, as an admin spawner bounds nothing in the walk. An admission without the
+field hands on no channel and no capability.
 
 **Revocation.** `revoked.v1.<endpoint>.<runId>` is the run's revocation marker: create-only,
 idempotent, written under the same `run-admitter` profile, never removed. A revoked run performs
@@ -6819,6 +6838,7 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
+| 2026-10-30 | **A hosted helper is bounded by the caller that asked for it (§13.6, §14.8), breaking.** A participant manager's enrollment made the manager the helper's ledger parent, so any agent of the owner that could reach the manager's `spawn` command got a helper bounded by the manager's grant. The enrollment request gains `spawn: { served, runId? }`. The issuing host reads every manager `spawn` request subject and makes the caller of an observed one the parent, or the run's starter for a run's spawn, and refuses a subject it did not observe or already answered. A hosted run's admission gains `delegation`, the starter's ledger row at admission, and the run's helpers must also fall within it. A host that predates the field refuses an enrollment carrying it, and a reader that predates `delegation` refuses an admission carrying it. |
 | 2026-10-30 | **A hosted run's spawns are bounded by its admission (§13.15, §14.8), breaking.** A workflow run's spawns were exempt from the static spawn bound, so a caller holding `run` could start a run and spawn a helper the direct spawn door refuses. Each spawn a run makes on a static mesh is now bounded by the admitted ceiling at the admitted caller's coordinate, so a grant the caller gained after admission is never handed on. The admission gains `spawnExempt: true`, written when the caller was an operator instrument or held the admin set at admission; such a run's spawns stay exempt. A reader that predates the field refuses an admission carrying it. |
 | 2026-10-30 | **`spawn` takes an inline persona (§13.7).** An agent defines its helper on the spawn itself: the persona body, role, model, channels and capabilities, bounded as a catalog file is. The manager keeps the record in a private per-lifecycle snapshot written after the grant, refuses a restart once the snapshot changed, and removes it at retirement. `save: true` writes a create-only catalog copy of the checked grant under the requested name. `define-persona` takes `capabilities`, bounded against the definer before the write. The manager cluster advances to revision 44. Additive. |
 | 2026-10-30 | **A static spawn is bounded against the spawner's issued evidence (§13.15), breaking.** A caller that could spawn on a static space could hand its helper any channel or capability, because nothing compared the grant with what the caller held. The manager now resolves the caller's issued authority and refuses, by name, every channel and capability token the evidence does not cover, measured at the caller's own coordinate. A caller with no resolvable authority hands on no grant. Operator instruments and admin spawners are exempt. The helper's role and a workflow run's spawns are outside the bound in this revision. The user-auth ledger's own scope rule learns that `run` carries `spawn`. No wire change. |

@@ -53,6 +53,7 @@ import {
   writeSecretFile,
   type IssuedSourceRef,
   type ManagedGrantCustody,
+  type RunDelegation,
 } from "@cotal-ai/core";
 import { grantCommandLine } from "./grant-command.js";
 import { chatSessionAliasPresent } from "./chat-session-row.js";
@@ -386,27 +387,9 @@ export function assertWithinSpawnerGrant(
       throw new Error(
         `agent "${childKey}" cannot be delegated by spawner "${parentKey}" of a different owner - cross-owner spawns are operator (admin) launches only`,
       );
-    // `run` carries the whole spawn set, so a run holder hands on `spawn` too (the token rule core
-    // shares with the static bound). The vocabulary stays open: any token the parent lists is within.
-    const overScope = child.scope.filter((s) => !capabilityWithin(parent.scope, s));
-    const overSub = child.allowSubscribe.filter((ch) => !patternInAllow(parent.allowSubscribe, ch));
-    // A spawner that may post its own events may hand each child that child's own event channel
-    // and no other. The channel names the child, so it reaches nothing the spawner holds, and the
-    // walk still checks the spawner's own event channel against its parent up to the root.
-    const ownEvents = patternInAllow(parent.allowPublish, eventChannel({ owner: pOwner, actor: pActor })) ? eventChannel(child) : undefined;
-    const overPub = child.allowPublish.filter((ch) => ch !== ownEvents && !patternInAllow(parent.allowPublish, ch));
-    // A role is RECEIVE reach (bind/consume the shared `svc_<role>` task queue), so it is a
-    // delegated capability like any other: the spawner's scope must carry `role:<r>` to hand it
-    // down. Rides the scope list — no extra row field, and scope's own per-link inclusion makes
-    // role delegation transitive for free.
-    const needRole = child.role && !parent.scope.includes(`role:${child.role}`) ? `role:${child.role}` : undefined;
+    const { overScope, overSub, overPub, needRole } = overreachOf(parent, child);
     if (overScope.length || overSub.length || overPub.length || needRole) {
-      const wrongs = [
-        overScope.length ? `scope [${overScope.join(", ")}] beyond [${parent.scope.join(", ") || "none"}]` : "",
-        overSub.length ? `read [${overSub.join(", ")}] beyond [${parent.allowSubscribe.join(", ") || "none"}]` : "",
-        overPub.length ? `post [${overPub.join(", ")}] beyond [${parent.allowPublish.join(", ") || "none"}]` : "",
-        needRole ? `role "${child.role}" beyond scope [${parent.scope.join(", ") || "none"}] (a role is delegated with the \`${needRole}\` capability)` : "",
-      ].filter(Boolean);
+      const wrongs = describeOverreach({ overScope, overSub, overPub, needRole }, parent, child.role);
       const widen = widenGrantCommand(pOwner, pActor, parent, [...overScope, ...(needRole ? [needRole] : [])], overSub, overPub);
       const who = deep ? `agent "${leaf}": its ancestor "${childKey}"` : `agent "${leaf}"`;
       throw new Error(
@@ -420,6 +403,61 @@ export function assertWithinSpawnerGrant(
     }
     child = parent;
   }
+}
+
+/** What a child's grant asks for beyond its spawner's, part by part: the per-link envelope rule. */
+function overreachOf(
+  parent: { owner: string; actor: string; scope: readonly string[]; allowSubscribe: readonly string[]; allowPublish: readonly string[] },
+  child: Pick<ActorRow, "owner" | "actor" | "scope" | "allowSubscribe" | "allowPublish" | "role">,
+): { overScope: string[]; overSub: string[]; overPub: string[]; needRole?: string } {
+  // `run` carries the whole spawn set, so a run holder hands on `spawn` too (the token rule core
+  // shares with the static bound). The vocabulary stays open: any token the parent lists is within.
+  const overScope = child.scope.filter((s) => !capabilityWithin(parent.scope, s));
+  const overSub = child.allowSubscribe.filter((ch) => !patternInAllow([...parent.allowSubscribe], ch));
+  // A spawner that may post its own events may hand each child that child's own event channel
+  // and no other. The channel names the child, so it reaches nothing the spawner holds, and the
+  // walk still checks the spawner's own event channel against its parent up to the root.
+  const ownEvents = patternInAllow([...parent.allowPublish], eventChannel({ owner: parent.owner, actor: parent.actor })) ? eventChannel(child) : undefined;
+  const overPub = child.allowPublish.filter((ch) => ch !== ownEvents && !patternInAllow([...parent.allowPublish], ch));
+  // A role is RECEIVE reach (bind/consume the shared `svc_<role>` task queue), so it is a
+  // delegated capability like any other: the spawner's scope must carry `role:<r>` to hand it
+  // down. Rides the scope list — no extra row field, and scope's own per-link inclusion makes
+  // role delegation transitive for free.
+  const needRole = child.role && !parent.scope.includes(`role:${child.role}`) ? `role:${child.role}` : undefined;
+  return { overScope, overSub, overPub, ...(needRole !== undefined ? { needRole } : {}) };
+}
+
+function describeOverreach(
+  o: ReturnType<typeof overreachOf>,
+  parent: { scope: readonly string[]; allowSubscribe: readonly string[]; allowPublish: readonly string[] },
+  role: string | undefined,
+): string[] {
+  return [
+    o.overScope.length ? `scope [${o.overScope.join(", ")}] beyond [${parent.scope.join(", ") || "none"}]` : "",
+    o.overSub.length ? `read [${o.overSub.join(", ")}] beyond [${parent.allowSubscribe.join(", ") || "none"}]` : "",
+    o.overPub.length ? `post [${o.overPub.join(", ")}] beyond [${parent.allowPublish.join(", ") || "none"}]` : "",
+    o.needRole ? `role "${role}" beyond scope [${parent.scope.join(", ") || "none"}] (a role is delegated with the \`${o.needRole}\` capability)` : "",
+  ].filter(Boolean);
+}
+
+/** A hosted run's spawn (SPEC 14.8): the helper's grant must sit within what the run's starter held
+ *  when the run was admitted, the delegation its admission recorded. This is checked beside the
+ *  chain walk over the starter's current row, so the helper is within both. An admin starter is
+ *  exempt, as the walk exempts an admin spawner. */
+export function assertWithinRunDelegation(
+  runId: string,
+  starter: { owner: string; actor: string },
+  delegation: RunDelegation,
+  child: Pick<ActorRow, "owner" | "actor" | "scope" | "allowSubscribe" | "allowPublish" | "role">,
+): void {
+  if (delegation.scope.includes("admin")) return;
+  const o = overreachOf({ ...starter, ...delegation }, child);
+  if (!o.overScope.length && !o.overSub.length && !o.overPub.length && !o.needRole) return;
+  throw new Error(
+    `agent "${child.actor}" would exceed what run ${runId}'s starter "${starter.owner}.${starter.actor}" held when the run was admitted - a run hands on only that: ` +
+      describeOverreach(o, delegation, child.role).join("; ") +
+      " - start the run from a caller that holds these, or spawn the helper without them",
+  );
 }
 
 /** The exact re-grant that would admit the refused delegation: the spawner's CURRENT row with the

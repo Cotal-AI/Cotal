@@ -31,7 +31,7 @@ import {
   registry, RUN_HOST_KIND, COTAL_LANG_RUN_HOST, type RunHost,
   identityFromCreds, credsFromJwt,
   CotalEndpoint, type Connector, type LaunchOpts, type RuntimeProvider, type AgentHandle,
-  runDriverCaller,
+  runDriverCaller, epRequestSubject,
 } from "@cotal-ai/core";
 import { emitSentinel } from "@cotal-ai/smoke-kit";
 import {
@@ -63,6 +63,11 @@ const names = [
   "U1 direct parent grant is read afresh at callout mint",
   "U1 absent malformed foreign and self parent cannot issue",
   "U1 seat-started run spawns only its owner and cross-owner launch is broker refused",
+  "U1 a served spawn's helper is parented to the caller the host saw ask for it",
+  "U1 a served spawn wider than its caller is refused by the host",
+  "U1 an enrollment naming a spawn the host did not observe is refused",
+  "U1 a run's helper is parented to the run's starter",
+  "U1 a run's admission freezes its starter's grant and a later widening reaches no helper",
 ];
 let pass = 0, fail = 0;
 async function cell(index: number, fn: () => Promise<void>) {
@@ -198,8 +203,8 @@ try {
       return remote.remoteManagerAdminAuthorized(await post("/manager-service-authority", { idpToken, request }), request, owner);
     },
     agentBearerExchangeUrl: service.publicUrl!,
-    enrollManagedAgent: async ({ target }) => {
-      const request = remote.remoteManagedAgentEnrollmentRequest(state, "cli", proof, registered.processEpoch, target);
+    enrollManagedAgent: async ({ target, spawn }) => {
+      const request = remote.remoteManagedAgentEnrollmentRequest(state, "cli", proof, registered.processEpoch, target, spawn);
       return remote.remoteManagedAgentEnrollmentMaterial(await post("/manager-service-authority", { idpToken, request }), request);
     },
     runHosting: remote.remoteRunHosting({ state, owner, registrationProof: proof, accountPublicKey: a.accountPublicKey, processEpoch: registered.processEpoch,
@@ -340,6 +345,66 @@ try {
     assert.equal(findManagedActor(a.stateDir, spec.owner, "foreign"), undefined);
     drives.get(runId)!.release("owned spawn boundary fixture complete");
     assert.ok((await call(d, caller, "run-answer", { runId, stepKey: "/checkpoint:owned#0", value: true })).ok);
+  });
+  await cell(15, async () => {
+    // The run's driver sent the spawn, and the host records the run's starter as the parent.
+    assert.equal(findManagedActor(a.stateDir, owner, "owned")?.parent, `${owner}.runner`);
+  });
+  await cell(12, async () => {
+    assert.ok(d && caller);
+    const reply = await call(d, caller, "spawn", { name: "asked", agent: "u1-fixture", persona: { prompt: "A helper the runner asked for." }, events: false });
+    assert.ok(reply.ok, reply.error?.message);
+    assert.equal(findManagedActor(a.stateDir, owner, "asked")?.parent, `${owner}.runner`);
+  });
+  await cell(13, async () => {
+    assert.ok(d && caller);
+    const reply = await call(d, caller, "spawn", { name: "toowide", agent: "u1-fixture", persona: { prompt: "A helper wider than the runner.", allowPublish: ["secret"] }, events: false });
+    assert.equal(reply.ok, false);
+    assert.match(reply.error?.message ?? "", /would exceed its spawner's grant/);
+    assert.match(reply.error?.message ?? "", /post \[secret\]/);
+    assert.equal(findManagedActor(a.stateDir, owner, "toowide"), undefined);
+  });
+  await cell(14, async () => {
+    assert.ok(caller);
+    const served = epRequestSubject(a.space, { route: { mode: "inst", instanceId: state.instanceId }, endpoint: "manager", command: "spawn", caller, nonce: `forged${mintLifecycleUid()}` });
+    const secret = newActorToken();
+    const request = remote.remoteManagedAgentEnrollmentRequest(state, "cli", proof, registered.processEpoch,
+      { actor: "forged", tokenHash: secret.tokenHash, label: "forged", allowSubscribe: [] }, { served });
+    await assert.rejects(post("/manager-service-authority", { idpToken, request }), /did not observe this spawn request/);
+    assert.equal(findManagedActor(a.stateDir, owner, "forged"), undefined);
+  });
+  await cell(16, async () => {
+    assert.ok(d && caller);
+    writeFileSync(join(managerRoot, ".cotal", "agents", "late.md"), "---\nname: late\nagent: u1-fixture\ncapabilities: []\nallowPublish: [secret]\n---\n");
+    const started = await call(d, caller, "run-start", { source: 'await checkpoint("widen", "Widen the starter?"); await spawn("late", { events: false });' });
+    assert.ok(started.ok, started.error?.message);
+    const runId = (started.data as { runId: string }).runId;
+    await readyStatus(d, caller, runId, "pending", "/checkpoint:widen#0");
+    const row = findManagedActor(a.stateDir, owner, "runner")!;
+    const reader = await connect({ servers: fx.servers, ...standaloneConnectOpts({ creds: await mintCreds(a.auth, newIdentity(), "run-mediator",
+      { runMediator: { endpoint: "manager", runId, takeoverId: "a".repeat(16), instanceId: state.instanceId, epoch: 2 } }), tls: false }) });
+    try {
+      const admission = (await readRunAdmission(await jetstreamManager(reader), a.space, "manager", runId)).admission;
+      assert.deepEqual(admission.delegation, { scope: row.scope, allowSubscribe: row.allowSubscribe, allowPublish: row.allowPublish });
+    } finally { await reader.close(); }
+    // The starter gains `secret` after the run began. The walk over its current row now passes, so
+    // only the admission's frozen grant refuses the helper.
+    grantManagedActor(a.stateDir, { custody: { kind: "foreground" }, ...row, allowPublish: [...row.allowPublish, "secret"], tokenHash: row.tokenHash! });
+    try {
+      assert.ok((await call(d, caller, "run-answer", { runId, stepKey: "/checkpoint:widen#0", value: true })).ok);
+      let view: RunStatusView | undefined;
+      for (let n = 0; n < 100 && view?.status?.state !== "failed"; n++) {
+        const reply = await call(d, caller, "run-status", { runId });
+        assert.ok(reply.ok, reply.error?.message);
+        view = reply.data as RunStatusView;
+        if (view.status?.state !== "failed") await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      assert.equal(view?.status?.state, "failed");
+      assert.match(JSON.stringify(view), /held when the run was admitted/);
+      assert.equal(findManagedActor(a.stateDir, owner, "late"), undefined);
+    } finally {
+      grantManagedActor(a.stateDir, { custody: { kind: "foreground" }, ...row, tokenHash: row.tokenHash! });
+    }
   });
   await cell(5, async () => {
     grantActor(a.stateDir, { owner, actor: "norun", scope: ["admin", "spawn"], allowSubscribe: [], allowPublish: [] });

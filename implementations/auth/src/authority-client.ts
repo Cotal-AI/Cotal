@@ -162,7 +162,7 @@ export function remoteManagerIssuerGrants(space: string, connId: string): { publ
       `$JS.API.STREAM.INFO.KV_${sessionsBucket(space)}`,
       `$JS.API.STREAM.MSG.GET.KV_${sessionsBucket(space)}`,
     ],
-    subscribe: [...base.subscribe, ...servedRunRequestSubjects(space), servedRunCancelRequestSubject(space)],
+    subscribe: [...base.subscribe, ...servedRunRequestSubjects(space), servedRunCancelRequestSubject(space), ...servedSpawnRequestSubjects(space)],
   };
 }
 
@@ -220,6 +220,15 @@ export function servedRunRequestSubjects(space: string): string[] {
     `${p}.ep.inst.${m}.*.run-answer.>`,
     `${p}.ep.one.${m}.run-answer.>`,
   ];
+}
+
+/** The manager spawn request subjects a participant manager forwards with a hosted enrollment
+ *  (SPEC 13.6), on both rails and both routes. The issuing host reads them and never replies:
+ *  observing one is its own evidence of which caller asked for the helper. */
+export function servedSpawnRequestSubjects(space: string): string[] {
+  const p = spacePrefix(space);
+  const m = endpointToken("manager");
+  return ["ep.v1", "ep"].flatMap((rail) => [`${p}.${rail}.inst.${m}.*.spawn.>`, `${p}.${rail}.one.${m}.spawn.>`]);
 }
 
 /** Cancellation observes only the issued untargeted exact-instance rail. */

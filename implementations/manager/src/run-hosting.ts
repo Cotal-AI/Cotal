@@ -188,6 +188,17 @@ const DEFAULT_CHECKPOINT_TIMEOUT = "1h";
  *  the wait's length. */
 const MAX_LAUNCHING = 8;
 
+
+/** The request subject this host served, rebuilt from the parsed context: what a signerless host
+ *  forwards to the issuing host, which re-parses it. */
+export function servedRequestSubject(space: string, ctx: EpServeContext): string {
+  const p = ctx.subject;
+  return epRequestSubject(space, {
+    route: p.route === "inst" ? { mode: "inst", instanceId: p.instanceId! } : { mode: p.route },
+    endpoint: p.endpoint, command: p.command, ...(p.target !== null ? { target: p.target } : {}), caller: p.caller, nonce: p.nonce,
+  });
+}
+
 export class RunHosting {
   private readonly runs = new Map<string, HostedRun>();
   private readonly cancellations = new Map<string, { runId: string; reason: string; observed: boolean; mayHaveDispatched: boolean }>();
@@ -435,14 +446,8 @@ export class RunHosting {
     return admission;
   }
 
-  /** The request subject this host served, rebuilt from the parsed context: what a signerless host
-   *  forwards to the issuing host, which re-parses it. */
   private servedSubject(ctx: EpServeContext): string {
-    const p = ctx.subject;
-    return epRequestSubject(this.ctx.space, {
-      route: p.route === "inst" ? { mode: "inst", instanceId: p.instanceId! } : { mode: p.route },
-      endpoint: p.endpoint, command: p.command, ...(p.target !== null ? { target: p.target } : {}), caller: p.caller, nonce: p.nonce,
-    });
+    return servedRequestSubject(this.ctx.space, ctx);
   }
 
   /** On a signerless host a caller's `run-resume` or `run-answer` is forwarded with the subject it

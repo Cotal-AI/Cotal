@@ -31,6 +31,7 @@ import {
   type RunOperatorGrantArgs,
   type RemoteRunAdmissionResult,
   type RunAdmission,
+  type RunDelegation,
   type HostedRunAttempt,
   type IssuedStore,
   type IssuedSourceRef,
@@ -330,6 +331,8 @@ export async function handleRemoteRunSubmission(args: {
   endpoint: string; observeManagerGate: ObserveManagerGate; issued: IssuedStore;
   sourceIsLive: (source: IssuedSourceRef) => Promise<boolean>;
   takeObserved: (subject: string) => Promise<ObservedRunRequest | undefined>;
+  /** What the ledger grants a principal now, frozen into the admission as what the run hands on. */
+  delegationOf: (owner: string, actor: string) => RunDelegation | undefined;
   registeredCommand: (instanceId: string, revision: number, command: string) => Promise<Pick<EpCommandAuthority, "class" | "inputDigest" | "outputDigest">>;
   withStore: <T>(runId: string, submission: { caller: import("@cotal-ai/core").EpCaller; id: string },
     work: (kv: KV, jsm: import("@nats-io/jetstream").JetStreamManager) => Promise<T>) => Promise<T>;
@@ -361,8 +364,10 @@ export async function handleRemoteRunSubmission(args: {
     if (performance.now() >= observed.submission!.requestEndsAt) throw new EpEnvelopeError("deadline-exceeded", "original observed keyed deadline elapsed");
     if (parsed.command === "run-submission-status") return { winner: false, view: await readRunSubmission({
       jsm, space: r.space, endpoint: args.endpoint, caller: c, submissionId: id, instanceId: r.instanceId, processEpoch: r.processEpoch }) };
+    const delegation = args.delegationOf(c.owner, c.actor);
     const admission: RunAdmission = { version: 1, space: r.space, endpoint: args.endpoint, runId, instanceId: r.instanceId,
-      caller: c, ceiling: resolved.evidence.permissions, provenance: { kind: "issued", ref, resolvedRevision: resolved.revision }, admittedAt: Date.now() };
+      caller: c, ceiling: resolved.evidence.permissions, provenance: { kind: "issued", ref, resolvedRevision: resolved.revision }, admittedAt: Date.now(),
+      ...(delegation !== undefined ? { delegation } : {}) };
     return bindAndAdmitRunSubmission({ kv, jsm, admission, submissionId: id, fingerprint: observed.submission!.fingerprint,
       processEpoch: r.processEpoch, deadline: { requestEndsAt: observed.submission!.requestEndsAt,
         ...(resolved.evidence.expiresAt !== undefined ? { authorityExpiresAt: resolved.evidence.expiresAt * 1000 } : {}) },
@@ -418,6 +423,9 @@ export async function admitRemoteRun(args: {
   sourceIsLive: (source: IssuedSourceRef) => Promise<boolean>;
   /** Consumes the one observation of a served request subject. */
   takeObserved: (subject: string) => Promise<ObservedRunRequest | undefined>;
+  /** What the ledger grants a principal now. The admission freezes it as what the run's spawns may
+   *  hand on, so a grant the starter gains later never reaches a helper (SPEC 14.8). */
+  delegationOf: (owner: string, actor: string) => RunDelegation | undefined;
   admissions: KV;
   now?: () => number;
 }): Promise<RemoteRunAdmissionResult> {
@@ -442,11 +450,13 @@ export async function admitRemoteRun(args: {
     throw new EpEnvelopeError("permission-denied", "manager run admission evidence names another issued reference");
   if (!issuedPermitsSubject(resolved.evidence.permissions.publish, r.run.subject))
     throw new EpEnvelopeError("permission-denied", "the caller's issued ceiling does not permit this run-start subject");
+  const delegation = args.delegationOf(caller.owner, caller.actor);
   const admission: RunAdmission = {
     version: 1, space: r.space, endpoint: args.endpoint, runId: r.run.runId, instanceId: r.instanceId,
     caller, ceiling: resolved.evidence.permissions,
     provenance: { kind: "issued", ref, resolvedRevision: resolved.revision },
     admittedAt: (args.now ?? Date.now)(),
+    ...(delegation !== undefined ? { delegation } : {}),
   };
   try {
     const revision = await createRunAdmission(args.admissions, admission);

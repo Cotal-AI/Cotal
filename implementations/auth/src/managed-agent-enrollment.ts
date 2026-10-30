@@ -14,6 +14,9 @@
 import {
   EpEnvelopeError,
   managedRetirementOpId,
+  parseEpSubject,
+  principalKey,
+  runDriverCaller,
   parseRemoteManagedAgentEnrollmentRequest,
   parseRemoteManagedAgentPrepareRetirementRequest,
   parseRemoteManagedAgentRuntimeCreateRequest,
@@ -24,6 +27,8 @@ import {
   type RemoteManagedAgentPrepareRetirementRequest,
   type RemoteManagedAgentRuntimeCreateRequest,
   type RemoteManagedAgentRuntimeStatusRequest,
+  type RunAdmission,
+  type RunDelegation,
 } from "@cotal-ai/core";
 import { timingSafeEqual } from "node:crypto";
 import { ledgerAuthorizeGrant } from "./ledger.js";
@@ -73,6 +78,46 @@ export async function authorizeRemoteManagedAgentEnrollment(
     throw new EpEnvelopeError("permission-denied", 'managed agent enrollment needs scope "supervise"; spawn/admin do not imply it');
   await assertCurrentManagerRegistration(r, args, "enrollment");
   return r;
+}
+
+/** Who a hosted enrollment's helper is delegated by (SPEC 13.6): the parent its managed row records,
+ *  whose current grant the ledger walk bounds it by. With no served spawn the manager starts the
+ *  helper on its own behalf and is its parent. With one, the parent is the caller this host saw
+ *  publish that exact subject, so the request names no one: the broker forge-locks the caller in
+ *  the subject. A run's spawn is delegated by the run's starter, and its admission's delegation
+ *  bounds it as well. A subject this host did not observe, or already answered, is refused. */
+export async function resolveRemoteSpawner(args: {
+  request: RemoteManagedAgentEnrollmentRequest;
+  owner: string;
+  /** Consumes the one observation of a served spawn subject. */
+  takeObserved: (subject: string) => Promise<boolean>;
+  readAdmission: (runId: string) => Promise<RunAdmission | undefined>;
+}): Promise<{ parent: string; run?: { runId: string; starter: { owner: string; actor: string }; delegation: RunDelegation } }> {
+  const r = args.request;
+  if (r.spawn === undefined) return { parent: principalKey(args.owner, r.actor).key };
+  const parsed = parseEpSubject(r.spawn.served);
+  if (!r.spawn.served.startsWith(`cotal.${r.space}.`) || parsed === null || parsed.plane !== "request" || parsed.endpoint !== "manager"
+    || parsed.command !== "spawn" || parsed.target !== null || (parsed.route === "inst" && parsed.instanceId !== r.instanceId))
+    throw new EpEnvelopeError("permission-denied", "a hosted enrollment's spawn must name a manager spawn request served on this instance");
+  if (!(await args.takeObserved(r.spawn.served)))
+    throw new EpEnvelopeError("permission-denied", "the issuing host did not observe this spawn request, or already enrolled a helper for it (SPEC 13.6)");
+  const caller = parsed.caller;
+  if (caller.owner !== args.owner)
+    throw new EpEnvelopeError("permission-denied", "a helper is enrolled only for a spawn asked for by a caller of the manager's own owner");
+  if (r.spawn.runId === undefined) return { parent: principalKey(caller.owner, caller.actor).key };
+  const runId = r.spawn.runId;
+  const admission = await args.readAdmission(runId);
+  if (admission === undefined || admission.instanceId !== r.instanceId)
+    throw new EpEnvelopeError("permission-denied", `run ${runId} is not admitted on this manager instance, so it has no starter to delegate a helper`);
+  const driver = runDriverCaller(runId, admission.caller.owner);
+  if (driver.owner !== caller.owner || driver.actor !== caller.actor || driver.uid !== caller.uid)
+    throw new EpEnvelopeError("permission-denied", `the spawn request was not sent by run ${runId}'s driver`);
+  const starter = { owner: admission.caller.owner, actor: admission.caller.actor };
+  return {
+    parent: principalKey(starter.owner, starter.actor).key,
+    // An admission written before the snapshot existed hands on nothing.
+    run: { runId, starter, delegation: admission.delegation ?? { scope: [], allowSubscribe: [], allowPublish: [] } },
+  };
 }
 
 export interface AuthorizeRemoteManagedAgentPrepareRetirementArgs {

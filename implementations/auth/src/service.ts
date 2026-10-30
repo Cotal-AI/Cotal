@@ -86,14 +86,14 @@ import { pinnedJwksResolver, type UserTokenIssuer } from "./issuer.js";
 import { bootstrapServiceCallerPayload, type ServiceCallerPayloadBootstrap } from "./service-caller-payload-bootstrap.js";
 import { handleRemoteRunCancel, parseRemoteRunCancelRequest, admitRemoteRun, handleRemoteRunSubmission, authorizeRemoteManagerRenewal, authorizeRemoteRunAttempt, holdsRunFence, issueRemoteManagerAuthority, observedRunRequest, parseRemoteRunAdmissionRequest, parseRemoteRunAttemptRequest, parseRemoteRunRevokeRequest, revokeRemoteRun, type ObservedRunRequest } from "./manager-authority.js";
 import { authorizeRemoteRetainedAgentValidation, completeRemoteRetainedAgentValidation, remoteManagerCurrentRegistrationProof } from "./retained-manager-validation.js";
-import { authorizeRemoteManagedAgentEnrollment, authorizeRemoteManagedAgentPrepareRetirement, authorizeRemoteManagedAgentRuntimeCreate, authorizeRemoteManagedAgentRuntimeStatus, type ObserveManagerGate, type RemoteManagedAgentRuntimeDecision } from "./managed-agent-enrollment.js";
+import { authorizeRemoteManagedAgentEnrollment, resolveRemoteSpawner, authorizeRemoteManagedAgentPrepareRetirement, authorizeRemoteManagedAgentRuntimeCreate, authorizeRemoteManagedAgentRuntimeStatus, type ObserveManagerGate, type RemoteManagedAgentRuntimeDecision } from "./managed-agent-enrollment.js";
 import { authorizeRemoteManagerGoalIndexScan, completeRemoteManagerGoalIndexScan } from "./manager-goal-index.js";
 import { authorizeRemoteManagerAdmin } from "./manager-admin-authorization.js";
 import { authorizeRemoteManagerParticipation } from "./manager-participation-authorization.js";
 import { authorizeRemoteManagerMaintenance, completeRemoteManagerMaintenance } from "./manager-maintenance.js";
 import { validateRetainedManagedAgent } from "./continuity.js";
 import { reconstructRemoteManagerServeGrant, remoteManagerServeGrantFromCluster, remoteManagerSurface, type ManagerCluster } from "./manager-contract.js";
-import { authorityBarrierGrants, authorityWriterGrants, openAuthorityClient, openSupervisedConnectReader, platformReadinessGrants, remoteManagerIssuerGrants, remoteManagerRegistrationProof, registrationExecutorGrants, servedRunRequestSubjects, servedRunCancelRequestSubject, serviceCalloutWriterGrants, serviceHostDiscoveryGrants, type AuthorityClient } from "./authority-client.js";
+import { authorityBarrierGrants, authorityWriterGrants, openAuthorityClient, openSupervisedConnectReader, platformReadinessGrants, remoteManagerIssuerGrants, remoteManagerRegistrationProof, registrationExecutorGrants, servedRunRequestSubjects, servedRunCancelRequestSubject, servedSpawnRequestSubjects, serviceCalloutWriterGrants, serviceHostDiscoveryGrants, type AuthorityClient } from "./authority-client.js";
 import { createNativeServiceCalloutAuthority, type NativeServiceCalloutAuthority } from "./native-service-callout.js";
 import { openChatSessionAuthority, type ChatAdmissionRequest, type ChatRetireRequest, type ChatRetireResult, type ChatSessionAdmitted } from "./chat-session-authority.js";
 import { CorruptNativeIssuanceEvidence, pruneNativeIssuance } from "./native-issuance.js";
@@ -114,13 +114,14 @@ import { makeRetirementCleaners } from "./retirement-cleaner.js";
 import { makeDrainRepairers } from "./drain-repair.js";
 import { serializedFor } from "./serialized.js";
 import { RunCancelObservations, type RunCancelLimits } from "./run-cancel-observation.js";
-import { jitteredBackoffMs, readCancellationAdmission } from "@cotal-ai/core";
+import { jitteredBackoffMs, readCancellationAdmission, type RunDelegation } from "@cotal-ai/core";
 import type { DelegatedUserIntentIncarnation } from "./delegated-user-intent.js";
 import { joinOrStartRetirement, openAuthAdminListener, type RetirementFlights } from "./auth-admin.js";
 import { AUTH_SERVICE_ENDPOINT, authClusterArtifacts, authContractArtifactValues } from "./auth-service-contract.js";
 import { drainTargetForEndpoint, openAdmissionMediator } from "./admission-mediator.js";
 import {
   AGENT_BEARER_TTL_SEC,
+  assertWithinRunDelegation,
   assertWithinSpawnerGrant,
   findInteractiveActor,
   findManagedActor,
@@ -1054,6 +1055,32 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
         observedRunRequests.set(msg.subject, { expires: now + OBSERVED_RUN_REQUEST_WINDOW_MS, request });
       },
     });
+  // The served spawn requests a hosted enrollment may name (SPEC 13.6). A spawn request's subject
+  // carries its caller and a per-call nonce, so each one is answered at most once.
+  const observedSpawnRequests = new Map<string, number>();
+  for (const subject of servedSpawnRequestSubjects(space))
+    remoteIssuer.nc.subscribe(subject, {
+      callback: (_err, msg) => {
+        const now = Date.now();
+        for (const [seen, expires] of observedSpawnRequests) {
+          if (expires > now) break;
+          observedSpawnRequests.delete(seen);
+        }
+        observedSpawnRequests.delete(msg.subject);
+        observedSpawnRequests.set(msg.subject, now + OBSERVED_RUN_REQUEST_WINDOW_MS);
+      },
+    });
+  const takeObservedSpawnRequest = async (subject: string): Promise<boolean> => {
+    await remoteIssuer.nc.flush();
+    const expires = observedSpawnRequests.get(subject);
+    observedSpawnRequests.delete(subject);
+    return expires !== undefined && expires > Date.now();
+  };
+  // What a run's starter holds in the ledger when the run is admitted: the most its spawns hand on.
+  const ledgerDelegation = (owner: string, actor: string): RunDelegation | undefined => {
+    const row = findActorUnified(opts.dir, owner, actor);
+    return row && { scope: [...row.scope], allowSubscribe: [...row.allowSubscribe], allowPublish: [...row.allowPublish] };
+  };
   const takeObservedRunRequest = async (subject: string): Promise<ObservedRunRequest | undefined> => {
     // The broker queued the request to this connection before the manager could read it, and a
     // flush returns only after this connection has read everything its server queued before it.
@@ -1657,6 +1684,18 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
         // The custody this enrollment attests: the instance the authorized request names, checked
         // against its current registration above. Never a field of the participant's target.
         const custody = { kind: "remote-manager" as const, instanceId: r.instanceId };
+        // The helper's parent is the caller this host observed asking for it, not the manager, so
+        // the ledger bounds the helper by that caller's grant (SPEC 13.6). A retry of an enrollment
+        // whose row stands answers from that row, whose parent was decided when it was written, so
+        // it consumes no observation.
+        const spawner = findManagedActor(opts.dir, owner, t.actor)?.tokenHash === t.tokenHash ? undefined : await resolveRemoteSpawner({
+          request: r, owner, takeObserved: takeObservedSpawnRequest,
+          readAdmission: async (runId) => {
+            const view = await readRunAdmission(recordsJsm, space, "manager", runId);
+            if (view.revoked !== undefined) throw new EpEnvelopeError("permission-denied", `run ${runId} was revoked; a revoked run enrolls no helper`);
+            return view.admission;
+          },
+        });
         // ONE synchronous transaction for the read, the decision and the write, so an
         // enrollment in another process (or a provider grant) cannot land between them.
         const decided = withManagedGrantTransaction(opts.dir, (tx) => {
@@ -1677,6 +1716,14 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
             assertWithinSpawnerGrant(opts.dir, held, "spawn");
             return { lifecycleUid: held.lifecycleUid!, row: held, wrote: false };
           }
+          if (spawner === undefined)
+            throw new EpEnvelopeError("conflict", `managed agent "${t.actor}" was enrolled for this token and is gone; enroll it again`);
+          // A run's helper is also bounded by what the run's starter held at admission, beside the
+          // walk over the starter's current row below.
+          if (spawner.run !== undefined)
+            assertWithinRunDelegation(spawner.run.runId, spawner.run.starter, spawner.run.delegation, {
+              owner, actor: t.actor, scope: t.capabilities ?? [], allowSubscribe: t.allowSubscribe ?? [], allowPublish: t.allowPublish ?? [], role: t.role,
+            });
           // A fresh uid is never one a retirement tombstoned, and only the host can make that
           // promise. The grant's envelope walk refuses an over-wide request before any durable exists.
           const lifecycleUid = mintLifecycleUid();
@@ -1688,7 +1735,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
             allowPublish: t.allowPublish ?? [],
             ...(t.role !== undefined ? { role: t.role } : {}),
             ...(t.label !== undefined ? { label: t.label } : {}),
-            parent: principalKey(owner, r.actor).key,
+            parent: spawner.parent,
             lifecycleUid,
             tokenHash: t.tokenHash,
             custody,
@@ -1839,6 +1886,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
         request, owner, space, accountPublicKey: dataAccount.pub, proofSecret: dataAccount.signingSeed, endpoint: "manager",
         observeManagerGate: observeLegacyManagerGate, issued: session.store, sourceIsLive: composedSourceIsLive(session),
         takeObserved: takeObservedRunRequest,
+        delegationOf: ledgerDelegation,
         registeredCommand: async (instanceId, registrationRevision, command) => {
           const registered = remoteManagerSurface(await registeredManagerCluster(owner, instanceId, { registrationRevision }))[command];
           if (!registered) throw new EpEnvelopeError("failed-precondition", "registered manager has no keyed contract");
@@ -1878,6 +1926,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
             issued: session.store,
             sourceIsLive: composedSourceIsLive(session),
             takeObserved: takeObservedRunRequest,
+            delegationOf: ledgerDelegation,
             admissions: await new Kvm(admitterNc).open(admissionBucket(space)),
           });
         } finally {

@@ -340,7 +340,10 @@ whose caller had no channels can still sleep, checkpoint and turn agents; its `w
 is refused at the effect. On a static mesh the same ceiling bounds what the run's spawns hand on:
 a helper gets no channel or capability the caller's credential did not carry when the run was
 admitted, and a grant the caller gains later is never handed on. A run started by an operator
-instrument, or by a caller holding admin, is exempt, as that caller's own spawns are.
+instrument, or by a caller holding admin, is exempt, as that caller's own spawns are. On a
+participant manager of a user-auth mesh, the issuing host records the starter's ledger grant with
+the admission and enrolls each helper the run spawns under the starter. The helper must fall within
+both that recorded grant and the starter's current one.
 
 The manager endpoint serves `run-cancel` with `{ runId, reason }`. Call it through an issued
 credential on a handle pinned to the manager instance, retaining the Describe-derived epoch bind.
