@@ -47,6 +47,10 @@
  * (connects a minute) sets others. A capacity run sets them above its offered rate: the harness signs
  * every bearer for one owner, so past 10 connects a second the default owner limit refuses by design.
  *
+ * --client-signing native uses core's existing native signer for the load clients only. The default
+ * nats backend retains the stock client cost. The service and nonce/JWT/bearer protocol do not change;
+ * report the selected backend and never compare them as a service optimization.
+ *
  * Run (needs a nats-server on PATH, or NATS_SERVER_BIN):
  *   pnpm smoke:callout-load --scenario steady --arm main --rate 200 --seconds 20 --connect-limits 100000,100000,100000
  */
@@ -62,6 +66,7 @@ import { createSpaceAuth, chatSubject, isReachable, serverConfig, mintLifecycleU
 import { ConnectLimiter, createCalloutAuth, calloutPermissions, deriveOwnerToken, USER_TOKEN_VER, type StartAuthCalloutOpts } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 import { assertLoopbackListener, remoteJobCommand } from "./_callout-load-ssh.js";
+import { clientSigning, nativeLoadAuthenticator, type ClientSigning } from "./_callout-load-signing.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 // ---------------------------------------------------------------------------------------------
@@ -72,6 +77,7 @@ import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 interface Attempt { ok: boolean; ms: number; reason?: string }
 /** What a load child reports back on stdout when its phase is over. */
 interface ChildResult {
+  clientSigning: ClientSigning;
   attempts: number;
   ok: number;
   byReason: Record<string, number>;
@@ -88,6 +94,7 @@ interface ChildResult {
 }
 /** The job one load child runs. Carries credential material, so it travels over stdin only. */
 interface ChildJob {
+  clientSigning: ClientSigning;
   mode: "churn" | "seats" | "hold";
   servers: string;
   sentinelCreds: string;
@@ -180,6 +187,9 @@ async function runChild(): Promise<void> {
   for await (const c of process.stdin) chunks.push(c as Buffer);
   const job = JSON.parse(Buffer.concat(chunks).toString("utf8")) as ChildJob;
   const cpu0 = process.cpuUsage();
+  const signing = clientSigning(job.clientSigning);
+  const native = signing === "native" ? nativeLoadAuthenticator(job.sentinelCreds) : undefined;
+  if (native) process.once("exit", () => native.clear());
   const attempts: Attempt[] = [];
   const held: NatsConnection[] = [];
 
@@ -192,7 +202,7 @@ async function runChild(): Promise<void> {
     try {
       const nc = await connect({
         servers: job.servers,
-        authenticator: [credsAuthenticator(enc(job.sentinelCreds)), tokenAuthenticator(bearer)],
+        authenticator: [native?.authenticator ?? credsAuthenticator(enc(job.sentinelCreds)), tokenAuthenticator(bearer)],
         name: nonce, inboxPrefix: `_INBOX_${nonce}`,
         timeout: job.connectTimeoutMs, maxReconnectAttempts: 0,
       });
@@ -295,6 +305,7 @@ async function runChild(): Promise<void> {
   const byReason: Record<string, number> = {};
   for (const a of attempts) if (!a.ok) byReason[a.reason!] = (byReason[a.reason!] ?? 0) + 1;
   const out: ChildResult = {
+    clientSigning: signing,
     attempts: attempts.length,
     ok: attempts.filter((a) => a.ok).length,
     byReason,
@@ -374,6 +385,7 @@ const num = (name: string, dflt?: string): number => {
 
 const SCENARIO = flag("scenario");
 const ARM = flag("arm", "main");
+const CLIENT_SIGNING = clientSigning(flag("client-signing", "nats"));
 if (ARM !== "main" && ARM !== "stock") throw new Error(`callout-load: --arm must be main or stock, got ${ARM}`);
 const RATE = num("rate", "200");
 const SECONDS = num("seconds", "20");
@@ -755,7 +767,7 @@ const stopTunnel = async (transport: SshTransport): Promise<void> => {
  *  only the spawn's own argv changes, and that carries no secret, so no credential touches a
  *  command line or the generator's disk. `exec` makes the remote node the sshd child directly, so
  *  the hangup that follows this process killing its ssh reaches the child rather than a shell. */
-const runLoad = (job: ChildJob): Promise<ChildResult> =>
+const runLoad = (job: Omit<ChildJob, "clientSigning">): Promise<ChildResult> =>
   new Promise((resolve, reject) => {
     const gen = generators.length ? dealGenerator() : undefined;
     if (gen) job.servers = gen.servers!;
@@ -783,13 +795,15 @@ const runLoad = (job: ChildJob): Promise<ChildResult> =>
       catch (e) {
         return reject(new Error(`load child exited ${code} with an unparseable result (${line.length} bytes, likely truncated): ${e instanceof Error ? e.message : String(e)}`));
       }
+      if (r.clientSigning !== CLIENT_SIGNING) return reject(new Error("load child did not confirm the requested signing backend"));
       (r as ChildResult & { pid: number }).pid = child.pid!;
       resolve(r);
     });
-    child.stdin.end(JSON.stringify(job));
+    child.stdin.end(JSON.stringify({ ...job, clientSigning: CLIENT_SIGNING }));
   });
 
 const merge = (rs: ChildResult[]): ChildResult => ({
+  clientSigning: CLIENT_SIGNING,
   attempts: rs.reduce((a, r) => a + r.attempts, 0),
   ok: rs.reduce((a, r) => a + r.ok, 0),
   byReason: rs.reduce<Record<string, number>>((a, r) => { for (const [k, v] of Object.entries(r.byReason)) a[k] = (a[k] ?? 0) + v; return a; }, {}),
@@ -969,6 +983,7 @@ try {
     ? `${generators.map((g) => `${g.host} (${g.cores} cores, ${g.dir}, ${g.servers})`).join(", ")} over SSH remote forwards${LOAD_EXEC ? ", custom launcher" : ""}`
     : `co-located with the broker and the auth service${LOAD_EXEC ? ", custom launcher" : ""}`);
   row("arm", ARM === "main" ? "main (native Ed25519 signer, maxInFlight 32)" : `stock ${STOCK_REF} (pure-JS signer, serial)`);
+  row("client signing backend", result.clientSigning);
   row("auth callout processes", CALLOUTS);
   const limits = (connectLimiter ?? new ConnectLimiter()).limits;
   row("connect limits (a minute)", ARM === "stock" ? "none (the stock arm has no limiter)" : `actor ${limits.actorPerMinute}, owner ${limits.ownerPerMinute}, host ${limits.hostPerMinute}${connectLimiter ? "" : " (production defaults)"}`);
