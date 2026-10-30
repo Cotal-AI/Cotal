@@ -335,9 +335,10 @@ async function choiceCells(final: string, replies: readonly StartupReply[], read
 /** A once launch's channel notice in both sequence copies and both watches. The gate's Enter does not
  * end the watch: only the notice on a later screen confirms it, within a bound counted from that Enter. */
 async function noticeCells(final: string, replies: readonly StartupReply[], ready: readonly string[], blockers: readonly StartupBlocker[], notice: string): Promise<void> {
-  // The input screen under Claude's banner for an admitted channel (its text in Claude 2.1.314), and
-  // a screen showing the notice alone.
-  const NOTICE_SCREEN = CLEAR + `  Channels (experimental) ${notice} · restart without --dangerously-load-development-channels to stop\r\n\r\n${CLAUDE_READY.replace(/^\x1b\[2J\x1b\[H/, "")}`;
+  // The input screen with Claude's banner for an admitted channel (its text in Claude 2.1.314) on its
+  // top row, and a screen showing the notice alone. The recorded input screen clears the screen as it
+  // paints, so the banner is drawn after it.
+  const NOTICE_SCREEN = `${CLAUDE_READY}\x1b[1;1H\x1b[2K  Channels (experimental) ${notice} · restart without --dangerously-load-development-channels to stop`;
   const NOTICE_ONLY = CLEAR + `  ${notice}`;
   const reason = blockers.find((blocker) => blocker.prompt === BLOCKER_SCREENS[2][2])?.reason ?? assert.fail("no Bypass Permissions blocker declared");
   for (const [impl, Sequence] of [["core", CoreSequence], ["seat", SeatSequence]] as const) {
