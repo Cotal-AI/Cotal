@@ -12,6 +12,11 @@ Use the repository guard instead:
 pnpm pr-head-gate <pull-request-number>
 ```
 
+It requires a GitHub token, resolved once per run from `GH_TOKEN`, then `GITHUB_TOKEN`, then
+`gh auth token`. If no token is available, it exits before sending any request and names the
+credential setup options. It never switches to anonymous requests. `pnpm smoke:pr-head-auth`
+checks this with native `gh`, isolated placeholder credentials and an offline HTTP fixture.
+
 It parses `.github/workflows/*.yml` at the exact head with the repository's YAML parser and derives
 the expected named set, including `pull_request` path filters. Valid YAML forms such as flow event
 lists with trailing comments are handled by the parser rather than a line reader. Invalid YAML,
