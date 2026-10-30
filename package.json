@@ -706,6 +706,7 @@
     "smoke:grant-usage": "tsx implementations/auth/smoke/grant-usage.smoke.ts",
     "smoke:auth-attenuation": "tsx implementations/auth/smoke/attenuation.smoke.ts",
     "smoke:auth-callout:auth": "tsx implementations/auth/smoke/auth-callout.smoke.ts",
+    "smoke:callout-client-signing": "tsx implementations/auth/smoke/callout-client-signing.smoke.ts",
     "smoke:bearer-exp-ceiling:auth": "tsx implementations/auth/smoke/bearer-exp-ceiling.smoke.ts",
     "smoke:dm-reader:auth": "tsx implementations/auth/smoke/dm-reader.smoke.ts",
     "smoke:endpoint-usermode:auth": "tsx implementations/auth/smoke/endpoint-usermode.smoke.ts",
