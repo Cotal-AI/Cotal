@@ -67,6 +67,14 @@ site but may omit the caller that began an asynchronous request. Authentication,
 authorization and timeout deadlines are unchanged. Direct native dials and
 standalone helpers retain their existing diagnostic defaults.
 
+### Temporary KV scans
+
+`liveKvEntries` uses native memory-backed state for its temporary ordered consumer. The backing
+KV stream keeps its configured storage. Each call still reads fresh broker data and must prove
+completion before returning; interrupted reads throw rather than return a partial view. Consumer
+cleanup, inactivity expiry and recreated-consumer checks remain in place. The temporary cursor
+is not persistent across server loss.
+
 ## Agent tools
 
 The [MCP tool catalog](mcp-tools.md) lists tool arguments and side effects. A
