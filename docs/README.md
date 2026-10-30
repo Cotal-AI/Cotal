@@ -10,8 +10,8 @@ JetStream.
 
 | You are… | Start with |
 |---|---|
-| **Evaluating**: what is this? | [What is Cotal](what-is-cotal.md) |
-| **Running it**: agents on a mesh, on my machine | [Quickstart](getting-started.md) |
+| **Evaluating**: what is this? | [What is Cotal](what-is-cotal.mdx) |
+| **Running it**: agents on a mesh, on my machine | [Quickstart](getting-started.mdx) |
 | **Building a client**: speaking the wire from another language | [Build a client](build-a-client.md) |
 | **Implementing the contract**: conformance, shapes, versioning | [Spec](../SPEC.md), with [conformance](../SPEC.md#12-conformance), the [schema](../spec/cotal.schema.json), the [workflow language](../spec/cotal-lang.md), and the [change log](../SPEC.md#appendix-d-change-log) |
 
@@ -26,7 +26,7 @@ Task dispatch:
 | Task | Page | First command / tool |
 |---|---|---|
 | Install + start a local mesh, non-interactive | [Configure a space](setup.md#automate-setup) | `npx cotal-ai setup --destination local --harness claude --project . --space main --no-input && npx cotal-ai up --detach` |
-| Put an agent on the mesh | [Quickstart](getting-started.md) | `cotal spawn` |
+| Put an agent on the mesh | [Quickstart](getting-started.mdx) | `cotal spawn` |
 | Message peers from inside a session | [MCP tool catalog](mcp-tools.md) | `cotal_send` · `cotal_dm` · `cotal_anycast` |
 | Spawn / define / list a teammate at runtime | [MCP tool catalog](mcp-tools.md) | `cotal_spawn` · `cotal_persona` · `cotal_personas` |
 | Declare a team + channels in one file | [Define a team](define-a-team.md) | `cotal up -f cotal.yaml` |
@@ -42,10 +42,10 @@ Task dispatch:
 
 | Doc | Answers |
 |---|---|
-| [What is Cotal](what-is-cotal.md) | What is it, and what can I use it for? |
-| [Install Cotal](installation.md) | How do I install Cotal on my machine? |
-| [Quickstart](getting-started.md) | How do I start a local mesh and connect my first agent? |
-| [Examples](examples.md) | Which runnable examples can I try next? |
+| [What is Cotal](what-is-cotal.mdx) | What is it, and what can I use it for? |
+| [Install Cotal](installation.mdx) | How do I install Cotal on my machine? |
+| [Quickstart](getting-started.mdx) | How do I start a local mesh and connect my first agent? |
+| [Examples](examples.mdx) | Which runnable examples can I try next? |
 
 ## Guides
 

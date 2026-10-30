@@ -8,6 +8,8 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { parse } from 'parse5';
+import { AGENT_PROMPT } from '../src/prompt.js';
 
 const dist = join(dirname(fileURLToPath(import.meta.url)), '..', 'dist');
 const fail = (msg) => {
@@ -27,14 +29,22 @@ for (const cmd of ['npx cotal-ai setup --destination local --harness claude --pr
   if (!runbook.includes(cmd)) fail(`prompt.md lost its command: ${cmd}`);
 }
 
-// The Quickstart ships the interactive prompt card on the page, and its
-// Markdown twin (plus the llms dumps) must stay clean Markdown: the plain
-// fence restored, no component tag leaking through.
 const quickstartHtml = readFileSync(join(dist, 'docs', 'getting-started', 'index.html'), 'utf8');
-if (!quickstartHtml.includes('agent-prompt')) fail('quickstart lost its prompt card');
+const textOf = node => node.nodeName === '#text' ? node.value : (node.childNodes ?? []).map(textOf).join('');
+function find(node, predicate) {
+  if (predicate(node)) return node;
+  for (const child of node.childNodes ?? []) {
+    const result = find(child, predicate);
+    if (result) return result;
+  }
+}
+const promptFigure = find(parse(quickstartHtml), node => node.nodeName === 'figure' &&
+  find(node, child => child.nodeName === 'pre' && textOf(child).trim() === AGENT_PROMPT));
+if (!promptFigure || !find(promptFigure, node => node.nodeName === 'button' && textOf(node) === 'Copy Text'))
+  fail('quickstart lost its native copyable setup prompt');
 const quickstartTwin = readFileSync(join(dist, 'docs/getting-started.md'), 'utf8');
-if (!quickstartTwin.includes('prompt.md, then set up Cotal'))
-  fail('quickstart twin lost the setup prompt');
+if (!quickstartTwin.includes('```text wrap\n' + AGENT_PROMPT + '\n```'))
+  fail('quickstart Markdown does not contain the complete setup prompt fence');
 if (!quickstartTwin.includes('/docs/setup/')) fail('quickstart lost its link to setup instructions');
 const setupTwin = readFileSync(join(dist, 'docs/setup.md'), 'utf8');
 for (const cmd of ['npx cotal-ai setup --destination local --harness claude --project . --space main --no-input', 'npx cotal-ai up --root . --space main --detach']) {

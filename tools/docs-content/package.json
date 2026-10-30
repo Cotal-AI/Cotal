@@ -1,0 +1,35 @@
+{
+  "name": "@cotal-ai/docs-content",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Build-only documentation metadata and semantic Markdown exports.",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "import": "./index.mjs"
+    }
+  },
+  "files": [
+    "index.mjs",
+    "index.d.ts"
+  ],
+  "scripts": {
+    "build": "node --check index.mjs",
+    "typecheck": "tsc --noEmit --allowJs --checkJs --module NodeNext --moduleResolution NodeNext --target ES2022 --skipLibCheck index.mjs",
+    "test": "node --test test.mjs"
+  },
+  "dependencies": {
+    "fumadocs-core": "16.17.9",
+    "remark-gfm": "^4.0.1",
+    "remark-mdx": "^3.1.1",
+    "remark-parse": "^11.0.0",
+    "unified": "^11.0.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.0",
+    "typescript": "^5.9.3",
+    "@types/mdast": "^4.0.4",
+    "mdast-util-mdx": "^3.0.0"
+  }
+}

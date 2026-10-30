@@ -220,7 +220,7 @@ A completed timer records its sleep step as `ok`.
    Upgrade an older installation using the [upgrade guide](https://github.com/Cotal-AI/Cotal/blob/main/docs/UPGRADING.md).
 2. Have the operator add `run` to the persona's existing `capabilities` list, for example
    `capabilities: [spawn, run]`. `spawn` alone does not expose `cotal_run`. Setup leaves existing
-   personas unchanged except for its [byte-exact legacy migration](getting-started.md).
+   personas unchanged except for its [byte-exact legacy migration](getting-started.mdx).
    Peer persona-definition tools cannot grant capabilities.
 3. Relaunch the agent through the manager from the updated persona so it receives newly issued
    credentials and a fresh connector configuration. Editing the file or reconnecting with the

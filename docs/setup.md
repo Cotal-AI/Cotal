@@ -24,7 +24,7 @@ Choose the following:
 Review the choices before saving.
 Choose **Change** to edit them or **Cancel** to save nothing.
 With `--configure-only`, setup does not start a process.
-Continue with the [Quickstart](getting-started.md#2-start-a-local-mesh) after preparation.
+Continue with the [Quickstart](getting-started.mdx#2-start-a-local-mesh) after preparation.
 
 Without `--configure-only`, successful interactive setup offers to start the space and open the default agent.
 The initial answer is No.
@@ -126,7 +126,7 @@ For commands, flags, and exit codes, see the [CLI reference](cli.md).
 
 ## Next steps
 
-- [Quickstart](getting-started.md). Start the prepared space and launch an agent.
+- [Quickstart](getting-started.mdx). Start the prepared space and launch an agent.
 - [Connectors](connectors.md). Check setup requirements for your application.
 - [Run a mesh](run-a-mesh.md). Operate a space after setup.
 - [Define a team](define-a-team.md). Launch your own agents and channels together.

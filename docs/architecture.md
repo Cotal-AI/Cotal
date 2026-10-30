@@ -90,7 +90,7 @@ examples ──→ implementations ──→ workspace ──→ core ←(peer)�
   at runtime, in a shared space over NATS. A composition root (the `cotal` binary, or an
   example) wires the pieces it wants.
 - **`examples/*`**: use-cases and composition roots, never published
-  ([examples](examples.md)). An example only configures and orchestrates; new message
+  ([examples](examples.mdx)). An example only configures and orchestrates; new message
   kinds or subjects go into core, generalized, never into an example.
 
 The published binary also loads **operator-installed extensions**: `cotal ext add

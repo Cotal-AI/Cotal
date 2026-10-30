@@ -67,7 +67,7 @@ Installs into your home directory, no sudo, then runs `cotal setup`. Read it fir
 
 On Windows, or if you already have Node 22+: `npm install -g cotal-ai && cotal setup`. The
 installer is a POSIX shell script, so npm is the Windows route
-([details](docs/installation.md)).
+([details](docs/installation.mdx)).
 Prefer your agent to do it? Point it at <https://docs.cotal.ai/prompt.md>.
 
 `cotal setup` gets your machine ready and **starts nothing**. It seeds a `default` persona and
@@ -105,7 +105,7 @@ in its own [cmux](https://cmux.com), [tmux](https://github.com/tmux/tmux/wiki) o
 [Orca](https://www.onorca.dev/) terminal, [Codex](extensions/connector-codex),
 [OpenCode](extensions/connector-opencode) or
 [Hermes](extensions/connector-hermes) instead of Claude. Install flags, requirements and
-uninstall are in [docs/getting-started.md](docs/getting-started.md).
+uninstall are in [Install Cotal](docs/installation.mdx).
 
 ## How it works
 
@@ -235,7 +235,7 @@ pipeline that resumes on another machine. Nothing to install.
 </tr>
 </table>
 
-Full index: [docs/examples.md](docs/examples.md).
+Full index: [docs/examples.mdx](docs/examples.mdx).
 
 ## Supported agents
 

@@ -3,15 +3,21 @@ import { readFileSync } from 'node:fs';
 
 const artifact = (path) =>
   readFileSync(new URL(`../dist/${path}`, import.meta.url), 'utf8');
+const pages = JSON.parse(
+  readFileSync(new URL('../src/generated/pages.json', import.meta.url)),
+);
 const quickstart = artifact('docs/getting-started/index.html');
 assert(
   /class="[^"]*fd-steps/.test(quickstart),
   'Quickstart renders native Fumadocs steps',
 );
-assert(
-  quickstart.includes('id="2-start-a-local-mesh"'),
-  'tutorial source heading IDs survive step styling',
-);
+for (const id of [
+  '1-prepare-a-project',
+  '2-start-a-local-mesh',
+  '3-launch-your-agent',
+  '4-check-the-mesh',
+  '5-stop-the-tutorial',
+]) assert(quickstart.includes(`id="${id}"`), `stable tutorial anchor: ${id}`);
 assert(
   quickstart.includes('data-card="true"'),
   'next steps render native Fumadocs cards',
@@ -36,10 +42,25 @@ for (const slug of [
 ]) {
   const markdown = artifact(`docs/${slug}.md`);
   assert(
-    !/<(?:Steps?|Cards?|Callout|AgentPrompt)\b|^import /m.test(markdown),
+    !/<(?:Steps?|Cards?|Tabs?|Callout|AgentPrompt)\b|^import |^export /m.test(markdown),
     `plain Markdown: ${slug}`,
   );
 }
+for (const slug of ['what-is-cotal', 'installation', 'getting-started', 'examples']) {
+  const source = readFileSync(new URL(`../../docs/${slug}.mdx`, import.meta.url), 'utf8');
+  const markdown = artifact(`docs/${slug}.md`);
+  assert(/^---\n/.test(source), `authored frontmatter: ${slug}`);
+  assert(/^kind: /m.test(source) && /^audience: /m.test(source), `classification metadata: ${slug}`);
+  assert(!/^> Informative/m.test(markdown), `classification stays out of prose: ${slug}`);
+  for (const [, title, href] of source.matchAll(/<Card title="([^"]+)" href="([^"]+)">/g)) {
+    assert(markdown.includes(`[${title}](`), `card title in Markdown: ${slug}/${title}`);
+    const target = pages.find(page => page.slug === href.replace(/\.mdx?$/, '').toLowerCase());
+    assert(target && markdown.includes(`](${target.url})`), `card destination in Markdown: ${slug}/${href}`);
+  }
+}
+const shutdown = artifact('docs/getting-started.md');
+assert(shutdown.includes('stops the local stack and deprovisions its managed agents'), 'shutdown warning is exported');
+assert(shutdown.indexOf('stops the local stack') < shutdown.indexOf('cotal down --with-agents'), 'shutdown warning precedes command');
 const setup = artifact('docs/setup.md');
 for (const command of [
   'npx cotal-ai setup --destination local --harness claude --project . --space main --no-input',
@@ -55,9 +76,6 @@ console.log(
 );
 
 const { navigation } = await import('../src/generated/navigation.mjs');
-const pages = JSON.parse(
-  readFileSync(new URL('../src/generated/pages.json', import.meta.url)),
-);
 const homes = new Map();
 const collect = (nodes, path) => {
   for (const node of nodes) {

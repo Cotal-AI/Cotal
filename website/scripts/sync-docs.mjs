@@ -1,12 +1,3 @@
-// Sync the repo's canonical Markdown (/docs/*.md + /SPEC.md) into Fumadocs's
-// content collection. The repo files stay the single source of truth; this only
-// derives a frontmatter title from the H1 each page opens with and a description
-// from the first paragraph, and rewrites cross-links to Fumadocs routes. Generated
-// files are git-ignored (see .gitignore).
-//
-// The group map below IS the site's information architecture. It publishes the same
-// pages docs/README.md (the docs index) links, and the sync refuses when the two
-// differ. Missing source files fail the sync loudly — no silent drift.
 import { readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync, copyFileSync, existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join, dirname, basename } from 'node:path';
@@ -18,7 +9,7 @@ import { mdxjs } from 'micromark-extension-mdxjs';
 import { decodeString } from 'micromark-util-decode-string';
 import { normalizeUri } from 'micromark-util-sanitize-uri';
 import { parse as parseHtml, parseFragment } from 'parse5';
-import { PROMPT_FENCE } from '../src/prompt.js';
+import { readDocument } from '@cotal-ai/docs-content';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..', '..');
@@ -30,12 +21,6 @@ const pubDir = join(here, '..', 'public');
 const GITHUB_BLOB = 'https://github.com/Cotal-AI/Cotal/blob/main';
 const blobPath = new URL(`${GITHUB_BLOB}/`).pathname;
 
-// The Quickstart's paste-into-your-agent fence renders as the interactive
-// AgentPrompt card on the site (the page is emitted as MDX; the .md twin
-// endpoint restores the plain fence). The prompt's source of truth is
-// src/prompt.js; the fence in docs/getting-started.md must match it exactly.
-const QUICKSTART_SRC = 'docs/getting-started.md';
-
 // Map a source basename (no extension) to its Fumadocs slug. README is the docs
 // index (its front-door content lives on the generated landing page), so it is
 // excluded from the sync and links to it go to the site root.
@@ -45,7 +30,7 @@ const page = (source) => ({ kind: 'page', source });
 const group = (title, children) => ({ kind: 'group', title, children });
 const navigation = [
   { section: 'docs', title: 'Docs', children: [
-    group('Start here', ['what-is-cotal', 'installation', 'getting-started', 'examples'].map(name => page(`docs/${name}.md`))),
+    group('Start here', ['what-is-cotal', 'installation', 'getting-started', 'examples'].map(name => page(`docs/${name}.mdx`))),
     group('Guides', [
       group('Operate a mesh', ['run-a-mesh', 'setup', 'define-a-team', 'watch-a-mesh', 'deploy', 'UPGRADING'].map(name => page(`docs/${name}.md`))),
       group('Connect agents', ['connectors', 'connect-claude', 'connect-opencode', 'connect-codex', 'connect-hermes', 'connect-jcode', 'connect-pi'].map(name => page(`docs/${name}.md`))),
@@ -80,12 +65,12 @@ const sectionFor = rel => {
   if (!section) throw new Error(`page is absent from navigation: ${rel}`);
   return section;
 };
-const knownSlugs = new Map(sources.map(rel => [rel, `${sectionFor(rel)}/${slugFor(basename(rel).replace(/\.md$/, ''))}`]));
+const knownSlugs = new Map(sources.map(rel => [rel, `${sectionFor(rel)}/${slugFor(basename(rel).replace(/\.mdx?$/, ''))}`]));
 if (new Set(knownSlugs.values()).size !== sources.length) throw new Error('duplicate published page URL');
 
 // The site publishes only SPEC.md and top-level docs pages, so one of these the group map
 // leaves out is drift, and every other repo file stays on GitHub.
-const isSitePage = (rel) => rel === 'SPEC.md' || /^docs\/[^/]+\.md$/.test(rel);
+const isSitePage = (rel) => rel === 'SPEC.md' || /^docs\/[^/]+\.mdx?$/.test(rel);
 
 // Rewrite repo-relative links to site routes. Every link is first resolved as a URL
 // against its source file's GitHub address (sources live at different depths:
@@ -207,44 +192,6 @@ function rewriteLinks(md, rel, extensions) {
   return out + md.slice(at);
 }
 
-// The title comes from the lexed first block, so a `#` comment in a code fence is never read as the
-// H1. Fumadocs renders the title itself, so the H1 is dropped from the body. The lexer measures its
-// spans in the text after turning CR and CRLF into LF, so the body is cut from that same text.
-function splitH1(md, rel) {
-  const lf = md.replace(/\r\n?/g, '\n');
-  const [h1] = marked.lexer(lf);
-  if (h1?.type !== 'heading' || h1.depth !== 1) throw new Error(`page does not open with an H1: ${rel}`);
-  return { title: h1.text, body: lf.slice(h1.raw.length).replace(/^\n+/, '') };
-}
-
-// A hard line break renders as a br with no text, but it separates the words on either side.
-const textOf = (node) =>
-  node.nodeName === '#text' ? node.value : node.nodeName === 'br' ? ' ' : (node.childNodes ?? []).map(textOf).join('');
-
-const graphemes = new Intl.Segmenter();
-
-// Every page opens with a banner blockquote and some with headings, so the description is the
-// first top-level paragraph after them that has text; an image alone has none. It is rendered and
-// read back as text, so a link keeps its label and loses its target. A long one is cut where the
-// character that crosses the limit begins, so the cut never splits an emoji or an accented letter.
-// When the first character crosses it alone, the cut would keep nothing.
-function firstParagraph(md, rel) {
-  for (const token of marked.lexer(md)) {
-    if (token.type !== 'paragraph') continue;
-    const text = textOf(parseFragment(marked.parser([token]))).replace(/\s+/g, ' ').trim();
-    if (!text) continue;
-    if (text.length <= 160) return text;
-    const cut = graphemes.segment(text).containing(159).index;
-    if (cut === 0) throw new Error(`first character of the description is too long to cut to 160 units: ${rel}`);
-    return `${text.slice(0, cut).replace(/\s+\S*$/, '')}…`;
-  }
-  throw new Error(`no paragraph with text to describe the page: ${rel}`);
-}
-
-function yamlEscape(s) {
-  return `"${s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
-}
-
 // The index also links design notes (docs/design/) and spec/ references, which stay on
 // GitHub, so only its links to SPEC.md and top-level docs pages must match the group map.
 // Readers follow the links of the rendered index on GitHub, and a hand-written reading of
@@ -269,13 +216,12 @@ visit(parseHtml(marked.parse(readFileSync(join(repoRoot, 'docs', 'README.md'), '
 for (const rel of indexed) if (!sources.includes(rel)) throw new Error(`indexed but not in the group map: ${rel}`);
 for (const rel of sources) if (!indexed.has(rel)) throw new Error(`in the group map but not indexed: ${rel}`);
 
-// Clean generated markdown (keep hand-authored .mdx like index.mdx; the
-// generated getting-started.mdx is ours to remove).
+const documents = new Map(await Promise.all(sources.map(async rel =>
+  [rel, await readDocument(join(repoRoot, rel))],
+)));
+
 mkdirSync(outDir, { recursive: true });
 for (const section of ['docs', 'api-reference']) rmSync(join(outDir, section), { recursive: true, force: true });
-for (const f of readdirSync(outDir)) {
-  if (f.endsWith('.md') || f === 'getting-started.mdx') rmSync(join(outDir, f));
-}
 mkdirSync(genDir, { recursive: true });
 
 // Publish the machine-readable schema at its canonical URL (/cotal.schema.json).
@@ -287,29 +233,17 @@ copyFileSync(join(repoRoot, 'spec', 'cotal.schema.json'), join(pubDir, 'cotal.sc
 // never drift from the one people audit on GitHub.
 copyFileSync(join(repoRoot, 'install.sh'), join(pubDir, 'install.sh'));
 
-for (const rel of sources) {
-    const src = join(repoRoot, rel);
-    const name = basename(rel).replace(/\.md$/, '');
-    const slug = slugFor(name);
-    const { title, body } = splitH1(readFileSync(src, 'utf8'), rel);
-    const description = firstParagraph(body, rel);
-    // The Quickstart is emitted as MDX, which has no indented code and reads braces and tags as JavaScript.
-    let md = rewriteLinks(body, rel, rel === QUICKSTART_SRC ? [mdxjs(), gfm()] : [gfm()]);
-    const fm = ['---', `title: ${yamlEscape(title)}`, `description: ${yamlEscape(description)}`, '---', ''].join('\n');
-    let ext = 'md';
-    let imports = '';
-    if (rel === QUICKSTART_SRC) {
-      if (!md.includes(PROMPT_FENCE))
-        throw new Error(`quickstart prompt fence not found: ${rel} drifted from src/prompt.js`);
-      md = md.replace(PROMPT_FENCE, '<AgentPrompt />');
-      imports = "import { AgentPrompt } from '@/components/agent-prompt';\n\n";
-      ext = 'mdx';
-    }
-    const section = sectionFor(rel);
-    mkdirSync(join(outDir, section), { recursive: true });
-    writeFileSync(join(outDir, section, `${slug}.${ext}`), fm + imports + md);
+for (const [rel, document] of documents) {
+  const slug = slugFor(basename(rel).replace(/\.mdx?$/, ''));
+  const extensions = document.format === 'mdx' ? [mdxjs(), gfm()] : [gfm()];
+  const body = rewriteLinks(document.content, rel, extensions);
+  const frontmatter = ['---', ...Object.entries(document.metadata)
+    .filter(([, value]) => value !== undefined)
+    .map(([key, value]) => `${key}: ${JSON.stringify(value)}`), '---', ''].join('\n');
+  const section = sectionFor(rel);
+  mkdirSync(join(outDir, section), { recursive: true });
+  writeFileSync(join(outDir, section, `${slug}.${document.format}`), frontmatter + body);
 }
-
 
 // Copy every image the pages reference into public/. copyFileSync throws on a
 // missing source, so a dead image link fails the sync instead of 404ing live.
@@ -382,19 +316,20 @@ console.log(
 for (const section of ['docs', 'api-reference']) {
   rmSync(join(pubDir, section), { recursive: true, force: true });
 }
-const pages = sources.map(rel => {
-  const slug = slugFor(basename(rel).replace(/\.md$/, ''));
-  const { title, body } = splitH1(readFileSync(join(repoRoot, rel), 'utf8'), rel);
-  return { slug, title, section: sectionFor(rel), url: `/${sectionFor(rel)}/${slug}/`,
-    markdown: `# ${title}\n\n${rewriteLinks(body, rel, [gfm()])}` };
+const pages = [...documents].map(([rel, document]) => {
+  const slug = slugFor(basename(rel).replace(/\.mdx?$/, ''));
+  return { slug, title: document.metadata.title, section: sectionFor(rel), url: `/${sectionFor(rel)}/${slug}/`,
+    markdown: rewriteLinks(document.markdown, rel, [gfm()]) };
 });
-const agents = readFileSync(join(here, '../src/content/docs/docs-for-agents.mdx'), 'utf8');
-const agentsBody = agents.replace(/^---[\s\S]*?---\s*/, '').replace(/\/([a-z-]+)(\/|\.md)/g, (match, slug, end) => {
+const agents = await readDocument(join(here, '../src/content/docs/docs-for-agents.mdx'));
+const routeAgentLinks = text => text.replace(/\/([a-z-]+)(\/|\.md)/g, (match, slug, end) => {
   const page = pages.find(p => p.slug === slug);
   return page ? page.url.slice(0, -1) + end : match;
 });
-writeFileSync(join(outDir, 'docs/docs-for-agents.md'), '---\ntitle: Docs for agents\ndescription: How agents consume Cotal documentation.\n---\n' + agentsBody);
-pages.push({ slug: 'docs-for-agents', title: 'Docs for agents', section: 'docs', url: '/docs/docs-for-agents/', markdown: '# Docs for agents\n\n' + agentsBody });
+const agentsFrontmatter = ['---', ...Object.entries(agents.metadata)
+  .map(([key, value]) => `${key}: ${JSON.stringify(value)}`), '---', ''].join('\n');
+writeFileSync(join(outDir, 'docs/docs-for-agents.mdx'), agentsFrontmatter + routeAgentLinks(agents.content));
+pages.push({ slug: 'docs-for-agents', title: agents.metadata.title, section: 'docs', url: '/docs/docs-for-agents/', markdown: routeAgentLinks(agents.markdown) });
 const publishedNavigation = navigation.map(section => {
   const convert = node => node.kind === 'page'
     ? { kind: 'page', url: `/${knownSlugs.get(node.source)}/` }

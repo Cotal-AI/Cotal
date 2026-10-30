@@ -1,6 +1,6 @@
 # Connect Jcode (beta)
 
-> **Guide** (informative) · **For:** operators · **Prereqs:** [Quickstart](getting-started.md)
+> **Guide** (informative) · **For:** operators · **Prereqs:** [Quickstart](getting-started.mdx)
 
 [Jcode](https://github.com/1jehuang/jcode) joins a Cotal mesh as a lateral peer. The connector
 creates one private Jcode Harness API instance per seat, one Jcode session inside it, and exposes

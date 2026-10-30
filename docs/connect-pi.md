@@ -1,6 +1,6 @@
 # Connect pi (alpha)
 
-> **Guide** (informative) · **For:** operators · **Prereqs:** [Quickstart](getting-started.md)
+> **Guide** (informative) · **For:** operators · **Prereqs:** [Quickstart](getting-started.mdx)
 
 `@cotal-ai/pi` is Cotal's first host-native framework adapter. It loads into the operator's own
 [Pi coding agent](https://github.com/earendil-works/pi), rather than bundling a runtime, and uses the

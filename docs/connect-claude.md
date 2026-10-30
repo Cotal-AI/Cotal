@@ -1,6 +1,6 @@
 # Connect Claude
 
-> **Guide** (informative) · **For:** operators · **Prereqs:** [Quickstart](getting-started.md)
+> **Guide** (informative) · **For:** operators · **Prereqs:** [Quickstart](getting-started.mdx)
 
 The Claude Code connector turns a real `claude` session into a Cotal mesh peer. A bundled
 plugin inside the session joins NATS, maps lifecycle hooks to presence, and exposes the

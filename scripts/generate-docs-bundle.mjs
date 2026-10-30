@@ -1,37 +1,12 @@
-// Generate the version-exact Cotal docs bundle that ships inside the connector, so a
-// mesh agent can call `cotal_docs` and read the AUTHORITATIVE docs for the exact version
-// it is running — offline, with no drift. Sources of truth: /docs/*.md + /SPEC.md +
-// /spec/cotal-lang.md + /spec/cotal.schema.json, stamped with the release version (bin/package.json). Run:
-// `pnpm gen:docsbundle`.
-//
-// Emits extensions/connector-core/src/docs-bundle.generated.ts by default, as a typed object
-// literal (a JSON.stringify'd one — readable and bundler-proof: tsc copies it into dist and
-// esbuild inlines it into the OpenCode plugin bundle, where loose files would be dropped).
-// The literal is the body of `loadDocsBundle()` rather than a module constant: every connector
-// process imports this module and most never call `cotal_docs`, and a constant would build the
-// whole docs set in each of them at startup. `DOCS_VERSION` sits outside it so the orientation
-// card can print the version without building the docs. FAILS LOUD on an empty or missing source
-// so a release can never ship hollow docs.
-//
-// THE OUTPUT IS A BUILD ARTIFACT, NOT A TRACKED FILE. `@cotal-ai/connector-core` runs this
-// from its own `build` and `typecheck`, and the path is gitignored. It used to be committed,
-// which made every pair of branches regenerating the same region of it conflict in a file no
-// human wrote while the source pages merged cleanly. Generating it on the way past removes
-// that class rather than automating around it.
-//
-// `--out <path>` writes somewhere else. A caller that must inspect the SHIPPED text without
-// running a build (the upgrade-section gate) regenerates into a temporary path with it.
-import { readFileSync, writeFileSync, readdirSync } from "node:fs";
-import { join, dirname, basename } from "node:path";
+import { readFileSync, writeFileSync } from "node:fs";
+import { join, dirname, basename, extname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { readDocument, discoverDocuments } from "@cotal-ai/docs-content";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, "..");
 const docsDir = join(repoRoot, "docs");
 
-// `--out <path>` overrides the destination; the default is the connector source the build
-// compiles. An `--out` with no value is a caller mistake, not a reason to silently use the
-// default and write over the connector's copy.
 const outFlag = process.argv.indexOf("--out");
 if (outFlag !== -1 && !process.argv[outFlag + 1]) {
   throw new Error("gen:docsbundle: --out needs a path");
@@ -44,79 +19,39 @@ const out =
 const version = JSON.parse(readFileSync(join(repoRoot, "bin", "package.json"), "utf8")).version;
 if (!version) throw new Error("gen:docsbundle: no version in bin/package.json");
 
-// README.md is the docs index (human navigation), not agent content — cotal_docs() renders
-// its own index from the pages below. Reading order: these key pages first, then the rest
-// alphabetically, so the index reads like a route, not a directory listing.
-const EXCLUDE = new Set(["README.md"]);
 const ORDER = [
-  "what-is-cotal.md",
-  "getting-started.md",
-  "architecture.md",
-  "mcp-tools.md",
-  "channels-and-permissions.md",
-  "identity-and-auth.md",
+  "what-is-cotal", "getting-started", "architecture", "mcp-tools",
+  "channels-and-permissions", "identity-and-auth",
 ];
-
-/** First H1 → title; fail loud if a page has none (every doc opens with one). */
-function titleOf(md, slug) {
-  const m = md.match(/^#\s+(.+?)\s*$/m);
-  if (!m) throw new Error(`gen:docsbundle: ${slug}.md has no H1 title`);
-  return m[1].trim();
-}
-
-/** The classification line every page opens with — `> **Concept** (informative) · …` →
- *  "Concept (informative)". "" when a page has no such line. */
-function kindOf(md) {
-  const m = md.match(/^>\s*(.+?)\s*$/m);
-  if (!m) return "";
-  return m[1].split("·")[0].replace(/\*\*/g, "").replace(/[[\]]/g, "").trim();
-}
-
-/** One-line summary: the first real content paragraph, flattened to a single sentence-ish
- *  line with markdown noise stripped. Fail loud if a page is all headings/blockquotes. */
-function summaryOf(md, slug) {
-  const lines = md.split("\n");
-  const para = [];
-  for (const raw of lines) {
-    const l = raw.trim();
-    if (!para.length) {
-      // Seek the first content line: skip headings, the classification blockquote,
-      // images, HTML comments, and blanks.
-      if (!l || l.startsWith("#") || l.startsWith(">") || l.startsWith("![") || l.startsWith("<!--")) continue;
-      para.push(l);
-    } else {
-      if (!l) break; // paragraph ends at the first blank line
-      para.push(l);
-    }
-  }
-  if (!para.length) throw new Error(`gen:docsbundle: ${slug}.md has no summary paragraph`);
-  const flat = para
-    .join(" ")
-    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1") // links → their text
-    .replace(/[*_`]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-  // Trim to the first sentence, capped, so the index stays scannable.
-  const dot = flat.indexOf(". ");
-  const oneLine = dot > 40 ? flat.slice(0, dot + 1) : flat;
-  return oneLine.length > 200 ? oneLine.slice(0, 197).trimEnd() + "…" : oneLine;
-}
-
-const files = readdirSync(docsDir)
-  .filter((f) => f.endsWith(".md") && !EXCLUDE.has(f))
-  .sort((a, b) => {
-    const ia = ORDER.indexOf(a);
-    const ib = ORDER.indexOf(b);
-    if (ia !== -1 || ib !== -1) return (ia === -1 ? 1e9 : ia) - (ib === -1 ? 1e9 : ib);
-    return a.localeCompare(b);
-  });
-
-const pages = files.map((f) => {
-  const slug = basename(f, ".md").toLowerCase();
-  const body = readFileSync(join(docsDir, f), "utf8");
-  if (!body.trim()) throw new Error(`gen:docsbundle: docs/${f} is empty`);
-  return { slug, title: titleOf(body, slug), kind: kindOf(body), summary: summaryOf(body, slug), body };
+const slugOf = path => basename(path, extname(path)).toLowerCase();
+const files = (await discoverDocuments(docsDir)).sort((a, b) => {
+  const ia = ORDER.indexOf(slugOf(a));
+  const ib = ORDER.indexOf(slugOf(b));
+  if (ia !== -1 || ib !== -1) return (ia === -1 ? Infinity : ia) - (ib === -1 ? Infinity : ib);
+  return a.localeCompare(b);
 });
+
+function titleOf(md, slug) {
+  const title = md.match(/^#\s+(.+?)\s*$/m)?.[1]?.trim();
+  if (!title) throw new Error(`gen:docsbundle: ${slug}.md has no H1 title`);
+  return title;
+}
+
+function summaryOf(description) {
+  const dot = description.indexOf(". ");
+  const text = dot > 40 ? description.slice(0, dot + 1) : description;
+  return text.length > 200 ? text.slice(0, 197).trimEnd() + "…" : text;
+}
+
+const pages = [];
+for (const path of files) {
+  if (!readFileSync(path, "utf8").trim()) throw new Error(`gen:docsbundle: docs/${basename(path)} is empty`);
+  const doc = await readDocument(path);
+  pages.push({
+    slug: slugOf(path), title: doc.metadata.title, kind: doc.metadata.kind,
+    summary: summaryOf(doc.metadata.description), body: doc.markdown,
+  });
+}
 
 const specBody = readFileSync(join(repoRoot, "SPEC.md"), "utf8");
 if (!specBody.trim()) throw new Error("gen:docsbundle: SPEC.md is empty");
@@ -127,7 +62,7 @@ if (!langBody.trim()) throw new Error("gen:docsbundle: spec/cotal-lang.md is emp
 
 const bundle = {
   version,
-  generatedFrom: "docs/*.md + SPEC.md + spec/cotal-lang.md + spec/cotal.schema.json",
+  generatedFrom: "docs/*.{md,mdx} + SPEC.md + spec/cotal-lang.md + spec/cotal.schema.json",
   pages,
   spec: { title: titleOf(specBody, "spec"), body: specBody },
   lang: { title: titleOf(langBody, "lang"), body: langBody },
@@ -135,7 +70,7 @@ const bundle = {
 };
 
 const banner =
-  "// GENERATED by scripts/generate-docs-bundle.mjs — do not edit by hand.\n" +
+  "// GENERATED by scripts/generate-docs-bundle.mjs. Do not edit by hand.\n" +
   "// Regenerate with `pnpm gen:docsbundle` whenever /docs, /SPEC.md, /spec, or the\n" +
   "// release version changes. It is the version-exact docs `cotal_docs` serves offline.\n";
 

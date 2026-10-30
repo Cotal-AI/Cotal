@@ -85,7 +85,7 @@ One-line definitions of the terms used across these docs and the spec. The base 
   [SPEC §4](../SPEC.md#4-delivery-modes), [§5](../SPEC.md#5-envelopes)
 
 - **Mesh**, a running Cotal deployment: a broker, a space, and the peers coordinating in it.
-  [what-is-cotal.md](what-is-cotal.md)
+  [what-is-cotal.mdx](what-is-cotal.mdx)
 
 - **Multicast**: a delivery mode delivered to every subscriber of a channel.
   [SPEC §4](../SPEC.md#4-delivery-modes)

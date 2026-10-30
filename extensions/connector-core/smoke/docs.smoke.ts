@@ -6,7 +6,7 @@
  */
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,6 +14,12 @@ import { runDocs, searchDocs, renderDocsIndex, DOCS_VERSION } from "@cotal-ai/co
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, "..", "..", "..");
+const originalFetch = globalThis.fetch;
+let networkCalls = 0;
+globalThis.fetch = async () => {
+  networkCalls++;
+  throw new Error("docs smoke runs offline");
+};
 
 // 1 — release safety: the bundle version equals the version we actually ship. A release can
 // never hand agents docs stamped for a different version than the package they installed.
@@ -54,6 +60,17 @@ console.log("✓ 2 — the index names the version and offers real page slugs");
 
   const schema = await runDocs({ page: "schema" });
   assert.match(schema.text, /"\$schema"|"\$id"|"properties"/, "schema alias returns JSON Schema");
+
+  const quickstart = await runDocs({ page: "getting-started.md" });
+  assert.equal(quickstart.isError, undefined);
+  assert.match(quickstart.text, /# Quickstart/);
+  assert.match(quickstart.text, /cotal setup --configure-only/);
+  assert.match(quickstart.text, /cotal down --with-agents/);
+  assert.match(quickstart.text, /deprovisions its managed agents/);
+  assert.match(quickstart.text, /Read https:\/\/docs\.cotal\.ai\/prompt\.md, then set up Cotal/);
+  assert.match(quickstart.text, /\[Define a team\]\(define-a-team\.md\)/, "Card title and URL reach the installed tool");
+  assert.match(quickstart.text, /Choose several agents and their channels in one file/, "Card children reach the installed tool");
+  assert.doesNotMatch(quickstart.text, /<(?:Card|Cards|Step|Steps|Callout)\b|^import /m);
 
   // Case-insensitive and tolerant of a trailing .md.
   const alt = await runDocs({ page: "Architecture.md" });
@@ -155,8 +172,8 @@ console.log("✓ 5 — BM25 section search");
   const docsDir = join(repoRoot, "docs");
   // README.md is the human index; cotal_docs renders its own, so the generator excludes it.
   const expected = readdirSync(docsDir)
-    .filter((f) => f.endsWith(".md") && f !== "README.md")
-    .map((f) => f.slice(0, -3).toLowerCase())
+    .filter((f) => /\.mdx?$/.test(f) && f !== "README.md")
+    .map((f) => f.replace(/\.mdx?$/, "").toLowerCase())
     .sort();
   assert.ok(expected.length > 0, "the docs directory has pages to serve");
 
@@ -207,6 +224,7 @@ console.log("✓ 6 — the built docs module serves every page in docs/ at the s
     mkdirSync(join(tree, "bin"), { recursive: true });
     cpSync(join(repoRoot, "bin", "package.json"), join(tree, "bin", "package.json"));
     cpSync(gen, join(tree, "scripts", "generate-docs-bundle.mjs"));
+    symlinkSync(join(repoRoot, "node_modules"), join(tree, "node_modules"), "dir");
     const copied = join(tree, "scripts", "generate-docs-bundle.mjs");
 
     // ACCEPT CONTROL FOR THE COPY. The refuse legs below are only evidence if the copy itself is
@@ -250,4 +268,6 @@ console.log("✓ 6 — the built docs module serves every page in docs/ at the s
 }
 console.log("✓ 7 — the generator refuses a hollow source, naming which one");
 
-console.log("docs.smoke: OK — 7 sections");
+assert.equal(networkCalls, 0, "page, index and search calls use no network");
+globalThis.fetch = originalFetch;
+console.log("docs.smoke: OK — 7 sections, zero network calls");

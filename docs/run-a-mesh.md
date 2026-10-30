@@ -1,6 +1,6 @@
 # Run a mesh
 
-> **Guide** (informative) · **For:** operators · **Prereqs:** [Quickstart](getting-started.md)
+> **Guide** (informative) · **For:** operators · **Prereqs:** [Quickstart](getting-started.mdx)
 
 Day-to-day operation of a local mesh: what `cotal up` actually runs, how spawning
 resolves personas, harnesses, and models, how to reach a mesh from any directory, and the

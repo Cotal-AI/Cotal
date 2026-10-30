@@ -6,7 +6,7 @@
 identities, launch agents, watch what they do, and tear it all down. It is a thin client over the
 wire contract: the normative subjects and schemas live in the [SPEC](../SPEC.md); this page is
 lookup material for the commands, not a walkthrough; if you are new, start with
-[Getting started](getting-started.md).
+[Getting started](getting-started.mdx).
 
 ## Running it
 
@@ -368,7 +368,7 @@ registered at that root is reported, not refused. A space name or root another s
 `partial` (exit 4), naming the tool; an application action that does not finish does the same.
 `cotal status` reports the machine's state, and it points
 stale Claude skills and out-of-date `.agents` skills at `cotal setup --skills`. See
-[Getting started](getting-started.md) and, for maintainers, [setup internals](setup-internals.md).
+[Getting started](getting-started.mdx) and, for maintainers, [setup internals](setup-internals.md).
 
 ## update
 

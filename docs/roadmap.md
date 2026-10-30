@@ -13,7 +13,7 @@ The core is running today: all three delivery modes over JetStream, presence and
 discovery, channel replay and durable delivery classes, JWT identity and per-agent ACLs on
 by default, a supervising manager with pluggable runtimes, connectors for Claude Code,
 OpenCode, Codex, Hermes, Jcode, and pi, the mesh manifest (`cotal.yaml`), and the console + web
-observers. The [Quickstart](getting-started.md) is the fastest proof.
+observers. The [Quickstart](getting-started.mdx) is the fastest proof.
 
 ## Deferred work
 

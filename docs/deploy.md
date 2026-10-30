@@ -1,6 +1,6 @@
 # Deploying agent teams
 
-> **Guide** (informative) · **For:** operators · **Prereqs:** [Quickstart](getting-started.md)
+> **Guide** (informative) · **For:** operators · **Prereqs:** [Quickstart](getting-started.mdx)
 
 The `deploy/` tree runs a team of agents in an isolated container that dials **out** to an
 existing Cotal broker. The container gets no host file access; only NATS traffic crosses the wall.

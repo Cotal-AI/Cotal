@@ -1,8 +1,8 @@
 # Define a team
 
-> **Guide** (informative) · **For:** operators · **Prereqs:** [Quickstart](getting-started.md)
+> **Guide** (informative) · **For:** operators · **Prereqs:** [Quickstart](getting-started.mdx)
 
-The [Quickstart](getting-started.md) gives you one agent. To run a **specific team** (your own
+The [Quickstart](getting-started.mdx) gives you one agent. To run a **specific team** (your own
 channels, your own agents, and the channel access for each agent), describe it once in a
 `cotal.yaml` and launch it with a single command.
 

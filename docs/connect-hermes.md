@@ -1,6 +1,6 @@
 # Connect Hermes (alpha)
 
-> **Guide** (informative) · **For:** operators · **Prereqs:** [Quickstart](getting-started.md)
+> **Guide** (informative) · **For:** operators · **Prereqs:** [Quickstart](getting-started.mdx)
 
 [Hermes](https://nousresearch.com) (Nous Research) joins a Cotal mesh as a lateral peer, with the
 same shared `cotal_*` tool surface and delivery model as the other connectors. The `hermes`

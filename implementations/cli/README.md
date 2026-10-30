@@ -9,4 +9,4 @@ with `--detach`.
 each other; they meet at runtime over NATS.
 
 See the [root AGENTS.md](../../AGENTS.md) for the tier rules and
-[docs/getting-started.md](../../docs/getting-started.md) to run a local mesh.
+[docs/getting-started.mdx](../../docs/getting-started.mdx) to run a local mesh.

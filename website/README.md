@@ -1,9 +1,10 @@
 # Cotal docs site
 
-Next.js and Fumadocs render the canonical Markdown in `/docs` and `/SPEC.md`.
-Edit those files rather than the generated content under `website/content/`.
-The sync script generates titles, descriptions, section navigation, links,
-Markdown exports, redirects, and agent discovery artifacts.
+Next.js and Fumadocs render the authored Markdown and MDX in `/docs` and `/SPEC.md`.
+Edit those sources rather than the generated collection under `website/content/`.
+The sync script publishes navigation, links, Markdown downloads, redirects, and
+agent discovery files. `@cotal-ai/docs-content` provides the same complete Markdown
+to this site and the release bundle served by `cotal_docs`.
 
 ## Develop
 
@@ -39,11 +40,23 @@ Its published page set must match `docs/README.md`. Guides and Concepts contain
 collapsible subsections. A page has one navigation home, and its subsection does
 not change its URL.
 
-Canonical prose stays Markdown. The content compiler uses Fumadocs steps for the
-numbered Quickstart sections and cards for Start here next-step lists. Heading IDs
-come from the original Markdown. Raw Markdown and the agent bundle retain the
-plain text, links, and code fences. The Quickstart prompt card also retains its
-plain fence in the Markdown export.
+Start here uses direct MDX with explicit Fumadocs Cards, Steps, and Callout
+components. Titles, descriptions, classification, and audience live in frontmatter.
+Tutorial headings declare their existing IDs so incoming fragment links still work.
+Fumadocs code blocks provide the setup prompt's copy button.
+
+Other sections remain Markdown until their own review. Generated reference pages
+and the normative specification keep their current sources.
+
+The shared build package converts supported components to complete Markdown.
+Card links and descriptions, all tab alternatives, warnings, and code remain in
+the downloads. Unknown components and executable expressions fail the export.
+See [`tools/docs-content/README.md`](../tools/docs-content/README.md) for the authoring contract.
+
+The website installs its own copy of the shared package through a local file
+dependency. `install-links=true` in `.npmrc` makes that copy resolve dependencies
+inside the website installation. The connector build uses the root pnpm workspace
+and does not need Next.js or the website's dependencies.
 
 ## Agent endpoints
 

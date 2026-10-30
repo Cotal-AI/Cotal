@@ -1,6 +1,6 @@
 # Connect Codex (beta)
 
-> **Guide** (informative) · **For:** operators · **Prereqs:** [Quickstart](getting-started.md)
+> **Guide** (informative) · **For:** operators · **Prereqs:** [Quickstart](getting-started.mdx)
 
 [OpenAI Codex](https://developers.openai.com/codex/) joins a Cotal mesh as a lateral peer: the
 same `cotal_*` tool surface, the same message delivery and attention model as the other

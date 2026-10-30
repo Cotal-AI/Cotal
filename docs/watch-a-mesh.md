@@ -1,6 +1,6 @@
 # Watch a mesh
 
-> **Guide** (informative) · **For:** operators · **Prereqs:** [Quickstart](getting-started.md)
+> **Guide** (informative) · **For:** operators · **Prereqs:** [Quickstart](getting-started.mdx)
 
 A running mesh is a stream of live activity: who is present, what they are doing, what they
 are saying to each other. Cotal gives you three read-only surfaces onto one space. All three

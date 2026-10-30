@@ -1,6 +1,14 @@
-import { remarkStartHere } from './src/lib/remark-start-here';
 import { defineDocs, defineConfig } from 'fumadocs-mdx/config';
-export const docs = defineDocs({ dir: 'content' });
-export default defineConfig({
-  mdxOptions: { remarkPlugins: [remarkStartHere] },
+import { pageSchema } from 'fumadocs-core/source/schema';
+import { z } from 'zod';
+
+export const docs = defineDocs({
+  dir: 'content',
+  docs: {
+    schema: pageSchema.extend({
+      kind: z.string().optional(),
+      audience: z.string().optional(),
+    }),
+  },
 });
+export default defineConfig();

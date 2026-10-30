@@ -962,6 +962,7 @@
     "ts-json-schema-generator": "^2.9.0",
     "tsx": "^4.23.0",
     "typescript": "^5.9.3",
-    "yaml": "^2.9.0"
+    "yaml": "^2.9.0",
+    "@cotal-ai/docs-content": "workspace:*"
   }
 }

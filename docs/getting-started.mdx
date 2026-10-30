@@ -1,6 +1,13 @@
-# Quickstart
+---
+title: "Quickstart"
+description: "Start a local Cotal mesh, launch an agent, and watch it join."
+kind: "Informative"
+audience: "first-time users"
+---
 
-> Informative. For first-time users.
+import { Card, Cards } from 'fumadocs-ui/components/card';
+import { Step, Steps } from 'fumadocs-ui/components/steps';
+import { Callout } from 'fumadocs-ui/components/callout';
 
 We'll start a local Cotal mesh, launch an agent, and watch it join.
 A mesh is the network your agents use to communicate.
@@ -17,10 +24,13 @@ To do the setup yourself, follow the steps below.
 
 ## Before you start
 
-[Install Cotal](installation.md) and one of its supported [agent applications](connectors.md).
+[Install Cotal](installation.mdx) and one of its supported [agent applications](connectors.md).
 Complete that application's own authentication before you launch it through Cotal.
 
-## 1. Prepare a project
+<Steps>
+<Step>
+
+## Prepare a project [#1-prepare-a-project]
 
 Create a folder for this tutorial:
 
@@ -39,7 +49,11 @@ Setup creates the space's files, including `.cotal/agents/default.md`.
 Nothing is running yet.
 [Configure a space](setup.md) covers the other choices and setup from a script.
 
-## 2. Start a local mesh
+</Step>
+
+<Step>
+
+## Start a local mesh [#2-start-a-local-mesh]
 
 In the same project folder, run:
 
@@ -50,7 +64,11 @@ cotal up --detach
 This starts the local broker and background services for your space.
 Authentication is enabled by default.
 
-## 3. Launch your agent
+</Step>
+
+<Step>
+
+## Launch your agent [#3-launch-your-agent]
 
 ```bash
 cotal spawn
@@ -61,7 +79,11 @@ Ask the agent which space it joined and who else is present.
 
 Leave this terminal open for the next step.
 
-## 4. Check the mesh
+</Step>
+
+<Step>
+
+## Check the mesh [#4-check-the-mesh]
 
 In another terminal, open the same `cotal-demo` project folder and run:
 
@@ -81,11 +103,19 @@ cotal watch
 Press Ctrl-C to leave the watch view.
 Leaving this view does not stop the mesh or its agents.
 
-## 5. Stop the tutorial
+</Step>
+
+<Step>
+
+## Stop the tutorial [#5-stop-the-tutorial]
+
+<Callout type="warn">
 
 The following command stops the local stack and deprovisions its managed agents.
 Use it when you have finished this tutorial.
 For ways to preserve running work, see the [shutdown reference](cli.md#down).
+
+</Callout>
 
 Run this from the tutorial project folder:
 
@@ -93,15 +123,31 @@ Run this from the tutorial project folder:
 cotal down --with-agents
 ```
 
+</Step>
+</Steps>
+
 ## Troubleshooting
 
-- If `cotal` is missing or selects an old installation, follow [Check the installation](installation.md#check-the-installation).
+- If `cotal` is missing or selects an old installation, follow [Check the installation](installation.mdx#check-the-installation).
 - If your agent cannot launch, check its [connector guide](connectors.md) and run setup again after fixing the reported dependency.
 - If setup fails, see [Recover from a setup failure](setup.md#recover-from-a-setup-failure).
 
 ## Next steps
 
-- [Define a team](define-a-team.md). Choose several agents and their channels in one file.
-- [Connectors](connectors.md). Set up another agent application.
-- [Examples](examples.md). Try a complete example.
-- [Run a mesh](run-a-mesh.md). Manage spaces, agent defaults, and day-to-day operation.
+<Cards>
+<Card title="Define a team" href="define-a-team.md">
+Choose several agents and their channels in one file.
+</Card>
+
+<Card title="Connectors" href="connectors.md">
+Set up another agent application.
+</Card>
+
+<Card title="Examples" href="examples.mdx">
+Try a complete example.
+</Card>
+
+<Card title="Run a mesh" href="run-a-mesh.md">
+Manage spaces, agent defaults, and day-to-day operation.
+</Card>
+</Cards>

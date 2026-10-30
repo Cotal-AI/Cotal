@@ -1,6 +1,6 @@
 # Connect OpenCode (beta)
 
-> **Guide** (informative) · **For:** operators · **Prereqs:** [Quickstart](getting-started.md)
+> **Guide** (informative) · **For:** operators · **Prereqs:** [Quickstart](getting-started.mdx)
 
 [OpenCode](https://opencode.ai) joins a Cotal mesh as a lateral peer, at parity with Claude
 Code: the same `cotal_*` tool surface, the same message delivery and attention model. You spawn
