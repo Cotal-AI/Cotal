@@ -1135,7 +1135,7 @@ it reaches.
 
 The cotal config reader now checks each server under `connectors.<name>.mcpServers` when it reads
 the file, and refuses one that cannot launch as written, naming the file and the field. The rules
-are in [the config file](config.md#the-config-file).
+are in [the config file](config.mdx#the-config-file).
 
 ### What stops working
 

@@ -291,7 +291,7 @@ or stop participants; future posts can create retained history again.
 
 The command inspects and edits the channel registry: replay and delivery policy, description, and joiner instructions. `live` has no per-member backstop; it does not disable ACL-bounded retained history. Changing a channel's delivery class does not settle already pending durable copies. `--delivery durable` requires a registered static-auth or user-auth space; an open or unregistered target has no established delivery-service support. A recorded auth mode does not prove that daemon is currently healthy. ACL
 semantics (who may read or post) are set at mint / provision time, not here; see
-[Channels and permissions](channels-and-permissions.md). On a user-auth mesh, `list` rides your
+[Channels and permissions](channels-and-permissions.mdx). On a user-auth mesh, `list` rides your
 own login as is; `set` and `defaults` edit the registry over a short-lived
 channel-writer view, which needs ledger scope `admin` ([Identity & auth](identity-and-auth.md)).
 On a remote user-auth mesh that view is served by the public exchange; space-history `purger`

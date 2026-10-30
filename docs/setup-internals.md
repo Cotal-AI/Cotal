@@ -166,7 +166,7 @@ fail-loud on collision.
   ([`lib/delivery-proc.ts`](../implementations/cli/src/lib/delivery-proc.ts)) re-execs `cotal
   deliver` detached with a pre-minted scoped `delivery.creds` (auth mode only, the durable
   backstop; open mode has none). Writes `.cotal/delivery.<key>.pid` and `.cotal/delivery.<key>.log`,
-  where `<key>` is the space key ([Config](config.md#project-files)), so a root can serve a space per
+  where `<key>` is the space key ([Config](config.mdx#project-files)), so a root can serve a space per
   daemon.
 - **Manager:** `startManagerDetached` / `ensureManager`
   ([`lib/manager-proc.ts`](../implementations/cli/src/lib/manager-proc.ts)) re-execs `cotal
@@ -175,7 +175,7 @@ fail-loud on collision.
   `managerUp(space)` checks that space's pid record. The **manager itself**
   writes `.cotal/manager.<key>.pid`, so a supervisor started by a container entrypoint, by cron, or
   by hand is recorded the same way a detached `cotal up` is. Readers verify the recorded pid is alive and is a
-  supervisor before trusting it ([Config](config.md#project-files)).
+  supervisor before trusting it ([Config](config.mdx#project-files)).
 
 The **web dashboard** is *not* part of `cotal up`. It ships inside `cotal-ai` as the `@cotal-ai/web`
 extension and is seeded automatically by the boot reconcile, the same durable, version-locked path as

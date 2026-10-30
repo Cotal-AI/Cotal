@@ -57,11 +57,11 @@ Cotal chooses the connector in this order:
 1. The launch's explicit `--harness` option.
 2. The persona file's `agent:` field.
 3. `COTAL_DEFAULT_AGENT`.
-4. The saved [`harness` preference](config.md#preferences).
+4. The saved [`harness` preference](config.mdx#preferences).
 5. The product default, Claude Code.
 
 A persona's `agent:` field takes precedence over a default. An unknown connector
-name fails the launch. See [Agent files](agent-files.md) to configure a persona.
+name fails the launch. See [Agent files](agent-files.mdx) to configure a persona.
 
 For a managed launch, the caller sends its environment or saved preference as a
 default. If the caller supplies neither, the manager's `COTAL_DEFAULT_AGENT`

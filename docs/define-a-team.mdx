@@ -25,7 +25,7 @@ For each channel, choose these permissions:
 
 A reader does not have to subscribe at startup.
 In the example below, `builder` may read `review`, but only `planner` starts subscribed.
-The [manifest reference](manifest.md) covers all fields, persona forms, channel cards, and resolution rules.
+The [manifest reference](manifest.mdx) covers all fields, persona forms, channel cards, and resolution rules.
 
 ## Start a fresh team [#quickstart]
 
@@ -224,9 +224,9 @@ Optional keys are:
 - `role` overrides the persona's role.
 - `config` chooses an agent file by catalog name or path.
 - `cwd` selects an existing working directory, resolved against the manager's workspace root.
-- `share-tools` lists the MCP servers to share from [configuration](config.md#the-config-file).
+- `share-tools` lists the MCP servers to share from [configuration](config.mdx#the-config-file).
 
 Unknown keys, including keys beside `agents:`, are refused before startup.
 This catches spelling errors such as `share_tools` or `cdw` before they silently change a launch.
 
-See [Agent files](agent-files.md) for persona fields and [Channels and permissions](channels-and-permissions.md) for access rules.
+See [Agent files](agent-files.mdx) for persona fields and [Channels and permissions](channels-and-permissions.mdx) for access rules.

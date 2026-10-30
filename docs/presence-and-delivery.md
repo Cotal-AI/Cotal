@@ -292,7 +292,7 @@ pull-only: it never drives automatic turns or wakes the session, and is read on 
 through `cotal_inbox`. A historical @mention or DM stays automatic. Mail addressed to
 you is never noise. Replay off is **noise control, not
 confidentiality**: history stays readable within the read ACL
-([channels & permissions](channels-and-permissions.md)).
+([channels & permissions](channels-and-permissions.mdx)).
 
 ## Attention
 

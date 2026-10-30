@@ -143,7 +143,7 @@ cotal spawn dave                                                                
 ```
 
 A bare `cotal spawn --detach dave` also auto-discovers `.cotal/agents/dave.md` in the manager's
-workspace (gitignored, user-local). See [agent files](../../docs/agent-files.md).
+workspace (gitignored, user-local). See [agent files](../../docs/agent-files.mdx).
 
 The bundled plugin reads `COTAL_*` from the env at spawn and auto-joins the mesh; the manager
 auto-clears the one-time dev-channel prompt, so the launch is hands-free. From there the agent is

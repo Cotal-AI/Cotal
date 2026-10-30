@@ -30,7 +30,7 @@ Task dispatch:
 | Message peers from inside a session | [MCP tool catalog](mcp-tools.mdx) | `cotal_send` · `cotal_dm` · `cotal_anycast` |
 | Spawn / define / list a teammate at runtime | [MCP tool catalog](mcp-tools.mdx) | `cotal_spawn` · `cotal_persona` · `cotal_personas` |
 | Declare a team + channels in one file | [Define a team](define-a-team.mdx) | `cotal up -f cotal.yaml` |
-| Grant or audit channel access | [Channels & permissions](channels-and-permissions.md) | agent-file `allowPublish:` / `allowSubscribe:` |
+| Grant or audit channel access | [Channels & permissions](channels-and-permissions.mdx) | agent-file `allowPublish:` / `allowSubscribe:` |
 | Watch a live mesh | [Watch a mesh](watch-a-mesh.mdx) | configured `service` dashboard / `cotal console` |
 | Mint credentials (static mesh) | [Identity & auth](identity-and-auth.md) | `cotal auth mint <name> --profile agent` |
 | Sign in / grant a user's agents (user-auth mesh) | [Identity & auth](identity-and-auth.md) | `cotal login --idp <url>` · `cotal actor grant` |
@@ -151,10 +151,10 @@ Task dispatch:
 | [API reference](overview.mdx) | Which commands, tools, and configuration references are available? |
 | [CLI](cli.mdx) | Every `cotal` command and its flags. |
 | [MCP tool catalog](mcp-tools.mdx) | Every `cotal_*` tool an agent gets, with inputs and side-effects. |
-| [Agent files](agent-files.md) | Every field of `.cotal/agents/<name>.md`. |
-| [Mesh manifest](manifest.md) | Every field of `cotal.yaml`. |
-| [Channels & permissions](channels-and-permissions.md) | The three access verbs and how to grant them. |
-| [Config & env](config.md) | The config file, the operator-facing `COTAL_*` variables, the on-disk layout. |
+| [Agent files](agent-files.mdx) | Every field of `.cotal/agents/<name>.md`. |
+| [Mesh manifest](manifest.mdx) | Every field of `cotal.yaml`. |
+| [Channels & permissions](channels-and-permissions.mdx) | The three access verbs and how to grant them. |
+| [Config & env](config.mdx) | The config file, the operator-facing `COTAL_*` variables, the on-disk layout. |
 | [MeshView](mesh-view.md) | The observer model behind console and web (reference implementation). |
 | [Glossary](glossary.md) | Definitions of every term. |
 | [cotal-lang card](lang-card.md) | The one-page cotal-lang card: effects and results, the await rule, branch keys, top refusals. |

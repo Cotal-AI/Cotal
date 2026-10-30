@@ -200,7 +200,7 @@ for (const n of Object.keys(ANNOTATIONS)) if (!specNames.has(n)) throw new Error
 
 const lines = [];
 lines.push(
-  "The tools are defined once, platform-neutrally, in `@cotal-ai/connector-core` and rendered onto each host's native tool API (an MCP server for [Claude Code](connect-claude.mdx) and [Codex](connect-codex.mdx), native plugin tools for [OpenCode](connect-opencode.mdx), [Hermes](connect-hermes.mdx), and [pi](connect-pi.mdx)), so the surface cannot drift across connectors. Argument defaults shown below are rendered for an agent subscribed to `general`; an agent reads only the channels its persona lists, so one that lists none has no default channel at all and `cotal_send` requires an explicit `channel`. Channel-scoped calls are bounded by your ACLs ([channels & permissions](channels-and-permissions.md)).",
+  "The tools are defined once, platform-neutrally, in `@cotal-ai/connector-core` and rendered onto each host's native tool API (an MCP server for [Claude Code](connect-claude.mdx) and [Codex](connect-codex.mdx), native plugin tools for [OpenCode](connect-opencode.mdx), [Hermes](connect-hermes.mdx), and [pi](connect-pi.mdx)), so the surface cannot drift across connectors. Argument defaults shown below are rendered for an agent subscribed to `general`; an agent reads only the channels its persona lists, so one that lists none has no default channel at all and `cotal_send` requires an explicit `channel`. Channel-scoped calls are bounded by your ACLs ([channels & permissions](channels-and-permissions.mdx)).",
 );
 lines.push("");
 lines.push(

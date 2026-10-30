@@ -100,7 +100,7 @@ service with an explicit protected credential.
 > pull in teammates on demand: ask your agent for one ("spin up a reviewer") and it spawns it
 > on the mesh via `cotal_spawn`. See [docs/connect-claude.mdx](docs/connect-claude.mdx).
 
-**Run it your way:** a whole team from one [`cotal.yaml` manifest](docs/manifest.md), each agent
+**Run it your way:** a whole team from one [`cotal.yaml` manifest](docs/manifest.mdx), each agent
 in its own [cmux](https://cmux.com), [tmux](https://github.com/tmux/tmux/wiki) or
 [Orca](https://www.onorca.dev/) terminal, [Codex](extensions/connector-codex),
 [OpenCode](extensions/connector-opencode) or

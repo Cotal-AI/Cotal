@@ -265,7 +265,7 @@ including for `supervise`. Local process providers participate in status and shu
 `down` selects saved owned-service definitions rather than legacy component names.
 `ext remove` uninstalls packages, and `ext list` reports the inventory. The `@cotal-ai/web`
 dashboard supplies a service preset. Installed packages and their location are described in
-[config](config.md). When a package needs an export its linked `@cotal-ai/*` peer does not have,
+[config](config.mdx). When a package needs an export its linked `@cotal-ai/*` peer does not have,
 `add` rolls back and names which install is behind, as a later load of an installed one does.
 
 ### Extension inventory
@@ -421,7 +421,7 @@ cotal config unset <key> [--user | --space <name>] [--json | --plain]
 | `--json` / `-j` | off | One JSON document |
 | `--plain` | off | The same report without color |
 
-The [preference keys](config.md#preferences) are `harness`, `persona`, `detach-key`, `color`, and
+The [preference keys](config.mdx#preferences) are `harness`, `persona`, `detach-key`, `color`, and
 `editor`. Bare `config` lists each key's effective value, its source, and the values it overrides.
 Sources are an environment variable, a per-space value, a user value, or the product default.
 `config get` reads one key. Reads use explicit `--space`, then the selection from `cotal use`,

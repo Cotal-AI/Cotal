@@ -70,7 +70,7 @@ To use your existing model configuration, [adopt your own profile](#use-your-own
 ## Use a custom endpoint [#use-a-custom-endpoint]
 
 On Hermes 0.19, for a custom OpenAI-compatible server that needs no API key, select the `custom` provider and forward its endpoint variables.
-Add these names to `spawn.env` in your [Cotal configuration](config.md#launcher-variables):
+Add these names to `spawn.env` in your [Cotal configuration](config.mdx#launcher-variables):
 
 ```json
 { "spawn": { "env": ["HERMES_INFERENCE_PROVIDER", "CUSTOM_BASE_URL"] } }

@@ -31,7 +31,7 @@ are described in [Agent and team views](cli-agent-views.mdx#managed-launch-view)
 | `--name <n>` | persona's `name:` | Presence-name override (does not choose the persona) |
 | `--file <persona-file>`, `-f` | none | Persona file on the execution host. Cannot be combined with a positional persona or internal `--config`. Managed files are read on the manager host, without upload |
 | `--config <persona-or-path>` | none | Reserved for persisted internal handoff and enrollment callers. Public launches use a positional catalog name or `--file` |
-| `--harness <a>`, `-H` | persona's `agent:`, else the [`harness` preference](config.md#preferences), else `claude` | Connector type (`claude`, `opencode`, `jcode`, `hermes`, and so on). Legacy `--agent` remains accepted; combining the spellings refuses |
+| `--harness <a>`, `-H` | persona's `agent:`, else the [`harness` preference](config.mdx#preferences), else `claude` | Connector type (`claude`, `opencode`, `jcode`, `hermes`, and so on). Legacy `--agent` remains accepted; combining the spellings refuses |
 | `--role <r>` | persona's `role:` | Role override |
 | `--model <m>` | persona's `model:` | Model override |
 | `--variant <v>` | persona's `variant:` | Model variant override (connector-defined; e.g. OpenCode reasoning tiers) |
@@ -147,7 +147,7 @@ does not override `--no-events`.
 ### Persona resolution
 
 The persona is selected by an explicit `--file`, a positional reference, the
-[`persona` preference](config.md#preferences), then `default`. Persisted internal callers use
+[`persona` preference](config.mdx#preferences), then `default`. Persisted internal callers use
 `--config` ahead of the positional reference. A bare catalog name is loaded from the target mesh's `.cotal/agents/`. A reference that contains a path separator or
 ends in `.md` is loaded from that file. A relative path resolves against the mesh root, except that
 direct foreground enrollment or a managed handoff resolves its internal `--config` against the working directory.
@@ -176,7 +176,7 @@ machine. A foreground `--share-tools` selection that names a server the config d
 refused before anything is provisioned. A managed spawn is an
 **action**: the manager accepts it and returns the allocated identity, then the CLI
 follows that goal to readiness before attaching or returning a detached receipt (see [the control surface](control-surface.md)).
-See [Connect Claude Code](connect-claude.mdx) and [Agent files](agent-files.md). Team manifests use
+See [Connect Claude Code](connect-claude.mdx) and [Agent files](agent-files.mdx). Team manifests use
 [`team deploy`](cli-agent-views.mdx#recorded-team-views), while public `spawn -f` selects a persona file. (`cotal start` was merged into `cotal spawn --detach`.)
 A `--detach` spawn onto a manager from another Cotal release is refused before any request is sent
 when the manager's contract does not declare a field this CLI sends. The refusal names the field,
@@ -283,7 +283,7 @@ space has an offline catalog before it is started. Failed target resolution neve
 to the current directory. Exact-manager `--on` supports list, show, and create under the native ownership policy. Remote
 edit and removal refuse without changing the local catalog.
 
-Creation accepts one of `--file/-f` (a complete [agent file](agent-files.md)), `--prompt`, or
+Creation accepts one of `--file/-f` (a complete [agent file](agent-files.mdx)), `--prompt`, or
 `--from` (body file, or `-` for explicit stdin). Complete files validate all supported fields,
 must name the requested persona and keep their original bytes. They cannot be combined with
 `--role`, `--model` or `--subscribe`. Body input requires an explicit `--subscribe` declaration,

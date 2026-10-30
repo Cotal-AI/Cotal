@@ -735,7 +735,7 @@ must implement.
 **On by default.** A space is provisioned with decentralized JWT auth. Open unauthenticated
 dev mode is available but out of scope for the security claims here. *(Informative
 operator-facing views of this section: [docs/identity-and-auth.md](docs/identity-and-auth.md),
-[docs/channels-and-permissions.md](docs/channels-and-permissions.md); the threat model is
+[docs/channels-and-permissions.mdx](docs/channels-and-permissions.mdx); the threat model is
 [docs/security.md](docs/security.md).)*
 
 - **Account = space, user = agent.** A space is one NATS account. The **broker's** operator signs

@@ -137,7 +137,7 @@ holder's lease has not expired yet. A lease write the credential is not allowed 
 as a denial naming the refused subject and operation, never as another daemon holding the lease.
 `up` says so and exits non-zero instead of printing a healthy control plane over a
 daemon that is not there. The daemon writes its own reason to `.cotal/delivery.<key>.log`, the log
-for the space it serves ([Config](config.md#project-files)). That path is project-local. Detached
+for the space it serves ([Config](config.mdx#project-files)). That path is project-local. Detached
 `up` redirects the daemon's stdout and stderr onto the file, so wrapping the launcher in a
 systemd unit does not put those lines in that unit's journal. A daemon stopped by SIGTERM or
 SIGINT, which is what `cotal down`, a service stop and Ctrl-C send, writes `received <signal>,

@@ -47,7 +47,7 @@ The final default is `default`, which selects `.cotal/agents/default.md`.
 Use `--file <persona-file>` for a file on the execution host.
 The path is not an implicit upload and cannot name a Mesh manifest.
 The older `--config` spelling is reserved for persisted internal callers.
-See [Agent files](agent-files.md) for the persona format and [Preferences](config.md#preferences) for saved defaults.
+See [Agent files](agent-files.mdx) for the persona format and [Preferences](config.mdx#preferences) for saved defaults.
 
 ### Choose the application
 
@@ -67,7 +67,7 @@ OpenCode uses `provider/model`.
 For connectors with a catalog, run `cotal models --harness opencode` to inspect model IDs and variants.
 Select one with `--model provider/model --variant high`.
 
-A spawned Claude Code agent receives Cotal's tools and the MCP servers shared by your [configuration](config.md).
+A spawned Claude Code agent receives Cotal's tools and the MCP servers shared by your [configuration](config.mdx).
 Use `--share-tools` to narrow the shared servers for one launch.
 
 <Callout type="warn" title="Launch permission includes native options">
@@ -153,4 +153,4 @@ Use `--json` or `--plain` for finite reports.
 
 The legacy `personas` parser remains available during migration; its `--running` overlay is live.
 Inside an agent session, use `cotal_persona` to write a persona and `cotal_personas` to read the catalog through the manager's ownership checks.
-See [Agent files](agent-files.md) for the fields.
+See [Agent files](agent-files.mdx) for the fields.

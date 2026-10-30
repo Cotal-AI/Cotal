@@ -87,8 +87,8 @@ normative shapes are [SPEC Appendix B](../SPEC.md#appendix-b-profile-acls); in b
 
 **An agent's channel scope is three verbs**: `subscribe` (reads at boot),
 `allowSubscribe` (read ACL), `allowPublish` (post ACL, default-deny), declared in its
-[agent file](agent-files.md) or [manifest](manifest.md), minted into its cred. One card
-with the recipes: [Channels & permissions](channels-and-permissions.md).
+[agent file](agent-files.mdx) or [manifest](manifest.mdx), minted into its cred. One card
+with the recipes: [Channels & permissions](channels-and-permissions.mdx).
 
 **DM confidentiality** holds against peers by construction: deliveries ride per-identity
 inbox prefixes, and the DM/task consumers are provisioner-pre-created and bind-only, so an
@@ -147,7 +147,7 @@ the manager's workflow-run commands (start, resume, answer, status, list) togeth
 set, since a program the agent starts may spawn; the manager drives the run under a per-run
 `run-driver` credential of its own, never the caller's. The tool surface mirrors the grant:
 `cotal_spawn` / `cotal_persona` / `cotal_personas` are injected only for `spawn`, and `cotal_run`
-only for `run` ([agent files](agent-files.md)). Destructive
+only for `run` ([agent files](agent-files.mdx)). Destructive
 operator ops (history purge, cross-agent stop) live on a third tier no agent credential
 reaches. Persona redefinition separates content from policy; the write path takes only
 `model`/`persona`, so a peer cannot grant itself a capability by redefining a file.
@@ -687,7 +687,7 @@ expands it and auto-joins. Token/user-pass links are the open-mode path; the def
 authed path threads a minted creds file, and the endpoint adopts the credential's identity
 as its card id. A seat the manager spawned reaches that file through its **launch
 material** rather than through `COTAL_CREDS` in an environment every descendant process
-inherits (see [Configuration](config.md#launch-material)); a session you drive by hand
+inherits (see [Configuration](config.mdx#launch-material)); a session you drive by hand
 still sets `COTAL_CREDS` itself.
 
 ## Honest limitations (v0)

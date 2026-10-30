@@ -45,7 +45,7 @@ const recoveryGuide = await guide("recover-a-mesh");
 const cli = (await Promise.all([
   "cli-startup", "cli-shutdown", "cli-processes", "cli-services", "cli-selection", "cli-agent-control",
 ].map(async slug => (await readDocument(join(REPO, "docs", `${slug}.mdx`))).markdown))).join("\n\n");
-const config = read("docs/config.md");
+const config = (await readDocument(join(REPO, "docs/config.mdx"))).markdown;
 const control = read("docs/control-surface.md");
 const delivery = read("docs/delivery-daemon.md");
 const pid = read("packages/workspace/src/pid.ts");

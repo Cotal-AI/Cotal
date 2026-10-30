@@ -47,7 +47,7 @@ than one collaboration on a deployment, or about presence scoped to a group. Thi
 universal split: Slack workspace vs channel, NATS account vs subject.
 
 Who may read and post a channel is a separate, per-agent question:
-[channels & permissions](channels-and-permissions.md).
+[channels & permissions](channels-and-permissions.mdx).
 
 ## 3. Channels inside channels? No.
 

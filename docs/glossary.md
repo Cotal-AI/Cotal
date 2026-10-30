@@ -7,7 +7,7 @@ One-line definitions of the terms used across these docs and the spec. The base 
 
 - **Agent file / persona**, a `.cotal/agents/<name>.md` file: AgentCard-shaped identity and
   channel grants in the frontmatter, with the Markdown body as the agent's persona (appended
-  system prompt). [agent-files.md](agent-files.md)
+  system prompt). [Agent files](agent-files.mdx)
 
 - **Agent node**: an instance whose `kind` is `agent`, as opposed to a plain `endpoint` such as
   an observer or dashboard. [SPEC §1](../SPEC.md#1-scope-and-terminology)
@@ -39,7 +39,7 @@ One-line definitions of the terms used across these docs and the spec. The base 
 
 - **Delivery class (`live` / `durable`)**, a channel's per-channel delivery guarantee: `live`
   is at-most-once; `durable` adds a per-member backstop (at-least-once within retention). Distinct
-  from delivery *mode*. [SPEC §4](../SPEC.md#4-delivery-modes), [channels-and-permissions.md](channels-and-permissions.md)
+  from delivery *mode*. [SPEC §4](../SPEC.md#4-delivery-modes), [Channel permissions](channels-and-permissions.mdx)
 
 - **Delivery daemon (Plane-3)**, the server-side component providing the durable backstop:
   fan-out writer, trusted reader, and membership registry. [delivery-daemon.md](delivery-daemon.md)
@@ -78,7 +78,7 @@ One-line definitions of the terms used across these docs and the spec. The base 
   themselves. [run-a-mesh.mdx](run-a-mesh.mdx)
 
 - **Manifest**, `cotal.yaml` (`kind: Mesh`): the declarative, channel-centric description of a
-  team's channels, agents, and access, launched with one command. [manifest.md](manifest.md)
+  team's channels, agents, and access, launched with one command. [Mesh manifest](manifest.mdx)
 
 - **Mention**: a lowercased peer name in a message's `mentions`; a wake hint that, on a `live`
   channel, also routes a durable copy to each mentioned target authorized to read the channel.
@@ -125,7 +125,7 @@ One-line definitions of the terms used across these docs and the spec. The base 
   account. [SPEC §1](../SPEC.md#1-scope-and-terminology), [spaces.md](spaces.md)
 
 - **Spawn capability**, the `spawn` control-plane capability in an agent file: grants publish to
-  the privileged control subject so the agent may start or despawn peers. [agent-files.md](agent-files.md)
+  the privileged control subject so the agent may start or despawn peers. [Agent files](agent-files.mdx)
 
 - **Trusted reader**: the privileged component that reads the mixed durable backstop on an
   agent's behalf and re-authorizes each entry (current ACL and membership) before delivering it.
