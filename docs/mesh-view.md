@@ -20,6 +20,11 @@ binds no inbox durable and reads through tap, history and presence-watch. Histor
 can still create temporary consumers. Each running console owns its endpoint connection;
 the dashboard owns a separate one.
 
+Stopping or rebinding a watch first disarms local delivery. When the connection's presented
+credentials exclude its consumer-delete subject, cleanup sends no delete request and leaves
+the consumer to the broker's five-minute inactivity threshold. Already-permitted deletes still
+reclaim consumers immediately. This does not change SDK-internal ordered-consumer recovery.
+
 On an open mesh the console adds a presence-only endpoint under the observer's card when
 the operator first sends, so agents can reply (see [Watch a mesh](watch-a-mesh.md)). A
 pure-watch session remains invisible.

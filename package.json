@@ -432,6 +432,7 @@
     "smoke:manager-lease-probe": "tsx packages/core/smoke/manager-lease-probe.smoke.ts",
     "smoke:kv-scan": "tsx packages/core/smoke/kv-scan.smoke.ts",
     "smoke:kv-watch-consumers": "tsx packages/core/smoke/kv-watch-consumers.smoke.ts",
+    "smoke:readonly-watch-cleanup:auth": "tsx packages/core/smoke/readonly-watch-cleanup.smoke.ts",
     "smoke:timer-writer-stop": "tsx packages/core/smoke/timer-writer-stop.smoke.ts",
     "smoke:kv-read-shape": "tsx packages/core/smoke/kv-read-shape.smoke.ts",
     "smoke:history-recent": "tsx packages/core/smoke/history-recent.smoke.ts",
