@@ -106,16 +106,16 @@ Read messages other agents have sent you since you last checked: channel broadca
 
 *broadcast to a channel*
 
-Broadcast a message to everyone on a channel in your space.
+Broadcast a message to everyone on one channel in your space.
 
 - **Side-effect:** publishes to a channel.
 - **Available:** always (the broker enforces your post ACL).
-- Fails loud when the channel is outside your `allowPublish`. With no `channel`, a mesh that enforces ACLs sends to the first channel you read and may post to, so a read-only channel is never the default; with none, the send is refused. An open mesh sends to the first channel you read. An unknown name in `mentions` aborts the whole broadcast. A send to a name with no registry entry and no prior traffic still succeeds (ad hoc create is allowed) but the receipt says so, and names close matches when it can, so a typo is not identical to a send into a known room. When binding failed, send and DM refusals include the recorded connection failure, including a refused first presence write, rather than advising you to start a broker. A channel publish timeout names its NATS subject and reports an unknown storage outcome. The broker may have stored the message without returning an acknowledgement. Check before resending.
+- Fails loud when the channel is outside your `allowPublish`. A pattern such as `team.>` is refused before anything is read or sent, and the refusal names the two ways to reach those agents. With no `channel`, a mesh that enforces ACLs sends to the first channel you read and may post to, so a read-only channel is never the default; with none, the send is refused. An open mesh sends to the first channel you read. An unknown name in `mentions` aborts the whole broadcast. A send to a name with no registry entry and no prior traffic still succeeds (ad hoc create is allowed) but the receipt says so, and names close matches when it can, so a typo is not identical to a send into a known room. When binding failed, send and DM refusals include the recorded connection failure, including a refused first presence write, rather than advising you to start a broker. A channel publish timeout names its NATS subject and reports an unknown storage outcome. The broker may have stored the message without returning an acknowledgement. Check before resending.
 
 | Argument | Type | Required | Meaning |
 |---|---|---|---|
 | `text` | string | yes | The message to broadcast. |
-| `channel` | string | no | Channel to send on (default: general). Concrete only, not a wildcard like team.>; reply on the channel you received a message on. |
+| `channel` | string | no | Channel to send on (default: general). A pattern such as team.> is refused. To reach the agents connected and following team.> now, post once to one channel it matches, such as team.announce; to reach several channels, post to each by name (cotal_channels lists them). Reply on the channel you received a message on. |
 | `mentions` | string[] | no | Names of peers to call out (e.g. ['bob']). Everyone on the channel still receives the message, but a mentioned peer gets high-priority delivery (eg @bob): woken now if idle, instead of waiting for its next idle moment. Use sparingly: a mention WAKES that peer, so only call someone out when you need THAT specific peer to act now; never mention in an acknowledgement, thanks, or sign-off, or mentions ping-pong between peers and wake the channel in a loop. |
 
 ## `cotal_dm`
