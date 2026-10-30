@@ -20,6 +20,10 @@ Use `SMOKE_BROKER_TOKEN` as the prefix for a broker's temporary directory and re
 with `teardownOnSignal`. The token records its owning process. Normal-path cleanup still belongs
 to the suite.
 
+`pnpm smoke:broker-migration` checks broker adoption in test-shaped paths and in direct Node/tsx
+entrypoints declared by root `smoke` and `smoke:*` scripts. A declared smoke stays in scope even
+when its filename is unconventional. A source path passed as an argument is not an entrypoint.
+
 Suites spawn the bare `nats-server` name, so the server under test is whichever one the spawn's
 PATH reaches first. `teardownOnSignal` names it: it reads each running child's binary from
 `/proc/<pid>/exe`, runs that link with `--version`, and for a nats-server prints
