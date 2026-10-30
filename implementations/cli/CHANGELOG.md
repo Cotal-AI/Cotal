@@ -1,5 +1,14 @@
 # @cotal-ai/cli
 
+## 0.129.1
+
+### Patch Changes
+
+- 4bf8933: `cotal doctor auth` without `--space`, run in the root of a space that was prepared and never started, now says to start that space with `cotal up` and then run the same command again. It used to say to run the command in a space's root folder, where the user already was. The report is still partial (exit 4), and `--fix` there still refuses `AUTH_REQUIRED`, with the same step.
+- 8c3d77f: `cotal up --root <root> --no-manager` run from another folder now quotes the root in the `cotal up --root` its Next offers when a shell would split it, so a folder name with a space, an apostrophe or a `$` pastes as one word. It used to print the path raw, which a shell split at its spaces, expanded at its `$`, or refused as an unmatched quote. The `--json` result and the `cotal down` description still name the path as it is.
+- @cotal-ai/core@0.129.1
+  - @cotal-ai/workspace@0.129.1
+
 ## 0.129.0
 
 ### Patch Changes
