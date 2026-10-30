@@ -1,8 +1,9 @@
 import { useEffect, type ReactNode } from "react";
 import { Box, Text, useFocus, useInput } from "ink";
 import { peerLabel, presenceText, type Presence } from "@cotal-ai/core";
+import { displayWidth } from "@cotal-ai/workspace";
 import { activityAge, presenceFacts } from "../../ui.js";
-import { agentColor, STATUS, ago, windowAround, wrapFacts, type FactRow } from "./theme.js";
+import { agentColor, STATUS, ago, clipText, windowAround, wrapFacts, type FactRow } from "./theme.js";
 import { useListCursor } from "./useListCursor.js";
 
 function progressText(p: Presence): string {
@@ -36,30 +37,49 @@ export function factRow(row: FactRow, color: string | undefined, selected = fals
   );
 }
 
-function RosterRow({ p, selected, facts, tag }: { p: Presence; selected: boolean; facts: FactRow[]; tag?: string }) {
+/** A head row's pieces cut to `width` columns, ending in "…" on the last piece that keeps text.
+ *  Ink's truncate-end keeps a wide character that straddles the cut, so its "…" lands on the box's
+ *  padding; this cut ends at the last whole character that leaves room for the "…". */
+function fitHead(parts: string[], width: number): string[] {
+  if (displayWidth(parts.join("")) <= width) return parts;
+  let rest = clipText(parts.join(""), width - 1);
+  const out = parts.map((part) => {
+    const kept = rest.slice(0, part.length);
+    rest = rest.slice(kept.length);
+    return kept;
+  });
+  out[Math.max(0, out.findLastIndex(Boolean))] += "…";
+  return out;
+}
+
+function RosterRow({ p, selected, facts, tag, width }: { p: Presence; selected: boolean; facts: FactRow[]; tag?: string; width: number }) {
   const isAgent = p.card.kind === "agent";
   const s = STATUS[p.status];
   const age = progressText(p);
   const act = p.activity ? "  " + presenceText(p.activity) + activityAge(p) : "";
+  const [mark, name, tagText, actText, ageText] = fitHead(
+    [(isAgent ? s.dot : "⚙") + " ", peerLabel(p.card), tag ? " " + tag : "", act, "  " + age],
+    width,
+  );
   let head: ReactNode, tail: ReactNode;
   // Selected: one uniform cyan bar (like the tabs); unselected: the normal colored row.
   if (selected) {
-    head = (isAgent ? s.dot : "⚙") + " " + peerLabel(p.card) + (tag ? " " + tag : "");
-    tail = act + "  " + age;
+    head = mark + name + tagText;
+    tail = actText + ageText;
   } else {
     head = (
       <>
-        <Text color={isAgent ? s.color : "gray"}>{isAgent ? s.dot : "⚙"} </Text>
+        <Text color={isAgent ? s.color : "gray"}>{mark}</Text>
         <Text color={isAgent ? agentColor(p.card.name) : undefined} dimColor={!isAgent}>
-          {peerLabel(p.card)}
+          {name}
         </Text>
-        {tag ? <Text dimColor>{" " + tag}</Text> : null}
+        {tagText ? <Text dimColor>{tagText}</Text> : null}
       </>
     );
     tail = (
       <>
-        {act ? <Text dimColor>{act}</Text> : null}
-        <Text dimColor>{"  " + age}</Text>
+        {actText ? <Text dimColor>{actText}</Text> : null}
+        <Text dimColor>{ageText}</Text>
       </>
     );
   }
@@ -188,6 +208,7 @@ export function Roster({
             selected={isFocused && start + i === selClamped}
             facts={facts[start + i]}
             tag={harness?.get(p.card.id)}
+            width={boxWidth - 4} // border (2) + padding (2)
           />
         ))
       )}
