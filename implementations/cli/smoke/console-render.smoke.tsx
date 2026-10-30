@@ -18,12 +18,13 @@ import { EventEmitter } from "node:events";
 import { readFileSync } from "node:fs";
 import { PassThrough, Writable } from "node:stream";
 import { peerLabel, type AgentCard, type CotalEndpoint, type Presence } from "@cotal-ai/core";
+import { displayWidth } from "@cotal-ai/workspace";
 import { App } from "../src/console/app.js";
 import { StatusBar } from "../src/console/ui/StatusBar.js";
 import { Detail, type DetailTarget } from "../src/console/ui/Detail.js";
 import { Topo, type TopoVariant } from "../src/console/ui/topo/Topo.js";
 import { MEMBERSHIP_STALE_MS } from "../src/console/ui/topo/model.js";
-import { sidePaneSize } from "../src/console/ui/theme.js";
+import { sidePaneSize, wrapFacts, wrapText } from "../src/console/ui/theme.js";
 import type { FeedEntry, MembershipView } from "../src/view/mesh-view.js";
 
 let pass = 0, fail = 0;
@@ -427,6 +428,89 @@ console.log("8. the roster and DM lens share pane geometry without changing thei
       check(`${cols}x${rows} loads the DM fixture`, frames.at(-1)?.includes("geometry thread") === true, frames.at(-1));
       check(`${cols}x${rows} DM paints the same peer pane`,
         JSON.stringify(sizeOfPane(frames.at(-1)!)) === JSON.stringify({ w: paneWidth, h: paneHeight }), frames.at(-1));
+    } finally {
+      app.unmount(); app.cleanup();
+    }
+  }
+}
+
+console.log("9. wide text wraps by terminal columns, so the feed paints all of it and splits no character");
+// The wrap counted UTF-16 units: 40 ideographs at a 20-column body made two 40-column rows, whose
+// truncation then dropped half the message, and an odd width cut an emoji's surrogate pair in two.
+{
+  const run = (start: number, n: number) => Array.from({ length: n }, (_, i) => String.fromCodePoint(start + i)).join("");
+  const cjk = run(0x4e00, 40);
+  const emoji = run(0x1f600, 21);
+  const family = "👨‍👩‍👧‍👦";
+  const lone = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+  const clusters = (s: string) => [...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(s)].map((g) => g.segment);
+  const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+  const ideographRows = [0, 10, 20, 30].map((i) => [...cjk].slice(i, i + 10).join(""));
+  check("40 ideographs at 20 columns make four full 20-column rows", same(wrapText(cjk, 20), ideographRows), wrapText(cjk, 20));
+  check("an odd width leaves the spare column empty", same(wrapText(cjk, 21), ideographRows), wrapText(cjk, 21));
+  const emojiRows = wrapText(emoji, 21);
+  check("21 emoji at 21 columns split between emoji, never inside a surrogate pair",
+    same(emojiRows, [[...emoji].slice(0, 10).join(""), [...emoji].slice(10, 20).join(""), [...emoji][20]]) && !emojiRows.some((r) => lone.test(r)), emojiRows);
+  const families = wrapText(family.repeat(3), 4);
+  check("a joined emoji sequence stays whole", same(families, [family + family, family]) && families.flatMap(clusters).every((g) => g === family), families);
+  check("combining marks take no column", same(wrapText("é".repeat(6), 4), ["é".repeat(4), "é".repeat(2)]), wrapText("é".repeat(6), 4));
+  check("ASCII, line breaks, empty text and the minimum width wrap as before",
+    same(wrapText("ASCII alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo END", 20),
+      ["ASCII alpha bravo", "charlie delta echo", "foxtrot golf hotel", "india juliet kilo", "END"]) &&
+    same(wrapText("one\n\ntwo\r\nthree", 20), ["one", "", "two", "three"]) &&
+    same(wrapText("", 20), [""]) && same(wrapText("abcdefghij", 1), ["abcd", "efgh", "ij"]));
+  check("a dated fact too wide to share the row by columns starts its own",
+    same(wrapFacts("ab · 漢漢漢", 10), [[{ text: "ab", dated: false }], [{ text: "漢漢漢", dated: true }]]), wrapFacts("ab · 漢漢漢", 10));
+  check("ASCII facts wrap as before",
+    same(wrapFacts("working (rate_limit for 3m) · unchanged for 5m · active 2s ago", 21), [
+      [{ text: "working", dated: false }], [{ text: "rate_limit for 3m", dated: false }],
+      [{ text: "unchanged for 5m", dated: true }], [{ text: "active 2s ago", dated: true }],
+    ]));
+  check("no row is wider than its width", [cjk, emoji, family.repeat(3)].every((s) =>
+    [4, 5, 20, 21].every((w) => wrapText(s, w).every((r) => displayWidth(r) <= w))));
+
+  const condition = "漢".repeat(7);
+  class Observer extends EventEmitter {
+    space = "wide-text";
+    card = { id: "local.operator", name: "operator", kind: "endpoint", role: "operator" };
+    async start() {}
+    async stop() {}
+    getRoster() {
+      // The peer writes its condition code, and ingest checks only that it is a string.
+      return [{ card: { id: "local.wide", name: "wide", kind: "agent" }, status: "working", ts: Date.now(),
+        condition: { code: condition } }] as unknown as Presence[];
+    }
+    tap() {}
+    async listChannels() { return [{ channel: "general", messages: 2 }]; }
+    async channelHistory() {
+      return [["cjk", cjk], ["emoji", emoji]].map(([name, text], i) => ({ id: "wide-" + name, ts: Date.now() - 2000 + i,
+        from: { id: "local." + name, name }, channel: "general", parts: [{ kind: "text", text }] }));
+    }
+    async dmHistory() { return []; }
+    ref() { return this.card; }
+    async readMembership() { return { asOf: undefined, members: [] }; }
+    async watchMembership() { return { stop: async () => {} }; }
+  }
+  // 27 and 28 columns are narrow layouts whose feed body is 20 and 21 columns wide.
+  for (const cols of [27, 28]) {
+    const stdin = new PassThrough() as unknown as NodeJS.ReadStream;
+    stdin.isTTY = true;
+    stdin.setRawMode = () => stdin;
+    stdin.ref = () => stdin;
+    stdin.unref = () => stdin;
+    let raw = "";
+    const frames: string[] = [];
+    const stdout = new Writable({ write(c, _e, cb) { raw += String(c); frames.push(strip(String(c))); cb(); } }) as unknown as NodeJS.WriteStream;
+    stdout.columns = cols; stdout.rows = 40; stdout.isTTY = true;
+    const app = render(<App ep={new Observer() as unknown as CotalEndpoint} canWrite={false} canControl={false} />,
+      { stdin, stdout, debug: true, patchConsole: false, exitOnCtrlC: false });
+    try {
+      await waitForFrame(frames, "emoji", 5_000);
+      await waitForFrame(frames, "wide", 5_000);
+      const frame = frames.at(-1) ?? "";
+      check(`${cols} columns paint every ideograph`, [...cjk].every((c) => frame.includes(c)), frame);
+      check(`${cols} columns paint every emoji whole`, [...emoji].every((c) => frame.includes(c)) && !lone.test(raw) && !raw.includes("�"), frame);
+      check(`${cols} columns paint the roster condition whole`, frame.includes(condition), frame);
     } finally {
       app.unmount(); app.cleanup();
     }
