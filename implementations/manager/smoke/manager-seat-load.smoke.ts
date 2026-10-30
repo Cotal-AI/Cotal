@@ -249,6 +249,9 @@ const SHAPE = flag("shape", "src");
  *  "optimize-for-size,max-semi-space-size=1", to measure what they save. */
 const MANAGER_NODE_FLAGS = flag("manager-node-flags", "").split(",").map((f) => f.trim().replace(/^-*/, "")).filter(Boolean).map((f) => `--${f}`);
 const REAL_SEATS = flag("seat", "stub") === "real";
+const realEntryIndex = argv.indexOf("--real-entry");
+if (realEntryIndex !== -1 && (!argv[realEntryIndex + 1] || argv[realEntryIndex + 1]!.startsWith("--")))
+  throw new Error("manager-seat-load: real-entry needs an explicit value");
 const REAL_ENTRY = flag("real-entry", "stock");
 if (REAL_ENTRY !== "stock" && REAL_ENTRY !== "direct") throw new Error("manager-seat-load: real-entry is stock or direct");
 if (!REAL_SEATS && argv.includes("--real-entry")) throw new Error("manager-seat-load: real-entry requires --seat real");
