@@ -415,7 +415,7 @@ const proto = MeshAgent.prototype as unknown as {
   // A name that is not a channel name is refused too, with the send's own rule. The endpoint would
   // otherwise rewrite its characters onto a different subject than the receipt names (team.** goes
   // out as team.__), and the policy grammar's message would offer * and > as valid segments.
-  for (const bad of ["team.>.x", "team. >", "team.**", "team.a*", "team.>>", "#*", "#team", "team..announce", "team/announce", ""]) {
+  for (const bad of ["team.>.x", "team. >", "team.**", "team.a*", "team.>>", "#*", "#team", "team..announce", "team/announce", "team.announce ", " team.announce", ""]) {
     const refused = await send.run(agent, cfg, { text: "hi", channel: bad });
     check(
       `${JSON.stringify(bad)} is refused as no channel name before reading or sending`,
