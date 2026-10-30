@@ -11,7 +11,7 @@
  * mesh manager and a user-auth manager with a refusing auth provider cover the paths a static mesh
  * does not take. Run with: pnpm smoke:spawn-inline-persona
  */
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -85,6 +85,7 @@ type Internals = {
   retiring: Map<string, unknown>;
   freeSlot: (a: unknown, floor: boolean, cause: FreeSlotCause) => void;
   deprovision: (a: unknown) => Promise<void>;
+  deprovisioningFlight: Map<string, Promise<void>>;
   driveStaticRetirement: (a: unknown, surfaceFailure?: boolean) => Promise<void>;
   inventoryReferenceError: (entry: ManagerResumeAgent) => string | undefined;
   resumeEntryOf: (a: Seat) => ManagerResumeAgent;
@@ -309,6 +310,20 @@ try {
     check("a preservation cut keeps the snapshot", existsSync(inlineSnapshotPath(workspaceRoot, d!.lifecycleUid)));
   }
   {
+    // A file already at the accepted uid's path is not this spawn's snapshot. The write refuses it,
+    // and neither the rollback nor the retirement terminal it drives may delete it.
+    const planted = "planted at this path before the spawn wrote\n";
+    let path = "";
+    let uid = "";
+    const r = await spawnAs(undefined, "squatter", { persona: { prompt: "x" } }, {
+      onAccepted: (a: { lifecycleUid: string }) => { uid = a.lifecycleUid; path = inlineSnapshotPath(workspaceRoot, uid); writeFileSync(path, planted); },
+    });
+    check("a snapshot write that finds a file at its path fails the spawn", !r.ok && /EEXIST/.test(r.error ?? ""), r);
+    await Promise.allSettled([...S.M.deprovisioningFlight.values()]);
+    check("control: the rollback's retirement ran", uid !== "" && !existsSync(agentLifecycleSecretFilePaths(workspaceRoot, space, "squatter", uid).creds));
+    check("and it leaves the file the write refused", existsSync(path) && readFileSync(path, "utf8") === planted);
+  }
+  {
     const before = snapshots(workspaceRoot);
     S.failLaunch.add("doomed");
     const r = await spawnAs(undefined, "doomed", { persona: { prompt: "x" } });
@@ -344,6 +359,19 @@ try {
     S.seats.get("steady")!.exit();
     await until(() => (S.spawned.get("steady") ?? 0) > 1);
     check("control: an unchanged snapshot restarts", (S.spawned.get("steady") ?? 0) > 1, S.spawned.get("steady"));
+    // A seat whose recorded path names another file, carrying that file's digest.
+    const swapped = okData(await spawnAs(undefined, "swapped", { persona: { prompt: "x" }, supervise }));
+    const seat = seatOf(S.M, "swapped") as (Seat & { restart?: { opts: { configPath?: string } } }) | undefined;
+    const foreign = join(scratch, "foreign.md");
+    writeFileSync(foreign, "---\nname: swapped\n---\nnot the persona this spawn accepted\n", { mode: 0o600 });
+    if (seat?.restart) {
+      seat.launch.source.configPath = foreign;
+      seat.launch.source.configSha256 = createHash("sha256").update(readFileSync(foreign)).digest("hex");
+      seat.restart.opts.configPath = foreign;
+    }
+    S.seats.get("swapped")!.exit();
+    await until(() => seatOf(S.M, "swapped") === undefined || (S.spawned.get("swapped") ?? 0) > 1);
+    check("a restart refuses a recorded snapshot path that is not the lifecycle's own", swapped !== undefined && seatOf(S.M, "swapped") === undefined && S.spawned.get("swapped") === 1, S.spawned.get("swapped"));
   }
   {
     const d = okData(await spawnAs(undefined, "cut", { persona: { prompt: "x" } }));

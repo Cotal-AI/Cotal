@@ -14,7 +14,9 @@
     "N7, N8 and N9 each drop one removal: the live slot free (the only one an open mesh has), the",
     "static retirement terminal (the one a boot sweep reaches), and the spawn's own rollback (the only",
     "one an open mesh's failed launch has). N10 lets a resume inventory point a seat at another file.",
-    "N11 keys the snapshot by the uid the spawn allocated, which a hosted enrollment replaces."
+    "N11 keys the snapshot by the uid the spawn allocated, which a hosted enrollment replaces.",
+    "N12 lets a restart trust a recorded path that names another file with that file's digest.",
+    "N13 lets a spawn whose snapshot write found a file at its path delete that file at the terminal."
   ],
   "mutations": [
     {
@@ -62,14 +64,14 @@
     {
       "name": "N7 keep the snapshot when the live slot frees",
       "file": "implementations/manager/src/manager.ts",
-      "find": "      if (a.launch.source.kind === \"inline\") this.dropInlineSnapshot(a.name, a.lifecycleUid);\n",
-      "replace": "",
+      "find": "      if (a.launch.source.kind === \"inline\") this.dropInlineSnapshot(a.name, a.lifecycleUid);\n      target.snapshotSettled = true;\n",
+      "replace": "      target.snapshotSettled = true;\n",
       "expectRed": "an open-mesh inline seat's snapshot goes when its seat exits"
     },
     {
       "name": "N8 keep the snapshot at the static retirement terminal",
       "file": "implementations/manager/src/manager.ts",
-      "find": "      await attemptCleanup(failed, `file ${snapshot}`, () => rmSync(snapshot, { force: true }));\n",
+      "find": "        await attemptCleanup(failed, `file ${snapshot}`, () => rmSync(snapshot, { force: true }));\n",
       "replace": "",
       "expectRed": "the static retirement terminal removes a snapshot by its lifecycle uid"
     },
@@ -93,6 +95,20 @@
       "find": "        configPath = snapshot = writeInlineSnapshot(this.workspaceRoot, lifecycleUid, {",
       "replace": "        configPath = snapshot = writeInlineSnapshot(this.workspaceRoot, agentTriple.uid, {",
       "expectRed": "a user-auth snapshot is keyed by the uid the grant settled on"
+    },
+    {
+      "name": "N12 check the recorded snapshot path instead of the lifecycle's own",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    if (resolve(source.configPath) !== path || (a.restart !== undefined && resolve(a.restart.opts.configPath ?? \"\") !== path))\n",
+      "replace": "    if (false)\n",
+      "expectRed": "a restart refuses a recorded snapshot path that is not the lifecycle's own"
+    },
+    {
+      "name": "N13 let the rollback's terminal remove the uid's path",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "        const orphan: TeardownTarget = { ...provisioned, snapshotSettled: true };\n",
+      "replace": "        const orphan: TeardownTarget = { ...provisioned };\n",
+      "expectRed": "and it leaves the file the write refused"
     }
   ]
 }

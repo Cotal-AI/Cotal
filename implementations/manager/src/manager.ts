@@ -1210,6 +1210,11 @@ interface TeardownTarget {
   launch?: { allowSubscribe: readonly string[] };
   /** The departed agent's admitted renewal, which the static terminal drains before it begins. */
   staticCredentialRenewal?: Promise<void>;
+  /** Set by a teardown that already settled this lifecycle's inline snapshot: a live slot's free
+   *  and a manager shutdown remove the seat's own, and a spawn's rollback removes the one it wrote. A file the snapshot
+   *  write refused was never this lifecycle's, so the static terminal then leaves the uid's path
+   *  alone. Absent for a lifecycle known only by its slot row, whose snapshot the terminal removes. */
+  snapshotSettled?: true;
 }
 
 /** A name held pending its incarnation's retirement. It keeps the teardown target whole, so a
@@ -3405,9 +3410,11 @@ export class Manager {
     }));
     // Deprovision EVERY snapshot entry regardless of whether its stop failed (allSettled + a loud log).
     await Promise.allSettled(
-      managed.filter((a) => !a.suppressCleanup).map((a) =>
-        this.deprovision(this.teardownTarget(a)).catch((e) => console.error(`deprovision ${a.name} (${a.id}) on shutdown: ${rejectionText(e)}`)),
-      ),
+      managed.filter((a) => !a.suppressCleanup).map((a) => {
+        // Retired here on every mesh, the open mesh included, which runs no teardown of its own.
+        if (a.launch.source.kind === "inline") this.dropInlineSnapshot(a.name, a.lifecycleUid);
+        return this.deprovision({ ...this.teardownTarget(a), snapshotSettled: true }).catch((e) => console.error(`deprovision ${a.name} (${a.id}) on shutdown: ${rejectionText(e)}`));
+      }),
     );
     if (failures.length)
       throw new Error(`manager shutdown could not prove every seat exited: ${failures.join("; ")}`);
@@ -5114,6 +5121,7 @@ export class Manager {
       // An inline seat's snapshot goes with the seat on every mesh. An open mesh runs no teardown
       // below, and a preservation cut suppresses this, so a resumed seat still finds its snapshot.
       if (a.launch.source.kind === "inline") this.dropInlineSnapshot(a.name, a.lifecycleUid);
+      target.snapshotSettled = true;
       this.trackDeprovision(target);
     }
   }
@@ -5732,15 +5740,20 @@ export class Manager {
   }
 
   /** Why an inline seat's snapshot no longer matches its launch, or `undefined` when it does or the
-   *  seat is not inline: it must still be a private regular file with the recorded digest. */
+   *  seat is not inline. The recorded path and the relaunch's path must both be this lifecycle's
+   *  snapshot path, as the resume cut requires, and the file there must still be a private regular
+   *  file with the recorded digest. */
   private inlineSnapshotChange(a: ManagedAgent): string | undefined {
     const source = a.launch.source;
     if (source.kind !== "inline") return undefined;
+    const path = resolve(inlineSnapshotPath(this.workspaceRoot, a.lifecycleUid));
+    if (resolve(source.configPath) !== path || (a.restart !== undefined && resolve(a.restart.opts.configPath ?? "") !== path))
+      return `its recorded inline persona snapshot ${source.configPath} is not this lifecycle's snapshot path`;
     try {
-      const st = lstatSync(source.configPath);
-      if (!st.isFile() || st.isSymbolicLink()) return `its inline persona snapshot ${source.configPath} is not a regular file`;
-      if (process.platform !== "win32" && (st.mode & 0o077) !== 0) return `its inline persona snapshot ${source.configPath} is readable by others`;
-      if (this.fileDigest(source.configPath) !== source.configSha256) return `its inline persona snapshot ${source.configPath} changed after launch`;
+      const st = lstatSync(path);
+      if (!st.isFile() || st.isSymbolicLink()) return `its inline persona snapshot ${path} is not a regular file`;
+      if (process.platform !== "win32" && (st.mode & 0o077) !== 0) return `its inline persona snapshot ${path} is readable by others`;
+      if (this.fileDigest(path) !== source.configSha256) return `its inline persona snapshot ${path} changed after launch`;
     } catch (e) {
       return `its inline persona snapshot is unavailable: ${rejectionText(e)}`;
     }
@@ -5771,9 +5784,10 @@ export class Manager {
       release();
       return;
     }
-    // An inline seat relaunches from its snapshot, so one that changed after launch would start a
-    // session its spawn never accepted. Every in-place restart passes here; the resume cut and a
-    // successor's restart check the same digest in inventoryReferenceError.
+    // An inline seat relaunches from its snapshot, so one that changed after launch, or a recorded
+    // path that names another file, would start a session its spawn never accepted. Every in-place
+    // restart passes here; the resume cut and a successor's restart make the same two checks in
+    // inventoryReferenceError.
     const changed = this.inlineSnapshotChange(a);
     if (changed) {
       console.error(`! ${a.name}: ${changed} - retiring the managed seat instead of restarting it`);
@@ -7487,7 +7501,9 @@ export class Manager {
       // Minted but never handed to a live slot (buildLaunch / runtime.spawn threw after mint) → tear the
       // orphan down (detached, fail-loud) so a failed spawn leaves no creds/durables behind (#159 B).
       if (provisioned) {
-        const orphan = provisioned;
+        // The line above removed the snapshot this spawn wrote, and a file its write refused is not
+        // this lifecycle's, so the terminal leaves the uid's path alone.
+        const orphan: TeardownTarget = { ...provisioned, snapshotSettled: true };
         // The host enrolled this UID for the intent's user, so only that user's retirement intent
         // retires it, and its name stays held for retireDelegatedAgent.
         const p = orphan.delegated ? parsePrincipalKey(orphan.id) : null;
@@ -10857,10 +10873,12 @@ export class Manager {
         await attemptCleanup(failed, `secret ${creds}`, () => secrets.delete(agentSecretKeyForFile(creds, this.space)));
         await attemptCleanup(failed, `file ${creds}`, () => rmSync(creds, { force: true }));
       }
-      // The lifecycle's inline snapshot, if it had one. Keyed by the uid, so a boot sweep or a
-      // reconcile that knows only the slot row removes it too.
-      const snapshot = inlineSnapshotPath(this.workspaceRoot, a.lifecycleUid);
-      await attemptCleanup(failed, `file ${snapshot}`, () => rmSync(snapshot, { force: true }));
+      // The lifecycle's inline snapshot, when no earlier step settled it. Keyed by the uid, so a boot
+      // sweep or a reconcile that knows only the slot row removes it too.
+      if (!a.snapshotSettled) {
+        const snapshot = inlineSnapshotPath(this.workspaceRoot, a.lifecycleUid);
+        await attemptCleanup(failed, `file ${snapshot}`, () => rmSync(snapshot, { force: true }));
+      }
       await attemptCleanup(failed, "broker teardown", async () => {
         try {
           const accounting = await this.deprovisionBroker(a);
