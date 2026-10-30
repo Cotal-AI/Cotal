@@ -1,5 +1,41 @@
 # @cotal-ai/auth
 
+## 0.129.3
+
+### Patch Changes
+
+- Updated dependencies [c6ddccc]
+- Updated dependencies [565f465]
+  - @cotal-ai/core@0.129.3
+  - @cotal-ai/workspace@0.129.3
+  - @cotal-ai/lang@0.129.3
+
+## 0.129.2
+
+### Patch Changes
+
+- a407c63: Keep unexpected HTTP handler errors in the auth service's server log and return a generic 500 on both listeners. Reject null, array and scalar exchange bodies with a named 400 that counts toward the listener's refusal budget. Preserve the explicit malformed-JSON and oversized-body responses.
+- @cotal-ai/core@0.129.2
+  - @cotal-ai/lang@0.129.2
+  - @cotal-ai/workspace@0.129.2
+
+## 0.129.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.129.1
+  - @cotal-ai/lang@0.129.1
+  - @cotal-ai/workspace@0.129.1
+
+## 0.129.0
+
+### Patch Changes
+
+- Updated dependencies [de421cd]
+  - @cotal-ai/workspace@0.129.0
+  - @cotal-ai/core@0.129.0
+  - @cotal-ai/lang@0.129.0
+
 ## 0.128.7
 
 ### Patch Changes

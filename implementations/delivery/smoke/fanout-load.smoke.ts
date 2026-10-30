@@ -10,6 +10,8 @@
  * connector-core's `MeshAgent` configures them. Every member self-joins the channel durably at
  * connect, as a seat does, so the channel is a `durable` channel (the default class) with M members.
  * One member then posts on the channel at `--rate` messages a second for `--seconds`.
+ * `--sublist-cache on|off` controls the native broker cache, default on. Posts reuse one
+ * sender/channel subject; this workload does not measure controlled subject churn.
  *
  * Every post costs the daemon a Plane-3 fan-out: the writer reads it off CHAT, scans the members
  * registry, and writes one copy per eligible member into the mixed inbox; the trusted reader then
@@ -219,6 +221,9 @@ const SECONDS = num("seconds", "30");
 const DRAIN_S = num("drain", "120");
 const MEMBER_PROCS = Math.max(1, Math.min(availableParallelism() * 2, num("member-procs", String(Math.min(availableParallelism(), Math.ceil(MEMBERS / 100))))));
 const NATS_BIN = process.env.NATS_SERVER_BIN ?? "nats-server";
+const SUBLIST_CACHE = flag("sublist-cache", argv.includes("--sublist-cache") ? undefined : "on");
+if (SUBLIST_CACHE !== "on" && SUBLIST_CACHE !== "off")
+  throw new Error("fanout-load: --sublist-cache must be on or off");
 const RAM = argv.includes("--ram");
 /** Seconds to wait after the drain before reading the broker's retained heap. */
 const RAM_WAIT_S = num("ram-wait", "30");
@@ -257,7 +262,7 @@ const brokerAuth = await createBrokerAuth(`fanout-load-${space}`);
 const account = await createSpaceAccountAuth(brokerAuth, space);
 const auth = composeSpaceAuth(brokerAuth, account);
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
-writeFileSync(join(dir, "server.conf"), serverConfig(brokerAuth, [account], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }) + `\nhttp: 127.0.0.1:${MON_PORT}\n` + (RAM ? `prof_port: ${PROF_PORT}\n` : ""));
+writeFileSync(join(dir, "server.conf"), serverConfig(brokerAuth, [account], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }) + `\ndisable_sublist_cache: ${SUBLIST_CACHE === "off"}\nhttp: 127.0.0.1:${MON_PORT}\n` + (RAM ? `prof_port: ${PROF_PORT}\n` : ""));
 const srv = spawn(NATS_BIN, ["-c", join(dir, "server.conf")], { stdio: ["ignore", "ignore", "pipe"] });
 const releaseBroker = teardownOnSignal(srv, dir);
 let brokerPartial = "";
@@ -393,12 +398,13 @@ try {
     if (last.fanout === 0 && last.reader === 0) { drainedAt = performance.now(); break; }
     await wait(250);
   }
-  await wait(1000); // the last DLV transfers reach the members' pumps
   const endS = ((drainedAt ?? performance.now()) - t0) / 1000;
   const daemonCpuMs = procCpuMs(daemon.pid!) - d0 - daemonIdleCoresMs * endS * 1000;
   const brokerCpuMs = procCpuMs(srv.pid!) - b0;
   const writeBytes = procWriteBytes(srv.pid!) - w0;
   const memberCpuMs = kids.reduce((a, k, i) => a + procCpuMs(k.pid!) - k0[i], 0);
+  // Let the final DLV copies reach the members without adding this tail to the CPU window.
+  await wait(1000);
   const s1 = await streams();
   const samples = (await Promise.all(kids.map((k) => ask(k, { cmd: "sample" }, "sample")))).map((m) => m.sample as MemberSample);
 
@@ -411,6 +417,7 @@ try {
 
   row("git sha", SHA);
   row("nats-server", `${serverVersion} (${NATS_BIN})`);
+  row("subscription cache", SUBLIST_CACHE);
   row("host", `${availableParallelism()} cores, ${(totalmem() / 1073741824).toFixed(1)} GB`);
   row("shape", `1 space, durable channel #${CHANNEL}, ${membersUp} members up (${membersFailed} failed), ${kids.length} member process(es)`);
   row("offered", `${RATE} posts/s for ${SECONDS}s by one member`);

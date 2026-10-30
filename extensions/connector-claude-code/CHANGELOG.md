@@ -1,5 +1,21 @@
 # @cotal-ai/connector-claude-code
 
+## 0.129.3
+
+No changes in this release.
+
+## 0.129.2
+
+No changes in this release.
+
+## 0.129.1
+
+No changes in this release.
+
+## 0.129.0
+
+No changes in this release.
+
 ## 0.128.7
 
 No changes in this release.

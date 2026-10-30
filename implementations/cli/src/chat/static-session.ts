@@ -27,6 +27,12 @@ import type { CloseReport, SessionIdentity } from "./session.js";
 /** The leaf's whole life. The manager caps `ttl` here and never renews it. */
 export const STATIC_CHAT_TTL_SEC = 900;
 
+/** How long `chat-session-retire` may take to answer. The manager answers once its static terminal
+ *  settles, and that terminal waits up to 15 seconds for the delivery daemon's verified eviction so
+ *  a daemon that is reconnecting can still finish it. The window outlives that wait and the
+ *  footprint cleanup after a late eviction; a reply that still does not come is reported unknown. */
+const STATIC_CHAT_RETIRE_TIMEOUT_MS = 30_000;
+
 /** What `chat-session-open` returned, checked. `actor` is the session's wire authority and
  *  `alias` its routing-only slot name. */
 export interface StaticAdmission {
@@ -107,12 +113,13 @@ export function retireReport(reply: ManagerReply, managerInstanceId: string, val
  *  trust material. When the mint or the dial throws, nothing reached the manager, and a read-only
  *  preflight of the same target classifies the cause as `connectOrThrow` does; it prunes nothing.
  *  With `purpose`, an unpinned call on a space whose registry lists no live manager is refused
- *  before `op` is sent, as the run verbs refuse it, rather than after it has waited out its deadline. */
-async function askPinned(mesh: PinnedMesh, op: string, args: Record<string, unknown>, instanceId: string | undefined, purpose?: string): Promise<ManagerReply> {
+ *  before `op` is sent, as the run verbs refuse it, rather than after it has waited out its deadline.
+ *  `timeoutMs` is the reply window for `op` itself; absent, it is `askManager`'s default. */
+async function askPinned(mesh: PinnedMesh, op: string, args: Record<string, unknown>, instanceId: string | undefined, purpose?: string, timeoutMs?: number): Promise<ManagerReply> {
   try {
     const auth = { ...await mintControlInstrument(mesh, "privileged", instanceId), tls: mesh.tlsRequired };
     if (purpose !== undefined && instanceId === undefined) await refuseWithoutLiveManager(mesh.space, mesh.server, auth, { space: mesh.space }, purpose);
-    return await askManager(mesh.space, mesh.server, op, args, auth, "owner", undefined, instanceId !== undefined ? { instanceId } : undefined);
+    return await askManager(mesh.space, mesh.server, op, args, auth, "owner", timeoutMs, instanceId !== undefined ? { instanceId } : undefined);
   } catch (e) {
     if (e instanceof CommandFailure) throw e;
     await preflightOrThrow(mesh, undefined, true);
@@ -191,7 +198,7 @@ export async function openStaticChatSession(target: MeshTarget, options: {
   const retire = async (): Promise<CloseReport> => {
     let answer: ManagerReply;
     try {
-      answer = await askPinned(mesh, "chatSessionRetire", { alias: slot.alias, actor: slot.actor, lifecycleUid: slot.lifecycleUid }, managerInstanceId);
+      answer = await askPinned(mesh, "chatSessionRetire", { alias: slot.alias, actor: slot.actor, lifecycleUid: slot.lifecycleUid }, managerInstanceId, undefined, STATIC_CHAT_RETIRE_TIMEOUT_MS);
     } catch (e) {
       const cause = isConnectRefusal(e) ? e.failure().message : (e as Error).message;
       return { retirement: "unknown", connectionClosed: "confirmed", credentialValidUntil: slot.expiresAt, message: `The retire request was not sent to manager ${managerInstanceId}: ${cause}. That manager retires the session at its expiry or its stop if it is still running.` };

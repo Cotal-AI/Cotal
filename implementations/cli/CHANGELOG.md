@@ -1,5 +1,41 @@
 # @cotal-ai/cli
 
+## 0.129.3
+
+### Patch Changes
+
+- d968671: Wait long enough for a static chat session's retirement answer. With the delivery daemon stopped, closing `cotal chat` now reports the retirement pending and names the daemon (exit 4) instead of timing out as an unknown outcome that blamed the manager.
+- Updated dependencies [c6ddccc]
+- Updated dependencies [565f465]
+  - @cotal-ai/core@0.129.3
+  - @cotal-ai/workspace@0.129.3
+
+## 0.129.2
+
+### Patch Changes
+
+- 244387e: `space forget` now clears, in the root's stack journal, the instances of the stopped stack members it removes. Before, after `up`, `down`, `space forget` and `space create` in the same folder, `up --no-manager` carried the forgotten manager's instance, and `down` refused `TARGET_NOT_FOUND` and stopped nothing. An instance forget did not remove stays in the journal, and a journal an earlier release left that way is not changed.
+- @cotal-ai/core@0.129.2
+  - @cotal-ai/workspace@0.129.2
+
+## 0.129.1
+
+### Patch Changes
+
+- 4bf8933: `cotal doctor auth` without `--space`, run in the root of a space that was prepared and never started, now says to start that space with `cotal up` and then run the same command again. It used to say to run the command in a space's root folder, where the user already was. The report is still partial (exit 4), and `--fix` there still refuses `AUTH_REQUIRED`, with the same step.
+- 8c3d77f: `cotal up --root <root> --no-manager` run from another folder now quotes the root in the `cotal up --root` its Next offers when a shell would split it, so a folder name with a space, an apostrophe or a `$` pastes as one word. It used to print the path raw, which a shell split at its spaces, expanded at its `$`, or refused as an unmatched quote. The `--json` result and the `cotal down` description still name the path as it is.
+- @cotal-ai/core@0.129.1
+  - @cotal-ai/workspace@0.129.1
+
+## 0.129.0
+
+### Patch Changes
+
+- de421cd: `cotal doctor auth --space <space>` for a space that was prepared and never started now says to start it with `cotal up` first, instead of telling the user to run the same command in the folder they are already in. From another folder, that step names the space's root with `--root`, quoted for a shell. The refusal and its exit code are unchanged.
+- Updated dependencies [de421cd]
+  - @cotal-ai/workspace@0.129.0
+  - @cotal-ai/core@0.129.0
+
 ## 0.128.7
 
 ### Patch Changes

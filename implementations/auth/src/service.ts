@@ -3411,7 +3411,8 @@ function notExecuted(e: unknown, code: EpErrorCode): EpEnvelopeError {
 
 function sendRequestError(res: ServerResponse, e: unknown): void {
   if (e instanceof RequestBodyError) return send(res, e.status, { error: e.message });
-  send(res, 400, { error: e instanceof Error ? e.message : String(e) });
+  console.error("auth-service: unexpected request error", e);
+  send(res, 500, { error: "internal server error" });
 }
 
 type RouteHandler = (req: IncomingMessage, res: ServerResponse, ctx: HandlerCtx) => void | Promise<void>;
@@ -3800,6 +3801,14 @@ async function handleExchange(req: IncomingMessage, res: ServerResponse, ctx: Ha
   const peer = policy.peerKey(req);
   const peerThrottled = policy.throttled(ctx, peer);
   const body = await readJsonBody(req);
+  if (body === null || typeof body !== "object" || Array.isArray(body)) {
+    policy.recordFailure(ctx, peer);
+    const reason = "exchange body must be a JSON object";
+    console.error(`auth-service: refused an exchange: ${reason}`);
+    if (peerThrottled)
+      return send(res, 429, { error: "too many refused exchanges - wait a minute and retry" });
+    return send(res, 400, { error: reason });
+  }
   const { idpToken, actor, actorToken, owner, ttlSec, view, managerInstanceId, sessionGrant, transferWriter } = body as {
     idpToken?: unknown;
     actor?: unknown;

@@ -1,5 +1,23 @@
 # @cotal-ai/connector-jcode
 
+## 0.129.3
+
+No changes in this release.
+
+## 0.129.2
+
+No changes in this release.
+
+## 0.129.1
+
+No changes in this release.
+
+## 0.129.0
+
+### Minor Changes
+
+- cf5d83e: Require Node 22.13 or later for the Jcode connector (23.4 or later on Node 23). Cursor credential mirrors now contain only the three values used by Jcode, instead of copying the entire editor-state database into every seat. Read-only SQLite queries include committed WAL updates; private atomic publication, login rotation and removal are preserved. Existing full mirrors are replaced when their seats next launch. Provider selection and external-auth consent are unchanged.
+
 ## 0.128.7
 
 ### Patch Changes

@@ -407,6 +407,11 @@ auth provider, and that name is the same one the local arm registers under. A do
 different provider than the one serving it would register an entry nothing can resolve, so both read
 one constant. Treat it as bootstrap material: the sentinel cannot publish or subscribe, but
 consumers must still take the bundle only from the intended HTTPS origin and must verify TLS.
+Both HTTP listeners answer unexpected handler failures with a generic `500` and log the exception
+server-side. Malformed JSON keeps its named `400`, and an oversized request keeps its `413`.
+An exchange body must be a JSON object. Null, arrays and scalar bodies receive a named `400` and
+count against that face's refused-exchange budget; once full, the refusal becomes `429`.
+
 `--exchange-trusted-proxy` opts into peer attribution by the **last** `X-Forwarded-For` hop; use it
 only when the listener is reachable solely through a proxy you control.
 Without it, forwarded headers are ignored and the socket address is the peer key. Public failure
@@ -427,7 +432,7 @@ reason without spending the per-peer probing budget or being masked by a peer's 
 principal's `unpinned` or `pinned` window is full, the public face sheds manager selection for that
 class (refusing requests of that class, including ones that would have succeeded, while leaving the
 other class open) and returns `429` with that class's remedy (`--on` / `--manager-instance` /
-`cotal supervise` for `unpinned`; checking that the pinned manager instance is live and registered
+`cotal manager start` for `unpinned`; checking that the pinned manager instance is live and registered
 to the caller for `pinned`) until the window drains. Those principal-class windows share one bounded
 1024-key LRU of the same kind as the peer buckets: because one principal owns both its `pinned` and
 `unpinned` class keys, rotating 512 other verified principals (1024 keys, where each principal

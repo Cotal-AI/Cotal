@@ -1260,7 +1260,8 @@ Next offers `cotal spawn --space <space>`, or `cotal up` to add the manager afte
 and `cotal down`. The spawn carries `--space` because `up` keeps an existing selection, so a bare
 `cotal spawn` can target another space. Run from another folder, as `up --root <root>` is, the Next
 says to run `cotal down` from the root, because `down` stops only the stack of the folder it runs in,
-and it offers `cotal up --root <root>` to add the manager. When another space stays selected, the
+and it offers `cotal up --root <root>` to add the manager, with `<root>` quoted when a shell would
+split it. When another space stays selected, the
 receipt says so and names `cotal use <space>`, as a legacy `up` does. When no registered or prepared space is
 selected, `up` selects the space it started and says so.
 The receipt also names each service saved for the space that `up` does not start, such as one
@@ -2964,8 +2965,12 @@ removal fails after the record is gone, the run is `partial` and names the `conf
 after the `chmod` when the preferences folder is one another account could write.
 Forget also removes the stack definitions `cotal up` saved for the space at its root, with their
 stopped instance records, so another folder can start a stack under the same name. The result lists
-them. While a member was not stopped cleanly, or the root holds preserved state, they stay and the
-result warns with `STACK_DEFINITIONS_KEPT`. For a member that was not stopped cleanly, the warning
+them. The root's stack journal stays, keeping the stack's mode, address and store, and no longer
+names the instances forget removed. After `space create` in that folder, the space reads as prepared
+but not started, and `up --no-manager` and `down` there start and stop only the new members. A
+journal an earlier release left naming removed instances is not changed, and `down` there still
+refuses `TARGET_NOT_FOUND`. While a member was not stopped cleanly, or the root holds preserved
+state, they stay and the result warns with `STACK_DEFINITIONS_KEPT`. For a member that was not stopped cleanly, the warning
 names `cotal down --yes` in the root and then `space forget` again. When the stack's folder is
 gone, it names `cotal down --space <space> --yes`, which stops the stack and removes them.
 Forget keeps the other services saved under the name, such as one `cotal service add` saved, with
@@ -6216,7 +6221,10 @@ close was confirmed and it was retired, or was an open-mesh session with nothing
 exits 3 when the retirement outcome is unknown, its connection close was not confirmed, or no close
 was observed. A session that cannot reconnect because its inbox is gone from the broker, as when the
 space restarted and retired it while the connection was down, ends by itself with that reason and
-exits 5 when its close is confirmed. In the terminal view Ctrl-C and Ctrl-D leave. With `--plain` or `--stdio`, Ctrl-C ends
+exits 5 when its close is confirmed. On a static mesh, leaving waits up to 30 seconds for the
+manager to answer the retirement. When the delivery daemon does not answer, the manager waits 15
+seconds for it, then reports the retirement pending and names the daemon, and the session exits 4.
+In the terminal view Ctrl-C and Ctrl-D leave. With `--plain` or `--stdio`, Ctrl-C ends
 input and the session closes, then exits 130. A terminate signal exits 143 and a hangup 129. A
 signal that arrives before the view starts is held: no session is opened if admission has not
 begun, and a session admitted meanwhile is closed at once. The exit status is still the signal's.
@@ -7119,11 +7127,15 @@ rows without JWTs, seeds, fingerprints or raw parser/renewal error bodies. On a 
 spaces, `--space` names one; it defaults to the sole space. Without `--space`, a root with several
 spaces refuses with `TARGET_AMBIGUOUS` (exit 2) and names them. In a folder whose root holds no space,
 the report is partial (exit 4) and its next step is to run it in a space's root, which `cotal space`
-lists. In the root of a space registered as open, the report says that the space issues no
+lists. Without `--space`, in the root of a space `cotal space create` prepared and no `cotal up`
+started, the step is to start it with `cotal up`, then run the same command again. In the root of a
+space registered as open, the report says that the space issues no
 credentials, so there are none to check, and the result is a no-op (exit 0). With `--space` naming
 a space whose signing trust this root does not hold, it refuses `AUTH_REQUIRED` (exit 2) and reads
 no other root. Its next step names the folder that space is registered at, where the same command
-runs, or else a space's root, which `cotal space` lists.
+runs, or else a space's root, which `cotal space` lists. For a space `cotal space create` prepared
+and no `cotal up` started, the step is to start it with `cotal up` first, then run the same command
+again. From another folder, that `cotal up` names the space's root with `--root`, quoted for a shell.
 
 Plain diagnosis starts no repair or connection. A required legacy credential or user-auth directory
 migration refuses instead of silently moving files or reading canonical absence as an empty scope.

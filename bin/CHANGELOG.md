@@ -1,5 +1,69 @@
 # cotal-ai
 
+## 0.129.3
+
+### Patch Changes
+
+- Updated dependencies [d968671]
+- Updated dependencies [c6ddccc]
+- Updated dependencies [565f465]
+  - @cotal-ai/cli@0.129.3
+  - @cotal-ai/core@0.129.3
+  - @cotal-ai/connector-core@0.129.3
+  - @cotal-ai/auth@0.129.3
+  - @cotal-ai/delivery@0.129.3
+  - @cotal-ai/manager@0.129.3
+  - @cotal-ai/runtime@0.129.3
+  - @cotal-ai/workspace@0.129.3
+  - @cotal-ai/seat@0.129.3
+
+## 0.129.2
+
+### Patch Changes
+
+- Updated dependencies [a407c63]
+- Updated dependencies [244387e]
+  - @cotal-ai/auth@0.129.2
+  - @cotal-ai/cli@0.129.2
+  - @cotal-ai/connector-core@0.129.2
+  - @cotal-ai/manager@0.129.2
+  - @cotal-ai/delivery@0.129.2
+  - @cotal-ai/runtime@0.129.2
+  - @cotal-ai/core@0.129.2
+  - @cotal-ai/seat@0.129.2
+  - @cotal-ai/workspace@0.129.2
+
+## 0.129.1
+
+### Patch Changes
+
+- Updated dependencies [4bf8933]
+- Updated dependencies [8c3d77f]
+  - @cotal-ai/cli@0.129.1
+  - @cotal-ai/connector-core@0.129.1
+  - @cotal-ai/auth@0.129.1
+  - @cotal-ai/delivery@0.129.1
+  - @cotal-ai/manager@0.129.1
+  - @cotal-ai/runtime@0.129.1
+  - @cotal-ai/core@0.129.1
+  - @cotal-ai/seat@0.129.1
+  - @cotal-ai/workspace@0.129.1
+
+## 0.129.0
+
+### Patch Changes
+
+- Updated dependencies [de421cd]
+  - @cotal-ai/cli@0.129.0
+  - @cotal-ai/workspace@0.129.0
+  - @cotal-ai/auth@0.129.0
+  - @cotal-ai/delivery@0.129.0
+  - @cotal-ai/manager@0.129.0
+  - @cotal-ai/runtime@0.129.0
+  - @cotal-ai/connector-core@0.129.0
+  - @cotal-ai/core@0.129.0
+  - @cotal-ai/seat@0.129.0
+
 ## 0.128.7
 
 ### Patch Changes
