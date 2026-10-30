@@ -1,5 +1,16 @@
 # @cotal-ai/auth
 
+## 0.130.0
+
+### Patch Changes
+
+- 025d175: Build trusted auth request-observation filters through the same core request head as actual endpoint requests. Existing observed commands, routes and rails are unchanged. The focused source census ignores comment prose while still rejecting literal rail construction outside core.
+- Updated dependencies [025d175]
+- Updated dependencies [27250e3]
+  - @cotal-ai/core@0.130.0
+  - @cotal-ai/workspace@0.130.0
+  - @cotal-ai/lang@0.130.0
+
 ## 0.129.9
 
 ### Patch Changes
