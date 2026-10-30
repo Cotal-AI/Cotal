@@ -1,5 +1,9 @@
 # @cotal-ai/web
 
+## 0.129.8
+
+No changes in this release.
+
 ## 0.129.7
 
 No changes in this release.
