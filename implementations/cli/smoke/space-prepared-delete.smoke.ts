@@ -5,18 +5,22 @@
  * delete help described `-y` with the `add` text first. The `space` listing said "No spaces
  * registered" above the prepared space it listed, under a `SPACE  Project` header. `space forget
  * --yes` said `--yes` is taken by `space add` only, though `space delete` takes it too. A second
- * `space create` in the folder named no step for the space already there.
+ * `space create` in the folder named no step for the space already there. `doctor auth --space`
+ * for a prepared space told the user to run the same command in the space's root, also when run
+ * there; it now names `cotal up` first, with the root quoted for a shell from another folder, and
+ * still refuses AUTH_REQUIRED.
  *
- * Driven through the built binary in a sandboxed HOME, XDG_CONFIG_HOME and COTAL_HOME. No broker is
- * started and nothing is deleted.
+ * Driven through the built binary in a sandboxed HOME, XDG_CONFIG_HOME and COTAL_HOME, the 80-column
+ * run on a real pty. No broker is started and nothing is deleted.
  *
  * Run: pnpm smoke:space-prepared-delete
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSuite } from "@cotal-ai/smoke-kit";
+import { ptySpawn, screen } from "./_console-pty.js";
 
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
 if (!existsSync(BIN)) {
@@ -24,7 +28,7 @@ if (!existsSync(BIN)) {
   process.exit(1);
 }
 
-interface Envelope { outcome?: string; error?: { code?: string; message?: string; remedy?: string } }
+interface Envelope { outcome?: string; target?: { root?: string; space?: string }; error?: { code?: string; message?: string; remedy?: string } }
 
 const { check, finish } = createSuite();
 const home = mkdtempSync(join(tmpdir(), "cotal-prepared-delete-"));
@@ -33,8 +37,8 @@ process.on("exit", () => rmSync(home, { recursive: true, force: true }));
 
 const HOST_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_") && k !== "FORCE_COLOR" && k !== "NO_COLOR"));
 const env = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
-const run = (args: string[]) => {
-  const r = spawnSync(process.execPath, [BIN, ...args], { cwd: root, env, encoding: "utf8", timeout: 120_000 });
+const run = (args: string[], cwd = root) => {
+  const r = spawnSync(process.execPath, [BIN, ...args], { cwd, env, encoding: "utf8", timeout: 120_000 });
   let envelope: Envelope | undefined;
   try { envelope = JSON.parse(r.stdout ?? "") as Envelope; } catch { envelope = undefined; }
   return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "", envelope };
@@ -49,6 +53,49 @@ check("rig: the space is prepared and not started", created.status === 0, shown(
 const listing = run(["space"]);
 check("the space listing names a prepared space without saying none is registered", listing.status === 0 && /Prepared, not started/.test(listing.stdout) && /\bb4b\b/.test(listing.stdout) && !/No spaces registered/.test(listing.stdout) && /No space has been started or registered yet/.test(listing.stdout), shown(listing));
 check("the prepared table's headers are Space and Project", /^\s*Space\s+Project\s*$/m.test(listing.stdout) && !/SPACE/.test(listing.stdout), shown(listing));
+
+// A space no `up` started holds no signing trust, so doctor auth refuses for it. Its step used to be
+// to run the same command in the space's root, which is where it ran. The refusal stays; the step is
+// to start the space first.
+const DOCTOR_HERE = '"b4b" is prepared but not started; start it with `cotal up`, then run `cotal doctor auth --space b4b` again';
+const cotalBefore = readdirSync(join(root, ".cotal")).sort();
+const doctorJson = run(["doctor", "auth", "--space", "b4b", "--json"]);
+check("doctor auth --space in a prepared space's root still refuses AUTH_REQUIRED, exit 2, with that root as its target",
+  doctorJson.status === 2 && doctorJson.envelope?.error?.code === "AUTH_REQUIRED" && doctorJson.envelope.target?.root === realpathSync(root) && doctorJson.envelope.target?.space === "b4b", shown(doctorJson));
+check("its step is to start the space, then run the same command again", doctorJson.envelope?.error?.remedy === DOCTOR_HERE, doctorJson.envelope?.error);
+const doctorPlain = run(["doctor", "auth", "--space", "b4b"]);
+const plainText = doctorPlain.stdout + doctorPlain.stderr;
+check("the plain refusal prints that step under Next", doctorPlain.status === 2 && plainText.includes(`Next\n  ${DOCTOR_HERE}\n`) && !plainText.includes("in that space's root folder"), shown(doctorPlain));
+const doctorAgain = run(["doctor", "auth", "--space", "b4b"]);
+check("running it again in the same root gives the same refusal and writes nothing",
+  doctorAgain.status === 2 && doctorAgain.stdout + doctorAgain.stderr === plainText && JSON.stringify(readdirSync(join(root, ".cotal")).sort()) === JSON.stringify(cotalBefore), shown(doctorAgain));
+{
+  const ptyEnv: Record<string, string> = {};
+  for (const [k, v] of Object.entries(env)) if (v !== undefined) ptyEnv[k] = v;
+  const pty = ptySpawn(process.execPath, [BIN, "doctor", "auth", "--space", "b4b"], { name: "xterm-256color", cols: 80, rows: 60, cwd: root, env: ptyEnv });
+  let raw = "";
+  pty.onData((d) => { raw += d; });
+  const exitCode = await new Promise<number>((done) => pty.onExit((e) => done(e.exitCode)));
+  const display = await screen(raw, 80, 60);
+  check("on an 80-column terminal the refusal fits and names the same step", exitCode === 2 && display.split("\n").every((line) => [...line].length <= 80) && display.replace(/\s+/g, " ").includes(DOCTOR_HERE), { exitCode, display });
+}
+
+// From another folder the step names the prepared root with --root, quoted so a shell reads it back
+// as that folder.
+const special = join(home, "it's $HOME d");
+mkdirSync(special);
+const createdSpecial = run(["space", "create", "b4d", "--root", special]);
+check("rig: a second space is prepared in a folder whose name a shell would expand", createdSpecial.status === 0, shown(createdSpecial));
+const doctorElsewhere = run(["doctor", "auth", "--space", "b4d", "--json"]);
+const elsewhereStep = /^"b4d" is prepared but not started; start it with `cotal up --root (.+)`, then run `cotal doctor auth --space b4d` in that folder$/.exec(doctorElsewhere.envelope?.error?.remedy ?? "");
+const shellRead = elsewhereStep ? spawnSync("/bin/sh", ["-c", `printf %s ${elsewhereStep[1]}`], { encoding: "utf8", env: { PATH: process.env.PATH, HOME: "/nonexistent" } }).stdout : undefined;
+check("doctor auth --space from another folder refuses AUTH_REQUIRED and names cotal up --root for the prepared root",
+  doctorElsewhere.status === 2 && doctorElsewhere.envelope?.error?.code === "AUTH_REQUIRED" && elsewhereStep !== null, shown(doctorElsewhere));
+check("a shell reads that --root back as the prepared folder", shellRead !== undefined && existsSync(shellRead) && realpathSync(shellRead) === realpathSync(special), { remedy: doctorElsewhere.envelope?.error?.remedy, shellRead });
+
+const doctorUnknown = run(["doctor", "auth", "--space", "nosuch", "--json"]);
+check("control: a space nothing prepared or registered keeps the general step",
+  doctorUnknown.status === 2 && doctorUnknown.envelope?.error?.code === "AUTH_REQUIRED" && doctorUnknown.envelope.error.remedy === "run `cotal doctor auth --space nosuch` in that space's root folder; `cotal space` lists each space's root", shown(doctorUnknown));
 
 const preview = run(["space", "delete", "b4b", "--dry-run", "--json"]);
 check("a delete preview of a prepared space refuses as unavailable, exit 2", preview.status === 2 && preview.envelope?.error?.code === "TARGET_UNAVAILABLE", shown(preview));

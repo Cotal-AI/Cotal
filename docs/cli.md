@@ -7123,7 +7123,9 @@ lists. In the root of a space registered as open, the report says that the space
 credentials, so there are none to check, and the result is a no-op (exit 0). With `--space` naming
 a space whose signing trust this root does not hold, it refuses `AUTH_REQUIRED` (exit 2) and reads
 no other root. Its next step names the folder that space is registered at, where the same command
-runs, or else a space's root, which `cotal space` lists.
+runs, or else a space's root, which `cotal space` lists. For a space `cotal space create` prepared
+and no `cotal up` started, the step is to start it with `cotal up` first, then run the same command
+again. From another folder, that `cotal up` names the space's root with `--root`, quoted for a shell.
 
 Plain diagnosis starts no repair or connection. A required legacy credential or user-auth directory
 migration refuses instead of silently moving files or reading canonical absence as an empty scope.

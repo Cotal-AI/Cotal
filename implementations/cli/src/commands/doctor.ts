@@ -19,7 +19,7 @@ import {
   type SpaceAuth,
 } from "@cotal-ai/core";
 import {
-  CommandFailure, accountInventory, canonicalRoot, credentialFileExposure, isCommandFailure, jsonFlag, plainFlag, presentationOf, readLocalRecordSource, renewalRecordPath, writeResult,
+  CommandFailure, accountInventory, canonicalRoot, codeSpan, credentialFileExposure, isCommandFailure, jsonFlag, plainFlag, preparedNeverStarted, presentationOf, readLocalRecordSource, renewalRecordPath, upCommand, writeResult,
   agentCredsDir,
   authDir,
   CONNECTION_EVICTOR_CREDS_KIND,
@@ -52,6 +52,7 @@ import {
   type AgentGrants,
 } from "@cotal-ai/workspace";
 import { displayCmd } from "../lib/self-exec.js";
+import { shellWord } from "../lib/endpoint-errors.js";
 import { RESPONDER_UNBOUND_CONSEQUENCE } from "../lib/delivery-responder.js";
 import { noExpiryRecordPath, noExpiryRequestedAt } from "../lib/no-expiry-record.js";
 import { credentialExportStore } from "../lib/credential-exports.js";
@@ -117,14 +118,19 @@ function recordedOpenSpace(root: string, space: string | undefined): string | un
 }
 
 /** Where to run doctor auth when this folder's root holds no signing trust for the scope it names:
- *  the root `space` is registered at, when that is another folder, or else a space's root. The
- *  report stays root-local, so the step names the folder instead of reading another root's trust. */
+ *  the root `space` is registered at, when that is another folder; the root `space` was prepared
+ *  in, once `cotal up` there starts it, when no `up` has; or else a space's root. The report stays
+ *  root-local, so the step names the folder instead of reading another root's trust. */
 function trustRootStep(root: string, space: string | undefined, fix: boolean): string {
   const command = `cotal doctor auth${space === undefined ? "" : ` --space ${space}`}${fix ? " --fix" : ""}`;
-  let registered: string | undefined;
+  let registered: string | undefined, prepared: string | undefined;
   if (space !== undefined) {
     try { const target = resolveMeshTarget(root, { space, readOnly: true }); if (canonicalRoot(target.root) !== canonicalRoot(root)) registered = target.root; }
-    catch { /* not registered here: the general step */ }
+    catch (error) { if (error instanceof MeshTargetError && error.code === "not-started" && preparedNeverStarted(error.details)) prepared = error.details.root; /* else not registered here: the general step */ }
+  }
+  if (prepared !== undefined) {
+    const here = canonicalRoot(prepared) === canonicalRoot(root);
+    return `"${space}" is prepared but not started; start it with ${codeSpan(upCommand(prepared, space!, ...(here ? [] : ["--root", shellWord(prepared)])))}, then run \`${command}\` ${here ? "again" : "in that folder"}`;
   }
   return registered ? `run \`${command}\` in the folder space ${space} is registered at: ${registered}` : `run \`${command}\` in ${space === undefined ? "a" : "that"} space's root folder; \`cotal space\` lists each space's root`;
 }

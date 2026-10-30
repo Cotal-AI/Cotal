@@ -382,6 +382,15 @@ export function preparedLifecycle(root: string, space: string): PreparedLifecycl
   return { state: "prepared", lastOperation: null };
 }
 
+/** Whether a `not-started` refusal names a prepared space whose root exists and whose stack never
+ *  launched a member: not one that is stopped or unsettled (its journal names members a manager may
+ *  still hold), not a root whose stack runs under another Cotal home, and not a root whose journal
+ *  or account names a space this home never prepared. */
+export function preparedNeverStarted(d: MeshTargetErrorDetails): d is MeshTargetErrorDetails & { space: string; root: string } {
+  return typeof d.space === "string" && typeof d.root === "string" && d.rootMissing !== true &&
+    d.stopped === undefined && d.unsettled === undefined && d.home === undefined && d.stackSpace === undefined;
+}
+
 const OPERATION: Record<string, string> = { up: codeSpan("cotal up"), down: codeSpan("cotal down"), preserve: `a preserving ${codeSpan("cotal down")}`, resume: "a resume" };
 const OUTCOME: Record<string, string> = { completed: "completed", failed: "failed", refused: "was refused", partial: "applied in part", unknown: "has an unknown outcome", applying: "did not finish", planned: "did not finish" };
 
