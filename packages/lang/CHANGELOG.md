@@ -1,5 +1,11 @@
 # @cotal-ai/lang
 
+## 0.130.1
+
+### Patch Changes
+
+- 029df4f: Keep foreign error names and messages consistent across worker execution, inspection and the host bridge. Shared readers retain only string-valued fields and contain throwing accessors or failed string conversion, so formatting a failure does not strand its answer.
+
 ## 0.130.0
 
 No changes in this release.
