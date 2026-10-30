@@ -156,31 +156,6 @@ export function addedSectionsBetween(basePage, headPage) {
   return coveringSections(headPage).filter((s) => !before.has(s));
 }
 
-/**
- * The verdict for one range.
- *
- * `breaking` are the commits that declared themselves breaking. `addedSections` are the non-empty
- * release sections THIS RANGE ADDED to the page, base compared against head.
- *
- * THE PREDICATE IS "ADDED A SECTION", NOT "TOUCHED THE FILE", AND THE DIFFERENCE IS THE WHOLE
- * GATE. Measured on the first version of this tool, which asked only whether the diff touched the
- * path: a breaking commit shipped beside a ONE-LINE TYPO FIX on this page passed, "covered by 8
- * section(s)", every one of them written for an earlier release. That is worse than it looks,
- * because it decays: every section the page ever accumulates becomes permanent pre-coverage for
- * every future break, so the gate gets weaker precisely as the page gets longer. It is also the
- * reporter's own failure reintroduced one level up, since it greens a breaking release that did no
- * upgrade work at all.
- *
- * The comparison is deliberately by section TITLE rather than by content. A range that edits an
- * existing section does not read as coverage, which is correct: amending the 0.48.2 section is not
- * documenting a 0.50.0 break. It also means the gate cannot be satisfied by rewording, only by
- * writing something that was not there.
- *
- * What it still does NOT do is match a breaking commit to a SPECIFIC section, because a release's
- * section is written once for several breaking commits and any such rule would be guesswork
- * wearing a rule's clothes. What it asserts is that a range which broke something also WROTE
- * something new here.
- */
 /** Which OTHER job names a document still claims runs the gate.
  *
  *  PURE, EXPORTED, AND TESTED AGAINST BUILT INPUTS, because the live repository is the one input
@@ -211,6 +186,31 @@ export function staleJobClaims(text, hostJob, candidates) {
     && new RegExp(`(runs?|grades?|grading path is|step (?:in|of)|in) the .${j}. job`).test(text));
 }
 
+/**
+ * The verdict for one range.
+ *
+ * `breaking` are the commits that declared themselves breaking. `addedSections` are the non-empty
+ * release sections THIS RANGE ADDED to the page, base compared against head.
+ *
+ * THE PREDICATE IS "ADDED A SECTION", NOT "TOUCHED THE FILE", AND THE DIFFERENCE IS THE WHOLE
+ * GATE. Measured on the first version of this tool, which asked only whether the diff touched the
+ * path: a breaking commit shipped beside a ONE-LINE TYPO FIX on this page passed, "covered by 8
+ * section(s)", every one of them written for an earlier release. That is worse than it looks,
+ * because it decays: every section the page ever accumulates becomes permanent pre-coverage for
+ * every future break, so the gate gets weaker precisely as the page gets longer. It is also the
+ * reporter's own failure reintroduced one level up, since it greens a breaking release that did no
+ * upgrade work at all.
+ *
+ * The comparison is deliberately by section TITLE rather than by content. A range that edits an
+ * existing section does not read as coverage, which is correct: amending the 0.48.2 section is not
+ * documenting a 0.50.0 break. It also means the gate cannot be satisfied by rewording, only by
+ * writing something that was not there.
+ *
+ * What it still does NOT do is match a breaking commit to a SPECIFIC section, because a release's
+ * section is written once for several breaking commits and any such rule would be guesswork
+ * wearing a rule's clothes. What it asserts is that a range which broke something also WROTE
+ * something new here.
+ */
 export function verdict({ breaking, addedSections }) {
   // "no breaking commits DETECTED", never "no breaking commits". The gate reads markers, and the
   // design note is explicit that no marker-keyed detector can see an unmarked break, so a pass
