@@ -468,7 +468,7 @@ try {
   let lostError = "";
   try { await auth10.cancel(sender.id, { seq: s10.ack.seq, id: s10.msg.id }); } catch (e) { lostError = (e as Error).message; }
   check("10a the first cancel deleted the request and lost the reply", /reply was lost/.test(lostError) && !(await queued(s10.ack.seq)), lostError);
-  const c10 = await auth10.cancel(sender.id, { seq: s10.ack.seq, id: s10.msg.id });
+  const c10 = await auth10.cancel(sender.id, { seq: s10.ack.seq, id: s10.msg.id }).catch((e: Error) => ({ state: "threw" as const, error: e.message }));
   check("10b the retried cancel finishes the removal as already gone", c10.state === "cancelled" && c10.removal === "already-gone", c10);
   const t10 = await g10!.delivery.take!();
   check("10c the holder's copy is refused as cancelled", !t10.taken && t10.drop && t10.reason === "cancelled", t10);
