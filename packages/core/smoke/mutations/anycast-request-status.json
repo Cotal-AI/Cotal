@@ -98,6 +98,14 @@
       "expectRed": "5f a take naming its holder by a multi-line name is refused",
       "cell": "5f a take naming its holder by a multi-line name is refused",
       "note": "A holder name with a line break reaches the record and every notice and status that prints it."
+    },
+    {
+      "file": "packages/core/src/anycast-requests.ts",
+      "find": "  return (e as { code?: unknown } | null)?.code === 10043 || /no message found/i.test(",
+      "replace": "  return (e as { code?: unknown } | null)?.code === 10037 || /no message found/i.test(",
+      "expectRed": "10b the retried cancel finishes the removal as already gone",
+      "cell": "10b the retried cancel finishes the removal as already gone",
+      "note": "nats-server answers a delete of a seq inside the stream's range, already gone, with 10043 `sequence <n> not found`. Without it the retried cancel throws instead of recording already-gone, and the sweep throws on the same row every ten minutes."
     }
   ]
 }

@@ -224,8 +224,11 @@ function storedRequest(subject: string, data: Uint8Array): StoredRequest | undef
   return { role: parsed.rest, sender: parsed.sender, id };
 }
 
+/** Whether a STREAM.MSG.DELETE found nothing stored at the seq. nats-server answers `sequence <n> not
+ *  found` (10043) for a seq inside the stream's range and `no message found` for one below its first
+ *  seq. A seq past the stream's end answers `stream store EOF`, which is not this. */
 function isNoMessageFound(e: unknown): boolean {
-  return (e as { code?: unknown } | null)?.code === 10037 || /no message found/i.test(String((e as Error | null)?.message ?? ""));
+  return (e as { code?: unknown } | null)?.code === 10043 || /no message found/i.test(String((e as Error | null)?.message ?? ""));
 }
 
 const encoder = new TextEncoder();

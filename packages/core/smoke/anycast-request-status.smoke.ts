@@ -457,6 +457,10 @@ try {
     },
   } as unknown as JetStreamManager;
   const auth10 = new AnycastRequestAuthority({ jsm: lossyJsm, kv, stream: taskStream(space), send: async () => {}, mayAct: () => true, onError: () => {} });
+  // A request no holder takes stays queued below the cancelled one, so the retried delete names a seq
+  // inside the stream's range. nats-server answers that with `sequence <n> not found`, and one below
+  // the stream's first seq with `no message found`.
+  await sender.ep.anycastAttributed("idle", "stays on the queue below the cancelled request");
   const s10 = await sender.ep.anycastAttributed("reviewer", "a cancel whose reply is lost");
   const g10 = await nextRequest(x, seen, s10.msg.id);
   mark(g10!);
