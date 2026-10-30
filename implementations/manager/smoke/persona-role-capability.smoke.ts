@@ -52,7 +52,9 @@ import {
   CotalEndpoint,
   createSpaceAuth,
   isReachable,
+  mintAcceptedToken,
   mintCreds,
+  mintGeneration,
   mintLifecycleUid,
   newIdentity,
   provisionAgent,
@@ -60,6 +62,7 @@ import {
   seedChannelRegistry,
   serverConfig,
   setupSpaceStreams,
+  withIssuerSession,
   type Connector,
   type LaunchOpts,
 } from "@cotal-ai/core";
@@ -179,13 +182,23 @@ try {
   const chACL = { subscribe: ["general"], allowSubscribe: ["general"], allowPublish: ["general"] };
   const definerId = newIdentity();
   const definerUid = mintLifecycleUid();
-  const definerCreds = await provisionAgent(provisioner, auth, definerId, {
-    ...chACL,
-    role: "worker",
-    lifecycleUid: definerUid,
-    capabilities: ["spawn"],
-    endpointCapabilities: [{ endpoint: "manager", command: "define-persona" }, { endpoint: "manager", command: "spawn" }],
-  });
+  // The definer spawns a persona that names `spawn`, so its credential is an issuance (SPEC 13.15):
+  // a spawner with no issued evidence hands on no grant.
+  const definerExp = Math.floor(Date.now() / 1000) + 600;
+  const definerIssued = { generation: mintGeneration(definerExp), acceptedToken: mintAcceptedToken() };
+  const prov = provisioner;
+  const definerCreds = await withIssuerSession({ servers: SERVERS, space, auth, tls: false }, (s) =>
+    provisionAgent(prov, auth, definerId, {
+      ...chACL,
+      role: "worker",
+      lifecycleUid: definerUid,
+      capabilities: ["spawn"],
+      endpointCapabilities: [{ endpoint: "manager", command: "define-persona" }, { endpoint: "manager", command: "spawn" }],
+      expiresAt: definerExp,
+      issued: definerIssued,
+      issuance: { mode: "issue", store: s.store, accepted: s.accepted, sources: [] },
+    }),
+  );
   const cfg: AgentConfig = {
     space,
     name: "definer",
@@ -198,6 +211,7 @@ try {
     id: definerId.id,
     capabilities: ["spawn"],
     lifecycleUid: definerUid,
+    acceptedToken: definerIssued.acceptedToken,
   };
   definer = new MeshAgent(cfg);
   definer.on("error", () => {});

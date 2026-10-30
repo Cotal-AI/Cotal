@@ -701,8 +701,12 @@ try {
     check("and its show-persona is not-found", rStaticShow.reply.ok === false && rStaticShow.reply.error?.code === "not-found", rStaticShow.reply);
 
     // One of the manager's own seats keeps its principal for its life, so what it defines is its own.
+    // Started by the composition root with A as its spawner: A holds no issued evidence, so a spawn
+    // A sends hands on no grant (SPEC 13.15), and this seat needs `spawn` to define. A still stops it
+    // below as its own child.
     saveAgentFile(join(workspaceRoot, ".cotal", "agents", "seatdef.md"), { name: "seatdef", persona: "A seat that defines.", subscribe: [], capabilities: ["spawn"] });
-    await spawnLive(A.call, { name: "seatdef", agent: "e2e-stub", cwd: repoRoot, events: false });
+    const seatdefStart = await M.startAgent({ name: "seatdef", agent: "e2e-stub", cwd: repoRoot, events: false }, A.principal);
+    if (!seatdefStart.ok) throw new Error(`seatdef did not start: ${JSON.stringify(seatdefStart)}`);
     const seatdef = M.agents.get("seatdef")!;
     const seatCreds = seatdef.secretPaths?.creds ?? agentLifecycleSecretFilePaths(workspaceRoot, space, "seatdef", String(seatdef.lifecycleUid)).creds;
     const seatNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: readFileSync(seatCreds, "utf8"), tls: false }), maxReconnectAttempts: 0 });
@@ -798,7 +802,11 @@ try {
     const rRemoveB = await B.call("remove-persona", { name: "eppersona" });
     check("a foreign remove-persona refuses without deleting the definition",
       rRemoveB.reply.ok === false && rRemoveB.reply.error?.code === "permission-denied" && existsSync(eppPath), rRemoveB.reply);
-    const { row: runningFromPersona } = await spawnLive(A.call, { name: "eppersona", agent: "e2e-stub", cwd: repoRoot, events: false });
+    // The operator widened this persona to read `general`, which A's unissued credential cannot hand
+    // on (SPEC 13.15), so the composition root starts it with A as its spawner.
+    const eppStart = await M.startAgent({ name: "eppersona", agent: "e2e-stub", cwd: repoRoot, events: false }, A.principal);
+    if (!eppStart.ok) throw new Error(`eppersona did not start: ${JSON.stringify(eppStart)}`);
+    const runningFromPersona = eppStart.data as { name: string; id: string; lifecycleUid: string };
     const rRemove = await A.call("remove-persona", { name: "eppersona" });
     const rListAfterRemove = await A.call("list-personas");
     const afterRemove = ((rListAfterRemove.reply.data as { personas?: Array<{ name: string }> })?.personas) ?? [];
