@@ -583,14 +583,18 @@ function readCursorState(source: string, sourceRelative: string): Map<string, st
     db.exec(`PRAGMA busy_timeout = ${CURSOR_STATE_BUSY_MS}`);
     db.exec("BEGIN");
     if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'ItemTable'").get()) throw unreadable("no_item_table");
-    const select = db.prepare("SELECT value, typeof(value) AS kind FROM ItemTable WHERE key = ?");
+    // SQLite checks the type and size before a value leaves it, so an integer JavaScript cannot
+    // represent, or a large blob, never reaches node:sqlite's conversion.
+    const select = db.prepare(
+      `SELECT typeof(value) AS kind, CASE WHEN typeof(value) = 'text' AND octet_length(value) <= ${CURSOR_STATE_VALUE_MAX_BYTES} THEN value END AS value FROM ItemTable WHERE key = ?`,
+    );
     const values = new Map<string, string>();
     for (const key of CURSOR_STATE_KEYS) {
-      const row = select.get(key) as { value: unknown; kind: string } | undefined;
+      const row = select.get(key) as { kind: string; value: string | null } | undefined;
       if (row === undefined || row.kind === "null") continue;
       // Jcode reads each value as text and treats a blank one as missing.
-      if (row.kind !== "text" || typeof row.value !== "string") throw unreadable("value_type");
-      if (Buffer.byteLength(row.value) > CURSOR_STATE_VALUE_MAX_BYTES) throw unreadable("value_size");
+      if (row.kind !== "text") throw unreadable("value_type");
+      if (row.value === null) throw unreadable("value_size");
       if (row.value.trim()) values.set(key, row.value);
     }
     db.exec("COMMIT");

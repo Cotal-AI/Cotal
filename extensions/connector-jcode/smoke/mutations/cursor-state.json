@@ -50,16 +50,24 @@
     {
       "name": "a non-text value is not refused",
       "file": "extensions/connector-jcode/src/private-state.ts",
-      "find": "      if (row.kind !== \"text\" || typeof row.value !== \"string\") throw unreadable(\"value_type\");",
+      "find": "      if (row.kind !== \"text\") throw unreadable(\"value_type\");",
       "replace": "      if (false) throw unreadable(\"value_type\");",
       "expectRed": "a non-text value under a read key refuses instead of being copied",
       "cell": "a non-text value under a read key refuses instead of being copied"
     },
     {
+      "name": "a value leaves SQLite before its type and size are checked",
+      "file": "extensions/connector-jcode/src/private-state.ts",
+      "find": "CASE WHEN typeof(value) = 'text' AND octet_length(value) <= ${CURSOR_STATE_VALUE_MAX_BYTES} THEN value END AS value",
+      "replace": "value AS value",
+      "expectRed": "an integer too large for a JavaScript number refuses as value_type",
+      "cell": "an integer too large for a JavaScript number refuses as value_type"
+    },
+    {
       "name": "an oversized value is not refused",
       "file": "extensions/connector-jcode/src/private-state.ts",
-      "find": "      if (Buffer.byteLength(row.value) > CURSOR_STATE_VALUE_MAX_BYTES) throw unreadable(\"value_size\");",
-      "replace": "      if (false) throw unreadable(\"value_size\");",
+      "find": "      if (row.value === null) throw unreadable(\"value_size\");",
+      "replace": "",
       "expectRed": "an oversized value under a read key refuses instead of being truncated",
       "cell": "an oversized value under a read key refuses instead of being truncated"
     },

@@ -33,7 +33,7 @@ const leafKind = (path: string): { kind: "file" | "dir" | "other" | "absent"; by
 const CURSOR_KEYS = ["cursorAuth/accessToken", "cursorAuth/refreshToken", "storage.serviceMachineId", "cursorAuth/cachedEmail"];
 const cursorValues = (generation: string): Record<string, string> => Object.fromEntries(CURSOR_KEYS.map((key) => [key, `${generation}-${key}-fake`]));
 const CURSOR_REL = join(".config", "Cursor", "User", "globalStorage", "state.vscdb");
-function writeCursorDb(path: string, values: Record<string, string | Uint8Array> = cursorValues("v1"), journal: "delete" | "wal" = "delete"): DatabaseSync {
+function writeCursorDb(path: string, values: Record<string, string | Uint8Array | bigint> = cursorValues("v1"), journal: "delete" | "wal" = "delete"): DatabaseSync {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const db = new DatabaseSync(path);
   db.exec(`PRAGMA journal_mode = ${journal}`);
@@ -577,6 +577,11 @@ try {
     writeCursorDb(blob.source, { ...cursorValues("v1"), "cursorAuth/accessToken": new Uint8Array([1, 2, 3]) }).close();
     seedPrevious(blob);
     check("a non-text value under a read key refuses instead of being copied", refusedCleanly(blob, mirrorError(() => blob.mirror()), "value_type"));
+    const wide = cursorCase("wide-integer");
+    writeCursorDb(wide.source, { ...cursorValues("v1"), "cursorAuth/accessToken": 9007199254740993n }).close();
+    seedPrevious(wide);
+    const wideError = mirrorError(() => wide.mirror());
+    check("an integer too large for a JavaScript number refuses as value_type", refusedCleanly(wide, wideError, "value_type"), String(wideError));
     const huge = cursorCase("oversized");
     writeCursorDb(huge.source, { ...cursorValues("v1"), "cursorAuth/refreshToken": "r".repeat(17 * 1024) }).close();
     seedPrevious(huge);
