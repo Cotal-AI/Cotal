@@ -90,12 +90,10 @@
     "child on an unsettled top-level await before it can report the bound. Keeping the real-path and",
     "liveness cells separate makes each claim observable without weakening the half-open-link guard.",
     "",
-    "UNASSERTED OR UNKILLABLE GUARDS remain in `unkillable`, not in the executable kill set. The",
-    "`permission-denied` branch has no end-to-end producer in this static single-owner harness, and the",
-    "deadline-ref mutation is masked by every event-loop population this harness can construct after",
-    "stdin ownership changed. Keeping them in `mutations` made unrelated branch edits re-run a known",
-    "survivor and fail the changed-fixture gate. They remain visible in the denominator with their full",
-    "measured reasons; neither is claimed as killed."
+    "Only the `permission-denied` gap remains in `unkillable`: this static single-owner harness has",
+    "no end-to-end producer for that refusal. Cell I covers the deadline's real-path reachability;",
+    "cell K covers its timer liveness, so the deadline entry remains in the executable set only.",
+    "Issue #634 retains the historical cell-I survivor measurements."
   ],
   "mutations": [
     {
@@ -224,11 +222,6 @@
       "name": "a manager's `permission-denied` is classified as worth retrying",
       "file": "implementations/cli/src/commands/agents.ts",
       "why": "A manager that has said no does not change its mind, so reading its refusal as transient turns one refusal into an unbounded retry loop against it. This is the mutation aimed at the hand-built cell, and the reason is in `why`: nothing in this harness makes a static single-owner mesh answer `permission-denied`. Its sibling, mutation 4, is what shows the same function is reached from the real binary."
-    },
-    {
-      "name": "the link deadline is unref'd again, so the timer cannot hold the process open while a dead socket is waited on",
-      "file": "implementations/cli/src/commands/agents.ts",
-      "why": "A wait bounded by an unref'd timer is not bounded. With something else holding the event loop open, which is true of every severed-link cell, the deadline fires and the bound looks real. On a HELD link the socket is idle, so an unref'd timer lets node empty its loop and abort the command on a pending await: exit 13, no message, the session dropped silently. Aimed at cell I, which WAS the only state where nothing else keeps the process alive. SURVIVES AS OF THE STDIN-OWNERSHIP CHANGE, and this note records that rather than the set quietly shrinking. Measured on both trees with the same find, replace, command and registered assertion: KILLED at origin/main 6512ac9b, 71 marks of a 73 baseline; SURVIVED here on a full 73, with another mutation in this same file killed in that run as the positive control, so the suite provably reaches the file. The mask is one line: `if (reconnect) ownStdin();` is the first statement of the session hand-back, so the stream is RESUMED across the very flush this cell bounds, and a resumed stream is a ref'd handle. Isolated as one variable: with the deadline unref'd AND that single line deleted, the cell reddens again at exit code 13 with the unsettled-top-level-await warning. Two repair windows were built and measured and both rejected rather than shipped. A one-shot attach, where `--no-reconnect` never calls ownStdin: its cell baselined green at the predicted count and then PASSED under the mutation, and it skips the abandoned release, though the hand-back flush does run in its window, so its failure is not fully explained and stays an open observation. A piped attach, where the population gate installs no reader while reconnect stays true: the probe exited 0 in BOTH arms while reaching the right window, its transcript carrying the held-session line, because the pipe's own stdio handle holds the loop. So every population this harness can build now has something holding the loop across that wait. Kept registered rather than removed or re-aimed on a guess, so a run reports a survivor instead of a smaller set; #634 carries the two instrument shapes that would observe the ref rather than its consequence."
     }
   ]
 }
