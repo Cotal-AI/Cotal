@@ -432,7 +432,7 @@ reason without spending the per-peer probing budget or being masked by a peer's 
 principal's `unpinned` or `pinned` window is full, the public face sheds manager selection for that
 class (refusing requests of that class, including ones that would have succeeded, while leaving the
 other class open) and returns `429` with that class's remedy (`--on` / `--manager-instance` /
-`cotal supervise` for `unpinned`; checking that the pinned manager instance is live and registered
+`cotal manager start` for `unpinned`; checking that the pinned manager instance is live and registered
 to the caller for `pinned`) until the window drains. Those principal-class windows share one bounded
 1024-key LRU of the same kind as the peer buckets: because one principal owns both its `pinned` and
 `unpinned` class keys, rotating 512 other verified principals (1024 keys, where each principal
