@@ -306,7 +306,7 @@
     {
       "name": "N1 the core sequence confirms on any screen after the Enter",
       "file": "packages/core/src/startup-confirm.ts",
-      "find": "      if (!lines.some((line, i) => (line + (lines[i + 1] ?? \"\")).includes(this.#notice!))) return undefined;\n",
+      "find": "      if (!lines.map((line) => line.replace(EDGE_MARKS, \"\")).join(\"\").includes(this.#notice!)) return undefined;\n",
       "replace": "",
       "expectRed": "core: a once launch's gate gets one Enter, and only the notice on a later screen confirms it",
       "cell": "core: a once launch's gate gets one Enter, and only the notice on a later screen confirms it",
@@ -317,7 +317,7 @@
     {
       "name": "N2 the seat sequence confirms on any screen after the Enter",
       "file": "packages/seat/src/startup-confirm.ts",
-      "find": "      if (!lines.some((line, i) => (line + (lines[i + 1] ?? \"\")).includes(this.#notice!))) return undefined;\n",
+      "find": "      if (!lines.map((line) => line.replace(EDGE_MARKS, \"\")).join(\"\").includes(this.#notice!)) return undefined;\n",
       "replace": "",
       "expectRed": "seat: a once launch's gate gets one Enter, and only the notice on a later screen confirms it",
       "cell": "seat: a once launch's gate gets one Enter, and only the notice on a later screen confirms it",
@@ -381,23 +381,45 @@
       "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code build"
     },
     {
-      "name": "N8 the core sequence misses a notice its pane wrapped",
+      "name": "N8 the core sequence reads a wrapped notice across two lines at most",
       "file": "packages/core/src/startup-confirm.ts",
-      "find": "(line + (lines[i + 1] ?? \"\")).includes(this.#notice!)",
-      "replace": "line.includes(this.#notice!)",
-      "expectRed": "core: a notice its pane wrapped onto two lines still confirms",
-      "cell": "core: a notice its pane wrapped onto two lines still confirms",
+      "find": "lines.map((line) => line.replace(EDGE_MARKS, \"\")).join(\"\").includes(this.#notice!)",
+      "replace": "lines.some((line, i) => (line + (lines[i + 1] ?? \"\")).includes(this.#notice!))",
+      "expectRed": "core: a notice its pane wrapped confirms at every width from 20 to 120, however many lines it takes",
+      "cell": "core: a notice its pane wrapped confirms at every width from 20 to 120, however many lines it takes",
       "command": "pnpm --filter @cotal-ai/core --filter @cotal-ai/seat --filter @cotal-ai/connector-claude-code build && pnpm exec tsx implementations/manager/smoke/claude-workspace-trust.smoke.ts",
       "completionMarker": "CLAUDE WORKSPACE TRUST CELLS COMPLETE",
       "afterRestore": "pnpm --filter @cotal-ai/core build"
     },
     {
-      "name": "N9 the seat sequence misses a notice its pane wrapped",
+      "name": "N10 the core sequence reads the bar beside each banner line as part of the notice",
+      "file": "packages/core/src/startup-confirm.ts",
+      "find": "lines.map((line) => line.replace(EDGE_MARKS, \"\")).join(\"\")",
+      "replace": "lines.join(\"\")",
+      "expectRed": "core: a notice its pane wrapped confirms at every width from 20 to 120, however many lines it takes",
+      "cell": "core: a notice its pane wrapped confirms at every width from 20 to 120, however many lines it takes",
+      "command": "pnpm --filter @cotal-ai/core --filter @cotal-ai/seat --filter @cotal-ai/connector-claude-code build && pnpm exec tsx implementations/manager/smoke/claude-workspace-trust.smoke.ts",
+      "completionMarker": "CLAUDE WORKSPACE TRUST CELLS COMPLETE",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "N9 the seat sequence reads a wrapped notice across two lines at most",
       "file": "packages/seat/src/startup-confirm.ts",
-      "find": "(line + (lines[i + 1] ?? \"\")).includes(this.#notice!)",
-      "replace": "line.includes(this.#notice!)",
-      "expectRed": "seat: a notice its pane wrapped onto two lines still confirms",
-      "cell": "seat: a notice its pane wrapped onto two lines still confirms",
+      "find": "lines.map((line) => line.replace(EDGE_MARKS, \"\")).join(\"\").includes(this.#notice!)",
+      "replace": "lines.some((line, i) => (line + (lines[i + 1] ?? \"\")).includes(this.#notice!))",
+      "expectRed": "seat: a notice its pane wrapped confirms at every width from 20 to 120, however many lines it takes",
+      "cell": "seat: a notice its pane wrapped confirms at every width from 20 to 120, however many lines it takes",
+      "command": "pnpm --filter @cotal-ai/core --filter @cotal-ai/seat --filter @cotal-ai/connector-claude-code build && pnpm exec tsx implementations/manager/smoke/claude-workspace-trust.smoke.ts",
+      "completionMarker": "CLAUDE WORKSPACE TRUST CELLS COMPLETE",
+      "afterRestore": "pnpm --filter @cotal-ai/seat build"
+    },
+    {
+      "name": "N11 the seat sequence reads the bar beside each banner line as part of the notice",
+      "file": "packages/seat/src/startup-confirm.ts",
+      "find": "lines.map((line) => line.replace(EDGE_MARKS, \"\")).join(\"\")",
+      "replace": "lines.join(\"\")",
+      "expectRed": "seat: a notice its pane wrapped confirms at every width from 20 to 120, however many lines it takes",
+      "cell": "seat: a notice its pane wrapped confirms at every width from 20 to 120, however many lines it takes",
       "command": "pnpm --filter @cotal-ai/core --filter @cotal-ai/seat --filter @cotal-ai/connector-claude-code build && pnpm exec tsx implementations/manager/smoke/claude-workspace-trust.smoke.ts",
       "completionMarker": "CLAUDE WORKSPACE TRUST CELLS COMPLETE",
       "afterRestore": "pnpm --filter @cotal-ai/seat build"

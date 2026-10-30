@@ -86,9 +86,10 @@ const BLOCKER_SCREENS: [string, string, string][] = [
   ["the Bypass Permissions warning", CLAUDE_BYPASS, "WARNING: Claude Code running in Bypass Permissions mode"],
 ];
 
-/** The pty runtime's screen mirror: @xterm/headless at that runtime's default size, read as it reads. */
+/** The pty runtime's screen mirror: @xterm/headless at that runtime's default size or a narrower pane, read as it reads. */
 class Screen {
-  readonly #term = new Headless.Terminal({ cols: 120, rows: 32, scrollback: 1000, allowProposedApi: true });
+  readonly #term: InstanceType<typeof Headless.Terminal>;
+  constructor(cols = 120) { this.#term = new Headless.Terminal({ cols, rows: 32, scrollback: 1000, allowProposedApi: true }); }
   write(data: string): Promise<void> { return new Promise((resolve) => this.#term.write(data, resolve)); }
   read(): string {
     const buffer = this.#term.buffer.active;
@@ -383,17 +384,32 @@ async function noticeCells(final: string, replies: readonly StartupReply[], read
       assert.deepEqual(sequence.observe(screen.read()), { done: true });
       assert.equal(sequence.outcome, "confirmed");
     });
-    await cell(`${impl}: a notice its pane wrapped onto two lines still confirms`, async () => {
-      const screen = new Screen();
-      const sequence = new Sequence(final, replies, ready, blockers, notice);
-      await screen.write(CLEAR + CLAUDE_CHANNELS);
-      assert.deepEqual(sequence.observe(screen.read()), { key: "Enter", done: false });
-      // Claude's banner as a narrow pane wraps it, between two words of the notice.
-      const words = `Channels (experimental) ${notice} · restart without --dangerously-load-development-channels to stop`.split(" ");
-      const cut = words.indexOf("directly");
-      await screen.write(CLEAR + `  ${words.slice(0, cut).join(" ")}\r\n  ${words.slice(cut).join(" ")}`);
-      assert.deepEqual(sequence.observe(screen.read()), { done: true });
-      assert.equal(sequence.outcome, "confirmed");
+    await cell(`${impl}: a notice its pane wrapped confirms at every width from 20 to 120, however many lines it takes`, async () => {
+      // Claude's banner as a narrow pane wraps it: by word as Claude 2.1.314 lays it out, with its bar
+      // beside each line, and by the terminal as one line wider than the pane.
+      const banner = `Channels (experimental) ${notice} · restart without --dangerously-load-development-channels to stop`;
+      const byWord = (width: number): string => {
+        const rows: string[] = [];
+        for (const word of banner.split(" ")) {
+          const last = rows.length - 1;
+          if (last >= 0 && rows[last]!.length + 1 + word.length <= width) rows[last] += ` ${word}`;
+          else rows.push(word);
+        }
+        return rows.map((row) => `▎ ${row}`).join("\r\n");
+      };
+      const missed: string[] = [];
+      for (let width = 20; width <= 120; width++) {
+        for (const [wrap, text] of [["word", byWord(width - 2)], ["terminal", `▎ ${banner}`]] as const) {
+          const gate = new Screen();
+          const sequence = new Sequence(final, replies, ready, blockers, notice);
+          await gate.write(CLEAR + CLAUDE_CHANNELS);
+          assert.deepEqual(sequence.observe(gate.read()), { key: "Enter", done: false });
+          const pane = new Screen(width);
+          await pane.write(CLEAR + text);
+          if (sequence.observe(pane.read())?.done !== true || sequence.outcome !== "confirmed") missed.push(`${wrap} ${width}`);
+        }
+      }
+      assert.deepEqual(missed, [], "every wrapped banner confirms");
     });
     await cell(`${impl}: malformed notices are refused`, () => {
       assert.throws(() => new Sequence(final, replies, ready, blockers, ""));

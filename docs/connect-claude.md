@@ -277,7 +277,8 @@ claude --mcp-config '{"mcpServers":{"cotal":{…}}}' \
   two screen reads in a row. That seat gets mesh messages through its hooks only, so a message does
   not wake it while it is idle. For a `once` seat the answered prompt is not enough: the watch then
   reads for up to 15 more seconds for Claude's notice that `server:cotal` messages reach the
-  session, and the seat is served its task only after it sees that notice. A seat that opened its
+  session, however many lines a narrow pane wraps it onto, and the seat is served its task only
+  after it sees that notice. A seat that opened its
   input screen, or answered the prompt without the notice, fails its spawn and is stopped. The PTY runtimes read the child's screen, and the tmux, cmux, Orca
   and Herdr runtimes read the pane's screen. If neither the prompt nor the input screen appears
   within 15 seconds, the seat ends with a bounded error naming the unmatched prompt instead of

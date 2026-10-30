@@ -4,6 +4,8 @@ import { CONFIRM_TIMEOUT_MS } from "./protocol.js";
 const CSI = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 const OSC = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
 const ESC = /\x1b(?:.|$)/g;
+/** Box and bar marks at a line's edges, such as the bar Claude draws beside each line of its banner. */
+const EDGE_MARKS = /^[\u2500-\u259f]+|[\u2500-\u259f]+$/g;
 
 /** Normalize terminal text according to LaunchSpec.confirm: ignore ANSI control sequences and whitespace.
  *  Repeated in core's startup-confirm, which the runtimes that read their panes use, because this
@@ -116,7 +118,7 @@ export class StartupConfirmSequence {
     this.#blocked = this.#blockers.find((blocker) => matches(blocker.prompt))?.reason;
     if (this.#blocked !== undefined) { this.#seen = undefined; this.#readySeen = false; return undefined; }
     if (this.#awaitingNotice) {
-      if (!lines.some((line, i) => (line + (lines[i + 1] ?? "")).includes(this.#notice!))) return undefined;
+      if (!lines.map((line) => line.replace(EDGE_MARKS, "")).join("").includes(this.#notice!)) return undefined;
       this.#awaitingNotice = false;
       this.#done = true;
       this.#outcome = "confirmed";

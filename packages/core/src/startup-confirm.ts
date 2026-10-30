@@ -3,6 +3,8 @@ import type { LaunchSpec } from "./connector.js";
 const CSI = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 const OSC = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
 const ESC = /\x1b(?:.|$)/g;
+/** Box and bar marks at a line's edges, such as the bar Claude draws beside each line of its banner. */
+const EDGE_MARKS = /^[\u2500-\u259f]+|[\u2500-\u259f]+$/g;
 const POLL_MS = 250;
 const CONFIRM_TIMEOUT_MS = 15_000;
 
@@ -104,10 +106,10 @@ export class StartupConfirmSequence {
     this.#blocked = this.#blockers.find((blocker) => matches(blocker.prompt))?.reason;
     if (this.#blocked !== undefined) { this.#seen = undefined; this.#readySeen = false; return undefined; }
     // After the final prompt's Enter only the notice ends the watch, read on a later snapshot than
-    // the one that showed the prompt. A narrow pane wraps it, and with whitespace gone two adjacent
-    // lines read as one.
+    // the one that showed the prompt. A narrow pane wraps it over as many lines as it needs, and with
+    // whitespace and edge marks gone consecutive lines read as one.
     if (this.#awaitingNotice) {
-      if (!lines.some((line, i) => (line + (lines[i + 1] ?? "")).includes(this.#notice!))) return undefined;
+      if (!lines.map((line) => line.replace(EDGE_MARKS, "")).join("").includes(this.#notice!)) return undefined;
       this.#awaitingNotice = false;
       this.#done = true;
       this.#outcome = "confirmed";
