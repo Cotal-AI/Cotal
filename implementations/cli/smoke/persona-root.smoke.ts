@@ -26,7 +26,7 @@
  * which is itself part of the claim. Run: pnpm smoke:persona-root
  */
 import { strict as assert } from "node:assert";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { makeScratch } from "../../../bin/smoke/_scratch.js";
 
@@ -240,6 +240,35 @@ try {
   check("--space beta: personas list prints beta's catalog", betaListed.join(",") === "beta-only", betaListed);
   check("--space: two spaces give two DIFFERENT answers from one cwd", alphaListed.join(",") !== betaListed.join(","));
   check("--space: neither answer is the cwd's catalog", !alphaListed.concat(betaListed).some((n) => n.startsWith("cwd-")), { alphaListed, betaListed });
+
+  // A catalog folder this account cannot read is refused with a next step that names no chmod when
+  // the folder withholding it is above the catalog or owned by another account: a chmod there would
+  // change a folder the operator may not own. Root reads through any mode, so only an ordinary user.
+  if (process.platform !== "win32" && process.getuid?.() !== 0) {
+    const refusal = () => captureList({ space: "alpha" }).then(() => undefined, (error: unknown) => (isCommandFailure(error) ? error : undefined));
+    const dotCotal = join(realpathSync(ALPHA), ".cotal"), agents = join(dotCotal, "agents");
+    const mode = statSync(dotCotal).mode & 0o7777;
+    chmodSync(dotCotal, 0o000);
+    let above: Awaited<ReturnType<typeof refusal>>;
+    try { above = await refusal(); } finally { chmodSync(dotCotal, mode); }
+    check("unreadable catalog: a folder above it that this account cannot enter is named, with no chmod",
+      above?.code === "PERMISSION_DENIED" && above.message === `cannot read persona catalog: ${agents}` &&
+        above.remedy === `this account cannot enter ${dotCotal}, which holds the catalog; get access to that folder from its owner, then run the command again`, above && { message: above.message, remedy: above.remedy });
+    // A folder another account owns and this account cannot list, such as /root, when the host has one.
+    const foreign = ["/root", "/var/root"].find((dir) => {
+      try { if (statSync(dir).uid === process.getuid!()) return false; readdirSync(dir); return false; }
+      catch (error) { return (error as NodeJS.ErrnoException).code === "EACCES"; }
+    });
+    if (foreign) {
+      renameSync(agents, `${agents}.real`);
+      symlinkSync(foreign, agents);
+      let owned: Awaited<ReturnType<typeof refusal>>;
+      try { owned = await refusal(); } finally { unlinkSync(agents); renameSync(`${agents}.real`, agents); }
+      check(`unreadable catalog: a folder another account owns (${foreign}) says to ask its owner, with no chmod`,
+        owned?.code === "PERMISSION_DENIED" && owned.message === `cannot read persona catalog: ${agents}` &&
+          owned.remedy === "another account owns this folder; ask its owner to let this account read it", owned && { message: owned.message, remedy: owned.remedy });
+    } else console.log("  - no folder another account owns and this account cannot list; that cell did not run");
+  }
 
   // 3. COMPLETERS. argv EXCLUDES the command name (same convention as spawn-from-anywhere's
   // `spawnComplete([""])`); the trailing "" is the word being completed.
