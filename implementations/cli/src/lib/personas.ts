@@ -1,7 +1,8 @@
 import { lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { loadAgentFile, personaDir, utf16Problem, type AgentDef } from "@cotal-ai/core";
-import { CommandFailure } from "@cotal-ai/workspace";
+import { codeSpan, CommandFailure, unsearchableFolder } from "@cotal-ai/workspace";
+import { shellWord } from "./endpoint-errors.js";
 
 /**
  * The persona catalog: the local `.cotal/agents/*.md` files an operator manages with
@@ -59,6 +60,22 @@ export function catalogFolderProblem(dir: string): CommandFailure | undefined {
   return new CommandFailure("refused", "CONFLICT", `${dir} is ${what}, so it holds no personas`, {
     remedy: `move ${dir} out of the way; \`cotal persona create <name>\` then makes the folder`,
   });
+}
+
+/** The refusal for a catalog folder `dir` that {@link readPersonas} could not read. Its next step
+ *  names a chmod only for a folder this account owns whose owner bits lack read or search. A folder
+ *  above it that this account cannot enter, or a folder another account owns, is named without one,
+ *  and any other error is refused without a step. */
+export function catalogReadRefusal(dir: string, error: unknown): CommandFailure {
+  const refusal = (remedy?: string) => new CommandFailure("refused", "PERMISSION_DENIED", `cannot read persona catalog: ${dir}`, remedy ? { remedy } : {});
+  const code = (error as NodeJS.ErrnoException).code;
+  if ((code !== "EACCES" && code !== "EPERM") || process.getuid === undefined) return refusal();
+  const above = unsearchableFolder(dir);
+  if (above) return refusal(`this account cannot enter ${above}, which holds the catalog; get access to that folder from its owner, then run the command again`);
+  let owner: number, mode: number;
+  try { ({ uid: owner, mode } = statSync(dir)); } catch { return refusal(); }
+  if (owner !== process.getuid()) return refusal("another account owns this folder; ask its owner to let this account read it");
+  return (mode & 0o500) === 0o500 ? refusal() : refusal(`make it readable by you with ${codeSpan(`chmod u+rx ${shellWord(dir)}`)}`);
 }
 
 /** The file `path` links to when it is a symbolic link: its resolved path, or the link's own text

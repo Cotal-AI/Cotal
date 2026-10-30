@@ -5040,7 +5040,11 @@ refuse it with `PERMISSION_DENIED`, and the list marks it unreadable and names i
 List, show and mutation receipts support one-document `--json` and line-oriented `--plain`.
 Show explicitly returns the full definition and source. List does not return the body or launch
 options. A malformed entry produces a partial inventory (exit 4); an unreadable catalog refuses
-rather than reporting it empty. Remove asks with cancellation as the default in a terminal.
+with `PERMISSION_DENIED` (exit 2) rather than reporting it empty. Its next step is
+`chmod u+rx <folder>` only for a catalog folder you own whose mode denies you read or search. A
+folder above the catalog that you cannot enter is named instead, and a catalog folder another
+account owns says to ask its owner. Other read errors get no next step, and the CLI never changes a
+mode itself. Remove asks with cancellation as the default in a terminal.
 Removing the seeded `default` persona says so in the question and the receipt, since a bare
 `cotal spawn` launches it, and names what writes a fresh copy: a local `cotal up` in its root,
 `cotal space create` or `cotal setup`.
@@ -5050,11 +5054,12 @@ The legacy `personas` parser remains available during migration: `list [-v] [--r
 `show`, `edit`, `new` and `rm --force`. Its `new` requires `--subscribe`, reads `--from -` from
 stdin, and overwrites an existing persona only with `--force`. Its local writes share the same
 draft validation and commit fence. Its `list` refuses a catalog folder it cannot read with
-`PERMISSION_DENIED` (exit 2), as `persona` does, rather than reporting it empty, and still lists a
-persona file that does not parse as unparseable. It escapes control characters in the names,
-fields and bodies it prints, as `persona show` does, and shows each persona's description or first
-prompt line whole, wrapped to the terminal's width. Its `show` does the same on a terminal, under
-the file's path, and writes only the file, byte for byte, when its output is piped or redirected, so
+`PERMISSION_DENIED` (exit 2), naming the space and giving the next step `persona` gives, rather
+than reporting it empty, and still lists a persona file that does not parse as unparseable. It
+escapes control characters in the names, fields and bodies it prints, as `persona show` does, and
+shows each persona's description or first prompt line whole, wrapped to the terminal's width. Its
+`show` does the same on a terminal, under the file's path, and writes only the file, byte for byte,
+when its output is piped or redirected, so
 `personas show <name> > <file>` copies it. It refuses a missing persona, an invalid definition and a
 name no persona can have with the codes `persona show` uses. Only its explicit `--running` overlay
 connects to the mesh.
