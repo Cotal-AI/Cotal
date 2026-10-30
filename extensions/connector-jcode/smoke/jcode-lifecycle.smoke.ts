@@ -279,6 +279,25 @@ try {
   check("graceful stop tears down the private daemon (#839)", !alive(healthyDaemon.pid), { daemon: healthyDaemon.pid });
   check("graceful stop tears down the daemon's MCP child (#839)", !alive(healthyDaemon.mcp), { mcp: healthyDaemon.mcp });
 
+  const hungup = startHost("lifehup", {});
+  child = hungup.child;
+  const hungupDaemon = (await waitFor("hangup private daemon", () =>
+    entriesOf(hungup.log).find((entry) => entry.ev === "daemon"),
+  )) as unknown as { pid: number; mcp: number };
+  leaked.push(hungupDaemon.pid, hungupDaemon.mcp);
+  await waitFor("hangup readiness turn", () =>
+    entriesOf(hungup.log).find(
+      (entry) => entry.ev === "request" && (entry.frame as { req?: string; content?: string }).req === "send_message"
+        && String((entry.frame as { content?: string }).content).includes("cotal_orientation"),
+    ),
+  );
+  check("hangup control starts with a live private daemon and MCP child", alive(hungupDaemon.pid) && alive(hungupDaemon.mcp), hungupDaemon);
+  hungup.child.kill("SIGHUP");
+  await Promise.race([once(hungup.child, "exit"), sleep(30_000)]);
+  check("terminal hangup exits cleanly", hungup.child.exitCode === 0, { code: hungup.child.exitCode, signal: hungup.child.signalCode });
+  check("terminal hangup retains its initiating signal diagnostic", hungup.stderr().trim().endsWith("[cotal-jcode] received SIGHUP; shutting down; signal sender unavailable from Node.js"), hungup.stderr());
+  check("terminal hangup tears down the private daemon and MCP child", !alive(hungupDaemon.pid) && !alive(hungupDaemon.mcp), hungupDaemon);
+
   console.log(`\nJCODE LIFECYCLE SMOKE PASSED (${pass} checks)`);
 } finally {
   if (child && child.exitCode === null) child.kill("SIGKILL");
