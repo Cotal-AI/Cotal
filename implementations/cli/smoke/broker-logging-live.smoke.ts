@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import { createConnection } from "node:net";
 import { chmodSync, closeSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { freePort, recordSmokeSandbox, assertSmokeSandboxDown } from "@cotal-ai/smoke-kit";
+import { freePort, recordSmokeSandbox, assertSmokeSandboxDown, emitSentinel } from "@cotal-ai/smoke-kit";
 import { assertScratchHeld, makeScratch } from "../../../bin/smoke/_scratch.js";
 import { readStackJournal } from "../src/lib/stack-journal.js";
 import { openBrokerLog } from "../src/commands/up.js";
@@ -117,3 +117,4 @@ try {
   process.umask(priorUmask);
   rmSync(scratch, { recursive: true, force: true });
 }
+emitSentinel({ passed: checks, failed: 0 });
