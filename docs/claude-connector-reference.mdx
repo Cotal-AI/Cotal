@@ -1,0 +1,602 @@
+---
+title: "Claude connector reference"
+description: "Binding, delivery, presence, event recording, and hosting contracts for the Claude Code connector."
+kind: "Reference"
+audience: "integrators"
+---
+
+This page describes the Claude-specific adapter and its shared mesh runtime.
+For setup and launch procedures, see [Connect Claude](connect-claude.mdx).
+The [wire specification](../SPEC.md) defines the protocol.
+
+## Binding [#binding]
+
+[`@cotal-ai/connector-claude-code`](../extensions/connector-claude-code) launches the real `claude` executable.
+[`@cotal-ai/connector-core`](../extensions/connector-core) owns the mesh agent, `cotal_*` tools, and hook relay.
+
+| Integration | Mechanism |
+| --- | --- |
+| Ambient outbound activity | Lifecycle hooks relay presence and activity to the local connector. |
+| Deliberate outbound traffic | MCP tools include `cotal_send`, `cotal_dm`, `cotal_anycast`, and `cotal_feedback`. |
+| Inbound pull | `cotal_inbox` reads queued messages through the same MCP server. |
+| Inbound push | Channel wake starts a turn. Hooks inject pending messages. |
+
+A managed launch supplies Cotal's MCP configuration, `--plugin-dir`, and
+`--dangerously-load-development-channels server:cotal`.
+The plugin directory loads the lifecycle hooks. The channel flag alone does not load them.
+The plugin's duplicate MCP declaration is deduplicated by Claude against the explicit server.
+Inbound channel envelopes carry routing metadata, such as `from` and `kind`, as attributes.
+
+The launch environment carries `COTAL_SPACE`, `COTAL_NAME`, optional `COTAL_ROLE`, and `COTAL_CHANNEL=1`.
+Identity may also come from `COTAL_LINK` or `COTAL_AGENT_FILE`.
+Without an identity, the installed plugin serves connection tools and opens no broker connection until `cotal_connect` runs.
+
+### Launch permissions
+
+The connector adds `--permission-mode bypassPermissions` unless launch options include `permission-mode` or `dangerously-skip-permissions`.
+The default applies to both managed and direct foreground launches.
+Claude's root restriction and managed policy still apply.
+Native options use `--opt key=value`. An empty value renders a bare `--key` flag.
+The `spawn` capability grants host-launch authority. The connector has no native-option allowlist.
+
+The connector pre-allows `WebFetch` for `github.com` and `raw.githubusercontent.com` so an installed persona can fetch public source documentation.
+That allowance does not replace the selected permission mode.
+
+### Authentication
+
+An ordinary local session uses Claude's saved login, including macOS Keychain or its configuration home.
+The child environment forwards the documented Claude authentication and cloud-provider variables.
+It excludes host-session markers `CLAUDE_CODE_CHILD_SESSION` and `CLAUDECODE`, so a nested seat still saves a transcript.
+The child receives an allowlisted environment rather than the entire host environment.
+
+### Private launch files
+
+Persona text reaches Claude through `--append-system-prompt-file <path>`.
+The process arguments contain the path, not the persona body.
+Broker credentials and the control token live in private launch material referenced by a path.
+The material reference remains in Claude's environment because its later hook and MCP processes need it.
+A child shell can inherit that path. This is protection from other OS users, not from processes running as the same user.
+
+On POSIX, private files use mode `0600` inside mode `0700` directories.
+Windows uses owner-only ACL hardening.
+The launcher removes artifacts after proving the Claude process exited.
+A separate watcher removes them after Claude exits if the launcher dies first.
+
+### MCP configuration [#mcp-configuration]
+
+Ordinary sessions retain Claude's native user, local, project, plugin, and connected-account MCP sources.
+`CLAUDE_CONFIG_DIR` remains in effect.
+Claude controls discovery, precedence, approval, disabled servers, and managed policy.
+Cotal adds its local server after declared overrides, so an override cannot replace the local Cotal entry.
+
+`connectors.claude.mcpServers` contains explicit overrides.
+First-run setup seeds eligible user-scope definitions without replacing an existing list.
+The list is not a copy kept in sync with native configuration.
+An empty sharing map keeps native discovery enabled.
+
+An explicit `--share-tools` selection loads only the selected declared servers plus Cotal, using `--strict-mcp-config`.
+`--share-tools none` loads Cotal alone.
+Carried sessions are also strict and retain their private Claude home.
+Neither path copies connected-account credentials or native profiles to another host.
+
+Environment names referenced by declared shared servers and selected user-owned MCP configuration can be forwarded.
+Repository and plugin references cannot add ambient secret names.
+An explicit shared declaration or `spawn.env` policy can authorize those names.
+Native files retain their configured values.
+Explicit native settings for connected-account opt-out and tool search retain their values.
+
+With declared shared servers, Cotal writes a private MCP configuration file.
+Secret values remain environment references such as `${VAR}`, which Claude expands from the child environment.
+Without shared servers, Cotal passes its own non-secret server definition inline.
+The file remains until child exit because Claude can read it again during MCP reconnect.
+Each enabled MCP server may create a process per seat.
+
+### Process cost
+
+Both managed launches and installed plugin sessions run the MCP server with
+`--optimize-for-size --max-semi-space-size=1`.
+WebAssembly remains enabled because Node's built-in `fetch` needs it.
+The per-hook process imports the relay through `@cotal-ai/connector-core/relay` and uses small core subpaths.
+It does not load the core package root, NATS client, YAML, or Zod.
+
+### Plugin installation
+
+The `cotal` plugin installs at user scope from the `cotal-mesh` marketplace.
+Setup migrates earlier project-local installations to that scope.
+An uneditable project configuration leaves setup with an explicit failure and a project-specific uninstall remedy.
+Sessions Cotal launches load the package copy with `--plugin-dir`, replacing the installed copy for that session.
+
+The repository marketplace points at the committed `claude-plugin/` tree.
+Release generation includes built bundles, skills, and the release version, so a pinned repository install needs no build.
+Installed CLI setup materializes the same marketplace under `~/.cotal/claude-plugin`.
+Plugin directories are rebuilt and atomically replaced rather than merged.
+`cotal status` checks the resolved payload and its recorded version.
+Updates preserve disabled installations. Existing sessions keep loaded code until reload or restart.
+
+The separate user-scope `cotal-skills` plugin contains Agent Skills and no connector code or core dependency.
+Its version tracks the CLI release.
+`cotal update` refreshes an existing installation without reinstalling a removed one or enabling a disabled one.
+Setup and `cotal setup --skills` also install missing skills.
+The cross-vendor skill installation under `~/.agents/skills` updates only Cotal-owned skills, backs up edited files to `SKILL.md.bak`, and removes retired Cotal skills.
+The website's discovery index is separate from these installed skill files.
+
+## Startup confirmation [#startup-confirmation]
+
+Managed runtimes inspect normalized terminal text before sending startup input.
+The development-channel dialog is identified by its title and confirmed once.
+If channels are unavailable and Claude opens its input screen instead, two consecutive reads of a recognized footer end the watcher without input.
+
+Workspace trust has two supported native layouts.
+When Yes is first and selected, the runtime confirms it.
+When No is selected first, the runtime moves to Yes and confirms only after observing Yes selected.
+It never confirms No or guesses a response to another layout.
+The watcher stops after channel confirmation or a recognized input screen.
+Claude retains its native trust rules for repositories and linked worktrees.
+Cotal does not rewrite the manager's trust configuration.
+Workspace trust enables repository hooks and settings. The separately selected launch permission mode still applies.
+
+An unmatched startup screen fails after 15 seconds.
+PTY runtimes write the error to the seat output and stop the child, escalating after three seconds if graceful termination fails.
+Other runtimes write the error to the manager log.
+PTY runtimes read child screens. tmux, cmux, Orca, and Herdr runtimes read pane screens.
+Direct foreground launches leave the trust dialog in the operator's terminal.
+
+## Inbox custody [#inbox-custody]
+
+A consuming connector holds a crash-safe local claim for its broker target, space, principal, and lifecycle.
+A second patched session on the same OS user account refuses before consuming the same inbox.
+Reconnect retains the claim. Hooks and non-consuming helpers do not claim it.
+The authenticated control listener binds before the broker connection and never removes an existing socket path.
+
+This protection is cooperative and local to one host.
+Other hosts, broker URL aliases, and older clients are not fenced.
+An uncertain shutdown retains custody until the consuming process exits or its connections are proved closed.
+
+## Personal sessions [#personal-sessions]
+
+A session opened outside Cotal exposes `cotal_connect`, `cotal_wait`, `cotal_disconnect`, and routed mesh tools.
+It joins only when the conversation calls `cotal_connect` with a name.
+The local server provisions an application identity through the CLI path recorded by setup in `dist/cli.json`.
+It does not require `cotal` on `PATH`.
+A plugin not installed through setup has no recorded path and reports the setup remedy.
+
+Mesh selection follows the mesh a bare spawn from that directory would select.
+Each connection gets its own identity with the mesh default persona's role and channels.
+A live name collision uses suffixes such as `_2` and `_3`.
+Disconnect, session end, or a signal retires the identity.
+A later provision also retires identities whose server was killed.
+
+### Native wake
+
+In supported local Code hosts, including Desktop's Code tab, a native hooks module runs a wake reader beside the MCP server.
+Each server writes connection IDs to its own socket in a private directory.
+The notification names a `connection_id` and asks the model to read `cotal_inbox`.
+It uses plugin-sender attribution rather than impersonating the person.
+The model receives only the fixed wake notification until it reads the inbox.
+During work, the module inserts the notification at the next main-conversation tool or model-request boundary.
+It does not queue an extra turn after the current work ends.
+The expandable transcript indicator can show the unread count and a non-consuming message preview.
+The preview has at most eight rows of 240 Unicode code points each, with control characters neutralized.
+Preview content is UI data and does not replace or consume inbox messages.
+It does not change the fixed model notification.
+
+Wake occurs once until the connection reads its messages and is suppressed while `cotal_wait` holds it.
+A replacement reader reoffers unread work.
+A refused wake remains pending without retrying for every new message.
+Claude's Stop and organization controls still apply.
+`cotal_connect` reports reader attachment, which does not prove that the host admitted a turn.
+Without an available native module, `cotal_wait` remains the listening path.
+
+### Desktop chat
+
+On macOS and Windows with Desktop installed, setup adds a `cotal` entry to `claude_desktop_config.json` while preserving other entries.
+The entry uses `--desktop`, the recorded absolute Node path, and the plugin under `~/.cotal/claude-plugin`.
+Installed MCP and command hooks use the recorded Node executable rather than depending on Desktop's `PATH`.
+Setup and update keep the entry current. Invalid JSON is refused without replacement.
+Linux setup writes no Desktop chat entry.
+
+Desktop chat's mesh is the mesh selected by `cotal use`, or the only running mesh.
+Desktop has no native wake monitor.
+Tool calls can report waiting messages, and `cotal_wait` can wait within an active turn.
+A server cannot start an idle Desktop chat turn.
+
+### Connection guards [#connection-guards]
+
+For sessions Cotal launches, the plugin's `PreToolUse` hook denies `cotal_*` tools from any server except the local Cotal server.
+The decision runs in the hook process even if the control socket is down.
+Sessions opened outside Cotal retain hosted connectors.
+Their local server instructions prefer the local path unless the operator requests the hosted one.
+
+For hosted `cotal_connect` calls, `PostToolUse` records the returned `connection_id` with the Claude session ID under `CLAUDE_PLUGIN_DATA`.
+Disconnect releases it.
+A fork inherits transcript text but has a new session ID, so it must connect again rather than reuse a recorded ID.
+An ordinary resume and its subagents retain the session ID and pass this guard.
+An unrecorded connection ID reaches the hosted connector's own account check.
+These checks require the installed plugin. A hosted-only session has no local ownership hook.
+
+MCP annotations describe effects and do not grant access.
+Orientation, connection status, roster, and channel information are read-only.
+Sends, connections, and joins are additive.
+Inbox reads and waits consume messages. Status changes, channel modes, leave, and disconnect can replace or remove state.
+Hosted connectors can return messages or wait during tool calls, but cannot start an idle turn.
+
+## Message delivery [#message-delivery]
+
+Durable traffic reaches the inbox through JetStream consumers.
+Live channel traffic can use an at-most-once core subscription.
+Durable traffic waits in the stream while a session is busy or offline, subject to retention.
+The [NATS binding](../SPEC.md#8-nats--jetstream-binding) defines transport guarantees.
+
+### Hook acknowledgement
+
+`SessionStart` and `UserPromptSubmit` inject automatic inbox items as `additionalContext`.
+Quiet ambient traffic stays buffered for explicit `cotal_inbox` calls.
+The hook path works independently of Claude channels.
+
+A message is acknowledged only after the hook relay reports a clean stdout write of the reply that carries it.
+The control exchange has a two-second budget. The stdout write has a one-second exit backstop.
+The receipt follows the stdout write callback over the same control socket.
+Formatting the reply or writing it to the control socket does not commit delivery.
+A broken pipe, timeout, killed partial flush, or lost receipt leaves the message unacknowledged for redelivery.
+
+A clean write proves that the OS accepted the bytes, not that Claude read or applied them.
+If a reply arrives but its receipt is lost, the connector can inject it again and marks the possible repeat.
+The path favors at-least-once delivery.
+A throwing hook returns an empty reply and commits no pending batch.
+
+The seat drops malformed `turn-pending` rows, including a row without an integer deadline, and logs the problem once.
+A reply without a `turns` array leaves existing held turns unchanged.
+Peer-controlled bodies, sender labels, roles, services, and channel labels are neutralized before injection.
+The connector owns column-zero framing. Peer attribution cannot introduce line breaks or brackets that forge another frame.
+
+### Channel wake
+
+`notifications/claude/channel` wakes an idle session so the next hook can drain its inbox.
+The nudge never acknowledges messages.
+Directed messages, including DMs, anycast, and mentions, normally nudge immediately.
+Ambient channel traffic waits during a turn and produces one batch wake when the session becomes idle.
+The attention and channel rules below can narrow this behavior.
+
+A rejected push uses bounded backoff while work remains pending.
+When the channel activates, the connector first reoffers a remembered focus mention, otherwise one buffered wake.
+A successfully pushed nudge is not repeated for the same pending message on every redelivery or retry.
+After a hook frame carries the message, or its push fails, a later redelivery can nudge again.
+Live-only traffic has no durable recovery.
+Without channels, an idle session waits for another turn to trigger a hook.
+
+Claude channels are a research preview.
+Cotal uses the custom development-channel flag.
+The original channel integration targets Claude 2.1.80 or later, and permission relay targets 2.1.81 or later.
+Those versions describe the channel feature, not a minimum covering all current connector features.
+Authentication and organization restrictions are listed in [Connect Claude](connect-claude.mdx#enable-channels-for-your-organization).
+The same channel can relay tool-permission requests onto the mesh for approval or denial.
+
+### Attention [#attention]
+
+`cotal_status({ attention })` selects one of three modes, independent of presence.
+
+| Arrival | `open` | `dnd` | `focus` |
+| --- | --- | --- | --- |
+| DM or anycast | Wake and inject. | Wake and inject. | Wake and inject. |
+| Channel mention | Wake and inject. | Wake and inject. | Acknowledge and drop locally. Wake to pull. |
+| Ambient channel message | Wake when idle. Hold during work. | No wake. Inject on the next turn. | Acknowledge and drop locally. Recall through `cotal_inbox`. |
+
+Per-channel overrides have final precedence for their channel.
+`quiet` keeps ambient traffic pull-only but allows mentions to wake and inject.
+Quiet ambient never joins another automatic turn, including a human prompt, DM, or mention.
+`muted` drops channel traffic on receipt, including mentions.
+Channel overrides do not change DMs or anycast.
+Defaults can also come from persona `quiet:` and `muted:` fields.
+
+Attention is advisory, not an authorization boundary.
+An allowed peer can still direct traffic to a `dnd` or `focus` agent.
+Muting does not remove broker authorization.
+Focus reduces automatic injection of untrusted ambient content. DMs and anycast retain their authenticated subject routing.
+`SessionStart` resets attention to `open`, including after a restart.
+The selected attention mode appears in presence.
+
+### Inbox bounds
+
+Each `cotal_inbox` response fits a receivable window.
+The order favors direct messages and role requests, then channel traffic, then replayed history.
+Items beyond the response remain buffered and are reported as remaining.
+An oversized message is delivered in parts once smaller mail is drained.
+It is cleared only after the last part is handed over.
+Overlapping inbox calls run in sequence.
+
+On overflow, the local inbox evicts pull-only traffic first, then other channel traffic.
+It evicts a DM or role request only if the entire buffer contains directed mail.
+It never evicts an item being handed over or carried by a turn.
+Evicted channel items are acknowledged.
+Evicted directed items remain unacknowledged and can redeliver after the acknowledgement wait.
+`cotal deliver pending <name>` counts the agent's pending DM durable, not its role's shared queue.
+
+If the bounded live-versus-durable classification guard fills, ordinary ambient traffic becomes pull-only until restart.
+Muted drops and normal focus recall still take precedence.
+If the separate hard-drop disposition guard fills, channel traffic is dropped for the session's remainder.
+DMs and anycast are unaffected by that guard.
+
+### Focus recall
+
+Focus keeps a bounded exclusion list so recall does not reintroduce quiet or muted traffic.
+If that list fills, the affected channel is skipped and reported incomplete.
+An item with an empty ID cannot be distinguished from an identical copy by ID.
+Focus therefore holds such an item as pull-only rather than dropping it. A mention can still wake the session.
+
+For a settled ID-less copy, the connector reads the stream's last sequence.
+Identical received copies bind in arrival order, latest first, to the latest unbound stream copies no later than their observed boundary.
+Out-of-order reads use the lowest boundary observed for that copy or a later identical copy.
+This excludes identical traffic sent during a later reconnect gap.
+An arriving copy absent from the in-progress read binds nothing on that read.
+Recall rereads up to three times and reports unresolved copies as incomplete rather than assuming they were received.
+Copies proven older than focus or outside retention are forgotten.
+
+Unbound stream copies, including traffic missed during reconnect or evicted by overflow, return to the inbox if space remains.
+A full inbox leaves them in the stream and reports incomplete recall.
+A history failure or replay-disabled channel settles nothing and reports incomplete recall.
+A failed sequence read, or one completed after disconnect, excludes that channel for the rest of the focus period.
+Recall calls run in sequence.
+
+Each identical copy retains its own receive disposition.
+Eviction releases only the evicted copy, so an identical muted copy stays excluded.
+A late identical copy may surface twice because recall cannot prove it is the same delivery.
+A new quiet mention remains automatic.
+Once a recalled item has been partly delivered, it continues to its last part even if an exclusion arrives later.
+
+## Presence mapping [#presence-mapping]
+
+Presence describes coarse turn state. Activity carries the current operation.
+Presence publication is best-effort and cannot block inbox delivery or held-message flushing.
+Presence writes run in order. Shutdown refuses newly admitted writes and queues departure after earlier writes.
+After a three-second wait for a stalled chain, shutdown also closes the endpoint directly.
+
+| Hook | Presence effect |
+| --- | --- |
+| `SessionStart` | `idle` only outside an open turn. Surfaces automatic inbox items, resets attention, and records an unpinned model. |
+| `UserPromptSubmit` | `working`. Opens the turn and surfaces automatic items. |
+| `PreToolUse` | Keeps state and records the pending tool. |
+| `PostToolBatch` | Restores `working` after the main agent's permission or input wait resolves. Subagent batches and batches after turn closure have no effect. |
+| `Notification` | `waiting`. Permission and input notifications set conditions `approval` and `input`. Elicitation can set waiting activity without those conditions. |
+| `Stop` | `idle`. Closes the turn and releases held ambient wake. |
+| `StopFailure` | `idle` with a mapped failure condition. Closes the event run as `RUN_ERROR`. |
+| `SessionEnd` | `offline`. Leaves gracefully. |
+
+A `SessionStart` during compaction preserves an open turn's `working` or `waiting` status.
+Model metadata retains a launch pin. Otherwise it records the model reported at session start.
+A mid-session model switch has no hook, so this display field can lag until the next start.
+`meta.cwd` records startup, resume, or fork directory. Clear and compact do not replace it.
+It is advisory roster data visible to readers of that roster.
+Closing MCP stdin also leaves the mesh, including when Claude exits without `SessionEnd`.
+
+`StopFailure` maps upstream error values to these conditions:
+
+| Claude error | Condition |
+| --- | --- |
+| `rate_limit`, `overloaded` | The same value. |
+| Authentication or credential failures | `auth` |
+| Account or billing failures | `billing` |
+| `invalid_request` | `request` |
+| `model_not_found` | `model` |
+| `server_error` | `server` |
+| `max_output_tokens` | `context` |
+| `unknown` | `failed` |
+
+The native value remains in `condition.source`.
+Hooks use a per-user local control endpoint with a per-launch token checked in constant time.
+Finding the socket path alone does not authorize presence changes or shutdown.
+Registered hook matchers are listed in the [adapter README](../extensions/connector-claude-code/README.md#claude-code-hooks).
+
+## Event plane [#event-plane]
+
+Spawned Claude sessions record turn boundaries, assistant text, reasoning, and tool-call start and end events.
+`COTAL_EVENTS` arms publication by default.
+An unrestricted mesh permits `--no-events`.
+A user-auth registration with `policy: { events: "required" }` carries `eventsRequired` in private launch material and refuses an opt-out.
+Hand-driven user-mode sessions can carry the requirement as `COTAL_EVENTS_REQUIRED=1`.
+A required plane must have the principal's own event publish grant before the connector joins.
+An unmanaged session without required-policy or launch material retains the generic default behavior.
+
+### Event privacy
+
+`TOOL_CALL_ARGS` and `TOOL_CALL_RESULT` are suppressed before write-ahead logging.
+Their contents are not replaced with empty values because those event types require content.
+The event channel's reader ACL may differ from the ACL under which a tool ran.
+Tool start and end still publish. Assistant text and reasoning still publish.
+A pending old frame containing suppressed event types is refused rather than republished.
+
+A failed turn publishes `RUN_ERROR` with message `run failed` and no code.
+The upstream error kind and detail do not publish on the event channel because they can echo prompts or tool output.
+The kind remains available as a presence condition.
+A normal end publishes a run-finished event with no outcome. Completion of the turn does not assert success of the task.
+
+### Channel identity
+
+The channel is `events.<owner>.<actor>`, derived from the authenticated session principal.
+
+| Mesh | Channel identity |
+| --- | --- |
+| User-auth | `events.<owner>.<agent-name>`, using the actor ledger key. |
+| Static | `events.local.<key>`, using the manager-allocated key returned as spawn `id`. |
+
+One channel contains all sessions of that principal.
+The child's grant includes publication on its own channel.
+Managed spawn and preserved-state resume refuse a concrete event channel belonging to another principal.
+The rule also applies on open meshes.
+Patterns such as `events.<owner>.>` are not concrete channels under this check.
+They remain subject to ordinary delegation or static credential authority.
+Direct foreground launches can grant channels from the operator's own signing material.
+
+On a user-auth mesh, delegation only narrows the spawner's grant.
+A peer-initiated spawn needs the caller's grant to cover the child's event channel.
+The refusal supplies the grant remedy. Operator launches whose chain reaches an admin-scoped or roster row are unaffected.
+`events: false` explicitly disarms an optional plane.
+
+A typed request for events can arm a child under the caller's owner and satisfy a required-events policy.
+A different-owner request requires the caller's admin tier.
+Without it, explicit or required events are refused before provisioning.
+An implicit optional plane is instead disarmed with a notice for a non-owner caller.
+Later provisioning checks, the own-channel rule, and delegation still apply.
+
+### Reader grants
+
+On a user-auth mesh, a scoped reader grant names every ACL field:
+
+```bash
+cotal actor grant <reader> --owner <owner> --scope '' --allow-subscribe 'events.<owner>.<actor>' --allow-publish ''
+```
+
+`actor grant` upserts the whole row and refuses omitted ACL fields unless `--full` is given.
+`--full` supplies wide defaults and is not a scoped observer grant.
+
+On a static mesh, the scoped credential uses the agent profile:
+
+```bash
+cotal auth mint watcher --profile agent --allow-subscribe 'events.<owner>.<actor>' --provision
+```
+
+The observer profile has a fixed chat-plane read set and refuses `--allow-subscribe` without writing credentials.
+The agent profile also reports the lifecycle UID needed by an authenticated consuming endpoint.
+Open meshes have no credentials or ACL grant step.
+
+Readers list the event channel in `CotalEndpoint`'s `channels`.
+History uses mediated `readHistory(channel)`.
+Direct `channelHistory(channel)` creates an ad-hoc consumer that scoped credentials cannot authorize.
+The CLI and web consoles use the mediated path and render event frames.
+They hide event channels from conversation lists but accept a channel opened by name.
+Flat-text clients display a marker because an event frame has no prose text part.
+
+### Transcript adoption
+
+A fresh Claude `source: "startup"` reads from the beginning, including a positional prompt written before `SessionStart`.
+Resume, fork, clear, and compact adopt at the transcript boundary captured before the mesh connection wait.
+They do not republish retained history or skip records appended during startup.
+Crash recovery uses the cursor already stored in the write-ahead log regardless of startup label.
+
+Hook processes can arrive out of order.
+Before `SessionStart`, the connector holds event flushes and a terminal, then queues adopt, flush, and close in order.
+Only `SessionStart` retries transient listener-not-ready errors within the relay's two-second budget.
+Later hooks and permanent faults fail open immediately.
+After a socket connects, a broken exchange is never replayed because the connector may already have applied it.
+
+A new startup or fork waits up to five seconds for its transcript file, with capped backoff.
+The same deadline bounds a stalled file read.
+A fork adopts after Claude copies retained history to its new file.
+Resume, clear, compact, and recovered cursors require an existing source immediately.
+An unreadable transcript line is skipped with its offset, byte count, and parser reason on stderr.
+Records after that line remain eligible.
+
+### Event recovery
+
+Events are written to a per-session write-ahead log before publication.
+Recovery settles a pending frame, restores the run from the log, and continues from the stored cursor.
+Broker connection delays and reconnects pause publication without closing MCP.
+Unpublished transcript records remain available. Shutdown cancels the connection wait.
+
+A publishing or log error stops that emitter, not the Claude session or mesh connection.
+The log reports `AG-UI emitter stopped` with the cause and retry delay.
+A fresh emitter starts immediately, then retries every second while the fault remains.
+Retries reuse the original transcript source and captured boundary.
+A conflicting second transcript path is refused. The first path stays bound.
+
+Turn terminals are retained during outages, startup waits, failed terminal writes, and concurrent flushes.
+Each terminal belongs to the last transcript turn begun at the position observed when its hook fired.
+Recovery places it after that turn's records and before the next run.
+An error remains an error rather than becoming a synthetic normal finish.
+A duplicate terminal never replaces a recorded terminal or shifts to another turn.
+A turn that opens no event run consumes its own terminal without publishing one.
+Unreadable or unavailable records produce a reported gap and do not hold all later terminals indefinitely.
+
+### Event state
+
+`COTAL_WORKSPACE_ROOT` identifies the event state root.
+Per-session logs retain cursors and open-run state.
+A per-principal record retains the last broker-assigned sequence so later sessions continue the same channel.
+Launches with events require the stable root rather than defaulting to the current directory.
+
+A missing principal record can be rebuilt from adjacent session logs.
+Rebuilding refuses any damaged, unreadable, non-JSON, wrong-principal, linked, or multiply linked log.
+Linked session directories also fail.
+A partial reconstruction could choose an incorrect sequence, so no subset is accepted.
+A record that disagrees with the broker, or changes beneath a writer, stops publication and names the conflict.
+
+There is no state-clear command.
+Manual recovery requires purging the event channel first, then removing the principal's entire event-state directory.
+The sequence record, cursors, and session logs are one state and cannot be removed separately.
+Removing local state while channel frames remain makes the next session expect an empty channel and fail on the same disagreement.
+
+## Carried session custody [#carried-session-custody]
+
+Carried resume transfers one transcript through a JetStream Object Store bucket readable only by the selected manager instance.
+The writer credential is restricted to that object.
+Identical repeated transfers send no bytes. Interrupted transfers continue from prior progress.
+Without an explicit connector choice, the CLI asks the target manager which connector its persona resolves to before deciding to carry.
+
+The manager forks the transcript in a private home under `.cotal/seat-homes`.
+Other seats do not discover that home's sessions, and the home is removed when the seat stops.
+It contains no saved login.
+Claude 2.1.234 or later is required to honor the private project-directory setting.
+Token credentials or cloud-provider selection must come from the manager environment. API key alone is refused.
+The private home records trust for the authorized launch directory without changing the manager's home.
+
+At fork, the seat records the source transcript's SHA-256 from its private project.
+The manager compares that record with the transferred transcript and records provenance only on a match.
+A mismatch or absent record within the post-join timeout stops the seat, including an uncertain launch.
+Attachment identifies the source host and session ID.
+User-auth transfer-writer exchange requires the operator's `admin` scope.
+MCP `cotal_spawn` cannot request transcript resume.
+
+## Host sessions in one process [#host-sessions-in-one-process]
+
+`@cotal-ai/connector-claude-code/mcp` exports a per-session server for managed hosts.
+It supports `import` and `require`, including CommonJS declarations with Node16 or Node18 module settings.
+
+```ts
+import { serveClaudeSession } from "@cotal-ai/connector-claude-code/mcp";
+
+const session = await serveClaudeSession({ env, input, output });
+await session.close();
+```
+
+Importing the module does not serve its own stdio.
+Running `node dist/mcp.cjs` serves stdio directly.
+Claude sends channel pushes only through a stdio server it launched, so each Claude process still needs a stdio command, such as a relay to the shared host.
+Process sharing does not isolate untrusted tenants or their files.
+
+### Session options
+
+| Option | Contract |
+| --- | --- |
+| `env` | Complete launch environment, copied at call start. Requires mesh identity and the full control pair. Host environment is not merged. |
+| `input` | Client JSON-RPC stream. Ended or destroyed input rejects startup. Buffered unread input is allowed. |
+| `output` | Session replies and Claude channel pushes. Owned by the caller. |
+| `fatalBind` | Defaults to false. Bind failure rejects only this session. Direct `mcp.cjs` enables process-fatal binding. |
+| `onShutdown(code)` | Called once after shutdown-frame or input-end teardown. Reports code 1 on teardown failure. |
+
+The environment copy also governs bearer commands, carried-fork records, presence labels, and feedback contact lookup.
+Subprocesses need their own `PATH`, `HOME`, and other OS variables in that copy.
+They still run in the host process's working directory.
+The session card instead records `meta.cwd` from its own start hook.
+Feedback's Git fallback reads the session's global configuration and includes, not the host repository configuration.
+
+### Teardown
+
+Input `end` or `close`, including a relay reset, closes the active session.
+`close()` closes control, wake policy, event emitter, mesh endpoint, and MCP server.
+It is idempotent, leaves caller streams open, and rejects on teardown failure.
+Startup failure closes started resources before rejecting.
+Shutdown callbacks report teardown errors without an unhandled host rejection.
+
+Teardown removes session input listeners and may pause input.
+A host reusing the stream resumes it when needed and keeps its own error handlers.
+Close waits for an in-flight broker dial. A dial failure after shutdown begins is not itself a teardown failure.
+Local inbox custody is released only after connections are proved closed.
+A successful close permits the same lifecycle to reopen. An active duplicate or unproved close retains custody.
+
+## Feedback configuration [#feedback-configuration]
+
+Without a key, `cotal_feedback` posts to the public intake at `https://cotal.ai/v1/feedback`.
+Contact resolution uses `COTAL_FEEDBACK_EMAIL`, then Git `user.email`, then a tool request for an email.
+An explicit tool `email` selects another contact.
+`COTAL_FEEDBACK_KEY=fbk_<key>` uses keyed intake with bearer authentication and identity derived from the key.
+`COTAL_FEEDBACK_URL` overrides either endpoint.
+Submissions record `origin` as `human` or `agent` to distinguish requested feedback from an automatic major-issue report.

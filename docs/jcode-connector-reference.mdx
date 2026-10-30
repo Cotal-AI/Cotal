@@ -1,0 +1,282 @@
+---
+title: "Jcode connector reference"
+description: "Private Jcode process ownership, session forks, readiness checks, model selection, and event delivery."
+kind: "Reference"
+audience: "integrators"
+---
+
+The Jcode connector drives one private session through the protocol-v1 NDJSON Harness API over a Unix socket.
+[Connect Jcode](connect-jcode.mdx) contains operator procedures.
+
+## Private instance ownership
+
+The host calls `launchInstance()` from `@1jehuang/jcode-sdk`, then attaches to that instance's socket.
+It retains the process handle and owns the private daemon, `api-bridge`, home, and runtime directory.
+It never attaches to an operator-run bridge, whose stop and session-selection operations could affect the operator's work.
+
+The private home is owner-only and keyed by manager workspace, space, and seat name under `<manager-workspace>/.cotal/jcode/`.
+Each launch reclaims the short socket alias derived from that home.
+The Jcode child does not inherit `COTAL_*` variables or the Cotal launch-material pointer.
+
+`JCODE_NO_AUTO_UPDATE=1` disables background binary replacement.
+An updater restart would drop the TUI connection and allow Jcode's idle reaper to stop the server five minutes later.
+The binary selected at launch remains in use for the seat's lifetime.
+
+### Process teardown
+
+Graceful stop and startup failure both verify that the private process tree has exited.
+The connector uses the PIDs recorded by that private home, sends bounded SIGTERM, and sends SIGKILL to survivors.
+A recorded process that survives produces a failed stop.
+The connector never signals processes by name.
+It does not rely only on the SDK's registry-keyed stop, which can miss a differently spelled socket path.
+
+A hard-killed host can leave its private server alive until Jcode's five-minute idle timer expires.
+Each launch records an identity nonce and the host process identity before it starts the tree.
+The next launch stops the recorded orphan only after proving the recorded host is gone.
+If that host is still alive, it signals nothing and the new launch encounters the native runtime-directory lock.
+
+## Credential mirroring
+
+Each launch refreshes an explicit inventory of Jcode credentials, provider configuration, and external logins in the private home.
+A source login that was removed causes its mirrored destination to be removed.
+Transcripts, MCP configuration, logs, and other private state are outside that inventory.
+The SDK's automatic login inheritance is disabled because rotating auth files must not be symlinks.
+There is no credential-free mode that skips this refresh.
+
+Copy, directory creation, and removal pin each parent directory after walking it with `O_NOFOLLOW`.
+Leaf operations use that pinned directory, so replacing an ancestor with a symlink cannot redirect the operation outside the private home.
+
+On Linux, the pin uses a proven `/dev/fd/<fd>/<name>` subpath.
+On macOS, the process enters the pinned parent directory, verifies its inode against the opened descriptor, and uses a single-component leaf name.
+The working directory is restored on success and failure.
+A system without either mechanism refuses the operation with a named error and mirrors nothing.
+After the parent is pinned, a child's `ENOENT` means that mirror path is absent.
+
+## Session state
+
+A relaunch with the same manager workspace, space, and name uses the same private home.
+Without an explicit fork record, the host selects a non-archived session for the seat's working directory that has a nonempty transcript.
+The largest transcript wins, with session ID as the tie-breaker.
+A fresh seat name has a different home and starts without that history.
+
+An empty stored-session directory skips enumeration and starts fresh.
+If enumeration fails, the host logs the cause, stops that private instance, and tries a fresh instance.
+If session creation then fails, `sessions_enumeration_failed` identifies the earlier lookup failure.
+An existing `sessions/` directory that cannot create a file is refused as `sessions_unwritable` before the first turn.
+Its permissions are never repaired automatically.
+A missing directory is a first launch and is left for Jcode to create.
+
+### Operator-requested forks
+
+`--resume <id>` reads the source from the operator's `JCODE_HOME`, or the default Jcode home, before the private instance starts.
+The Harness API has no fork call.
+The connector writes a new session with the source as parent and carries its messages, compaction state, system prompt, and model.
+The source files are only read.
+The seat receives its briefing as the first turn after that history.
+
+Every carried message, content block, and compaction field is checked against Jcode's stored-session schema.
+A refusal names the invalid field.
+Counts use plain decimal u64 values.
+Values beyond JavaScript's integer precision retain their source bytes.
+Fractions, exponent spellings, and values beyond u64 are refused.
+A source title longer than the manager's 1024-character limit is also refused.
+
+A live source is read until two consecutive snapshot-and-journal reads agree.
+Each journal record must be newer than the snapshot and must not duplicate a message already present.
+This prevents a checkpoint in progress from losing or replaying a journal entry twice.
+A source that remains unstable is refused with a retry request.
+
+A saved fork is selected by its recorded session ID, rather than by transcript size.
+A relaunch continues it without reading the source again, even if the source has been deleted.
+The briefing is recorded separately, so a failure after the fork does not discard the briefing owed on the next launch.
+The fork record contains source ID, title, and a SHA-256 over the source snapshot and journal bytes.
+The launcher prints the record and the manager includes it in `cotal ps --wide`.
+
+## MCP configuration
+
+The connector writes its own `cotal` stdio MCP entry to the private `JCODE_HOME/mcp.json`.
+That bridge relays calls to the host's one `MeshAgent`.
+Its child receives a per-launch relay capability, without the broker credential or launch-material pointer.
+
+Jcode also reads workspace `.jcode/mcp.json`, `.mcp.json`, and `.claude/mcp.json`.
+The host refuses a workspace containing any of those files before mesh join because they could replace `cotal` or add unshared tools.
+Operator MCP configuration is isolated in the private home.
+Project MCP configuration and `--share-tools` are unsupported.
+
+## Readiness
+
+Before mesh join, the host requires a provider-backed Jcode turn to call `cotal_orientation` successfully.
+A direct call counts, as does a deferred `mcp_call` using server `cotal` and tool `cotal_orientation`.
+A failed call or an MCP error result does not count.
+
+Jcode loads its MCP tools asynchronously.
+If the first turn uses a snapshot taken before those tools loaded, the host repeats the same check once.
+A second absence refuses the launch.
+The persona is already in the transcript as a no-reply message.
+The spawn prompt waits until after join.
+
+The check has a three-minute deadline, also declared to the manager through `readinessTimeoutMs`.
+The host observes the orientation `tool_done` event and does not require `turn_done` before declaring the tool check successful.
+The test-only `COTAL_JCODE_READINESS_TIMEOUT_MS` override does not change the manager's declared deadline.
+
+| Diagnostic | Meaning |
+| --- | --- |
+| `pre-join readiness` | The tool check is in progress. The log includes its bound. |
+| `orientation proved; joining with no spawn --prompt` | The check passed without an initial prompt. |
+| `joining, then submitting the spawn --prompt` | The check passed and the requested prompt follows join. |
+| `provider refusal` | The provider rejected the check. |
+| `timeout` | The check exceeded its bound. The line states whether the orientation call was observed. |
+
+An in-flight line alone does not distinguish a slow check, a provider refusal, or a hang.
+If the deadline expires without a successful orientation call, the connector kills
+the private tree without waiting for its active turn and never joins the mesh.
+Output generated by that destroyed turn is not recoverable.
+A seat with an observed successful orientation can join while that proof turn remains open.
+A manager `uncertain` receipt means its readiness wait did not establish the outcome; it is not a cleanup verdict or a host timeout.
+
+### First turn after join
+
+After the connection and presence bind complete, the host announces that the bootstrap orientation predates the join and a new orientation has current context.
+During a broker outage, it waits and sends no connected notice.
+With a spawn prompt, this notice is a no-reply append before the prompt's driven turn.
+Without a spawn prompt, the notice itself becomes the first driven turn.
+
+A refused no-reply append is logged without ending the session.
+A refusal before dispatching the startup turn is logged and retried like a pending startup prompt.
+A busy session or reconnecting bridge also leaves that prompt pending.
+Once the host invokes the Harness request, it consumes the prompt even if the result is ambiguous.
+It does not submit the same request again after an error or connection close that could hide successful execution.
+
+The startup prompt excludes the automatic inbox.
+Earlier buffered traffic, including ordinary channel messages held in `dnd`, runs in the following turn.
+Quiet-channel traffic remains available through an explicit inbox pull.
+The connector log distinguishes a prompt waiting on steering from a turn deferred after native state changed.
+
+## Message delivery
+
+An inbound message starts a Harness turn when the session is free.
+Directed traffic that arrives during a Cotal-owned or TUI-owned turn enters Jcode's soft-interrupt queue.
+An idle pulse between tool rounds does not make an open Cotal turn free.
+Ambient channel traffic stays buffered for the next turn.
+
+The host acknowledges the initial and soft-interrupted inbox IDs only after their containing turn succeeds.
+A failed turn or private Harness replacement leaves them unacknowledged for redelivery.
+`cotal_inbox` accesses only buffered quiet ambient in the host-owned queue.
+`peek: true` reads that ambient without clearing it.
+
+Presence is `working` while the session is busy.
+Uncommitted automatic traffic contributes queue depth and age to `activity`.
+A Harness error, including an unsolicited error from a TUI-owned turn, becomes the presence `condition`.
+Known codes retain their names, such as `rate_limit`.
+Other codes use `failed` and preserve the native code in `condition.source`.
+The next turn clears the condition.
+Native session work events update `activeAt`, even when the TUI owns the turn, so stale work is visible beside a fresh heartbeat.
+
+A run turn becomes shown when the Harness accepts its starting message.
+The model can then use `cotal_yield` during that turn.
+A message the Harness never accepts leaves the run turn unshown for a later delivery.
+
+### Private connection recovery
+
+A provider failure that closes the Harness connection leaves the active inbox batch unacknowledged.
+The host permits one recovery window of 60 seconds, including time spent stopping the failed private tree.
+Transient replacement launch and attach failures retry within that window.
+Each failed replacement must be proven stopped before another starts.
+Presence remains `waiting` until the same session is attached, then the retained batch can run again.
+
+Permanent errors end the seat immediately.
+These include invalid requests, missing sessions, protocol mismatch, missing binary, and socket permission denial.
+A teardown that cannot be proven complete, an expired window, or another disconnect after successful replacement also ends the seat.
+Unrecognized SDK error codes remain transient within the same bound until the explicit classifier includes them.
+
+If a Harness error remains unresolved when recovery ends, the final connector line puts `last turn error: <message>` before `recovery error: <message>`.
+The manager's `seat reaped:` line retains only its first 240 characters.
+Connector diagnostics also go to an owner-only `<private-home>/logs/connector-<timestamp>-<pid>.log`.
+Public startup failures expose allow-listed codes rather than arbitrary provider output.
+
+## Model selection
+
+`--model` selects a session-level bare model ID through the Harness API.
+Jcode validates the ID against the active provider.
+An accepted selection becomes the session pin and presence model label.
+Presence also reports the provider route, visible as `provider` in `cotal ps --wide` and `--json`.
+The connector does not require `RuntimeInfo.model` to reflect the new pin immediately because that field can lag selection.
+
+| Startup code | Meaning |
+| --- | --- |
+| `model_prefix_rejected` | The request used `provider/model` instead of a bare ID. |
+| `model_refused` | Jcode refused the bare ID. |
+| `model_mismatch` | A requested effort could not be tied to one active provider route. |
+| `private_state` | Private home, credential mirror, or socket alias preparation failed. |
+
+### Declared catalog
+
+`cotal models --harness jcode` reads the operator home's `config.toml`.
+It lists providers with `model_catalog = true`, their `[[providers.<name>.models]]` IDs, and declared `reasoning_efforts`.
+An unreadable or malformed file, an absent enabled catalog, or an enabled catalog without model entries is refused.
+This is the config copied into the private instance.
+
+Declared efforts are not provider capability checks.
+The command labels configured tier lists `(declared, not provider-verified)`.
+`--refresh` does not probe a provider.
+The provider can reject a declared tier at launch.
+
+### Requested reasoning effort
+
+`--variant` overrides the persona's `variant:` and applies after model selection, before the first turn.
+The connector verifies one active provider route for the accepted model pin.
+Without an explicit model, the runtime model identifies the selection.
+An identical model ID on another route cannot receive the setting by accident.
+Jcode owns the supported tier rules.
+
+An unsupported capability or rejected tier refuses the launch.
+An accepted-tier list is included only when safely parsed from Jcode's response.
+Arbitrary provider rejection text stays private.
+The Harness API has no effective-effort readback, so Cotal records the accepted request without claiming an observed tier.
+
+A readiness-turn `invalid_request` for a model or effort reports the provider error code and rejected value.
+Other provider output remains scrubbed.
+
+## Event plane
+
+The event channel is `events.<owner>.<actor>` and the thread ID is Jcode's session ID.
+The connector publishes run boundaries, persisted assistant text, reasoning, and tool starts and ends.
+User prompts, tool arguments, and tool results are excluded.
+Text and reasoning arrive per persisted block, rather than as live token deltas.
+
+The source is Jcode's append-only session journal in the private home.
+The live Harness stream cannot be replayed after a crash.
+A durable byte cursor and event write-ahead log prevent already acknowledged records from being republished after restart.
+Open tools are restored from that log.
+
+### Journal recovery
+
+A checkpoint validates the saved snapshot and ends interrupted observations with `RUN_ERROR`.
+Open tool observations close before the error, without claiming their executions finished.
+The seat remains up while the new journal is absent, including during a long tool call.
+The reader retains its cursor until it can read the replacement journal from the beginning.
+It does not reconstruct output from a snapshot.
+
+A tool result without an observed start also ends the run with `RUN_ERROR`.
+It does not invent a start or publish an unpaired end.
+Both cases expose only `run failed`.
+Internal codes `jcode_journal_fold` and `jcode_tool_start_missing` remain private.
+A missing journal without a valid same-session snapshot, a malformed cursor, an invalid complete record, or a filesystem refusal is an emitter failure.
+
+A mesh outage pauses publication until reconnection, then queued records publish in order.
+Stopping before reconnection leaves unpublished records in the journal behind the saved cursor.
+They can publish on the next start.
+Other emitter failures also leave the seat running and log `AG-UI emitter stopped` with the delay before the plane is re-established.
+
+The plane is enabled by default and requires a stable workspace root for its event log.
+`--no-events` opts out only on unrestricted spaces.
+An event-required registration refuses that opt-out and carries the event flag and workspace root.
+A user-mode launch with `COTAL_EVENTS_REQUIRED=1` also arms the plane.
+
+## Unsupported operations
+
+The connector refuses exact-session continuation, MCP tool sharing, and arbitrary launch options.
+An external session enters through `--resume` as a fork owned by the new private instance.
+Windows and the current container deployment image are unsupported.
+The private home is not an OS-user isolation boundary.
+Filesystem, network, and provider authority remain those of the user running Jcode.

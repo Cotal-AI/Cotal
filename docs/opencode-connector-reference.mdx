@@ -1,0 +1,173 @@
+---
+title: "OpenCode connector reference"
+description: "OpenCode version support, injected configuration, session delivery, and structured event limits."
+kind: "Reference"
+audience: "integrators"
+---
+
+The `opencode` connector runs the Cotal bridge as a native plugin inside an OpenCode server.
+An attached OpenCode TUI uses the session that the plugin drives.
+[Connect OpenCode](connect-opencode.mdx) covers launch procedures.
+
+## Version support
+
+The launcher detects the installed line from `opencode --version`.
+It accepts major version 1 for `opencode-ai` and major version 2 for `@opencode/cli`.
+Other major versions fail with an error naming the detected version and supported lines.
+
+| Capability | OpenCode 1.x | OpenCode 2.x |
+| --- | --- | --- |
+| Native TUI and shared Cotal tools | Supported | Supported |
+| Models and variants at launch | Supported | Supported |
+| Catalog through `cotal models` | CLI catalog | Unavailable |
+| AG-UI event plane | Supported | Unsupported, requires `--no-events` |
+| Registration requiring events | Supported | Refused |
+| Session resume or exact-session continuation | Unsupported | Unsupported |
+| Selected MCP-server sharing | Unsupported | Unsupported |
+
+These are Cotal connector capabilities.
+They do not describe every feature of the standalone OpenCode application.
+
+## Tool configuration
+
+The plugin and configuration are injected through `OPENCODE_CONFIG_CONTENT`.
+The connector does not write `~/.config/opencode`.
+OpenCode [merges inline configuration with its other config sources](https://opencode.ai/docs/config/), so the agent inherits the operator's MCP servers.
+`connectors.opencode.mcpServers` is refused because a selected-subset filter is not implemented.
+
+The plugin exposes the shared `cotal_*` tools natively.
+It is not a separate MCP server and does not create a second mesh identity.
+An agent file supplies persona instructions and mesh identity.
+Spawned agents use `permission: "allow"`, allowing tool execution without approval prompts.
+The ability to spawn an agent is therefore a trust boundary.
+
+Model and variant pins select a dedicated `cotal` primary agent as the default.
+This prevents the operator's own default-agent model from replacing a Cotal selection.
+`--opt key=value` launch options are merged into that agent's configuration and validated by OpenCode.
+An option with the same key can replace the connector's `mode`, `model`, or `variant` default.
+
+## Server state
+
+The server binds loopback and requires a password.
+The launcher generates a password per launch unless a headless host supplies `OPENCODE_SERVER_PASSWORD`.
+The server and TUI receive credentials through their environments.
+The headless `[cotal-serve]` line omits the password.
+
+Mesh credentials, the broker URL, and the control token arrive through a private launch-material file with mode `0600`.
+The plugin reads and removes the material reference from the server's environment.
+Shell tools run in that server and inherit neither the material nor its path.
+The launcher retains the reference only so the server can read it.
+
+Each agent stores its SQLite database at `<workspace>/.cotal/opencode/<name>/opencode.db`.
+Managed launches use the manager's workspace, even when the agent works in another repository.
+Direct launches use the launch directory.
+Authentication and other OpenCode configuration still use the operator's normal home and XDG roots.
+The separate database prevents concurrent agents from competing for one SQLite write lock.
+
+Each launch owns a `serve.<token>.pid` record in that directory.
+Startup checks all such records and legacy `serve.pid` records.
+A live recorded server refuses another launch on the database.
+Stale records and empty directories at record paths are removed.
+A record removed by an exiting launcher is treated as absent.
+A nonempty directory at a record path fails startup and is preserved.
+
+On POSIX, the child records its PID before becoming the server through `exec`.
+On Windows, the launcher records the PID after spawning the server.
+Each launcher removes only its own record on server exit, so delayed cleanup cannot remove a successor's record.
+A termination signal during startup stops the server and any attached TUI.
+
+## Model reporting
+
+On 1.x, the catalog comes from `opencode models --pure --verbose`.
+The refresh option adds `--refresh` to that query.
+On 2.x, discovery reports an unavailable catalog because that line serves models through a running server.
+Direct model selection still uses `provider/model` IDs.
+
+An explicit model is verified against the session's server before mesh join.
+The 1.x route is `/provider`.
+The 2.x route is `/api/model`, with a bounded wait for provider initialization.
+The CLI catalog alone does not prove that the serving process has the model.
+Readiness allows two minutes for cold server startup, model verification, and mesh join.
+
+OpenCode events report working, idle, and waiting presence.
+Permission requests map to waiting.
+Prompt events report the actual model and optional variant.
+Until that observation, an unpinned model remains unreported.
+An explicit model or variant pin takes precedence over observation.
+
+## Message delivery
+
+The plugin submits incoming peer batches as turns on its owned session.
+It does not interrupt a turn already running.
+The surfaced batch stays in flight until its turn ends.
+JetStream in-progress acknowledgements renew that batch's delivery lease, including turns longer than the normal 60-second acknowledgement wait.
+
+A successful turn or a user Stop acknowledges the carried batch.
+A failed turn or seat shutdown releases it unacknowledged.
+A crashed seat stops renewing the lease, permitting broker redelivery after the acknowledgement wait.
+On 2.x, only an execution that began after batch submission can settle that batch.
+An earlier or replayed execution-end event cannot acknowledge it.
+
+Queued messages behind a turn are not renewed.
+Inbox overflow evicts queued messages rather than the batch currently carried by a turn.
+Renewal stops when the connector can no longer establish that it owns a delivery, such as after a connection outage longer than the acknowledgement wait.
+Delivery remains [at least once](presence-and-delivery.md#durable-transport).
+
+Quiet-channel ambient messages remain available only through `cotal_inbox`.
+They are not prepended to human prompts or directed-message turns.
+Quiet-channel mentions still trigger turns.
+
+On 1.x, a focus-mode mention retains a wake until a turn carrying it is accepted.
+Busy sessions, refused turns, and failed submissions delay that wake rather than discard it.
+Several mentions can share one wake.
+When channel replay is disabled, the wake reports the mention without recovering its discarded body.
+A failed turn re-arms its focus-mention wake after the retry delay.
+
+## Session lifecycle
+
+On 1.x, `/new` resets the context while preserving the mesh identity and credentials.
+The 2.x adapter owns a single session and does not implement that session handoff.
+`/reconnect` is an injected command that invokes the shared `cotal_reconnect` tool to rebuild the mesh connection in process.
+
+On 1.x, once shutdown begins, new TUI and API prompts are refused before OpenCode saves them.
+A turn already running is not cancelled by this admission check.
+For asynchronous requests, OpenCode emits `session.error` with `the prompt was not run: this seat is shutting down`.
+Synchronous requests return a generic server error and log the reason server-side.
+
+On 1.x, instance disposal follows the same teardown as a stop and ends the server, including disposal caused by global config changes or `POST /instance/dispose`.
+Whenever the server exits, the launcher closes the TUI and kills it if it remains alive after three seconds.
+The manager then sees the agent process end.
+
+## Event plane
+
+The AG-UI event plane is implemented for OpenCode 1.x only.
+The default launch publishes on `events.<owner>.<actor>`.
+`--no-events` disables it on a registration that permits opting out.
+Required launch material, or `COTAL_EVENTS_REQUIRED=1` for the direct environment path, arms the plane without a separate event flag.
+The plugin refuses to join if its publish grant does not cover its principal-keyed event channel.
+
+OpenCode 2.x refuses an armed event plane.
+A registration requiring events cannot opt out, so that registration cannot use 2.x.
+
+The 1.x stream contains run boundaries, assistant text, and tool starts and ends.
+Tool arguments and results are excluded.
+Reasoning publication is disabled by default.
+User text is always excluded because a native prompt can combine human and injected peer text without a reliable authorship boundary.
+The connector publishes neither step events nor usage counts because OpenCode's step records lack pairable step names and keys.
+
+The plugin records the publication boundary when it adopts the session, before joining the mesh.
+Activity written during mesh startup remains eligible for publication.
+Each `/new` session uses its own thread ID on the same principal-keyed channel.
+Before switching, the plugin flushes the old session and closes its open run.
+
+A failed turn closes with `RUN_ERROR`, the fixed message `run failed`, and no code.
+Provider errors, authentication failures, and output-length stops can cause these failures.
+Upstream error names and messages are withheld because they can contain prompts or tool output.
+A user cancellation closes as an ordinary run end.
+
+A new prompt waits for outstanding reads that identify prior turn ends before OpenCode saves it.
+This includes duplicate turn-end events.
+That wait covers the position read rather than completion of event publication.
+
+Publish grants do not grant readership.
+The [Claude Code event reference](claude-connector-reference.mdx#event-plane) describes shared channel authorization and read grants.

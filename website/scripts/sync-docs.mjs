@@ -10,6 +10,7 @@ import { decodeString } from 'micromark-util-decode-string';
 import { normalizeUri } from 'micromark-util-sanitize-uri';
 import { parse as parseHtml, parseFragment } from 'parse5';
 import { readDocument } from '@cotal-ai/docs-content';
+import { connectorIcons } from '../src/lib/connector-icons.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..', '..');
@@ -48,8 +49,14 @@ const navigation = [
         page('docs/recover-a-mesh.mdx'),
         page('docs/upgrade-cotal.mdx'),
       ]),
-      group('Connect agents', ['connectors', 'connect-claude', 'connect-opencode', 'connect-codex', 'connect-hermes', 'connect-jcode', 'connect-pi'].map(name => page(`docs/${name}.md`))),
-      group('Build integrations', ['authoring-a-connector', 'build-a-client', 'embedding'].map(name => page(`docs/${name}.md`))),
+      group('Connect agents', ['connectors', 'connect-claude', 'connect-opencode', 'connect-codex', 'connect-hermes', 'connect-jcode', 'connect-pi'].map(name => page(`docs/${name}.mdx`))),
+      group('Build integrations', [
+        ...['authoring-a-connector', 'build-a-client', 'embedding'].map(name => page(`docs/${name}.md`)),
+        group('Connector reference', [
+          page('docs/connector-runtime-reference.mdx'),
+          ...['claude', 'opencode', 'codex', 'hermes', 'jcode', 'pi'].map(name => page(`docs/${name}-connector-reference.mdx`)),
+        ]),
+      ]),
     ]),
     group('Concepts', [
       group('Fundamentals', ['architecture', 'spaces', 'transport'].map(name => page(`docs/${name}.md`))),
@@ -98,7 +105,7 @@ const isSitePage = (rel) => rel === 'SPEC.md' || /^docs\/[^/]+\.mdx?$/.test(rel)
 // to an unpublished site page or to a missing repo path throws — no silent drift.
 // Seeded with images used by the hand-authored landing page (index.mdx), which
 // doesn't pass through this rewriter.
-const assetRefs = new Set(['assets/cotal-demo.webp']);
+const assetRefs = new Set(['assets/cotal-demo.webp', ...[...connectorIcons.values()].map(src => src.slice(1))]);
 
 function rewriteTarget(target, rel) {
   const url = new URL(target, `${GITHUB_BLOB}/${rel}`);
@@ -252,7 +259,8 @@ for (const [rel, document] of documents) {
   const slug = slugFor(basename(rel).replace(/\.mdx?$/, ''));
   const extensions = document.format === 'mdx' ? [mdxjs(), gfm()] : [gfm()];
   const body = rewriteLinks(document.content, rel, extensions);
-  const frontmatter = ['---', ...Object.entries(document.metadata)
+  const metadata = { ...document.metadata, ...(connectorIcons.has(slug) ? { icon: slug } : {}) };
+  const frontmatter = ['---', ...Object.entries(metadata)
     .filter(([, value]) => value !== undefined)
     .map(([key, value]) => `${key}: ${JSON.stringify(value)}`), '---', ''].join('\n');
   const section = sectionFor(rel);

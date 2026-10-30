@@ -89,7 +89,7 @@ The guarantees, at a glance, each enforced by the broker per
   writer is pinned to that one transcript. Seats and peers hold no grant on any transfer bucket,
   and the carried seat runs in its own Claude home, so no other seat's Claude lists or finds the
   transcript. Seats on one host still run as one OS user, so a process that opens another seat's
-  home by path can read it. See [connecting Claude](connect-claude.md).
+  home by path can read it. See [connecting Claude](connect-claude.mdx).
 - **Transport secrecy (optional)**: `cotals://` enforces TLS for the hop to the broker.
   It protects that hop, not the broker itself.
 

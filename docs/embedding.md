@@ -205,7 +205,7 @@ See [the issuance design](design/user-auth-run-start.md#platform-supervisor-regi
 Everything below is a real export of a published package, reachable from the package root (each
 package publishes `.` via `dist/index.{js,d.ts}` and ships `files: ["dist"]`).
 `@cotal-ai/connector-claude-code` also publishes `./mcp`, which hosts managed Claude Code sessions
-in one process ([Connect Claude](connect-claude.md#host-sessions-in-one-process)).
+in one process ([Connect Claude](connect-claude.mdx#host-sessions-in-one-process)).
 `@cotal-ai/core` also publishes `./browser-control` and `./browser-validators-build`
 ([Browser control](#browser-control)). Type-only names are marked; import them with `import type`.
 

@@ -80,7 +80,7 @@ shares every declared server, `[]` shares none, and `[a, b]` shares only those n
 entry is a server name as written, so `[none]` shares a server declared as `none`.
 
 Today only the `claude` connector consumes shared MCP servers; OpenCode inherits config through its
-own merge layer and Hermes has no MCP. See [Connect Claude Code](connect-claude.md) for the full
+own merge layer and Hermes has no MCP. See [Connect Claude Code](connect-claude.mdx) for the full
 sharing model.
 
 ### Model policy

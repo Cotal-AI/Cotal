@@ -30,7 +30,7 @@ One-line definitions of the terms used across these docs and the spec. The base 
   [SPEC §7](../SPEC.md#7-channels)
 
 - **Connector**: an adapter that bridges an agent harness (Claude Code, OpenCode, Hermes, …) to
-  the mesh, exposing the `cotal_*` tools. [connect-claude.md](connect-claude.md)
+  the mesh, exposing the `cotal_*` tools. [connect-claude.mdx](connect-claude.mdx)
 
 - **Control plane**: the request/reply layer (from v0.4 the endpoint control surface, on the
   `ep` rails) plus the infra roles behind it (the manager and the delivery daemon) that

@@ -311,7 +311,7 @@ preset, not an implicit reinstall or a second launcher.
 Beyond the app-bound connectors, `@cotal-ai/pi` is a **host-native plugin**: a pi extension
 loaded into the user's own pi (CLI or SDK-embedded), placing a Cotal endpoint inside the
 session's process and driving its run loop off the inbox. See
-[connect-pi](connect-pi.md).
+[connect-pi](connect-pi.mdx).
 
 ## Connector runtime
 
@@ -329,12 +329,12 @@ the mesh agent, the [`cotal_*` tool surface](mcp-tools.md) (defined once in its 
 specs, so it cannot drift across hosts), and the delivery buffer with its attention
 policy. Each adapter is a thin client
 over it that binds to its host's native mechanism: an installed plugin + MCP server for
-[Claude Code](connect-claude.md), an in-process plugin for
-[OpenCode](connect-opencode.md) (beta), a host-mode peer driving `codex app-server` for
-[Codex](connect-codex.md) (beta), a Python sidecar for
-[Hermes](connect-hermes.md) (alpha), a host-mode peer driving the Jcode Harness API for
-[Jcode](connect-jcode.md) (beta), a host-native extension for
-[pi](connect-pi.md) (alpha). The [connectors matrix](connectors.md) compares them
+[Claude Code](connect-claude.mdx), an in-process plugin for
+[OpenCode](connect-opencode.mdx) (beta), a host-mode peer driving `codex app-server` for
+[Codex](connect-codex.mdx) (beta), a Python sidecar for
+[Hermes](connect-hermes.mdx) (alpha), a host-mode peer driving the Jcode Harness API for
+[Jcode](connect-jcode.mdx) (beta), a host-native extension for
+[pi](connect-pi.mdx) (alpha). The [connectors matrix](connectors.mdx) compares them
 feature-by-feature.
 
 Replies carry their correlation ([SPEC §5](../SPEC.md#5-envelopes)). A `cotal_dm` to a peer

@@ -467,7 +467,7 @@ The CLI prints `carried session <id> to <instance>: sha256:<hex>, <sent> of <siz
 | `implementations/cli` | The carry step in `spawnDetached`; provenance in `ps` and `attach` |
 | `extensions/connector-claude-code` | The locator, the seat-home launch, the login and first-run checks |
 | `SPEC.md` | Section 8: the transfer bucket and the chunk chain headers. Section 9 and Appendix B: the two new credentials. Section 13: the new row and the `spawn` and `ps` fields |
-| `docs/` | `connect-claude.md` (resume across hosts, the login requirement), `cli.md`, `control-surface.md`, `security.md` (the boundary in 7.5), `UPGRADING.md` (a carried resume needs a manager and credentials from this release) |
+| `docs/` | `connect-claude.mdx` (resume across hosts, the login requirement), `cli.md`, `control-surface.md`, `security.md` (the boundary in 7.5), `UPGRADING.md` (a carried resume needs a manager and credentials from this release) |
 
 The changeset is a minor bump: `spawn` and `ps` contracts change, and a new manager row and two new
 credentials ship.

@@ -62,7 +62,7 @@ Authoritative shape: [`agent-file.ts`](../packages/core/src/agent-file.ts).
 The three channel verbs on one card, with the common recipes:
 [Channels & permissions](channels-and-permissions.md). Attention semantics (`quiet` /
 `muted` are one-way *defaults*; the runtime toggle is per-instance and resets on restart):
-[Connect Claude](connect-claude.md#attention).
+[Connect Claude](connect-claude.mdx#attention).
 
 ## Persona lookup
 

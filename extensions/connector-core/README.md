@@ -7,5 +7,5 @@ The shared MCP-bridge runtime: the mesh agent, the `cotal_*` tool specs (includi
 **Tier:** `extensions/`. Peer-depends [`@cotal-ai/core`](../../packages/core); self-registers on
 import.
 
-See [docs/connect-claude.md](../../docs/connect-claude.md) for how a session
+See [docs/connect-claude.mdx](../../docs/connect-claude.mdx) for how a session
 joins, and the [root AGENTS.md](../../AGENTS.md) for the tier rules.

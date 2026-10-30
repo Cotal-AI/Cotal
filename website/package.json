@@ -7,7 +7,7 @@
   "scripts": {
     "sync": "node scripts/sync-docs.mjs",
     "dev": "npm run sync && next dev --webpack",
-    "build": "npm run sync && next build --webpack && node scripts/export.mjs && node scripts/check-dist.mjs && node scripts/check-migration.mjs && node scripts/check-start-here.mjs && node scripts/check-operate-mesh.mjs",
+    "build": "npm run sync && next build --webpack && node scripts/export.mjs && node scripts/check-dist.mjs && node scripts/check-migration.mjs && node scripts/check-start-here.mjs && node scripts/check-operate-mesh.mjs && node scripts/check-connect-agents.mjs",
     "typecheck": "npm run sync && fumadocs-mdx && next typegen && tsc --noEmit",
     "preview": "wrangler pages dev",
     "postinstall": "fumadocs-mdx",

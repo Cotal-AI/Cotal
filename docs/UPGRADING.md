@@ -1561,7 +1561,7 @@ session. The broker may or may not already hold that frame, so the halt cannot s
    pending frame may never have reached the broker, so a `cas-loss` does not tell you whether it
    landed. Find and stop any second writer and rule out a restored state first. Clearing the halt
    then means purging the agent's event channel and removing the agent's directory under the events
-   state root whole (see [Event plane](connect-claude.md#event-plane)). That abandons the pending
+   state root whole (see [Event plane](connect-claude.mdx#event-plane)). That abandons the pending
    frame whether or not the broker has it, and the purge also drops the earlier frames of every
    session of that agent.
 4. Upgrade once step 2 prints nothing.

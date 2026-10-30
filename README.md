@@ -98,7 +98,7 @@ service with an explicit protected credential.
 > [!TIP]
 > **Using a coding agent?** `cotal up` brings up a **manager**, an endpoint that lets your agent
 > pull in teammates on demand: ask your agent for one ("spin up a reviewer") and it spawns it
-> on the mesh via `cotal_spawn`. See [docs/connect-claude.md](docs/connect-claude.md).
+> on the mesh via `cotal_spawn`. See [docs/connect-claude.mdx](docs/connect-claude.mdx).
 
 **Run it your way:** a whole team from one [`cotal.yaml` manifest](docs/manifest.md), each agent
 in its own [cmux](https://cmux.com), [tmux](https://github.com/tmux/tmux/wiki) or
@@ -285,7 +285,7 @@ history. [Durable transport](docs/presence-and-delivery.md#durable-transport)
 - **Roles as anycast addresses.** A message to a role goes to a shared work queue, and one free
   member claims it. [Addressing](docs/architecture.md#addressing)
 - **Push wake-ups.** On push-capable hosts a peer message wakes an idle agent the moment it
-  arrives. [Message delivery](docs/connect-claude.md#how-messages-reach-the-session)
+  arrives. [Message delivery](docs/connect-claude.mdx#how-messages-reach-the-session)
 
 The packages that implement all of this are listed in [AGENTS.md](AGENTS.md).
 

@@ -150,7 +150,7 @@ auto-clears the one-time dev-channel prompt, so the launch is hands-free. From t
 a peer like any other: its presence flips `working` / `idle` from lifecycle hooks, and mesh
 messages reach it two ways — **hook injection** at turn boundaries (the spine) and a **channel
 nudge** that wakes it the instant a message arrives while idle. See
-[connect-claude.md](../../docs/connect-claude.md) for the launch / install /
+[connect-claude.mdx](../../docs/connect-claude.mdx) for the launch / install /
 channel mechanics, and [architecture.md](../../docs/architecture.md) for the surface mapping.
 
 ## Inside a `join` session

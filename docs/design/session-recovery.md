@@ -595,7 +595,7 @@ A message the seat sent, or was delivered, at the instant of the cut is not a jo
 Delivery is durable at the broker, and the seat's acknowledgement is what decides whether a redelivery
 is a duplicate.
 
-`docs/connect-pi.md` documents the strictest shipped instance. The pi adapter uses three distinct
+`docs/connect-pi.mdx` documents the strictest shipped instance. The pi adapter uses three distinct
 proof points: the matching custom `message_start` proves pi dequeued the batch locally, a `context`
 event containing that exact batch proves it entered one provider request, and a successful
 `after_provider_response` proves acceptance early where the transport exposes an HTTP response, with
@@ -794,7 +794,7 @@ seats are not continuable however plausible their file layout looks.
 
 A procedure an operator runs to distinguish a real continuation from a silent fresh session. pi
 because it is the only connector that declares `exact`. Two hosts of the same architecture, host A
-and host B, each with a Cotal checkout and the pi binary the version pin in `docs/connect-pi.md`
+and host B, each with a Cotal checkout and the pi binary the version pin in `docs/connect-pi.mdx`
 names. The seat's workspace root is `$ROOT` on both.
 
 The commands below are the shipped surface: `cotal up`, `cotal spawn`, `cotal ps`,

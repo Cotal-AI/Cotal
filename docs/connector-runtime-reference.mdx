@@ -1,0 +1,63 @@
+---
+title: Connector runtime reference
+description: Shared connection state, presence ordering, and resume records for Cotal connectors.
+kind: Reference
+audience: integrators
+---
+
+This page describes the shared connector runtime. Each connector has a separate
+reference for its integration with the agent application.
+
+## Connection state
+
+`MeshAgent.transportConnected` reports whether the current NATS transport is live.
+`MeshAgent.connected` reports whether the full endpoint is bound and ready.
+These values represent separate states.
+
+A short broker disconnect marks the transport down until nats.js reconnects.
+The disconnect does not imply that the connector's full Cotal binding was removed
+and rebuilt. A clean connector stop clears both states locally.
+
+If a binding fails after transport connection, the endpoint closes the partial
+connection. Both states become false before the connector retries.
+
+The endpoint's `transport` event reports state changes. It does not replay earlier
+events to a listener added later. A connector reads `transportConnected` for the
+current state and subscribes to the event for later changes.
+
+`MeshAgent.connectionIssue` retains the latest failure before a successful bind.
+A successful bind clears the failure. Stopping preserves the failure for diagnosis.
+
+## Presence ordering
+
+During normal operation, presence writes from one agent complete in the order
+the agent issued them. Shutdown queues departure after writes already in progress
+and refuses newly submitted writes.
+
+If that queue stalls for three seconds, shutdown stops the endpoint directly.
+A host can also abandon a stalled queue to continue teardown. An abandoned write
+can still finish later because the underlying operation cannot be cancelled.
+See [Shutdown limits](claude-connector-reference.mdx#presence-mapping).
+
+## Resume records
+
+The manager records the source session for a seat launched with `--resume`.
+The seat's resume document holds the record. `cotal ps --wide` and
+`cotal ps --json` include it.
+
+Hermes and Jcode create their forks after launch. Their records include the source
+session title and a SHA-256 hash of the transcript they read. The manager reads
+these values once the fork exists. Each seat also prints the source session, title,
+and hash when it creates the fork.
+
+## Connector contracts
+
+- [Claude Code reference](claude-connector-reference.mdx)
+- [OpenCode reference](opencode-connector-reference.mdx)
+- [Codex reference](codex-connector-reference.mdx)
+- [Hermes reference](hermes-connector-reference.mdx)
+- [Jcode reference](jcode-connector-reference.mdx)
+- [pi reference](pi-connector-reference.mdx)
+
+The [connector authoring guide](authoring-a-connector.md) describes the extension
+interface. The [MCP tool catalog](mcp-tools.md) lists the tools shared by connector sessions.

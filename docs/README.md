@@ -73,13 +73,13 @@ Task dispatch:
 
 | Doc | Answers |
 |---|---|
-| [Connectors](connectors.md) | Which agent application should I use? |
-| [Connect Claude](connect-claude.md) | How does a Claude Code session join the mesh? |
-| [Connect OpenCode](connect-opencode.md) | How does an OpenCode session join? |
-| [Connect Codex](connect-codex.md) | How does a Codex session join? |
-| [Connect Hermes](connect-hermes.md) | How does a Hermes session join? |
-| [Connect Jcode](connect-jcode.md) | How does a Jcode session join? |
-| [Connect pi](connect-pi.md) | How do pi sessions and SDK agents join? |
+| [Connectors](connectors.mdx) | Which agent application should I use? |
+| [Connect Claude](connect-claude.mdx) | How does a Claude Code session join the mesh? |
+| [Connect OpenCode](connect-opencode.mdx) | How does an OpenCode session join? |
+| [Connect Codex](connect-codex.mdx) | How does a Codex session join? |
+| [Connect Hermes](connect-hermes.mdx) | How does a Hermes session join? |
+| [Connect Jcode](connect-jcode.mdx) | How does a Jcode session join? |
+| [Connect pi](connect-pi.mdx) | How do pi sessions and SDK agents join? |
 
 ### Build integrations
 
@@ -88,6 +88,18 @@ Task dispatch:
 | [Authoring a connector](authoring-a-connector.md) | How do I add support for another agent application? |
 | [Build a client](build-a-client.md) | How do I implement the wire contract in another language? |
 | [Embedding Cotal](embedding.md) | How do I build a service with the published packages? |
+
+#### Connector reference
+
+| Doc | Answers |
+|---|---|
+| [Connector runtime](connector-runtime-reference.mdx) | Which connection states, presence ordering, and resume records do connectors share? |
+| [Claude Code reference](claude-connector-reference.mdx) | How do binding, delivery, and events work in Claude Code? |
+| [OpenCode reference](opencode-connector-reference.mdx) | How do the OpenCode plugins and event versions differ? |
+| [Codex reference](codex-connector-reference.mdx) | How does Cotal host a Codex app-server session? |
+| [Hermes reference](hermes-connector-reference.mdx) | How do the Python gateway and local bridge work? |
+| [Jcode reference](jcode-connector-reference.mdx) | How does Cotal host a Jcode Harness API session? |
+| [pi reference](pi-connector-reference.mdx) | How does the pi extension manage tools, messages, and events? |
 
 ## Concepts
 

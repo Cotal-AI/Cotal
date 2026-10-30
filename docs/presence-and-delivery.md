@@ -228,11 +228,11 @@ A recipient's connector acknowledges a DM only once it has handed it to the sess
 session is busy and its bounded local inbox fills with directed mail, the oldest DM is evicted
 from that buffer but left unacknowledged: it stays pending on the recipient's durable and the
 broker redelivers it after the durable's ack wait, so it lands once the session drains
-([Connect Claude](connect-claude.md#how-messages-reach-the-session)).
+([Connect Claude](connect-claude.mdx#how-messages-reach-the-session)).
 
 A connector that acks only when a turn ends keeps the messages that turn carries from being
 redelivered while it runs, by restarting their ack wait with JetStream's in-progress ack
-([Connect OpenCode](connect-opencode.md#how-it-binds)). A redelivered copy says so: the broker
+([Connect OpenCode](connect-opencode.mdx#how-it-binds)). A redelivered copy says so: the broker
 counts each delivery, and a connector marks a message the broker delivered more than once as
 redelivered in the frame it injects. The count comes from the broker, so a sender cannot forge
 or hide it.
@@ -302,7 +302,7 @@ mode (`open` / `dnd` / `focus`) plus per-channel overrides (`quiet` / `muted`). 
 only shapes when the receiving agent's session is interrupted. It is mirrored into
 presence as advisory observability ("locally muted #deploys; DM to reach"), never read
 back into delivery. Semantics and tables:
-[Connect Claude](connect-claude.md#attention); the concrete
+[Connect Claude](connect-claude.mdx#attention); the concrete
 knobs: [`cotal_status` / `cotal_channel_mode`](mcp-tools.md).
 
 ## Related

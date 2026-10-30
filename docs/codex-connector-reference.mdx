@@ -1,0 +1,202 @@
+---
+title: "Codex connector reference"
+description: "Codex launch options, private credentials, delivery behavior, presence, and structured event limits."
+kind: "Reference"
+audience: "integrators"
+---
+
+The `codex` connector runs a host process that owns one mesh endpoint and drives a Codex app-server thread over JSON-RPC.
+[Connect Codex](connect-codex.mdx) covers installation and launch procedures.
+
+## Tool connection
+
+The host starts an authenticated app-server listener on loopback.
+Codex's native TUI connects to that listener with `codex resume --remote` and rejoins the host's thread.
+This native TUI attachment does not implement Cotal's `--resume` option.
+Both human turns and peer-driven turns use the same `cotal_*` tools.
+
+The host serves those tools through a bearer-authenticated loopback MCP endpoint.
+The app-server calls the tools against the host's existing mesh endpoint.
+There is no second mesh identity.
+The token is passed by environment-variable name rather than exposed in command arguments.
+
+Readiness requires the app-server, MCP endpoint, mesh connection, and initial presence publication.
+Initial broker connection failure ends startup within 15 seconds and reports the broker address and latest connection error.
+The host does not open the TUI before that gate succeeds.
+
+## Private home
+
+Each space and agent name maps to a hashed directory under `<workspace>/.cotal/codex/`.
+The workspace is the manager's workspace for managed launches and the launch directory for direct execution.
+The agent uses this directory as `CODEX_HOME`.
+It does not load the operator's `config.toml`, hooks, MCP servers, or project trust records.
+
+The host links the operator's `auth.json` into the private home and refreshes the link on each launch.
+The operator home is `CODEX_HOME` when set, or `~/.codex` otherwise.
+A symbolic link keeps ChatGPT-plan token refreshes on one credential file.
+The host refuses symbolic links at managed directory components before modifying them.
+
+Authentication requires that file or `OPENAI_API_KEY`.
+Credentials stored only in an OS keyring are unavailable in the private home.
+Missing authentication fails at thread start.
+Managed Codex agents are POSIX-only because their authentication depends on this symbolic link.
+
+## Message delivery
+
+An inbound batch starts a turn with `turn/start`.
+A directed message received during a turn uses `turn/steer`.
+Directed messages include DMs, anycast requests, and mentions.
+Ambient channel messages wait for the next turn boundary.
+
+The host acknowledges the exact message IDs carried by a turn when the turn completes.
+An operator interruption through the TUI also acknowledges that batch, treating it as dismissed.
+A failed turn retries with backoff.
+A missing or unrecognized terminal status leaves the batch unacknowledged without scheduling its own retry.
+
+If the app-server dies, the host starts a new app-server and thread while retaining its mesh identity, credentials, and durable consumer.
+The unacknowledged batch is submitted again.
+More than three crashes within two minutes ends the host.
+The TUI is replaced to follow the new listener and thread.
+
+A host shutdown interrupts its active turn but leaves the batch unacknowledged.
+A later same-name launch has its own delivery frontier, so redelivery to that successor is not guaranteed.
+Bounded inbox overflow can also evict an in-flight ID.
+Delivery remains [at least once](presence-and-delivery.md#durable-transport).
+
+## Model reporting
+
+The catalog comes from `model/list` on a short-lived app-server using the operator's authentication.
+Mesh identity variables are removed from that discovery process.
+Hidden models are omitted, and each model's supported reasoning efforts become variants.
+The query fails after 10 seconds or when its child process or input pipe closes.
+Those failures are reported as catalog errors without ending the manager.
+
+Model IDs and effort values are passed through without local validation.
+The started thread supplies the reported model ID.
+Presence includes a variant only when the launch requested one.
+The connector does not infer the active thread's default effort.
+
+App-server events determine working, idle, and waiting presence.
+Approval requests report an `approval` condition.
+Failed-turn conditions retain the native value in `condition.source`.
+Presence writes follow event order, so a failure or approval request keeps its condition until another turn starts.
+
+| Native error | Presence condition |
+| --- | --- |
+| `contextWindowExceeded` | `context` |
+| `sessionBudgetExceeded` | `budget` |
+| `usageLimitExceeded` | `billing` |
+| `rateLimitExceeded` | `rate_limit` |
+| `serverOverloaded` | `overloaded` |
+| `internalServerError`, `httpConnectionFailed` | `server` |
+| `unauthorized` | `auth` |
+| `badRequest`, `cyberPolicy`, `misalignmentPolicyViolation` | `request` |
+| Rollback, sandbox, `other`, or an unrecognized value | `failed` |
+| An error marked `willRetry` | `retrying` |
+
+## Terminal mode
+
+The host opens Codex's TUI when its stdout is a terminal.
+A managed agent normally has a PTY, so its default is the TUI even when the operator requested `--detach`.
+Without a terminal, the host prints an activity feed.
+`COTAL_CODEX_TUI=1` and `COTAL_CODEX_TUI=0` override terminal detection.
+Other accepted on/off spellings appear in [Configuration](config.md#environment-variables).
+Invalid values fail at startup.
+
+The process that builds the launch reads this preference.
+Managed launches use the manager's environment, including launches that attach immediately.
+Direct `--foreground` launches use the operator shell's environment.
+An override in the shell that requests a managed spawn does not change the manager's preference.
+
+Once the TUI owns the terminal, host diagnostics go to `<workspace>/.cotal/codex/<space>-<name>-<hash>/host.log`.
+The handoff line prints the concrete path.
+A failure is also reported through the attached terminal or the managed PTY.
+The file retains diagnostics after the terminal view ends.
+
+The app-server listener binds only loopback.
+Native TUI access from another host requires an operator-provided SSH port forward.
+`cotal attach` streams the manager's PTY and is the supported Cotal path for remote viewing.
+
+## Sandbox options
+
+Launch options use `--opt key=value` and become Codex `-c key=value` overrides.
+Keys are top-level configuration names.
+Values must be strings, numbers, or booleans.
+Nested values are expressed as TOML inline-table text, such as `sandbox_workspace_write={network_access=false}`.
+Objects and arrays in an agent file's launch options are refused.
+
+| Default | Behavior |
+| --- | --- |
+| `approval_policy="never"` | Commands run without an approval prompt. Interactive approval policies are refused. |
+| `sandbox_mode="workspace-write"` | The sandbox restricts local writes outside the workspace. |
+| `sandbox_workspace_write={network_access=true}` | Network access is enabled within workspace-write mode. |
+
+Explicit overrides take precedence over the connector's defaults and model selectors.
+The connector adds the network default only when the selected mode is `workspace-write`.
+The entire `mcp_servers` namespace is reserved because it supplies the mesh tools.
+
+The `read-only` mode further restricts writes.
+`danger-full-access` removes the Codex sandbox and permits writes wherever the OS user can write.
+The sandbox does not provide privacy for readable credentials or protection from networked side effects.
+A peer message can cause a model turn that discloses files or acts through an accessible credential.
+Turning network access off does not isolate files from the agent.
+
+## Event plane
+
+The default launch arms the AG-UI event plane on `events.<owner>.<actor>`.
+An unrestricted space permits `--no-events`.
+A registration that requires events refuses that opt-out.
+Direct user-mode launch material with `COTAL_EVENTS_REQUIRED=1` also arms the plane.
+An ordinary Codex session outside Cotal publishes nothing unless its environment arms the plane.
+
+The stream contains run boundaries, assistant text, reasoning summaries, and paired function-call or custom-tool activity.
+This includes `shell` and `apply_patch`.
+It excludes tool arguments, tool results, user prompts, injected peer messages, and developer instructions.
+The encrypted reasoning payload is also excluded.
+Codex's built-in web search, tool search, and image generation lack a pairable start record, so their activity is absent.
+
+The source is the thread's rollout file under the private home:
+
+```text
+sessions/<yyyy>/<mm>/<dd>/rollout-<stamp>-<thread>.jsonl
+```
+
+The file appears after the thread is primed.
+Publication starts at the position where the host binds to it.
+If the file is late, the host logs the delay and tries again at turn boundaries.
+Records written before the eventual bind are not republished.
+The bind position is persisted before the first read, so a host restart can recover that boundary.
+Records appended during emitter setup remain after that cursor and are published.
+
+An app-server restart creates a new thread and rollout file.
+The host flushes the old stream, closes its open run, and starts a separate stream for the replacement.
+If the new file is slow to appear, the bounded search delays closing the old stream.
+When that search ends unsuccessfully, publication pauses until a later successful bind.
+Activity is never attributed to the dead thread during that pause.
+
+A failed turn emits `RUN_ERROR` with the fixed message `run failed` and no error code.
+Upstream error text and `codex_error_info` are withheld because they can contain prompts or tool output.
+A broker outage can stop the emitter without ending the agent.
+The host logs `AG-UI emitter stopped`, records the retry delay, and restarts publication from its stored cursor after recovery.
+
+An event publish grant and an event read grant are separate permissions.
+The manager grants publication on the agent's own principal-keyed channel and rejects a concrete grant naming another agent's channel.
+Wildcard grants remain subject to the ordinary ACL rules.
+A direct foreground launch uses the operator's signing authority.
+Event readership is granted separately through `cotal actor grant` on a user-auth mesh or `cotal auth mint` on a static mesh.
+The [Claude Code event reference](claude-connector-reference.mdx#event-plane) describes these shared permissions.
+
+## Trust boundaries
+
+The listener requires codex-cli 0.145.0 or later.
+The connector relies on specific app-server protocol shapes, and later Codex releases can require a connector update.
+Current [OpenAI app-server documentation](https://developers.openai.com/codex/app-server/) distinguishes stable methods from methods and fields gated as experimental.
+Cotal's beta status applies to this integration.
+
+The connector refuses session resume and exact-session continuation.
+Its supported launch path creates a fresh thread with the required MCP configuration.
+It also refuses `connectors.codex.mcpServers` and `mcp_servers` launch overrides.
+
+Loopback binding and tokens protect the app-server and MCP endpoint against off-host access and other OS users.
+They do not isolate agents that run as the same OS user and can read each other's tokens.
+The private Codex home isolates configuration, not the authority of the shared OS account.

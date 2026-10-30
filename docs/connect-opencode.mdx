@@ -1,0 +1,119 @@
+---
+title: "Connect OpenCode"
+description: "Launch OpenCode on a Cotal mesh and choose the model and options for your installed version."
+kind: "Informative"
+audience: "operators"
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+Run OpenCode with its own terminal interface and the shared `cotal_*` tools.
+The connector installs its plugin at launch and directs peer messages into the session you can see.
+First [start a mesh](run-a-mesh.mdx).
+
+<Callout type="warn" title="Beta connector">
+Session resume and selected MCP-server sharing are unsupported.
+Spawned OpenCode agents allow tool execution without approval and inherit the operator's configured MCP servers.
+OpenCode 2.x also requires `--no-events`, so it cannot join a registration that requires events.
+</Callout>
+
+## Prepare OpenCode [#no-install-needed]
+
+Install and authenticate `opencode` on the execution host using the [OpenCode documentation](https://opencode.ai/docs/).
+Cotal recognizes the OpenCode 1.x `opencode-ai` line and the 2.x `@opencode/cli` line.
+It rejects other major versions.
+
+No OpenCode-side Cotal installation is needed.
+The OpenCode choice in `cotal setup` records your preference, and the connector injects its plugin at launch.
+
+## Launch OpenCode [#spawn-it]
+
+For OpenCode 1.x, run from the space's project folder:
+
+```bash
+cotal spawn --harness opencode
+```
+
+For OpenCode 2.x, opt out of the unsupported event plane:
+
+```bash
+cotal spawn --harness opencode --no-events
+```
+
+Cotal asks the manager to launch OpenCode, waits for it to join the mesh, and attaches your terminal.
+To launch a `researcher` persona without opening its terminal, add `--detach`:
+
+```bash
+cotal spawn researcher --harness opencode --detach
+cotal ps
+cotal attach researcher
+```
+
+Keep `--no-events` on that launch if you use 2.x.
+For direct execution, add `--foreground` instead of `--detach`.
+To select a persona file, use `--file ./researcher.md`.
+You can also set `agent: opencode` in an [agent file](agent-files.md) or a [team manifest](manifest.md).
+See [Launch agents](launch-agents.mdx) for persona selection and terminal controls.
+
+## Choose a model [#choose-a-model]
+
+On OpenCode 1.x, inspect the available catalog:
+
+```bash
+cotal models --harness opencode
+cotal models --harness opencode --refresh
+```
+
+Choose a `provider/model` ID and, when the model offers variants, a variant from that listing:
+
+```bash
+cotal spawn --harness opencode --model <provider/model> --variant <variant>
+```
+
+On 2.x, `cotal models` cannot list the catalog.
+Pass a model ID supported by your configured OpenCode server, and keep `--no-events` on the spawn.
+
+You can also set `model:` and `variant:` in the agent file.
+Explicit flags override those fields.
+Before joining the mesh, the connector checks an explicit model against the server that will run the session.
+A model visible only in the CLI catalog can still be refused.
+Cold startup has a two-minute readiness window.
+
+## Work in the session [#how-it-binds]
+
+Type in the attached OpenCode TUI to use the same session that receives mesh messages.
+On OpenCode 1.x, use `/new` to reset the context while keeping the mesh identity.
+On 2.x, keep mesh work in the launched session because the connector does not follow `/new` into a new session.
+To rebuild a wedged mesh connection from OpenCode, use `/reconnect`.
+
+The connector injects configuration through `OPENCODE_CONFIG_CONTENT` without writing your global config.
+This configuration merges with your existing settings, including MCP servers.
+Each managed agent stores its session database under `<workspace>/.cotal/opencode/<name>/`.
+See the [OpenCode connector reference](opencode-connector-reference.mdx) for configuration, message delivery, and shutdown behavior.
+
+## Watch structured events [#event-plane]
+
+OpenCode 1.x publishes run boundaries, assistant text, and tool activity to `events.<owner>.<actor>` by default.
+It excludes user text, tool arguments, and tool results.
+Reasoning publication is off by default.
+Use [Watch a mesh](watch-a-mesh.mdx) to observe agents and the [event reference](opencode-connector-reference.mdx#event-plane) for the stream's limits.
+
+On a space that permits opting out, add `--no-events` to disable publication.
+OpenCode 2.x requires that option because its event plane is unsupported.
+A registration that requires events cannot use 2.x.
+
+## Check the limits [#limits]
+
+- Session resume and exact-session continuation are unsupported.
+- `connectors.opencode.mcpServers` is unsupported. Agents inherit the operator's MCP servers through the config merge, without a Cotal filter for selecting a subset.
+- Spawned agents use `permission: "allow"`. Tool calls do not wait for human approval.
+- OpenCode 2.x has no Cotal event plane, model catalog listing, or `/new` session handoff. Pass `--no-events` and select the model explicitly when needed.
+
+## Continue [#see-also]
+
+- [Connector comparison](connectors.mdx)
+- [Define a team](define-a-team.mdx)
+- [MCP tools](mcp-tools.md)
+- [OpenCode connector reference](opencode-connector-reference.mdx)
+- [Connect Codex](connect-codex.mdx)
+- [Deploy against an external broker](deploy.mdx)

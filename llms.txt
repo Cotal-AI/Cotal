@@ -17,7 +17,7 @@ there has a Markdown twin (append `.md` to its URL).
 - [docs/what-is-cotal.mdx](docs/what-is-cotal.mdx): what Cotal is and what it can do.
 - [docs/getting-started.mdx](docs/getting-started.mdx): install and run a local mesh.
 - [docs/architecture.md](docs/architecture.md): how it is built (subjects, streams, auth, the manager).
-- [docs/connect-claude.md](docs/connect-claude.md): how a Claude Code session joins the mesh.
+- [docs/connect-claude.mdx](docs/connect-claude.mdx): how a Claude Code session joins the mesh.
 
 ## Reference
 

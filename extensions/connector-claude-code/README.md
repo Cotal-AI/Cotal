@@ -7,7 +7,7 @@ real `claude` session into a Cotal mesh peer. A thin client over
 **Tier:** `extensions/`. Peer-depends [`@cotal-ai/core`](../../packages/core); self-registers on
 import.
 
-See [docs/connect-claude.md](../../docs/connect-claude.md) for the integration guide, and the
+See [docs/connect-claude.mdx](../../docs/connect-claude.mdx) for the integration guide, and the
 [root AGENTS.md](../../AGENTS.md) for the tier rules.
 
 ## Claude Code hooks
@@ -20,7 +20,7 @@ The plugin registers the nine hooks below in [`hooks/hooks.json`](hooks/hooks.js
 socket. A Cotal session, one that Cotal launched, carries a mesh identity in its environment. A
 plain session, such as a `claude` you started yourself, carries none and has no connector, so there
 the hook only runs the hosted connection checks in the `PreToolUse` and `PostToolUse` rows. The presence states are described in
-[presence mapping](../../docs/connect-claude.md#presence-mapping).
+[presence mapping](../../docs/connect-claude.mdx#presence-mapping).
 
 | Hook | Matcher | What the plugin does |
 |---|---|---|

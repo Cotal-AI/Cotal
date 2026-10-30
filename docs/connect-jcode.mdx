@@ -1,0 +1,176 @@
+---
+title: "Connect Jcode (beta)"
+description: "Launch a private Jcode session on a Cotal mesh, choose its model, and fork an existing transcript."
+kind: "Informative"
+audience: "operators"
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+import { Card, Cards } from 'fumadocs-ui/components/card';
+
+Run [Jcode](https://github.com/1jehuang/jcode) as a Cotal peer with its own session and MCP configuration.
+The connector is included with the Cotal CLI.
+First [start the mesh](run-a-mesh.mdx).
+
+<Callout type="warn" title="Check the workspace before launch">
+
+Jcode can act with your OS user's filesystem, network, and provider privileges.
+Its private home prevents accidental session sharing but does not isolate hostile processes running as the same user.
+A workspace containing `.jcode/mcp.json`, `.mcp.json`, or `.claude/mcp.json` is refused because those files can override the connector's tools.
+
+</Callout>
+
+## Install Jcode [#install]
+
+Install a Jcode release with the protocol-v1 Harness API and make `jcode` available on the execution host's `PATH`.
+The connector uses the released `api-bridge` command and needs no Rust checkout.
+A protocol-major mismatch refuses the connection as `unsupported_version`.
+Windows is unsupported because the bridge uses Unix sockets.
+Managed seats target Linux, macOS, and BSD systems, subject to the [credential-copy requirements](jcode-connector-reference.mdx#credential-mirroring).
+
+Check the installed binary:
+
+```bash
+jcode version --json
+```
+
+If the connector is missing from an older Cotal installation, add it:
+
+```bash
+cotal ext add @cotal-ai/connector-jcode
+```
+
+Update Jcode between seats.
+A running managed seat disables Jcode's background binary updater and keeps the version selected at launch.
+
+## Launch a session [#spawn-it]
+
+```bash
+cotal spawn --harness jcode
+```
+
+Cotal asks the manager to launch Jcode, waits for readiness, and attaches your terminal.
+Jcode must complete a provider-backed tool check before it joins, so its first launch can take several minutes.
+The [readiness diagnostics](jcode-connector-reference.mdx#readiness) explain the outcome lines.
+
+To start a catalog persona without attaching, use its name:
+
+```bash
+cotal spawn reviewer --harness jcode --detach
+cotal ps
+cotal attach reviewer
+cotal stop reviewer
+```
+
+These commands assume a `reviewer` persona exists.
+For a persona file on the execution host, use `--file <persona-file>`.
+To run Jcode directly in this terminal, add `--foreground`.
+
+To provide the first instruction at launch, add `--prompt`:
+
+```bash
+cotal spawn --harness jcode --prompt "Review the current change."
+```
+
+A terminal launch opens Jcode's TUI on the managed session.
+Piped output leaves the connector headless.
+`COTAL_JCODE_TUI=1` forces the TUI, and `COTAL_JCODE_TUI=0` disables it.
+Set this variable in the process that builds the launch, which is the manager for managed launches.
+Invalid boolean values are refused.
+
+To prefer Jcode when no flag or persona chooses another connector, set `COTAL_DEFAULT_AGENT=jcode`.
+See [Launch agents](launch-agents.mdx) for persona and manager selection.
+
+### Choose a model
+
+List models declared in your Jcode configuration:
+
+```bash
+cotal models --harness jcode
+```
+
+The list comes from `config.toml`, rather than a live provider probe.
+A declared reasoning tier can still be rejected by the provider.
+`--refresh` does not change that distinction.
+
+Pass a bare model ID, without a `provider/` prefix:
+
+```bash
+cotal spawn --harness jcode --model <model> --variant high
+```
+
+`--variant` requests a reasoning effort.
+The model and effort flags override the persona's `model:` and `variant:` fields.
+Omit the effort to keep Jcode's configured default.
+Cotal verifies the provider route and refuses an unsupported or rejected effort before the first turn.
+The Harness API cannot report the effective effort, so Cotal records the accepted request rather than an observed value.
+
+### Fork an existing session
+
+```bash
+cotal spawn --harness jcode --resume <session-id>
+```
+
+This creates a private fork from your `JCODE_HOME`, or Jcode's default home.
+The source transcript is read without appending to it.
+A missing, invalid, unstable, or unreadable transcript is refused before launch.
+
+Use the same space, seat name, and manager workspace to continue the seat's saved session on a later launch.
+A seat that already holds the fork does not read or fork the source again.
+`cotal ps --wide` shows the source ID, title, and transcript hash.
+See [Session state](jcode-connector-reference.mdx#session-state) for selection rules and fork validation.
+
+## Private session ownership [#how-it-binds]
+
+Each seat has a private Jcode instance and home under `<manager-workspace>/.cotal/jcode/`.
+The connector never attaches to your operator-run bridge or its live session inventory.
+It refreshes provider credentials for the seat and gives Jcode a stdio MCP entry for the shared `cotal_*` tools.
+
+See the [Jcode connector reference](jcode-connector-reference.mdx) for process cleanup, credential copying, startup checks, and recovery.
+
+## Watch events [#event-plane]
+
+Jcode publishes run boundaries, persisted assistant text, reasoning, and tool boundaries on `events.<owner>.<actor>`.
+It does not publish user prompts, tool arguments, or tool results.
+Text arrives after Jcode persists a block, rather than as live token updates.
+
+The event plane is enabled by default.
+`--no-events` opts out only on a space that allows it.
+See [Event access](connect-claude.mdx#event-plane) for grants and [Jcode event behavior](jcode-connector-reference.mdx#event-plane) for persistence and recovery.
+
+## Resolve a launch refusal [#model-limits]
+
+A model with a provider prefix is refused as `model_prefix_rejected`.
+`model_refused` means Jcode rejected the bare ID.
+`model_mismatch` means Cotal could not verify one provider route for the requested effort.
+Check the model declaration and provider configuration before trying again.
+
+`private_state` names a problem preparing the private home, credentials, or socket alias.
+`sessions_unwritable` names a session directory that cannot accept writes.
+Correct that directory's permissions yourself; the connector does not widen them.
+`sessions_enumeration_failed` identifies a failed stored-session lookup when session creation also cannot proceed.
+
+The connector keeps an owner-only log at `<private-home>/logs/connector-<timestamp>-<pid>.log`.
+If the manager reports readiness as `uncertain`, inspect `cotal ps` or attach to the allocated seat before launching another.
+A host `readiness_timeout` is different: the connector kills its private tree and never joins.
+
+The connector refuses exact-session continuation, `--share-tools`, and arbitrary `--opt` values.
+Use `--resume` for a private fork.
+Project MCP configuration and container deployment are unsupported.
+See [Model selection](jcode-connector-reference.mdx#model-selection) and [Readiness](jcode-connector-reference.mdx#readiness) for the full contracts.
+
+## Keep the host boundary clear [#security-limits]
+
+Remote peer messages can influence Jcode's coding actions.
+Cotal's spawn permission controls who can create the seat; it does not sandbox actions after launch.
+Use OS isolation when peers must not share a user's privileges.
+The current deployment image does not include Jcode.
+
+<Cards>
+  <Card title="Jcode connector reference" href="jcode-connector-reference.mdx">
+    Look up private state, delivery acknowledgements, recovery, and model diagnostics.
+  </Card>
+  <Card title="Connector comparison" href="connectors.mdx">
+    Compare supported launch features and platform limits.
+  </Card>
+</Cards>

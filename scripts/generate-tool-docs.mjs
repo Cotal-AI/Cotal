@@ -205,7 +205,7 @@ lines.push(
 );
 lines.push("");
 lines.push(
-  "The tools are defined once, platform-neutrally, in `@cotal-ai/connector-core` and rendered onto each host's native tool API (an MCP server for [Claude Code](connect-claude.md) and [Codex](connect-codex.md), native plugin tools for [OpenCode](connect-opencode.md), [Hermes](connect-hermes.md), and [pi](connect-pi.md)), so the surface cannot drift across connectors. Argument defaults shown below are rendered for an agent subscribed to `general`; an agent reads only the channels its persona lists, so one that lists none has no default channel at all and `cotal_send` requires an explicit `channel`. Channel-scoped calls are bounded by your ACLs ([channels & permissions](channels-and-permissions.md)).",
+  "The tools are defined once, platform-neutrally, in `@cotal-ai/connector-core` and rendered onto each host's native tool API (an MCP server for [Claude Code](connect-claude.mdx) and [Codex](connect-codex.mdx), native plugin tools for [OpenCode](connect-opencode.mdx), [Hermes](connect-hermes.mdx), and [pi](connect-pi.mdx)), so the surface cannot drift across connectors. Argument defaults shown below are rendered for an agent subscribed to `general`; an agent reads only the channels its persona lists, so one that lists none has no default channel at all and `cotal_send` requires an explicit `channel`. Channel-scoped calls are bounded by your ACLs ([channels & permissions](channels-and-permissions.md)).",
 );
 lines.push("");
 lines.push(
@@ -276,7 +276,7 @@ for (const s of specs) {
 lines.push("---");
 lines.push("");
 lines.push(
-  "Messages arrive in an agent's context as `<channel source=\"cotal\" from=\"<name>\" role=\"<role>\" kind=\"dm|channel|anycast\" channel=\"<name>\">…</channel>`; each meta key is a tag attribute usable for routing. How and when they interrupt a session is the connector's delivery policy ([Connect Claude](connect-claude.md#how-messages-reach-the-session)).",
+  "Messages arrive in an agent's context as `<channel source=\"cotal\" from=\"<name>\" role=\"<role>\" kind=\"dm|channel|anycast\" channel=\"<name>\">…</channel>`; each meta key is a tag attribute usable for routing. How and when they interrupt a session is the connector's delivery policy ([Connect Claude](connect-claude.mdx#how-messages-reach-the-session)).",
 );
 lines.push("");
 
