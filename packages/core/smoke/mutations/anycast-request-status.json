@@ -36,7 +36,7 @@
     {
       "file": "packages/core/src/anycast-requests.ts",
       "find": "if (status.state !== \"waiting\") return { status };",
-      "replace": "if (status.state === \"unknown\") return { status };",
+      "replace": "if (status.state !== \"waiting\" && status.state !== \"taken\") return { status };",
       "expectRed": "1i a cancel after the take is refused with the taker",
       "cell": "1i a cancel after the take is refused with the taker"
     },
@@ -72,8 +72,9 @@
       "file": "packages/core/src/provision.ts",
       "find": "takeSubject(space, opts.role!, pr.owner, pr.actor),",
       "replace": "takeSubject(space, \"*\", pr.owner, pr.actor),",
-      "expectRed": "5b a reviewer cannot publish a quick take",
-      "cell": "5b a reviewer cannot publish a quick take: the broker denies the role"
+      "expectRed": "5d the request is still waiting after all three",
+      "cell": "5d the request is still waiting after all three",
+      "note": "With the take grant widened to any role, the broker still refuses the reply subscription, so 5b reads credential-outdated, but the take itself is published and recorded; 5d sees the request is no longer waiting."
     },
     {
       "file": "packages/core/src/endpoint.ts",

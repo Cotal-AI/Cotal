@@ -225,10 +225,12 @@ try {
     const s = await sender.ep.anycastAttributed("reviewer", `race ${i}`);
     const g = await nextRequest(x, seen, s.msg.id);
     mark(g!);
-    // Alternate which call is issued first, so both losing orders are exercised.
+    // Alternate which call is issued first, so both losing orders are exercised. A cancel that
+    // throws found the row changed under it, which is a race without one winner.
+    const cancelOf = () => sender.ep.cancelAnycast(s.ack.seq).catch((e: Error) => ({ state: "threw" as const, error: e.message }));
     const [take, cancel] = i % 2 === 0
-      ? await Promise.all([g!.delivery.take!(), sender.ep.cancelAnycast(s.ack.seq)])
-      : await Promise.all([sender.ep.cancelAnycast(s.ack.seq), g!.delivery.take!()]).then(([c, t]) => [t, c] as const);
+      ? await Promise.all([g!.delivery.take!(), cancelOf()])
+      : await Promise.all([cancelOf(), g!.delivery.take!()]).then(([c, t]) => [t, c] as const);
     const after = await sender.ep.anycastStatus(s.ack.seq);
     const won = take.taken && cancel.state === "taken" && after.state === "taken" && await queued(s.ack.seq);
     const lost = !take.taken && take.drop && take.reason === "cancelled" && cancel.state === "cancelled" && after.state === "cancelled" && !(await queued(s.ack.seq));
