@@ -126,26 +126,19 @@ try {
     }),
     "scope [run] beyond [spawn]",
   );
-  // Only tokens the mesh reads are delegable: a parent that lists an unknown token cannot hand it on.
-  grantActor(dir, { owner: OWNER, actor: "oddparent", scope: ["spawn", "machine-vitals", "frobnicate"], allowSubscribe: ["general"], allowPublish: ["general"] });
-  let vitalsKid: { scope: string[] } | undefined, vitalsError: unknown;
+  // The ledger's vocabulary stays open: a parent-held token outside the static agent set delegates.
+  grantActor(dir, { owner: OWNER, actor: "opsparent", scope: ["spawn", "supervise", "machine-vitals"], allowSubscribe: ["general"], allowPublish: ["general"] });
+  let opsKid: { scope: string[] } | undefined, opsError: unknown;
   try {
-    vitalsKid = grantManagedActor(dir, { custody: { kind: "foreground" },
-      owner: OWNER, actor: "vitalskid", scope: ["machine-vitals"], parent: `${OWNER}.oddparent`,
+    opsKid = grantManagedActor(dir, { custody: { kind: "foreground" },
+      owner: OWNER, actor: "opskid", scope: ["supervise", "machine-vitals"], parent: `${OWNER}.opsparent`,
       allowSubscribe: ["general"], allowPublish: [], tokenHash: newActorToken().tokenHash, lifecycleUid: mintLifecycleUid(),
     });
   } catch (e) {
-    vitalsError = e;
+    opsError = e;
   }
-  check("a token the mesh reads delegates when the parent holds it (machine-vitals)", vitalsKid?.scope.includes("machine-vitals") === true, vitalsError);
-  rejects(
-    "an unknown token is refused even when the parent lists it",
-    () => grantManagedActor(dir, { custody: { kind: "foreground" },
-      owner: OWNER, actor: "oddkid", scope: ["frobnicate"], parent: `${OWNER}.oddparent`,
-      allowSubscribe: ["general"], allowPublish: [], tokenHash: newActorToken().tokenHash, lifecycleUid: mintLifecycleUid(),
-    }),
-    "scope [frobnicate] beyond",
-  );
+  check("a parent-held token outside the static agent set delegates (supervise, machine-vitals)",
+    opsKid?.scope.includes("supervise") === true && opsKid.scope.includes("machine-vitals"), opsError);
   rejects(
     "a cross-owner delegation is refused (agents live under their spawner's owner)",
     () => grantManagedActor(dir, { custody: { kind: "foreground" },

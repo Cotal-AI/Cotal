@@ -55,17 +55,17 @@ takes from its spawner are all measured. The operator's own commands, such as `c
 - A manager persona that spawns helpers on channels it does not read or post itself is refused.
   Add those channels to the manager persona's `allowSubscribe` and `allowPublish`, or narrow the
   helper.
+- A spawner that cannot post on its own event channel, such as one started with `--no-events`, can
+  no longer arm a helper's event plane. Spawn the helper with `events: false`, or start the spawner
+  with its event plane.
 - A spawner holding `capabilities: [run]` may hand on `spawn` as well as `run`. A token no agent mint
   uses, such as `machine-vitals`, is refused on a static mesh.
 - An agent started by foreground `cotal spawn`, `cotal join` or `cotal mint` carries no issued
-  evidence, so it hands on no grant. Its helpers start with no channels and no capabilities, and a
-  persona that names any is refused. Start such a spawner under a manager with `cotal spawn
+  evidence, so it hands on no grant. Its helpers start with no channels, no capabilities and no
+  event plane, and a spawn that asks for any of them is refused. Start such a spawner under a manager with `cotal spawn
   --detach` instead.
-- A user-auth mesh keeps its ledger rule with two changes. A spawner whose scope holds `run` may now
-  hand on `spawn`. A scope token the mesh does not read, anything other than `admin`, `run`,
-  `spawn`, `supervise`, `machine-vitals` and `role:<r>`, is no longer handed on. A managed agent
-  that already carries such a token under a spawner without `admin` is refused at its next bearer
-  refresh, so respawn it without the token.
+- A user-auth mesh keeps its ledger rule, except that a spawner whose scope holds `run` may now hand
+  on `spawn`.
 
 ## Multi-space host acknowledgments after 0.116.1
 

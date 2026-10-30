@@ -1,7 +1,9 @@
 /** The delegation bound: a grant is tested against the spawner's evidence at the spawner's own
  *  coordinate, and each part it does not hold is named. Each ceiling here is the evidence an agent
  *  mint records (provision.ts imports the minted permissions verbatim). No broker. */
-import { permissionsFor, type MintOpts } from "../src/provision.js";
+import { createSpaceAuth, mintCreds, permissionsFor, type MintOpts } from "../src/provision.js";
+import { mintLifecycleUid, newIdentity } from "../src/index.js";
+import type { IssuanceSeam } from "../src/issued-authority.js";
 import { importNativeSubjectPermissions, mintAcceptedToken, mintGeneration, type IssuedEvidence, type IssuedSubjectPermissions } from "../src/issued-authority.js";
 import { capabilityWithin, grantOverreach, grantParts, issuedSpawnerStanding, type DelegatedGrant, type GrantOverreach } from "../src/grant-bound.js";
 import type { IssuedCaller } from "../src/endpoint-subjects.js";
@@ -142,6 +144,32 @@ console.log("standing (static spawner)");
   ok("a managed agent is bounded", issuedSpawnerStanding(ev(mint("agent", { capabilities: ["spawn"] }), true)) === "bounded");
   ok("an agent holding the admin set is admin", issuedSpawnerStanding(ev(mint("agent", { capabilities: ["admin"] }), true)) === "admin");
   ok("a sourced instrument shape is not an instrument", issuedSpawnerStanding(ev(mint("control-caller-privileged"), true)) === "bounded");
+  const mcPerms = importNativeSubjectPermissions(permissionsFor("manager-caller", space,
+    { owner: caller.owner, actor: caller.actor, connId: caller.actor, lifecycleUid: caller.uid },
+    { lifecycleUid: caller.uid, managerInstanceId: "inst0000000000000000000000a1", capabilities: ["spawn"], issued: { generation: caller.generation, acceptedToken: mintAcceptedToken() } }));
+  ok("a sourced manager-caller is bounded, never an instrument", issuedSpawnerStanding(ev(mcPerms, true)) === "bounded");
+}
+
+console.log("issuer invariant");
+{
+  // A fake evidence store whose stage records the profile and stops the mint, so no broker is needed.
+  const STAGED = "staged: the issuer reached the evidence store";
+  const auth = await createSpaceAuth(space);
+  const issueSourceFree = async (profile: "agent" | "control-caller-privileged" | "manager-caller", extra: Omit<MintOpts, "lifecycleUid" | "issued" | "issuance" | "expiresAt"> = {}) => {
+    const now = Math.floor(Date.now() / 1000);
+    const seam = { mode: "issue", sources: [], accepted: {}, store: { stage: async () => { throw new Error(STAGED); } } } as unknown as IssuanceSeam;
+    try {
+      await mintCreds(auth, newIdentity(), profile, { ...extra, lifecycleUid: mintLifecycleUid(), expiresAt: now + 300,
+        issued: { generation: mintGeneration(now + 3600), acceptedToken: mintAcceptedToken() }, issuance: seam });
+      return "minted";
+    } catch (e) {
+      return e instanceof Error ? e.message : String(e);
+    }
+  };
+  ok("a source-free instrument reaches the evidence store", (await issueSourceFree("control-caller-privileged")) === STAGED);
+  ok("a source-free agent reaches it too: it carries its own presence key", (await issueSourceFree("agent")) === STAGED);
+  const mc = await issueSourceFree("manager-caller", { managerInstanceId: "inst0000000000000000000000a1" });
+  ok("a source-free non-instrument with no presence key of its own is refused before staging", /must carry its own presence key/.test(mc), mc);
 }
 
 console.log("token rule (ledger)");

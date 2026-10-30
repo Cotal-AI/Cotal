@@ -143,10 +143,12 @@ The guarantees, at a glance, each enforced by the broker per
   and capabilities, and the manager refuses any part the caller does not hold itself. On a
   static-auth mesh the measure is the caller's issued evidence, the ceiling its own credential was
   minted with ([SPEC 13.15](../SPEC.md#1315-issued-authority)), and `events.*` is measured like any
-  other channel. A caller whose evidence does not resolve hands on no grant. That includes
+  other channel. A helper's own event plane is armed only when the spawner may post on its own. A caller whose evidence does not resolve hands on no grant. That includes
   agents started by foreground `cotal spawn`, `cotal join` and `cotal mint`, whose credentials
   carry no issued evidence. Operator instruments and admin spawners are exempt. A
-  per-user-auth mesh checks the same rule on its ledger: every delegation must sit inside the
+  per-user-auth mesh checks the rule on its ledger, where any scope token the spawner's row lists
+  can be handed on, `machine-vitals` included; a static spawner hands on only what an agent mint
+  carries, so `machine-vitals` does not pass there. On the ledger every delegation must sit inside the
   spawner's own grant, checked by NATS-pattern containment along the whole chain, at the grant
   write and again at every bearer exchange ([identity & auth](identity-and-auth.md)). On a static
   mesh two things are not measured: the helper's role, and the spawns a workflow run makes, so a

@@ -1,0 +1,23 @@
+{
+  "suite": [
+    "implementations/manager/smoke/spawn-grant-door.smoke.ts"
+  ],
+  "guard": "the served spawn door hands the bound the caller the broker pinned on the request subject",
+  "command": "pnpm smoke:spawn-grant-door",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/mutations/spawn-grant-door.json",
+  "completionMarker": "SPAWN-GRANT-DOOR SMOKE",
+  "why": [
+    "The bound exempts a spawn with no authenticated caller, the manager's own composition root.",
+    "D1 drops the caller from the served door's handoff to startAgent, so every served static spawn",
+    "would read as the composition root and pass unbounded."
+  ],
+  "mutations": [
+    {
+      "name": "D1 drop the served caller from the handoff",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      caller,\n      hooks,\n      authenticatedCaller,\n    );\n  }",
+      "replace": "      caller,\n      hooks,\n    );\n  }",
+      "expectRed": "a served spawn wider than the spawner is refused at the door, naming the part"
+    }
+  ]
+}

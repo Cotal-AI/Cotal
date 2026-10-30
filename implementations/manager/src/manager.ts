@@ -77,6 +77,7 @@ import {
   AUTH_ENDPOINT,
   EP_CMD_RETIRE_LIFECYCLE,
   controlServiceSubject,
+  eventChannel,
   eventChannelPrincipal,
   resolveService,
   invokeCommand,
@@ -6375,7 +6376,8 @@ export class Manager {
   private async staticSpawnBound(caller: EpCaller | undefined): Promise<StaticSpawnBound> {
     if (this.meshMode !== "static" || caller === undefined) return { kind: "exempt" };
     // A workflow run's spawns are not bounded here: the driver's own credential is not the run's
-    // authority, and the run's admission (SPEC 14.8) does not record what its starter may hand on.
+    // authority, and the run's admission (SPEC 14.8) records its starter's permissions but no
+    // verdict on what the starter may hand on, so an instrument-started run cannot be told apart.
     if (this.runHosting?.admittedCaller(caller) !== undefined) return { kind: "exempt" };
     if (!isIssuedCaller(caller))
       return { kind: "none", reason: "its credential carries no issued generation (an unissued mint or a legacy rail)" };
@@ -6390,17 +6392,25 @@ export class Manager {
   }
 
   /** The refusal for a grant its static spawner does not hold, or `undefined` when it holds all of
-   *  it. Each part is named, so the caller can drop exactly what overreached. */
-  private spawnBoundRefusal(bound: StaticSpawnBound, grant: DelegatedGrant): string | undefined {
+   *  it. Each part is named, so the caller can drop exactly what overreached. `armsEvents` is whether
+   *  the helper's own event plane will be minted: that row is keyed on a principal allocated later,
+   *  so it is measured as the spawner's own, the rule the ledger applies. */
+  private spawnBoundRefusal(bound: StaticSpawnBound, grant: DelegatedGrant, armsEvents: boolean): string | undefined {
     if (bound.kind === "exempt") return undefined;
     let over: GrantOverreach[];
+    let eventsOver: boolean;
     try {
       over = bound.kind === "none" ? grantParts(grant) : grantOverreach(this.space, bound.caller, bound.ceiling, grant);
+      eventsOver = armsEvents && (bound.kind === "none"
+        || grantOverreach(this.space, bound.caller, bound.ceiling, { allowPublish: [eventChannel({ owner: bound.caller.owner, actor: bound.caller.actor })] }).length > 0);
     } catch (e) {
       return `spawn: ${rejectionText(e)}`;
     }
-    if (!over.length) return undefined;
-    const named = over.map((o) => `${o.field} ${o.value}`).join(", ");
+    if (!over.length && !eventsOver) return undefined;
+    const named = [
+      ...over.map((o) => `${o.field} ${o.value}`),
+      ...(eventsOver ? ["events (the helper's own event plane; pass events: false to spawn without it)"] : []),
+    ].join(", ");
     return bound.kind === "none"
       ? `spawn: the spawner holds no issued evidence (SPEC 13.15), so it hands on no grant: ${bound.reason}. This spawn asks for ${named}. ` +
           `Spawn a persona that names none of these, or start the spawner under a manager (\`cotal spawn --detach\`), whose seats carry issued evidence.`
@@ -6636,14 +6646,18 @@ export class Manager {
     } catch (e) {
       return { ok: false, error: opts.resolved ? `launch agent: ${rejectionText(e)}` : `persona ${configPath}: ${rejectionText(e)}` };
     }
+    // The AG-UI event plane is on unless the launch explicitly opted out. A connector that cannot
+    // emit one is refused further down, before anything is minted.
+    const events = this.eventsRequired || opts.events !== false;
     // THE DELEGATION BOUND, on the grant as it will be minted: every channel and capability the
-    // helper gets, from the persona, the raw overrides and the `callerAcl` default alike, so no
-    // door reaches the mint around it. Before any reserve or mint, so a refusal leaves nothing.
+    // helper gets, from the persona, the raw overrides and the `callerAcl` default alike, and its own
+    // event plane, so no door reaches the mint around it. Before any reserve or mint, so a refusal
+    // leaves nothing.
     const boundRefusal = this.spawnBoundRefusal(bound, {
       allowSubscribe,
       ...(allowPublish !== undefined ? { allowPublish } : {}),
       ...(capabilities !== undefined ? { capabilities } : {}),
-    });
+    }, events);
     if (boundRefusal) return { ok: false, error: boundRefusal };
     // Checked after every path has resolved its selectors: a direct `startAgent` call skips the
     // `start` op's checks, and no connector may receive a blank one (#2862).
@@ -6724,16 +6738,15 @@ export class Manager {
     const unportable = runtime.spawnDelegated ? Object.keys(launchOptions ?? {}).filter((k) => typeof launchOptions![k] !== "string") : [];
     if (unportable.length)
       return { ok: false, error: `runtime "${runtime.kind}" starts seats outside this host, so it cannot pass non-string launch options (${unportable.join(", ")})` };
-    // The AG-UI event plane is on unless the launch explicitly opted out. Refused HERE, before
-    // anything is minted: a connector that cannot
-    // emit must fail before provisioning rather than after, exactly as an unsupported `resume` does.
+    // An event plane the connector cannot emit is refused HERE, before anything is minted: a
+    // connector that cannot emit must fail before provisioning rather than after, as an
+    // unsupported `resume` does.
     // The GRANT itself cannot be derived yet. It is keyed on the agent's PRINCIPAL, and in user mode
     // the principal's owner is resolved further down, so deriving it from anything in scope here
     // would mean guessing at the identity the child will actually connect as. It is added at the
     // accept seam below, where the allocated triple exists.
     const eventsRefused = this.eventsRefusal(connector, opts.events);
     if (eventsRefused) return { ok: false, error: eventsRefused };
-    const events = this.eventsRequired || opts.events !== false;
 
     // The roster the allocation consults must reflect the initial presence snapshot,
     // or a spawn immediately after manager boot races an already-live unmanaged peer and re-opens the

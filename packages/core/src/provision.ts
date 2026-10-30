@@ -98,7 +98,7 @@ import { parseServiceConnectionBinding, type ServiceConnectionBinding } from "./
 import { SERVICE_ACCESS_TTL_SECONDS } from "./service-authority-limits.js";
 import { effectsBindGrants, poolOwnerBindGrants, goalWriterGrants, sessionLedgerGrants, epAuthBucket, sessionsBucket, epcStreamName, endpointPlaneStreamNames, eptReqStreamName, eptStreamName, hardenedAuthorityStreamNames, timerWriterDurable, timerWriterGrants } from "./endpoint-binding.js";
 import { epsSubject, epCallerReplyFilter, assertGeneration, AUTH_ENDPOINT, EP_CMD_RETIRE_LIFECYCLE, type EpCaller, type IssuedCaller } from "./endpoint-subjects.js";
-import { acceptedReadGrant, acceptedBucket, importNativeSubjectPermissions, issuedBucket, issuedHorizon, issuedStoreStreamNames, writeAcceptedRow, type IssuanceSeam, type IssuedAuthorityRef } from "./issued-authority.js";
+import { acceptedReadGrant, acceptedBucket, importNativeSubjectPermissions, issuedBucket, issuedHorizon, issuedPermitsPattern, issuedStoreStreamNames, writeAcceptedRow, type IssuanceSeam, type IssuedAuthorityRef } from "./issued-authority.js";
 import { admissionBucket, admissionKey, revocationKey } from "./run-admission.js";
 import { runSubmissionKey } from "./run-submission.js";
 import { runDriverGrants, runMediatorGrants, runOperatorGrants, type RunDriverGrantArgs, type RunOperatorGrantArgs } from "./run-driver-grants.js";
@@ -1090,6 +1090,11 @@ async function releaseIssuance(
     await seam.finalize?.(credentialId);
     return;
   }
+  // The spawn bound reads an issuance with no source and no presence key of its own as an operator
+  // instrument (grant-bound.ts, issuedSpawnerStanding), so only an instrument profile is issued that
+  // way. Any other profile issued without a source must carry its own presence key.
+  if (seam.sources.length === 0 && !INSTRUMENT_PROFILES.has(profile) && !issuedPermitsPattern(permissions.publish, presenceKeySubject(space, pr.owner, pr.actor)))
+    throw new Error(`mintCreds: a "${profile}" issuance with no source must carry its own presence key, or the spawn bound would read it as an operator instrument (SPEC 13.15)`);
   const prepared = await seam.store.stage({
     version: 1,
     ref,
@@ -1196,6 +1201,8 @@ export async function mintServiceCalloutJwt(
 /** The profiles whose credential carries caller rails, and can therefore be minted as an
  *  issuance (SPEC 13.15). Everything else is infrastructure or a one-shot with no rail to bind. */
 const ISSUABLE_PROFILES: ReadonlySet<Profile> = new Set<Profile>(["agent", "control-caller-privileged", "control-caller-admin", "deployer", "manager-caller"]);
+/** The operator instruments: the only profiles issued with no source and no presence key of their own. */
+const INSTRUMENT_PROFILES: ReadonlySet<Profile> = new Set<Profile>(["control-caller-privileged", "control-caller-admin", "deployer"]);
 
 /** Build the NATS user permission object for a profile: a default-deny allow-list scoped to
  *  exactly what each profile does. Every profile is now enumerated least-privilege — the former

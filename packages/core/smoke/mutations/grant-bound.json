@@ -15,7 +15,9 @@
     "B1 drops the subtraction, so the coordinate's own rows decide and every grant refuses. B2",
     "stops folding subscribe into the read ACL, so a subscribe-only grant escapes the bound. B3",
     "stops testing publish rows. B4 forgets that run carries spawn. B5 mints a class rail for an",
-    "instance pin. B6 reads role:<r> as an ordinary token, so a held role cannot be handed on."
+    "instance pin. B6 reads role:<r> as an ordinary token, so a held role cannot be handed on.",
+    "",
+    "I1 drops the issuer's guard, so a source-free manager-caller could be issued and read as an instrument."
   ],
   "mutations": [
     {
@@ -59,6 +61,13 @@
       "find": "    const role = ROLE_TOKEN.exec(token)?.[1];",
       "replace": "    const role = undefined as string | undefined;",
       "expectRed": "role:<r> as a capability token is held when the spawner holds that role"
+    },
+    {
+      "name": "I1 issue a source-free non-instrument with no presence key",
+      "file": "packages/core/src/provision.ts",
+      "find": "  if (seam.sources.length === 0 && !INSTRUMENT_PROFILES.has(profile) && !issuedPermitsPattern(permissions.publish, presenceKeySubject(space, pr.owner, pr.actor)))",
+      "replace": "  if (false)",
+      "expectRed": "a source-free non-instrument with no presence key of its own is refused before staging"
     }
   ]
 }
