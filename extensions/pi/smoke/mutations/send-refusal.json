@@ -13,6 +13,8 @@
     "",
     "PS1 puts that wrapper check back.",
     "",
+    "PS2 stops dropping a leading #, so #team.> reaches the shared check as a name that is no channel.",
+    "",
     "NO BUILD STEP: the suite imports ../src/tools.js."
   ],
   "mutations": [
@@ -24,6 +26,15 @@
       "expectRed": "pi refuses team.> with the shared pattern refusal, naming both ways",
       "cell": "pi refuses team.> with the shared pattern refusal, naming both ways",
       "note": "The cold review's live defect: the pi wrapper's own line, with neither way to reach a family."
+    },
+    {
+      "name": "PS2 pi stops dropping a leading # before the shared check",
+      "file": "extensions/pi/src/tools.ts",
+      "find": "args.channel = args.channel.replace(/^#+/, \"\");",
+      "replace": "args.channel = args.channel;",
+      "expectRed": "pi drops a leading # before the shared check, so #team.** is refused as \"team.**\"",
+      "cell": "pi drops a leading # before the shared check, so #team.** is refused as \"team.**\"",
+      "note": "A model that echoes the display # back would be told its channel is no channel name."
     }
   ]
 }

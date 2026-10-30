@@ -34,6 +34,12 @@
     "",
     "N13 lets a malformed name with no whole-segment wildcard through, so team.** is sent as team.__.",
     "",
+    "N14 shows a long name whole in the refusal instead of its first 64 characters.",
+    "",
+    "N15 drops the channel grammar from the no-channel-name refusal.",
+    "",
+    "N16 states a limit other than core's MAX_CHANNEL_LENGTH in the no-channel-name refusal.",
+    "",
     "NO BUILD STEP: the suite imports ../src."
   ],
   "mutations": [
@@ -153,6 +159,33 @@
       "expectRed": "\"team.**\" is refused as no channel name before reading or sending",
       "cell": "\"team.**\" is refused as no channel name before reading or sending",
       "note": "The cold review's live defect: team.** passes the concrete check, the endpoint rewrites it to team.__, and the receipt names #team.**."
+    },
+    {
+      "name": "N14 a long name that is no channel name is shown whole",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "  const shown = JSON.stringify(channel.length > 64 ? `${channel.slice(0, 64)}…` : channel);",
+      "replace": "  const shown = JSON.stringify(channel);",
+      "expectRed": "a long name that is no channel name is shown cut to its first 64 characters",
+      "cell": "a long name that is no channel name is shown cut to its first 64 characters",
+      "note": "A name up to 4096 characters or more would be echoed whole into the refusal."
+    },
+    {
+      "name": "N15 the no-channel-name refusal drops the channel grammar",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "A channel name is segments of letters, digits, _ and - joined by dots, such as team.announce, at most ",
+      "replace": "A channel name is at most ",
+      "expectRed": "the no-channel-name refusal states the channel grammar",
+      "cell": "the no-channel-name refusal states the channel grammar",
+      "note": "The caller would learn the name is refused but not what a channel name is."
+    },
+    {
+      "name": "N16 the no-channel-name refusal states a limit that is not core's",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "at most ${MAX_CHANNEL_LENGTH} characters. Nothing was sent.",
+      "replace": "at most 4000 characters. Nothing was sent.",
+      "expectRed": "the no-channel-name refusal states core's limit of 4096 characters",
+      "cell": "the no-channel-name refusal states core's limit of 4096 characters",
+      "note": "A refusal that names its own number drifts from the limit core enforces."
     }
   ]
 }

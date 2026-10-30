@@ -13,6 +13,7 @@
  *
  * Run: `pnpm smoke:send-channel-receipt`
  */
+import { MAX_CHANNEL_LENGTH } from "@cotal-ai/core";
 import { closeChannelNames, MeshAgent, type MeshAgent as MeshAgentType } from "../src/agent.js";
 import { cotalToolSpecs } from "../src/tool-specs.js";
 import type { AgentConfig } from "../src/config.js";
@@ -422,6 +423,40 @@ const proto = MeshAgent.prototype as unknown as {
       refused.isError === true && calls.length === 0 && refused.text.includes(`${JSON.stringify(bad)} is not a channel name.`) &&
         refused.text.includes("Nothing was sent.") && !refused.text.includes("is a pattern") && !/'[*>]'/.test(refused.text),
       { refused, calls },
+    );
+  }
+  // The refusal says what a channel name is, with core's own length limit, and cuts a long name to
+  // its first 64 characters.
+  {
+    const refused = await send.run(agent, cfg, { text: "hi", channel: "team.**" });
+    check(
+      "the no-channel-name refusal states the channel grammar",
+      refused.text.includes("A channel name is segments of letters, digits, _ and - joined by dots, such as team.announce,"),
+      refused.text,
+    );
+    check(
+      `the no-channel-name refusal states core's limit of ${MAX_CHANNEL_LENGTH} characters`,
+      refused.text.includes(`at most ${MAX_CHANNEL_LENGTH} characters. Nothing was sent.`),
+      refused.text,
+    );
+  }
+  {
+    const long = `team.${"x".repeat(100)}.**`;
+    const refused = await send.run(agent, cfg, { text: "hi", channel: long });
+    check(
+      "a long name that is no channel name is shown cut to its first 64 characters",
+      refused.isError === true && calls.length === 0 &&
+        refused.text.includes(`${JSON.stringify(`${long.slice(0, 64)}…`)} is not a channel name.`) && !refused.text.includes(long),
+      refused.text,
+    );
+  }
+  {
+    const over = "a".repeat(MAX_CHANNEL_LENGTH + 1);
+    const refused = await send.run(agent, cfg, { text: "hi", channel: over });
+    check(
+      `a name one character over the ${MAX_CHANNEL_LENGTH}-character limit is refused as no channel name`,
+      refused.isError === true && calls.length === 0 && refused.text.includes(`${JSON.stringify(`${over.slice(0, 64)}…`)} is not a channel name.`),
+      refused.text,
     );
   }
   const sent = await send.run(agent, cfg, { text: "hi", channel: "team.announce" });

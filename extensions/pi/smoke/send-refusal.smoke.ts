@@ -65,6 +65,10 @@ for (const channel of ["team.>.x", "team.**"]) {
   const text = await run(channel);
   check(`pi refuses ${channel} as no channel name`, text.includes(`${JSON.stringify(channel)} is not a channel name.`), text);
 }
+{
+  const text = await run("#team.**");
+  check('pi drops a leading # before the shared check, so #team.** is refused as "team.**"', text.includes('"team.**" is not a channel name.'), text);
+}
 check("no refusal touched the mesh agent", touched.length === 0, touched);
 
 console.log(`\n${failures === 0 ? "PI-SEND-REFUSAL SMOKE OK ✅" : "PI-SEND-REFUSAL SMOKE FAILED"}  (${failures} failed)`);
