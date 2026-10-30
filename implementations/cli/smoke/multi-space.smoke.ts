@@ -543,8 +543,8 @@ try {
     check("an unreadable .cotal/auth resolves to a typed unreadable-auth, not a raw EACCES",
       isWorkspaceTargetError(unreadErr) && (unreadErr as { code: string }).code === "unreadable-auth", (unreadErr as Error)?.message);
     const authRemedy = isWorkspaceTargetError(unreadErr) ? workspaceErrorParts({ kind: "target", error: unreadErr }).remedy ?? "" : "";
-    check("…whose next step names .cotal/auth itself, the folder this account cannot read",
-      authRemedy.includes(`make ${authDir(unreadable)} a folder this account can read`) && authRemedy.includes("--space <name>"), authRemedy);
+    check("…whose next step names .cotal/auth itself, the folder this account cannot read or enter",
+      authRemedy.includes(`make ${authDir(unreadable)} a folder this account can read and enter, `) && authRemedy.includes("--space <name>"), authRemedy);
 
     // A `.cotal` this account cannot enter hides `.cotal/auth` from `existsSync`. Read as absent, the
     // inventory found no tenants, the legacy record's EACCES became a corrupt `auth.json`, and every
@@ -583,7 +583,7 @@ try {
       const rendered = isWorkspaceTargetError(err) ? workspaceErrorParts({ kind: "target", error: err }) : undefined;
       check(`a ${how} target whose .cotal/auth lists but cannot be searched is refused as unreadable, naming no record`,
         isWorkspaceTargetError(err) && err.code === "unreadable-auth" && err.details.records === undefined && rendered !== undefined &&
-          !rendered.message.includes("will not load") && (rendered.remedy ?? "").includes(`make ${authDir(listable)} a folder this account can read`), rendered ?? (err as Error)?.message);
+          !rendered.message.includes("will not load") && (rendered.remedy ?? "").includes(`make ${authDir(listable)} a folder this account can read and enter, `), rendered ?? (err as Error)?.message);
     }
     check("…and both the local and the --server target refused", listErrs.length === 2, listErrs.length);
   } else {
