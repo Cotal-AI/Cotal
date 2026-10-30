@@ -211,8 +211,7 @@ try {
       nc.publish = (subject, payload, opts) => { sent.push(subject); publish(subject, payload, opts); };
     };
     let fetches = 0;
-    // The renewal source re-exchanges a fresh short proof, as an embedder would: 70 s, inside the
-    // endpoint's 60 s refresh margin, so the first renewal comes due within the cell.
+    // The endpoint renews at 50-80% of the proof's remaining 70 s lifetime.
     const source = async () => { fetches++; return bearerOf(await exchange(await dmProof({}, { exp: now() + 70 }), { view: "dm-reader" }))!; };
     const got: string[] = [];
     const ep = own(new CotalEndpoint(dmOnlyOpts(source, { handler: (m, d) => { got.push(`${textOf(m)}|${m.from.id}`); d.ack(); } }, { onConnection: census })));
@@ -224,8 +223,8 @@ try {
     await sleep(300);
     const acked = await pending(readerDurable);
     check("U1.ack: the handler's ack lands (nothing pending or unacked)", acked.pending === 0 && acked.ackPending === 0, acked);
-    // Renewal: wait for the source's second fetch, which the 60 s margin arms about 10 s in.
-    for (let i = 0; i < 200 && fetches < 2; i++) await sleep(100);
+    // A 70 s proof renews by 56 s. Wait for the actual fetch, with a bounded scheduling margin.
+    for (let i = 0; i < 700 && fetches < 2; i++) await sleep(100);
     await ep.reconnect(); // a reconnect presents the renewed bearer through the callout
     await sender.unicast(readerKey, "u1-b");
     for (let i = 0; i < 80 && got.length < 2; i++) await sleep(100);

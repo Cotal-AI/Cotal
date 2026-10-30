@@ -502,16 +502,18 @@ export function sendComplete(argv: string[]): CompletionResult {
  *  mesh `--space`/`--server` resolve to, so their completions must come from that mesh's catalog and
  *  not from whatever project the operator happens to be standing in. The catalog is resolved as
  *  `spawn` and `persona show` resolve it, so a space prepared and not started offers its own.
- *  Offline (no probe: a <TAB> never opens the network) and FAIL CLOSED — with no single resolvable
- *  target, or a malformed persona file (see `declaredValues`), offer nothing rather than throw into
- *  the operator's shell. */
+ *  Offline (no probe: a <TAB> never opens the network). With no single resolvable target it offers
+ *  nothing. A resolved catalog that cannot be read, or a malformed persona file (see
+ *  `declaredValues`), throws, so the completion fails and COTAL_COMPLETE_DEBUG says why. */
 export function declaredFrom(argv: string[], list: (root: string) => string[]): string[] {
+  let root: string;
   try {
-    return list(personaCatalog({
+    root = personaCatalog({
       space: completedFlagValue(argv, targetFlags, "space"),
       server: completedFlagValue(argv, targetFlags, "server"),
-    }).root);
+    }).root;
   } catch {
     return [];
   }
+  return list(root);
 }

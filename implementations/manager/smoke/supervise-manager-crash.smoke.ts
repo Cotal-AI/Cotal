@@ -3,8 +3,8 @@
  *
  * Live: a JWT-auth scratch broker, the real Manager in a child process, the real pty runtime and a
  * stub seat that joins presence. The first manager spawns `worker` with supervise { restarts: 1 }
- * and accepts a turn for it, then is SIGKILLed. On macOS the seat dies with it; on Linux its
- * custodian keeps it and the successor reaps it by reference. The successor must restart the seat
+ * and accepts a turn for it, then is SIGKILLed. The built-in pty records no custody reference.
+ * The old seat must exit and the successor must start only one replacement. It must restart the seat
  * under the same principal and lifecycle uid, and the restarted incarnation must pull and yield the
  * turn the dead manager accepted. A second crash past the budget retires the seat instead.
  *
@@ -33,9 +33,11 @@ import { bootDeliveryDaemon, type DeliveryDaemon } from "./_boot-delivery.js";
 // always reaches its completion line.
 const CELLS = [
   "the first manager starts a supervised seat and records it with no restart counted",
+  "the supervised pty owns one seat process before the manager crash",
   "a turn is accepted against the supervised seat",
   "the successor is the same logical manager instance",
   "the successor restarts the supervised seat as one restart of its policy",
+  "the restarted pty has one replacement process and no surviving predecessor",
   "the restarted seat heartbeats under the same principal and lifecycle uid after the crash",
   "the restarted incarnation pulls the turn the dead manager accepted",
   "the restarted incarnation yields that turn",
@@ -65,6 +67,12 @@ for (const key of Object.keys(ambientEnv)) if (key.startsWith("COTAL_")) delete 
 
 const port = await freePort(); const servers = `nats://127.0.0.1:${port}`; const space = `supcrash-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space); const observerCreds = await mintMembershipObserverCreds(auth, newIdentity()); const evictorCreds = await mintConnectionEvictorCreds(auth, newIdentity());
+const seatPids = () => {
+  const result = spawnSync("pgrep", ["-f", `e2e-stub.mjs ${space}`], { encoding: "utf8" });
+  if (result.error) throw result.error;
+  if (result.status !== 0 && result.status !== 1) throw new Error(`seat process census exited ${result.status}: ${result.stderr}`);
+  return result.stdout.split("\n").map(Number).filter((pid) => pid > 0);
+};
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN)); const root = join(dir, "ws");
 mkdirSync(join(root, ".cotal", "agents"), { recursive: true }); saveSpaceAuth(authDir(root), auth);
 writeFileSync(join(root, ".cotal", "agents", "worker.md"), "---\nname: worker\nrole: worker\nsubscribe: []\nallowSubscribe: []\nallowPublish: []\n---\n");
@@ -129,6 +137,8 @@ try {
   const uid = identity?.lifecycleUid ?? "";
   const acceptedToken = identity?.mode === "static" ? identity.issued?.acceptedToken ?? "" : "";
   const principal = principalKey(DEV_OWNER, actor).key;
+  const beforePids = seatPids();
+  check("the supervised pty owns one seat process before the manager crash", beforePids.length === 1, beforePids);
 
   const goalId = "crash-turn".padEnd(43, "c");
   const accepted = await call("turn", { payload: JSON.stringify({ run: "r1", step: "turn:worker", context: "do the thing" }), deadlineMs: 600_000 }, { id: goalId, target: { actor, lifecycleUid: uid } });
@@ -140,6 +150,12 @@ try {
   check("the successor is the same logical manager instance", successor.manager.managerInstanceId === first.manager.managerInstanceId, { first: first.manager, successor: successor.manager });
   const restarted = await until(() => successor.stderr().includes("worker: restarted under the same lifecycle after its manager stopped (1/1)"), 90_000);
   check("the successor restarts the supervised seat as one restart of its policy", restarted, successor.stderr().slice(-3000));
+  let afterPids: number[] = [];
+  const oneReplacement = await until(() => {
+    afterPids = seatPids();
+    return afterPids.length === 1 && !beforePids.includes(afterPids[0]!);
+  }, 10_000);
+  check("the restarted pty has one replacement process and no surviving predecessor", oneReplacement, { beforePids, afterPids });
 
   const watcherId = newIdentity();
   const watcher = new CotalEndpoint({ space, servers, creds: await mintCreds(auth, watcherId, "observer"), card: { id: watcherId.id, name: "watcher", role: "observer", kind: "endpoint" }, channels: [], consume: false, registerPresence: false, watchPresence: true, watchChannels: false });

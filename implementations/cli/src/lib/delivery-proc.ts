@@ -10,14 +10,13 @@ import {
   waitForDeliveryLease,
   deliveryLeaseHolderFor,
 } from "@cotal-ai/core";
-import { DELIVERY_PROCESS, DELIVERY_CREDS_KIND, DELIVERY_LOGFILE, DELIVERY_PIDFILE, authDir, canonicalLocalProcessPath, codeSpan, commandIsCotalDelivery, deliveryCredsKey, findCotalRoot, getSpaceAuth, listSpaceAccounts, localProcessPath, parsePid, probeLiveness, readProcessCommand, readProcessRecord, reclaimDeadPreUpgradeRecord, segmentedKey, stopReservationPath, type LivenessProbe, type LocalProcessContext, type ProcessRecord, type ProcessRecordState, workspaceSecretStore, writePidPair } from "@cotal-ai/workspace";
+import { DELIVERY_PROCESS, DELIVERY_CREDS_KIND, DELIVERY_LOGFILE, DELIVERY_PIDFILE, authDir, canonicalLocalProcessPath, commandIsCotalDelivery, deliveryCredsKey, findCotalRoot, getSpaceAuth, listSpaceAccounts, localProcessPath, parsePid, probeLiveness, readProcessCommand, readProcessRecord, reclaimDeadPreUpgradeRecord, segmentedKey, stopReservationPath, type LivenessProbe, type LocalProcessContext, type ProcessRecord, type ProcessRecordState, workspaceSecretStore, writePidPair } from "@cotal-ai/workspace";
 import { daemonArgv, displayCmd } from "./self-exec.js";
 import { resolveRuntimeSpace } from "./status.js";
 import { cotalRoot } from "./paths.js";
 import { clearManagerArtifacts, ensureManager, managerHasDeliveryMarker, managerRecordState, recordSeams, stopManager, type RecordSeams } from "./manager-proc.js";
 import { stopLocalProcess } from "./local-process-stop.js";
 import { RESPONDER_UNBOUND_CONSEQUENCE } from "./delivery-responder.js";
-import { shellWord } from "./endpoint-errors.js";
 import { seedBeforeLaunch } from "../seed/launch.js";
 
 /** The space this folder's commands mean, and the per-space record paths over it. The daemon is
@@ -127,7 +126,7 @@ function oldHostingManagerVerdict(
   if (record.state !== "alive") return "proceed"; // dead or absent: nothing is hosting Plane 3
   // Alive: the marker decides, for the pid this record attributed. A delivery-aware manager removes its
   // marker just before it exits, so a missing marker on a pid that has died since was that exit.
-  const pid = record.pid!;
+  const pid = record.pid;
   return managerHasDeliveryMarker(pid, space, root) || probe(pid) === "dead" ? "proceed" : "stop-it";
 }
 
@@ -152,7 +151,7 @@ export async function stopOldHostingManagerIfPresent(
     if (record.state === "unattributable")
       throw new Error(
         `the manager pidfile at ${p} holds content that is not a pid (${JSON.stringify(record.content)}), so it names no process and cotal cannot tell whether a manager still runs. Nothing was started over it.\n` +
-          `NEXT: once ${codeSpan(`cotal ps --space ${shellWord(space)}`)} finds no manager running, remove that file and re-run.`,
+          `NEXT: confirm yourself that no manager runs for this folder, because one that does not answer on the mesh may still be running, then remove that file and re-run.`,
       );
     throw new Error(
       `the recorded manager pid (${record.pid}) cannot be attributed, so cotal cannot tell whether a manager still runs: the kernel answered neither "running" nor "no such process" (a seccomp filter or LSM policy does this inside some sandboxes). Nothing was started over it.\n` +
@@ -160,15 +159,20 @@ export async function stopOldHostingManagerIfPresent(
     );
   }
   if (verdict === "stop-it") {
+    // The verdict is `stop-it` only for an alive record. The state names that record's pid; a record
+    // that is not alive is not the process the preflight decided to stop.
+    if (record.state !== "alive")
+      throw new Error("the delivery cutover preflight judged a manager record whose state is not alive; refusing to stop it or start the daemon");
+    const pid = record.pid;
     console.error("• stopping an old Plane-3-hosting manager before starting the delivery daemon (cutover preflight)");
     // stopManager THROWS rather than reporting a stop it did not achieve (a refused stop, or a process
     // whose death it could not confirm). Letting that throw propagate is the point: the daemon must not
     // start beside a manager still bound to Plane 3. A false result means the judged record changed
     // or disappeared, not that this manager stopped. Refuse rather than treating a successor's marker
     // as proof that the predecessor released Plane 3, and leave the successor's artifacts untouched.
-    if (!await stopManager(space, { pid: record.pid, root }))
+    if (!await stopManager(space, { pid, root }))
       throw new Error(
-        `the manager record changed or disappeared during the delivery cutover preflight (judged pid ${record.pid}); refusing to start the daemon. Retry once the manager restart has completed.`,
+        `the manager record changed or disappeared during the delivery cutover preflight (judged pid ${pid}); refusing to start the daemon. Retry once the manager restart has completed.`,
       );
     clearManagerArtifacts(space, root);
   }
@@ -298,7 +302,7 @@ export async function ensureDelivery(
     // A row written again during the wait has a live holder, and that is refused.
     const previous = await credsStore().get(credsKey);
     if (previous !== undefined) {
-      const recorded = delivery.state !== "absent" && delivery.pid !== undefined ? ` (pid ${delivery.pid})` : "";
+      const recorded = delivery.state === "dead" || delivery.state === "foreign" ? ` (pid ${delivery.pid})` : "";
       const waited = await awaitDeadDeliveryLease({
         servers: server,
         space,

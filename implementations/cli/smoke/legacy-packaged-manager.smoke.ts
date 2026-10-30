@@ -301,7 +301,8 @@ setInterval(() => {}, 1000);
   const output = `${update.stdout ?? ""}${update.stderr ?? ""}`;
   assert.notEqual(update.status, 0, output);
   assert.match(output, /legacy manager custody: PTY continuity is impossible; this update is not a hot update/, output);
-  for (const [name, continuity] of [["pi_seat", "exact"], ["claude_seat", "fork"], ["open_seat", "fresh"], ["jcode_seat", "drain-only"]]) assert.match(output, new RegExp(`${name}: ${continuity}`), output);
+  // Jcode supports fork-resume into a private seat home, not exact-session continuation.
+  for (const [name, continuity] of [["pi_seat", "exact"], ["claude_seat", "fork"], ["open_seat", "fresh"], ["jcode_seat", "fork"]]) assert.match(output, new RegExp(`${name}: ${continuity}`), output);
   assert.ok(alive(ids.managerPid) && alive(ids.childPid), "legacy report killed neither the old manager nor its counter child");
   console.log("LEGACY PACKAGED MANAGER: 1 checks passed");
   assert.deepEqual(

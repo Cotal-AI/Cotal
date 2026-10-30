@@ -4,7 +4,6 @@ import { setTimeout as delay } from "node:timers/promises";
 import { createConnection, isIP } from "node:net";
 import {
   connect,
-  credsAuthenticator,
   headers,
   tokenAuthenticator,
   nanos,
@@ -33,6 +32,7 @@ import {
 } from "./liveness.js";
 import { processRuntime } from "./process-runtime.js";
 import { credsClaims, credsFingerprint, credsRenewalDelayMs, idFromCreds } from "./identity.js";
+import { nativeCredsAuthenticator } from "./creds-authenticator.js";
 import { armRenewal, renewalDeadlineMs, jitteredBackoffMs } from "./renewal.js";
 import { requireBrokerFloor } from "./broker-floor.js";
 import { withDeadline } from "./deadline.js";
@@ -47,7 +47,7 @@ import { EpEnvelopeError, respondedButUnbound, replyRefusedBeforeEffect, replyTa
 import { isRepeatSafeCommand } from "./endpoint-grants.js";
 import type { EpCaller, IssuedCaller } from "./endpoint-subjects.js";
 import { assertIdToken, assertGeneration, isIssuedCaller } from "./endpoint-subjects.js";
-import { issuedCallerOfToken, listingAcceptedToken, readAcceptedRow } from "./issued-authority.js";
+import { importNativeSubjectPermissions, issuedCallerOfToken, issuedPermitsSubject, listingAcceptedToken, readAcceptedRow, type IssuedSubjectPermission } from "./issued-authority.js";
 import { REGISTRY_CONTRACTS, REGISTRY_ENDPOINT, REGISTRY_ENDPOINTS_COMMAND, type RegistryEndpointsInput, type RegistryEndpointsOutput } from "./registry-contract.js";
 import type { EpVerbTarget, EpAttributedReply } from "./endpoint-verbs.js";
 import { lastKvEntries, liveKvEntries } from "./kv-scan.js";
@@ -169,7 +169,7 @@ import {
   assertInboxConnId,
   type ParsedSubject,
   presenceBucket,
-  isPresenceRow,
+  isPresenceRow, assertPresenceRow,
   membershipBucket,
   MEMBERSHIP_FEED_KEY,
   principalKey,
@@ -592,6 +592,9 @@ export class CotalEndpoint extends EventEmitter {
   /** The freshest creds — what every (re)connect attempt presents. Static callers set it once. */
   private currentCreds?: string;
   private credsTimer?: NodeJS.Timeout;
+  /** Publish permissions presented on each watch's connection, refreshed only when it authenticates.
+   *  Missing context preserves broker-checked cleanup for other supported authentication forms. */
+  private readonly watchDeletePermissions = new WeakMap<object, () => IssuedSubjectPermission | undefined>();
   /** True in user mode (bearer string OR source) — gates the callout-shaped connect. */
   private readonly userMode: boolean = false;
   /** The bearer source, when auth refreshes (spawned agents); undefined for a one-shot string. */
@@ -1688,8 +1691,11 @@ export class CotalEndpoint extends EventEmitter {
     // The refusal still surfaces on this path: the authenticator throws during the CONNECT, the
     // library closes that attempt, and the reestablish loop's capped backoff re-enters here — where
     // the source re-fetch above is what recovers a renewable endpoint.
+    let watchDeletePermission: IssuedSubjectPermission | undefined;
     this.nc = await dialerFor(this.servers)({
       servers: this.servers,
+      // Keep native failures without eagerly capturing a request-origin stack on every operation.
+      noAsyncTraces: true,
       // In USER MODE the connection `name` carries the client-chosen inbox nonce (= connId) the callout
       // scopes `_INBOX_<connId>.>` on (see EndpointOptions.bearer); otherwise it's the display handle.
       name: this.userMode ? this.connId : `cotal:${this.card.name}`,
@@ -1716,10 +1722,22 @@ export class CotalEndpoint extends EventEmitter {
       // and dialed ANONYMOUSLY, so the broker answered `Authorization Violation` and the real fault
       // (an empty credential) was never named. Routing it into the checked getter fails it loud
       // instead. Anonymous access stays reachable the only way it should be: by passing no creds.
-      ...authOpts({ token: this.token, user: this.user, pass: this.pass, creds: this.currentCreds !== undefined || this.credsSource ? () => this.presentCreds() : undefined, bearer: this.userMode ? () => this.presentBearer() : undefined, sentinelCreds: this.sentinelCreds, tls: this.tls }),
+      ...authOpts({ token: this.token, user: this.user, pass: this.pass, creds: this.currentCreds !== undefined || this.credsSource ? () => this.presentCreds() : undefined, bearer: this.userMode ? () => this.presentBearer() : undefined, sentinelCreds: this.sentinelCreds, tls: this.tls,
+        onCreds: (creds) => {
+          watchDeletePermission = undefined;
+          try {
+            const nats = credsClaims(creds).nats;
+            if (nats?.pub !== undefined)
+              watchDeletePermission = importNativeSubjectPermissions({ pub: nats.pub }).publish;
+          } catch {
+            // Unknown/malformed claims cannot prove a denial. Keep the existing broker check.
+          }
+        },
+      }),
     });
     // SPEC §13.12: the control surface requires nats-server >= 2.12; this runs on every
     // fresh connection, including the reconnects the library performs on its own here.
+    this.watchDeletePermissions.set(this.nc, () => watchDeletePermission);
     this.ownedConnections.add(this.nc);
     const owned = this.nc;
     void owned.closed().then(() => this.ownedConnections.delete(owned));
@@ -2980,6 +2998,7 @@ export class CotalEndpoint extends EventEmitter {
         deadlineMs,
         signal,
         commands: needed,
+        ...(opts.follow && command !== "goal-result" ? { optionalCommands: ["goal-result"] } : {}),
         ...(opts.instanceId !== undefined ? { instanceId: opts.instanceId } : {}),
         ...(opts.classInstanceId !== undefined ? { classInstanceId: opts.classInstanceId } : {}),
       });
@@ -3266,7 +3285,13 @@ export class CotalEndpoint extends EventEmitter {
     }
   }
 
+  private assertPresenceUpdate(update: Partial<Presence>): void {
+    assertPresenceRow({ card: this.card, status: this.status, activity: this.activity,
+      condition: this.condition, attention: this.attentionMode, ts: Date.now(), ...update }, this.card.id);
+  }
+
   async setActivity(activity: string): Promise<void> {
+    this.assertPresenceUpdate({ activity });
     if (activity !== this.activity) this.statusSince = this.activitySince = Date.now();
     this.activity = activity;
     await this.publishPresence();
@@ -3275,6 +3300,7 @@ export class CotalEndpoint extends EventEmitter {
   /** Set the status, and with `activity` the activity line too, in one presence write, so no peer sees
    *  the new activity beside the old status. */
   async setStatus(status: PresenceStatus, activity?: string): Promise<void> {
+    this.assertPresenceUpdate({ status, ...(activity === undefined ? {} : { activity }) });
     if (activity !== undefined && activity !== this.activity) this.statusSince = this.activitySince = Date.now();
     if (activity !== undefined) this.activity = activity;
     if (status !== this.status) this.statusSince = Date.now();
@@ -3290,6 +3316,7 @@ export class CotalEndpoint extends EventEmitter {
 
   /** Publish a harness-reported condition, or clear it. Core stores the relay without interpretation. */
   async setCondition(condition: PresenceCondition | null): Promise<void> {
+    this.assertPresenceUpdate({ condition: condition ?? undefined });
     this.condition = condition ?? undefined;
     this.conditionRevision++;
     await this.publishPresence();
@@ -3298,6 +3325,7 @@ export class CotalEndpoint extends EventEmitter {
   /** Publish the agent's global attention mode into presence (advisory observability). Mirror only —
    *  delivery decisions stay in the connector's authoritative state. */
   async setAttention(attention: AttentionMode): Promise<void> {
+    this.assertPresenceUpdate({ attention });
     this.attentionMode = attention;
     await this.publishPresence();
   }
@@ -3665,8 +3693,9 @@ export class CotalEndpoint extends EventEmitter {
    *  {@link MembershipChange} — the decoded member record (or its deletion), or the feed heartbeat's
    *  `asOf` — so a caller keeps its snapshot current without re-reading the bucket; the entries replayed
    *  when the watch (re)arms carry `update: false` and end with a `replayed` change. The async stop
-   *  handle resolves only after its ordered broker consumer is deleted. Best-effort: a feed the cred
-   *  can't read (or absent) surfaces as an `error` event and the dashboard keeps its last snapshot. */
+   *  handle disarms local delivery before resolving. It deletes the broker consumer when permitted;
+   *  a known-ungranted delete leaves it to native inactivity reclamation. A feed the cred can't read
+   *  (or absent) surfaces as an `error` event and the dashboard keeps its last snapshot. */
   async watchMembership(onChange: (change: MembershipChange) => void, onClosed?: (err: Error) => void): Promise<{ stop(): Promise<void> }> {
     if (this.stopped) throw new Error("endpoint stopped - cannot watch membership");
     const watch: MembershipFeedWatch = { onChange, onClosed, stopped: false, arm: Promise.resolve() };
@@ -3713,6 +3742,8 @@ export class CotalEndpoint extends EventEmitter {
     // The broker resource exists now. Record its identity BEFORE consume() so a concurrent stop or
     // connection close always leaves enough state for strict cleanup or fresh-epoch retry.
     watch.consumer = consumer;
+    const permission = this.nc && this.watchDeletePermissions.get(this.nc);
+    if (permission) this.watchDeletePermissions.set(consumer, permission);
     watch.consumerStream = info.stream_name;
     watch.consumerName = info.name;
     // The replay is the bucket's last value per key, bound at `info`; it ends with the entry that
@@ -3752,6 +3783,10 @@ export class CotalEndpoint extends EventEmitter {
     // A terminal close is not deletion success and not a public-stop failure. Keep the identity
     // endpoint-owned; rearmMembershipWatches retries it through the next live JetStream manager.
     if (!this.nc || this.nc.isClosed()) return;
+    if (this.watchConsumerDeleteDenied(watch.consumerStream, watch.consumerName, this.nc)) {
+      watch.consumerStream = undefined; watch.consumerName = undefined;
+      return;
+    }
     const jsm = await jetstreamManager(this.nc);
     if (await this.deleteMembershipConsumer(jsm, watch.consumerStream, watch.consumerName)) {
       watch.consumerStream = undefined;
@@ -3789,10 +3824,19 @@ export class CotalEndpoint extends EventEmitter {
     return /^\d+$/.test(subject.slice(cut)) && this.ownWatchDeletePrefixes.has(subject.slice(0, cut));
   }
 
+  /** Skip only a delete the authenticated connection's well-formed publish claims exclude.
+   *  This is request avoidance, not authority: the broker still enforces every request we send. */
+  private watchConsumerDeleteDenied(stream: string, name: string, owner: object | undefined): boolean {
+    const permission = owner && this.watchDeletePermissions.get(owner)?.();
+    return Boolean(permission && !issuedPermitsSubject(permission, `$JS.API.CONSUMER.DELETE.${stream}.${name}`));
+  }
+
   /** Delete one of this connection's own KV-watch consumers. A refused delete is the designed
    *  outcome for a profile without a stream-wide CONSUMER.DELETE (#691): the broker reaps the
    *  consumer at its inactive threshold. */
   private async deleteOwnConsumer(consumer: Consumer | PushConsumer): Promise<void> {
+    const { stream_name, name } = await consumer.info(true);
+    if (this.watchConsumerDeleteDenied(stream_name, name, consumer)) return;
     try { await consumer.delete(); }
     catch (e) {
       if (!isJetStreamMissing(e, JetStreamApiCodes.ConsumerNotFound) && !isPublishPermissionDenied(e)) throw e;
@@ -3808,9 +3852,8 @@ export class CotalEndpoint extends EventEmitter {
     }
   }
 
-  /** Stop the local iterator AND delete its ordered consumer. The admin/observer profile holds no
-   *  consumer delete on this bucket (#691), so its refused delete leaves the consumer to the broker's
-   *  five-minute inactive threshold. */
+  /** Stop the local iterator, then delete when permitted. A known-ungranted delete releases local
+   *  cleanup custody without a request; the broker reclaims the consumer at its inactive threshold. */
   private async disarmMembershipWatch(watch: MembershipFeedWatch): Promise<void> {
     const iter = watch.iter;
     const consumer = watch.consumer;
@@ -3818,6 +3861,10 @@ export class CotalEndpoint extends EventEmitter {
     watch.consumer = undefined;
     try { iter?.stop(); } catch { /* already closed */ }
     if (consumer) {
+      if (watch.consumerStream && watch.consumerName && this.watchConsumerDeleteDenied(watch.consumerStream, watch.consumerName, consumer)) {
+        watch.consumerStream = undefined; watch.consumerName = undefined;
+        return;
+      }
       try {
         const deleted = await consumer.delete();
         if (deleted) { watch.consumerStream = undefined; watch.consumerName = undefined; }
@@ -5039,9 +5086,11 @@ export class CotalEndpoint extends EventEmitter {
     if (this.stopped) return Promise.resolve(undefined);
     const epoch = this.presenceEpoch;
     const binding = (async () => {
+      const permission = this.nc && this.watchDeletePermissions.get(this.nc);
       const iter = await kv.watch();
       const info = await kvWatchConsumer(iter).info(true);
       this.recordOwnWatchConsumer(info);
+      if (permission) this.watchDeletePermissions.set(kvWatchConsumer(iter), permission);
       if (epoch === this.presenceEpoch && !this.stopped) return { iter, info };
       this.retireKvWatch(iter);
       return undefined;
@@ -7349,6 +7398,7 @@ export class CotalEndpoint extends EventEmitter {
     // offline publish site, so the raw KV record is compliant, not only the observer-side roster
     // materialization.
     const record = this.status === "offline" ? this.toOffline(p) : p;
+    assertPresenceRow(record, this.card.id);
     // #1356: this put can still be in flight when a teardown runs, because a rebind reaches
     // publishPresence through onPresenceBucketEmpty and no teardown awaits that flight. Take the same
     // epoch fence {@link startPresenceWatch} takes, so a put that outlives its epoch still throws to
@@ -8163,6 +8213,8 @@ interface AuthOpts {
   /** May be a sync GETTER (like `bearer`) — the authenticator then re-reads it per (re)connect
    *  attempt, which is how a standing-renewal endpoint presents its freshest cred. */
   creds?: string | (() => string);
+  /** Observe only the credential actually presented, including native reconnect authentication. */
+  onCreds?: (creds: string) => void;
   bearer?: string | (() => string);
   sentinelCreds?: string;
   tls?: boolean;
@@ -8179,7 +8231,7 @@ function authOpts(a: AuthOpts) {
     if (!a.sentinelCreds)
       throw new Error("user-mode bearer requires sentinelCreds");
     return {
-      authenticator: [credsAuthenticator(new TextEncoder().encode(a.sentinelCreds)), tokenAuthenticator(a.bearer)],
+      authenticator: [nativeCredsAuthenticator(a.sentinelCreds), tokenAuthenticator(a.bearer)],
       tls,
     };
   }
@@ -8191,9 +8243,12 @@ function authOpts(a: AuthOpts) {
     const creds = a.creds;
     // A getter re-wraps per (re)connect attempt so each attempt signs with the freshest cred;
     // nats.js invokes the authenticator function on every attempt, including internal reconnects.
-    const authenticator = typeof creds === "function"
-      ? (nonce?: string) => credsAuthenticator(new TextEncoder().encode(creds()))(nonce)
-      : credsAuthenticator(new TextEncoder().encode(creds));
+    const authenticator = (nonce?: string) => {
+      const presented = typeof creds === "function" ? creds() : creds;
+      const authenticated = nativeCredsAuthenticator(presented)(nonce);
+      a.onCreds?.(presented);
+      return authenticated;
+    };
     return { authenticator, tls };
   }
   return { token: a.token, user: a.user, pass: a.pass, tls };

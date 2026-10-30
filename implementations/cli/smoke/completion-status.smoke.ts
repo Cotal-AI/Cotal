@@ -12,7 +12,7 @@
  * Run: pnpm smoke:completion-status
  */
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { assertSmokeSandboxDown, createSuite } from "@cotal-ai/smoke-kit";
@@ -589,6 +589,11 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   check("history offers clear and the channels the space's personas declare", exactly(history, ["clear", "review"]), shown(history));
   const channel = offered(["channel", "remove", "--space", "rr"]);
   check("channel remove offers those channels", exactly(channel, ["review"]), shown(channel));
+  for (const [words, values] of [[["send", "--space", "rr", "--channel"], ["review"]], [["chat", "--space", "rr"], ["review"]], [["spawn", "--space", "rr", "--subscribe"], ["review"]],
+    [["send", "--space", "cc", "--role"], ["default"]], [["spawn", "--space", "cc", "--role"], ["default"]], [["send", "--space", "nosuch", "--channel"], []]] as const) {
+    const r = offered([...words]);
+    check(`${words.join(" ")} offers ${values.length ? values.join(" ") : "nothing for a space that does not resolve"}`, exactly(r, [...values]), shown(r));
+  }
   // A catalog file name holding a control character is not offered: the shell would write it to the
   // terminal, and a newline or tab would forge another candidate or the directive line.
   const agents = join(prepared, ".cotal", "agents");
@@ -599,19 +604,42 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
     const directives = r.stdout.split("\n").filter((line) => line.startsWith(":"));
     check(`${words.join(" ")} leaves out a catalog file name with a control character`, exactly(r, ["default"]) && directives.length === 1 && !/[\u0000-\u0009\u000b-\u001f\u007f‮]/u.test(r.stdout), shown(r));
   }
+  // The completions of a channel or role the target space's personas declare.
+  const declared = [["send", "--space", "cc", "--channel"], ["send", "--space", "cc", "--role"], ["chat", "--space", "cc"], ["history", "--space", "cc"],
+    ["channel", "show", "--space", "cc"], ["spawn", "--space", "cc", "--role"], ["spawn", "--space", "cc", "--subscribe"]];
   // A catalog folder that cannot be read is not an empty catalog: the completion fails, so the shell
   // offers nothing, and COTAL_COMPLETE_DEBUG names the folder. Root reads through the mode, so the
   // cell runs only for an ordinary POSIX user.
   if (process.platform !== "win32" && process.getuid?.() !== 0) {
     const folder = realpathSync(agents);
     chmodSync(agents, 0o000);
-    for (const words of [["persona", "show"], ["persona", "edit"], ["spawn"]]) {
-      const r = s.run(["__complete", ...words, "--space", "cc", ""], { COTAL_COMPLETE_DEBUG: "1" });
+    for (const words of [["persona", "show", "--space", "cc"], ["persona", "edit", "--space", "cc"], ["spawn", "--space", "cc"], ...declared]) {
+      const r = s.run(["__complete", ...words, ""], { COTAL_COMPLETE_DEBUG: "1" });
       check(`${words.join(" ")} fails its completion on an unreadable catalog folder and names it`,
         r.status === 1 && r.stdout === "" && r.stderr.includes(`cannot read the persona catalog ${folder}: permission denied`), shown(r));
     }
+    const quiet = s.run(["__complete", "send", "--space", "cc", "--channel", ""]);
+    check("send --channel fails silently on an unreadable catalog folder with COTAL_COMPLETE_DEBUG unset", quiet.status === 1 && quiet.stdout === "" && quiet.stderr === "", shown(quiet));
     chmodSync(agents, 0o700);
   }
+  // A persona file that does not parse leaves the declared set incomplete, so those completions fail
+  // and name it rather than offer part of it. A persona name needs no parse, so it is still offered.
+  writeFileSync(join(agents, "broken.md"), "no frontmatter\n", { mode: 0o600 });
+  for (const words of declared) {
+    const r = s.run(["__complete", ...words, ""], { COTAL_COMPLETE_DEBUG: "1" });
+    check(`${words.join(" ")} fails its completion on a persona file that does not parse and names it`,
+      r.status === 1 && r.stdout === "" && r.stderr.includes(`persona "broken" is unparseable`), shown(r));
+  }
+  const names = offered(["persona", "show", "--space", "cc"]);
+  check("persona show still offers the name of a persona file that does not parse", names.status === 0 && names.values.includes("broken") && names.values.includes("default"), shown(names));
+  rmSync(join(agents, "broken.md"));
+  // A catalog folder that does not exist is an empty catalog.
+  renameSync(agents, `${agents}.away`);
+  for (const words of declared) {
+    const r = offered(words);
+    check(`${words.join(" ")} offers no declared value when the catalog folder does not exist`, exactly(r, words[0] === "history" ? ["clear"] : []), shown(r));
+  }
+  renameSync(`${agents}.away`, agents);
   // A path lets the shell complete file names; any other value does not.
   for (const [words, directive] of [[["space", "add", "x", "--root"], ":default"], [["space", "add", "x", "--file"], ":default"], [["channel", "set", "ops", "--creds"], ":default"],
     [["status", "--creds"], ":default"], [["history", "--creds"], ":default"], [["watch", "--creds"], ":default"], [["who", "--creds"], ":default"],

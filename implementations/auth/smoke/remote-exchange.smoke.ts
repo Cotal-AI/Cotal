@@ -414,7 +414,7 @@ try {
   // Cloud #210: naming an instance cannot revive a dead gate, so the remedy is to start a manager.
   // The live local manager above is still not selected.
   check("an owner whose remote manager gates are all dead is refused with the start-a-manager remedy, not routed to the local manager",
-    unavailable.status === 401 && String(unavailable.body.error).includes("none live") && String(unavailable.body.error).includes("`cotal supervise`")
+    unavailable.status === 401 && String(unavailable.body.error).includes("none live") && String(unavailable.body.error).includes("`cotal manager start`")
       && !String(unavailable.body.error).includes("managerInstanceId"), unavailable);
   const wrongLocalOwner = "u_" + "y".repeat(26);
   const wrongLocalActor = "wronglocal";
@@ -838,17 +838,38 @@ try {
     { status: ambiguousFromFull.status, body: ambiguousFromFull.body },
   );
   const poller = asPeer("203.0.113.61");
-  let ambiguousRefusals = 0;
+  // Selection failures have their own per-principal/class window. A fresh actor starts it empty;
+  // changing only the peer would reuse the five unpinned failures from the earlier cells.
+  const pollerSecret = newActorToken();
+  const pollerActor = "selectionbudget";
+  grantManagedActor(dir, { custody: { kind: "foreground" }, owner: OWNER, actor: pollerActor,
+    scope: ["role:worker"], allowSubscribe: [], allowPublish: [], parent: `${OWNER}.cli`,
+    tokenHash: pollerSecret.tokenHash, lifecycleUid: mintLifecycleUid() });
+  const pollerBody = { owner: OWNER, actor: pollerActor, actorToken: pollerSecret.actorToken };
+  let ambiguousRefusals = 0, selectionThrottles = 0;
   for (let i = 0; i < 40; i++) {
-    const r = await post(`${PUBLIC}/exchange`, { ...agentBody2, view: "manager-caller" }, poller);
-    if (r.status === 401 && /live remote manager candidates/.test(String(r.body.error))) ambiguousRefusals++;
+    const r = await post(`${PUBLIC}/exchange`, { ...pollerBody, view: "manager-caller" }, poller);
+    if (i < 30 && r.status === 401 && /live remote manager candidates/.test(String(r.body.error))) ambiguousRefusals++;
+    if (i >= 30 && r.status === 429 && /too many manager-caller selection refusals/.test(String(r.body.error))) selectionThrottles++;
   }
-  const afterPolls = await post(`${PUBLIC}/exchange`, { ...agentBody2, actorToken: newActorToken().actorToken }, poller);
+  check("a fresh principal gets 30 named unpinned selection refusals", ambiguousRefusals === 30, { ambiguousRefusals });
+  check("the next 10 unpinned selections hit that principal's selection limit", selectionThrottles === 10, { selectionThrottles });
+  const afterPolls = await post(`${PUBLIC}/exchange`, { ...pollerBody, actorToken: newActorToken().actorToken }, poller);
   check(
-    "40 ambiguous selections leave the peer's refused-exchange budget untouched",
-    ambiguousRefusals === 40 && afterPolls.status === 401 && afterPolls.body.error === wrongSecret.body.error,
-    { ambiguousRefusals, status: afterPolls.status, body: afterPolls.body },
+    "selection refusals and throttles leave the peer's probing budget untouched",
+    afterPolls.status === 401 && afterPolls.body.error === wrongSecret.body.error,
+    { status: afterPolls.status },
   );
+  const pinnedAfterPolls = await post(`${PUBLIC}/exchange`, { ...pollerBody, view: "manager-caller", managerInstanceId: remoteOne }, poller);
+  check("a full unpinned window leaves the same principal's pinned selection open",
+    pinnedAfterPolls.status === 200 && boundInstance(pinnedAfterPolls) === remoteOne, { status: pinnedAfterPolls.status });
+  const ordinaryAfterPolls = await post(`${PUBLIC}/exchange`, pollerBody, poller);
+  check("a full selection window leaves the principal's ordinary exchange open", ordinaryAfterPolls.status === 200,
+    { status: ordinaryAfterPolls.status });
+  const siblingAfterPolls = await post(`${PUBLIC}/exchange`, { ...agentBody2, view: "manager-caller" }, poller);
+  check("a full selection window leaves another principal of the same owner and peer below its own limit",
+    siblingAfterPolls.status === 401 && /live remote manager candidates/.test(String(siblingAfterPolls.body.error)),
+    { status: siblingAfterPolls.status });
 
   // ---------- H. refresh across expiry ----------
   console.log("H) agent-bearer-style refresh yields a fresh, later-expiring bearer");
@@ -871,7 +892,7 @@ try {
 }
 
 // Counts, not just "no failures": a cell that stops running stops protecting anything.
-const EXPECTED = 122;
+const EXPECTED = 127;
 console.log(`\nremote-exchange smoke: ${pass} passed, ${fail} failed`);
 if (pass + fail !== EXPECTED) {
   console.log(`  ✗ FAIL: expected ${EXPECTED} cells, ran ${pass + fail} - a cell was added or silently skipped`);

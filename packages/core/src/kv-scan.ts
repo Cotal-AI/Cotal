@@ -121,6 +121,8 @@ export interface LiveKvEntriesOptions {
  *
  * Throws {@link IncompleteKvScan} if the pass is cut short. Returns `[]` for a bucket that is
  * genuinely empty (proven at bind time, not inferred from silence).
+ * The temporary ordered consumer keeps its state in native memory storage. This changes neither
+ * the backing bucket's persistence nor the fresh-read and completeness checks.
  */
 export async function liveKvEntries(
   kv: KV,
@@ -159,6 +161,9 @@ export async function liveKvEntries(
     );
   const bucket: Bucket = kv;
   const cc = bucket._buildCC(filter ?? ">", KvWatchInclude.AllHistory, { headers_only: false });
+  // Only this temporary scan's cursor is volatile. The backing KV records keep their storage;
+  // an interrupted pass still has to prove completeness or throw before returning any result.
+  cc.mem_storage = true;
   const oc = await bucket.js.consumers.getPushConsumer(bucket.stream, cc);
   // nats.js rebuilds the consumer after a stall or a sequence gap as `<prefix>_<serial + 1>` and sends
   // that create without awaiting it, so a delete the broker answers first lets the consumer land after

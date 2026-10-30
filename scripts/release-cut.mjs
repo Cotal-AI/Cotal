@@ -4,10 +4,13 @@
  *
  * Usage: pnpm release:cut <main-sha>
  *
- * Refuses a commit that is not on main or carries no changeset. Waits until the version PR carries
- * the commit, is based on main's head, and the push run that wrote it has packed it. Merges the
+ * Refuses a commit that is not main's head or carries no changeset. Waits for a packed version PR
+ * based on that commit, refusing source drift instead of selecting a newer release. Merges the
  * version PR by its head commit; the merge's push run publishes that pack. Then follows the run and
  * polls npm for the new `cotal-ai` version until it answers.
+ *
+ * The final main check and GitHub merge are separate operations, not an atomic base assertion.
+ * The merged-tree check below still guards the packed source after the merge.
  *
  * Each line is one point on the release timeline, in UTC: command, ready, merged, run, published,
  * rerun (after a failed publish job), visible, run rc. The ten-minute budget runs from `command` to
@@ -48,6 +51,11 @@ function fail(message) {
 
 const isAncestor = (a, b) => attempt("git", ["merge-base", "--is-ancestor", a, b]) !== undefined;
 
+function requireRequestedMain(sha) {
+  const main = run("git", ["rev-parse", "origin/main"]);
+  if (main !== sha) fail(`refused: requested source ${short(sha)} differs from current main ${short(main)}; nothing was merged`);
+}
+
 function changesets(sha) {
   return run("git", ["ls-tree", "--name-only", sha, ".changeset/"])
     .split("\n")
@@ -75,7 +83,7 @@ console.log(`command ${time()}`);
 run("git", ["fetch", "-q", "origin", "main"]);
 const sha = attempt("git", ["rev-parse", "--verify", `${want}^{commit}`]);
 if (!sha) fail(`refused: ${want} is not a known commit`);
-if (!isAncestor(sha, "origin/main")) fail(`refused: ${short(sha)} is not on main`);
+requireRequestedMain(sha);
 if (changesets(sha).length === 0) fail(`refused: ${short(sha)} carries no changeset, so there is nothing to release`);
 
 let rel;
@@ -83,9 +91,13 @@ let base;
 const readyBy = Date.now() + READY_DEADLINE_MS;
 for (;;) {
   attempt("git", ["fetch", "-q", "origin", "main", RELEASE_BRANCH]);
+  requireRequestedMain(sha);
   rel = attempt("git", ["rev-parse", "--verify", `origin/${RELEASE_BRANCH}^{commit}`]);
   base = rel && run("git", ["rev-parse", `${rel}^`]);
-  if (rel && isAncestor(sha, rel) && base === run("git", ["rev-parse", "origin/main"]) && changesets(rel).length === 0) {
+  if (rel && base !== sha && isAncestor(sha, rel)) {
+    fail(`refused: requested source ${short(sha)} differs from version PR base ${short(base)}; nothing was merged`);
+  }
+  if (rel && base === sha && changesets(rel).length === 0) {
     const prepared = pushRun(base);
     if (prepared?.conclusion === "success") {
       const artifacts = run("gh", ["api", `repos/{owner}/{repo}/actions/runs/${prepared.databaseId}/artifacts`, "--jq", ".artifacts[].name"]);
@@ -103,6 +115,8 @@ const version = JSON.parse(run("git", ["show", `${rel}:bin/package.json`])).vers
 console.log(`ready ${time()} main=${short(base)} rel=${short(rel)} ver=${version}`);
 
 const pr = run("gh", ["pr", "list", "--head", RELEASE_BRANCH, "--state", "open", "--json", "number", "--jq", ".[0].number"]);
+run("git", ["fetch", "-q", "origin", "main"]);
+requireRequestedMain(sha);
 try {
   run("gh", ["pr", "merge", pr, "--squash", "--match-head-commit", rel]);
 } catch (err) {

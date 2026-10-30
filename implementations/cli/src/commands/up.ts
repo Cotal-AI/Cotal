@@ -582,6 +582,21 @@ function serverExample(server: string): string {
   return `--server ${/^tls:/i.test(server) ? "tls" : "nats"}://127.0.0.1:${valid ? Number(port) : "<port>"}`;
 }
 
+/** The refusal of a manifest start whose effective `--server` or `broker.servers` lists more than
+ *  one URL, or undefined when it names one. The start binds one new local broker to one address, so
+ *  it does not pick an entry. The manifest still validates with a list, which `topology view` shows.
+ *  The message counts the entries and never repeats them, as one may carry a credential. */
+function bindListRefusal(command: string, file: string, space: string, server: string | undefined, servers: string | undefined): CommandFailure | undefined {
+  const count = (server ?? servers)?.split(",").filter((entry) => entry.trim()).length ?? 0;
+  if (count < 2) return undefined;
+  const source = server !== undefined ? "--server" : "broker.servers";
+  return new CommandFailure("refused", "USAGE_INVALID", `${source} lists ${count} broker URLs, and ${command} binds a single broker address; nothing was started or written`, {
+    target: { space, path: resolve(file), source, entries: count },
+    remedy: server !== undefined ? "pass one --server URL for the new broker to listen on" : `set broker.servers in ${file} to the one URL the new broker listens on`,
+    selfContained: true,
+  });
+}
+
 /** The local stack's own clients cannot reach a broker on an IPv6 address, so neither flag may name one. */
 const IPV6_UNSERVED = (flag: string): string => `${flag} names an IPv6 address, and the local stack's own clients cannot reach a broker there`;
 
@@ -890,7 +905,7 @@ export async function up(args: ParsedArgs, inheritedLock?: MaintenanceLock, fres
     const fresh = args.values.root === undefined ? freshFolderRoot(args.values) : undefined;
     if (fresh) {
       mkdirSync(join(fresh, ".cotal"), { mode: 0o700 });
-      console.error(c.dim(`made ${join(fresh, ".cotal")} for this folder's records; the machine's home .cotal was not used`));
+      for (const line of hang("", `made ${join(fresh, ".cotal")} for this folder's records; the machine's home .cotal was not used`, terminalWidth(process.stderr), c.dim)) console.error(line);
     }
     const root = args.values.root === undefined ? undefined : preparedUpRoot(String(args.values.root));
     const previousCwd = process.cwd();
@@ -1737,7 +1752,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
             }
           } else if (heldForRepair.storeDir !== undefined) {
             values["store-dir"] = heldForRepair.storeDir;
-            console.log(c.dim(`reopening the recorded store ${heldForRepair.storeDir}`));
+            for (const line of hang("", `reopening the recorded store ${heldForRepair.storeDir}`, terminalWidth(process.stdout), c.dim)) console.log(line);
           } else {
             const defaultStore = cotalPath("nats");
             let hasEntries = false;
@@ -2085,7 +2100,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       // The same Next a launch ends with: this mesh runs, so the steps are the ones that use and
       // stop it. A manager the refresh found or healed is what makes `spawn` one of them.
       const managerRecord = managerRecordState(held.space);
-      console.log(`\n${renderReport({ sections: [{ title: "Next", blocks: [{ kind: "commands", items: detachedNext({ manager: managerRecord.state === "alive", controlPlane: controlPlane !== undefined, machineHome: canonicalRoot(root) === canonicalRoot(homedir()), ...(values.root ? { root } : {}), ...(managerRecord.state === "unattributable" ? { unattributableManager: managerRecord.path, noManager } : {}) }, held.space) }] }] }, "rich", process.stdout)}`);
+      console.log(`\n${renderReport({ sections: [{ title: "Next", blocks: detachedNext({ manager: managerRecord.state === "alive", controlPlane: controlPlane !== undefined, machineHome: canonicalRoot(root) === canonicalRoot(homedir()), ...(values.root ? { root } : {}), ...(managerRecord.state === "unattributable" ? { unattributableManager: managerRecord.path, noManager } : {}) }, held.space) }] }, "rich", process.stdout)}`);
       return;
     }
     const who = held ? `mesh "${held.space}" (${held.root})` : "a broker not started here";
@@ -2184,10 +2199,12 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     const controlPlane = planeReturned && deliveryLost === undefined;
     const detached = { pid, delivery, authService: wantUser && authService, manager, machineHome: canonicalRoot(cotalRoot()) === canonicalRoot(homedir()), ...(values.root ? { root: cotalRoot() } : {}) };
     if (!quietRestore) {
-      console.log(c.dim(`Started ${executable}.`));
-      console.log(c.green(renderDetachedSummary(detached)));
+      for (const line of hang("", `Started ${executable}.`, terminalWidth(process.stdout), c.dim)) console.log(line);
+      // The summary's continuation lines start under its text, past the `✓`.
+      const [mark, ...summary] = renderDetachedSummary(detached).split(" ");
+      for (const line of hang(`${mark} `, summary.join(" "), terminalWidth(process.stdout))) console.log(c.green(line));
       if (unnamed) console.log(c.dim(`  This folder names no space, so up started the default space "${receiptSpace}"; pass --space <name> to start another`));
-      if (values.__folderNamed) console.log(c.dim(`  This new project's space is named after its folder, "${receiptSpace}"; pass --space <name> to start another`));
+      if (values.__folderNamed) for (const line of hang("  ", `This new project's space is named after its folder, "${receiptSpace}"; pass --space <name> to start another`, terminalWidth(process.stdout))) console.log(c.dim(line));
     }
     if (restored && process.env.COTAL_SMOKE_FAIL_AFTER_RESTORE_LISTENER_READY === "1")
       throw new Error("smoke-injected failure after restore listener readiness");
@@ -2215,7 +2232,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     }
     if (!quietRestore) {
       const managerRecord = managerRecordState(receiptSpace);
-      console.log(`\n${renderReport({ sections: [{ title: "Next", blocks: [{ kind: "commands", items: detachedNext({ ...detached, controlPlane, ...(managerRecord.state === "unattributable" ? { unattributableManager: managerRecord.path, noManager } : {}) }, receiptSpace) }] }] }, "rich", process.stdout)}`);
+      console.log(`\n${renderReport({ sections: [{ title: "Next", blocks: detachedNext({ ...detached, controlPlane, ...(managerRecord.state === "unattributable" ? { unattributableManager: managerRecord.path, noManager } : {}) }, receiptSpace) }] }, "rich", process.stdout)}`);
     }
     if (restored) restoreSinks.get(restored.attemptId)?.({
       attemptId: restored.attemptId, space: restored.space, root: restored.root, server: restored.server, mode: restored.mode,
@@ -3361,6 +3378,8 @@ export async function prepareFreshTeamBoot(file: string, opts: { space: string; 
   if (idpProblem) throw new CommandFailure("refused", "SCHEMA_INVALID", idpProblem, { target: { space: opts.space } });
   const serverProblems = opts.server === undefined ? [] : serverUrlProblems(opts.server, "--server");
   if (serverProblems.length) throw new CommandFailure("refused", "SCHEMA_INVALID", serverProblems.join("; "), { target: { space: opts.space } });
+  const list = bindListRefusal("team boot", file, opts.space, opts.server, prepared.manifest.broker?.servers);
+  if (list) throw list;
   const { prepared: eff, hostSource, serverSource } = applyUpOverrides(prepared, flags);
   const m = eff.manifest;
   const host = m.broker?.host ?? "127.0.0.1";
@@ -3517,6 +3536,9 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
     for (const problem of serverProblems) stderrLine("✗ ", `${problem}`, c.red);
     process.exit(1);
   }
+  // Each entry of a list is checked above; the start still needs one address, before any parse of it.
+  const list = bindListRefusal(opts.freshTeamBoot ? "team boot" : "up -f", file, prepared.manifest.space, opts.server, prepared.manifest.broker?.servers);
+  if (list) throw list;
   // Apply CLI overrides to one effective manifest (flag > manifest > default) so render + seed +
   // broker + launch all agree on the same values.
   const { prepared: eff, hostSource, serverSource } = applyUpOverrides(prepared, opts);
@@ -4601,11 +4623,11 @@ function recordOurMesh(m: MeshEntry, provenance: Provenance, quietBoot = false):
   removePreparedSpace(m.space); // started: the registration is its record now
   if (!usableCurrent) {
     setCurrent(m.space);
-    if (!quietBoot) console.log(c.dim(selectedOnUp(m.space)));
+    if (!quietBoot) for (const line of hang("", selectedOnUp(m.space), terminalWidth(process.stdout), c.dim)) console.log(line);
     return;
   }
   if (usableCurrent !== m.space && !quietBoot)
-    console.log(c.dim(keptOnUp(m.space, usableCurrent)));
+    for (const line of hang("", keptOnUp(m.space, usableCurrent), terminalWidth(process.stdout), c.dim)) console.log(line);
 }
 
 /** Write the default persona into the root this `up` started or refreshed when it has none, and
@@ -4618,7 +4640,7 @@ function seedPersonaAfterUp(root: string, quiet = false): void {
     console.error(c.yellow(`! the default persona was not written in ${root}: ${(e as Error).message}`));
     return;
   }
-  if (written && !quiet) console.log(c.dim(`  wrote ${written.what}: ${written.path}`));
+  if (written && !quiet) for (const line of hang("  ", `wrote ${written.what}: ${written.path}`, terminalWidth(process.stdout))) console.log(c.dim(line));
 }
 
 async function waitReady(server: string, creds?: string, tls = false, log?: string): Promise<boolean> {

@@ -170,8 +170,12 @@ try {
     c.check("R4 operator operation-read sees the approval's operation", or.state === "present", or);
     const pr = await call(host, { v: 1, kind: "service-endpoint-host", requestId: rid(), operation: "proposal-read", input: { proposalId: p.proposalId }, granter: { kind: "owner", owner } });
     c.check("R4 owner proposal-read sees the terminal view", pr.state === "present", pr);
+    const seqBefore = (await (await jetstreamManager(wide.nc)).streams.info(`KV_${epAuthBucket(space)}`)).state.last_seq;
     const u = await call(host, { v: 1, kind: "service-endpoint-host", requestId: rid(), operation: "instance-read", input: { endpoint, instanceId: p.instanceId }, granter: { kind: "owner", owner } });
-    c.check("R5 operations outside decide, revoke and the reads are unsupported", u.state === "denied" && u.reason === "unsupported", u);
+    const foreign = await call(host, { v: 1, kind: "service-endpoint-host", requestId: rid(), operation: "instance-read", input: { endpoint, instanceId: p.instanceId }, granter: { kind: "owner", owner: `u_${"d".repeat(26)}` } });
+    const view = u.state === "present" ? u.record.value as { endpoint?: string; instanceId?: string; assignmentDigest?: string; state?: string } : undefined;
+    c.check("R5 owner instance-read projects the selected revoking assignment and a foreign owner is refused", u.state === "present" && view?.endpoint === endpoint && view?.instanceId === p.instanceId && view?.assignmentDigest === approval?.assignment.assignmentDigest && view?.state === "revoking" && foreign.state === "denied" && foreign.reason === "permission-denied", { u, foreign });
+    c.check("R5 instance reads write nothing", (await (await jetstreamManager(wide.nc)).streams.info(`KV_${epAuthBucket(space)}`)).state.last_seq === seqBefore);
     await o.plane.close();
     c.check("R6 close releases the claim", (await claimState()) === "released");
     const after = await call(host, decide(p.proposalId, p.revision, name.revision));

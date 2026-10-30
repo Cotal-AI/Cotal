@@ -165,37 +165,31 @@ export function classifyPullRequestHead({ pr, headSha, expected, runs }) {
   return { expected, missing, pending, failing, green: missing.length === 0 && pending.length === 0 && failing.length === 0 };
 }
 
-function authHeaders() {
+function githubToken() {
   let token = process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
   if (!token) {
-    try { token = execFileSync("gh", ["auth", "token"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim(); }
+    try { token = execFileSync("gh", ["auth", "token"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }); }
     catch { token = undefined; }
   }
-  return {
-    accept: "application/vnd.github+json",
+  token = token?.trim();
+  if (!token) throw new Error("pr-head-gate needs a GitHub token (GH_TOKEN, GITHUB_TOKEN or gh auth login)");
+  return token;
+}
+
+async function request(token, path, query = {}, raw = false) {
+  const url = new URL(path, API);
+  for (const [key, value] of Object.entries(query)) url.searchParams.set(key, String(value));
+  const response = await fetch(url, { headers: {
+    accept: raw ? "application/vnd.github.raw+json" : "application/vnd.github+json",
     "user-agent": "cotal-pr-head-gate",
     "x-github-api-version": "2022-11-28",
-    ...(token ? { authorization: `Bearer ${token}` } : {}),
-  };
-}
-
-async function api(path, query = {}) {
-  const url = new URL(path, API);
-  for (const [key, value] of Object.entries(query)) url.searchParams.set(key, String(value));
-  const response = await fetch(url, { headers: authHeaders() });
+    authorization: `Bearer ${token}`,
+  } });
   if (!response.ok) throw new Error(`GitHub API ${response.status} for ${url.pathname}: ${await response.text()}`);
-  return response.json();
+  return raw ? response.text() : response.json();
 }
 
-async function rawApi(path, query = {}) {
-  const url = new URL(path, API);
-  for (const [key, value] of Object.entries(query)) url.searchParams.set(key, String(value));
-  const response = await fetch(url, { headers: { ...authHeaders(), accept: "application/vnd.github.raw+json" } });
-  if (!response.ok) throw new Error(`GitHub API ${response.status} for ${url.pathname}: ${await response.text()}`);
-  return response.text();
-}
-
-async function pages(path, query = {}) {
+async function pages(api, path, query = {}) {
   const out = [];
   for (let page = 1; ; page++) {
     const batch = await api(path, { ...query, per_page: 100, page });
@@ -215,11 +209,14 @@ function repository() {
 }
 
 async function live(pr) {
+  const token = githubToken();
+  const api = (path, query) => request(token, path, query);
+  const rawApi = (path, query) => request(token, path, query, true);
   const repo = repository();
   const pull = await api(`/repos/${repo}/pulls/${pr}`);
   const headSha = pull.head?.sha;
   if (!/^[0-9a-f]{40}$/i.test(headSha)) throw new Error(`PR #${pr} returned an invalid head SHA`);
-  const files = await pages(`/repos/${repo}/pulls/${pr}/files`);
+  const files = await pages(api, `/repos/${repo}/pulls/${pr}/files`);
   const changedPaths = files.flatMap((file) => [file.filename, ...(file.previous_filename ? [file.previous_filename] : [])]);
   const entries = await api(`/repos/${repo}/contents/.github/workflows`, { ref: headSha });
   if (!Array.isArray(entries)) throw new Error("workflow directory response is malformed");

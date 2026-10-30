@@ -318,7 +318,7 @@
     {
       "path": "implementations/cli/src/commands/agents.ts",
       "kind": "status-token",
-      "anchor": " yet populated)\", tone: \"waiting\" };\n  // The harness-rep",
+      "anchor": " yet populated)\", tone: \"waiting\" };\n  if (r.joinHealth?.",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
@@ -3276,7 +3276,7 @@
     {
       "path": "implementations/cli/src/chat/static-session.ts",
       "kind": "derived-output",
-      "anchor": "askPinned(mesh, \"chatSessionRetire\", { alias: slot.alias, actor: slot.actor, lifecycleUid: slot.lifecycleUid }, managerInstanceId)",
+      "anchor": "askPinned(mesh, \"chatSessionRetire\", { alias: slot.alias, actor: slot.actor, lifecycleUid: slot.lifecycleUid }, managerInstanceId, undefined, STATIC_CHAT_RETIRE_TIMEOUT_MS)",
       "class": "non-render/control",
       "rationale": "Static chat control path: asks the pinned manager to retire the chat session; no presence is rendered."
     },
@@ -3304,7 +3304,7 @@
     {
       "path": "implementations/cli/src/chat/static-session.ts",
       "kind": "derived-output",
-      "anchor": "askManager(mesh.space, mesh.server, op, args, auth, \"owner\", undefined, instanceId !== undefined ? { instanceId } : undefined)",
+      "anchor": "askManager(mesh.space, mesh.server, op, args, auth, \"owner\", timeoutMs, instanceId !== undefined ? { instanceId } : undefined)",
       "class": "non-render/control",
       "rationale": "Static chat control path: asks the pinned space's manager; no presence is rendered."
     },
@@ -3605,7 +3605,7 @@
     {
       "path": "implementations/cli/src/commands/agents.ts",
       "kind": "status-token",
-      "anchor": ".partial.message, tone: \"waiting\" }] }] }] }, \"rich\", ter",
+      "anchor": ".partial.message, tone: \"waiting\" }] }] }] }, \"rich\", pro",
       "class": "non-render/control",
       "rationale": "Attach picker preface: \"waiting\" is the color tone for the partial agent list warning, not a peer's presence."
     },
@@ -4604,20 +4604,6 @@
       "rationale": "Help context line: \"waiting\" is the color tone for a folder that no longer exists, not any peer's presence."
     },
     {
-      "path": "implementations/cli/src/help.ts",
-      "kind": "derived-output",
-      "anchor": "`Start this space${capLabel(start)}`",
-      "class": "non-render/control",
-      "rationale": "Help context line: the start command for the prepared space's root with its cap label; a registration record, not presence."
-    },
-    {
-      "path": "implementations/cli/src/help.ts",
-      "kind": "derived-output",
-      "anchor": "capLabel(start)",
-      "class": "non-render/control",
-      "rationale": "Help context line: the start command for the prepared space's root with its cap label; a registration record, not presence."
-    },
-    {
       "path": "implementations/cli/src/lib/controller-preserve.ts",
       "kind": "status-token",
       "anchor": "\"idle\"",
@@ -4718,9 +4704,23 @@
     {
       "path": "implementations/cli/src/lib/up-report.ts",
       "kind": "derived-output",
-      "anchor": "return items;",
+      "anchor": "`cotal up${status.root ? ` --root ${shellWord(status.root)}` : \"\"}`",
       "class": "non-render/control",
-      "rationale": "Up result next steps: the stop command and root from the local stack record; not agent presence."
+      "rationale": "Up result recovery command uses the recorded stack root, not agent presence or work progress."
+    },
+    {
+      "path": "implementations/cli/src/lib/up-report.ts",
+      "kind": "derived-output",
+      "anchor": "` --root ${shellWord(status.root)}`",
+      "class": "non-render/control",
+      "rationale": "Up result recovery command formats the stack root as a shell argument, not agent presence."
+    },
+    {
+      "path": "implementations/cli/src/lib/up-report.ts",
+      "kind": "derived-output",
+      "anchor": "`${up} --no-manager`",
+      "class": "non-render/control",
+      "rationale": "Up result recovery command retains the operator's no-manager choice, not agent presence."
     },
     {
       "path": "implementations/cli/src/watch-data.ts",

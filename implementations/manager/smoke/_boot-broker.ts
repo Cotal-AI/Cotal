@@ -13,7 +13,7 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { serverConfig, isReachable, type SpaceAuth } from "@cotal-ai/core";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal, killAndAwaitExit } from "@cotal-ai/smoke-kit";
 import { pickFreePort } from "./_free-port.js";
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -58,8 +58,7 @@ export async function bootBroker(auth: SpaceAuth, opts?: { monitor?: boolean }):
     servers,
     ...(monitorPort !== undefined ? { monitorUrl: `http://127.0.0.1:${monitorPort}` } : {}),
     stop: async () => {
-      srv.kill("SIGTERM");
-      await wait(200);
+      await killAndAwaitExit(srv);
       rmSync(dir, { recursive: true, force: true });
       release(); // last: ownership is held until this teardown has actually finished
     },

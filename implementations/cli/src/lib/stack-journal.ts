@@ -729,7 +729,9 @@ export function goneStackRoot(space: string): string | undefined {
  *  records, as `service remove` does, so that another folder can start a stack under the same name.
  *  A definition saved for another root is left alone. Nothing is removed while the root holds
  *  preserved state, which resumes from them, or while any of their instances is not removable;
- *  `kept` names them, why, and the route that removes them. */
+ *  `kept` names them, why, and the route that removes them. The root's stack journal stays, and a
+ *  member it names by one of the removed instance records then records no instance, so a later
+ *  `up` or `down` there does not look for it. A member it names by any other instance keeps it. */
 export function releaseStackDefinitions(root: string, space: string): { released: string[]; kept?: { names: string[]; why: string } } {
   let owned: ServiceDefinitionSnapshot[];
   try { owned = stackDefinitionsAt(space, root); } catch (error) { return { released: [], kept: { names: [], why: `${(error as Error).message}; inspect them with \`cotal service --space ${space}\`` } }; }
@@ -746,12 +748,27 @@ export function releaseStackDefinitions(root: string, space: string): { released
       : isCommandFailure(error) && error.remedy || `inspect them with \`cotal service --space ${space}\``;
     return { released: [], kept: { names, why: `${(error as Error).message}; ${route}` } };
   }
-  const store = serviceDefinitionStore(space), released: string[] = [];
+  // Read before anything is removed, so the update below replaces only these bytes. A journal this
+  // cannot read is left as it is; `up` and `down` there refuse it and name its way out.
+  let journal: StackJournalSnapshot | undefined;
+  try { journal = readStackJournal(root); } catch { journal = undefined; }
+  const store = serviceDefinitionStore(space), released: string[] = [], retired: { definition: string; instanceId: string }[] = [];
   try {
-    for (const row of owned) { store.commit(row.name, row, undefined, () => removeStoppedInstanceRecords(space, row.name)); released.push(row.name); }
+    for (const row of owned) {
+      store.commit(row.name, row, undefined, () => { for (const instanceId of removeStoppedInstanceRecords(space, row.name)) retired.push({ definition: row.name, instanceId }); });
+      released.push(row.name);
+    }
   } catch (error) {
     if (!released.length) throw error;
     throw new CommandFailure("partial", "OPERATION_PARTIAL", "some stack definitions were removed, but another changed before its removal", { target: { space, root }, changed: released.map((name) => ({ kind: "service-definition", name })), remedy: `inspect the rest with \`cotal service --space ${space}\`` });
+  }
+  const isRetired = (row: StackMember) => retired.some((item) => item.definition === row.definition && item.instanceId === row.instanceId);
+  if (journal?.journal.space === space && journal.journal.members.some(isRetired)) {
+    try {
+      writeStackJournal(root, journal, { ...journal.journal, members: journal.journal.members.map((row) => isRetired(row) ? { ...row, instanceId: null } : row), updatedAt: new Date().toISOString() });
+    } catch (error) {
+      throw new CommandFailure("partial", "OPERATION_PARTIAL", `the stopped stack definitions were removed, but the stack journal still names their instances: ${(error as Error).message}`, { target: { space, root }, changed: released.map((name) => ({ kind: "service-definition", name })), remedy: `inspect ${stackJournalPath(root)} and the service instances it names with \`cotal service --space ${space}\`; it was not reset` });
+    }
   }
   return { released };
 }

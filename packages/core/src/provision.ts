@@ -15,7 +15,7 @@
  * expiry and renewal owner.
  */
 import { TTL_RECONCILE_CANARY_KEY, ttlBuckets } from "./streams.js";
-import { nativeNkeySigner } from "./nkey-signer.js";
+import { decodeNatsJwt, nativeNkeySigner } from "./nkey-signer.js";
 import { spaceDeletionStreams } from "./space-deletion-targets.js";
 import { BROKER_USER_INFO_SUBJECT } from "./broker-identity.js";
 import { randomBytes } from "node:crypto";
@@ -432,11 +432,11 @@ export function assertAccountSignedByBroker(broker: BrokerAuth, spaceAccount: Sp
     throw new Error("assertAccountSignedByBroker: broker operator material is required to verify the account binding");
   let operatorPub: string;
   try {
-    operatorPub = fromSeed(new TextEncoder().encode(broker.operator.seed)).getPublicKey();
+    operatorPub = nativeNkeySigner(new TextEncoder().encode(broker.operator.seed)).getPublicKey();
   } catch {
     throw new Error("assertAccountSignedByBroker: the broker operator seed is not a valid operator seed");
   }
-  const claims = decode<{ iss?: string }>(spaceAccount.account.jwt);
+  const claims = decodeNatsJwt<{ iss?: string }>(spaceAccount.account.jwt);
   if (claims.iss !== operatorPub)
     throw new Error(
       `space "${spaceAccount.space}" account was signed by ${claims.iss ?? "an unknown issuer"}, not this broker's operator ${operatorPub} - refusing to compose trust across brokers`,
@@ -577,13 +577,14 @@ export async function createBrokerAuth(label: string): Promise<BrokerAuth> {
 
 /** Generate one space's data account (+ signing key), signed by an EXISTING broker operator. This is
  *  the per-tenant half of provisioning: call it once per space against the same {@link BrokerAuth}
- *  to put many spaces on one broker, each in its own NATS account. */
+ *  to put many spaces on one broker, each in its own NATS account. Key generation and JWT
+ *  construction stay with NATS; the existing native signer derives public keys and signs. */
 export async function createSpaceAccountAuth(broker: BrokerAuth, space: string): Promise<SpaceAccountAuth> {
   if (!broker.operator.seed)
     throw new Error("createSpaceAccountAuth: the broker operator seed is required - a stripped broker cannot sign a new space account");
-  const okp = fromSeed(new TextEncoder().encode(broker.operator.seed));
-  const akp = createAccount();
-  const askp = createAccount(); // account signing key - what mints users
+  const okp = nativeNkeySigner(new TextEncoder().encode(broker.operator.seed));
+  const akp = nativeNkeySigner(createAccount().getSeed());
+  const askp = nativeNkeySigner(createAccount().getSeed()); // account signing key - what mints users
   const accountJwt = await encodeAccount(
     token(space),
     akp,

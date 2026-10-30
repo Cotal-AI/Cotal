@@ -5,8 +5,10 @@ cell and mutation behind each measured one. Start there if you are reviewing.
 
 ## Running these
 
-None of these suites are registered in `package.json`, so `pnpm smoke:ci` does not run any of
-them. That is deliberate while the contract is under review: the shard-stability suite treats a
+The full prototype suites below are not registered in `package.json`. The focused
+`pnpm smoke:issued-rail-sources` gate does run in `smoke:ci`: it checks the shared literal
+inventory and observer filters, not the full profile or origin claims. Keeping the remaining
+prototype suites outside the gate was deliberate while the contract was under review: the shard-stability suite treats a
 removed suite name as a resharding event, and these prototypes are expected to be deleted or
 replaced once the contract is settled. Run them by path, and prove each with its own config:
 
@@ -271,11 +273,14 @@ wider shape a fenced mint composes on top of it (journal effects bind, one owned
 bind, `$JS.API.INFO`, and the connection inbox). The fence that releases those rows is
 covered by `endpoint-serve-auth.smoke.ts`, not here. These limits remain open for full
 migration acceptance, except the option-combination one: the per-variant checks cover
-representative options, and a scan of every shipped `.ts` under `packages/*/src`,
-`implementations/*/src` and `extensions/*/src` shows no builder emits an `ep.v1` subject at
-all, so no option combination can reach that namespace. The scan carries a positive control
-requiring it to have reached the endpoint subject builders, and two named mutations: skipping
-a source tier, and making a real builder emit the issued rail.
+representative options. The source scan covers shipped `.ts` files under `packages/*/src`,
+`implementations/*/src`, `extensions/*/src` and the published composition root. TypeScript
+parsing separates string, template and regex literals from comments/JSDoc. Literal rail
+spelling outside core's builders refuses; the generated docs bundle is excluded. The scan
+carries a corpus control and the focused gate exercises positive and negative syntax inputs.
+This is a literal inventory, not a data-flow proof about dynamically assembled subjects.
+Trusted auth observation uses core's request-head builder, keeping its existing command,
+route and rail selection. It grants no new read or publish permission.
 
 Every profile is classified peer-held or trusted, and the two lists must union to exactly the
 declared set. Peer-heldness is a deployment property, so no cell here can settle which side a

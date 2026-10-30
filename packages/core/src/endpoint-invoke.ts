@@ -188,14 +188,16 @@ async function pooled<T, R>(items: readonly T[], limit: number, work: (item: T) 
  * `opts.commands` narrows the returned handle to those visible commands. The resolver still uses
  * the fresh describe as the authority for visibility, then fetches only the cluster documents and
  * schema closures needed by that subset. An absent requested command fails before any contract-store
- * read. Omit it to resolve the complete visible surface, as discovery callers require.
+ * read unless listed in `opts.optionalCommands`, which omits it from the handle instead. A follow
+ * caller can then refuse a missing reconciliation command before submitting its required action.
+ * Omit `commands` to resolve the complete visible surface, as discovery callers require.
  */
 export async function resolveService(
   nc: NatsConnection,
   space: string,
   endpoint: string,
   caller: EpCaller,
-  opts: { deadlineMs?: number; instanceId?: string; classInstanceId?: string; signal?: AbortSignal; commands?: readonly string[] } = {},
+  opts: { deadlineMs?: number; instanceId?: string; classInstanceId?: string; signal?: AbortSignal; commands?: readonly string[]; optionalCommands?: readonly string[] } = {},
 ): Promise<ResolvedService> {
   if (opts.commands !== undefined) {
     if (!Array.isArray(opts.commands) || opts.commands.length === 0)
@@ -203,6 +205,14 @@ export async function resolveService(
     for (const command of opts.commands) {
       try { assertCommandToken(command); }
       catch (e) { throw new EpEnvelopeError("failed-precondition", `invalid requested command: ${(e as Error).message}`); }
+    }
+  }
+  if (opts.optionalCommands !== undefined) {
+    if (!Array.isArray(opts.optionalCommands) || opts.optionalCommands.length === 0)
+      throw new EpEnvelopeError("failed-precondition", "optionalCommands must be a non-empty array when supplied");
+    for (const command of opts.optionalCommands) {
+      try { assertCommandToken(command); }
+      catch (e) { throw new EpEnvelopeError("failed-precondition", `invalid optional command: ${(e as Error).message}`); }
     }
   }
   // `deadlineMs` bounds the WHOLE resolve: the describe spends from it, and each closure walk is
@@ -213,9 +223,12 @@ export async function resolveService(
   const store = await contractStoreContext(nc, space);
   const visible = new Set<string>(answer.descriptor.clusters.flatMap((cl) => cl.commands));
   const requested = opts.commands === undefined ? visible : new Set(opts.commands);
-  for (const command of requested)
-    if (!visible.has(command))
-      throw new EpEnvelopeError("not-found", `command "${command}" is not in ${endpoint}'s visible surface; describe lists ${[...visible].sort().join(", ") || "(none)"}`);
+  const optional = new Set(opts.optionalCommands);
+  for (const command of requested) {
+    if (visible.has(command)) continue;
+    if (optional.has(command)) { requested.delete(command); continue; }
+    throw new EpEnvelopeError("not-found", `command "${command}" is not in ${endpoint}'s visible surface; describe lists ${[...visible].sort().join(", ") || "(none)"}`);
+  }
   // The store reads dominate a resolve's wall time and are all caller->broker round-trips, so they
   // are issued CONCURRENTLY and deduped through one memo rather than queued one behind another (a
   // 17-command surface measured 70 strictly sequential reads, 22 of them re-reads; at a WAN RTT

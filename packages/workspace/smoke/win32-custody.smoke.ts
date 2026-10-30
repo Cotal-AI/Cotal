@@ -12,6 +12,7 @@ import { assertRecordIdentity } from "../src/pid.js";
 import { custodyRequest, custodyStatus, serveCustody, startWin32Custodian, type CustodyStatus } from "../src/win32-custody.js";
 import { nativeWin32CreationToken, windowsCommandLine, windowsEnvironmentBlock } from "../src/win32-process.js";
 import { probeLiveness } from "../src/pid.js";
+import { emitSentinel } from "@cotal-ai/smoke-kit";
 
 const root = mkdtempSync(join(tmpdir(), "win32-custody-"));
 let checks = 0;
@@ -165,6 +166,7 @@ ${exitAfter === undefined ? "setInterval(() => {}, 1000);" : `setTimeout(() => p
     holder.close();
   }
   console.log(`WINDOWS CUSTODY OK (${checks} checks; ${process.platform}/${process.arch}, ${process.version})`);
+  emitSentinel({ passed: checks, failed: 0 });
 } finally {
   await sleep(200);
   rmSync(root, { recursive: true, force: true });

@@ -33,9 +33,9 @@ export function isUnansweredDeliveryAdmin(e: unknown): boolean {
   return e instanceof TimeoutError || (e instanceof RequestError && e.isNoResponders());
 }
 
-/** Run `attempt` until it resolves, retrying with capped backoff while `retryable` accepts the
- *  failure, and settle within `waitMs` on the monotonic clock (#871). The wait ends on time even
- *  inside an attempt that is still minting, connecting or reading, so an attempt must be safe to
+/** Run `attempt` until it resolves, retrying at once and then at one-second intervals while
+ *  `retryable` accepts the failure, and settle within `waitMs` on the monotonic clock (#871). The
+ *  wait ends on time even inside an attempt that is still minting, connecting or reading, so it must be safe to
  *  abandon: it sizes its request with `requestMs(capMs)`, which cuts the cap to what is left and
  *  throws once nothing is, so an abandoned attempt sends nothing. No retry sleeps longer than half of
  *  what is left, because a no-responder failure is immediate and a daemon that binds in the last
@@ -61,7 +61,7 @@ export async function untilDeliveryAdminAnswers<T>(
   const waitEnds = new Promise<never>((_, reject) => (timer = setTimeout(() => reject(ended), waitMs)));
   let failure: unknown = ended;
   try {
-    for (let delayMs = 1_000; leftMs() > 0; delayMs = Math.min(2 * delayMs, 5_000)) {
+    for (let retry = 0; leftMs() > 0; retry++) {
       try {
         return await Promise.race([attempt(requestMs), waitEnds]);
       } catch (e) {
@@ -69,8 +69,9 @@ export async function untilDeliveryAdminAnswers<T>(
         if (!retryable(e)) throw e;
         failure = e;
       }
-      const sleepMs = Math.ceil(Math.min(delayMs, leftMs() / 2));
-      if (sleepMs <= 0) break;
+      const remaining = leftMs();
+      if (remaining <= 0) break;
+      const sleepMs = retry === 0 ? 0 : Math.ceil(Math.min(1_000, remaining / 2));
       onRetry(failure instanceof Error ? failure.message : String(failure), sleepMs);
       await new Promise((r) => setTimeout(r, sleepMs));
     }

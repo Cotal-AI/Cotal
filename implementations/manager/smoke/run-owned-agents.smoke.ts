@@ -540,6 +540,8 @@ try {
   writeFileSync(controlPath, "parent-denied");
   await until(() => trace().some((e) => e.kind === "tool-parent-denied"), "native direct parent run denial");
   check("MC-4 current direct parent without run refuses child tool start", trace().find((e) => e.kind === "tool-parent-denied")?.isError === true && drives.size === beforeParentDenial && await runCount() === recordsBeforeParentDenial);
+  // The denied call memoized a legacy view for this credential. The next connection must adopt
+  // its own accepted row when the restored parent makes it eligible for issued run authority.
   grantActor(hostDir, { ...row, owner, actor: "cli", scope: ["spawn", "run", "supervise", "admin"], lifecycleUid: row.lifecycleUid });
   for (const scenario of ["parent-restored", "stale-uid", "wrong-instance"]) {
     const before = drives.size;

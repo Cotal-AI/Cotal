@@ -12,6 +12,8 @@ import {
   dmStream,
   isConsumerNotFound,
   parsePrincipalKey,
+  parseSubject,
+  peerLabel,
   resolvePeer,
   standaloneConnectOpts,
   unicastSubject,
@@ -172,10 +174,19 @@ export async function runPending(args: ParsedArgs): Promise<void> {
           let seen = 0;
           try {
             for await (const m of iter) {
-              const body = JSON.parse(new TextDecoder().decode(m.data)) as { id: string; from: EndpointRef; ts: number };
-              // Keep the legacy --json output unchanged, including its candidate lines.
-              const from = values.json ? String(body.from) : `${body.from.name} (${body.from.id})`;
-              console.log(`  ${body.id}  from=${from}  ts=${body.ts}`);
+              const body = JSON.parse(new TextDecoder().decode(m.data)) as { id: string; from?: Partial<EndpointRef>; ts: number };
+              if (values.json) {
+                // Keep the legacy --json output unchanged, including its candidate lines.
+                console.log(`  ${body.id}  from=${String(body.from)}  ts=${body.ts}`);
+              } else {
+                // `from=` is the sender principal the broker bound into the stored subject. The card is
+                // the sender's own claim, so its name and role print last, as a label and nothing more.
+                const sender = parseSubject(m.subject)?.sender;
+                if (!sender) throw new Error(`unparseable DM subject ${m.subject}`);
+                const card = body.from;
+                const label = typeof card?.name === "string" ? `  label=${peerLabel({ name: card.name, role: typeof card.role === "string" ? card.role : undefined })}` : "";
+                console.log(`  ${body.id}  from=${sender}  ts=${body.ts}${label}`);
+              }
               seen++;
               if (seen >= pendingCandidates) break;
             }
