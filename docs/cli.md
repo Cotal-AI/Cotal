@@ -6583,6 +6583,7 @@ a hyperlink. The TUI keeps a body's line breaks, and `--plain` prints each messa
 The TUI wraps a body, and a roster seat's status facts, by terminal columns: a wide character such
 as a CJK ideograph or an emoji takes two, and a word wider than the pane breaks between characters,
 never inside one.
+A roster seat's head row wider than its pane ends in `…` after the last whole character that fits.
 
 <a id="web"></a>
 

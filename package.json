@@ -1053,6 +1053,7 @@
     "smoke:console-attach": "tsx implementations/cli/smoke/console-attach.smoke.ts",
     "smoke:console-cursor": "tsx implementations/cli/smoke/console-cursor.smoke.tsx",
     "smoke:console-render": "tsx implementations/cli/smoke/console-render.smoke.tsx",
+    "smoke:console-roster-head": "tsx implementations/cli/smoke/console-roster-head.smoke.tsx",
     "smoke:console-managed-rows": "tsx implementations/cli/smoke/console-managed-rows.smoke.ts",
     "smoke:console-status-row": "tsx implementations/cli/smoke/console-status-row.smoke.ts",
     "smoke:split-topology-docs": "tsx bin/smoke/split-topology-docs.smoke.ts",
