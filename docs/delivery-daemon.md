@@ -67,6 +67,11 @@ then asks to take its buffered copy is refused and forgets it. The daemon remove
 the request left the queue. It checks every row when it starts and every ten minutes, and resends
 any notice a crash left unsent.
 
+Stop the daemon before you delete or recreate the task stream. A cancel checks the stream's
+creation time and then deletes by seq, and JetStream has no delete that checks the stream it lands
+on. A stream recreated between the two loses the request the new stream stores at that seq, and the
+cancel still reads deleted.
+
 For this the `delivery` credential can read every request body on the task stream and delete any
 request there. Only the trust placed in the daemon bounds those two grants
 ([SPEC Appendix B](../SPEC.md#appendix-b-profile-acls)).

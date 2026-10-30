@@ -825,8 +825,8 @@ recorded sender is another principal reads `unknown`. The reply `data` is one of
   `seq`.
 
 A cancel succeeds only while the request waits. The daemon creates a `cancelled` row with
-`removal: "pending"`, deletes the request from `TASK_<space>` when the stream's creation time still
-matches the row, and records how the request left. A cancel of a request a holder took is refused,
+`removal: "pending"`, reads the stream's creation time, deletes the request from `TASK_<space>` by
+seq when that time still matches the row, and records how the request left. A cancel of a request a holder took is refused,
 and its reply is the `taken` status, which names the taker. A cancel retried after a lost reply
 finishes a removal the first attempt left pending. A third op, `anycastTakes`, answers
 `{ takes: true }`. A holder whose take finds no responder calls it to tell an older daemon, which
@@ -862,6 +862,11 @@ holder asks again, so its ack wait can run out, and the broker then redelivers t
   `already-gone`.
 - A seq names whatever the queue stores there now. After a stream recreation a bare seq can name a
   newer request from the same sender; giving `id` rules that out.
+- JetStream deletes a message by stream and seq, with no condition on the stream's creation time.
+  If `TASK_<space>` is deleted and recreated between the daemon's read of that time and its delete,
+  the delete removes whatever request the new stream stores at that seq, and the cancel reads
+  `deleted`. An operator stops the delivery daemon before deleting or recreating the stream; a
+  removal left pending then reads `already-gone` once the daemon is back.
 
 ---
 
