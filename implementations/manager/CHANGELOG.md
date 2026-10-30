@@ -1,5 +1,14 @@
 # @cotal-ai/manager
 
+## 0.128.6
+
+### Patch Changes
+
+- 56b84af: Wait through delivery credential reconnects before completing static agent retirement. Retry an unanswered eviction promptly while preserving its deadline and verified-cleanup requirements.
+- @cotal-ai/core@0.128.6
+  - @cotal-ai/seat@0.128.6
+  - @cotal-ai/workspace@0.128.6
+
 ## 0.128.5
 
 ### Patch Changes
