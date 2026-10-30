@@ -442,13 +442,18 @@ try {
       await seat.start();
       await (seat as unknown as { pollTurns(): Promise<void> }).pollTurns();
       const surfaced = await until(async () => seat.peekPendingTurns(), 10_000);
-      const line = surfaced?.text.split("\n").find((s) => s.startsWith("Answer with: `") && s.endsWith("`"))?.slice("Answer with: `".length, -1);
-      const command = line?.replace("'<json record>'", "'{\"estimate\":4}'");
-      if (command !== undefined) {
-        const parts = command.match(/(?:[^\s']+|'[^']*')+/g)?.map((p) => p.startsWith("'") ? p.slice(1, -1) : p) ?? [];
-        const [binary, ...args] = parts;
-        if (binary === "cotal") {
-          // The rendered command as is, with `--json` added so its receipt is the CLI's result envelope.
+      // The seat renders its native answer route, `cotal_invoke` with `args={...}`; the shipped CLI
+      // answers the same run and step from inside the seat.
+      const route = surfaced?.text.split("\n").find((s) => s.startsWith("Answer through your native Cotal tools:"));
+      const routed = route?.match(/ args=(\{.*\})\.$/)?.[1];
+      const coordinate = ((): { runId?: unknown; stepKey?: unknown } | undefined => {
+        try { return routed === undefined ? undefined : JSON.parse(routed.replace("<json record>", "null")); } catch { return undefined; }
+      })();
+      if (route !== undefined) {
+        const args = typeof coordinate?.runId === "string" && typeof coordinate.stepKey === "string"
+          ? ["run", "answer", coordinate.runId, coordinate.stepKey, "--value", '{"estimate":4}'] : undefined;
+        if (args !== undefined) {
+          // With `--json` so its receipt is the CLI's result envelope.
           renderedForm = await execFile(process.execPath, [resolve("bin/dist/cotal.js"), ...args, "--json"], {
             cwd: wsA,
             env: {
@@ -472,7 +477,7 @@ try {
               ? { ok: true as const, token: reply.token, answerId: reply.answerId }
               : { ok: false as const, error: `the CLI returned no answer coordinate: ${stdout}` };
           }, (e: unknown) => ({ ok: false as const, error: String((e as Error).message) }));
-        } else renderedForm = { ok: false, error: `unexpected rendered command ${String(command)}` };
+        } else renderedForm = { ok: false, error: `unexpected rendered answer route ${route}` };
       }
     } finally {
       await seat.stop();
@@ -484,7 +489,7 @@ try {
         recordedBy = (await readCheckpointAnswer(await openRecordsBucket(readNc, spaceA), "manager", renderedForm.token, renderedForm.answerId))?.by;
       } finally { await readNc.drain().catch(() => readNc.close()); }
     }
-    c("the addressed baseline seat's rendered command with --json is accepted through the shipped CLI path as asked", renderedForm.ok && recordedBy === "asked", { renderedForm, recordedBy });
+    c("the addressed baseline seat answers its rendered ask through the shipped CLI path with --json, as asked", renderedForm.ok && recordedBy === "asked", { renderedForm, recordedBy });
     const answered = await until(async () => {
       const v = await status(runId);
       return v?.journal.some((row) => row.kind === "step" && row.step === "/ask:size#0" && row.state === "settled") ? v : undefined;
