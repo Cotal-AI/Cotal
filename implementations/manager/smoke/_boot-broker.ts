@@ -19,6 +19,8 @@ import { pickFreePort } from "./_free-port.js";
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export interface Broker {
+  /** PID of this helper's own native broker. */
+  pid: number;
   /** `nats://127.0.0.1:<port>` of the booted broker. */
   servers: string;
   /** `http://127.0.0.1:<port>` of the monitoring endpoint — present iff booted with `monitor`. */
@@ -55,6 +57,7 @@ export async function bootBroker(auth: SpaceAuth, opts?: { monitor?: boolean }):
     throw new Error(`bootBroker: nats-server did not come up on ${port}`);
   }
   return {
+    pid: srv.pid!,
     servers,
     ...(monitorPort !== undefined ? { monitorUrl: `http://127.0.0.1:${monitorPort}` } : {}),
     stop: async () => {

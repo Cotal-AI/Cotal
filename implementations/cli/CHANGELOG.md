@@ -1,5 +1,26 @@
 # @cotal-ai/cli
 
+## 0.132.0
+
+### Patch Changes
+
+- 7613605: Share comma-list parsing across spawn, mint and persona commands. Preserve absent flags, explicit empty overrides and each command's validation rules.
+- 2f0e7c8: Share dashboard bound-address formatting between the web service and CLI status, keeping IPv6 brackets, readiness URLs and the branded default unchanged.
+- Updated dependencies [5b197c0]
+- Updated dependencies [7613605]
+- Updated dependencies [2f0e7c8]
+  - @cotal-ai/workspace@0.132.0
+  - @cotal-ai/core@0.132.0
+
+## 0.131.6
+
+### Patch Changes
+
+- 672f4a8: Closing a console detail sent the roster back to its first seat at the top, so `j`, Enter, Escape could never reach past the second seat. The roster now keeps its selected seat and window across a detail, help and the DM lens. A seat that moved while its detail was open stays selected, and one that left gives its row to the next seat.
+- 9de91fb: Show how many console roster seats the window leaves out. The roster drew whole seats around the selected one and said nothing about the rest: at 80 columns four seats showed two with no sign of the others, and the title was cut before its seat count. The title now starts with the whole seats left out above and below the window, as in `roster ↑2 ↓1 more`, so the 80-column cut keeps them. A selected seat taller than the window used to push the title out, and the title's tail then showed beside a short name row. The title now keeps its row while the box has another, and the seat shows its first rows under it. A box with one row inside gives that row to the seat's name.
+- @cotal-ai/core@0.131.6
+  - @cotal-ai/workspace@0.131.6
+
 ## 0.131.5
 
 ### Patch Changes

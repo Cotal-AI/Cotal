@@ -346,7 +346,7 @@ writeFileSync(join(dir, "server.conf"), serverConfig(brokerAuth, accounts, { tra
 const srv = spawn(NATS_BIN, ["-c", join(dir, "server.conf")], {
   stdio: ["ignore", "ignore", "pipe"],
   // Scope runtime diagnostics to the broker; esbuild is also a Go program.
-  ...(GO_TRACE ? { env: { ...process.env, GODEBUG: [process.env.GODEBUG, "gctrace=1", "scavtrace=1"].filter(Boolean).join(",") } } : {}),
+  env: { ...cleanEnv, ...(GO_TRACE ? { GODEBUG: [cleanEnv.GODEBUG, "gctrace=1", "scavtrace=1"].filter(Boolean).join(",") } : {}) },
 });
 const releaseBroker = teardownOnSignal(srv, dir);
 // The broker's warnings and errors are part of the result (an fd limit, a slow consumer, a refused
