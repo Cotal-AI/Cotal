@@ -107,22 +107,23 @@ try {
   };
 
   const listed = await agent({ listing: true, expiresAt: exp });
-  const result = await listed.listEndpoints({});
-  const page = "page" in result ? result.page : undefined;
+  const result = await listed.listEndpoints({}).catch((e: unknown) => e as Error);
+  const page = result instanceof Error || result.unbound ? undefined : result.page;
   const commandsOf = (p: RegistryEndpointsOutput | undefined, endpoint: string) => p?.rows.find((r) => r.endpoint === endpoint)?.commands.map((c) => c.name).join();
   suite.check("a static agent with a listing generation lists the endpoints and commands its grants cover, and no others",
     page?.source === "recorded-ceiling" && page.rows.map((r) => r.endpoint).join() === "alpha.example,registry"
-      && commandsOf(page, "alpha.example") === "read" && commandsOf(page, "registry") === "endpoints", JSON.stringify(result));
+      && commandsOf(page, "alpha.example") === "read" && commandsOf(page, "registry") === "endpoints", result instanceof Error ? result.message : JSON.stringify(result));
   const forms = page?.rows.find((r) => r.endpoint === "alpha.example")?.commands[0]?.forms ?? [];
   suite.check("the listed command's form is the legacy class route the agent's own rows hold",
     forms.length === 1 && forms[0]!.rail === "ep" && forms[0]!.route === "one", forms);
 
   const before = await agent({ listing: false, expiresAt: exp });
-  const unbound = await before.listEndpoints({});
-  suite.check("a credential minted without a listing generation is told it has no listing binding", "unbound" in unbound && unbound.unbound === true, unbound);
+  const isUnbound = (r: unknown) => typeof r === "object" && r !== null && "unbound" in r && r.unbound === true;
+  const unbound = await before.listEndpoints({}).catch((e: unknown) => e);
+  suite.check("a credential minted without a listing generation is told it has no listing binding", isUnbound(unbound), unbound instanceof Error ? unbound.message : unbound);
   const forever = await agent({ listing: true });
-  const noExpiry = await forever.listEndpoints({});
-  suite.check("a credential with no expiry has no listing binding", "unbound" in noExpiry && noExpiry.unbound === true, noExpiry);
+  const noExpiry = await forever.listEndpoints({}).catch((e: unknown) => e);
+  suite.check("a credential with no expiry has no listing binding", isUnbound(noExpiry), noExpiry instanceof Error ? noExpiry.message : noExpiry);
 
   const asked = await before.invokeService("registry", "endpoints", {}).catch((e: unknown) => e);
   suite.check("the legacy rail cannot ask the registry: the broker refuses the publish",
