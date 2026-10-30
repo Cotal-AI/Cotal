@@ -11,6 +11,9 @@ The shared flag module exports `parseCommaList`: absent input stays `undefined`,
 input is split on commas, trimmed and stripped of empty tokens. An explicit empty value becomes
 `[]`. Commands retain their own required-flag and channel validation; `none` is a literal entry.
 
+The web-session module exports `webBoundUrl` for the dashboard and CLI status to format the same
+bound host and port. It preserves IPv6 brackets and the trailing slash; branding stays with the dashboard.
+
 **Tier:** `packages/`. Depends on core; not part of the wire standard.
 
 See the [root AGENTS.md](../../AGENTS.md) for the tier rules.
