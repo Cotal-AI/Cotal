@@ -352,6 +352,8 @@ if (process.argv[2] === "callout") { await runCalloutChild(); }
 // ---------------------------------------------------------------------------------------------
 
 const argv = process.argv.slice(2);
+if (argv.includes("--listen"))
+  throw new Error("callout-load: --listen is retired; the broker and remote forwarding listeners are loopback-only");
 const flag = (name: string, dflt?: string): string => {
   const i = argv.indexOf(`--${name}`);
   if (i >= 0 && argv[i + 1] !== undefined && !argv[i + 1].startsWith("--")) return argv[i + 1];
@@ -405,6 +407,9 @@ const LOAD_DIR = flag("load-dir", "");
  *  bounds the OFFERED rate, so a run under one reports a generator-bound rate, never a ceiling;
  *  the slice's `cpu.stat` `throttled_usec` is how to tell which happened. */
 const LOAD_EXEC = flag("load-exec", "");
+/** Test-only safety probes for this harness. They never change auth, parser, limiter, or broker behavior. */
+const TEST_TUNNEL_BINDING = flag("test-tunnel-binding", "");
+const TEST_TUNNEL_FAILURE_MS = num("test-tunnel-failure-ms", "0");
 if (LOAD_HOSTS.length && !LOAD_DIR && LOAD_HOSTS.some((h) => !h.includes("=")))
   throw new Error("callout-load: --load-host needs --load-dir, or a `target=/abs/path` entry, for every generator");
 if (LOAD_DIR && !LOAD_DIR.startsWith("/")) throw new Error(`callout-load: --load-dir must be absolute, got ${LOAD_DIR}`);
@@ -463,6 +468,7 @@ const SSH_OPTS = [
   "-o", "StrictHostKeyChecking=yes",
   "-o", "ForwardAgent=no",
 ];
+const SSH_COMMAND_TIMEOUT_MS = 30_000;
 /** ssh argv that runs `cmd` in a LOGIN shell on `host`.
  *
  *  ssh joins everything after the destination with spaces and hands the result to the remote login
@@ -473,6 +479,7 @@ const SSH_OPTS = [
 const sshArgs = (host: string, cmd: string): string[] => [...SSH_OPTS, host, `sh -lc ${shq(cmd)}`];
 /** A generator host, its checkout, and the core count the `--load-procs` cap reads from it. */
 interface LoadGenerator { host: string; dir: string; cores: number; servers?: string }
+interface SshTransport { child: ChildProcess; host: string; stopping: boolean; failed?: Error }
 /** Probe every generator once, before anything is measured. A generator on a different commit is a
  *  different client library and so a different measurement: a mismatch refuses the run rather than
  *  reporting it, the same rule the stock arm's pinned blob follows. The core count comes from here
@@ -485,7 +492,7 @@ const generators: LoadGenerator[] = LOAD_HOSTS.map((entry) => {
   if (!dir.startsWith("/")) throw new Error(`callout-load: generator ${host} needs an absolute checkout path, got ${dir}`);
   let out: string;
   try {
-    out = execFileSync("ssh", sshArgs(host, `cd ${shq(dir)} && git rev-parse HEAD && nproc`), { encoding: "utf8" });
+    out = execFileSync("ssh", sshArgs(host, `cd ${shq(dir)} && git rev-parse HEAD && nproc`), { encoding: "utf8", timeout: SSH_COMMAND_TIMEOUT_MS });
   } catch (e) {
     throw new Error(`callout-load: generator ${host} failed the preflight in ${dir}: ${e instanceof Error ? e.message : String(e)}`);
   }
@@ -504,8 +511,17 @@ const LOAD_PROCS = Math.min(LOAD_PROCS_ASKED, generators.length ? genCores : ava
  *  is not saturated, and the children's own `process.cpuUsage()` cannot answer that: it reports
  *  what the children spent, not what was left on the machine they shared. */
 const genBusyS = (host: string): number => {
-  const f = execFileSync("ssh", sshArgs(host, "head -1 /proc/stat"), { encoding: "utf8" }).trim().split(/\s+/).slice(1).map(Number);
+  const f = execFileSync("ssh", sshArgs(host, "head -1 /proc/stat"), { encoding: "utf8", timeout: SSH_COMMAND_TIMEOUT_MS }).trim().split(/\s+/).slice(1).map(Number);
   return (f.reduce((a, b) => a + b, 0) - (f[3] + f[4])) / CLK_TCK; // total - (idle + iowait)
+};
+
+/** Refuse a remote forward unless its allocated TCP listener is observed on IPv4 loopback only. */
+const verifyTunnelListener = (gen: LoadGenerator, port: number): void => {
+  const out = TEST_TUNNEL_BINDING.replaceAll("<port>", String(port))
+    || execFileSync("ssh", sshArgs(gen.host, `ss -H -ltn 'sport = :${port}'`), { encoding: "utf8", timeout: SSH_COMMAND_TIMEOUT_MS }).trim();
+  const listeners = out.split("\n").map((line) => line.trim()).filter(Boolean).map((line) => line.split(/\s+/)[3]);
+  if (listeners.length !== 1 || listeners[0] !== `127.0.0.1:${port}`)
+    throw new Error(`callout-load: generator ${gen.host} allocated an unsafe SSH listener for port ${port}: ${JSON.stringify(listeners)}`);
 };
 
 // ---- space, callout account, broker -----------------------------------------------------------
@@ -597,7 +613,7 @@ const ANSWER_LINE = /^auth callout: level=(\w+) outcome=(\w+) .* total_ms=(\d+)/
 let calloutNc: NatsConnection | undefined;
 const children: ChildProcess[] = [];
 /** Long-lived SSH transports own the encrypted remote forwards independently of load children. */
-const sshTransports: ChildProcess[] = [];
+const sshTransports: SshTransport[] = [];
 /** The extra auth-callout service processes (`--callouts`), kept so their CPU can be read from
  *  /proc before they are killed. */
 const calloutChildren: ChildProcess[] = [];
@@ -663,39 +679,71 @@ const startTunnel = (gen: LoadGenerator): Promise<string> => new Promise((resolv
     gen.host,
     "cat",
   ], { stdio: ["pipe", "ignore", "pipe"], env: cleanEnv });
-  sshTransports.push(ssh);
+  const transport: SshTransport = { child: ssh, host: gen.host, stopping: false };
+  sshTransports.push(transport);
   let stderr = "";
   let settled = false;
-  const cleanup = () => {
+  const cleanupReadiness = () => {
     clearTimeout(timer);
     ssh.off("error", onError);
-    ssh.off("exit", onExit);
+    ssh.off("exit", onExitBeforeReady);
   };
   const fail = (error: Error) => {
     if (settled) return;
     settled = true;
-    cleanup();
+    cleanupReadiness();
     try { ssh.kill("SIGKILL"); } catch { /* already gone */ }
     reject(error);
   };
   const onError = (error: Error) => fail(new Error(`callout-load: generator ${gen.host} SSH tunnel failed: ${error.message}`));
-  const onExit = (code: number | null) => fail(new Error(`callout-load: generator ${gen.host} SSH tunnel exited ${code} before readiness: ${stderr.trim()}`));
+  const onExitBeforeReady = (code: number | null) => fail(new Error(`callout-load: generator ${gen.host} SSH tunnel exited ${code} before readiness: ${stderr.trim()}`));
   const timer = setTimeout(() => fail(new Error(`callout-load: generator ${gen.host} SSH tunnel did not allocate a remote port in 15s: ${stderr.trim()}`)), 15_000);
   ssh.once("error", onError);
-  ssh.once("exit", onExit);
+  ssh.once("exit", onExitBeforeReady);
   ssh.stderr!.setEncoding("utf8");
   ssh.stderr!.on("data", (d: string) => {
-    stderr += d;
+    stderr = (stderr + d).slice(-8192);
     const match = /Allocated port (\d+) for remote forward to 127\.0\.0\.1:\d+/.exec(stderr);
     if (!match || settled) return;
     const port = Number(match[1]);
     if (!Number.isSafeInteger(port) || port < 1 || port > 65535)
       return fail(new Error(`callout-load: generator ${gen.host} SSH tunnel returned an invalid port: ${match[1]}`));
+    try {
+      verifyTunnelListener(gen, port);
+    } catch (error) {
+      return fail(error instanceof Error ? error : new Error(String(error)));
+    }
     settled = true;
-    cleanup();
+    cleanupReadiness();
+    ssh.once("error", (error) => { transport.failed = new Error(`generator ${gen.host} SSH tunnel failed after readiness: ${error.message}`); });
+    ssh.once("exit", (code, signal) => {
+      if (!transport.stopping)
+        transport.failed = new Error(`generator ${gen.host} SSH tunnel exited after readiness (code ${code}, signal ${signal ?? "none"}): ${stderr.trim()}`);
+    });
     resolve(`nats://127.0.0.1:${port}`);
   });
 });
+
+const assertTunnelsLive = (): void => {
+  const failed = sshTransports.find((transport) => transport.failed);
+  if (failed) throw failed.failed;
+};
+
+const stopTunnel = async (transport: SshTransport): Promise<void> => {
+  const { child } = transport;
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  transport.stopping = true;
+  const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
+  try { child.stdin?.end(); } catch { /* already gone */ }
+  try { child.kill("SIGTERM"); } catch { /* already gone */ }
+  await Promise.race([exited, wait(5000)]);
+  if (child.exitCode === null && child.signalCode === null) {
+    try { child.kill("SIGKILL"); } catch { /* already gone */ }
+    await Promise.race([exited, wait(5000)]);
+  }
+  if (child.exitCode === null && child.signalCode === null)
+    throw new Error(`callout-load: generator ${transport.host} SSH tunnel did not exit during cleanup`);
+};
 
 /** Run one load child. Its job (which carries credentials) goes over stdin, never argv.
  *
@@ -827,10 +875,13 @@ try {
   const v0 = await varz();
   const genBusy0 = genHosts.map((g) => genBusyS(g.host));
   const brokerCpu0 = procCpuMs(srv.pid!);
-  const sshCpu0 = sshTransports.map((child) => procCpuMs(child.pid!));
+  const sshCpu0 = sshTransports.map(({ child }) => procCpuMs(child.pid!));
   const childCpu0 = calloutChildren.map((child) => procCpuMs(child.pid!));
   const selfCpu0 = process.cpuUsage();
   const t0 = performance.now();
+  if (TEST_TUNNEL_FAILURE_MS > 0)
+    for (const transport of sshTransports)
+      setTimeout(() => { if (!transport.stopping) transport.child.kill("SIGKILL"); }, TEST_TUNNEL_FAILURE_MS).unref();
   let result: ChildResult;
   let note = "";
 
@@ -887,6 +938,7 @@ try {
   }
 
   const elapsedS = (performance.now() - t0) / 1000;
+  assertTunnelsLive();
   const genBusy1 = genHosts.map((g) => genBusyS(g.host));
   const loadS = result.loadMs / 1000;
   const selfCpu = process.cpuUsage(selfCpu0);
@@ -948,8 +1000,8 @@ try {
   row("auth service CPU (cores, all processes)", authCpuMs / 1000 / elapsedS);
   row("broker CPU (cores)", brokerCpuMs / 1000 / elapsedS);
   row("load generators CPU (cores)", result.cpuMs / 1000 / elapsedS);
-  const sshCpuMs = sshTransports.reduce((sum, child, i) => sum + procCpuMs(child.pid!) - sshCpu0[i], 0);
-  row("SSH transport CPU (cores, local clients)", sshCpuMs / 1000 / elapsedS);
+  const sshCpuMs = sshTransports.reduce((sum, { child }, i) => sum + procCpuMs(child.pid!) - sshCpu0[i], 0);
+  row("SSH forwarding clients CPU (local cores)", sshCpuMs / 1000 / elapsedS);
   // The children's self CPU is the remote generator cost. Host CPU also includes the remote sshd
   // transport half and unrelated host work, so it stays a separate headroom reading rather than
   // being added to the generator row or mislabelled as isolated SSH CPU.
@@ -1006,10 +1058,7 @@ try {
   process.exitCode = 1;
 } finally {
   for (const c of [...children, ...calloutChildren]) { try { c.kill("SIGKILL"); } catch { /* already gone */ } }
-  for (const ssh of sshTransports) {
-    try { ssh.stdin?.end(); } catch { /* already gone */ }
-    try { ssh.kill("SIGTERM"); } catch { /* already gone */ }
-  }
+  for (const ssh of sshTransports) { try { await stopTunnel(ssh); } catch (error) { console.error("  ✗", (error as Error).message); process.exitCode = 1; } }
   try { await calloutNc?.close(); } catch { /* closing a dead conn is not a result */ }
   srv.kill("SIGKILL");
   rmSync(dir, { recursive: true, force: true });
