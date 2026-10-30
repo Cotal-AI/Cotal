@@ -105,6 +105,12 @@ are handled alike. Build closures include development, optional and peer depende
 reader retains its own command-admission checks. `pnpm smoke:workspace-build-filters` exercises
 these forms through read-only metadata grading; it does not execute fixture commands or mutations.
 
+Metadata validation reuses the current TypeScript parse of each normalized file path while its
+source text is unchanged. A changed source replaces that cached parse. Each config reads its
+suites lazily once, preserving validation order; file reads are not memoized across configs.
+`pnpm smoke:mutation-parse-cache` checks native parse/read counts and cache invalidation without
+executing fixture commands.
+
 A native `ETIMEDOUT` result is reported as `command was killed at its timeout`, not as a
 failure to start. Missing executables and permission errors retain the startup diagnosis. Both
 remain unmeasurable; this distinction changes the reason, not the verdict or timeout budget.
