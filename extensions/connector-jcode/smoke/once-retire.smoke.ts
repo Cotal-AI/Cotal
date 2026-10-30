@@ -10,7 +10,8 @@
  * environment cannot be read is still stopped while its parent, its parent's parent, or a carrier's
  * group ties it to the launch. A signal goes to a group only when a carrier leads it, and never to a
  * pid that shows another start token. A launched process whose process table entry cannot be read
- * once it was found stops the proof, and one whose re-read fails (a synthetic EMFILE) is still stopped
+ * once it was found stops the proof while a sibling launched with it still runs, one whose entry
+ * cannot be read at all stops it too, and one whose re-read fails (a synthetic EMFILE) is still stopped
  * before the proof.
  *
  * Run: pnpm smoke:jcode-once-retire
@@ -229,29 +230,53 @@ try {
   check("a launched process that shows another start token after SIGTERM is not sent SIGKILL", existsSync(termed) && living(reused.pid!));
   check("...and the launch is proved retired", tokProof);
 
-  // A launched process whose process table entry reads once, when it is found, and not after.
+  // A launched process whose process table entry reads once, when it is found, and not after. A
+  // sibling launched with it reads as usual, and is signalled only if the proof goes on.
   for (const [label, leads] of [["a launched process", false], ["a launched group leader", true]] as const) {
     const lostUid = mintLifecycleUid(), lostHost = sleeper(), lostIdentity = nonce();
     recordOnceLaunch(home, lostUid, { identity: lostIdentity, host: captureProcessIdentity(lostHost.pid!) });
     const lost = leads ? python("import time\ntime.sleep(600)", lostIdentity) : attached("import time\ntime.sleep(600)", lostIdentity);
-    await poll(() => processStat(lost.pid!) !== undefined && (processStat(lost.pid!)!.group === lost.pid) === leads);
+    const sibling = attached("import time\ntime.sleep(600)", lostIdentity);
+    await poll(() => processStat(lost.pid!) !== undefined && (processStat(lost.pid!)!.group === lost.pid) === leads && processStat(sibling.pid!) !== undefined);
     let reads = 0;
     const lostStat = (pid: number) => (pid === lost.pid && reads++ > 0 ? undefined : processStat(pid));
     process.kill(lostHost.pid!, "SIGKILL");
     await gone(lostHost.pid!);
-    const refused = await rejects(retireOnceTree(home, lostUid, { gracefulWaitMs: 500, killWaitMs: 500, processStat: lostStat }), /cannot read PID \d+'s process table entry/u);
+    const refused = await rejects(retireOnceTree(home, lostUid, { gracefulWaitMs: 500, killWaitMs: 500, processStat: lostStat }), /PID \d+ was found in the once launch, and its process table entry can no longer be read/u);
     check(`${label} whose process table entry cannot be read once found stops the proof`, refused?.startsWith("jcode") === true, refused);
     check("...its evidence is kept, and it is not signalled", evidence(lostUid).includes("launches") && living(lost.pid!));
+    check(`${label}: a sibling launched with it is still running when the proof stops`, living(sibling.pid!));
   }
+
+  // A launched process whose process table entry cannot be read at all: the launch scan never
+  // captures it, and the scan of every other process finds it alive and unreadable.
+  const neverUid = mintLifecycleUid(), neverHost = sleeper(), neverIdentity = nonce();
+  recordOnceLaunch(home, neverUid, { identity: neverIdentity, host: captureProcessIdentity(neverHost.pid!) });
+  const never = attached("import time\ntime.sleep(600)", neverIdentity);
+  await poll(() => processStat(never.pid!) !== undefined);
+  process.kill(neverHost.pid!, "SIGKILL");
+  await gone(neverHost.pid!);
+  const neverRefused = await rejects(retireOnceTree(home, neverUid, { gracefulWaitMs: 500, killWaitMs: 500, processStat: (pid) => (pid === never.pid ? undefined : processStat(pid)) }), /cannot read PID \d+'s process table entry to rule it out/u);
+  check("a launched process whose process table entry cannot be read at all stops the proof", neverRefused?.startsWith("jcode") === true, neverRefused);
+  check("...its evidence is kept, and it is not signalled", evidence(neverUid).includes("launches") && living(never.pid!));
 
   // A synthetic EMFILE: a launched process's entry fails the read made straight after a successful
   // one, in the same synchronous step. The scan's own reads go through the seam and are not failed,
   // so only a check that reads the entry twice meets the failure. The process ignores SIGTERM, so it
   // is gone only if a check that still sees it running sends SIGKILL.
+  const flakyUid = mintLifecycleUid(), flakyHost = sleeper(), flakyIdentity = nonce();
+  recordOnceLaunch(home, flakyUid, { identity: flakyIdentity, host: captureProcessIdentity(flakyHost.pid!) });
+  const flaky = attached("import signal, time\nsignal.signal(signal.SIGTERM, signal.SIG_IGN)\ntime.sleep(600)", flakyIdentity);
+  await poll(() => processStat(flaky.pid!) !== undefined);
+  process.kill(flakyHost.pid!, "SIGKILL");
+  await gone(flakyHost.pid!);
   const fs = createRequire(import.meta.url)("node:fs") as typeof import("node:fs");
   const realRead = fs.readFileSync;
-  let flakyPath: string | undefined, viaSeam = 0;
+  const flakyPath = `/proc/${flaky.pid}/stat`;
+  let viaSeam = 0;
   const justRead = new Set<string>();
+  const seamStat = (pid: number) => { viaSeam++; try { return processStat(pid); } finally { viaSeam--; } };
+  let flakyProof = false;
   fs.readFileSync = ((path: unknown, ...rest: unknown[]) => {
     if (typeof path === "string" && path === flakyPath && viaSeam === 0) {
       if (justRead.delete(path)) throw Object.assign(new Error(`EMFILE: too many open files, open '${path}'`), { code: "EMFILE" });
@@ -261,21 +286,14 @@ try {
     return (realRead as (...a: unknown[]) => unknown)(path, ...rest);
   }) as typeof fs.readFileSync;
   syncBuiltinESMExports();
-  const seamStat = (pid: number) => { viaSeam++; try { return processStat(pid); } finally { viaSeam--; } };
-  const flakyUid = mintLifecycleUid(), flakyHost = sleeper(), flakyIdentity = nonce();
-  recordOnceLaunch(home, flakyUid, { identity: flakyIdentity, host: captureProcessIdentity(flakyHost.pid!) });
-  const flaky = attached("import signal, time\nsignal.signal(signal.SIGTERM, signal.SIG_IGN)\ntime.sleep(600)", flakyIdentity);
-  await poll(() => processStat(flaky.pid!) !== undefined);
-  process.kill(flakyHost.pid!, "SIGKILL");
-  await gone(flakyHost.pid!);
-  flakyPath = `/proc/${flaky.pid}/stat`;
-  // The module's own read meets the failure: its second read in one step fails.
-  check("control: a read of the entry straight after another fails (synthetic EMFILE)", processStat(flaky.pid!) !== undefined && processStat(flaky.pid!) === undefined);
-  let flakyProof = false;
-  try { await retireOnceTree(home, flakyUid, { gracefulWaitMs: 500, killWaitMs: 500, processStat: seamStat }); flakyProof = true; } catch (e) { console.log(`    (retire threw: ${(e as Error).message})`); }
-  flakyPath = undefined;
-  fs.readFileSync = realRead;
-  syncBuiltinESMExports();
+  try {
+    // The module's own read meets the failure: its second read in one step fails.
+    check("control: a read of the entry straight after another fails (synthetic EMFILE)", processStat(flaky.pid!) !== undefined && processStat(flaky.pid!) === undefined);
+    try { await retireOnceTree(home, flakyUid, { gracefulWaitMs: 500, killWaitMs: 500, processStat: seamStat }); flakyProof = true; } catch (e) { console.log(`    (retire threw: ${(e as Error).message})`); }
+  } finally {
+    fs.readFileSync = realRead;
+    syncBuiltinESMExports();
+  }
   check("a launched process whose entry fails a re-read (synthetic EMFILE) is still stopped before the proof", flakyProof && !living(flaky.pid!), { flakyProof, living: living(flaky.pid!) });
 
   console.log("\n6. a once launch carries its marker and needs a uid");

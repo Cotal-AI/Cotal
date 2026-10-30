@@ -331,7 +331,7 @@ export function recordOnceLaunch(home: string, uid: string, record: LaunchRecord
 function stillOwned(p: ProcessIdentity, readStat: (pid: number) => ProcessStat | undefined): boolean {
   const stat = readStat(p.pid);
   if (!stat) {
-    if (alive(p.pid)) throw new Error(`jcode connector: cannot read PID ${p.pid}'s process table entry to rule it out of a once launch`);
+    if (alive(p.pid)) throw new Error(`jcode connector: PID ${p.pid} was found in the once launch, and its process table entry can no longer be read to rule it out`);
     return false;
   }
   return stat.start === p.start && !stat.zombie;

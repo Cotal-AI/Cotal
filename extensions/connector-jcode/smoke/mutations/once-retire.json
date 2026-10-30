@@ -2,7 +2,7 @@
   "suite": [
     "extensions/connector-jcode/smoke/once-retire.smoke.ts"
   ],
-  "guard": "a once Jcode seat's launched tree is proved gone only by the evidence its host recorded under the seat's uid: never while the recorded host lives, every launch the uid recorded, a receipt that replays the proof, and live evidence never discarded; a launched process whose environment cannot be read is still tied to the launch by a parent already found or by a group a carrier leads, a signal reaches a group only when a carrier leads it and never a pid with another start token, and a found process whose entry cannot be read stops the proof, and a process is alive by one read of its entry, so a failed re-read never reads as an exit",
+  "guard": "a once Jcode seat's launched tree is proved gone only by the evidence its host recorded under the seat's uid: never while the recorded host lives, every launch the uid recorded, a receipt that replays the proof, and live evidence never discarded; a launched process whose environment cannot be read is still tied to the launch by a parent already found or by a group a carrier leads, a signal reaches a group only when a carrier leads it and never a pid with another start token, and a found process whose entry cannot be read stops the proof, and a process is alive by one read of its entry, so a failed re-read never reads as an exit, and a live process whose entry cannot be read stops the proof whether or not the launch scan found it",
   "command": "pnpm smoke:jcode-once-retire",
   "completionMarker": "JCODE ONCE RETIRE SMOKE",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-jcode/smoke/mutations/once-retire.json",
@@ -17,10 +17,13 @@
     "parent link, so a hidden child that moved to its own group outlives it. R8 ties a process only to a parent",
     "that carries the identity, so a hidden child's own child outlives the proof. R9 signals every target's",
     "group, so a process outside the launch that joined a group a descendant leads is killed. R10 signals a pid",
-    "without its start token, so a process that took a target's pid is killed. R11 reads an unreadable entry",
-    "as a process gone, so the receipt is written while it may still run. R12 reads a process's",
+    "without its start token, so a process that took a target's pid is killed. R11 reads a found process's unreadable entry",
+    "as a process gone, so the rest of the launch is signalled before the scan of every other process stops",
+    "the proof. R12 reads a process's",
     "entry twice and takes a failed second read as an exit, so a launched process whose re-read fails is",
-    "dropped from the proof while it still runs."
+    "dropped from the proof while it still runs. R13 lets",
+    "that scan pass over a live process whose entry it cannot read, so a launched process whose entry never",
+    "reads is left out of the proof while it runs."
   ],
   "mutations": [
     {
@@ -96,9 +99,9 @@
     {
       "name": "R11 a found process whose entry cannot be read counts as gone",
       "file": "extensions/connector-jcode/src/private-lifecycle.ts",
-      "find": "    if (alive(p.pid)) throw new Error(`jcode connector: cannot read PID ${p.pid}'s process table entry to rule it out of a once launch`);\n",
+      "find": "    if (alive(p.pid)) throw new Error(`jcode connector: PID ${p.pid} was found in the once launch, and its process table entry can no longer be read to rule it out`);\n",
       "replace": "",
-      "expectRed": "a launched process whose process table entry cannot be read once found stops the proof"
+      "expectRed": "a launched process: a sibling launched with it is still running when the proof stops"
     },
     {
       "name": "R12 a failed re-read of a process entry counts as an exit",
@@ -106,6 +109,13 @@
       "replace": "  if (stat) {\n    try {\n      readFileSync(`/proc/${pid}/stat`, \"utf8\");\n    } catch {\n      return false;\n    }\n    return !stat.zombie;\n  }\n",
       "file": "extensions/connector-jcode/src/private-lifecycle.ts",
       "expectRed": "a launched process whose entry fails a re-read (synthetic EMFILE) is still stopped before the proof"
+    },
+    {
+      "name": "R13 the scan passes over a live process whose entry cannot be read",
+      "file": "extensions/connector-jcode/src/private-lifecycle.ts",
+      "find": "      if (alive(pid)) throw new Error(`jcode connector: cannot read PID ${pid}'s process table entry to rule it out of a once launch`);\n",
+      "replace": "",
+      "expectRed": "a launched process whose process table entry cannot be read at all stops the proof"
     }
   ]
 }
