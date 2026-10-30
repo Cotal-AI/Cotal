@@ -109,6 +109,7 @@
     "smoke:lang-conformance": "tsx packages/lang/smoke/conformance.smoke.ts",
     "smoke:lang-transform": "tsx packages/lang/smoke/transform.smoke.ts",
     "smoke:lang-engine": "pnpm --filter @cotal-ai/lang build:emit && tsx packages/lang/smoke/engine.smoke.ts",
+    "smoke:lang-worker-errors": "pnpm --filter @cotal-ai/lang build:emit && tsx packages/lang/smoke/worker-errors.smoke.ts",
     "smoke:lang-differential": "tsx packages/lang/smoke/differential.smoke.ts",
     "smoke:lang-root-cancellation": "pnpm --filter @cotal-ai/lang build && tsx packages/lang/smoke/root-cancellation.smoke.ts",
     "smoke:run-cancel-static": "tsx bin/smoke/run-cancel-live.smoke.ts",

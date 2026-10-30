@@ -27,6 +27,7 @@ const FILES = [
   "transform",
   "differential",
   "engine",
+  "worker-errors",
   "root-cancellation",
 ].map((n) => `${n}.smoke.ts`);
 
