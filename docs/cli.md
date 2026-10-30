@@ -6585,8 +6585,8 @@ as a CJK ideograph or an emoji takes two, and a word wider than the pane breaks 
 never inside one.
 A roster seat's head row wider than its pane ends in `…` after the last whole character that fits.
 The agent detail's recent traffic cuts each preview by columns too, never inside a character, and a
-row that would overflow the card ends with `…`. Closing a detail returns the feed to the message and
-scroll position it showed.
+preview that leaves any of its text out ends with `…`. Closing a detail returns the feed to the
+message and scroll position it showed.
 
 <a id="web"></a>
 
