@@ -2965,8 +2965,12 @@ removal fails after the record is gone, the run is `partial` and names the `conf
 after the `chmod` when the preferences folder is one another account could write.
 Forget also removes the stack definitions `cotal up` saved for the space at its root, with their
 stopped instance records, so another folder can start a stack under the same name. The result lists
-them. While a member was not stopped cleanly, or the root holds preserved state, they stay and the
-result warns with `STACK_DEFINITIONS_KEPT`. For a member that was not stopped cleanly, the warning
+them. The root's stack journal stays, keeping the stack's mode, address and store, and no longer
+names the instances forget removed. After `space create` in that folder, the space reads as prepared
+but not started, and `up --no-manager` and `down` there start and stop only the new members. A
+journal an earlier release left naming removed instances is not changed, and `down` there still
+refuses `TARGET_NOT_FOUND`. While a member was not stopped cleanly, or the root holds preserved
+state, they stay and the result warns with `STACK_DEFINITIONS_KEPT`. For a member that was not stopped cleanly, the warning
 names `cotal down --yes` in the root and then `space forget` again. When the stack's folder is
 gone, it names `cotal down --space <space> --yes`, which stops the stack and removes them.
 Forget keeps the other services saved under the name, such as one `cotal service add` saved, with
