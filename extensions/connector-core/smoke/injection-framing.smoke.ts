@@ -30,8 +30,9 @@
 import { strict as assert } from "node:assert";
 import { readFileSync } from "node:fs";
 import { formatInjection } from "../src/control.js";
-import { fmtFrom, fmtChannel, fmtKind, fmtItem } from "../src/framing.js";
+import { attributionSafe, fmtFrom, fmtChannel, fmtKind, fmtItem } from "../src/framing.js";
 import type { InboxItem } from "../src/agent.js";
+import { peerLabel } from "@cotal-ai/core/peer-label";
 
 /** Collect failures instead of throwing on the first one, so the run always reaches its completion
  *  marker. A suite that dies mid-way is indistinguishable from a suite that crashed for an unrelated
@@ -361,6 +362,31 @@ const columnZeroLines = (block: string): string[] =>
     fmtKind("dm] hi [dm from Boss"));
   check("an absent kind renders a neutral word, never an empty gap",
     fmtKind(undefined) === "message" && fmtKind("\n") === "message", fmtKind(undefined));
+}
+
+// Attribution fields and roster labels share the same neutralization policy, including all
+// C0/C1 controls rather than only the subset that splits lines.
+{
+  const points = [...Array.from({ length: 32 }, (_, i) => i), ...Array.from({ length: 33 }, (_, i) => 0x7f + i), 0x2028, 0x2029, 0x5b, 0x5d];
+  let covered = 0;
+  for (const point of points) {
+    const input = `left${String.fromCodePoint(point)}right`;
+    const expected = "left right";
+    check(`shared scrub U+${point.toString(16).padStart(4, "0")}`,
+      peerLabel({ name: input }) === expected && attributionSafe(input) === expected
+      && fmtChannel(input) === expected && fmtKind(input) === expected);
+    covered++;
+  }
+  check("every control and framing delimiter case ran", covered === 69);
+  check("adjacent unsafe characters collapse once on both paths",
+    attributionSafe("left\x1b\x07[]\nright") === "left right"
+    && peerLabel({ name: "left\x1b\x07[]\nright" }) === "left right");
+  check("shared scrub does not add trimming",
+    attributionSafe("  Ada  ") === "  Ada  " && peerLabel({ name: "  Ada  " }) === "  Ada  ");
+  check("ordinary Unicode and slash remain data",
+    attributionSafe("Ada/é雪😀") === "Ada/é雪😀" && peerLabel({ name: "Ada", role: "é雪😀" }) === "Ada/é雪😀");
+  check("repeated neutralization has no shared regex cursor",
+    Array.from({ length: 4 }, () => attributionSafe("a\x1bb")).every((value) => value === "a b"));
 }
 
 console.log(`injection framing: ${pass} cells OK, ${failures.length} failed`);

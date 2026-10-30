@@ -218,6 +218,8 @@ agents exchange messages directly and choose their own work.
   interrupt) is the documented upgrade path ([roadmap](roadmap.md)).
   The tmux driver's session-name and pane-capture failures name the operation, include tmux's
   error text and retain the failed call as `cause`.
+  Exit watchers check that the handle is still current before notifying the manager, including
+  after asynchronous exit proof. A stream subscription is released when its exit is observed.
 - **Served commands.** `spawn` (an action, below), `stop`, `ps`, `status`, `attach`,
   `models`, `define-persona`, and `remove-persona` are among its endpoint commands
   ([§13.5](../SPEC.md#135-verbs)) any authorized node can send, policy-gated

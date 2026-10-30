@@ -3197,6 +3197,15 @@ exits 0. A script, a `--json` caller and `--no-input` are not asked: the command
 in `error.remedy`, apart from `error.message`, and names the space and root it concerns under
 `target` when they are known, as for a prepared space that is not started.
 
+When this account cannot read or enter a project folder's `.cotal/auth`, for example because it cannot
+enter the folder's `.cotal`, the spaces the folder holds are unknown. A command that would target that folder,
+including through `--server`, refuses with `DEPENDENCY_UNAVAILABLE`, exit 2, and names the folder and
+the read error. When a folder on the way to `.cotal/auth` cannot be entered, the next step names that
+folder rather than `.cotal/auth`. The same refusal names each account record in `.cotal/auth` that
+will not load, such as an `auth.json` that is not JSON, and says to repair or remove it. It does not
+name running spaces or pick another space, and it changes no file. `--space <name>` still targets a
+space by name.
+
 `--creds <file>` presents that credential to `--server`. Without `--server`, it goes to the broker
 its space is registered at and keeps that registration's TLS requirement. The space is `--space`,
 else the selected space, else the space of the project the command runs in, else `main`. Inside a
@@ -5040,7 +5049,9 @@ refuse it with `PERMISSION_DENIED`, and the list marks it unreadable and names i
 List, show and mutation receipts support one-document `--json` and line-oriented `--plain`.
 Show explicitly returns the full definition and source. List does not return the body or launch
 options. A malformed entry produces a partial inventory (exit 4); an unreadable catalog refuses
-with `PERMISSION_DENIED` (exit 2) rather than reporting it empty. Its next step is
+with `PERMISSION_DENIED` (exit 2) rather than reporting it empty. A catalog folder that lists its
+file names but cannot be searched, such as one set to mode 0600, is refused the same way, empty or
+not, and its personas are not reported as malformed. Its next step is
 `chmod u+rx <folder>` only for a catalog folder you own whose mode denies you read or search. A
 folder above the catalog that you cannot enter is named instead, and a catalog folder another
 account owns says to ask its owner. Other read errors get no next step, and the CLI never changes a
@@ -6569,6 +6580,16 @@ same per-action instrument path as `cotal stop` and `cotal ps`, never the observ
 Message bodies, names and other text from peers are untrusted. Both views show a control character
 in them as its `\uXXXX` escape, so a message cannot clear the screen, retitle the terminal or plant
 a hyperlink. The TUI keeps a body's line breaks, and `--plain` prints each message on one line.
+The TUI wraps a body, and a roster seat's rows, by terminal columns: a wide character such as a CJK
+ideograph or an emoji takes two, and a word wider than the pane breaks between characters, never
+inside one. On a seat's head, the name, harness tag, activity, the activity's age and the progress
+or heartbeat age each start a new row when they do not fit on the current one, so a long name never
+hides them. The roster draws whole seats around the selected one. A seat taller than the pane shows
+only its first rows, which a long activity can cause below 80 columns, where the roster has at most
+five rows for seats.
+The agent detail's recent traffic cuts each preview by columns too, never inside a character, and a
+preview that leaves any of its text out ends with `…`. Closing a detail returns the feed to the
+message and scroll position it showed.
 
 <a id="web"></a>
 
@@ -6784,8 +6805,11 @@ not prune a locally saved mesh registration.
 Candidates are read without acknowledging DMs. The transient read consumer is
 deleted after the bounded pass; an unconfirmed cleanup or candidate read is
 reported as partial. Candidate IDs are not evidence of delivery, a missing
-message or complete history. Recipient contents are not printed. The retained
-`deliver pending` spelling keeps its earlier output shape.
+message or complete history. Each candidate's `from` is the sender principal
+parsed from its stored message subject, which the broker binds to the sender's
+credential. The sender's own card is not printed, and a candidate that cannot
+be decoded is withheld and reported as partial. Recipient contents are not
+printed. The retained `deliver pending` spelling keeps its earlier output shape.
 
 ## deliver
 
@@ -6808,7 +6832,11 @@ the verb exists to inspect); when neither a card nor the durable can be found, i
 `max_msgs_per_subject` / `discard` limits (`--json` prints the same facts as one object), followed
 by a bounded, unacked read of up to `--limit` (default 20) recent candidate message ids under the
 heading `recent candidate ids (from the ack floor; not proof of a hole)`, a list of what is
-there, not proof that nothing was lost.
+there, not proof that nothing was lost. Each plain candidate line prints `from=` with the sender
+principal parsed from the stored message subject, which the broker binds to the sender's
+credential, then `ts=`, then `label=` with the name and role the sender wrote in its own message.
+The label is the sender's claim and can name another agent; control characters and brackets in it
+print as spaces. `--json` keeps its earlier candidate lines.
 
 The verb needs the `admin` credential profile: it runs through the same static-mesh route as
 `cotal auth mint --profile admin`, and refuses a user-mode mesh, naming the retired static credential,

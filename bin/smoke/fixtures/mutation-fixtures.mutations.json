@@ -145,17 +145,17 @@
     },
     {
       "name": "the closure expansion ignores the ellipsis, so a cli... build no longer covers core",
-      "file": "bin/smoke/mutation-fixtures.smoke.ts",
-      "find": "      const closure = filter.endsWith(\"...\");\n      const dependents = filter.startsWith(\"...\");",
-      "replace": "      const closure = false as boolean;\n      const dependents = filter.startsWith(\"...\");",
+      "file": "scripts/workspace-build-filters.mjs",
+      "find": "    const withDependencies = filter.endsWith(\"...\");",
+      "replace": "    const withDependencies = false;",
       "expectRed": "a closure filter (cli...) that covers core flags a core mutation with no core rebuild",
       "cell": "a closure filter (cli...) that covers core flags a core mutation with no core rebuild"
     },
     {
       "name": "the quote strip is removed, so a quoted filter names no package and blinds the build and the restore alike",
-      "file": "bin/smoke/mutation-fixtures.smoke.ts",
-      "find": "    const filters = [...segment.matchAll(/--filter[= ](\\S+)/g)].map((m) => m[1].replace(/^([\"'])(.*)\\1$/, \"$2\"));",
-      "replace": "    const filters = [...segment.matchAll(/--filter[= ](\\S+)/g)].map((m) => m[1]);",
+      "file": "scripts/workspace-build-filters.mjs",
+      "find": "    const filter = raw.replace(/^([\"'])(.*)\\1$/, \"$2\");",
+      "replace": "    const filter = raw;",
       "expectRed": "a quoted closure filter builds the mutated package and is flagged with no afterRestore",
       "cell": "a quoted closure filter builds the mutated package and is flagged with no afterRestore"
     },

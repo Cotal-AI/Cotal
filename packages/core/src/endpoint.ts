@@ -4,7 +4,6 @@ import { setTimeout as delay } from "node:timers/promises";
 import { createConnection, isIP } from "node:net";
 import {
   connect,
-  credsAuthenticator,
   headers,
   tokenAuthenticator,
   nanos,
@@ -33,6 +32,7 @@ import {
 } from "./liveness.js";
 import { processRuntime } from "./process-runtime.js";
 import { credsClaims, credsFingerprint, credsRenewalDelayMs, idFromCreds } from "./identity.js";
+import { nativeCredsAuthenticator } from "./creds-authenticator.js";
 import { armRenewal, renewalDeadlineMs, jitteredBackoffMs } from "./renewal.js";
 import { requireBrokerFloor } from "./broker-floor.js";
 import { withDeadline } from "./deadline.js";
@@ -168,7 +168,7 @@ import {
   assertInboxConnId,
   type ParsedSubject,
   presenceBucket,
-  isPresenceRow,
+  isPresenceRow, assertPresenceRow,
   membershipBucket,
   MEMBERSHIP_FEED_KEY,
   principalKey,
@@ -3216,7 +3216,13 @@ export class CotalEndpoint extends EventEmitter {
     }
   }
 
+  private assertPresenceUpdate(update: Partial<Presence>): void {
+    assertPresenceRow({ card: this.card, status: this.status, activity: this.activity,
+      condition: this.condition, attention: this.attentionMode, ts: Date.now(), ...update }, this.card.id);
+  }
+
   async setActivity(activity: string): Promise<void> {
+    this.assertPresenceUpdate({ activity });
     if (activity !== this.activity) this.statusSince = this.activitySince = Date.now();
     this.activity = activity;
     await this.publishPresence();
@@ -3225,6 +3231,7 @@ export class CotalEndpoint extends EventEmitter {
   /** Set the status, and with `activity` the activity line too, in one presence write, so no peer sees
    *  the new activity beside the old status. */
   async setStatus(status: PresenceStatus, activity?: string): Promise<void> {
+    this.assertPresenceUpdate({ status, ...(activity === undefined ? {} : { activity }) });
     if (activity !== undefined && activity !== this.activity) this.statusSince = this.activitySince = Date.now();
     if (activity !== undefined) this.activity = activity;
     if (status !== this.status) this.statusSince = Date.now();
@@ -3240,6 +3247,7 @@ export class CotalEndpoint extends EventEmitter {
 
   /** Publish a harness-reported condition, or clear it. Core stores the relay without interpretation. */
   async setCondition(condition: PresenceCondition | null): Promise<void> {
+    this.assertPresenceUpdate({ condition: condition ?? undefined });
     this.condition = condition ?? undefined;
     this.conditionRevision++;
     await this.publishPresence();
@@ -3248,6 +3256,7 @@ export class CotalEndpoint extends EventEmitter {
   /** Publish the agent's global attention mode into presence (advisory observability). Mirror only —
    *  delivery decisions stay in the connector's authoritative state. */
   async setAttention(attention: AttentionMode): Promise<void> {
+    this.assertPresenceUpdate({ attention });
     this.attentionMode = attention;
     await this.publishPresence();
   }
@@ -7320,6 +7329,7 @@ export class CotalEndpoint extends EventEmitter {
     // offline publish site, so the raw KV record is compliant, not only the observer-side roster
     // materialization.
     const record = this.status === "offline" ? this.toOffline(p) : p;
+    assertPresenceRow(record, this.card.id);
     // #1356: this put can still be in flight when a teardown runs, because a rebind reaches
     // publishPresence through onPresenceBucketEmpty and no teardown awaits that flight. Take the same
     // epoch fence {@link startPresenceWatch} takes, so a put that outlives its epoch still throws to
@@ -8152,7 +8162,7 @@ function authOpts(a: AuthOpts) {
     if (!a.sentinelCreds)
       throw new Error("user-mode bearer requires sentinelCreds");
     return {
-      authenticator: [credsAuthenticator(new TextEncoder().encode(a.sentinelCreds)), tokenAuthenticator(a.bearer)],
+      authenticator: [nativeCredsAuthenticator(a.sentinelCreds), tokenAuthenticator(a.bearer)],
       tls,
     };
   }
@@ -8166,7 +8176,7 @@ function authOpts(a: AuthOpts) {
     // nats.js invokes the authenticator function on every attempt, including internal reconnects.
     const authenticator = (nonce?: string) => {
       const presented = typeof creds === "function" ? creds() : creds;
-      const authenticated = credsAuthenticator(new TextEncoder().encode(presented))(nonce);
+      const authenticated = nativeCredsAuthenticator(presented)(nonce);
       a.onCreds?.(presented);
       return authenticated;
     };
