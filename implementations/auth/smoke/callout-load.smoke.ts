@@ -34,6 +34,8 @@
  * on stdin, which leaves the broker and the auth service alone on the host under test. Each host
  * gets one OpenSSH remote-forward master: the broker stays on a loopback-only plaintext listener,
  * the child dials a loopback port on its own host, and SSH encrypts the inter-host leg.
+ * The observed remote listener must be loopback-only. Remote jobs retain only PATH, HOME and
+ * disabled-telemetry settings after login-shell tool resolution; credentials arrive on stdin.
  *
  *   pnpm smoke:callout-load --scenario burst --burst 500 \
  *     --load-host gen1,gen2 --load-dir /srv/cotal
@@ -56,6 +58,7 @@ import { SignJWT, exportJWK, generateKeyPair, importJWK, type CryptoKey, type JW
 import { createSpaceAuth, chatSubject, isReachable, serverConfig, mintLifecycleUid } from "@cotal-ai/core";
 import { ConnectLimiter, createCalloutAuth, calloutPermissions, deriveOwnerToken, USER_TOKEN_VER, type StartAuthCalloutOpts } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
+import { assertLoopbackListener, remoteJobCommand } from "./_callout-load-ssh.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 // ---------------------------------------------------------------------------------------------
@@ -408,7 +411,6 @@ const LOAD_DIR = flag("load-dir", "");
  *  the slice's `cpu.stat` `throttled_usec` is how to tell which happened. */
 const LOAD_EXEC = flag("load-exec", "");
 /** Test-only safety probes for this harness. They never change auth, parser, limiter, or broker behavior. */
-const TEST_TUNNEL_BINDING = flag("test-tunnel-binding", "");
 const TEST_TUNNEL_FAILURE_MS = num("test-tunnel-failure-ms", "0");
 if (LOAD_HOSTS.length && !LOAD_DIR && LOAD_HOSTS.some((h) => !h.includes("=")))
   throw new Error("callout-load: --load-host needs --load-dir, or a `target=/abs/path` entry, for every generator");
@@ -515,13 +517,12 @@ const genBusyS = (host: string): number => {
   return (f.reduce((a, b) => a + b, 0) - (f[3] + f[4])) / CLK_TCK; // total - (idle + iowait)
 };
 
-/** Refuse a remote forward unless its allocated TCP listener is observed on IPv4 loopback only. */
+/** Read the actual remote socket table before accepting the forwarding transport. */
 const verifyTunnelListener = (gen: LoadGenerator, port: number): void => {
-  const out = TEST_TUNNEL_BINDING.replaceAll("<port>", String(port))
-    || execFileSync("ssh", sshArgs(gen.host, `ss -H -ltn 'sport = :${port}'`), { encoding: "utf8", timeout: SSH_COMMAND_TIMEOUT_MS }).trim();
-  const listeners = out.split("\n").map((line) => line.trim()).filter(Boolean).map((line) => line.split(/\s+/)[3]);
-  if (listeners.length !== 1 || listeners[0] !== `127.0.0.1:${port}`)
-    throw new Error(`callout-load: generator ${gen.host} allocated an unsafe SSH listener for port ${port}: ${JSON.stringify(listeners)}`);
+  const out = execFileSync("ssh", sshArgs(gen.host, `ss -H -ltn 'sport = :${port}'`), {
+    encoding: "utf8", timeout: SSH_COMMAND_TIMEOUT_MS,
+  });
+  assertLoopbackListener(out, port, gen.host);
 };
 
 // ---- space, callout account, broker -----------------------------------------------------------
@@ -757,7 +758,7 @@ const runLoad = (job: ChildJob): Promise<ChildResult> =>
     if (gen) job.servers = gen.servers!;
     const child = gen
       ? spawn("ssh", sshArgs(gen.host,
-          `cd ${shq(gen.dir)} && DO_NOT_TRACK=1 COTAL_TELEMETRY=off exec ${LOAD_EXEC ? `${LOAD_EXEC} ` : ""}node --import tsx implementations/auth/smoke/callout-load.smoke.ts load`),
+          remoteJobCommand(gen.dir, `${LOAD_EXEC ? `${LOAD_EXEC} ` : ""}node --import tsx implementations/auth/smoke/callout-load.smoke.ts load`)),
           { stdio: ["pipe", "pipe", "inherit"], env: cleanEnv })
       : spawn(process.execPath, [...process.execArgv, import.meta.filename, "load"], {
           stdio: ["pipe", "pipe", "inherit"],
