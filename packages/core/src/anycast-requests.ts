@@ -327,8 +327,9 @@ export class AnycastRequestAuthority {
     throw new Error(`request seq ${q.seq} changed under five cancels in a row; retry`);
   }
 
-  /** Delete a cancelled request from the queue, once, and only from the stream its row was written
-   *  against, then record how it left. */
+  /** Delete a cancelled request from the queue, once, when the stream's creation time still matches
+   *  the row, then record how it left. The read and the delete are two calls, so a stream recreated
+   *  between them loses the request it stores at that seq (SPEC §8.1, limits). */
   private async remove(key: string): Promise<AnycastStatus> {
     let removal: AnycastRemoval | undefined;
     for (let attempt = 0; attempt < 5; attempt++) {

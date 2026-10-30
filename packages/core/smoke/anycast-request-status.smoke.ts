@@ -442,7 +442,7 @@ try {
   check("9a status on an open mesh is refused, naming why", /open mesh runs no delivery daemon/.test(openErr), openErr);
 
   // ── 10. a lost delete reply; a stream recreated under a pending removal ─────────────────────
-  // Last, because it deletes and recreates the TASK stream.
+  // Near the end, because it deletes and recreates the TASK stream; only section 11 follows.
   console.log("[10] a cancel whose delete reply was lost, and a removal pending across a stream recreation");
   let loseDeleteReply = false;
   const lossyJsm = {
