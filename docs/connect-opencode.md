@@ -125,9 +125,10 @@ in-process plugin does everything.
   reports a turn's end and the server's answer reports the submission landed, and the two can
   arrive in either order. When the end arrives first, the connector cannot tell the task's own
   turn from one typed into the TUI, so it reports the task unconfirmed. The manager fails it with
-  `delivery-unconfirmed` and stops the seat, and the task may have run. On 2.x an end counts only
-  when its log position is past the last end seen when the submission was sent. On 1.x a turn
-  counts once, at its first end after it started.
+  `delivery-unconfirmed` and stops the seat, and the task may have run. On 2.x an end counts when
+  its log position is past the last end seen when the submission was sent, or when it has no
+  position. On 1.x every end that arrives after the send counts, and so does a `/new` that replaces
+  the session meanwhile.
 - **Quiet stays pull-only.** Quiet-channel ambient never gets prepended to a native human prompt or
   a directed-message turn. `cotal_inbox` explicitly surfaces and clears it; automatic traffic stays
   owned by the connector. Quiet-channel `@mention`s still drive a turn.

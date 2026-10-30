@@ -159,6 +159,7 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
   let surfaced: string[] = []; // receive keys surfaced into the current turn, acked on completion
   let ended: OpenCode2Event["durable"]; // log position of the event that ended the last turn
   let started: OpenCode2Event["durable"]; // log position of the running execution's start
+  let unorderedEnds = 0; // ends of this session with no log position, which no submission can order itself against
   let submitting: Promise<void> | undefined; // the prompt POST in flight; what it carries settles when it answers
 
   /** Create the session this agent owns and announce its id to the serve shim, exactly as
@@ -267,6 +268,7 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
     execution = "submitted";
     briefed = true;
     const endAtSend = ended;
+    const unorderedAtSend = unorderedEnds;
     // The turn can end before this POST answers: the event stream is a separate transport. The boot
     // text, run turns and persona it carries settle only on the answer, so until then no second
     // submission starts and `completeTurn` waits before it drives; either would send them again.
@@ -278,10 +280,10 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
           10_000,
         );
         // An end recorded since the send is newer than the last turn's, because `ended` moves only
-        // forward. That turn may be the once task's own, already over, or one the host ran
-        // meanwhile, and nothing here tells which. The task is sealed and reported rather than
-        // confirmed, so a later turn's end cannot yield it.
-        if (turnIds.length && ended !== endAtSend) agent.releaseTurns(turnIds);
+        // forward, and an end with no log position cannot be ordered at all. That turn may be the
+        // once task's own, already over, or one the host ran meanwhile, and nothing here tells which.
+        // The task is sealed and reported rather than confirmed, so a later turn's end cannot yield it.
+        if (turnIds.length && (ended !== endAtSend || unorderedEnds !== unorderedAtSend)) agent.releaseTurns(turnIds);
         if (turnIds.length) agent.commitSurfacedTurns(turnIds);
         if (system) primed = true;
         if (boot !== undefined) bootPrompt = undefined;
@@ -305,11 +307,18 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
    *  or whose aggregate is not a non-empty string or whose sequence is not a finite number, cannot be
    *  ordered, so it is refused the same way a missing position is. */
   function replayed(ev: OpenCode2Event, mark = ended): boolean {
+    if (!positioned(ev)) {
+      log(`${ev.type} carries no durable log position; ignored`);
+      return true;
+    }
+    return ev.durable.aggregateID === mark?.aggregateID && ev.durable.seq <= mark.seq;
+  }
+
+  /** Whether an execution event carries its durable log position: a non-empty aggregate and a finite
+   *  sequence. */
+  function positioned(ev: OpenCode2Event): ev is OpenCode2Event & { durable: { aggregateID: string; seq: number } } {
     const at = ev.durable;
-    const seq = at?.seq;
-    const ordered = typeof at?.aggregateID === "string" && at.aggregateID.length > 0 && typeof seq === "number" && Number.isFinite(seq);
-    if (!ordered) log(`${ev.type} carries no durable log position; ignored`);
-    return !ordered || (at.aggregateID === mark?.aggregateID && seq <= mark.seq);
+    return typeof at?.aggregateID === "string" && at.aggregateID.length > 0 && typeof at.seq === "number" && Number.isFinite(at.seq);
   }
 
   /** A turn ended: release `execution`, settle the batch it carried, then drive whatever waited
@@ -322,6 +331,9 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
    *  it closes nothing either once an execution is running. An end at or before the running
    *  execution's start belongs to an earlier one, so it is not recorded and closes nothing. */
   async function completeTurn(ev: OpenCode2Event, settle: () => void): Promise<void> {
+    // An end with no log position closes nothing, but a submission in flight cannot order itself
+    // against it, so it counts as a turn end for that submission's once task.
+    if (!positioned(ev)) unorderedEnds += 1;
     if (replayed(ev) || (execution === "running" && replayed(ev, started))) return;
     ended = ev.durable;
     if (execution !== "running") return;

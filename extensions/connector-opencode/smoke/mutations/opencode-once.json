@@ -22,9 +22,10 @@
     "",
     "M6 and M12 confirm a task whose turn ended before the submission's answer, so the next turn's",
     "end yields it as done. M7 notes the 1.x idle only after its position read, which an answer can",
-    "overtake. M8 and M9 miss the end an idle status or an error reports. M10 counts the idle that",
-    "trails an end already seen, so a stale end seals a task that was delivered. M11 drops the 2.x exit",
-    "registration, as M5 does for 1.x."
+    "overtake. M8 and M9 miss the end an idle status or an error reports. M10 counts the ends from",
+    "before the send, so a stale end seals a task that was delivered. M11 drops the 2.x exit",
+    "registration, as M5 does for 1.x. M13 confirms a 1.x task whose session was replaced while its",
+    "answer was held, and M14 lets a 2.x end with no log position pass unnoticed."
   ],
   "mutations": [
     {
@@ -65,15 +66,15 @@
     {
       "name": "M6 a 1.x answer after a turn end confirms the task",
       "file": "extensions/connector-opencode/src/plugin.ts",
-      "find": "      if (turnIds.length && turnEndsSeen !== endsAtSend) agent.releaseTurns(turnIds);\n",
-      "replace": "",
+      "find": "      if (turnIds.length && (turnEndsSeen !== endsAtSend || sessionID !== id)) agent.releaseTurns(turnIds);\n",
+      "replace": "      if (turnIds.length && sessionID !== id) agent.releaseTurns(turnIds);\n",
       "expectRed": "1.x: a turn that ends before the submission's answer arrives seals the task"
     },
     {
       "name": "M7 the 1.x idle notes its end after the position read",
       "file": "extensions/connector-opencode/src/plugin.ts",
-      "find": "          if (!ours(idleSession)) return;\n          noteTurnEnd();\n          // Order matters and is not stylistic: flush the turn's records FIRST, then close the run.\n          // Both land on the holder's chain in the order they were enqueued, so closing first would\n          // terminate a run the records that follow still belong to.\n          eventsFor(sessionID)?.flush(sessionID);\n          // The close's position read is awaited BEFORE the next turn is admitted, on every path\n          // that admits one: this arm for the driven turn, and the prompt hook for a native one.\n          // The position is the session's messages over HTTP, and a next prompt that lands before\n          // that read answers puts the terminal after the next turn's records, which closes that\n          // turn with it: a failed turn closed as a finish and its successor as the error.\n          await turnEnded(idleSession, eventsFor(sessionID)?.closeRun(Date.now()));\n",
-      "replace": "          if (!ours(idleSession)) return;\n          // Order matters and is not stylistic: flush the turn's records FIRST, then close the run.\n          // Both land on the holder's chain in the order they were enqueued, so closing first would\n          // terminate a run the records that follow still belong to.\n          eventsFor(sessionID)?.flush(sessionID);\n          // The close's position read is awaited BEFORE the next turn is admitted, on every path\n          // that admits one: this arm for the driven turn, and the prompt hook for a native one.\n          // The position is the session's messages over HTTP, and a next prompt that lands before\n          // that read answers puts the terminal after the next turn's records, which closes that\n          // turn with it: a failed turn closed as a finish and its successor as the error.\n          await turnEnded(idleSession, eventsFor(sessionID)?.closeRun(Date.now()));\n          noteTurnEnd();\n",
+      "find": "          if (!ours(idleSession)) return;\n          noteTurnEnd();\n",
+      "replace": "          if (!ours(idleSession)) return;\n          queueMicrotask(() => void turnEnds.get(idleSession!)?.finally(noteTurnEnd));\n",
       "expectRed": "1.x: an answer that arrives while the turn end's position is read still seals the task, and no turn yields it"
     },
     {
@@ -86,16 +87,16 @@
     {
       "name": "M9 a 1.x error is not a turn end",
       "file": "extensions/connector-opencode/src/plugin.ts",
-      "find": "          noteTurnEnd();\n          if (!busy && !awaitingTurnEnd) return; // no turn to fail — stray error\n",
-      "replace": "          if (!busy && !awaitingTurnEnd) return; // no turn to fail — stray error\n",
+      "find": "          noteTurnEnd();\n          if (!busy && !awaitingTurnEnd) return;",
+      "replace": "          if (!busy && !awaitingTurnEnd) return;",
       "expectRed": "1.x: a turn error before the answer seals the task and no turn yields it"
     },
     {
-      "name": "M10 every 1.x end counts, the trailing idle too",
+      "name": "M10 a 1.x submission counts the ends from before its send",
       "file": "extensions/connector-opencode/src/plugin.ts",
-      "find": "    if (!turnStartedSinceEnd) return;\n",
-      "replace": "",
-      "expectRed": "1.x: an idle with no turn started since the last end, or another session's, does not seal the task"
+      "find": "      const endsAtSend = turnEndsSeen;\n",
+      "replace": "      const endsAtSend = 0;\n",
+      "expectRed": "1.x: an end before the send, or another session's end, does not seal the task"
     },
     {
       "name": "M11 the 2.x plugin registers no once exit",
@@ -107,9 +108,23 @@
     {
       "name": "M12 a 2.x answer after a turn end confirms the task",
       "file": "extensions/connector-opencode/src/plugin2.ts",
-      "find": "        if (turnIds.length && ended !== endAtSend) agent.releaseTurns(turnIds);\n",
-      "replace": "",
+      "find": "        if (turnIds.length && (ended !== endAtSend || unorderedEnds !== unorderedAtSend)) agent.releaseTurns(turnIds);\n",
+      "replace": "        if (turnIds.length && unorderedEnds !== unorderedAtSend) agent.releaseTurns(turnIds);\n",
       "expectRed": "2.x: a turn that ends succeeded before the submission's answer arrives seals the task, and no turn yields it"
+    },
+    {
+      "name": "M13 a 1.x answer after its session was replaced confirms the task",
+      "file": "extensions/connector-opencode/src/plugin.ts",
+      "find": "      if (turnIds.length && (turnEndsSeen !== endsAtSend || sessionID !== id)) agent.releaseTurns(turnIds);\n",
+      "replace": "      if (turnIds.length && turnEndsSeen !== endsAtSend) agent.releaseTurns(turnIds);\n",
+      "expectRed": "1.x: a session replaced while the answer is held seals the task"
+    },
+    {
+      "name": "M14 a 2.x end with no log position does not count",
+      "file": "extensions/connector-opencode/src/plugin2.ts",
+      "find": "        if (turnIds.length && (ended !== endAtSend || unorderedEnds !== unorderedAtSend)) agent.releaseTurns(turnIds);\n",
+      "replace": "        if (turnIds.length && ended !== endAtSend) agent.releaseTurns(turnIds);\n",
+      "expectRed": "2.x: an end with no log position, before the answer, seals the task, and no turn yields it"
     }
   ]
 }

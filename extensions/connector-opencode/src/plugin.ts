@@ -505,16 +505,13 @@ export const cotal: Plugin = async () => {
   let briefed = false;
   let surfaced: string[] = []; // receive keys surfaced into the current turn, acked on completion (per delivery, not count)
   let awaitingTurnEnd = false; // a turn is in flight → ignore a duplicate idle that isn't its end
-  // The turn ends this session has reported, counted when each event arrives and before any await.
-  // A submission compares the count across its send: a turn can end before the answer arrives. A
-  // turn counts once, at its first end after a start (`session.status` busy), so the idle that
-  // trails its error or its idle status is not counted again. 1.x events carry no log position, so
-  // this order is the one the plugin observes.
+  // Every turn end this session reports (an idle, an idle status, an error), counted when its event
+  // arrives and before any await. A submission compares the count across its send, because a turn can
+  // end before the answer arrives. 1.x events carry no log position, and OpenCode can report an idle
+  // with no busy before it (a cancel while idle, a run that fails before its first step), so every
+  // end after the send counts and none before it does.
   let turnEndsSeen = 0;
-  let turnStartedSinceEnd = false;
   const noteTurnEnd = (): void => {
-    if (!turnStartedSinceEnd) return;
-    turnStartedSinceEnd = false;
     turnEndsSeen += 1;
   };
   let errorRetryTimer: ReturnType<typeof setTimeout> | undefined;
@@ -1056,9 +1053,10 @@ export const cotal: Plugin = async () => {
       const endsAtSend = turnEndsSeen;
       await opencodeApi(`/session/${encodeURIComponent(id)}/prompt_async`, { method: "POST", body: JSON.stringify(body) }, 10_000);
       // A turn that ended before this answer may be the once task's own turn, already over, or one
-      // the host ran meanwhile, and nothing here tells which. The task is sealed and reported rather
-      // than confirmed, so a later turn's end cannot yield it.
-      if (turnIds.length && turnEndsSeen !== endsAtSend) agent.releaseTurns(turnIds);
+      // the host ran meanwhile, and nothing here tells which; a session replaced meanwhile (`/new`)
+      // hides the old one's end. Either way the task is sealed and reported rather than confirmed,
+      // so a later turn's end cannot yield it.
+      if (turnIds.length && (turnEndsSeen !== endsAtSend || sessionID !== id)) agent.releaseTurns(turnIds);
       // The submission landed with the run turns in its prompt — they are surfaced.
       if (turnIds.length) agent.commitSurfacedTurns(turnIds);
       // WHAT THIS TURN CARRIED, so the `session.error` arm can re-arm it if this turn fails instead
@@ -1437,7 +1435,6 @@ export const cotal: Plugin = async () => {
           const s = event.properties.status;
           // Presence only — session.idle owns ack + drive (so a duplicate idle can't mis-ack).
           if (s.type === "busy") {
-            turnStartedSinceEnd = true;
             busy = true;
             await safeStatus("working");
           } else if (s.type === "idle") {

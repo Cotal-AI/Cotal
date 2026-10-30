@@ -9,9 +9,11 @@
  *
  * A turn can end before the submission's answer arrives, because the events come over another
  * transport. That end may be the task's own turn or one the host ran meanwhile, and neither
- * generation can tell which, so the task is sealed and reported instead of confirmed. Only an end
- * newer than the last one seen when the submission started counts: a replay, the idle that trails
- * an end already seen, and another session's end leave the task to confirm as usual.
+ * generation can tell which, so the task is sealed and reported instead of confirmed. On 1.x every
+ * end that arrives after the send counts, with or without a busy status before it, and so does a
+ * session replaced meanwhile. On 2.x an end counts when it is newer than the last one seen at the
+ * send or carries no log position. An end before the send, a replay, and another session's end
+ * leave the task to confirm as usual.
  *
  * The manager is the agent's `managerInvoke`, replaced for the run: `turn-pending` serves the rows
  * below and `turn-unconfirmed` records each report. The mesh is a real nats-server.
@@ -271,15 +273,15 @@ try {
   check("control: the turn end's position read was held while the answer arrived", readsHeld > heldBefore, { readsHeld });
   check("1.x: an answer that arrives while the turn end's position is read still seals the task, and no turn yields it", stateOf(uid, "g7") === "sealed" && reportsOf("g7") === 1 && yieldsOf("g7") === 0, { state: stateOf(uid, "g7"), reports, yields });
 
+  // An idle that arrives before the submission is sent, and another session's end while it is held.
+  await idle1();
   open1 = holdAnswer();
   offer("Una", onceRow("g8", "after a stale end"));
   await claimed(uid, "g8");
-  // The idle that trails the last turn's end, with no turn started since, and another session's end.
-  await idle1();
   await fire({ type: "session.idle", properties: { sessionID: "ses_other" } });
   open1();
   await landed(uid, "g8");
-  check("1.x: an idle with no turn started since the last end, or another session's, does not seal the task", stateOf(uid, "g8") === "confirmed" && reportsOf("g8") === 0, { state: stateOf(uid, "g8"), reports });
+  check("1.x: an end before the send, or another session's end, does not seal the task", stateOf(uid, "g8") === "confirmed" && reportsOf("g8") === 0, { state: stateOf(uid, "g8"), reports });
   await laterTurn1();
   check("1.x: ...and its own turn's end yields it", yieldsOf("g8") === 1, yields);
 
@@ -303,6 +305,37 @@ try {
   await sleep(500);
   await laterTurn1();
   check("1.x: a task the manager settles while its answer is held is neither reported nor yielded when the answer arrives", reportsOf("g10") === 0 && yieldsOf("g10") === 0, { state: stateOf(uid, "g10"), reports, yields });
+
+  open1 = holdAnswer();
+  offer("Una", onceRow("g11", "ends with no busy seen"));
+  await claimed(uid, "g11");
+  // OpenCode sends an idle with no busy before it, for a cancel while idle or a run that fails first.
+  await idle1();
+  open1();
+  await landed(uid, "g11");
+  await laterTurn1();
+  check("1.x: an idle with no busy before it, before the answer, seals the task and no turn yields it", stateOf(uid, "g11") === "sealed" && reportsOf("g11") === 1 && yieldsOf("g11") === 0, { state: stateOf(uid, "g11"), reports, yields });
+
+  open1 = holdAnswer();
+  offer("Una", onceRow("g12", "stopped before its answer"));
+  await claimed(uid, "g12");
+  await busy1();
+  await fire({ type: "session.error", properties: { sessionID: SID, error: { name: "MessageAbortedError", data: { message: "The operation was aborted." } } } });
+  open1();
+  await landed(uid, "g12");
+  await idle1();
+  await laterTurn1();
+  check("1.x: a turn the user stops before the answer seals the task and no turn yields it", stateOf(uid, "g12") === "sealed" && reportsOf("g12") === 1 && yieldsOf("g12") === 0, { state: stateOf(uid, "g12"), reports, yields });
+
+  open1 = holdAnswer();
+  offer("Una", onceRow("g13", "its session replaced"));
+  await claimed(uid, "g13");
+  // `/new` in the TUI replaces the session while the submission into the old one is held.
+  await fire({ type: "session.created", properties: { info: { id: "ses_once_new" } } });
+  await sleep(500);
+  open1();
+  await landed(uid, "g13");
+  check("1.x: a session replaced while the answer is held seals the task", stateOf(uid, "g13") === "sealed" && reportsOf("g13") === 1, { state: stateOf(uid, "g13"), reports });
 
   // The registered once exit is the plugin's own teardown, which ends the process with code 1.
   const exitCodes: Array<number | undefined> = [];
@@ -384,6 +417,16 @@ try {
   await landed(uid2, "h7");
   await laterTurn2();
   check("2.x: an end with no start seen, before the answer, seals the task, and no turn yields it", stateOf(uid2, "h7") === "sealed" && reportsOf("h7") === 1 && yieldsOf("h7") === 0, { state: stateOf(uid2, "h7"), reports, yields });
+
+  open2 = holdAnswer();
+  offer("Duo", onceRow("h10", "ends with no position"));
+  await claimed(uid2, "h10");
+  ctx.feed({ type: "session.execution.succeeded", data: { sessionID: SID2 } } as never);
+  await sleep(200);
+  open2();
+  await landed(uid2, "h10");
+  await laterTurn2();
+  check("2.x: an end with no log position, before the answer, seals the task, and no turn yields it", stateOf(uid2, "h10") === "sealed" && reportsOf("h10") === 1 && yieldsOf("h10") === 0, { state: stateOf(uid2, "h10"), reports, yields });
 
   open2 = holdAnswer();
   offer("Duo", onceRow("h8", "after a replayed end"));
