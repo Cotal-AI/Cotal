@@ -106,7 +106,7 @@ function mount(roster: Presence[], cols: number, rows = 30) {
   stdout.columns = cols; stdout.rows = rows; stdout.isTTY = true;
   const app = render(<App ep={new Observer(roster) as unknown as CotalEndpoint} canWrite={false} canControl={false} />,
     { stdin, stdout, debug: true, patchConsole: false, exitOnCtrlC: false });
-  return { stdin, raws, frames, close: () => { app.unmount(); app.cleanup(); } };
+  return { stdin, stdout, raws, frames, close: () => { app.unmount(); app.cleanup(); } };
 }
 
 /** True when a raw frame paints the seat whose head starts with `lead` as the inverse selection bar. */
@@ -194,7 +194,8 @@ console.log("2. a long identity keeps its name, activity and ages at every cappe
         const rows = seatRows(f, "● " + name.slice(0, 6), box);
         check(`${name}: the head shows the whole name, tag, activity and both ages`, same(rows, want.map((c) => boxRow(c, box))), rows);
       }
-      check("no roster row ends in a cut", rosterBox(f, box).length > 2 && rosterBox(f, box).every((r) => !r.includes("…")), rosterBox(f, box));
+      // At 80 columns the title leads with the seats left out and is cut after them; no seat row is.
+      check("no seat row ends in a cut", rosterBox(f, box).length > 2 && rosterBox(f, box).slice(2).every((r) => !r.includes("…")), rosterBox(f, box));
       check("no painted row is wider than the terminal", f.split("\n").every((r) => displayWidth(r) <= cols));
       // The window counts the head rows: a seat that does not fit is left out whole, not cut at the
       // bottom of the box.
@@ -217,6 +218,123 @@ console.log("2. a long identity keeps its name, activity and ages at every cappe
         check("the selected seat is drawn whole", same(rows, long(long2, "reviewing-the-diff34")[80].map((c) => boxRow(c, box))), rows);
         check("...and the first seat scrolled out to make room", seatRows(sel, "● " + long1.slice(0, 6), box).length === 0, sel);
       }
+    } finally {
+      close();
+    }
+  }
+}
+
+console.log("3. a window that leaves seats out says how many are above and below it");
+// The roster drew whole seats around the selected one and said nothing about the rest: at 80 columns
+// the title is cut before its count, and a selected seat taller than the window displaced the title,
+// which Ink still painted under the seat's head row. The title now leads with the counts the window
+// leaves out, and keeps its row while the box has another for the seat.
+{
+  const now = Date.now();
+  const seat = (name: string, status: Presence["status"], activity: string, role?: string) => ({
+    card: { id: "local." + name, name, kind: "endpoint", ...(role ? { role } : {}) },
+    status, ts: now, statusSince: now - 3 * 60_000, activity, activitySince: now - 5 * 60_000,
+  }) as Presence;
+  const lxn = "endpoint-with-a-very-long-name-for-roster-wrap-0123";
+  const ax = seat("ax", "working", "build ok");
+  const lx = seat(lxn, "working", "compiling the very long module graph for the roster wrap check 0123456789");
+  const cx = seat("cx", "waiting", "等待审批：生产数据库迁移需要人工确认🚦🔐 waiting-on-an-unbroken-identifier-0123456789abcdef");
+  const mg = seat("manager", "idle", "supervisor (pty)", "manager");
+  const four = [ax, lx, cx, mg];
+  const lead = (p: Presence) => "⚙ " + p.card.name.slice(0, 6);
+  /** The roster box's first row inside its top border: tabs take three rows and tiles one. */
+  const firstRow = (f: string, box: number) => cells(f.split("\n")[5] ?? "", box);
+  /** The seats drawn in the frame, by their head rows. */
+  const drawn = (f: string, box: number) => four.filter((p) => seatRows(f, lead(p), box).length > 0).map((p) => p.card.name);
+  const resize = (out: NodeJS.WriteStream, rows: number) => { out.rows = rows; out.emit("resize"); };
+
+  console.log("80x30: the title keeps its counts ahead of the cut");
+  {
+    const { stdin, raws, frames, close } = mount(four, 80);
+    try {
+      const top = await frameWhere(frames, (f) => f.includes("⚙ ax"));
+      check("top: the title leads with the two seats below", firstRow(top, 24).startsWith("│ roster ↓2 more ·") && firstRow(top, 24).endsWith(" │"), firstRow(top, 24));
+      check("top: the window draws ax and the long name", same(drawn(top, 24), ["ax", lxn]), drawn(top, 24));
+      stdin.write("l");
+      await frameWhere(raws, selected(lead(ax)));
+      for (const p of [lx, cx]) { stdin.write("j"); await frameWhere(raws, selected(lead(p))); }
+      const low = await frameWhere(frames, (f) => f.includes("⚙ manag"));
+      check("bottom: j to cx brings in cx and the manager", same(drawn(low, 24), ["cx", "manager"]), drawn(low, 24));
+      check("bottom: the title leads with the two seats above", firstRow(low, 24).startsWith("│ roster ↑2 more ·"), firstRow(low, 24));
+      check("bottom: both drawn seats keep every row",
+        seatRows(low, lead(cx), 24).at(-1) === boxRow("  unchanged for 3m", 24) && seatRows(low, lead(mg), 24).at(-1) === boxRow("  unchanged for 3m", 24),
+        [seatRows(low, lead(cx), 24), seatRows(low, lead(mg), 24)]);
+      check("no painted row is wider than the terminal", low.split("\n").every((r) => displayWidth(r) <= 80));
+    } finally {
+      close();
+    }
+  }
+
+  console.log("47x30: one seat at a time, its place among the four in the title");
+  {
+    const { stdin, stdout, raws, frames, close } = mount(four, 47);
+    try {
+      const want = (cue: string) => boxRow("roster " + cue + " · 0 agents · 4 ep", 47);
+      const top = await frameWhere(frames, (f) => f.includes("⚙ ax"));
+      check("top: ↓3 more", firstRow(top, 47) === want("↓3 more"), firstRow(top, 47));
+      stdin.write("l");
+      await frameWhere(raws, selected(lead(ax)));
+      stdin.write("j");
+      const tall = await frameWhere(raws, selected(lead(lx)));
+      const tallFrame = strip(tall);
+      // The long name's seat is six rows and the narrow window five, so it shows its first five
+      // under the title.
+      check("a tall selected seat keeps the title, with ↑1 ↓2 more", firstRow(tallFrame, 47) === want("↑1 ↓2 more"), firstRow(tallFrame, 47));
+      const tallRows = tallFrame.split("\n").slice(6, 12).map((r) => cells(r, 47));
+      check("...and shows its first rows whole up to the bottom border",
+        same(tallRows.slice(0, 4), [
+          boxRow("⚙ endpoint-with-a-very-long-name-for-roster", 47), boxRow("  -wrap-0123", 47),
+          boxRow("  compiling the very long module graph for", 47), boxRow("  the roster wrap check 0123456789", 47),
+        ]) && tallRows[4]?.startsWith("│   (set 5m ago)  ") && tallRows[5] === "╰" + "─".repeat(45) + "╯", tallRows);
+      stdin.write("j");
+      const mid = strip(await frameWhere(raws, selected(lead(cx))));
+      check("middle: ↑2 ↓1 more", firstRow(mid, 47) === want("↑2 ↓1 more"), firstRow(mid, 47));
+      check("middle: cx is drawn whole", seatRows(mid, lead(cx), 47).at(-1) === boxRow("  endpoint · unchanged for 3m", 47), seatRows(mid, lead(cx), 47));
+      // A shorter terminal makes cx taller than the window: the title keeps its row, and the head row
+      // under it paints no part of the title.
+      frames.length = 0;
+      resize(stdout, 20);
+      const short = await frameWhere(frames, (f) => f.split("\n").length <= 21 && f.includes("⚙ cx"));
+      check("resize 47x20: the title keeps the counts", firstRow(short, 47) === want("↑2 ↓1 more"), short.split("\n").slice(4, 9));
+      check("resize 47x20: cx's head row paints no part of the title", cells(short.split("\n")[6] ?? "", 47) === boxRow("⚙ cx", 47), short.split("\n").slice(4, 9));
+      // A three-row box has one row inside: the selected seat's head, and no title under it.
+      frames.length = 0;
+      resize(stdout, 14);
+      const tiny = await frameWhere(frames, (f) => f.split("\n").length <= 15 && f.includes("⚙ cx"));
+      check("resize 47x14: the one inner row is cx's head, with no title painted under it",
+        same(tiny.split("\n").slice(4, 7).map((r) => cells(r, 47)), ["╭" + "─".repeat(45) + "╮", boxRow("⚙ cx", 47), "╰" + "─".repeat(45) + "╯"]),
+        tiny.split("\n").slice(4, 7));
+      frames.length = 0;
+      resize(stdout, 30);
+      const back = await frameWhere(frames, (f) => f.split("\n").length > 21 && f.includes("⚙ cx"));
+      check("resize back to 47x30: the window and its counts come back", firstRow(back, 47) === want("↑2 ↓1 more") && same(drawn(back, 47), ["cx"]), back.split("\n").slice(4, 12));
+      stdin.write("j");
+      const bottom = strip(await frameWhere(raws, selected(lead(mg))));
+      check("bottom: ↑3 more", firstRow(bottom, 47) === want("↑3 more"), firstRow(bottom, 47));
+      check("no painted row is wider than the terminal", bottom.split("\n").every((r) => displayWidth(r) <= 47));
+    } finally {
+      close();
+    }
+  }
+
+  console.log("no cue when nothing is left out");
+  for (const { name, roster, cols, box, title, seats } of [
+    { name: "empty at 80", roster: [], cols: 80, box: 24, title: "roster · 0 agents", seats: [] },
+    { name: "empty at 47", roster: [], cols: 47, box: 47, title: "roster · 0 agents", seats: [] },
+    { name: "one seat at 47", roster: [lx], cols: 47, box: 47, title: "roster · 0 agents · 1 ep", seats: [lxn] },
+    { name: "two that fit at 47", roster: [ax, mg], cols: 47, box: 47, title: "roster · 0 agents · 2 ep", seats: ["ax", "manager"] },
+    { name: "all four at 120", roster: four, cols: 120, box: 36, title: "roster · 0 agents · 4 ep", seats: ["ax", lxn, "cx", "manager"] },
+  ]) {
+    const { frames, close } = mount(roster, cols);
+    try {
+      const f = await frameWhere(frames, (fr) => fr.includes(seats.length ? lead(roster.at(-1)!) : "(nobody present)"));
+      check(`${name}: the title has no arrow`, firstRow(f, box) === boxRow(title, box), firstRow(f, box));
+      check(`${name}: every seat is drawn`, same(drawn(f, box), seats) && (seats.length > 0 || f.includes("(nobody present)")), drawn(f, box));
     } finally {
       close();
     }
