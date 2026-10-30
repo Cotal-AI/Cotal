@@ -398,12 +398,13 @@ try {
     if (last.fanout === 0 && last.reader === 0) { drainedAt = performance.now(); break; }
     await wait(250);
   }
-  await wait(1000); // the last DLV transfers reach the members' pumps
   const endS = ((drainedAt ?? performance.now()) - t0) / 1000;
   const daemonCpuMs = procCpuMs(daemon.pid!) - d0 - daemonIdleCoresMs * endS * 1000;
   const brokerCpuMs = procCpuMs(srv.pid!) - b0;
   const writeBytes = procWriteBytes(srv.pid!) - w0;
   const memberCpuMs = kids.reduce((a, k, i) => a + procCpuMs(k.pid!) - k0[i], 0);
+  // Let the final DLV copies reach the members without adding this tail to the CPU window.
+  await wait(1000);
   const s1 = await streams();
   const samples = (await Promise.all(kids.map((k) => ask(k, { cmd: "sample" }, "sample")))).map((m) => m.sample as MemberSample);
 
