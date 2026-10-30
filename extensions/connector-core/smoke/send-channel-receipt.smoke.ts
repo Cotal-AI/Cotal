@@ -440,11 +440,22 @@ const proto = MeshAgent.prototype as unknown as {
       refused.text,
     );
   }
+  // `team.` and `.**` around enough x's to make a name that is no channel name of the given length.
+  const badName = (length: number): string => `team.${"x".repeat(length - 8)}.**`;
   {
-    const long = `team.${"x".repeat(100)}.**`;
+    const whole = badName(64);
+    const refused = await send.run(agent, cfg, { text: "hi", channel: whole });
+    check(
+      "a 64-character name that is no channel name is shown whole",
+      refused.isError === true && calls.length === 0 && refused.text.includes(`${JSON.stringify(whole)} is not a channel name.`),
+      refused.text,
+    );
+  }
+  {
+    const long = badName(65);
     const refused = await send.run(agent, cfg, { text: "hi", channel: long });
     check(
-      "a long name that is no channel name is shown cut to its first 64 characters",
+      "a 65-character name that is no channel name is shown cut to its first 64 characters",
       refused.isError === true && calls.length === 0 &&
         refused.text.includes(`${JSON.stringify(`${long.slice(0, 64)}…`)} is not a channel name.`) && !refused.text.includes(long),
       refused.text,

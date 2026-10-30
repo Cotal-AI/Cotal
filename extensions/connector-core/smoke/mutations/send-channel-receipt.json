@@ -40,6 +40,8 @@
     "",
     "N16 states a limit other than core's MAX_CHANNEL_LENGTH in the no-channel-name refusal.",
     "",
+    "N17 and N18 move the cut one character either way.",
+    "",
     "NO BUILD STEP: the suite imports ../src."
   ],
   "mutations": [
@@ -165,8 +167,8 @@
       "file": "extensions/connector-core/src/tool-specs.ts",
       "find": "  const shown = JSON.stringify(channel.length > 64 ? `${channel.slice(0, 64)}…` : channel);",
       "replace": "  const shown = JSON.stringify(channel);",
-      "expectRed": "a long name that is no channel name is shown cut to its first 64 characters",
-      "cell": "a long name that is no channel name is shown cut to its first 64 characters",
+      "expectRed": "a 65-character name that is no channel name is shown cut to its first 64 characters",
+      "cell": "a 65-character name that is no channel name is shown cut to its first 64 characters",
       "note": "A name up to 4096 characters or more would be echoed whole into the refusal."
     },
     {
@@ -186,6 +188,24 @@
       "expectRed": "the no-channel-name refusal states core's limit of 4096 characters",
       "cell": "the no-channel-name refusal states core's limit of 4096 characters",
       "note": "A refusal that names its own number drifts from the limit core enforces."
+    },
+    {
+      "name": "N17 the cut starts one character later, so a 65-character name is shown whole",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "channel.length > 64 ?",
+      "replace": "channel.length > 65 ?",
+      "expectRed": "a 65-character name that is no channel name is shown cut to its first 64 characters",
+      "cell": "a 65-character name that is no channel name is shown cut to its first 64 characters",
+      "note": "A name just past 64 characters would be echoed whole. A name far past the cut cannot show where it starts."
+    },
+    {
+      "name": "N18 the cut starts one character earlier, so a 64-character name is cut",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "> 64 ? `${channel.slice",
+      "replace": "> 63 ? `${channel.slice",
+      "expectRed": "a 64-character name that is no channel name is shown whole",
+      "cell": "a 64-character name that is no channel name is shown whole",
+      "note": "A name of 64 characters fits and is shown as typed."
     }
   ]
 }
