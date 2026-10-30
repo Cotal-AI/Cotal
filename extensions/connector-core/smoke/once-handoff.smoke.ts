@@ -140,6 +140,20 @@ console.log("\n3. a dispatch given up on: the task is sealed, reported once, and
   check("a later pull of the same task offers it to no one", a.peekPendingTurns() === undefined && a.pendingWake() === 0);
 }
 
+console.log("\n3b. a task its manager settles while it waits takes no permit from a stale peek");
+{
+  const { a, uid, state, poll } = rig();
+  state.pending = [onceRow("o3b", "settled while queued")];
+  await poll();
+  const stale = a.peekPendingTurns()!;
+  state.pending = [];
+  await poll();
+  check("the settle ends the handoff, and a dispatch queued behind a gate is refused its permit",
+    onceHandoffState(uid, "o3b") === "sealed" && a.claimTurns(stale.goalIds) === false);
+  await tick();
+  check("...and nothing is reported: the manager already holds the task's terminal", state.reports.length === 0, state.reports);
+}
+
 console.log("\n4. the handoff timer measures the dispatch only");
 {
   const { a, uid, state, poll } = rig();
@@ -235,7 +249,7 @@ console.log("\n7. the report: retried while the manager is unreachable, and a re
 
 globalThis.setTimeout = realSetTimeout;
 globalThis.clearTimeout = realClearTimeout;
-const EXPECTED_CELLS = 21;
+const EXPECTED_CELLS = 23;
 console.log(`\n${fail === 0 && pass === EXPECTED_CELLS ? "ONCE HANDOFF SMOKE OK ✅" : "ONCE HANDOFF SMOKE FAILED"}  (${pass} passed, ${fail} failed)`);
 if (pass + fail !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);

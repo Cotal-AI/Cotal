@@ -77,6 +77,16 @@ export function sealOnceHandoff(uid: string, goalId: string): boolean {
   return true;
 }
 
+/** End the handoff of a task its manager settled without this seat (its deadline, a stop), whether
+ *  or not a dispatch had claimed it, so no later claim can send it. A confirmed task stays confirmed.
+ *  Nothing is reported: the manager already holds the task's terminal. */
+export function endOnceHandoff(uid: string, goalId: string): void {
+  const h = proc().handoffs.get(keyOf(uid, goalId));
+  if (h?.state === "confirmed" || h?.state === "sealed") return;
+  if (h?.timer !== undefined) clearTimeout(h.timer);
+  proc().handoffs.set(keyOf(uid, goalId), { state: "sealed" });
+}
+
 /** The dispatch left the seat; the acceptance arrives with the model's response, which the
  *  handoff timer must not measure. */
 export function stopOnceHandoffTimer(uid: string, goalId: string): void {

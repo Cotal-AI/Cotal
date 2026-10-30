@@ -44,7 +44,7 @@ import {
 } from "@cotal-ai/core";
 import type { AgentConfig } from "./config.js";
 import { TURN_PULL_RETRY_MS } from "./turn-poll.js";
-import { ONCE_HANDOFF_MS, claimOnceHandoff, confirmOnceHandoff, exitOnceSeat, onOnceHandoffTimeout, onceHandoffState, sealOnceHandoff, stopOnceHandoffTimer } from "./once.js";
+import { ONCE_HANDOFF_MS, claimOnceHandoff, confirmOnceHandoff, endOnceHandoff, exitOnceSeat, onOnceHandoffTimeout, onceHandoffState, sealOnceHandoff, stopOnceHandoffTimer } from "./once.js";
 import { attributionSafe } from "./framing.js";
 import { invokeUserManager } from "./manager-call.js";
 
@@ -2818,7 +2818,9 @@ export class MeshAgent extends EventEmitter {
    *  already ended, and the caller sends no once task. Run turns need no permit and are offered
    *  again as before. */
   claimTurns(goalIds: readonly string[]): boolean {
-    return claimOnceHandoff(this.onceUid(), goalIds.filter((id) => this.activeTurns.get(id)?.once !== undefined));
+    // A once task settled since the caller's peek is still a once task: its handoff has ended, and
+    // it takes no permit.
+    return claimOnceHandoff(this.onceUid(), goalIds.filter((id) => (this.activeTurns.get(id) ?? this.settledTurns.get(id))?.once !== undefined));
   }
 
   /** The adapter gave up on a dispatch that carried these turns. A claimed once task is sealed and
@@ -2915,7 +2917,7 @@ export class MeshAgent extends EventEmitter {
   /** Drop an active turn the run settled without this seat's yield, remembering its deadline. */
   private settleTurn(t: ActiveTurn): void {
     // A once task settled without this seat (its deadline, or a stop) ends its handoff too.
-    if (t.once !== undefined) sealOnceHandoff(this.onceUid(), t.goalId);
+    if (t.once !== undefined) endOnceHandoff(this.onceUid(), t.goalId);
     this.activeTurns.delete(t.goalId);
     this.settledTurns.set(t.goalId, { ...(t.deadlineAt !== undefined ? { deadlineAt: t.deadlineAt } : {}), ...(t.once !== undefined ? { once: true as const } : {}) });
     if (this.settledTurns.size > MAX_SETTLED_TURNS) this.settledTurns.delete(this.settledTurns.keys().next().value!);
