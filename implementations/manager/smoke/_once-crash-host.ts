@@ -45,6 +45,15 @@ kv.put = async (key, ...rest) => {
   if (key.startsWith("cp.") && existsSync(crashMarker)) { rmSync(crashMarker); process.kill(process.pid, "SIGKILL"); }
   return put(key, ...rest);
 };
+// Armed with another marker file: the manager dies at a spawn's `presence` progress, the step right
+// before its succeeded terminal is written, so the seat joined and its task was never served.
+const progress = manager as unknown as { emitGoalProgress(ref: unknown, epoch: number, event: { phase?: string }): void };
+const emit = progress.emitGoalProgress.bind(manager);
+const successMarker = join(root, "crash-at-success");
+progress.emitGoalProgress = (ref, epoch, event) => {
+  if (event.phase === "presence" && existsSync(successMarker)) { rmSync(successMarker); process.kill(process.pid, "SIGKILL"); }
+  emit(ref, epoch, event);
+};
 const managerInstanceId = (manager as unknown as { managerInstanceId: string }).managerInstanceId;
 process.stdout.write(`REPRO_MANAGER ${JSON.stringify({ managerPid: process.pid, managerInstanceId })}\n`);
 await new Promise<void>(() => {});

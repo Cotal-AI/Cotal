@@ -10,7 +10,10 @@
     "CELLS NAMED BEFORE THE RUN.",
     "",
     "R1 leaves a once task whose accept crashed before its deadline hold was minted in the goal index,",
-    "where no manager serves, cancels or retries it."
+    "where no manager serves, cancels or retries it.",
+    "",
+    "R2 lets a successor rebuild a task whose spawn has no succeeded terminal, a task its predecessor",
+    "never served, and R3 reads that verdict from the task's own goal, which has none while it runs."
   ],
   "mutations": [
     {
@@ -19,6 +22,20 @@
       "find": "      if (parsed.once) { await this.settleOnceTurn(p.ref, \"launch-failed\"); return; }\n",
       "replace": "",
       "expectRed": "the next manager cancels that task `launch-failed` and drops its index entry"
+    },
+    {
+      "name": "R2 a successor serves a task whose spawn never succeeded",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    if (parsed.once && !(await this.onceServed(entry.ref, parsed))) {\n      await this.commitOnceCancel(entry.ref, NEVER_SERVED);\n      await this.inheritOnce(entry.ref, entry.allocated, parsed);\n      return;\n    }\n",
+      "replace": "",
+      "expectRed": "the next manager cancels that task as never served, and drops its index entry once the seat is ruled out"
+    },
+    {
+      "name": "R3 whether a task was served is read from the task's own goal",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "{ endpoint: ref.endpoint, caller: ref.caller, goalId: note.spawn }",
+      "replace": "{ endpoint: ref.endpoint, caller: ref.caller, goalId: ref.goalId }",
+      "expectRed": "the successor cancels the task with no deadline `seat-exited` once its reconcile rules the seat out"
     }
   ]
 }

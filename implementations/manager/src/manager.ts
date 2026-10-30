@@ -81,10 +81,11 @@ import {
   resolveService,
   invokeCommand,
   digestIdToken,
+  renderOnceTask,
 } from "@cotal-ai/core";
 import { loadLaunchPersonaFile, PersonaSourceError } from "@cotal-ai/workspace";
 import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, claimIdentityRecord, claimManagerSiblingIdentities, connectorInstallHint, DEFAULT_SEAT_CAP, DELIVERY_CREDS_KIND, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, localTrustOfSpace, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, probeLiveness, remintDaemonCreds, resolveAgentType, resolveOnPath, runtimeInstallHint, createManagerInstanceIdentity, SEAT_CAP_UNLIMITED, spaceKey, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type MeshEntry, type RenewalRecord, type SeatCap, type UserAuthInfo } from "@cotal-ai/workspace";
-import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, DaemonStoreAnswer, DeliveryLeaseInfo, EpCaller, EpErrorCode, EpErrorDetail, LaunchOpts, LaunchSpec, ManagedLifecycleHandoff, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeProvider, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth } from "@cotal-ai/core";
+import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, DaemonStoreAnswer, DeliveryLeaseInfo, EpCaller, EpErrorCode, EpErrorDetail, LaunchOpts, LaunchSpec, ManagedLifecycleHandoff, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeProvider, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth, StartupOutcome } from "@cotal-ai/core";
 import {
   createRuntime,
   exitProof,
@@ -265,6 +266,14 @@ const TURN_NOTE_MAX = 65536;
  *  launch-parity smoke can assert every launch client's request timeout OUTLIVES this window — the tier
  *  rule forbids the clients importing it directly. */
 export const READINESS_TIMEOUT_MS = 30_000;
+/** How long a once seat whose connector needs a confirmed startup waits for its startup watch to end,
+ *  from its launch: the watch's 15s for the confirm prompt and 15s for its notice, plus 5s for the
+ *  last read. The readiness window applies when it is longer. */
+const STARTUP_OUTCOME_MS = 35_000;
+/** The cancel reason of an inherited once task whose spawn has no succeeded terminal. */
+const NEVER_SERVED = "never served: the manager restarted before the spawn's readiness verdict";
+/** Said by every settle of an inherited once task whose seat this manager does not hold. */
+const UNHELD_SEAT = "the manager does not hold the seat; it may still be running";
 /** How often the readiness race asks a runtime that streams no exit whether its child has exited, and
  *  how long it waits past the window for the proof of its last read. An operator waits on this reply,
  *  so it asks more often than the exit watch that outlives readiness. */
@@ -1200,8 +1209,9 @@ export interface SpawnHooks {
   /** Fires at the readiness verdict (presence join → succeeded / process exit → failed / window
    *  elapsed → uncertain), carrying the succeeded reply data — the async serve body commits the goal
    *  terminal + emits the final progress event here. Awaited, but the caller swallows its own errors
-   *  so a terminal-commit failure never disrupts the (already-replied) spawn. */
-  onOutcome?: (outcome: { kind: "succeeded" | "failed" | "uncertain"; data?: unknown }) => Promise<void> | void;
+   *  so a terminal-commit failure never disrupts the (already-replied) spawn. Resolves true only
+   *  when this call committed the terminal; a once task is served only after that. */
+  onOutcome?: (outcome: { kind: "succeeded" | "failed" | "uncertain"; data?: unknown }) => Promise<boolean | void> | boolean | void;
   /** Fires when this spawn ends with its goal's terminal owned by ANOTHER path — today only a
    *  despawn/stop that lands inside the readiness window, whose own handler commits `cancel`.
    *  It commits nothing; it only claims the terminal so the post-accept fallback does not
@@ -1315,6 +1325,10 @@ interface TurnNote {
   /** The connector whose {@link Connector.retireAfterExit} must prove a once seat's launched
    *  processes gone before its debt clears. */
   retire?: string;
+  /** A once task's spawn goal id, under the task's own caller and endpoint. The task is served only
+   *  after that goal's succeeded terminal is written, so a successor reads the terminal as whether
+   *  it was. A note without it is treated as a task never served. */
+  spawn?: string;
 }
 
 function parseTurnNote(raw: string): TurnNote | undefined {
@@ -1328,6 +1342,7 @@ function parseTurnNote(raw: string): TurnNote | undefined {
   if (n.holdToken !== undefined && typeof n.holdToken !== "string") return undefined;
   if (n.handoffFrom !== undefined && typeof n.handoffFrom !== "string") return undefined;
   if (n.retire !== undefined && (n.once !== true || typeof n.retire !== "string")) return undefined;
+  if (n.spawn !== undefined && (n.once !== true || typeof n.spawn !== "string")) return undefined;
   return {
     payload: n.payload, holdEpoch: n.holdEpoch,
     ...(typeof n.deadlineAt === "number" ? { deadlineAt: n.deadlineAt } : {}),
@@ -1335,6 +1350,7 @@ function parseTurnNote(raw: string): TurnNote | undefined {
     ...(typeof n.handoffFrom === "string" ? { handoffFrom: n.handoffFrom } : {}),
     ...(n.once === true ? { once: true as const } : {}),
     ...(typeof n.retire === "string" ? { retire: n.retire } : {}),
+    ...(typeof n.spawn === "string" ? { spawn: n.spawn } : {}),
   };
 }
 
@@ -1352,7 +1368,7 @@ function retireOf(d: { seat: { name: string; uid: string }; retire?: string }): 
 /** The relay record of a `once` task. The prompt is only ever the string value of `context`, so a
  *  prompt shaped like a run payload stays text and cannot add an `ask` or a `checkpoint`; the
  *  `once` block is the manager's, rendered by the seat beside the prompt. */
-function onceTurnNote(o: { prompt: string; spawner: string; deadlineAt?: number; holdEpoch: number; holdToken?: string; retire?: string }): { payload: string; note: string } {
+function onceTurnNote(o: { prompt: string; spawner: string; deadlineAt?: number; holdEpoch: number; holdToken?: string; retire?: string; spawn: string }): { payload: string; note: string } {
   const payload = JSON.stringify({ context: o.prompt, once: { spawner: o.spawner, ...(o.deadlineAt !== undefined ? { deadlineAt: o.deadlineAt } : {}) } });
   const note = JSON.stringify({
     payload, holdEpoch: o.holdEpoch,
@@ -1360,6 +1376,7 @@ function onceTurnNote(o: { prompt: string; spawner: string; deadlineAt?: number;
     ...(o.holdToken !== undefined ? { holdToken: o.holdToken } : {}),
     once: true,
     ...(o.retire !== undefined ? { retire: o.retire } : {}),
+    spawn: o.spawn,
   } satisfies TurnNote);
   return { payload, note };
 }
@@ -1653,6 +1670,9 @@ export class Manager {
    *  proves it gone. `readinessMs` bounds how long a seat no reconcile here can account for is
    *  waited for. */
   private readonly onceInherited = new Map<string, { ref: GoalRef; seat: { name: string; owner: string; actor: string; uid: string }; deadlineAt?: number; readinessMs: number; retire?: string }>();
+  /** Inherited once seats this manager does not hold whose task has a terminal, by lifecycle uid.
+   *  Every pull from one is answered `stop`, and its notice repeats until a pull has carried it. */
+  private readonly onceStops = new Map<string, { owner: string; actor: string; name: string; uid: string; told?: true }>();
   /** When the goal reconcile finished: the start of an inherited once task's wait for its seat. */
   private goalReconcileDoneAt = 0;
   /** Process start, for the served `status` uptime. */
@@ -6234,17 +6254,28 @@ export class Manager {
     if (launch.supervise !== undefined) return "once: a once seat is never restarted, so it cannot carry supervise";
     if (!connector.supportsTurnRelay)
       return `once: the ${connector.name} connector cannot take a once task${connector.turnRelayRefusal ? `: ${connector.turnRelayRefusal}` : ""}`;
+    if (connector.onceNeedsConfirmed !== undefined && !runtime.reportsStartupOutcome)
+      return `once: runtime "${runtime.kind}" does not report how a seat's startup ended, which a once seat on the ${connector.name} connector needs`;
     if (runtime.spawnDelegated) return `once: runtime "${runtime.kind}" starts seats outside this host, where this manager cannot prove the seat's exit`;
     const operator = connector.waitsForOperator?.(launch.launchOptions);
     if (operator !== undefined) return `once: these launch options make the seat wait at ${operator} before it starts, so nothing could take its task`;
     // The task's relay record, measured with the widest deadline it could carry.
-    const { note } = onceTurnNote({
+    const { note, payload } = onceTurnNote({
       prompt: launch.prompt, spawner: this.spawnerName(spawner),
       ...(launch.once!.deadlineMs !== undefined ? { deadlineAt: MAX_SCHEDULE_MS, holdToken: turnHoldToken("") } : {}),
       holdEpoch: this.serviceServe?.grant.epoch ?? 0,
       ...(connector.retireAfterExit ? { retire: connector.name } : {}),
+      // The longest id token core accepts (endpoint-subjects `assertIdToken`).
+      spawn: "x".repeat(64),
     });
     if (note.length > TURN_NOTE_MAX) return `once: the prompt is too long for one task (its relay record is ${note.length} characters, over ${TURN_NOTE_MAX})`;
+    if (connector.turnFrameLimit !== undefined) {
+      // The text the seat shows, rendered by the seat's own function with the widest values it could
+      // carry: the task's goal id is a digest token, and a deadline renders as one ISO instant.
+      const text = renderOnceTask({ goalId: digestIdToken("once"), payload, spawner: this.spawnerName(spawner), ...(launch.once!.deadlineMs !== undefined ? { deadlineAt: MAX_SCHEDULE_MS } : {}) });
+      if (text.length > connector.turnFrameLimit)
+        return `once: the prompt is too long for one ${connector.name} turn (the task renders to ${text.length} characters, over ${connector.turnFrameLimit})`;
+    }
     return undefined;
   }
 
@@ -7126,6 +7157,7 @@ export class Manager {
       }
       if (onceTask && !handle.waitForExit)
         throw new Error(`once: runtime "${handle.kind}" cannot prove the seat's exit, which is what ends its task when the seat goes first`);
+      const launchedAt = Date.now();
       hooks?.onLaunched?.(); // The "launched" progress edge (process spawned, pre-presence)
       const managed: ManagedAgent = {
         name,
@@ -7255,6 +7287,23 @@ export class Manager {
         await hooks?.onOutcome?.({ kind: "uncertain", data: { reason: readiness.detail, ...(readiness.running ? { running: true } : {}) } });
         return { ok: false, error: readiness.detail };
       }
+      // A once seat whose connector needs a confirmed startup is served only on that outcome. Any
+      // other ends it like a seat that never joined: stopped before the failed terminal, and its
+      // task, never served, cancelled with the verdict.
+      if (onceTask && connector.onceNeedsConfirmed !== undefined) {
+        const startup = await this.awaitStartupOutcome(managed, launchedAt, readinessTimeoutMs);
+        if (managed.terminalizing) { hooks?.onTerminalDeferred?.(); return { ok: false, error: `${name} was stopped before its startup ended` }; }
+        if (startup !== "confirmed") {
+          const watch = { ready: "opened its input screen without the prompt", failed: "failed", exited: "saw the seat exit", pending: "had not ended" }[startup];
+          const error = `${name} joined, but ${connector.onceNeedsConfirmed}: its startup watch ${watch}, so it cannot take a once task`;
+          this.watchExit(managed);
+          this.agentGoals.delete(managed.name);
+          managed.once!.stopReason ??= "launch-failed";
+          this.stopOnceSeat(managed, "launch-failed");
+          await hooks?.onOutcome?.({ kind: "failed", data: { error } });
+          return { ok: false, error };
+        }
+      }
       if (managed.launch.carried) {
         const refused = await this.refuseCarriedFork(managed, readinessTimeoutMs);
         if (refused !== undefined && managed.terminalizing) { hooks?.onTerminalDeferred?.(); return { ok: false, error: refused }; }
@@ -7318,10 +7367,16 @@ export class Manager {
       // A host that granted other channels than this spawn asked for: the receipt carries both.
       const acl = enrolled ? enrolledAcl({ allowSubscribe, allowPublish }, enrolled.material) : undefined;
       const okData = { name, agent, id: managed.id, mode: handle.kind, streamsTerminal: runtime.streamsTerminal, lifecycleUid, ...(role !== undefined ? { role } : {}), ...(opts.eventsNotice !== undefined ? { eventsNotice: opts.eventsNotice } : {}), ...(acl ? { acl } : {}), ...(readiness.operator !== undefined ? { waitingFor: readiness.operator } : {}), ...(onceTask ? { once: { goalId: onceTask.ref.goalId, ...(onceTask.deadlineAt !== undefined ? { deadlineAt: onceTask.deadlineAt } : {}) } } : {}) };
-      // The task is served from the readiness verdict on. Every failure arm above ran before it,
-      // so a spawn that did not succeed never handed its seat the task.
-      if (onceTask) this.openOnceDelivery(onceTask.ref);
-      await hooks?.onOutcome?.({ kind: "succeeded", data: okData });
+      // The task is served once the succeeded terminal is written, so a served task always has it
+      // and a successor reads it as the readiness verdict. Every failure arm above ran before it. A
+      // terminal this call did not commit never served the task: the seat is stopped, which cancels it.
+      const committed = await hooks?.onOutcome?.({ kind: "succeeded", data: okData });
+      if (onceTask && committed === true) this.openOnceDelivery(onceTask.ref);
+      else if (onceTask) {
+        this.agentGoals.delete(managed.name);
+        managed.once!.stopReason ??= "launch-failed";
+        this.stopOnceSeat(managed, "launch-failed");
+      }
       return { ok: true, data: okData };
     } catch (e) {
       // Failure after reserve (provision / launch threw): the slot was never live, so no cold-start
@@ -9654,12 +9709,12 @@ export class Manager {
     // Named rather than inlined into the hooks below so the H1 post-accept fallback drives THIS
     // path — one commit site, so the progress event, the index clear and the `agentGoals` cleanup
     // cannot drift between a normal outcome and a recovered one.
-    const onOutcome = async (o: { kind: "succeeded" | "failed" | "uncertain"; data?: unknown }): Promise<void> => {
+    const onOutcome = async (o: { kind: "succeeded" | "failed" | "uncertain"; data?: unknown }): Promise<boolean> => {
       // THE AUTHORITY CHECK, and the only one. An attempt that never won the bind provisioned
       // nothing and has no outcome to report: the goal belongs to whoever won it, in this
       // incarnation or a sibling. Refusing here rather than at each unwind site is the point --
       // there is exactly one commit path, so this fences every route into it, present and future.
-      if (!ownsGoal) return;
+      if (!ownsGoal) return false;
       terminalEntered = true; // entered, not succeeded — see the catch below
       // A once spawn that did not succeed never served its task (delivery opens only with a
       // succeeded verdict), so the task is cancelled now rather than at the seat's exit. A launched
@@ -9688,6 +9743,7 @@ export class Manager {
         this.emitGoalProgress(ref, epoch, { phase: "terminal", state: fact.state, ...(fact.data !== undefined ? { data: fact.data } : {}) });
         await clearGoalIndex(gw.ctx, ref); // terminal reached - the successor never reconciles it
         if (acceptance) this.agentGoals.delete(acceptance.name); // goal terminal - no cancel path left
+        return true;
       } catch (e) {
         // THE NARROWER LEG, LEFT OPEN DELIBERATELY. If the COMMIT ITSELF throws (the currency belt
         // refused a superseded commit, or the broker failed) there is genuinely no terminal, and the
@@ -9697,6 +9753,7 @@ export class Manager {
         // next boot, which is why the index is NOT cleared above on this path. Do not "close" it
         // here with a retry loop.
         console.error(`! goal terminal commit for ${goalId} failed: ${rejectionText(e)}`);
+        return false;
       }
     };
 
@@ -10014,7 +10071,7 @@ export class Manager {
 
   /** The seat's pull: every pending turn addressed to the CALLER's incarnation, oldest first.
    *  The uid is part of the address — a successor seat never receives a predecessor's turn. */
-  private turnPendingFor(c: { owner: string; actor: string; uid: string }): { turns: { goalId: string; payload: string; acceptedAt: number; deadlineAt?: number; once?: true }[]; notices: true } {
+  private turnPendingFor(c: { owner: string; actor: string; uid: string }): { turns: { goalId: string; payload: string; acceptedAt: number; deadlineAt?: number; once?: true }[]; notices: true; stop?: true } {
     // AN EMPTY LIST IS AN ANSWER, so it must not be given before the index is rebuilt. Between
     // registration and `reconcileGoalIndex`, `pendingTurns` holds nothing a predecessor accepted,
     // and a seat that pulls in that window is told authoritatively that it has no turn. The seat
@@ -10022,6 +10079,13 @@ export class Manager {
     // window has to refuse, the same way `serveTurnGoal` does.
     if (!this.goalReconcileDone)
       throw new EpEnvelopeError("unavailable", "the manager is still reconciling accepted goals at boot; the pending-turn index is not rebuilt yet, retry (SPEC 13.6)");
+    // A once seat this manager does not hold, whose task has ended, is told to end itself. Nothing
+    // else rides that answer, and the settled task is never served again.
+    const stop = this.onceStops.get(c.uid);
+    if (stop !== undefined && stop.owner === c.owner && stop.actor === c.actor) {
+      stop.told = true;
+      return { turns: [], notices: true, stop: true };
+    }
     // Two turns on one seat are serialized at the dispatch (cotal-lang 6.5): only the oldest
     // unsettled one is served, and the next surfaces once it yields or its deadline denies, so a
     // seat is never shown two turns at once.
@@ -10272,7 +10336,7 @@ export class Manager {
     const epoch = this.serviceServe?.grant.epoch ?? 0;
     try {
       await this.assertGoalWriterEpochCurrent(epoch);
-      const { fact } = await commitGoalResult(gw.ctx, { ref: p.ref, now: Date.now(), cause: "deny", denial: { kind: "hold-expired", token: p.holdToken! }, data: { reason: "turn-deadline", ...(p.seatDiedAt !== undefined ? { agentDownAt: p.seatDiedAt } : {}), ...(p.handoffFrom !== undefined ? { handoffFrom: p.handoffFrom } : {}) }, committer: { instanceId: this.managerInstanceId, epoch } });
+      const { fact } = await commitGoalResult(gw.ctx, { ref: p.ref, now: Date.now(), cause: "deny", denial: { kind: "hold-expired", token: p.holdToken! }, data: { reason: "turn-deadline", ...(p.seatDiedAt !== undefined ? { agentDownAt: p.seatDiedAt } : {}), ...(p.handoffFrom !== undefined ? { handoffFrom: p.handoffFrom } : {}), ...(this.onceSeatUnheld(p) ? { seat: UNHELD_SEAT } : {}) }, committer: { instanceId: this.managerInstanceId, epoch } });
       this.emitGoalProgress(p.ref, epoch, { phase: "terminal", state: fact.state, ...(fact.data !== undefined ? { data: fact.data } : {}) });
       // Remember BEFORE the index clear: a late yield that arrives after the pending latch
       // (the delete at the top of this function) and after this CAS has to name this terminal.
@@ -10346,7 +10410,7 @@ export class Manager {
    *  terminals AND drops settled answers once their retry window has passed, so a stop while the
    *  second is still owed would leave one entry per turn for the process lifetime. */
   private maybeStopTurnSweep(): void {
-    if (this.pendingTurns.size > 0 || this.onceSettles.size > 0 || this.onceInherited.size > 0) return;
+    if (this.pendingTurns.size > 0 || this.onceSettles.size > 0 || this.onceInherited.size > 0 || [...this.onceStops.values()].some((s) => !s.told)) return;
     // An acceptance with no `settled` yet is the in-flight deadline commit: pending was the
     // latch and is already gone, the terminal CAS has not returned, and a concurrent sweep
     // tick used to clear the map here, so rememberSettledTurn no-op'd and a late yield heard
@@ -10389,6 +10453,7 @@ export class Manager {
       if (h === undefined || p.acceptedAt < h.acceptedAt) heads.set(k, p);
     }
     for (const p of heads.values()) if (p.pulledAt === undefined) this.noticeSeatTurns(p.seat);
+    for (const stop of this.onceStops.values()) if (!stop.told) this.noticeSeatTurns(stop);
     for (const owed of [...this.onceSettles.values()]) if (!owed.flight) void this.settleOnceTurn(owed.ref, owed.reason);
     if (this.onceInherited.size > 0) await this.settleInheritedOnce().catch((e) => console.error(`! inherited once tasks: ${rejectionText(e)}`));
     for (const p of [...this.pendingTurns.values()]) {
@@ -10459,6 +10524,14 @@ export class Manager {
       console.error(`turn reconcile ${p.goalId}: its deadline hold was never minted (the accept crashed before it); left unsettled`);
       return;
     }
+    // A once task whose spawn has no succeeded terminal was never served, whatever seat exists:
+    // it is cancelled, its row is not rebuilt so a later pull finds nothing, and its seat is
+    // settled as an inherited debt.
+    if (parsed.once && !(await this.onceServed(entry.ref, parsed))) {
+      await this.commitOnceCancel(entry.ref, NEVER_SERVED);
+      await this.inheritOnce(entry.ref, entry.allocated, parsed);
+      return;
+    }
     const key = goalKey(p.ref);
     this.pendingTurns.set(key, p);
     // THE ACCEPTANCE TOO, or the adopted turn's answer is never remembered: `rememberSettledTurn`
@@ -10514,7 +10587,7 @@ export class Manager {
     if (deadlineAt !== undefined && deadlineAt > MAX_SCHEDULE_MS)
       throw new EpEnvelopeError("failed-precondition", `once: the deadline ends after the deadline scheduler's last instant (the end of year 9999)`);
     const holdToken = deadlineAt === undefined ? undefined : turnHoldToken(key);
-    const { payload, note } = onceTurnNote({ prompt: o.prompt, spawner: o.spawner, holdEpoch: o.executor.epoch, ...(deadlineAt !== undefined ? { deadlineAt, holdToken } : {}), ...(o.retire !== undefined ? { retire: o.retire } : {}) });
+    const { payload, note } = onceTurnNote({ prompt: o.prompt, spawner: o.spawner, holdEpoch: o.executor.epoch, ...(deadlineAt !== undefined ? { deadlineAt, holdToken } : {}), ...(o.retire !== undefined ? { retire: o.retire } : {}), spawn: o.spawnRef.goalId });
     const { seat } = o;
     const idx = await recordGoalIndex(gw.ctx, ref, o.executor.lifecycleUid, { name: seat.name, owner: seat.owner, actor: seat.actor, uid: seat.uid, readinessDeadlineMs: o.readinessDeadlineMs }, note);
     if (!idx.recorded)
@@ -10569,7 +10642,19 @@ export class Manager {
     return { ref, ...(deadlineAt !== undefined ? { deadlineAt } : {}) };
   }
 
-  /** Serve a once task from now on: the spawn reached its readiness verdict. */
+  /** How a once seat's startup watch ended, waited for until {@link STARTUP_OUTCOME_MS} after its
+   *  launch or the readiness window, whichever is longer. A watch that has not ended by then, or a
+   *  seat being stopped, answers what the handle reports at that moment. */
+  private async awaitStartupOutcome(a: ManagedAgent, launchedAt: number, readinessTimeoutMs: number): Promise<StartupOutcome> {
+    const until = launchedAt + Math.max(readinessTimeoutMs, STARTUP_OUTCOME_MS);
+    for (;;) {
+      const outcome = a.handle.startupOutcome?.() ?? "pending";
+      if (outcome !== "pending" || a.terminalizing || Date.now() >= until) return outcome;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+  }
+
+  /** Serve a once task from now on: its spawn's succeeded terminal is written. */
   private openOnceDelivery(ref: GoalRef): void {
     const p = this.pendingTurns.get(goalKey(ref));
     if (p?.once === undefined || p.once.deliverable) return;
@@ -10695,6 +10780,19 @@ export class Manager {
     this.ensureTurnSweep();
   }
 
+  /** An inherited once task whose seat this manager cannot hold: it adopts no seats (an open or
+   *  user-mode mesh) and the seat is not bound here. */
+  private onceSeatUnheld(p: PendingTurn): boolean {
+    return p.once !== undefined && this.onceInherited.has(p.seat.uid) && !(this.auth !== undefined && !this.userMode);
+  }
+
+  /** Whether a once task was served: its spawn's succeeded terminal is written. */
+  private async onceServed(ref: GoalRef, note: TurnNote): Promise<boolean> {
+    if (note.spawn === undefined) return false;
+    const spawn = await readGoalResult(this.goalWriter!.ctx, { endpoint: ref.endpoint, caller: ref.caller, goalId: note.spawn });
+    return spawn?.state === "succeeded";
+  }
+
   /** Make an adopted seat a once seat again: its exit settles its task, and the task is served to
    *  it. A task that ended before the restart owes the stop the predecessor may not have made. */
   private async bindOnceSeat(a: ManagedAgent): Promise<void> {
@@ -10745,16 +10843,20 @@ export class Manager {
       this.pendingTurns.delete(key);
       this.markTurnLatchDropped(key);
       try {
-        await settleGoalUncertain(gw.ctx, { ref: d.ref, now: Date.now(), committer: { instanceId: this.managerInstanceId, epoch: this.serviceServe?.grant.epoch ?? 0 }, reason: "the manager restarted and could not reach the seat; the task may have run in part or in full" });
+        await settleGoalUncertain(gw.ctx, { ref: d.ref, now: Date.now(), committer: { instanceId: this.managerInstanceId, epoch: this.serviceServe?.grant.epoch ?? 0 }, reason: `the manager restarted and could not reach the seat; ${UNHELD_SEAT}, and the task may have run in part or in full` });
         this.keepUnprovedOnceDebt(d);
       } catch (e) { console.error(`! inherited once task ${d.ref.goalId}: ${rejectionText(e)}`); }
     }
   }
 
   /** An inherited task's seat this manager cannot reach: its terminal stands, and its index entry,
-   *  the seat's debt, stays recorded, because nothing here can prove that seat gone. */
-  private keepUnprovedOnceDebt(d: { ref: GoalRef; seat: { name: string; uid: string } }): void {
-    console.error(`! once task ${d.ref.goalId}: this manager cannot reach seat ${d.seat.name}/${d.seat.uid} to prove it gone; its debt stays in the goal index`);
+   *  the seat's debt, stays recorded, because nothing here can prove that seat gone. The seat is
+   *  told to end itself on its next pull, and its notice repeats until a pull carries that. */
+  private keepUnprovedOnceDebt(d: { ref: GoalRef; seat: { name: string; owner: string; actor: string; uid: string } }): void {
+    console.error(`! once task ${d.ref.goalId}: this manager cannot reach seat ${d.seat.name}/${d.seat.uid} to prove it gone; its debt stays in the goal index, and the seat is told to end itself`);
+    this.onceStops.set(d.seat.uid, { ...d.seat });
+    this.noticeSeatTurns(d.seat);
+    this.ensureTurnSweep();
   }
 
   /** Settle race: a despawn MID-GOAL drives the goal's cancel terminal - transition to

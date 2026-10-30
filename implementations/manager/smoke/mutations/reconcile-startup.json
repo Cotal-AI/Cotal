@@ -41,8 +41,8 @@
     {
       "name": "the seat's turn pull answers during the boot window",
       "file": "implementations/manager/src/manager.ts",
-      "find": "  private turnPendingFor(c: { owner: string; actor: string; uid: string }): { turns: { goalId: string; payload: string; acceptedAt: number; deadlineAt?: number; once?: true }[]; notices: true } {\n",
-      "replace": "  private turnPendingFor(c: { owner: string; actor: string; uid: string }): { turns: { goalId: string; payload: string; acceptedAt: number; deadlineAt?: number; once?: true }[]; notices: true } {\n    if (!this.goalReconcileDone) return { turns: [], notices: true };\n",
+      "find": "  private turnPendingFor(c: { owner: string; actor: string; uid: string }): { turns: { goalId: string; payload: string; acceptedAt: number; deadlineAt?: number; once?: true }[]; notices: true; stop?: true } {\n",
+      "replace": "  private turnPendingFor(c: { owner: string; actor: string; uid: string }): { turns: { goalId: string; payload: string; acceptedAt: number; deadlineAt?: number; once?: true }[]; notices: true; stop?: true } {\n    if (!this.goalReconcileDone) return { turns: [], notices: true };\n",
       "expectRed": "a seat pulling turns before the goal index is rebuilt is REFUSED, never told it holds none",
       "cell": "a seat pulling turns before the goal index is rebuilt is REFUSED, never told it holds none",
       "note": "Measured 2026-09-03: KILLED. MANAGER RECONCILE STARTUP SMOKE FAILED  (5 passed, 1 failed) Named cell red: a seat pulling turns before the goal index is rebuilt is REFUSED, never told it holds none"

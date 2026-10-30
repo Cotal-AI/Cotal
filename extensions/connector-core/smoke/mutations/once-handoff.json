@@ -64,7 +64,7 @@
     {
       "name": "M7 a report that never lands leaves the seat running",
       "file": "extensions/connector-core/src/agent.ts",
-      "find": "    exitOnceSeat();\n",
+      "find": "        if (await exitOnceSeat()) return;\n",
       "replace": "",
       "expectRed": "a report that cannot land within the bound starts the seat's graceful shutdown and then exits its process"
     },
@@ -74,6 +74,55 @@
       "find": "  setTimeout(() => process.exit(1), ONCE_EXIT_GRACE_MS);\n",
       "replace": "",
       "expectRed": "its shutdown starts, and the process exits one grace period later with its teardown still holding the event loop"
+    },
+    {
+      "name": "M9 a declined exit arms the forced exit anyway",
+      "file": "extensions/connector-core/src/once.ts",
+      "find": "  if (ending === false) { p.exiting = false; return false; }\n",
+      "replace": "",
+      "expectRed": "an exit that answers false declines: no forced exit is armed, and the next end asks the exit again"
+    },
+    {
+      "name": "M10 an exit whose promise rejects counts as ending",
+      "file": "extensions/connector-core/src/once.ts",
+      "find": "  if (ending instanceof Promise) ending = await ending.catch(() => false);\n",
+      "replace": "  if (ending instanceof Promise) ending = await ending.catch(() => undefined);\n",
+      "expectRed": "a promise that answers false or rejects declines; a throw, true, or no answer ends the seat with its forced exit armed"
+    },
+    {
+      "name": "M11 a declined exit ends the report",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "        if (await exitOnceSeat()) return;\n",
+      "replace": "        await exitOnceSeat();\n        return;\n",
+      "expectRed": "past the bound the exit is asked once, declines, and the report goes on, waits growing to a minute and no longer"
+    },
+    {
+      "name": "M12 the report after a declined exit keeps the ten-second cap",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "      delay = Math.min(delay * 2, exitTried ? 60_000 : 10_000);\n",
+      "replace": "      delay = Math.min(delay * 2, 10_000);\n",
+      "expectRed": "past the bound the exit is asked once, declines, and the report goes on, waits growing to a minute and no longer"
+    },
+    {
+      "name": "M13 the report outlives its stopped agent",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "      if (this._stopping) return;\n      await new Promise((resolve) => setTimeout(resolve, delay));\n",
+      "replace": "      await new Promise((resolve) => setTimeout(resolve, delay));\n",
+      "expectRed": "...and an agent that stops ends the loop with it"
+    },
+    {
+      "name": "M14 a pull answered stop is ignored",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "        void exitOnceSeat();\n",
+      "replace": "",
+      "expectRed": "a pull answered `stop` asks the seat's exit; a declined one leaves the seat running, and the next `stop` asks again"
+    },
+    {
+      "name": "M15 a seat that cannot confirm its wake arms no claim bound",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "        if (once !== undefined && !surfaced && this.options.onceClaimBound) this.boundOnceClaim(t.goalId);\n",
+      "replace": "",
+      "expectRed": "the pull arms the bound"
     }
   ]
 }

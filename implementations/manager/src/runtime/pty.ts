@@ -22,6 +22,7 @@ const GRACE_MS = 3_000;
 export class LegacyPtyRuntime implements Runtime {
   readonly kind = "pty" as const;
   readonly streamsTerminal = true;
+  readonly reportsStartupOutcome = true;
 
   spawn(name: string, spec: LaunchSpec, cwd: string): AgentHandle {
     // POSIX: passthrough (node-pty's exec resolves the bare name). win32: resolve the EXACT file and
@@ -35,7 +36,7 @@ export class LegacyPtyRuntime implements Runtime {
     let confirmGate: StartupConfirmGate | undefined;
     try {
       if ((spec.confirmBefore?.length || spec.confirmReady?.length || spec.confirmBlockers?.length) && spec.confirm === undefined) throw new Error("startup choices require a final confirmation prompt");
-      confirmGate = spec.confirm === undefined ? undefined : new StartupConfirmGate(spec.confirm, spec.confirmBefore, spec.confirmReady, spec.confirmBlockers);
+      confirmGate = spec.confirm === undefined ? undefined : new StartupConfirmGate(spec.confirm, spec.confirmBefore, spec.confirmReady, spec.confirmBlockers, spec.confirmNotice);
     } catch (err) {
       throw new SpawnRefused((err as Error).message);
     }
@@ -108,6 +109,7 @@ export class LegacyPtyRuntime implements Runtime {
       },
       status: () => (alive ? "running" : "exited"),
       exitInfo: () => exit,
+      startupOutcome: () => confirmGate?.outcome ?? "pending",
       stop: (opts) => {
         if (!alive) return;
         // node-pty's ConPTY backend has no signals: kill(<signal>) throws on Windows, and a

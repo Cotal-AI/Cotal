@@ -43,18 +43,27 @@ export interface StartupReply { prompt: string; key: "Down" | "Enter"; optional?
 /** A native startup screen the watch never answers; see core's StartupBlocker. */
 export interface StartupBlocker { prompt: string; reason: string }
 
+/** How a watch ended; see core's StartupWatchOutcome. */
+export type StartupWatchOutcome = "confirmed" | "ready";
+/** A gate's outcome so far: `failed` for a bound, a blocker, a read error or a disarm before the
+ * watch ended, `exited` for a child gone before it ended. */
+export type StartupOutcome = "pending" | StartupWatchOutcome | "failed" | "exited";
+
 /** Mirrors core's screen-based startup sequence without introducing a seat-to-core dependency. */
 export class StartupConfirmSequence {
   readonly #final: string;
   readonly #before: { prompt: string; key: "Down" | "Enter"; optional: boolean }[];
   readonly #ready: string[];
   readonly #blockers: { prompt: string; reason: string }[];
+  readonly #notice: string | undefined;
   #blocked: string | undefined;
   #step = 0;
   #seen: number | undefined;
   #readySeen = false;
+  #awaitingNotice = false;
+  #outcome: StartupWatchOutcome | undefined;
   #done = false;
-  constructor(prompt: string, before: readonly StartupReply[] = [], ready: readonly string[] = [], blockers: readonly StartupBlocker[] = []) {
+  constructor(prompt: string, before: readonly StartupReply[] = [], ready: readonly string[] = [], blockers: readonly StartupBlocker[] = [], notice?: string) {
     this.#final = normalizeConfirmText(prompt);
     if (!this.#final) throw new Error("startup confirmation prompt is empty after ANSI and whitespace normalization");
     if (!Array.isArray(before) || before.length > 8) throw new Error("invalid startup choices");
@@ -79,10 +88,22 @@ export class StartupConfirmSequence {
       if (!normalized) throw new Error("startup blocker prompt is empty after normalization");
       return { prompt: normalized, reason: blocker.reason };
     });
+    if (notice !== undefined) {
+      this.#notice = typeof notice === "string" && notice.length <= 1024 ? normalizeConfirmText(notice) : "";
+      if (!this.#notice) throw new Error("invalid startup notice");
+    }
   }
   /** The reason of the declared blocker on the last screen read, if one was there. */
   get blocked(): string | undefined {
     return this.#blocked;
+  }
+  /** True after the final prompt was answered while the declared notice has not been seen yet. */
+  get awaitingNotice(): boolean {
+    return this.#awaitingNotice;
+  }
+  /** How the watch ended, once it has. */
+  get outcome(): StartupWatchOutcome | undefined {
+    return this.#outcome;
   }
   /** The key to press, if any; `done` ends the watch. */
   observe(screen: string): { key?: "Down" | "Enter"; done: boolean } | undefined {
@@ -94,13 +115,21 @@ export class StartupConfirmSequence {
     };
     this.#blocked = this.#blockers.find((blocker) => matches(blocker.prompt))?.reason;
     if (this.#blocked !== undefined) { this.#seen = undefined; this.#readySeen = false; return undefined; }
+    if (this.#awaitingNotice) {
+      if (!lines.some((line, i) => (line + (lines[i + 1] ?? "")).includes(this.#notice!))) return undefined;
+      this.#awaitingNotice = false;
+      this.#done = true;
+      this.#outcome = "confirmed";
+      return { done: true };
+    }
     let index = this.#step;
     while (this.#before[index]?.optional && !matches(this.#before[index].prompt)) index++;
     const step = this.#before[index];
     if (!step || !matches(step.prompt)) {
       this.#seen = undefined;
       const final = this.#before.length ? matches(this.#final) : normalizeConfirmText(screen).includes(this.#final);
-      if (final) { this.#done = true; return { key: "Enter", done: true }; }
+      if (final && this.#notice !== undefined) { this.#awaitingNotice = true; return { key: "Enter", done: false }; }
+      if (final) { this.#done = true; this.#outcome = "confirmed"; return { key: "Enter", done: true }; }
       // A harness may skip the confirmation and open its input screen. Seeing a ready text within
       // one visible line, on two consecutive snapshots, ends the watch without a key. A declared
       // dialog still on screen is not that input screen, even when its displayed path has the text.
@@ -109,6 +138,7 @@ export class StartupConfirmSequence {
       if (!ready) { this.#readySeen = false; return undefined; }
       if (!this.#readySeen) { this.#readySeen = true; return undefined; }
       this.#done = true;
+      this.#outcome = "ready";
       return { done: true };
     }
     this.#readySeen = false;
@@ -119,10 +149,11 @@ export class StartupConfirmSequence {
   }
 }
 
-export function unmatchedConfirmMessage(prompt: string, timeoutMs: number, blocked?: string): string {
-  return blocked === undefined
+export function unmatchedConfirmMessage(prompt: string, timeoutMs: number, blocked?: string, notice?: string): string {
+  if (blocked !== undefined) return `Cotal startup confirmation failed: ${blocked}`;
+  return notice === undefined
     ? `Cotal startup confirmation failed: prompt ${JSON.stringify(prompt)} did not appear within ${timeoutMs}ms.`
-    : `Cotal startup confirmation failed: ${blocked}`;
+    : `Cotal startup confirmation failed: notice ${JSON.stringify(notice)} did not appear within ${timeoutMs}ms of answering ${JSON.stringify(prompt)}.`;
 }
 
 /** What a runtime does for a {@link StartupConfirmGate} whose prompt never appeared. */
@@ -143,13 +174,19 @@ export class StartupConfirmGate {
   private timer: ReturnType<typeof setTimeout> | undefined;
   private pollTimer: ReturnType<typeof setTimeout> | undefined;
   private readonly sequence: StartupConfirmSequence | undefined;
+  #outcome: StartupOutcome = "pending";
 
   /** Throws for a prompt that can never match, so a runtime refuses it before it starts a child.
-   * Choices and ready texts are read from the screen; a bare prompt is matched in the output. */
-  constructor(prompt: string, before: readonly StartupReply[] = [], ready: readonly string[] = [], blockers: readonly StartupBlocker[] = []) {
+   * Choices, ready texts and a notice are read from the screen; a bare prompt is matched in the output. */
+  constructor(prompt: string, before: readonly StartupReply[] = [], ready: readonly string[] = [], blockers: readonly StartupBlocker[] = [], private readonly notice?: string) {
     this.matcher = new StartupConfirmMatcher(prompt);
-    const sequence = new StartupConfirmSequence(prompt, before, ready, blockers);
-    this.sequence = before.length || ready.length || blockers.length ? sequence : undefined;
+    const sequence = new StartupConfirmSequence(prompt, before, ready, blockers, notice);
+    this.sequence = before.length || ready.length || blockers.length || notice !== undefined ? sequence : undefined;
+  }
+
+  /** How the watch ended, set once from the event that ended it. */
+  get outcome(): StartupOutcome {
+    return this.#outcome;
   }
 
   /** The failure becomes the exit's diagnostic, because a TUI may never show it where an operator looks. */
@@ -158,24 +195,31 @@ export class StartupConfirmGate {
   }): void {
     if (!this.active) return;
     const fail = (message: string): void => {
-      this.disarm();
+      this.end("failed");
       diagnostic.recordStop(message);
       failure.report(message);
       failure.stop();
     };
-    const deadline = Date.now() + CONFIRM_TIMEOUT_MS;
-    this.timer = setTimeout(() => fail(unmatchedConfirmMessage(this.matcher.prompt, CONFIRM_TIMEOUT_MS, this.sequence?.blocked)), CONFIRM_TIMEOUT_MS);
+    let deadline = Date.now() + CONFIRM_TIMEOUT_MS;
+    const bound = (notice?: string): void => {
+      clearTimeout(this.timer);
+      this.timer = setTimeout(() => fail(unmatchedConfirmMessage(this.matcher.prompt, CONFIRM_TIMEOUT_MS, this.sequence?.blocked, notice)), CONFIRM_TIMEOUT_MS);
+    };
+    bound();
     if (this.sequence) {
       if (!pane) { fail("Cotal startup confirmation failed: this runtime has no screen-based startup choices."); return; }
       const poll = (): void => {
         if (!this.active || Date.now() >= deadline) return;
         try {
           const screen = pane.read();
-          if (screen === undefined) { this.disarm(); return; }
+          if (screen === undefined) { this.end("exited"); return; }
           if (!this.active || Date.now() >= deadline) return;
+          const awaiting = this.sequence!.awaitingNotice;
           const action = this.sequence!.observe(screen);
           if (action?.key) pane.key(action.key);
-          if (action?.done) { this.disarm(); return; }
+          // The notice gets a bound of its own, from the Enter that answered the prompt.
+          if (!awaiting && this.sequence!.awaitingNotice) { deadline = Date.now() + CONFIRM_TIMEOUT_MS; bound(this.notice); }
+          if (action?.done) { this.end(this.sequence!.outcome!); return; }
           this.pollTimer = setTimeout(poll, 250);
         } catch (error) { fail(`Cotal startup confirmation failed: ${(error as Error).message}`); }
       };
@@ -186,12 +230,19 @@ export class StartupConfirmGate {
   /** True once, for the chunk that completes the prompt; the runtime answers it with Enter. */
   push(chunk: string): boolean {
     if (!this.active || this.sequence || !this.matcher.push(chunk)) return false;
-    this.disarm();
+    this.end("confirmed");
     return true;
   }
 
-  /** End confirmation authority before stopping the child or processing further output. */
+  private end(outcome: StartupOutcome): void {
+    if (this.#outcome === "pending") this.#outcome = outcome;
+    this.disarm();
+  }
+
+  /** End confirmation authority before stopping the child or processing further output. A watch
+   *  disarmed before it ended records `failed`: no positive outcome without the read that ended it. */
   disarm(): void {
+    if (this.#outcome === "pending") this.#outcome = "failed";
     this.active = false;
     clearTimeout(this.timer);
     clearTimeout(this.pollTimer);

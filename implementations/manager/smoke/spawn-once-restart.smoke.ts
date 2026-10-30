@@ -8,7 +8,9 @@
  * then proved, and each task must be cancelled `seat-exited` at once rather than wait for a
  * deadline, or forever when there is none. Retrying the original spawn after the restart must
  * start no second seat and no second task. A manager that then dies between a task's goal and its
- * deadline hold has launched no seat, and the next manager must cancel that task.
+ * deadline hold has launched no seat, and the next manager must cancel that task. One that dies
+ * after a seat joined but before its spawn's succeeded terminal never served that seat its task, and
+ * the next manager must cancel the task as never served.
  *
  * Run: pnpm smoke:spawn-once-restart   (needs nats-server + node on PATH)
  */
@@ -43,6 +45,8 @@ const CELLS = [
   "the original spawn retried after the restart starts no second seat and no second task",
   "a manager that dies between a task's goal and its deadline hold has launched no seat",
   "the next manager cancels that task `launch-failed` and drops its index entry",
+  "a manager that dies after a seat joined and before its spawn's succeeded terminal leaves the task recorded",
+  "the next manager cancels that task as never served, and drops its index entry once the seat is ruled out",
 ];
 let pass = 0, fail = 0;
 const graded = new Set<string>();
@@ -74,7 +78,7 @@ const seatPids = (name: string) => {
 };
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN)); const root = join(dir, "ws");
 mkdirSync(join(root, ".cotal", "agents"), { recursive: true }); saveSpaceAuth(authDir(root), auth);
-for (const name of ["open", "timed", "held"]) writeFileSync(join(root, ".cotal", "agents", `${name}.md`), `---\nname: ${name}\nrole: worker\nsubscribe: []\nallowSubscribe: []\nallowPublish: []\n---\n`);
+for (const name of ["open", "timed", "held", "early"]) writeFileSync(join(root, ".cotal", "agents", `${name}.md`), `---\nname: ${name}\nrole: worker\nsubscribe: []\nallowSubscribe: []\nallowPublish: []\n---\n`);
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port, storeDir: join(dir, "js") }));
 const broker = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" }); const releaseBroker = teardownOnSignal(broker, dir);
 let daemon: DeliveryDaemon | undefined; const managers: ChildProcess[] = [];
@@ -183,6 +187,25 @@ try {
   await until(async () => (held = await resultOf(heldTask)) !== undefined, 60_000);
   check("the next manager cancels that task `launch-failed` and drops its index entry",
     held?.state === "cancelled" && held.data?.reason === "launch-failed" && await until(async () => !(await indexed(heldTask)), 30_000), { held, stderr: third.stderr().slice(-2000) });
+
+  // The third manager dies at the step before a once spawn's succeeded terminal: the seat joined,
+  // delivery never opened, and the seat dies with its manager.
+  const earlyId = "spawn-early".padEnd(43, "e");
+  const earlyTask = digestIdToken(`${earlyId}:once`);
+  const thirdExit = third.child.exitCode === null ? new Promise<void>((r) => third.child.once("exit", () => r())) : Promise.resolve();
+  writeFileSync(join(root, "crash-at-success"), "");
+  void call("spawn", { name: "early", agent: "once-crash-stub", cwd: repo, events: false, prompt: "the early task", once: { deadlineMs: 600_000 } }, earlyId);
+  const diedEarly = await Promise.race([thirdExit.then(() => true), wait(60_000).then(() => false)]);
+  check("a manager that dies after a seat joined and before its spawn's succeeded terminal leaves the task recorded",
+    diedEarly && await indexed(earlyTask) && await until(() => seatPids("early").length === 0, 15_000), { diedEarly, pids: seatPids("early"), stderr: third.stderr().slice(-1500) });
+  const fourth = await startHost();
+  epoch = 3;
+  let early: Awaited<ReturnType<typeof resultOf>>;
+  await until(async () => (early = await resultOf(earlyTask)) !== undefined, 60_000);
+  const earlySpawn = await resultOf(earlyId);
+  check("the next manager cancels that task as never served, and drops its index entry once the seat is ruled out",
+    early?.state === "cancelled" && early.data?.reason === "never served: the manager restarted before the spawn's readiness verdict"
+      && earlySpawn?.state !== "succeeded" && await until(async () => !(await indexed(earlyTask)), 30_000), { early, earlySpawn, stderr: fourth.stderr().slice(-2000) });
 } catch (error) {
   for (const name of CELLS) if (!graded.has(name)) check(name, false, `not reached: ${(error as Error).message}`);
 } finally {
@@ -192,7 +215,7 @@ try {
   for (const child of managers) if (child.exitCode === null) stopGroup(child.pid);
   await Promise.all(managerExits);
   // End every seat this suite started, by its own command line.
-  for (const pid of [...seatPids("open"), ...seatPids("timed"), ...seatPids("held")]) stopGroup(pid);
+  for (const pid of [...seatPids("open"), ...seatPids("timed"), ...seatPids("held"), ...seatPids("early")]) stopGroup(pid);
   await daemon?.stop().catch(() => {});
   broker.kill("SIGKILL");
   await wait(300);

@@ -28,7 +28,7 @@ interface OnceProcess {
   /** Called with the goal id of a claim whose timer fired; the latest `MeshAgent` registers it. */
   timedOut?: (uid: string, goalId: string) => void;
   /** The adapter's graceful shutdown, started before the forced exit. */
-  exit?: () => void;
+  exit?: OnceExit;
   exiting?: boolean;
 }
 
@@ -100,18 +100,29 @@ export function onOnceHandoffTimeout(fn: (uid: string, goalId: string) => void):
   proc().timedOut = fn;
 }
 
+/** An adapter's graceful shutdown for a once seat that must end itself. It starts the shutdown and
+ *  returns nothing, or answers whether the seat is ending: an adapter whose own process is not the
+ *  seat (Claude's MCP server is a child of `claude`) answers false when it cannot end the seat. A
+ *  promise must settle, since no forced exit is armed until it does. */
+export type OnceExit = () => void | boolean | Promise<boolean>;
+
 /** Register the adapter's graceful shutdown for a once seat that must end itself. */
-export function registerOnceExit(fn: () => void): void {
+export function registerOnceExit(fn: OnceExit): void {
   proc().exit = fn;
 }
 
-/** End this seat's own process: start the adapter's graceful shutdown, then exit after
- *  {@link ONCE_EXIT_GRACE_MS} whatever that shutdown is doing. Its manager proves the exit, and
- *  the exit settles the task. Only this process exits; nothing signals another. */
-export function exitOnceSeat(): void {
+/** End this seat: start the adapter's graceful shutdown, then exit this process after
+ *  {@link ONCE_EXIT_GRACE_MS} whatever that shutdown is doing. Its manager proves the exit, and the
+ *  exit settles the task. A shutdown that answers false declines: no forced exit is armed, this
+ *  process keeps running, and the caller keeps reporting. Resolves whether the seat is ending. */
+export async function exitOnceSeat(): Promise<boolean> {
   const p = proc();
-  if (p.exiting) return;
+  if (p.exiting) return true;
   p.exiting = true;
+  let ending: void | boolean | Promise<boolean> | undefined;
+  try { ending = p.exit?.(); } catch { ending = undefined; }
+  if (ending instanceof Promise) ending = await ending.catch(() => false);
+  if (ending === false) { p.exiting = false; return false; }
   setTimeout(() => process.exit(1), ONCE_EXIT_GRACE_MS);
-  try { p.exit?.(); } catch { /* the forced exit above still runs */ }
+  return true;
 }

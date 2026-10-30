@@ -662,6 +662,9 @@ const TURN_PENDING_OUTPUT_SCHEMA = {
   type: "object", additionalProperties: false, required: ["turns"],
   properties: {
     notices: { const: true },
+    // Only for a once seat this manager does not hold whose task has ended: the seat ends itself.
+    // It comes with an empty `turns`, and an empty `turns` alone never means stop.
+    stop: { const: true },
     turns: {
       type: "array",
       items: {
@@ -1439,8 +1442,9 @@ export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: Compile
  *  workflow turn lease without creating a managed seat or granting terminal custody.
  *
  *  44 = `once` on `spawn`: the spawn input grows `once` (`deadlineMs`), a `turn-pending` row gains
- *  `once` and its `deadlineAt` becomes optional (a once task with no deadline never expires), and the new
- *  `turn-unconfirmed` command lets a once seat report an unconfirmed handoff of its task. */
+ *  `once` and its `deadlineAt` becomes optional (a once task with no deadline never expires), the
+ *  `turn-pending` reply gains `stop` for a once seat the manager does not hold whose task ended, and
+ *  the new `turn-unconfirmed` command lets a once seat report an unconfirmed handoff of its task. */
 export function managerClusterDocument(): ClusterDocument {
   return buildClusterDocument(MANAGER_CLUSTER_URN, 44, ROWS);
 }

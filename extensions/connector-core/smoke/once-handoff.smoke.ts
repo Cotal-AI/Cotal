@@ -17,8 +17,9 @@ import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { mintLifecycleUid } from "@cotal-ai/core";
 import { MeshAgent } from "../src/agent.js";
-import { ONCE_EXIT_GRACE_MS, ONCE_HANDOFF_MS, onceHandoffState, registerOnceExit } from "../src/once.js";
+import { ONCE_EXIT_GRACE_MS, ONCE_HANDOFF_MS, exitOnceSeat, onceHandoffState, registerOnceExit } from "../src/once.js";
 import type { AgentConfig } from "../src/config.js";
+import type { MeshAgentOptions } from "../src/agent.js";
 
 let pass = 0, fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -37,10 +38,12 @@ const config = (uid: string): AgentConfig => ({
 
 /** One agent over a scripted endpoint. `pending` is what `turn-pending` serves; `unconfirmed`
  *  scripts the answers to `turn-unconfirmed`, in order, and `reports` records each one sent. */
-const rig = (uid = mintLifecycleUid()) => {
-  const a = new MeshAgent(config(uid));
+const rig = (uid = mintLifecycleUid(), options: MeshAgentOptions = {}) => {
+  const a = new MeshAgent(config(uid), undefined, options);
   const state = {
     pending: [] as Row[],
+    /** Answer every pull `stop`, as a manager that does not hold this seat does once its task ended. */
+    stop: false,
     yields: [] as Record<string, unknown>[],
     reports: [] as Record<string, unknown>[],
     unconfirmed: [] as Array<{ ok: boolean; code?: string }>,
@@ -51,7 +54,7 @@ const rig = (uid = mintLifecycleUid()) => {
     setActivity: async () => {},
     setCondition: async () => {},
     invokeService: async (_ep: string, command: string, args: unknown) => {
-      if (command === "turn-pending") return { reply: { ok: true, data: { turns: [...state.pending], notices: true } } };
+      if (command === "turn-pending") return { reply: { ok: true, data: { turns: [...state.pending], notices: true, ...(state.stop ? { stop: true } : {}) } } };
       if (command === "turn-yield") {
         state.yields.push(args as Record<string, unknown>);
         state.pending = state.pending.filter((t) => t.goalId !== (args as { goalId?: string }).goalId);
@@ -183,6 +186,33 @@ console.log("\n4. the handoff timer measures the dispatch only");
   check("noting the dispatch stops the timer, so a slow first response is never ended by it", timer.cleared === true && onceHandoffState(second.uid, "o5") === "claimed");
 }
 
+console.log("\n4b. a seat whose wake it cannot confirm bounds an unclaimed pull");
+{
+  const bounded = rig(mintLifecycleUid(), { onceClaimBound: true });
+  bounded.state.pending = [onceRow("o4b", "never dispatched")];
+  const before = captured.length;
+  await bounded.poll();
+  check("the pull arms the bound", captured.length === before + 1);
+  fireLast();
+  await tick();
+  check("a once task pulled and never claimed within the bound is sealed and reported",
+    onceHandoffState(bounded.uid, "o4b") === "sealed" && bounded.state.reports.length === 1 && bounded.state.reports[0]!.goalId === "o4b", bounded.state.reports);
+  const claimed = rig(mintLifecycleUid(), { onceClaimBound: true });
+  claimed.state.pending = [onceRow("o4c", "dispatched in time")];
+  await claimed.poll();
+  const bound = captured.at(-1)!;
+  claimed.a.claimTurns(["o4c"]);
+  claimed.a.commitSurfacedTurns(["o4c"]);
+  bound.fn();
+  await tick();
+  check("...and one handed over first is left as it is when the bound fires", onceHandoffState(claimed.uid, "o4c") === "confirmed" && claimed.state.reports.length === 0);
+  const plain = rig();
+  plain.state.pending = [onceRow("o4d", "a connector that confirms its wake")];
+  const unbounded = captured.length;
+  await plain.poll();
+  check("a seat without the option arms no bound for a pull", captured.length === unbounded);
+}
+
 console.log("\n5. run turns keep today's behavior");
 {
   const { a, uid, state, poll } = rig();
@@ -255,6 +285,153 @@ console.log("\n7. the report: retried while the manager is unreachable, and a re
 globalThis.setTimeout = realSetTimeout;
 globalThis.clearTimeout = realClearTimeout;
 
+console.log("\n7b. a seat that cannot end itself declines its exit, keeps reporting, and is never forced out");
+{
+  // The process registry's exit latch, reset between cells: cell 7 left it set.
+  const registry = (globalThis as unknown as Record<symbol, { exiting?: boolean }>)[Symbol.for("cotal.once-handoff")]!;
+  const graceTimers: number[] = [];
+  const withGraceCaptured = async <T>(fn: () => Promise<T>): Promise<T> => {
+    globalThis.setTimeout = ((f: () => void, ms?: number, ...rest: unknown[]) => {
+      if (ms === ONCE_EXIT_GRACE_MS) { graceTimers.push(ms); return {} as ReturnType<typeof setTimeout>; }
+      return realSetTimeout(f, ms, ...(rest as []));
+    }) as typeof setTimeout;
+    try { return await fn(); } finally { globalThis.setTimeout = realSetTimeout; }
+  };
+  const answers = async (exit: () => void | boolean | Promise<boolean>) => withGraceCaptured(async () => {
+    registry.exiting = false;
+    graceTimers.length = 0;
+    registerOnceExit(exit);
+    return { ending: await exitOnceSeat(), forced: graceTimers.length };
+  });
+  let asked = 0;
+  const declined = await answers(() => { asked++; return false; });
+  const again = await withGraceCaptured(() => exitOnceSeat());
+  check("an exit that answers false declines: no forced exit is armed, and the next end asks the exit again",
+    declined.ending === false && declined.forced === 0 && again === false && asked === 2 && graceTimers.length === 0, { declined, again, asked });
+  const cases = {
+    asyncFalse: await answers(async () => false),
+    rejects: await answers(() => Promise.reject(new Error("could not read the parent"))),
+    throws: await answers(() => { throw new Error("shutdown threw"); }),
+    asyncTrue: await answers(async () => true),
+    plain: await answers(() => {}),
+  };
+  check("a promise that answers false or rejects declines; a throw, true, or no answer ends the seat with its forced exit armed",
+    cases.asyncFalse.ending === false && cases.asyncFalse.forced === 0 && cases.rejects.ending === false && cases.rejects.forced === 0
+      && [cases.throws, cases.asyncTrue, cases.plain].every((c) => c.ending === true && c.forced === 1), cases);
+
+  // The report loop on a fake clock: backoff waits run at once and advance it.
+  const loop = rig();
+  loop.state.pending = [onceRow("o9", "z")];
+  loop.state.unconfirmed = [...Array.from({ length: 30 }, () => ({ ok: false, code: "unavailable" })), { ok: true }];
+  await loop.poll();
+  registry.exiting = false;
+  let exitAsks = 0;
+  registerOnceExit(() => { exitAsks++; return false; });
+  const delays: number[] = [];
+  const exits: number[] = [];
+  const realExit = process.exit;
+  const realNow = Date.now;
+  let clock = realNow();
+  Date.now = () => clock;
+  globalThis.setTimeout = ((fn: () => void, ms?: number) => {
+    if (ms === ONCE_EXIT_GRACE_MS) { graceTimers.push(ms); return {} as ReturnType<typeof setTimeout>; }
+    if (ms !== undefined && ms >= 1_000) { delays.push(ms); clock += ms; queueMicrotask(fn); return {} as ReturnType<typeof setTimeout>; }
+    return realSetTimeout(fn, ms);
+  }) as typeof setTimeout;
+  (process as { exit: (code?: number) => never }).exit = ((code?: number) => { exits.push(code ?? 0); }) as (code?: number) => never;
+  graceTimers.length = 0;
+  try {
+    loop.a.claimTurns(["o9"]);
+    loop.a.releaseTurns(["o9"]);
+    for (let i = 0; i < 400 && loop.state.reports.length < 31; i++) await new Promise((r) => setImmediate(r));
+    for (let i = 0; i < 50; i++) await new Promise((r) => setImmediate(r));
+  } finally {
+    Date.now = realNow;
+    (process as { exit: typeof realExit }).exit = realExit;
+    globalThis.setTimeout = realSetTimeout;
+  }
+  const atBound = delays.findIndex((_, i) => delays.slice(0, i + 1).reduce((x, y) => x + y, 0) > ONCE_HANDOFF_MS);
+  check("past the bound the exit is asked once, declines, and the report goes on, waits growing to a minute and no longer",
+    exitAsks === 1 && exits.length === 0 && graceTimers.length === 0 && atBound > 0 && loop.state.reports.length > atBound + 2
+      && Math.max(...delays) === 60_000 && delays.slice(-3).every((d) => d === 60_000), { exitAsks, exits, delays, reports: loop.state.reports.length });
+  check("...until a manager answers it: no report follows the answer", loop.state.reports.length === 31 && delays.length === 30, { reports: loop.state.reports.length, delays: delays.length });
+
+  const stopping = rig();
+  stopping.state.pending = [onceRow("o10", "w")];
+  stopping.state.unconfirmed = Array.from({ length: 200 }, () => ({ ok: false, code: "unavailable" }));
+  await stopping.poll();
+  registry.exiting = false;
+  registerOnceExit(() => false);
+  let stopClock = realNow();
+  Date.now = () => stopClock;
+  let waits = 0;
+  globalThis.setTimeout = ((fn: () => void, ms?: number) => {
+    if (ms !== undefined && ms >= 1_000) {
+      waits++;
+      stopClock += ms;
+      // The agent stops while the loop waits past the bound.
+      if (waits === 12) (stopping.a as unknown as { _stopping: boolean })._stopping = true;
+      queueMicrotask(fn);
+      return {} as ReturnType<typeof setTimeout>;
+    }
+    return realSetTimeout(fn, ms);
+  }) as typeof setTimeout;
+  try {
+    stopping.a.claimTurns(["o10"]);
+    stopping.a.releaseTurns(["o10"]);
+    for (let i = 0; i < 300; i++) await new Promise((r) => setImmediate(r));
+  } finally {
+    Date.now = realNow;
+    globalThis.setTimeout = realSetTimeout;
+  }
+  check("...and an agent that stops ends the loop with it", waits === 12 && stopping.state.reports.length === 13, { waits, reports: stopping.state.reports.length });
+
+  const told = rig();
+  told.state.stop = true;
+  let stopAsks = 0;
+  const first = await withGraceCaptured(async () => {
+    registry.exiting = false;
+    graceTimers.length = 0;
+    registerOnceExit(() => { stopAsks++; return false; });
+    await told.poll();
+    await tick();
+    await told.poll();
+    await tick();
+    return { asks: stopAsks, forced: graceTimers.length };
+  });
+  check("a pull answered `stop` asks the seat's exit; a declined one leaves the seat running, and the next `stop` asks again",
+    first.asks === 2 && first.forced === 0, first);
+  const ended = await withGraceCaptured(async () => {
+    registry.exiting = false;
+    graceTimers.length = 0;
+    let graceful = 0;
+    registerOnceExit(() => { graceful++; });
+    await told.poll();
+    await tick();
+    return { graceful, forced: graceTimers.length };
+  });
+  check("...and an exit that does not decline ends the seat, with its forced exit armed", ended.graceful === 1 && ended.forced === 1, ended);
+
+  // A seat holding no turn does not pull when it reconnects; the manager's repeated notice is what
+  // reaches it.
+  const idle = rig();
+  let notice: (() => void) | undefined;
+  (idle.a as unknown as { hasTurnRelay(): boolean }).hasTurnRelay = () => true;
+  const idleEp = (idle.a as unknown as { ep: Record<string, unknown> }).ep;
+  idleEp.tap = (fn: () => void) => { notice = fn; };
+  idleEp.serviceRailCaller = () => ({ owner: "local", actor: "helper", uid: idle.uid });
+  (idle.a as unknown as { armTurnRelay(): void }).armTurnRelay();
+  await tick();
+  idle.state.stop = true;
+  registry.exiting = false;
+  let idleAsks = 0;
+  registerOnceExit(() => { idleAsks++; return false; });
+  notice?.();
+  await tick();
+  check("a seat holding no turn pulls on the manager's notice, and the `stop` it gets asks its exit", notice !== undefined && idle.a.activeTurnCount() === 0 && idleAsks === 1, { armed: notice !== undefined, idleAsks });
+  registry.exiting = false;
+}
+
 console.log("\n8. a seat whose report cannot land exits its own process, even while its shutdown stalls");
 {
   const here = dirname(fileURLToPath(import.meta.url));
@@ -278,7 +455,7 @@ console.log("\n8. a seat whose report cannot land exits its own process, even wh
     exit?.code === 1 && Number.isFinite(graceful) && lapse !== undefined && lapse >= ONCE_EXIT_GRACE_MS - 500 && lapse < ONCE_EXIT_GRACE_MS + 5_000,
     { exit, lapse, out, err: err.slice(-800) });
 }
-const EXPECTED_CELLS = 24;
+const EXPECTED_CELLS = 36;
 console.log(`\n${fail === 0 && pass === EXPECTED_CELLS ? "ONCE HANDOFF SMOKE OK ✅" : "ONCE HANDOFF SMOKE FAILED"}  (${pass} passed, ${fail} failed)`);
 if (pass + fail !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);

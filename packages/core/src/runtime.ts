@@ -1,5 +1,6 @@
 import type { Extension } from "./registry.js";
 import type { LaunchSpec } from "./connector.js";
+import type { StartupOutcome } from "./startup-confirm.js";
 import { MANAGED_HANDOFF_FILE_ENV, type ManagedLifecycleHandoff, type ManagedLifecycleTarget } from "./managed-handoff.js";
 import { assertLifecycleToken } from "./subjects.js";
 
@@ -89,6 +90,10 @@ export interface AgentHandle {
    *  connector's `[cotal-<name>]` or `[cotal-<name>/<part>]` prefix, for a backend that reads the
    *  child's output; absent when there is neither. */
   exitInfo?(): { code?: number; signal?: number; diagnostic?: string } | undefined;
+  /** How the connector's startup watch ended for this child, from the screen read that ended it.
+   *  Present on every handle spawned by a runtime that declares {@link Runtime.reportsStartupOutcome}
+   *  (an adopted handle may omit it); a launch with no `confirm` reports `pending` forever. */
+  startupOutcome?(): StartupOutcome;
   /** Open a live attach. Throws on a backend that cannot stream, which is every backend whose
    *  runtime declares {@link Runtime.streamsTerminal} false: the throw carries that backend's own
    *  guidance for watching the agent where it actually runs. */
@@ -114,6 +119,9 @@ export interface Runtime {
    * stopping the underlying agent. Absent is false for PTY runtimes and irrelevant for runtimes
    * that hold no process-owning PTY master. */
   readonly supportsRelease?: boolean;
+  /** True when every handle this runtime spawns reports {@link AgentHandle.startupOutcome}. A `once`
+   *  spawn on a connector with {@link Connector.onceNeedsConfirmed} is refused without it. */
+  readonly reportsStartupOutcome?: boolean;
   /**
    * Mint the durable custody reference for a seat this runtime is ABOUT to spawn, before any
    * process exists. The caller records it durably and then hands the SAME reference back to

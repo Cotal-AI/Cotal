@@ -5988,9 +5988,10 @@ interval until one succeeds; a refusal MUST NOT be retried on a timer.
 
 **Once spawns.** A manager MAY relay a turn of its own: the task of a `spawn` that carries `once`.
 It accepts that turn with the spawn, before the seat launches, addressed to the spawned incarnation
-under the spawn's caller triple, and serves it from the spawn's readiness verdict under the protocol
-above. The task's `turn-pending` row carries `once: true`. Its `deadlineAt` is absent when the spawn
-set no deadline, and a row without `deadlineAt` never expires. While the task is pending, the
+under the spawn's caller triple, and serves it under the protocol above only once the spawn's
+`succeeded` terminal is written, so a served task always has that terminal. The task's
+`turn-pending` row carries `once: true`. Its `deadlineAt` is absent when the spawn set no deadline,
+and a row without `deadlineAt` never expires. While the task is pending, the
 manager MUST refuse every other turn to that incarnation. On the task's terminal, the manager MUST
 stop the incarnation, found by its lifecycle uid and never by its name. When the seat exits first,
 the manager MUST NOT commit the task's end before it has proved that exit, and then cancels the task
@@ -6002,6 +6003,16 @@ the task MUST NOT offer it again, and reports it with the self-mode `turn-unconf
 seat's own credential and only for the once task pending against it, refuses it for a run's turn,
 commits the task `failed` with `delivery-unconfirmed`, and stops the seat. A report repeated after
 the terminal is answered with that terminal.
+
+A manager that inherits a once task from an earlier incarnation of itself MUST NOT serve it when the
+spawn has no `succeeded` terminal; it cancels the task as never served. It MUST NOT serve a task
+whose seat it does not hold, and the reason of that task's terminal says the seat may still be
+running. Once such a task has a terminal, the manager answers that seat's `turn-pending` with
+`{ "turns": [], "notices": true, "stop": true }`, keyed by its lifecycle uid, and repeats the turn
+notice at most every 5 seconds until a pull has returned that answer. `stop` appears on no other
+answer, and a seat MUST NOT read an empty `turns` as a stop. A seat answered with `stop` ends its own
+process when it can. One that cannot keeps reporting a task it holds unconfirmed; one that holds no
+task stays running until a person or its runtime stops it.
 
 ### 14.4 The step journal on the wire
 
