@@ -3,7 +3,7 @@
     "packages/core/smoke/anycast-request-status.smoke.ts"
   ],
   "command": "pnpm smoke:anycast-request-status:auth",
-  "completionMarker": "COTAL_SMOKE_SENTINEL cells=54",
+  "completionMarker": "COTAL_SMOKE_SENTINEL cells=64",
   "mutations": [
     {
       "file": "packages/core/src/anycast-requests.ts",
@@ -82,6 +82,22 @@
       "replace": "if (false) throw new Error(\"an open mesh runs no delivery daemon",
       "expectRed": "9a status on an open mesh is refused, naming why",
       "cell": "9a status on an open mesh is refused, naming why"
+    },
+    {
+      "file": "packages/core/src/anycast-requests.ts",
+      "find": "      if (req.epoch !== epoch)\n        return { ok: false, code: \"mismatch\"",
+      "replace": "      if (false)\n        return { ok: false, code: \"mismatch\"",
+      "expectRed": "10e a holder's copy from the old stream is refused as a mismatch",
+      "cell": "10e a holder's copy from the old stream is refused as a mismatch",
+      "note": "A copy from a recreated stream takes the newer request stored at its seq."
+    },
+    {
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    try { assertValidName(req.from.name); } catch (e) {",
+      "replace": "    try { } catch (e) {",
+      "expectRed": "5f a take naming its holder by a multi-line name is refused",
+      "cell": "5f a take naming its holder by a multi-line name is refused",
+      "note": "A holder name with a line break reaches the record and every notice and status that prints it."
     }
   ]
 }

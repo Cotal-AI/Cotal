@@ -712,6 +712,9 @@ export class CotalEndpoint extends EventEmitter {
    *  (delivery daemon, SPEC §8.1). Bound with the other Plane-3 responders and dropped with them. */
   private takeServeSub?: import("@nats-io/transport-node").Subscription;
   private anycastAuthority?: AnycastRequestAuthority;
+  /** The TASK stream's creation time for the role consumer this endpoint pumps, stamped on each copy
+   *  it delivers and carried by that copy's take (SPEC §8.1). */
+  private taskEpoch?: string;
   /** Why the records are not open, when this daemon's credential cannot open them. */
   private anycastUnavailable?: string;
   private anycastSweep?: ReturnType<typeof setInterval>;
@@ -5994,9 +5997,14 @@ export class CotalEndpoint extends EventEmitter {
     try { req = m.json<AnycastTakeRequest>(); } catch { req = undefined; }
     if (!parsed || !isPrincipalOwnerToken(parsed.owner) || req?.from?.id !== parsed.sender || typeof req.from.name !== "string")
       return { ok: false, code: "mismatch", error: "sender mismatch - take rejected" };
-    if (!isAnycastSeq(req.seq) || !isAnycastSeq(req.count) || typeof req.id !== "string" || req.id.length > 256)
-      return { ok: false, code: "mismatch", error: "a take names a seq, the request id and a delivery count" };
-    return authority.take(parsed.role, { from: { id: parsed.sender, name: req.from.name.slice(0, 128) }, seq: req.seq, id: req.id, count: req.count });
+    if (!isAnycastSeq(req.seq) || !isAnycastSeq(req.count) || typeof req.id !== "string" || req.id.length > 256 ||
+        typeof req.epoch !== "string" || req.epoch.length > 64)
+      return { ok: false, code: "mismatch", error: "a take names a seq, the request id, a delivery count and the stream's creation time" };
+    // The name reaches the sender's status text, so it must pass the rule a presence card name does.
+    try { assertValidName(req.from.name); } catch (e) {
+      return { ok: false, code: "mismatch", error: `a take names its holder by a valid display name: ${(e as Error).message}` };
+    }
+    return authority.take(parsed.role, { from: { id: parsed.sender, name: req.from.name }, seq: req.seq, id: req.id, count: req.count, epoch: req.epoch });
   }
 
   /** DM one notice to a request's sender from this daemon's own principal. The event key is the
@@ -6758,12 +6766,12 @@ export class CotalEndpoint extends EventEmitter {
   /** Holder side of a take (SPEC §8.1): ask the delivery daemon to record this endpoint's take of the
    *  request at `seq`, for the copy with `count` deliveries. Never throws; a take the daemon could
    *  not decide is reported as held, with what the operator has to do when that is anything. */
-  private async takeAnycast(role: string, seq: number, id: string, count: number): Promise<AnycastTakeOutcome> {
+  private async takeAnycast(role: string, seq: number, id: string, count: number, epoch: string): Promise<AnycastTakeOutcome> {
     const held = (reason: "daemon-busy" | "daemon-down" | "daemon-outdated" | "credential-outdated", detail: string): AnycastTakeOutcome =>
       ({ taken: false, drop: false, reason, detail });
     if (!this.nc) return held("daemon-down", this.notLiveMsg());
     const subject = takeSubject(this.space, role, this.owner, this.actor);
-    const body: AnycastTakeRequest = { from: { id: this.card.id, name: this.card.name }, seq, id, count };
+    const body: AnycastTakeRequest = { from: { id: this.card.id, name: this.card.name }, seq, id, count, epoch };
     let reply: AnycastTakeReply;
     try {
       const m = await this.nc.request(subject, JSON.stringify(body), { timeout: ANYCAST_TAKE_TIMEOUT_MS, noMux: true, reply: `${subject}.reply.${randomUUID()}` });
@@ -6775,6 +6783,9 @@ export class CotalEndpoint extends EventEmitter {
       return held("daemon-down", `the delivery daemon did not answer the take: ${(e as Error).message}`);
     }
     if (reply.ok) return { taken: true };
+    // A mismatch can mean the stream was recreated under this consumer, which resumes on the new
+    // stream: read its creation time again, so the copies delivered from here on carry it.
+    if (reply.code === "mismatch") void this.readTaskEpoch().catch(() => {});
     if (reply.code === "cancelled" || reply.code === "taken" || reply.code === "gone" || reply.code === "mismatch")
       return { taken: false, drop: true, reason: reply.code, detail: reply.error };
     return held("daemon-busy", reply.error);
@@ -6983,7 +6994,9 @@ export class CotalEndpoint extends EventEmitter {
    *  and acking one unseen on the work queue would delete the only copy of the request. */
   private async pump(stream: string, durable: string, opts: { inbox?: boolean; takeRole?: string } = {}): Promise<void> {
     if (!this.js) throw new Error(this.notLiveMsg());
-    const consumer = await this.js.consumers.get(stream, durable);
+    const consumer = opts.takeRole === undefined
+      ? await this.js.consumers.get(stream, durable)
+      : await this.bindTaskConsumer(stream, durable);
     const ackWaitMs = await ackWaitOf(consumer);
     const msgs = await consumer.consume();
     this.streamMsgs.push(msgs);
@@ -6996,8 +7009,12 @@ export class CotalEndpoint extends EventEmitter {
         const delivery = durableDelivery(m, ackWaitMs);
         // On an auth mesh a role request carries its take: the holder records it with the delivery
         // daemon before showing the request, so its sender can cancel it until then (SPEC §8.1).
+        // The copy carries the creation time of the stream it came from, read at bind.
         const role = opts.takeRole;
-        if (role !== undefined) delivery.take = () => this.takeAnycast(role, m.seq, msg.id, m.info.deliveryCount);
+        if (role !== undefined) {
+          const epoch = this.taskEpoch!;
+          delivery.take = () => this.takeAnycast(role, m.seq, msg.id, m.info.deliveryCount, epoch);
+        }
         this.emit("message", authenticatedMessage(msg, parsed), delivery, {
           historical: false,
           kind: kindFromParsed(parsed.kind),
@@ -7006,6 +7023,24 @@ export class CotalEndpoint extends EventEmitter {
     })().catch((e) => {
       if (!this.stopped) this.emit("error", e as Error);
     });
+  }
+
+  /** Bind the role consumer and read the TASK stream's creation time on both sides of the bind, so
+   *  the time belongs to the stream the consumer was bound on (SPEC §8.1). */
+  private async bindTaskConsumer(stream: string, durable: string): Promise<Consumer> {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const before = await this.readTaskEpoch();
+      const consumer = await this.js!.consumers.get(stream, durable);
+      if (before === (await this.readTaskEpoch())) return consumer;
+    }
+    throw new Error(`the ${stream} stream was recreated while its role consumer was binding; reconnect to bind it again`);
+  }
+
+  /** Read the TASK stream's creation time into {@link taskEpoch}. */
+  private async readTaskEpoch(): Promise<string> {
+    const epoch = (await (await this.manager()).streams.info(taskStream(this.space))).created;
+    this.taskEpoch = epoch;
+    return epoch;
   }
 
   /** Warn once when the broker reports this endpoint's own DM inbox missing while the connection is

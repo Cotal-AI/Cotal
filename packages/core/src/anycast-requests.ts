@@ -52,12 +52,15 @@ export type AnycastNotice = {
 };
 
 /** What a holder sends to take one request it was delivered. `count` is the broker's delivery count
- *  for the copy it holds, 1 on the first delivery. */
+ *  for the copy it holds, 1 on the first delivery. `epoch` is the TASK stream's creation time as the
+ *  holder read it for the consumer that delivered the copy, so a copy from a stream that was since
+ *  recreated never takes a request the new stream stores at the same seq. */
 export interface AnycastTakeRequest {
   from: AnycastHolderRef;
   seq: number;
   id: string;
   count: number;
+  epoch: string;
 }
 
 /** Why a take was refused. The first four tell the holder to drop its copy unseen; `busy` tells it
@@ -76,7 +79,8 @@ export type AnycastStatus =
   | { state: "unknown"; seq: number };
 
 /** How a cancelled request left the queue. `already-gone` means it was off the queue when the
- *  daemon tried to remove it, which only a holder that skips the take step can cause. */
+ *  daemon went to remove it: an earlier delete whose reply was lost removed it, the stream was
+ *  recreated, or a holder that skips the take step acked it. */
 export type AnycastRemoval = "pending" | "deleted" | "already-gone";
 
 interface OutboxEvent {
@@ -272,6 +276,8 @@ export class AnycastRequestAuthority {
   async take(role: string, req: AnycastTakeRequest): Promise<AnycastTakeReply> {
     for (let attempt = 0; attempt < 5; attempt++) {
       const { epoch, stored } = await this.queued(req.seq);
+      if (req.epoch !== epoch)
+        return { ok: false, code: "mismatch", error: `the copy of seq ${req.seq} came from a ${this.deps.stream} stream that has since been recreated` };
       if (!stored) {
         // A cancel deletes the request, so the record says why it is gone when it is.
         const row = readRow(await this.deps.kv.get(anycastRecordKey(epoch, req.seq)));
