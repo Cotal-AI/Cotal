@@ -2,7 +2,7 @@
   "suite": [
     "extensions/connector-jcode/smoke/once-retire.smoke.ts"
   ],
-  "guard": "a once Jcode seat's launched tree is proved gone only by the evidence its host recorded under the seat's uid: never while the recorded host lives, every launch the uid recorded, a receipt that replays the proof, and live evidence never discarded",
+  "guard": "a once Jcode seat's launched tree is proved gone only by the evidence its host recorded under the seat's uid: never while the recorded host lives, every launch the uid recorded, a receipt that replays the proof, and live evidence never discarded, and a launched process whose environment cannot be read is still tied to the launch by its proved parent or by a group the launch leads",
   "command": "pnpm smoke:jcode-once-retire",
   "completionMarker": "JCODE ONCE RETIRE SMOKE",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-jcode/smoke/mutations/once-retire.json",
@@ -12,7 +12,9 @@
     "R1 proves a seat retired while its recorded host still runs, and signals that host's tree. R2",
     "keeps only the latest launch, so a bridge relaunch's first tree is never stopped. R3 writes no",
     "receipt, so a manager that crashes after the proof and before its clear can never get it back.",
-    "R4 discards live evidence. R5 never tells the host it is a once seat, so it records nothing."
+    "R4 discards live evidence. R5 never tells the host it is a once seat, so it records nothing.",
+    "R6 drops the group link, so a hidden process left in the server's group outlives the proof. R7 drops the",
+    "parent link, so a hidden child that moved to its own group outlives it."
   ],
   "mutations": [
     {
@@ -49,6 +51,20 @@
       "find": "      env.COTAL_JCODE_ONCE = \"1\";\n",
       "replace": "",
       "expectRed": "a once launch tells the host it is a once seat"
+    },
+    {
+      "name": "R6 a process left in the server's group is not tied to the launch",
+      "file": "extensions/connector-jcode/src/private-lifecycle.ts",
+      "find": "    if (leads(stat.group) || (parent !== undefined && processMatches(parent))) tree.set(pid, { pid, start: stat.start });",
+      "replace": "    if (parent !== undefined && processMatches(parent)) tree.set(pid, { pid, start: stat.start });",
+      "expectRed": "...after the process left in the server's group, which ignored SIGTERM, is gone"
+    },
+    {
+      "name": "R7 a child is not tied to the launch by its proved parent",
+      "file": "extensions/connector-jcode/src/private-lifecycle.ts",
+      "find": "    if (leads(stat.group) || (parent !== undefined && processMatches(parent))) tree.set(pid, { pid, start: stat.start });",
+      "replace": "    if (leads(stat.group)) tree.set(pid, { pid, start: stat.start });",
+      "expectRed": "...and the child tied only by its parent is gone"
     }
   ]
 }

@@ -6,7 +6,8 @@
  * `retireAfterExit` stops what that evidence names once the recorded host is gone, and answers with
  * proof only when nothing it names survives; the proof is kept as a receipt, so asking again gives
  * the same answer until the manager discards it. Missing or malformed evidence and a live recorded
- * host PID each throw. A same-name successor's tree is never touched.
+ * host PID each throw. A same-name successor's tree is never touched. A launched process whose
+ * environment cannot be read is still stopped while its parent or its group ties it to the launch.
  *
  * Run: pnpm smoke:jcode-once-retire
  */
@@ -30,6 +31,9 @@ const rejects = async (p: Promise<unknown>, pattern: RegExp): Promise<string | u
 };
 
 const started: ChildProcess[] = [];
+/** Processes the suite did not spawn itself, with their start tokens, killed at the end only if
+ *  each is still that process. */
+const extra: { pid: number; start: string }[] = [];
 /** A process in its own group, as the real Jcode daemon is, carrying `identity` when given. */
 const sleeper = (identity?: string): ChildProcess => {
   const env = { ...process.env };
@@ -102,16 +106,65 @@ try {
 
   console.log("\n3. the receipt is discarded only after the proof, and live evidence never is");
   check("live evidence is not discarded", (() => { try { discardOnceReceipt(home, successorUid); return false; } catch (e) { return /not a retirement receipt/u.test((e as Error).message); } })());
-  await proof?.discard();
+  // A missing receipt makes the discard throw; the suite reports that through the cell below and runs on.
+  try { await proof?.discard(); } catch (e) { console.log(`    (discard threw: ${(e as Error).message})`); }
   check("discarding the receipt removes it", !existsSync(join(home, `cotal-once-${uid}.json`)));
   check("...and the seat can no longer be proved retired from it", (await rejects(retireOnceTree(home, uid), /has no launch evidence/u))?.startsWith("jcode") === true);
 
-  console.log("\n4. a once launch carries its marker and needs a uid");
+  console.log("\n4. a launched process whose environment cannot be read is found through its parent or its group");
+  // Turning off the dumpable flag, as ssh-agent does, makes a process's environ unreadable to its
+  // own user, while the process table still shows its parent and its group.
+  const HIDE = "import ctypes\nctypes.CDLL(None).prctl(4, 0, 0, 0, 0)\n";
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) if (key.startsWith("COTAL_") || key === "JCODE_COTAL_LAUNCH_IDENTITY") delete env[key];
+  const python = (code: string, identity?: string): ChildProcess => {
+    const child = spawn("python3", ["-c", code], { env: identity ? { ...env, JCODE_COTAL_LAUNCH_IDENTITY: identity } : env, stdio: "ignore", detached: true });
+    child.unref();
+    started.push(child);
+    return child;
+  };
+  const unreadable = (pid: number): boolean => { try { readFileSync(`/proc/${pid}/environ`); return false; } catch (e) { return (e as NodeJS.ErrnoException).code === "EACCES"; } };
+  const poll = async (cond: () => boolean, ms = 10_000): Promise<boolean> => {
+    for (const until = Date.now() + ms; Date.now() < until; await new Promise((r) => setTimeout(r, 25))) if (cond()) return true;
+    return cond();
+  };
+  const tiedUid = mintLifecycleUid(), tiedHost = sleeper(), tiedIdentity = nonce();
+  recordOnceLaunch(home, tiedUid, { identity: tiedIdentity, host: captureProcessIdentity(tiedHost.pid!) });
+  const pidsFile = join(root, "tied-pids");
+  // The leader carries the identity in a group of its own, as the Jcode server does. A grandchild
+  // whose parent has exited is tied only by the group, and ignores SIGTERM; a child that moved to a
+  // group of its own is tied only by its parent.
+  const ignoresTerm = `${HIDE}import signal, time\nsignal.signal(signal.SIGTERM, signal.SIG_IGN)\ntime.sleep(600)`;
+  const ownGroup = `import os\nos.setpgid(0, 0)\n${HIDE}import time\ntime.sleep(600)`;
+  const orphan = `import subprocess, sys\nprint(subprocess.Popen([sys.executable, "-c", ${JSON.stringify(ignoresTerm)}], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).pid)`;
+  python([
+    "import subprocess, sys, time",
+    `g = int(subprocess.run([sys.executable, "-c", ${JSON.stringify(orphan)}], capture_output=True, text=True).stdout)`,
+    `p = subprocess.Popen([sys.executable, "-c", ${JSON.stringify(ownGroup)}])`,
+    `open(${JSON.stringify(pidsFile)}, "w").write(f"{g} {p.pid}")`,
+    "time.sleep(600)",
+  ].join("\n"), tiedIdentity);
+  const foreign = python(`${HIDE}import time\ntime.sleep(600)`);
+  let inGroup = 0, byParent = 0;
+  await poll(() => { try { [inGroup, byParent] = readFileSync(pidsFile, "utf8").split(" ").map(Number); return inGroup > 0 && byParent > 0; } catch { return false; } });
+  for (const pid of [inGroup, byParent]) extra.push(captureProcessIdentity(pid));
+  check("two launched processes and an unrelated one hide their environment", await poll(() => unreadable(inGroup) && unreadable(byParent) && unreadable(foreign.pid!)));
+  process.kill(tiedHost.pid!, "SIGKILL");
+  await gone(tiedHost.pid!);
+  let tiedProof = false;
+  try { await retireOnceTree(home, tiedUid); tiedProof = true; } catch (e) { console.log(`    (retire threw: ${(e as Error).message})`); }
+  check("a seat whose children hide their environment is still proved retired", tiedProof);
+  check("...after the process left in the server's group, which ignored SIGTERM, is gone", await gone(inGroup));
+  check("...and the child tied only by its parent is gone", await gone(byParent));
+  check("an unrelated process whose environment cannot be read is not signalled", running(foreign.pid!));
+
+  console.log("\n5. a once launch carries its marker and needs a uid");
   const launch = jcodeConnector.buildLaunch({ space, name, servers: "nats://127.0.0.1:1", workspaceRoot: root, lifecycleUid: uid, once: true } as Parameters<typeof jcodeConnector.buildLaunch>[0]);
   check("a once launch tells the host it is a once seat", launch.env?.COTAL_JCODE_ONCE === "1");
   check("a once launch without a lifecycle uid is refused", (() => { try { jcodeConnector.buildLaunch({ space, name, servers: "nats://127.0.0.1:1", workspaceRoot: root, once: true } as Parameters<typeof jcodeConnector.buildLaunch>[0]); return false; } catch (e) { return /needs its lifecycle uid/u.test((e as Error).message); } })());
 } finally {
   for (const child of started) { try { process.kill(child.pid!, "SIGKILL"); } catch { /* already gone */ } }
+  for (const x of extra) { try { if (captureProcessIdentity(x.pid).start === x.start) process.kill(x.pid, "SIGKILL"); } catch { /* already gone */ } }
   rmSync(root, { recursive: true, force: true });
 }
 
