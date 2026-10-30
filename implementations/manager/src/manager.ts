@@ -54,6 +54,7 @@ import {
   mintCreds,
   mintGeneration,
   mintAcceptedToken,
+  type IssuedBinding,
   bindIssuedStores,
   type IssuanceSeam,
   type IssuedStore,
@@ -718,7 +719,7 @@ export type ManagerResumeIdentity =
   // must recover it, not mint a fresh one, or a later teardown would orphan the real durables. It is
   // recorded here (from the live ManagedAgent) so recovery is uniform across all three modes.
   | { mode: "open"; id: string; lifecycleUid: string }
-  | { mode: "static"; id: string; lifecycleUid: string; credential: { kind: "file"; path: string; sha256: string }; issued?: { generation: string; acceptedToken: string } }
+  | { mode: "static"; id: string; lifecycleUid: string; credential: { kind: "file"; path: string; sha256: string }; issued?: IssuedBinding }
   | {
       mode: "user";
       owner: string;
@@ -1030,7 +1031,7 @@ interface ManagedAgent {
   /** The SPEC 13.15 issuance of a static agent's credential: the generation its rails carry and
    *  the accepted-row token its endpoint discovers it by. A renewal keeps both (the ceiling is
    *  unchanged by construction); absent on a user-mode or open agent. */
-  issued?: { generation: string; acceptedToken: string };
+  issued?: IssuedBinding;
   /** Set for a USER-MODE agent: its derived owner. Marks the slot for user-mode teardown (ledger
    *  revoke + token/sentinel/health file removal) and the auth-health read in {@link list}. */
   userOwner?: string;
@@ -6843,7 +6844,7 @@ export class Manager {
         // evidence activates only once the row exists, and the row exists only after the evidence
         // was staged. The agent learns the generation by reading the accepted row under its token.
         // The generation's horizon bounds every renewal of this incarnation's credential.
-        issued = { generation: mintGeneration(now + STATIC_GENERATION_HORIZON_SEC), acceptedToken: mintAcceptedToken() };
+        issued = { generation: mintGeneration(now + STATIC_GENERATION_HORIZON_SEC), acceptedToken: mintAcceptedToken(), listing: true };
         const issuedAgent = { name, id: identity.id, lifecycleUid };
         const creds = await this.withIssuer((i) =>
           this.withProvisioner((prov) =>
