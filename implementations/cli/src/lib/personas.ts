@@ -115,8 +115,14 @@ export function readPersonas(root: string): PersonaEntry[] {
  *  show/rm`. Only an absent folder is an empty catalog. One that cannot be read throws an error that
  *  names it, so the completion offers nothing and COTAL_COMPLETE_DEBUG says why. */
 export function listPersonaNames(root: string): string[] {
+  return completionPersonas(root).map((p) => p.name);
+}
+
+/** {@link readPersonas} for a completion: a catalog folder that cannot be read throws an error that
+ *  names it. */
+function completionPersonas(root: string): PersonaEntry[] {
   try {
-    return readPersonas(root).map((p) => p.name);
+    return readPersonas(root);
   } catch (e) {
     const code = (e as NodeJS.ErrnoException).code;
     throw new Error(`cannot read the persona catalog ${personaDir(root)}: ${code === "EACCES" || code === "EPERM" ? "permission denied" : code ?? (e as Error).message}`);
@@ -124,12 +130,12 @@ export function listPersonaNames(root: string): string[] {
 }
 
 /** Collect a deduped, sorted set of values declared across every persona file, via `pick`.
- *  Fail-closed: a single malformed file throws — the aggregate can't be trusted, so a derived
- *  completer must decline rather than offer a silently-partial set. The broken file is named loudly
- *  by `cotal personas list`, so the error stays visible; it's just not buried in a <TAB>. */
+ *  Fail-closed: a catalog folder that cannot be read, or a single malformed file, throws — the
+ *  aggregate can't be trusted, so a derived completer must fail rather than offer a silently-partial
+ *  or empty set. COTAL_COMPLETE_DEBUG prints the reason, and `cotal persona` names the broken file. */
 function declaredValues(root: string, pick: (def: AgentDef) => (string | undefined)[]): string[] {
   const out = new Set<string>();
-  for (const e of listPersonas(root)) {
+  for (const e of completionPersonas(root)) {
     if (e.error) throw new Error(`persona "${e.name}" is unparseable: ${e.error}`);
     for (const v of pick(e.def!)) if (v) out.add(v);
   }

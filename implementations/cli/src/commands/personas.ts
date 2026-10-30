@@ -8,10 +8,10 @@ import {
   type CompletionResult,
   type ParsedArgs,
 } from "@cotal-ai/core";
-import { renderReport, targetFlags, terminalWidth, wrapWords } from "@cotal-ai/workspace";
+import { CommandFailure, renderReport, targetFlags, terminalWidth, wrapWords } from "@cotal-ai/workspace";
 import { commitPersona, editPersona, personaCatalog, personaPath, readPersonaSource, requirePersonaSource, reservedPersonaName, serializePersona, validatePersona } from "../lib/persona-files.js";
 import { completedFlagValue, completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
-import { catalogFolderProblem, listPersonas, listPersonaNames } from "../lib/personas.js";
+import { catalogFolderProblem, listPersonaNames, readPersonas, type PersonaEntry } from "../lib/personas.js";
 import { openTransient, type ConnectValues } from "../lib/transient.js";
 import { c } from "../ui.js";
 
@@ -131,7 +131,10 @@ async function list(verbose: boolean, running: boolean, values: ConnectValues): 
   // A catalog folder that is a file or a looping link is not an empty catalog.
   const folder = catalogFolderProblem(personaDir(root));
   if (folder) throw folder;
-  const entries = listPersonas(root);
+  // Only an absent folder is an empty catalog. One that cannot be read is refused, as `persona` refuses it.
+  let entries: PersonaEntry[];
+  try { entries = readPersonas(root); }
+  catch { throw new CommandFailure("refused", "PERMISSION_DENIED", `cannot read persona catalog: ${personaDir(root)}`); }
   if (!entries.length) {
     console.log(
       c.dim(`no personas in ${personaDir(root)}\n`) +
