@@ -319,11 +319,15 @@ console.log("\n7b. a seat that cannot end itself declines its exit, keeps report
     cases.asyncFalse.ending === false && cases.asyncFalse.forced === 0 && cases.rejects.ending === false && cases.rejects.forced === 0
       && [cases.throws, cases.asyncTrue, cases.plain].every((c) => c.ending === true && c.forced === 1), cases);
 
-  // The report loop on a fake clock: backoff waits run at once and advance it.
+  // The report loop on a fake clock: backoff waits run at once and advance it. The clock starts
+  // after the claim, so every wait it sees is the loop's: the backoff cap and the forced exit's
+  // grace are both 10 s, and its last wait is as long as the handoff bound. A forced exit armed
+  // here would fire at once and show in `exits`.
   const loop = rig();
   loop.state.pending = [onceRow("o9", "z")];
   loop.state.unconfirmed = [...Array.from({ length: 30 }, () => ({ ok: false, code: "unavailable" })), { ok: true }];
   await loop.poll();
+  loop.a.claimTurns(["o9"]);
   registry.exiting = false;
   let exitAsks = 0;
   registerOnceExit(() => { exitAsks++; return false; });
@@ -334,14 +338,11 @@ console.log("\n7b. a seat that cannot end itself declines its exit, keeps report
   let clock = realNow();
   Date.now = () => clock;
   globalThis.setTimeout = ((fn: () => void, ms?: number) => {
-    if (ms === ONCE_EXIT_GRACE_MS) { graceTimers.push(ms); return {} as ReturnType<typeof setTimeout>; }
     if (ms !== undefined && ms >= 1_000) { delays.push(ms); clock += ms; queueMicrotask(fn); return {} as ReturnType<typeof setTimeout>; }
     return realSetTimeout(fn, ms);
   }) as typeof setTimeout;
   (process as { exit: (code?: number) => never }).exit = ((code?: number) => { exits.push(code ?? 0); }) as (code?: number) => never;
-  graceTimers.length = 0;
   try {
-    loop.a.claimTurns(["o9"]);
     loop.a.releaseTurns(["o9"]);
     for (let i = 0; i < 400 && loop.state.reports.length < 31; i++) await new Promise((r) => setImmediate(r));
     for (let i = 0; i < 50; i++) await new Promise((r) => setImmediate(r));
@@ -352,7 +353,7 @@ console.log("\n7b. a seat that cannot end itself declines its exit, keeps report
   }
   const atBound = delays.findIndex((_, i) => delays.slice(0, i + 1).reduce((x, y) => x + y, 0) > ONCE_HANDOFF_MS);
   check("past the bound the exit is asked once, declines, and the report goes on, waits growing to a minute and no longer",
-    exitAsks === 1 && exits.length === 0 && graceTimers.length === 0 && atBound > 0 && loop.state.reports.length > atBound + 2
+    exitAsks === 1 && exits.length === 0 && atBound > 0 && loop.state.reports.length > atBound + 2
       && Math.max(...delays) === 60_000 && delays.slice(-3).every((d) => d === 60_000), { exitAsks, exits, delays, reports: loop.state.reports.length });
   check("...until a manager answers it: no report follows the answer", loop.state.reports.length === 31 && delays.length === 30, { reports: loop.state.reports.length, delays: delays.length });
 
@@ -360,6 +361,7 @@ console.log("\n7b. a seat that cannot end itself declines its exit, keeps report
   stopping.state.pending = [onceRow("o10", "w")];
   stopping.state.unconfirmed = Array.from({ length: 200 }, () => ({ ok: false, code: "unavailable" }));
   await stopping.poll();
+  stopping.a.claimTurns(["o10"]);
   registry.exiting = false;
   registerOnceExit(() => false);
   let stopClock = realNow();
@@ -377,7 +379,6 @@ console.log("\n7b. a seat that cannot end itself declines its exit, keeps report
     return realSetTimeout(fn, ms);
   }) as typeof setTimeout;
   try {
-    stopping.a.claimTurns(["o10"]);
     stopping.a.releaseTurns(["o10"]);
     for (let i = 0; i < 300; i++) await new Promise((r) => setImmediate(r));
   } finally {
