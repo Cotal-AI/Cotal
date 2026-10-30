@@ -25,6 +25,7 @@ import {
   CONNECTION_EVICTOR_CREDS_KIND,
   DELIVERY_CREDS_KIND,
   findCotalRoot,
+  folderSpaceHeld,
   getSoleSpaceAuth,
   getSpaceAuth,
   hasUserAuthState,
@@ -119,18 +120,21 @@ function recordedOpenSpace(root: string, space: string | undefined): string | un
 
 /** Where to run doctor auth when this folder's root holds no signing trust for the scope it names:
  *  the root `space` is registered at, when that is another folder; the root `space` was prepared
- *  in, once `cotal up` there starts it, when no `up` has; or else a space's root. The report stays
- *  root-local, so the step names the folder instead of reading another root's trust. */
+ *  in, once `cotal up` there starts it, when no `up` has; or else a space's root. Without `space`,
+ *  only the space this root prepared and never started is named. The report stays root-local, so
+ *  the step names the folder instead of reading another root's trust. */
 function trustRootStep(root: string, space: string | undefined, fix: boolean): string {
   const command = `cotal doctor auth${space === undefined ? "" : ` --space ${space}`}${fix ? " --fix" : ""}`;
+  let named = space;
+  if (named === undefined) try { const held = folderSpaceHeld(root); if (held?.state === "prepared") named = held.space; } catch { /* the general step */ }
   let registered: string | undefined, prepared: string | undefined;
-  if (space !== undefined) {
-    try { const target = resolveMeshTarget(root, { space, readOnly: true }); if (canonicalRoot(target.root) !== canonicalRoot(root)) registered = target.root; }
+  if (named !== undefined) {
+    try { const target = resolveMeshTarget(root, { space: named, readOnly: true }); if (space !== undefined && canonicalRoot(target.root) !== canonicalRoot(root)) registered = target.root; }
     catch (error) { if (error instanceof MeshTargetError && error.code === "not-started" && preparedNeverStarted(error.details)) prepared = error.details.root; /* else not registered here: the general step */ }
   }
   if (prepared !== undefined) {
     const here = canonicalRoot(prepared) === canonicalRoot(root);
-    return `"${space}" is prepared but not started; start it with ${codeSpan(upCommand(prepared, space!, ...(here ? [] : ["--root", shellWord(prepared)])))}, then run \`${command}\` ${here ? "again" : "in that folder"}`;
+    return `"${named}" is prepared but not started; start it with ${codeSpan(upCommand(prepared, named!, ...(here ? [] : ["--root", shellWord(prepared)])))}, then run \`${command}\` ${here ? "again" : "in that folder"}`;
   }
   return registered ? `run \`${command}\` in the folder space ${space} is registered at: ${registered}` : `run \`${command}\` in ${space === undefined ? "a" : "that"} space's root folder; \`cotal space\` lists each space's root`;
 }
@@ -158,7 +162,7 @@ export async function doctor(args: ParsedArgs): Promise<void> {
       return;
     }
     if (values.fix || values.space) throw new CommandFailure("refused", "AUTH_REQUIRED", "no validated signing trust for the named local diagnostic scope is present; no open mode or broader authority was inferred", { target: { root, space: values.space ?? null }, remedy: trustRootStep(root, values.space, values.fix === true) });
-    writeResult(presentationOf(values), { command: "doctor auth", target: { root }, result: { kind: "credential-health", root, space: null, localFindings: null, credentialScope: "not-established", brokerAuthorization: "not-checked", repair }, completeness: "not-checked", partial: { message: "No local static authority was established. This is not proof of an open or healthy mesh.", remedy: "run `cotal doctor auth` in a space's root folder; `cotal space` lists each space's root" } }, () => ({ sections: [{ title: "Local credential scope not established", blocks: [{ kind: "fields", rows: [["Root", root], ["Space", "not established"], ["Live authorization", "not checked"], ["Repair", "not requested"]] }] }] }));
+    writeResult(presentationOf(values), { command: "doctor auth", target: { root }, result: { kind: "credential-health", root, space: null, localFindings: null, credentialScope: "not-established", brokerAuthorization: "not-checked", repair }, completeness: "not-checked", partial: { message: "No local static authority was established. This is not proof of an open or healthy mesh.", remedy: trustRootStep(root, undefined, false) } }, () => ({ sections: [{ title: "Local credential scope not established", blocks: [{ kind: "fields", rows: [["Root", root], ["Space", "not established"], ["Live authorization", "not checked"], ["Repair", "not requested"]] }] }] }));
     return;
   }
   const target = { root, space: auth.space };

@@ -8,7 +8,8 @@
  * `space create` in the folder named no step for the space already there. `doctor auth --space`
  * for a prepared space told the user to run the same command in the space's root, also when run
  * there; it now names `cotal up` first, with the root quoted for a shell from another folder, and
- * still refuses AUTH_REQUIRED.
+ * still refuses AUTH_REQUIRED. Bare `doctor auth` in that root said the same; it names the space
+ * this root prepared, and only that one, and its report stays partial.
  *
  * Driven through the built binary in a sandboxed HOME, XDG_CONFIG_HOME and COTAL_HOME, the 80-column
  * run on a real pty. No broker is started and nothing is deleted.
@@ -28,7 +29,7 @@ if (!existsSync(BIN)) {
   process.exit(1);
 }
 
-interface Envelope { outcome?: string; target?: { root?: string; space?: string }; error?: { code?: string; message?: string; remedy?: string } }
+interface Envelope { outcome?: string; target?: { root?: string; space?: string | null }; result?: { space?: string | null; credentialScope?: string }; error?: { code?: string; message?: string; remedy?: string } }
 
 const { check, finish } = createSuite();
 const home = mkdtempSync(join(tmpdir(), "cotal-prepared-delete-"));
@@ -44,6 +45,19 @@ const run = (args: string[], cwd = root) => {
   return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "", envelope };
 };
 const shown = (r: ReturnType<typeof run>) => ({ status: r.status, stdout: r.stdout.slice(0, 900), stderr: r.stderr.slice(0, 600) });
+const ptyEnv: Record<string, string> = {};
+for (const [k, v] of Object.entries(env)) if (v !== undefined) ptyEnv[k] = v;
+/** One run in `root` on an 80-column pty: its exit code and the screen it leaves. */
+const at80 = async (args: string[]) => {
+  const pty = ptySpawn(process.execPath, [BIN, ...args], { name: "xterm-256color", cols: 80, rows: 60, cwd: root, env: ptyEnv });
+  let raw = "";
+  pty.onData((d) => { raw += d; });
+  const exitCode = await new Promise<number>((done) => pty.onExit((e) => done(e.exitCode)));
+  return { exitCode, display: await screen(raw, 80, 60) };
+};
+/** Every line fits 80 columns, except one that is a single word, such as a long temporary root path,
+ *  which no wrap can break. */
+const fits80 = (display: string) => display.split("\n").every((line) => [...line].length <= 80 || !/\S\s+\S/.test(line.trim()));
 
 const created = run(["space", "create", "b4b", "--root", root]);
 check("rig: the space is prepared and not started", created.status === 0, shown(created));
@@ -70,15 +84,32 @@ const doctorAgain = run(["doctor", "auth", "--space", "b4b"]);
 check("running it again in the same root gives the same refusal and writes nothing",
   doctorAgain.status === 2 && doctorAgain.stdout + doctorAgain.stderr === plainText && JSON.stringify(readdirSync(join(root, ".cotal")).sort()) === JSON.stringify(cotalBefore), shown(doctorAgain));
 {
-  const ptyEnv: Record<string, string> = {};
-  for (const [k, v] of Object.entries(env)) if (v !== undefined) ptyEnv[k] = v;
-  const pty = ptySpawn(process.execPath, [BIN, "doctor", "auth", "--space", "b4b"], { name: "xterm-256color", cols: 80, rows: 60, cwd: root, env: ptyEnv });
-  let raw = "";
-  pty.onData((d) => { raw += d; });
-  const exitCode = await new Promise<number>((done) => pty.onExit((e) => done(e.exitCode)));
-  const display = await screen(raw, 80, 60);
-  check("on an 80-column terminal the refusal fits and names the same step", exitCode === 2 && display.split("\n").every((line) => [...line].length <= 80) && display.replace(/\s+/g, " ").includes(DOCTOR_HERE), { exitCode, display });
+  const { exitCode, display } = await at80(["doctor", "auth", "--space", "b4b"]);
+  check("on an 80-column terminal the refusal fits and names the same step", exitCode === 2 && fits80(display) && display.replace(/\s+/g, " ").includes(DOCTOR_HERE), { exitCode, display });
 }
+
+// Without --space the report is partial rather than a refusal, and its step was the same "run it in a
+// space's root". It now names the space this root prepared; the outcome, exit and scope stay.
+const BARE_HERE = '"b4b" is prepared but not started; start it with `cotal up`, then run `cotal doctor auth` again';
+const bareJson = run(["doctor", "auth", "--json"]);
+check("bare doctor auth in a prepared space's root stays partial, exit 4, with no space or credential scope established",
+  bareJson.status === 4 && bareJson.envelope?.outcome === "partial" && bareJson.envelope.error?.code === "OPERATION_PARTIAL" && bareJson.envelope.target?.root === realpathSync(root)
+    && bareJson.envelope.result?.space === null && bareJson.envelope.result?.credentialScope === "not-established", shown(bareJson));
+check("its step is to start the space this root prepared, then run the same command again", bareJson.envelope?.error?.remedy === BARE_HERE, bareJson.envelope?.error);
+const barePlain = run(["doctor", "auth"]);
+const bareText = barePlain.stdout + barePlain.stderr;
+check("the text report names that step", barePlain.status === 4 && bareText.includes(`↳ ${BARE_HERE}\n`) && !bareText.includes("in a space's root folder"), shown(barePlain));
+const bareAgain = run(["doctor", "auth"]);
+check("running it again gives the same report and writes nothing",
+  bareAgain.status === 4 && bareAgain.stdout + bareAgain.stderr === bareText && JSON.stringify(readdirSync(join(root, ".cotal")).sort()) === JSON.stringify(cotalBefore), shown(bareAgain));
+{
+  const { exitCode, display } = await at80(["doctor", "auth"]);
+  check("on an 80-column terminal the bare report fits and names the same step", exitCode === 4 && fits80(display) && display.replace(/\s+/g, " ").includes(BARE_HERE), { exitCode, display });
+}
+const bareFix = run(["doctor", "auth", "--fix", "--json"]);
+check("bare doctor auth --fix there still refuses AUTH_REQUIRED, exit 2, naming no space, with the step for --fix",
+  bareFix.status === 2 && bareFix.envelope?.error?.code === "AUTH_REQUIRED" && bareFix.envelope.target?.space === null
+    && bareFix.envelope.error.remedy === '"b4b" is prepared but not started; start it with `cotal up`, then run `cotal doctor auth --fix` again', shown(bareFix));
 
 // From another folder the step names the prepared root with --root, quoted so a shell reads it back
 // as that folder.
@@ -92,6 +123,23 @@ const shellRead = elsewhereStep ? spawnSync("/bin/sh", ["-c", `printf %s ${elsew
 check("doctor auth --space from another folder refuses AUTH_REQUIRED and names cotal up --root for the prepared root",
   doctorElsewhere.status === 2 && doctorElsewhere.envelope?.error?.code === "AUTH_REQUIRED" && elsewhereStep !== null, shown(doctorElsewhere));
 check("a shell reads that --root back as the prepared folder", shellRead !== undefined && existsSync(shellRead) && realpathSync(shellRead) === realpathSync(special), { remedy: doctorElsewhere.envelope?.error?.remedy, shellRead });
+
+// Bare doctor auth names only the space its own root prepared: not another prepared space, not the
+// selection, and none from a folder that holds no space.
+const selected = run(["use", "b4d"]);
+check("rig: the other prepared space is selected", selected.status === 0, shown(selected));
+const bareOwn = run(["doctor", "auth", "--json"]);
+check("bare doctor auth in the first root still names its own space, not the selected one", bareOwn.status === 4 && bareOwn.envelope?.error?.remedy === BARE_HERE, shown(bareOwn));
+const bareSpecial = run(["doctor", "auth", "--json"], special);
+check("in the second root it names that root's space, with no --root",
+  bareSpecial.status === 4 && bareSpecial.envelope?.error?.remedy === '"b4d" is prepared but not started; start it with `cotal up`, then run `cotal doctor auth` again', shown(bareSpecial));
+const noSpace = join(home, "no-space");
+mkdirSync(noSpace);
+const bareNone = run(["doctor", "auth", "--json"], noSpace);
+check("control: from a folder that holds no space it keeps the general step and names neither",
+  bareNone.status === 4 && bareNone.envelope?.error?.remedy === "run `cotal doctor auth` in a space's root folder; `cotal space` lists each space's root", shown(bareNone));
+const cleared = run(["use", "--clear"]);
+check("rig: the selection is cleared", cleared.status === 0, shown(cleared));
 
 const doctorUnknown = run(["doctor", "auth", "--space", "nosuch", "--json"]);
 check("control: a space nothing prepared or registered keeps the general step",
