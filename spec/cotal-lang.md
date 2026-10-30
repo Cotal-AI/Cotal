@@ -1007,6 +1007,35 @@ effect never race for a counter. Both counters are allocated synchronously at th
 await, which is the whole determinism argument: the allocating code is either sequential or already
 inside a deterministic namespace.
 
+#### Reusable helpers
+
+A plain function call does not open a journal scope. Calls to a helper whose turn is named `review`
+use the enclosing occurrence sequence: `/turn:review#0`, `/turn:review#1`, and so on. Inserting
+another call before them shifts their occurrences; naming the turn alone does not give each
+helper instance a stable key.
+
+Instantiate a reusable helper inside a named, single-branch `parallel`. Give each instance a
+distinct scope name and use a record branch key, even though no concurrency is needed:
+
+```js
+const reviewer = await spawn("reviewer")
+async function review(agent) {
+  return await turn(agent, { name: "review" })
+}
+const first = await parallel({ call: () => review(reviewer) }, { name: "panel-one" })
+const second = await parallel({ call: () => review(reviewer) }, { name: "panel-two" })
+log(first.call.status, second.call.status)
+```
+
+The turns now key as `/parallel:panel-one#0/b:call/turn:review#0` and
+`/parallel:panel-two#0/b:call/turn:review#0`. An earlier instance with a different scope name does
+not renumber either. Each wrapper adds one scope entry, and its result is under `.call`.
+Reusing the same scope name still advances that scope's occurrence counter.
+
+Keep required step names literal inside the helper; L3013 is unchanged. This convention gives
+instances separate namespaces, not an exemption from input-hash checks or the migration rules
+(§11.2). `once` is not a general-purpose replacement: it has the effect restrictions in §7.8.
+
 ### 10.3 The digest
 
 `digest(value)` is `"sha256:" + hex(SHA-256(canonical(value)))` where `canonical` is RFC 8785. The
