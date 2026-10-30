@@ -3,7 +3,7 @@
     "packages/core/smoke/anycast-request-status.smoke.ts"
   ],
   "command": "pnpm smoke:anycast-request-status:auth",
-  "completionMarker": "COTAL_SMOKE_SENTINEL cells=66",
+  "completionMarker": "COTAL_SMOKE_SENTINEL cells=69",
   "mutations": [
     {
       "file": "packages/core/src/anycast-requests.ts",

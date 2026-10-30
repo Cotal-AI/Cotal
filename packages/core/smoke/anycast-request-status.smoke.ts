@@ -533,6 +533,34 @@ try {
     { refreshed, t10c },
   );
 
+  // ── 11. the stated limit: a recreation inside a cancel's delete ───────────────────────────
+  // SPEC §8.1 states this as a limit. JetStream's delete names only the stream and the seq, so a
+  // recreation after the daemon read the creation time and before its delete lands on the new
+  // stream. These cells record that loss; a fence that ends it changes them and the limit text.
+  console.log("[11] a stream recreated inside a cancel's delete loses the new stream's request at that seq (the stated limit)");
+  const teardownJsm = await jetstreamManager(teardownNc);
+  let replacement: { seq: number; id: string } | undefined;
+  const racingJsm = {
+    streams: {
+      info: (name: string) => dJsm.streams.info(name),
+      getMessage: (name: string, q: { seq: number }) => dJsm.streams.getMessage(name, q),
+      deleteMessage: async (name: string, seq: number, erase?: boolean) => {
+        await teardownJsm.streams.delete(name);
+        await setupSpaceStreams({ servers: SERVERS, space, creds: provCreds });
+        for (let i = 1; i < seq; i++) await sender.ep.anycastAttributed("idle", `refill ${i}`);
+        const r = await sender.ep.anycastAttributed("idle", "the new stream's request at that seq");
+        replacement = { seq: r.ack.seq, id: r.msg.id };
+        return dJsm.streams.deleteMessage(name, seq, erase);
+      },
+    },
+  } as unknown as JetStreamManager;
+  const auth11 = new AnycastRequestAuthority({ jsm: racingJsm, kv, stream: taskStream(space), send: async () => {}, mayAct: () => true, onError: () => {} });
+  const s11 = await sender.ep.anycastAttributed("idle", "cancelled while the stream is recreated");
+  const c11 = await auth11.cancel(sender.id, { seq: s11.ack.seq, id: s11.msg.id });
+  check("11a the new stream stored another request at the cancelled seq", replacement?.seq === s11.ack.seq && replacement.id !== s11.msg.id, { replacement, cancelled: s11.ack.seq });
+  check("11b the cancel reads deleted", c11.state === "cancelled" && c11.removal === "deleted", c11);
+  check("11c the new stream's request at that seq is gone", !(await queued(s11.ack.seq)));
+
   check("no unexpected endpoint errors on the sender", sender.errors.length === 0, sender.errors);
 } catch (e) {
   check(`scenario threw: ${(e as Error).stack ?? (e as Error).message}`, false);
