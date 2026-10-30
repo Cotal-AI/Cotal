@@ -8,7 +8,7 @@ audience: "operators"
 import { Card, Cards } from 'fumadocs-ui/components/card';
 
 Inspect agents, channels, and messages in a [running mesh](run-a-mesh.mdx).
-The displays use the same [MeshView](mesh-view.md) observer model.
+The terminal console and stream use the [MeshView](mesh-view.mdx) observer model.
 Choose one for your current task:
 
 <Cards>
@@ -40,8 +40,8 @@ The credential and display determine what you can see:
 
 | Display | Visibility |
 | --- | --- |
-| Console TUI | Requests admin observer access by default under auth. An explicit `--creds` file restricts observation to its grants. |
-| Console line stream | Shows only the chat subtree, even with an admin credential. |
+| Console TUI | Selects only chat when credentials or a user bearer are present, even with admin grants. Without either, uses a whole-space tap on an open mesh. |
+| Console line stream | Uses the same chat or whole-space tap selection as the TUI. |
 | Dashboard service | Uses the protected file you supply and its grants. It does not mint a replacement admin credential. |
 
 A chat-only credential hides DM views. A restricted read does not prove that a peer or DM is absent.

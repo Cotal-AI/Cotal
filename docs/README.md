@@ -155,9 +155,9 @@ Task dispatch:
 | [Mesh manifest](manifest.mdx) | Every field of `cotal.yaml`. |
 | [Channels & permissions](channels-and-permissions.mdx) | The three access verbs and how to grant them. |
 | [Config & env](config.mdx) | The config file, the operator-facing `COTAL_*` variables, the on-disk layout. |
-| [MeshView](mesh-view.md) | The observer model behind console and web (reference implementation). |
-| [Glossary](glossary.md) | Definitions of every term. |
-| [cotal-lang card](lang-card.md) | The one-page cotal-lang card: effects and results, the await rule, branch keys, top refusals. |
+| [MeshView](mesh-view.mdx) | The terminal console and stream observer API. |
+| [Glossary](glossary.mdx) | Definitions of every term. |
+| [cotal-lang card](lang-card.mdx) | The one-page cotal-lang card: effects and results, the await rule, branch keys, top refusals. |
 
 ### CLI command reference
 

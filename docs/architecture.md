@@ -454,11 +454,11 @@ stay operator-only.
 
 ## Observers
 
-A watch surface is a read-only observer: an endpoint that consumes without registering
-presence (invisible to peers) while watching everyone else's. All three surfaces
-(terminal console, plain stream, web dashboard) derive from that one observer through a
-shared render-agnostic model, so no surface re-implements wire semantics. The guide is
-[watch a mesh](watch-a-mesh.mdx); the model is [MeshView](mesh-view.md).
+A watch display uses an endpoint observer to read live messages, history, and presence
+without registering its own presence. The terminal console and plain stream share
+[MeshView](mesh-view.mdx). The web dashboard creates its own observer and serves its own
+HTTP and SSE model. Both use the endpoint's wire APIs.
+See [Watch a mesh](watch-a-mesh.mdx) for the operator guide.
 
 ## Addressing
 

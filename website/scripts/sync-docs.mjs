@@ -82,7 +82,7 @@ const navigation = [
     ]),
     group('Agent tools', [page('docs/mcp-tools.mdx')]),
     group('Configuration', ['agent-files', 'manifest', 'channels-and-permissions', 'config'].map(name => page(`docs/${name}.mdx`))),
-    group('Models', ['mesh-view', 'lang-card', 'glossary'].map(name => page(`docs/${name}.md`))),
+    group('Models', ['mesh-view', 'lang-card', 'glossary'].map(name => page(`docs/${name}.mdx`))),
   ] },
 ];
 const publications = [];

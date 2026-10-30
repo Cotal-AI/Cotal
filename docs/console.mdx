@@ -128,9 +128,9 @@ A supported authenticated participant profile with presence, chat, and inbox acc
 ## Check visibility limits
 
 The console requests admin observer access by default on an authenticated mesh.
-That view can include chat, DMs, and anycast when `dmVisible` is true.
-An explicit `--creds` file restricts observation to that file's grants, and a chat-only credential hides DM views.
+Both the TUI and line stream select only the chat subtree whenever credentials or a user bearer are present, including with admin grants.
+An explicit `--creds` file can restrict reads further to its grants.
 
-The line stream deliberately shows only the chat subtree, even with an admin credential.
+On an open mesh without credentials or a user bearer, both displays use a whole-space tap that can include DMs and anycast.
 A restricted read does not prove that hidden peers or DMs are absent.
-See [Identity](identity-and-auth.md) for observer and admin scopes and [MeshView](mesh-view.md) for the shared model.
+See [Identity](identity-and-auth.md) for observer and admin scopes and [MeshView](mesh-view.mdx) for the console and stream model.

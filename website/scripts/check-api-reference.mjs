@@ -7,10 +7,11 @@ import { assertPlainMarkdown } from './assert-plain-markdown.mjs';
 const read = path => readFileSync(new URL(path, import.meta.url), 'utf8');
 const artifact = path => read(`../dist/${path}`);
 const configuration = JSON.parse(read('./fixtures/configuration-anchors.json'));
-const legacy = { ...JSON.parse(read('./fixtures/api-reference-anchors.json')), ...configuration };
+const models = JSON.parse(read('./fixtures/models-anchors.json'));
+const legacy = { ...JSON.parse(read('./fixtures/api-reference-anchors.json')), ...configuration, ...models };
 const cli = JSON.parse(read('./fixtures/cli-fragments.json'));
 const focused = [...new Set(Object.values(cli))];
-const slugs = ['overview', 'cli', 'mcp-tools', ...focused, ...Object.keys(configuration)];
+const slugs = ['overview', 'cli', 'mcp-tools', ...focused, ...Object.keys(configuration), ...Object.keys(models)];
 const attr = (node, name) => node.attrs?.find(attribute => attribute.name === name)?.value;
 const elements = (node, result = []) => {
   if (node.tagName) result.push(node);
@@ -31,11 +32,11 @@ for (const slug of slugs) {
   assert(markdown.startsWith('# '), `Markdown title: ${slug}`);
   assertPlainMarkdown(markdown, slug);
   assert(!/^> \*\*Reference\*\*/m.test(markdown), `classification outside prose: ${slug}`);
-  if (Object.hasOwn(configuration, slug)) {
-    const document = await readDocument(new URL(`../../docs/${slug}.mdx`, import.meta.url).pathname);
-    assert.equal(document.format, 'mdx', `direct MDX reference: ${slug}`);
-    assert.equal(document.metadata.kind, 'Reference', `reference metadata: ${slug}`);
-    assert(document.metadata.audience, `audience metadata: ${slug}`);
+  const document = await readDocument(new URL(`../../docs/${slug}.mdx`, import.meta.url).pathname);
+  assert.equal(document.format, 'mdx', `direct MDX reference: ${slug}`);
+  assert.equal(document.metadata.kind, 'Reference', `reference metadata: ${slug}`);
+  assert(document.metadata.audience, `audience metadata: ${slug}`);
+  if (Object.hasOwn(configuration, slug) || slug === 'mesh-view' || slug === 'lang-card') {
     assert(nodes.some(node => node.tagName === 'table'), `native reference tables: ${slug}`);
   }
 }
@@ -63,6 +64,8 @@ assert.equal(overviewCards.length, 9, 'nine native API overview destinations');
 assert.equal(index.filter(node => node.tagName === 'div' && attr(node, 'data-card') === 'true').length, 6, 'six native CLI groups without nested anchors');
 for (const slug of focused) assert(artifact('api-reference/cli.md').includes(`](/api-reference/${slug}/)`), `CLI group links export: ${slug}`);
 const { navigation } = await import('../src/generated/navigation.mjs');
+const pages = JSON.parse(read('../src/generated/pages.json'));
+assert.deepEqual(pages.filter(page => page.section === 'api-reference').map(page => page.slug).sort(), [...slugs].sort(), 'every published API reference is checked as direct MDX');
 const homes = new Map();
 const visit = (nodes, path) => {
   for (const node of nodes) {
@@ -74,6 +77,7 @@ for (const section of navigation) visit(section.children, [section.title]);
 for (const slug of slugs) assert.equal(homes.get(`/api-reference/${slug}/`)?.[0], 'API Reference', `reference navigation home: ${slug}`);
 for (const slug of focused) assert(homes.get(`/api-reference/${slug}/`).includes('CLI'), `CLI topic grouping: ${slug}`);
 for (const slug of Object.keys(configuration)) assert(homes.get(`/api-reference/${slug}/`).includes('Configuration'), `configuration grouping: ${slug}`);
+for (const slug of Object.keys(models)) assert(homes.get(`/api-reference/${slug}/`).includes('Models'), `models grouping: ${slug}`);
 assert(artifact('_redirects').includes('/api-reference /api-reference/overview/ 301'), 'API root opens the overview');
 assert(artifact('api-reference/overview/index.html').includes('href="/api-reference/overview/"'), 'API tab opens overview');
-console.log(`check-api-reference: ${focused.length} focused CLI pages, ${Object.keys(configuration).length} configuration references, overview, MCP catalog, ${Object.values(legacy).flat().length} legacy fragments, native Cards, Markdown and navigation verified`);
+console.log(`check-api-reference: ${slugs.length} direct MDX references, ${Object.values(legacy).flat().length} legacy fragments, native Cards, Markdown and navigation verified`);
