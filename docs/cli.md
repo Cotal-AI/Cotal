@@ -6221,7 +6221,10 @@ close was confirmed and it was retired, or was an open-mesh session with nothing
 exits 3 when the retirement outcome is unknown, its connection close was not confirmed, or no close
 was observed. A session that cannot reconnect because its inbox is gone from the broker, as when the
 space restarted and retired it while the connection was down, ends by itself with that reason and
-exits 5 when its close is confirmed. In the terminal view Ctrl-C and Ctrl-D leave. With `--plain` or `--stdio`, Ctrl-C ends
+exits 5 when its close is confirmed. On a static mesh, leaving waits up to 30 seconds for the
+manager to answer the retirement. When the delivery daemon does not answer, the manager waits 15
+seconds for it, then reports the retirement pending and names the daemon, and the session exits 4.
+In the terminal view Ctrl-C and Ctrl-D leave. With `--plain` or `--stdio`, Ctrl-C ends
 input and the session closes, then exits 130. A terminate signal exits 143 and a hangup 129. A
 signal that arrives before the view starts is held: no session is opened if admission has not
 begun, and a session admitted meanwhile is closed at once. The exit status is still the signal's.
