@@ -85,6 +85,18 @@ export function wrapText(s: string, width: number): string[] {
   return out.length ? out : [""];
 }
 
+// The longest run of whole grapheme clusters from the start of s that fits width terminal columns.
+export function clipText(s: string, width: number): string {
+  let head = "";
+  let used = 0;
+  for (const { segment } of graphemes.segment(s)) {
+    used += displayWidth(segment);
+    if (used > width) break;
+    head += segment;
+  }
+  return head;
+}
+
 /** A row of {@link wrapFacts}: its pieces, each marked when it is a dated fact. */
 export type FactRow = { text: string; dated: boolean }[];
 
