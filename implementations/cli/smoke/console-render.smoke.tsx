@@ -17,7 +17,7 @@ import React from "react";
 import { EventEmitter } from "node:events";
 import { readFileSync } from "node:fs";
 import { PassThrough, Writable } from "node:stream";
-import { peerLabel, type AgentCard, type CotalEndpoint, type Presence } from "@cotal-ai/core";
+import { chatSubject, peerLabel, type AgentCard, type CotalEndpoint, type Presence } from "@cotal-ai/core";
 import { displayWidth } from "@cotal-ai/workspace";
 import { App } from "../src/console/app.js";
 import { StatusBar } from "../src/console/ui/StatusBar.js";
@@ -565,7 +565,12 @@ console.log("11. a detail returns the feed to the message and viewport it left")
     async start() {}
     async stop() {}
     getRoster(): Presence[] { return []; }
-    tap() {}
+    deliver?: (subject: string, msg: unknown) => void;
+    tap(cb: (subject: string, msg: unknown) => void) { this.deliver = cb; }
+    say(n: number) {
+      this.deliver?.(chatSubject(this.space, "local", "cx", "general"), { id: "place-" + n, ts: Date.now(),
+        from: { id: "local.cx", name: "cx" }, channel: "general", parts: [{ kind: "text", text: `m${n} ` + "word ".repeat(20) }] });
+    }
     async listChannels() { return [{ channel: "general", messages: 5 }]; }
     async channelHistory() {
       return [1, 2, 3, 4, 5].map((n) => ({ id: "place-" + n, ts: Date.now() - 5000 + n,
@@ -585,7 +590,8 @@ console.log("11. a detail returns the feed to the message and viewport it left")
   const stdout = new Writable({ write(c, _e, cb) { frames.push(strip(String(c))); cb(); } }) as unknown as NodeJS.WriteStream;
   // A narrow 47x24 terminal: five messages of a head and three body rows overflow the feed's 10 rows.
   stdout.columns = 47; stdout.rows = 24; stdout.isTTY = true;
-  const app = render(<App ep={new Observer() as unknown as CotalEndpoint} canWrite={false} canControl={false} />,
+  const ep = new Observer();
+  const app = render(<App ep={ep as unknown as CotalEndpoint} canWrite={false} canControl={false} />,
     { stdin, stdout, debug: true, patchConsole: false, exitOnCtrlC: false });
   const press = async (keys: string, marker: string) => {
     frames.length = 0;
@@ -625,6 +631,19 @@ console.log("11. a detail returns the feed to the message and viewport it left")
     await press("\x1b", "feed · ");
     await press("]", "feed · general");
     check("a channel change still jumps to the newest", (await opened()) === "m5");
+    // Messages that arrive while a detail is open: at the bottom the feed follows them, scrolled up it stays.
+    ep.say(6);
+    await wait(400);
+    const tail = feedPane(await press("\x1b", "feed · "));
+    check("at the bottom, the feed follows a message that arrived during a detail",
+      tail.includes("m6 word") && !tail.includes("more · G to follow"), tail);
+    const anchored = feedPane(await press("kk", "↓2 more"));
+    await opened();
+    ep.say(7);
+    await wait(400);
+    const still = feedPane(await press("\x1b", "feed · "));
+    check("scrolled up, the feed keeps its rows when a message arrives during a detail",
+      still.split("\n").slice(1).join("\n") === anchored.split("\n").slice(1).join("\n") && still.includes("↓6 more"), { anchored, still });
   } finally {
     app.unmount(); app.cleanup();
   }

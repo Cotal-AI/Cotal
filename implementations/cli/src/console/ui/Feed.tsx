@@ -142,8 +142,10 @@ export function Feed({
   const maxTop = Math.max(0, rows.length - room);
   const { top, setTop, sel, setSel, placed } = view;
   // Tail-follow: if parked at the bottom, ride new rows down; else stay anchored to what you're reading.
+  // The old bottom is read here, since React may run the updater after it has been replaced.
   useEffect(() => {
-    setTop((t) => (t >= placed.current.maxTop ? maxTop : Math.min(t, maxTop)));
+    const followed = placed.current.maxTop;
+    setTop((t) => (t >= followed ? maxTop : Math.min(t, maxTop)));
     placed.current.maxTop = maxTop;
   }, [maxTop]);
   // Jump to the newest when the channel filter or query changes, not when the Feed mounts again.
