@@ -35,6 +35,8 @@ function prepare(name) {
 try {
   for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
   process.env.CI = "true";
+  // pnpm disables nested verification in script children; this fixture exercises its install mode.
+  process.env.pnpm_config_verify_deps_before_run = "install";
   process.env.FORCE_COLOR = "0";
   process.env.COREPACK_HOME = corepackHome;
   process.env.npm_config_store_dir = join(root, "store");
