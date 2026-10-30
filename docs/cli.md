@@ -6591,7 +6591,8 @@ which a long activity can cause below 80 columns, where the roster has at most f
 The count leaves out those cut rows, since it counts whole seats.
 The agent detail's recent traffic cuts each preview by columns too, never inside a character, and a
 preview that leaves any of its text out ends with `…`. Closing a detail returns the feed to the
-message and scroll position it showed.
+message and scroll position it showed, and the roster to the seat it had selected, or to that row if
+the seat has left.
 
 <a id="web"></a>
 

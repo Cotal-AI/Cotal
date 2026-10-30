@@ -1,4 +1,4 @@
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { Box, Text, useFocus, useInput } from "ink";
 import { peerLabel, presenceText, type Presence } from "@cotal-ai/core";
 import { activityAge, presenceFacts } from "../../ui.js";
@@ -90,9 +90,17 @@ function matches(p: Presence, q: string): boolean {
   return [p.card.name, p.card.role ?? "", p.activity ?? ""].join(" ").toLowerCase().includes(q);
 }
 
+/** The roster's selected seat and its row, held by the App across the Roster's unmount while a
+ *  detail or another full-screen view is open. */
+export function useRosterView() {
+  return useRef<{ id?: string; index: number }>({ index: 0 });
+}
+
 /** Always-visible roster: agents (status dot + color + activity + age) then endpoints (dimmed).
- *  A selection cursor (↑/↓) highlights one row; `Enter` opens its detail; `/` filters the list. */
+ *  A selection cursor (↑/↓) highlights one row; `Enter` opens its detail; `/` filters the list.
+ *  `view` keeps the selected seat, and with it the window, while the Roster is unmounted. */
 export function Roster({
+  view,
   agents,
   endpoints,
   query,
@@ -106,6 +114,7 @@ export function Roster({
   harness,
   onCompose,
 }: {
+  view: ReturnType<typeof useRosterView>;
   agents: Presence[];
   endpoints: Presence[];
   query: string;
@@ -129,7 +138,13 @@ export function Roster({
   const q = query.trim().toLowerCase();
   const filt = (l: Presence[]) => (q ? l.filter((p) => matches(p, q)) : l);
   const list = [...filt(agents), ...filt(endpoints)];
-  const { index: selClamped, up, down } = useListCursor(list.length);
+  // Mount on the seat the App last held, wherever it sorts now, or on its row if it has left.
+  const held = list.findIndex((p) => p.card.id === view.current.id);
+  const { index: selClamped, up, down } = useListCursor(list.length, { start: held < 0 ? view.current.index : held });
+  const selectedId = list[selClamped]?.card.id;
+  useEffect(() => {
+    view.current = { id: selectedId, index: selClamped };
+  }, [view, selectedId, selClamped]);
 
   useInput(
     (input, key) => {
