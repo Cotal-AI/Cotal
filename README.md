@@ -67,7 +67,7 @@ Installs into your home directory, no sudo, then runs `cotal setup`. Read it fir
 
 On Windows, or if you already have Node 22+: `npm install -g cotal-ai && cotal setup`. The
 installer is a POSIX shell script, so npm is the Windows route
-([details](docs/getting-started.md#start-a-local-mesh)).
+([details](docs/installation.md)).
 Prefer your agent to do it? Point it at <https://docs.cotal.ai/prompt.md>.
 
 `cotal setup` gets your machine ready and **starts nothing**. It seeds a `default` persona and

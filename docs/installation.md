@@ -1,0 +1,112 @@
+# Install Cotal
+
+> Informative. For first-time users.
+
+Install the `cotal` command on your machine, then use the Quickstart to create your first space.
+Choose the shell installer on macOS or Linux, or use npm if you already have Node.js.
+
+## Use the shell installer
+
+The installer supports x64 and arm64 machines.
+On Linux, use a glibc distribution such as Debian, Ubuntu, Fedora, or Arch.
+Alpine and other musl distributions are not supported.
+
+Read the [installer script](https://get.cotal.ai) before you run it.
+To install without opening guided setup:
+
+```bash
+curl -fsSL https://get.cotal.ai | sh -s -- --no-setup
+```
+
+Run the installer as your own user, without sudo.
+It installs inside your home directory and checks downloaded Node.js files against their published SHA-256 sums.
+It uses a suitable Node.js 22 or newer already on your machine, or installs one for Cotal.
+
+The launcher goes in `~/.local/bin/cotal`.
+The install root defaults to `${XDG_DATA_HOME:-~/.local/share}/cotal`.
+The installer updates your shell configuration to add the launcher directory to PATH.
+Its files are not writable by other users.
+
+To install and open guided setup in one command instead, omit `--no-setup`:
+
+```bash
+curl -fsSL https://get.cotal.ai | sh
+```
+
+For the manual Quickstart, choose not to start a session at the end of setup.
+The Quickstart starts the prepared space separately.
+
+## Install with npm
+
+If you already have Node.js 22 or newer, run:
+
+```bash
+npm install -g cotal-ai
+```
+
+Use this route on Windows.
+The shell installer does not support Windows shells.
+You can also use the shell installer inside WSL.
+
+Cotal includes a `nats-server` binary for its local broker.
+If you put your own `nats-server` on PATH, Cotal uses that binary instead.
+It must be version 2.12 or newer.
+An older deployment with a file-backed presence bucket needs 2.14.5 or newer to avoid a known write failure.
+See [Run a mesh](run-a-mesh.md#the-stack) before reusing an existing broker.
+
+## Check the installation
+
+Open a new terminal, then run:
+
+```bash
+cotal version
+```
+
+This reports the Cotal binary version and the installed extension versions.
+If the command is missing, check that the installer's launcher directory is on PATH.
+
+If an older installation runs, use the absolute launcher path printed by the installer.
+On macOS and Linux, `type -a cotal` lists shell aliases, functions, and executable candidates.
+Correct PATH order and refresh your shell's command cache, or open a new terminal.
+Do not use older force-seed instructions to repair command selection.
+
+## Choose installer options
+
+Pass shell-installer options after `sh -s --`:
+
+```bash
+curl -fsSL https://get.cotal.ai | sh -s -- --dry-run
+```
+
+The options used most often are:
+
+| Option | Effect |
+|---|---|
+| `--dry-run` | Reports the planned changes without making them. |
+| `--no-setup` | Installs Cotal without opening guided setup. |
+| `--no-modify-path` | Prints the PATH change instead of editing shell configuration. |
+
+Use `--help` for the full list.
+
+## Remove Cotal
+
+Stop the spaces and agents that use this installation before removing its files.
+For an npm installation, run:
+
+```bash
+npm uninstall -g cotal-ai
+```
+
+For a shell installation with the default locations, remove `~/.local/bin/cotal` and the `cotal` directory under `${XDG_DATA_HOME:-~/.local/share}`.
+If you selected custom install locations, remove those locations instead.
+Delete the `# cotal` block the installer added to your shell configuration.
+
+Deleting `~/.cotal` also deletes machine-local mesh records, agent data, and credentials.
+Keep or back up that data unless you intend to remove it.
+Project folders can hold their own `.cotal` directories.
+Removing the installation does not remove those project files.
+
+## Next steps
+
+- [Quickstart](getting-started.md). Start a local space and launch an agent.
+- [Configure a space](setup.md). Prepare a space with guided setup or command-line flags.

@@ -34,10 +34,16 @@ Docs live at `/docs/<page>/`; API Reference lives at `/api-reference/<page>/`.
 The root opens What is Cotal through a Pages redirect. Old page and Markdown
 URLs redirect to their new section. Changelog will be added later.
 
-The group map in `scripts/sync-docs.mjs` controls publication and order and must
-match the pages linked by `docs/README.md`. Prose stays Markdown; pages with
-components use MDX. The Quickstart card is React; its Markdown export retains
-the original plain text fence.
+The navigation tree in `scripts/sync-docs.mjs` controls publication and order.
+Its published page set must match `docs/README.md`. Guides and Concepts contain
+collapsible subsections. A page has one navigation home, and its subsection does
+not change its URL.
+
+Canonical prose stays Markdown. The content compiler uses Fumadocs steps for the
+numbered Quickstart sections and cards for Start here next-step lists. Heading IDs
+come from the original Markdown. Raw Markdown and the agent bundle retain the
+plain text, links, and code fences. The Quickstart prompt card also retains its
+plain fence in the Markdown export.
 
 ## Agent endpoints
 

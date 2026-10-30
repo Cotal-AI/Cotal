@@ -35,8 +35,10 @@ if (!quickstartHtml.includes('agent-prompt')) fail('quickstart lost its prompt c
 const quickstartTwin = readFileSync(join(dist, 'docs/getting-started.md'), 'utf8');
 if (!quickstartTwin.includes('prompt.md, then set up Cotal'))
   fail('quickstart twin lost the setup prompt');
+if (!quickstartTwin.includes('/docs/setup/')) fail('quickstart lost its link to setup instructions');
+const setupTwin = readFileSync(join(dist, 'docs/setup.md'), 'utf8');
 for (const cmd of ['npx cotal-ai setup --destination local --harness claude --project . --space main --no-input', 'npx cotal-ai up --root . --space main --detach']) {
-  if (!quickstartTwin.includes(cmd)) fail(`quickstart lost the runbook command: ${cmd}`);
+  if (!setupTwin.includes(cmd)) fail(`setup lost the runbook command: ${cmd}`);
 }
 for (const f of ['docs/getting-started.md', 'llms-full.txt', 'llms-small.txt']) {
   if (readFileSync(join(dist, f), 'utf8').includes('AgentPrompt'))

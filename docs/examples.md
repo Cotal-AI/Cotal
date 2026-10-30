@@ -1,32 +1,34 @@
 # Examples
 
-> **Guide** (informative) · **For:** everyone
+> Informative. For anyone looking for a working example.
 
-Examples live in [`examples/`](../examples), one self-contained folder each. They consume the
-protocol (`packages/*`) through one or more implementations and add nothing to it. An example only
-*configures and orchestrates* (roles, config, space name, runbook, optional driver) and picks which
-extensions to register. It never adds new message kinds, subjects, or endpoint methods; those
-belong in `@cotal-ai/core`, generalized. Dependency direction is one-way:
-`examples → implementations → workspace → core`, never back. Each folder documents itself in its own
-README.
+Try an example to see how agents use Cotal to work together.
+Each example has its own README with prerequisites and run commands.
+These examples use a source checkout, so follow those instructions rather than assuming the installed CLI is enough.
 
-| Example | What it shows |
+## Start with peer messaging
+
+[Lateral coordination](../examples/01-lateral-coordination/README.md) shows peers joining a space, discovering each other, and sending channel, direct, and role-addressed messages.
+Start here to see the messaging model without first setting up a team of coding agents.
+It needs Node.js, pnpm, and a NATS server, as its README describes.
+
+## Choose another example
+
+| Example | What you can try |
 |---|---|
-| [01: Lateral Coordination](../examples/01-lateral-coordination/README.md) | Role-specialized endpoints join one shared space and coordinate laterally: presence and discovery, all three addressing modes (multicast / unicast / anycast), live state, observability, graceful leave, and late join. The starting point. |
-| [02: Self-improving Console](../examples/02-self-improving-console/README.md) | A swarm of Claude Code agents (with an OpenCode/GPT agent reviewing their work) ships a live activity-pulse sparkline into Cotal's own console, settling the data↔UI contract peer-to-peer over the mesh. Agents improving the system that coordinates them. |
-| [03: Personas](../examples/03-personas/README.md) | Ten character personas join one space and talk in real time: the same primitives (presence, channels, DMs) as the worker examples, but the peers are personalities, not roles. Research drops and derived personas are gitignored; only the READMEs and the template are committed. |
-| [04: Frontier Faces](../examples/04-frontier-faces/README.md) | Panelist personas as animated 32×32 pixel-art OpenCode agents: each thinks, lip-syncs its streamed reply, and steers its own expression. Two front-ends onto the *same* live mesh (a browser studio and a tmux wall), both spawning real agents that coordinate as lateral peers. |
-| [05: Scale Showcase](../examples/05-scale-showcase/README.md) | Thousands of real endpoints on one live mesh, drawn as a GPU galaxy. Each one publishes multicast, DM and anycast traffic, and a single read-only observer taps the mesh to render who talks to whom and on which channels. |
-| [06: Feed Agent](../examples/06-feed-agent/README.md) | A deterministic pump polls public HTTP(S) RSS/Atom and iCal feeds, labels every item as untrusted remote data, and publishes into a replayed channel. A separate control channel carries feedkeeper requests, while a curator reposts only the items worth attention. Private destinations and oversized responses are refused. |
-| [07: Issue Orchestrator](../examples/07-issue-orchestrator/README.md) | Two cotal-lang programs resolve GitHub issues as durable runs, one lane per issue: a worker reproduces and fixes in its own worktree, two reviewers from different model families grade the PR at an exact sha, and a merger merges only that sha. `pnpm check` runs four scripted outcomes with no broker. |
+| [Self-improving console](../examples/02-self-improving-console/README.md) | A coding team changes Cotal's console while a reviewer checks its work. The launcher uses cmux; other runtimes need changes described in its README. |
+| [Personas](../examples/03-personas/README.md) | Create character personas and let them talk in one channel. The committed template is the starting point for your own persona files. |
+| [Frontier faces](../examples/04-frontier-faces/README.md) | Watch OpenCode agents as animated avatars in a browser studio or a tmux display. |
+| [Scale showcase](../examples/05-scale-showcase/README.md) | Watch traffic between thousands of endpoints in a browser visualization. |
+| [Feed agent](../examples/06-feed-agent/README.md) | Publish public feed and calendar updates to a channel, then have agents manage and select them. |
+| [Issue orchestrator](../examples/07-issue-orchestrator/README.md) | Run durable workflows for issue triage, implementation, review, and merge. This example needs a static-auth mesh, authenticated GitHub CLI, and the listed agent applications. |
 
-Example 02 running, a Claude Code swarm with the live console beside it:
+The self-improving console example has a live activity view beside the agent sessions:
 
-![Four Claude Code agents (orchestrator, backend, tui-designer, manager) coordinating on the Cotal mesh, with the live cotal console on the left and the agents in cmux tabs on the right](../assets/example-02.webp)
+![A coding team with a live console beside its agent sessions](../assets/example-02.webp)
 
-Example 04 on the tmux wall, pixel-art OpenCode agents lip-syncing their streamed replies:
+## Next steps
 
-![The Frontier Tower faces demo: animated pixel-art OpenCode agents on the Cotal mesh, with the live cotal console beside them](../assets/example-04-frontier.webp)
-
-To build your own, start from [Define a team](define-a-team.md) (declare a team in `cotal.yaml`) or
-[Build a client](build-a-client.md) (drive the endpoint API directly).
+- [Quickstart](getting-started.md). Start a local mesh before trying a full example.
+- [Define a team](define-a-team.md). Declare your agents and channels in a `cotal.yaml` file.
+- [Build a client](build-a-client.md). Connect your own application to a space.

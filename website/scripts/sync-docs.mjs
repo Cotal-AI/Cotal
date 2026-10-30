@@ -41,79 +41,47 @@ const QUICKSTART_SRC = 'docs/getting-started.md';
 // excluded from the sync and links to it go to the site root.
 const slugFor = (name) => name.toLowerCase();
 
-// Source files in intended reading order → sidebar groups (the six-section IA).
-const groups = [
-  {
-    label: 'Start here',
-    files: ['docs/what-is-cotal.md', 'docs/getting-started.md'],
-  },
-  {
-    // Three lanes, in order: operators → connector users → protocol implementers
-    // (mirrors docs/README.md's Guides lanes).
-    label: 'Guides',
-    files: [
-      'docs/run-a-mesh.md',
-      'docs/define-a-team.md',
-      'docs/watch-a-mesh.md',
-      'docs/deploy.md',
-      'docs/UPGRADING.md',
-      'docs/examples.md',
-      'docs/connectors.md',
-      'docs/connect-claude.md',
-      'docs/connect-opencode.md',
-      'docs/connect-codex.md',
-      'docs/connect-hermes.md',
-      'docs/connect-jcode.md',
-      'docs/connect-pi.md',
-      'docs/authoring-a-connector.md',
-      'docs/build-a-client.md',
-      'docs/embedding.md',
-    ],
-  },
-  {
-    label: 'Concepts',
-    files: [
-      'docs/architecture.md',
-      'docs/control-surface.md',
-      'docs/workflows.md',
-      'docs/spaces.md',
-      'docs/transport.md',
-      'docs/presence-and-delivery.md',
-      'docs/identity-and-auth.md',
-      'docs/delivery-daemon.md',
-      'docs/security.md',
-    ],
-  },
-  {
-    label: 'Reference',
-    files: [
-      'docs/cli.md',
-      'docs/mcp-tools.md',
-      'docs/agent-files.md',
-      'docs/manifest.md',
-      'docs/channels-and-permissions.md',
-      'docs/config.md',
-      'docs/mesh-view.md',
-      'docs/lang-card.md',
-      'docs/glossary.md',
-    ],
-  },
-  {
-    label: 'Specification',
-    files: ['SPEC.md'],
-  },
-  {
-    label: 'Project',
-    files: ['docs/roadmap.md', 'docs/release.md', 'docs/stability.md', 'docs/setup-internals.md'],
-  },
+const page = (source) => ({ kind: 'page', source });
+const group = (title, children) => ({ kind: 'group', title, children });
+const navigation = [
+  { section: 'docs', title: 'Docs', children: [
+    group('Start here', ['what-is-cotal', 'installation', 'getting-started', 'examples'].map(name => page(`docs/${name}.md`))),
+    group('Guides', [
+      group('Operate a mesh', ['run-a-mesh', 'setup', 'define-a-team', 'watch-a-mesh', 'deploy', 'UPGRADING'].map(name => page(`docs/${name}.md`))),
+      group('Connect agents', ['connectors', 'connect-claude', 'connect-opencode', 'connect-codex', 'connect-hermes', 'connect-jcode', 'connect-pi'].map(name => page(`docs/${name}.md`))),
+      group('Build integrations', ['authoring-a-connector', 'build-a-client', 'embedding'].map(name => page(`docs/${name}.md`))),
+    ]),
+    group('Concepts', [
+      group('Fundamentals', ['architecture', 'spaces', 'transport'].map(name => page(`docs/${name}.md`))),
+      group('Messaging', ['presence-and-delivery', 'delivery-daemon'].map(name => page(`docs/${name}.md`))),
+      group('Security', ['identity-and-auth', 'security'].map(name => page(`docs/${name}.md`))),
+      group('Agent coordination', ['control-surface', 'workflows'].map(name => page(`docs/${name}.md`))),
+    ]),
+    group('Specification', [page('SPEC.md')]),
+    group('Project', ['roadmap', 'release', 'stability', 'setup-internals'].map(name => page(`docs/${name}.md`))),
+  ] },
+  { section: 'api-reference', title: 'API Reference', children: [
+    group('Reference', ['cli', 'mcp-tools', 'agent-files', 'manifest', 'channels-and-permissions', 'config', 'mesh-view', 'lang-card', 'glossary'].map(name => page(`docs/${name}.md`))),
+  ] },
 ];
-
-const sectionFor = (rel) => groups.find(g => g.files.includes(rel))?.label === 'Reference' ? 'api-reference' : 'docs';
-const sources = groups.flatMap((g) => g.files);
-
-// Slugs we publish, keyed by source path so a design note cannot take the route of a
-// published page that shares its name.
-const knownSlugs = new Map(sources.map((rel) => [rel, `${sectionFor(rel)}/${slugFor(basename(rel).replace(/\.md$/, ''))}`]));
+const publications = [];
+const collectPages = (children, section) => {
+  for (const node of children) {
+    if (node.kind === 'group') collectPages(node.children, section);
+    else publications.push({ source: node.source, section });
+  }
+};
+for (const section of navigation) collectPages(section.children, section.section);
+const sources = publications.map(page => page.source);
+const sectionBySource = new Map(publications.map(page => [page.source, page.section]));
+if (sectionBySource.size !== sources.length) throw new Error('page appears more than once in navigation');
+const sectionFor = rel => {
+  const section = sectionBySource.get(rel);
+  if (!section) throw new Error(`page is absent from navigation: ${rel}`);
+  return section;
+};
+const knownSlugs = new Map(sources.map(rel => [rel, `${sectionFor(rel)}/${slugFor(basename(rel).replace(/\.md$/, ''))}`]));
+if (new Set(knownSlugs.values()).size !== sources.length) throw new Error('duplicate published page URL');
 
 // The site publishes only SPEC.md and top-level docs pages, so one of these the group map
 // leaves out is drift, and every other repo file stays on GitHub.
@@ -319,8 +287,7 @@ copyFileSync(join(repoRoot, 'spec', 'cotal.schema.json'), join(pubDir, 'cotal.sc
 // never drift from the one people audit on GitHub.
 copyFileSync(join(repoRoot, 'install.sh'), join(pubDir, 'install.sh'));
 
-for (const group of groups) {
-  for (const rel of group.files) {
+for (const rel of sources) {
     const src = join(repoRoot, rel);
     const name = basename(rel).replace(/\.md$/, '');
     const slug = slugFor(name);
@@ -341,7 +308,6 @@ for (const group of groups) {
     const section = sectionFor(rel);
     mkdirSync(join(outDir, section), { recursive: true });
     writeFileSync(join(outDir, section, `${slug}.${ext}`), fm + imports + md);
-  }
 }
 
 
@@ -429,14 +395,17 @@ const agentsBody = agents.replace(/^---[\s\S]*?---\s*/, '').replace(/\/([a-z-]+)
 });
 writeFileSync(join(outDir, 'docs/docs-for-agents.md'), '---\ntitle: Docs for agents\ndescription: How agents consume Cotal documentation.\n---\n' + agentsBody);
 pages.push({ slug: 'docs-for-agents', title: 'Docs for agents', section: 'docs', url: '/docs/docs-for-agents/', markdown: '# Docs for agents\n\n' + agentsBody });
-for (const section of ['docs', 'api-reference']) {
-  const order = [];
-  for (const group of groups.filter(g => (g.label === 'Reference') === (section === 'api-reference'))) {
-    order.push(`---${group.label}---`, ...group.files.map(rel => slugFor(basename(rel).replace(/\.md$/, ''))));
-  }
-  if (section === 'docs') order.push('---For agents---', 'docs-for-agents');
-  writeFileSync(join(outDir, section, 'meta.json'), JSON.stringify({ title: section === 'docs' ? 'Docs' : 'API Reference', root: true, pages: order }, null, 2));
-}
+const publishedNavigation = navigation.map(section => {
+  const convert = node => node.kind === 'page'
+    ? { kind: 'page', url: `/${knownSlugs.get(node.source)}/` }
+    : { kind: 'group', title: node.title, children: node.children.map(convert) };
+  const children = section.children.map(convert);
+  if (section.section === 'docs') children.push({ kind: 'group', title: 'For agents', children: [{ kind: 'page', url: '/docs/docs-for-agents/' }] });
+  const order = pages.filter(page => page.section === section.section).map(page => page.slug);
+  writeFileSync(join(outDir, section.section, 'meta.json'), JSON.stringify({ title: section.title, root: true, pages: order }, null, 2));
+  return { section: section.section, title: section.title, children };
+});
+writeFileSync(join(genDir, 'navigation.mjs'), `// @ts-check\n/** @type {import('../lib/navigation').NavigationSection[]} */\nexport const navigation = ${JSON.stringify(publishedNavigation, null, 2)};\n`);
 writeFileSync(join(genDir, 'pages.json'), JSON.stringify(pages, null, 2));
 writeFileSync(join(genDir, 'routes.json'), JSON.stringify(pages.map(({slug,url}) => ({slug,url}))));
 const redirects = ['/ /docs/what-is-cotal/ 301', '/docs /docs/what-is-cotal/ 301', '/docs/ /docs/what-is-cotal/ 301', '/api-reference /api-reference/cli/ 301', '/api-reference/ /api-reference/cli/ 301', '/agent-frameworks /docs/connect-pi/ 301', '/agent-frameworks/ /docs/connect-pi/ 301', '/agent-frameworks.md /docs/connect-pi.md 301'];

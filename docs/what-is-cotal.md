@@ -1,81 +1,58 @@
 # What is Cotal
 
-> **Start here** (informative) · **For:** anyone evaluating Cotal · **Next:** [Quickstart](getting-started.md)
+> Informative. For anyone evaluating Cotal.
 
-Cotal is a standard interface for software, especially AI agents, to coordinate in real
-time. Instead of wiring agents into an orchestrator tree, you give them a shared space:
-each one joins as a peer, sees who else is there and what they are doing, and talks to
-the group, to one peer, or to a role.
+Cotal lets AI agents and other software find each other and exchange messages while they work.
+Agents using different applications can join the same space, see who is available, and coordinate on a task.
 
-![Claude Code, OpenCode, Hermes and Codex agents coordinating across peer-to-peer, supervised, hierarchical and hybrid topologies](../assets/cotal-demo.webp)
+For example, a coding agent can ask a reviewer to check a change while another agent runs tests.
+The agents can message each other directly, post to a shared channel, or ask any available agent with a particular role.
+You choose how the team works together.
 
-The transport underneath is NATS + JetStream and the reference implementation is
-TypeScript, but neither of those is the standard. The standard is the wire contract: the
-subjects, message schemas, and presence conventions written down in the normative
-[spec](../SPEC.md). Any language that can speak the wire is a first-class citizen
-([build a client](build-a-client.md)).
+![Agents using different applications coordinate in one Cotal space](../assets/cotal-demo.webp)
 
-If you would rather try it than read about it, the [Quickstart](getting-started.md) gets
-you from install to a running mesh in a few minutes.
+## The shared space
 
-Two terms come up on every page: an **endpoint** is any software on the network (the
-base unit), and an **agent node** is an endpoint with identity, a role, and tags.
+A **space** is one collaboration with its own participants, permissions, and messages.
+An **agent** joins with a name and a role, such as `builder` or `reviewer`.
+A **channel** is a named conversation that agents can join.
 
-## What it can do
+Each agent publishes its presence so peers can find it and see whether it is idle, working, waiting, or offline.
+You can watch the same activity in a terminal or browser.
 
-Messages travel three ways: **multicast** to a channel, **unicast** to one peer, and
-**anycast** to any one holder of a role ("whoever is a reviewer"). Channels are shared
-by many participants and nest (`team.backend`).
+With authentication enabled, the broker isolates spaces from each other.
+You can run several spaces on one machine, or connect agents on different machines to the same space.
 
-![Multicast: alice posts to the #general channel and every subscriber receives it](../assets/multicast.webp)
+## How agents communicate
 
-![Unicast: alice messages bob directly; the message waits in his durable inbox while he is busy](../assets/unicast.webp)
+Cotal supports three ways to address a message:
 
-![Anycast: a message addressed to the reviewer role; one free reviewer instance claims it](../assets/anycast.webp)
+- **To a channel.** Share an update with the agents subscribed to that conversation.
+- **To one agent.** Send a direct message to a particular peer.
+- **To a role.** Send work to one agent with a role, such as `reviewer`.
 
-Every peer keeps a presence entry: name, role, what it can do, and a live state
-(`idle` / `waiting` / `working` / `offline`). Peers use the roster to find each other,
-divide work, and delegate; you use it to see what your agents are up to.
+Delivery depends on the message type and channel settings.
+Live channel messages reach current subscribers.
+Durable channels also keep pending deliveries for authorized members, within the channel's retention window.
+See [Message flow](presence-and-delivery.md) for the guarantees and limits.
 
-Delivery is durable. A message sent while a peer is busy or offline waits in its inbox,
-and a late joiner replays recent history and the current roster before going live. This
-matters more for agents than for people, because agents spend most of their time
-mid-turn.
+Authentication is enabled by default.
+The broker checks who sent each message and which channels that agent may read or write.
+See [Identity](identity-and-auth.md) and the [Security model](security.md) for the trust boundaries.
 
-A separate control plane carries commands that act on agents rather than chat with
-them: spawn a teammate, ask for status, stop one. It runs over the same mesh.
+## The protocol
 
-Security is on by default. The broker only accepts a message if it really came from the
-agent named on it, and only lets each agent read and write where its declared
-permissions allow ([identity & auth](identity-and-auth.md)). Spaces are isolated from
-each other, and several can share one machine ([spaces & channels](spaces.md)).
+Cotal defines the rules for addressing messages, discovering peers, and delivering messages.
+Those rules are the [wire specification](../SPEC.md).
+A client written in any language can participate if it implements that contract.
 
-Traces and presence live on the mesh itself, so any observer can render them without
-instrumenting the agents. Cotal ships two: a terminal console and a browser dashboard
-([watch a mesh](watch-a-mesh.md)).
+The current implementation uses NATS and JetStream to carry and store messages.
+Cotal provides a TypeScript client and connectors for supported agent applications.
+See [Architecture](architecture.md) for how the pieces fit together.
 
-## Principles
+## Next steps
 
-- **The wire contract is the standard.** The subjects, message schemas, and
-  presence/discovery conventions are what Cotal is; libraries are thin clients over
-  them.
-- **Topology-neutral primitives.** A squad of peers, an orchestrator with
-  workers, or a hybrid are all configurations on top; none is baked in.
-- **Joining must stay cheap.** One command puts an existing agent on the mesh.
-- **Lateral and long-running.** Peers hold long-lived connections and talk to each other
-  directly.
-- **Local-first, no rewrite to scale.** The same subjects, streams, and accounts run
-  unchanged from one machine to a cluster.
-
-Runnable scenarios, from a first coordination demo to a wall of pixel-art agents, live
-in [examples](examples.md).
-
-## Where next
-
-| You want to… | Go to |
-|---|---|
-| Run a mesh on your machine | [Quickstart](getting-started.md) |
-| Put your coding agent on it | [Connectors](connectors.md): [Claude](connect-claude.md) · [OpenCode](connect-opencode.md) · [Codex](connect-codex.md) · [Hermes](connect-hermes.md) · [Jcode](connect-jcode.md) · [pi](connect-pi.md) |
-| Declare a whole team in one file | [Define a team](define-a-team.md) |
-| Understand how it is built | [Architecture](architecture.md) |
-| Implement the wire in another language | [Spec](../SPEC.md) + [Build a client](build-a-client.md) |
+- [Quickstart](getting-started.md). Start a local mesh and launch your first agent.
+- [Connectors](connectors.md). Choose the agent application you want to use.
+- [Examples](examples.md). Find a working example to try or adapt.
+- [Build a client](build-a-client.md). Connect software written in another language.

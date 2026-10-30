@@ -1,3 +1,6 @@
+import { remarkStartHere } from './src/lib/remark-start-here';
 import { defineDocs, defineConfig } from 'fumadocs-mdx/config';
 export const docs = defineDocs({ dir: 'content' });
-export default defineConfig();
+export default defineConfig({
+  mdxOptions: { remarkPlugins: [remarkStartHere] },
+});

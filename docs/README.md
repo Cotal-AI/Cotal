@@ -25,7 +25,7 @@ Task dispatch:
 
 | Task | Page | First command / tool |
 |---|---|---|
-| Install + start a local mesh, non-interactive | [Quickstart](getting-started.md) | `npx cotal-ai setup --destination local --harness claude --project . --space main --no-input && npx cotal-ai up --detach` |
+| Install + start a local mesh, non-interactive | [Configure a space](setup.md#automate-setup) | `npx cotal-ai setup --destination local --harness claude --project . --space main --no-input && npx cotal-ai up --detach` |
 | Put an agent on the mesh | [Quickstart](getting-started.md) | `cotal spawn` |
 | Message peers from inside a session | [MCP tool catalog](mcp-tools.md) | `cotal_send` · `cotal_dm` · `cotal_anycast` |
 | Spawn / define / list a teammate at runtime | [MCP tool catalog](mcp-tools.md) | `cotal_spawn` · `cotal_persona` · `cotal_personas` |
@@ -42,55 +42,74 @@ Task dispatch:
 
 | Doc | Answers |
 |---|---|
-| [What is Cotal](what-is-cotal.md) | What is it, and what can it do? |
-| [Quickstart](getting-started.md) | How do I install it and get a running mesh? |
+| [What is Cotal](what-is-cotal.md) | What is it, and what can I use it for? |
+| [Install Cotal](installation.md) | How do I install Cotal on my machine? |
+| [Quickstart](getting-started.md) | How do I start a local mesh and connect my first agent? |
+| [Examples](examples.md) | Which runnable examples can I try next? |
 
 ## Guides
 
-For operators running and watching a mesh:
+### Operate a mesh
 
 | Doc | Answers |
 |---|---|
-| [Run a mesh](run-a-mesh.md) | How do I operate the local stack (modes, status, multiple meshes, history)? |
-| [Define a team](define-a-team.md) | How do I declare a whole team in one `cotal.yaml` and launch it? |
-| [Watch a mesh](watch-a-mesh.md) | How do I see who is doing what (browser dashboard, terminal console)? |
+| [Run a mesh](run-a-mesh.md) | How do I operate the local stack, manage spaces, and recover from failures? |
+| [Configure a space](setup.md) | How do I prepare a space, choose runtimes, or automate setup? |
+| [Define a team](define-a-team.md) | How do I declare a team in one `cotal.yaml` and launch it? |
+| [Watch a mesh](watch-a-mesh.md) | How do I watch agents in the terminal or browser? |
 | [Deploy](deploy.md) | How do I run agent teams against an external broker? |
-| [Upgrading](UPGRADING.md) | How do I upgrade a deployment that already exists, and in what order? |
-| [Examples](examples.md) | Which runnable examples exist? |
+| [Upgrading](UPGRADING.md) | How do I upgrade an existing deployment? |
 
-For connector users putting an agent on the mesh:
+### Connect agents
 
 | Doc | Answers |
 |---|---|
-| [Connectors](connectors.md) | Which harness should I use? One feature matrix across all of them. |
+| [Connectors](connectors.md) | Which agent application should I use? |
 | [Connect Claude](connect-claude.md) | How does a Claude Code session join the mesh? |
-| [Connect OpenCode (beta)](connect-opencode.md) | How does an OpenCode session join? |
-| [Connect Codex (beta)](connect-codex.md) | How does a Codex session join? |
-| [Connect Hermes (alpha)](connect-hermes.md) | How does a Hermes agent join? |
-| [Connect Jcode (beta)](connect-jcode.md) | How does a Jcode session join? |
-| [Connect pi (alpha)](connect-pi.md) | How do pi sessions and agents built on pi's SDK join? |
-| [Authoring a connector](authoring-a-connector.md) | How do I add my own agent harness as a `cotal ext` plugin? |
+| [Connect OpenCode](connect-opencode.md) | How does an OpenCode session join? |
+| [Connect Codex](connect-codex.md) | How does a Codex session join? |
+| [Connect Hermes](connect-hermes.md) | How does a Hermes session join? |
+| [Connect Jcode](connect-jcode.md) | How does a Jcode session join? |
+| [Connect pi](connect-pi.md) | How do pi sessions and SDK agents join? |
 
-For protocol implementers:
+### Build integrations
 
 | Doc | Answers |
 |---|---|
-| [Build a client](build-a-client.md) | How do I implement a conformant client in another language? |
-| [Embedding Cotal](embedding.md) | How do I build a service on the published `@cotal-ai/*` packages? |
+| [Authoring a connector](authoring-a-connector.md) | How do I add support for another agent application? |
+| [Build a client](build-a-client.md) | How do I implement the wire contract in another language? |
+| [Embedding Cotal](embedding.md) | How do I build a service with the published packages? |
 
 ## Concepts
 
+### Fundamentals
+
 | Doc | Answers |
 |---|---|
-| [Architecture](architecture.md) | How is it built (the thin waist, the pieces), and why? |
-| [Control surface](control-surface.md) | How are the manager and other daemons driven (endpoints, describe/invoke, actions, sessions)? |
-| [Workflow runs](workflows.md) | How does a durable multi-agent workflow run, resume, migrate and fork (Cotal Lang, the step journal)? |
-| [Spaces & channels](spaces.md) | What is a space, how does it differ from a channel? |
-| [Transport vs protocol](transport.md) | What is protocol vs transport, and what must a binding provide? |
-| [Presence & delivery](presence-and-delivery.md) | How do presence, the three delivery modes, and durable delivery work? |
-| [Identity & auth](identity-and-auth.md) | Who can do what, and how is it enforced? |
-| [Delivery daemon (Plane-3)](delivery-daemon.md) | What is the durable backstop, and why does it exist? |
-| [Security model](security.md) | What is the trust boundary (what v0 protects and does not)? |
+| [Architecture](architecture.md) | How is Cotal built, and why? |
+| [Spaces](spaces.md) | What is a space, and how does it differ from a channel? |
+| [Transport vs protocol](transport.md) | What does the protocol define, and what must a transport provide? |
+
+### Messaging
+
+| Doc | Answers |
+|---|---|
+| [Message flow](presence-and-delivery.md) | How do peers find each other and receive messages? |
+| [Delivery daemon](delivery-daemon.md) | How does the durable delivery backstop work? |
+
+### Security
+
+| Doc | Answers |
+|---|---|
+| [Identity](identity-and-auth.md) | Who can do what, and how is it enforced? |
+| [Security model](security.md) | What does Cotal protect against, and where are its trust boundaries? |
+
+### Agent coordination
+
+| Doc | Answers |
+|---|---|
+| [Control surface](control-surface.md) | How do endpoints discover and invoke commands? |
+| [Workflow runs](workflows.md) | How do durable workflows run, resume, migrate, and fork? |
 
 ## Reference
 
