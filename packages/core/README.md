@@ -29,4 +29,6 @@ the parent received a line, not the exact collection time. Native trace fields d
 broker's Go version. No memory cap or GC policy changes. Omit `--ram` to observe collections
 without the profiler forcing them, and keep traced runs separate from performance comparisons.
 
-`pnpm smoke:seat-idle-go-trace` runs native default and opt-in controls.
+`pnpm smoke:seat-idle-go-trace` runs native default and opt-in controls. It requires Linux
+and NATS Server 2.15.1. Other platforms or broker versions emit an explicit skipped sentinel
+with zero executed cells; a missing or unreadable broker remains a failure.

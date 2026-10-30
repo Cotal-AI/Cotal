@@ -1,8 +1,14 @@
 /** Native diagnostic opt-in leaves the default workload and non-broker processes unchanged. */
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { join } from "node:path";
-import { emitSentinel } from "@cotal-ai/smoke-kit";
+import { emitSentinel, skipSuite } from "@cotal-ai/smoke-kit";
+
+if (process.platform !== "linux") skipSuite("seat-idle-go-trace requires Linux /proc");
+const binary = process.env.NATS_SERVER_BIN ?? "nats-server";
+const version = /\d+\.\d+\.\d+/.exec(execFileSync(binary, ["--version"], { encoding: "utf8" }))?.[0];
+assert.ok(version, "native broker must identify its version");
+if (version !== "2.15.1") skipSuite(`seat-idle-go-trace requires nats-server 2.15.1; found ${version}`);
 
 const script = join(import.meta.dirname, "seat-idle-load.smoke.ts");
 let assertions = 0;
