@@ -1,4 +1,6 @@
-/* Native transport regression. Own broker, short built-in NATS pings, no second health connection. */
+/* Native transport regression. Own broker, short built-in NATS pings, no second health connection.
+ * Run: pnpm smoke:delivery-transport-health
+ */
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -122,6 +124,7 @@ try {
     await dead.close();
     await died;
   }
+  if (passed !== 15) throw new Error(`expected 15 transport-health checks, ran ${passed}`);
   console.log(`delivery native transport health: ${passed} passed, 0 failed`);
 } finally {
   await killAndAwaitExit(broker);
