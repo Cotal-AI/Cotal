@@ -200,8 +200,11 @@ observer.on("message", (m: CotalMessage, d: Delivery) => {
 const follower = new CotalEndpoint({ space, servers, card: { name: "follower", kind: "agent", id: "follower" }, channels: ["lobby.>"], registerPresence: false, lifecycleUid: mintLifecycleUid() });
 follower.on("error", () => {});
 const followed: string[] = [];
+const followedOn = new Map<string, string>();
 follower.on("message", (m: CotalMessage, d: Delivery) => {
-  followed.push(m.parts.map((p) => (p.kind === "text" ? p.text : "")).join(""));
+  const text = m.parts.map((p) => (p.kind === "text" ? p.text : "")).join("");
+  followed.push(text);
+  if (m.channel) followedOn.set(text, m.channel);
   d.ack();
 });
 
@@ -364,10 +367,20 @@ try {
   for (let i = 0; i < 30 && !heard.includes("hello-from-claude"); i++) await sleep(100);
   check("the send reached the mesh", heard.includes("hello-from-claude"), heard);
   check("refused sends reached nothing", !heard.includes("from-unknown") && !heard.includes("from-foreign") && !heard.includes("from-anon"), heard);
+  // lobby.** is no channel name. Before the refusal the endpoint rewrote it to lobby.__, which a
+  // follower of lobby.> received while the receipt named #lobby.**.
+  const malformedSend = await call(a, "cotal_send", { connection_id: id1, text: "malformed-probe", channel: "lobby.**" });
+  for (let i = 0; i < 10 && !followed.includes("malformed-probe"); i++) await sleep(100);
+  check(
+    "a malformed wildcard through the gateway is refused as no channel name and reaches no one",
+    malformedSend.isError && malformedSend.text.includes('"lobby.**" is not a channel name.') && !followed.includes("malformed-probe") && !heard.includes("malformed-probe"),
+    { malformedSend, followerGotItOn: followedOn.get("malformed-probe") },
+  );
   const patternSend = await call(a, "cotal_send", { connection_id: id1, text: "pattern-probe", channel: "lobby.>" });
   check(
     "a pattern send through the gateway is refused and names both ways",
-    patternSend.isError && patternSend.text.includes('"lobby.>" is a pattern') && patternSend.text.includes("post once to one channel it matches") && patternSend.text.includes("cotal_channels lists them"),
+    patternSend.isError && patternSend.text.includes('"lobby.>" is a pattern') && patternSend.text.includes("post once to one channel it matches") &&
+      patternSend.text.includes("A pattern follow has no durable backstop") && patternSend.text.includes("cotal_channels lists the existing ones"),
     patternSend,
   );
   const familySend = await call(a, "cotal_send", { connection_id: id1, text: "family-probe", channel: "lobby.news" });
@@ -378,7 +391,7 @@ try {
   const sendTool = tools.find((t) => t.name === "cotal_send");
   const channelText = JSON.stringify((sendTool?.inputSchema.properties as Record<string, unknown> | undefined)?.channel ?? "");
   check("the advertised send default names no connection's channel", channelText.includes("this connection's default") && !channelText.includes("lobby"), channelText);
-  check("the advertised send channel names both ways to reach a family", channelText.includes("post once to one channel it matches") && channelText.includes("cotal_channels lists them"), channelText);
+  check("the advertised send channel names both ways to reach a family", channelText.includes("post once to one channel it matches") && channelText.includes("cotal_channels lists the existing ones"), channelText);
   const inc = await call(a, "cotal_connect", { name: "inc_watch" });
   const incSent = await call(a, "cotal_send", { connection_id: idOf(inc), text: "default-channel-probe" });
   for (let i = 0; i < 30 && !heardOn.has("default-channel-probe"); i++) await sleep(100);

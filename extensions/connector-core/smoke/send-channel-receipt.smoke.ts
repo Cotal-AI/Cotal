@@ -399,15 +399,28 @@ const proto = MeshAgent.prototype as unknown as {
     );
     check(
       `the refusal for ${pattern} says to post to each channel by name and where to list them`,
-      refused.text.includes("post to each by name; cotal_channels lists them"),
+      refused.text.includes("To reach several channels, post to each by name; cotal_channels lists the existing ones."),
       refused.text,
     );
   }
-  for (const [bad, grammar] of [["team.>.x", "'>' is only valid as the last segment"], ["team. >", "must be a NATS-safe token"]] as const) {
+  {
+    const refused = await send.run(agent, cfg, { text: "hi", channel: "team.>" });
+    check(
+      "the whole refusal for team.> reads as written",
+      refused.text ===
+        `Couldn't send: "team.>" is a pattern, and a post goes to one concrete channel. To reach the agents connected and following team.> now, post once to one channel it matches. A pattern follow has no durable backstop, so a follower that is offline then may miss it. To reach several channels, post to each by name; cotal_channels lists the existing ones. Nothing was sent.`,
+      refused.text,
+    );
+  }
+  // A name that is not a channel name is refused too, with the send's own rule. The endpoint would
+  // otherwise rewrite its characters onto a different subject than the receipt names (team.** goes
+  // out as team.__), and the policy grammar's message would offer * and > as valid segments.
+  for (const bad of ["team.>.x", "team. >", "team.**", "team.a*", "team.>>", "#*", "#team", "team..announce", "team/announce", ""]) {
     const refused = await send.run(agent, cfg, { text: "hi", channel: bad });
     check(
-      `a wildcard that is not a legal pattern (${bad}) gets the grammar error, not the pattern advice`,
-      refused.isError === true && calls.length === 0 && refused.text.includes(grammar) && refused.text.includes("Nothing was sent.") && !refused.text.includes("is a pattern"),
+      `${JSON.stringify(bad)} is refused as no channel name before reading or sending`,
+      refused.isError === true && calls.length === 0 && refused.text.includes(`${JSON.stringify(bad)} is not a channel name.`) &&
+        refused.text.includes("Nothing was sent.") && !refused.text.includes("is a pattern") && !/'[*>]'/.test(refused.text),
       { refused, calls },
     );
   }
@@ -416,9 +429,12 @@ const proto = MeshAgent.prototype as unknown as {
   const described = (send.schema.shape.channel as { description?: string } | undefined)?.description ?? "";
   check(
     "the advertised channel text names both ways to reach a family",
-    described.includes("To reach the agents connected and following team.> now, post once to one channel it matches, such as team.announce") && described.includes("post to each by name (cotal_channels lists them)"),
+    described.includes(
+      "A pattern such as team.> is refused. To reach the agents connected and following team.> now, post once to one channel it matches, such as team.announce; to reach several channels, post to each by name (cotal_channels lists the existing ones).",
+    ),
     described,
   );
+  check("the cotal_send description says one channel", send.description === "Broadcast a message to everyone on one channel in your space.", send.description);
 }
 
 console.log(`\nSEND-CHANNEL-RECEIPT SMOKE ${fail === 0 ? "OK" : "FAILED"}  (${pass} passed, ${fail} failed)`);

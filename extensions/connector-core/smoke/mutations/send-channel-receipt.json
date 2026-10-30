@@ -22,15 +22,17 @@
     "",
     "N7 sends the raw argument instead of the resolved default.",
     "",
-    "N8 drops the pattern refusal, so a pattern is described and handed to send.",
+    "N8 drops the explicit channel check, so a pattern or a malformed name is described and handed to send.",
     "",
     "N9 drops the first way to reach a family from the refusal.",
     "",
     "N10 drops both ways from the advertised channel text.",
     "",
-    "N11 drops the grammar check, so a name that is not a legal pattern gets the pattern advice.",
+    "N11 gives a name that breaks the channel grammar the pattern advice.",
     "",
     "N12 drops the durable-backstop caveat from the refusal.",
+    "",
+    "N13 lets a malformed name with no whole-segment wildcard through, so team.** is sent as team.__.",
     "",
     "NO BUILD STEP: the suite imports ../src."
   ],
@@ -99,18 +101,18 @@
       "note": "The receipt would describe team.rocket while the message went to the endpoint default."
     },
     {
-      "name": "N8 a pattern as the channel is no longer refused before the send path",
+      "name": "N8 an explicit channel is no longer checked before the send path",
       "file": "extensions/connector-core/src/tool-specs.ts",
-      "find": "        if (channel !== undefined && !isConcreteChannel(channel)) return err(`Couldn't send: ${patternSendRefusal(channel)}`);\n",
+      "find": "        if (refusal !== undefined) return err(`Couldn't send: ${refusal}`);\n",
       "replace": "",
       "expectRed": "cotal_send refuses the pattern team.> before reading or sending",
       "cell": "cotal_send refuses the pattern team.> before reading or sending",
-      "note": "Without the guard a pattern reaches describeSendChannel, which reads the channel list, and then the endpoint, whose refusal names neither way to reach a family."
+      "note": "Without the guard a pattern or a malformed name reaches describeSendChannel, which reads the channel list, and then the endpoint, which refuses a whole-segment pattern without either way and rewrites a malformed name onto another subject."
     },
     {
       "name": "N9 the refusal stops naming one post to a channel the pattern matches",
       "file": "extensions/connector-core/src/tool-specs.ts",
-      "find": "To reach the agents connected and following ${pattern} now, post once to one channel it matches. ",
+      "find": "To reach the agents connected and following ${channel} now, post once to one channel it matches. ",
       "replace": "",
       "expectRed": "the refusal for team.> says one post to a channel it matches reaches its connected followers",
       "cell": "the refusal for team.> says one post to a channel it matches reaches its connected followers",
@@ -126,13 +128,13 @@
       "note": "An agent reading the tool schema would learn of the refusal only by hitting it."
     },
     {
-      "name": "N11 a wildcard that is not a legal pattern gets the pattern advice",
+      "name": "N11 a name that breaks the channel grammar gets the pattern advice",
       "file": "extensions/connector-core/src/tool-specs.ts",
-      "find": "  try {\n    assertValidChannel(pattern);\n  } catch (e) {\n    return `${(e as Error).message}. Nothing was sent.`;\n  }\n",
-      "replace": "",
-      "expectRed": "a wildcard that is not a legal pattern (team.>.x) gets the grammar error, not the pattern advice",
-      "cell": "a wildcard that is not a legal pattern (team.>.x) gets the grammar error, not the pattern advice",
-      "note": "The refusal would call team.>.x a pattern and suggest posting to a channel it matches, though nothing can match it."
+      "find": "  if (legal)\n    return `\"${channel}\" is a pattern",
+      "replace": "  if (true)\n    return `\"${channel}\" is a pattern",
+      "expectRed": "\"team.>.x\" is refused as no channel name before reading or sending",
+      "cell": "\"team.>.x\" is refused as no channel name before reading or sending",
+      "note": "The refusal would call team.>.x and team.** patterns and suggest posting to a channel they match, though nothing can match them."
     },
     {
       "name": "N12 the refusal stops saying an offline follower may miss the post",
@@ -142,6 +144,15 @@
       "expectRed": "the refusal for team.> says a pattern follow has no durable backstop",
       "cell": "the refusal for team.> says a pattern follow has no durable backstop",
       "note": "A sender who posts once and leaves would assume offline followers got it."
+    },
+    {
+      "name": "N13 a malformed name with no whole-segment wildcard is sent",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "  if (legal && isConcreteChannel(channel)) return undefined;",
+      "replace": "  if (isConcreteChannel(channel)) return undefined;",
+      "expectRed": "\"team.**\" is refused as no channel name before reading or sending",
+      "cell": "\"team.**\" is refused as no channel name before reading or sending",
+      "note": "The cold review's live defect: team.** passes the concrete check, the endpoint rewrites it to team.__, and the receipt names #team.**."
     }
   ]
 }

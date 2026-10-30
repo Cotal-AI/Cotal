@@ -9,7 +9,7 @@
  */
 import { execFileSync } from "node:child_process";
 import { z } from "zod";
-import { isConcreteChannel, assertValidChannel, channelInAllow, AmbiguousPeerError, peerLabel, assertLifecycleToken, isPermissionDenied, renderLifecycleBlocked, EpEnvelopeError, LANG_PROBLEM_DETAIL_KIND, formatAge, presenceAges, presenceText, type ControlReply, type PresenceStatus } from "@cotal-ai/core";
+import { isConcreteChannel, assertValidChannel, MAX_CHANNEL_LENGTH, channelInAllow, AmbiguousPeerError, peerLabel, assertLifecycleToken, isPermissionDenied, renderLifecycleBlocked, EpEnvelopeError, LANG_PROBLEM_DETAIL_KIND, formatAge, presenceAges, presenceText, type ControlReply, type PresenceStatus } from "@cotal-ai/core";
 import { afterRecallMark, type MeshAgent, type InboxItem } from "./agent.js";
 // The neutralization and the per-item rendering live in `framing.ts`, one convention shared with
 // the auto-injected block, and are used here rather than restated. See that file for the rule.
@@ -689,17 +689,25 @@ const NO_POSTABLE_DEFAULT =
 /** How to reach a channel family, since every publish names one concrete channel (SPEC §3). The
  *  advertised `channel` text of `cotal_send`, here and in the gateway. */
 export const PATTERN_SEND_HELP =
-  "A pattern such as team.> is refused. To reach the agents connected and following team.> now, post once to one channel it matches, such as team.announce; to reach several channels, post to each by name (cotal_channels lists them).";
+  "A pattern such as team.> is refused. To reach the agents connected and following team.> now, post once to one channel it matches, such as team.announce; to reach several channels, post to each by name (cotal_channels lists the existing ones).";
 
-/** The refusal for a wildcard given as `cotal_send`'s channel, returned before anything is read or
- *  sent. A name that is not a legal pattern either gets the grammar error instead. */
-function patternSendRefusal(pattern: string): string {
+/** Why `cotal_send` refuses `channel`, returned before anything is read or sent, or undefined when it
+ *  is one concrete channel name. A legal pattern gets the ways to reach a family. Any other name that
+ *  breaks the channel grammar is refused with the send's own rule: the endpoint would rewrite its
+ *  characters onto another subject than the receipt names, and the grammar's own message lists the
+ *  wildcard segments a policy may use. */
+function sendChannelRefusal(channel: string): string | undefined {
+  let legal = true;
   try {
-    assertValidChannel(pattern);
-  } catch (e) {
-    return `${(e as Error).message}. Nothing was sent.`;
+    assertValidChannel(channel);
+  } catch {
+    legal = false;
   }
-  return `"${pattern}" is a pattern, and a post goes to one concrete channel. To reach the agents connected and following ${pattern} now, post once to one channel it matches. A pattern follow has no durable backstop, so a follower that is offline then may miss it. To reach several channels, post to each by name; cotal_channels lists them. Nothing was sent.`;
+  if (legal && isConcreteChannel(channel)) return undefined;
+  if (legal)
+    return `"${channel}" is a pattern, and a post goes to one concrete channel. To reach the agents connected and following ${channel} now, post once to one channel it matches. A pattern follow has no durable backstop, so a follower that is offline then may miss it. To reach several channels, post to each by name; cotal_channels lists the existing ones. Nothing was sent.`;
+  const shown = JSON.stringify(channel.length > 64 ? `${channel.slice(0, 64)}…` : channel);
+  return `${shown} is not a channel name. A channel name is segments of letters, digits, _ and - joined by dots, such as team.announce, at most ${MAX_CHANNEL_LENGTH} characters. Nothing was sent.`;
 }
 
 /** The full Cotal tool set for a given config. Renderers iterate this; `source` names the
@@ -1140,7 +1148,8 @@ export function cotalToolSpecs(
           ),
       },
       async run(agent, config, { text: msg, channel, mentions }: { text: string; channel?: string; mentions?: string[] }) {
-        if (channel !== undefined && !isConcreteChannel(channel)) return err(`Couldn't send: ${patternSendRefusal(channel)}`);
+        const refusal = channel === undefined ? undefined : sendChannelRefusal(channel);
+        if (refusal !== undefined) return err(`Couldn't send: ${refusal}`);
         try {
           const joined = agent.joinedChannels();
           const target = channel ?? defaultSendChannel(config, joined);
