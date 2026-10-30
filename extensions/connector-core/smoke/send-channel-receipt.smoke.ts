@@ -367,6 +367,10 @@ const proto = MeshAgent.prototype as unknown as {
   } as AgentConfig;
   const calls: string[] = [];
   const agent = stubAgent({ joined: ["team.>"], listed: [] });
+  (agent as unknown as { joinedChannels: MeshAgentType["joinedChannels"] }).joinedChannels = () => {
+    calls.push("joined");
+    return ["team.>"];
+  };
   (agent as unknown as { send: MeshAgentType["send"] }).send = async (_t, channel) => {
     calls.push(`send ${channel}`);
     return { id: "m", ts: 1, space: "demo", from: { id: "a", name: "alice", kind: "agent" }, channel, parts: [] } as never;
@@ -376,7 +380,7 @@ const proto = MeshAgent.prototype as unknown as {
     return "existing channel";
   };
   const send = cotalToolSpecs(cfg, "smoke").find((s) => s.name === "cotal_send")!;
-  for (const pattern of ["team.>", "team.*.ci"]) {
+  for (const pattern of ["team.>", "team.*.ci", ">", "*"]) {
     const refused = await send.run(agent, cfg, { text: "hi", channel: pattern });
     check(
       `cotal_send refuses the pattern ${pattern} before reading or sending`,
