@@ -26,6 +26,7 @@ import { parseSuiteSources } from "./mutation-suite-metadata.mjs";
 import { gradeCellTarget } from "./mutation-cell-witness.mjs";
 import { emitSentinel } from "../bin/smoke/sentinel.mjs";
 import { workspaceBuildSelection } from "./workspace-build-filters.mjs";
+import { sourceAst as ast } from "./mutation-source-cache.mjs";
 
 const FLAG_EXECUTE_DISCOVERED = "--execute-discovered";
 const FLAG_GRADABLE_ONLY = "--gradable-only";
@@ -130,7 +131,7 @@ const calleeText = (expr) => {
  * `import * as pty` followed by `pty.spawn`. `fromSpec` may be several modules, for a callee the
  * repo genuinely reaches through more than one.
  */
-const namedAliases = (source, fromSpec, originals) => {
+const namedAliases = (sf, fromSpec, originals) => {
   const anyModule = fromSpec === ANY_IMPORT;
   const anyName = originals === ANY_IMPORT;
   const specs = anyModule ? []
@@ -157,7 +158,7 @@ const namedAliases = (source, fromSpec, originals) => {
     }
     ts.forEachChild(node, visit);
   };
-  visit(ast("alias.ts", source));
+  visit(sf);
   // Every name a binding introduces. `const { readFileSync } = fake` and `function run({ readFileSync })`
   // bind exactly as `const readFileSync = …` does, so reading only `ts.isIdentifier(name)` misses a
   // shadow and credits the import for a callee the program never reaches. Nested patterns, renames,
@@ -246,7 +247,7 @@ const namedAliases = (source, fromSpec, originals) => {
 
 const pathEval = (suite, source, env = new Map()) => {
   const sf = ast(suite, source);
-  const joiners = namedAliases(source, JOINER_MODULES, JOINERS);
+  const joiners = namedAliases(sf, JOINER_MODULES, JOINERS);
   // A scalar binding is resolved at the USE SITE, by walking outward to the nearest enclosing
   // scope that declares the name. A flat name->value map is not a binding: a same-named `ENTRY`
   // in an unrelated function would stand in for the one the launcher actually passes, which
@@ -1033,9 +1034,9 @@ const isSourceModule = (file) => SOURCE_MODULE.has(extname(file));
 const READDIRS = ["readdirSync", "readdir", "globSync", "glob"];
 const readsFile = (suite, source, file, env = new Map(), audit) => {
   const { sf, evalPath } = pathEval(suite, source, env);
-  const readers = namedAliases(source, "fs", READERS);
+  const readers = namedAliases(sf, "fs", READERS);
   let hit = false;
-  const listers = namedAliases(source, "fs", READDIRS);
+  const listers = namedAliases(sf, "fs", READDIRS);
   const want = resolve(file);
   const visit = (node) => {
     if (ts.isCallExpression(node) && readers(node.expression) && evaluated(node, sf)) {
@@ -1072,7 +1073,7 @@ const readsFile = (suite, source, file, env = new Map(), audit) => {
 /** Every repo path this suite hands to a launcher in the slot that actually gets executed. */
 const launchedPaths = (suite, source) => {
   const { sf, evalPath } = pathEval(suite, source);
-  const launchers = namedAliases(source, LAUNCHER_MODULES, LAUNCHERS);
+  const launchers = namedAliases(sf, LAUNCHER_MODULES, LAUNCHERS);
   // Resolve an argv identifier the way the language does: to the declaration that is actually in
   // scope at the use site. A flat name->value map is not a binding, it is a name collision waiting
   // to happen: a same-named `args` in an unrelated function would stand in for the launcher's own,
@@ -1142,7 +1143,7 @@ const launchedPaths = (suite, source) => {
  */
 const copiesRoot = (suite, source, root) => {
   const { sf, evalPath } = pathEval(suite, source);
-  const copiers = namedAliases(source, "fs", COPIERS);
+  const copiers = namedAliases(sf, "fs", COPIERS);
   let hit = false;
   const visit = (node) => {
     if (ts.isCallExpression(node) && copiers(node.expression) && evaluated(node, sf)) {
@@ -1286,7 +1287,7 @@ const handedToImportedCall = (property, sf, imported) => {
 const importsBuiltOutput = (path, source) => {
   const roots = [];
   const sf = ast(path, source);
-  const imported = namedAliases(source, ANY_IMPORT, ANY_IMPORT);
+  const imported = namedAliases(sf, ANY_IMPORT, ANY_IMPORT);
   // A worker entry is written as `new URL(spec, import.meta.url)`, as a plain string, or as a
   // const holding one. An identifier is resolved to the initialiser it is DECLARED with rather
   // than by its spelling, so the fact recorded is the path the program actually hands over.
@@ -1364,7 +1365,6 @@ const candidateFiles = (path) => {
   return [...new Set(out)].find(existsSync);
 };
 
-const ast = (path, source) => ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true);
 const stringValue = (node) => ts.isStringLiteralLike(node) || ts.isNoSubstitutionTemplateLiteral(node) ? node.text : undefined;
 /**
  * Specifiers this file LOADS at run time. Type-only imports are erased by the compiler and never
@@ -1686,7 +1686,7 @@ const packedRoots = (suite, source) => {
   // The pack has to be performed by a REAL launcher, for the #1612 reason: a local function
   // spelled `execFileSync` packs nothing, so a tarball witness resting on the spelling credits a
   // suite for reading an artifact that was never produced.
-  const launchers = namedAliases(source, LAUNCHER_MODULES, LAUNCHERS);
+  const launchers = namedAliases(sf, LAUNCHER_MODULES, LAUNCHERS);
   const roots = [];
   const visit = (node) => {
     if (ts.isCallExpression(node)) {
@@ -1728,7 +1728,7 @@ const executedWitness = (suite, source, command, mutation, executes) => {
   return launchedPaths(suite, source).some((entry) => entryPackages(entry).has(name));
 };
 
-const assertGradable = (configPath, cfg, suites, mutation) => {
+const assertGradable = (configPath, cfg, suites, mutation, readSuite) => {
   // A mutation may override the config's command with its own; that override is what actually runs
   // for this mutation, so it is the command every build/env witness below must be read from.
   const command = typeof mutation.command === "string" && mutation.command !== "" ? mutation.command : cfg.command;
@@ -1738,7 +1738,7 @@ const assertGradable = (configPath, cfg, suites, mutation) => {
   // actually runs; both halves are required, because the import alone loads a stale artifact.
   const audit = {};
   for (const suite of suites) {
-    const source = readFileSync(suite, "utf8");
+    const source = readSuite(suite);
     if (resolve(mutation.file) === resolve(suite)) return;
     if (launchedPaths(suite, source).some((entry) => sourceReaches(entry, mutation.file))) return;
     if (readsFile(suite, source, mutation.file, commandEnv(command), audit)) return;
@@ -1791,9 +1791,9 @@ const assertGradable = (configPath, cfg, suites, mutation) => {
  * they stop noticing. Measured on #1521: the two MIS-targeted mutants each reddened exactly one
  * cell, while the correctly targeted one reddened five.
  */
-const assertCellObserves = (suites, mutation) => {
+const assertCellObserves = (suites, mutation, readSuite) => {
   if (typeof mutation.cell !== "string" || mutation.cell === "") return;
-  const sources = suites.map((path) => ({ path, sf: ast(path, readFileSync(path, "utf8")), cell: mutation.cell }));
+  const sources = suites.map((path) => ({ path, sf: ast(path, readSuite(path)), cell: mutation.cell }));
   const graded = gradeCellTarget(mutation.file, sources);
   if (graded.verdict !== "self-fed") return;
   throw new Error(
@@ -1846,6 +1846,11 @@ const validate = (path, cfg) => {
   for (const key of ["assembles", "executes"]) {
     if (cfg[key] !== undefined && !validStringArray(cfg[key])) throw new Error(`"${key}" must be an array of non-empty repo paths`);
   }
+  const suiteSources = new Map();
+  const readSuite = (suite) => {
+    if (!suiteSources.has(suite)) suiteSources.set(suite, readFileSync(suite, "utf8"));
+    return suiteSources.get(suite);
+  };
   const required = gradesTool ? REQUIRED.filter((key) => key !== "cell") : REQUIRED;
   for (const mutation of cfg.mutations) {
     for (const key of required) {
@@ -1855,8 +1860,8 @@ const validate = (path, cfg) => {
       if (typeof mutation[key] !== "string") throw new Error(`mutation "${mutation.name ?? "(unnamed)"}" is missing "${key}"`);
     }
     if (!gradesTool) {
-      assertGradable(path, cfg, suites, mutation);
-      assertCellObserves(suites, mutation);
+      assertGradable(path, cfg, suites, mutation, readSuite);
+      assertCellObserves(suites, mutation, readSuite);
     }
   }
   return { gradesTool, suites };
