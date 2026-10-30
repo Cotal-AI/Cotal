@@ -20,8 +20,8 @@
       "file": "extensions/connector-jcode/src/private-state.ts",
       "find": "  const cursorStates = inventory\n    .filter((entry) => entry.family === \"cursor-state\")\n    .map((entry) => ({ entry, values: readCursorState(entry.source, relative(sources.externalHome, entry.source)) }));\n  for (const entry of inventory) if (entry.family !== \"cursor-state\") copyCredentialFile(home, entry.source, entry.destinationRelative);",
       "replace": "  for (const entry of inventory) if (entry.family !== \"cursor-state\") copyCredentialFile(home, entry.source, entry.destinationRelative);\n  const cursorStates = inventory\n    .filter((entry) => entry.family === \"cursor-state\")\n    .map((entry) => ({ entry, values: readCursorState(entry.source, relative(sources.externalHome, entry.source)) }));",
-      "expectRed": "a plain-text source refuses as not SQLite instead of being copied",
-      "cell": "a plain-text source refuses as not SQLite instead of being copied"
+      "expectRed": "a header SQLite does not accept refuses as not SQLite",
+      "cell": "a header SQLite does not accept refuses as not SQLite"
     },
     {
       "name": "a hot journal is not named",
