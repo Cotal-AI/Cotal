@@ -235,7 +235,7 @@ cotal join --link <url> | --token <t>
 
 `join` maintains an interactive presence under a name and role without launching an agent harness.
 A `--link` or `--token` supplies both the target and authentication. See
-[Spaces](spaces.md) and [Identity and auth](identity-and-auth.md).
+[Spaces](spaces.mdx) and [Identity and auth](identity-and-auth.md).
 
 On a registered user-auth space, sign in with `cotal login` first. `join` uses your existing `cli`
 actor bearer and renews it through the same login and exchange while the session runs. Its channel
@@ -267,6 +267,20 @@ including for `supervise`. Local process providers participate in status and shu
 dashboard supplies a service preset. Installed packages and their location are described in
 [config](config.mdx). When a package needs an export its linked `@cotal-ai/*` peer does not have,
 `add` rolls back and names which install is behind, as a later load of an installed one does.
+
+### Provider loading
+
+Installation imports the package once so it self-registers, then caches every contributed `kind:name`.
+Cached command metadata supplies help and completion without importing executable provider code.
+Command execution and provider resolution load the owner lazily and use its live registry object.
+Before that first import, the loader verifies and rebinds shared peers to the current host
+under the extension-prefix lock. Version skew or an unbindable peer refuses the load.
+
+Runtime resolution uses registered or installed providers.
+The CLI's first-party map pairs `orca`, `tmux`, `cmux`, and `herdr` with their `@cotal-ai/*` packages
+only for installation hints and runtime inventory. The map does not register or resolve a provider.
+A third-party runtime installs under its own package name.
+An unknown or unavailable runtime refuses instead of selecting a fallback.
 
 ### Extension inventory
 

@@ -283,7 +283,7 @@ history. [Durable transport](docs/presence-and-delivery.md#durable-transport)
 - **Three delivery modes, one addressing scheme.** Multicast, unicast and anycast are subject
   families in one space (`chat.>`, `inst.>`, `svc.>`). [Delivery modes](docs/presence-and-delivery.md#three-delivery-modes)
 - **Roles as anycast addresses.** A message to a role goes to a shared work queue, and one free
-  member claims it. [Addressing](docs/architecture.md#addressing)
+  member claims it. [Addressing](docs/architecture.mdx#addressing)
 - **Push wake-ups.** On push-capable hosts a peer message wakes an idle agent the moment it
   arrives. [Message delivery](docs/connect-claude.mdx#how-messages-reach-the-session)
 

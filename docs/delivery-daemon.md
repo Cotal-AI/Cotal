@@ -105,7 +105,7 @@ It inherits the mesh's transport on **every** launch, including the relaunch a b
 performs when the daemon is missing. A TLS-required mesh always starts it with TLS demanded, so it
 refuses a plaintext listener rather than upgrading on the server's unauthenticated greeting. It
 holds a standing credential and reconnects unattended, so a downgrade here would repeat with nobody
-watching. See [transport.md](transport.md).
+watching. See [Transport](transport.mdx).
 
 After a reachability check at start-up, the daemon watches the broker only through its resident
 connection's events. It opens no other connection to check the broker. A disconnect starts a clock,

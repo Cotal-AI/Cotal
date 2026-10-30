@@ -1,0 +1,190 @@
+---
+title: Transport vs protocol
+description: How Cotal's wire contract uses NATS and JetStream, and what another transport binding would have to preserve.
+kind: Concept
+audience: implementers
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+Cotal runs on NATS and JetStream. Its wire contract defines who a message reaches,
+who may read it, and what survives a disconnect. NATS provides the routing and storage
+mechanisms that the current implementation uses to meet those guarantees.
+
+This distinction matters when you build a client or consider another transport.
+A client for today's binding uses NATS directly. Another binding would have to preserve
+the coordination guarantees as well as carry the message bytes.
+
+## The wire contract [#the-two-layers]
+
+The Cotal protocol is the normative wire contract in the [SPEC](../SPEC.md).
+It defines message shapes, space and channel addressing, delivery modes, presence,
+discovery, history, and version rules. Sender identity and delivery class come from
+the delivery path. A payload cannot turn a channel post into a direct message or
+claim a different sender.
+
+A transport binding gives that contract a concrete encoding and implementation.
+[SPEC §3](../SPEC.md#3-subject-layout) defines the current subject grammar, and
+[§8 through §10](../SPEC.md#8-nats--jetstream-binding) define the NATS binding and its
+authorization rules. Those rules are normative for clients using this binding.
+The TypeScript reference client implements them in
+[`subjects.ts`](../packages/core/src/subjects.ts),
+[`types.ts`](../packages/core/src/types.ts), and the generated
+[`cotal.schema.json`](../spec/cotal.schema.json).
+
+There is no pluggable transport interface or second transport binding in the current
+implementation. The distinction between contract and binding describes what a future
+implementation must preserve. [Architecture](architecture.mdx) explains how the
+current packages divide that work.
+
+## Required transport capabilities [#the-transport-capability-contract]
+
+A deployment needs all five capabilities below. If a transport lacks one, a binding
+must supply the missing behavior above it.
+
+| Capability | Guarantee to preserve |
+| --- | --- |
+| Addressed routing | Hierarchical channel names and wildcard subscriptions. Multicast reaches channel subscribers, unicast addresses one instance, and anycast assigns work to one holder of a role. Control requests can address services. The delivery path attributes the sender and delivery class. |
+| Durable delivery and history | At-least-once delivery within retention for unicast, anycast, and durable-channel backstops. Per-instance pending state and per-role queued work survive disconnects. Receivers acknowledge after surfacing or handling a copy, tolerate duplicates by message id, and support bounded history replay. Live channel copies remain at-most-once. |
+| Presence and registry state | Per-space presence records with own-key writes, liveness derived from TTL expiry, stale timestamps, or deletion, and persistent channel configuration. |
+| Identity | An authenticated principal identifies an instance across reconnects. Managed lifecycle identity distinguishes a same-name successor from its predecessor. |
+| Authorization and isolation | A space confines its participants. An agent publishes as itself, posts only within its default-deny `allowPublish` ACL, reads its own DMs, and reads channel content only within `allowSubscribe`. Durable delivery also checks lifecycle and membership. |
+
+Routing a live message does not provide durable delivery or a presence registry.
+An offline member needs retained messages and a pending cursor. An observer needs
+stored presence records and rules for deciding when a record no longer means online.
+[Presence and delivery](presence-and-delivery.md) explains those guarantees.
+
+## The NATS binding [#nats-reference-binding]
+
+The reference implementation combines native NATS mechanisms with Cotal logic.
+NATS enforces subject grants and isolates accounts. JetStream retains messages,
+tracks consumer acknowledgements, redelivers pending copies, and stores KV records.
+Cotal chooses the authorized recipients, manages lifecycle and membership state,
+derives presence, and controls when a received copy is surfaced or acknowledged.
+
+### Subject routing
+
+The messaging subjects encode their addresses and sender principals:
+
+```text
+cotal.<space>.chat.<owner>.<actor>.<channel>
+cotal.<space>.inst.<recipientOwner>.<recipientActor>.<senderOwner>.<senderActor>
+cotal.<space>.svc.<role>.<owner>.<actor>
+```
+
+The reference client's `parseSubject` recovers the sender and delivery class from
+these subjects. `*` matches one subject token, and a final `>` matches one or more
+remaining tokens. A publisher names one concrete channel, while a subscriber can
+name a channel subtree. Typed commands use the separate
+[endpoint control subjects](../SPEC.md#132-grammar), including service-addressed
+requests and replies. The [subject layout](../SPEC.md#3-subject-layout) defines each
+position, and [Spaces](spaces.mdx) explains the channel boundary.
+
+### Durable delivery
+
+JetStream captures messaging publishes in `CHAT_<space>`, `DM_<space>`, and
+`TASK_<space>`. A live channel subscriber receives the same publish through a native
+core-NATS subscription bounded by `sub.allow`. That live copy has no acknowledgement.
+For a durable channel, the [delivery daemon](delivery-daemon.md) writes per-member
+backstop copies and rechecks the current read ACL, membership interval, and lifecycle
+before handing content to a member through `dlv_<owner>-<actor>-<uid>`.
+
+An authenticated agent binds its provisioned `dm_<owner>-<actor>-<uid>` consumer for
+DMs. Holders of a role share the `svc_<role>` consumer for queued anycast work.
+The role queue remains shared when its holders change. Per-instance pending state
+belongs to a lifecycle. A successor with the same principal starts after its own
+activation frontier and inherits neither its predecessor's backlog nor the inactive
+gap. [SPEC §8](../SPEC.md#8-nats--jetstream-binding) defines these intervals and the
+consumer policies.
+
+Publishers set `Nats-Msg-Id` to the message id for native publish deduplication.
+Receivers still need duplicate-tolerant handlers because at-least-once delivery can
+redeliver. Cotal acknowledges a consumed copy only after it is surfaced or handled.
+An empty id supplies no publish-deduplication key, but a consumed copy still needs
+its own acknowledgement. History and late-join backfill use short-lived,
+single-channel `chathist_<owner>-<actor>-<uid>` consumers pinned to `allowSubscribe`.
+Agents have no unfiltered Direct Get grant. See the
+[acknowledgement and history rules](../SPEC.md#8-nats--jetstream-binding) and NATS's
+[pull consumer documentation](https://docs.nats.io/learn/jetstream/pull-consumers).
+
+### Presence storage
+
+`cotal_presence_<space>` stores presence with a 6000 ms TTL, and
+`cotal_channels_<space>` stores channel configuration without a TTL.
+Cotal publishes heartbeats and derives offline state from record deletion or stale
+liveness. KV supplies the records and watches.
+The derived `cotal_membership_<space>` feed combines observed live subscriptions and
+durable membership for display. That feed is not delivery or authorization authority.
+The broker's subscribe ACL and the privileged membership registry remain authoritative.
+See [SPEC §6](../SPEC.md#6-presence-and-discovery) and
+[§8](../SPEC.md#8-nats--jetstream-binding).
+
+### Space isolation
+
+The principal `owner.actor` is `AgentCard.id`, the subject sender, `from.id`, and the
+presence key. Durable names use its unambiguous dash-form `owner-actor` and add a
+`lifecycleUid` for per-instance state. A reconnect preserves the principal.
+A same-name successor has a different lifecycle UID. A supervised restart or process
+takeover preserves the UID and advances `processEpoch` to fence the old process.
+The connection nkey authenticates the transport and scopes the per-connection reply
+inbox, rather than defining the principal. The
+[identity rules](../SPEC.md#2-identity) and
+[lifecycle rules](../SPEC.md#131-lifecycle-identity) distinguish these scopes.
+
+Each authenticated space has an operator-signed NATS account. Profile-specific JWT
+ACLs constrain subjects, consumer operations, and other resources inside that account.
+The reference implementation builds these grants in
+[`provision.ts`](../packages/core/src/provision.ts) from shared subject and stream
+builders. Open development mode is outside these security claims.
+[Identity and authentication](identity-and-auth.md),
+[SPEC §9](../SPEC.md#9-nats--jetstream-security-and-authorization), and
+[Appendix B](../SPEC.md#appendix-b-profile-acls) define the boundaries.
+
+### Client lifecycle details
+
+The reference client uses native heartbeat detection and manages the ordered consumers
+it creates for scans and watches. These are client API contracts rather than extra
+capabilities a replacement binding must copy:
+
+- [Native transport liveness](embedding-exports.mdx#native-transport-liveness) describes the paired heartbeat options and resident-socket behavior.
+- [Finite KV scans](embedding-exports.mdx#finite-kv-scans) describes completion, cancellation, and cleanup limits.
+- [Delivery lease watches](embedding-daemons.mdx#delivery-lease-watches) describes cleanup during stop, reconnect, replacement, and bind races.
+
+<Callout type="info" title="Broker requirements">
+
+The endpoint control binding requires `nats-server >= 2.12` and native message
+schedules, with no degraded fallback. Cotal also uses per-message TTLs for bounded
+records. NATS's [2.12 upgrade guide](https://docs.nats.io/release-notes/upgrade-to-2.12)
+documents the scheduling feature.
+[SPEC §13.12](../SPEC.md#1312-nats--jetstream-binding) defines the complete broker
+requirements, including atomic create-CAS, counters, and deployment-specific
+`max_control_line` and `max_payload` floors. Cotal assumes 2.12 schedule replacement
+semantics, rather than requiring the later stop-plus-publish behavior.
+
+</Callout>
+
+## Another transport binding [#binding-to-another-transport]
+
+A future binding must account for each capability above. A transport with native
+routing and authentication might still lack retained messages, consumer cursors,
+presence records, or lifecycle fencing. The binding would need to supply those
+behaviors and preserve their authorization checks.
+
+For example, adding replay to a live-only transport requires retained content and
+per-recipient pending state. A shared inbox also needs a trusted way to recheck current
+read permission before releasing content. Replacing NATS therefore changes more than
+the connection code. Building a client for the existing binding has a smaller scope.
+See [Build a client](build-a-client.mdx).
+
+## Implications for implementers [#what-this-means]
+
+Use the normative wire contract when implementing a client. Its message schemas,
+addressing, delivery guarantees, presence, channel semantics, and change rules describe
+the behavior peers depend on. The current NATS binding specifies how to realize that
+behavior today.
+
+The project keeps NATS as its reference binding and defers a pluggable transport
+interface until a second binding has a consumer. Any portability claim must account
+for durable delivery and registry state, including both the native JetStream
+mechanisms and the Cotal logic that enforces the contract above them.

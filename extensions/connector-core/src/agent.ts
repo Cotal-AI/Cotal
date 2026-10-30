@@ -1961,7 +1961,7 @@ export class MeshAgent extends EventEmitter {
    *  wrongly reject it), case-insensitively. Send is all-or-nothing: one unknown @name aborts
    *  the whole broadcast (fail-loud on typos). Caveat: only catches peers THIS client has seen
    *  — an offline peer lingers in the roster, but one never observed (or not yet filled in
-   *  after connect) throws. See docs/architecture.md.
+   *  after connect) throws. See docs/architecture.mdx.
    *
    *  #1229: the roster can only support an ABSENCE verdict while `presenceView()` is `current`.
    *  `clearConnectionScoped()` empties it on every reconnect and the watch refills entry by

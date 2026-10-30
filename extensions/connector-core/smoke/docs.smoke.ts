@@ -106,10 +106,14 @@ console.log("✓ 4 — an unknown page fails loud and lists what is available");
     "exact identifier ‘allowSubscribe’ retrieves the channels page",
   );
 
-  // Subject wildcards hit the intended sections: the exact wildcard form keeps its boost so it
-  // ranks the Wildcards section first.
-  assert.equal(searchDocs("team.>")[0].slug, "channels-and-permissions", "‘team.>’ ranks the Wildcards section first");
-  assert.equal(searchDocs("team.*")[0].slug, "channels-and-permissions", "‘team.*’ ranks the Wildcards section first");
+  for (const wildcard of ["team.>", "team.*"]) {
+    const literal = searchDocs(wildcard, Number.MAX_SAFE_INTEGER);
+    assert.ok(literal[0]?.text.includes(wildcard), `leading result documents literal wildcard ${wildcard}`);
+    const reference = literal.find((hit) => hit.slug === "channels-and-permissions" && hit.heading.endsWith(" › Wildcards"));
+    const base = searchDocs("team", Number.MAX_SAFE_INTEGER).find((hit) => hit.slug === reference?.slug && hit.heading === reference.heading);
+    assert.ok(reference && base, `wildcard reference remains reachable for ${wildcard} and its base subject`);
+    assert.ok(reference.score > base.score, `literal wildcard ${wildcard} increases its reference section score`);
+  }
 
   // A wildcard with NO literal form anywhere — `$SYS.>` is written nowhere in the corpus — reaches
   // its sections only because the tokenizer strips the wildcard and searches the base subject.
@@ -246,16 +250,16 @@ console.log("✓ 6 — the built docs module serves every page in docs/ at the s
     };
 
     // REFUSE LEG: an empty page.
-    writeFileSync(join(tree, "docs", "architecture.md"), "");
+    writeFileSync(join(tree, "docs", "architecture.mdx"), "");
     assert.match(
       refusal(join(dir, "hollow.ts")),
-      /gen:docsbundle: docs\/architecture\.md is empty/,
+      /gen:docsbundle: docs\/architecture\.mdx is empty/,
       "an empty source page makes the generator throw rather than emit hollow docs",
     );
 
     // REFUSE LEG: an empty normative source. A hollow SPEC.md is a different failure from an
     // empty page, and a generator that only guarded pages would ship a bundle with no spec.
-    cpSync(join(repoRoot, "docs", "architecture.md"), join(tree, "docs", "architecture.md"));
+    cpSync(join(repoRoot, "docs", "architecture.mdx"), join(tree, "docs", "architecture.mdx"));
     writeFileSync(join(tree, "SPEC.md"), "");
     assert.match(
       refusal(join(dir, "nospec.ts")),

@@ -30,8 +30,8 @@ concepts leak into `@cotal-ai/core` or the shared layers.
 - [README.md](README.md): what Cotal is, for a general audience.
 - [docs/README.md](docs/README.md): the docs index and reading path.
 - [docs/what-is-cotal.mdx](docs/what-is-cotal.mdx) (*what* it does) →
-[docs/architecture.md](docs/architecture.md) (*how*) →
-[docs/connect-claude.md](docs/connect-claude.md) (the connector).
+[docs/architecture.mdx](docs/architecture.mdx) (*how*) →
+[docs/connect-claude.mdx](docs/connect-claude.mdx) (the connector).
 - [SPEC.md](SPEC.md): the **normative** wire contract. Where a client disagrees with the spec,
 the spec wins. [spec/cotal-lang.md](spec/cotal-lang.md) is the normative reference for the
 workflow language (SPEC §14); every `js` block in it is validated by `pnpm smoke:lang-surface`.
@@ -52,7 +52,7 @@ pnpm check         # every local check, :live suites included; runs every step a
 
 ESM only (`"type": "module"`); `tsx` runs TS directly, but packages import each other from their
 built `dist/`, so run `pnpm build` after `pnpm install` and after editing a package
-([docs/cli.md](docs/cli.md#running-it)). Node &gt;= 22.
+([docs/cli-usage.mdx](docs/cli-usage.mdx#running-it)). Node &gt;= 22.
 
 ## Repository map
 

@@ -35,7 +35,7 @@ built yet.
 ## Connecting spaces (federation)
 
 The rule: **never merge trust roots.** The staged path, from
-[spaces & channels](spaces.md):
+[spaces & channels](spaces.mdx):
 
 - **v0: origin-qualified identity.** An additive `name@space` qualifier on the envelope
   and card, so a remote peer is unambiguous. Cheap, non-breaking, prerequisite for any

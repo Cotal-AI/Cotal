@@ -50,6 +50,17 @@ unpinned spawn can bind-fence against a skip member; re-issue, or pin `--on`. A 
 inventory keeps the class rail and names `--on` on a harness refusal, because sibling
 inventories are not readable from the serve credential. See [control surface](control-surface.md#instance-routing).
 
+### Managed child environment
+
+A managed agent receives the fixed OS environment allow-list, including PATH, HOME, and locale,
+the machine-wide `COTAL_*` operator settings, connector-declared provider inputs,
+explicitly shared MCP references, and names selected through `spawn.env`.
+The PATH retains entries for connector binaries.
+Other ambient variables, including host-session markers such as `CLAUDE_CODE_CHILD_SESSION`, do not cross automatically.
+They can cross when explicitly selected by a connector, a shared MCP reference, or `spawn.env`.
+Connection material is passed through a private file.
+This environment policy does not isolate children from processes running as the same OS user.
+
 ### Control-only execution
 
 Use `--execution none` only for a fresh control instance in an existing hosting user-auth root.
@@ -290,6 +301,19 @@ bytes. Control credentials are not inherited wholesale. The program still runs a
 OS user; this is not a process sandbox. Native managers require their service adapter and
 agent-impact guards and are refused by generic process launch/stop.
 
+### Local process declarations
+
+The CLI and composed native packages register broker and control-plane `local-process` descriptors.
+Installed packages can contribute their own descriptors, so local status and shutdown use provider metadata
+rather than package-specific PID-file rules in the base CLI.
+A legacy extension process claims its declared PID file with exclusive create.
+Extension removal reserves that same path, preventing a new start from crossing uninstall.
+Controller-only services instead use launch intents and instance-based removal guards.
+
+A descriptor's `cooperativeStop` selects the workspace's process-bound local cleanup capability on Windows.
+Manager and delivery declare it. Injected hosted services do not use this workstation channel.
+The channel provides local process cleanup, not wire authority.
+
 ### Adapter declarations
 
 Adapter definitions use the same owned direct-child controller. The local-process provider
@@ -317,6 +341,14 @@ name or successful HTTP request is insufficient. Reports preserve those coordina
 observation time. Local status does not refresh them or promote them to current live authorization.
 A failed or timed-out hook retains an unknown receipt and is not retried. A cancellation signal
 does not prove third-party code stopped working.
+
+A trusted Manager embedding can capture its selected public identity through `onServiceIdentity`
+before endpoint construction. The native service adapter binds that selection privately to the full
+service instance, launch request, and process creation identity.
+The selection supplies no epoch, readiness, credential, or grant.
+Dotted endpoint classes keep their native grammar; encoding validates the class without replacing it.
+Delivery registers its adapter over shared workspace custody metadata, so CLI stop clients do not import
+the delivery implementation. Startup receipts remain private, request-specific local observations.
 
 Extension removal checks retained service records in every local service space, including spaces
 absent from the mesh-selection registry. Live, foreign, unreadable or unresolved instances block

@@ -307,7 +307,7 @@ knobs: [`cotal_status` / `cotal_channel_mode`](mcp-tools.mdx).
 
 ## Related
 
-- [Spaces & channels](spaces.md): the isolation boundary vs the topic axis.
+- [Spaces & channels](spaces.mdx): the isolation boundary vs the topic axis.
 - [Delivery daemon](delivery-daemon.md): the durable backstop's three pieces.
 - [Identity & auth](identity-and-auth.md): who may publish and read where.
 - [Watch a mesh](watch-a-mesh.mdx): seeing presence and traffic live.

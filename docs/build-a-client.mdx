@@ -23,7 +23,7 @@ Read both parts of the contract:
 - [SPEC sections 8 through 10](../SPEC.md#8-nats--jetstream-binding) bind those rules to NATS and JetStream.
   This is the only defined transport binding.
 
-See [Transport](transport.md) for the capabilities a binding must provide.
+See [Transport](transport.mdx) for the capabilities a binding must provide.
 
 ## Prepare a reference mesh [#prerequisites]
 
@@ -206,7 +206,7 @@ The interoperability scenario is the current conformance test for a client in an
 
 Bind directly to the NATS client library.
 There is one defined binding, so a pluggable transport layer adds no current capability.
-For another transport, implement the [binding capability contract](transport.md), including durability and presence.
+For another transport, implement the [binding capability contract](transport.mdx), including durability and presence.
 
 Keep process scheduling and supervision in separate tooling.
 A wire client connects, announces itself, and exchanges messages as a peer.

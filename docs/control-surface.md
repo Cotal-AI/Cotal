@@ -475,6 +475,16 @@ that cannot renew or read its lease keeps serving, stays registered, and retries
 holds the same instance key, that process has taken the instance over, so this one logs the conflict
 and exits without deregistering, leaving the successor's registration alone.
 
+Each manager schedules its own lease-key refresh at one quarter of the key's TTL.
+A failed lease refresh first triggers a re-read of the instance key.
+If the key is still this process's, the manager adopts the broker's revision and retries renewal.
+If the key expired, the manager tries to recreate it.
+An unavailable broker leaves the manager serving and retrying without a time limit.
+Lease state changes produce a log line; repeated ticks in the same state do not.
+A clean stop fences new renewals, waits for one already in flight, and attempts to release its own key
+at the broker's current revision. Release is best effort; a key that cannot be released remains until the bucket TTL expires.
+A takeover exit releases neither the successor's lease nor its registration.
+
 A restart that died *mid-registration* is a different residue: the issuance gate stays frozen under
 that op. The successor completes the dead registration on boot when the freeze-holder is
 affirmatively gone under a complete CONNZ sweep (the same composition as
@@ -596,6 +606,6 @@ the host issues a remote manager through its `transferReader` authority operatio
 
 ## See also
 
-- [Architecture](architecture.md), where the manager and the wire fit in the whole system.
+- [Architecture](architecture.mdx), where the manager and the wire fit in the whole system.
 - [CLI](cli.mdx), for `describe`, `invoke`, `spawn`, `ps`, `status`, `attach`, and `input`.
 - [SPEC §13](../SPEC.md#13-endpoint-control-surface-v04), the normative contract.

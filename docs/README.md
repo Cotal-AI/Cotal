@@ -97,6 +97,7 @@ Task dispatch:
 | [Remote service clients](embedding-remote-clients.mdx) | How do MCP, browser, and Manager clients carry caller authority? |
 | [Embedded daemons](embedding-daemons.mdx) | How does a host compose auth and delivery services? |
 | [Space provisioning](embedding-provisioning.mdx) | Which trust records, storage, and lifecycle operations does a host own? |
+| [Schema inspection](embedding-schema-inspection.mdx) | What can storage and initialization inspection establish, and which operations remain unsupported? |
 | [Service authority](embedding-service-authority.mdx) | Which authority contracts are implemented, and which remain prerequisites? |
 | [Embedded Manager](embedding-manager.mdx) | How do selection and signing authority work in a host composition? |
 | [Delegated seats](embedding-delegated-seats.mdx) | How do delegated launch and recovery work outside the Manager's filesystem? |
@@ -119,9 +120,9 @@ Task dispatch:
 
 | Doc | Answers |
 |---|---|
-| [Architecture](architecture.md) | How is Cotal built, and why? |
-| [Spaces](spaces.md) | What is a space, and how does it differ from a channel? |
-| [Transport vs protocol](transport.md) | What does the protocol define, and what must a transport provide? |
+| [Architecture](architecture.mdx) | How is Cotal built, and why? |
+| [Spaces](spaces.mdx) | What is a space, and how does it differ from a channel? |
+| [Transport vs protocol](transport.mdx) | What does the protocol define, and what must a transport provide? |
 
 ### Messaging
 

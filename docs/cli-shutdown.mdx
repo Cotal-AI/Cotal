@@ -47,7 +47,11 @@ Completion reads saved definitions without provider imports or network requests.
 and shared catalog preparation do not precede this route.
 
 Multiple names resolve as one selected-space set. All owned targets and process roles are checked
-before effects. After confirmation, the controller reserves every definition in stable order and
+before effects. The set refuses shared process or native identities, foreign or unresolved custody,
+recorded OS supervisors, and unsupported process roles.
+Failed and unattempted members retain labeled pre-stop snapshots, not inferred current state.
+A failed sequence is not automatically retried.
+After confirmation, the controller reserves every definition in stable order and
 rechecks all records and native impact before the first stop. Stops follow the displayed input
 order, with each native guard rechecking at effect. A later failure stops the sequence; one receipt
 retains completed, failed/unknown and unattempted members. Reservation/preflight refusals also

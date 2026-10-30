@@ -6,7 +6,7 @@ import { assertPlainMarkdown } from './assert-plain-markdown.mjs';
 const artifact = path => readFileSync(new URL(`../dist/${path}`, import.meta.url), 'utf8');
 const anchors = JSON.parse(readFileSync(new URL('./fixtures/integration-legacy-anchors.json', import.meta.url), 'utf8'));
 const guides = Object.keys(anchors);
-const references = ['exports', 'remote-clients', 'daemons', 'provisioning', 'service-authority', 'manager', 'delegated-seats'].map(name => `embedding-${name}`);
+const references = ['exports', 'remote-clients', 'daemons', 'provisioning', 'schema-inspection', 'service-authority', 'manager', 'delegated-seats'].map(name => `embedding-${name}`);
 const attr = (node, name) => node.attrs?.find(attribute => attribute.name === name)?.value;
 const elements = (node, result = []) => {
   if (node.tagName) result.push(node);

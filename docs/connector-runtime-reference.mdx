@@ -1,6 +1,6 @@
 ---
 title: Connector runtime reference
-description: Shared connection state, presence ordering, and resume records for Cotal connectors.
+description: Shared connection recovery, reply correlation, presence ordering, and resume records for Cotal connectors.
 kind: Reference
 audience: integrators
 ---
@@ -27,6 +27,43 @@ current state and subscribes to the event for later changes.
 
 `MeshAgent.connectionIssue` retains the latest failure before a successful bind.
 A successful bind clears the failure. Stopping preserves the failure for diagnosis.
+
+### Endpoint recovery
+
+When nats.js exhausts its reconnect attempts and the transport closes terminally,
+the endpoint supervisor rebuilds the endpoint.
+Manual reconnect, terminal-close recovery, and retry triggers share one serialized rebuild.
+Concurrent triggers join that rebuild instead of opening parallel connections.
+A failed post-connect bind closes its partial transport before another attempt begins.
+Unacknowledged durable messages remain eligible for redelivery after the endpoint rebinds.
+`cotal_reconnect` requests this recovery manually.
+
+## Reply correlation
+
+A DM's explicit `replyTo` must name a message from that peer that is still waiting for an answer.
+The explicit argument takes precedence over a message bound to the current tool call.
+Without an explicit argument, the bound message takes precedence.
+Otherwise the runtime selects the peer's oldest unanswered message without a reply already in flight, only when all of that peer's
+waiting messages belong to one conversation, identified by `contextId`.
+Several waiting conversations cause a refusal that lists the message IDs to choose from.
+
+The reply names its question in `replyTo` and copies the asker's `contextId`.
+A question counts as answered only after publication succeeds.
+A failed send leaves it waiting for retry.
+An in-flight reply also leaves the question waiting, so another conversation arriving meanwhile
+can make an unqualified DM ambiguous.
+When no reply is selected or bound, a scoped `contextId` takes precedence over the connector's configured context.
+
+`MeshAgent.withCorrelation` supplies correlation for one host call.
+For implicit reply selection, a scope with `replyTo` uses that message if it came from the peer.
+A scope with only `contextId` suppresses implicit replies to other peers.
+For its peer, the runtime uses the same waiting-message selection described above, without requiring the scope's own `contextId` to match.
+A connector serving several host sessions, such as Hermes, can assign each question its own ID.
+An answer returns to the asking session only when the runtime recognizes that ID and authenticates
+the expected peer, or a holder of the requested role for an anycast question.
+A copied conversation ID alone is not sender proof.
+See [Hermes answer routing](hermes-connector-reference.mdx#answer-routing) and
+[`cotal_dm`](mcp-tools.mdx#cotal_dm).
 
 ## Presence ordering
 

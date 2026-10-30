@@ -158,6 +158,10 @@ verdict. A reopened gate with retained cursor cleanup returns exit 4.
 
 ## Manager stop impact [#manager-stop-impact]
 
+A fully preserved manager, or an active manager awaiting resume commitment, can answer `status` through the same membership gate.
+The counted read writes nothing. Other ordinary commands stay fenced in those states.
+A preserving or stopping manager does not admit that read.
+
 The native manager status contract includes its selected `lifecycleUid` and a caller-scoped `stopImpact` observation. It lists
 visible managed principals and lifecycle IDs, their runtime modes and the seat actions a default
 stop or `--with-agents` would request. In-process PTYs without a release hook stop by default;

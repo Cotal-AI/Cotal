@@ -151,7 +151,7 @@ a peer like any other: its presence flips `working` / `idle` from lifecycle hook
 messages reach it two ways — **hook injection** at turn boundaries (the spine) and a **channel
 nudge** that wakes it the instant a message arrives while idle. See
 [connect-claude.mdx](../../docs/connect-claude.mdx) for the launch / install /
-channel mechanics, and [architecture.md](../../docs/architecture.md) for the surface mapping.
+channel mechanics, and [architecture.md](../../docs/architecture.mdx) for the surface mapping.
 
 ## Inside a `join` session
 

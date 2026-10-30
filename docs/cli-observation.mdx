@@ -51,6 +51,9 @@ and explicit read-only intent. `--host` chooses a concrete bind/browser address,
 `127.0.0.1`; wildcard binds refuse. `--port` is 1 to 65535, default 7799. Broker coordinates and
 required TLS come from the registered target. Broker TLS does not encrypt the dashboard's HTTP
 listener. The file supplies the only connection authority.
+Before native initialization, that credential must match the selected root's full validated static trust chain,
+current issuer, native user key, and validity window.
+No signer is forwarded to an HTTP handler or used to mint a replacement credential.
 No cached human login, managed-seat identity, operator signer or channel-purger credential is
 substituted. User-auth/open targets refuse, because no supported caller handoff is connected for them.
 The page marks this service read-only and hides channel delete; the server also refuses it before

@@ -225,12 +225,26 @@ Until the application reports that directory, the field is absent.
 The path is preserved byte for byte, including whitespace. An empty string leaves the value unchanged.
 Claude sessions report it from their `SessionStart` hook.
 
+## Native transport liveness
+
+`CotalEndpoint` accepts `transportPingIntervalMs` and `transportMaxPingOut` together
+as positive safe integers. Omission keeps the NATS defaults. Native PING/PONG uses the
+resident socket without another authenticated probe connection. A stale connection
+emits a transport disconnect before reconnect attempts. The
+[delivery daemon's connection handling](delivery-daemon.md#where-it-runs) explains how
+that event affects the service. The option validation and NATS mapping are in
+[`endpoint.ts`](../packages/core/src/endpoint.ts).
+
 ## Finite KV scans
 
 `liveKvEntries(kv, filterOrOptions?, options?)` reads one finite scan of live entries.
 A `{ signal }` argument can appear second or after a key filter.
 An interrupted scan throws `IncompleteKvScan`.
 Cancellation throws the signal's reason, including during a bind to an empty bucket.
+The ordered consumer's pending count distinguishes an empty completed scan from an interrupted read.
+Completion requires a zero pending count at bind or a delivered message reporting zero pending.
+Successful empty and nonempty results await cleanup before returning.
+Cancellation still wins while cleanup is pending, before a result returns.
 
 Cleanup deletes only the scan's owned consumers, including consumers nats.js rebuilt from them.
 It waits for broker replies to every create sent by those rebuilds.

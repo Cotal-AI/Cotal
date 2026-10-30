@@ -184,6 +184,17 @@ A successor refuses while the lease row lives.
 Bucket TTL eventually expires a row left by the instance.
 Credential-expiry health clears after broker-verified adoption through the existing `reloadCreds` operation.
 
+## Delivery lease watches
+
+The delivery lease watch also retires its ordered consumer on an explicit stop,
+endpoint stop, manual reconnect of a live connection, or replacement during binding.
+Endpoint stop and manual reconnect wait for in-flight binds and cleanup before closing the connection,
+bounded by the JetStream request timeout. A watch that finishes binding to a retired
+connection is deleted instead of installed. A connection that already closed cannot
+carry the delete, so the broker reclaims its consumer after five minutes of inactivity.
+A failed delete emits a warning and also leaves reclamation to the broker.
+[`watchDeliveryLease` in endpoint.ts](../packages/core/src/endpoint.ts) owns this behavior.
+
 ## Daemon credential renewal
 
 `remintDaemonCreds(root, space, store?, { preflight? })` is exported by `@cotal-ai/workspace`.
