@@ -21,7 +21,8 @@
     "role and model where the spawn overrode them. N16 lets a failed removal throw out of the rollback",
     "before the grant's teardown is scheduled. N17, N18 and N19 mark a snapshot settled after a",
     "removal that failed, on the rollback, the slot free and the stop, so no terminal retries or",
-    "reports it. N20 removes through a linked .cotal/run/inline."
+    "reports it. N20 removes through a linked .cotal/run/inline. N21 writes a defined persona's",
+    "capabilities without bounding them against the definer."
   ],
   "mutations": [
     {
@@ -170,6 +171,13 @@
       "find": "  const dir = realDirNoSymlink(root, \".cotal\", \"run\", \"inline\");\n  if (!dir) return;\n",
       "replace": "  const dir = inlinePersonaDir(root);\n",
       "expectRed": "a seat's retirement never removes through a linked inline directory"
+    },
+    {
+      "name": "N21 write a defined persona's capabilities unbounded",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    const refused = capabilities?.length ? await this.definedCapabilitiesRefusal(capabilities, caller, authenticated) : undefined;\n",
+      "replace": "    const refused = undefined as string | undefined;\n",
+      "expectRed": "and is refused one its row does not hold, by name, writing nothing"
     }
   ]
 }

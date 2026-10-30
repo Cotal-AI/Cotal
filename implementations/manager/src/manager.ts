@@ -83,6 +83,7 @@ import {
   resolveService,
   invokeCommand,
   digestIdToken,
+  capabilityWithin,
   grantOverreach,
   grantParts,
   isIssuedCaller,
@@ -4423,7 +4424,7 @@ export class Manager {
       // authenticated caller's own, so a run withdraws only the turns it submitted.
       cancel: (ctx) => this.serveGated(ctx, () => this.serveTurnCancel(ctx)),
       stopSelf: (ctx) => this.serveGated(ctx, () => unwrap(this.opStopSelf(callerOf(ctx), args(ctx)))),
-      definePersona: (ctx) => this.serveGated(ctx, () => unwrap(this.opDefinePersona(args(ctx), callerOf(ctx), false))),
+      definePersona: (ctx) => this.serveGated(ctx, async () => unwrap(await this.opDefinePersona(args(ctx), callerOf(ctx), false, ctx.subject.caller))),
       removePersona: (ctx) => this.serveGated(ctx, () => {
         const r = this.opRemovePersona(args(ctx), callerOf(ctx), false);
         if (!r.ok) throw new EpEnvelopeError((r.code ?? "failed-precondition") as EpErrorCode, r.error ?? "the operation failed", r.details, "not-executed");
@@ -6582,8 +6583,9 @@ export class Manager {
   /** The refusal for a grant its static spawner does not hold, or `undefined` when it holds all of
    *  it. Each part is named, so the caller can drop exactly what overreached. `armsEvents` is whether
    *  the helper's own event plane will be minted: that row is keyed on a principal allocated later,
-   *  so it is measured as the spawner's own, the rule the ledger applies. */
-  private spawnBoundRefusal(bound: StaticSpawnBound, grant: DelegatedGrant, armsEvents: boolean): string | undefined {
+   *  so it is measured as the spawner's own, the rule the ledger applies. `door` names the command
+   *  being bounded: a persona definition is bounded against its definer as a spawn is. */
+  private spawnBoundRefusal(bound: StaticSpawnBound, grant: DelegatedGrant, armsEvents: boolean, door: "spawn" | "define-persona" = "spawn"): string | undefined {
     if (bound.kind === "exempt") return undefined;
     let over: GrantOverreach[];
     let eventsOver: boolean;
@@ -6592,13 +6594,19 @@ export class Manager {
       eventsOver = armsEvents && (bound.kind === "none"
         || grantOverreach(this.space, bound.caller, bound.ceiling, { allowPublish: [eventChannel({ owner: bound.caller.owner, actor: bound.caller.actor })] }).length > 0);
     } catch (e) {
-      return `spawn: ${rejectionText(e)}`;
+      return `${door}: ${rejectionText(e)}`;
     }
     if (!over.length && !eventsOver) return undefined;
     const named = [
       ...over.map((o) => `${o.field} ${o.value}`),
       ...(eventsOver ? ["events (the helper's own event plane; pass events: false to spawn without it)"] : []),
     ].join(", ");
+    if (door === "define-persona")
+      return bound.kind === "none"
+        ? `define-persona: the definer holds no issued evidence (SPEC 13.15), so its persona can grant nothing: ${bound.reason}. This persona asks for ${named}. ` +
+            `Define it without these, or start the definer under a manager (\`cotal spawn --detach\`), whose seats carry issued evidence.`
+        : `define-persona: this persona grants more than the definer holds: ${named}. A definer hands on only what its own issued credential carries (SPEC 13.15). ` +
+            `Drop these from the persona, or have the operator widen the definer's own persona.`;
     return bound.kind === "none"
       ? `spawn: the spawner holds no issued evidence (SPEC 13.15), so it hands on no grant: ${bound.reason}. This spawn asks for ${named}. ` +
           `Spawn a persona that names none of these, or start the spawner under a manager (\`cotal spawn --detach\`), whose seats carry issued evidence.`
@@ -11709,15 +11717,17 @@ export class Manager {
   /** Persist a peer-defined persona as config. After this, `start name` auto-discovers
    *  .cotal/agents/<name>.md and the connector applies its persona/model at spawn.
    *
-   *  CONTENT vs POLICY (P6): `capabilities` and `owner` still have no slot, so a peer cannot
-   *  self-grant spawn or claim ownership. Channel grants, role, and agent are content: they may
+   *  CONTENT vs POLICY (P6): `owner` has no slot, so a peer cannot claim ownership, and
+   *  `capabilities` is bounded against the definer before the write, so a peer can put only what it
+   *  holds into a persona that a wider spawner might later launch. Channel grants, role, and agent
+   *  are content: they may
    *  arrive as explicit arguments or as a leading frontmatter block inside `persona`. A prompt
    *  that starts with `---` is parsed and merged (explicit args win) so the written file has one
    *  frontmatter block; a malformed block is refused by name rather than wrapped. A fresh name is
    *  created with the owner {@link personaOwner} records. Redefining an EXISTING file is allowed on
    *  the privileged tier only if `file.owner == caller`, else admin is required. Fail-closed: an
    *  ownerless file (legacy / operator-written) is admin-only. */
-  private opDefinePersona(args: Record<string, unknown>, caller: string, admin: boolean): ControlReply {
+  private async opDefinePersona(args: Record<string, unknown>, caller: string, admin: boolean, authenticated?: EpCaller): Promise<ControlReply> {
     if (this.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
     const name = String(args.name ?? "").trim();
     if (!name) return { ok: false, error: "name required" };
@@ -11756,18 +11766,42 @@ export class Manager {
           subscribe: strList(args.subscribe),
           allowSubscribe: strList(args.allowSubscribe),
           allowPublish: strList(args.allowPublish),
+          capabilities: strList(args.capabilities),
         },
         existing,
       );
     } catch (e) {
       return { ok: false, error: rejectionText(e) };
     }
+    const capabilities = strList(args.capabilities);
+    const refused = capabilities?.length ? await this.definedCapabilitiesRefusal(capabilities, caller, authenticated) : undefined;
+    if (refused) return { ok: false, code: "permission-denied", error: refused };
     try {
       saveAgentFile(path, def);
     } catch (e) {
       return { ok: false, error: rejectionText(e) };
     }
     return { ok: true, data: { name, path } };
+  }
+
+  /** The refusal for capabilities a persona's definer does not hold, or `undefined` when it holds
+   *  them all. A static definer is bounded by its issued evidence, as a spawner is; a user-auth
+   *  definer by its own ledger row's scope, under the ledger's token rule, with `admin` exempt. A
+   *  hosted manager reads no ledger, so it refuses. A later spawn of the persona is bounded again
+   *  against its own spawner. */
+  private async definedCapabilitiesRefusal(capabilities: string[], caller: string, authenticated: EpCaller | undefined): Promise<string | undefined> {
+    if (this.meshMode === "open") return undefined;
+    if (this.meshMode === "static") return this.spawnBoundRefusal(await this.staticSpawnBound(authenticated), { capabilities }, false, "define-persona");
+    if (this.remoteAuthority)
+      return "define-persona: this manager's user authority is hosted, so it cannot read the definer's grant and its persona can grant no capabilities";
+    const p = parsePrincipalKey(caller);
+    const scope = p ? await resolveAuthProvider().actorScope({ dir: userAuthStateDir(this.workspaceRoot, this.space), owner: p.owner, actor: p.actor }) : undefined;
+    if (scope?.includes("admin")) return undefined;
+    const over = capabilities.filter((c) => !capabilityWithin(scope ?? [], c));
+    if (!over.length) return undefined;
+    return scope === undefined
+      ? `define-persona: the definer ${caller} has no grant in this space, so its persona can grant nothing. This persona asks for capabilities ${over.join(", ")}.`
+      : `define-persona: this persona grants more than the definer holds: capabilities ${over.join(", ")} beyond [${scope.join(", ") || "none"}]. Drop these from the persona, or have the operator widen the definer's grant.`;
   }
 
   /** Remove one machine-local persona definition without touching any running lifecycle that was

@@ -9,7 +9,8 @@
  * `spawn`, reading and posting `review`, its evidence recorded with no source and a fixed expiry.
  * The same door carries an inline persona (SPEC 13.7): the bound reads the record, the helper joins
  * and its goal ends succeeded, and a repeated goal returns its first acceptance instead of a second
- * spawn.
+ * spawn. `define-persona` is bounded at the same door: a definer puts only capabilities it holds
+ * into a persona.
  * Run with: pnpm smoke:spawn-grant-door
  */
 import { randomUUID } from "node:crypto";
@@ -172,6 +173,27 @@ try {
   const changed = await spawn("notes", { ...joining, persona: { ...joining.persona, prompt: "changed" } }, goal);
   check("the same goal with a changed record is refused as a different submission", !changed.ok && changed.code === "failed-precondition" && changed.outcome === "not-executed" && /was accepted under a different submission/.test(changed.message), changed);
   check("and starts nothing", seats().filter((a) => a.name.startsWith("notes")).length === 1 && snapshots().length === 1, { seats: seats().map((a) => a.name), snapshots: snapshots() });
+
+  console.log("define-persona through the served door");
+  const defineSvc = await resolveService(nc, space, MANAGER_ENDPOINT, caller, { deadlineMs: 8_000, commands: ["define-persona"] });
+  const define = async (name: string, capabilities: string[]): Promise<{ ok: boolean; code?: string; message: string }> => {
+    try {
+      const r = await invokeCommand(nc!, space, defineSvc, "define-persona", { name, persona: "You help.", capabilities }, { deadlineMs: 10_000 });
+      const reply = (r as { reply?: { ok?: boolean; error?: { code?: string; message?: string } } }).reply;
+      return { ok: reply?.ok === true, code: reply?.error?.code, message: reply?.error?.message ?? "" };
+    } catch (e) {
+      const err = e as { code?: string; message?: string };
+      return { ok: false, code: err.code, message: err.message ?? String(e) };
+    }
+  };
+  const file = (name: string) => join(root, ".cotal", "agents", `${name}.md`);
+  const held = await define("delegate", ["spawn"]);
+  check("a definer may put a capability it holds into a persona", held.ok && /capabilities:\s*\n\s*- spawn/.test(readFileSync(file("delegate"), "utf8")), held);
+  const admin = await define("usurper", ["admin"]);
+  check("a define-persona capability the definer does not hold is refused at the door, naming it", !admin.ok && admin.code === "permission-denied" && /grants more than the definer holds: capabilities admin/.test(admin.message), admin);
+  const run = await define("runner", ["run"]);
+  check("and so is run for a definer that holds only spawn", !run.ok && /capabilities run/.test(run.message), run);
+  check("and neither refusal wrote a file", !existsSync(file("usurper")) && !existsSync(file("runner")));
 } finally {
   await nc?.drain().catch(() => nc?.close());
   await mgr?.stop({ withAgents: true }).catch(() => {});

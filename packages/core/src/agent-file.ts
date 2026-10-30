@@ -338,7 +338,8 @@ export function saveAgentFile(path: string, def: AgentDef, opts: { createOnly?: 
   (opts.createOnly ? createPrivateRecord : writePrivateRecord)(path, `---\n${frontmatter}\n---\n\n${body}`);
 }
 
-/** Content a peer may name on `define-persona`. Policy (`capabilities`, `owner`) has no slot. */
+/** What a peer may name on `define-persona`: content, plus `capabilities`, which the manager bounds
+ *  against the definer before it writes. `owner` has no slot. */
 export type WirePersonaArgs = {
   name: string;
   /** The principal a fresh file records as its owner; absent, the file is operator-owned. */
@@ -350,6 +351,7 @@ export type WirePersonaArgs = {
   subscribe?: string[];
   allowSubscribe?: string[];
   allowPublish?: string[];
+  capabilities?: string[];
 };
 
 /**
@@ -386,7 +388,8 @@ function dropWireDefaultIfScoped(def: AgentDef): void {
 /**
  * Build the AgentDef `definePersona` writes. A leading frontmatter block in `prompt` is parsed
  * and merged: explicit tool arguments win; grants, role, and agent from the prompt survive;
- * `capabilities` and `owner` from the prompt never do. The result is always one frontmatter block
+ * `capabilities` and `owner` from the prompt never do, and only an explicit `capabilities`
+ * argument sets capabilities. The result is always one frontmatter block
  * once {@link saveAgentFile} writes it. On redefine, prompt grants are not applied (the stored
  * file's policy is preserved) except where an explicit tool argument names a field.
  */
@@ -401,6 +404,7 @@ export function composeWirePersona(args: WirePersonaArgs, existing?: AgentDef): 
     if (args.subscribe !== undefined) def.subscribe = args.subscribe;
     if (args.allowSubscribe !== undefined) def.allowSubscribe = args.allowSubscribe;
     if (args.allowPublish !== undefined) def.allowPublish = args.allowPublish;
+    if (args.capabilities !== undefined) def.capabilities = args.capabilities;
     def.persona = parsed.body;
     dropWireDefaultIfScoped(def);
     return def;
@@ -417,6 +421,7 @@ export function composeWirePersona(args: WirePersonaArgs, existing?: AgentDef): 
     subscribe,
     allowSubscribe: args.allowSubscribe ?? fromPrompt?.allowSubscribe,
     allowPublish: args.allowPublish ?? fromPrompt?.allowPublish,
+    capabilities: args.capabilities,
     description: fromPrompt?.description,
     tags: fromPrompt?.tags,
     variant: fromPrompt?.variant,

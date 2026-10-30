@@ -117,12 +117,14 @@ write path takes **content** (`model` /
 complete agent file (its own `---` frontmatter) is **merged** into one block: grants,
 role, and agent from that block survive, and explicit tool arguments such as `model` win.
 A malformed leading frontmatter block is refused (`prompt-frontmatter`) rather than
-wrapped. `capabilities` and `owner` remain policy and have no slot, so a peer cannot
-grant itself spawn or claim ownership. A persona with no `capabilities:` line therefore
-spawns **without** `spawn`, and a spawn whose effective role is `manager` is **refused at
-spawn time** rather than joining as a labelled manager that silently cannot seat workers:
-either put `capabilities: [spawn]` on the file (an operator edit) or spawn it under
-another role.
+wrapped. `capabilities` is policy, so the manager's `define-persona` command checks it
+against the definer before it writes: a definer can put into a persona only capabilities
+it holds itself, and a later spawn of the persona is checked again against its spawner.
+`owner` has no slot, so a peer cannot claim ownership. A persona with no `capabilities:`
+line therefore spawns **without** `spawn`, and a spawn whose effective role is `manager` is
+**refused at spawn time** rather than joining as a labelled manager that silently cannot
+seat workers: either give the persona `capabilities: [spawn]` (an operator edit, or a
+definer that holds `spawn`) or spawn it under another role.
 
 **Defining is silent.** Nothing goes out on the mesh unless you pass `announce: <channel>`,
 and then it goes to that channel only. A peer that did not ask for the persona has no way

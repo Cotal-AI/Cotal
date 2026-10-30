@@ -776,6 +776,7 @@ const PERSONA_INPUT_SCHEMA = {
     subscribe: CHANNEL_LIST,
     allowSubscribe: CHANNEL_LIST,
     allowPublish: CHANNEL_LIST,
+    capabilities: { type: "array", items: { type: "string" } },
   },
 } as const;
 const PERSONA_OUTPUT_SCHEMA = {
@@ -1449,8 +1450,8 @@ export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: Compile
  *  43 = `turn-participate` authorizes an exact personal native lifecycle for a finite self-only
  *  workflow turn lease without creating a managed seat or granting terminal custody.
  *
- *  44 = `spawn` takes an inline `persona` record. The spawn input schema is closed, so a
- *  revision-43 contract rejects it. */
+ *  44 = `spawn` takes an inline `persona` record, and `define-persona` takes `capabilities`. Both
+ *  input schemas are closed, so a revision-43 contract rejects either. */
 export function managerClusterDocument(): ClusterDocument {
   return buildClusterDocument(MANAGER_CLUSTER_URN, 44, ROWS);
 }

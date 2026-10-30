@@ -9,7 +9,8 @@
   "why": [
     "The bound exempts a spawn with no authenticated caller, the manager's own composition root.",
     "D1 drops the caller from the served door's handoff to startAgent, so every served static spawn",
-    "would read as the composition root and pass unbounded."
+    "would read as the composition root and pass unbounded. D2 drops it from define-persona's",
+    "handoff, so a served definer would put any capability into a persona."
   ],
   "mutations": [
     {
@@ -18,6 +19,13 @@
       "find": "      caller,\n      hooks,\n      authenticatedCaller,\n    );\n  }",
       "replace": "      caller,\n      hooks,\n    );\n  }",
       "expectRed": "a served spawn wider than the spawner is refused at the door, naming the part"
+    },
+    {
+      "name": "D2 drop the served caller from define-persona",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "this.opDefinePersona(args(ctx), callerOf(ctx), false, ctx.subject.caller)",
+      "replace": "this.opDefinePersona(args(ctx), callerOf(ctx), false)",
+      "expectRed": "a define-persona capability the definer does not hold is refused at the door, naming it"
     }
   ]
 }

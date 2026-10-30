@@ -91,6 +91,7 @@ type Internals = {
   inventoryReferenceError: (entry: ManagerResumeAgent) => string | undefined;
   resumeEntryOf: (a: Seat) => ManagerResumeAgent;
   spawnPersona: (opts: Record<string, unknown>, spawner: string | undefined, caller: EpCaller | undefined) => Promise<{ error?: string }>;
+  opDefinePersona: (args: Record<string, unknown>, caller: string, admin: boolean, authenticated?: EpCaller) => Promise<ControlReply>;
 };
 
 /** A manager over a fake endpoint and runtime. `spawned` counts launches per seat name; a name in
@@ -283,6 +284,8 @@ try {
     const unissued = { owner: DEV_OWNER, actor: newIdentity().id, uid: "u-unissued" } as EpCaller;
     check("a spawner with no evidence hands the record nothing", refused(await spawnAs(unissued, "orphaned", { persona: { prompt: "x", allowSubscribe: ["review"] } }), /holds no issued evidence/));
     check("and a refused record writes no snapshot", JSON.stringify(snapshots(workspaceRoot)) === JSON.stringify(before), snapshots(workspaceRoot));
+    const define = S.M.opDefinePersona({ name: "orphan_def", persona: "x", capabilities: ["spawn"] }, principalKey(DEV_OWNER, unissued.actor).key, false, unissued);
+    check("a definer with no evidence puts no capability into a persona", refused(await define, /definer holds no issued evidence.*capabilities spawn/) && !existsSync(catalog("orphan_def")));
   }
 
   console.log("save");
@@ -637,6 +640,15 @@ try {
     check("control: and writes no row for it", findActorUnified(ledger, owner, "wide") === undefined);
     check("a refused user-auth grant leaves no catalog file", !existsSync(join(root, ".cotal", "agents", "wide.md")));
     check("and no snapshot", snapshots(root).length === 0, snapshots(root));
+    // define-persona reads the same row: the definer puts only capabilities its scope carries.
+    const defineAs = (who: string, name: string, capabilities: string[]) => U.M.opDefinePersona({ name, persona: "x", capabilities }, who, false);
+    const definedPath = (name: string) => join(root, ".cotal", "agents", `${name}.md`);
+    const kept = await defineAs(spawner, "scoped", ["spawn"]);
+    check("a user-auth definer may put a capability its row holds into a persona", kept.ok && JSON.stringify(loadAgentFile(definedPath("scoped")).capabilities) === JSON.stringify(["spawn"]), kept);
+    const over = await defineAs(spawner, "runner", ["run"]);
+    check("and is refused one its row does not hold, by name, writing nothing", refused(over, /grants more than the definer holds: capabilities run beyond \[spawn\]/) && !existsSync(definedPath("runner")), over);
+    const stranger = await defineAs(principalKey(owner, "stranger").key, "foreign", ["spawn"]);
+    check("a user-auth definer with no row puts no capability into a persona", refused(stranger, /has no grant in this space/) && !existsSync(definedPath("foreign")), stranger);
     // A grant can settle on another uid than the one the spawn allocated: a hosted enrollment picks
     // its own. The spawn rebinds to the returned uid on both user-auth arms, so a grant that returns
     // a different one stands in for the host.
