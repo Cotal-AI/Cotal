@@ -3,7 +3,7 @@
     "packages/core/smoke/anycast-request-status.smoke.ts"
   ],
   "command": "pnpm smoke:anycast-request-status:auth",
-  "completionMarker": "COTAL_SMOKE_SENTINEL cells=64",
+  "completionMarker": "COTAL_SMOKE_SENTINEL cells=66",
   "mutations": [
     {
       "file": "packages/core/src/anycast-requests.ts",
@@ -106,6 +106,14 @@
       "expectRed": "10b the retried cancel finishes the removal as already gone",
       "cell": "10b the retried cancel finishes the removal as already gone",
       "note": "nats-server answers a delete of a seq inside the stream's range, already gone, with 10043 `sequence <n> not found`. Without it the retried cancel throws instead of recording already-gone, and the sweep throws on the same row every ten minutes."
+    },
+    {
+      "file": "packages/core/src/endpoint.ts",
+      "find": "m.info.deliveryCount, epoch)",
+      "replace": "m.info.deliveryCount, this.taskEpoch!)",
+      "expectRed": "10k a second copy from the old stream is refused as a mismatch",
+      "cell": "10k a second copy from the old stream is refused as a mismatch after the endpoint read the new time",
+      "note": "A take that reads the endpoint's stream time when it runs, instead of when its copy arrived, sends the new stream's time for a copy buffered from the old one once a refusal has refreshed it."
     }
   ]
 }

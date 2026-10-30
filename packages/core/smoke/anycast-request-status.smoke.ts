@@ -476,6 +476,10 @@ try {
   const s10b = await sender.ep.anycastAttributed("reviewer", "pending across a recreation");
   const g10b = await nextRequest(x, seen, s10b.msg.id);
   mark(g10b!);
+  // A second copy stays buffered, untaken, across the recreation.
+  const s10c = await sender.ep.anycastAttributed("reviewer", "a second copy buffered across a recreation");
+  const g10c = await nextRequest(x, seen, s10c.msg.id);
+  mark(g10c!);
   // A daemon that stopped right after its cancel fence leaves the row with its removal pending.
   const epochBefore = (await dJsm.streams.info(taskStream(space))).created;
   const pendingKey = anycastRecordKey(epochBefore, s10b.ack.seq);
@@ -502,6 +506,11 @@ try {
   );
   const reused = replay.seq === s10b.ack.seq ? { seq: replay.seq, id: s10b.msg.id } : undefined;
   check("10d the new stream stores the same request at the same seq", reused !== undefined, { replayed: replay.seq, original: s10b.ack.seq });
+  const replayC = await jetstream(senderNc).publish(
+    anycastSubject(space, "reviewer", DEV_OWNER, sender.id.slice(sender.id.indexOf(".") + 1)),
+    JSON.stringify(s10c.msg),
+    { msgID: s10c.msg.id },
+  );
   const t10b = await g10b!.delivery.take!();
   check("10e a holder's copy from the old stream is refused as a mismatch", !t10b.taken && t10b.drop && t10b.reason === "mismatch", t10b);
   check("10f and the replayed request still waits, cancellable", (await sender.ep.anycastStatus(s10b.ack.seq, s10b.msg.id)).state === "waiting");
@@ -512,6 +521,17 @@ try {
   const keptId = kept ? (JSON.parse(new TextDecoder().decode(kept.data)) as { id?: string }).id : undefined;
   check("10h the new stream's request at that seq was not deleted", keptId !== undefined && keptId === reused?.id, { keptId, reused });
   check("10i the sender reads the new request as waiting", (await sender.ep.anycastStatus(s10b.ack.seq, reused?.id)).state === "waiting");
+  // 10e's refusal made the endpoint read the new stream's time. A copy delivered before that read
+  // still carries the time of the stream it came from.
+  check("10j the second request is stored again at its seq", replayC.seq === s10c.ack.seq, { replayed: replayC.seq, original: s10c.ack.seq });
+  const epochAfter = await taskEpoch();
+  const refreshed = await until(() => (x.ep as unknown as { taskEpoch?: string }).taskEpoch === epochAfter || undefined);
+  const t10c = await g10c!.delivery.take!();
+  check(
+    "10k a second copy from the old stream is refused as a mismatch after the endpoint read the new time",
+    refreshed === true && !t10c.taken && t10c.drop && t10c.reason === "mismatch",
+    { refreshed, t10c },
+  );
 
   check("no unexpected endpoint errors on the sender", sender.errors.length === 0, sender.errors);
 } catch (e) {
