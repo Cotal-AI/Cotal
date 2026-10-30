@@ -34,6 +34,7 @@ for (let key = 0; key < 4; key++) {
 }
 check(clientSigning("nats") === "nats", "stock mode is explicit");
 check(clientSigning("native") === "native", "native mode is explicit");
+check(clientSigning("core") === "core", "product connection mode is explicit");
 for (const value of [undefined, "unknown"]) {
   let refused = false;
   try { clientSigning(value); } catch { refused = true; }
@@ -42,6 +43,6 @@ for (const value of [undefined, "unknown"]) {
 let invalid = false;
 try { nativeLoadAuthenticator("not a credential"); } catch { invalid = true; }
 check(invalid, "invalid credential refuses without a fallback");
-assert.equal(checks, 105);
+assert.equal(checks, 106);
 console.log(`  ${checks} checks: four keys, four nonce shapes, clear and refusal controls`);
 emitSentinel({ passed: checks, failed: 0 });

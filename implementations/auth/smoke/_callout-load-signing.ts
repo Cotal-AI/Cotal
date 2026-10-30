@@ -2,12 +2,12 @@ import { identityFromCreds, jwtFromCreds, nativeNkeySigner } from "@cotal-ai/cor
 import { encode } from "@nats-io/nkeys";
 import type { Authenticator } from "@nats-io/transport-node";
 
-export type ClientSigning = "nats" | "native";
+export type ClientSigning = "nats" | "native" | "core";
 
 /** The explicitly selected load-client backend; unknown child jobs and flags refuse. */
 export function clientSigning(value: unknown): ClientSigning {
-  if (value === "nats" || value === "native") return value;
-  throw new Error("callout-load: --client-signing must be nats or native");
+  if (value === "nats" || value === "native" || value === "core") return value;
+  throw new Error("callout-load: --client-signing must be nats, native or core");
 }
 
 /** Test-only native nonce signing for this job's generated, static sentinel credential. The JWT,

@@ -4,7 +4,6 @@ import { setTimeout as delay } from "node:timers/promises";
 import { createConnection, isIP } from "node:net";
 import {
   connect,
-  credsAuthenticator,
   headers,
   tokenAuthenticator,
   nanos,
@@ -33,6 +32,7 @@ import {
 } from "./liveness.js";
 import { processRuntime } from "./process-runtime.js";
 import { credsClaims, credsFingerprint, credsRenewalDelayMs, idFromCreds } from "./identity.js";
+import { nativeCredsAuthenticator } from "./creds-authenticator.js";
 import { armRenewal, renewalDeadlineMs, jitteredBackoffMs } from "./renewal.js";
 import { requireBrokerFloor } from "./broker-floor.js";
 import { withDeadline } from "./deadline.js";
@@ -8162,7 +8162,7 @@ function authOpts(a: AuthOpts) {
     if (!a.sentinelCreds)
       throw new Error("user-mode bearer requires sentinelCreds");
     return {
-      authenticator: [credsAuthenticator(new TextEncoder().encode(a.sentinelCreds)), tokenAuthenticator(a.bearer)],
+      authenticator: [nativeCredsAuthenticator(a.sentinelCreds), tokenAuthenticator(a.bearer)],
       tls,
     };
   }
@@ -8176,7 +8176,7 @@ function authOpts(a: AuthOpts) {
     // nats.js invokes the authenticator function on every attempt, including internal reconnects.
     const authenticator = (nonce?: string) => {
       const presented = typeof creds === "function" ? creds() : creds;
-      const authenticated = credsAuthenticator(new TextEncoder().encode(presented))(nonce);
+      const authenticated = nativeCredsAuthenticator(presented)(nonce);
       a.onCreds?.(presented);
       return authenticated;
     };

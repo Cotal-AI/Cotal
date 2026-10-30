@@ -66,6 +66,7 @@
     "release:cut": "node scripts/release-cut.mjs",
     "smoke": "tsx packages/core/smoke.ts",
     "smoke:auth": "tsx packages/core/smoke-auth.ts",
+    "smoke:native-creds-authenticator": "tsx packages/core/smoke/native-creds-authenticator.smoke.ts",
     "smoke:lang-grammar": "tsx packages/lang/smoke/grammar.smoke.ts",
     "smoke:lang-keys": "tsx packages/lang/smoke/keys.smoke.ts",
     "smoke:lang-journal": "tsx packages/lang/smoke/journal.smoke.ts",
