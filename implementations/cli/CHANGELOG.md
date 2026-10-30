@@ -1,5 +1,17 @@
 # @cotal-ai/cli
 
+## 0.131.0
+
+### Patch Changes
+
+- 0e65b6f: `ProcessRecord` carries only the fields its state has. A missing or empty record is `absent` and carries nothing. A record that is not a pid is `unattributable` and carries that content. `dead` and `unknown` carry the pid. `alive` and `foreign` carry the pid and, when the command line was read, the command. A caller that reads `pid` on an absent or unattributable record, or `content` on any other state, fails to compile. `readProcessRecord` already returned these shapes, and its results are unchanged. The manager and delivery refusals name the same pid they named before.
+- daff420: Inspect user-auth state-directory and provider-pin entries without following symlinks at those entries. Regular pins still count. The directory/pin entry checks treat ENOENT as absence and propagate other inspection errors; this does not change ancestor-path or auth-directory enumeration behavior.
+- Updated dependencies [f7c2c28]
+- Updated dependencies [0e65b6f]
+- Updated dependencies [daff420]
+  - @cotal-ai/core@0.131.0
+  - @cotal-ai/workspace@0.131.0
+
 ## 0.130.2
 
 ### Patch Changes

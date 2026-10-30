@@ -1,5 +1,11 @@
 # @cotal-ai/core
 
+## 0.131.0
+
+### Patch Changes
+
+- f7c2c28: Use native Ed25519 nonce signing for Node endpoint and standalone connections. Read rotating credentials on every authentication attempt and clear the temporary signer after use.
+
 ## 0.130.2
 
 No changes in this release.
