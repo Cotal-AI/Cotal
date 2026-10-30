@@ -55,7 +55,11 @@
  * on stderr. They mark only completed transitions, with `up` and `failed` on
  * `all_seat_starts_settled`.
  *
- * Run (needs nats-server 2.15.1 on PATH or NATS_SERVER_BIN, and an fd limit above 2N):
+ * `--server-version X.Y.Z` explicitly selects the expected broker version for a comparison.
+ * It defaults to 2.15.1 and refuses a mismatched binary; NATS_SERVER_BIN selects the binary.
+ * This changes only the version check, not broker configuration or the workload.
+ *
+ * Run (needs the selected nats-server on PATH or NATS_SERVER_BIN, and an fd limit above 2N):
  *   ulimit -n 65536; pnpm -C packages/core smoke:seat-idle-load --seats 500 --space-size 10 [--ram]
  */
 import { spawn, execFileSync, type ChildProcess } from "node:child_process";
@@ -292,7 +296,9 @@ const NATS_BIN = process.env.NATS_SERVER_BIN ?? "nats-server";
 
 const REPO = execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8", cwd: import.meta.dirname }).trim();
 const SHA = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8", cwd: REPO }).trim();
-const EXPECT_SERVER = "2.15.1";
+const EXPECT_SERVER = flag("server-version", argv.includes("--server-version") ? undefined : "2.15.1");
+if (!/^\d+\.\d+\.\d+$/.test(EXPECT_SERVER))
+  throw new Error("seat-idle-load: --server-version must be a numeric major.minor.patch version");
 const serverVersion = (() => {
   const v = execFileSync(NATS_BIN, ["--version"], { encoding: "utf8" }).trim();
   return (/\d+\.\d+\.\d+/.exec(v) ?? ["unknown"])[0];
