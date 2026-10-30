@@ -1,0 +1,24 @@
+{
+  "suite": [
+    "implementations/manager/smoke/spawn-once-restart.smoke.ts"
+  ],
+  "guard": "a once task outlives its manager: a successor serves or settles it, and a crash before its deadline hold leaves nothing unsettled",
+  "command": "pnpm smoke:spawn-once-restart",
+  "completionMarker": "SPAWN ONCE RESTART SMOKE",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/mutations/spawn-once-restart.json",
+  "why": [
+    "CELLS NAMED BEFORE THE RUN.",
+    "",
+    "R1 leaves a once task whose accept crashed before its deadline hold was minted in the goal index,",
+    "where no manager serves, cancels or retries it."
+  ],
+  "mutations": [
+    {
+      "name": "R1 a task with no hold is left unsettled",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      if (parsed.once) { await this.settleOnceTurn(p.ref, \"launch-failed\"); return; }\n",
+      "replace": "",
+      "expectRed": "the next manager cancels that task `launch-failed` and drops its index entry"
+    }
+  ]
+}

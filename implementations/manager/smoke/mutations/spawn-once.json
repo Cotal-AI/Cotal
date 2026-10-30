@@ -14,7 +14,10 @@
     "cannot be woken for the task, which then sits until its deadline. S5 leaves a task whose seat",
     "was despawned open, with nothing left to end it. S6 leaves a seat that never joined running with",
     "nothing to do. S7 clears the debt without the connector's proof that the seat's launched",
-    "processes are gone."
+    "processes are gone. S8 stops a seat that never joined only after its spawn's terminal is",
+    "published, so a stalled publish leaves it running. S9 drops a deadline whose terminal write was",
+    "refused, and S10 leaves that seat running past its deadline. S11 settles a never-served task's",
+    "debt at the readiness verdict, before the seat's exit and its connector's proof."
   ],
   "mutations": [
     {
@@ -27,8 +30,8 @@
     {
       "name": "S2 the deadline no longer stops the seat",
       "file": "implementations/manager/src/manager.ts",
-      "find": "      if (p.once) this.endOnceSeat(p, \"turn-deadline\");\n",
-      "replace": "",
+      "find": "      if (p.once) this.endOnceSeat(p, \"turn-deadline\");\n      else await clearGoalIndex(gw.ctx, p.ref);\n",
+      "replace": "      if (!p.once) await clearGoalIndex(gw.ctx, p.ref);\n",
       "expectRed": "...and the seat is gone at its deadline"
     },
     {
@@ -48,14 +51,14 @@
     {
       "name": "S5 the proved exit no longer cancels the task",
       "file": "implementations/manager/src/manager.ts",
-      "find": "      if ((await readGoalResult(gw.ctx, owed.ref)) === undefined) {\n        await this.assertGoalWriterEpochCurrent(epoch);",
-      "replace": "      if (false) {\n        await this.assertGoalWriterEpochCurrent(epoch);",
+      "find": "      await this.commitOnceCancel(owed.ref, owed.reason);\n",
+      "replace": "",
       "expectRed": "a despawn ends it: the task is cancelled `despawned` at the proved exit"
     },
     {
       "name": "S6 a seat that never joined is left running",
       "file": "implementations/manager/src/manager.ts",
-      "find": "        if (managed.once) this.stopOnceSeat(managed, \"readiness-timeout\");\n",
+      "find": "          this.stopOnceSeat(managed, \"readiness-timeout\");\n",
       "replace": "",
       "expectRed": "...and the seat is stopped, never left running with nothing to do"
     },
@@ -65,6 +68,34 @@
       "find": "      const retired = owed.retire === undefined ? undefined : await this.retireOnceSeat(owed.retire);",
       "replace": "      const retired = undefined as { discard(): Promise<void> } | undefined;",
       "expectRed": "a refused proof keeps the debt"
+    },
+    {
+      "name": "S8 the readiness stop waits for the spawn's terminal",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "        if (managed.once) {\n          this.agentGoals.delete(managed.name);\n          this.stopOnceSeat(managed, \"readiness-timeout\");\n        }\n        await hooks?.onOutcome?.({ kind: \"uncertain\", data: { reason: readiness.detail, ...(readiness.running ? { running: true } : {}) } });\n",
+      "replace": "        await hooks?.onOutcome?.({ kind: \"uncertain\", data: { reason: readiness.detail, ...(readiness.running ? { running: true } : {}) } });\n        if (managed.once) {\n          this.agentGoals.delete(managed.name);\n          this.stopOnceSeat(managed, \"readiness-timeout\");\n        }\n",
+      "expectRed": "a seat that never joins is stopped while its spawn's terminal cannot be published"
+    },
+    {
+      "name": "S9 a refused deadline write is not written again",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "        this.pendingTurns.set(key, p);\n        this.endOnceSeat(p, \"turn-deadline\");\n",
+      "replace": "        this.endOnceSeat(p, \"turn-deadline\");\n",
+      "expectRed": "...and the deadline terminal is written again while the manager runs"
+    },
+    {
+      "name": "S10 a refused deadline write leaves the seat running",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "        this.pendingTurns.set(key, p);\n        this.endOnceSeat(p, \"turn-deadline\");\n",
+      "replace": "        this.pendingTurns.set(key, p);\n",
+      "expectRed": "a refused deadline write still stops the seat at its deadline"
+    },
+    {
+      "name": "S11 a readiness cancel clears the debt before the seat exits",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "        if (this.onceWatched.has(goalKey(onceRef))) void this.commitOnceCancel(",
+      "replace": "        if (false) void this.commitOnceCancel(",
+      "expectRed": "a seat that never joins: its task is cancelled at once, and its debt is kept while its process still runs"
     }
   ]
 }

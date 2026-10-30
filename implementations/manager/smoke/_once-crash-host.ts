@@ -1,7 +1,7 @@
 // One manager process for spawn-once-restart.smoke.ts: it starts the manager, prints
 // REPRO_MANAGER, and waits to be SIGKILLed, which is the crash the suite grades. The suite spawns
 // the seats over the manager's own spawn command, so the suite is their spawner.
-import { appendFileSync } from "node:fs";
+import { appendFileSync, existsSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Manager } from "../src/manager.js";
@@ -36,6 +36,15 @@ const manager = new Manager({ space, servers, runtime: "pty", workspaceRoot: roo
     options: { maxVerifyRounds: 12 },
   });
 await manager.start();
+// Armed by the suite with a marker file: the manager dies at its next checkpoint write, the deadline
+// hold a once task mints after its goal and index entry exist and before its seat launches.
+const kv = (manager as unknown as { goalWriter: { ctx: { kv: { put: (key: string, ...rest: unknown[]) => Promise<unknown> } } } }).goalWriter.ctx.kv;
+const put = kv.put.bind(kv);
+const crashMarker = join(root, "crash-at-hold");
+kv.put = async (key, ...rest) => {
+  if (key.startsWith("cp.") && existsSync(crashMarker)) { rmSync(crashMarker); process.kill(process.pid, "SIGKILL"); }
+  return put(key, ...rest);
+};
 const managerInstanceId = (manager as unknown as { managerInstanceId: string }).managerInstanceId;
 process.stdout.write(`REPRO_MANAGER ${JSON.stringify({ managerPid: process.pid, managerInstanceId })}\n`);
 await new Promise<void>(() => {});

@@ -95,7 +95,22 @@ const retireStub: Connector = {
     return { discard: async () => { discarded.push(seat.lifecycleUid); } };
   },
 };
-for (const c of [relayStub, lateStub, silentStub, noRelayStub, retireStub]) registry.register(c);
+// Never joins, takes four seconds to exit after a SIGTERM, and answers retireAfterExit as a connector
+// that launches outside its seat: it refuses its first proof.
+const slowRetireCalls: Array<{ seat: OnceSeat; seatRunning: boolean; indexed: boolean }> = [];
+let slowRetireRefusals = 1;
+/** Whether the slow seat's own process was still running when its connector was asked. */
+let slowSeatRunning: (() => boolean) | undefined;
+const slowRetireStub: Connector = {
+  kind: "connector", name: "once-slow-retire-stub", requires: ["node"], supportsPrompt: true, supportsTurnRelay: true, readinessTimeoutMs: 3_000,
+  buildLaunch: (o): LaunchSpec => ({ command: "node", args: ["-e", "process.on('SIGTERM', () => setTimeout(() => process.exit(0), 4000)); setInterval(() => {}, 1 << 30)"], env: envFor(o) }),
+  async retireAfterExit(seat) {
+    slowRetireCalls.push({ seat, seatRunning: slowSeatRunning?.() ?? true, indexed: (await probe?.())?.indexed ?? false });
+    if (slowRetireRefusals-- > 0) throw new Error("its launched tree is still running");
+    return { discard: async () => { discarded.push(seat.lifecycleUid); } };
+  },
+};
+for (const c of [relayStub, lateStub, silentStub, noRelayStub, retireStub, slowRetireStub]) registry.register(c);
 
 let manager: Manager | undefined;
 let delivery: Awaited<ReturnType<typeof bootDeliveryDaemon>> | undefined;
@@ -332,6 +347,58 @@ try {
   check("a seat that dies first: its task is cancelled only once the connector proved the launch gone",
     r8?.state === "cancelled" && retireCalls.at(-1)?.seat.lifecycleUid === s8.seat!.lifecycleUid && retireCalls.at(-1)?.ended === false
       && await debtCleared(s8.once!.goalId), { r8, calls: retireCalls });
+
+  console.log("\n13. a stop never waits on a goal write, and a seat's debt never clears before its exit and its proof");
+  // The next goal write the manager makes waits until released, or is refused, as a stalled or a
+  // refused publication would.
+  const G = manager as unknown as { assertGoalWriterEpochCurrent(epoch: number): Promise<void> };
+  const realAssert = G.assertGoalWriterEpochCurrent.bind(manager);
+  let gate: { mode: "stall" | "refuse"; hit: boolean; release?: () => void } | undefined;
+  G.assertGoalWriterEpochCurrent = async (epoch: number) => {
+    const g = gate;
+    if (g !== undefined && !g.hit) {
+      g.hit = true;
+      if (g.mode === "refuse") throw new Error("injected: this goal write was refused");
+      await new Promise<void>((resolve) => { g.release = resolve; });
+    }
+    return realAssert(epoch);
+  };
+  const stallId = goalId("stall");
+  const s9name = (await call("spawn", { name: "helper", agent: "once-silent-stub", cwd: repoRoot, events: false, prompt: "never seen", once: { deadlineMs: -1 } }, { id: stallId })).data?.name as string | undefined;
+  const stall: { mode: "stall"; hit: boolean; release?: () => void } = { mode: "stall", hit: false };
+  gate = stall;
+  const s9 = s9name !== undefined && await until(() => M.agents.has(s9name), 15_000) ? M.agents.get(s9name) : undefined;
+  check("a seat that never joins is stopped while its spawn's terminal cannot be published",
+    s9 !== undefined && await gone(s9name!, s9.handle) && stall.hit && (await readGoalResult(actx, refOf(stallId))) === undefined, { hit: stall.hit, s9name });
+  stall.release?.();
+  gate = undefined;
+  const stallTerm = await resultOf(stallId, 20_000);
+  check("...and the spawn's own terminal lands once the write goes through", stallTerm?.state === "uncertain", stallTerm);
+
+  const s10 = await spawnOnce({ prompt: "never answered", once: { deadlineMs: 3_000 } });
+  gate = { mode: "refuse", hit: false };
+  check("a refused deadline write still stops the seat at its deadline", s10.seat !== undefined && await gone(s10.name!, s10.seat.handle) && gate.hit);
+  const r10 = await resultOf(s10.once!.goalId, 20_000);
+  check("...and the deadline terminal is written again while the manager runs",
+    r10?.state === "failed" && (r10.data as { reason?: string }).reason === "turn-deadline" && await debtCleared(s10.once!.goalId), r10);
+  gate = undefined;
+
+  const slowId = goalId("slow");
+  const slowName = (await call("spawn", { name: "helper", agent: "once-slow-retire-stub", cwd: repoRoot, events: false, prompt: "never seen", once: { deadlineMs: -1 } }, { id: slowId })).data?.name as string | undefined;
+  const slowSeat = slowName !== undefined && await until(() => M.agents.has(slowName), 15_000) ? M.agents.get(slowName) : undefined;
+  slowSeatRunning = () => slowSeat?.handle.status() !== "exited";
+  const slowTask = taskOf(slowId);
+  probe = probeOf(slowTask);
+  const rSlow = await resultOf(slowTask, 15_000);
+  const heldAtCancel = (await readGoalIndex(actx, refOf(slowTask))) !== undefined;
+  check("a seat that never joins: its task is cancelled at once, and its debt is kept while its process still runs",
+    rSlow?.state === "cancelled" && (rSlow.data as { reason?: string }).reason === "readiness-timeout" && heldAtCancel && slowSeatRunning() && slowRetireCalls.length === 0,
+    { rSlow, heldAtCancel, calls: slowRetireCalls.length });
+  await until(() => slowRetireCalls.length >= 1, 20_000);
+  check("...its connector is asked only after the exit, and a refused proof keeps the debt",
+    slowRetireCalls[0]?.seatRunning === false && slowRetireCalls[0]?.seat.lifecycleUid === slowSeat?.lifecycleUid && slowRetireCalls[0]?.indexed === true, slowRetireCalls);
+  check("...and the debt clears on its proof, which is then discarded",
+    await debtCleared(slowTask) && slowRetireCalls.length === 2 && await until(() => discarded.includes(slowSeat!.lifecycleUid), 5_000), slowRetireCalls.length);
 } finally {
   for (const nc of seatConns) await nc.drain().catch(() => nc.close());
   await runnerNc?.drain().catch(() => runnerNc?.close());
@@ -342,7 +409,7 @@ try {
   await broker.stop().catch(() => {});
 }
 
-const EXPECTED_CELLS = 48;
+const EXPECTED_CELLS = 55;
 console.log(`\n${fail === 0 && pass === EXPECTED_CELLS ? "SPAWN ONCE SMOKE OK ✅" : "SPAWN ONCE SMOKE FAILED"}  (${pass} passed, ${fail} failed)`);
 if (pass + fail !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);

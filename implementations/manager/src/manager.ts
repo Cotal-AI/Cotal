@@ -1647,6 +1647,8 @@ export class Manager {
    *  exit is proved, or it was never served), so it is cancelled if it has no terminal and its index
    *  entry is dropped. A settle that fails stays here and the turn sweep retries it. */
   private readonly onceSettles = new Map<string, { ref: GoalRef; reason: string; retire?: OnceRetire; flight?: Promise<void> }>();
+  /** Once tasks whose seat's exit is watched: that exit, not the spawn's outcome, settles the debt. */
+  private readonly onceWatched = new Set<string>();
   /** Once tasks a predecessor accepted, by seat uid, until this incarnation binds the seat or
    *  proves it gone. `readinessMs` bounds how long a seat no reconcile here can account for is
    *  waited for. */
@@ -7234,6 +7236,7 @@ export class Manager {
         const error = reopenSession === undefined ? readiness.detail
           : `${readiness.detail} (continuity: exact was reopening recorded session ${reopenSession}; if the harness no longer has it, ` +
             `remove ${join(this.workspaceRoot, ".cotal", "continuity", `${name}.json`)} to start a new session)`;
+        if (managed.once) managed.once.stopReason ??= "launch-failed";
         await hooks?.onOutcome?.({ kind: "failed", data: { error } });
         return { ok: false, error };
       }
@@ -7242,10 +7245,14 @@ export class Manager {
       if (!readiness.ok) {
         this.watchExit(managed);
         if (managed.launch.carried) void this.refuseLateCarriedFork(managed, readinessTimeoutMs);
+        // A once seat is never left running with nothing to do, and its stop does not wait on the
+        // spawn's terminal, whose write can stall. The spawn keeps that terminal: the stop lets go
+        // of the spawn goal first. Its task was never served and is cancelled with the verdict.
+        if (managed.once) {
+          this.agentGoals.delete(managed.name);
+          this.stopOnceSeat(managed, "readiness-timeout");
+        }
         await hooks?.onOutcome?.({ kind: "uncertain", data: { reason: readiness.detail, ...(readiness.running ? { running: true } : {}) } });
-        // Its task was never served and is cancelled with the verdict; a once seat is never left
-        // running with nothing to do.
-        if (managed.once) this.stopOnceSeat(managed, "readiness-timeout");
         return { ok: false, error: readiness.detail };
       }
       if (managed.launch.carried) {
@@ -9655,8 +9662,14 @@ export class Manager {
       if (!ownsGoal) return;
       terminalEntered = true; // entered, not succeeded — see the catch below
       // A once spawn that did not succeed never served its task (delivery opens only with a
-      // succeeded verdict), so the task is cancelled now rather than at the seat's exit.
-      if (o.kind !== "succeeded" && onceRef !== undefined) void this.settleOnceTurn(onceRef, o.kind === "uncertain" ? "readiness-timeout" : "launch-failed");
+      // succeeded verdict), so the task is cancelled now rather than at the seat's exit. A launched
+      // seat's debt is still settled by its exit, which proves the seat gone first; a spawn that
+      // never launched one owes nothing more.
+      if (o.kind !== "succeeded" && onceRef !== undefined) {
+        const reason = o.kind === "uncertain" ? "readiness-timeout" : "launch-failed";
+        if (this.onceWatched.has(goalKey(onceRef))) void this.commitOnceCancel(onceRef, reason).catch((e: unknown) => console.error(`! once task ${onceRef!.goalId} (${reason}): ${rejectionText(e)}; its seat's exit cancels it`));
+        else void this.settleOnceTurn(onceRef, reason);
+      }
       try {
         await this.assertGoalWriterEpochCurrent(epoch); // a superseded corpse never commits
         let fact;
@@ -10268,7 +10281,16 @@ export class Manager {
       this.rememberSettledTurn(key, fact.state, Date.now());
       if (p.once) this.endOnceSeat(p, "turn-deadline");
       else await clearGoalIndex(gw.ctx, p.ref);
-    } catch (e) { console.error(`! turn deadline terminal for ${p.goalId}: ${rejectionText(e)}`); }
+    } catch (e) {
+      console.error(`! turn deadline terminal for ${p.goalId}: ${rejectionText(e)}`);
+      // A once seat stops at its deadline whether or not the terminal landed, and the task stays
+      // pending so the turn sweep writes the terminal again while this manager runs.
+      if (p.once) {
+        this.pendingTurns.set(key, p);
+        this.endOnceSeat(p, "turn-deadline");
+        this.ensureTurnSweep();
+      }
+    }
     this.maybeStopTurnSweep();
   }
 
@@ -10431,6 +10453,9 @@ export class Manager {
     // so a crash between them leaves a goal with no hold: nothing could ever settle it, and the
     // sweep would report the same missing pause every tick. Left unsettled, said once.
     if (p.holdToken !== undefined && (await readCheckpointSpec(gw.ctx.kv, { endpoint: p.ref.endpoint, token: p.holdToken })) === undefined) {
+      // A once task's hold is minted before its seat launches, so without one no seat ever ran it:
+      // the task is cancelled and its entry dropped, with nothing launched to prove gone.
+      if (parsed.once) { await this.settleOnceTurn(p.ref, "launch-failed"); return; }
       console.error(`turn reconcile ${p.goalId}: its deadline hold was never minted (the accept crashed before it); left unsettled`);
       return;
     }
@@ -10577,6 +10602,7 @@ export class Manager {
    *  exit that cannot be proved leaves both. */
   private watchOnceExit(a: ManagedAgent): void {
     const once = a.once!;
+    this.onceWatched.add(goalKey(once.ref));
     const retire = once.retire === undefined ? undefined : { connector: once.retire, name: a.name, uid: a.lifecycleUid };
     void a.handle.waitForExit!().then(
       () => this.settleOnceTurn(once.ref, once.stopReason ?? "seat-exited", retire),
@@ -10604,32 +10630,42 @@ export class Manager {
     // The pending entry is the latch the yield and the deadline race on; a task settled here is
     // served to no one again.
     const p = this.pendingTurns.get(key);
-    if (p) {
+    // A task past its deadline owes the deadline terminal, which the turn sweep writes again until
+    // it lands; the settle waits for it rather than record a cancel in its place.
+    const denyOwed = p?.deadlineAt !== undefined && p.deadlineAt <= Date.now();
+    if (p && !denyOwed) {
       this.pendingTurns.delete(key);
       this.markTurnLatchDropped(key);
       this.noticeSeatTurns(p.seat);
     }
-    const epoch = this.serviceServe?.grant.epoch ?? 0;
     try {
+      if (denyOwed) throw new Error("its deadline terminal is not written yet");
       // A seat whose exit is proved may have left processes of its own running the task: the task
       // is not recorded as ended, nor its debt cleared, before they are proved gone.
       const retired = owed.retire === undefined ? undefined : await this.retireOnceSeat(owed.retire);
-      if ((await readGoalResult(gw.ctx, owed.ref)) === undefined) {
-        await this.assertGoalWriterEpochCurrent(epoch);
-        if ((await readGoalStatus(gw.ctx, owed.ref))?.value.state !== "cancelling")
-          await transitionGoal(gw.ctx, owed.ref, "cancelling", { fields: { cancelMode: "terminate" } });
-        const { fact } = await commitGoalResult(gw.ctx, { ref: owed.ref, now: Date.now(), cause: "cancel", data: { cancelledBy: "manager", reason: owed.reason }, committer: { instanceId: this.managerInstanceId, epoch } });
-        this.emitGoalProgress(owed.ref, epoch, { phase: "terminal", state: fact.state, ...(fact.data !== undefined ? { data: fact.data } : {}) });
-        this.rememberSettledTurn(key, fact.state, Date.now());
-      }
+      await this.commitOnceCancel(owed.ref, owed.reason);
       await clearGoalIndex(gw.ctx, owed.ref);
       this.onceSettles.delete(key);
+      this.onceWatched.delete(key);
       await retired?.discard().catch((e: unknown) => console.error(`! once task ${owed.ref.goalId}: its retirement receipt was not discarded (${rejectionText(e)})`));
     } catch (e) {
       console.error(`! once task ${owed.ref.goalId} (${owed.reason}): ${rejectionText(e)}; retried by the turn sweep`);
       this.ensureTurnSweep();
     }
     this.maybeStopTurnSweep();
+  }
+
+  /** Cancel a once task with `reason` unless it already has a terminal. */
+  private async commitOnceCancel(ref: GoalRef, reason: string): Promise<void> {
+    const gw = this.goalWriter!;
+    if ((await readGoalResult(gw.ctx, ref)) !== undefined) return;
+    const epoch = this.serviceServe?.grant.epoch ?? 0;
+    await this.assertGoalWriterEpochCurrent(epoch);
+    if ((await readGoalStatus(gw.ctx, ref))?.value.state !== "cancelling")
+      await transitionGoal(gw.ctx, ref, "cancelling", { fields: { cancelMode: "terminate" } });
+    const { fact } = await commitGoalResult(gw.ctx, { ref, now: Date.now(), cause: "cancel", data: { cancelledBy: "manager", reason }, committer: { instanceId: this.managerInstanceId, epoch } });
+    this.emitGoalProgress(ref, epoch, { phase: "terminal", state: fact.state, ...(fact.data !== undefined ? { data: fact.data } : {}) });
+    this.rememberSettledTurn(goalKey(ref), fact.state, Date.now());
   }
 
   /** Ask the seat's connector to prove its launched processes gone, within {@link ONCE_RETIRE_MS}.
@@ -10681,7 +10717,8 @@ export class Manager {
    *  every seat it can and reaps the rest by their custody reference, so once it has finished with
    *  a seat's slot, an unbound seat is proved gone. A manager that adopts no seats cannot reach the
    *  old seat or prove its exit: it does not serve the task to it, a task with a deadline ends at
-   *  that deadline, and one without is settled `uncertain` after one readiness window. */
+   *  that deadline, and one without is settled `uncertain` after one readiness window. Its debt is
+   *  never cleared here, since nothing proves that seat gone. */
   private async settleInheritedOnce(): Promise<void> {
     const gw = this.goalWriter;
     if (!gw || !this.goalReconcileDone) return;
@@ -10699,7 +10736,7 @@ export class Manager {
       }
       if ((await readGoalResult(gw.ctx, d.ref)) !== undefined) {
         this.onceInherited.delete(uid);
-        void this.settleOnceTurn(d.ref, "seat-exited", retireOf(d));
+        this.keepUnprovedOnceDebt(d);
         continue;
       }
       if (d.deadlineAt !== undefined || Date.now() - this.goalReconcileDoneAt < d.readinessMs) continue;
@@ -10709,9 +10746,15 @@ export class Manager {
       this.markTurnLatchDropped(key);
       try {
         await settleGoalUncertain(gw.ctx, { ref: d.ref, now: Date.now(), committer: { instanceId: this.managerInstanceId, epoch: this.serviceServe?.grant.epoch ?? 0 }, reason: "the manager restarted and could not reach the seat; the task may have run in part or in full" });
-        void this.settleOnceTurn(d.ref, "seat-exited", retireOf(d));
+        this.keepUnprovedOnceDebt(d);
       } catch (e) { console.error(`! inherited once task ${d.ref.goalId}: ${rejectionText(e)}`); }
     }
+  }
+
+  /** An inherited task's seat this manager cannot reach: its terminal stands, and its index entry,
+   *  the seat's debt, stays recorded, because nothing here can prove that seat gone. */
+  private keepUnprovedOnceDebt(d: { ref: GoalRef; seat: { name: string; uid: string } }): void {
+    console.error(`! once task ${d.ref.goalId}: this manager cannot reach seat ${d.seat.name}/${d.seat.uid} to prove it gone; its debt stays in the goal index`);
   }
 
   /** Settle race: a despawn MID-GOAL drives the goal's cancel terminal - transition to

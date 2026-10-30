@@ -7,7 +7,8 @@
  * dies with its manager, so the successor's static reconcile cannot adopt either seat. Its exit is
  * then proved, and each task must be cancelled `seat-exited` at once rather than wait for a
  * deadline, or forever when there is none. Retrying the original spawn after the restart must
- * start no second seat and no second task.
+ * start no second seat and no second task. A manager that then dies between a task's goal and its
+ * deadline hold has launched no seat, and the next manager must cancel that task.
  *
  * Run: pnpm smoke:spawn-once-restart   (needs nats-server + node on PATH)
  */
@@ -40,6 +41,8 @@ const CELLS = [
   "...and drops both tasks' index entries",
   "...after the successor asked the connector the task names to prove each seat's launch gone, and discarded each proof after its clear",
   "the original spawn retried after the restart starts no second seat and no second task",
+  "a manager that dies between a task's goal and its deadline hold has launched no seat",
+  "the next manager cancels that task `launch-failed` and drops its index entry",
 ];
 let pass = 0, fail = 0;
 const graded = new Set<string>();
@@ -71,7 +74,7 @@ const seatPids = (name: string) => {
 };
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN)); const root = join(dir, "ws");
 mkdirSync(join(root, ".cotal", "agents"), { recursive: true }); saveSpaceAuth(authDir(root), auth);
-for (const name of ["open", "timed"]) writeFileSync(join(root, ".cotal", "agents", `${name}.md`), `---\nname: ${name}\nrole: worker\nsubscribe: []\nallowSubscribe: []\nallowPublish: []\n---\n`);
+for (const name of ["open", "timed", "held"]) writeFileSync(join(root, ".cotal", "agents", `${name}.md`), `---\nname: ${name}\nrole: worker\nsubscribe: []\nallowSubscribe: []\nallowPublish: []\n---\n`);
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port, storeDir: join(dir, "js") }));
 const broker = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" }); const releaseBroker = teardownOnSignal(broker, dir);
 let daemon: DeliveryDaemon | undefined; const managers: ChildProcess[] = [];
@@ -163,6 +166,23 @@ try {
   await wait(3_000);
   check("the original spawn retried after the restart starts no second seat and no second task",
     seatPids("open").length === 0 && !(await indexed(tasks.open)) && (await resultOf(tasks.open))?.state === "cancelled", { retried, pids: seatPids("open") });
+
+  // The successor dies at the hold write of the next once spawn: the task's goal and index entry
+  // exist, its hold does not, and its seat was never launched.
+  const heldId = "spawn-held".padEnd(43, "h");
+  const heldTask = digestIdToken(`${heldId}:once`);
+  const successorExit = successor.child.exitCode === null ? new Promise<void>((r) => successor.child.once("exit", () => r())) : Promise.resolve();
+  writeFileSync(join(root, "crash-at-hold"), "");
+  void call("spawn", { name: "held", agent: "once-crash-stub", cwd: repo, events: false, prompt: "the held task", once: { deadlineMs: 600_000 } }, heldId);
+  const died = await Promise.race([successorExit.then(() => true), wait(30_000).then(() => false)]);
+  check("a manager that dies between a task's goal and its deadline hold has launched no seat",
+    died && seatPids("held").length === 0 && await indexed(heldTask), { died, pids: seatPids("held"), stderr: successor.stderr().slice(-1500) });
+  const third = await startHost();
+  epoch = 2;
+  let held: Awaited<ReturnType<typeof resultOf>>;
+  await until(async () => (held = await resultOf(heldTask)) !== undefined, 60_000);
+  check("the next manager cancels that task `launch-failed` and drops its index entry",
+    held?.state === "cancelled" && held.data?.reason === "launch-failed" && await until(async () => !(await indexed(heldTask)), 30_000), { held, stderr: third.stderr().slice(-2000) });
 } catch (error) {
   for (const name of CELLS) if (!graded.has(name)) check(name, false, `not reached: ${(error as Error).message}`);
 } finally {
@@ -172,7 +192,7 @@ try {
   for (const child of managers) if (child.exitCode === null) stopGroup(child.pid);
   await Promise.all(managerExits);
   // End every seat this suite started, by its own command line.
-  for (const pid of [...seatPids("open"), ...seatPids("timed")]) stopGroup(pid);
+  for (const pid of [...seatPids("open"), ...seatPids("timed"), ...seatPids("held")]) stopGroup(pid);
   await daemon?.stop().catch(() => {});
   broker.kill("SIGKILL");
   await wait(300);
