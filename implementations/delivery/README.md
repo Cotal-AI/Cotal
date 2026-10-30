@@ -11,6 +11,13 @@ Implementations never import each other; they meet at runtime over NATS.
 See [docs/delivery-daemon.md](../../docs/delivery-daemon.md) and the
 [root AGENTS.md](../../AGENTS.md) for the tier rules.
 
+## Native transport regression
+
+After `pnpm build`, run `pnpm smoke:delivery-transport-health` with `nats-server` on PATH.
+The suite owns its broker and temporary state. Its 15 checks exercise the transport-health
+class directly, including failed credential adoption, reconnect recovery and sustained broker
+loss. The CI smoke registry runs it alongside the daemon-level native-health suite.
+
 ## Load-harness delivery checks
 
 `pnpm -C implementations/delivery smoke:fanout-load --members 50 --rate 10 --seconds 30`
