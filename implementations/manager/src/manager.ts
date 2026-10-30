@@ -10529,6 +10529,8 @@ export class Manager {
       servers: this.servers ?? DEFAULT_SERVER,
       auth: this.auth!,
       log: (line) => console.error(`static retirement ${a.name}: ${line}`),
+      // A daemon credential reload briefly removes its responder while it reconnects.
+      unreachableWaitMs: DEPROVISION_TIMEOUT_MS,
     });
     const cleanup = async (): Promise<void> => {
       // SPEC 13.15: every issuance bound to this incarnation's ledger family is retired here,
