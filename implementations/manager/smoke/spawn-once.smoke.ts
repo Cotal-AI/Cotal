@@ -465,7 +465,16 @@ try {
     r2?.state === "cancelled" && reasonOf(r2) === "launch-failed" && !opened.includes(taskOf(c2.id))
       && c2.seat !== undefined && await gone(c2.name!, c2.seat.handle) && await debtCleared(taskOf(c2.id)), r2);
 
+  // The runtime's gate stops the seat when its watch fails. The launch here reads that outcome only
+  // after the seat's exit, the order a loaded manager can see between its polls.
   startupMode = "silent";
+  const W = manager as unknown as { awaitStartupOutcome(a: { handle: AgentHandle }, ...rest: unknown[]): Promise<string> };
+  const readOutcome = W.awaitStartupOutcome.bind(manager);
+  W.awaitStartupOutcome = async (a, ...rest) => {
+    const outcome = await readOutcome(a, ...rest);
+    if (outcome === "failed") { await until(() => a.handle.status() === "exited", 10_000); await wait(500); }
+    return outcome;
+  };
   const silentId = goalId("silent");
   const silentName = (await call("spawn", { name: "helper", agent: "once-confirm-stub", cwd: repoRoot, events: false, prompt: "no notice", once: {} }, { id: silentId })).data?.name as string | undefined;
   const silentSeat = silentName !== undefined && await until(() => M.agents.has(silentName), 15_000) ? M.agents.get(silentName) : undefined;
@@ -477,9 +486,10 @@ try {
   const rSilent = await resultOf(taskOf(silentId), 10_000);
   check("a prompt answered with no notice after it fails the spawn at the notice's bound, saying why",
     silentTerm?.state === "failed" && errorOf(silentTerm) === `${silentName} joined, but its startup did not show the channel: its startup watch failed, so it cannot take a once task`, silentTerm);
-  check("...its task, never served, is cancelled `launch-failed`, and its seat is gone",
+  check("...its task, never served, is cancelled `launch-failed` though its seat's exit landed first, and its seat is gone",
     rSilent?.state === "cancelled" && reasonOf(rSilent) === "launch-failed" && !opened.includes(taskOf(silentId))
       && silentSeat !== undefined && await gone(silentName!, silentSeat.handle), rSilent);
+  W.awaitStartupOutcome = readOutcome;
 
   startupMode = "confirmed";
   const lostId = goalId("lost");

@@ -10689,8 +10689,9 @@ export class Manager {
     const once = a.once!;
     this.onceWatched.add(goalKey(once.ref));
     const retire = once.retire === undefined ? undefined : { connector: once.retire, name: a.name, uid: a.lifecycleUid };
+    // A startup watch that failed stopped the seat itself, possibly before the launch read that outcome.
     void a.handle.waitForExit!().then(
-      () => this.settleOnceTurn(once.ref, once.stopReason ?? "seat-exited", retire),
+      () => this.settleOnceTurn(once.ref, once.stopReason ?? (a.handle.startupOutcome?.() === "failed" ? "launch-failed" : "seat-exited"), retire),
       (e) => console.error(`! ${a.name}: its exit could not be proved (${rejectionText(e)}); its once task stays owed`),
     );
   }

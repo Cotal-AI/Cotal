@@ -23,7 +23,8 @@
     "seat's task would be served on no evidence of channels. S13 and S14 move the turn-frame bound one",
     "character each way, and S15 measures the task without the deadline line it can carry. S16 serves a",
     "seat whose startup skipped the channel prompt, S17 serves it at its join before its notice, and",
-    "S18 serves a task whose spawn has no succeeded terminal, which a successor reads as never served."
+    "S18 serves a task whose spawn has no succeeded terminal, which a successor reads as never served. S19 names",
+    "a seat its failed startup watch stopped `seat-exited` when its exit lands before the launch reads the outcome."
   ],
   "mutations": [
     {
@@ -151,6 +152,13 @@
       "find": "      if (onceTask && committed === true) this.openOnceDelivery(onceTask.ref);\n      else if (onceTask) {\n",
       "replace": "      if (onceTask) this.openOnceDelivery(onceTask.ref);\n      if (onceTask && committed !== true) {\n",
       "expectRed": "a confirmed spawn whose succeeded terminal cannot be written never serves its task: its seat is stopped"
+    },
+    {
+      "name": "S19 a seat its failed startup watch stopped is cancelled as a seat that exited",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "once.stopReason ?? (a.handle.startupOutcome?.() === \"failed\" ? \"launch-failed\" : \"seat-exited\")",
+      "replace": "once.stopReason ?? \"seat-exited\"",
+      "expectRed": "is cancelled `launch-failed` though its seat's exit landed first"
     }
   ]
 }
