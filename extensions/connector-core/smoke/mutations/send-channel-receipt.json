@@ -22,6 +22,12 @@
     "",
     "N7 sends the raw argument instead of the resolved default.",
     "",
+    "N8 drops the pattern refusal, so a pattern is described and handed to send.",
+    "",
+    "N9 drops the first way to reach a family from the refusal.",
+    "",
+    "N10 drops both ways from the advertised channel text.",
+    "",
     "NO BUILD STEP: the suite imports ../src."
   ],
   "mutations": [
@@ -87,6 +93,33 @@
       "expectRed": "an omitted channel goes to the first channel the agent may post to",
       "cell": "an omitted channel goes to the first channel the agent may post to",
       "note": "The receipt would describe team.rocket while the message went to the endpoint default."
+    },
+    {
+      "name": "N8 a pattern as the channel is no longer refused before the send path",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "        if (channel !== undefined && !isConcreteChannel(channel)) return err(`Couldn't send: ${patternSendRefusal(channel)}`);\n",
+      "replace": "",
+      "expectRed": "cotal_send refuses the pattern team.> before reading or sending",
+      "cell": "cotal_send refuses the pattern team.> before reading or sending",
+      "note": "Without the guard a pattern reaches describeSendChannel, which reads the channel list, and then the endpoint, whose refusal names neither way to reach a family."
+    },
+    {
+      "name": "N9 the refusal stops naming one post to a channel the pattern matches",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "To reach agents that follow ${pattern}, post once to one channel it matches. ",
+      "replace": "",
+      "expectRed": "the refusal for team.> says one post to a channel it matches reaches its followers",
+      "cell": "the refusal for team.> says one post to a channel it matches reaches its followers",
+      "note": "The refusal would still refuse but would teach only the per-channel way."
+    },
+    {
+      "name": "N10 the advertised channel text drops both ways to reach a family",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "}). ${PATTERN_SEND_HELP} Reply on the channel you received a message on.`",
+      "replace": "}). Reply on the channel you received a message on.`",
+      "expectRed": "the advertised channel text names both ways to reach a family",
+      "cell": "the advertised channel text names both ways to reach a family",
+      "note": "An agent reading the tool schema would learn of the refusal only by hitting it."
     }
   ]
 }

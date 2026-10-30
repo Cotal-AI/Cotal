@@ -357,6 +357,7 @@ try {
   const sendTool = tools.find((t) => t.name === "cotal_send");
   const channelText = JSON.stringify((sendTool?.inputSchema.properties as Record<string, unknown> | undefined)?.channel ?? "");
   check("the advertised send default names no connection's channel", channelText.includes("this connection's default") && !channelText.includes("lobby"), channelText);
+  check("the advertised send channel names both ways to reach a family", channelText.includes("post once to one channel it matches") && channelText.includes("cotal_channels lists them"), channelText);
   const inc = await call(a, "cotal_connect", { name: "inc_watch" });
   const incSent = await call(a, "cotal_send", { connection_id: idOf(inc), text: "default-channel-probe" });
   for (let i = 0; i < 30 && !heardOn.has("default-channel-probe"); i++) await sleep(100);

@@ -93,3 +93,7 @@ A **publish target is always concrete** (no `*`/`>`). **Subscriptions and ACLs m
 `team.*` (one level) or `team.>` (any depth). A `>` read grant is **read-all chat** in the space
 by design: it suits trusted/local deployments, not least privilege ([SPEC §3](../SPEC.md#3-subject-layout),
 [§9](../SPEC.md#9-nats--jetstream-security-and-authorization)).
+
+To reach the agents that follow `team.>`, post once to one channel it matches, such as
+`team.announce`. To reach several channels, post to each by name. `cotal_send` refuses a pattern,
+and its refusal names both ways.

@@ -352,5 +352,57 @@ const proto = MeshAgent.prototype as unknown as {
   check("an open mesh, which enforces no post ACL, keeps the first channel read", !unchanged.result.isError && unchanged.sent[0] === "announce", unchanged);
 }
 
+// A pattern as the channel is refused before any read or publish, and the refusal names the two ways
+// to reach a channel family: one post to a channel the pattern matches, or a post to each by name.
+{
+  const cfg = {
+    space: "demo",
+    name: "alice",
+    servers: "nats://127.0.0.1:4222",
+    subscribe: ["team.>"],
+    allowSubscribe: ["team.>"],
+    allowPublish: ["team.>"],
+    kind: "agent",
+    tls: false,
+  } as AgentConfig;
+  const calls: string[] = [];
+  const agent = stubAgent({ joined: ["team.>"], listed: [] });
+  (agent as unknown as { send: MeshAgentType["send"] }).send = async (_t, channel) => {
+    calls.push(`send ${channel}`);
+    return { id: "m", ts: 1, space: "demo", from: { id: "a", name: "alice", kind: "agent" }, channel, parts: [] } as never;
+  };
+  (agent as unknown as { describeSendChannel: MeshAgentType["describeSendChannel"] }).describeSendChannel = async (c) => {
+    calls.push(`describe ${c}`);
+    return "existing channel";
+  };
+  const send = cotalToolSpecs(cfg, "smoke").find((s) => s.name === "cotal_send")!;
+  for (const pattern of ["team.>", "team.*.ci"]) {
+    const refused = await send.run(agent, cfg, { text: "hi", channel: pattern });
+    check(
+      `cotal_send refuses the pattern ${pattern} before reading or sending`,
+      refused.isError === true && calls.length === 0 && refused.text.includes("Nothing was sent."),
+      { refused, calls },
+    );
+    check(
+      `the refusal for ${pattern} says one post to a channel it matches reaches its followers`,
+      refused.text.includes(`To reach agents that follow ${pattern}, post once to one channel it matches.`),
+      refused.text,
+    );
+    check(
+      `the refusal for ${pattern} says to post to each channel by name and where to list them`,
+      refused.text.includes("post to each by name; cotal_channels lists them"),
+      refused.text,
+    );
+  }
+  const sent = await send.run(agent, cfg, { text: "hi", channel: "team.announce" });
+  check("a channel the pattern matches still sends", !sent.isError && calls.includes("send team.announce"), { sent, calls });
+  const described = (send.schema.shape.channel as { description?: string } | undefined)?.description ?? "";
+  check(
+    "the advertised channel text names both ways to reach a family",
+    described.includes("post once to one channel it matches, such as team.announce") && described.includes("post to each by name (cotal_channels lists them)"),
+    described,
+  );
+}
+
 console.log(`\nSEND-CHANNEL-RECEIPT SMOKE ${fail === 0 ? "OK" : "FAILED"}  (${pass} passed, ${fail} failed)`);
 process.exit(fail === 0 ? 0 : 1);

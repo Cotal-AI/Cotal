@@ -686,6 +686,16 @@ export function defaultSendChannel(config: Pick<AgentConfig, "allowPublish" | "c
 const NO_POSTABLE_DEFAULT =
   "you may post to none of the channels you read, so there is no default and an omitted channel is refused - name one your post ACL allows (cotal_orientation lists them)";
 
+/** How to reach a channel family, since every publish names one concrete channel (SPEC §3). The
+ *  advertised `channel` text of `cotal_send`, here and in the gateway. */
+export const PATTERN_SEND_HELP =
+  "A pattern such as team.> is refused. To reach agents that follow team.>, post once to one channel it matches, such as team.announce; to reach several channels, post to each by name (cotal_channels lists them).";
+
+/** The refusal for a pattern given as `cotal_send`'s channel, returned before anything is read or sent. */
+function patternSendRefusal(pattern: string): string {
+  return `"${pattern}" is a pattern, and a post goes to one concrete channel. To reach agents that follow ${pattern}, post once to one channel it matches. To reach several channels, post to each by name; cotal_channels lists them. Nothing was sent.`;
+}
+
 /** The full Cotal tool set for a given config. Renderers iterate this; `source` names the
  *  hosting connector and is stamped onto outgoing feedback. An explicit env restricts feedback's
  *  Git lookup to its global config; omitted preserves process inheritance and repository lookup.
@@ -1107,14 +1117,14 @@ export function cotalToolSpecs(
     {
       name: "cotal_send",
       title: "Cotal: broadcast to a channel",
-      description: "Broadcast a message to everyone on a channel in your space.",
+      description: "Broadcast a message to everyone on one channel in your space.",
       schema: {
         text: z.string().describe("The message to broadcast."),
         channel: z
           .string()
           .optional()
           .describe(
-            `Channel to send on (${defaultChannel ? `default: ${defaultChannel}` : config.subscribe.some(isConcreteChannel) ? `REQUIRED: ${NO_POSTABLE_DEFAULT}` : "REQUIRED: you are on no channel, so there is no default and an omitted channel is refused - join one first"}). Concrete only, not a wildcard like team.>; reply on the channel you received a message on.`,
+            `Channel to send on (${defaultChannel ? `default: ${defaultChannel}` : config.subscribe.some(isConcreteChannel) ? `REQUIRED: ${NO_POSTABLE_DEFAULT}` : "REQUIRED: you are on no channel, so there is no default and an omitted channel is refused - join one first"}). ${PATTERN_SEND_HELP} Reply on the channel you received a message on.`,
           ),
         mentions: z
           .array(z.string())
@@ -1124,6 +1134,7 @@ export function cotalToolSpecs(
           ),
       },
       async run(agent, config, { text: msg, channel, mentions }: { text: string; channel?: string; mentions?: string[] }) {
+        if (channel !== undefined && !isConcreteChannel(channel)) return err(`Couldn't send: ${patternSendRefusal(channel)}`);
         try {
           const joined = agent.joinedChannels();
           const target = channel ?? defaultSendChannel(config, joined);
