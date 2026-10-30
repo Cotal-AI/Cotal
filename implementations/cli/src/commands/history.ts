@@ -116,6 +116,7 @@ export interface HistoryResult {
   readonly retention: {
     readonly perSender: number | null;
     readonly maxAgeMs: number | null;
+    readonly oldestAt: string | null;
     readonly gaps: { readonly channel: string; readonly sender: string; readonly name: string | null; readonly retained: number }[];
   } | null;
   readonly replay: { readonly channel: string; readonly replay: boolean | null; readonly window: string | null }[];
@@ -438,6 +439,7 @@ export async function readWindow(ep: CotalEndpoint, conn: Connection, req: Windo
     retention = {
       perSender: held.perSender,
       maxAgeMs: held.maxAgeMs,
+      oldestAt: held.oldestAt,
       gaps: held.perSender === null
         ? []
         : held.senders
@@ -634,8 +636,10 @@ function historyView(r: HistoryResult, space: string, names: ReadonlyMap<string,
   if (r.retention) {
     const limits = [r.retention.perSender !== null ? `${r.retention.perSender} per sender on each channel` : null, r.retention.maxAgeMs !== null ? `posts older than ${formatChatAge(r.retention.maxAgeMs)} expire` : null].filter(Boolean);
     notes.push({ text: `retention: ${limits.length ? limits.join(", ") : "no limit set"}; history is what remains, not every message sent`, tone: "hint" });
+    if (r.retention.oldestAt !== null) notes.push({ text: `the oldest post the chat stream still holds is from ${shownTime(r.retention.oldestAt)}; posts sent before it are gone`, tone: "hint" });
+    // A sender at the limit may have posted exactly that many, so the gap is possible, not proven.
     for (const gap of r.retention.gaps)
-      notes.push({ text: `gap: #${gap.channel} holds ${gap.retained} from ${gap.name ?? gap.sender}, the per-sender limit, so their older messages there are gone`, tone: "waiting" });
+      notes.push({ text: `gap: #${gap.channel} holds ${gap.retained} from ${gap.name ?? gap.sender}, the per-sender limit, so their older messages there may be gone`, tone: "waiting" });
   }
   if (r.dms) notes.push({ text: "DM retention gaps are not reported", tone: "hint" });
   for (const row of r.replay) notes.push({ text: `#${row.channel} replay to new members: ${row.replay === null ? "unknown" : row.replay ? `on${row.window ? ` (${row.window})` : ""}` : "off"}`, tone: "hint" });

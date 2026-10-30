@@ -1,7 +1,8 @@
 /**
  * Backup and restore of the chat stream's history limit, on a real stack: a restore holds the chat
  * stream at no age while it checks the restored state, then sets the age the backup recorded, and a
- * backup on the old settings restores on them and moves at the next start.
+ * backup on the old settings restores on them and moves at the next start. A resume moves nothing,
+ * and a start that fails after the move says so in its error.
  *
  * The first scenario waits out the two-minute minimum age between the backup and the restore, so
  * its posts are older than the recorded age when the restore checks them. A restore that applied
@@ -10,12 +11,12 @@
  * Run: pnpm smoke:chat-history-restore:live   (needs nats-server on PATH)
  */
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
-import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { connect, nanos } from "@nats-io/transport-node";
-import { CHAT_HISTORY_DEFAULT, LEGACY_CHAT_HISTORY, PLANE3_MAX_MSGS_PER_SUBJECT, chatStream, dlvStream, inboxStream, type ChatHistoryLimit } from "@cotal-ai/core";
+import { CHAT_HISTORY_DEFAULT, LEGACY_CHAT_HISTORY, PLANE3_MAX_MSGS_PER_SUBJECT, channelBucket, chatStream, dlvStream, inboxStream, type ChatHistoryLimit } from "@cotal-ai/core";
 import { assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 import { infrastructureMaintenancePermissions } from "../../implementations/cli/src/lib/isolated-broker.js";
 
@@ -146,6 +147,58 @@ const same = (a: ChatHistoryLimit, b: ChatHistoryLimit) => a.maxAgeMs === b.maxA
     check("...keeping the post that is newer than 30 days", migrated.state.messages === 1, migrated.state.messages);
   } catch (e) {
     check(`the legacy scenario ran without throwing: ${e instanceof Error ? e.message : String(e)}`, false, e instanceof Error ? e.stack : e);
+  } finally {
+    if (up) s.run("down");
+    s.cleanup();
+  }
+}
+
+// ── a resume, and a start that fails after the move ────────────────────────────────────────────────
+{
+  const s = sandbox("late");
+  const port = await freePort();
+  const server = `nats://127.0.0.1:${port}`;
+  const space = "chl_late_failure";
+  const seed = join(s.root, "seed.json");
+  writeFileSync(seed, JSON.stringify({ channels: { general: { replay: true } } }));
+  const moved = (r: SpawnSyncReturns<string>) => `${r.stdout}${r.stderr}`.includes("the broker now deletes posts older than 30d");
+  const chatLimit = async () => {
+    const c = await connect({ servers: server });
+    try { return limitOf((await (await jetstreamManager(c)).streams.info(chatStream(space))).config); } finally { await c.close(); }
+  };
+  let up = false;
+  try {
+    const started = s.run("up", "--detach", "--open", "--server", server, "--space", space);
+    up = started.status === 0;
+    check("control: the open stack starts", up, s.shown(started));
+    const nc = await connect({ servers: server });
+    const jsm = await jetstreamManager(nc);
+    const { config } = await jsm.streams.info(chatStream(space));
+    await jsm.streams.update(chatStream(space), { ...config, max_age: 0, max_msgs_per_subject: LEGACY_CHAT_HISTORY.perSender });
+    // A registry entry that does not decode, which a seed for that channel refuses to write over.
+    await jetstream(nc).publish(`$KV.${channelBucket(space)}.general`, "{not json");
+    await nc.close();
+
+    const preserved = s.run("down", "--preserve-state");
+    up = preserved.status !== 0;
+    const resumed = s.run("up", "--detach", "--open", "--server", server, "--space", space);
+    up = resumed.status === 0;
+    check("a resume after down --preserve-state runs no stream setup, so the old settings stay", up && !moved(resumed) && same(await chatLimit(), LEGACY_CHAT_HISTORY), { down: s.shown(preserved), up: s.shown(resumed) });
+
+    const stopped = s.run("down");
+    up = stopped.status !== 0;
+    const failed = s.run("up", "--detach", "--open", "--server", server, "--space", space, "--channels", seed, "--json");
+    up = failed.status === 0;
+    let envelope: { error?: { code?: string }; changed?: { kind?: string; stream?: string; to?: ChatHistoryLimit }[] } | undefined;
+    try { envelope = JSON.parse(failed.stdout); } catch { envelope = undefined; }
+    check("a start that moves the limit and then fails on a later step says the limit moved", failed.status !== 0 && envelope?.error?.code === "CONFLICT" && moved(failed), s.shown(failed));
+    check("...and its envelope names the chat stream as changed", envelope?.changed?.some((c) => c.kind === "chat-history-limit" && c.stream === chatStream(space) && c.to !== undefined && same(c.to, CHAT_HISTORY_DEFAULT)) === true, envelope?.changed);
+
+    const retry = s.run("up", "--detach", "--open", "--server", server, "--space", space);
+    up = retry.status === 0;
+    check("the next start runs on the moved limit and reports no move", up && !moved(retry) && same(await chatLimit(), CHAT_HISTORY_DEFAULT), s.shown(retry));
+  } catch (e) {
+    check(`the late-failure scenario ran without throwing: ${e instanceof Error ? e.message : String(e)}`, false, e instanceof Error ? e.stack : e);
   } finally {
     if (up) s.run("down");
     s.cleanup();

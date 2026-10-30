@@ -19,6 +19,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { jetstream, jetstreamManager, type JetStreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
+import { Objm } from "@nats-io/obj";
 import { connect, nanos, type NatsConnection } from "@nats-io/transport-node";
 import {
   CHAT_HISTORY_DEFAULT,
@@ -33,7 +34,9 @@ import {
   channelBucket,
   chatStream,
   createSpaceAuth,
+  dinboxSubject,
   dlvStream,
+  dlvSubject,
   dmStream,
   inboxStream,
   isPublishPermissionDenied,
@@ -144,14 +147,17 @@ try {
   const objUpdate = await thrown(() => jsm.streams.update(obj.config.name, obj.config));
   check("the artifact store's update stays granted", objUpdate === undefined, objUpdate);
 
-  // ── catch-up: the cap rule tombstones a join, a passed stream head does not ──
+  // ── catch-up copies what the stream holds and judges no retention ──
+  // A removed sequence does not record its subject, so stream state cannot tell this channel's
+  // eviction from another channel's removal. SPEC §4 bounds the durable guarantee by the limit.
   console.log("\ndurable join catch-up over the stream's limits (auth mode):");
   const mgr = new CotalEndpoint({ space: S, servers: authBroker.servers, creds: provisioner, channels: [], consume: false, watchPresence: false, registerPresence: false, card: { name: "prov", role: "manager", kind: "endpoint" } });
   const daemon = new CotalEndpoint({ space: S, servers: authBroker.servers, creds: await mintCreds(auth, newIdentity(), "delivery"), channels: [], consume: false, watchPresence: true, registerPresence: false, card: { name: "delivery", role: "delivery", kind: "endpoint" } });
   for (const ep of [mgr, daemon]) { ep.on("error", () => {}); await ep.start(); endpoints.push(ep); }
   await daemon.startPlane3((owner, lifecycleUid) => daemon.aclForOwner(owner, lifecycleUid));
   const posterId = newIdentity(), posterUid = mintLifecycleUid();
-  const posterCreds = await provisionAgent(mgr, auth, posterId, { allowSubscribe: ["elsewhere", "held", "capped"], allowPublish: ["elsewhere", "held", "capped"], subscribe: [], lifecycleUid: posterUid });
+  const joinChannels = ["elsewhere", "held", "full", "capped", "gone"];
+  const posterCreds = await provisionAgent(mgr, auth, posterId, { allowSubscribe: joinChannels, allowPublish: joinChannels, subscribe: [], lifecycleUid: posterUid });
   const poster = new CotalEndpoint({ space: S, servers: authBroker.servers, creds: posterCreds, channels: [], consume: false, lifecycleUid: posterUid, watchPresence: false, registerPresence: false, card: { id: posterId.id, name: "poster", role: "agent", kind: "agent" } });
   poster.on("error", () => {});
   await poster.start();
@@ -159,41 +165,66 @@ try {
   // The membership store's writer is the delivery daemon, so its credential writes the pending row.
   const membership = await connect({ servers: authBroker.servers, ...standaloneConnectOpts({ creds: await mintCreds(auth, newIdentity(), "delivery"), tls: false }) });
   const members = await new Kvm(membership).open(membersBucket(S));
-  const owner = principalKey(DEV_OWNER, newIdentity().id).key;
-  const uid = mintLifecycleUid();
-  /** A join committed and not yet activated, as a crash between the two leaves it: its catch-up
-   *  window opens at `joinCursor`, which a fresh join would set to the current frontier. */
-  const pending = (channel: string, joinCursor: number) => commitMemberRevision(members, {
-    channel, owner, lifecycleUid: uid, state: "durable-active", joinCursor, generation: 1, activated: false, writerIdentity: "smoke", updatedAt: Date.now(),
-  });
+  const actor = newIdentity().id;
+  const owner = principalKey(DEV_OWNER, actor).key;
+  /** A join committed and not yet activated, with its window opening at `joinCursor`. Each cell
+   *  commits it after the posts that window covers, as when the row lands after the cursor was
+   *  read: the fan-out passed those posts before the row existed, so only catch-up copies them.
+   *  Each join has its own lifecycle, so its inbox holds only its own copies. */
+  const pending = async (channel: string, joinCursor: number) => {
+    const lifecycleUid = mintLifecycleUid();
+    await commitMemberRevision(members, { channel, owner, lifecycleUid, state: "durable-active", joinCursor, generation: 1, activated: false, writerIdentity: "smoke", updatedAt: Date.now() });
+    return lifecycleUid;
+  };
   const lastSeq = async () => (await jsm.streams.info(chatStream(S))).state.last_seq;
+  const held = async (channel: string) => Object.values((await jsm.streams.info(chatStream(S), { subjects_filter: `cotal.${S}.chat.*.*.${channel}` })).state.subjects ?? {}).reduce((a, n) => a + n, 0);
+  const copies = async (lifecycleUid: string) => {
+    const subject = dinboxSubject(S, DEV_OWNER, actor, lifecycleUid);
+    return (await jsm.streams.info(inboxStream(S), { subjects_filter: subject })).state.subjects?.[subject] ?? 0;
+  };
+  const join = async (channel: string, lifecycleUid: string) => {
+    const result = await daemon.durableJoinFor(owner, channel, lifecycleUid);
+    const row = (await readMember(members, channel, owner, lifecycleUid))?.record;
+    return { result, row, open: result.durable === true && row?.activated === true && row.leaveCursor === undefined, copies: await copies(lifecycleUid) };
+  };
+  const purger = await connect({ servers: authBroker.servers, ...standaloneConnectOpts({ creds: await mintCreds(auth, newIdentity(), "purger"), tls: false }) });
+  const purgerJsm = await jetstreamManager(purger);
 
   // Head: another channel's posts are removed below this join's window. The channel lost nothing.
   const headCursor = await lastSeq();
-  await pending("held", headCursor);
   for (const i of [1, 2]) await poster.multicast(`other ${i}`, { channel: "elsewhere" });
   for (const i of [1, 2]) await poster.multicast(`held ${i}`, { channel: "held" });
   await wait(300);
-  const purger = await connect({ servers: authBroker.servers, ...standaloneConnectOpts({ creds: await mintCreds(auth, newIdentity(), "purger"), tls: false }) });
-  await (await jetstreamManager(purger)).streams.purge(chatStream(S), { seq: headCursor + 3 });
-  await purger.close();
+  // A purge to a sequence removes every message below it, so held's posts at +3 and +4 stay.
+  await purgerJsm.streams.purge(chatStream(S), { seq: headCursor + 3 });
   const head = (await jsm.streams.info(chatStream(S))).state.first_seq;
-  check("the rig: the stream's head is past the join's window start", head > headCursor + 1, { head, headCursor });
-  const joined = await daemon.durableJoinFor(owner, "held", uid);
-  const heldRow = await readMember(members, "held", owner, uid);
-  check("a join whose window the stream head passed, with nothing of its channel removed, activates", joined.durable === true && joined.reason === undefined, joined);
-  check("...and its row stays open", heldRow?.record.activated === true && heldRow.record.leaveCursor === undefined, heldRow?.record);
+  check("the rig: the stream's head is past the join's window start, and the joined channel keeps both posts", head > headCursor + 1 && await held("held") === 2, { head, headCursor, held: await held("held") });
+  const heldJoin = await join("held", await pending("held", headCursor));
+  check("a join whose window the stream head passed, with nothing of its channel removed, activates with both posts", heldJoin.open && heldJoin.copies === 2, heldJoin);
 
-  // Cap: one sender's posts past the count are evicted inside the window.
+  // The per-sender count, at a limit of 2.
   await setChatHistoryLimit(jsm, S, { maxAgeMs: 7 * DAY, perSender: 2 }, operatorSet);
+  // Exactly at the count, behind another channel's post: nothing of this channel was removed.
+  const fullCursor = await lastSeq();
+  await poster.multicast("other 3", { channel: "elsewhere" });
+  for (const i of [1, 2]) await poster.multicast(`full ${i}`, { channel: "full" });
+  await wait(300);
+  const fullJoin = await join("full", await pending("full", fullCursor));
+  check("a join whose channel is exactly at the per-sender count, behind another channel's post, activates with both posts", fullJoin.open && fullJoin.copies === 2, fullJoin);
+  // Past the count: the sender's two oldest posts in the window are evicted.
   const capCursor = await lastSeq();
-  await pending("capped", capCursor);
   for (const i of [1, 2, 3, 4]) await poster.multicast(`capped ${i}`, { channel: "capped" });
   await wait(300);
-  const capped = await daemon.durableJoinFor(owner, "capped", uid);
-  const cappedRow = await readMember(members, "capped", owner, uid);
-  check("a join whose window lost a sender's posts to the per-sender count is refused as durable", capped.durable === false && capped.reason === "activation catch-up window partially evicted by retention", capped);
-  check("...and its row is tombstoned", cappedRow?.record.leaveCursor !== undefined, cappedRow?.record);
+  const capJoin = await join("capped", await pending("capped", capCursor));
+  check("a join whose window lost a sender's posts to the per-sender count activates with the two the stream still holds", capJoin.open && capJoin.copies === 2 && await held("capped") === 2, { ...capJoin, held: await held("capped") });
+  // A channel-filtered purge empties the channel while older posts elsewhere keep the head.
+  const goneCursor = await lastSeq();
+  for (const i of [1, 2]) await poster.multicast(`gone ${i}`, { channel: "gone" });
+  await wait(300);
+  await purgerJsm.streams.purge(chatStream(S), { filter: `cotal.${S}.chat.*.*.gone` });
+  const goneJoin = await join("gone", await pending("gone", goneCursor));
+  check("a join over a channel a filtered purge emptied activates with nothing to copy", goneJoin.open && goneJoin.copies === 0 && await held("gone") === 0, goneJoin);
+  await purger.close();
   await membership.close();
   await nc.close();
 } catch (e) {
@@ -224,6 +255,10 @@ try {
   await setupSpaceStreams({ servers: open.servers, space: E });
   const oldPoster = await start(E, "old");
   for (const i of [1, 2, 3]) await oldPoster.multicast(`old ${i}`, { channel: "old" });
+  // Durable copies taken at the same time, on the two streams that keep their own bound.
+  const copyUid = mintLifecycleUid();
+  const copySubjects = [dinboxSubject(E, "o", "a", copyUid), dlvSubject(E, "o", "a", copyUid)];
+  for (const subject of copySubjects) await js.publish(subject, JSON.stringify({ copy: true }));
   const writtenAt = Date.now();
 
   // The boundary of cotal up's migration.
@@ -238,6 +273,16 @@ try {
   const after = (await jsm.streams.info(chatStream(drifted))).config;
   check("a legacy chat stream with any other drift is refused, not migrated", refusal instanceof Error && refusal.message.includes("max_bytes"), refusal);
   check("...and left as it was", after.max_age === 0 && after.max_bytes === 10 * 1024 * 1024, { max_age: after.max_age, max_bytes: after.max_bytes });
+  // A setup that a later check refuses deletes nothing: the move runs after every other check.
+  const late = "chllate";
+  await jsm.streams.add(canonicalBackupStreamConfig(late, chatStream(late), LEGACY_CHAT_HISTORY));
+  await new Objm(js).create(artifactBucket(late), { max_bytes: 1024 });
+  const lateRefusal = await thrown(() => setupSpaceStreams({ servers: open.servers, space: late }));
+  check("a setup the artifact store check refuses leaves a legacy chat stream as it was", lateRefusal instanceof Error && lateRefusal.message.includes("max_bytes is 1024") && same(await chatLimit(jsm, late), LEGACY_CHAT_HISTORY), { refusal: lateRefusal, limit: await chatLimit(jsm, late) });
+  const store = (await jsm.streams.info(objectStoreStream(artifactBucket(late)))).config;
+  await jsm.streams.update(store.name, { ...store, max_bytes: -1 });
+  const lateRetry = await setupSpaceStreams({ servers: open.servers, space: late });
+  check("...and once that drift is gone, setup moves it and reports the move", same(lateRetry.chatHistory?.to, CHAT_HISTORY_DEFAULT) && same(await chatLimit(jsm, late), CHAT_HISTORY_DEFAULT), lateRetry);
 
   // The helper.
   const V = "chlhelper";
@@ -294,6 +339,8 @@ try {
   let messages = -1;
   for (let i = 0; i < 50 && messages !== 0; i++) { messages = (await jsm.streams.info(chatStream(E))).state.messages; if (messages !== 0) await wait(200); }
   check("setting a 2-minute age makes the broker delete posts older than it", expiry !== undefined && messages === 0, { expiry, messages });
+  const kept = await Promise.all([inboxStream(E), dlvStream(E)].map(async (name, i) => (await jsm.streams.info(name, { subjects_filter: copySubjects[i] })).state.subjects?.[copySubjects[i]!] ?? 0));
+  check("...while the INBOX and DLV copies taken as old as those posts are kept", kept.every((n) => n === 1), kept);
   const recallReader = await start(E, "expiryreader");
   const expired = await recallReader.recallChannel("old", 0);
   check("recall reports the expired channel as possibly incomplete", expired.dropped === true && expired.messages.length === 0, expired);

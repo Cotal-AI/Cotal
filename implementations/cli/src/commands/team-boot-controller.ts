@@ -7,7 +7,7 @@
  *  nothing is replayed. */
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { resolveAuthProvider, type BrokerTransport } from "@cotal-ai/core";
+import { resolveAuthProvider, type BrokerTransport, type ChatHistoryChange } from "@cotal-ai/core";
 import {
   CommandFailure, acquireMaintenanceLock, codeSpan, getCurrent, isCommandFailure, readMaintenanceJournal, releaseMaintenanceLock,
   workspaceSecretStore, writeResult, type Report,
@@ -16,9 +16,9 @@ import { buildLaunchSpec, genRunId, manifestToChannels, writeLaunchSpec } from "
 import { observeServiceProcess, serviceInstances } from "../lib/service-instances.js";
 import { readStackJournal, STACK_DEFINITION, type StackJournal } from "../lib/stack-journal.js";
 import { writeFreshTeamAttempt, writeFreshTeamSummary } from "../lib/team-fresh.js";
-import { startControllerStack, stackMembersView, stackUpForegroundNotice } from "./stack-up.js";
+import { chatHistoryMigratedNotice, startControllerStack, stackMembersView, stackUpForegroundNotice } from "./stack-up.js";
 import { assertManagerLogin, assertUserStackTransport, preflightUserStack, userLoginState } from "./stack-user-auth.js";
-import { controllerStackNative, holdForegroundStack, prepareFreshTeamBoot, prepareResumeTeamBoot, recheckFreshTeamBoot, type FreshTeamBootPlan } from "./up.js";
+import { chatHistoryMovedFailure, controllerStackNative, holdForegroundStack, prepareFreshTeamBoot, prepareResumeTeamBoot, recheckFreshTeamBoot, type FreshTeamBootPlan } from "./up.js";
 import { recheckStackResume, stackResumeEligibility, type StackResumeBinding } from "../lib/stack-resume.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { authModeText } from "../lib/team-text.js";
@@ -120,6 +120,7 @@ export async function controllerTeamBoot(request: ControllerTeamBootRequest): Pr
   const lock = acquireMaintenanceLock(plan.root);
   let result!: ControllerTeamBootResult;
   let journal!: StackJournal;
+  let chatHistory: ChatHistoryChange | undefined;
   try {
     if (binding) recheckStackResume(binding); else await recheckFreshTeamBoot(plan);
     const deploymentId = genRunId();
@@ -152,6 +153,7 @@ export async function controllerTeamBoot(request: ControllerTeamBootRequest): Pr
       },
     }, controllerStackNative());
     journal = started.journal;
+    chatHistory = started.chatHistory;
     const evidence = summaryEvidence(journal);
     let summaryRecorded = false;
     try {
@@ -177,11 +179,11 @@ export async function controllerTeamBoot(request: ControllerTeamBootRequest): Pr
   } catch (error) {
     // Partial and unknown startup keeps the retained attempt with no summary: never adopted as
     // settled, never replayed. A stack journal, when one was written, names the exact members.
-    throw isCommandFailure(error) ? error : new CommandFailure("unknown", "OPERATION_UNKNOWN", "the fresh controller team boot did not confirm its outcome; its retained intent and any started members were kept", { target: { space: plan.space, root: plan.root } });
+    throw chatHistoryMovedFailure(isCommandFailure(error) ? error : new CommandFailure("unknown", "OPERATION_UNKNOWN", "the fresh controller team boot did not confirm its outcome; its retained intent and any started members were kept", { target: { space: plan.space, root: plan.root } }));
   } finally { releaseMaintenanceLock(lock); }
   if (request.foreground && request.presentation !== "json") stackUpForegroundNotice(request.presentation, result.space);
   // With no agents requested, no join is left unchecked and the receipt is complete.
   const joins = result.requestedAgents.length > 0;
-  writeResult(request.presentation, { command: "team boot", target: { space: result.space, root: result.root, deploymentId: result.deploymentId }, result, ...(joins ? { completeness: "partial" as const, partial: { message: "Agent joins are not checked by this receipt." } } : {}), warnings: plan.prepared.warnings.map((warning) => ({ code: "MANIFEST_WARNING", target: { agent: warning.agent }, message: warning.message })) }, (data) => bootView(data, journal));
+  writeResult(request.presentation, { command: "team boot", target: { space: result.space, root: result.root, deploymentId: result.deploymentId }, result, ...(joins ? { completeness: "partial" as const, partial: { message: "Agent joins are not checked by this receipt." } } : {}), warnings: [...plan.prepared.warnings.map((warning) => ({ code: "MANIFEST_WARNING", target: { agent: warning.agent }, message: warning.message })), ...(chatHistory ? [{ code: "CHAT_HISTORY_MIGRATED", target: { root: result.root, space: result.space, stream: chatHistory.stream }, message: chatHistoryMigratedNotice(result.space, chatHistory) }] : [])] }, (data) => bootView(data, journal));
   if (request.foreground) await holdForegroundStack(plan.root);
 }

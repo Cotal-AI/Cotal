@@ -1341,11 +1341,14 @@ refused the same way, and its next step makes it readable again.
 When `cotal up` starts a space's broker, it moves a chat stream still on the settings every stream had
 before the limit was configurable, no age limit and 1000 posts per sender on each channel, to the
 current default of 30 days and 1000 per sender. **This deletes every channel post older than 30 days at that moment.**
-`up` warns with the old and new limit, as `CHAT_HISTORY_MIGRATED` in a controller stack's receipt.
-Any other limit is the operator's ([`history limit`](#history)) and is left as it is, and a chat
-stream that differs from the canonical settings in anything else refuses the start. A refresh of a
-broker that is already running changes no limit, so `history limit` can set one before the next
-start. [Upgrading](UPGRADING.md#channel-posts-expire-at-30-days-after-01272) has the steps.
+`up` warns with the old and new limit, as `CHAT_HISTORY_MIGRATED` in the receipt of a controller
+stack or `team boot`. Any other limit is the operator's ([`history limit`](#history)) and is left as
+it is, and a chat stream that differs from the canonical settings in anything else refuses the start.
+The move runs after every other stream setup check, so a start that a check refuses deletes nothing.
+A start that fails after the move says so in its error, and its envelope lists the chat stream under
+`changed`. A refresh of a broker that is already running changes no limit, and neither does a resume
+after `down --preserve-state`, which runs no stream setup, so `history limit` can set one before the
+next start. [Upgrading](UPGRADING.md#channel-posts-expire-at-30-days-after-01286) has the steps.
 
 On an existing mesh, `cotal up` reconciles the presence and lease bucket TTLs. It writes a reserved
 canary and waits for the bucket to expire it before reporting success. If the broker accepts the
@@ -6493,9 +6496,10 @@ Retained history is not every message sent. The chat stream keeps a post until i
 space's age limit, or until its sender has posted the space's per-sender count of newer ones on that
 channel. A new space keeps posts for 30 days and 1000 per sender, and `history limit` changes both.
 Past the count a busy sender's oldest posts are deleted while other senders' posts from the same time
-remain. `result.retention` names both limits and each sender at the count on the channels read, and
-the report prints a `gap` line for each. A gap is a fact about the stream, not a
-partial read. `result.replay` gives each channel's replay policy for new members, read from the
+remain. `result.retention` names both limits, `oldestAt` (the time of the oldest post the stream
+still holds), and each sender at the count on the channels read. The report prints that time and a
+`gap` line for each such sender. A sender at the count may have posted only that many, so a gap says
+their older posts may be gone. It describes the stream, not a partial read. `result.replay` gives each channel's replay policy for new members, read from the
 channel registry. DM gaps are not reported.
 
 A channel the identity may not read is refused with `PERMISSION_DENIED` (exit 2), never shown as

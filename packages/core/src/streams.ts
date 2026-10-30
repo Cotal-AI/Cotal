@@ -855,9 +855,6 @@ export async function setupSpaceStreams(opts: {
     requireBrokerFloor(nc);
     const jsm = await jetstreamManager(nc);
     await createSpaceStreams(jsm, opts.space);
-    // A chat stream from before the history limit was configurable moves to the default here, and
-    // the broker then expires its posts older than the default age (SPEC §8).
-    const chatHistory = await reconcileChatHistory(jsm, opts.space);
     // KV buckets are streams too — pre-create them so agents (denied KV stream-create) can open
     // them. Idempotent. The TTL'd ones come from `ttlBuckets` and ONLY from there, so a new one
     // cannot be created on this path without also being reconciled on the upgrade path; the
@@ -890,6 +887,10 @@ export async function setupSpaceStreams(opts: {
     // Artifact Object Store (SPEC section 5): the bytes an `artifact` reference part points at.
     // Create-or-VERIFY, drift fails loud - see ensureArtifactStore for why create alone is not enough.
     await ensureArtifactStore(nc, opts.space);
+    // A chat stream from before the history limit was configurable moves to the default, and the
+    // broker then expires its posts older than the default age (SPEC §8). It runs last because it
+    // deletes posts, so a setup that a check above refuses deletes nothing.
+    const chatHistory = await reconcileChatHistory(jsm, opts.space);
     return chatHistory ? { chatHistory } : {};
   } finally {
     await nc.drain();

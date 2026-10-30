@@ -2,7 +2,7 @@
   "suite": [
     "bin/smoke/chat-history-restore-live.smoke.ts"
   ],
-  "guard": "A restore holds the chat stream at the recorded count and no age through every check of the restored state, then sets the age the backup recorded on the target and reads it back.",
+  "guard": "A restore holds the chat stream at the recorded count and no age through every check of the restored state, then sets the age the backup recorded on the target and reads it back; a `cotal up` that fails after moving the chat stream's limit says so in its error and envelope.",
   "command": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/cli build && pnpm smoke:chat-history-restore:live",
   "completionMarker": "COTAL_SMOKE_SENTINEL",
   "progressPattern": "^  [✓✗] ",
@@ -32,6 +32,16 @@
       "expectRed": "...then holds the recorded age and count",
       "cell": "...then holds the recorded age and count",
       "afterRestore": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "a start that fails after the move does not say the limit moved",
+      "file": "implementations/cli/src/commands/up.ts",
+      "find": "    throw chatHistoryMovedFailure(seedMovedFailure(error));\n",
+      "replace": "    throw seedMovedFailure(error);\n",
+      "expectRed": "a start that moves the limit and then fails on a later step says the limit moved",
+      "cell": "a start that moves the limit and then fails on a later step says the limit moved",
+      "afterRestore": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/cli build",
+      "note": "The broker deleted the posts older than the new age at the move, and the next start finds nothing to move, so this error is the only report of it."
     }
   ]
 }

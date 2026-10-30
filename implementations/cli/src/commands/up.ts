@@ -848,7 +848,7 @@ export async function upCommand(args: ParsedArgs): Promise<void> {
     // A run that started no process, such as one that found its stack running, still reconciles.
     await seedBeforeLaunch();
   } catch (error) {
-    throw seedMovedFailure(error);
+    throw chatHistoryMovedFailure(seedMovedFailure(error));
   }
   const warning = upSystemdSupervisionWarning(args.values);
   if (warning) console.error(c.yellow(warning));
@@ -867,6 +867,24 @@ function seedMovedFailure(error: unknown): unknown {
     return error;
   }
   const changed = { kind: "seed-store", path: seedDir(), ...(moved.from === undefined ? {} : { from: moved.from }), to: moved.to };
+  return new CommandFailure(error.outcome, error.code, message, { remedy: error.remedy, native: error.native, target: error.target, changed: [...(error.changed ?? []), changed], cause: error.cause, selfContained: error.selfContained, remedyIsCommand: error.remedyIsCommand });
+}
+
+/** The chat history limit this run's stream setup moved, recorded the moment setup returns it. */
+let chatHistoryMoved: { space: string; change: ChatHistoryChange } | undefined;
+
+/** A failure after this run moved a chat stream's history limit says so, instead of claiming that
+ *  nothing was written: the broker deleted the posts older than the new age, and a later start finds
+ *  nothing left to move and reports nothing. */
+export function chatHistoryMovedFailure(error: unknown): unknown {
+  const moved = chatHistoryMoved;
+  if (!moved || !(error instanceof Error)) return error;
+  const message = `${error.message.replace(/; nothing was (?:started or )?written$/, "")}; ${chatHistoryMigratedNotice(moved.space, moved.change)}`;
+  if (!isCommandFailure(error)) {
+    error.message = message;
+    return error;
+  }
+  const changed = { kind: "chat-history-limit", stream: moved.change.stream, from: moved.change.from, to: moved.change.to };
   return new CommandFailure(error.outcome, error.code, message, { remedy: error.remedy, native: error.native, target: error.target, changed: [...(error.changed ?? []), changed], cause: error.cause, selfContained: error.selfContained, remedyIsCommand: error.remedyIsCommand });
 }
 
@@ -4926,6 +4944,7 @@ async function postStart(
   let chatHistory: ChatHistoryChange | undefined;
   try {
     ({ chatHistory } = await setupSpaceStreams({ servers: server, space, creds: setup?.creds }));
+    if (chatHistory) chatHistoryMoved = { space, change: chatHistory };
   } catch (error) {
     // Nothing of the stack runs yet, and the caller stops this broker again, so this is a refusal.
     if (error instanceof IssuedStoreBeforeRetentionError)

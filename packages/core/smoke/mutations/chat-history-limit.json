@@ -2,11 +2,11 @@
   "suite": [
     "packages/core/smoke/chat-history-limit.smoke.ts"
   ],
-  "guard": "The chat stream's history limit: the provisioner may update the chat stream and no other message stream, `cotal up` moves only the legacy pair, a broker refusal of the update is not reported as an unknown outcome, recall reads the stream's own limits and its head, and durable catch-up tombstones only on the per-sender rule, reading the channel's oldest post through its own consumer.",
+  "guard": "The chat stream's history limit: the provisioner may update the chat stream and no other message stream, `cotal up` moves only the legacy pair and only after every other setup check, a broker refusal of the update is not reported as an unknown outcome, recall reads the stream's own limits and its head, and durable catch-up copies what the stream holds without judging retention.",
   "command": "pnpm smoke:chat-history-limit",
   "completionMarker": "chat-history-limit:",
   "progressPattern": "^  [✓✗] ",
-  "minTicks": 40,
+  "minTicks": 43,
   "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/mutations/chat-history-limit.json",
   "why": [
     "The suite imports core from `src`, so no build is needed and each mutant is what the suite runs. Every cell",
@@ -49,28 +49,28 @@
       "cell": "a credential without the update grant is refused, not reported as an unknown outcome"
     },
     {
-      "name": "the head rule enters durable catch-up",
-      "file": "packages/core/src/endpoint.ts",
-      "find": "    const evicted = (await this.chatRetainedLoss(subject, fromSeqExcl, () => this.oldestRetainedThrough(name, subject))).capEvicted;",
-      "replace": "    const evicted = ((l) => l.capEvicted || l.headPassed)(await this.chatRetainedLoss(subject, fromSeqExcl, () => this.oldestRetainedThrough(name, subject)));",
-      "expectRed": "a join whose window the stream head passed, with nothing of its channel removed, activates",
-      "cell": "a join whose window the stream head passed, with nothing of its channel removed, activates",
-      "note": "Another channel's removals would then tombstone a join that lost nothing."
+      "name": "cotal up moves the chat stream before setup's other checks",
+      "file": "packages/core/src/streams.ts",
+      "find": "    await createSpaceStreams(jsm, opts.space);\n    // KV buckets",
+      "replace": "    await createSpaceStreams(jsm, opts.space);\n    await reconcileChatHistory(jsm, opts.space);\n    // KV buckets",
+      "expectRed": "a setup the artifact store check refuses leaves a legacy chat stream as it was",
+      "cell": "a setup the artifact store check refuses leaves a legacy chat stream as it was",
+      "note": "The move deletes posts, so a setup a later check refuses would delete them and report nothing."
     },
     {
-      "name": "the daemon reads the oldest post through the agent reader and swallows its failure, as before",
+      "name": "catch-up judges the per-sender count again",
       "file": "packages/core/src/endpoint.ts",
-      "find": "    const evicted = (await this.chatRetainedLoss(subject, fromSeqExcl, () => this.oldestRetainedThrough(name, subject))).capEvicted;",
-      "replace": "    const evicted = (await this.chatRetainedLoss(subject, fromSeqExcl, async () => (await this.collectHistory(subject, { seq: 1 }, { limit: 1 }).catch(() => []))[0]?.seq)).capEvicted;",
-      "expectRed": "a join whose window lost a sender's posts to the per-sender count is refused as durable",
-      "cell": "a join whose window lost a sender's posts to the per-sender count is refused as durable",
-      "note": "The delivery daemon holds no lifecycleUid, so the agent reader refuses it; swallowed, the eviction is never seen and the join is reported complete."
+      "find": "    await this.catchupCopy(owner, lifecycleUid, channel, joinCursor, fence, generation);\n",
+      "replace": "    await this.catchupCopy(owner, lifecycleUid, channel, joinCursor, fence, generation);\n    { const info = await this.jsm!.streams.info(chatStream(this.space), { subjects_filter: chatSubject(this.space, \"*\", \"*\", channel) }); if (Object.values(info.state.subjects ?? {}).some((n) => n >= info.config.max_msgs_per_subject)) { await tombstoneMember(kv, channel, owner, lifecycleUid, fence, this.card.id, generation); return { durable: false, reason: \"activation catch-up window partially evicted by retention\", generation }; } }\n",
+      "expectRed": "a join whose channel is exactly at the per-sender count, behind another channel's post, activates with both posts",
+      "cell": "a join whose channel is exactly at the per-sender count, behind another channel's post, activates with both posts",
+      "note": "Stream state cannot tell this channel's eviction from another channel's removal, so a sender at the count proves nothing; the mutant tombstones a join that lost nothing."
     },
     {
       "name": "recall ignores the stream head",
       "file": "packages/core/src/endpoint.ts",
-      "find": "    return { messages: collected, seqs, dropped: loss.capEvicted || loss.headPassed, unanswered: false };",
-      "replace": "    return { messages: collected, seqs, dropped: loss.capEvicted, unanswered: false };",
+      "find": "    if (info.state.first_seq > sinceSeq + 1) return true;\n",
+      "replace": "",
       "expectRed": "recall reports a channel whose posts are all gone, with the stream head past the watermark",
       "cell": "recall reports a channel whose posts are all gone, with the stream head past the watermark"
     },
