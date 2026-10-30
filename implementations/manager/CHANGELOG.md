@@ -1,5 +1,14 @@
 # @cotal-ai/manager
 
+## 0.130.2
+
+### Patch Changes
+
+- 3c422e0: Honor exit-watcher cancellation for terminal streams, already-exited handles and pending exit proof. Dispose completed stream subscriptions and keep late exits from notifying for a replacement handle.
+- @cotal-ai/core@0.130.2
+  - @cotal-ai/seat@0.130.2
+  - @cotal-ai/workspace@0.130.2
+
 ## 0.130.1
 
 ### Patch Changes
