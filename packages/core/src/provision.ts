@@ -193,6 +193,9 @@ export type Profile =
   // the accepted row with, and a lifecycle terminal retires issuances through. Writes the two
   // issued-authority stores and reads the evidence store leader-served; nothing else.
   | "issuer"
+  // The REGISTRY READER (SPEC 13.20): the registry's reads and nothing else. The evidence store's
+  // leader read, the records key list and `svc` spec/status rows, and contract artifacts by subject.
+  | "registry-reader"
   // The RUN ADMITTER (SPEC 14.8): the one-shot connection a hosting manager admits a workflow run
   // over. Creates that ONE run's admission record and, later, its revocation marker. The driver
   // holds nothing on this store; the mediator reads it.
@@ -312,6 +315,7 @@ export const CREDENTIAL_LIFETIMES: Record<CredentialKind, CredentialLifetimePoli
   "run-driver": { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "one workflow run's driver, per takeover attempt (SPEC 14.6): the hosting manager mints it when it takes the run over and re-mints for the SAME nkey on renewal; a new takeover mints a new one" },
   "run-mediator": { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "trusted workflow host operations, bound to one run and attempt; kept on the hosting process's connection" },
   "run-operator": { class: "one-shot", defaultTtlSeconds: 60, note: "one served run-status / run-ps / run-answer call (SPEC 14.3): the hosting manager mints it per call on its own connection, never the serve rails; 60s bounds a copied cred to a minute" },
+  "registry-reader": { class: "standing-renewable", defaultTtlSeconds: 60 * 60, renewalOwner: "registry host", note: "the registry's reads (SPEC 13.20), no write of any shape; the evidence-store read is stream-scoped, so it can read every recorded ceiling in the space (a NAMED RESIDUAL), and one hour bounds a copied credential; the process hosting the registry re-mints it" },
   issuer: { class: "mixed", defaultTtlSeconds: FIVE_MINUTES, renewalOwner: "auth-service", note: "renewed as the auth plane's held session for connect-time issuance (re-minted before exp, closed with the plane); one-shot for every other issuance window and for a lifecycle terminal's issuance retirement (SPEC 13.15)" },
   "run-admitter": { class: "one-shot", defaultTtlSeconds: 60, note: "one hosted run's admission record create, or its revocation marker (SPEC 14.8); 60s bounds a copied cred to a minute" },
   "transfer-writer": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "one carried resume per CLI call: one object's chunk and meta subjects in one instance's transfer bucket" },
@@ -1336,6 +1340,7 @@ export function permissionsFor(
     return remoteManagerPermissions(space, pr, opts.remoteManager);
   }
   if (profile === "issuer") return issuerPermissions(space, pr);
+  if (profile === "registry-reader") return registryReaderPermissions(space, pr);
   if (profile === "run-admitter") {
     if (!opts.runAdmitter) throw new Error("permissionsFor: run-admitter requires opts.runAdmitter ({endpoint, runId} of the ONE run it admits)");
     return runAdmitterPermissions(space, pr, opts.runAdmitter);
@@ -1669,7 +1674,7 @@ export function permissionsFor(
   pubAllow.push(...baseline.pub);
   if (opts.issued) pubAllow.push(acceptedReadGrant(space, opts.issued.acceptedToken));
   const epSub: string[] = [...baseline.sub];
-  // The registry's listing question rides the issued rail (SPEC 13.17): under the credential's own
+  // The registry's listing question rides the issued rail (SPEC 13.20): under the credential's own
   // generation when its issuance carries it, else under a listing generation.
   if (opts.issued?.listing) pubAllow.push(...epRequestGrantRows(space, REGISTRY_ENDPOINTS_GRANT, epCaller));
   if (opts.listing) {
@@ -2612,6 +2617,29 @@ function issuerPermissions(space: string, pr: MintPrincipal): Record<string, unk
         `$JS.API.CONSUMER.INFO.${ISSUED}.>`,
         `$JS.API.CONSUMER.DELETE.${ISSUED}.>`,
         "$JS.FC.>",
+      ],
+    },
+    sub: { allow: [`_INBOX_${pr.connId}.>`] },
+  };
+}
+
+/** The REGISTRY READER permission set (SPEC 13.20). The evidence store's `STREAM.MSG.GET` is
+ *  stream-scoped because the key rides the request body: NAMED RESIDUAL, the holder can read every
+ *  recorded ceiling in the space, so this credential is never a peer's. The records reads are the
+ *  key list and the per-key `svc` spec/status Direct Get, no stream-wide read; contract artifacts
+ *  ride the agent's subject-scoped fetch row. No write of any shape. */
+function registryReaderPermissions(space: string, pr: MintPrincipal): Record<string, unknown> {
+  const ISSUED = `KV_${issuedBucket(space)}`;
+  const REC = recordsBucket(space);
+  return {
+    pub: {
+      allow: [
+        `$JS.API.STREAM.INFO.${ISSUED}`,
+        `$JS.API.STREAM.MSG.GET.${ISSUED}`,
+        `$JS.API.STREAM.INFO.KV_${REC}`,
+        `$JS.API.DIRECT.GET.KV_${REC}.$KV.${REC}.svc.*.*.spec`,
+        `$JS.API.DIRECT.GET.KV_${REC}.$KV.${REC}.svc.*.*.status`,
+        `$JS.API.DIRECT.GET.${epcStreamName(space)}.${spacePrefix(space)}.epc.>`,
       ],
     },
     sub: { allow: [`_INBOX_${pr.connId}.>`] },
