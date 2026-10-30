@@ -323,7 +323,7 @@ needs the control token. For those two, a shell the seat runs still inherits a p
 file, though not the material itself.
 
 The material's private directory is also a launch artifact (see
-[Private launch files](authoring-a-connector.md#private-launch-files)), so the launcher removes it
+[Private launch files](authoring-a-connector.mdx#private-launch-files)), so the launcher removes it
 when the seat's process exits, the same way it removes a persona file. For Claude that is when the
 file goes. Hermes' launcher merges the file it was given into a second file of its own for the
 gateway child, and that second file is not a launch artifact. The launcher writes the file after

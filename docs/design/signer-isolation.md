@@ -1,6 +1,6 @@
 # Signer isolation
 
-> **Design** (non-normative, not shipped) · Closes [embedding](../embedding.md) remaining gap
+> **Design** (non-normative, not shipped) · Closes [embedding](../embedding.mdx) remaining gap
 > ("The remaining hosted gap is signer isolation"). Wire contract unchanged: no new subject, no new
 > stream, no new message type. This is a composition-root and OS-custody seam.
 
@@ -66,7 +66,7 @@ sign/mint seam would be a separate capability. Isolation is that seam.
   for the process lifetime.
 - **Hold.** `this.auth.account.signingSeed` is then in the manager's address space. Injecting
   KMS/Vault through `secretStore` changes where the bytes are stored at rest. It does not stop
-  `getSpaceAuth` from decrypting them into `this.auth`. `docs/embedding.md` already names this:
+  `getSpaceAuth` from decrypting them into `this.auth`. `docs/embedding.mdx` already names this:
   custody is resolved, isolation is not.
 - **Use.** Every mint in this process calls `mintCreds` / `provisionAgent` with `this.auth` (or a
   closed-over `auth` from `runStart`). `mintCreds` (`provision.ts`) does
@@ -255,7 +255,7 @@ Two attackers, same missing boundary:
 
 1. **Agent child (or a tool it shells out to).** Same uid, same mounts, `HOME` set. It reads the
    account record and now mints any profile `permissionsFor` will encode, including `admin` /
-   `provisioner` / `purger`. `docs/embedding.md` ("Hazardous provisioning primitives") already
+   `provisioner` / `purger`. `docs/embedding.mdx` ("Hazardous provisioning primitives") already
    warns against co-locating signer access with an untrusted connector at the same OS uid.
 2. **Code running as the manager after the agent-facing surface is compromised.** `this.auth` is
    already in memory; `FsSecretStore.get` still works. Isolation cannot stop that process from
@@ -1099,7 +1099,7 @@ account signing seed on a path the manager can `get`.
 1. **Mint-while-compromised.** A live manager that can dial the socket can still issue JWTs.
    Isolation is seed-theft resistance plus agent-uid confinement, not an HSM policy engine
    inside the signer. Narrowing which profiles the signer will encode is a later policy, not
-   required to close the gap `docs/embedding.md` names.
+   required to close the gap `docs/embedding.mdx` names.
 2. **Operator/account seeds.** Still on the operator path for rotation and for
    `createBrokerAuth` / `createSpaceAccountAuth`. A host that also wants those off the manager
    disk already has that as a separate custody problem.

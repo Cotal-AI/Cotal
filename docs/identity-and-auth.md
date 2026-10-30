@@ -314,7 +314,7 @@ The fourth, `POST /tool-result-human-proof/verify`, decides a pinned password pr
 host's authenticated session subject without issuing consent or credentials.
 The opt-in `POST /tool-result-consent/issue` door signs and records a same-owner consent
 under a host-custodied scoped anchor. It returns no result content, private key or capability.
-[embedding.md](embedding.md) documents these host doors' contracts.
+[embedding.mdx](embedding.mdx) documents these host doors' contracts.
 
 The public listener has a closed surface: `GET /health`, `GET /jwks`, `POST /exchange`,
 `POST /manager-service-authority`, `POST /manager-instances`, and `GET /.well-known/cotal-mesh`;
@@ -671,7 +671,7 @@ than the decision and at most 300 seconds old, and signed `amr` must contain `pw
 recent JWT `iat` nor a session's creation time supplies password provenance. Missing, malformed,
 future or stale provenance refuses this decision without changing ordinary bearer exchange.
 The host-only proof door and the remaining activation limits are documented under
-[private tool results](embedding.md#private-tool-results).
+[private tool results](embedding-remote-clients.mdx#private-tool-results).
 
 ## Joining
 

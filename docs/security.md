@@ -36,7 +36,7 @@ Each adversary, what it can attempt, and what stops it (or why it is out of scop
   does not protect*). These are **broker-enforced** guarantees and assume the peer has no host
   filesystem or process access to the account signer: the default single-host manager and container
   compositions do not isolate the signer from a same-uid agent, which could then mint `admin` and
-  read any DM. Isolating it is a hosted-composition concern (see [Embedding Cotal](embedding.md) and
+  read any DM. Isolating it is a hosted-composition concern (see [Embedding Cotal](embedding.mdx) and
   [Deploy](deploy.mdx)).
 - **Buggy or lazy receiver:** sender authenticity depends on the receiver enforcing the
   `from.id`-equals-subject-sender check; a client that skips it accepts spoofed senders. The

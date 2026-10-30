@@ -89,7 +89,7 @@ The contract is what a second binding implements against. Routing, identity, and
 A live-only transport does not have them. On any transport without native store-and-forward and
 a presence/registry store, Cotal has to supply those pieces itself. A non-NATS binding is
 therefore more than a pipe swap. (Implementing a *client* for the existing NATS binding is a
-different, much smaller job: [build a client](build-a-client.md).)
+different, much smaller job: [build a client](build-a-client.mdx).)
 
 ## What this means
 

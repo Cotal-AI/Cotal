@@ -81,7 +81,7 @@ Copying `.cotal/auth` does not copy that identity.
 
 In the broker-only example, the remote manager detects the different store and stays off the daemon-credential renewal lease.
 Run `cotal doctor auth --fix` on the broker host when the daemon credentials reach their renewal point.
-Share a store only for an explicitly [composed hosted pair](embedding.md#supervisor-signing-authority).
+Share a store only for an explicitly [composed hosted pair](embedding-manager.mdx#supervisor-signing-authority).
 
 The manager renews its own service credential within that credential's renewal window and reconnects with it.
 If a closed connection cannot be restored within about forty seconds, it releases its lease and exits so a restart can recover it.

@@ -47,7 +47,7 @@ it must hold the raw token.
 
 - **The host cannot, for a manager-enrolled lifecycle.** SPEC §13.1 says an enrollment request MUST
   carry the SHA-256 digest of the agent's standing actor token and never the token itself
-  (`SPEC.md:1340-1341`). `docs/embedding.md:370-372` says the participant passes only its digest so
+  (`SPEC.md:1340-1341`). `docs/embedding.mdx:370-372` says the participant passes only its digest so
   the plaintext secret never leaves the participant machine. A host-held one-time handoff for this
   lifecycle would need a second request carrying the plaintext to the host, which both clauses
   exclude. The host's ledger keeps the digest only, and that is the property worth keeping: a ledger
@@ -455,7 +455,7 @@ the child and hands it the material; a later change may join the two.
 - A copy of the manager's token, sentinel or launch-material files into the child. It exports
   manager paths and custody the child does not need.
 - A host-minted redeem URL for a manager-enrolled lifecycle. Forbidden by `SPEC.md:1340-1341` and
-  `docs/embedding.md:370-372`, as above.
+  `docs/embedding.mdx:370-372`, as above.
 - A manager-served redeem URL. It adds a listener for one read.
 - Passing material through `LaunchSpec.env` or argv. Both are inherited or visible.
 - Custody inside the spawn handler. `runCli` parses flags strictly, prints help and seeds

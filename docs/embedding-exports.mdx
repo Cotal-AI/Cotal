@@ -1,0 +1,273 @@
+---
+title: Embedding package exports
+description: Public package entry points, endpoint credentials, and Manager execution contracts.
+kind: Reference
+audience: integrators
+---
+
+The symbols below are public exports used by host applications.
+[Embedding Cotal](embedding.mdx) gives the composition reading path.
+
+## Package entry points [#the-export-surface]
+
+The package roots expose their JavaScript and TypeScript declarations through `dist/index.js` and `dist/index.d.ts`.
+Type-only names require `import type`.
+Other public entry points include:
+
+| Entry point | Purpose |
+|---|---|
+| `@cotal-ai/connector-claude-code/mcp` | Host managed Claude Code sessions in one process. See [Claude session hosting](claude-connector-reference.mdx#host-sessions-in-one-process). |
+| `@cotal-ai/core/browser-control` | Browser endpoint callers. |
+| `@cotal-ai/core/browser-validators-build` | Node-only generation of browser validators. See [Browser control](embedding-remote-clients.mdx#browser-control). |
+
+### Daemon APIs
+
+| Symbol | Package | Purpose |
+|---|---|---|
+| `runAuthService(args, store?, options?)` | `@cotal-ai/auth` | Auth process runner with optional secret-store and lifecycle configuration. |
+| `startAuthService(inputs)` | `@cotal-ai/auth` | Account-scoped hosted auth service returning an `AuthServiceHandle`. |
+| `runDelivery(args, store?)` | `@cotal-ai/delivery` | Delivery process runner with an optional secret store. |
+| `startDeliveryService(inputs)` | `@cotal-ai/delivery` | Account-scoped hosted delivery service returning a `HostedServiceHandle`. |
+| `HostedContextInputs`, `HostedServiceHandle` | `@cotal-ai/workspace` | Types for hosted account identity, storage, and lifecycle. |
+| `deliveryCredsKey(space, composition)`, `membershipRwCredsKey(space, composition)` | `@cotal-ai/workspace` | Per-space secret-store keys for standing credentials. |
+| `DELIVERY_CREDS_KIND`, `MEMBERSHIP_RW_CREDS_KIND` | `@cotal-ai/workspace` | Credential kind names reported by operators and renewal results. |
+
+Hosted handles expose `readiness`, `drain`, and idempotent `close`.
+The [daemon reference](embedding-daemons.mdx) describes startup, closure failures, optional auth features, and renewal.
+
+Credential kinds and store keys are different values.
+For example, `delivery.creds` is a kind, while its store key has the shape `space.<hex>/<kind>`.
+An injected host uses `deliveryCredsKey(space, { injected: true })`.
+A credential written under the bare kind goes to the obsolete flat location and is not read by the current daemon.
+
+### Manager APIs
+
+| Symbol | Package | Purpose |
+|---|---|---|
+| `Manager`, `ManagerOptions` | `@cotal-ai/manager` | In-process supervisor and its configuration type. |
+| `ManagerStatus` | `@cotal-ai/manager` | Type for verified status payloads. Advisory `host` and `version` can be absent in older replies. |
+| `createRuntime`, `Runtime` | `@cotal-ai/manager` | Runtime resolver and type. PTY is built in. |
+| `retireManagerInstanceIdentity(root, space, expected)` | `@cotal-ai/workspace` | Remove a persisted identity only when its instance ID and serve identity still match. |
+| `PlatformControlAuthorityRequest`, `PlatformControlInnerRequest`, `PlatformControlAuthorityResult`, `PlatformControlAssignment` | `@cotal-ai/core` | Types for platform-control request envelopes, results, and assignments. |
+| `platformControlOwner` | `@cotal-ai/auth` | Derive the `p_` owner used by the platform-control authority. |
+
+`retireManagerInstanceIdentity` returns `removed` or `absent`.
+Malformed, nonregular, and changed records are refused.
+An `absent` result proves neither ownership nor successful teardown.
+The host must establish stop and retirement ownership separately.
+
+`ManagerOptions.secretStore` supplies the store used for all Manager secrets.
+`ManagerOptions.remoteAuthority` supplies hosted authority callbacks, including release, retained validation, goal indexing, and serve-time admin authorization.
+See [Manager signing authority](embedding-manager.mdx#supervisor-signing-authority) for custody and policy details.
+
+### Provisioning APIs
+
+These symbols are exported by `@cotal-ai/core`:
+
+| Symbol | Purpose |
+|---|---|
+| `createBrokerAuth(label)` | Create the operator and system account trusted by one broker. |
+| `createSpaceAccountAuth(broker, space)` | Create a space data account signed by that operator. |
+| `createSpaceAuth(space)` | Create broker trust and one space account as a composed bundle. |
+| `setupSpaceStreams({ servers, space, creds })` | Create the space's JetStream streams. |
+| `ensureDefaultDeliveryClass({ servers, space, creds?, deliveryClass })` | Record the default delivery class at space creation. |
+| `serverConfig(broker, spaces, { storeDir, transport, maxFileStore?, extraAccounts?, port?, host?, wsPort?, wsHost? })` | Render one operator and its space accounts into broker configuration. |
+| `mintCreds(auth, identity, profile, opts?)` | Mint credentials for a selected `Profile`. |
+| `mintMembershipObserverCreds`, `mintConnectionEvictorCreds` | Mint scoped system-account observation and eviction credentials. |
+| `provisionAgent`, `provisionAgentDurables` | Create an agent's bind-only durable consumers. |
+| `newIdentity`, `stripSpaceAuth` | Create an nkey identity or a signer bundle containing only the data-account signing seed. |
+| `Profile`, `CredentialKind`, `MintOpts`, `SpaceAuth` | Types for profiles, credential kinds, mint options, and trust material. |
+| `CREDENTIAL_LIFETIMES` | Credential lifetime policy. |
+
+`serverConfig` requires `storeDir` and an explicit `BrokerTransport`.
+The transport is `{ kind: "plaintext" }` or `{ kind: "tls-required", certFile, keyFile }`.
+Optional `wsPort` enables the websocket listener; `wsHost` defaults to loopback.
+`maxFileStore` is an optional positive integer byte cap. Without it, nats-server applies its dynamic default.
+`extraAccounts` includes the separate auth-callout account for a user-auth space.
+See [Space provisioning](embedding-provisioning.mdx) for trust boundaries and limitations.
+
+### Authentication APIs
+
+These symbols are exported by `@cotal-ai/auth`:
+
+| Symbol | Purpose |
+|---|---|
+| `createCalloutAuth`, `startAuthCallout` | Create the auth-callout account and start its responder. |
+| `createUserTokenIssuer`, `pinnedJwksResolver` | Issue and verify Cotal user bearers. |
+| `createIdpBridge` | Exchange a verified IdP JWT for a Cotal bearer. |
+| `deriveOwnerToken`, `validateUserToken` | Derive an owner token and validate a bearer. |
+| `cotalAuthProvider` | Auth-provider extension that self-registers on import. |
+| `ensureCalloutAuth`, `loadCalloutAuth` | Write or read callout secrets through a `SecretStore`. |
+| `ensureIssuer`, `loadIssuer` | Write or read issuer secrets. |
+| `ensureOwnerSecret`, `loadOwnerSecret` | Write or read the owner-derivation secret. |
+| `PLANE_CLAIM_REFUSED`, `planeClaimRefusal`, `PlaneClaimRefusal` | Plane-claim refusal detail constant, reader, and type. |
+
+`startAuthCallout` requires an awaited `recordIssuance` callback.
+The callback durably records each successful broker user key before the responder returns it.
+The stock authority plane provides this callback.
+
+Each `ensure*` operation uses the store's atomic `create` for its first value.
+Concurrent initialization of the same key returns the single value held by the store.
+
+`planeClaimRefusal(error)` reads a typed refusal reason:
+`corrupt`, `live-peer`, `unknown`, `concurrent`, `fenced`, `released`, or `lost`.
+Only `unknown`, an inconclusive liveness observation, is coded `unavailable`.
+A host can distinguish corrupt records from contention without matching error text.
+
+### Composition APIs
+
+| Symbol | Package | Purpose |
+|---|---|---|
+| `SecretStore` | `@cotal-ai/core` | Type for `get`, `put`, atomic create-if-absent, and `delete`. |
+| `FsSecretStore`, `workspaceSecretStore(root)` | `@cotal-ai/workspace` | Filesystem secret-store implementations. |
+| `AuthProvider`, `Connector`, `Runtime`, `Command` | `@cotal-ai/core` | Extension contract types. Implementations self-register on import. |
+| `registry` | `@cotal-ai/core` | Shared extension registry. |
+| `CotalEndpoint`, subject helpers, message types | `@cotal-ai/core` | Wire client, addressing, and message shapes. |
+| `ParsedArgs` | `@cotal-ai/core` | CLI-shaped argument type accepted by process runners. |
+| `peerCredentials(socket)` | `@cotal-ai/seat` | Linux kernel-observed peer PID, UID, and GID for a Unix socket. |
+| `liveKvEntries`, `LiveKvEntriesOptions`, `IncompleteKvScan` | `@cotal-ai/core` | Finite live KV scan, its options type, and incomplete-scan error. |
+
+`SecretStore.create` must be one atomic backend operation.
+`get` returns raw keys into process memory. The interface does not provide HSM or KMS signing isolation.
+
+`peerCredentials` starts no custodian.
+It refuses unsupported platforms and a missing native helper.
+The host compares the returned credentials with its authorization policy.
+Request-supplied identity and process liveness do not replace policy or lifecycle fencing.
+
+## Manager execution modes
+
+### Runtime execution
+
+Omitted execution or `execution: "runtime"` keeps runtime execution.
+Local startup claims the native identity and execution record before later authentication and registration checks.
+A failed start can therefore leave those files classified as runtime.
+Malformed identity or capability files refuse during admission.
+These checks do not change the identity format or its authority.
+
+### Execution-free control
+
+`execution: "none"` accepts a genuine local user-auth composition or complete pooled signerless authority.
+It rejects a `runtime` option and constructs no Runtime.
+It performs no connector inspection, seat launch, model-adapter resolution, or workflow hosting.
+
+The instance retains registration, goal recovery, session-ledger, renewal, and maintenance duties.
+Its status reports `execution: "none"`, `runtime: "none"`, and `custody: "none"`.
+It reports no children or connectors and false `classSpawn`, `runHosting`, and `terminalSessions`.
+This uses the existing status schema without a new wire field.
+
+Execution mode is recorded per instance.
+An incompatible record, retained seat or turn inventory, or an older unclassified instance refuses before recovery.
+A NONE record cannot restart as runtime.
+Removing identity or capability files is not a supported mode change.
+
+The control instance refuses caller-driven writes, including persona definition, purge, transcript transfer, preservation, and resume.
+It starts no transcript receiver or sweep.
+Its autonomous registration, lease, renewal, session-ledger, and goal maintenance still write native control state.
+
+A host-issued, instance-pinned `manager-caller` view selects the participant Manager for workflow and terminal operations.
+That participant retains the children, workflow journal, and terminal sessions.
+The control instance does not adopt roster peers or proxy user runs.
+Missing participant selection or authority refuses the operation.
+No application routing is added by this capability.
+
+### Local control admission
+
+A genuine local control instance supplies `execution: "none"` without `pooled`, `remoteAuthority`, or `runtime`.
+Startup requires the space's local signing trust, provider pin, and user-mode mesh record.
+It keeps the native persisted instance and serve identity.
+Local-primary selection uses the existing gate.
+A preclaimed identity without an execution record is also unclassified and refused.
+
+The CLI exposes this composition as `cotal supervise --execution none --space <space>`.
+It validates arguments before connector seeding, resolves no Runtime, and refuses startup workloads and participant registrations.
+Omitted execution keeps ordinary PTY execution.
+This option does not enable auth-service local-primary selection, change scopes, or broaden `ps`.
+
+### Pooled renewal authority
+
+`ManagerOptions.pooled` requires signerless remote authority and either an explicit non-custodial runtime or `execution: "none"`.
+The host supplies the assigned account key and an all-duty renewal callback.
+A human-owned Manager obtains that material through `managerServiceAuthority`.
+A platform control Manager obtains it through `AuthServiceHandle.platformControlAuthority` and the [remote Manager client builders](embedding-remote-clients.mdx#remote-manager-client-composition).
+See the [platform-control design](design/platform-pooled-control-authority.md) for the composition.
+
+The authority parser accepts `renewStandingBundle` and `renewRunDriver` only with an assigned account nkey, the current process epoch, and a host-authenticated registration proof.
+A run renewal also names its active holder, takeover, epoch, fencing token, and two existing nkeys.
+The host checks these against its current registration gate and run journal before issuing server-selected profiles.
+A host without renewal authorization refuses the request.
+These contracts alone do not establish an operational pooled renewal service.
+The host issuer must implement them and validate the resulting credentials on real connections.
+
+With `renewStandingBundle`, the Manager renews all five standing credentials together.
+Each candidate must retain the held nkey and assigned account, pass a broker test connection, and match the unchanged serve epoch before adoption.
+A failed candidate leaves current credentials in place and records cleanup debt until a later successful renewal.
+After shutdown drains the standing context, an expired maintenance executor can renew through the scoped host operation to finish deregistration without restarting duties.
+
+Issued-authority references, source coordinates, and stores accept nonempty space tokens in `[A-Za-z0-9_-]`, including underscores.
+They reject values that the subject-token sanitizer would rewrite.
+Endpoint names use the separate DNS-label grammar.
+
+## Endpoint presence metadata
+
+`EndpointOptions.environment` is an explicit presence label.
+Passing `null` omits the label without reading `COTAL_ENVIRONMENT`.
+Omitting the option preserves the environment default.
+
+Shared connector sessions set `card.meta.host` and `card.meta.cwd` from the connector process at construction, overriding agent-file values.
+These fields are advisory display data and do not affect routing or access.
+The directory is a startup snapshot, not a later shell directory.
+The connector reads no arguments or environment dump for these values.
+
+A process that hosts several sessions can pass `{ withholdProcessCwd: true }` as `MeshAgent`'s third argument.
+It reports each session's directory later with `setCwd`, which uses `CotalEndpoint.setCardCwd`.
+Until the application reports that directory, the field is absent.
+The path is preserved byte for byte, including whitespace. An empty string leaves the value unchanged.
+Claude sessions report it from their `SessionStart` hook.
+
+## Finite KV scans
+
+`liveKvEntries(kv, filterOrOptions?, options?)` reads one finite scan of live entries.
+A `{ signal }` argument can appear second or after a key filter.
+An interrupted scan throws `IncompleteKvScan`.
+Cancellation throws the signal's reason, including during a bind to an empty bucket.
+
+Cleanup deletes only the scan's owned consumers, including consumers nats.js rebuilt from them.
+It waits for broker replies to every create sent by those rebuilds.
+A confirmed not-found delete counts as gone.
+A refused delete leaves the consumer to broker inactivity expiry, which also covers a crash.
+Other delete failures are thrown.
+A not-found delete also fails when the broker never answered that consumer's create before a timeout or closed connection.
+
+A cleanup error replaces only an otherwise successful result.
+The scan's own error, cancellation reason, or `IncompleteKvScan` takes precedence.
+
+## Long-lived endpoint credentials [#long-lived-endpoints-take-a-bearer-function]
+
+`EndpointOptions.bearer` accepts a string or an async function returning a string.
+A string serves a one-shot connection whose lifetime fits within the bearer lifetime.
+After it expires, the endpoint refuses to present it to the broker.
+It emits a `warning` and retries with increasing backoff until the process reauthenticates and rebuilds the endpoint.
+
+A bearer function is a renewal source.
+The endpoint calls it before expiry and when reconnect finds an expired cached bearer.
+The source requires explicit `card.owner` and `card.actor`.
+`UserViewAuth.source` and the connector's `agentBearerCommand` provide this behavior in first-party compositions.
+
+An in-process `MeshAgent` accepts `userAuth.bearer`, a function returning a fresh bearer.
+`userAuth.bearerCmd` instead names the command executed by a launched seat.
+An agent with only the bearer source has no Manager-call bearer.
+Its spawn, despawn, persona, and run calls refuse before reaching a Manager.
+
+### Endpoint event handling
+
+Long-lived hosts need a `warning` listener.
+Warnings include credential renewal failures, reconnect retries, repeated durable leaves after a refused live subscription, and invalid channel-registry configurations.
+For an invalid registry entry, such as an unknown delivery class or `null` defaults, the endpoint removes the cached entry and uses default policy until a valid entry appears.
+An unhandled warning is silent and nonfatal.
+A one-shot host can explicitly rely on its awaited operation's verdict instead.
+
+The `error` event reports faults that cannot return through a waiting call, such as a refused subscription or an unsolicited publish refusal.
+The listener must be attached before `start()` because Node throws on an unhandled `error` event.
+A broker denial returned to a request reaches that call and is not emitted again as `error`.
+For example, an observer's denied read of the DM stream is a request failure.

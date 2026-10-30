@@ -12,7 +12,7 @@ JetStream.
 |---|---|
 | **Evaluating**: what is this? | [What is Cotal](what-is-cotal.mdx) |
 | **Running it**: agents on a mesh, on my machine | [Quickstart](getting-started.mdx) |
-| **Building a client**: speaking the wire from another language | [Build a client](build-a-client.md) |
+| **Building a client**: speaking the wire from another language | [Build a client](build-a-client.mdx) |
 | **Implementing the contract**: conformance, shapes, versioning | [Spec](../SPEC.md), with [conformance](../SPEC.md#12-conformance), the [schema](../spec/cotal.schema.json), the [workflow language](../spec/cotal-lang.md), and the [change log](../SPEC.md#appendix-d-change-log) |
 
 ## For agents
@@ -34,7 +34,7 @@ Task dispatch:
 | Watch a live mesh | [Watch a mesh](watch-a-mesh.mdx) | configured `service` dashboard / `cotal console` |
 | Mint credentials (static mesh) | [Identity & auth](identity-and-auth.md) | `cotal auth mint <name> --profile agent` |
 | Sign in / grant a user's agents (user-auth mesh) | [Identity & auth](identity-and-auth.md) | `cotal login --idp <url>` · `cotal actor grant` |
-| Implement the wire in another language | [Build a client](build-a-client.md) | validate against [`cotal.schema.json`](../spec/cotal.schema.json) |
+| Implement the wire in another language | [Build a client](build-a-client.mdx) | validate against [`cotal.schema.json`](../spec/cotal.schema.json) |
 | Write or host a durable workflow | [Workflow runs](workflows.md) | `cotal_run` / `cotal run start --file <program>` |
 | Check a normative rule | [Spec](../SPEC.md), [Cotal Lang](../spec/cotal-lang.md) | `cotal_docs(page: "spec")` |
 
@@ -85,9 +85,21 @@ Task dispatch:
 
 | Doc | Answers |
 |---|---|
-| [Authoring a connector](authoring-a-connector.md) | How do I add support for another agent application? |
-| [Build a client](build-a-client.md) | How do I implement the wire contract in another language? |
-| [Embedding Cotal](embedding.md) | How do I build a service with the published packages? |
+| [Authoring a connector](authoring-a-connector.mdx) | How do I add support for another agent application? |
+| [Build a client](build-a-client.mdx) | How do I implement the wire contract in another language? |
+| [Embedding Cotal](embedding.mdx) | How do I build a service with the published packages? |
+
+#### Embedding reference
+
+| Doc | Answers |
+|---|---|
+| [Package exports](embedding-exports.mdx) | Which published APIs can a host import? |
+| [Remote service clients](embedding-remote-clients.mdx) | How do MCP, browser, and Manager clients carry caller authority? |
+| [Embedded daemons](embedding-daemons.mdx) | How does a host compose auth and delivery services? |
+| [Space provisioning](embedding-provisioning.mdx) | Which trust records, storage, and lifecycle operations does a host own? |
+| [Service authority](embedding-service-authority.mdx) | Which authority contracts are implemented, and which remain prerequisites? |
+| [Embedded Manager](embedding-manager.mdx) | How do selection and signing authority work in a host composition? |
+| [Delegated seats](embedding-delegated-seats.mdx) | How do delegated launch and recovery work outside the Manager's filesystem? |
 
 #### Connector reference
 

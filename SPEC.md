@@ -1111,7 +1111,7 @@ surface: v0.4 defines it normatively via the credential ledger and the lifecycle
 ## 12. Conformance
 
 *(An informative build-order walkthrough of this checklist is
-[docs/build-a-client.md](docs/build-a-client.md).)*
+[docs/build-a-client.mdx](docs/build-a-client.mdx).)*
 
 A conformant authenticated NATS client MUST:
 

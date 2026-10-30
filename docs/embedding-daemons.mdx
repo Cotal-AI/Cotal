@@ -1,0 +1,254 @@
+---
+title: Embedded daemon lifecycle
+description: Process runners, account-scoped hosted services, and delivery credential renewal.
+kind: Reference
+audience: integrators
+---
+
+Cotal exposes process runners and account-scoped hosted handles.
+The host supplies provisioned authority and owns the lifecycle of the composition.
+
+## Daemon entry points [#booting-the-daemons]
+
+| Function | Package | Configuration | Lifecycle |
+|---|---|---|---|
+| `runAuthService` | `@cotal-ai/auth` | `ParsedArgs`, optional store, optional runtime options | Auth process runner. |
+| `runDelivery` | `@cotal-ai/delivery` | `ParsedArgs`, optional store | Delivery process runner. |
+| `startAuthService` | `@cotal-ai/auth` | `HostedContextInputs` plus auth options | Account-scoped `AuthServiceHandle`. |
+| `startDeliveryService` | `@cotal-ai/delivery` | `HostedContextInputs` | Account-scoped `HostedServiceHandle`. |
+
+The process runners accept the CLI-shaped `ParsedArgs` type from `@cotal-ai/core`.
+They do not accept a separate typed daemon options object.
+For example, a host with existing `space` and `server` values constructs:
+
+```ts
+import type { ParsedArgs } from "@cotal-ai/core";
+
+const args: ParsedArgs = {
+	values: { space, server, port: "0" },
+	positionals: [],
+	raw: [],
+};
+```
+
+The hosted functions use explicit account, storage, and state-directory inputs.
+They do not provide the complete CLI `up` orchestration.
+The [provisioning reference](embedding-provisioning.mdx) lists the material the host must supply first.
+
+## Auth process runner [#auth-service]
+
+`runAuthService(args, store?, options?)` reads provisioned signing material through the `SecretStore`.
+This includes service keys, callout-account material, issuer keys, and the owner-derivation secret.
+The process holds data-account and callout-account signing seeds, private issuer JWKs, and the owner secret in memory.
+It is a signing and identity authority, not a scoped worker.
+
+The IdP pin and actor ledger are separate from that store.
+The runner resolves them under `userAuthStateDir(findCotalRoot(), space)` relative to the process's working directory.
+Neither `store` nor `COTAL_HOME` selects that directory.
+
+A host with provisioned state and an injected `store` can call:
+
+```ts
+import { runAuthService } from "@cotal-ai/auth";
+
+await runAuthService(
+	{ values: { space, server: brokerUrl, port: "8081" }, positionals: [], raw: [] },
+	store,
+);
+```
+
+The runner writes `auth-service.json` in the resolved state directory only after every plane is bound.
+That file contains the live exchange capability and acts as the discovery readiness signal.
+Passing the daemon PID to the provider's `ready()` makes the wait process-bound.
+While that PID is alive, the wait can extend beyond its base timeout to a fixed bound.
+The wait ends when the PID exits.
+
+`AuthServiceRuntimeOptions` also accepts the trusted [interactive Manager selection policy](embedding-manager.mdx#interactive-manager-primary).
+No CLI flag or exchange field sets that policy.
+
+## Hosted auth context
+
+`startAuthService(inputs)` takes `HostedContextInputs` from `@cotal-ai/workspace`, with optional auth features.
+Its store must declare the assigned injected identity and hold the assigned data account.
+The inputs include the account public key, lifecycle UID, space, broker URL, store, stable `storeIdentity`, and explicit `stateDir`.
+
+The IdP pin and ledger live under `stateDir`.
+The auth plane's instance identity contains its private serve seed and lives in the store under `authInstanceKey(space)` from `@cotal-ai/auth`.
+On first start, an older identity record under `stateDir` migrates into that store.
+
+This context does not discover a workspace from the working directory and has no local Manager.
+It can select only remote Manager gates.
+Startup returns after the authority plane, callout subscription, and loopback listener are bound.
+A failed start closes its opened connections and releases its plane claim, allowing a retry for that space.
+A fenced plane or lost broker connection makes the context unavailable and closes it without exiting the host process.
+
+### Auth handle
+
+`AuthServiceHandle` exposes `readiness`, `drain`, and idempotent `close`.
+It also carries the loopback `url` and per-start `cap` that a CLI start would write in `auth-service.json`.
+The hosted context writes no discovery file.
+
+The capability authorizes loopback host actions, lifecycle retirement, and managed-agent enrollment verification.
+It remains in the authority process.
+
+`close` rejects if the plane claim was replaced or its release write failed.
+The claim remains held in that case.
+A later start must reclaim it through the liveness oracle.
+
+### Public exchange face
+
+An optional `publicFace` configures `port`, `url`, `trustedProxy`, `advertisedServer`, and `agentProvisioningUrl` under the process runner's rules.
+A public face without a port is refused.
+When present, the handle also carries `publicUrl`.
+
+### Platform control
+
+`platformControl: { observeAssignment }` adds an in-process `platformControlAuthority` method.
+The method is served on no listener.
+It issues Manager-service requests for the backend's one assigned control Manager under a derived `p_` owner.
+
+Each call reads the assignment again.
+It refuses IdP tokens, another account, stale revisions, different instances or lifecycles, and instances registered by another owner.
+`prepare` and `activate` refuse while the assignment's named predecessor remains registered or frozen.
+
+The handle also exposes `platformControlReadiness(instanceId)`.
+This returns an attributed status reply only for the currently assigned instance and an owner-matching gate.
+The read uses the context's own connection with grants for that instance's `describe`, `status`, and the context's reply subject.
+That connection renews inside the context and is not lent to a worker.
+The host does not mint a new control instrument per read or infer serving readiness from process liveness.
+Without `platformControl`, both members are `undefined`.
+
+The platform input also exposes `observeManagerGate` and `activateManagedLifecycle` for host-composed delegated launch decisions.
+With `platformControl.host`, the handle adds `registerHostIncarnation`, `observeHostGate`, and `awaitHostFence`.
+They register the host's endpoint instance, observe its issuance gate, and await a later registration or barrier fencing that incarnation.
+See [Delegated seats](embedding-delegated-seats.mdx).
+
+`standingRenewableTtlSeconds` passes to the authority plane unchanged.
+The plane bounds it to 5 through 86,400 seconds.
+This is a trusted-host input, not a request parameter or CLI flag.
+[SPEC §13.1](../SPEC.md#131-lifecycle-identity) and [§13.6](../SPEC.md#136-composites) define the view.
+
+The plane can renew a registered Manager's five standing credentials from the current registration.
+Run-driver renewal still refuses without an authoritative activated-run reader.
+These handles therefore do not establish a complete pooled auth and delivery host.
+
+### Claim recovery order
+
+A fresh auth plane can initialize without a delivery-admin responder.
+Reclaiming a held claim from a dead predecessor requires delivery first.
+Delivery's admin responder must complete a broker connection-liveness sweep before auth takes the claim.
+An absent or inconclusive oracle refuses reclaim.
+
+## Delivery process runner [#delivery]
+
+`runDelivery(args, store?)` uses a pre-minted scoped `delivery` credential.
+It never loads the signer.
+The credential comes either from the injected store under `deliveryCredsKey(space, { injected: true })` or from a `--creds` file.
+Those inputs are mutually exclusive.
+
+```ts
+import { runDelivery } from "@cotal-ai/delivery";
+
+await runDelivery(
+	{ values: { space, server: brokerUrl }, positionals: [], raw: [] },
+	store,
+);
+```
+
+The daemon re-reads the credential at 75% of its JWT lifetime.
+Another process must write the next signed credential into that same source.
+If the old generation remains, the daemon reports the missed remint and retries in 60 seconds.
+The current credential remains usable until expiry.
+Each retry reads the store once.
+
+## Hosted delivery context
+
+`startDeliveryService(inputs)` uses the same explicit `HostedContextInputs` shape as hosted auth.
+The store must declare the assigned injected `storeIdentity`.
+The initial delivery credential must belong to the assigned account.
+Startup returns after the delivery responder is bound.
+A failed start refuses locally without exiting the host process or stopping another account's service.
+If a health fault occurs during an asynchronous store read, startup rejects when that read returns and closes resources created by its late completion.
+
+The returned `HostedServiceHandle` exposes `readiness`, `drain`, and idempotent `close`.
+Closure withdraws serving and releases only the instance's owned lease.
+Both membership connections close even if a disconnected drain fails, so they cannot reconnect after closure.
+
+`close` rejects when the lease row remains held, its release did not commit, or the broker cannot confirm release.
+If the delivery connection drops before or during release, closure waits for reconnect within `COTAL_DELIVERY_BROKER_GONE_MS` from the drop.
+The default window is 15 seconds.
+On reconnect, it attempts release once more before deciding.
+`drain` returns the same promise.
+
+A successor refuses while the lease row lives.
+Bucket TTL eventually expires a row left by the instance.
+Credential-expiry health clears after broker-verified adoption through the existing `reloadCreds` operation.
+
+## Daemon credential renewal
+
+`remintDaemonCreds(root, space, store?, { preflight? })` is exported by `@cotal-ai/workspace`.
+It reads the `SpaceAuth` signer and writes renewed `delivery.creds` and `membership-rw.creds` through the same resolved store.
+The injected store is both signer source and credential destination.
+Without injection, the source is `workspaceSecretStore(root)`.
+The split signer keys are `auth/broker.json` and `auth/account.<key>.json`.
+The older `auth/auth.json` bundle is migration input and the container signer mount.
+
+The required `space` is checked against the signer.
+A store holding another space cannot overwrite this space's credentials.
+
+### Candidate validation
+
+A supplied `preflight` proves the broker accepts each candidate before the last good credential is overwritten.
+The reference Manager uses `probeConnect` against its `servers`.
+A self-consistent JWT chain with the right space label is insufficient.
+Two `createSpaceAuth(space)` calls create different account chains with the same label.
+
+Offline `doctor auth --fix` has no broker preflight.
+It permits replacement only when the candidate's account signing key, `iss`, matches the current broker-accepted credential.
+An alternate account breaks that continuity and is refused, for both full and stripped signer bundles.
+A continuous local re-sign requires no network.
+
+The Manager schedules remint against its own `secretStore`.
+Sharing that store with delivery completes the renewal cycle from signing to adoption.
+The daemon's adoption still performs a broker preflight at its 75% renewal point.
+
+### Store identity
+
+Manager startup and every later remint challenge delivery's `reloadStoreIdentity`.
+Different stores are refused with both identities reported.
+Writing on one host's filesystem does not renew a daemon reading another host's filesystem.
+
+The identity describes the source delivery actually reloads:
+
+| Credential source | Identity |
+|---|---|
+| Injected store | Its declared stable coordinate. |
+| Canonical `<root>/.cotal/<spaceSegment(space)>/delivery.creds` | Workstation root. |
+| Other `--creds` path | The file's own directory. |
+| Default filesystem source | Workstation root. |
+
+Filesystem stores also record a random lowercase UUID in their own `store.id`.
+Equal path strings on two hosts therefore identify different stores.
+A symbolic-link or malformed `store.id` is refused.
+No secret key or `--creds` path may name that identity file.
+
+An uninjected `--creds` path under a real workstation is refused when it names a different root from the process working directory.
+Membership writes still resolve that working-directory root.
+A credential path outside every `.cotal` tree does not trigger this check.
+The credential identity calculation does not walk ancestors through `findCotalRoot`.
+
+When no daemon is bound, no daemon store identity is available and startup proceeds.
+A daemon later bound to a foreign store is refused at the next remint.
+The filesystem adapter declares its workspace-root identity on the store.
+Other injected adapters declare `SecretStore.identity` or use the same `COTAL_SECRET_STORE` coordinate in both processes.
+
+### Renewal results
+
+`remintDaemonCreds` returns per-file results instead of throwing.
+When signer records are absent, it reports `skipped: "no-auth"`.
+The caller must inspect those results or credentials can reach expiry despite a completed function call.
+A file-based source requires atomic replacement before the 75% read.
+
+A remote secret backend changes where keys are stored.
+`SecretStore.get` still returns raw signing material into the Manager process.
+Agent isolation or a separate signing service remains necessary when those processes are not equally trusted.

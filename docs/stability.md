@@ -1,6 +1,6 @@
 # Substrate stability
 
-> **Project** (informative) · **For:** anyone building a product on the published packages · **See also:** [Embedding Cotal](embedding.md), [Release](release.md), the spec's [versioning rules](../SPEC.md#11-versioning-and-extensibility)
+> **Project** (informative) · **For:** anyone building a product on the published packages · **See also:** [Embedding Cotal](embedding.mdx), [Release](release.md), the spec's [versioning rules](../SPEC.md#11-versioning-and-extensibility)
 
 If you build on the `@cotal-ai/*` packages, this page is what you can rely on and what will change.
 Two versions matter and they move independently: the **wire** version (`protocolVersion`) and the
@@ -21,7 +21,7 @@ Two versions matter and they move independently: the **wire** version (`protocol
 - **Packages: pre-1.0 (the 0.x line).** core, workspace, auth, delivery, manager, web, and the
   connectors publish in lockstep. The exact version is whatever the packages' `package.json` (and
   `cotal_docs`) report, so any number on this page is illustrative.
-  These are the surfaces [Embedding Cotal](embedding.md) documents.
+  These are the surfaces [Embedding Cotal](embedding.mdx) documents.
 
 Buildable on today: the owner+actor identity grammar, the lateral chat/DM/task envelopes and
 subjects, presence and discovery, channels, the three delivery modes, and the Plane-3 durable
@@ -96,7 +96,7 @@ grammar. What breaks alongside the control grammar is the presence/membership an
 The substrate packages stay **pre-1.0 (0.x)** for now. The project does **not** declare a 1.0 line
 for them yet, because a known breaking change is still ahead (the [v0.4 cut](#the-coming-v04-cut)),
 and a 1.0 promise made right before a deliberate break would be hollow. A 1.0 line is revisited once
-v0.4 has landed and the hosted-composition gaps [Embedding Cotal](embedding.md) documents (the secret
+v0.4 has landed and the hosted-composition gaps [Embedding Cotal](embedding.mdx) documents (the secret
 seam, multi-space) have closed.
 
 What a product embedding the packages can rely on in the meantime:

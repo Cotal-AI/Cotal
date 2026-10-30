@@ -1,7 +1,7 @@
 # Per-space lifecycle on a shared broker
 
 > **Design** (non-normative, not shipped) · Closes [roadmap](../roadmap.md) "Multi-space brokers"
-> and [embedding](../embedding.md) known gap 3. Wire contract unchanged; this is operator tooling.
+> and [embedding](../embedding.mdx) known gap 3. Wire contract unchanged; this is operator tooling.
 
 ## 1. Where the gap is
 

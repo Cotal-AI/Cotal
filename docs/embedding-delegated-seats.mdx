@@ -1,0 +1,116 @@
+---
+title: Delegated seat contracts
+description: Managed lifecycle handoff, provider closure guarantees, and the limits of delegated recovery contracts.
+kind: Reference
+audience: integrators
+---
+
+A delegated seat runs outside the manager's filesystem. The handoff path is implemented for supporting runtimes. Delegated recovery is a contract with no enabled Manager recovery path.
+
+## Delegated seats outside the manager's filesystem [#delegated-seats-outside-the-managers-filesystem]
+
+The [portable lifecycle bootstrap](design/portable-lifecycle-bootstrap.md) design and SPEC §13.17
+define this path for an agent already enrolled by `enrollManagedAgent`.
+
+Ordinary `spawn` writes the token and sentinel under the manager's workspace root. Its launch
+contains a bearer command and material file that refer to that filesystem. A child that cannot
+read those paths needs a delegated handoff.
+
+### Runtime handoff
+
+The optional `Runtime.spawnDelegated(launch, handoff)` method receives two values without manager
+paths:
+
+| Value | Contents |
+| --- | --- |
+| `DelegatedSeatLaunch` | Connector name, persona text, model, and the other launch choices. |
+| `ManagedLifecycleHandoff` | Space, owner, actor, host-chosen `lifecycleUid`, broker and IdP pins, pinned exchange base, sentinel, channel lists, and raw actor token. |
+
+The manager enrolls once and builds the handoff from material it already holds. It sends no token
+to the authority host, copies no file from its workspace or secret store, and builds no local
+launch for that seat. The handoff contains no signer, issuer or callout record, loopback capability,
+provisioner or manager credential, control token, or manager path.
+
+### Refused launch choices
+
+Choices that depend on the manager's host refuse before enrollment:
+
+- `--resume`.
+- A manifest agent's `continuity: exact`.
+- `--cwd`.
+- Any shared MCP server from `--share-tools` or the config default. `--share-tools none` passes.
+
+A delegated manager also refuses a caller-supplied persona `config` override in `resolve-agent`,
+`spawn` and direct `Manager.startAgent` calls. The shared persona resolver refuses before checking
+or reading that path, with `failed-precondition` on the wire and one fixed execution-mode message.
+Pass a named catalog persona instead. This does not change locally executing managers. A resolved
+manifest can still use its own validated, host-materialized persona resource. The wire schemas
+accept no internal `resolved` field that could bypass the config refusal.
+
+### Child bootstrap
+
+The runtime creates one provider resource under `managedRuntimeKey(target)`. It writes the handoff
+as one 0600 file with the persona beside it, then runs the stock bootstrap there:
+`cotal spawn --config <persona-file> --space <space> --name <actor> --expect-owner <owner> --expect-lifecycle-uid <uid>`
+with `COTAL_MANAGED_HANDOFF_FILE` naming the file. `delegatedSeatCommand` builds the argv and
+environment. It also supplies the connector with `--agent` and any supported optional launch flags.
+
+The `cotal` entry reads the file into memory, deletes it, and drops the variable before parsing
+flags, printing help, or loading extensions. Every outcome, including refusal of its own flags,
+leaves no handoff file.
+
+Space, owner, actor, or lifecycle UID mismatches refuse before any broker connection or exchange
+request. The entry then uses the enrollment-redeem consumer to register the mesh in the child's
+home and write the token to its own 0600 file. It exchanges the unchanged token through
+`agent-bearer --exchange-url`. This consumer does not perform enrollment or redemption, or mint a
+token or UID.
+
+### Provider closure guarantees
+
+Mesh presence remains the readiness signal. If a create response is lost, the handle stays running
+and the launch settles uncertain and held. The manager never retries that create. An absent
+provider read cannot establish exit because the create may still complete.
+
+Every close by `managedRuntimeKey` requires a fence. Close completes only after the create has
+answered or the provider refuses any later create under that key.
+
+A provider that assigns resource identifiers can use a durable create operation keyed by
+`managedRuntimeKey`. Closure uses the identifier from the authenticated create response, stored
+where the host can read it without the manager. Only that response binds the identifier to the key.
+An identifier derived from the key or found through a name or listing cannot be closed or adopted.
+An unknown response keeps the launch held.
+
+### Retirement order
+
+Every stop uses this order, including a reap after the parent exits and
+`Manager.stop({ withAgents: true })`:
+
+1. `prepareAgentRetirement` for the exact lifecycle UID.
+2. `stop()` on the handle returned by `spawnDelegated`.
+3. The terminal barrier.
+
+`preparePreservation` refuses a cut that holds a delegated seat. A subsequent `Manager.stop()`
+retires the seat through the same steps. After the manager is gone, the host performs the same
+steps and fenced close by `managedRuntimeKey`, ending at `MANAGED_RETIRE_PATH`. A runtime can
+supply `spawnDelegated` only if its host can perform that fenced close without the manager.
+
+The enrollment redeem through `COTAL_ENROLLMENT_FILE` remains for lifecycles whose token the host
+generated. A host holds only the digest for a manager-enrolled lifecycle and cannot mint that
+enrollment redeem.
+
+## Delegated recovery contracts [#delegated-recovery-contracts]
+
+Core exports `RemoteDelegatedRecoveryRequest`, `RemoteDelegatedRecoveryResult`,
+`RemoteDelegatedRecoveryLaunchRequest`, their closed parsers, and
+`parseDelegatedRecoveryDescriptor`. `Runtime.rebindDelegated` describes an optional same-child
+rebind. These are contracts for SPEC §13.18, not an enabled recovery path. The current Manager
+does not call the new method or reconstruct delegated rows. Its public `adoptRuntimeHandle`
+returns a native handle without inserting a managed row.
+
+A supporting host retains the descriptor in the original user-intent consuming CAS, binds each
+claim to the original instance and current registration, and supplies complete fenced scans.
+The manager needs its original persistent secret store and a runtime that can verify the same
+child execution after process loss. It must retain held aliases before reconciling accepted goals.
+Missing storage or unverified child identity keeps recovery held; neither permits another launch.
+The request parsers validate data, not fresh host authority or durable transactions. Existing
+hosts continue to refuse the opt-in launch extension rather than silently ignore it.

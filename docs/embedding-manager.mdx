@@ -1,0 +1,424 @@
+---
+title: Manager embedding authority
+description: Manager startup, signer custody, remote authority callbacks, and delegated user intent contracts.
+kind: Reference
+audience: integrators
+---
+
+The `Manager` API supports host composition. Its startup, credentials, and remote authority callbacks have separate requirements.
+
+## Interactive manager primary [#interactive-manager-primary]
+
+A trusted composition can pass `{ interactiveManagerSelection: "local-primary" }` as the third
+argument of `runAuthService(args, store, options)`. `AuthServiceRuntimeOptions` is exported by
+`@cotal-ai/auth`. The third argument still accepts the native daemon lifecycle hooks. No CLI
+flag or exchange field sets the policy, and unsupported runtime values refuse before startup effects. `openAuthAuthorityPlane` accepts the same option beside its fresh
+`localManager` reader; `OpenAuthAuthorityPlaneOptions` is exported too.
+
+The opt-in chooses the genuine local Manager up front for an unpinned human `manager-caller`
+exchange. It reads the persisted local identity and requires the existing open gate, serve
+principal, registration revision and status epoch checks. An absent, unreadable or noncandidate
+local Manager refuses without scanning or substituting remote Managers. Explicit selectors win,
+and managed-secret exchanges and launching or issued instance bindings keep their existing rules.
+The option adds no scopes, registry reads or inventory rows.
+
+This routes all unpinned interactive Manager control, not only `ps`: slot reads, stop, attach,
+input, spawn, models, hosted run verbs and generic Manager describe/invoke share the view. It
+chooses local even when the person has a live remote Manager. A host must decide whether that
+routing is appropriate; a local Manager without execution cannot forward a spawn or run to the
+person's remote Manager. The person selects that Manager explicitly for those operations.
+
+Absent the option, selection is unchanged. `startAuthService` still has no local Manager and
+keeps its remote-only composition. Supplying this programmatic option does not enable it in stock
+`up`, restart or recovery paths; a host must compose those paths separately after adopting the
+published API. `ps` still lists only the selected Manager's managed seats, not HTTP-hosted sessions.
+
+## Supervisor signing authority [#supervisor-signing-authority]
+
+`@cotal-ai/manager` exports the `Manager` class. It has no `runSupervise(opts)` runner. The
+private CLI `runManager` also does broker-reachability checks, space/default resolution,
+roster/launch parsing and materialization, installed-extension resolution, signal handling, staged
+pre-spawn, and the forever wait. A host composes that lifecycle itself around `Manager`:
+
+```ts
+import { Manager } from "@cotal-ai/manager";
+const mgr = new Manager({ space, servers: brokerUrl, workspaceRoot });
+await mgr.start();          // then wire your own SIGINT/SIGTERM -> mgr.stop()
+```
+
+`stop()` runs once. A later call joins the stop in progress and settles with it, and a call that
+asks for a different `withAgents` than the running stop is refused.
+
+### Signer custody
+
+Without `remoteAuthority`, `start()` reads the space's full trust chain through `secretStore` with
+`getSpaceAuth(this.secrets,
+this.space)`. The chain combines `auth/broker.json` and
+`auth/account.<key>.json`. A container can instead mount a stripped signer bundle at the legacy
+`auth/auth.json` key.
+
+In this local signing composition, the manager mints its supervisor credential and renewals from the data-account signing seed.
+Static mode also mints every per-agent credential from that seed. In user mode, agents receive
+callout-minted bearers, but the manager retains the seed for its own credentials and renewal.
+Local user-mode startup also requires a `~/.cotal/meshes/space.<key>.json` registry record and the
+workspace user-auth marker.
+
+A local signing supervisor holds per-tenant account authority. Auth-service also holds a signer. Although it holds fewer artifacts
+than the full trust bundle, compromise of its data-account signing seed grants complete
+data-account mint authority.
+
+With `remoteAuthority`, the manager uses a signerless user-mode path and host-issued scoped credentials.
+It refuses local signing trust for the same space and skips the local `getSpaceAuth` path.
+The local mesh registry record and user-auth marker requirements above do not apply to this path.
+The host supplies the remote authority callbacks and held identities described below.
+
+`ManagerOptions.secretStore` injects one `SecretStore` for the split signer records,
+daemon-credential renewal through `remintDaemonCreds`, and per-agent secrets. The default is the
+workspace filesystem store. Other settings are `workspaceRoot` and the process-global `COTAL_HOME`.
+
+In a local signing composition, an injected KMS or Vault store can keep the seed off hosted disk. The seed is still decrypted
+inside the manager process at its OS uid. Isolating that signer requires an OS sandbox or a remote
+signer. Store injection alone does not provide isolation.
+
+### Daemon renewal ownership
+
+When a local signing manager renews delivery credentials, it must use the delivery daemon's store. Both processes
+declare the same store identity, or both set `COTAL_SECRET_STORE` to the same coordinate.
+
+When the daemon names a different store, the manager remints no daemon credential. This also
+applies when the daemon binds after manager startup. The manager continues serving its own agents,
+so one space can have managers on several workspace roots. A manager with a different store also
+leaves the space's renewal lease free for a manager or `cotal doctor auth --fix` on the daemon's store.
+
+Several managers can share one store coordinate. Store identity contains no holder or tiebreak,
+so every manager on that store matches. Only the manager that also holds the space's renewal lease
+remints. The others skip renewal. Without the lease, independent timers could write between
+another manager's re-sign and fingerprint-only `reloadCreds`.
+
+`cotal doctor auth --fix` takes the same lease before re-signing. A local repair and a live manager
+therefore cannot race those renewal writes.
+
+### Rejection handling
+
+A store, runtime or extension the manager calls may reject with any value, including `null`. The
+manager logs or refuses with that value's `message`, or with the value itself as text when it has
+none, and keeps serving. A value it cannot read reports as `an unreadable rejection`.
+
+The static-auth operator paths `cotal spawn`, `join`, `status`, and `web` still read the signer from
+local split records through synchronous `loadSpaceAuth`. Their call path runs through `mesh-target`
+to `connect` and `preflight`. This is the single-machine static-auth composition, which keeps the
+signer on local disk. Multi-tenant hosting uses user mode, whose operator paths never mint from
+on-disk trust. The store-injectable hosted-server path covers the manager, `remintDaemonCreds`, and
+delivery.
+
+### Managed lifecycle retirement
+
+The typed remote-manager authority contract includes a one-shot terminal phase. A host implements
+`remoteAuthority.prepareAgentRetirement` to revoke the managed grant and finish its resumable
+release while preserving the UID, then `remoteAuthority.mintRetirementRequester` returns the
+host-signed JWT for a fresh participant-owned nkey. The credential is pinned to the authenticated
+owner, server-derived manager serve principal, current instance epoch, and exact target lifecycle.
+The manager then uses the existing auth `retireLifecycle` rail with the operation id derived by
+`managedRetirementOpId(target.lifecycleUid)`. This derivation is the reference remote-Manager
+composition's closed contract, not a rule for every retirement entry point; interactive retirement
+keeps its existing operation identity and remains compatible. The `retireLifecycle` rail independently
+recomputes the managed id from its broker-pinned target before any gate, head, intent, or barrier
+access, so mint-time validation is not the terminal boundary. A failure keeps
+the alias held. This does not expose the auth barrier or give the participant signer authority.
+
+If the participant disappears after prepare, the host finishes the retirement itself on the auth
+service's loopback face: `POST /managed-lifecycle/retire` (exported as `MANAGED_RETIRE_PATH` from
+`@cotal-ai/auth`) with the `Bearer <cap>` from `auth-service.json` and only
+`{ owner, actor, lifecycleUid }`. It has the interactive door's guards (POST only, no `Origin`, JSON,
+capability, closed body) and is never served on the public face. The managed grant must already be
+revoked at that uid, or it answers 409. It runs the same `managedRetirementOpId(uid)` operation as
+the rail, and the rail and the door share one in-process flight, so a late participant request and
+the host call converge on one barrier.
+
+| lifecycle head | answer |
+| --- | --- |
+| absent, or `retired` at another uid | `200 { retired: false, lifecycleUid, notStarted: true }` |
+| `active`/`retiring` at another uid | `409` |
+| `retired` at this uid | `200 { retired: true, lifecycleUid, alreadyRetired: true }` |
+| `active`/`retiring` at this uid | the barrier runs, then `200 { retired: true, lifecycleUid }` |
+
+### Durable cleanup results
+
+`deprovisionAgent` and a `deprovisioner` credential retain responsibility for durable cleanup.
+Both accept `memberChannels` to purge the retired lifecycle's durable membership rows on those
+concrete channels. The manager combines the launch's concrete read channels with the delivery
+daemon's read-only `lifecycleMemberships` admin inventory.
+
+When that inventory cannot answer, rows on other channels remain retained. Teardown logs the
+incomplete inventory and holds retirement pending retry, without releasing the alias.
+
+Each teardown examines two exact consumers, one ACL key, and the named member keys. KV deletion
+uses a native revision condition. A lost condition with a live replacement refuses to claim
+absence. Consumer INFO reads before and after DELETE distinguish verified prior absence from
+disappearance.
+
+| Result field | Meaning |
+| --- | --- |
+| `acknowledged` | Native DELETE success replies. |
+| `disappeared` | Observed live-to-absent consumers, or live KV rows whose conditional purge lost to a competing deletion. |
+| `absent` | Verified prior absence. A KV row present at the first read cannot count here. |
+| `deleted` | Removals attributable to this caller. A KV purge lost to another deletion cannot count here. |
+| `refused` | Slots whose cleanup or state remains uncertain. |
+
+The ACL and membership subtotals keep these distinctions. Observations cannot establish which
+concurrent caller uniquely removed a consumer. When a consumer disappears without a winner token,
+`consumers.deleted` and total `deleted` are `null`. A repeat after verified absence reports zero.
+
+A partial failure raises `DeprovisionError` with these bounded observations. The Manager's static
+sweep preserves unknown uniqueness. It does not count acknowledged requests as physical removals,
+and its slot totals remain separate.
+
+### Retained managed agents
+
+A host that resumes retained managed actors also implements
+`remoteAuthority.validateRetainedAgent`. The participant sends back the actor token and sentinel it
+already holds, plus the `nextRegistrationProof` returned by the activation response. That proof is
+host-issued after registration and binds the manager owner, actor, lifecycle, identity nkeys, current
+registration revision, and serving epoch. The host checks it against the current open manager gate,
+validates the retained secrets against its current managed row, and returns only the non-secret
+authority shape. The manager binds every result coordinate and the returned authority back to its
+inventory before use. Do not copy the provider's `issuer.json` or `callout.json` into the participant
+store. Both contain private signing or exchange authority.
+
+The same composition supplies `remoteAuthority.agentBearerExchangeUrl`, the pinned public auth-service
+base used by retained children. Remote adoption launches `agent-bearer --exchange-url <base>`; it must
+not select the local `--dir` arm, which depends on a host-only auth-service process record.
+
+### Fresh managed agents
+
+A host that lets a remote participant spawn fresh managed agents implements
+`remoteAuthority.enrollManagedAgent`. The participant generates the standing actor token, writes
+it at mode 0600, and passes only its SHA-256 digest with the requested actor, label, role,
+capabilities, and channel lists. The plaintext secret stays on the participant machine.
+
+There is no `lifecycleUid` input. The host selects the UID because only the host sees the retirement
+tombstones that make a UID permanently unusable. A participant-chosen UID could target a fresh
+grant at a dead incarnation.
+
+The host authors the ledger grant, pre-creates the lifecycle-keyed durables, and clamps the requested
+lists to what the spawning owner already holds. It returns the owner, actor, chosen `lifecycleUid`,
+space sentinel credentials, effective lists, and `agentBearerExchangeUrl`.
+
+The manager binds every returned coordinate, re-keys the secret family onto the returned UID, and
+launches `agent-bearer --exchange-url <base>`. Without the hook, a signerless manager refuses the
+user-mode spawn. It cannot author a local grant unknown to the host.
+
+### Managed-agent authority transport
+
+Both managed-agent operations use the verified `POST /manager-service-authority` transport as
+`kind: "manager-managed-agent-enrollment"` and `kind: "manager-managed-agent-prepare-retirement"`.
+Stock `cotal auth-service` answers both because it owns the actor ledger and the space's
+provisioning authority.
+
+Enrollment writes the managed grant at a fresh UID with the supervising actor as parent. It
+provisions that UID's durables and returns the daemon's public exchange URL as
+`agentBearerExchangeUrl`. A daemon started without `--exchange-public-port` refuses enrollment.
+
+A retry with the same token digest returns the same UID while the supervising actor's current
+grant covers it. Otherwise, it gets the refusal a fresh enrollment would receive. While the agent's
+grant stands, another digest refuses with `conflict` until that lifecycle's retirement is prepared.
+Prepare-retirement releases the target UID's broker footprint, then revokes its grant. The manager's
+terminal rail therefore finds the grant gone.
+
+A platform that keeps these writers in its own storage intercepts both kinds. It terminates its
+own public route, authenticates the human there, and asks the auth service for a decision at
+`POST /manager-service-authority/verify-enrollment`. This is exported as `VERIFY_ENROLLMENT_PATH`
+from `@cotal-ai/auth`. It takes `Bearer <cap>` from `auth-service.json` and only `{ owner, request }`.
+
+That door has the managed retirement door's guards. It derives caller scope from the local ledger,
+checks the manager gate and registration proof in-process, and answers
+`{ authorized: true, owner, actor, instanceId, serveEpoch }`.
+
+`authorizeRemoteManagedAgentEnrollment` and `authorizeRemoteManagedAgentPrepareRetirement` are
+also exported for a host that composes the decision without HTTP. Both require ledger scope
+`supervise`. Neither `spawn` nor `admin` implies it.
+
+### Host runtime contracts
+
+A host runtime uses two more kinds on the same transport.
+`kind: "manager-managed-agent-runtime-create"` requests a runtime for an already enrolled agent.
+`kind: "manager-managed-agent-runtime-status"` reads that runtime's state. Both carry the manager
+envelope and `target: { owner, actor, lifecycleUid }` from enrollment.
+
+Both schemas are closed. Unknown top-level or target fields, including `providerRef`, `handle`,
+and `name`, refuse with `bad-request`. Only the host issues and holds provider references. There
+is no stop, adopt, or probe kind. Stop uses prepare-retirement. Stock dispatch refuses both kinds
+with `unimplemented`. The verify-enrollment door provides their authorization decisions.
+
+`authorizeRemoteManagedAgentRuntimeCreate` and `authorizeRemoteManagedAgentRuntimeStatus` apply
+the enrollment door's checks. They verify host space, target owner equality with the authenticated
+owner, the manager actor's own `supervise` ledger row, the open gate, current serve epoch, and
+registration proof. Each returns only `{ owner, instanceId, actor, target }`. The door touches no
+provider and writes nothing. The host matches the decision to its own intent record before creating
+the runtime.
+
+| Result field | Values |
+| --- | --- |
+| `state` | `reserved`, `creating`, `bound`, `create-unknown`, `closing`, or `closed`. |
+| `readiness` | `ready`, `bound-not-ready`, or `none`. |
+| `retirementPhase` | Optional retirement phase. |
+
+The manager builds requests with `remoteManagerClient.remoteManagedAgentRuntimeRequest` and binds
+the answer with `remoteManagedAgentRuntimeState`.
+
+Enrollment may return `runtimeIntent: { state: "reserved" }` when the host reserved a runtime for
+the agent. This field is display-only. Older hosts omit it. The manager binds both result shapes
+to the same material and never treats the field as authority.
+
+### Delegated user intent decisions
+
+No stock door lets a platform control holder launch or retire an agent for a signed-in user.
+The managed-agent kinds above require that authenticated user as caller. A platform would otherwise
+need the user's login or enrollment under the platform's own owner. Both are refused.
+
+The [delegated user launch intent](design/delegated-user-launch-intent.md) design and SPEC §13.16
+define the additional contract. The user admits one launch or one retirement on the host's
+authenticated route. The holder consumes that intent once from its current registration, epoch,
+and lifecycle.
+
+The host enrolls the agent under the user's `u_` owner with the user's actor as ledger parent.
+The envelope walk, membership, and channel lists therefore match those of the user's own manager.
+Retirement preserves the prepare, provider closure, and terminal barrier order. The host finishes
+it when the holder is gone.
+
+A launch that needs compensation holds its agent name until the executing host process confirms
+it has stopped. While held, that name also refuses reuse by the user's own manager.
+
+`@cotal-ai/auth` exports `authorizeDelegatedUserIntentAdmission` and
+`authorizeDelegatedUserIntentExecution`. A host with its own intent store and writers composes
+these decisions on its own routes. Both read the holder's gate through the handle's
+`observeManagerGate`, available with `platformControl`. Reads use the context's connection, so the
+host opens no second data-account connection. This read is an observation for the decision. The
+consuming CAS and writers still apply their own checks.
+
+The consuming CAS pins the executing host process's incarnation. It cannot use the auth plane's
+incarnation because those processes can restart independently.
+
+### Host registration artifacts
+
+`platformControl.host` names the host process's reverse-DNS endpoint, the closure digest of its
+§13.7 cluster, and the artifacts registration reads. The auth plane self-authorizes that one name.
+Registration reads the closure manifest `{ v: 1, root, members }` at `clusterDigest`, then the
+cluster document at the manifest's `root`. Each must match its digest. `artifacts` contains both,
+and `clusterDigest` is the manifest's digest.
+
+`members` stays empty. SPEC §13.7 lists every reachable artifact there, but this implementation
+registers single-document clusters only and refuses a manifest with members. The contract store
+also refuses fields beyond `v`, `root`, and `members`. `singleDocumentClosure(document)` returns
+the manifest and its closure digest.
+
+The instance id is a lifecycle token matching `[a-z0-9]{26,32}`. The minimal example has one command
+over the void schema. A host replaces `document` with its real cluster and passes `host` as
+`platformControl: { observeAssignment, host }`.
+
+```ts
+import { mintLifecycleUid, singleDocumentClosure, VOID_SCHEMA_DIGEST } from "@cotal-ai/core";
+
+const document = {
+  urn: "com.example.host",
+  revision: 1,
+  attributes: [],
+  events: [],
+  commands: [{
+    name: "ping", class: "ephemeral", targeted: false, capability: "host.ping",
+    inputDigest: VOID_SCHEMA_DIGEST, outputDigest: VOID_SCHEMA_DIGEST,
+  }],
+};
+const { manifest, closureDigest } = singleDocumentClosure(document);
+const host = { endpoint: "com.example.host", clusterDigest: closureDigest, artifacts: [document, manifest] };
+const instanceId = mintLifecycleUid(); // first start only; later starts reuse the persisted id
+```
+
+### Host incarnation fencing
+
+`registerHostIncarnation(instanceId)` publishes the artifacts and registers the instance through
+the plane's own ceremony. It returns `{ instanceId, processEpoch }` with the committed epoch.
+The host calls it on every start with its persisted instance id, before admitting or recovering
+any flight. A restart therefore fences its predecessor.
+
+The first registration commits epoch 0, which is open and serving like later epochs. Each later
+start of the same instance commits the previous epoch plus one. Consumers compare epochs for
+equality. Epoch 0 never means absent or not ready. If the confirming gate read finds a later start
+of the same instance, registration refuses with `conflict`. The returned epoch stays current only
+until the next start registers, which can happen before the call returns.
+
+`observeHostGate(instanceId)` reads an executor's gate at one point in time and returns `null` for
+an absent gate. A sweeper decides how to act on that observation.
+
+`awaitHostFence(instanceId, processEpoch)` resolves with the gate once it is no longer open at
+that epoch, or with `null` once absent. It accepts any non-negative safe integer epoch, including 0.
+Other values refuse with `bad-request`. The host arms this wait with its returned incarnation
+before admitting or recovering any flight and stops serving when it resolves. It polls because
+runtime credentials cannot watch the auth bucket.
+
+### Delegated intent execution
+
+The host's launch writer activates the agent's lifecycle at the pinned UID through the handle's
+`activateManagedLifecycle` before writing any ledger row or durable. Compensation makes the same
+call before the terminal barrier. Even an agent that never exchanged its bearer therefore reaches
+the barrier at that UID.
+
+The agent exchanges its bearer on the context's public face, so the host starts with `publicFace`.
+The retirement writer ends at `POST /managed-lifecycle/retire` with the handle's `cap`. Stock
+dispatch refuses both delegated-intent kinds with `unimplemented`.
+
+The holder supplies `remoteAuthority.executeDelegatedUserIntent`. This posts the execution request
+and binds the answer with `parseRemoteDelegatedUserIntentExecutionResult`. The holder starts the
+agent with `startAgent({ ..., delegatedIntent: { intentId, owner, parent } })` and retires it with
+`retireDelegatedAgent(name, intentId)`. This stops the agent and removes its local secret family
+only after the host confirms `retired: true` for the exact target.
+
+Stop, exit, or failed launch holds a delegated agent's name until retirement confirms. A secret
+file that retirement fails to remove also keeps the name held.
+
+### Remote administration authorization
+
+Remote user-mode managers must also supply `remoteAuthority.authorizeAdmin`. The manager builds each
+request only from the caller tuple parsed from the broker-authenticated endpoint subject, then relays
+that tuple over the current registered manager lifecycle. HTTPS does not separately authenticate the
+relayed caller. The host authenticates the manager operator, binds the request to the current open
+manager gate, registration proof, serving epoch, and identity nkeys, then reads the caller's unified
+authoritative row fresh. It returns only the manager owner and `authorized: boolean`, with every request
+coordinate echoed. Missing, revoked, narrowed, foreign-owner, and stale-lifecycle callers all return
+`false`; malformed coordinates or corrupt and unavailable authority state fail the operation. The
+participant never reads or mirrors the host ledger, and the remote branch has no local fallback. The
+same callback gates all `manager.admin` handlers, any-mode cross-owner control, and `ps` or `inspect`
+cross-owner visibility. Launch keeps its owner-equality policy.
+
+### Maintenance limits
+
+The remote authority's instance executor remains the scoped maintenance credential for clean service
+deregistration and exact instance registration operations. It carries no records-stream consumer
+lifecycle authority. The manager's boot `goalidx` sweep uses the authenticated host operation, which
+returns parsed `goalidx.manager.<owner>.>` entries for that owner only. The host keeps the sealed
+consumer connection and its create/delete rights.
+
+When the host supplies `remoteAuthority.renewStandingBundle`, the manager renews the supervisor,
+executor, serve, goal-writer, and session-ledger credentials as one family.
+It checks the held nkeys, account, and active serve epoch, preflights the candidates, then adopts them
+and reconnects the held connections. `remoteManagerClient.remoteStandingBundleRenewal` builds
+the caller for this host authority operation.
+Without that callback, the separate executor path uses `remoteAuthority.renewExecutor`.
+
+For hosted runs, `remoteRunHosting` supplies `renewRun`.
+The run host validates and adopts the renewed driver and mediator pair before reconnecting them.
+The host still implements the authority operations and transport that these callbacks call.
+The [hosted runtime contract](design/hosted-runtime-contracts.md) describes the wider composition;
+these renewal paths do not supply a complete pooled service.
+
+### Agent isolation
+
+The default pty runtime runs agent children under the manager's OS uid and `workspaceRoot`.
+Mode-0600 trust records do not stop a hostile same-uid agent from reading their absolute paths.
+The reference [deploy](deploy.mdx) tree mounts the signer into each agent's container. Its phase-1
+boundary isolates agents from each other, but the agent can still read its signer.
+
+For a local signing composition, the host must put the manager or minter in a different uid,
+container, or mount namespace from untrusted agents. Agent children must mount no signer.
+The signerless path removes local signing trust, but host-issued scoped credentials still need
+protection from other processes running as the same OS user.

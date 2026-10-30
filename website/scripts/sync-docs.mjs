@@ -51,7 +51,8 @@ const navigation = [
       ]),
       group('Connect agents', ['connectors', 'connect-claude', 'connect-opencode', 'connect-codex', 'connect-hermes', 'connect-jcode', 'connect-pi'].map(name => page(`docs/${name}.mdx`))),
       group('Build integrations', [
-        ...['authoring-a-connector', 'build-a-client', 'embedding'].map(name => page(`docs/${name}.md`)),
+        ...['authoring-a-connector', 'build-a-client', 'embedding'].map(name => page(`docs/${name}.mdx`)),
+        group('Embedding reference', ['exports', 'remote-clients', 'daemons', 'provisioning', 'service-authority', 'manager', 'delegated-seats'].map(name => page(`docs/embedding-${name}.mdx`))),
         group('Connector reference', [
           page('docs/connector-runtime-reference.mdx'),
           ...['claude', 'opencode', 'codex', 'hermes', 'jcode', 'pi'].map(name => page(`docs/${name}-connector-reference.mdx`)),

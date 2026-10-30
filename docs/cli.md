@@ -2104,7 +2104,7 @@ refusals name the handoff's space field. An actor outside `[A-Za-z0-9_]` and a s
 name local state, such as `..`, are refused as malformed before any plane. A handoff conflicts with
 the enrollment variables, `--detach`, `-f` and `--creds`, and needs `--config <persona-file>`. From
 there it runs the enrollment consumer above without redeeming anything. See
-[Delegated seats](embedding.md#delegated-seats-outside-the-managers-filesystem).
+[Delegated seats](embedding-delegated-seats.mdx#delegated-seats-outside-the-managers-filesystem).
 
 | Flag | Default | Meaning |
 |---|---|---|
@@ -2640,7 +2640,7 @@ selection refuses before sending the command. With several of your managers live
 their instance ids so you can pass one to `--on`. By default, when every manager you registered has
 exited, the refusal says to start one with [`supervise`](#supervise); the command is not sent to the local manager.
 
-A trusted hosted composition may opt into an [interactive local primary](embedding.md#interactive-manager-primary).
+A trusted hosted composition may opt into an [interactive local primary](embedding-manager.mdx#interactive-manager-primary).
 Under that policy, unpinned human control selects the genuine local Manager up front, even when your
 own remote Manager is live; an unavailable local Manager refuses without remote substitution. This
 affects all interactive Manager verbs, not only `ps`. Select your remote Manager explicitly for its
@@ -4545,7 +4545,7 @@ authority. It is auth-mode-only and single-instance (`--shard`/`--shards` accept
 daemon serves. `--creds` can start a daemon that already looks healthy, but production renewal is
 not that file alone: the manager and the daemon must address one credential store. On a stock split host with two project roots, a
 direct `deliver` is not an independent repair; keep the daemon under `cotal up` on the broker
-host, or inject the same store into both processes ([embedding](embedding.md#supervisor-signing-authority)).
+host, or inject the same store into both processes ([embedding](embedding-manager.mdx#supervisor-signing-authority)).
 Typed by hand on the workstation, `deliver` dials the broker recorded for `--space` in the mesh
 registry (a mismatching `--server` is refused before any dial, and a record for a different
 workspace root is refused outright); with no record for the space it falls back to the local mesh.
