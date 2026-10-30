@@ -1,5 +1,21 @@
 # @cotal-ai/connector-codex
 
+## 0.128.7
+
+### Patch Changes
+
+- 7e34db3: Report the Cotal release loaded by Codex's HTTP MCP server and Jcode's stdio MCP bridge in standard `serverInfo.version`, instead of `0.0.0`. The value comes from the bundled release, not a CLI installed on disk; updating files does not change the version reported by an already-running process.
+
+## 0.128.6
+
+### Patch Changes
+
+- ce07fa6: Keep automatically answered native user-input requests (`item/tool/requestUserInput`) from disarming workflow turn completion. A completed Codex turn now yields done after this request without requiring a later command or MCP item. Explicit blocked and handoff yields remain unchanged.
+
+## 0.128.5
+
+No changes in this release.
+
 ## 0.128.4
 
 No changes in this release.

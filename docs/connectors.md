@@ -8,6 +8,13 @@ and delivery model ([MCP tools](mcp-tools.md)), and hands its agent the same
 harness and which spawn features are wired. Anything unwired **fails loud**: a flag a connector
 does not support throws; nothing silently degrades.
 
+**Running version.** An MCP server's standard `serverInfo.version` names the Cotal release
+that server loaded, not the MCP protocol version or a newer CLI installed on disk.
+`cotal_orientation` reports the release loaded by the host answering the tool. Some clients
+hide MCP server metadata; the orientation card remains available through the tool list.
+Jcode's stdio bridge and tool host are separate processes, so their versions can differ if
+only one has reloaded after an upgrade. Updating files alone does not upgrade a running process.
+
 Connectors track raw NATS transport liveness separately from endpoint readiness. A short broker
 disconnect marks the transport down until nats.js reconnects, without claiming that the connector's
 full Cotal bind was torn down and rebuilt. A clean connector stop clears both states locally.

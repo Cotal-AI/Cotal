@@ -220,7 +220,7 @@ if (!brokerDisplayOnly) {
     check(`control: ${label} gets no bare up`, !/(^|\s)cotal up(\s{2}|$)/m.test(next), next);
   check("control: a controller stack is not read from legacy pidfiles", !/(^|\s)cotal up(\s{2}|$)/m.test(legacyNext(["manager"], { controllerStack: true })), legacyNext(["manager"], { controllerStack: true }));
   const plain = run(["status", "--space", "alpha", "--plain"]);
-  const NOT_DIALED = "Unselected spaces are not dialed - `cotal status --all` dials each";
+  const NOT_DIALED = "Unselected spaces are not dialed - `pnpm cotal status --all` dials each";
   check("the other registration carries no connection state, and one note says why, once",
     /^ {2}beta +open$/m.test(plain.stdout) && !/^ {2}\S+ +not checked/m.test(plain.stdout) &&
       (plain.stdout.match(/are not dialed/g) ?? []).length === 1 && plain.stdout.includes(NOT_DIALED), plain.stdout);
@@ -459,7 +459,7 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   const store = failed.envelope?.result?.store;
   check("status --json names this broker's store write failure with its time, cause and file", store?.state === "write-failed" && store.at === "2026/10/23 19:38:44" && store.cause === "no space left on device" && store.path === "/store/msgs/1.blk", shown(failed));
   const plain = run(["status", ...server, "--plain"]);
-  check("the report shows a Store row and leads Next with down, after freeing space on the disk for a full one", /Store: +write failed at 2026\/10\/23 19:38:44: no space left on device - \/store\/msgs\/1\.blk/.test(plain.stdout) && /cotal down +First free space on the disk that holds \S+; then .*`cotal up` starts the broker again with the history it kept/.test(plain.stdout), plain.stdout);
+  check("the report shows a Store row and leads Next with down, after freeing space on the disk for a full one", /Store: +write failed at 2026\/10\/23 19:38:44: no space left on device - \/store\/msgs\/1\.blk/.test(plain.stdout) && /cotal down +First free space on the disk that holds \S+; then .*`pnpm cotal up` starts the broker again with the history it kept/.test(plain.stdout), plain.stdout);
   // The repair follows the cause: a permission is given back, not disk space freed.
   appendFileSync(log, `[${pid}] ${stamp} [ERR] Filestore [CHAT_s] Critical write error: open /store/msgs/2.blk: permission denied\n`);
   const denied = run(["status", ...server, "--plain"]);
@@ -537,7 +537,7 @@ if (process.platform !== "win32") {
   const plain = run(["status", "--space", "nosuch", "--plain"], onPath);
   const machine = plain.stdout.split("\n\n")[0] ?? "";
   check("the applications line names what is set up and counts the rest behind cotal setup",
-    /^ {2}Agent applications: +aa - 1 more with `cotal setup`$/m.test(plain.stdout), shown(plain));
+    /^ {2}Agent applications: +aa - 1 more with `pnpm cotal setup`$/m.test(plain.stdout), shown(plain));
   check("no row is printed per known application",
     !/^ {2}aa: /m.test(plain.stdout) && !/^ {2}bb: /m.test(plain.stdout) && !/not on PATH/.test(plain.stdout), machine);
   check("the extensions line is one count at the version they share",

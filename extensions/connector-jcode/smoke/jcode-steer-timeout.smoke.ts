@@ -67,7 +67,7 @@ try {
     try {
       await operator.start();
       const env = { ...process.env };
-      for (const key of Object.keys(env)) if (/^(COTAL_|JCODE_|FAKE_JCODE_)/.test(key)) delete env[key];
+      for (const key of Object.keys(env)) if (key.startsWith("COTAL_") || key.startsWith("JCODE_") || key.startsWith("FAKE_JCODE_")) delete env[key];
       child = spawn(tsx, [host], {
         cwd: cell,
         env: {

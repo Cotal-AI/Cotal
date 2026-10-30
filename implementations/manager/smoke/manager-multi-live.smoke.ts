@@ -28,6 +28,14 @@ import type { Connector, LaunchOpts, LaunchSpec, EpCaller } from "@cotal-ai/core
 
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 process.env.COTAL_HOME = join(dir, "home");
+const hostileIdentity = {
+  COTAL_AGENT_FILE: join(dir, "ambient-agent.md"), COTAL_SERVERS: "nats://127.0.0.1:1",
+  COTAL_SPACE: "ambient-space", COTAL_NAME: "ambient-seat", COTAL_ID: "ambient-id",
+  COTAL_OWNER: "ambient-owner", COTAL_ACTOR: "ambient-actor",
+};
+writeFileSync(hostileIdentity.COTAL_AGENT_FILE, "---\nname: ambient-seat\nrole: ambient-role\n---\n");
+const savedIdentity = Object.fromEntries(Object.keys(hostileIdentity).map((key) => [key, process.env[key]]));
+Object.assign(process.env, hostileIdentity);
 const {
   isReachable, createSpaceAuth, serverConfig, setupSpaceStreams, mintCreds, newIdentity,
   mintLifecycleUid, standaloneConnectOpts, DEV_OWNER,
@@ -134,10 +142,17 @@ try {
 
   console.log("3. a static managed seat keeps self-stop and saved-persona spawn on its launch manager");
   writeFileSync(join(root2, ".cotal", "agents", "route-seat.md"), "---\nname: route-seat\nagent: multi-tool-seat\ncapabilities: [spawn]\nsubscribe: []\nallowSubscribe: []\nallowPublish: []\n---\n");
+  check("the launcher still carries the hostile ambient identity", Object.entries(hostileIdentity).every(([key, value]) => process.env[key] === value));
   const routed = await m2.startAgent({ name: "route-seat", cwd: root2, events: false });
   if (!routed.ok) throw new Error(`tool seat failed: ${JSON.stringify(routed)}`);
-  const rows = (): Array<{ seq?: number; startedSeq?: number; selfStopped?: boolean; command?: string; reply?: { ok?: boolean; instanceId?: string }; result?: { isError?: boolean }; error?: string }> =>
+  const rows = (): Array<{ identity?: { space: string; name: string; id?: string; lifecycleUid?: string; managerInstanceId?: string }; seq?: number; startedSeq?: number; selfStopped?: boolean; command?: string; reply?: { ok?: boolean; instanceId?: string }; result?: { isError?: boolean }; error?: string }> =>
     existsSync(join(dir, "tool-results.jsonl")) ? readFileSync(join(dir, "tool-results.jsonl"), "utf8").trim().split("\n").filter(Boolean).map((s) => JSON.parse(s)) : [];
+  for (let i = 0; i < 50 && !rows().some((r) => r.identity); i++) await wait(100);
+  const identity = rows().find((r) => r.identity)?.identity;
+  const allocated = routed.data as { id: string; lifecycleUid: string };
+  check("the tool child resolves only its allocated identity despite the hostile launcher environment",
+    identity?.space === SPACE && identity.name === "route-seat" && identity.id === allocated.id
+      && identity.lifecycleUid === allocated.lifecycleUid && identity.managerInstanceId === IID2, identity);
   let seq = 0;
   const tool = async (name: string, args: Record<string, unknown>) => {
     const id = ++seq;
@@ -194,6 +209,9 @@ try {
   await wait(200);
   rmSync(dir, { recursive: true, force: true });
   releaseBroker?.(); // last: ownership is held until this teardown has actually finished
+  for (const [key, value] of Object.entries(savedIdentity)) {
+    if (value === undefined) delete process.env[key]; else process.env[key] = value;
+  }
 }
 
 function names2(scatter: Awaited<ReturnType<typeof scatterCommand>>, iid: string): string[] {
