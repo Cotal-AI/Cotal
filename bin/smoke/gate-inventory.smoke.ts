@@ -71,10 +71,8 @@ type UngatedExemption = { reason: string; recheckBy: string };
 // manifest suite does.
 const EXPECTED_EXEMPTIONS = 16;
 const standing = (reason: string): UngatedExemption => ({ reason, recheckBy: "2026-11-30" });
-const untriagedExemption = (reason: string): UngatedExemption => ({ reason, recheckBy: "2026-09-30" });
-/** The BROKEN class carried `untriagedExemption`, which says nobody has looked. Someone had: each
- *  backup entry below names its issue, its commit, and the assertion that failed. What they need is a
- *  fuse tied to the issue rather than a marker that misreports the state of the record. Premise
+/** Each BROKEN backup entry below names its issue, commit and failed assertion, with a review
+ *  date tied to that investigated debt. Premise
  *  re-verified 2026-10-01: #643 and #1285 are both still OPEN, so every entry's stated cause still
  *  holds and none of them can enter CI while red. Re-dated with that decision, not bumped. These
  *  cannot be discharged by running them here: #1285 is under a standing instruction not to resume,
@@ -116,7 +114,7 @@ const UNGATED: Record<string, UngatedExemption> = {
   // plane3-activation:auth 6/0, plane3-gate:auth 3/0, self-serve-join-coverage:auth 17/0. All ten
   // passed, so all ten were GATED through `bin/smoke/ci-suites.d/` fragments rather than
   // re-explained, which is the exit this gate asks for and the one that takes the count down instead
-  // of resetting its clock. `untriagedExemption` is kept because the next entry will want it.
+  // of resetting its clock.
 };
 
 /**
