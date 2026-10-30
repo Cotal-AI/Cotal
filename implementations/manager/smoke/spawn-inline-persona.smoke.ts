@@ -8,14 +8,15 @@
  * whose issued evidence the real issuer recorded, and each cell passes the spawner's issued caller
  * to `startAgent` the way the served door does. The runtime and the endpoint are fakes, so no seat
  * process starts; a fake seat's exit is fired by hand, which drives the real exit watcher. An open
- * mesh manager and a user-auth manager with a refusing auth provider cover the paths a static mesh
- * does not take. Run with: pnpm smoke:spawn-inline-persona
+ * mesh manager covers the paths a static mesh does not take, the public preservation cut and resume
+ * included, and a user-auth manager runs the real auth provider and ledger, whose refusal comes
+ * before any broker work. Run with: pnpm smoke:spawn-inline-persona
  */
-import { createHash, randomUUID } from "node:crypto";
-import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Manager, type FreeSlotCause, type ManagerResumeAgent } from "../src/manager.js";
+import { Manager, type FreeSlotCause, type ManagerResumeAgent, type ManagerResumeInventory } from "../src/manager.js";
 import { inlinePersonaDir, inlineSnapshotPath } from "../src/launch.js";
 import { readSeatRecord } from "../src/resume.js";
 import {
@@ -29,15 +30,15 @@ import {
   registry,
   setupSpaceStreams,
   DEV_OWNER,
+  type AgentDef,
   type AgentHandle,
-  type AuthProvider,
   type Connector,
   type ControlReply,
   type EpCaller,
   type IssuedCaller,
   type LaunchSpec,
 } from "@cotal-ai/core";
-import { agentLifecycleSecretFilePaths } from "@cotal-ai/workspace";
+import { agentLifecycleSecretFilePaths, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { bootBroker } from "./_boot-broker.js";
 import { credAcl } from "./_cred-acl.js";
 import { requestDeliveryAdminZeroMemberships } from "./_fake-delivery-admin.js";
@@ -73,7 +74,7 @@ const fakeSeat = (name: string, kind: string): FakeSeat => {
   const listeners: Array<() => void> = [];
   const session = { cols: 80, rows: 24, backlog: () => Buffer.alloc(0), onData: () => () => {}, onExit: (cb: () => void) => { listeners.push(cb); return () => {}; }, write: () => {}, resize: () => {} };
   return {
-    name, kind, status: () => (exited ? "exited" : "running"), stop: () => {}, interrupt: () => {}, attach: () => session, waitForExit: async () => {},
+    name, kind, status: () => (exited ? "exited" : "running"), stop: () => { exited = true; }, interrupt: () => {}, attach: () => session, waitForExit: async () => {},
     exit: () => { exited = true; for (const l of listeners.splice(0)) l(); },
   } as unknown as FakeSeat;
 };
@@ -82,7 +83,7 @@ type Seat = { id: string; name: string; lifecycleUid: string; issued?: { generat
 type Internals = {
   managerInstanceId: string;
   agents: Map<string, Seat>;
-  retiring: Map<string, unknown>;
+  retiring: Map<string, { lastError?: string }>;
   freeSlot: (a: unknown, floor: boolean, cause: FreeSlotCause) => void;
   deprovision: (a: unknown) => Promise<void>;
   deprovisioningFlight: Map<string, Promise<void>>;
@@ -93,19 +94,21 @@ type Internals = {
 };
 
 /** A manager over a fake endpoint and runtime. `spawned` counts launches per seat name; a name in
- *  `failLaunch` throws at launch, after the grant and the snapshot. */
+ *  `failLaunch` throws at launch, after the grant and the snapshot, and `beforeLaunch` runs first. */
 function managerAt(root: string, opts: { auth?: boolean }) {
-  const mgr = new Manager({ space, servers: SERVERS, runtime: "pty", workspaceRoot: root });
+  const mgr = new Manager({ space, servers: SERVERS, runtime: "pty", workspaceRoot: root, preserveStopTimeoutMs: 2_000 });
   if (opts.auth) (mgr as unknown as { auth: unknown }).auth = auth;
   const M = mgr as unknown as Internals;
-  M.managerInstanceId = `smoke-manager-${randomUUID().slice(0, 6)}`;
+  M.managerInstanceId = mintLifecycleUid();
   const seats = new Map<string, FakeSeat>();
   const spawned = new Map<string, number>();
   const failLaunch = new Set<string>();
+  const beforeLaunch = new Map<string, () => void>();
   (mgr as unknown as { runtime: unknown }).runtime = {
     kind: "pty",
     spawn: (name: string, _spec: LaunchSpec) => {
       spawned.set(name, (spawned.get(name) ?? 0) + 1);
+      beforeLaunch.get(name)?.();
       if (failLaunch.has(name)) throw new Error(`smoke: launch of ${name} refused`);
       const seat = fakeSeat(name, "pty");
       seats.set(name, seat);
@@ -119,11 +122,12 @@ function managerAt(root: string, opts: { auth?: boolean }) {
     on: () => {},
     off: () => {},
     waitForPresenceSnapshot: async () => {},
+    chatFrontier: async () => 0,
     requestDeliveryAdmin: requestDeliveryAdminZeroMemberships,
     // A user-mode seat's id is already its principal; a static one is the nkey under the dev owner.
     getRoster: () => [...M.agents.values()].map((a) => ({ card: { id: a.id.includes(".") ? a.id : principalKey(DEV_OWNER, a.id).key, name: a.name }, status: "idle", lifecycleUid: a.lifecycleUid, ts: 1 })),
   };
-  return { mgr, M, seats, spawned, failLaunch };
+  return { mgr, M, seats, spawned, failLaunch, beforeLaunch };
 }
 
 const con: Connector = { kind: "connector", name: "smoke-inline", requires: ["node"], eventChannel, readinessTimeoutMs: 2_000, buildLaunch: () => ({ command: "true", args: [], env: {} }) };
@@ -150,6 +154,35 @@ const catalog = (name: string) => join(agentsDir, `${name}.md`);
 const retire = async (M: Internals, seats: Map<string, FakeSeat>, name: string) => {
   seats.get(name)!.exit();
   await until(() => seatOf(M, name) === undefined && !M.retiring.has(name));
+};
+/** Exit a seat and wait for its teardown to settle, however it ends. */
+const exitAndSettle = async (M: Internals, seats: Map<string, FakeSeat>, name: string) => {
+  seats.get(name)!.exit();
+  await until(() => seatOf(M, name) === undefined);
+  await Promise.allSettled([...M.deprovisioningFlight.values()]);
+};
+/** What `console.error` printed while `run` ran: a teardown reports there. */
+const errorsDuring = async <T>(run: () => Promise<T>): Promise<{ value: T; lines: string[] }> => {
+  const lines: string[] = [];
+  const original = console.error;
+  console.error = (...args: unknown[]) => { lines.push(args.map(String).join(" ")); original(...args); };
+  try {
+    return { value: await run(), lines };
+  } finally {
+    console.error = original;
+  }
+};
+/** Give a fake-endpoint manager what a public stop calls. */
+const stoppable = (mgr: Manager) => {
+  Object.assign((mgr as unknown as { ep: Record<string, unknown> }).ep, { releaseManagerLease: async () => {}, releaseDaemonRenewalLease: async () => {}, stop: async () => {} });
+  (mgr as unknown as { attach: unknown }).attach = { stop: async () => {} };
+};
+/** Swap the inline directory for a link to `target`. The returned function puts the real one back. */
+const linkedInlineDir = (root: string, target: string) => {
+  const dir = inlinePersonaDir(root);
+  renameSync(dir, `${dir}.real`);
+  symlinkSync(target, dir);
+  return () => { rmSync(dir); renameSync(`${dir}.real`, dir); };
 };
 
 try {
@@ -202,6 +235,32 @@ try {
     const def = d ? loadAgentFile(inlineSnapshotPath(workspaceRoot, d.lifecycleUid)) : undefined;
     check("a body that starts with --- stays body in the snapshot", def !== undefined && def.capabilities === undefined && def.allowSubscribe === undefined && (def.persona ?? "").includes("capabilities: [admin]"), def);
     check("and grants nothing it names", reads(minted(r), "review") && !reads(minted(r), "general") && !(minted(r)?.pub ?? []).some((s) => s.includes("admin")), minted(r));
+  }
+  {
+    // Strings a frontmatter reader takes for an alias, a null or a number, or that a one-line
+    // writer folds: each must read back from the snapshot as the record gave it.
+    const strings = [
+      { description: "*missing", model: "null" },
+      { description: "line one\nline two: \"quoted\"", model: "1.20" },
+    ];
+    for (const [i, fields] of strings.entries()) {
+      const d = okData(await spawnAs(undefined, `literal${i}`, { persona: { prompt: "x", ...fields } }));
+      let def: AgentDef | undefined;
+      let error = "";
+      try {
+        def = d ? loadAgentFile(inlineSnapshotPath(workspaceRoot, d.lifecycleUid)) : undefined;
+      } catch (e) {
+        error = String(e);
+      }
+      check(`the snapshot reads back ${JSON.stringify(fields)} as the record gave it`, def?.description === fields.description && def?.model === fields.model, error || def);
+    }
+  }
+  {
+    const r = await spawnAs(undefined, "overridden", { role: "launched", model: "m-launched", persona: { prompt: "x", role: "authored", model: "m-authored" } });
+    const d = okData(r);
+    const def = d ? loadAgentFile(inlineSnapshotPath(workspaceRoot, d.lifecycleUid)) : undefined;
+    check("control: the spawn's role wins over the record's", (r.ok ? (r.data as { role?: string }).role : undefined) === "launched", r);
+    check("the snapshot carries the role and model the seat launched with", def?.role === "launched" && def.model === "m-launched", def);
   }
 
   console.log("omission and [] (bounded spawner)");
@@ -329,6 +388,102 @@ try {
     const r = await spawnAs(undefined, "doomed", { persona: { prompt: "x" } });
     check("a launch that fails after the snapshot removes it", !r.ok && JSON.stringify(snapshots(workspaceRoot)) === JSON.stringify(before) && (S.spawned.get("doomed") ?? 0) === 1, r);
   }
+  {
+    // A snapshot the rollback cannot remove. The grant's teardown must still run, and the terminal
+    // it drives retries the file and reports it.
+    const dir = inlinePersonaDir(workspaceRoot);
+    let accepted = { uid: "", actor: "" };
+    S.failLaunch.add("stuck");
+    S.beforeLaunch.set("stuck", () => chmodSync(dir, 0o500));
+    const { value: r, lines } = await errorsDuring(async () => {
+      const reply = await spawnAs(undefined, "stuck", { persona: { prompt: "x" } }, {
+        onAccepted: (a: { lifecycleUid: string; identity: { id: string } }) => { accepted = { uid: a.lifecycleUid, actor: a.identity.id }; },
+      }).catch((e: unknown): ControlReply => ({ ok: false, error: `the spawn threw: ${String(e)}` }));
+      await Promise.allSettled([...S.M.deprovisioningFlight.values()]);
+      return reply;
+    });
+    chmodSync(dir, 0o700);
+    const path = inlineSnapshotPath(workspaceRoot, accepted.uid);
+    check("a spawn whose snapshot cannot be removed still returns its launch failure", refused(r, /launch of stuck refused/), r);
+    check("and still tears its grant down", accepted.uid !== "" && !existsSync(agentLifecycleSecretFilePaths(workspaceRoot, space, "stuck", accepted.uid).creds));
+    check("and its terminal reports the snapshot it could not remove", existsSync(path) && lines.some((l) => /cleanup failed/.test(l) && l.includes(path)), lines.filter((l) => l.includes("stuck")));
+    await S.M.driveStaticRetirement({ id: accepted.actor, name: "stuck", lifecycleUid: accepted.uid }, true);
+    check("and a later terminal by the slot row removes it", !existsSync(path));
+  }
+  {
+    // A seat whose snapshot cannot be removed when it retires.
+    const dir = inlinePersonaDir(workspaceRoot);
+    const d = okData(await spawnAs(undefined, "pinned", { persona: { prompt: "x" } }));
+    const seat = seatOf(S.M, "pinned")!;
+    const path = inlineSnapshotPath(workspaceRoot, d!.lifecycleUid);
+    chmodSync(dir, 0o500);
+    await exitAndSettle(S.M, S.seats, "pinned");
+    chmodSync(dir, 0o700);
+    const held = S.M.retiring.get("pinned");
+    check("a retirement that cannot remove the snapshot keeps the name held and says why", existsSync(path) && (held?.lastError ?? "").includes(path), held);
+    await S.M.driveStaticRetirement({ id: seat.id, name: "pinned", lifecycleUid: d!.lifecycleUid }, true);
+    check("and the retried terminal removes it and frees the name", !existsSync(path) && !S.M.retiring.has("pinned"));
+  }
+  {
+    // The inline directory replaced by a link to another directory that holds a file of the same name.
+    const d = okData(await spawnAs(undefined, "linked", { persona: { prompt: "x" } }));
+    const seat = seatOf(S.M, "linked")!;
+    const outside = join(scratch, "outside-free");
+    mkdirSync(outside);
+    const bait = join(outside, `${d!.lifecycleUid}.md`);
+    writeFileSync(bait, "not a snapshot\n");
+    const restore = linkedInlineDir(workspaceRoot, outside);
+    await exitAndSettle(S.M, S.seats, "linked");
+    restore();
+    check("a seat's retirement never removes through a linked inline directory", existsSync(bait), d);
+    check("and it keeps the name held, saying why", /symlink/.test(S.M.retiring.get("linked")?.lastError ?? ""), S.M.retiring.get("linked"));
+    await S.M.driveStaticRetirement({ id: seat.id, name: "linked", lifecycleUid: d!.lifecycleUid }, true);
+    check("control: once the directory is real again, the terminal removes the snapshot", !existsSync(inlineSnapshotPath(workspaceRoot, d!.lifecycleUid)));
+  }
+  {
+    let accepted = { uid: "", actor: "" };
+    let restore = () => {};
+    const outside = join(scratch, "outside-rollback");
+    mkdirSync(outside);
+    S.failLaunch.add("linkfail");
+    S.beforeLaunch.set("linkfail", () => {
+      writeFileSync(join(outside, `${accepted.uid}.md`), "not a snapshot\n");
+      restore = linkedInlineDir(workspaceRoot, outside);
+    });
+    await spawnAs(undefined, "linkfail", { persona: { prompt: "x" } }, {
+      onAccepted: (a: { lifecycleUid: string; identity: { id: string } }) => { accepted = { uid: a.lifecycleUid, actor: a.identity.id }; },
+    }).catch(() => undefined);
+    await Promise.allSettled([...S.M.deprovisioningFlight.values()]);
+    restore();
+    check("a failed spawn's rollback never removes through a linked inline directory", accepted.uid !== "" && existsSync(join(outside, `${accepted.uid}.md`)));
+    await S.M.driveStaticRetirement({ id: accepted.actor, name: "linkfail", lifecycleUid: accepted.uid }, true);
+    check("control: once the directory is real again, the terminal removes the snapshot the spawn wrote", !existsSync(inlineSnapshotPath(workspaceRoot, accepted.uid)));
+  }
+
+  console.log("stop with agents");
+  {
+    // The public stop: each inline seat's snapshot goes, and a snapshot it cannot remove is reported
+    // from the terminal while that seat's grant still goes.
+    const root = join(scratch, "stop");
+    mkdirSync(join(root, ".cotal"), { recursive: true });
+    const T = managerAt(root, { auth: true });
+    stoppable(T.mgr);
+    const start = (name: string) => T.mgr.startAgent({ name, agent: "smoke-inline", events: false, persona: { prompt: "x" } });
+    const owned = okData(await start("stop_owned"));
+    const blocked = okData(await start("stop_blocked"));
+    check("control: two inline seats run before the stop", owned !== undefined && blocked !== undefined);
+    // The blocked seat's snapshot path holds a directory, which a removal refuses.
+    const blockedPath = inlineSnapshotPath(root, blocked!.lifecycleUid);
+    rmSync(blockedPath);
+    mkdirSync(blockedPath);
+    writeFileSync(join(blockedPath, "inside"), "x");
+    const { value: stopped, lines } = await errorsDuring(() => T.mgr.stop({ withAgents: true }).then(() => "stopped", (e: unknown) => String(e)));
+    check("control: the stop with agents completes", stopped === "stopped", stopped);
+    check("a stop with agents removes an inline seat's snapshot", !existsSync(inlineSnapshotPath(root, owned!.lifecycleUid)));
+    check("and tears down the grant of a seat whose snapshot it cannot remove", !existsSync(agentLifecycleSecretFilePaths(root, space, "stop_blocked", blocked!.lifecycleUid).creds));
+    check("and reports that snapshot from its terminal", lines.some((l) => l.includes("static retirement stop_blocked") && l.includes(blockedPath)), lines.filter((l) => l.includes("stop_blocked")));
+    rmSync(blockedPath, { recursive: true });
+  }
 
   console.log("the door guard");
   {
@@ -359,19 +514,22 @@ try {
     S.seats.get("steady")!.exit();
     await until(() => (S.spawned.get("steady") ?? 0) > 1);
     check("control: an unchanged snapshot restarts", (S.spawned.get("steady") ?? 0) > 1, S.spawned.get("steady"));
-    // A seat whose recorded path names another file, carrying that file's digest.
-    const swapped = okData(await spawnAs(undefined, "swapped", { persona: { prompt: "x" }, supervise }));
-    const seat = seatOf(S.M, "swapped") as (Seat & { restart?: { opts: { configPath?: string } } }) | undefined;
+    // A seat whose recorded path, or whose relaunch path, names another file. Each is refused alone.
+    // The recorded path moves and keeps the digest of the file the relaunch reads.
     const foreign = join(scratch, "foreign.md");
     writeFileSync(foreign, "---\nname: swapped\n---\nnot the persona this spawn accepted\n", { mode: 0o600 });
-    if (seat?.restart) {
-      seat.launch.source.configPath = foreign;
-      seat.launch.source.configSha256 = createHash("sha256").update(readFileSync(foreign)).digest("hex");
-      seat.restart.opts.configPath = foreign;
-    }
-    S.seats.get("swapped")!.exit();
-    await until(() => seatOf(S.M, "swapped") === undefined || (S.spawned.get("swapped") ?? 0) > 1);
-    check("a restart refuses a recorded snapshot path that is not the lifecycle's own", swapped !== undefined && seatOf(S.M, "swapped") === undefined && S.spawned.get("swapped") === 1, S.spawned.get("swapped"));
+    const pair = ["recorded", "relaunched"];
+    for (const name of pair) await spawnAs(undefined, name, { persona: { prompt: "x" }, supervise });
+    type Supervised = Seat & { restart?: { opts: { configPath?: string } } };
+    const recorded = seatOf(S.M, "recorded") as Supervised | undefined;
+    const relaunched = seatOf(S.M, "relaunched") as Supervised | undefined;
+    check("control: both supervised seats spawned", recorded?.restart !== undefined && relaunched?.restart !== undefined);
+    if (recorded) recorded.launch.source.configPath = foreign;
+    if (relaunched?.restart) relaunched.restart.opts.configPath = foreign;
+    for (const name of pair) S.seats.get(name)!.exit();
+    await until(() => pair.every((n) => seatOf(S.M, n) === undefined || (S.spawned.get(n) ?? 0) > 1));
+    check("a restart refuses a recorded snapshot path that is not the lifecycle's own", seatOf(S.M, "recorded") === undefined && S.spawned.get("recorded") === 1, S.spawned.get("recorded"));
+    check("and a relaunch path that is not the lifecycle's own", seatOf(S.M, "relaunched") === undefined && S.spawned.get("relaunched") === 1, S.spawned.get("relaunched"));
   }
   {
     const d = okData(await spawnAs(undefined, "cut", { persona: { prompt: "x" } }));
@@ -399,26 +557,52 @@ try {
     O.failLaunch.add("fragile");
     const r = await O.mgr.startAgent({ name: "fragile", agent: "smoke-inline", events: false, persona: { prompt: "x" } });
     check("an open-mesh spawn that fails after its snapshot removes it", !r.ok && snapshots(root).length === 0, snapshots(root));
+    const last = okData(await O.mgr.startAgent({ name: "last", agent: "smoke-inline", events: false, persona: { prompt: "x" } }));
+    stoppable(O.mgr);
+    const stopped = await O.mgr.stop({ withAgents: true }).then(() => "stopped", (e: unknown) => String(e));
+    check("an open-mesh stop with agents removes an inline seat's snapshot", stopped === "stopped" && last !== undefined && !existsSync(inlineSnapshotPath(root, last.lifecycleUid)), stopped);
+  }
+
+  console.log("preserve, resume, retire");
+  {
+    // The public cut, stop and resume on an open mesh: the snapshot survives the cut and its stop,
+    // the replacement launches from it, and the resumed seat's retirement removes it.
+    const root = join(scratch, "preserve");
+    mkdirSync(join(root, ".cotal"), { recursive: true });
+    const A = managerAt(root, {});
+    stoppable(A.mgr);
+    const d = okData(await A.mgr.startAgent({ name: "carried", agent: "smoke-inline", events: false, persona: { prompt: "carried across" } }));
+    const path = d ? inlineSnapshotPath(root, d.lifecycleUid) : "";
+    let inventory: ManagerResumeInventory | undefined;
+    const cut = await A.mgr.preserveState({ attemptId: "inline-cut", persistInventory: async (inv) => { inventory = inv; } });
+    const stopped = await A.mgr.stop().then(() => "stopped", (e: unknown) => String(e));
+    check("control: the preservation cut and its stop complete", cut.ok && stopped === "stopped" && inventory !== undefined, { cut, stopped });
+    check("a preservation cut and its stop keep the inline snapshot", existsSync(path));
+    const B = managerAt(root, {});
+    const resumed = await B.mgr.resumePreserved(inventory!);
+    const seat = seatOf(B.M, "carried");
+    check("a replacement manager resumes the inline seat from its snapshot", resumed.ok && seat?.launch.source.kind === "inline" && seat.launch.source.configPath === path && B.spawned.get("carried") === 1, resumed);
+    await exitAndSettle(B.M, B.seats, "carried");
+    check("and the resumed seat's retirement removes the snapshot", !existsSync(path));
   }
 
   console.log("user-auth mesh");
   {
-    // The ledger is the bound on a user-auth mesh, and it runs inside the grant. A provider that
-    // refuses the grant stands in for it: the order under test is the manager's.
-    let grants = 0;
-    const refusing: Pick<AuthProvider, "kind" | "name" | "grantAgent"> = {
-      kind: "auth-provider",
-      name: "smoke-refusing-ledger",
-      grantAgent: async () => { grants++; throw new Error("delegation exceeds the spawner's grant: allowSubscribe general"); },
-    };
-    registry.register(refusing as unknown as AuthProvider);
+    // The ledger is the bound on a user-auth mesh, and it runs inside the grant: the real provider,
+    // with the spawner's row reading review only and the record asking for general.
+    const { ensureCalloutAuth, findActorUnified, grantActor } = await import("@cotal-ai/auth");
     const root = join(scratch, "user");
     mkdirSync(join(root, ".cotal", "agents"), { recursive: true });
     const U = managerAt(root, {});
     (U.mgr as unknown as { userMode: boolean }).userMode = true;
-    const spawner = principalKey("u_smokeowner", "parent").key;
+    await ensureCalloutAuth(workspaceSecretStore(root), { space, operatorSeed: auth.operator.seed, accountPub: auth.account.pub });
+    const owner = "u_smokeownersmokeownersmokeo";
+    const ledger = userAuthStateDir(root, space);
+    grantActor(ledger, { owner, actor: "parent", scope: ["spawn"], allowSubscribe: ["review"], allowPublish: [], label: "smoke spawner" });
+    const spawner = principalKey(owner, "parent").key;
     const r = await U.mgr.startAgent({ name: "wide", agent: "smoke-inline", events: false, persona: { prompt: "x", allowSubscribe: ["general"], save: true } }, spawner);
-    check("control: the user-auth grant ran and refused", grants === 1 && refused(r, /exceeds the spawner's grant/), r);
+    check("the ledger refuses an inline record wider than its spawner's row", refused(r, /would exceed its spawner's grant.*read \[general\] beyond \[review\]/), r);
+    check("control: and writes no row for it", findActorUnified(ledger, owner, "wide") === undefined);
     check("a refused user-auth grant leaves no catalog file", !existsSync(join(root, ".cotal", "agents", "wide.md")));
     check("and no snapshot", snapshots(root).length === 0, snapshots(root));
     // A grant can settle on another uid than the one the spawn allocated: a hosted enrollment picks
@@ -426,10 +610,10 @@ try {
     // a different one stands in for the host.
     const hostUid = mintLifecycleUid();
     (U.mgr as unknown as { provisionUserAgent: (name: string) => Promise<unknown> }).provisionUserAgent = async (name: string) => ({
-      owner: "u_smokeowner",
+      owner,
       lifecycleUid: hostUid,
       files: agentLifecycleSecretFilePaths(root, space, name, hostUid),
-      launch: { owner: "u_smokeowner", actor: name, sentinelCredsPath: join(root, "sentinel.creds"), bearerCmd: ["true"] },
+      launch: { owner, actor: name, sentinelCredsPath: join(root, "sentinel.creds"), bearerCmd: ["true"] },
     });
     const hosted = await U.mgr.startAgent({ name: "hosted", agent: "smoke-inline", events: false, persona: { prompt: "x" } }, spawner);
     check("control: the user-auth spawn settles on the grant's uid", okData(hosted)?.lifecycleUid === hostUid, hosted);

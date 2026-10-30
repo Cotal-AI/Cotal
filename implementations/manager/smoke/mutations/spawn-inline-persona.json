@@ -15,8 +15,13 @@
     "static retirement terminal (the one a boot sweep reaches), and the spawn's own rollback (the only",
     "one an open mesh's failed launch has). N10 lets a resume inventory point a seat at another file.",
     "N11 keys the snapshot by the uid the spawn allocated, which a hosted enrollment replaces.",
-    "N12 lets a restart trust a recorded path that names another file with that file's digest.",
-    "N13 lets a spawn whose snapshot write found a file at its path delete that file at the terminal."
+    "N12a and N12b each drop one half of the restart's path check, so each half has its own cell.",
+    "N13 lets a spawn whose snapshot write found a file at its path delete that file at the terminal.",
+    "N14 writes strings a YAML reader takes for an alias, a null or a number. N15 writes the record's",
+    "role and model where the spawn overrode them. N16 lets a failed removal throw out of the rollback",
+    "before the grant's teardown is scheduled. N17, N18 and N19 mark a snapshot settled after a",
+    "removal that failed, on the rollback, the slot free and the stop, so no terminal retries or",
+    "reports it. N20 removes through a linked .cotal/run/inline."
   ],
   "mutations": [
     {
@@ -64,22 +69,22 @@
     {
       "name": "N7 keep the snapshot when the live slot frees",
       "file": "implementations/manager/src/manager.ts",
-      "find": "      if (a.launch.source.kind === \"inline\") this.dropInlineSnapshot(a.name, a.lifecycleUid);\n      target.snapshotSettled = true;\n",
-      "replace": "      target.snapshotSettled = true;\n",
+      "find": "      if (a.launch.source.kind !== \"inline\" || this.dropInlineSnapshot(a.name, a.lifecycleUid)) target.snapshotSettled = true;\n",
+      "replace": "      if (a.launch.source.kind !== \"inline\") target.snapshotSettled = true;\n",
       "expectRed": "an open-mesh inline seat's snapshot goes when its seat exits"
     },
     {
       "name": "N8 keep the snapshot at the static retirement terminal",
       "file": "implementations/manager/src/manager.ts",
-      "find": "        await attemptCleanup(failed, `file ${snapshot}`, () => rmSync(snapshot, { force: true }));\n",
+      "find": "        await attemptCleanup(failed, `file ${snapshot}`, () => removeInlineSnapshot(this.workspaceRoot, a.lifecycleUid));\n",
       "replace": "",
       "expectRed": "the static retirement terminal removes a snapshot by its lifecycle uid"
     },
     {
       "name": "N9 keep the snapshot when the spawn rolls back",
       "file": "implementations/manager/src/manager.ts",
-      "find": "      if (snapshot) rmSync(snapshot, { force: true });\n",
-      "replace": "",
+      "find": "      const snapshotGone = snapshotUid === undefined || this.dropInlineSnapshot(name, snapshotUid);\n",
+      "replace": "      const snapshotGone = snapshotUid === undefined;\n",
       "expectRed": "an open-mesh spawn that fails after its snapshot removes it"
     },
     {
@@ -92,23 +97,79 @@
     {
       "name": "N11 key the snapshot by the allocated uid instead of the granted one",
       "file": "implementations/manager/src/manager.ts",
-      "find": "        configPath = snapshot = writeInlineSnapshot(this.workspaceRoot, lifecycleUid, {",
-      "replace": "        configPath = snapshot = writeInlineSnapshot(this.workspaceRoot, agentTriple.uid, {",
+      "find": "        configPath = writeInlineSnapshot(this.workspaceRoot, lifecycleUid, {",
+      "replace": "        configPath = writeInlineSnapshot(this.workspaceRoot, agentTriple.uid, {",
       "expectRed": "a user-auth snapshot is keyed by the uid the grant settled on"
     },
     {
-      "name": "N12 check the recorded snapshot path instead of the lifecycle's own",
+      "name": "N12a check the relaunch path only",
       "file": "implementations/manager/src/manager.ts",
-      "find": "    if (resolve(source.configPath) !== path || (a.restart !== undefined && resolve(a.restart.opts.configPath ?? \"\") !== path))\n",
-      "replace": "    if (false)\n",
+      "find": "    if (resolve(source.configPath) !== path)\n      return `its recorded inline persona snapshot",
+      "replace": "    if (false)\n      return `its recorded inline persona snapshot",
       "expectRed": "a restart refuses a recorded snapshot path that is not the lifecycle's own"
+    },
+    {
+      "name": "N12b check the recorded path only",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    if (a.restart !== undefined && resolve(a.restart.opts.configPath ?? \"\") !== path)\n",
+      "replace": "    if (false)\n",
+      "expectRed": "and a relaunch path that is not the lifecycle's own"
     },
     {
       "name": "N13 let the rollback's terminal remove the uid's path",
       "file": "implementations/manager/src/manager.ts",
-      "find": "        const orphan: TeardownTarget = { ...provisioned, snapshotSettled: true };\n",
+      "find": "        const orphan: TeardownTarget = { ...provisioned, ...(snapshotGone ? { snapshotSettled: true as const } : {}) };\n",
       "replace": "        const orphan: TeardownTarget = { ...provisioned };\n",
       "expectRed": "and it leaves the file the write refused"
+    },
+    {
+      "name": "N14 write the snapshot's frontmatter as plain lines",
+      "file": "implementations/manager/src/launch.ts",
+      "find": "stringifyYaml(fm, { lineWidth: 0 }).trimEnd()",
+      "replace": "Object.entries(fm).map(([k, v]) => `${k}: ${v}`).join(\"\\n\")",
+      "expectRed": "the snapshot reads back {\"description\":\"*missing\",\"model\":\"null\"} as the record gave it"
+    },
+    {
+      "name": "N15 write the record's role and model instead of the launched ones",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "writeInlineSnapshot(this.workspaceRoot, lifecycleUid, { name, role, model, variant,",
+      "replace": "writeInlineSnapshot(this.workspaceRoot, lifecycleUid, { name, role: def.role, model: def.model, variant: def.variant,",
+      "expectRed": "the snapshot carries the role and model the seat launched with"
+    },
+    {
+      "name": "N16 let the rollback throw when its snapshot removal fails",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      const snapshotGone = snapshotUid === undefined || this.dropInlineSnapshot(name, snapshotUid);\n",
+      "replace": "      const snapshotGone = snapshotUid === undefined || (removeInlineSnapshot(this.workspaceRoot, snapshotUid), true);\n",
+      "expectRed": "and still tears its grant down"
+    },
+    {
+      "name": "N17 settle the rollback's snapshot when its removal failed",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "        const orphan: TeardownTarget = { ...provisioned, ...(snapshotGone ? { snapshotSettled: true as const } : {}) };\n",
+      "replace": "        const orphan: TeardownTarget = { ...provisioned, snapshotSettled: true };\n",
+      "expectRed": "and its terminal reports the snapshot it could not remove"
+    },
+    {
+      "name": "N18 settle a freed seat's snapshot when its removal failed",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      if (a.launch.source.kind !== \"inline\" || this.dropInlineSnapshot(a.name, a.lifecycleUid)) target.snapshotSettled = true;\n",
+      "replace": "      if (a.launch.source.kind !== \"inline\" || this.dropInlineSnapshot(a.name, a.lifecycleUid) || true) target.snapshotSettled = true;\n",
+      "expectRed": "a retirement that cannot remove the snapshot keeps the name held and says why"
+    },
+    {
+      "name": "N19 settle a stopped seat's snapshot when its removal failed",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "        const settled = a.launch.source.kind !== \"inline\" || this.dropInlineSnapshot(a.name, a.lifecycleUid);\n",
+      "replace": "        const settled = a.launch.source.kind !== \"inline\" || this.dropInlineSnapshot(a.name, a.lifecycleUid) || true;\n",
+      "expectRed": "and reports that snapshot from its terminal"
+    },
+    {
+      "name": "N20 remove the snapshot through a linked inline directory",
+      "file": "implementations/manager/src/launch.ts",
+      "find": "  const dir = realDirNoSymlink(root, \".cotal\", \"run\", \"inline\");\n  if (!dir) return;\n",
+      "replace": "  const dir = inlinePersonaDir(root);\n",
+      "expectRed": "a seat's retirement never removes through a linked inline directory"
     }
   ]
 }

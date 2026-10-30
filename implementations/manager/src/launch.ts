@@ -1,8 +1,9 @@
 import { readFileSync, writeFileSync, lstatSync, renameSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
+import { stringify as stringifyYaml } from "yaml";
 import { z } from "zod";
-import { assertDerivedOwnerToken, assertValidChannel, assertValidName, ensureDirNoSymlink, isConcreteChannel, realDirNoSymlink, type MeshLaunchAgent, type MeshLaunchSpec } from "@cotal-ai/core";
+import { assertDerivedOwnerToken, assertValidChannel, assertValidName, ensureDirNoSymlink, isConcreteChannel, realDirNoSymlink, unlinkFileNoFollow, type MeshLaunchAgent, type MeshLaunchSpec } from "@cotal-ai/core";
 
 /**
  * Load + materialize a resolved launch spec for `supervise --launch`.
@@ -200,18 +201,29 @@ export function writeInlineSnapshot(
   const dir = ensureDirNoSymlink(root, ".cotal", "run", "inline");
   const path = resolve(dir, `${lifecycleUid}.md`);
   if (dirname(path) !== dir) throw new Error(`unsafe lifecycle uid "${lifecycleUid}" - snapshot path escapes ${dir}`);
-  const fm = ["---", `name: ${p.name}`];
-  if (p.role) fm.push(`role: ${scalar(p.role)}`);
-  if (p.model) fm.push(`model: ${scalar(p.model)}`);
-  if (p.variant) fm.push(`variant: ${scalar(p.variant)}`);
-  if (p.description) fm.push(`description: ${scalar(p.description)}`);
-  fm.push("---", "");
+  // The catalog writer's serializer, so every string the record accepted reads back as itself.
+  const fm: Record<string, string> = { name: p.name };
+  if (p.role) fm.role = p.role;
+  if (p.model) fm.model = p.model;
+  if (p.variant) fm.variant = p.variant;
+  if (p.description) fm.description = p.description;
   const header = `<!-- Generated runtime artifact: the inline persona of lifecycle ${lifecycleUid}, written by its spawn. Do NOT edit - the seat refuses a changed snapshot on restart, and the file is deleted when the seat retires. It is not a reusable persona and carries no access authority. -->`;
   const body = p.body ? `${p.body.trim()}\n` : "";
   // Create-only (`wx` never follows a link planted at the path): the uid is fresh, so a file already
   // there is not this spawn's to replace.
-  writeFileSync(path, `${fm.join("\n")}${header}\n\n${body}`, { mode: 0o600, flag: "wx" });
+  writeFileSync(path, `---\n${stringifyYaml(fm, { lineWidth: 0 }).trimEnd()}\n---\n${header}\n\n${body}`, { mode: 0o600, flag: "wx" });
   return path;
+}
+
+/** Remove one lifecycle's snapshot without following a link: `.cotal/run/inline` must be a real
+ *  directory chain and the snapshot a regular file, as the run tree's other destructive callers
+ *  require. A snapshot that is not there counts as removed; anything refused or not removed throws. */
+export function removeInlineSnapshot(root: string, lifecycleUid: string): void {
+  const dir = realDirNoSymlink(root, ".cotal", "run", "inline");
+  if (!dir) return;
+  const path = resolve(dir, `${lifecycleUid}.md`);
+  if (dirname(path) !== resolve(dir)) throw new Error(`unsafe lifecycle uid "${lifecycleUid}" - snapshot path escapes ${dir}`);
+  unlinkFileNoFollow(path);
 }
 
 /** Build the manager spawn opts for a launch agent: identity/role/model/variant + the resolved object
