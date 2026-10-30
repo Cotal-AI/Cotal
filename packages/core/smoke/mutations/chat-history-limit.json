@@ -17,8 +17,8 @@
     {
       "name": "the provisioner loses its chat stream update grant",
       "file": "packages/core/src/provision.ts",
-      "find": "  const streamReconcile = [...ttlStreams, OBJ, CHAT].map((s) => `$JS.API.STREAM.UPDATE.${s}`);",
-      "replace": "  const streamReconcile = [...ttlStreams, OBJ].map((s) => `$JS.API.STREAM.UPDATE.${s}`);",
+      "find": "  const streamReconcile = [...ttlStreams, `KV_${membershipBucket(space)}`, OBJ, CHAT]\n",
+      "replace": "  const streamReconcile = [...ttlStreams, `KV_${membershipBucket(space)}`, OBJ]\n",
       "expectRed": "cotal up's setup, as the provisioner, moves a legacy chat stream to 30 days and 1000 per sender",
       "cell": "cotal up's setup, as the provisioner, moves a legacy chat stream to 30 days and 1000 per sender",
       "note": "Without the grant every authed space dies on a permissions violation at its first start on this release."
@@ -26,8 +26,8 @@
     {
       "name": "the grant is widened to the DM stream",
       "file": "packages/core/src/provision.ts",
-      "find": "  const streamReconcile = [...ttlStreams, OBJ, CHAT].map((s) => `$JS.API.STREAM.UPDATE.${s}`);",
-      "replace": "  const streamReconcile = [...ttlStreams, OBJ, CHAT, DM].map((s) => `$JS.API.STREAM.UPDATE.${s}`);",
+      "find": "  const streamReconcile = [...ttlStreams, `KV_${membershipBucket(space)}`, OBJ, CHAT]\n",
+      "replace": "  const streamReconcile = [...ttlStreams, `KV_${membershipBucket(space)}`, OBJ, CHAT, DM]\n",
       "expectRed": "the provisioner may not update DM_",
       "cell": "the provisioner may not update DM_<space>"
     },

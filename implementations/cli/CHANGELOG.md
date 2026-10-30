@@ -1,5 +1,141 @@
 # @cotal-ai/cli
 
+## 0.128.5
+
+### Patch Changes
+
+- 1c86343: Preserve the pre-submission compatibility refusal when a followed action's service does not advertise goal-result. Narrowed discovery keeps the action required and lets the existing follow preflight report the upgrade notice and not-executed outcome without publishing a mutation.
+- Updated dependencies [1c86343]
+  - @cotal-ai/core@0.128.5
+  - @cotal-ai/workspace@0.128.5
+
+## 0.128.4
+
+### Patch Changes
+
+- Updated dependencies [4bfbede]
+  - @cotal-ai/core@0.128.4
+  - @cotal-ai/workspace@0.128.4
+
+## 0.128.3
+
+### Patch Changes
+
+- Updated dependencies [76fcf89]
+  - @cotal-ai/workspace@0.128.3
+  - @cotal-ai/core@0.128.3
+
+## 0.128.2
+
+### Patch Changes
+
+- 13de45e: On a store over its `--max-file-store` cap, the Next of a `cotal up` whose member cannot start, and of `cotal status`, now names only `cotal down --yes` and `cotal up --max-file-store <bytes>` with a larger cap, after `kill -TERM <pid>` for a manager that still runs. They no longer lead with `cotal history clear`. A purge frees only the channel history's bytes, so on a new space whose cap is below the stack's own first writes it purged nothing and the store stayed full, and on a space with history it could delete all of it without making room.
+- @cotal-ai/core@0.128.2
+  - @cotal-ai/workspace@0.128.2
+
+## 0.128.1
+
+### Patch Changes
+
+- 00d85b7: Remove an accidentally tracked presence-render census probe from the CLI source tree.
+- 7b54f38: `cotal up` in a new folder under your home now wraps its stderr note `made <root>/.cotal for this folder's records; the machine's home .cotal was not used` at spaces on a terminal, to the width of stderr. A path wider than the line keeps a line of its own and is never split, and each line stays dimmed. When stderr is not a terminal the note is still one line, even when stdout is a terminal, and exit codes are unchanged.
+- Updated dependencies [20a5c96]
+- Updated dependencies [985519f]
+  - @cotal-ai/core@0.128.1
+  - @cotal-ai/workspace@0.128.1
+
+## 0.128.0
+
+### Patch Changes
+
+- 75e06da: When `cotal ps` refuses because no manager runs or is registered for the space, its next step now
+  names the root of this machine's own stack for the space, as bare `cotal up` in that folder. It used
+  to say bare `cotal up` with no folder, and run from another project that starts the other project's
+  manager. A space this machine only registered or records no stack for, or one reached through a
+  `--server` other than its recorded broker, gets a step that says to start the manager where the
+  space's stack runs and names no local command. `cotal status <agent>` and the `attach` picker share
+  the refusal. Its code, message, cause and exit 2 are unchanged.
+- 1f8bfe5: A restore made by an earlier release no longer has its cleanup delete another account's data without
+  consent. Such a restore recorded no other accounts, so its cleanup named none and deleted the store it
+  set aside, an open mesh's account included, with no `--discard-history`. `status`, the
+  `backup cleanup-fallback` preview and the cleanup now read that store while it is still the recorded
+  one and name the accounts the restore's auth mode rules out: every account but `$G` after an open
+  restore, and `$G` after a static or user one. The preview warns with `HISTORY_ONLY_IN_PREVIOUS_STORE`,
+  and `backup cleanup-fallback` and `clean restore-fallback` refuse and delete nothing unless
+  `--discard-history` is given. Which data account a static or user restore brought back is not
+  recorded, so another data account in that store is still not named.
+  
+  The exported restore-summary helpers now require the record's `mode`. Library callers that passed
+  only a partial record must pass the validated maintenance journal, including its mode. This is a
+  breaking TypeScript API change for those callers.
+- 1090d9b: `cotal up` now wraps four more start notes at spaces on a terminal, as other lines do: the note that it selected the space it started, the note that another space stays selected, `wrote default persona` and the note that a new project's space is named after its folder. A path wider than the line keeps a line of its own and is never split, and `cotal use <space>` stays whole. Off a terminal each is still one line on stdout, and exit codes are unchanged.
+- Updated dependencies [1f8bfe5]
+  - @cotal-ai/workspace@0.128.0
+  - @cotal-ai/core@0.128.0
+
+## 0.127.5
+
+### Patch Changes
+
+- 6e9e9c0: `cotal up --detach` now wraps its `Started nats-server` line, its `✓ running in the background` line and a repair's `reopening the recorded store` line at spaces on a terminal, as other lines do. A path wider than the line keeps a line of its own and is never split, the summary's continuation lines start under its text, and `cotal down` stays whole. Off a terminal each is still one line on stdout, and exit codes are unchanged.
+- ad0e5a1: `cotal ps` on a static or open space whose manager registry lists no live manager, such as a legacy
+  stack started with `--no-manager`, now refuses `TARGET_UNAVAILABLE`, exit 2. It says that no
+  manager is registered, so none was asked, and that this does not show that no manager process runs.
+  It used to fail with the generic `OPERATION_FAILED`, exit 5, as if `ps` itself had failed. Scripts
+  that read exit 5 for this case now get exit 2. `cotal status <agent>` and the `attach` picker read
+  the same list and refuse the same way. The registry's own answer stays under `error.cause`, and a
+  controller stack keeps its own refusals.
+- 580afa4: `cotal up` over a manager pidfile that holds no pid no longer tells you to remove the file once
+  `cotal ps` finds no manager running. A manager that does not answer on the mesh, such as a stopped
+  one, still runs and owns the folder while `cotal ps` finds none, and following that step started a
+  second manager beside it. The degraded report and its Next now ask you to confirm yourself that no
+  manager runs for the folder before they name `rm <pidfile>`, in the words `cotal down` uses for the
+  same record. `up` still refuses to start over the file, keeps the broker running, and never removes
+  the file itself.
+- @cotal-ai/core@0.127.5
+  - @cotal-ai/workspace@0.127.5
+
+## 0.127.4
+
+### Patch Changes
+
+- dd13059: `cotal down` over a pidfile that holds content that is not a pid now says the record names no
+  process, so cotal cannot tell whether that component still runs. It used to tell you to stop "that
+  process" when the file named none. It still refuses, keeps the file, does not stop the broker, and
+  keeps the artifacts and the registration. A Next now follows: it asks you to confirm that no such
+  component still runs for the folder, because a manager that does not answer on the mesh may still be
+  running, then names `rm <pidfile>` and the same `cotal down`.
+- 9d69969: The guided `cotal meshes add` on a terminal now reports a TLS broker whose certificate this machine
+  does not trust as the flag form does: the handshake failed, and `NODE_EXTRA_CA_CERTS` names the
+  issuing CA. It used to say the broker did not answer and offer another address first. Cancel is now
+  the first choice there, and registering the address anyway is still an explicit choice. A host name
+  the guided form refuses for lacking TLS now gets the flag form's next step, the `tls://` form of the
+  address, and the question that asks again shows no plaintext example. The guided form's refusals
+  and warnings now wrap to the terminal.
+- 9dc9bc4: A restore no longer leaves another account's data in the store it sets aside without saying so. When
+  open and static meshes ran in one folder, their store holds both accounts, and a backup holds one, so
+  a restore leaves the other account's streams only in the store it moves aside. The restore now
+  journals those accounts. Its receipt names that store in `previousStore` and warns with
+  `OTHER_ACCOUNTS_NOT_RESTORED`, or names the accounts in `otherAccounts` on the left-out warning it
+  already gives. `status` and every next step that names the cleanup include `--discard-history`. The
+  `backup cleanup-fallback` preview warns with `HISTORY_ONLY_IN_PREVIOUS_STORE` and names the accounts,
+  and `backup cleanup-fallback` and `clean restore-fallback` refuse and delete nothing unless
+  `--discard-history` is given. A restore made by an earlier release recorded no other accounts, so its
+  cleanup does not name them.
+- Updated dependencies [9dc9bc4]
+  - @cotal-ai/workspace@0.127.4
+  - @cotal-ai/core@0.127.4
+
+## 0.127.3
+
+### Patch Changes
+
+- aaa07ab: A Ctrl-C or `SIGTERM` that reached a foreground controller `cotal up` as its start ended, such as one sent on seeing the start receipt, was dropped: the stack kept running and the terminal kept holding it until a second signal. That signal now runs the guarded whole-stack stop and exits 130 or 143, as a signal at any other moment does.
+- 5ad71cb: Remove the 64 MiB reservation from each space's membership store, bound values per agent, reconcile legacy stores, and drop the CLI file-store floor.
+- Updated dependencies [5ad71cb]
+  - @cotal-ai/core@0.127.3
+  - @cotal-ai/workspace@0.127.3
+
 ## 0.127.2
 
 ### Patch Changes

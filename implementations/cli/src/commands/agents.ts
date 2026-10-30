@@ -9,6 +9,7 @@ import {
   isConnectRefusal,
   isWorkspaceTargetError,
   jsonFlag,
+  localStackRoot,
   oneLine,
   renderReport,
   plainFlag,
@@ -899,13 +900,30 @@ export async function readSeats(v: ConnectFlags, command: "ps" | "slots", on: st
     if (stackManagerStarting(t.root, t.space))
       throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the stack's manager is starting, so it has no managed agents to list yet", { target, native, remedy: "run `cotal ps` again once `cotal up` reports the manager started" });
     if (stackManagerAbsent(t.root, t.space))
-      throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "no manager is running for this space, so it has no managed agents to list", { target, native, remedy: "start the stack's manager with bare `cotal up`; a stack started with --no-manager has none" });
+      throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "no manager is running for this space, so it has no managed agents to list", { target, native, remedy: startStackManagerRemedy(t) });
   }
   const silentPid = !scatter.ok && scatter.unanswered === true && t.root !== undefined ? runningStackManagerPid(t.root, t.space) : undefined;
   if (!scatter.ok && silentPid !== undefined)
     throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `this space's stack manager (pid ${silentPid}) is running but did not answer, so no agents were listed`, { target, native: { code: scatter.code, ...(scatter.error ? { detail: scatter.error } : {}) }, remedy: `if it stays unresponsive, end that process with kill -KILL ${silentPid}; then bare \`cotal up\` starts the manager again` });
+  // Anywhere else, a registry that was read and lists no live manager is the same boundary: no
+  // manager was asked. It is not proof that no manager process runs, since one that is starting or
+  // cannot register is not listed, so the refusal says only what the registry showed.
+  if (!scatter.ok && scatter.noLiveManager)
+    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "no manager is registered for this space, so none was asked and nothing was listed. A manager that is still starting or cannot register has no registration either, so this does not show that no manager process runs", { target, native: { code: scatter.code, ...(scatter.error ? { detail: scatter.error } : {}) }, remedy: startStackManagerRemedy(t) });
   if (!scatter.ok) throw readFailure(scatter, target);
   return seatCensus(target, scatter.instances, command, t.mode);
+}
+
+/** The step that starts the space's manager when `ps` found none. Bare `cotal up` starts it only in
+ *  the root of this machine's own stack, so the step names that root when the target is that stack's
+ *  registration at the broker it records. A space this machine only registered, one it records no
+ *  stack for, or one read at another broker runs where this machine cannot say, and a `cotal up` in
+ *  the caller's folder would not start its manager, so that step names no local command. */
+function startStackManagerRemedy(t: { space: string; server: string; root?: string }): string {
+  const root = localStackRoot(t.space);
+  return root !== undefined && root === t.root && findMesh(t.space)?.server === t.server
+    ? `start the stack's manager with bare \`cotal up\` in ${root}; a stack started with --no-manager has none`
+    : "start this space's manager where its stack runs; a stack started with --no-manager has none";
 }
 
 /** A census from the slots of a scatter: each answered instance's rows as it returned them, every

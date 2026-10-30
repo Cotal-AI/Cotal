@@ -11,7 +11,8 @@
  *    (REVERSAL of the previous origin split: redness of "sweep prunes a dead mesh this machine
  *    started" / "absent origin = `up`" is expected and intended.)
  *  • `add` verifies against the real broker before recording, and records nothing when that fails,
- *    over TLS too: a host name whose broker requires TLS registers through the handshake;
+ *    over TLS too: a host name whose broker requires TLS registers through the handshake, and the
+ *    guided form on a terminal names a certificate this machine does not trust as that;
  *  • `--force` is the explicit record-without-verifying / replace escape;
  *  • `add` refuses a space name `space create` refuses, and `rm` still removes one an earlier
  *    release registered;
@@ -34,6 +35,7 @@ import { connect as netConnect, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { SMOKE_BROKER_TOKEN, freePort, listenOn, onFreePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { clean, cotalPty, screen } from "./_console-pty.js";
 
 // Sandbox the machine-home BEFORE anything reads the registry — homeCotalDir() reads COTAL_HOME per
 // call, so the real ~/.cotal is never touched.
@@ -453,6 +455,50 @@ try {
       check("add nats://<host name> --tls registers the same broker the same way",
         byFlag.status === 0 && findMesh("tls-host-live")?.tlsRequired === true, { out: byFlag.stdout + byFlag.stderr, entry: findMesh("tls-host-live") });
       removeMesh("tls-host-live");
+
+      // The guided form on an 80-column terminal. Without the CA the broker still answers, so the
+      // guided form gives the flag form's handshake failure and its NODE_EXTRA_CA_CERTS step, with
+      // Cancel first, instead of the choices for an address where no broker answered. With the CA it
+      // registers. Each run answers its prompts in order and keeps the screen as each was asked.
+      const guided = async (args: string[], ca: string, answers: [prompt: string, keys: string][]) => {
+        const ptyEnv: Record<string, string> = { TERM: "xterm-256color" };
+        for (const [k, v] of Object.entries({ ...env, NODE_EXTRA_CA_CERTS: ca })) if (v !== undefined && k !== "COTAL_NO_PROMPT") ptyEnv[k] = v;
+        const pty = cotalPty(["meshes", "add", ...args, "--root", root], { cwd: root, env: ptyEnv, cols: 80, rows: 60 });
+        let raw = "";
+        let exitCode: number | undefined;
+        pty.onData((d) => { raw += d; });
+        pty.onExit((e) => { exitCode = e.exitCode; });
+        const until = async (done: () => boolean) => {
+          for (const t0 = Date.now(); !done() && exitCode === undefined && Date.now() - t0 < 30_000;) await new Promise((r) => setTimeout(r, 50));
+          return done();
+        };
+        const asked: string[] = [];
+        let from = 0;
+        for (const [prompt, keys] of answers) {
+          if (!(await until(() => clean(raw).includes(prompt, from)))) break;
+          from = clean(raw).indexOf(prompt, from) + prompt.length;
+          asked.push(await screen(raw, 80, 60));
+          pty.write(keys);
+        }
+        if (!(await until(() => exitCode !== undefined))) pty.kill();
+        return { exitCode, asked, raw };
+      };
+      const fits = (shown: string) => shown.split("\n").every((line) => [...line].length <= 80);
+      const untrustedGuided = await guided(["--server", `nats://localhost:${tlsPort}`, "--tls", "--no-color"], "", [["Register it anyway", "\r"]]);
+      // A wrapped line continues under clack's bar, so the text is read with those breaks joined.
+      const trustAsk = (untrustedGuided.asked[0] ?? "").replace(/\n│ {2}/g, " ");
+      check("guided add of a TLS broker whose CA is not trusted gives the handshake failure and NODE_EXTRA_CA_CERTS, fitting 80 columns",
+        trustAsk.includes("could not complete the handshake") && trustAsk.includes("`NODE_EXTRA_CA_CERTS`") && trustAsk.includes("This machine does not trust that broker's certificate.") &&
+          !trustAsk.includes("did not answer") && !trustAsk.includes("No broker answered there") && fits(untrustedGuided.asked[0] ?? ""),
+        untrustedGuided.asked[0]);
+      check("…offers Cancel first, which Enter takes, recording nothing", /● Cancel/.test(trustAsk) && untrustedGuided.exitCode === 0 && !loadMeshes().some((m) => m.server.endsWith(`:${tlsPort}`)),
+        { exitCode: untrustedGuided.exitCode, trustAsk });
+      check("…with no ANSI color under --no-color", !/\x1b\[[0-9;]*m/.test(untrustedGuided.raw), JSON.stringify(untrustedGuided.raw.slice(0, 300)));
+      const trustedGuided = await guided(["tls-guided-live"], join(pki, "ca.pem"), [["Broker URL of the mesh", `tls://localhost:${tlsPort}\r`], ["Register this mesh?", "\r"]]);
+      check("guided add of the same broker with its CA trusted registers it with the TLS requirement",
+        trustedGuided.exitCode === 0 && trustedGuided.asked.length === 2 && findMesh("tls-guided-live")?.tlsRequired === true && fits(trustedGuided.asked[1] ?? ""),
+        { asked: trustedGuided.asked.at(-1), entry: findMesh("tls-guided-live") });
+      removeMesh("tls-guided-live");
     } finally {
       tlsBroker.kill("SIGKILL");
     }
@@ -1428,6 +1474,8 @@ try {
   const tlsHostOut = await addWizard({ server: DEAD.replace("127.0.0.1", "localhost"), root, tls: true }, root, tlsHost.io as never);
   check("guided --tls registers a host name with the TLS requirement",
     tlsHostOut === true && findMesh("tls-host")?.tlsRequired === true, { asked: tlsHost.asked, entry: findMesh("tls-host") });
+  check("…where nothing listens, it is offered as no broker there, not as an untrusted certificate",
+    tlsHost.asked[0]?.message === "No broker answered there." && tlsHost.asked[0]?.options?.[0] === "retype", tlsHost.asked);
   removeMesh("tls-host");
 
   // 1. A name that came in on the command line must still hit the clash gate.

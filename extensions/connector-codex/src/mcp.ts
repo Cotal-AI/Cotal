@@ -83,6 +83,7 @@ export async function startCotalMcp(
   agent: MeshAgent,
   config: AgentConfig,
   log: (m: string) => void,
+  boundThread: () => string | undefined,
 ): Promise<CotalMcpEndpoint> {
   const token = randomBytes(32).toString("hex");
   const specs = cotalToolSpecs(config, "codex");
@@ -95,6 +96,20 @@ export async function startCotalMcp(
       const toContent = (r: ToolResult) => {
         const content = [{ type: "text" as const, text: r.text }];
         return r.isError ? { content, isError: true as const } : { content };
+      };
+      // Codex supplies this metadata itself, including on TUI turns (0.145.0+).
+      // A second root inherits the app-server's MCP configuration, not this seat's identity.
+      const run = async (args: Record<string, unknown>, meta: Record<string, unknown> | undefined) => {
+        const thread = boundThread();
+        if (!thread || meta?.threadId !== thread) return toContent({
+          isError: true,
+          text: thread
+            ? `/new does not replace the managed conversation. Cotal tools belong to managed thread ${thread}. ` +
+              `Return to that thread in Codex to use this mesh identity, ` +
+              `or spawn a separate Cotal seat for a different conversation.`
+            : "Cotal's managed thread is not ready. Retry after the seat finishes starting.",
+        });
+        return toContent(await spec.run(agent, config, args));
       };
       // The one Codex-specific override (shared with the OpenCode connector): automatic traffic
       // is OWNED by the host's turn loop — surfaced into turns and acked at the turn boundary —
@@ -113,7 +128,7 @@ export async function startCotalMcp(
             // against and forwards extras to be discarded here. Publish the closed empty object.
             inputSchema: NO_TOOL_ARGS,
           },
-          async () => toContent(await spec.run(agent, config, { scope: "pull-only" })),
+          async (_args, extra) => run({ scope: "pull-only" }, extra._meta),
         );
         continue;
       }
@@ -122,7 +137,7 @@ export async function startCotalMcp(
       server.registerTool(
         spec.name,
         { title: spec.title, description: spec.description, inputSchema: spec.schema },
-        async (args: Record<string, unknown>) => toContent(await spec.run(agent, config, args)),
+        async (args: Record<string, unknown>, extra) => run(args, extra._meta),
       );
     }
     return server;

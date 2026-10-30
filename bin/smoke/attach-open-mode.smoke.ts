@@ -60,7 +60,7 @@ process.env.COTAL_HOME = home;
 
 const { createSpaceAuth, mintCreds, newIdentity, parseCommandArgs, probeConnect, registry, serverConfig } = await import("@cotal-ai/core");
 const { ConnectRefusal, authDir, connectOrThrow, recordMesh } = await import("@cotal-ai/workspace");
-await import("@cotal-ai/cli"); // registers the CLI commands (spawn/attach) into the registry
+await import("@cotal-ai/cli"); // register the same built CLI graph the assertions inspect
 const { Manager } = await import("@cotal-ai/manager");
 import type { Command, Connector, LaunchOpts, SpaceAuth } from "@cotal-ai/core";
 const TSX = join(import.meta.dirname, "..", "..", "node_modules", ".bin", "tsx");
@@ -89,10 +89,10 @@ type Resolved = {
 };
 type Link = { mode: "bare"; tls: boolean } | { mode: "session-caller"; tls: boolean; creds: string };
 
-const agentsMod = (await import("../../implementations/cli/src/commands/agents.js")) as Record<string, unknown>;
+const agentsMod = (await import("../../implementations/cli/dist/commands/agents.js")) as Record<string, unknown>;
 const decide = agentsMod.attachSessionMaterial as ((t: Target) => Material) | undefined;
 const connectOptsFor = agentsMod.redeemConnectOpts as ((l: Link) => Record<string, unknown>) | undefined;
-const controlMod = (await import("../../implementations/cli/src/lib/control.js")) as Record<string, unknown>;
+const controlMod = (await import("../../implementations/cli/dist/lib/control.js")) as Record<string, unknown>;
 const scatterProbe = controlMod.scatterProbeMaterial as
   | ((auth: { creds?: string; bearer?: string }, spaceAuth?: SpaceAuth) => { kind: string })
   | undefined;

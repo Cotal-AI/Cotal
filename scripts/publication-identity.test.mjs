@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -167,3 +169,92 @@ test("a free predicate cannot replace certificate-bound run and attempt identity
   assert.throws(() => verifyBuildAttestation({ ...options, exec: () => "[]" }), /certificate belongs to another run or attempt/);
   assert.throws(() => verifyBuildAttestation({ ...options, exec: () => { throw Object.assign(new Error("synthetic untrusted certificate"), { status: 1 }); } }), /build attestation verification failed/);
 }));
+
+// Recorded source identities from the aborted 0.128.3 cut; all subprocess replies are fixtures.
+// No executable is available on PATH, and the merge boundary always throws without publishing.
+function releaseCutFixture(mode) {
+  const root = mkdtempSync(join(tmpdir(), "release-cut-source-"));
+  const callsFile = join(root, "calls.jsonl"), preload = join(root, "commands.mjs"), emptyBin = join(root, "bin");
+  mkdirSync(emptyBin);
+  writeFileSync(callsFile, "");
+  writeFileSync(preload, `
+import cp from "node:child_process";
+import { appendFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
+const source = "4e5be110931a6e208a024a83eb43a2c9d1770cf3";
+const newer = "02ac65271e7d45f3cc01a9fa4e51704467c89e26";
+const version = "6598fd4fb53f1613f4c5b7c8d3d48f2dfd3a9ce1";
+const newerVersion = "ccd5e11de7c27b17a95a5b2eb420eb19c042f755";
+const olderVersion = "65cb8c864019af1ed708f0b9bf3ec1328fb390b8";
+let main = ${JSON.stringify(mode)} === "stale" ? newer : source, mainFetches = 0, preparationFetches = 0;
+const mode = ${JSON.stringify(mode)};
+cp.execFileSync = (file, args) => {
+  appendFileSync(${JSON.stringify(callsFile)}, JSON.stringify({ file, args }) + "\\n");
+  if (file === "git") {
+    if (args[0] === "fetch") {
+      if (args.includes("changeset-release/main")) {
+        preparationFetches++;
+        if (mode === "during-preparation") main = newer;
+      } else if (++mainFetches === 2 && mode === "before-merge") main = newer;
+      return "";
+    }
+    if (args[0] === "rev-parse") {
+      const ref = args.at(-1);
+      if (ref === source + "^{commit}") return source;
+      if (ref === "origin/main") return main;
+      if (ref === "origin/changeset-release/main^{commit}") {
+        if (mode === "older-preparation" && preparationFetches === 1) return olderVersion;
+        return main === newer || mode === "wrong-base" ? newerVersion : version;
+      }
+      if (ref === version + "^") return source;
+      if (ref === newerVersion + "^") return newer;
+      if (ref === olderVersion + "^") return "13de45e32dd658fddb8528ffe95274caa08ede83";
+    }
+    if (args[0] === "merge-base") {
+      if (args.at(-1) === olderVersion) throw new Error("not an ancestor");
+      return "";
+    }
+    if (args[0] === "ls-tree") return args[2] === source ? ".changeset/supervised-pty-recovery.md" : "";
+    if (args[0] === "show") return JSON.stringify({ version: "0.128.3" });
+  }
+  if (file === "gh") {
+    if (args[0] === "run" && args[1] === "list") return JSON.stringify([{ databaseId: 123, status: "completed", conclusion: "success" }]);
+    if (args[0] === "api" && args[1].endsWith("/artifacts")) return "release-candidate";
+    if (args[0] === "pr" && args[1] === "list") return "5309";
+    if (args[0] === "pr" && args[1] === "merge") throw new Error("NO_PUBLICATION_MERGE_BOUNDARY");
+  }
+  throw new Error("UNEXPECTED_FIXTURE_COMMAND " + file + " " + JSON.stringify(args));
+};
+syncBuiltinESMExports();
+`);
+  try {
+    const result = spawnSync(process.execPath, ["--import", preload, fileURLToPath(new URL("./release-cut.mjs", import.meta.url)), "4e5be110931a6e208a024a83eb43a2c9d1770cf3"], {
+      encoding: "utf8", timeout: 15_000, env: { PATH: emptyBin, HOME: root, DO_NOT_TRACK: "1" },
+    });
+    assert.ifError(result.error);
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    assert.doesNotMatch(result.stdout + result.stderr, /UNEXPECTED_FIXTURE_COMMAND/);
+    assert.equal((result.stdout.match(/^command /gm) ?? []).length, 1, "the original command clock is emitted once");
+    const calls = readFileSync(callsFile, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    const merges = calls.filter(({ file, args }) => file === "gh" && args[0] === "pr" && args[1] === "merge");
+    return { output: result.stdout, calls, merges };
+  } finally { rmSync(root, { recursive: true, force: true }); }
+}
+
+for (const mode of ["stale", "during-preparation", "before-merge", "wrong-base"]) {
+  test(`release cut refuses ${mode} source drift before a merge request`, () => {
+    const { output, merges } = releaseCutFixture(mode);
+    assert.match(output, /refused: .*4e5be1109.*02ac65271.*nothing was merged/);
+    assert.equal(merges.length, 0, "source mismatch must never reach the merge boundary");
+  });
+}
+
+for (const mode of ["matching", "older-preparation"]) {
+  test(`release cut retains ${mode} preparation without changing its source or clock`, () => {
+    const { output, merges } = releaseCutFixture(mode);
+    assert.match(output, /ready .*main=4e5be1109 rel=6598fd4fb ver=0.128.3/);
+    assert.match(output, /NO_PUBLICATION_MERGE_BOUNDARY/);
+    assert.equal(merges.length, 1);
+    assert.deepEqual(merges[0].args, ["pr", "merge", "5309", "--squash", "--match-head-commit", "6598fd4fb53f1613f4c5b7c8d3d48f2dfd3a9ce1"]);
+  });
+}

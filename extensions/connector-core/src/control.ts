@@ -122,7 +122,11 @@ export function formatInjection(items: InboxItem[], options: { metadata?: boolea
   if (!items.length) return undefined;
   const live = items.filter((item) => !item.historical);
   const history = items.filter((item) => item.historical);
-  const format = options.metadata ? fmtDeliveryItem : fmtItem;
+  // A one-shot sender never joins the roster, and two sends from one login and host share a display
+  // name while carrying distinct principals. The injected frame is what a native recipient sees, so
+  // it carries the same sender and message ids an inbox reader needs to answer one of them. The
+  // field is connector-authored metadata, not a new reply route.
+  const format = options.metadata === false ? fmtItem : fmtDeliveryItem;
   const blocks: string[] = [];
   if (live.length) {
     const head = `📨 Cotal — ${live.length} new message${live.length === 1 ? "" : "s"} from peers:`;

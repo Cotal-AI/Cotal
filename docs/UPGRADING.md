@@ -7,6 +7,15 @@ other half: what to actually do when the deployment already exists, has credenti
 cannot simply be recreated. Every release that breaks a running deployment gets a section here,
 naming what migrates on its own, what does not, and the order to move the pieces in.
 
+## Bounded multi-space startup
+
+Multi-space auth, callout and delivery hosts now admit four lane opens at a time. A ready line may
+include `queued <s>, <s>` while the remaining spaces wait for admission. Read per-space health
+rather than treating the first ready line as proof that the whole manifest is serving. Each batch
+uses a fresh manifest read; removed queued spaces never start. The 30-second opening deadline
+starts at admission, and an open still running after that deadline keeps its slot until it settles.
+No credentials, manifests or timeout settings need to change.
+
 ## The pre-1.0 upgrade contract
 
 The packages are pre-1.0, so a minor bump may break an API or an on-disk expectation. Five

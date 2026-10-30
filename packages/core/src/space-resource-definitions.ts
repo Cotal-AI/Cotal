@@ -41,6 +41,7 @@ export function explicitSpaceResourceFields(resource: SpaceResourceDefinition): 
       if (field === "allow_direct" && typeof value === "boolean") { config.allow_direct = value; continue; }
       if (field === "storage" && (value === "file" || value === "memory")) { config.storage = value; continue; }
       if (field === "history" && typeof value === "number" && Number.isSafeInteger(value) && value > 0) { config.max_msgs_per_subject = value; continue; }
+      if (field === "maxValueSize" && typeof value === "number" && Number.isSafeInteger(value)) { config.max_msg_size = value; continue; }
       if (field === "ttl" && typeof value === "number" && Number.isSafeInteger(value) && value >= 0) { config.max_age = nanos(value); continue; }
       if (field === "markerTTL" && typeof value === "number" && Number.isSafeInteger(value) && value > 0) { config.allow_msg_ttl = true; config.subject_delete_marker_ttl = nanos(value); continue; }
     }

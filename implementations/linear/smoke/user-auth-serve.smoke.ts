@@ -1,5 +1,6 @@
 /** Real owned authority and broker; the upstream tool reply is an inert fixture, not Linear data. */
-import assert from "node:assert/strict";
+import nodeAssert from "node:assert/strict";
+import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import { generateKeyPairSync, randomBytes, sign } from "node:crypto";
 import { createServer } from "node:http";
 import { EventEmitter, once } from "node:events";
@@ -24,6 +25,9 @@ import { SERVICE_CALLER_PAYLOAD_FLOOR } from "../../auth/src/service-caller-payl
 import { LINEAR_CAPABILITY, LINEAR_COMMANDS } from "../src/contract.js";
 import { linearUserAuthRequest, serveLinearUserAuth } from "../src/user-auth-serve.js";
 import type { LinearUpstream } from "../src/upstream.js";
+
+const counted = countedAssert(nodeAssert);
+const assert: typeof nodeAssert = counted.assert;
 
 const rid = () => randomBytes(16).toString("hex");
 const fx = await startHostedAuthFixture("linearhost", 1, { maxPayload: SERVICE_CALLER_PAYLOAD_FLOOR });
@@ -113,7 +117,7 @@ try {
   const request = seen.find((r): r is Extract<ServiceAuthorityRequest, { operation: "register" }> => r.operation === "register")!;
   assert.deepEqual(refused.target, { space: a.space, endpoint, instanceId: request.instanceId, proposalId }, "the refusal's target carries the live proposal id");
   // The owner approves by running the remedy's command as printed; its ceiling must cover the Linear commands.
-  const remedy = /cotal service-endpoint approve (\S+) --caller-ceiling (\S+) --space (\S+), then repeat the same serve command/.exec(refused.remedy ?? "");
+  const remedy = /`cotal service-endpoint approve ([^\s`]+) --caller-ceiling ([^\s`]+) --space ([^\s`]+)`, then repeat the same serve command/.exec(refused.remedy ?? "");
   assert.ok(remedy, `the remedy names the approve command: ${refused.remedy}`);
   assert.deepEqual(remedy.slice(1), [proposalId, LINEAR_CAPABILITY, a.space], "the approve command names this proposal, the Linear capability and this space");
   const capabilities = LINEAR_COMMANDS.map(command => ({ endpoint, command, instanceId: request.instanceId, instanceOnly: true }));
@@ -200,6 +204,7 @@ try {
     assert.equal(closedUpstreams, 3, "restart stop closes its upstream");
   }
   console.log("LINEAR HOSTED SERVE: approval refusal names its proposal and approve command, the printed approval, approval replay, native ready, exact caller discovery/invocation, ungranted refusal, account pin, stop and same-instance restart passed");
+  emitSentinel({ passed: counted.cells(), failed: 0 });
 } finally {
   ctl.abort(); await running?.catch(() => {});
   for (const nc of conns) await nc.close();

@@ -1,5 +1,156 @@
 # cotal-ai
 
+## 0.128.5
+
+### Patch Changes
+
+- Updated dependencies [1c86343]
+  - @cotal-ai/core@0.128.5
+  - @cotal-ai/connector-core@0.128.5
+  - @cotal-ai/cli@0.128.5
+  - @cotal-ai/auth@0.128.5
+  - @cotal-ai/delivery@0.128.5
+  - @cotal-ai/manager@0.128.5
+  - @cotal-ai/runtime@0.128.5
+  - @cotal-ai/workspace@0.128.5
+  - @cotal-ai/seat@0.128.5
+
+## 0.128.4
+
+### Patch Changes
+
+- Updated dependencies [4bfbede]
+  - @cotal-ai/core@0.128.4
+  - @cotal-ai/connector-core@0.128.4
+  - @cotal-ai/auth@0.128.4
+  - @cotal-ai/cli@0.128.4
+  - @cotal-ai/delivery@0.128.4
+  - @cotal-ai/manager@0.128.4
+  - @cotal-ai/runtime@0.128.4
+  - @cotal-ai/workspace@0.128.4
+  - @cotal-ai/seat@0.128.4
+
+## 0.128.3
+
+### Patch Changes
+
+- Updated dependencies [76fcf89]
+- Updated dependencies [5e19e96]
+  - @cotal-ai/workspace@0.128.3
+  - @cotal-ai/auth@0.128.3
+  - @cotal-ai/delivery@0.128.3
+  - @cotal-ai/manager@0.128.3
+  - @cotal-ai/cli@0.128.3
+  - @cotal-ai/runtime@0.128.3
+  - @cotal-ai/connector-core@0.128.3
+  - @cotal-ai/core@0.128.3
+  - @cotal-ai/seat@0.128.3
+
+## 0.128.2
+
+### Patch Changes
+
+- Updated dependencies [653c0cd]
+- Updated dependencies [26a6668]
+- Updated dependencies [c8c7f68]
+- Updated dependencies [13de45e]
+  - @cotal-ai/connector-core@0.128.2
+  - @cotal-ai/manager@0.128.2
+  - @cotal-ai/auth@0.128.2
+  - @cotal-ai/cli@0.128.2
+  - @cotal-ai/delivery@0.128.2
+  - @cotal-ai/runtime@0.128.2
+  - @cotal-ai/core@0.128.2
+  - @cotal-ai/seat@0.128.2
+  - @cotal-ai/workspace@0.128.2
+
+## 0.128.1
+
+### Patch Changes
+
+- Updated dependencies [00d85b7]
+- Updated dependencies [20a5c96]
+- Updated dependencies [985519f]
+- Updated dependencies [2d4e188]
+- Updated dependencies [7b54f38]
+  - @cotal-ai/cli@0.128.1
+  - @cotal-ai/core@0.128.1
+  - @cotal-ai/manager@0.128.1
+  - @cotal-ai/connector-core@0.128.1
+  - @cotal-ai/auth@0.128.1
+  - @cotal-ai/delivery@0.128.1
+  - @cotal-ai/runtime@0.128.1
+  - @cotal-ai/workspace@0.128.1
+  - @cotal-ai/seat@0.128.1
+
+## 0.128.0
+
+### Patch Changes
+
+- Updated dependencies [6f945a2]
+- Updated dependencies [75e06da]
+- Updated dependencies [1f8bfe5]
+- Updated dependencies [1090d9b]
+  - @cotal-ai/connector-core@0.128.0
+  - @cotal-ai/cli@0.128.0
+  - @cotal-ai/workspace@0.128.0
+  - @cotal-ai/manager@0.128.0
+  - @cotal-ai/auth@0.128.0
+  - @cotal-ai/delivery@0.128.0
+  - @cotal-ai/runtime@0.128.0
+  - @cotal-ai/core@0.128.0
+  - @cotal-ai/seat@0.128.0
+
+## 0.127.5
+
+### Patch Changes
+
+- Updated dependencies [6e9e9c0]
+- Updated dependencies [ad0e5a1]
+- Updated dependencies [580afa4]
+  - @cotal-ai/cli@0.127.5
+  - @cotal-ai/connector-core@0.127.5
+  - @cotal-ai/manager@0.127.5
+  - @cotal-ai/auth@0.127.5
+  - @cotal-ai/delivery@0.127.5
+  - @cotal-ai/runtime@0.127.5
+  - @cotal-ai/core@0.127.5
+  - @cotal-ai/seat@0.127.5
+  - @cotal-ai/workspace@0.127.5
+
+## 0.127.4
+
+### Patch Changes
+
+- Updated dependencies [dd13059]
+- Updated dependencies [9d69969]
+- Updated dependencies [9dc9bc4]
+  - @cotal-ai/cli@0.127.4
+  - @cotal-ai/connector-core@0.127.4
+  - @cotal-ai/workspace@0.127.4
+  - @cotal-ai/manager@0.127.4
+  - @cotal-ai/auth@0.127.4
+  - @cotal-ai/delivery@0.127.4
+  - @cotal-ai/runtime@0.127.4
+  - @cotal-ai/core@0.127.4
+  - @cotal-ai/seat@0.127.4
+
+## 0.127.3
+
+### Patch Changes
+
+- Updated dependencies [aaa07ab]
+- Updated dependencies [5ad71cb]
+  - @cotal-ai/cli@0.127.3
+  - @cotal-ai/core@0.127.3
+  - @cotal-ai/workspace@0.127.3
+  - @cotal-ai/delivery@0.127.3
+  - @cotal-ai/connector-core@0.127.3
+  - @cotal-ai/auth@0.127.3
+  - @cotal-ai/manager@0.127.3
+  - @cotal-ai/runtime@0.127.3
+  - @cotal-ai/seat@0.127.3
+
 ## 0.127.2
 
 ### Patch Changes

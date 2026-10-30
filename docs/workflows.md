@@ -226,7 +226,9 @@ authority. Static authentication issues it to its credentials. On a user-auth me
 participant manager hosts authorized runs. A managed agent invokes `cotal_run` through its own
 launcher-provided bearer command and immutable manager instance selection. Its current managed
 grant and its direct parent's current grant must both carry `run`. A removed grant, stale lifecycle
-or wrong manager selection refuses rather than borrowing a signed-in user's authority.
+or wrong manager selection refuses rather than borrowing a signed-in user's authority. After a
+parent's `run` grant is restored, the next call checks its new connection's issued authority before
+submitting the workflow.
 
 Open meshes may expose the tool but refuse hosted runs. A local user-mode host without remote
 run authority and an `execution: "none"` control manager also refuse the family. A legacy
