@@ -10,14 +10,13 @@ import {
   waitForDeliveryLease,
   deliveryLeaseHolderFor,
 } from "@cotal-ai/core";
-import { DELIVERY_PROCESS, DELIVERY_CREDS_KIND, DELIVERY_LOGFILE, DELIVERY_PIDFILE, authDir, canonicalLocalProcessPath, codeSpan, commandIsCotalDelivery, deliveryCredsKey, findCotalRoot, getSpaceAuth, listSpaceAccounts, localProcessPath, parsePid, probeLiveness, readProcessCommand, readProcessRecord, reclaimDeadPreUpgradeRecord, segmentedKey, stopReservationPath, type LivenessProbe, type LocalProcessContext, type ProcessRecord, type ProcessRecordState, workspaceSecretStore, writePidPair } from "@cotal-ai/workspace";
+import { DELIVERY_PROCESS, DELIVERY_CREDS_KIND, DELIVERY_LOGFILE, DELIVERY_PIDFILE, authDir, canonicalLocalProcessPath, commandIsCotalDelivery, deliveryCredsKey, findCotalRoot, getSpaceAuth, listSpaceAccounts, localProcessPath, parsePid, probeLiveness, readProcessCommand, readProcessRecord, reclaimDeadPreUpgradeRecord, segmentedKey, stopReservationPath, type LivenessProbe, type LocalProcessContext, type ProcessRecord, type ProcessRecordState, workspaceSecretStore, writePidPair } from "@cotal-ai/workspace";
 import { daemonArgv, displayCmd } from "./self-exec.js";
 import { resolveRuntimeSpace } from "./status.js";
 import { cotalRoot } from "./paths.js";
 import { clearManagerArtifacts, ensureManager, managerHasDeliveryMarker, managerRecordState, recordSeams, stopManager, type RecordSeams } from "./manager-proc.js";
 import { stopLocalProcess } from "./local-process-stop.js";
 import { RESPONDER_UNBOUND_CONSEQUENCE } from "./delivery-responder.js";
-import { shellWord } from "./endpoint-errors.js";
 import { seedBeforeLaunch } from "../seed/launch.js";
 
 /** The space this folder's commands mean, and the per-space record paths over it. The daemon is
@@ -152,7 +151,7 @@ export async function stopOldHostingManagerIfPresent(
     if (record.state === "unattributable")
       throw new Error(
         `the manager pidfile at ${p} holds content that is not a pid (${JSON.stringify(record.content)}), so it names no process and cotal cannot tell whether a manager still runs. Nothing was started over it.\n` +
-          `NEXT: once ${codeSpan(`cotal ps --space ${shellWord(space)}`)} finds no manager running, remove that file and re-run.`,
+          `NEXT: confirm yourself that no manager runs for this folder, because one that does not answer on the mesh may still be running, then remove that file and re-run.`,
       );
     throw new Error(
       `the recorded manager pid (${record.pid}) cannot be attributed, so cotal cannot tell whether a manager still runs: the kernel answered neither "running" nor "no such process" (a seccomp filter or LSM policy does this inside some sandboxes). Nothing was started over it.\n` +

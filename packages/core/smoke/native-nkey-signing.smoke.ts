@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { Algorithms, decode, encodeAuthorizationResponse, encodeUser } from "@nats-io/jwt";
-import { createAccount, createCluster, createCurve, createOperator, createServer, createUser, fromPublic, NKeysErrorCode, Prefix } from "@nats-io/nkeys";
+import { createAccount, createCluster, createCurve, createOperator, createServer, createUser, fromPublic, fromSeed, NKeysErrorCode, Prefix } from "@nats-io/nkeys";
 import { Codec } from "@nats-io/nkeys/lib/codec.js";
 import { decodeNatsJwt, nativeNkeySigner } from "../src/nkey-signer.js";
+import { composeSpaceAuth, createBrokerAuth, createSpaceAccountAuth, newIdentity } from "../src/index.js";
 
 const messages = [new Uint8Array(), new TextEncoder().encode("NATS signing: café"), Uint8Array.from({ length: 256 }, (_, i) => i)];
 let cases = 0;
@@ -110,4 +111,65 @@ try {
     cases++;
   } finally { signer.clear(); issuer.clear(); holder.clear(); srv.clear(); }
 }
-console.log(`native nkey signing smoke: ${cases} cases passed (5 key kinds × 3 payloads, invalid seeds, v1/v2 JWTs and callout responses, native JWT decode)`);
+// Fresh user identities retain stock seed encoding and public-key/signature compatibility.
+{
+  const identities = [newIdentity(), newIdentity()];
+  for (const identity of identities) {
+    const seed = new TextEncoder().encode(identity.seed);
+    const stock = fromSeed(seed);
+    try {
+      assert.ok(/^U[A-Z2-7]{55}$/.test(identity.id), "generated identity is a user public key");
+      assert.ok(/^SU[A-Z2-7]{56}$/.test(identity.seed), "generated seed is a user seed");
+      assert.equal(stock.getPublicKey(), identity.id, "stock nkeys derives the same public identity");
+      assert.ok(Buffer.from(stock.getSeed()).equals(seed), "stock nkeys preserves the encoded seed");
+      for (const message of messages)
+        assert.equal(fromPublic(identity.id).verify(message, stock.sign(message)), true);
+      cases++;
+    } finally { stock.clear(); seed.fill(0); }
+  }
+  assert.notEqual(identities[0]!.id, identities[1]!.id, "fresh identities do not reuse a public key");
+  assert.ok(identities[0]!.seed !== identities[1]!.seed, "fresh identities do not reuse a seed");
+  cases++;
+}
+// The account factory uses the same signer without changing the operator/account trust chain.
+{
+  const broker = await createBrokerAuth("native-account-factory");
+  const operatorPub = decode(broker.operator.jwt).sub;
+  const accounts = [];
+  for (const space of ["native-account-a", "native-account-b"]) {
+    const account = await createSpaceAccountAuth(broker, space);
+    const stockAccount = fromSeed(new TextEncoder().encode(account.account.seed));
+    const stockSigning = fromSeed(new TextEncoder().encode(account.account.signingSeed));
+    try {
+      assert.equal(account.account.pub, stockAccount.getPublicKey());
+      assert.equal(account.account.signingPub, stockSigning.getPublicKey());
+      const claims = decode<{ signing_keys: string[] }>(account.account.jwt);
+      assert.equal(claims.iss, operatorPub, "stock JWT verification accepts the operator signature");
+      assert.equal(claims.sub, account.account.pub);
+      assert.deepEqual(claims.nats.signing_keys, [account.account.signingPub]);
+      assert.notEqual(account.account.pub, account.account.signingPub);
+      assert.doesNotThrow(() => composeSpaceAuth(broker, account));
+      accounts.push(account);
+      cases++;
+    } finally { stockAccount.clear(); stockSigning.clear(); }
+  }
+  const first = accounts[0]!;
+  const foreignBroker = await createBrokerAuth("native-account-foreign");
+  assert.throws(() => composeSpaceAuth(foreignBroker, first), /refusing to compose trust across brokers/);
+  cases++;
+  const parts = first.account.jwt.split(".");
+  const signature = Buffer.from(parts[2]!, "base64url");
+  signature[0] = signature[0]! ^ 1;
+  const invalidJwt = [parts[0], parts[1], signature.toString("base64url")].join(".");
+  assert.throws(() => decode(invalidJwt), /sig verification failed/);
+  assert.throws(() => composeSpaceAuth(broker, { ...first, account: { ...first.account, jwt: invalidJwt } }), /sig verification failed/);
+  cases++;
+  assert.throws(() => composeSpaceAuth({ ...broker, operator: { ...broker.operator, seed: "invalid" } }, first), /not a valid operator seed/);
+  assert.throws(() => composeSpaceAuth({ ...broker, operator: { ...broker.operator, seed: "" } }, first), /operator material is required/);
+  cases++;
+  assert.notEqual(accounts[0]!.account.pub, accounts[1]!.account.pub);
+  assert.notEqual(accounts[0]!.account.signingPub, accounts[1]!.account.signingPub);
+  await assert.rejects(() => createSpaceAccountAuth({ ...broker, operator: { ...broker.operator, seed: "" } }, "stripped"), /operator seed is required/);
+  cases++;
+}
+console.log(`native nkey signing smoke: ${cases} cases passed (5 key kinds × 3 payloads, invalid seeds, v1/v2 JWTs and callout responses, native JWT decode, identity/account factories and broker binding)`);

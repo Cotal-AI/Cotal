@@ -126,9 +126,9 @@ export interface BrokerHeap {
   /** Live heap by broker part. The profile is sampled, so the parts are scaled to sum to heapAllocMb. */
   heapByPart: Record<BrokerPart, number>;
   goroutinesByPart: Record<BrokerPart, number>;
-  /** The allocation sites holding the most live heap, scaled the same way. */
+  /** The allocation site/category pairs holding the most live heap, scaled the same way. */
   topSites: Array<{ site: string; part: BrokerPart; mb: number }>;
-  /** Every allocation site, scaled the same way, so two reads can be subtracted site by site. */
+  /** Every allocation site/category pair, scaled the same way, so two reads can be subtracted by both keys. */
   sites: Array<{ site: string; part: BrokerPart; mb: number }>;
 }
 
@@ -174,9 +174,11 @@ export async function brokerHeap(profBase: string): Promise<BrokerHeap> {
     heapByPart[part] += bytes;
     sampled += bytes;
     const site = siteOf(r.stack);
-    const s = sites.get(site) ?? { site, part, mb: 0 };
+    // One allocation function can serve several parts; keep each stack category separate.
+    const key = `${part}:${site}`;
+    const s = sites.get(key) ?? { site, part, mb: 0 };
     s.mb += bytes;
-    sites.set(site, s);
+    sites.set(key, s);
   }
   const heapAllocMb = stat("HeapAlloc");
   const k = sampled > 0 ? heapAllocMb / (sampled / 1048576) : 0;

@@ -49,7 +49,6 @@ import {
   requireBrokerFloor,
   parseServerVersion,
   presenceBucket,
-  MEMBERSHIP_MAX_BYTES,
   spaceDeletionStreams,
   isJetStreamMissing,
   seedChannelRegistry,
@@ -197,7 +196,6 @@ import {
   restoreLeftOut,
   SPACE_NAME_MAX,
   spaceNameTooLong,
-  MIN_FILE_STORE,
   NATS_PIDFILE,
   UNTRUSTED_CERTIFICATE,
   exitCode,
@@ -892,7 +890,7 @@ export async function up(args: ParsedArgs, inheritedLock?: MaintenanceLock, fres
     const fresh = args.values.root === undefined ? freshFolderRoot(args.values) : undefined;
     if (fresh) {
       mkdirSync(join(fresh, ".cotal"), { mode: 0o700 });
-      console.error(c.dim(`made ${join(fresh, ".cotal")} for this folder's records; the machine's home .cotal was not used`));
+      for (const line of hang("", `made ${join(fresh, ".cotal")} for this folder's records; the machine's home .cotal was not used`, terminalWidth(process.stderr), c.dim)) console.error(line);
     }
     const root = args.values.root === undefined ? undefined : preparedUpRoot(String(args.values.root));
     const previousCwd = process.cwd();
@@ -1739,7 +1737,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
             }
           } else if (heldForRepair.storeDir !== undefined) {
             values["store-dir"] = heldForRepair.storeDir;
-            console.log(c.dim(`reopening the recorded store ${heldForRepair.storeDir}`));
+            for (const line of hang("", `reopening the recorded store ${heldForRepair.storeDir}`, terminalWidth(process.stdout), c.dim)) console.log(line);
           } else {
             const defaultStore = cotalPath("nats");
             let hasEntries = false;
@@ -2087,7 +2085,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       // The same Next a launch ends with: this mesh runs, so the steps are the ones that use and
       // stop it. A manager the refresh found or healed is what makes `spawn` one of them.
       const managerRecord = managerRecordState(held.space);
-      console.log(`\n${renderReport({ sections: [{ title: "Next", blocks: [{ kind: "commands", items: detachedNext({ manager: managerRecord.state === "alive", controlPlane: controlPlane !== undefined, machineHome: canonicalRoot(root) === canonicalRoot(homedir()), ...(values.root ? { root } : {}), ...(managerRecord.state === "unattributable" ? { unattributableManager: managerRecord.path, noManager } : {}) }, held.space) }] }] }, "rich", process.stdout)}`);
+      console.log(`\n${renderReport({ sections: [{ title: "Next", blocks: detachedNext({ manager: managerRecord.state === "alive", controlPlane: controlPlane !== undefined, machineHome: canonicalRoot(root) === canonicalRoot(homedir()), ...(values.root ? { root } : {}), ...(managerRecord.state === "unattributable" ? { unattributableManager: managerRecord.path, noManager } : {}) }, held.space) }] }, "rich", process.stdout)}`);
       return;
     }
     const who = held ? `mesh "${held.space}" (${held.root})` : "a broker not started here";
@@ -2186,10 +2184,12 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     const controlPlane = planeReturned && deliveryLost === undefined;
     const detached = { pid, delivery, authService: wantUser && authService, manager, machineHome: canonicalRoot(cotalRoot()) === canonicalRoot(homedir()), ...(values.root ? { root: cotalRoot() } : {}) };
     if (!quietRestore) {
-      console.log(c.dim(`Started ${executable}.`));
-      console.log(c.green(renderDetachedSummary(detached)));
+      for (const line of hang("", `Started ${executable}.`, terminalWidth(process.stdout), c.dim)) console.log(line);
+      // The summary's continuation lines start under its text, past the `✓`.
+      const [mark, ...summary] = renderDetachedSummary(detached).split(" ");
+      for (const line of hang(`${mark} `, summary.join(" "), terminalWidth(process.stdout))) console.log(c.green(line));
       if (unnamed) console.log(c.dim(`  This folder names no space, so up started the default space "${receiptSpace}"; pass --space <name> to start another`));
-      if (values.__folderNamed) console.log(c.dim(`  This new project's space is named after its folder, "${receiptSpace}"; pass --space <name> to start another`));
+      if (values.__folderNamed) for (const line of hang("  ", `This new project's space is named after its folder, "${receiptSpace}"; pass --space <name> to start another`, terminalWidth(process.stdout))) console.log(c.dim(line));
     }
     if (restored && process.env.COTAL_SMOKE_FAIL_AFTER_RESTORE_LISTENER_READY === "1")
       throw new Error("smoke-injected failure after restore listener readiness");
@@ -2217,7 +2217,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     }
     if (!quietRestore) {
       const managerRecord = managerRecordState(receiptSpace);
-      console.log(`\n${renderReport({ sections: [{ title: "Next", blocks: [{ kind: "commands", items: detachedNext({ ...detached, controlPlane, ...(managerRecord.state === "unattributable" ? { unattributableManager: managerRecord.path, noManager } : {}) }, receiptSpace) }] }] }, "rich", process.stdout)}`);
+      console.log(`\n${renderReport({ sections: [{ title: "Next", blocks: detachedNext({ ...detached, controlPlane, ...(managerRecord.state === "unattributable" ? { unattributableManager: managerRecord.path, noManager } : {}) }, receiptSpace) }] }, "rich", process.stdout)}`);
     }
     if (restored) restoreSinks.get(restored.attemptId)?.({
       attemptId: restored.attemptId, space: restored.space, root: restored.root, server: restored.server, mode: restored.mode,
@@ -4603,11 +4603,11 @@ function recordOurMesh(m: MeshEntry, provenance: Provenance, quietBoot = false):
   removePreparedSpace(m.space); // started: the registration is its record now
   if (!usableCurrent) {
     setCurrent(m.space);
-    if (!quietBoot) console.log(c.dim(selectedOnUp(m.space)));
+    if (!quietBoot) for (const line of hang("", selectedOnUp(m.space), terminalWidth(process.stdout), c.dim)) console.log(line);
     return;
   }
   if (usableCurrent !== m.space && !quietBoot)
-    console.log(c.dim(keptOnUp(m.space, usableCurrent)));
+    for (const line of hang("", keptOnUp(m.space, usableCurrent), terminalWidth(process.stdout), c.dim)) console.log(line);
 }
 
 /** Write the default persona into the root this `up` started or refreshed when it has none, and
@@ -4620,7 +4620,7 @@ function seedPersonaAfterUp(root: string, quiet = false): void {
     console.error(c.yellow(`! the default persona was not written in ${root}: ${(e as Error).message}`));
     return;
   }
-  if (written && !quiet) console.log(c.dim(`  wrote ${written.what}: ${written.path}`));
+  if (written && !quiet) for (const line of hang("  ", `wrote ${written.what}: ${written.path}`, terminalWidth(process.stdout))) console.log(c.dim(line));
 }
 
 async function waitReady(server: string, creds?: string, tls = false, log?: string): Promise<boolean> {
@@ -5036,13 +5036,8 @@ async function recreateDeletedStreams(opts: { root: string; space: string; serve
   return true;
 }
 
-/** `--max-file-store`, refused below {@link MIN_FILE_STORE}: a smaller cap cannot create the
- *  space's streams. */
 function parseMaxFileStore(raw: string | undefined): number | undefined {
-  const cap = parsePositiveIntegerFlag("--max-file-store", raw);
-  if (cap !== undefined && cap < MIN_FILE_STORE)
-    throw new CommandFailure("refused", "USAGE_INVALID", `--max-file-store ${cap} is below ${MIN_FILE_STORE} bytes, the least the space's streams start on: its membership bucket reserves ${MEMBERSHIP_MAX_BYTES} bytes (64 MiB) of the broker's file store, and nats-server needs one more byte free to create the others; nothing was started`, { remedy: `pass --max-file-store ${MIN_FILE_STORE} or more, leaving room for messages, or omit it` });
-  return cap;
+  return parsePositiveIntegerFlag("--max-file-store", raw);
 }
 
 /** `--auth-timeout`, whole seconds from 1 to 60. nats-server warns above 60 that the value is

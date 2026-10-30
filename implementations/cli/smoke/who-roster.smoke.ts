@@ -97,6 +97,15 @@ writeFileSync(join(storeDir, "server.conf"), serverConfig(auth, [auth], { transp
 const broker = spawn("nats-server", ["-c", join(storeDir, "server.conf")], { stdio: "ignore" });
 const releaseBroker = teardownOnSignal(broker, storeDir);
 
+// Recovery must reach an auth-required address with no other space registered there.
+// Sharing the roster broker instead exercises the resolver's valid address-conflict refusal.
+const recoveryPort = await pickFreePort();
+const recoveryServers = `nats://127.0.0.1:${recoveryPort}`;
+const recoveryStoreDir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
+writeFileSync(join(recoveryStoreDir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: recoveryPort, storeDir: join(recoveryStoreDir, "js") }));
+const recoveryBroker = spawn("nats-server", ["-c", join(recoveryStoreDir, "server.conf")], { stdio: "ignore" });
+const releaseRecoveryBroker = teardownOnSignal(recoveryBroker, recoveryStoreDir);
+
 const home = mkdtempSync(join(tmpdir(), "cotal-who-home-"));
 const releaseHome = teardownPathOnSignal(home);
 mkdirSync(join(home, ".cotal"), { recursive: true });
@@ -146,6 +155,12 @@ try {
     if (!ready) await wait(100);
   }
   check("control: the owned broker is ready", ready, servers);
+  let recoveryReady = false;
+  for (let i = 0; i < 50 && !recoveryReady; i++) {
+    recoveryReady = await isReachable(recoveryServers);
+    if (!recoveryReady) await wait(100);
+  }
+  check("control: the separate owned auth recovery broker is ready", recoveryReady, recoveryServers);
   const provisionerCreds = await mintCreds(auth, newIdentity(), "provisioner");
   await setupSpaceStreams({ servers, space, creds: provisionerCreds });
   await seedChannelRegistry({ servers, space, creds: provisionerCreds, file: { channels: { general: {} } } });
@@ -158,7 +173,7 @@ try {
     recordMesh({ space: "openmesh", server: openServer, root: openRoot, mode: "open", origin: "manual", ts: new Date().toISOString() });
     for (const entry of urlCases)
       recordMesh({ space: entry.space, server: entry.server, root: openRoot, mode: "open", origin: "manual", ts: new Date().toISOString() });
-    recordMesh({ space: "url-auth-recovery", server: `nats://${urlUser}:${urlPassword}@127.0.0.1:${port}`, root: openRoot, mode: "open", origin: "manual", ts: new Date().toISOString() });
+    recordMesh({ space: "url-auth-recovery", server: `nats://${urlUser}:${urlPassword}@127.0.0.1:${recoveryPort}`, root: openRoot, mode: "open", origin: "manual", ts: new Date().toISOString() });
     setCurrent(space);
   } finally {
     if (priorHome === undefined) delete process.env.COTAL_HOME;
@@ -356,10 +371,10 @@ try {
         if (result.trace.some((record) => typeof record === "object" && record !== null && "kind" in record && record.kind === "classification" && "reason" in record && ["unreachable", "timeout"].includes(String(record.reason)))) break;
       }
       return {
-        brokerExitCode: broker.exitCode,
-        brokerSignalCode: broker.signalCode,
-        plain: await probeConnect(servers),
-        userinfo: await probeConnect(`nats://${urlUser}:${urlPassword}@127.0.0.1:${port}`),
+        brokerExitCode: recoveryBroker.exitCode,
+        brokerSignalCode: recoveryBroker.signalCode,
+        plain: await probeConnect(recoveryServers),
+        userinfo: await probeConnect(`nats://${urlUser}:${urlPassword}@127.0.0.1:${recoveryPort}`),
         tracedAttempts,
       };
     })();
@@ -452,6 +467,8 @@ try {
 } finally {
   for (const ep of endpoints) await ep.stop().catch(() => {});
   await provisioner?.stop().catch(() => {});
+  await killAndAwaitExit(recoveryBroker);
+  releaseRecoveryBroker();
   await killAndAwaitExit(broker);
   releaseBroker();
   releaseHome();

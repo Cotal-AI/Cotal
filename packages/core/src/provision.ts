@@ -15,7 +15,7 @@
  * expiry and renewal owner.
  */
 import { TTL_RECONCILE_CANARY_KEY, ttlBuckets } from "./streams.js";
-import { nativeNkeySigner } from "./nkey-signer.js";
+import { decodeNatsJwt, nativeNkeySigner } from "./nkey-signer.js";
 import { spaceDeletionStreams } from "./space-deletion-targets.js";
 import { BROKER_USER_INFO_SUBJECT } from "./broker-identity.js";
 import { randomBytes } from "node:crypto";
@@ -431,11 +431,11 @@ export function assertAccountSignedByBroker(broker: BrokerAuth, spaceAccount: Sp
     throw new Error("assertAccountSignedByBroker: broker operator material is required to verify the account binding");
   let operatorPub: string;
   try {
-    operatorPub = fromSeed(new TextEncoder().encode(broker.operator.seed)).getPublicKey();
+    operatorPub = nativeNkeySigner(new TextEncoder().encode(broker.operator.seed)).getPublicKey();
   } catch {
     throw new Error("assertAccountSignedByBroker: the broker operator seed is not a valid operator seed");
   }
-  const claims = decode<{ iss?: string }>(spaceAccount.account.jwt);
+  const claims = decodeNatsJwt<{ iss?: string }>(spaceAccount.account.jwt);
   if (claims.iss !== operatorPub)
     throw new Error(
       `space "${spaceAccount.space}" account was signed by ${claims.iss ?? "an unknown issuer"}, not this broker's operator ${operatorPub} - refusing to compose trust across brokers`,
@@ -576,13 +576,14 @@ export async function createBrokerAuth(label: string): Promise<BrokerAuth> {
 
 /** Generate one space's data account (+ signing key), signed by an EXISTING broker operator. This is
  *  the per-tenant half of provisioning: call it once per space against the same {@link BrokerAuth}
- *  to put many spaces on one broker, each in its own NATS account. */
+ *  to put many spaces on one broker, each in its own NATS account. Key generation and JWT
+ *  construction stay with NATS; the existing native signer derives public keys and signs. */
 export async function createSpaceAccountAuth(broker: BrokerAuth, space: string): Promise<SpaceAccountAuth> {
   if (!broker.operator.seed)
     throw new Error("createSpaceAccountAuth: the broker operator seed is required - a stripped broker cannot sign a new space account");
-  const okp = fromSeed(new TextEncoder().encode(broker.operator.seed));
-  const akp = createAccount();
-  const askp = createAccount(); // account signing key - what mints users
+  const okp = nativeNkeySigner(new TextEncoder().encode(broker.operator.seed));
+  const akp = nativeNkeySigner(createAccount().getSeed());
+  const askp = nativeNkeySigner(createAccount().getSeed()); // account signing key - what mints users
   const accountJwt = await encodeAccount(
     token(space),
     akp,
@@ -2392,11 +2393,11 @@ function purgerPermissions(space: string, pr: MintPrincipal): Record<string, unk
  *  `$JS` is an ENUMERATED allow-list, never `$JS.>`: STREAM.CREATE + INFO for the space streams/buckets,
  *  DM/DLV/TASK consumer CREATE/DURABLE.CREATE/INFO — and deliberately NO `MSG.NEXT`/`MSG.GET`/`ACK` on
  *  DM/DLV (it creates the bind-only mailbox but never reads it), and NO STREAM.DELETE/PURGE/MSG.DELETE
- *  (it provisions, it does not tear down). STREAM.UPDATE is held on EXACTLY eight streams and no others:
+ *  (it provisions, it does not tear down). STREAM.UPDATE is held on EXACTLY nine streams and no others:
  *  the three TTL'd KV buckets (presence + the two leases, #286: an existing bucket's `max_age` cannot be
  *  fixed by `kvm.create`, so reconciling a pre-TTL deployment requires updating it), the four hardened
  *  authority stores (records, issued, accepted, admission), each updated once at creation, and the
- *  artifact Object Store, whose legacy 4 GiB `max_bytes` `ensureArtifactStore` reconciles to -1 (the
+ *  membership KV and artifact Object Store, whose legacy `max_bytes` values setup reconciles to -1 (the
  *  reservation a positive cap holds against the broker's `max_file_store` is what stopped a tenth space
  *  from being provisioned; `Objm.create` cannot fix an existing bucket's cap either).
  *  Stated positively on purpose: this docblock previously read "NO …/UPDATE", which was already untrue of
@@ -2444,8 +2445,8 @@ function provisionerPermissions(space: string, pr: MintPrincipal): Record<string
   // never updates an existing bucket's config, so a bucket created by a cotal that predates the `max_age`
   // TTL keeps NO expiry forever — dead presence records (and stale leases) never age out. `setupSpaceStreams`
   // reconciles their `max_age` via STREAM.UPDATE at every `cotal up`, which needs this grant. Scoped to these
-  // three streams only — the durable streams (chat/dm/task/inbox/dlv, channel/members/acl/membership
-  // registries) are never updated — and still NO DELETE/PURGE. The supervisor profile keeps its full UPDATE
+  // three streams only — the durable streams (chat/dm/task/inbox/dlv and channel/members/acl registries)
+  // are never updated — and still NO DELETE/PURGE. The supervisor profile keeps its full UPDATE
   // denial; this widening is provisioning-only.
   // Derived from the SAME inventory that creates and reconciles them, not a third hand-kept copy.
   // Review found this list was the last independent one: a fourth TTL'd bucket added to `ttlBuckets`
@@ -2453,15 +2454,16 @@ function provisionerPermissions(space: string, pr: MintPrincipal): Record<string
   // the grant never learned about it. Same defect one seam out — a bucket the code knows to maintain
   // and the credential is not allowed to.
   const ttlStreams = ttlBuckets(space).map(([bucket]) => `KV_${bucket}`);
-  // ...plus the artifact Object Store. `ensureArtifactStore` creates it at `max_bytes: -1` so it
-  // reserves nothing against the broker's `max_file_store`, and reconciles a store left at the legacy
-  // stock 4 GiB to -1 so an EXISTING mesh releases that reservation too. `Objm.create` never updates
-  // an existing bucket's config (measured: create at 1024 then create at 4096 leaves 1024), so the
-  // reconcile is a STREAM.UPDATE and needs this grant — without it the provisioner dies on a
-  // permissions violation on the first `cotal up` after the upgrade. Still CREATE/INFO/UPDATE only:
+  // ...plus the membership KV and artifact Object Store. Both create at `max_bytes: -1` so they
+  // reserve nothing against the broker's `max_file_store`, and both reconcile only their own stock
+  // legacy caps so an EXISTING mesh releases those reservations too. The create clients never update
+  // an existing bucket's config, so each reconcile is a STREAM.UPDATE and needs this grant — without
+  // it the provisioner dies on a permissions violation on the first `cotal up` after the upgrade.
+  // Still CREATE/INFO/UPDATE only:
   // no publish, no CONSUMER.CREATE (a push consumer's caller-chosen `deliver_subject` would export
   // every artifact in the space), no DELETE/PURGE.
-  const streamReconcile = [...ttlStreams, OBJ].map((s) => `$JS.API.STREAM.UPDATE.${s}`);
+  const streamReconcile = [...ttlStreams, `KV_${membershipBucket(space)}`, OBJ]
+    .map((s) => `$JS.API.STREAM.UPDATE.${s}`);
   // #404: one EXACT reserved key on each TTL bucket is the post-update enforcement canary. The
   // provisioner still cannot write presence identities or lease keys; it can only write this fixed
   // maintenance key, which expires through the policy the reconcile is proving.

@@ -23,12 +23,17 @@
 import { createHash } from "node:crypto";
 import { readFileSync, renameSync, watch, writeFileSync, type FSWatcher } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
+import { performance } from "node:perf_hooks";
 
 /** How long after a lane fails to open the host tries it again. One fixed wait, never a growing
  *  backoff, and the log line that reports the failure names it. */
 const REOPEN_WAIT_SECONDS = 5;
 
-/** How long a pass waits for one space's open. The lane opens of a pass run together, and an open
+/** Lane startup signs broker handshakes on this process's event loop. Bound simultaneous opens so
+ *  one large manifest cannot consume the connection budgets of its own lanes. */
+const MAX_CONCURRENT_OPENS = 4;
+
+/** How long a pass waits for one space's open. Admitted opens run together, and an open
  *  that has not settled by then no longer holds the pass: the others are served, the ready line is
  *  written, and the lane is taken or closed when that open settles. The acknowledgment is written
  *  too while the manifest still names the space, and held back once it does not. */
@@ -108,6 +113,8 @@ export interface SpaceHost {
   readonly lanes: ReadonlyMap<string, SpaceLane>;
   /** Spaces whose open outlived a pass's deadline and is still running. */
   readonly opening: ReadonlySet<string>;
+  /** Spaces waiting for admission. Their opening deadlines have not started. */
+  readonly queued: ReadonlySet<string>;
   /** The spaces the manifest named at startup, in manifest order. */
   readonly named: readonly string[];
   readonly ended: Promise<number>;
@@ -223,6 +230,10 @@ export async function runSpaceHost<S = undefined>(options: SpaceHostOptions<S>):
    *  space here: the one pending is taken, or closed, when it settles. One whose space the manifest
    *  no longer names holds back the acknowledgment until then. */
   const opening = new Set<string>();
+  /** Names only: every pass reads settings afresh before admitting a queued lane. Set order keeps
+   *  retries behind spaces that have not had a turn. An overdue open still occupies its slot. */
+  const queued = new Set<string>();
+  const retryAfter = new Map<string, number>();
   /** The spaces the manifest the last pass read named. An open that settles after its deadline
    *  reads it to tell a retry of a space still wanted from one the acknowledgment is waiting on. */
   let wantedSpaces: ReadonlySet<string> = new Set<string>();
@@ -263,6 +274,7 @@ export async function runSpaceHost<S = undefined>(options: SpaceHostOptions<S>):
       return "opened";
     }
     if (settled.outcome === "failed") {
+      retryAfter.set(space, performance.now() + REOPEN_WAIT_SECONDS * 1000);
       log(`✗ ${label}: space "${space}" could not be served (${settled.why}) - retrying in ${REOPEN_WAIT_SECONDS}s`);
       return "failed";
     }
@@ -282,31 +294,57 @@ export async function runSpaceHost<S = undefined>(options: SpaceHostOptions<S>):
       // A space the manifest dropped meanwhile opens no lane to retry, and its pending open was
       // holding back the acknowledgment: that pass runs now rather than after the retry wait.
       const wanted = wantedSpaces.has(space);
+      if (wanted) retryAfter.set(space, performance.now() + REOPEN_WAIT_SECONDS * 1000);
       log(wanted
         ? `✗ ${label}: space "${space}" could not be served (${why}) after its deadline - retrying in ${REOPEN_WAIT_SECONDS}s`
         : `✗ ${label}: space "${space}" could not be served (${why}) after its deadline - it left the manifest meanwhile, so it is not opened again`);
-      schedule(wanted ? REOPEN_WAIT_SECONDS : 0);
+      schedule(wanted && queued.size === 0 ? REOPEN_WAIT_SECONDS : 0);
     });
     return "pending";
   };
 
-  /** Open every wanted space without a lane, all at once. Each failure is reported and retried after
-   *  the fixed wait; an open past the deadline is left running; the others still open. */
-  const openWanted = async (wanted: SpaceManifest | SpaceSettingsManifest<S>): Promise<void> => {
-    let failed = false;
-    await Promise.all(wanted.spaces.map(async (space) => {
-      if (lanes.has(space) || unclosed.has(space) || opening.has(space) || stopping) return;
+  /** Admit one bounded batch, then reconcile again for the rest. A fresh manifest read precedes
+   *  each batch, so a queued removal or settings replacement never starts from the old snapshot. */
+  const openWanted = async (wanted: SpaceManifest | SpaceSettingsManifest<S>, sha256: string): Promise<void> => {
+    if (stopping) return;
+    // Closing a removed lane may have awaited I/O since the pass read its manifest. Do not admit
+    // queued work from that snapshot if a replacement arrived during the close.
+    try {
+      if (readManifestFile(manifestPath, options.settings).sha256 !== sha256) { schedule(0); return; }
+    } catch (e) {
+      log(`✗ ${label}: ${e instanceof Error ? e.message : String(e)} - keeping the ${lanes.size} lane(s) already open`);
+      return;
+    }
+    const want = new Set(wanted.spaces);
+    const now = performance.now();
+    const eligible = (space: string): boolean => !lanes.has(space) && !unclosed.has(space)
+      && !opening.has(space) && (retryAfter.get(space) ?? 0) <= now;
+    for (const space of retryAfter.keys()) if (!want.has(space)) retryAfter.delete(space);
+    for (const space of queued) if (!want.has(space) || !eligible(space)) queued.delete(space);
+    for (const space of wanted.spaces) if (eligible(space)) queued.add(space);
+    const slots = Math.max(0, MAX_CONCURRENT_OPENS - opening.size - inflight.size);
+    await Promise.all([...queued].slice(0, slots).map(async (space) => {
+      if (stopping) return;
+      queued.delete(space);
+      retryAfter.delete(space);
       const open = openWithin(space, settingsOf(wanted, space));
       inflight.add(open);
       try {
         const outcome = await open;
         if (outcome === "opened") log(stopping ? `${label}: space "${space}" opened during the stop - closed it` : `${label}: space "${space}" opened - ${lanes.size} lane(s) up`);
-        if (outcome === "failed") failed = true;
       } finally {
         inflight.delete(open);
       }
     }));
-    if (failed) schedule(REOPEN_WAIT_SECONDS);
+    if (stopping) return;
+    let nextRetry = Infinity;
+    const afterBatch = performance.now();
+    for (const [space, at] of retryAfter) {
+      if (at <= afterBatch) queued.add(space);
+      else nextRetry = Math.min(nextRetry, at);
+    }
+    if (Number.isFinite(nextRetry)) schedule(Math.max(0, nextRetry - afterBatch) / 1000);
+    if (queued.size > 0 && opening.size + inflight.size < MAX_CONCURRENT_OPENS) schedule(0);
   };
 
   /** Opens a pass is waiting on. A stop waits for them before it closes the lanes, so a lane that
@@ -403,7 +441,7 @@ export async function runSpaceHost<S = undefined>(options: SpaceHostOptions<S>):
           }
           schedule(REOPEN_WAIT_SECONDS);
         }
-        await openWanted(wanted);
+        await openWanted(wanted, read.sha256);
       } while (pending && !stopping);
     } finally {
       reconciling = false;
@@ -446,7 +484,7 @@ export async function runSpaceHost<S = undefined>(options: SpaceHostOptions<S>):
   }
   if (options.startup === "servable") {
     reconciling = true;
-    try { await openWanted(initial.manifest); } finally { reconciling = false; }
+    try { await openWanted(initial.manifest, initial.sha256); } finally { reconciling = false; }
   } else {
     // One space at a time, and the first that does not open refuses the host. An open still running
     // past the deadline closes its lane when it settles: the host is stopping by then.
@@ -483,7 +521,7 @@ export async function runSpaceHost<S = undefined>(options: SpaceHostOptions<S>):
     throw new Error(`${options.entry}: cannot watch ${dirname(manifestPath)} for manifest changes (${e instanceof Error ? e.message : String(e)})`);
   }
   // A trigger that arrived during a servable startup's opens runs now.
-  if (pending) schedule(0);
+  if (pending) setImmediate(() => schedule(0));
   const backstop = setInterval(() => schedule(0), BACKSTOP_INTERVAL_SECONDS * 1000);
   backstop.unref();
 
@@ -491,6 +529,8 @@ export async function runSpaceHost<S = undefined>(options: SpaceHostOptions<S>):
     const stop = (signal: NodeJS.Signals) => () => {
       if (stopping) return;
       stopping = true;
+      queued.clear();
+      retryAfter.clear();
       options.onStop?.(signal);
       if (retry !== undefined) clearTimeout(retry);
       if (debounce !== undefined) clearTimeout(debounce);
@@ -506,5 +546,5 @@ export async function runSpaceHost<S = undefined>(options: SpaceHostOptions<S>):
     process.on("SIGTERM", stop("SIGTERM"));
     process.on("SIGHUP", () => schedule(0));
   });
-  return { lanes, opening, named: initial.manifest.spaces, ended };
+  return { lanes, opening, queued, named: initial.manifest.spaces, ended };
 }

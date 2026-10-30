@@ -14,7 +14,6 @@ export const OFFICIAL_RUNTIMES: Readonly<Record<string, string>> = {
   tmux: "@cotal-ai/tmux",
   cmux: "@cotal-ai/cmux",
   herdr: "@cotal-ai/herdr",
-  paseo: "@cotal-ai/paseo",
 };
 
 /** Every runtime name known without importing anything: `pty` (built in) plus the officials. */

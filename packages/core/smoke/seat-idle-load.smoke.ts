@@ -35,6 +35,10 @@
  * heartbeats), so the difference against a default run is what the per-seat watch costs;
  * `--watch-channels false` does the same for the channel-registry watch.
  *
+ * `--sublist-cache on|off` selects the native NATS subscription-result cache (default: on).
+ * Compare both settings with the same workload; disabling the cache may save memory while
+ * increasing matching CPU. This changes only the isolated smoke broker, not core defaults.
+ *
  * `--ram` adds the RAM profile. The broker's live heap and goroutines are read from its pprof
  * endpoint after a forced GC at each step of the build-up (empty, message streams, KV buckets and
  * registries, provisioned durables, delivery daemons, seats), so each step's delta is that part's
@@ -46,6 +50,10 @@
  *
  * Seats run in CHILD PROCESSES (`--seat-procs`), never in this process, so the broker's CPU and the
  * seats' CPU stay separately readable from /proc. Credentials reach a child over IPC, never argv.
+ *
+ * Phase breadcrumbs use `seat-idle-load phase=<name> utc_epoch_ms=<epoch> elapsed_ms=<monotonic>`
+ * on stderr. They mark only completed transitions, with `up` and `failed` on
+ * `all_seat_starts_settled`.
  *
  * Run (needs nats-server 2.15.1 on PATH or NATS_SERVER_BIN, and an fd limit above 2N):
  *   ulimit -n 65536; pnpm -C packages/core smoke:seat-idle-load --seats 500 --space-size 10 [--ram]
@@ -276,6 +284,9 @@ const SECONDS = num("seconds", "60");
 const HEARTBEAT = flag("heartbeat-ms", ""); // empty: the endpoint's own default
 const WATCH_PRESENCE = flag("watch-presence", "false") === "true";
 const WATCH_CHANNELS = flag("watch-channels", "true") !== "false";
+const SUBLIST_CACHE = flag("sublist-cache", argv.includes("--sublist-cache") ? undefined : "on");
+if (SUBLIST_CACHE !== "on" && SUBLIST_CACHE !== "off")
+  throw new Error("seat-idle-load: --sublist-cache must be on or off");
 const RAM = argv.includes("--ram");
 const NATS_BIN = process.env.NATS_SERVER_BIN ?? "nats-server";
 
@@ -320,7 +331,7 @@ const spaceNames = Array.from({ length: SPACES }, (_, i) => `idle-${tag}-${i}`);
 const accounts = await Promise.all(spaceNames.map((s) => createSpaceAccountAuth(brokerAuth, s)));
 const auths: SpaceAuth[] = accounts.map((a) => composeSpaceAuth(brokerAuth, a));
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
-writeFileSync(join(dir, "server.conf"), serverConfig(brokerAuth, accounts, { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }) + `\nhttp: 127.0.0.1:${MON_PORT}\n` + (RAM ? `prof_port: ${PROF_PORT}\n` : ""));
+writeFileSync(join(dir, "server.conf"), serverConfig(brokerAuth, accounts, { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }) + `\ndisable_sublist_cache: ${SUBLIST_CACHE === "off"}\nhttp: 127.0.0.1:${MON_PORT}\n` + (RAM ? `prof_port: ${PROF_PORT}\n` : ""));
 const srv = spawn(NATS_BIN, ["-c", join(dir, "server.conf")], { stdio: ["ignore", "ignore", "pipe"] });
 const releaseBroker = teardownOnSignal(srv, dir);
 // The broker's warnings and errors are part of the result (an fd limit, a slow consumer, a refused
@@ -364,6 +375,14 @@ const ask = (child: ChildProcess, cmd: ChildCmd, key: string): Promise<Record<st
   child.send(cmd);
 });
 
+const phaseOrigin = performance.now();
+const phase = (name: string, detail = "") => console.error(`seat-idle-load phase=${name} utc_epoch_ms=${Date.now()} elapsed_ms=${Math.round(performance.now() - phaseOrigin)}${detail}`);
+let teardownStarted = false;
+const startTeardown = () => {
+  if (teardownStarted) return;
+  teardownStarted = true;
+  phase("teardown_start");
+};
 const rows: Array<[string, string]> = [];
 const row = (k: string, v: string | number) => rows.push([k, typeof v === "number" ? (Number.isInteger(v) ? String(v) : Math.abs(v) >= 100 ? v.toFixed(1) : v.toFixed(3)) : v]);
 const n2 = (x: number) => (Number.isFinite(x) ? x.toFixed(2) : "n/a");
@@ -395,21 +414,24 @@ try {
   const tSetup = performance.now();
   const seats: SeatSpec[] = [];
   const daemons: DaemonSpec[] = [];
-  const provCredsOf: string[] = [];
+  // A full pass can outlast the five-minute provisioner lifetime. Mint per space and phase.
   for (let s = 0; s < SPACES; s++) {
-    provCredsOf.push(await mintCreds(auths[s], newIdentity(), "provisioner"));
+    const creds = await mintCreds(auths[s], newIdentity(), "provisioner");
     // Dialled as `setupSpaceStreams` dials, so the provisioner's scoped inbox prefix applies.
-    const nc = await dialerFor(SERVERS)({ servers: SERVERS, ...standaloneConnectOpts({ creds: provCredsOf[s], tls: false }) });
+    const nc = await dialerFor(SERVERS)({ servers: SERVERS, ...standaloneConnectOpts({ creds, tls: false }) });
     const jsm = await jetstreamManager(nc);
     for (const definition of spaceMessageStreamConfigs(spaceNames[s])) await jsm.streams.add(definition);
     await nc.drain();
   }
   await step("+ message streams");
-  for (let s = 0; s < SPACES; s++) await setupSpaceStreams({ servers: SERVERS, space: spaceNames[s], creds: provCredsOf[s] });
+  for (let s = 0; s < SPACES; s++) {
+    const creds = await mintCreds(auths[s], newIdentity(), "provisioner");
+    await setupSpaceStreams({ servers: SERVERS, space: spaceNames[s], creds });
+  }
   await step("+ KV buckets, registries, object store");
   for (let s = 0; s < SPACES; s++) {
     const space = spaceNames[s], auth = auths[s];
-    const provCreds = provCredsOf[s];
+    const provCreds = await mintCreds(auth, newIdentity(), "provisioner");
     const prov = new CotalEndpoint({ space, servers: SERVERS, creds: provCreds, channels: [], consume: false, watchPresence: false, registerPresence: false, watchChannels: false, card: { name: "prov", role: "manager", kind: "endpoint" } });
     prov.on("error", () => {});
     await prov.start();
@@ -427,12 +449,14 @@ try {
   }
   const setupS = (performance.now() - tSetup) / 1000;
   await step("+ seat durables and ACL rows");
+  phase("setup_done");
 
   // ---- delivery daemons -------------------------------------------------------------------------
   let daemonReady!: () => void;
   const daemonUp = new Promise<void>((r) => { daemonReady = r; });
   const daemon = startChild({ kind: "daemons", servers: SERVERS, daemons }, (m) => { if (m.ready) daemonReady(); });
   await guard(daemonUp);
+  phase("delivery_ready");
   console.error(`  … ${SPACES} delivery daemon(s) ready`);
   await wait(2000);
   const base = { rss: procRssMb(srv.pid!), varz: await monitor("/varz"), jsz: await monitor<Jsz>("/jsz") };
@@ -464,6 +488,7 @@ try {
   const seatsUp = upReports.reduce((a, m) => a + (m.up as number), 0);
   const seatsFailed = upReports.reduce((a, m) => a + (m.failed as number), 0);
   const startErrors = upReports.flatMap((m) => m.firstErrors as string[]).slice(0, 5);
+  phase("all_seat_starts_settled", ` up=${seatsUp} failed=${seatsFailed}`);
 
   // ---- settle, then the measured idle window ------------------------------------------------------
   await wait(SETTLE_S * 1000);
@@ -472,11 +497,13 @@ try {
   const b0 = procCpuMs(srv.pid!), d0 = procCpuMs(daemon.pid!), s0 = seatKids.map((c) => procCpuMs(c.pid!));
   const box0 = boxCpu();
   const t0 = performance.now();
+  phase("window_start");
   // Sample the rosters mid-window too, so a run that is degrading shows it, not just its end.
   await wait((SECONDS * 1000) / 2);
   const mid = (await guard(Promise.all(seatKids.map((c) => ask(c, { cmd: "sample" }, "sample"))))).map((m) => m.sample as SeatSample);
   await wait((SECONDS * 1000) / 2);
   const winS = (performance.now() - t0) / 1000;
+  phase("window_end");
   const brokerCpuMs = procCpuMs(srv.pid!) - b0, daemonCpuMs = procCpuMs(daemon.pid!) - d0;
   const seatCpuMs = seatKids.reduce((a, c, i) => a + procCpuMs(c.pid!) - s0[i], 0);
   const box1 = boxCpu();
@@ -500,6 +527,7 @@ try {
 
   row("git sha", SHA);
   row("nats-server", `${serverVersion} (${NATS_BIN})`);
+  row("subscription cache", SUBLIST_CACHE);
   row("host", `${availableParallelism()} cores, ${(totalmem() / 1073741824).toFixed(1)} GB`);
   row("shape", `${SEATS} seats in ${SPACES} space(s) of ${SPACE_SIZE}, ${seatKids.length} seat process(es), heartbeat ${HEARTBEAT ? `${HEARTBEAT}ms (override)` : "endpoint default"}, presence watch ${WATCH_PRESENCE ? "on" : "OFF"}, channel registry watch ${WATCH_CHANNELS ? "on" : "OFF"}`);
   row("setup (spaces + provisioning) (s)", setupS);
@@ -580,7 +608,7 @@ try {
     console.log(`| goroutine stacks | ${f1(last.heap.stackInuseMb)} | ${f1((last.heap.stackInuseMb / N) * 1024)} | ${f1(((last.heap.stackInuseMb - before.heap.stackInuseMb) / N) * 1024)} | ${last.heap.goroutines} |`);
     console.log(`| heap spans not live (GC headroom, fragmentation) | ${f1(last.heap.heapInuseMb - last.heap.heapAllocMb)} | | | |`);
     console.log(`| RSS beyond heap and stacks (runtime, freed-not-returned pages, binary) | ${f1(headroom)} | | | |`);
-    console.log("\nTop broker allocation sites (live heap at the end):\n");
+    console.log("\nTop broker allocation site/category pairs (live heap at the end):\n");
     for (const t of last.heap.topSites) console.log(`- ${t.site} (${t.part}): ${f1(t.mb)} MB, ${f1((t.mb / N) * 1024)} KB per seat`);
 
     // JetStream assets by kind, and every connection's queued outbound bytes.
@@ -625,12 +653,14 @@ try {
     console.log("");
   }
 
+  startTeardown();
   stopping = true;
   await Promise.all([...seatKids, daemon].map((c) => ask(c, { cmd: "stop" }, "stopped").catch(() => undefined)));
 } catch (e) {
   console.error("  ✗ seat-idle-load threw:", (e as Error).stack ?? (e as Error).message);
   process.exitCode = 1;
 } finally {
+  startTeardown();
   stopping = true;
   for (const c of children) { try { c.kill("SIGKILL"); } catch { /* already gone */ } }
   // A broker killed without waiting can still be writing its store after the dir is removed, and
@@ -638,6 +668,7 @@ try {
   await killAndAwaitExit(srv, "SIGKILL");
   rmSync(dir, { recursive: true, force: true });
   releaseBroker(); // last: ownership is held until this teardown has actually finished
+  phase("teardown_end");
   await new Promise<void>((r) => { process.stdout.write("", () => r()); });
   process.exit(process.exitCode ?? 0);
 }

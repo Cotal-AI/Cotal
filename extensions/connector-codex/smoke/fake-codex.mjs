@@ -118,7 +118,7 @@ async function mcpCall(tool, args, { token = MCP_TOKEN } = {}) {
   const res = await fetch(MCP_URL, {
     method: "POST",
     headers: withSession,
-    body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: tool, arguments: args } }),
+    body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: tool, arguments: args, _meta: { threadId: THREAD } } }),
   });
   return { httpStatus: res.status, body: parseRpc(await res.text()) };
 }

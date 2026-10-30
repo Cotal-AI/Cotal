@@ -39,7 +39,7 @@ function titleLines(message: string, output: Writable | undefined): string {
 function errorLines(message: string | Error | undefined, output: Writable | undefined): string | Error | undefined {
   if (typeof message !== "string") return message;
   const columns = ((output ?? process.stdout) as { columns?: number }).columns ?? 80;
-  return wrapWords(message, columns - 3).join("\n   ");
+  return message.split("\n").flatMap((line) => wrapWords(line, columns - 3)).join("\n   ");
 }
 
 /** `message` as a `log` line on `output`, which clack does not wrap either: broken at spaces to fit

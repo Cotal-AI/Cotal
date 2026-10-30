@@ -45,19 +45,41 @@ try {
       suite.check(`${label} startup reaches the real retained broker launcher`,
         brokerPid !== undefined && probeLiveness(brokerPid) === "alive" && /✓ running in the background: nats-server \(pid \d+\) - stop with: `cotal down`/.test(output), output);
       if (malformed) {
+        // What only the operator can establish before removing the file: a manager that does not
+        // answer on the mesh, so that `cotal ps` finds none, may still be running.
+        const recordCheck = "The manager pidfile names no process, so cotal cannot check whether a manager still runs for this folder, and one that does not answer on the mesh may still be running. Confirm yourself that none runs before you remove that file.";
         suite.check("control-plane refusal keeps a nonzero exit", result.status === 1, output);
         suite.check("control-plane refusal preserves the cause and its own next step",
           output.includes(`! control plane degraded: the manager pidfile at ${pidfile} holds content that is not a pid ("garbage")`) &&
-          output.includes(`NEXT: once \`cotal ps --space ${space}\` finds no manager running, remove that file and re-run.`), output);
+          output.includes("NEXT: confirm yourself that no manager runs for this folder, because one that does not answer on the mesh may still be running, then remove that file and re-run.") &&
+          !output.includes("cotal ps"), output);
         suite.check("control-plane refusal never appends the fixed supervise remedy",
           !output.includes("start one with: cotal supervise"), output);
         suite.check("control-plane refusal states the spawn and retirement consequence",
           output.includes("Spawn and retirement require a functioning control plane."), output);
-        // `down` refuses that pidfile too, so Next removes it and runs the broker-only start again.
+        // `down` refuses that pidfile too, so Next states the operator's check, then removes the file
+        // and runs the broker-only start again.
         const next = plain(result.stdout).trimEnd().split("\n");
-        suite.check("a broker-only start's Next removes the pidfile and runs up --no-manager again, not a down that refuses it",
+        suite.check("a broker-only start's Next states the operator's check, then removes the pidfile and runs up --no-manager again, not a down that refuses it",
           JSON.stringify(next.slice(next.lastIndexOf("Next") + 1).map((line) => line.trim().split(/ {2,}/))) ===
-            JSON.stringify([[`rm ${pidfile}`, `Remove the pidfile once \`cotal ps --space ${space}\` finds no manager running`], ["cotal up --no-manager", "Then refresh the stack without a manager"]]), output);
+            JSON.stringify([[recordCheck], [`rm ${pidfile}`, "Remove it once no manager runs for this folder"], ["cotal up --no-manager", "Then refresh the stack without a manager"]]), output);
+        // `down` refuses that record too, without calling it a process. Its Next states the check
+        // only the operator can make before it names the removal. Nothing is stopped or removed.
+        const refused = run("down");
+        const refusedOutput = plain(refused.stdout + refused.stderr);
+        suite.check("down over that pidfile exits 1 and says the record names no process",
+          refused.status === 1 && !refusedOutput.includes("Stop that process") &&
+          plain(refused.stderr).includes(`the manager pidfile at ${pidfile} holds content that is not a pid ("garbage"), so it names no process and cotal cannot tell whether a manager still runs; refusing to remove it or report a clean stop`), refusedOutput);
+        const refusedNext = plain(refused.stdout).trimEnd().split("\n");
+        suite.check("down's Next states the operator's check before the removal, then runs the same down",
+          JSON.stringify(refusedNext.slice(refusedNext.lastIndexOf("Next") + 1).map((line) => line.trim().split(/ {2,}/))) === JSON.stringify([
+            [recordCheck],
+            [`rm ${pidfile}`, "Remove it once no manager runs for this folder"],
+            ["cotal down", "Then stop the stack"],
+          ]), refusedOutput);
+        suite.check("down keeps that pidfile and the broker",
+          readFileSync(pidfile, "utf8") === "garbage" && brokerPid !== undefined && probeLiveness(brokerPid) === "alive", refusedOutput);
+        // This fixture started no manager (--no-manager), so it knows none runs for this folder.
         rmSync(pidfile);
         const again = run("up", "--no-manager");
         const againOutput = plain(again.stdout + again.stderr);

@@ -160,7 +160,7 @@ try {
   check("pty recovery creates no tmux window", !windows.split("\n").includes("pty-seat"), windows.trim());
 } finally {
   try { rows.get(name)?.handle.stop({ graceful: false }); } catch { /* already gone */ }
-  try { await manager.stop(); } catch { /* not started */ }
+  try { await manager.stop({ withAgents: true }); } catch { /* not started */ }
   try { await delivery?.stop(); } catch { /* not started */ }
   try { execFileSync("tmux", ["kill-session", "-t", session], { stdio: "ignore" }); } catch { /* no session */ }
   broker.kill("SIGTERM");

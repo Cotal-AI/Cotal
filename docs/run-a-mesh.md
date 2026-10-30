@@ -457,7 +457,9 @@ it can still adopt and reap seats that an earlier manager launched under a detac
 custodian, so those seats drain under the new manager; it starts no new custodian. A custodian whose agent has exited exits a few seconds later on its own. `cotal manager seats`
 lists the custodians left on the machine, and `cotal manager seats --drain` retires the ones whose agent
 has exited while keeping every seat whose agent still runs ([cli.md](cli.md#seats)). The hidden
-`cotal seats` spelling still works. When a pty
+`cotal seats` spelling still works. A stop that stops its seats logs `seat reaped:` for a seat
+only after the runtime proves that seat exited. A seat whose stop was refused, or whose exit was
+not proved, is named in the shutdown error and has no reap line. When a pty
 agent exits on its own, in-process or under a custodian, the manager logs a `seat reaped:` line
 with the exit code and, for a signalled child, the signal number. The line ends with the last line
 the child printed that starts with a connector's `[cotal-<name>]` or `[cotal-<name>/<part>]`
@@ -467,7 +469,7 @@ successor manager, reports how the child ended. When the custodian cannot write 
 says why in the seat's `custodian.log`, and a later reap of a child that ended on its own reports
 the record as missing or unreadable. Optional runtimes are installed
 through the extension surface, for example `cotal ext add @cotal-ai/orca`, then selected with
-`--runtime orca` (similarly `@cotal-ai/tmux`, `@cotal-ai/cmux`, `@cotal-ai/herdr`, and `@cotal-ai/paseo`). They put teammates in native
+`--runtime orca` (similarly `@cotal-ai/tmux`, `@cotal-ai/cmux`, and `@cotal-ai/herdr`). They put teammates in native
 terminal surfaces rather than manager-owned PTYs. Those surfaces stream no exit, so the manager
 asks the runtime every five seconds whether a seat's process has ended, and frees a seat that ended
 on its own once the runtime proves the exit. Its `seat reaped:` line says the exit detail is

@@ -686,6 +686,7 @@ try {
   agent = new MeshAgent({
     space: SPACE,
     name: "agent-a",
+    kind: "agent",
     servers: SERVER,
     tls: false,
     lifecycleUid: ownerAUid,
@@ -748,6 +749,7 @@ try {
   agent = new MeshAgent({
     space: SPACE,
     name: "agent-hosted",
+    kind: "agent",
     servers: SERVER,
     tls: false,
     lifecycleUid: ownerAUid,
@@ -955,6 +957,7 @@ try {
   realAgent = new MeshAgent({
     space: SPACE,
     name: "producer-operator",
+    kind: "agent",
     servers: SERVER,
     tls: false,
     lifecycleUid: ownerAUid,

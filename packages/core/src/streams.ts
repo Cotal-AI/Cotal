@@ -131,15 +131,20 @@ export const MANAGER_LEASE_TTL_MS = 10_000;
 export const MANAGER_LEASE_RENEW_MS = MANAGER_LEASE_TTL_MS / 4;
 export const MANAGER_LEASE_ATTEMPT_MS = 2_000;
 
-/** Bucket-level `max_bytes` cap on the derived membership feed (`cotal_membership_<space>`). The
- *  per-agent keying keeps each value tiny (a handful of channel patterns), so 64 MiB bounds the footprint
- *  far above any realistic readership while keeping the bucket from growing unbounded. A deliberate cap,
- *  not a guess at scale — the design is cap-safe by construction (per-agent, store-patterns-not-expanded). */
-export const MEMBERSHIP_MAX_BYTES = 64 * 1024 * 1024;
+/** The `max_bytes` the membership KV carried before its reservation was removed. Kept only so
+ *  {@link ensureMembershipStore} can recognize the stock value and release that reservation. */
+export const LEGACY_MEMBERSHIP_MAX_BYTES = 64 * 1024 * 1024;
 
-/** The anycast records bucket's size bound (SPEC §8.1). A full bucket refuses new rows, so takes wait
- *  instead of proceeding unrecorded. */
-export const ANYCAST_RECORDS_MAX_BYTES = 64 * 1024 * 1024;
+/** Maximum serialized value in the derived membership KV. One key holds one agent's normalized
+ *  subscription patterns, history is one, and the feed is display-only, so an agent that exceeds
+ *  this native per-message bound loses its derived view rather than reserving storage for every space. */
+export const MEMBERSHIP_MAX_VALUE_SIZE = 256 * 1024;
+
+/** Maximum serialized row in the anycast records KV (SPEC §8.1). A row holds one request and the
+ *  notices it still owes. A write past this native per-message bound is refused, so its take is
+ *  answered busy and the request waits rather than proceeding unrecorded. The bucket reserves no
+ *  storage: history is one, and a row is removed a day after its request leaves the queue. */
+export const ANYCAST_RECORD_MAX_VALUE_SIZE = 64 * 1024;
 
 /** The `max_bytes` a per-space artifact Object Store carried before the reservation was removed:
  *  4 GiB, the stock value every store created by that code holds. Kept for ONE purpose —
@@ -246,14 +251,58 @@ export function spaceRegistryStreamConfigs(space: string) {
 
 /** Native derived-membership creation inputs, not evidence of observed membership. */
 export function membershipStoreDefinition(space: string) {
-  return { bucket: membershipBucket(space), createOptions: { history: 1, max_bytes: MEMBERSHIP_MAX_BYTES } };
+  return {
+    bucket: membershipBucket(space),
+    createOptions: { history: 1, max_bytes: -1, maxValueSize: MEMBERSHIP_MAX_VALUE_SIZE },
+  };
+}
+
+/** Create or verify the derived membership KV, releasing only this code's legacy reservation.
+ *
+ * A positive `max_bytes` reserves that whole number against the broker's `max_file_store` before
+ * the bucket stores one byte. The old 64 MiB setting therefore capped spaces by disk capacity rather
+ * than membership use. This bucket now reserves nothing. Its footprint is bounded by construction:
+ * one key per agent, native history 1 (`max_msgs_per_subject`), and a native per-value ceiling
+ * (`max_msg_size`). Reaching the broker's real file-store cap or the value ceiling refuses a write.
+ *
+ * Exactly the former 64 MiB cap is reconciled to `-1`. Any other positive `max_bytes` is deliberate
+ * drift and is left untouched. Likewise, an existing positive value ceiling other than ours is not
+ * widened or narrowed silently. The pre-bound `-1` value ceiling is upgraded to the native bound. */
+export async function ensureMembershipStore(
+  jsm: JetStreamManager,
+  kvm: Kvm,
+  space: string,
+): Promise<void> {
+  const definition = membershipStoreDefinition(space);
+  const stream = `KV_${definition.bucket}`;
+  await kvm.create(definition.bucket, definition.createOptions);
+  let { config } = await jsm.streams.info(stream);
+  const drift: string[] = [];
+  if (config.max_bytes !== -1 && config.max_bytes !== LEGACY_MEMBERSHIP_MAX_BYTES)
+    drift.push(`max_bytes is ${config.max_bytes}, expected -1 (a deliberate cap is not widened by setup)`);
+  if (config.max_msgs_per_subject !== 1)
+    drift.push(`max_msgs_per_subject is ${config.max_msgs_per_subject}, expected 1`);
+  if (config.max_msg_size !== -1 && config.max_msg_size !== MEMBERSHIP_MAX_VALUE_SIZE)
+    drift.push(`max_msg_size is ${config.max_msg_size}, expected ${MEMBERSHIP_MAX_VALUE_SIZE} (a deliberate value cap is not changed by setup)`);
+  if (drift.length)
+    throw new Error(`membership store ${stream} has drifted: ${drift.join("; ")}`);
+
+  if (config.max_bytes === LEGACY_MEMBERSHIP_MAX_BYTES || config.max_msg_size === -1) {
+    await jsm.streams.update(stream, { ...config, max_bytes: -1, max_msg_size: MEMBERSHIP_MAX_VALUE_SIZE });
+    ({ config } = await jsm.streams.info(stream));
+  }
+  if (config.max_bytes !== -1 || config.max_msgs_per_subject !== 1 || config.max_msg_size !== MEMBERSHIP_MAX_VALUE_SIZE)
+    throw new Error(
+      `membership store ${stream} reconcile did not take: max_bytes=${config.max_bytes}, ` +
+      `max_msgs_per_subject=${config.max_msgs_per_subject}, max_msg_size=${config.max_msg_size}`,
+    );
 }
 
 /** Native creation inputs for the delivery daemon's anycast request records (SPEC §8.1). No TTL: the
  *  daemon removes a row a day after its request leaves the queue and never while it is queued. Both
  *  space setup and the daemon create it, the daemon for a mesh that predates the bucket. */
 export function anycastStoreDefinition(space: string) {
-  return { bucket: anycastBucket(space), createOptions: { history: 1, max_bytes: ANYCAST_RECORDS_MAX_BYTES } };
+  return { bucket: anycastBucket(space), createOptions: { history: 1, max_bytes: -1, maxValueSize: ANYCAST_RECORD_MAX_VALUE_SIZE } };
 }
 
 /**
@@ -711,11 +760,10 @@ export async function setupSpaceStreams(opts: {
     // config without TTL. Agents cannot create them; delivery re-auths against the read-ACL rows.
     for (const definition of spaceRegistryStreamConfigs(opts.space)) await jsm.streams.add(definition);
     // Derived channel-membership feed (broker CONNZ ∪ members registry): privileged-write (the
-    // `membership-rw` cred), admin/observer-read, no TTL (the daemon prunes departed agents). `history:1`
-    // (only the latest record per agent matters) + a `max_bytes` cap (footprint bound). Pre-created so the
-    // scoped writer holds no STREAM.CREATE. Idempotent.
-    const membership = membershipStoreDefinition(opts.space);
-    await kvm.create(membership.bucket, membership.createOptions);
+    // `membership-rw` cred), admin/observer-read, no TTL (the daemon prunes departed agents). Its
+    // one-key-per-agent history and native value-size ceiling bound it without a storage reservation.
+    // Pre-created so the scoped writer holds no STREAM.CREATE; legacy stock reservations reconcile.
+    await ensureMembershipStore(jsm, kvm, opts.space);
     const anycast = anycastStoreDefinition(opts.space);
     await kvm.create(anycast.bucket, anycast.createOptions);
     // The two §13.12 AUTHORITY stores (records + auth): every auth-mode mesh now carries a

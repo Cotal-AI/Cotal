@@ -234,6 +234,35 @@ const row = (goalId: string, context: string, acceptedAt = Date.now()): PendingT
     state.yields);
 }
 
+// A Codex server request is answered within the native turn. Its waiting presence must not
+// replace the host's turn accounting, even when no later tool restores working presence.
+{
+  const { a, state, poll } = rig();
+  state.pending = [row("answered-request", "work")];
+  await poll();
+  a.commitSurfacedTurns(["answered-request"]);
+  await a.setStatus("working");
+  await a.resetStatus("waiting", "item/tool/requestUserInput");
+  await a.setStatus("idle");
+  await tick();
+  check("a completed host turn after presence-only waiting yields done without another working item",
+    state.yields.length === 1 && state.yields[0]?.goalId === "answered-request" && state.yields[0]?.status === "done",
+    state.yields);
+}
+for (const status of ["blocked", "handoff"] as const) {
+  const { a, state, poll } = rig();
+  state.pending = [row("explicit-" + status, "work")];
+  await poll();
+  a.commitSurfacedTurns(["explicit-" + status]);
+  await a.setStatus("working");
+  await a.resetStatus("waiting", "item/tool/requestUserInput");
+  await a.yieldTurn(status, status === "handoff" ? { to: "reviewer" } : { note: "cannot progress" });
+  await a.setStatus("idle");
+  await tick();
+  check(`an explicit ${status} survives the completed host turn after presence-only waiting`,
+    state.yields.length === 1 && state.yields[0]?.status === status, state.yields);
+}
+
 // ── 4) an unseen payload is never "done" ──────────────────────────────────────────────────────
 {
   console.log("4 — an UNSURFACED turn never auto-yields");
@@ -1470,7 +1499,7 @@ await spawn(
   }
 }
 
-const EXPECTED_CELLS = 56;
+const EXPECTED_CELLS = 59;
 const ran = pass + fail;
 console.log(`\nturn-intake.smoke: ${pass} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {

@@ -220,7 +220,7 @@ const previewRuntime = (...words: string[]) => { const r = cotal("spawn", "-d", 
 const unknownRuntime = previewRuntime("--runtime", "nosuch");
 check("a managed preview of an unknown --runtime exits 0, carries it, and says this host cannot run it",
   unknownRuntime.r.status === 0 && unknownRuntime.p?.result?.requested?.runtime === "nosuch" && unknownRuntime.p.result.runtimeCheck?.host === hostname()
-    && unknownRuntime.p.result.runtimeCheck.available === false && unknownRuntime.p.result.runtimeCheck.error?.startsWith('unknown runtime "nosuch" (known: pty, orca, tmux, cmux, herdr, paseo)') === true
+    && unknownRuntime.p.result.runtimeCheck.available === false && unknownRuntime.p.result.runtimeCheck.error?.startsWith('unknown runtime "nosuch" (known: pty, orca, tmux, cmux, herdr)') === true
     && same(unknownRuntime.p.warnings?.map((w) => w.code), ["RUNTIME_UNAVAILABLE"]), shown(unknownRuntime.r));
 const uninstalledRuntime = previewRuntime("--runtime", "tmux");
 check("a known runtime that is not installed here names its cotal ext add package",

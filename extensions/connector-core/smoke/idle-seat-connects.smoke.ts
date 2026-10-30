@@ -623,7 +623,7 @@ try {
   await realManager.start();
   const managerInstanceId = (realManager as unknown as { managerInstanceId: string }).managerInstanceId;
   realAgent = new MeshAgent({
-    space: SPACE, name: "idle-operator", servers: SERVER, tls: false, lifecycleUid: ownerAUid,
+    space: SPACE, name: "idle-operator", kind: "agent", servers: SERVER, tls: false, lifecycleUid: ownerAUid,
     userAuth: { owner: OWNER_A, actor: AGENT_ACTOR, sentinelCreds: callout.sentinelCreds, bearerCmd: [process.execPath, BEARER_WRAP, BEARER_LOG, ...bearerArgv()] },
     managerInstanceId, subscribe: [], allowSubscribe: [], allowPublish: [],
   }, cleanEnv);

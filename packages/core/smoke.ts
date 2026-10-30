@@ -208,7 +208,8 @@ try {
       "the roster drops and diagnoses a presence row whose card id differs from its KV key",
       await until(() => bob.presenceBindingDropCount === 1)
         && !bob.getRoster().some((peer) => peer.card.name === "spoof")
-        && bobWarnings.some((message) => message.includes("does not match its KV key")),
+        && bobWarnings.some((message) => message.includes('key "local.binding_probe"')
+          && message.includes("card.id equal to its KV key")),
       { roster: bob.getRoster(), warnings: bobWarnings, drops: bob.presenceBindingDropCount },
     );
     await presenceKv.delete("local.binding_probe");
