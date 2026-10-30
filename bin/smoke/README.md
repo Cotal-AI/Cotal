@@ -63,6 +63,14 @@ suite stops its detached daemon groups on exit and on those signals, including p
 Broker and custodian leaks remain failures. Existing suite watchdogs and the CI job timeout
 remain in force.
 
+## Native dashboard journey
+
+`pnpm smoke:dogfood:live` installs the real web extension and starts its service on an owned
+static-auth mesh. It reads the private bootstrap file and checks the bound host and port directly,
+without extracting the retired legacy writer into a VM. The journey also verifies that a running
+saved service blocks `down`, leaves the service and broker alive, and names the explicit service
+stop required before stack shutdown. It does not test a browser's cookie enforcement.
+
 ## Platform skips
 
 A suite that cannot run on the current platform ends through `skipSuite(reason)` from
