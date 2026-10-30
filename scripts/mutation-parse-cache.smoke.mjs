@@ -10,6 +10,8 @@ import { createSuite } from "../bin/smoke/sentinel.mjs";
 const { check, finish } = createSuite();
 const root = fileURLToPath(new URL("..", import.meta.url));
 const tool = join(root, "scripts/mutation-coverage.mjs");
+const env = { ...process.env };
+for (const key of Object.keys(env)) if (key.startsWith("COTAL_")) delete env[key];
 const scratch = mkdtempSync(join(tmpdir(), "parse-cache-"));
 const config = JSON.parse(readFileSync(join(root, "bin/smoke/mutations/dm-history-subject.json"), "utf8"));
 assert(config.mutations.length > 0 && config.suite.length === 1);
@@ -34,7 +36,7 @@ process.on("exit", () => fs.writeFileSync(process.env.PARSE_CACHE_METRICS, JSON.
 const invoke = (path, metrics) => spawnSync(process.execPath, [
   ...(metrics ? ["--import", preload] : []), tool, "--gradable-only", ...(Array.isArray(path) ? path : [path]),
 ], { cwd: root, encoding: "utf8", timeout: 60_000,
-  env: { ...process.env, ...(metrics ? { PARSE_CACHE_METRICS: metrics } : {}) } });
+  env: { ...env, ...(metrics ? { PARSE_CACHE_METRICS: metrics } : {}) } });
 try {
   const rows = [];
   for (const factor of [0, 1, 4]) {
