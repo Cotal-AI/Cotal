@@ -292,7 +292,8 @@ Channel delivery has two wire-observable classes, fixed per channel
   unsubscribe: self-serve, bounded by your read ACL, no privileged mediation.
 - **`durable`**. `live` plus a per-member **durable backstop**: the message is also
   retained for each member and delivered on its next connection or turn, pending until
-  acked. At-least-once for current members, within the channel's retention window. The
+  acked. At-least-once for current members, within the space's chat history limit
+  ([channels](channels-and-permissions.md#how-long-posts-are-kept)). The
   machinery behind the backstop is the [delivery daemon](delivery-daemon.md).
 
 A message delivered both ways is one logical delivery; receivers dedupe by `id`, and

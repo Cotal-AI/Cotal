@@ -1339,6 +1339,18 @@ it starts anything, naming the path and the `mv` that moves it aside; the next `
 again. A trust record under `.cotal/auth` that this account cannot read, such as one at mode 000, is
 refused the same way, and its next step makes it readable again.
 
+When `cotal up` starts a space's broker, it moves a chat stream still on the settings every stream had
+before the limit was configurable, no age limit and 1000 posts per sender on each channel, to the
+current default of 30 days and 1000 per sender. **This deletes every channel post older than 30 days at that moment.**
+`up` warns with the old and new limit, as `CHAT_HISTORY_MIGRATED` in the receipt of a controller
+stack, `team boot` or `setup --start`. Any other limit is the operator's ([`history limit`](#history)) and is left as
+it is, and a chat stream that differs from the canonical settings in anything else refuses the start.
+The move runs after every other stream setup check, so a start that a check refuses deletes nothing.
+A start that fails after the move says so in its error, which for `setup --start` is the startup
+failure in its receipt, and its envelope lists the chat stream under `changed`. A refresh of a broker that is already running changes no limit, and neither does a resume
+after `down --preserve-state`, which runs no stream setup, so `history limit` can set one before the
+next start. [Upgrading](UPGRADING.md#channel-posts-expire-at-30-days-after-01311) has the steps.
+
 On an existing mesh, `cotal up` reconciles the presence and lease bucket TTLs. It writes a reserved
 canary and waits for the bucket to expire it before reporting success. If the broker accepts the
 stream update but the backing store does not persist or enforce it, `up` exits nonzero with a TTL
@@ -6457,6 +6469,7 @@ no Direct Get row on the registry, and neither has an agent credential passed wi
 ```bash
 cotal history [<channel>] [--dms] [--since <time|seq>] [--limit <n>] [--from <name>] [--grep <text>] [--follow] [--json | --plain]
 cotal history clear [--dms] [--yes | --dry-run] [--json | --plain] [--space <s>]
+cotal history limit [--max-age <age>] [--per-sender <n>] [--yes] [--json | --plain] [--space <s>]
 ```
 
 | Flag | Default | Meaning |
@@ -6470,8 +6483,10 @@ cotal history clear [--dms] [--yes | --dry-run] [--json | --plain] [--space <s>]
 | `--follow` | off | Keep listening and print each new message |
 | `--json` / `-j` | off | One JSON document, or with `--follow` one JSON record per line |
 | `--plain` | off | The same report without color or marks |
-| `--yes` / `-y` | off | `clear`: confirm without prompting. Scripts and `--json` require it |
+| `--yes` / `-y` | off | `clear` and `limit`: confirm without prompting. Scripts and `--json` require it |
 | `--dry-run` | off | `clear`: show the selected target and streams without connecting, and purge nothing |
+| `--max-age <age>` | none | `limit`: delete a channel post once it is older than this, from `2m` to `3650d` |
+| `--per-sender <n>` | none | `limit`: keep this many of each sender's newest posts on each channel, at least 1 |
 
 Reads the newest retained messages in the selected space, newest last: one channel, or every
 channel the identity may read. The channel may be written as `#general`, and a name holding `*` or
@@ -6503,11 +6518,14 @@ text and `--plain` reports, so a message cannot clear the screen or start a row 
 A row shows the first 500 characters of a longer message and marks the cut with the message's size.
 `--json` carries the text as it was sent, in `result.items[].text`.
 
-Retained history is not every message sent. The chat stream keeps a fixed number of messages per
-sender on each channel, so a busy sender's oldest messages are discarded while other senders'
-messages from the same time remain. `result.retention` names the limit and each sender at it on the
-channels read, and the report prints a `gap` line for each. A gap is a fact about the stream, not a
-partial read. `result.replay` gives each channel's replay policy for new members, read from the
+Retained history is not every message sent. The chat stream keeps a post until it is older than the
+space's age limit, or until its sender has posted the space's per-sender count of newer ones on that
+channel. A new space keeps posts for 30 days and 1000 per sender, and `history limit` changes both.
+Past the count a busy sender's oldest posts are deleted while other senders' posts from the same time
+remain. `result.retention` names both limits, `oldestAt` (the time of the oldest post the stream
+still holds), and each sender at the count on the channels read. The report prints that time and a
+`gap` line for each such sender. A sender at the count may have posted only that many, so a gap says
+their older posts may be gone. It describes the stream, not a partial read. `result.replay` gives each channel's replay policy for new members, read from the
 channel registry. DM gaps are not reported.
 
 A channel the identity may not read is refused with `PERMISSION_DENIED` (exit 2), never shown as
@@ -6552,6 +6570,27 @@ purger view over your login, which needs ledger scope `admin` ([Identity & auth]
 A purge the broker refuses for the credential's grant purged nothing, so it is refused with
 `PERMISSION_DENIED` (exit 2), naming the credential's profile; with `--creds`, the Next is to run it
 without `--creds`, on the operator credential this machine records.
+
+`history limit` sets how long the space keeps channel posts. `--max-age` deletes a post once it is
+older than the age, and `--per-sender` keeps that many of each sender's newest posts on each channel.
+One limit holds for every channel in the space. Give either flag or both, and the other part keeps
+its current value. An age is a whole number of `s`, `m`, `h` or `d` from `2m`, the chat stream's
+duplicate window, to `3650d`. A stream with no age limit, from before the limit was configurable,
+needs `--max-age` as well. A bad value is a `USAGE_INVALID` refusal before connecting.
+Run it on the broker host from the space's root: it mints a one-shot provisioner credential from the
+root's trust, as `up` does, and a root without that trust is refused with `PERMISSION_DENIED`. A
+space with no chat stream is refused with `TARGET_NOT_FOUND`; `cotal up` creates the stream.
+
+A lower limit deletes the posts it no longer keeps as soon as the broker applies it. In a terminal,
+lowering either part asks first, and the question comes with what the stream held when it was read:
+each sender on each channel with more posts than the new count and how many of them go, and every
+post older than the new age, with the time of the oldest retained post. Raising asks nothing, and
+posts deleted under an earlier limit do not come back. Scripts and `--json` need `--yes`, checked
+before any credential is minted. The update carries the limit that was read, and a stream that holds
+another one by then is refused with `CONFLICT` and left as it is. The read and the update are two
+steps, so two operators changing the limit at the same moment can still overwrite each other. An
+update sent without a confirmed outcome is `OPERATION_UNKNOWN` and is not retried. The receipt names
+the old and new limit, and running it again with the same values changes nothing and asks nothing.
 
 ## console
 

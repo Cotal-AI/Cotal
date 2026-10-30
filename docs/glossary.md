@@ -38,7 +38,7 @@ One-line definitions of the terms used across these docs and the spec. The base 
   [SPEC §13](../SPEC.md#13-endpoint-control-surface-v04), [architecture.md](architecture.md)
 
 - **Delivery class (`live` / `durable`)**, a channel's per-channel delivery guarantee: `live`
-  is at-most-once; `durable` adds a per-member backstop (at-least-once within retention). Distinct
+  is at-most-once; `durable` adds a per-member backstop (at-least-once within the space's chat history limit). Distinct
   from delivery *mode*. [SPEC §4](../SPEC.md#4-delivery-modes), [channels-and-permissions.md](channels-and-permissions.md)
 
 - **Delivery daemon (Plane-3)**, the server-side component providing the durable backstop:
@@ -58,7 +58,8 @@ One-line definitions of the terms used across these docs and the spec. The base 
   for any instance, agent or not. [SPEC §1](../SPEC.md#1-scope-and-terminology)
 
 - **History / replay**: retained channel messages backfilled to a joiner when a channel's
-  `replay` is on, bounded to the reader's ACL and optionally to `replayWindow`.
+  `replay` is on, bounded to the reader's ACL and optionally to `replayWindow`. The space's chat
+  history limit (30 days or 1000 posts per sender on a channel by default) decides what is retained.
   [SPEC §7](../SPEC.md#7-channels)
 
 - **Instance (id)**: a connected participant whose **id** is its principal (below), used

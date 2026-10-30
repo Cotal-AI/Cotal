@@ -18,6 +18,7 @@ import { CotalEndpoint, seedChannelRegistry, isReachable, mintLifecycleUid } fro
 import { MeshAgent } from "../src/agent.js";
 import type { AgentConfig } from "../src/config.js";
 import type { InboxItem } from "../src/agent.js";
+import { cotalToolSpecs } from "../src/tool-specs.js";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
@@ -115,6 +116,12 @@ try {
   // #977: the gate must not also claim the replay=off channel's window was empty and complete —
   // it ack-dropped ambient on the promise recall would cover it, and recall cannot, so it must say so.
   check("recall REPORTS the replay=off channel as dropped, not silently", r.droppedChannels.includes("quiet-ch"));
+  // The same list carries a channel whose read failed, so the warning names that reason too and
+  // does not report a channel recall never read as one whose posts expired.
+  const inbox = cotalToolSpecs(cfg).find((s) => s.name === "cotal_inbox");
+  const reply = inbox ? await inbox.run(agent, cfg, {}) : "";
+  const replyText = typeof reply === "string" ? reply : reply.text;
+  check("the inbox warning names a channel recall could not read as such", replyText.includes("#quiet-ch") && replyText.includes("or recall could not read the channel"), replyText);
 
   console.log(`\nATTENTION TESTS PASSED ✅  (${pass} checks)`);
   await agent.stop();

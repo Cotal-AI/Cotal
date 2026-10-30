@@ -487,8 +487,12 @@ const SEAMS: Seam[] = [
   // one provisioning connection each in delivery/smoke/fanout-load and core/smoke/seat-idle-load,
   // and the recorded program's hash on run-status (2b59b432f) adds a driver and a reader connection
   // in bin/smoke/run-status-program-identity. Each dials a plaintext loopback broker its suite
+  // starts and states `tls: false`. 332/255 -> 338/260: the chat history limit adds the provisioner
+  // dial of `cotal history limit` in cli/src/commands/history-limit, which states the mesh's recorded
+  // `tlsRequired`, and five smoke-side calls: core/smoke/chat-history-limit four and
+  // cli/smoke/history-limit one. Each smoke-side call dials a plaintext loopback broker its suite
   // starts and states `tls: false`.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 332, untypecheckedSites: 255 },
+  { fn: "standaloneConnectOpts", key: "tls", sites: 338, untypecheckedSites: 260 },
 ];
 
 const SITE_COUNTS = JSON.parse(readFileSync(new URL("./required-arg-sites.json", import.meta.url), "utf8")) as Record<string, number>;

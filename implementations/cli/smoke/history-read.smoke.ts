@@ -24,7 +24,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import {
-  BACKUP_MAX_MSGS_PER_SUBJECT,
+  CHAT_HISTORY_DEFAULT,
   CotalEndpoint,
   createSpaceAuth,
   isReachable,
@@ -56,7 +56,7 @@ type Result = {
   kind: string;
   channels: string[];
   window: { limit: number; read: number; olderRetained: boolean | null; since: string | null; reachesSince: boolean | null };
-  retention: { perSender: number | null; gaps: { channel: string; name: string | null; retained: number }[] } | null;
+  retention: { perSender: number | null; oldestAt?: string | null; gaps: { channel: string; name: string | null; retained: number }[] } | null;
   replay: { channel: string; replay: boolean | null }[];
   items: Item[];
 };
@@ -242,7 +242,7 @@ try {
     dmsPlain.status === 0 && /DM to erin\s+alice\s+for erin/.test(dmsPlain.stdout) && /DM to bob\s+alice\s+a private note/.test(dmsPlain.stdout), dmsPlain.stdout);
 
   const plain = await run(["history", "general", "--plain"]);
-  check("the plain report is a table and names the retention and replay", plain.status === 0 && /^TIME\s+WHERE\s+FROM\s+MESSAGE/m.test(plain.stdout) && /#general\s+alice\s+deploy started/.test(plain.stdout) && /retention: /.test(plain.stdout) && /#general replay to new members: on \(24h\)/.test(plain.stdout) && !/\x1b\[/.test(plain.stdout), shown(plain));
+  check("the plain report is a table and names the retention and replay", plain.status === 0 && /^TIME\s+WHERE\s+FROM\s+MESSAGE/m.test(plain.stdout) && /#general\s+alice\s+deploy started/.test(plain.stdout) && /retention: 1000 per sender on each channel, posts older than 30d expire; /.test(plain.stdout) && /#general replay to new members: on \(24h\)/.test(plain.stdout) && !/\x1b\[/.test(plain.stdout), shown(plain));
   const localTime = items[0] ? new Date(items[0].ts).toLocaleTimeString() : "";
   check("the plain report shows each message's local time, not the ISO time JSON carries", localTime !== "" && plain.stdout.includes(localTime) && !/\d{4}-\d\d-\d\dT\d\d:/.test(plain.stdout) && /^\d{4}-\d\d-\d\dT/.test(items[0]!.ts), { localTime, stdout: plain.stdout.slice(0, 600) });
 
@@ -484,7 +484,7 @@ try {
 
   // ── a retention gap ─────────────────────────────────────────────────────────────────────────────
   {
-    const cap = BACKUP_MAX_MSGS_PER_SUBJECT;
+    const cap = CHAT_HISTORY_DEFAULT.perSender;
     const talker = new CotalEndpoint({ space: openSpace, servers: openServers, card: { name: "carol", kind: "agent" }, channels: ["general"], heartbeatMs: 500 });
     const quiet = new CotalEndpoint({ space: openSpace, servers: openServers, card: { name: "dave", kind: "agent" }, channels: ["general"], heartbeatMs: 500 });
     for (const ep of [talker, quiet]) {
@@ -503,7 +503,8 @@ try {
     check("the gap is named: carol is at the per-sender limit on #general, dave is not", r?.retention?.perSender === cap && r.retention.gaps.length === 1 && r.retention.gaps[0]?.name === "carol" && r.retention.gaps[0].retained === cap, r?.retention);
     check("a retention gap is a fact about history, not a partial read", gap.envelope?.outcome === "ok" && gap.envelope.completeness === "complete", { outcome: gap.envelope?.outcome, completeness: gap.envelope?.completeness, warnings: gap.envelope?.warnings });
     const gapPlain = await run(["history", "general", "--space", openSpace, "--limit", "3", "--plain"]);
-    check("the report names the gap", new RegExp(`gap: #general holds ${cap} from carol, the per-sender limit, so their older messages there are gone`).test(gapPlain.stdout), gapPlain.stdout);
+    check("the report names the gap as possible loss", new RegExp(`gap: #general holds ${cap} from carol, the per-sender limit, so their older messages there may be gone`).test(gapPlain.stdout), gapPlain.stdout);
+    check("...and the time of the oldest post the stream still holds", typeof r?.retention?.oldestAt === "string" && /the oldest post the chat stream still holds is from .+; posts sent before it are gone/.test(gapPlain.stdout), { oldestAt: r?.retention?.oldestAt, stdout: gapPlain.stdout });
     // At the cap a larger --limit does not exist, and a filter finds only what the window read.
     const [capPlain, fromCarol] = await Promise.all([
       run(["history", "general", "--space", openSpace, "--limit", "1000", "--plain"]),

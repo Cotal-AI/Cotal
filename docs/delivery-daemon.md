@@ -12,7 +12,7 @@ alongside the live subject fabric and the presence/registry state).
 The backstop defines a **delivery contract** while leaving the storage layout open: [SPEC §8](../SPEC.md#8-nats--jetstream-binding)
 makes the daemon's store, writer, reader, and registry reference-implementation detail. What is
 normative is the [§4](../SPEC.md#4-delivery-modes) guarantee it upholds (`durable` is
-at-least-once for current members within retention) and the [§9](../SPEC.md#9-nats--jetstream-security-and-authorization)
+at-least-once for current members within the space's chat history limit) and the [§9](../SPEC.md#9-nats--jetstream-security-and-authorization)
 read checks it must apply. A conformant deployment may realize the backstop differently.
 
 ## The three pieces
