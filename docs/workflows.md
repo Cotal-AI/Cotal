@@ -337,7 +337,10 @@ That ceiling, the caller's own channel scope as it was issued, is what the run m
 in channels; the manager's own reach never stands in for it. A request from a credential minted
 without an issuance is refused with `permission-denied` and a detail naming the caller. A run
 whose caller had no channels can still sleep, checkpoint and turn agents; its `wait` on a channel
-is refused at the effect.
+is refused at the effect. On a static mesh the same ceiling bounds what the run's spawns hand on:
+a helper gets no channel or capability the caller's credential did not carry when the run was
+admitted, and a grant the caller gains later is never handed on. A run started by an operator
+instrument, or by a caller holding admin, is exempt, as that caller's own spawns are.
 
 The manager endpoint serves `run-cancel` with `{ runId, reason }`. Call it through an issued
 credential on a handle pinned to the manager instance, retaining the Describe-derived epoch bind.
@@ -588,8 +591,9 @@ This split confines broker credentials; it is not process isolation for injected
 The runtime and its effect host share the manager process. A run's channel reach is the admitted
 ceiling ([SPEC §14.8](../SPEC.md#148-run-admission)): the starting caller's issued channel scope,
 recorded once in `cotal_admission_<space>` under a per-run `run-admitter` credential the driver
-never holds, and re-read by the host before every channel effect. Spawn and turn keep their own
-delegated checks; `notify` writes agent-addressed notices and is not channel publication. Treat
+never holds, and re-read by the host before every channel effect. On a static mesh every spawn
+the run makes is bounded by that ceiling too; turn keeps its own delegated check, and `notify`
+writes agent-addressed notices and is not channel publication. Treat
 `run` as program-execution authority bounded by that ceiling, not as sandboxing of the program.
 
 A version-1 fork can replay its settled parent history through the host. Inherited checkpoint

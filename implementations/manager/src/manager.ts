@@ -1000,7 +1000,7 @@ type ManagedEnrollment = Awaited<ReturnType<NonNullable<NonNullable<ManagerOptio
 type StaticSpawnBound =
   | { kind: "exempt" }
   | { kind: "none"; reason: string }
-  | { kind: "bounded"; caller: IssuedCaller; ceiling: IssuedSubjectPermissions };
+  | { kind: "bounded"; caller: IssuedCaller; ceiling: IssuedSubjectPermissions; run?: string };
 
 const INLINE_PERSONA_KEYS = ["prompt", "role", "model", "variant", "description", "subscribe", "allowSubscribe", "allowPublish", "capabilities", "save"];
 
@@ -6542,15 +6542,22 @@ export class Manager {
    * keyed runs read it. A user-auth mesh bounds the mint on its ledger instead, and an open mesh
    * mints no grant, so both return `exempt`. So does a call with no authenticated caller, which is
    * the manager's own composition root (roster boot, a manifest `launch`, which a static mesh mints
-   * only into operator instruments). A caller with no issued generation, or whose evidence does not
-   * resolve, hands on no grant. The evidence's own standing decides the rest.
+   * only into operator instruments). A workflow run's own caller is bounded by its admission
+   * (SPEC 14.8): the starter's ceiling as resolved when the run was admitted, at the starter's
+   * coordinate, unless the starter was exempt then. A caller with no issued generation, or whose
+   * evidence does not resolve, hands on no grant. The evidence's own standing decides the rest.
    */
   private async staticSpawnBound(caller: EpCaller | undefined): Promise<StaticSpawnBound> {
     if (this.meshMode !== "static" || caller === undefined) return { kind: "exempt" };
-    // A workflow run's spawns are not bounded here: the driver's own credential is not the run's
-    // authority, and the run's admission (SPEC 14.8) records its starter's permissions but no
-    // verdict on what the starter may hand on, so an instrument-started run cannot be told apart.
-    if (this.runHosting?.admittedCaller(caller) !== undefined) return { kind: "exempt" };
+    // The driver's own credential is not the run's authority, and the starter's evidence may have
+    // expired or changed since: the admission recorded both the ceiling and the verdict.
+    const admission = this.runHosting?.runAdmission(caller);
+    if (admission !== undefined) {
+      if (admission.spawnExempt) return { kind: "exempt" };
+      if (!isIssuedCaller(admission.caller))
+        return { kind: "none", reason: "its run was admitted with no issued generation, so it records no ceiling to bound a grant by" };
+      return { kind: "bounded", caller: admission.caller, ceiling: admission.ceiling, run: admission.runId };
+    }
     if (!isIssuedCaller(caller))
       return { kind: "none", reason: "its credential carries no issued generation (an unissued mint or a legacy rail)" };
     const ref = { space: this.space, owner: caller.owner, actor: caller.actor, uid: caller.uid, generation: caller.generation };
@@ -6590,6 +6597,10 @@ export class Manager {
             `Define it without these, or start the definer under a manager (\`cotal spawn --detach\`), whose seats carry issued evidence.`
         : `define-persona: this persona grants more than the definer holds: ${named}. A definer hands on only what its own issued credential carries (SPEC 13.15). ` +
             `Drop these from the persona, or have the operator widen the definer's own persona.`;
+    if (bound.kind === "bounded" && bound.run !== undefined)
+      return `spawn: this spawn hands its helper more than run ${bound.run}'s starter held when the run was admitted: ${named}. ` +
+        `A run hands on only what its starter's issued credential carried at admission (SPEC 14.8). ` +
+        `Drop these from the persona or the spawn, or start the run from a caller that holds them.`;
     return bound.kind === "none"
       ? `spawn: the spawner holds no issued evidence (SPEC 13.15), so it hands on no grant: ${bound.reason}. This spawn asks for ${named}. ` +
           `Spawn a persona that names none of these, or start the spawner under a manager (\`cotal spawn --detach\`), whose seats carry issued evidence.`

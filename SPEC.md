@@ -5346,8 +5346,9 @@ authority does not resolve, a legacy-rail caller included, hands on no grant: a 
 any part is refused. Two callers are exempt. One is an operator instrument, whose evidence has no
 `sources` and does not permit a publish on its own presence key, which every agent mint carries.
 The other is a spawner whose evidence holds the admin set. A spawn the manager starts on its own
-behalf, with no caller, is not bounded. In this revision two parts of a spawn are outside the
-bound: the helper's role, and every spawn a workflow run makes (§14.8). A refusal names each part
+behalf, with no caller, is not bounded. A spawn a hosted workflow run makes is bounded by the run's
+admission instead of by the driver's own credential (§14.8). In this revision the helper's role is
+outside the bound. A refusal names each part
 it refuses and happens before any name, credential or durable exists. A user-auth space bounds the same grant on its actor
 ledger, at the managed row's write and at every bearer exchange. There a scope token is within when
 the spawner's scope lists it, or when it is `spawn` and the scope lists `run`.
@@ -6210,7 +6211,7 @@ recorded once per run, and never widened afterwards.
 **The record.** Before the driver is launched and before a successful start reply, the hosting
 endpoint writes `admission.v1.<endpoint>.<runId>` in `cotal_admission_<space>`, create-only,
 under a one-shot `run-admitter` credential pinned to that one run:
-`{ version: 1, space, endpoint, runId, instanceId, caller, ceiling, provenance, admittedAt }`.
+`{ version: 1, space, endpoint, runId, instanceId, caller, ceiling, provenance, admittedAt, spawnExempt? }`.
 The store is write-once per key at the broker (§13.12: one message per subject under `discard:
 new`, no rollup header, no message delete, no purge), so the admitter's own key row can neither
 replace the admission nor remove it once written, and a marker, once written, stays.
@@ -6229,8 +6230,18 @@ publish requires `chat.<owner>.<actor>.<channel>` under the caller's own triple 
 `ceiling.publish`; a read requires every subject `chat.*.*.<channel>` matches to be covered by
 `ceiling.subscribe`. Deny wins; an explicit `none` is deny-all; a generated channel name is
 checked after it is derived and no wildcard is invented to admit it. `notify` writes agent-
-addressed notices and is not channel publication; spawn and turn keep their separately checked
-delegated authority.
+addressed notices and is not channel publication; turn keeps its separately checked delegated
+authority.
+
+**Spawn.** On a static mesh every spawn a hosted run makes is bounded by its admission (§13.15's
+spawn bound): the helper's channels, capabilities and own event plane must be held by `ceiling` at
+the admitted caller's coordinate, so a grant the caller gained after admission is never handed on.
+`spawnExempt: true` is written at admission when the caller's evidence then classified it as an
+operator instrument or as holding the admin set, and the run's spawns are then exempt, as that
+caller's own are. The verdict is recorded rather than re-derived because an instrument's evidence
+expires minutes after issue and a run's spawns may come hours later. An admission without the field
+is bounded. A reader that predates the field refuses an admission carrying it as an unsupported
+field.
 
 **Revocation.** `revoked.v1.<endpoint>.<runId>` is the run's revocation marker: create-only,
 idempotent, written under the same `run-admitter` profile, never removed. A revoked run performs
@@ -6808,6 +6819,7 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
+| 2026-10-30 | **A hosted run's spawns are bounded by its admission (§13.15, §14.8), breaking.** A workflow run's spawns were exempt from the static spawn bound, so a caller holding `run` could start a run and spawn a helper the direct spawn door refuses. Each spawn a run makes on a static mesh is now bounded by the admitted ceiling at the admitted caller's coordinate, so a grant the caller gained after admission is never handed on. The admission gains `spawnExempt: true`, written when the caller was an operator instrument or held the admin set at admission; such a run's spawns stay exempt. A reader that predates the field refuses an admission carrying it. |
 | 2026-10-30 | **`spawn` takes an inline persona (§13.7).** An agent defines its helper on the spawn itself: the persona body, role, model, channels and capabilities, bounded as a catalog file is. The manager keeps the record in a private per-lifecycle snapshot written after the grant, refuses a restart once the snapshot changed, and removes it at retirement. `save: true` writes a create-only catalog copy of the checked grant under the requested name. `define-persona` takes `capabilities`, bounded against the definer before the write. The manager cluster advances to revision 44. Additive. |
 | 2026-10-30 | **A static spawn is bounded against the spawner's issued evidence (§13.15), breaking.** A caller that could spawn on a static space could hand its helper any channel or capability, because nothing compared the grant with what the caller held. The manager now resolves the caller's issued authority and refuses, by name, every channel and capability token the evidence does not cover, measured at the caller's own coordinate. A caller with no resolvable authority hands on no grant. Operator instruments and admin spawners are exempt. The helper's role and a workflow run's spawns are outside the bound in this revision. The user-auth ledger's own scope rule learns that `run` carries `spawn`. No wire change. |
 | 2026-10-29 | **Manager connector status declares event-plane support (§13.7), additive.** Every `status.connectors` row now requires `eventPlane: boolean`, including rows built from the declared extension inventory before its package is imported. The fact is true only when the connector declares its event channel; it is never defaulted to true. The reference Manager cluster advances to revision 42. |

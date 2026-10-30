@@ -57,6 +57,7 @@ import {
   newTakeoverId,
   admissionBucket,
   createRunAdmission,
+  issuedSpawnerStanding,
   bindAndAdmitRunSubmission, readRunSubmission, submissionFingerprint, newSubmissionRunId, KEYED_SUBMISSION_MAX_DEADLINE_MS,
   canonicalJson,
   type RunSubmissionView, type RemoteRunSubmissionResult,
@@ -164,6 +165,8 @@ interface HostedRun {
   /** The caller the run was admitted for, set at launch: whose grant the run's own caller is
    *  checked against ({@link RunHosting.admittedCaller}). */
   caller?: EpCaller;
+  /** The run's admission, set at launch: what bounds the run's spawns ({@link RunHosting.runAdmission}). */
+  admission?: RunAdmission;
   /** Set once the connection is up; a slot reserved before that holds neither. */
   nc?: NatsConnection;
   mediatorNc?: NatsConnection;
@@ -320,7 +323,8 @@ export class RunHosting {
         slot = this.claim(runId, placements);
         const admission: RunAdmission = { version: 1, space: this.ctx.space, endpoint: this.ctx.endpoint,
           runId, instanceId: this.ctx.instanceId, caller, ceiling: resolved.evidence.permissions,
-          provenance: { kind: "issued", ref, resolvedRevision: resolved.revision }, admittedAt: Date.now() };
+          provenance: { kind: "issued", ref, resolvedRevision: resolved.revision }, admittedAt: Date.now(),
+          ...(issuedSpawnerStanding(resolved.evidence) !== "bounded" ? { spawnExempt: true as const } : {}) };
         result = await this.withAdmitter(runId, (kv, jsm) => bindAndAdmitRunSubmission({ kv, jsm, admission,
           submissionId: ctx.request.id, fingerprint: submissionFingerprint(ctx.request, ctx.subject).fingerprint,
           processEpoch: ctx.identity.epoch, deadline: { requestEndsAt,
@@ -409,6 +413,9 @@ export class RunHosting {
       ceiling: resolved.evidence.permissions,
       provenance: { kind: "issued", ref, resolvedRevision: resolved.revision },
       admittedAt: Date.now(),
+      // Whether the starter's own spawns are bounded, decided now: an instrument's evidence expires
+      // minutes after issue, and the run's spawns may come hours later.
+      ...(issuedSpawnerStanding(resolved.evidence) !== "bounded" ? { spawnExempt: true as const } : {}),
     };
     await this.withAdmitter(runId, (kv) => createRunAdmission(kv, admission));
     return { admission, revoked: undefined };
@@ -1010,6 +1017,17 @@ export class RunHosting {
     return undefined;
   }
 
+  /** The admission of the run this manager drives under `caller`, the run's own derived caller;
+   *  `undefined` for any other caller. A run's spawns are bounded by it (SPEC 14.8). */
+  runAdmission(caller: EpCaller): RunAdmission | undefined {
+    for (const run of this.runs.values()) {
+      if (run.admission === undefined) continue;
+      const derived = runDriverCaller(run.runId, run.admission.caller.owner);
+      if (derived.owner === caller.owner && derived.actor === caller.actor && derived.uid === caller.uid) return run.admission;
+    }
+    return undefined;
+  }
+
   /** How many drives this incarnation holds; the status surface reads it. */
   get liveCount(): number {
     return this.runs.size;
@@ -1100,7 +1118,7 @@ export class RunHosting {
       : undefined;
     // The attempt's coordinates on the slot before the connection: the renewal loop re-mints from
     // these, and the epoch is a per-attempt fact.
-    const holder: HostedRun = Object.assign(slot, { epoch: req.epoch, fencingToken: req.fencingToken, caller: req.admission.admission.caller, ...(creds !== undefined ? { creds, mediatorCreds } : {}) });
+    const holder: HostedRun = Object.assign(slot, { epoch: req.epoch, fencingToken: req.fencingToken, caller: req.admission.admission.caller, admission: req.admission.admission, ...(creds !== undefined ? { creds, mediatorCreds } : {}) });
     const enc = new TextEncoder();
     // A STANDING connection: the drive may park for hours inside a pause, so it reconnects without
     // bound and presents whatever credential the renewal loop last minted.

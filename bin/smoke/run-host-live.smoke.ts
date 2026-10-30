@@ -288,6 +288,65 @@ try {
       failed?.status?.failure?.code === "L4000" && failed.status.failure.message.includes('is not admitted to read channel "build"') && listed?.failure?.code === "L4000", { status: failed?.status, listed });
   }
 
+  console.log("A2c. a run's spawns are bounded by what its starter held when the run was admitted");
+  {
+    // The caller holds `run` and no channel. Its run hands on only that: `spawn`, which `run`
+    // carries, and no channel or other capability (SPEC 14.8).
+    writeFileSync(join(wsA, ".cotal", "agents", "wide.md"), `---\nname: wide\nrole: worker\nagent: run-answer-stub\nallowPublish: [secret]\ncapabilities: []\n---\n`);
+    const settledRun = async (source: string, file: string): Promise<{ runId: string; v: RunStatusViewT | undefined }> => {
+      const r = await call("run-start", { source, file });
+      const runId = (r.data as { runId?: string } | undefined)?.runId ?? "";
+      const v = await until(async () => { const s = await status(runId); return stateOf(s) === "failed" || stateOf(s) === "completed" ? s : undefined; }, 30_000);
+      return { runId, v };
+    };
+    const wide = await settledRun('await spawn("wide");\n', "wide.cotal.js");
+    c("a run's spawn of a catalog persona wider than its starter is refused, naming the run and the channel",
+      stateOf(wide.v) === "failed" && wide.v?.status?.failure?.message.includes(`more than run ${wide.runId}'s starter held when the run was admitted`) === true
+        && wide.v?.status?.failure?.message.includes("allowPublish secret") === true, wide.v?.status);
+    const inlineWide = await settledRun('await spawn({ name: "inl-wide", prompt: "You answer.", capabilities: ["admin"] });\n', "inline-wide.cotal.js");
+    c("so is an inline persona asking for a capability the starter does not hold",
+      stateOf(inlineWide.v) === "failed" && inlineWide.v?.status?.failure?.message.includes("capabilities admin") === true, inlineWide.v?.status);
+    // An inline persona names no harness, so the manager's default stands in for the stub's pin.
+    process.env.COTAL_DEFAULT_AGENT = "run-answer-stub";
+    try {
+      const within = await settledRun('const h = await spawn({ name: "inl-ok", prompt: "You answer.", capabilities: ["spawn"] });\nlog("seat", h.agent);\n', "inline-ok.cotal.js");
+      c("an inline persona within the starter's ceiling launches and the run completes", stateOf(within.v) === "completed", within.v?.status);
+    } finally {
+      delete process.env.COTAL_DEFAULT_AGENT;
+    }
+    // A starter holding the admin set is exempt, as its own spawns are, and the admission says so.
+    const adminId = newIdentity();
+    const adminUid = mintLifecycleUid();
+    const adminIssued = { generation: mintGeneration(Math.floor(Date.now() / 1000) + 172_800), acceptedToken: mintAcceptedToken() };
+    const adminCaller = { owner: DEV_OWNER, actor: adminId.id, uid: adminUid, generation: adminIssued.generation } as EpCallerT;
+    const adminCreds = await withIssuerSession({ servers: brokerA.servers, space: spaceA, auth, tls: false }, (s) =>
+      mintCreds(auth, adminId, "agent", { lifecycleUid: adminUid, capabilities: ["run", "admin"], expiresInSeconds: 3600, issued: adminIssued, issuance: { mode: "issue", store: s.store, accepted: s.accepted, sources: [] } }));
+    const adminNc = await connect({ servers: brokerA.servers, ...standaloneConnectOpts({ creds: adminCreds, tls: false }), maxReconnectAttempts: 0 });
+    try {
+      const adminService = await resolveService(adminNc, spaceA, "manager", adminCaller, { deadlineMs: 10_000 });
+      const adminCall = async (command: string, args?: Record<string, unknown>): Promise<ReplyT> =>
+        (await invokeCommand(adminNc, spaceA, adminService, command, args, { deadlineMs: 30_000, currentEpoch: async () => 0 })).reply;
+      const started = await adminCall("run-start", { source: 'const h = await spawn("wide");\nlog("seat", h.agent);\n', file: "admin-wide.cotal.js" });
+      const adminRun = (started.data as { runId?: string } | undefined)?.runId ?? "";
+      const done = await until(async () => {
+        const r = await adminCall("run-status", { runId: adminRun });
+        const v = r.ok ? r.data as RunStatusViewT : undefined;
+        return stateOf(v) === "failed" || stateOf(v) === "completed" ? v : undefined;
+      }, 30_000);
+      c("a run started by a caller holding admin spawns the wider persona", stateOf(done) === "completed", done?.status);
+      const readAdmission = async (runId: string) => {
+        const admNc = await connect({ servers: brokerA.servers, ...standaloneConnectOpts({ creds: await mintCreds(auth, newIdentity(), "run-mediator", { runMediator: { endpoint: "manager", runId, takeoverId: newTakeoverId(), instanceId: mintLifecycleUid(), epoch: 1 } }), tls: false }), maxReconnectAttempts: 0 });
+        try { return (await readRunAdmission(await jetstreamManager(admNc), spaceA, "manager", runId)).admission; } finally { await admNc.close(); }
+      };
+      const exemptAdmission = await readAdmission(adminRun);
+      const boundedAdmission = await readAdmission(wide.runId);
+      c("its admission records the exemption, and the bounded starter's does not",
+        exemptAdmission.spawnExempt === true && boundedAdmission.spawnExempt === undefined, { exempt: exemptAdmission.spawnExempt, bounded: boundedAdmission.spawnExempt });
+    } finally {
+      await adminNc.close();
+    }
+  }
+
   console.log("A3. a checkpoint parks the hosted run; run-answer resolves it from the outside");
   let cpId = "";
   {
@@ -778,7 +837,7 @@ try { await delivery?.stop(); } catch { /* teardown */ }
   if (stillUp.running.length) console.log(`  ! seat processes still running after SIGKILL: ${stillUp.running.join(", ")}`);
 }
 
-const EXPECTED_CELLS = 78;
+const EXPECTED_CELLS = 83;
 if (pass + fail !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
   fail += 1;

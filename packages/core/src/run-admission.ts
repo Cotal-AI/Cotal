@@ -69,6 +69,11 @@ export interface RunAdmission {
   readonly ceiling: IssuedSubjectPermissions;
   readonly provenance: RunAdmissionProvenance;
   readonly admittedAt: number;
+  /** Present when the starter was an operator instrument or held the admin set at admission
+   *  (SPEC 13.15): the run's spawns are exempt from the spawn bound, as the starter's own are.
+   *  Absent, every spawn the run makes is bounded by `ceiling`. An instrument's evidence expires
+   *  minutes after issue, so a long run could not tell this later. */
+  readonly spawnExempt?: true;
 }
 
 export interface RunRevocation {
@@ -115,10 +120,11 @@ function provenanceSnapshot(value: unknown): RunAdmissionProvenance {
 
 /** Validate a record at the consuming boundary: closed schema, version, coordinates. */
 export function admissionSnapshot(value: unknown): RunAdmission {
-  const raw = closed(value, ["version", "space", "endpoint", "runId", "instanceId", "caller", "ceiling", "provenance", "admittedAt"], "run admission");
+  const raw = closed(value, ["version", "space", "endpoint", "runId", "instanceId", "caller", "ceiling", "provenance", "admittedAt", "spawnExempt"], "run admission");
   if (raw.version !== 1) throw new Error(`unsupported run admission version ${String(raw.version)}`);
   if (typeof raw.space !== "string" || typeof raw.endpoint !== "string" || typeof raw.runId !== "string" || typeof raw.instanceId !== "string"
-    || typeof raw.admittedAt !== "number" || !Number.isSafeInteger(raw.admittedAt) || raw.admittedAt <= 0)
+    || typeof raw.admittedAt !== "number" || !Number.isSafeInteger(raw.admittedAt) || raw.admittedAt <= 0
+    || (raw.spawnExempt !== undefined && raw.spawnExempt !== true))
     throw new Error("run admission is malformed");
   assertIssuedSpace(raw.space);
   endpointToken(raw.endpoint);
@@ -133,6 +139,7 @@ export function admissionSnapshot(value: unknown): RunAdmission {
   return Object.freeze({
     version: 1, space: raw.space, endpoint: raw.endpoint, runId: raw.runId, instanceId: raw.instanceId,
     caller, ceiling: readIssuedSubjectPermissions(raw.ceiling), provenance, admittedAt: raw.admittedAt,
+    ...(raw.spawnExempt === true ? { spawnExempt: true as const } : {}),
   });
 }
 
