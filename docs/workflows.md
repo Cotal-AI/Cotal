@@ -234,6 +234,32 @@ Open meshes may expose the tool but refuse hosted runs. A local user-mode host w
 run authority and an `execution: "none"` control manager also refuse the family. A legacy
 credential without issued authority must be replaced through the current issuance path.
 
+## One task without a run
+
+For a single task handed to a single helper, a run is more than you need. `cotal_spawn` with
+`once: true` and a `prompt` starts the helper and relays the prompt to it as its only task. The
+manager stops the helper when the task ends. It needs no `run` capability, so it works on an open
+mesh too. The language's `once` scope above is a different thing.
+
+The task ends in one of these ways:
+
+- The helper ends its turn or calls `cotal_yield`. The task succeeds and the helper is stopped.
+- The deadline passes. It is one hour unless the spawn passes `deadline`, and `-1` sets none. The
+  task fails with `turn-deadline` and the helper is stopped.
+- The helper exits first, never joins, or cannot confirm that its harness took the task. The task
+  is cancelled or fails, with that reason.
+
+After a deadline or an early exit, the task may have run in part or in full. Nothing runs it again;
+spawning it again is the caller's choice. The spawn result names the task's goal, and
+`goal-result` reads its outcome. A helper with no deadline keeps its name and its seat slot until
+its task ends or it is despawned.
+
+Jcode, OpenCode and pi helpers can take a once task. Claude Code helpers cannot yet: a Claude
+session wakes for a relayed task while idle only with channels on, and the connector cannot
+confirm that for a session.
+
+Use a run when the work has several steps, or when a program needs the helper's answer.
+
 ## Operating a run
 
 The manager hosts runs. `cotal run start` hands the program to the manager of the resolved mesh

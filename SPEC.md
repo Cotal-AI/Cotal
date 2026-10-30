@@ -5986,6 +5986,23 @@ pull on a timer while it is connected and its last pull succeeded, except under 
 A pull that fails because the manager is unavailable or unanswered MAY be retried at that same
 interval until one succeeds; a refusal MUST NOT be retried on a timer.
 
+**Once spawns.** A manager MAY relay a turn of its own: the task of a `spawn` that carries `once`.
+It accepts that turn with the spawn, before the seat launches, addressed to the spawned incarnation
+under the spawn's caller triple, and serves it from the spawn's readiness verdict under the protocol
+above. The task's `turn-pending` row carries `once: true`. Its `deadlineAt` is absent when the spawn
+set no deadline, and a row without `deadlineAt` never expires. While the task is pending, the
+manager MUST refuse every other turn to that incarnation. On the task's terminal, the manager MUST
+stop the incarnation, found by its lifecycle uid and never by its name. When the seat exits first,
+the manager MUST NOT commit the task's end before it has proved that exit, and then cancels the task
+with the reason the seat ended.
+
+A seat hands a once task to its harness at most once. A seat that cannot confirm its harness took
+the task MUST NOT offer it again, and reports it with the self-mode `turn-unconfirmed` command, input
+`{ goalId }`, answered like `turn-yield`. The manager accepts the report only from the addressed
+seat's own credential and only for the once task pending against it, refuses it for a run's turn,
+commits the task `failed` with `delivery-unconfirmed`, and stops the seat. A report repeated after
+the terminal is answered with that terminal.
+
 ### 14.4 The step journal on the wire
 
 The journal of a run is carried by the per-space **`WFJ_<space>` stream** (§13.12) on **one subject

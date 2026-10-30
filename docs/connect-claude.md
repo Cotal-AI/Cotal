@@ -585,7 +585,7 @@ delivers, the other only wakes:
   seat sends nothing. A pull that fails because the manager is down or unanswered is
   retried once every 15 seconds until one succeeds; a refusal is logged and not retried. The seat
   also drops any `turn-pending` row that breaks
-  the manager contract, such as one with no integer deadline, and says so once in its log. A reply
+  the manager contract, such as a run's turn with no integer deadline, and says so once in its log. A reply
   with no `turns` array changes nothing: the seat keeps the turns it already holds.
   This errs toward **at-least-once**: if a reply lands but its confirmation does not, the batch is
   surfaced again and flagged as a possible repeat. A duplicate injection is noise; a buried DM stops
