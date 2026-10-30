@@ -1,0 +1,62 @@
+{
+  "suite": [
+    "extensions/pi/smoke/once-handoff.smoke.ts"
+  ],
+  "guard": "the Pi driver hands a once task over at most once: it claims the task into one batch, stops the handoff timer when Pi starts that batch, seals and reports the task when the batch is held, and never sends a held once batch again; the extension's once exit is the driver's shutdown",
+  "command": "pnpm smoke:pi-once",
+  "completionMarker": "COTAL_SMOKE_SENTINEL",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/pi/smoke/mutations/pi-once.json",
+  "why": [
+    "CELLS NAMED BEFORE THE RUN.",
+    "",
+    "M1 drops the claim from the batch. The task is then still pending when the batch is held, so the",
+    "continuation's claim succeeds and the task is sent a second time.",
+    "",
+    "M2 keeps the handoff timer running after Pi took the batch, so a slow provider answer would seal",
+    "a task Pi already has.",
+    "",
+    "M3 drops the release from the hold. A batch Pi never confirmed leaves its task claimed, neither",
+    "sealed nor reported.",
+    "",
+    "M4 lets the continuation resend a held batch without the permit: the duplicate run.",
+    "",
+    "M5 drops the exit registration, so a once seat whose report cannot land has no shutdown to run."
+  ],
+  "mutations": [
+    {
+      "name": "M1 the batch carries the task without claiming it",
+      "file": "extensions/pi/src/driver.ts",
+      "find": "    const turns = turnPeek && this.mesh.claimTurns(turnPeek.goalIds) ? turnPeek : undefined;",
+      "replace": "    const turns = turnPeek;",
+      "expectRed": "the automatic continuation does not send the batch again"
+    },
+    {
+      "name": "M2 Pi starting the batch no longer stops the handoff timer",
+      "file": "extensions/pi/src/driver.ts",
+      "find": "    if (batch.turnIds) this.mesh.noteTurnsDispatched(batch.turnIds);\n",
+      "replace": "",
+      "expectRed": "Pi starting the batch stops the handoff timer"
+    },
+    {
+      "name": "M3 a hold no longer releases its batches' once tasks",
+      "file": "extensions/pi/src/driver.ts",
+      "find": "    for (const batch of this.batches) if (!batch.confirmed && batch.turnIds) this.mesh.releaseTurns(batch.turnIds);\n",
+      "replace": "",
+      "expectRed": "the held batch's task is sealed"
+    },
+    {
+      "name": "M4 the continuation resends a held batch without retaking the permit",
+      "file": "extensions/pi/src/driver.ts",
+      "find": "    if (batch.turnIds && !this.mesh.claimTurns(batch.turnIds)) return;\n",
+      "replace": "",
+      "expectRed": "the automatic continuation does not send the batch again"
+    },
+    {
+      "name": "M5 the extension registers no once exit",
+      "file": "extensions/pi/src/extension.ts",
+      "find": "  registerOnceExit(() => driver.requestShutdown());\n",
+      "replace": "",
+      "expectRed": "calling it shuts the Pi session down"
+    }
+  ]
+}

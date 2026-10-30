@@ -129,6 +129,7 @@
     "smoke:disarm-delete-timeout": "tsx packages/core/smoke/disarm-delete-timeout.smoke.ts",
     "smoke:pi": "tsx extensions/pi/pi.smoke.ts && tsx extensions/pi/pi-sdk.smoke.ts",
     "smoke:pi-sdk": "tsx extensions/pi/pi-sdk.smoke.ts",
+    "smoke:pi-once": "tsx extensions/pi/smoke/once-handoff.smoke.ts",
     "smoke:codex-args": "tsx extensions/connector-codex/smoke/codex-args.smoke.ts",
     "smoke:codex-host": "tsx extensions/connector-codex/smoke/codex-host.smoke.ts",
     "smoke:codex-dist": "tsx extensions/connector-codex/smoke/codex-dist.smoke.ts",
