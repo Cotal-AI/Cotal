@@ -4,7 +4,6 @@
   ],
   "guard": "a Jcode once seat starts a fresh session and never lists or attaches a session an earlier seat of the same name left in its home",
   "command": "pnpm --filter @cotal-ai/connector-jcode build && pnpm smoke:jcode-once",
-  "afterRestore": "pnpm --filter @cotal-ai/connector-jcode build",
   "completionMarker": "JCODE ONCE SMOKE",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/jcode-once-fresh.json",
   "why": [
@@ -19,7 +18,8 @@
       "file": "extensions/connector-jcode/src/host.ts",
       "find": "    } else if (onceUid !== undefined) {\n",
       "replace": "    } else if (false) {\n",
-      "expectRed": "the seat never lists its home's sessions, and creates its own instead of attaching the earlier one"
+      "expectRed": "the seat never lists its home's sessions, and creates its own instead of attaching the earlier one",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-jcode build"
     }
   ]
 }

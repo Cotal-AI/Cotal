@@ -25,8 +25,8 @@
     {
       "name": "F2 Stop leaves a claimed task awaiting its verdict",
       "file": "extensions/connector-claude-code/src/hooks.ts",
-      "find": "        case \"StopFailure\": // turn died on an API error \u2014 Stop won't fire, so reset here too\n          sealAwaiting();\n",
-      "replace": "        case \"StopFailure\": // turn died on an API error \u2014 Stop won't fire, so reset here too\n",
+      "find": "        case \"Stop\":\n        case \"StopFailure\":\n          sealAwaiting();\n",
+      "replace": "        case \"Stop\":\n        case \"StopFailure\":\n",
       "expectRed": "Stop before the verdict seals the claimed task; the late receipt leaves it sealed, reported once"
     },
     {
@@ -39,8 +39,8 @@
     {
       "name": "F4 a new session leaves the old session's task awaiting its verdict",
       "file": "extensions/connector-claude-code/src/hooks.ts",
-      "find": "          // A new session replaces the one an earlier frame's once task rode on.\n          sealAwaiting();\n",
-      "replace": "",
+      "find": "          sealAwaiting();\n          const card = await orientation();\n",
+      "replace": "          const card = await orientation();\n",
       "expectRed": "SessionStart before the verdict seals the claimed task; the late receipt leaves it sealed, reported once"
     },
     {

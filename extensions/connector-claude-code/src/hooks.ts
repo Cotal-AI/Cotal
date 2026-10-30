@@ -420,10 +420,11 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
           } catch {
             /* best-effort */
           }
-          // A new session replaces the one an earlier frame's once task rode on.
-          sealAwaiting();
           // Boot push: the orientation card, a one-line note per subscribed channel (if the
           // registry has loaded), plus any messages waiting and any turn. All advisory context.
+          // A new session replaces the one an earlier frame's once task rode on, so that task is
+          // sealed before the push.
+          sealAwaiting();
           const card = await orientation();
           return injectFrame(agent, ev, event, [card, agent.channelBriefing()]);
         }
@@ -483,8 +484,9 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
           await Promise.all(writes);
           return {};
         }
+        // StopFailure: the turn died on an API error, so Stop won't fire; it resets here too.
         case "Stop":
-        case "StopFailure": // turn died on an API error — Stop won't fire, so reset here too
+        case "StopFailure":
           sealAwaiting();
           turnOpen = false;
           promptOpen = false;
