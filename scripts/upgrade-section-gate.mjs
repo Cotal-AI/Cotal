@@ -751,9 +751,16 @@ if (process.argv.includes("--self-test")) {
     }
     return names;
   })();
+  // A trigger and a job may share a name: release is both in this checkout. Compare against
+  // the YAML jobs mapping so a real job is required and a trigger-only key is still refused.
+  const parsedJobNames = new Set(readdirSync(workflowDir).filter((n) => n.endsWith(".yml"))
+    .flatMap((f) => Object.keys(parseYaml(readFileSync(join(workflowDir, f), "utf8")).jobs ?? {})));
   cell("workflow candidates are job keys, not top-level trigger or configuration keys",
     allJobNames.has("ci-ok") && allJobNames.has("live")
-      && !["pull_request", "push", "release", "schedule", "workflow_dispatch"].some((n) => allJobNames.has(n)),
+      && allJobNames.size === parsedJobNames.size
+      && [...parsedJobNames].every((n) => allJobNames.has(n))
+      && !["pull_request", "push", "release", "schedule", "workflow_dispatch"]
+        .some((n) => !parsedJobNames.has(n) && allJobNames.has(n)),
     { count: allJobNames.size, names: [...allJobNames].sort() });
 
   const hostJob = (() => {
