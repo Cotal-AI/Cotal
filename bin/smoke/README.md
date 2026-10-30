@@ -3,6 +3,13 @@
 `pnpm smoke:ci` builds the workspace and runs the full gate. CI builds first and calls
 `shard.mjs` for its assigned partition.
 
+Both serial and pooled suites invoke pnpm with `--silent`. Dependency verification still runs,
+but pnpm's own progress banners stay out of the output graded as test cells. Suite output and
+nonzero exit status remain part of the result. The legacy per-row sentinel format is unchanged.
+`pnpm smoke:shard-launcher:live` checks this with a locked registry fixture and real pnpm pre-run
+installation. It needs registry access and runs on Linux. Run shard tests on an isolated CI host
+or in a PID namespace: the shard's initial orphan-process sweep is not limited to its own suite.
+
 ## Shard assignment
 
 `ci-suite-costs.json` records each suite's measured CI duration and pins it to a shard. A suite
