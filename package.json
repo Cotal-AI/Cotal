@@ -743,6 +743,7 @@
     "smoke:callout-xkey": "tsx implementations/auth/smoke/callout-xkey.smoke.ts",
     "smoke:user-auth-launch:live": "tsx implementations/auth/smoke/user-auth-launch.smoke.ts",
     "smoke:remote-exchange:live": "tsx implementations/auth/smoke/remote-exchange.smoke.ts",
+    "smoke:auth-http-errors:live": "tsx implementations/auth/smoke/http-errors.smoke.ts",
     "smoke:interactive-manager-options": "tsx implementations/auth/smoke/interactive-manager-options.smoke.ts",
     "smoke:interactive-manager-selection:live": "tsx implementations/auth/smoke/interactive-manager-selection.smoke.ts",
     "smoke:local-no-execution:live": "tsx implementations/auth/smoke/local-no-execution.smoke.ts",

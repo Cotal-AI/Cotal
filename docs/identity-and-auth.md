@@ -407,6 +407,11 @@ auth provider, and that name is the same one the local arm registers under. A do
 different provider than the one serving it would register an entry nothing can resolve, so both read
 one constant. Treat it as bootstrap material: the sentinel cannot publish or subscribe, but
 consumers must still take the bundle only from the intended HTTPS origin and must verify TLS.
+Both HTTP listeners answer unexpected handler failures with a generic `500` and log the exception
+server-side. Malformed JSON keeps its named `400`, and an oversized request keeps its `413`.
+An exchange body must be a JSON object. Null, arrays and scalar bodies receive a named `400` and
+count against that face's refused-exchange budget; once full, the refusal becomes `429`.
+
 `--exchange-trusted-proxy` opts into peer attribution by the **last** `X-Forwarded-For` hop; use it
 only when the listener is reachable solely through a proxy you control.
 Without it, forwarded headers are ignored and the socket address is the peer key. Public failure
