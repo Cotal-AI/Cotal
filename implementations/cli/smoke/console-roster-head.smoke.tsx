@@ -4,7 +4,9 @@
  * wide character that straddled the cut painted its "…" on the right padding cell. The head now
  * wraps at its piece boundaries, and the roster's window counts those rows. This drives the real
  * App unselected and selected, grades each seat's rows cell by cell, and checks that the window
- * draws whole seats and keeps the selected one in view.
+ * draws whole seats and keeps the selected one in view. A detail replaces the layout, and closing it
+ * used to put the roster back on its first seat; the last section checks that it comes back on the
+ * seat and window it left.
  */
 import React from "react";
 import { EventEmitter } from "node:events";
@@ -93,8 +95,10 @@ class Observer extends EventEmitter {
   async watchMembership() { return { stop: async () => {} }; }
 }
 
-/** The real App on a `cols` x `rows` terminal, its frames stripped and raw. */
+/** The real App on a `cols` x `rows` terminal, its frames stripped and raw, and its endpoint, whose
+ *  `roster` event replaces the seats. */
 function mount(roster: Presence[], cols: number, rows = 30) {
+  const ep = new Observer(roster);
   const stdin = new PassThrough() as unknown as NodeJS.ReadStream;
   stdin.isTTY = true;
   stdin.setRawMode = () => stdin;
@@ -104,9 +108,9 @@ function mount(roster: Presence[], cols: number, rows = 30) {
   const frames: string[] = [];
   const stdout = new Writable({ write(c, _e, cb) { raws.push(String(c)); frames.push(strip(String(c))); cb(); } }) as unknown as NodeJS.WriteStream;
   stdout.columns = cols; stdout.rows = rows; stdout.isTTY = true;
-  const app = render(<App ep={new Observer(roster) as unknown as CotalEndpoint} canWrite={false} canControl={false} />,
+  const app = render(<App ep={ep as unknown as CotalEndpoint} canWrite={false} canControl={false} />,
     { stdin, stdout, debug: true, patchConsole: false, exitOnCtrlC: false });
-  return { stdin, raws, frames, close: () => { app.unmount(); app.cleanup(); } };
+  return { ep, stdin, raws, frames, close: () => { app.unmount(); app.cleanup(); } };
 }
 
 /** True when a raw frame paints the seat whose head starts with `lead` as the inverse selection bar. */
@@ -217,6 +221,94 @@ console.log("2. a long identity keeps its name, activity and ages at every cappe
         check("the selected seat is drawn whole", same(rows, long(long2, "reviewing-the-diff34")[80].map((c) => boxRow(c, box))), rows);
         check("...and the first seat scrolled out to make room", seatRows(sel, "● " + long1.slice(0, 6), box).length === 0, sel);
       }
+    } finally {
+      close();
+    }
+  }
+}
+
+console.log("3. closing a detail returns the roster to the seat and window it left");
+// The detail replaces the layout, so the Roster unmounted while it was open and came back on its
+// first seat at the top: j, Enter, Escape could never reach past the second seat.
+{
+  const names = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel"];
+  // Five and a half minutes old, so no age changes between two paints of one window.
+  const ts = Date.now() - 330_000;
+  const seat = (name: string, status: Presence["status"] = "waiting") => ({
+    card: { id: "local." + name, name, kind: "endpoint" }, status, ts,
+    activity: name === "charlie" ? "compiling the very long module graph for the roster wrap check" : "task " + name,
+  }) as Presence;
+  const roster = names.map((n) => seat(n));
+  for (const [cols, box] of [[80, 24], [47, 47]] as const) {
+    console.log(`${cols}x30`);
+    const { ep, stdin, raws, frames, close } = mount(roster, cols);
+    const key = async (keys: string) => { for (const k of keys) { stdin.write(k); await wait(40); } await wait(160); };
+    /** The selected seat, and the seats the roster box draws in order. */
+    const view = () => ({
+      selected: names.find((n) => selected("⚙ " + n)(raws.at(-1) ?? "")),
+      seats: rosterBox(frames.at(-1) ?? "", box).flatMap((r) => names.filter((n) => r.startsWith("│ ⚙ " + n + " "))),
+    });
+    const open = async () => {
+      await key("\r");
+      return /name:\s+(\S+)/.exec(await frameWhere(frames, (f) => f.includes("agent detail")))?.[1];
+    };
+    const back = async () => { await key("\x1b"); await frameWhere(frames, (f) => f.includes("roster ·")); return view(); };
+    try {
+      await frameWhere(frames, (f) => f.includes("⚙ alpha"));
+      await key("l");
+      check("l selects alpha", view().selected === "alpha", view());
+      await key("jjjjj");
+      const deep = view();
+      check("five j select foxtrot in a scrolled window", deep.selected === "foxtrot" && !deep.seats.includes("alpha"), deep);
+      check("Enter opens foxtrot", (await open()) === "foxtrot");
+      check("Escape returns to foxtrot in the same window", same(await back(), deep), view());
+      await key("?");
+      await frameWhere(frames, (f) => f.includes("cotal console - help"));
+      check("help returns to the same seat and window", same(await back(), deep), view());
+      // The DM lens hands focus to the feed when it closes; h focuses the roster again.
+      await key("d");
+      await frameWhere(frames, (f) => f.includes("direct messages"));
+      await back();
+      await key("h");
+      check("the DM lens returns to the same seat and window", same(view(), deep), view());
+      await key("kkkkk");
+      const seen = [await open()];
+      for (let i = 1; i < names.length; i++) {
+        await back();
+        await key("j");
+        seen.push(await open());
+      }
+      check("j, Enter and Escape open every seat in turn", same(seen, names), seen);
+      const last = await back();
+      check("...and the last seat comes back selected and drawn", last.selected === "hotel" && last.seats.at(-1) === "hotel", last);
+      // delta starts working while its detail is open, which sorts it first.
+      await key("kkkk");
+      check("Enter opens delta", (await open()) === "delta");
+      const working = [seat("delta", "working"), ...roster.filter((p) => p.card.name !== "delta")];
+      ep.emit("roster", working);
+      await wait(400);
+      const moved = await back();
+      check("a seat that moved during its detail stays selected", moved.selected === "delta" && moved.seats[0] === "delta", moved);
+      // echo leaves while its detail is open, and its row goes to the next seat.
+      await key("jjjj");
+      check("Enter opens echo", (await open()) === "echo");
+      ep.emit("roster", working.filter((p) => p.card.name !== "echo"));
+      await wait(400);
+      check("a seat that left during its detail gives its row to the next seat", (await back()).selected === "foxtrot", view());
+      check("Enter opens foxtrot", (await open()) === "foxtrot");
+      ep.emit("roster", []);
+      await wait(400);
+      await back();
+      check("a roster emptied during a detail draws nobody", (frames.at(-1) ?? "").includes("(nobody present)"), frames.at(-1));
+      ep.emit("roster", roster);
+      await wait(400);
+      check("...and the seats that come back select the first", view().selected === "alpha", view());
+      // The filter /ot matches foxtrot and hotel, and a detail keeps its selected seat.
+      await key("/ot\r");
+      await key("j");
+      check("Enter opens hotel in the filter", (await open()) === "hotel");
+      const filtered = await back();
+      check("the filter comes back on hotel", same(filtered, { selected: "hotel", seats: ["foxtrot", "hotel"] }), filtered);
     } finally {
       close();
     }
