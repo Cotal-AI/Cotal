@@ -23,15 +23,18 @@
  * `--verify-delivery` adds recipient-ID coverage with extra tracking overhead; compare its
  * timings only with other verification runs. Aggregate-only runs still check accepted posts,
  * copy counts and endpoint errors. Receiver coverage is not a broker queue-empty proof.
+ * `--cpu-profile-dir /new/private/path` adds native CPU diagnostics for host16 only, not
+ * ordinary performance: the actual delivery CLI child from startup through exit, and the
+ * broker for up to60 seconds requested as posting begins. No forced GC or runtime tuning.
  *
  * Runs the BUILT dist (`pnpm build` first). Needs `nats-server` on PATH.
  * Run: pnpm smoke:delivery-multi-space
  */
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { cpus, loadavg, tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { parseArgs } from "node:util";
 import { connect, credsAuthenticator, NoRespondersError, RequestError, type NatsConnection } from "@nats-io/transport-node";
 import {
@@ -52,11 +55,13 @@ const { values } = parseArgs({ options: {
   "measure-shape": { type: "string", default: "all" },
   "sublist-cache": { type: "string", default: "on" },
   "verify-delivery": { type: "boolean" },
+  "cpu-profile-dir": { type: "string" },
 } });
 const MEASURE = values.measure === true;
 const SHAPE = values["measure-shape"];
 const SUBLIST_CACHE = values["sublist-cache"];
 const VERIFY_DELIVERY = values["verify-delivery"] === true;
+const CPU_PROFILE_DIR = values["cpu-profile-dir"];
 if (!["all", "host16", "single16"].includes(SHAPE)) throw new Error("--measure-shape must be all, host16 or single16");
 if (SUBLIST_CACHE !== "on" && SUBLIST_CACHE !== "off") throw new Error("--sublist-cache must be on or off");
 if (!MEASURE && (SHAPE !== "all" || VERIFY_DELIVERY)) throw new Error("--measure-shape and --verify-delivery require --measure");
@@ -67,6 +72,12 @@ if (MEASURE && (![SECONDS, RATE].every((n) => Number.isFinite(n) && n > 0)))
 const scheduledPosts = Math.ceil(RATE * SECONDS);
 if (MEASURE && (!Number.isSafeInteger(scheduledPosts) || scheduledPosts < 1))
   throw new Error("scheduled post count must be a positive safe integer");
+if (CPU_PROFILE_DIR !== undefined) {
+  if (!MEASURE || SHAPE !== "host16" || !isAbsolute(CPU_PROFILE_DIR))
+    throw new Error("--cpu-profile-dir requires --measure --measure-shape host16 and an absolute new directory");
+  mkdirSync(CPU_PROFILE_DIR, { mode: 0o700 }); // existing paths refuse; profiles never overwrite a prior run
+}
+const BROKER_PROFILE_SECONDS = Math.min(60, Math.max(1, Math.ceil(SECONDS)));
 const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 async function until(test: () => boolean | Promise<boolean>, ms: number, step = 150): Promise<boolean> {
   const deadline = Date.now() + ms;
@@ -91,6 +102,7 @@ for (const key of ["HOME", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME"
 }
 
 const port = await pickFreePort();
+const profilePort = CPU_PROFILE_DIR ? await pickFreePort() : undefined;
 const servers = `nats://127.0.0.1:${port}`;
 const tag = randomUUID().slice(0, 6);
 const brokerAuth = await createBrokerAuth(`msd-${tag}`);
@@ -101,7 +113,8 @@ const accounts = await Promise.all(names.map((space) => createSpaceAccountAuth(b
 const auths: SpaceAuth[] = accounts.map((account) => composeSpaceAuth(brokerAuth, account));
 const config = join(dir, "server.conf");
 writeFileSync(config, serverConfig(brokerAuth, accounts, { transport: { kind: "plaintext" }, port, host: "127.0.0.1", storeDir: join(dir, "js") })
-  + `\ndisable_sublist_cache: ${SUBLIST_CACHE === "off"}\n`, { mode: 0o600 });
+  + `\ndisable_sublist_cache: ${SUBLIST_CACHE === "off"}\n`
+  + (profilePort ? `prof_port: ${profilePort}\n` : ""), { mode: 0o600 });
 const nats = spawn("nats-server", ["-c", config], { stdio: ["ignore", "ignore", "pipe"] });
 let brokerLog = "";
 nats.stderr!.on("data", (chunk: Buffer) => { brokerLog += chunk.toString(); });
@@ -142,7 +155,8 @@ const manifestOf = (spaces: string[]) => JSON.stringify({ version: 1, spaces });
 type Run = { label: string; child: ChildProcess; out: string[]; text(): string; exited: Promise<number | null> };
 const runs: Run[] = [];
 function start(args: string[]): Run {
-  const child = spawn(process.execPath, [cotalJs, ...args], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+  const profileArgs = CPU_PROFILE_DIR ? ["--cpu-prof", `--cpu-prof-dir=${CPU_PROFILE_DIR}`, "--cpu-prof-name=delivery.cpuprofile"] : [];
+  const child = spawn(process.execPath, [...profileArgs, cotalJs, ...args], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
   children.push(child);
   const out: string[] = [];
   child.stdout!.on("data", (d: Buffer) => out.push(d.toString()));
@@ -418,6 +432,23 @@ async function traffic(i: number, count: number) {
   };
 }
 
+/** Native CPU samples only: this endpoint does not request a heap profile or force GC. */
+async function captureBrokerCpu(): Promise<void> {
+  if (!CPU_PROFILE_DIR || !profilePort) throw new Error("CPU profile output was not configured");
+  const startedAt = Date.now();
+  const response = await fetch(`http://127.0.0.1:${profilePort}/debug/pprof/profile?seconds=${BROKER_PROFILE_SECONDS}`, {
+    signal: AbortSignal.timeout((BROKER_PROFILE_SECONDS + 15) * 1000),
+  });
+  if (!response.ok) throw new Error(`broker CPU profile failed with HTTP ${response.status}`);
+  const bytes = Buffer.from(await response.arrayBuffer());
+  if (!bytes.length) throw new Error("broker CPU profile was empty");
+  writeFileSync(join(CPU_PROFILE_DIR, "broker.pprof"), bytes, { mode: 0o600, flag: "wx" });
+  writeFileSync(join(CPU_PROFILE_DIR, "broker-window.json"), JSON.stringify({
+    requestStartedEpochMs: startedAt, responseEndedEpochMs: Date.now(), requestedSeconds: BROKER_PROFILE_SECONDS,
+    scope: "Native broker CPU profile requested as posting begins; separate from the whole-child delivery profile.",
+  }, null, 2) + "\n", { mode: 0o600, flag: "wx" });
+}
+
 /** RSS and CPU per space for one shape. The five-second allowance is followed by a bounded
  * receiver-coverage wait; neither is evidence that every broker queue has drained. */
 async function measureShape(label: string, spaces: number[], hostShape: boolean, seconds: number, rate: number): Promise<string> {
@@ -450,6 +481,8 @@ async function measureShape(label: string, spaces: number[], hostShape: boolean,
   const brokerBefore = sample(nats.pid!);
   const load0 = loadavg()[0]!;
   const t0 = Date.now();
+  // Attach rejection handling immediately; a failed profile must fail the diagnostic, not go unhandled.
+  const brokerProfile = CPU_PROFILE_DIR ? captureBrokerCpu().then(() => ({ ok: true as const }), (error: unknown) => ({ ok: false as const, error })) : undefined;
   const posted = (await Promise.all(loads.map((l) => l.post(rate, seconds)))).reduce((n, x) => n + x, 0);
   await wait(5_000);
   const completed = await until(() => loads.every((l) => l.complete()), 30_000);
@@ -469,9 +502,18 @@ async function measureShape(label: string, spaces: number[], hostShape: boolean,
   const rss = after.reduce((n, s) => n + s.rssMb, 0);
   const cpu = after.reduce((n, s, k) => n + s.cpuS - before[k]!.cpuS, 0);
   const brokerCpu = brokerAfter.cpuS - brokerBefore.cpuS;
-  console.log(`MSD_RESULT ${JSON.stringify({ label, subscriptionCache: SUBLIST_CACHE, verifyDelivery: VERIFY_DELIVERY, spaces: spaces.length, accounts: accounts.length, deliveryProcesses: shape.length, windowSeconds: window, posted, copies, brokerCpuSeconds: brokerCpu, brokerRssMiB: brokerAfter.rssMb, deliveryCpuSeconds: cpu, deliveryRssMiB: rss, brokerWarningsErrors, receiverComplete: completed, results })}`);
+  console.log(`MSD_RESULT ${JSON.stringify({ label, subscriptionCache: SUBLIST_CACHE, verifyDelivery: VERIFY_DELIVERY, cpuProfiling: Boolean(CPU_PROFILE_DIR), spaces: spaces.length, accounts: accounts.length, deliveryProcesses: shape.length, windowSeconds: window, posted, copies, brokerCpuSeconds: brokerCpu, brokerRssMiB: brokerAfter.rssMb, deliveryCpuSeconds: cpu, deliveryRssMiB: rss, brokerWarningsErrors, receiverComplete: completed, results })}`);
+  if (brokerProfile) {
+    const captured = await brokerProfile;
+    if (!captured.ok) throw captured.error;
+    check(`${label}: native broker CPU profile written`, true);
+  }
   for (const l of loads) await l.stop();
   for (const run of shape) await killAndAwaitExit(run.child, "SIGTERM", 30_000);
+  if (CPU_PROFILE_DIR) {
+    const file = join(CPU_PROFILE_DIR, "delivery.cpuprofile");
+    check(`${label}: actual delivery child CPU profile written`, existsSync(file) && statSync(file).size > 0);
+  }
   await wait(2_000);
   const n = spaces.length;
   return `| ${label} | ${shape.length} | ${rss.toFixed(1)} | ${(rss / n).toFixed(1)} | ${(cpu / window * 100).toFixed(1)} | ${(cpu / window * 100 / n).toFixed(2)} | ${posted} | ${copies} | ${startup.toFixed(1)} | ${load0.toFixed(1)} |`;
@@ -483,7 +525,7 @@ async function measure(): Promise<void> {
   const all = names.map((_, i) => i);
   const version = spawnSync("nats-server", ["--version"], { encoding: "utf8" });
   if (version.status !== 0) throw new Error("cannot read native broker version");
-  console.log(`\nMeasured on ${cpus().length} vCPU, Node ${process.version}, ${version.stdout.trim()}, subscription cache ${SUBLIST_CACHE}, recipient ID verification ${VERIFY_DELIVERY ? "on (tracking overhead)" : "off (aggregate only)"}, shape ${SHAPE}. Per space: 3 durable members, one posting ${RATE}/s for ${SECONDS}s. CPU includes a 5s allowance and up to 30s for receiver completion.\n`);
+  console.log(`\nMeasured on ${cpus().length} vCPU, Node ${process.version}, ${version.stdout.trim()}, subscription cache ${SUBLIST_CACHE}, recipient ID verification ${VERIFY_DELIVERY ? "on (tracking overhead)" : "off (aggregate only)"}, shape ${SHAPE}, CPU profiling ${CPU_PROFILE_DIR ? "on (diagnostic overhead; delivery startup through exit, broker first up to60s of posting)" : "off"}. Per space: 3 durable members, one posting ${RATE}/s for ${SECONDS}s. CPU includes a 5s allowance and up to 30s for receiver completion.\n`);
   console.log("| shape | processes | RSS total MiB | RSS per space MiB | CPU % total | CPU % per space | posted | durable copies | all serving after s | load avg |");
   console.log("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |");
   if (SHAPE === "all") {
