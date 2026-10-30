@@ -162,14 +162,15 @@ export const BASELINE_DELIVERY_ENDPOINT = "delivery";
 export const BASELINE_DELIVERY_COMMANDS = Object.freeze(["join", "leave", "list"] as const);
 /** The manager endpoint's self baseline and the spawn-capability owner-mode lifecycle
  *  set. Self mode reaches the caller's OWN incarnation and nothing else: the no-name self stop
- *  (the v0.3 self-service tier's only op), the two halves of the run-turn relay, and `run-answer`.
+ *  (the v0.3 self-service tier's only op), the two halves of the run-turn relay, a once seat's
+ *  report that its task's handoff was not confirmed, and `run-answer`.
  *  The answer handler narrows a baseline seat to the open pause named by its own pending relay.
  *  The relay commands are in the baseline because
  *  the manager pushes nothing into a seat: without the pull row, a seat on an auth mesh is
  *  broker-denied at its first `turn-pending` and the relay is silently dead for every spawned
  *  agent (measured: the connector reads the denial as "no manager here" and stays quiet). */
 export const BASELINE_LIFECYCLE_ENDPOINT = "manager";
-export const BASELINE_SELF_LIFECYCLE_COMMANDS = Object.freeze(["stop", "turn-participate", "turn-pending", "turn-yield", "run-answer"] as const);
+export const BASELINE_SELF_LIFECYCLE_COMMANDS = Object.freeze(["stop", "turn-participate", "turn-pending", "turn-yield", "turn-unconfirmed", "run-answer"] as const);
 /** `spawn` is CREATION: a virgin spawn has no target lifecycle UID or current mapping yet, so it
  *  CANNOT ride owner mode (§13.2 owner mode resolves a body `{owner, actor, lifecycleUid}` against
  *  the CURRENT mapping — there is nothing to resolve for a not-yet-existing child). It is minted

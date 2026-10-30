@@ -320,6 +320,14 @@ export interface Connector extends Extension {
    *  Default-deny, so a prompt on a connector that does not declare it fails before any
    *  provisioning rather than being accepted and never submitted. */
   readonly supportsPrompt?: boolean;
+  /** Whether a seat on this connector takes a relayed turn on an idle fresh session, hands it to
+   *  the harness at most once, and yields when the turn ends. A `once` spawn needs it. Declare it
+   *  only after a live check shows the harness doing all three; serving `turn-pending` is not
+   *  enough. Default-deny. */
+  readonly supportsTurnRelay?: boolean;
+  /** Why this connector cannot take a relayed turn, in a clause the manager appends to its
+   *  refusal of a `once` spawn. Only meaningful without {@link supportsTurnRelay}. */
+  readonly turnRelayRefusal?: string;
   /**
    * Connector-specific upper bound for reaching mesh presence after its process is launched.
    *
