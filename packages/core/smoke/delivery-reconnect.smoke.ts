@@ -3,9 +3,9 @@
  * `armPlane3`/`armDeliveryControl`, which runs on EVERY (re)connect — a reconnect drains the old
  * connection (the old sub dies, and `clearConnectionScoped` leaves caller-owned subs alone), so the
  * responder + the Plane-3 KV handles (`membersKv`/`aclKv`/`deliveryKv`) and the observer's derived
- * membership-feed handle must be re-bound/re-opened on the fresh connection. Its old ordered consumer
- * is deleted before drain, and the replacement is deleted when the caller stops the watch. Asserts all
- * three lifetimes beside the existing durable join/leave/list reconnect checks.
+ * membership-feed handle must be re-bound/re-opened on the fresh connection. Old and stopped watches
+ * must release their local subscription. Read-only consumers remain for native inactivity reclamation
+ * without ungranted DELETE requests. Asserts these lifetimes beside durable join/leave/list checks.
  *
  * Run: pnpm smoke:delivery-reconnect:auth   (needs `nats-server` on PATH; auth/JetStream, local-only)
  */
@@ -16,7 +16,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
 import { Kvm } from "@nats-io/kv";
-import { CotalEndpoint, isReachable, createSpaceAuth, mintCreds, provisionAgent, mintLifecycleUid, serverConfig, newIdentity, setupSpaceStreams, principalKey, DEV_OWNER, membershipBucket, MEMBERSHIP_FEED_KEY, standaloneConnectOpts, dlvDurable, isPublishPermissionDenied, type MembershipChange } from "../src/index.js";
+import { CotalEndpoint, isReachable, createSpaceAuth, mintCreds, provisionAgent, mintLifecycleUid, serverConfig, newIdentity, setupSpaceStreams, principalKey, DEV_OWNER, membershipBucket, MEMBERSHIP_FEED_KEY, standaloneConnectOpts, dlvDurable, type MembershipChange } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
@@ -181,8 +181,8 @@ try {
   for (let i = 0; i < 20 && (await membershipConsumers()).length !== 0; i++) await wait(50);
   check("stopping the membership watch unbinds its broker consumer", (await membershipConsumers()).length === 0, await membershipConsumers());
 
-  // Invoke the REAL public stop while its broker consumer is live, then terminal-close that epoch.
-  // The stop promise must remain endpoint-owned and pending until fresh-epoch retained-identity deletion.
+  // Invoke the public stop while its broker consumer is live, then terminal-close that epoch.
+  // Read-only cleanup must settle and unbind without attempting an ungranted delete on either epoch.
   const raceNc = (observer as unknown as { nc: import("@nats-io/transport-node").NatsConnection }).nc;
   const raceFeed = await new Kvm(raceNc).open(membershipBucket(space));
   const raceBucket = raceFeed as unknown as { js: { consumers: { getPushConsumer: (...a: unknown[]) => Promise<import("@nats-io/jetstream").PushConsumer> } } };
@@ -199,35 +199,39 @@ try {
   const raceConsumers = await membershipConsumers();
   check("the public stop/close race starts with one membership consumer", raceConsumers.length === 1 && raceConsumer !== undefined, raceConsumers);
   if (!raceConsumer) throw new Error("public stop/close race did not capture broker consumer creation");
-  const raceDelete = raceConsumer.delete.bind(raceConsumer);
-  let releaseDelete!: () => void;
-  const deleteGate = new Promise<void>((resolve) => { releaseDelete = resolve; });
-  raceConsumer.delete = async () => { await deleteGate; return raceDelete(); };
-  // The admin cred's delete is refused, so the census reads the same whether the stop sent its fresh-epoch
-  // delete or skipped it. The refused request tells them apart. The endpoint binds each connection's
-  // request when it dials, so only the fresh connection sends through this prototype.
-  const raceDeleteSubject = `$JS.API.CONSUMER.DELETE.${membershipStream}.${(await raceConsumer.info(true)).name}`;
+  const raceDelete = raceConsumer.delete;
+  let raceDeleteCalls = 0;
+  raceConsumer.delete = function () { raceDeleteCalls++; return raceDelete.call(this); };
+  const raceDeletePrefix = `$JS.API.CONSUMER.DELETE.${membershipStream}.`;
   const ncPrototype = Object.getPrototypeOf(raceNc) as typeof raceNc;
   const ncRequest = ncPrototype.request;
-  let raceFreshDeleteRefused = false;
-  ncPrototype.request = function (this: typeof raceNc, ...args: Parameters<typeof ncRequest>) {
-    const reply = ncRequest.apply(this, args);
-    if (args[0] === raceDeleteSubject) reply.catch((e) => { raceFreshDeleteRefused = isPublishPermissionDenied(e); });
-    return reply;
+  const raceRequest = raceNc.request;
+  let raceDeleteRequests = 0;
+  // Existing connections already bind request; the prototype observes the fresh connection too.
+  raceNc.request = function (this: typeof raceNc, ...args: Parameters<typeof raceRequest>) {
+    if (args[0].startsWith(raceDeletePrefix)) raceDeleteRequests++;
+    return raceRequest.apply(this, args);
   };
-  let raceStopAfterFreshDelete = false;
-  const raceStop = raceHandle.stop().then(() => { raceStopAfterFreshDelete = raceFreshDeleteRefused; });
-  void raceStop.catch(() => {});
-  const raceHealed = reconnected(observer);
-  void raceNc.close();
-  await raceNc.closed();
-  releaseDelete();
-  const raceStopSettled = await Promise.race([raceStop.then(() => true, () => false), wait(5000).then(() => false)]);
-  ncPrototype.request = ncRequest;
-  for (let i = 0; i < 40 && (await membershipConsumers()).length !== 0; i++) await wait(50);
-  check("public stop concurrent with terminal close resolves after fresh cleanup", raceStopSettled && raceStopAfterFreshDelete && (await membershipConsumers()).length === 0, { raceStopSettled, raceStopAfterFreshDelete, consumers: await membershipConsumers() });
-  // A stop that settles before the self-heal must not leave the next cell watching mid-rebuild.
-  await Promise.race([raceHealed, wait(5000)]);
+  ncPrototype.request = function (this: typeof raceNc, ...args: Parameters<typeof ncRequest>) {
+    if (args[0].startsWith(raceDeletePrefix)) raceDeleteRequests++;
+    return ncRequest.apply(this, args);
+  };
+  try {
+    const raceStop = raceHandle.stop();
+    void raceStop.catch(() => {});
+    const raceHealed = reconnected(observer).then(() => true);
+    void raceNc.close();
+    await raceNc.closed();
+    const raceStopSettled = await Promise.race([raceStop.then(() => true, () => false), wait(5000).then(() => false)]);
+    // Observe fresh-epoch requests before restoring the spies or starting another watch.
+    const raceReconnected = await Promise.race([raceHealed, wait(5000).then(() => false)]);
+    for (let i = 0; i < 40 && (await membershipConsumers()).length !== 0; i++) await wait(50);
+    check("public stop concurrent with terminal close resolves without ungranted deletes", raceStopSettled && raceReconnected && raceDeleteCalls === 0 && raceDeleteRequests === 0 && (await membershipConsumers()).length === 0, { raceStopSettled, raceReconnected, raceDeleteCalls, raceDeleteRequests, consumers: await membershipConsumers() });
+  } finally {
+    raceConsumer.delete = raceDelete;
+    raceNc.request = raceRequest;
+    ncPrototype.request = ncRequest;
+  }
 
   const shutdownWatch = await observer.watchMembership(() => {});
   await wait(200);
@@ -260,8 +264,8 @@ try {
   observer = new CotalEndpoint({ space, servers: SERVERS, creds: await mintCreds(auth, newIdentity(), "admin"), channels: [], consume: false, watchPresence: false, registerPresence: false, card: { name: "observer-2", role: "observer", kind: "endpoint" } });
   observer.on("error", () => {}); await observer.start();
 
-  // Terminal self-heal starts only AFTER the old connection is closed. Its cleanup request cannot ride
-  // that epoch, so the fresh connection must release the predecessor by recorded stream+consumer name.
+  // Terminal self-heal starts after the old connection closes. The read-only predecessor becomes
+  // unbound for native inactivity reclamation; the fresh connection must own one successor watch.
   let terminalChanges = 0;
   const terminalWatch = await observer.watchMembership(() => { terminalChanges++; });
   await wait(200);
