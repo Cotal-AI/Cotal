@@ -18,6 +18,14 @@ checksum-verified binary through `COTAL_BROKER_LOG_NATS`. This does not replace 
 PATH for other suites. To run the logging suite locally, set that variable to the absolute path
 of a NATS 2.15.1 binary after building the workspace.
 
+## Inventory command resolution
+
+The inventory uses one reader for direct `pnpm [run] smoke:*` commands and package-filtered
+commands using `-F` or `--filter`, including quoted selectors and `--filter=<package>`. A filtered
+smoke target must exist in its package; it does not make a same-named root script reachable.
+Build-only filtered commands do not name smoke targets. `pnpm smoke:gate-invocations` checks these
+cases against isolated manifests without executing the audited scripts.
+
 ## Shard assignment
 
 `ci-suite-costs.json` records each suite's measured CI duration and pins it to a shard. A suite

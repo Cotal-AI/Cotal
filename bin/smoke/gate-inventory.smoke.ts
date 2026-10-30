@@ -178,16 +178,25 @@ const pkg = JSON.parse(packageText) as { scripts: Record<string, string> };
 const GATE_SCRIPTS = new Set(["smoke:ci", "smoke:ci:offline"]);
 const all = new Set(Object.keys(pkg.scripts).filter((k) => (k === "smoke" || k.startsWith("smoke:")) && !GATE_SCRIPTS.has(k)));
 
-/** Suites INVOKED by a script body. Anchored on `pnpm [run] <name>`, because a script is reached by
- *  being invoked, not by being mentioned.
- *
- *  A delimiter-anchored match on the bare word is NOT sufficient and briefly shipped here: every
- *  suite path contains `/smoke/`, so `tsx packages/core/smoke/members.smoke.ts` matched the bare
- *  `smoke` script and marked it reached. The audited set then looked one larger AND one more
- *  reached, and the unreached count did not move — a wrong answer that changed nothing visible.
- *  The pattern written to be careful about boundaries was less careful than the one it replaced. */
+type SmokeInvocation = { script: string; selector?: string };
+const invocationCache = new Map<string, SmokeInvocation[]>();
+
+/** One interpretation for direct and package-filtered pnpm smoke invocations. */
+function smokeInvocations(body: string): SmokeInvocation[] {
+  const cached = invocationCache.get(body);
+  if (cached) return cached;
+  const pattern = /\bpnpm\s+(?:(?:-F|--filter)(?:=|\s+)(?:"([^"]+)"|'([^']+)'|([^\s;&|]+))\s+)?(?:run\s+)?(smoke(?::[A-Za-z0-9:_-]+)?)(?![A-Za-z0-9:_/.-])/g;
+  const invocations = [...body.matchAll(pattern)].map((match) => {
+    const selector = match[1] ?? match[2] ?? match[3];
+    return { script: match[4]!, ...(selector === undefined ? {} : { selector }) };
+  });
+  invocationCache.set(body, invocations);
+  return invocations;
+}
+
+/** Package-local invocations do not make same-named root scripts reachable. */
 function suitesIn(body: string): string[] {
-  return [...body.matchAll(/\bpnpm\s+(?:run\s+)?(smoke(?::[A-Za-z0-9:_-]+)?)(?![A-Za-z0-9:_/.-])/g)].map((m) => m[1]);
+  return smokeInvocations(body).filter((call) => call.selector === undefined).map((call) => call.script);
 }
 
 /** The body to GRADE for a script. `smoke:ci` runs a list file rather than naming its suites inline
@@ -333,20 +342,13 @@ const workspaceManifest = (pkgName: string): Record<string, string> | null => {
 };
 const dangling: Array<[string, string]> = [];
 for (const name of Object.keys(pkg.scripts))
-  for (const segment of bodyOf(name).split("&&")) {
-    const filtered = /(?:^|\s)(?:-F|--filter)\s+(\S+)/.exec(segment);
-    if (filtered) {
-      // `pnpm -F <pkg>... build` selects a dependency closure; only a smoke target needs resolving.
-      const target = suitesIn(segment).find((t) => t !== name);
-      if (!target) continue;                       // a build step, nothing to resolve
-      const pkgName = filtered[1].replace(/\.\.\.$/, "");
+  for (const { script: target, selector } of smokeInvocations(bodyOf(name))) {
+    if (selector !== undefined) {
+      const pkgName = selector.replace(/\.\.\.$/, "");
       const scripts = workspaceManifest(pkgName);
       if (scripts === null) dangling.push([name, `${target} (in unresolvable package ${pkgName})`]);
       else if (!(target in scripts)) dangling.push([name, `${target} (absent from ${pkgName})`]);
-      continue;
-    }
-    for (const target of suitesIn(segment))
-      if (target !== name && !(target in pkg.scripts)) dangling.push([name, target]);
+    } else if (target !== name && !(target in pkg.scripts)) dangling.push([name, target]);
   }
 if (dangling.length) {
   fail++;
