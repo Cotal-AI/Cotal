@@ -11743,8 +11743,9 @@ export class Manager {
       return (Array.isArray(v) ? v : [v]).map((x) => String(x));
     };
     const capabilities = strList(args.capabilities);
-    // Read, authorize and compose against the catalog as it is now. Nothing may yield between this
-    // and the write, so a later write cannot land on a file another call changed.
+    // Read, authorize and compose against the catalog as it is now. Nothing yields between this and
+    // the write, so no other call in this manager can change the file in between. The handler does
+    // not serialize with other processes; their writes are outside this single-manager guarantee.
     const compose = (): { def: AgentDef } | { reply: ControlReply } => {
       let existing: AgentDef | undefined;
       if (existsSync(path)) {

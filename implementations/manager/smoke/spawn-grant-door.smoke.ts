@@ -10,7 +10,11 @@
  * The same door carries an inline persona (SPEC 13.7): the bound reads the record, the helper joins
  * and its goal ends succeeded, and a repeated goal returns its first acceptance instead of a second
  * spawn. `define-persona` is bounded at the same door: a definer puts only capabilities it holds
- * into a persona.
+ * into a persona, and a definition that waited on its definer's evidence writes only against the
+ * catalog as it found it after that wait: never over a persona another principal defined meanwhile,
+ * and never bringing back a persona removed meanwhile. A static owner is a live seat of this manager,
+ * whose ceiling a renewal keeps and whose respawn is a new principal, so a static definer is never
+ * demoted while it owns a persona; the demoted redefine is a ledger case, in spawn-inline-persona.
  * Run with: pnpm smoke:spawn-grant-door
  */
 import { randomUUID } from "node:crypto";
@@ -20,6 +24,7 @@ import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
 import {
   createSpaceAuth,
+  grantOverreach,
   invokeCommand,
   mintAcceptedToken,
   mintCreds,
@@ -88,6 +93,8 @@ registry.register({
 
 let mgr: InstanceType<typeof Manager> | undefined;
 let nc: Awaited<ReturnType<typeof connect>> | undefined;
+let rivalNc: Awaited<ReturnType<typeof connect>> | undefined;
+let definerNc: Awaited<ReturnType<typeof connect>> | undefined;
 try {
   await setupSpaceStreams({ servers: SERVERS, space, creds: await mintCreds(auth, newIdentity(), "provisioner") });
   mgr = new Manager({ space, servers: SERVERS, runtime: "pty", workspaceRoot: root });
@@ -176,9 +183,10 @@ try {
 
   console.log("define-persona through the served door");
   const defineSvc = await resolveService(nc, space, MANAGER_ENDPOINT, caller, { deadlineMs: 8_000, commands: ["define-persona"] });
-  const define = async (name: string, capabilities: string[]): Promise<{ ok: boolean; code?: string; message: string }> => {
+  type Door = { conn: NonNullable<typeof nc>; svc: typeof defineSvc };
+  const define = async (name: string, capabilities: string[], door: Door = { conn: nc!, svc: defineSvc }, persona = "You help."): Promise<{ ok: boolean; code?: string; message: string }> => {
     try {
-      const r = await invokeCommand(nc!, space, defineSvc, "define-persona", { name, persona: "You help.", capabilities }, { deadlineMs: 10_000 });
+      const r = await invokeCommand(door.conn, space, door.svc, "define-persona", { name, persona, capabilities }, { deadlineMs: 10_000 });
       const reply = (r as { reply?: { ok?: boolean; error?: { code?: string; message?: string } } }).reply;
       return { ok: reply?.ok === true, code: reply?.error?.code, message: reply?.error?.message ?? "" };
     } catch (e) {
@@ -194,7 +202,99 @@ try {
   const run = await define("runner", ["run"]);
   check("and so is run for a definer that holds only spawn", !run.ok && /capabilities run/.test(run.message), run);
   check("and neither refusal wrote a file", !existsSync(file("usurper")) && !existsSync(file("runner")));
+
+  // Two served definitions of one name from two principals. The first names a capability, so it
+  // waits while the manager reads its definer's evidence. A test hook holds that read open until the
+  // rival's definition, served on its own connection, has landed. The first must not write over it.
+  const rivalId = newIdentity();
+  const rivalUid = mintLifecycleUid();
+  const rivalIssued = { generation: mintGeneration(expiresAt), acceptedToken: mintAcceptedToken() };
+  const rivalCreds = await withIssuerSession({ servers: SERVERS, space, auth, tls: false }, (s) =>
+    mintCreds(auth, rivalId, "agent", {
+      lifecycleUid: rivalUid,
+      expiresAt,
+      issued: rivalIssued,
+      issuance: { mode: "issue", store: s.store, accepted: s.accepted, sources: [] },
+      capabilities: ["spawn"],
+      allowSubscribe: [],
+      allowPublish: [],
+    }),
+  );
+  const rivalCaller = { owner: DEV_OWNER, actor: rivalId.id, uid: rivalUid, generation: rivalIssued.generation } as IssuedCaller;
+  rivalNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: rivalCreds, tls: false }), maxReconnectAttempts: 0 });
+  const rivalDoor = { conn: rivalNc, svc: await resolveService(rivalNc, space, MANAGER_ENDPOINT, rivalCaller, { deadlineMs: 8_000, commands: ["define-persona"] }) };
+  // Holds `who`'s next evidence read open until `release`; any other caller's read passes. `inside`
+  // is false if no definition reached the read within its window.
+  const holdEvidence = (who: IssuedCaller) => {
+    const hooked = mgr as unknown as { staticSpawnBound: (c?: IssuedCaller) => Promise<unknown> };
+    const evidence = hooked.staticSpawnBound.bind(mgr);
+    let release!: () => void;
+    let entered!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const reached = new Promise<void>((r) => { entered = r; });
+    hooked.staticSpawnBound = async (c) => {
+      if (c?.actor !== who.actor || c.uid !== who.uid) return evidence(c);
+      entered();
+      await gate;
+      return evidence(c);
+    };
+    const inside = Promise.race([reached.then(() => true), new Promise<boolean>((r) => setTimeout(() => r(false), 10_000))]);
+    return { inside, release: () => { release(); delete (hooked as { staticSpawnBound?: unknown }).staticSpawnBound; } };
+  };
+  /** What `meanwhile` returned, the waiting definition's reply, and whether that definition was still
+   *  pending when `meanwhile` settled. */
+  const overlapping = async <T, M>(waiting: Promise<T>, meanwhile: () => Promise<M>) => {
+    let settled = false;
+    void waiting.then(() => { settled = true; });
+    const during = await meanwhile();
+    return { pendingThroughout: !settled, during, reply: await waiting };
+  };
+  const rivalHold = holdEvidence(caller);
+  const waiting = define("contested", ["spawn"]);
+  const rivalInside = await rivalHold.inside;
+  const rivalRace = await overlapping(waiting, async () => {
+    const reply = await define("contested", [], rivalDoor, "The rival's persona.");
+    const bytes = readFileSync(file("contested"), "utf8");
+    rivalHold.release();
+    return { reply, bytes };
+  });
+  check("control: the first definition waits on its evidence, and the rival's served definition lands before it settles",
+    rivalInside && rivalRace.pendingThroughout && rivalRace.during.reply.ok && rivalRace.during.bytes.includes("The rival's persona."), { rivalInside, rivalRace });
+  check("a served definition that waited on its evidence does not overwrite a persona another principal defined meanwhile",
+    !rivalRace.reply.ok && /not authorized to redefine contested/.test(rivalRace.reply.message) && readFileSync(file("contested"), "utf8") === rivalRace.during.bytes, rivalRace.reply);
+
+  // A served removal in the same gap. A static persona records an owner only for a seat this manager
+  // runs, so the definer here is one: started by the manager, calling with its own minted credential.
+  // The waiting redefine composes against the catalog it writes to, so the removed file's role does
+  // not come back with it.
+  const started = await mgr.startAgent({ name: "definer", agent: "smoke-door-join", events: false, persona: { prompt: "You define.", capabilities: ["spawn"] } });
+  for (let i = 0; i < 200 && !seats().some((a) => a.name === "definer"); i++) await new Promise((r) => setTimeout(r, 100));
+  const definerSeat = (seats() as Array<{ name: string; id?: string; lifecycleUid: string; issued?: { generation: string } }>).find((a) => a.name === "definer");
+  const definer = { owner: DEV_OWNER, actor: definerSeat?.id, uid: definerSeat?.lifecycleUid, generation: definerSeat?.issued?.generation } as IssuedCaller;
+  definerNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: readFileSync(agentLifecycleSecretFilePaths(root, space, "definer", definer.uid).creds, "utf8"), tls: false }), maxReconnectAttempts: 0 });
+  const definerDoor = { conn: definerNc, svc: await resolveService(definerNc, space, MANAGER_ENDPOINT, definer, { deadlineMs: 8_000, commands: ["define-persona", "remove-persona"] }) };
+  const withRole = await define("removed", [], definerDoor, "---\nrole: auditor\n---\nYou help.");
+  const firstFile = readFileSync(file("removed"), "utf8");
+  const removalHold = holdEvidence(definer);
+  const redefining = define("removed", ["spawn"], definerDoor);
+  const removalInside = await removalHold.inside;
+  const removalRace = await overlapping(redefining, async () => {
+    const removedOk = await invokeCommand(definerNc!, space, definerDoor.svc, "remove-persona", { name: "removed" }, { deadlineMs: 10_000 })
+      .then((r) => (r as { reply?: { ok?: boolean } }).reply?.ok === true, () => false);
+    const gone = !existsSync(file("removed"));
+    removalHold.release();
+    return { removedOk, gone };
+  });
+  const removed = readFileSync(file("removed"), "utf8");
+  check("control: a seat the manager runs defines a persona at the door with a role, which records it as the owner",
+    started.ok && definerSeat?.issued !== undefined && withRole.ok && /role: auditor/.test(firstFile) && firstFile.includes(`owner: ${DEV_OWNER}.${definer.actor}`), { started, withRole, firstFile });
+  check("control: it removes the persona at the door while its redefine waits on its evidence",
+    removalInside && removalRace.during.removedOk && removalRace.during.gone && removalRace.pendingThroughout, { removalInside, removalRace });
+  check("a served definition that waited on its evidence is composed against the catalog it writes to, not a removed file",
+    removalRace.reply.ok && !/role: auditor/.test(removed) && /capabilities:\s*\n\s*- spawn/.test(removed), { reply: removalRace.reply, removed });
 } finally {
+  await rivalNc?.drain().catch(() => rivalNc?.close());
+  await definerNc?.drain().catch(() => definerNc?.close());
   await nc?.drain().catch(() => nc?.close());
   await mgr?.stop({ withAgents: true }).catch(() => {});
   await stopBroker();

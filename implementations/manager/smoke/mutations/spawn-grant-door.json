@@ -2,7 +2,7 @@
   "suite": [
     "implementations/manager/smoke/spawn-grant-door.smoke.ts"
   ],
-  "guard": "the served spawn door hands the bound the caller the broker pinned on the request subject",
+  "guard": "the served spawn door hands the bound the caller the broker pinned on the request subject, and a served definition writes only against the catalog entry it checked",
   "command": "pnpm smoke:spawn-grant-door",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/mutations/spawn-grant-door.json",
   "completionMarker": "SPAWN-GRANT-DOOR SMOKE",
@@ -10,7 +10,8 @@
     "The bound exempts a spawn with no authenticated caller, the manager's own composition root.",
     "D1 drops the caller from the served door's handoff to startAgent, so every served static spawn",
     "would read as the composition root and pass unbounded. D2 drops it from define-persona's",
-    "handoff, so a served definer would put any capability into a persona."
+    "handoff, so a served definer would put any capability into a persona. D3 writes the persona",
+    "composed before the definer's evidence resolved, over what another call wrote or removed meanwhile."
   ],
   "mutations": [
     {
@@ -26,6 +27,13 @@
       "find": "this.opDefinePersona(args(ctx), callerOf(ctx), false, ctx.subject.caller)",
       "replace": "this.opDefinePersona(args(ctx), callerOf(ctx), false)",
       "expectRed": "a define-persona capability the definer does not hold is refused at the door, naming it"
+    },
+    {
+      "name": "D3 write the def composed before the evidence resolved",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      composed = compose();\n      if (\"reply\" in composed) return composed.reply;\n      const kept",
+      "replace": "      const kept",
+      "expectRed": "a served definition that waited on its evidence does not overwrite a persona another principal defined meanwhile"
     }
   ]
 }
