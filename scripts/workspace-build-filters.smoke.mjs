@@ -27,6 +27,7 @@ try {
   for (const [name, dependencies] of Object.entries(manifests)) {
     write(`packages/${name}/package.json`, JSON.stringify({ name: `@cotal-ai/${name}`, ...dependencies,
       scripts: { build: "tsc", "build:emit": "tsc", "build:docs": "typedoc" } }));
+    write(`packages/${name}/tsconfig.json`, JSON.stringify({ compilerOptions: { rootDir: "./src", outDir: "./dist" }, include: ["src"] }));
     write(`packages/${name}/src/index.ts`, "export const value = 1;\n");
     write(`packages/${name}/dist/index.js`, "export const value = 1;\n");
     write(`bin/smoke/${name}.smoke.ts`, `const mod = await import("../../packages/${name}/dist/index.js");\nconsole.log(mod);\n`);

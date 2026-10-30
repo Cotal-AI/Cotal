@@ -1234,15 +1234,20 @@ const importsSource = (path, source, target) => {
 const sourceOfBuilt = (absolute) => {
   const root = packageRoot(relative(process.cwd(), absolute));
   if (!root) return undefined;
-  let out = "dist", src = "src";
-  try {
-    const cfg = JSON.parse(readFileSync(resolve(root, "tsconfig.json"), "utf8").replace(/^\s*\/\/.*$/gm, ""));
-    out = (cfg.compilerOptions?.outDir ?? out).replace(/^\.\//, "").replace(/\/$/, "");
-    src = (cfg.compilerOptions?.rootDir ?? src).replace(/^\.\//, "").replace(/\/$/, "");
-  } catch { /* defaults above are this repo's convention */ }
-  const rel = relative(resolve(root, out), absolute).replaceAll("\\", "/");
+  const configPath = resolve(root, "tsconfig.json");
+  if (!existsSync(configPath)) return undefined;
+  const refuse = (diagnostics) => {
+    throw new Error(`${configPath}: ${diagnostics.map((d) => ts.flattenDiagnosticMessageText(d.messageText, "\n")).join("\n")}`);
+  };
+  const config = ts.readConfigFile(configPath, ts.sys.readFile);
+  if (config.error) refuse([config.error]);
+  const parsed = ts.parseJsonConfigFileContent(config.config, ts.sys, dirname(configPath), undefined, configPath);
+  if (parsed.errors.length) refuse(parsed.errors);
+  const { rootDir, outDir } = parsed.options;
+  if (!rootDir || !outDir) throw new Error(`${configPath}: built-source mapping requires explicit rootDir and outDir (local or inherited)`);
+  const rel = relative(outDir, absolute).replaceAll("\\", "/");
   if (rel.startsWith("..")) return undefined;
-  return candidateFiles(resolve(root, src, rel));
+  return candidateFiles(resolve(rootDir, rel));
 };
 
 /**
