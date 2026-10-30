@@ -6584,6 +6584,9 @@ The TUI wraps a body, and a roster seat's status facts, by terminal columns: a w
 as a CJK ideograph or an emoji takes two, and a word wider than the pane breaks between characters,
 never inside one.
 A roster seat's head row wider than its pane ends in `…` after the last whole character that fits.
+The agent detail's recent traffic cuts each preview by columns too, never inside a character, and a
+row that would overflow the card ends with `…`. Closing a detail returns the feed to the message and
+scroll position it showed.
 
 <a id="web"></a>
 
