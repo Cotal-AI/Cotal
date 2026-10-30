@@ -21,4 +21,11 @@ const keys = JSON.parse(execFileSync("sh", ["-c", remoteJobCommand(process.cwd()
 }).trim());
 assert.deepEqual(keys, ["COTAL_TELEMETRY", "DO_NOT_TRACK", "HOME", "PATH"]);
 checks++;
+const launchPrefix = `sh -c 'test "$LAUNCHER_TEST" = present && exec "$@"' sh`;
+const launchedKeys = JSON.parse(execFileSync("sh", ["-c", remoteJobCommand(process.cwd(), probe, launchPrefix)], {
+  encoding: "utf8",
+  env: { PATH: process.env.PATH!, HOME: process.env.HOME!, LAUNCHER_TEST: "present", COTAL_SERVERS: "synthetic", OPENAI_API_KEY: "synthetic" },
+}).trim());
+assert.deepEqual(launchedKeys, ["COTAL_TELEMETRY", "DO_NOT_TRACK", "HOME", "PATH"]);
+checks++;
 console.log(`callout-load SSH checks: ${checks}/${checks} passed`);
