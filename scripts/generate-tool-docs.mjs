@@ -70,9 +70,10 @@ const ANNOTATIONS = {
       "A DM publish timeout names its NATS subject and reports an unknown storage outcome. A timeout is not proof that the message was rejected or not delivered. Check before resending.",
   },
   cotal_anycast: {
-    effect: "queues a request for one holder of a role",
-    availability: "always",
-    notes: "When no holder is online the reply says that the request waits on the role's queue.",
+    effect: "queues a request for one holder of a role; with `seq`, reads or cancels one you sent",
+    availability: "always; a read or cancel by `seq` is refused on an open mesh",
+    notes:
+      "When no holder is online the reply says that the request waits on the role's queue. One call does one thing: a send with `role` and `text`, a status read with `seq`, or a cancel with `seq` and `cancel: true`. A call that mixes them changes nothing.",
   },
   cotal_status: {
     effect: "updates your own presence / attention",
@@ -275,7 +276,11 @@ for (const s of specs) {
   }
   if (s.name === "cotal_anycast") {
     lines.push(
-      "On success the tool answers `Request stored as seq <N> on the @<role> queue (<k> holders online at send; delivery not confirmed).`, appending ` duplicate publication.` when the publish was a duplicate. The sequence proves the broker stored the request on the role's work queue. A role is one `[A-Za-z0-9_-]` token, and any other spelling, `*` included, is refused before anything is sent. The count is the roster's live seats holding that role a moment before the publish, you included when you hold that role, since your own task consumer can take the request like any other holder's. While the presence view is not current the count reads `holders unknown at send: the presence view was not current`, because a partial roster cannot show that no holder exists. Neither the sequence nor the count proves a holder took the request.",
+      "On success a send answers `Request stored as seq <N> on the @<role> queue (<holders>; delivery not confirmed).`, appending ` duplicate publication.` when the publish was a duplicate. The sequence proves the broker stored the request on the role's work queue. A role is one `[A-Za-z0-9_-]` token, and any other spelling, `*` included, is refused before anything is sent. `<holders>` names the roster's live seats holding that role a moment before the publish, by name and id, the first eight and then a count of the rest. You are among them when you hold that role, since your own task consumer can take the request like any other holder's. While the presence view is not current the holders read as unknown, because a partial roster cannot show that no holder exists. Neither the sequence nor the holders prove a holder took the request.",
+      "",
+      "Except on an open mesh, the answer adds `You get a notice naming the holder that takes it. Read its status with seq <N>, or cancel it with seq <N> and cancel: true while it waits.` A holder's connector records its take with the delivery daemon just before it shows the request to its agent, and the daemon then sends you a notice: `<name> (<id>) took your @<role> request (seq <N>).` If that holder does not confirm the request before its ack wait runs out and another holder takes it, a second notice names both. A notice comes from the delivery daemon and needs no reply.",
+      "",
+      "Give `seq` alone to read the request's status: waiting on the queue, taken (by whom and when), cancelled, or unknown. Add `cancel: true` to cancel it. A cancel succeeds only while the request waits; once a holder took it, the answer names the taker and points you to that holder or to `cotal_run`. Taken means that holder's connector was about to show the request to its agent, and says nothing about whether the work was done. A seq reads only your own requests. When this session sent two requests under one seq, because the role queue was recreated between them, the seq is refused as ambiguous. Anycast does not follow the work to its end; use [`cotal_run`](#cotal_run) for work you need followed ([SPEC §8.1](../SPEC.md#81-anycast-request-status)).",
     );
     lines.push("");
   }

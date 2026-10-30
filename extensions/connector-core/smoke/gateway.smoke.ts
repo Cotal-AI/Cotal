@@ -227,8 +227,8 @@ try {
   const tools = (await a.listTools()).tools;
   const names = new Set(tools.map((t) => t.name));
   const readOnly = new Set(["cotal_orientation", "cotal_connection_status", "cotal_roster", "cotal_docs", "cotal_channel_info", "cotal_channels"]);
-  const additive = new Set(["cotal_connect", "cotal_send", "cotal_dm", "cotal_anycast", "cotal_join"]);
-  const destructive = new Set(["cotal_disconnect", "cotal_wait", "cotal_inbox", "cotal_status", "cotal_channel_mode", "cotal_leave"]);
+  const additive = new Set(["cotal_connect", "cotal_send", "cotal_dm", "cotal_join"]);
+  const destructive = new Set(["cotal_disconnect", "cotal_wait", "cotal_inbox", "cotal_anycast", "cotal_status", "cotal_channel_mode", "cotal_leave"]);
   check(
     "every gateway tool declares its read and update effects",
     tools.length === readOnly.size + additive.size + destructive.size && tools.every((t) =>

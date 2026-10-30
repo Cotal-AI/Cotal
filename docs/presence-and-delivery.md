@@ -189,6 +189,16 @@ subscriptions may wildcard a subtree (`team.>`). Anycast is queued work: a task 
 worker online *waits*; multiple online instances of a role load-balance; the task is
 removed once acked.
 
+**Anycast receipts.** On an authenticated mesh a holder's connector asks the
+[delivery daemon](delivery-daemon.md#anycast-request-records) to record its take of a role request
+just before it shows the request to its agent. The daemon then sends the sender a notice naming
+that holder, and a second notice if the holder's ack wait ran out and another holder took the
+request. The sender can read the request's status by the seq its send returned, and can cancel it
+until a holder takes it; after that the cancel is refused and names the taker. A take means the
+request was about to be shown and says nothing about the work itself. Anycast does not follow work
+to its end; a [workflow run](workflows.md) does. An open mesh runs no delivery daemon, so anycast
+there has no notices, status or cancel ([SPEC §8.1](../SPEC.md#81-anycast-request-status)).
+
 **Mentions.** A multicast message may carry `mentions: [name…]`, a *priority hint*, not
 a routing target. The message still reaches the whole channel, but a mentioned peer is
 woken immediately while everyone else picks it up when next idle. Names (not instance

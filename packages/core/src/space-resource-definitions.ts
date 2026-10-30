@@ -16,6 +16,7 @@ import {
 import { issuedStoreDefinitions } from "./issued-authority.js";
 import { admissionStoreDefinition } from "./run-admission.js";
 import {
+  anycastStoreDefinition,
   artifactStoreDefinition,
   membershipStoreDefinition,
   spaceMessageStreamConfigs,
@@ -86,6 +87,7 @@ export function spaceResourceDefinitions(space: string, options: EndpointStreamO
   const buckets = [
     ...ttlBuckets(space).map(([bucket, ttl, storage]) => ({ bucket, createOptions: { ttl, storage }, verification: "native-runtime-check-required" as const })),
     { ...membershipStoreDefinition(space), verification: "native-runtime-check-required" as const },
+    { ...anycastStoreDefinition(space), verification: "native-runtime-check-required" as const },
     { ...authority.records, verification: "records" as const },
     { ...authority.auth, verification: "auth" as const },
     ...issuedStoreDefinitions(space).map((definition) => ({ ...definition, verification: "issued" as const })),

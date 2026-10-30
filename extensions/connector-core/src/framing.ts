@@ -118,6 +118,9 @@ function formatItem(i: InboxItem, metadata = ""): string {
     ? `(broker redelivery, delivery ${i.deliveryCount}: prior model handoff unknown) `
     : "";
   const body = `${metadata}${h}${r}${fmtBody(i.text)}`;
+  // A notice is the mesh's own word about a request this session sent, checked against the delivery
+  // lease, so it is labelled as that and not as a peer's DM that wants an answer.
+  if (i.notice === "anycast") return `[anycast notice from the delivery daemon] ${body}`;
   if (i.kind === "dm") return `[DM from ${fmtFrom(i)}] ${body}`;
   if (i.kind === "anycast") return `[@${attributionSafe(i.service ?? "")} from ${fmtFrom(i)}] ${body}`;
   return `[#${attributionSafe(i.channel ?? "")}${i.mentionsMe ? " @you" : ""} ${fmtFrom(i)}] ${body}`;

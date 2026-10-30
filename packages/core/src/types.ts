@@ -491,7 +491,20 @@ export interface Delivery {
    *  consumer once `ackWaitMs` passes without an ack or a `working()` call, which restarts that wait
    *  (JetStream's in-progress ack). `deliveryCount` is 1 on the first delivery. */
   redelivery?: { deliveryCount: number; ackWaitMs: number; working(): void };
+  /** Present on a role request delivered on an auth mesh: record this reader's take of THIS copy
+   *  with the delivery daemon before the request is shown (SPEC §8.1). Showing a request whose take
+   *  did not succeed breaks its sender's cancel. */
+  take?: () => Promise<AnycastTakeOutcome>;
 }
+
+/** The outcome of a holder's take of one role request (SPEC §8.1). A `drop` refusal means the copy
+ *  must never be shown: the sender cancelled it, another holder took a later delivery of it, it left
+ *  the queue, or it is not the request the copy claims. Any other refusal means the take could not
+ *  be decided now, and the copy is held and asked about again. */
+export type AnycastTakeOutcome =
+  | { taken: true }
+  | { taken: false; drop: true; reason: "cancelled" | "taken" | "gone" | "mismatch"; detail: string }
+  | { taken: false; drop: false; reason: "daemon-busy" | "daemon-down" | "daemon-outdated" | "credential-outdated"; detail: string };
 
 /** Control-plane request/reply (e.g. CLI → manager). */
 export interface ControlRequest {

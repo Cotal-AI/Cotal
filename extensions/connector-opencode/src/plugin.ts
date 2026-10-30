@@ -993,6 +993,8 @@ export const cotal: Plugin = async () => {
       // of the promise. A batch still held when the seat tears down does not survive the process:
       // measured, by restarting the identity on a fresh uid and then on the same one and finding the
       // message was owed to neither. Durability across a stop is a delivery question, not this one.
+      // A role request is shown only once its take is recorded (SPEC §8.1); the recheck covers this await.
+      await agent.takeDue("automatic");
       if (phaseClosed()) return;
       const parts: { type: "text"; text: string }[] = [];
       let ids: string[] = [];

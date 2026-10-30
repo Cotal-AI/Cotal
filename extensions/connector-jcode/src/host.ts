@@ -987,7 +987,8 @@ export async function runJcodeHost(): Promise<void> {
   const sessionBusy = (): boolean => driving || turnActive;
 
   const publishInboundHealth = (): void => {
-    const pending = agent.peekInbox("automatic");
+    // Keys only: a health line shows no body, so it must not ask for a role request's take.
+    const pending = agent.inboxKeys("automatic").map((recvKey) => ({ recvKey }));
     const live = new Set(pending.map((item) => item.recvKey));
     for (const key of receivedAt.keys()) if (!live.has(key)) receivedAt.delete(key);
     const queued = pending.length;
@@ -1037,6 +1038,9 @@ export async function runJcodeHost(): Promise<void> {
     if (pendingKickoff !== undefined && steering)
       writeJcodeDiagnostic("[cotal-jcode] startup kickoff waiting for in-flight steering\n");
     await steerSettled;
+    // A role request is shown only once its take is recorded (SPEC §8.1), so ask for those before the
+    // session checks below, which then cover this await too.
+    if (pendingKickoff === undefined) await agent.takeDue("automatic");
     if (stopping || reconnecting || turnActive || !client || !sessionId) {
       driving = false;
       writeJcodeDiagnostic("[cotal-jcode] deferred turn after steering: native session unavailable\n");

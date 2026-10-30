@@ -56,7 +56,7 @@ import { ARTIFACT_PART_KIND, isArtifactPart } from "./artifact.js";
 import { assertValidKind } from "./agent-file.js";
 import { assertValidName } from "./resolve.js";
 import { EVICT_PRINCIPALS_MAX } from "./evict.js";
-import { createSpaceStreams, dmDurableConfig, dlvDurableConfig, taskDurableConfig, fanoutDurableConfig, inboxReaderConfig, MAX_MSGS_PER_SUBJECT, MANAGER_LEASE_TTL_MS, MANAGER_LEASE_ATTEMPT_MS, TTL_RECONCILE_CANARY_KEY, PRESENCE_STORAGE } from "./streams.js";
+import { anycastStoreDefinition, createSpaceStreams, dmDurableConfig, dlvDurableConfig, taskDurableConfig, fanoutDurableConfig, inboxReaderConfig, MAX_MSGS_PER_SUBJECT, MANAGER_LEASE_TTL_MS, MANAGER_LEASE_ATTEMPT_MS, TTL_RECONCILE_CANARY_KEY, PRESENCE_STORAGE } from "./streams.js";
 import {
   jetstream,
   jetstreamManager,
@@ -84,6 +84,7 @@ import type {
   ControlReply,
   ControlRequest,
   ControlRequestInit,
+  AnycastTakeOutcome,
   Delivery,
   EndpointRef,
   MessageMeta,
@@ -128,6 +129,19 @@ import {
   decodeChannelEntry,
 } from "./channels.js";
 import { isCasLoss } from "./endpoint-records.js";
+import {
+  ANYCAST_CANCEL_OP,
+  ANYCAST_NOTICE_KEY,
+  ANYCAST_RECORDS_CREDENTIAL_OUTDATED,
+  ANYCAST_STATUS_OP,
+  ANYCAST_TAKES_OP,
+  AnycastRequestAuthority,
+  isAnycastSeq,
+  type AnycastNotice,
+  type AnycastStatus,
+  type AnycastTakeReply,
+  type AnycastTakeRequest,
+} from "./anycast-requests.js";
 import {
   anycastSubject,
   assertValidRole,
@@ -183,6 +197,10 @@ import {
   subjectMatches,
   taskStream,
   taskDurable,
+  takeServeFilter,
+  takeSubject,
+  parseTakeSubject,
+  TAKE_ROUTE,
   token,
   unicastSubject,
   unicastRecvFilter,
@@ -193,6 +211,15 @@ export { isPermissionDenied };
 
 export const DEFAULT_SERVER = "nats://127.0.0.1:4222";
 const PLANE3_FRAME_HEADER = "Cotal-Delivery-Frame";
+/** The `ctl.delivery` ops a sender calls about one of its own anycast requests (SPEC §8.1). */
+const ANYCAST_CONTROL_OPS: ReadonlySet<string> = new Set([ANYCAST_STATUS_OP, ANYCAST_CANCEL_OP, ANYCAST_TAKES_OP]);
+/** Takes a daemon answers at once; one more is refused as busy, so the holder keeps its copy and
+ *  asks again rather than queueing work the daemon cannot bound. */
+const MAX_TAKES_IN_FLIGHT = 64;
+/** How often the daemon runs the anycast records maintenance pass. */
+const ANYCAST_SWEEP_MS = 10 * 60 * 1000;
+/** How long a holder waits for the daemon to answer a take. */
+const ANYCAST_TAKE_TIMEOUT_MS = 5_000;
 
 interface Plane3DeliveryFrame {
   version: 1;
@@ -681,6 +708,14 @@ export class CotalEndpoint extends EventEmitter {
    *  {@link armDeliveryControl}; tracked so the stale one is dropped on reconnect. */
   private deliveryServeSub?: import("@nats-io/transport-node").Subscription;
   private deliveryAdminServeSub?: import("@nats-io/transport-node").Subscription;
+  /** The anycast take responder, the request records it writes, and their maintenance timer
+   *  (delivery daemon, SPEC §8.1). Bound with the other Plane-3 responders and dropped with them. */
+  private takeServeSub?: import("@nats-io/transport-node").Subscription;
+  private anycastAuthority?: AnycastRequestAuthority;
+  /** Why the records are not open, when this daemon's credential cannot open them. */
+  private anycastUnavailable?: string;
+  private anycastSweep?: ReturnType<typeof setInterval>;
+  private takesInFlight = 0;
   /** The lifecycles whose membership inventory this daemon has been asked for, as principal to uids
    *  (#4965). A durable join or leave bound to one of them is refused, so no row of a retiring lifecycle
    *  is written after its inventory read starts. An entry goes when a later inventory for the same
@@ -1980,6 +2015,7 @@ export class CotalEndpoint extends EventEmitter {
       try { this.deliveryAdminServeSub.unsubscribe(); } catch { /* dead with the old connection */ }
       this.deliveryAdminServeSub = undefined;
     }
+    this.dropAnycastRequests();
     for (const sub of this.subs) {
       try { sub.unsubscribe(); } catch { /* dead with the old connection */ }
     }
@@ -5538,6 +5574,9 @@ export class CotalEndpoint extends EventEmitter {
     if (req.op === "durableJoin") return this.deliveryJoin(caller, args);
     if (req.op === "durableLeave") return this.deliveryLeave(caller, args);
     if (req.op === "readHistory") return this.deliveryReadHistory(caller, args);
+    if (req.op === ANYCAST_TAKES_OP)
+      return this.anycastUnavailable ? { ok: false, error: `delivery: ${this.anycastUnavailable}` } : { ok: true, data: { takes: true } };
+    if (req.op === ANYCAST_STATUS_OP || req.op === ANYCAST_CANCEL_OP) return this.deliveryAnycast(req.op, caller, args);
     if (req.op === "listMemberships") {
       if (typeof args.lifecycleUid !== "string")
         return { ok: false, error: "listMemberships: the caller's lifecycleUid is required (membership rows are lifecycle-keyed, SPEC 13.1)" };
@@ -5771,6 +5810,7 @@ export class CotalEndpoint extends EventEmitter {
       try { this.deliveryAdminServeSub.unsubscribe(); } catch { /* already dead */ }
       this.deliveryAdminServeSub = undefined;
     }
+    this.dropAnycastRequests();
     // Stopping the consumers ends the `for await` loops that drive fan-out and the reader. In-flight
     // messages are NOT acked by a stopped consumer, so they redeliver to whoever holds the shard
     // next: quiescing loses no message, it only stops this process from claiming them.
@@ -5826,6 +5866,7 @@ export class CotalEndpoint extends EventEmitter {
     if (this.plane3Quiesced) return;
     await this.manager(); // the manager runs consume:false, so this.jsm is lazy — ensure it
     this.armDeliveryControl();
+    await this.armAnycastRequests();
     await this.runFanout();
     await this.runReader();
   }
@@ -5842,7 +5883,12 @@ export class CotalEndpoint extends EventEmitter {
       const i = this.subs.indexOf(this.deliveryServeSub);
       if (i >= 0) this.subs.splice(i, 1);
     }
-    this.deliveryServeSub = this.serveControl(CONTROL_DELIVERY, (req) => this.handleDeliveryControl(req), { boundReply: true });
+    // A request's status and cancel touch only the TASK queue and the anycast records, so they do
+    // not wait behind a channel join on the in-order chain.
+    this.deliveryServeSub = this.serveControl(CONTROL_DELIVERY, (req) => this.handleDeliveryControl(req), {
+      boundReply: true,
+      concurrent: (req) => ANYCAST_CONTROL_OPS.has(req.op),
+    });
     if (this.deliveryAdminServeSub) {
       try { this.deliveryAdminServeSub.unsubscribe(); } catch { /* dead with the old connection */ }
       const i = this.subs.indexOf(this.deliveryAdminServeSub);
@@ -5855,6 +5901,137 @@ export class CotalEndpoint extends EventEmitter {
       boundReply: true,
       concurrent: (req) => req.op === "lifecycleMemberships",
     });
+  }
+
+  /** (Re)bind the anycast take responder and the request records maintenance on the current
+   *  connection (SPEC §8.1). The records bucket is created here as well as at space setup, so a mesh
+   *  that predates it gets one when its daemon restarts at this version. */
+  private async armAnycastRequests(): Promise<void> {
+    if (!this.nc || !this.jsm) return;
+    this.dropAnycastRequests();
+    const definition = anycastStoreDefinition(this.space);
+    let kv: KV;
+    try {
+      kv = await new Kvm(this.nc).create(definition.bucket, definition.createOptions);
+    } catch (e) {
+      // A credential minted before the records existed cannot open them. That costs the records and
+      // nothing else: the rest of Plane-3 still serves, and every anycast op answers with the cause.
+      if (!isPermissionDenied(e)) throw e;
+      this.anycastUnavailable = ANYCAST_RECORDS_CREDENTIAL_OUTDATED;
+      this.emitRecoverable(new Error(`delivery: ${ANYCAST_RECORDS_CREDENTIAL_OUTDATED}`));
+      return;
+    }
+    this.anycastUnavailable = undefined;
+    const authority = new AnycastRequestAuthority({
+      jsm: this.jsm,
+      kv,
+      stream: taskStream(this.space),
+      send: (to, event) => this.sendAnycastNotice(to, event),
+      mayAct: () => this.plane3MayAct(),
+      onError: (e) => this.emitRecoverable(e),
+    });
+    this.anycastAuthority = authority;
+    this.takeServeSub = this.serveTakes(authority);
+    const sweep = () => void authority.sweep().catch((e) => this.emitRecoverable(e as Error));
+    this.anycastSweep = setInterval(sweep, ANYCAST_SWEEP_MS);
+    this.anycastSweep.unref?.();
+    sweep();
+  }
+
+  private dropAnycastRequests(): void {
+    if (this.takeServeSub) {
+      try { this.takeServeSub.unsubscribe(); } catch { /* dead with the old connection */ }
+      const i = this.subs.indexOf(this.takeServeSub);
+      if (i >= 0) this.subs.splice(i, 1);
+      this.takeServeSub = undefined;
+    }
+    clearInterval(this.anycastSweep);
+    this.anycastSweep = undefined;
+    this.anycastAuthority = undefined;
+  }
+
+  /** Serve takes on `take.*.*.*`, each in its own time: a take reads one request and writes one row,
+   *  and shares nothing with any other take but the row's CAS. The reply is bound to the caller's own
+   *  request subtree, as `serveControl`'s `boundReply` binds it. */
+  private serveTakes(authority: AnycastRequestAuthority): import("@nats-io/transport-node").Subscription {
+    const sub = this.nc!.subscribe(takeServeFilter(this.space), { queue: TAKE_ROUTE });
+    this.subs.push(sub);
+    void (async () => {
+      for await (const m of sub) {
+        if (!m.reply || !m.reply.startsWith(`${m.subject}.reply.`)) {
+          this.emitRecoverable(new Error(`rejected take on ${m.subject}: reply target "${m.reply ?? "(none)"}" is not under the sender's own reply subtree`));
+          continue;
+        }
+        void this.answerTake(authority, m).catch((e) => this.emitRecoverable(e as Error));
+      }
+    })().catch((e) => this.emitRecoverable(e as Error));
+    return sub;
+  }
+
+  private async answerTake(authority: AnycastRequestAuthority, m: import("@nats-io/transport-node").Msg): Promise<void> {
+    let reply: AnycastTakeReply;
+    if (this.takesInFlight >= MAX_TAKES_IN_FLIGHT) reply = { ok: false, code: "busy", error: "the delivery daemon is answering too many takes; retry" };
+    else {
+      this.takesInFlight++;
+      try {
+        reply = await this.takeFor(authority, m);
+      } catch (e) {
+        reply = { ok: false, code: "busy", error: `the take could not be recorded: ${(e as Error).message}` };
+      } finally {
+        this.takesInFlight--;
+      }
+    }
+    m.respond(JSON.stringify(reply));
+  }
+
+  /** Check one take's caller and arguments, then record it. The role and the caller come from the
+   *  broker-policed subject; the payload's `from.id` must match, as on every control rail. */
+  private async takeFor(authority: AnycastRequestAuthority, m: import("@nats-io/transport-node").Msg): Promise<AnycastTakeReply> {
+    if (!this.plane3MayAct()) return { ok: false, code: "busy", error: "delivery: this daemon is not serving this shard (it is re-checking ownership); retry" };
+    const parsed = parseTakeSubject(m.subject);
+    let req: AnycastTakeRequest | undefined;
+    try { req = m.json<AnycastTakeRequest>(); } catch { req = undefined; }
+    if (!parsed || !isPrincipalOwnerToken(parsed.owner) || req?.from?.id !== parsed.sender || typeof req.from.name !== "string")
+      return { ok: false, code: "mismatch", error: "sender mismatch - take rejected" };
+    if (!isAnycastSeq(req.seq) || !isAnycastSeq(req.count) || typeof req.id !== "string" || req.id.length > 256)
+      return { ok: false, code: "mismatch", error: "a take names a seq, the request id and a delivery count" };
+    return authority.take(parsed.role, { from: { id: parsed.sender, name: req.from.name.slice(0, 128) }, seq: req.seq, id: req.id, count: req.count });
+  }
+
+  /** DM one notice to a request's sender from this daemon's own principal. The event key is the
+   *  message id, so a resend after a crash is dropped by the DM stream's duplicate window and by
+   *  the receiving connector. */
+  private async sendAnycastNotice(to: string, event: { key: string; text: string; notice: AnycastNotice }): Promise<void> {
+    if (!this.js) throw new Error(this.notLiveMsg());
+    const recipient = parsePrincipalKey(to);
+    if (!recipient) throw new Error(`anycast notice: "${to}" is not a principal`);
+    const msg: CotalMessage = {
+      id: event.key,
+      ts: Date.now(),
+      space: this.space,
+      from: this.ref(),
+      to,
+      parts: [{ kind: "text", text: event.text }, { kind: "data", data: { [ANYCAST_NOTICE_KEY]: event.notice } }],
+    };
+    await this.js.publish(unicastSubject(this.space, recipient.owner, recipient.actor, this.owner, this.actor), JSON.stringify(msg), { msgID: msg.id });
+  }
+
+  /** Answer a sender's status or cancel for one of its own requests. The caller is the
+   *  authenticated subject sender, checked against the request's stored subject. */
+  private async deliveryAnycast(op: string, caller: string, args: Record<string, unknown>): Promise<ControlReply> {
+    const authority = this.anycastAuthority;
+    if (!authority)
+      return { ok: false, error: `delivery: ${this.anycastUnavailable ?? "the anycast request records are not open on this daemon; retry"}` };
+    if (!isAnycastSeq(args.seq)) return { ok: false, error: `${op}: seq must be a whole number of at least 1` };
+    if (args.id !== undefined && (typeof args.id !== "string" || args.id.length > 256)) return { ok: false, error: `${op}: id must be a request id` };
+    const q = { seq: args.seq, ...(typeof args.id === "string" ? { id: args.id } : {}) };
+    try {
+      const status = op === ANYCAST_CANCEL_OP ? await authority.cancel(caller, q) : await authority.status(caller, q);
+      if (!this.plane3MayAct()) return { ok: false, error: "delivery: this daemon stopped serving this shard while the request was in flight; retry" };
+      return { ok: true, data: status satisfies AnycastStatus };
+    } catch (e) {
+      return { ok: false, error: (e as Error).message };
+    }
   }
 
   // ---- the peer-readable liveness surface (#1577) --------------------------
@@ -6577,6 +6754,79 @@ export class CotalEndpoint extends EventEmitter {
     return e instanceof NoRespondersError || (e instanceof RequestError && e.isNoResponders());
   }
 
+  /** Holder side of a take (SPEC §8.1): ask the delivery daemon to record this endpoint's take of the
+   *  request at `seq`, for the copy with `count` deliveries. Never throws; a take the daemon could
+   *  not decide is reported as held, with what the operator has to do when that is anything. */
+  private async takeAnycast(role: string, seq: number, id: string, count: number): Promise<AnycastTakeOutcome> {
+    const held = (reason: "daemon-busy" | "daemon-down" | "daemon-outdated" | "credential-outdated", detail: string): AnycastTakeOutcome =>
+      ({ taken: false, drop: false, reason, detail });
+    if (!this.nc) return held("daemon-down", this.notLiveMsg());
+    const subject = takeSubject(this.space, role, this.owner, this.actor);
+    const body: AnycastTakeRequest = { from: { id: this.card.id, name: this.card.name }, seq, id, count };
+    let reply: AnycastTakeReply;
+    try {
+      const m = await this.nc.request(subject, JSON.stringify(body), { timeout: ANYCAST_TAKE_TIMEOUT_MS, noMux: true, reply: `${subject}.reply.${randomUUID()}` });
+      reply = m.json<AnycastTakeReply>();
+    } catch (e) {
+      if (isPermissionDenied(e))
+        return held("credential-outdated", "this seat's credential was minted before anycast takes existed, so it cannot take role requests; respawn the seat to get a current credential");
+      if (this.isNoResponders(e)) return this.takeResponderMissing();
+      return held("daemon-down", `the delivery daemon did not answer the take: ${(e as Error).message}`);
+    }
+    if (reply.ok) return { taken: true };
+    if (reply.code === "cancelled" || reply.code === "taken" || reply.code === "gone" || reply.code === "mismatch")
+      return { taken: false, drop: true, reason: reply.code, detail: reply.error };
+    return held("daemon-busy", reply.error);
+  }
+
+  /** No responder on the take rail: an older daemon answers the probe op as unsupported, and a
+   *  stopped one does not answer at all. */
+  private async takeResponderMissing(): Promise<AnycastTakeOutcome> {
+    const held = (reason: "daemon-down" | "daemon-outdated", detail: string): AnycastTakeOutcome => ({ taken: false, drop: false, reason, detail });
+    let reply: ControlReply;
+    try {
+      reply = await this.requestDelivery(ANYCAST_TAKES_OP, {}, ANYCAST_TAKE_TIMEOUT_MS);
+    } catch {
+      return held("daemon-down", "no delivery daemon is answering on this mesh, so role requests wait on the queue until one does");
+    }
+    if (!reply.ok && /not supported on the delivery control service/.test(reply.error ?? ""))
+      return held("daemon-outdated", "the delivery daemon predates anycast takes, so this seat holds role requests until the daemon is restarted at this version (`cotal up` runs it)");
+    if (!reply.ok && reply.error?.includes(ANYCAST_RECORDS_CREDENTIAL_OUTDATED))
+      return held("daemon-outdated", `this seat holds role requests until the delivery daemon can record takes: ${ANYCAST_RECORDS_CREDENTIAL_OUTDATED}`);
+    return held("daemon-down", "the delivery daemon is not answering takes, so role requests wait on the queue until it does");
+  }
+
+  /** The status of one of this endpoint's own anycast requests, from the delivery daemon's record
+   *  or, with no record, from the queue (SPEC §8.1). `id` narrows the answer to that request. Throws
+   *  on an open mesh, which runs no delivery daemon. */
+  async anycastStatus(seq: number, id?: string): Promise<AnycastStatus> {
+    return this.anycastRequest(ANYCAST_STATUS_OP, seq, id);
+  }
+
+  /** Cancel one of this endpoint's own anycast requests while it waits. A request a holder already
+   *  took is refused, and the returned status names the taker. */
+  async cancelAnycast(seq: number, id?: string): Promise<AnycastStatus> {
+    return this.anycastRequest(ANYCAST_CANCEL_OP, seq, id);
+  }
+
+  private async anycastRequest(op: string, seq: number, id: string | undefined): Promise<AnycastStatus> {
+    if (!this.authed) throw new Error("an open mesh runs no delivery daemon, so it keeps no record of anycast requests");
+    if (!isAnycastSeq(seq)) throw new Error(`seq must be a whole number of at least 1, got ${seq}`);
+    let reply: ControlReply;
+    try {
+      reply = await this.requestDelivery(op, { seq, ...(id !== undefined ? { id } : {}) }, 10_000);
+    } catch (e) {
+      if (this.isNoResponders(e)) throw new Error("no delivery daemon is answering on this mesh, so the request's record cannot be read");
+      throw e;
+    }
+    if (!reply.ok) {
+      if (/not supported on the delivery control service/.test(reply.error ?? ""))
+        throw new Error("the delivery daemon predates anycast request status; restart it at this version (`cotal up` runs it)");
+      throw new Error(reply.error ?? `${op} failed`);
+    }
+    return reply.data as AnycastStatus;
+  }
+
   /** Agent-side: this session's CURRENT durable memberships (channel + join generation) from the
    *  manager — the agent holds no read on the privileged members KV. `undefined` ⇒ NO control responder
    *  (open / no delivery daemon, so there is no Plane-3 and no memberships). THROWS on a responder-present RPC
@@ -6723,14 +6973,14 @@ export class CotalEndpoint extends EventEmitter {
           taskDurableConfig(this.space, this.card.role, { ackWaitMs: this.ackWaitMs }),
         );
       }
-      await this.pump(taskStream(this.space), taskDurable(this.card.role));
+      await this.pump(taskStream(this.space), taskDurable(this.card.role), this.authed ? { takeRole: this.card.role } : {});
     }
   }
 
   /** Drive one consumer: decode and hand each message to listeners with ack control. Our own sends are
    *  delivered too: on the DM inbox and the role queue they were addressed to us, so none is an echo,
    *  and acking one unseen on the work queue would delete the only copy of the request. */
-  private async pump(stream: string, durable: string, opts: { inbox?: boolean } = {}): Promise<void> {
+  private async pump(stream: string, durable: string, opts: { inbox?: boolean; takeRole?: string } = {}): Promise<void> {
     if (!this.js) throw new Error(this.notLiveMsg());
     const consumer = await this.js.consumers.get(stream, durable);
     const ackWaitMs = await ackWaitOf(consumer);
@@ -6742,7 +6992,12 @@ export class CotalEndpoint extends EventEmitter {
         const authed = this.authenticateStreamMsg(m);
         if (!authed) continue;
         const { msg, parsed } = authed;
-        this.emit("message", authenticatedMessage(msg, parsed), durableDelivery(m, ackWaitMs), {
+        const delivery = durableDelivery(m, ackWaitMs);
+        // On an auth mesh a role request carries its take: the holder records it with the delivery
+        // daemon before showing the request, so its sender can cancel it until then (SPEC §8.1).
+        const role = opts.takeRole;
+        if (role !== undefined) delivery.take = () => this.takeAnycast(role, m.seq, msg.id, m.info.deliveryCount);
+        this.emit("message", authenticatedMessage(msg, parsed), delivery, {
           historical: false,
           kind: kindFromParsed(parsed.kind),
         } satisfies MessageMeta);

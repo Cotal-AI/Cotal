@@ -375,6 +375,7 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
           // Order matters: surfaceAutomatic creates this frame's inFlight record; surfaceTurns
           // extends it (or creates a message-less one), so it must evaluate second.
           const briefing = agent.channelBriefing();
+          if (deps.delivery !== false) await agent.takeDue("automatic");
           const reserved = (briefing?.length ?? 0) + (agent.peekPendingTurns()?.text.length ?? 0) + 4;
           const parts = [briefing, surfaceAutomatic(agent, ev, reserved), surfaceTurns(agent, ev)].filter(Boolean);
           return withContext(parts.length ? parts.join("\n\n") : undefined);
@@ -388,6 +389,8 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
           // Run turns ride the same frame as peer messages: this is an injectable boundary, and
           // the frame's delivery verdict is what commits them as surfaced (arming the automatic
           // `done` at the coming Stop). surfaceAutomatic first — it creates the inFlight record.
+          // A role request is shown only once its take is recorded (SPEC §8.1), so ask for those first.
+          if (deps.delivery !== false) await agent.takeDue("automatic");
           const reserved = (agent.peekPendingTurns()?.text.length ?? 0) + 2;
           const parts = [surfaceAutomatic(agent, ev, reserved), surfaceTurns(agent, ev)].filter(Boolean);
           return withContext(parts.length ? parts.join("\n\n") : undefined);

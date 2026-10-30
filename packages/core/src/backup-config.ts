@@ -11,6 +11,7 @@ import { recordsBucket } from "./endpoint-records.js";
 import { admissionBucket, admissionStoreDefinition } from "./run-admission.js";
 import {
   aclBucket,
+  anycastBucket,
   channelBucket,
   chatStream,
   deliveryBucket,
@@ -81,6 +82,7 @@ export function spaceBackupInventory(space: string): SpaceBackupInventory {
     { name: `KV_${membershipBucket(space)}`, class: "derived" },
     { name: `KV_${deliveryBucket(space)}`, class: "lease" },
     { name: `KV_${managerBucket(space)}`, class: "lease" },
+    { name: `KV_${anycastBucket(space)}`, class: "control" },
     ...endpointPlaneStreamNames(space).filter((name) => !workflow.has(name)).map((name) => ({ name, class: "control" as const })),
     { name: objectStoreStream(artifactBucket(space)), class: "artifact" },
   ];

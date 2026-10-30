@@ -17,7 +17,7 @@ The tools are defined once, platform-neutrally, in `@cotal-ai/connector-core` an
 | [`cotal_inbox`](#cotal_inbox) | read incoming messages | clears only the messages it returns (nothing at all when peek is true) |
 | [`cotal_send`](#cotal_send) | broadcast to a channel | publishes to a channel |
 | [`cotal_dm`](#cotal_dm) | direct-message a peer | sends a private message to one peer |
-| [`cotal_anycast`](#cotal_anycast) | ask any agent of a role | queues a request for one holder of a role |
+| [`cotal_anycast`](#cotal_anycast) | ask any agent of a role | queues a request for one holder of a role; with `seq`, reads or cancels one you sent |
 | [`cotal_status`](#cotal_status) | set your status / attention | updates your own presence / attention |
 | [`cotal_channel_info`](#cotal_channel_info) | what a channel is for | read-only |
 | [`cotal_channels`](#cotal_channels) | list channels | read-only |
@@ -140,18 +140,24 @@ On success the tool answers `DM stored as seq <N> for <name> (recipient was <sta
 
 *ask any agent of a role*
 
-Send a request to ANY one available agent of a given role (load-balanced). Use when you need 'a reviewer' rather than a specific person. The request waits on the role's queue until a holder takes it, so one sent while no agent holds the role is kept for the next that does.
+Send a request to ANY one available agent of a given role (load-balanced). Use when you need 'a reviewer' rather than a specific person. Give role and text to send. The request waits on the role's queue until a holder takes it, so one sent while no agent holds the role is kept for the next that does. The result gives the request's seq and the holders online at send. Except on an open mesh, you get a notice naming the holder that takes it, seq alone reads the request's status, and seq with cancel: true cancels it while it still waits. A cancel is refused once a holder took the request. Anycast does not follow the work to the end; use cotal_run for that.
 
-- **Side-effect:** queues a request for one holder of a role.
-- **Available:** always.
-- When no holder is online the reply says that the request waits on the role's queue.
+- **Side-effect:** queues a request for one holder of a role; with `seq`, reads or cancels one you sent.
+- **Available:** always; a read or cancel by `seq` is refused on an open mesh.
+- When no holder is online the reply says that the request waits on the role's queue. One call does one thing: a send with `role` and `text`, a status read with `seq`, or a cancel with `seq` and `cancel: true`. A call that mixes them changes nothing.
 
 | Argument | Type | Required | Meaning |
 |---|---|---|---|
-| `role` | string | yes | The role to address (e.g. reviewer). |
-| `text` | string | yes | The request. |
+| `role` | string | no | Send: the role to address (e.g. reviewer). Give it with text. |
+| `text` | string | no | Send: the request. |
+| `seq` | number | no | Status or cancel: the seq a send returned. Give it alone for the request's status. |
+| `cancel` | boolean | no | Cancel: true, with seq, cancels that request while it still waits. |
 
-On success the tool answers `Request stored as seq <N> on the @<role> queue (<k> holders online at send; delivery not confirmed).`, appending ` duplicate publication.` when the publish was a duplicate. The sequence proves the broker stored the request on the role's work queue. A role is one `[A-Za-z0-9_-]` token, and any other spelling, `*` included, is refused before anything is sent. The count is the roster's live seats holding that role a moment before the publish, you included when you hold that role, since your own task consumer can take the request like any other holder's. While the presence view is not current the count reads `holders unknown at send: the presence view was not current`, because a partial roster cannot show that no holder exists. Neither the sequence nor the count proves a holder took the request.
+On success a send answers `Request stored as seq <N> on the @<role> queue (<holders>; delivery not confirmed).`, appending ` duplicate publication.` when the publish was a duplicate. The sequence proves the broker stored the request on the role's work queue. A role is one `[A-Za-z0-9_-]` token, and any other spelling, `*` included, is refused before anything is sent. `<holders>` names the roster's live seats holding that role a moment before the publish, by name and id, the first eight and then a count of the rest. You are among them when you hold that role, since your own task consumer can take the request like any other holder's. While the presence view is not current the holders read as unknown, because a partial roster cannot show that no holder exists. Neither the sequence nor the holders prove a holder took the request.
+
+Except on an open mesh, the answer adds `You get a notice naming the holder that takes it. Read its status with seq <N>, or cancel it with seq <N> and cancel: true while it waits.` A holder's connector records its take with the delivery daemon just before it shows the request to its agent, and the daemon then sends you a notice: `<name> (<id>) took your @<role> request (seq <N>).` If that holder does not confirm the request before its ack wait runs out and another holder takes it, a second notice names both. A notice comes from the delivery daemon and needs no reply.
+
+Give `seq` alone to read the request's status: waiting on the queue, taken (by whom and when), cancelled, or unknown. Add `cancel: true` to cancel it. A cancel succeeds only while the request waits; once a holder took it, the answer names the taker and points you to that holder or to `cotal_run`. Taken means that holder's connector was about to show the request to its agent, and says nothing about whether the work was done. A seq reads only your own requests. When this session sent two requests under one seq, because the role queue was recreated between them, the seq is refused as ambiguous. Anycast does not follow the work to its end; use [`cotal_run`](#cotal_run) for work you need followed ([SPEC §8.1](../SPEC.md#81-anycast-request-status)).
 
 ## `cotal_status`
 

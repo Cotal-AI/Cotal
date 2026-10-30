@@ -1,0 +1,37 @@
+{
+  "suite": [
+    "extensions/connector-core/smoke/anycast-take-gate-auth.smoke.ts"
+  ],
+  "command": "pnpm smoke:anycast-take-gate:auth",
+  "completionMarker": "COTAL_SMOKE_SENTINEL cells=31",
+  "mutations": [
+    {
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "this.gated.push(pending);",
+      "replace": "this.inbox.push(pending);",
+      "expectRed": "1f a read before the take does not show it",
+      "cell": "1f a read before the take does not show it"
+    },
+    {
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    if (outcome.drop) {\n      this.dropGated(p);\n      return;\n    }",
+      "replace": "    if (outcome.drop) {\n      return;\n    }",
+      "expectRed": "2c and drops its copy",
+      "cell": "2c and drops its copy"
+    },
+    {
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "this.ingest(m, delivery, meta, holder !== undefined && holder === m.from.id);",
+      "replace": "this.ingest(m, delivery, meta, true);",
+      "expectRed": "4a it arrives as a DM from its real sender",
+      "cell": "4a it arrives as a DM from its real sender"
+    },
+    {
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "          if (!isAuthed(config))\n            return err(\"This is an open mesh",
+      "replace": "          if (false)\n            return err(\"This is an open mesh",
+      "expectRed": "3g on an open mesh status is refused, naming why",
+      "cell": "3g on an open mesh status is refused, naming why"
+    }
+  ]
+}

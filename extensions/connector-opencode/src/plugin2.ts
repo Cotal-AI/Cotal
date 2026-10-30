@@ -230,6 +230,8 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
     if (execution || submitting || controller.signal.aborted) return;
     const id = await ensureSession();
     if (!id) return; // no visible session yet — the boot task above retries via sessionReady
+    // A role request is shown only once its take is recorded (SPEC §8.1); the recheck covers this await.
+    if (override === undefined) await agent.takeDue("automatic");
     if (execution || submitting || controller.signal.aborted) return; // rechecked after the await, same reason as plugin.ts's `drive`
     // The floor: while boot text exists and its gate is closed, nothing else goes out (the 1.x
     // boot floor in `drive` without the `pendingWake` slot, which 2.x does not have).

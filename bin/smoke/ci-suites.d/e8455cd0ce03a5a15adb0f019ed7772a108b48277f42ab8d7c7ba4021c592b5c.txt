@@ -1,0 +1,4 @@
+# Anycast request status against a real delivery daemon on an auth broker: a take and its notice,
+# cancel before a take, take and cancel raced, a redelivery that moves the take, role pinning, a
+# foreign sender, no daemon or an older one, a daemon on an older credential, and record upkeep.
+smoke:anycast-request-status:auth

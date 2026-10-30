@@ -622,6 +622,9 @@ export async function runCodexHost(): Promise<void> {
       if (override) {
         parts.push(override);
       } else {
+        // A role request is shown only once its take is recorded (SPEC §8.1).
+        await agent.takeDue("automatic");
+        if (shuttingDown) return;
         const items = agent.peekInbox("automatic");
         if (items.length === 0 && !turnPeek) return;
         if (items.length > 0) {

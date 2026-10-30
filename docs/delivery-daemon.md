@@ -47,6 +47,28 @@ read checks it must apply. A conformant deployment may realize the backstop diff
   orders deterministically ([SPEC §7](../SPEC.md#7-channels)). It is broker-known truth, not
   self-reported: an agent cannot assert its own membership.
 
+## Anycast request records
+
+On an authenticated mesh the daemon also keeps the records behind anycast receipts
+([SPEC §8.1](../SPEC.md#81-anycast-request-status)). Just before a role holder's connector shows a
+role request, it asks the daemon on its own take subject to record the take. The daemon reads the
+request at that seq on the task stream and writes one row per request to the
+`cotal_anycast_<space>` bucket. A take and a cancel of one request race on that row's create and
+revision check, so only one of them wins. When a take wins, the daemon sends the request's sender a
+DM from its own principal naming the holder. It sends a second one when the request's ack wait ran
+out and a later delivery moved the take to another holder.
+
+A sender reads or cancels its own request by seq with the `anycastStatus` and `anycastCancel`
+commands on the `ctl.delivery` rail. A cancel succeeds only while no holder has taken the request:
+the daemon writes a cancelled row and deletes the request from the task stream, and a holder that
+then asks to take its buffered copy is refused and forgets it. The daemon removes a row a day after
+the request left the queue. It checks every row when it starts and every ten minutes, and resends
+any notice a crash left unsent.
+
+For this the `delivery` credential can read every request body on the task stream and delete any
+request there. Only the trust placed in the daemon bounds those two grants
+([SPEC Appendix B](../SPEC.md#appendix-b-profile-acls)).
+
 ## Why a *trusted* reader
 
 The per-member store is **mixed**: it holds copies for whatever channels a member was in when
@@ -259,3 +281,9 @@ Only the durable backstop and its membership writes need the privileged host. If
 `durable` channel while the backstop can't be established, it is **joined live with the durable
 backstop unestablished**: the live subscription is active, and the shortfall is surfaced as an
 exceptional delivery state, never reported as `joined durable` and never silently dropped ([SPEC §7](../SPEC.md#7-channels)).
+
+Role holders on an authenticated mesh do need the daemon. A holder's connector shows a role request
+only after the daemon records its take, so while no daemon runs, role requests wait on the queue
+and each holder reports that no delivery daemon is answering. A daemon that predates takes, or a
+seat credential minted before them, holds requests the same way, and the holder says to restart
+the daemon or respawn the seat.

@@ -34,6 +34,7 @@ import {
   aclBucket,
   aclKey,
   membershipBucket,
+  anycastBucket,
   deliveryBucket,
   managerBucket,
   inboxStream,
@@ -135,6 +136,10 @@ export const MANAGER_LEASE_ATTEMPT_MS = 2_000;
  *  far above any realistic readership while keeping the bucket from growing unbounded. A deliberate cap,
  *  not a guess at scale — the design is cap-safe by construction (per-agent, store-patterns-not-expanded). */
 export const MEMBERSHIP_MAX_BYTES = 64 * 1024 * 1024;
+
+/** The anycast records bucket's size bound (SPEC §8.1). A full bucket refuses new rows, so takes wait
+ *  instead of proceeding unrecorded. */
+export const ANYCAST_RECORDS_MAX_BYTES = 64 * 1024 * 1024;
 
 /** The `max_bytes` a per-space artifact Object Store carried before the reservation was removed:
  *  4 GiB, the stock value every store created by that code holds. Kept for ONE purpose —
@@ -242,6 +247,13 @@ export function spaceRegistryStreamConfigs(space: string) {
 /** Native derived-membership creation inputs, not evidence of observed membership. */
 export function membershipStoreDefinition(space: string) {
   return { bucket: membershipBucket(space), createOptions: { history: 1, max_bytes: MEMBERSHIP_MAX_BYTES } };
+}
+
+/** Native creation inputs for the delivery daemon's anycast request records (SPEC §8.1). No TTL: the
+ *  daemon removes a row a day after its request leaves the queue and never while it is queued. Both
+ *  space setup and the daemon create it, the daemon for a mesh that predates the bucket. */
+export function anycastStoreDefinition(space: string) {
+  return { bucket: anycastBucket(space), createOptions: { history: 1, max_bytes: ANYCAST_RECORDS_MAX_BYTES } };
 }
 
 /**
@@ -704,6 +716,8 @@ export async function setupSpaceStreams(opts: {
     // scoped writer holds no STREAM.CREATE. Idempotent.
     const membership = membershipStoreDefinition(opts.space);
     await kvm.create(membership.bucket, membership.createOptions);
+    const anycast = anycastStoreDefinition(opts.space);
+    await kvm.create(anycast.bucket, anycast.createOptions);
     // The two §13.12 AUTHORITY stores (records + auth): every auth-mode mesh now carries a
     // lifecycle registry — user mode's service re-ensures at its own boot, the STATIC manager's
     // start reconcile re-ensures for pre-existing spaces — and the up-time seed creates

@@ -29,6 +29,9 @@ import {
   type EpVerbTarget,
   type ControlReply,
   type Delivery,
+  type AnycastStatus,
+  type AnycastTakeOutcome,
+  ANYCAST_NOTICE_KEY,
   partsToText,
   assertValidRole,
   type MessageMeta,
@@ -151,6 +154,10 @@ export interface InboxItem {
    *  Broker-derived, never read from the payload: above 1, an earlier delivery of this message went
    *  unacked past its ack wait and may have run, here or on another reader. */
   deliveryCount?: number;
+  /** Set on a DM from the space's delivery daemon about one of this session's own role requests
+   *  (SPEC §8.1): its sender was checked against the delivery lease holder. A notice asks for no
+   *  reply and answers no question. */
+  notice?: "anycast";
 }
 
 /** A bounded, non-consuming view of the currently buffered inbox for presentation-only surfaces. */
@@ -188,6 +195,12 @@ interface Pending {
    *  the copy it is counted as. Evicting it un-counts that copy only, so recall can hand its stream
    *  copy back while an identical copy with another disposition stays counted. */
   idless?: { tally: Map<string, IdlessTally>; digest: string; copy: IdlessCopy };
+  /** A role request on an auth mesh (SPEC §8.1): the take of the current copy, the take in flight,
+   *  and the delivery count a recorded take is for. Such an entry is shown only once its take of
+   *  the copy it holds is recorded. */
+  take?: Delivery["take"];
+  taking?: Promise<void>;
+  takenCount?: number;
 }
 
 /** #662: the copies of one id-less channel message (by content) a focus episode has settled
@@ -242,6 +255,11 @@ export function afterRecallMark(a: RecallMark, b: RecallMark): boolean {
 /** How many pending messages one session buffers before the overflow valve in
  *  {@link MeshAgent.buffer} evicts. */
 const MAX_INBOX = 200;
+/** How long {@link MeshAgent.takeDue} waits for the delivery daemon before it lets a caller show
+ *  what is already taken. A take not decided by then stays held for a later read. */
+const TAKE_WAIT_MS = 2_000;
+/** How long a role request whose take could not be decided waits before it is asked about again. */
+const TAKE_RETRY_MS = 10_000;
 /** How many receive keys {@link MeshAgent.holdInFlight} protects at once. The overflow valve never
  *  evicts a held entry, so this ceiling also bounds the inbox while holds are open, which is why it
  *  is derived from {@link MAX_INBOX}. It sits above the inbox because a frame keeps its holds until
@@ -316,6 +334,12 @@ export interface ExactDrainResult {
 }
 
 import { createHash, randomUUID } from "node:crypto";
+
+/** Whether a DM carries a delivery daemon's anycast notice part (SPEC §8.1). Its sender is still to
+ *  be checked against the delivery lease. */
+function carriesAnycastNotice(m: CotalMessage): boolean {
+  return m.parts.some((p) => p.kind === "data" && typeof p.data === "object" && p.data !== null && !Array.isArray(p.data) && ANYCAST_NOTICE_KEY in p.data);
+}
 
 /** #662: what an id-less channel delivery shares with its stream copy. Both are the same published
  *  bytes, read through the same authentication, so their content is all that links them. */
@@ -444,6 +468,13 @@ export class MeshAgent extends EventEmitter {
   private readonly launchEnv?: NodeJS.ProcessEnv;
 
   private inbox: Pending[] = [];
+  /** Role requests delivered on an auth mesh whose take is not recorded for the copy held (SPEC §8.1).
+   *  They count toward a wake and are never shown: {@link takeDue} or a read of the inbox asks the
+   *  delivery daemon to record each take, and a recorded one moves the request to {@link inbox}. */
+  private gated: Pending[] = [];
+  /** Why the last take could not be decided, when it could not, and when a held request may be
+   *  asked about again. Reported by `cotal_inbox`. */
+  private heldTake?: { reason: string; detail: string; retryAt: number };
   /** Ids already SURFACED to the model (handled) — bounded, commit-aware dedup ACROSS a drain. The
    *  live↔durable transition window can deliver the two copies of one message far enough apart that the
    *  first is already drained (removed from {@link inbox}) when the second arrives; the pending-inbox
@@ -644,7 +675,10 @@ export class MeshAgent extends EventEmitter {
         meta: buildMeta(config, !options.withholdProcessCwd),
       },
     });
-    this.ep.on("message", (m: CotalMessage, d: Delivery, meta?: MessageMeta) => this.ingest(m, d, meta));
+    this.ep.on("message", (m: CotalMessage, d: Delivery, meta?: MessageMeta) => {
+      if (meta?.kind === "dm" && carriesAnycastNotice(m)) void this.ingestNotice(m, d, meta);
+      else this.ingest(m, d, meta);
+    });
     this.ep.on("error", (e: Error) => this.handleEndpointError(e));
     // A warning is a condition the endpoint is already surviving. Log it through the same bounded
     // operator sink, but never turn it into connectionIssue: readiness is still true.
@@ -1087,7 +1121,14 @@ export class MeshAgent extends EventEmitter {
 
   // ---- inbox ---------------------------------------------------------------
 
-  private ingest(m: CotalMessage, delivery: Delivery, meta?: MessageMeta): void {
+  /** A DM shaped as a delivery daemon's notice is one only when its authenticated sender holds the
+   *  space's delivery lease. Any other sender's copy is an ordinary DM. */
+  private async ingestNotice(m: CotalMessage, delivery: Delivery, meta: MessageMeta): Promise<void> {
+    const holder = await this.ep.deliveryLeaseHolder(0);
+    this.ingest(m, delivery, meta, holder !== undefined && holder === m.from.id);
+  }
+
+  private ingest(m: CotalMessage, delivery: Delivery, meta?: MessageMeta, notice = false): void {
     // #624: an EMPTY id is never a dedup key. The id-keyed coalescing below exists to collapse the
     // copies of ONE message across the live/durable paths, and identity is what makes that safe. A
     // message that carries an empty id asserts no identity (SPEC §5 requires a unique id; the sender
@@ -1118,13 +1159,17 @@ export class MeshAgent extends EventEmitter {
     // dropped as-is. A durable duplicate also re-announces the still-pending item through the
     // ordinary `incoming` policy path. That turns JetStream redelivery into a timer-free retry for
     // a wake the host dropped, without bypassing quiet/attention or adapter in-flight guards.
-    const existing = key === undefined ? undefined : this.inbox.find((p) => p.item.id === key);
+    const existing = key === undefined ? undefined : this.inbox.find((p) => p.item.id === key) ?? this.gated.find((p) => p.item.id === key);
     if (existing) {
       if (delivery.durable) {
         existing.ack = delivery.ack;
         // A fresh copy is a fresh ownership: a hold that outlived the copy it renewed keeps this one.
         this.own(existing, delivery.redelivery);
+        if (delivery.take) existing.take = delivery.take;
         if (this.inFlightIds.has(existing.item.recvKey)) this.keepOwned(existing.item.recvKey);
+        // A role request taken for an earlier copy and not yet shown needs a take of this one: the
+        // broker redelivered it, so the earlier take may have lost it to another holder.
+        else if (existing.take && existing.takenCount !== existing.item.deliveryCount) this.regate(existing);
         this.emit("incoming", existing.item);
       }
       return;
@@ -1132,16 +1177,10 @@ export class MeshAgent extends EventEmitter {
     if (!meta)
       throw new Error(`message ${m.id} delivered without MessageMeta — its class is unauthenticated`);
     const item = this.toInboxItem(m, meta.kind, meta.historical);
-    if (item.kind === "dm" || item.kind === "anycast") {
-      this.senders.delete(item.fromId);
-      this.senders.set(item.fromId, item.fromName);
-      if (this.senders.size > MAX_CORRELATIONS) this.senders.delete(this.senders.keys().next().value!);
-    }
-    if ((item.kind === "dm" || item.kind === "anycast") && !item.historical && item.id !== "" && !this.answersQuestion(item)) {
-      // A DM back to this peer answers it (see dm()). An answer to our own question needs none.
-      this.unanswered.set(item.id, { fromId: item.fromId, contextId: item.contextId, text: item.text.slice(0, 80) });
-      if (this.unanswered.size > MAX_CORRELATIONS) this.unanswered.delete(this.unanswered.keys().next().value!);
-    }
+    if (notice) item.notice = "anycast";
+    // A notice asks for nothing and answers nothing. A role request awaiting its take is recorded
+    // as asked of us only once it is taken, since a refused take drops it unseen.
+    else if (!delivery.take) this.noteDirected(item);
     // Per-channel override is the FINAL word for a channel message (DMs/anycast are never channel-
     // scoped, so they bypass this entirely and always buffer). Evaluated BEFORE the global mode:
     //  - `muted` → hard drop, incl. @mention (a mention rides the channel; you can't keep it if you
@@ -1225,15 +1264,44 @@ export class MeshAgent extends EventEmitter {
     this.buffer(item, delivery, false);
   }
 
+  /** Record a DM or role request as a peer's message to us: its sender becomes addressable by name,
+   *  and it waits for an answer unless it answers our own question. */
+  private noteDirected(item: InboxItem): void {
+    if (item.kind !== "dm" && item.kind !== "anycast") return;
+    this.senders.delete(item.fromId);
+    this.senders.set(item.fromId, item.fromName);
+    if (this.senders.size > MAX_CORRELATIONS) this.senders.delete(this.senders.keys().next().value!);
+    if (!item.historical && item.id !== "" && !this.answersQuestion(item)) {
+      // A DM back to this peer answers it (see dm()). An answer to our own question needs none.
+      this.unanswered.set(item.id, { fromId: item.fromId, contextId: item.contextId, text: item.text.slice(0, 80) });
+      if (this.unanswered.size > MAX_CORRELATIONS) this.unanswered.delete(this.unanswered.keys().next().value!);
+    }
+  }
+
   private buffer(
     item: InboxItem,
-    delivery: Pick<Delivery, "ack" | "redelivery">,
+    delivery: Pick<Delivery, "ack" | "redelivery" | "take">,
     pullOnly: boolean,
     idless?: { digest: string; copy: IdlessCopy },
   ): void {
     const pending: Pending = { item, ack: delivery.ack, pullOnly, receivedAt: Date.now() };
     this.own(pending, delivery.redelivery);
     if (idless) pending.idless = { tally: this.focusIdless, ...idless };
+    if (delivery.take) {
+      // Held until its take is recorded. A copy beyond the bound is left unacked, so the broker
+      // redelivers it once there is room, as the overflow valve below does for directed mail.
+      pending.take = delivery.take;
+      this.gated.push(pending);
+      if (this.gated.length > MAX_INBOX) this.gated.shift();
+      this.emit("incoming", item);
+      return;
+    }
+    this.admit(pending);
+    this.emit("incoming", item);
+  }
+
+  /** Put one entry in the shown inbox, running the overflow valve. */
+  private admit(pending: Pending): void {
     this.inbox.push(pending);
     if (this.inbox.length > MAX_INBOX) {
       // Prefer sacrificing pull-only backlog so it cannot crowd out DMs/mentions. Overflow is bounded
@@ -1285,7 +1353,6 @@ export class MeshAgent extends EventEmitter {
         if (!sacrificingDirected) evicted.ack();
       }
     }
-    this.emit("incoming", item);
   }
 
   private rememberEvicted(p: Pending): void {
@@ -1465,9 +1532,109 @@ export class MeshAgent extends EventEmitter {
   }
 
   /** Return pending messages in stable receive order. Automatic delivery excludes quiet ambient;
-   *  pull-only is the explicit cotal_inbox lane. */
+   *  pull-only is the explicit cotal_inbox lane.
+   *
+   *  A role request whose take is not yet recorded is never returned (SPEC §8.1). A read asks the
+   *  delivery daemon to record its take, and once it is recorded the request is re-announced on
+   *  `incoming`; a caller that can wait calls {@link takeDue} first and sees it on this read. */
   peekInbox(scope: InboxScope = "all"): InboxItem[] {
+    this.dropLapsedTakes();
+    void this.kickTakes(scope);
     return this.inbox.filter((p) => this.inScope(p, scope)).map((p) => p.item);
+  }
+
+  /** Ask the delivery daemon to record the take of every held role request in `scope`, and wait up
+   *  to `waitMs` for the answers, so a {@link peekInbox} right after shows each request taken by
+   *  then. Call it just before showing the inbox: a take is a claim that this session's agent is
+   *  about to see the request, which ends its sender's chance to cancel it. Never throws. */
+  async takeDue(scope: InboxScope = "all", waitMs = TAKE_WAIT_MS): Promise<void> {
+    const runs = this.kickTakes(scope);
+    if (!runs.length) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const waited = new Promise<void>((resolve) => { timer = setTimeout(resolve, waitMs); timer.unref?.(); });
+    await Promise.race([Promise.allSettled(runs), waited]);
+    clearTimeout(timer);
+  }
+
+  /** How many role requests are held because their take could not be decided, and why. */
+  heldTakes(): { count: number; detail?: string } {
+    const count = this.gated.filter((p) => p.taking === undefined).length;
+    return count && this.heldTake ? { count, detail: this.heldTake.detail } : { count };
+  }
+
+  /** Start the take of every held role request in scope that is not already being taken. */
+  private kickTakes(scope: InboxScope): Promise<void>[] {
+    if (scope === "pull-only" || !this.gated.length) return [];
+    const retryHeld = !this.heldTake || Date.now() >= this.heldTake.retryAt;
+    return this.gated
+      .filter((p) => p.taking !== undefined || retryHeld)
+      .map((p) => p.taking ?? this.startTake(p));
+  }
+
+  private startTake(p: Pending): Promise<void> {
+    const run = this.runTake(p).catch((e) => this.handleEndpointWarning(e as Error)).finally(() => { p.taking = undefined; });
+    p.taking = run;
+    return run;
+  }
+
+  /** Take one held role request for the copy it holds, and show it only if it still holds that copy
+   *  once the take is recorded: the same delivery, its ack wait not run out, the link not dropped. */
+  private async runTake(p: Pending): Promise<void> {
+    const take = p.take;
+    if (!take) return;
+    // The copy is renewed before the take is asked for, so the take cannot outlive it. A copy whose
+    // ack wait already ran out may be another holder's now: drop it unacked and let the broker redeliver.
+    if (!this._transportConnected) return;
+    if (!this.renewOwned(p)) {
+      this.dropGated(p);
+      return;
+    }
+    const count = p.item.deliveryCount;
+    const drops = this.transportDrops;
+    const outcome: AnycastTakeOutcome = await take();
+    if (!this.gated.includes(p) || p.take !== take) return;
+    if (outcome.taken) {
+      this.heldTake = undefined;
+      const current = p.item.deliveryCount === count && this.transportDrops === drops && p.ownedUntil !== undefined && Date.now() < p.ownedUntil;
+      if (!current) return; // a newer copy arrived meanwhile and needs its own take
+      p.takenCount = count;
+      this.gated.splice(this.gated.indexOf(p), 1);
+      this.noteDirected(p.item);
+      this.admit(p);
+      this.emit("incoming", p.item);
+      return;
+    }
+    if (outcome.drop) {
+      this.dropGated(p);
+      return;
+    }
+    const first = this.heldTake?.reason !== outcome.reason;
+    this.heldTake = { reason: outcome.reason, detail: outcome.detail, retryAt: Date.now() + TAKE_RETRY_MS };
+    if (first && outcome.reason !== "daemon-busy") this.handleEndpointWarning(new Error(outcome.detail));
+  }
+
+  /** Forget a role request whose take was refused or whose copy ran out. It is never acked: a
+   *  cancelled one is gone already, and one another holder took must stay with that holder. */
+  private dropGated(p: Pending): void {
+    const i = this.gated.indexOf(p);
+    if (i >= 0) this.gated.splice(i, 1);
+  }
+
+  /** Move a taken role request back to the held set when its copy changed before it was shown. */
+  private regate(p: Pending): void {
+    const i = this.inbox.indexOf(p);
+    if (i < 0) return;
+    this.inbox.splice(i, 1);
+    p.takenCount = undefined;
+    this.gated.push(p);
+  }
+
+  /** Drop every taken role request not yet shown whose copy ran out: the broker may have handed it
+   *  to another holder, whose take of the later copy wins. One the host holds is renewed and kept. */
+  private dropLapsedTakes(): void {
+    const now = Date.now();
+    this.inbox = this.inbox.filter((p) => !p.take || this.inFlightIds.has(p.item.recvKey) || (p.ownedUntil !== undefined && now < p.ownedUntil));
+    this.gated = this.gated.filter((p) => p.taking !== undefined || p.ownedUntil === undefined || now < p.ownedUntil);
   }
 
   /** Mark a surfaced batch as mid-delivery, so the overflow valve will not evict it out from under
@@ -1600,7 +1767,11 @@ export class MeshAgent extends EventEmitter {
   drainInboxDeliveries(keys: readonly string[]): ExactDrainResult {
     const requested = [...new Set(keys)];
     const wanted = new Set(requested);
-    const selected = this.inbox.filter((p) => wanted.has(p.item.recvKey));
+    // A role request the host surfaced can be back in the held set when its copy changed since. The
+    // host showed it, so its commit acks it from there too.
+    const regated = this.gated.filter((p) => wanted.has(p.item.recvKey));
+    if (regated.length) this.gated = this.gated.filter((p) => !wanted.has(p.item.recvKey));
+    const selected = [...this.inbox.filter((p) => wanted.has(p.item.recvKey)), ...regated];
     this.noteAutomaticHeadProgress(selected);
     const present = new Set(selected.map((p) => p.item.recvKey));
     const pullOnly = new Map(selected.map((p) => [p.item.recvKey, p.pullOnly]));
@@ -1652,8 +1823,17 @@ export class MeshAgent extends EventEmitter {
     }
   }
 
+  /** Receive keys of the pending messages in scope, role requests held for their take included,
+   *  for bookkeeping that shows no body. Unlike {@link peekInbox} it asks for no take. */
+  inboxKeys(scope: InboxScope = "all"): string[] {
+    const held = scope === "pull-only" ? [] : this.gated;
+    return [...this.inbox.filter((p) => this.inScope(p, scope)), ...held].map((p) => p.item.recvKey);
+  }
+
+  /** Pending messages in scope, counting role requests still held for their take. */
   inboxCount(scope: InboxScope = "all"): number {
-    return scope === "all" ? this.inbox.length : this.inbox.filter((p) => this.inScope(p, scope)).length;
+    const held = scope === "pull-only" ? 0 : this.gated.length;
+    return held + (scope === "all" ? this.inbox.length : this.inbox.filter((p) => this.inScope(p, scope)).length);
   }
 
   /**
@@ -1665,13 +1845,17 @@ export class MeshAgent extends EventEmitter {
   inboxSnapshot(limit = 3): InboxSnapshot {
     if (!Number.isInteger(limit) || limit < 0 || limit > 8)
       throw new Error(`inbox preview limit must be a whole number from 0 to 8, got ${limit}`);
-    return { unread: this.inbox.length, items: this.inbox.slice(0, limit).map((p) => ({ ...p.item })) };
+    // A held role request is counted and never previewed: its body is shown only once its take is
+    // recorded, which this read asks for (SPEC §8.1).
+    this.dropLapsedTakes();
+    void this.kickTakes("all");
+    return { unread: this.inbox.length + this.gated.length, items: this.inbox.slice(0, limit).map((p) => ({ ...p.item })) };
   }
 
   /** Local receive time of the oldest still-buffered automatic delivery, if any. */
   oldestAutomaticReceivedAt(): number | undefined {
     let oldest: number | undefined;
-    for (const pending of this.inbox) {
+    for (const pending of [...this.inbox, ...this.gated]) {
       if (pending.pullOnly) continue;
       if (oldest === undefined || pending.receivedAt < oldest) oldest = pending.receivedAt;
     }
@@ -1781,7 +1965,7 @@ export class MeshAgent extends EventEmitter {
   /** Buffered receive-time lane for one delivery, addressed by its receive key. Undefined means it
    *  is no longer pending. */
   inboxScope(key: string): Exclude<InboxScope, "all"> | undefined {
-    const pending = this.inbox.find((p) => p.item.recvKey === key);
+    const pending = this.inbox.find((p) => p.item.recvKey === key) ?? this.gated.find((p) => p.item.recvKey === key);
     return pending ? (pending.pullOnly ? "pull-only" : "automatic") : undefined;
   }
 
@@ -1789,7 +1973,7 @@ export class MeshAgent extends EventEmitter {
    *  (authenticated kind) or a live channel @mention. Pull-only history never counts, including
    *  mentions retained while focused. The Stop→idle flush uses this in `dnd`/`focus`. */
   directedPendingCount(): number {
-    return this.inbox.filter((p) => !p.pullOnly && (p.item.kind !== "channel" || (!p.item.historical && p.item.mentionsMe))).length;
+    return this.gated.length + this.inbox.filter((p) => !p.pullOnly && (p.item.kind !== "channel" || (!p.item.historical && p.item.mentionsMe))).length;
   }
 
   /** Buffered items that should WAKE a Stop→idle flush — the mode-and-channel-aware predicate the
@@ -1811,7 +1995,8 @@ export class MeshAgent extends EventEmitter {
    *  turns. A surface that cannot surface a run turn, such as the remote gateway, waits on this, so
    *  a turn it can never clear does not end every wait at once. */
   inboxWake(skip?: (item: InboxItem) => boolean): number {
-    return this.inbox.filter((p) => {
+    // A role request held for its take wakes like any other: the read the wake leads to takes it.
+    return this.gated.filter((p) => !skip?.(p.item)).length + this.inbox.filter((p) => {
       const it = p.item;
       if (p.pullOnly || (it.kind === "channel" && it.historical) || skip?.(it)) return false;
       if (it.kind !== "channel" || it.mentionsMe) return true;
@@ -2100,20 +2285,61 @@ export class MeshAgent extends EventEmitter {
     ack: { seq: number; duplicate: boolean };
     /** Live roster rows holding `role`, ourselves included; absent when the roster read failed,
      *  since only a read that succeeded can say that no holder exists (#1229). */
-    holdersAtSend?: number;
+    holdersAtSend?: { id: string; name: string }[];
   }> {
     // Refuse the address before recording a question it could never carry, as `dm` resolves its peer first.
     assertValidRole(role);
     await this.requireConnected();
-    // Like a DM's recipient status, the only holder count we can truthfully attribute is the roster
-    // read right before the publish. Our own task consumer competes for our own request,
-    // so we count when we hold the role.
-    const { roster, failure } = await this.readRoster();
-    const holdersAtSend = failure ? undefined : roster.filter((p) => p.card.role === role && p.status !== "offline").length;
+    // Like a DM's recipient status, the only holders we can truthfully name are the roster read
+    // right before the publish. Our own task consumer competes for our own request, so we count
+    // when we hold the role.
+    const holdersAtSend = await this.roleHolders(role);
     const { stamp, own } = this.stamp();
     this.recordQuestion(own, { role });
     const { msg, ack } = await this.ep.anycastAttributed(role, text, stamp);
+    this.rememberSent(ack.seq, msg.id);
     return { msg, ack, holdersAtSend };
+  }
+
+  /** The live holders of `role` on a fresh roster read, or undefined when the read failed. */
+  async roleHolders(role: string): Promise<{ id: string; name: string }[] | undefined> {
+    const { roster, failure } = await this.readRoster();
+    if (failure) return undefined;
+    return roster.filter((p) => p.card.role === role && p.status !== "offline").map((p) => ({ id: p.card.id, name: p.card.name }));
+  }
+
+  /** Message ids this session sent as role requests, by the seq the queue gave each. A queue that
+   *  was recreated reuses seqs, so one seq can name two of them. */
+  private sentRequests = new Map<number, string[]>();
+
+  private rememberSent(seq: number, id: string): void {
+    const ids = this.sentRequests.get(seq) ?? [];
+    if (!ids.includes(id)) ids.push(id);
+    this.sentRequests.delete(seq);
+    this.sentRequests.set(seq, ids);
+    if (this.sentRequests.size > MAX_CORRELATIONS) this.sentRequests.delete(this.sentRequests.keys().next().value!);
+  }
+
+  /** The message id to name a request by. Undefined when this session did not send that seq (the
+   *  daemon still checks the sender); refused when it sent two requests under one seq. */
+  private sentRequestId(seq: number): string | undefined {
+    const ids = this.sentRequests.get(seq);
+    if (ids && ids.length > 1)
+      throw new Error(`seq ${seq} names ${ids.length} requests this session sent (the role queue was recreated between them), so it is ambiguous; nothing was asked or cancelled`);
+    return ids?.[0];
+  }
+
+  /** The status of one of this session's own role requests, from the delivery daemon (SPEC §8.1). */
+  async anycastStatus(seq: number): Promise<AnycastStatus> {
+    await this.requireConnected();
+    return this.ep.anycastStatus(seq, this.sentRequestId(seq));
+  }
+
+  /** Cancel one of this session's own role requests while it waits. A taken one is refused, and
+   *  the status returned names its taker. */
+  async cancelAnycast(seq: number): Promise<AnycastStatus> {
+    await this.requireConnected();
+    return this.ep.cancelAnycast(seq, this.sentRequestId(seq));
   }
 
   /** Resolve a peer by instance id (exact) or display name against the roster of the last

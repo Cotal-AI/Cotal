@@ -9,7 +9,7 @@
  */
 import { execFileSync } from "node:child_process";
 import { z } from "zod";
-import { isConcreteChannel, channelInAllow, AmbiguousPeerError, peerLabel, assertLifecycleToken, isPermissionDenied, renderLifecycleBlocked, EpEnvelopeError, LANG_PROBLEM_DETAIL_KIND, formatAge, presenceAges, presenceText, type ControlReply, type PresenceStatus } from "@cotal-ai/core";
+import { isConcreteChannel, channelInAllow, AmbiguousPeerError, peerLabel, assertLifecycleToken, isPermissionDenied, renderLifecycleBlocked, EpEnvelopeError, LANG_PROBLEM_DETAIL_KIND, formatAge, presenceAges, presenceText, isAnycastSeq, type AnycastStatus, type ControlReply, type PresenceStatus } from "@cotal-ai/core";
 import { afterRecallMark, type MeshAgent, type InboxItem } from "./agent.js";
 // The neutralization and the per-item rendering live in `framing.ts`, one convention shared with
 // the auto-injected block, and are used here rather than restated. See that file for the rule.
@@ -31,13 +31,74 @@ export interface ToolResult {
 const ok = (text: string): ToolResult => ({ text });
 const err = (text: string): ToolResult => ({ text, isError: true });
 
+/** How many holders a `cotal_anycast` result names before it counts the rest. */
+const NAMED_HOLDERS = 8;
+
+/** The holders of a role, by name and id, from one roster read; `when` says which read. */
+function holdersLine(holders: { id: string; name: string }[] | undefined, when = "at send"): string {
+  if (holders === undefined) return `holders unknown ${when}: the presence view was not current`;
+  if (!holders.length) return `0 holders online ${when}`;
+  const named = holders.slice(0, NAMED_HOLDERS).map((h) => `${h.name} (${h.id})`).join(", ");
+  const more = holders.length > NAMED_HOLDERS ? ` and ${holders.length - NAMED_HOLDERS} more` : "";
+  return `${holders.length === 1 ? "holder" : "holders"} online ${when}: ${named}${more}`;
+}
+
+const TAKEN_MEANS =
+  "Taken means that holder's connector was about to show it to its agent, not that the agent read, ran or finished it.";
+
+function takenFollowUp(taker: { id: string; name: string }): string {
+  return `Ask ${taker.name} with cotal_dm about the work, or use cotal_run for work you need followed to the end.`;
+}
+
+const UNKNOWN_OUTCOME =
+  "Its outcome is unknown: a holder on an older connector may have taken it without a recorded take, it may have been dropped as malformed, or its record expired a day after it left the queue.";
+
+function removalLine(status: Extract<AnycastStatus, { state: "cancelled" }>): string {
+  if (status.removal === "deleted") return "It was removed from the queue before any holder took it.";
+  if (status.removal === "already-gone")
+    return "It had already left the queue when the delivery daemon went to remove it, so a holder on an older connector may have taken it.";
+  return "No holder can take it now; the delivery daemon has not finished removing it from the queue.";
+}
+
+/** A request's status, as `cotal_anycast` with `seq` reports it (SPEC §8.1). */
+function renderAnycastStatus(status: AnycastStatus, holders?: { id: string; name: string }[]): string {
+  const seq = status.seq;
+  if (status.state === "unknown")
+    return `No request seq ${seq} from you is on the queue, and the delivery daemon holds no record of it. ${UNKNOWN_OUTCOME}`;
+  if (status.state === "cancelled") return `Request seq ${seq} on @${status.role} is cancelled. ${removalLine(status)}`;
+  if (status.state === "waiting")
+    return `Request seq ${seq} on @${status.role} is waiting on the queue, and no holder has taken it (${holdersLine(holders, "now")}). ` +
+      `It may sit in a busy holder's buffer until that holder is free or its ack wait runs out. Cancel it with seq ${seq} and cancel: true.`;
+  const before = status.previous
+    ? ` Before that, ${status.previous.name} (${status.previous.id}) took it and did not confirm it before its ack wait ran out, so ${status.previous.name} may also have started it.`
+    : "";
+  return `Request seq ${seq} on @${status.role} was taken by ${status.taker.name} (${status.taker.id}) at ${new Date(status.at).toISOString()}.${before} ` +
+    `${TAKEN_MEANS} ${takenFollowUp(status.taker)}`;
+}
+
+/** A cancel's outcome, as `cotal_anycast` with `seq` and `cancel: true` reports it (SPEC §8.1). */
+function renderAnycastCancel(status: AnycastStatus): string {
+  const seq = status.seq;
+  if (status.state === "cancelled") return `Cancelled request seq ${seq} on @${status.role}. ${removalLine(status)}`;
+  if (status.state === "taken")
+    return `Not cancelled: request seq ${seq} on @${status.role} was already taken by ${status.taker.name} (${status.taker.id}). ${TAKEN_MEANS} ${takenFollowUp(status.taker)}`;
+  if (status.state === "unknown")
+    return `Not cancelled: no request seq ${seq} from you is on the queue, and the delivery daemon holds no record of it. ${UNKNOWN_OUTCOME}`;
+  return `Not cancelled: request seq ${seq} on @${status.role} is still waiting. Try the cancel again.`;
+}
+
 /** A local inbox read cannot establish that a session is receiving from the mesh. */
 function inboxConnectionWarning(agent: MeshAgent): string {
   const state = agent.connectionState;
   const channelIssue = agent.channelDeliveryIssue;
-  if (state === "ready" || state === "stalled") return channelIssue ?? "";
+  // A role request whose take the delivery daemon could not decide is held, not shown (SPEC §8.1).
+  const held = agent.heldTakes();
+  const heldIssue = held.count && held.detail
+    ? `${held.count} role request${held.count === 1 ? " is" : "s are"} held and not shown: ${held.detail}`
+    : undefined;
+  if (state === "ready" || state === "stalled") return [channelIssue, heldIssue].filter(Boolean).join("\n");
   const issue = agent.connectionIssue;
-  return [channelIssue, `Mesh connection is not ready (${state})${issue ? `: ${issue.slice(0, 500)}` : "."}\nLocally buffered messages are still readable; an empty buffer does not mean no new mesh messages.`].filter(Boolean).join("\n");
+  return [channelIssue, heldIssue, `Mesh connection is not ready (${state})${issue ? `: ${issue.slice(0, 500)}` : "."}\nLocally buffered messages are still readable; an empty buffer does not mean no new mesh messages.`].filter(Boolean).join("\n");
 }
 
 /** Cap on the JSON text a generic endpoint tool returns into the session. */
@@ -933,6 +994,9 @@ export function cotalToolSpecs(
       },
       run: oneReadAtATime(async (agent, _config, { peek, scope }: { peek?: boolean; scope?: "pull-only" }, call) => {
         const inboxScope = scope ?? "all";
+        // A peek shows bodies too, so every read first records the take of each role request it
+        // could show (SPEC §8.1).
+        await agent.takeDue(inboxScope);
         // Asked at each clear, not once: the caller can go while this read waits for the one before
         // it or for focus recall, and what it never receives must stay for the next read.
         const keeps = () => peek === true || call?.signal?.aborted === true;
@@ -1183,26 +1247,48 @@ export function cotalToolSpecs(
       name: "cotal_anycast",
       title: "Cotal: ask any agent of a role",
       description:
-        "Send a request to ANY one available agent of a given role (load-balanced). Use when you need 'a reviewer' rather than a specific person. The request waits on the role's queue until a holder takes it, so one sent while no agent holds the role is kept for the next that does.",
+        "Send a request to ANY one available agent of a given role (load-balanced). Use when you need 'a reviewer' rather than a specific person. Give role and text to send. The request waits on the role's queue until a holder takes it, so one sent while no agent holds the role is kept for the next that does. The result gives the request's seq and the holders online at send. Except on an open mesh, you get a notice naming the holder that takes it, seq alone reads the request's status, and seq with cancel: true cancels it while it still waits. A cancel is refused once a holder took the request. Anycast does not follow the work to the end; use cotal_run for that.",
       schema: {
-        role: z.string().describe("The role to address (e.g. reviewer)."),
-        text: z.string().describe("The request."),
+        role: z.string().optional().describe("Send: the role to address (e.g. reviewer). Give it with text."),
+        text: z.string().optional().describe("Send: the request."),
+        seq: z.number().optional().describe("Status or cancel: the seq a send returned. Give it alone for the request's status."),
+        cancel: z.boolean().optional().describe("Cancel: true, with seq, cancels that request while it still waits."),
       },
-      async run(agent, _config, { role, text: msg }: { role: string; text: string }) {
+      async run(agent, config, { role, text: msg, seq, cancel }: { role?: string; text?: string; seq?: number; cancel?: boolean }) {
+        // One call does one thing, and a call that is not exactly one of them changes nothing.
+        const sending = role !== undefined || msg !== undefined;
+        const asking = seq !== undefined || cancel !== undefined;
+        if (sending && asking)
+          return err("cotal_anycast does one thing per call: send with role and text, read a status with seq, or cancel with seq and cancel: true. Nothing was sent, read or cancelled.");
+        if (asking) {
+          if (seq === undefined) return err("cancel needs the seq of the request to cancel. Nothing was cancelled.");
+          if (!isAnycastSeq(seq)) return err(`seq must be a whole number of at least 1, the seq a send returned; got ${seq}. Nothing was read or cancelled.`);
+          if (cancel === false) return err("cancel takes only true. Give seq alone for the request's status. Nothing was read or cancelled.");
+          if (!isAuthed(config))
+            return err("This is an open mesh: it runs no delivery daemon, so it keeps no record of a request after its send, and a request cannot be read or cancelled by seq.");
+          try {
+            const status = cancel ? await agent.cancelAnycast(seq) : await agent.anycastStatus(seq);
+            const holders = status.state === "waiting" ? await agent.roleHolders(status.role) : undefined;
+            return ok(cancel ? renderAnycastCancel(status) : renderAnycastStatus(status, holders));
+          } catch (e) {
+            return err(`Couldn't ${cancel ? "cancel" : "read the status of"} request seq ${seq}: ${(e as Error).message}`);
+          }
+        }
+        if (role === undefined || msg === undefined)
+          return err("A send needs both role and text. Nothing was sent.");
         try {
-          const { ack, holdersAtSend: n } = await agent.anycast(role, msg);
+          const { ack, holdersAtSend } = await agent.anycast(role, msg);
           const dup = ack.duplicate ? " duplicate publication." : "";
-          const at =
-            n === undefined
-              ? "holders unknown at send: the presence view was not current"
-              : `${n} holder${n === 1 ? "" : "s"} online at send`;
           // Zero holders is not a failure: the queue keeps the request for whoever takes the role
           // next. Say so, so it reads neither as delivered nor as lost.
           const none =
-            n === 0
+            holdersAtSend?.length === 0
               ? ` No present agent holds @${role}, so the request waits on its queue until one does. Roles match exactly; cotal_roster shows the roles present.`
               : "";
-          return ok(`Request stored as seq ${ack.seq} on the @${role} queue (${at}; delivery not confirmed).${dup}${none}`);
+          const follow = isAuthed(config)
+            ? ` You get a notice naming the holder that takes it. Read its status with seq ${ack.seq}, or cancel it with seq ${ack.seq} and cancel: true while it waits.`
+            : "";
+          return ok(`Request stored as seq ${ack.seq} on the @${role} queue (${holdersLine(holdersAtSend)}; delivery not confirmed).${dup}${none}${follow}`);
         } catch (e) {
           return err(`Couldn't send: ${(e as Error).message}`);
         }

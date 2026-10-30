@@ -72,6 +72,9 @@ function sendCallLine(name: string, config: AgentConfig, args: Record<string, un
   // than a bogus concrete target; the settled frame paints the real one.
   const text = String(args.text ?? "");
   if (name === "cotal_dm") return `cotal_dm → ${args.to ? `"${String(args.to)}"` : "…"}: ${text}`;
+  // A status or cancel names a seq and sends nothing, so it must not render as a send.
+  if (name === "cotal_anycast" && (args.seq !== undefined || args.cancel !== undefined))
+    return `cotal_anycast → ${args.cancel === true ? "cancel" : "status of"} seq ${args.seq === undefined ? "…" : String(args.seq)}`;
   if (name === "cotal_anycast") return `cotal_anycast → @${String(args.role ?? "…")}: ${text}`;
   // Same default the tool itself applies (first CONCRETE channel) — subscribe[0] may be a
   // wildcard like `team.>`, which the message can never actually go to. On no channels there is no

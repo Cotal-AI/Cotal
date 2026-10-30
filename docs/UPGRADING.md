@@ -34,6 +34,33 @@ What this page does not promise is a rolling upgrade. Nothing in the current lin
 authority versions, so where broker and manager run separately there is a window in which the mesh
 is down. The sections below give that window's shape so it can be scheduled rather than endured.
 
+## Anycast takes after 0.127.2
+
+On an authenticated mesh a role holder now shows a role request only after the delivery daemon
+records its take ([SPEC §8.1](../SPEC.md#81-anycast-request-status)). The sender gets a notice
+naming the holder and can read or cancel the request by seq. Two credential shapes change for it:
+an agent credential with a role gains its take subject, and the delivery credential gains reads of
+the task stream, the `cotal_anycast_<space>` bucket and the notice publish.
+
+### What changes for you
+
+- Restart the delivery daemon at this version, on a credential minted at this version. `cotal up`
+  mints one when it starts the daemon, and the daemon creates the records bucket when it starts, so
+  an existing space needs no setup step. Until then, holders on the new connector keep role requests
+  unshown and report that the daemon predates anycast takes.
+- A daemon at this version on an older delivery credential still serves durable delivery, but it
+  records no takes. It logs, and every take, status and cancel answers,
+  `this delivery daemon's credential was minted before anycast request records existed`. This
+  matters for a `deliver --spaces` host, which reads each space's credential from the root.
+- Respawn every seat that holds a role. A role credential minted before this version has no take
+  subject, so the new connector on it holds role requests and reports
+  `this seat's credential was minted before anycast takes existed`. Seats without a role are
+  unaffected.
+- A seat still on an older connector shows role requests without a take, as before. Its requests
+  read `waiting` until it acks them, and a cancel can find one already gone, so upgrade every role
+  holder before you rely on status or cancel.
+- An open mesh is unchanged. It runs no delivery daemon, so it has no notices, status or cancel.
+
 ## Multi-space host acknowledgments after 0.116.1
 
 Every multi-space host (`auth-service --spaces`, `auth-service --callout-only --spaces`,

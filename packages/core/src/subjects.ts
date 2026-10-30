@@ -17,6 +17,9 @@
  *                                     The manager's ctl tiers were deleted in 1d, and the auth
  *                                     plane's rail moved to ep.one.auth in #350: both serve their
  *                                     control surface as v0.4 endpoints on the ep.* rails.
+ *   cotal.<space>.take.<role>.<owner>.<actor>
+ *                                     a role holder's take of one anycast request, served by the
+ *                                     delivery daemon (request/reply)
  *   cotal.<space>.ep.<one|all|inst|reply>.…
  *                                     v0.4 endpoint control surface; SPEC.md §13.2 defines each rail
  *   cotal.<space>.ep.<generation>.<one|all|inst|reply>.…
@@ -726,6 +729,37 @@ export function anycastServeFilter(space: string, service: string): string {
   return `${spacePrefix(space)}.svc.${routeToken(service)}.>`;
 }
 
+/** The route token of the anycast TAKE rail: `take.<role>.<owner>.<actor>`. A holder of a role
+ *  asks the delivery daemon to record its take of one request it was delivered, before its
+ *  connector shows the request (SPEC §8.1). The role rides the subject so the broker confines a take
+ *  to the roles a credential holds, as it confines the queue bind; the daemon then checks the role
+ *  against the request's own stored subject. */
+export const TAKE_ROUTE = "take" as const;
+
+/** The take REQUEST subject for one role and caller principal. A holder's credential may publish
+ *  only its own principal's form, and only for its own role. */
+export function takeSubject(space: string, role: string, owner: string, actor: string): string {
+  return `${spacePrefix(space)}.${TAKE_ROUTE}.${routeToken(role)}.${ownerToken(owner)}.${ownerToken(actor)}`;
+}
+
+/** The delivery daemon's serve filter for takes: every role, every caller principal. */
+export function takeServeFilter(space: string): string {
+  return `${spacePrefix(space)}.${TAKE_ROUTE}.*.*.*`;
+}
+
+/** The daemon's reply-PUBLISH grant for takes, bounded to the `.reply.` leaf under a caller's own
+ *  request subject, the same shape as `ctl.delivery.*.*.reply.>`. */
+export function takeReplyGrant(space: string): string {
+  return `${spacePrefix(space)}.${TAKE_ROUTE}.*.*.*.reply.>`;
+}
+
+/** Split a take subject into its role and caller principal, or `null` for any other shape. */
+export function parseTakeSubject(subject: string): { role: string; owner: string; actor: string; sender: string } | null {
+  const parts = subject.split(".");
+  if (parts.length !== 6 || parts[0] !== ROOT || parts[2] !== TAKE_ROUTE) return null;
+  return { role: parts[3], owner: parts[4], actor: parts[5], sender: `${parts[4]}.${parts[5]}` };
+}
+
 /** Control request/reply to a service — since 1d ONLY the delivery daemon (`ctl.delivery` /
  *  `ctl.delivery-admin`); the manager's own control moved to its v0.4 `service` endpoint on the
  *  `ep.*` rails, and the auth plane's rail followed it there (#350).
@@ -1094,6 +1128,13 @@ export function channelFromChatSubscription(space: string, subject: string): str
  *  bucket-level TTL is a deliberate simplicity choice for a one-purpose bucket, not a capability gap.) */
 export function deliveryBucket(space: string): string {
   return `cotal_delivery_${token(space)}`;
+}
+
+/** Name of the KV bucket holding the delivery daemon's anycast request records: one row per role
+ *  request that a holder took or its sender cancelled (SPEC §8.1). Only the `delivery` cred reads or
+ *  writes it; agents learn a request's status through the daemon. */
+export function anycastBucket(space: string): string {
+  return `cotal_anycast_${token(space)}`;
 }
 
 /** KV key for one shard's delivery lease/readiness (N=1 → `lease.0`). */

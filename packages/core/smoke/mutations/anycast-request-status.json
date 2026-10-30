@@ -1,0 +1,86 @@
+{
+  "suite": [
+    "packages/core/smoke/anycast-request-status.smoke.ts"
+  ],
+  "command": "pnpm smoke:anycast-request-status:auth",
+  "completionMarker": "COTAL_SMOKE_SENTINEL cells=54",
+  "mutations": [
+    {
+      "file": "packages/core/src/anycast-requests.ts",
+      "find": "else await this.deps.kv.create(key, bytes);",
+      "replace": "else await this.deps.kv.put(key, bytes);",
+      "expectRed": "3a every race had exactly one winner",
+      "cell": "3a every race had exactly one winner and a matching status"
+    },
+    {
+      "file": "packages/core/src/anycast-requests.ts",
+      "find": "if (row?.state === \"cancelled\" && row.id === req.id)",
+      "replace": "if (false)",
+      "expectRed": "2c the holder's take is refused as cancelled",
+      "cell": "2c the holder's take is refused as cancelled, so its copy is dropped unseen"
+    },
+    {
+      "file": "packages/core/src/anycast-requests.ts",
+      "find": "if (t.count > current.count) {",
+      "replace": "if (t.count >= current.count) {",
+      "expectRed": "8b another holder on the same delivery is refused",
+      "cell": "8b another holder on the same delivery is refused"
+    },
+    {
+      "file": "packages/core/src/anycast-requests.ts",
+      "find": "if (row.sender !== q.caller || (q.id !== undefined && row.id !== q.id)) return { state: \"unknown\", seq: q.seq };",
+      "replace": "if (q.id !== undefined && row.id !== q.id) return { state: \"unknown\", seq: q.seq };",
+      "expectRed": "1k a foreign sender reads nothing",
+      "cell": "1k a foreign sender reads nothing"
+    },
+    {
+      "file": "packages/core/src/anycast-requests.ts",
+      "find": "if (status.state !== \"waiting\") return { status };",
+      "replace": "if (status.state === \"unknown\") return { status };",
+      "expectRed": "1i a cancel after the take is refused with the taker",
+      "cell": "1i a cancel after the take is refused with the taker"
+    },
+    {
+      "file": "packages/core/src/anycast-requests.ts",
+      "find": "await this.deps.send(row.sender, event);",
+      "replace": "await this.deps.send(row.sender, event).catch(() => {});",
+      "expectRed": "7b the owed notice stays in the row's outbox",
+      "cell": "7b the owed notice stays in the row's outbox"
+    },
+    {
+      "file": "packages/core/src/anycast-requests.ts",
+      "find": "if (epoch === row.epoch && stored?.id === row.id) return;",
+      "replace": "",
+      "expectRed": "7d a request still queued gets no leftAt",
+      "cell": "7d a request still queued gets no leftAt"
+    },
+    {
+      "file": "packages/core/src/anycast-requests.ts",
+      "find": "if (stored.role !== role || stored.id !== req.id)",
+      "replace": "if (stored.id !== req.id)",
+      "expectRed": "5a a reviewer naming a quick request under its own role is refused",
+      "cell": "5a a reviewer naming a quick request under its own role is refused"
+    },
+    {
+      "file": "packages/core/src/endpoint.ts",
+      "find": "if (!isPermissionDenied(e)) throw e;",
+      "replace": "throw e;",
+      "expectRed": "6e a daemon on a credential from before the records still arms Plane-3",
+      "cell": "6e a daemon on a credential from before the records still arms Plane-3"
+    },
+    {
+      "file": "packages/core/src/provision.ts",
+      "find": "takeSubject(space, opts.role!, pr.owner, pr.actor),",
+      "replace": "takeSubject(space, \"*\", pr.owner, pr.actor),",
+      "expectRed": "5b a reviewer cannot publish a quick take",
+      "cell": "5b a reviewer cannot publish a quick take: the broker denies the role"
+    },
+    {
+      "file": "packages/core/src/endpoint.ts",
+      "find": "if (!this.authed) throw new Error(\"an open mesh runs no delivery daemon",
+      "replace": "if (false) throw new Error(\"an open mesh runs no delivery daemon",
+      "expectRed": "9a status on an open mesh is refused, naming why",
+      "cell": "9a status on an open mesh is refused, naming why"
+    }
+  ]
+}

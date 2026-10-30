@@ -131,8 +131,9 @@ const READ_ONLY = { readOnlyHint: true, destructiveHint: false };
 const ADDITIVE = { readOnlyHint: false, destructiveHint: false };
 const UPDATING = { readOnlyHint: false, destructiveHint: true };
 
-// Inbox and wait consume messages. Status can change attention, and disconnect, leave and channel
-// mode can remove a connection or subscription. None of those are read-only queries.
+// Inbox and wait consume messages, and anycast can cancel a request. Status can change attention,
+// and disconnect, leave and channel mode can remove a connection or subscription. None of those are
+// read-only queries.
 const GATEWAY_ANNOTATIONS: Readonly<Record<string, ToolAnnotations>> = {
   cotal_connect: ADDITIVE,
   cotal_disconnect: UPDATING,
@@ -144,7 +145,7 @@ const GATEWAY_ANNOTATIONS: Readonly<Record<string, ToolAnnotations>> = {
   cotal_inbox: UPDATING,
   cotal_send: ADDITIVE,
   cotal_dm: ADDITIVE,
-  cotal_anycast: ADDITIVE,
+  cotal_anycast: UPDATING,
   cotal_status: UPDATING,
   cotal_channel_info: READ_ONLY,
   cotal_channels: READ_ONLY,
