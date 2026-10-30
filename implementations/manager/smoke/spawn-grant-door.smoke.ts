@@ -195,6 +195,8 @@ try {
     }
   };
   const file = (name: string) => join(root, ".cotal", "agents", `${name}.md`);
+  // A missing file reads as empty, so a broken handler fails the cell instead of the suite.
+  const bytes = (name: string) => (existsSync(file(name)) ? readFileSync(file(name), "utf8") : "");
   const held = await define("delegate", ["spawn"]);
   check("a definer may put a capability it holds into a persona", held.ok && /capabilities:\s*\n\s*- spawn/.test(readFileSync(file("delegate"), "utf8")), held);
   const admin = await define("usurper", ["admin"]);
@@ -254,14 +256,14 @@ try {
   const rivalInside = await rivalHold.inside;
   const rivalRace = await overlapping(waiting, async () => {
     const reply = await define("contested", [], rivalDoor, "The rival's persona.");
-    const bytes = readFileSync(file("contested"), "utf8");
+    const written = bytes("contested");
     rivalHold.release();
-    return { reply, bytes };
+    return { reply, written };
   });
   check("control: the first definition waits on its evidence, and the rival's served definition lands before it settles",
-    rivalInside && rivalRace.pendingThroughout && rivalRace.during.reply.ok && rivalRace.during.bytes.includes("The rival's persona."), { rivalInside, rivalRace });
+    rivalInside && rivalRace.pendingThroughout && rivalRace.during.reply.ok && rivalRace.during.written.includes("The rival's persona."), { rivalInside, rivalRace });
   check("a served definition that waited on its evidence does not overwrite a persona another principal defined meanwhile",
-    !rivalRace.reply.ok && /not authorized to redefine contested/.test(rivalRace.reply.message) && readFileSync(file("contested"), "utf8") === rivalRace.during.bytes, rivalRace.reply);
+    !rivalRace.reply.ok && /not authorized to redefine contested/.test(rivalRace.reply.message) && bytes("contested") === rivalRace.during.written, rivalRace.reply);
 
   // A served removal in the same gap. A static persona records an owner only for a seat this manager
   // runs, so the definer here is one: started by the manager, calling with its own minted credential.
@@ -274,7 +276,7 @@ try {
   definerNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: readFileSync(agentLifecycleSecretFilePaths(root, space, "definer", definer.uid).creds, "utf8"), tls: false }), maxReconnectAttempts: 0 });
   const definerDoor = { conn: definerNc, svc: await resolveService(definerNc, space, MANAGER_ENDPOINT, definer, { deadlineMs: 8_000, commands: ["define-persona", "remove-persona"] }) };
   const withRole = await define("removed", [], definerDoor, "---\nrole: auditor\n---\nYou help.");
-  const firstFile = readFileSync(file("removed"), "utf8");
+  const firstFile = bytes("removed");
   const removalHold = holdEvidence(definer);
   const redefining = define("removed", ["spawn"], definerDoor);
   const removalInside = await removalHold.inside;
@@ -285,7 +287,7 @@ try {
     removalHold.release();
     return { removedOk, gone };
   });
-  const removed = readFileSync(file("removed"), "utf8");
+  const removed = bytes("removed");
   check("control: a seat the manager runs defines a persona at the door with a role, which records it as the owner",
     started.ok && definerSeat?.issued !== undefined && withRole.ok && /role: auditor/.test(firstFile) && firstFile.includes(`owner: ${DEV_OWNER}.${definer.actor}`), { started, withRole, firstFile });
   check("control: it removes the persona at the door while its redefine waits on its evidence",
