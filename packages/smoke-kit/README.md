@@ -18,7 +18,10 @@ way; a number derived from another port was never checked by the OS.
 
 Use `SMOKE_BROKER_TOKEN` as the prefix for a broker's temporary directory and register the child
 with `teardownOnSignal`. The token records its owning process. Normal-path cleanup still belongs
-to the suite.
+to the suite. Use `await killAndAwaitExit(child)` before removing the broker store, then release
+its ownership registration. A fixed delay after SIGTERM does not establish that the broker exited.
+`pnpm smoke:broker-stop-order` observes this order through the real manager smoke helper on Linux,
+including a native broker briefly paused before shutdown.
 
 `pnpm smoke:broker-migration` checks broker adoption in test-shaped paths and in direct Node/tsx
 entrypoints declared by root `smoke` and `smoke:*` scripts. A declared smoke stays in scope even
