@@ -36,7 +36,7 @@ process.env.PATH = `${bin}:${process.env.PATH ?? ""}`;
 const { connect } = await import("@nats-io/transport-node");
 const {
   createSpaceAuth, mintCreds, newIdentity, mintLifecycleUid, standaloneConnectOpts, setupSpaceStreams,
-  DEV_OWNER, digestIdToken, epCall, readGoalResult, readGoalIndex,
+  DEV_OWNER, digestIdToken, epCall, readGoalResult, readGoalIndex, lifecycleBlockedFrom,
 } = await import("@cotal-ai/core");
 type EpCaller = import("@cotal-ai/core").EpCaller;
 const { authDir, saveSpaceAuth, workspaceSecretStore } = await import("@cotal-ai/workspace");
@@ -60,7 +60,7 @@ const until = async (cond: () => boolean | Promise<boolean>, ms: number): Promis
     await wait(250);
   }
 };
-type Reply = { ok?: boolean; data?: Record<string, unknown>; error?: { message?: string } };
+type Reply = { ok?: boolean; data?: Record<string, unknown>; error?: { message?: string; details?: unknown[] } };
 
 /** Every live process carrying one of `identities` as its launch identity. */
 const carriers = (identities: readonly string[]): number[] => {
@@ -123,18 +123,29 @@ try {
   const spawnOnce = async (marker: string) => {
     const log = join(scratch, `${marker}.jsonl`);
     process.env.FAKE_JCODE_LOG = log;
-    // While the previous seat named helper is still being retired, the manager refuses the name and
-    // says to retry. That refusal alone is retried, under a new id each time, for up to 30 s.
+    // While the previous seat named helper is still being retired, the manager refuses the name with
+    // a lifecycle detail naming that retirement and a retry remedy. That refusal alone is retried,
+    // under a new id each time, for up to 30 s, and each one is kept for the cells. Any other reply,
+    // a refusal included, is the spawn's answer.
+    const retiring = (r: Reply): boolean => {
+      const blocked = lifecycleBlockedFrom(r.error);
+      return r.ok === false && blocked?.blockedOp === "retirement" && blocked.remedy === "retry"
+        && (r.error?.message ?? "").startsWith(`the name "helper" is reserved pending retirement`);
+    };
+    const refusals: string[] = [];
     let id: string, accepted: Reply;
     for (const end = Date.now() + 30_000; ;) {
       id = `jonce-${seq++}`.padEnd(43, "j");
       accepted = await call("spawn", { name: "helper", agent: "jcode", cwd: workspaceRoot, events: false, prompt: `do the ${marker} task`, once: {} }, id);
-      if (accepted.ok !== false || !/reserved pending retirement/.test(accepted.error?.message ?? "") || Date.now() >= end) break;
+      if (!retiring(accepted) || Date.now() >= end) break;
+      refusals.push(accepted.error!.message!);
       await wait(500);
     }
+    if (refusals.length) console.log(`  spawn ${marker}: retried ${refusals.length} refusal(s) while the previous helper retired`);
     const name = accepted.data?.name as string | undefined;
     const seat = name !== undefined && await until(() => M.agents.has(name), 20_000) ? M.agents.get(name) : undefined;
-    const terminal = await resultOf(id, 240_000);
+    // A refused spawn has no terminal to wait for; its cells fail on the reply.
+    const terminal = accepted.ok === false ? undefined : await resultOf(id, 240_000);
     const readyAt = Date.now();
     const task = digestIdToken(`${id}:once`);
     const entries = () => { try { return readFileSync(log, "utf8").trim().split("\n").map((l) => JSON.parse(l) as { ev: string; content?: string; pid?: number; req?: string; frame?: { req?: string } }); } catch { return []; } };
@@ -151,7 +162,7 @@ try {
       }
       return [];
     };
-    return { id, name, seat, terminal, readyAt, task, runsOf, identities, entries };
+    return { id, name, seat, terminal, readyAt, task, runsOf, identities, entries, accepted, refusals };
   };
   const goneSeat = (name: string, seat: Seat) => until(() => seat.handle.status() === "exited" && M.agents.get(name) !== seat, 30_000);
   const debtCleared = (task: string) => until(async () => (await readGoalIndex(M.goalWriter.ctx, refOf(task))) === undefined, 60_000);
@@ -213,6 +224,10 @@ try {
   writeFileSync(process.env.FAKE_JCODE_SESSION_STATE, JSON.stringify({ session_id: "earlier-seat", working_dir: workspaceRoot, transcript_bytes: 4096 }));
   const d = await spawnOnce("ONCE-FRESH");
   delete process.env.FAKE_JCODE_SESSION_STATE;
+  // It follows a seat killed without its teardown, so its name may still be retiring when it asks.
+  check("the spawn is accepted, after no refusal but the previous helper's retirement",
+    d.accepted.ok !== false && d.terminal?.state === "succeeded" && d.refusals.every((m) => /\[lifecycle blockedOp=retirement .*remedy=retry\]/.test(m)),
+    { accepted: d.accepted, refusals: d.refusals });
   const rd = await resultOf(d.task, 60_000);
   const paths = d.entries().filter((e) => e.ev === "session_path").map((e) => e.req);
   const listed = d.entries().some((e) => e.ev === "request" && e.frame?.req === "list_sessions");
@@ -229,7 +244,7 @@ try {
   rmSync(scratch, { recursive: true, force: true });
 }
 
-const EXPECTED_CELLS = 15;
+const EXPECTED_CELLS = 16;
 console.log(`\n${fail === 0 && pass === EXPECTED_CELLS ? "JCODE ONCE SMOKE OK ✅" : "JCODE ONCE SMOKE FAILED"}  (${pass} passed, ${fail} failed)`);
 console.log(`COTAL_SMOKE_SENTINEL cells=${pass + fail} passed=${pass} failed=${fail}`);
 process.exit(fail === 0 && pass === EXPECTED_CELLS ? 0 : 1);
