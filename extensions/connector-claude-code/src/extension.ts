@@ -165,6 +165,10 @@ export const claudeConnector: Connector = {
   resumeTranscript: claudeResumeTranscript,
   supportsToolListAnnounce: true, // MCP McpServer.registerTool; SDK fires tools/list_changed
   supportsPrompt: true, // a leading positional is auto-submitted as the first turn — see buildLaunch
+  // No supportsTurnRelay. A session wakes for a relayed task while idle only with channels on, and
+  // every managed launch forces COTAL_CHANNEL=1 because Claude does not report the channel back, so
+  // this connector cannot confirm that for a session. A channel-off seat pulls the task and sits.
+  turnRelayRefusal: "it can take one only when its session can be woken while idle, which needs channels on, and this connector cannot confirm that for a session",
   launchHint: "press Enter at the dev-channels prompt", // Claude Code opens on that one-time gate
   // `--opt resume=` renders a bare `--resume`, which opens Claude's session picker; the session joins
   // the mesh only after the operator picks one. `--opt resume=<id>` resumes that session directly.
