@@ -211,7 +211,9 @@ try {
     check("a spawner holding the admin set is exempt", b.ok === true, b);
     const sub = await spawnAs(issuedCallerOf("boss"), "spawner");
     check("control: the admin spawner seats a spawn holder without admin", sub.ok === true, sub);
-    const w = await spawnAs(issuedCallerOf(String((sub.data as { name?: string } | undefined)?.name)), "reader");
+    // A refused control carries its refusal forward, so the suite still reaches its marker.
+    const subName = (sub.data as { name?: string } | undefined)?.name;
+    const w = sub.ok && subName ? await spawnAs(issuedCallerOf(subName), "reader") : sub;
     check("that helper is bounded: the admin exemption is not inherited", refused(w, /allowSubscribe general/), w);
   }
 } finally {
