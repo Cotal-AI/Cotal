@@ -16,6 +16,8 @@ are not supported.
 
 The connector is seeded with the Cotal CLI. Jcode's released Harness API bridge is a Unix-socket
 surface, so Windows is not supported. Managed seats run on Linux, macOS, and the BSDs.
+This connector requires Node 22.13 or later; Node 23 installations require 23.4 or later.
+It uses the built-in SQLite reader to inherit Cursor authentication without copying editor state.
 Install Jcode 0.78.1 or later from its GitHub release and make the binary available as `jcode` on `PATH`:
 
 ```bash
@@ -164,10 +166,8 @@ them would create them in Cursor's directory. Without them the launch stops with
 source path follows the rule every mirrored file follows: a link to a regular file is read at its
 target, and a directory counts as missing.
 
-Reading the database needs `node:sqlite`, which Node ships without a flag from 22.13. On an older
-Node, a host that has a Cursor database refuses Jcode launches with `cursor_state_node_unsupported`
-before anything is copied, and a host without one is unaffected. A seat home made before this change
-keeps its full copy of the database until its next successful launch replaces it.
+A seat home made by a release that copied the whole file keeps that copy until its next successful
+launch replaces it. A retired seat home that never launches again keeps its copy.
 
 There is no credential-free opt-out today because the private instance must reproduce the operator's
 current provider-login state rather than silently start with stale or partial authorization.
@@ -367,7 +367,6 @@ active provider route for the selected model. `private_state` names a different 
 private home, its credential mirror, or its short socket alias could not be prepared.
 `cursor_state_unreadable` means the operator's Cursor state database could not be read; the line names
 the file relative to the home, a reason word and, when SQLite gave one, its result code.
-`cursor_state_node_unsupported` means that database exists and Node is older than 22.13.
 
 Stored sessions have their own refusals. `sessions_enumeration_failed` means listing the home's
 prior sessions killed the harness. `sessions_unwritable` means the home's `sessions/` directory

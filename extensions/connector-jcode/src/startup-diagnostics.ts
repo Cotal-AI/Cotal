@@ -11,7 +11,6 @@ export type JcodeConnectorFailureCode =
   | "readiness_timeout"
   | "sessions_enumeration_failed"
   | "sessions_unwritable"
-  | "cursor_state_node_unsupported"
   | "cursor_state_unreadable"
   | "provider_auth_refused"
   | "provider_request_failed";
@@ -48,19 +47,6 @@ export class JcodeSessionsUnwritableFailure extends Error {
     readonly errnoCode: string,
   ) {
     super(`stored sessions directory is not writable at ${sessionsPath} (${errnoCode})`);
-  }
-}
-
-/** The first Node release that ships `node:sqlite` without a flag. */
-export const CURSOR_STATE_NODE_FLOOR = "22.13";
-
-/** Reading Cursor's state database needs `node:sqlite`. Raised only when a Cursor source exists,
- * before anything is mirrored, so a host without Cursor keeps launching on an older Node. */
-export class JcodeCursorStateNodeUnsupported extends Error {
-  readonly code = "cursor_state_node_unsupported" as const;
-
-  constructor(readonly nodeVersion: string) {
-    super(`reading Cursor's state database needs Node ${CURSOR_STATE_NODE_FLOOR} or newer; this is Node ${nodeVersion}`);
   }
 }
 

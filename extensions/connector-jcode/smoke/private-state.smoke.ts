@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import { copyCredentialFile, ensurePinnedPrivateDirectory, jcodeCredentialMirrorInventory, mirrorJcodeCredentials, removeCredentialMirror, shortSocketHome, unlinkThroughSwappedPinForTest } from "../src/private-state.js";
-import { JcodeCursorStateNodeUnsupported, JcodeCursorStateUnreadable } from "../src/startup-diagnostics.js";
+import { JcodeCursorStateUnreadable } from "../src/startup-diagnostics.js";
 
 let pass = 0;
 const check = (name: string, condition: boolean, actual?: unknown): void => {
@@ -450,7 +450,7 @@ try {
         sources: caseSources,
         source: join(caseSources.externalHome, CURSOR_REL),
         destination: join(caseHome, "external", CURSOR_REL),
-        mirror: (sqlite?: Parameters<typeof mirrorJcodeCredentials>[2]) => mirrorJcodeCredentials(caseHome, caseSources, sqlite),
+        mirror: () => mirrorJcodeCredentials(caseHome, caseSources),
       };
     };
     const reasonOf = (error: unknown): string | undefined => (error instanceof JcodeCursorStateUnreadable ? error.reason : undefined);
@@ -583,23 +583,6 @@ try {
     writeCursorDb(partial.source, { ...partialValues, "cursorAuth/accessToken": "" }).close();
     partial.mirror();
     check("a partial source publishes only the keys it holds, leaving out a blank one", isExtractOf(partial.destination, partialValues), readExtract(partial.destination));
-
-    const oldNode = cursorCase("old-node");
-    writeCursorDb(oldNode.source).close();
-    seedPrevious(oldNode);
-    const oldNodeError = mirrorError(() => oldNode.mirror(() => undefined));
-    check(
-      "a Node without node:sqlite refuses before any byte is copied when a Cursor source exists",
-      oldNodeError instanceof JcodeCursorStateNodeUnsupported &&
-        oldNodeError.nodeVersion === process.version &&
-        readFileSync(join(oldNode.home, "auth.json"), "utf8") === "previous" &&
-        readFileSync(oldNode.destination, "utf8") === "previous-cursor",
-      String(oldNodeError),
-    );
-    const noCursor = cursorCase("old-node-no-cursor");
-    writeFileSync(join(noCursor.home, "auth.json"), "previous", { mode: 0o600 });
-    noCursor.mirror(() => undefined);
-    check("a Node without node:sqlite still mirrors a host that has no Cursor source", readFileSync(join(noCursor.home, "auth.json"), "utf8") === "case-token");
 
     const everyPath = cursorCase("six-paths");
     const cursorEntries = jcodeCredentialMirrorInventory(everyPath.home, everyPath.sources).filter((entry) => entry.family === "cursor-state");

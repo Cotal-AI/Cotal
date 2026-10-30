@@ -677,7 +677,7 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--server <url>` | auto (free local port) | Listen URL: one `nats://` or `tls://` URL with an IP address and a port, without credentials, path, query or fragment. `up` records and compares it with the scheme in lower case and without a bare trailing `/`, so `NATS://127.0.0.1:<port>/` names the same address as `nats://127.0.0.1:<port>`. A URL with no port is not given the default 4222. Any other value, a host name such as `localhost`, and an IPv6 address, which the stack's own clients cannot reach, refuse `USAGE_INVALID` before anything is written. That refusal gives an example on `127.0.0.1` with the port you passed, and prints no help. With no `--host` the broker binds `127.0.0.1`, so a `--server` naming another IPv4 address refuses `USAGE_INVALID` the same way and names the `--host` to add. A `tls://` address records TLS as required, so without `--tls-cert` and `--tls-key`, or a recorded TLS policy, `up` refuses it `USAGE_INVALID` before anything starts. On a prepared root it refuses `UNSUPPORTED`, exit 2, instead, as the `--tls-cert` row says. A controller stack's first `up` records it, and a later `--server` naming another address refuses `CONFLICT`, naming the recorded address and the bare `cotal up` that starts the stack there. A running space started again from its own project, that folder's subfolders included, at another address refuses `CONFLICT` too: it names the address the space runs at, the bare `cotal up` that reaches it, and the `cotal down` in its root. It does not offer a separate space in the folder, which is that space's own project. No command moves a stack that ran to another address. When another program holds the recorded address, bare `up` refuses too, so this refusal names that address and any process of this account that listens there, and says to stop it before bare `cotal up`. A different `--store-dir`, `--max-file-store` or `--host` refuses the same way, naming each recorded value. A controller stack's broker also needs an address that is not a wildcard, which `up` checks before it writes the stack journal. With `-f`, it overrides the manifest's `broker.servers` and follows that field's rules instead: a valid URL with no embedded credentials |
+| `--server <url>` | auto (free local port) | Listen URL: one `nats://` or `tls://` URL with an IP address and a port, without credentials, path, query or fragment. `up` records and compares it with the scheme in lower case and without a bare trailing `/`, so `NATS://127.0.0.1:<port>/` names the same address as `nats://127.0.0.1:<port>`. A URL with no port is not given the default 4222. Any other value, a host name such as `localhost`, and an IPv6 address, which the stack's own clients cannot reach, refuse `USAGE_INVALID` before anything is written. That refusal gives an example on `127.0.0.1` with the port you passed, and prints no help. With no `--host` the broker binds `127.0.0.1`, so a `--server` naming another IPv4 address refuses `USAGE_INVALID` the same way and names the `--host` to add. A `tls://` address records TLS as required, so without `--tls-cert` and `--tls-key`, or a recorded TLS policy, `up` refuses it `USAGE_INVALID` before anything starts. On a prepared root it refuses `UNSUPPORTED`, exit 2, instead, as the `--tls-cert` row says. A controller stack's first `up` records it, and a later `--server` naming another address refuses `CONFLICT`, naming the recorded address and the bare `cotal up` that starts the stack there. A running space started again from its own project, that folder's subfolders included, at another address refuses `CONFLICT` too: it names the address the space runs at, the bare `cotal up` that reaches it, and the `cotal down` in its root. It does not offer a separate space in the folder, which is that space's own project. No command moves a stack that ran to another address. When another program holds the recorded address, bare `up` refuses too, so this refusal names that address and any process of this account that listens there, and says to stop it before bare `cotal up`. A different `--store-dir`, `--max-file-store` or `--host` refuses the same way, naming each recorded value. A controller stack's broker also needs an address that is not a wildcard, which `up` checks before it writes the stack journal. With `-f`, it overrides the manifest's `broker.servers` and follows that field's rules instead: a valid URL with no embedded credentials. `up -f` binds a single broker address, so a `--server` or `broker.servers` that lists more than one URL refuses `USAGE_INVALID` before anything is written, naming which of the two lists them |
 | `--host <host>` | none | Bind host override for a **fresh** broker boot: an IP or hostname only, never a URL (that is `--server`) and never `host:port` (the port comes from `--server` or its default); a URL or port-bearing value is refused pointing at the right flag. With no `--server`, the broker URL is derived from it, so `--host <addr>` alone is enough to make a mesh reachable at that address; a `--host`/`--server` pair naming different addresses is refused. A wildcard bind (`0.0.0.0`, `::`) keeps a dialable loopback URL. The broker's plaintext websocket and the manager's plain HTTP console bind the same host, so a wildcard bind opens all three listeners on every interface. Each of these refusals, and a concrete IPv6 address, refuses `USAGE_INVALID` (exit 1) before anything is written. Recorded on the mesh and reused by every later manager launch, so a repair or resume keeps remote [`attach`](#managed-seats) working. A live refresh (`✓ mesh already running`) does not rewrite `.cotal/auth/server.conf` or rebind nats; stop the broker, then re-run `up --host` |
 | `--space <s>` | the folder's space | Space name, at most 64 characters; a longer one refuses `USAGE_INVALID` before anything is written |
 | `--root <prepared-dir>` | current folder's workspace | Start the project in `<dir>` instead of the folder you run `up` from. `<dir>` must already have its own `.cotal`, which `space create <space> --root <dir>` or an earlier `up` there made. An absent, inherited or symlinked `.cotal`, or the machine's home store, refuses before startup. Relative file, restore, channels, TLS and store paths remain relative to the invoking folder. The native `up` selection rule still applies after startup. |
@@ -1260,7 +1260,8 @@ Next offers `cotal spawn --space <space>`, or `cotal up` to add the manager afte
 and `cotal down`. The spawn carries `--space` because `up` keeps an existing selection, so a bare
 `cotal spawn` can target another space. Run from another folder, as `up --root <root>` is, the Next
 says to run `cotal down` from the root, because `down` stops only the stack of the folder it runs in,
-and it offers `cotal up --root <root>` to add the manager. When another space stays selected, the
+and it offers `cotal up --root <root>` to add the manager, with `<root>` quoted when a shell would
+split it. When another space stays selected, the
 receipt says so and names `cotal use <space>`, as a legacy `up` does. When no registered or prepared space is
 selected, `up` selects the space it started and says so.
 The receipt also names each service saved for the space that `up` does not start, such as one
@@ -2964,8 +2965,12 @@ removal fails after the record is gone, the run is `partial` and names the `conf
 after the `chmod` when the preferences folder is one another account could write.
 Forget also removes the stack definitions `cotal up` saved for the space at its root, with their
 stopped instance records, so another folder can start a stack under the same name. The result lists
-them. While a member was not stopped cleanly, or the root holds preserved state, they stay and the
-result warns with `STACK_DEFINITIONS_KEPT`. For a member that was not stopped cleanly, the warning
+them. The root's stack journal stays, keeping the stack's mode, address and store, and no longer
+names the instances forget removed. After `space create` in that folder, the space reads as prepared
+but not started, and `up --no-manager` and `down` there start and stop only the new members. A
+journal an earlier release left naming removed instances is not changed, and `down` there still
+refuses `TARGET_NOT_FOUND`. While a member was not stopped cleanly, or the root holds preserved
+state, they stay and the result warns with `STACK_DEFINITIONS_KEPT`. For a member that was not stopped cleanly, the warning
 names `cotal down --yes` in the root and then `space forget` again. When the stack's folder is
 gone, it names `cotal down --space <space> --yes`, which stops the stack and removes them.
 Forget keeps the other services saved under the name, such as one `cotal service add` saved, with
@@ -3191,6 +3196,15 @@ exits 0. A script, a `--json` caller and `--no-input` are not asked: the command
 `TARGET_AMBIGUOUS`, exit 2, naming the running spaces. Every refusal of a target puts what to run next
 in `error.remedy`, apart from `error.message`, and names the space and root it concerns under
 `target` when they are known, as for a prepared space that is not started.
+
+When this account cannot read or enter a project folder's `.cotal/auth`, for example because it cannot
+enter the folder's `.cotal`, the spaces the folder holds are unknown. A command that would target that folder,
+including through `--server`, refuses with `DEPENDENCY_UNAVAILABLE`, exit 2, and names the folder and
+the read error. When a folder on the way to `.cotal/auth` cannot be entered, the next step names that
+folder rather than `.cotal/auth`. The same refusal names each account record in `.cotal/auth` that
+will not load, such as an `auth.json` that is not JSON, and says to repair or remove it. It does not
+name running spaces or pick another space, and it changes no file. `--space <name>` still targets a
+space by name.
 
 `--creds <file>` presents that credential to `--server`. Without `--server`, it goes to the broker
 its space is registered at and keeps that registration's TLS requirement. The space is `--space`,
@@ -5035,7 +5049,13 @@ refuse it with `PERMISSION_DENIED`, and the list marks it unreadable and names i
 List, show and mutation receipts support one-document `--json` and line-oriented `--plain`.
 Show explicitly returns the full definition and source. List does not return the body or launch
 options. A malformed entry produces a partial inventory (exit 4); an unreadable catalog refuses
-rather than reporting it empty. Remove asks with cancellation as the default in a terminal.
+with `PERMISSION_DENIED` (exit 2) rather than reporting it empty. A catalog folder that lists its
+file names but cannot be searched, such as one set to mode 0600, is refused the same way, empty or
+not, and its personas are not reported as malformed. Its next step is
+`chmod u+rx <folder>` only for a catalog folder you own whose mode denies you read or search. A
+folder above the catalog that you cannot enter is named instead, and a catalog folder another
+account owns says to ask its owner. Other read errors get no next step, and the CLI never changes a
+mode itself. Remove asks with cancellation as the default in a terminal.
 Removing the seeded `default` persona says so in the question and the receipt, since a bare
 `cotal spawn` launches it, and names what writes a fresh copy: a local `cotal up` in its root,
 `cotal space create` or `cotal setup`.
@@ -5044,10 +5064,13 @@ Plain confirmation uses numbered choices. Scripts and JSON removal require `--ye
 The legacy `personas` parser remains available during migration: `list [-v] [--running]`,
 `show`, `edit`, `new` and `rm --force`. Its `new` requires `--subscribe`, reads `--from -` from
 stdin, and overwrites an existing persona only with `--force`. Its local writes share the same
-draft validation and commit fence. Its `list` escapes control characters in the names, fields and
-bodies it prints, as `persona show` does, and shows each persona's description or first prompt line
-whole, wrapped to the terminal's width. Its `show` does the same on a terminal, under the file's
-path, and writes only the file, byte for byte, when its output is piped or redirected, so
+draft validation and commit fence. Its `list` refuses a catalog folder it cannot read with
+`PERMISSION_DENIED` (exit 2), naming the space and giving the next step `persona` gives, rather
+than reporting it empty, and still lists a persona file that does not parse as unparseable. It
+escapes control characters in the names, fields and bodies it prints, as `persona show` does, and
+shows each persona's description or first prompt line whole, wrapped to the terminal's width. Its
+`show` does the same on a terminal, under the file's path, and writes only the file, byte for byte,
+when its output is piped or redirected, so
 `personas show <name> > <file>` copies it. It refuses a missing persona, an invalid definition and a
 name no persona can have with the codes `persona show` uses. Only its explicit `--running` overlay
 connects to the mesh.
@@ -6216,7 +6239,10 @@ close was confirmed and it was retired, or was an open-mesh session with nothing
 exits 3 when the retirement outcome is unknown, its connection close was not confirmed, or no close
 was observed. A session that cannot reconnect because its inbox is gone from the broker, as when the
 space restarted and retired it while the connection was down, ends by itself with that reason and
-exits 5 when its close is confirmed. In the terminal view Ctrl-C and Ctrl-D leave. With `--plain` or `--stdio`, Ctrl-C ends
+exits 5 when its close is confirmed. On a static mesh, leaving waits up to 30 seconds for the
+manager to answer the retirement. When the delivery daemon does not answer, the manager waits 15
+seconds for it, then reports the retirement pending and names the daemon, and the session exits 4.
+In the terminal view Ctrl-C and Ctrl-D leave. With `--plain` or `--stdio`, Ctrl-C ends
 input and the session closes, then exits 130. A terminate signal exits 143 and a hangup 129. A
 signal that arrives before the view starts is held: no session is opened if admission has not
 begun, and a session admitted meanwhile is closed at once. The exit status is still the signal's.
@@ -6554,6 +6580,9 @@ same per-action instrument path as `cotal stop` and `cotal ps`, never the observ
 Message bodies, names and other text from peers are untrusted. Both views show a control character
 in them as its `\uXXXX` escape, so a message cannot clear the screen, retitle the terminal or plant
 a hyperlink. The TUI keeps a body's line breaks, and `--plain` prints each message on one line.
+The TUI wraps a body, and a roster seat's status facts, by terminal columns: a wide character such
+as a CJK ideograph or an emoji takes two, and a word wider than the pane breaks between characters,
+never inside one.
 
 <a id="web"></a>
 
@@ -6793,7 +6822,11 @@ the verb exists to inspect); when neither a card nor the durable can be found, i
 `max_msgs_per_subject` / `discard` limits (`--json` prints the same facts as one object), followed
 by a bounded, unacked read of up to `--limit` (default 20) recent candidate message ids under the
 heading `recent candidate ids (from the ack floor; not proof of a hole)`, a list of what is
-there, not proof that nothing was lost.
+there, not proof that nothing was lost. Each plain candidate line prints `from=` with the sender
+principal parsed from the stored message subject, which the broker binds to the sender's
+credential, then `ts=`, then `label=` with the name and role the sender wrote in its own message.
+The label is the sender's claim and can name another agent; control characters and brackets in it
+print as spaces. `--json` keeps its earlier candidate lines.
 
 The verb needs the `admin` credential profile: it runs through the same static-mesh route as
 `cotal auth mint --profile admin`, and refuses a user-mode mesh, naming the retired static credential,
@@ -7119,11 +7152,15 @@ rows without JWTs, seeds, fingerprints or raw parser/renewal error bodies. On a 
 spaces, `--space` names one; it defaults to the sole space. Without `--space`, a root with several
 spaces refuses with `TARGET_AMBIGUOUS` (exit 2) and names them. In a folder whose root holds no space,
 the report is partial (exit 4) and its next step is to run it in a space's root, which `cotal space`
-lists. In the root of a space registered as open, the report says that the space issues no
+lists. Without `--space`, in the root of a space `cotal space create` prepared and no `cotal up`
+started, the step is to start it with `cotal up`, then run the same command again. In the root of a
+space registered as open, the report says that the space issues no
 credentials, so there are none to check, and the result is a no-op (exit 0). With `--space` naming
 a space whose signing trust this root does not hold, it refuses `AUTH_REQUIRED` (exit 2) and reads
 no other root. Its next step names the folder that space is registered at, where the same command
-runs, or else a space's root, which `cotal space` lists.
+runs, or else a space's root, which `cotal space` lists. For a space `cotal space create` prepared
+and no `cotal up` started, the step is to start it with `cotal up` first, then run the same command
+again. From another folder, that `cotal up` names the space's root with `--root`, quoted for a shell.
 
 Plain diagnosis starts no repair or connection. A required legacy credential or user-auth directory
 migration refuses instead of silently moving files or reading canonical absence as an empty scope.
@@ -7556,8 +7593,10 @@ and not started offers its own. The broker keeps the others, so a persona that d
 offers none. A
 candidate that holds a control character, such as a persona file name with an escape sequence or a
 newline in it, is not offered. `persona` still lists that file with the characters escaped. A
-persona catalog folder that cannot be read fails the completion of a persona name, so the shell
-offers none, and with `COTAL_COMPLETE_DEBUG=1` it prints the folder. A record it skips, such as a
+persona catalog folder that cannot be read fails the completion of a persona name, or of a channel
+or role its personas declare, so the shell offers none, and with `COTAL_COMPLETE_DEBUG=1` it prints
+the folder. A persona file that does not parse fails a channel or role completion the same way, and
+that flag names the file, because the declared set would be incomplete. A record it skips, such as a
 prepared space record that does not parse, is named on stderr only under that flag too. The stubs
 discard stderr, so run the completion by hand to see it, as
 `COTAL_COMPLETE_DEBUG=1 cotal __complete persona show ''` does. The bash

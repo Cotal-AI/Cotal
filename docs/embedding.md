@@ -73,6 +73,13 @@ keeps its remote-only composition. Supplying this programmatic option does not e
 `up`, restart or recovery paths; a host must compose those paths separately after adopting the
 published API. `ps` still lists only the selected Manager's managed seats, not HTTP-hosted sessions.
 
+## Node connection signing
+
+Node endpoints and `standaloneConnectOpts` sign NATS authentication challenges with the existing
+native Ed25519 signer. Credentials are read on every connection attempt, including reconnects,
+and the temporary signer is cleared after each callback. JWT, public-key and signature fields
+use the NATS authenticator contract. Browser connections keep the NATS JavaScript implementation.
+
 ## User credential authority
 
 `AuthProvider.userCredentials` returns the bearer and sentinel credential. A provider may also

@@ -1,0 +1,2 @@
+# Native ephemeral endpoint request provenance, both rails and all routes.
+smoke:ep-request-origin

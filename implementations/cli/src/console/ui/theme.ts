@@ -1,4 +1,5 @@
 import { formatAge, type PresenceStatus } from "@cotal-ai/core";
+import { displayWidth } from "@cotal-ai/workspace";
 
 // Per-agent color: a stable name→hex hash. These are render.ts's 256-color palette
 // indices converted to hex, so names read the same as the classic dashboard — and they
@@ -36,28 +37,47 @@ export function fmtTime(epochMs: number): string {
   return new Date(epochMs).toLocaleTimeString();
 }
 
-// Greedy word-wrap to a column width; hard-splits a single word longer than width.
+const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
+// Greedy word-wrap to a width in terminal columns, where a wide character such as a CJK ideograph or
+// an emoji takes two; hard-splits a single word wider than width between its grapheme clusters.
 // Honors embedded newlines and always returns at least one line.
 export function wrapText(s: string, width: number): string[] {
   const w = Math.max(4, width);
   const out: string[] = [];
   for (const rawLine of s.split(/\r?\n/)) {
     let cur = "";
+    let used = 0;
     for (const word of rawLine.split(" ")) {
       let token = word;
-      while (token.length > w) {
+      let size = displayWidth(token);
+      while (size > w) {
         if (cur) {
           out.push(cur);
           cur = "";
         }
-        out.push(token.slice(0, w));
-        token = token.slice(w);
+        let head = "";
+        let headSize = 0;
+        for (const { segment } of graphemes.segment(token)) {
+          const n = displayWidth(segment);
+          if (head && headSize + n > w) break;
+          head += segment;
+          headSize += n;
+        }
+        out.push(head);
+        token = token.slice(head.length);
+        size -= headSize;
       }
-      if (cur === "") cur = token;
-      else if (cur.length + 1 + token.length <= w) cur += " " + token;
-      else {
+      if (cur === "") {
+        cur = token;
+        used = size;
+      } else if (used + 1 + size <= w) {
+        cur += " " + token;
+        used += 1 + size;
+      } else {
         out.push(cur);
         cur = token;
+        used = size;
       }
     }
     out.push(cur);
@@ -77,13 +97,14 @@ export function wrapFacts(s: string, width: number): FactRow[] {
   let used = 0;
   for (const piece of s.split(/(?= · | \()/)) {
     const dated = piece.startsWith(" · ");
-    if (rows.length && used + piece.length <= width) {
+    const size = displayWidth(piece);
+    if (rows.length && used + size <= width) {
       rows[rows.length - 1].push({ text: piece, dated });
-      used += piece.length;
+      used += size;
     } else
       for (const text of wrapText(piece.replace(/^ · |^ \((.*)\)$/, "$1"), width)) {
         rows.push([{ text, dated }]);
-        used = text.length;
+        used = displayWidth(text);
       }
   }
   return rows;

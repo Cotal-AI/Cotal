@@ -87,11 +87,17 @@ registration gate, and the verified eviction a restart performs all go over the 
 retires; the reference implementation still serves them (see
 [the control surface](control-surface.md)). A manager that starts while the daemon is still binding, or while the
 daemon re-checks who owns its lease, waits up to 60 seconds for the rail to answer. Only a request
-that times out or finds no responder is retried. Retries come closer together as the wait runs out,
-so a daemon that binds in its last seconds is still asked. The wait ends on time even while a retry
-is still connecting, and nothing is sent after it. A daemon that answers fails the start at once if
-it refuses or its reply cannot be read. One that stays silent for the whole wait fails it, and the
-manager log names the rail.
+that times out or finds no responder is retried. The first retry runs at once. Later retries are at
+most one second apart, shortened as the wait runs out, so a daemon that binds in its last seconds is
+still asked. The wait ends on time even while a retry is still connecting, and nothing is sent after
+it. A daemon that answers fails the start at once if it refuses or its reply cannot be read. One
+that stays silent for the whole wait fails it, and the manager log names the rail.
+
+A manager retiring a static agent uses the same retry cadence for an unanswered verified-eviction
+request, within a 15-second total wait. A credential reload briefly removes the daemon's responder
+while it reconnects; that gap must not abandon an otherwise healthy retirement. A refusal or an
+unusable eviction reply still fails at once. The lifecycle stays held until eviction is verified
+and cleanup completes.
 
 The daemon answers `ctl.delivery-admin` requests one at a time, in the order they arrive, with one
 exception: the `lifecycleMemberships` inventory a retirement reads before it deletes the retired

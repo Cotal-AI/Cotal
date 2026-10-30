@@ -83,7 +83,8 @@ const tuiRuns: TuiRun[] = [];
 
 /** One terminal view under a pty, painted with its composer. */
 async function tuiChild(): Promise<TuiRun & { ready: boolean }> {
-  const pty = nodePty([CHILD, "tui"], { cwd: repoRoot, env, cols: 120, rows: 32 });
+  // Ink's CI renderer withholds frames until unmount. This child is an interactive terminal.
+  const pty = nodePty([CHILD, "tui"], { cwd: repoRoot, env: { ...env, CI: "false", CONTINUOUS_INTEGRATION: "false" }, cols: 120, rows: 32 });
   const run: TuiRun = { pty, raw: "", text: () => clean(run.raw) };
   tuiRuns.push(run);
   pty.onData((d) => { run.raw += d; });

@@ -31,7 +31,7 @@ import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
-import { cotalToolSpecs, NO_TOOL_ARGS, type MeshAgent, type AgentConfig, type ToolResult } from "@cotal-ai/connector-core";
+import { cotalToolSpecs, DOCS_VERSION, NO_TOOL_ARGS, type MeshAgent, type AgentConfig, type ToolResult } from "@cotal-ai/connector-core";
 
 /** The env var the codex child reads the bearer token from (`mcp_servers.cotal.bearer_token_env_var`). */
 export const MCP_TOKEN_ENV = "COTAL_MCP_TOKEN";
@@ -91,7 +91,7 @@ export async function startCotalMcp(
   /** One MCP server per session. Cheap: every one closes over the SAME MeshAgent, so this is
    *  tool wiring, not a second mesh identity. */
   const build = (): McpServer => {
-    const server = new McpServer({ name: MCP_SERVER_NAME, version: "0.0.0" });
+    const server = new McpServer({ name: MCP_SERVER_NAME, version: DOCS_VERSION });
     for (const spec of specs) {
       const toContent = (r: ToolResult) => {
         const content = [{ type: "text" as const, text: r.text }];

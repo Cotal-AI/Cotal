@@ -7,19 +7,21 @@ other half: what to actually do when the deployment already exists, has credenti
 cannot simply be recreated. Every release that breaks a running deployment gets a section here,
 naming what migrates on its own, what does not, and the order to move the pieces in.
 
-## Jcode seats read Cursor's state database instead of copying it
+## Jcode launches stop on a Cursor database they cannot read cleanly
 
-A Jcode seat no longer copies Cursor's `User/globalStorage/state.vscdb` into its private home. It
-reads the four auth rows Jcode uses into a small file at the same path
-([Connect Jcode](connect-jcode.md)). Two hosts see a change:
+A Jcode seat still mirrors only the auth rows of Cursor's `User/globalStorage/state.vscdb`, and now
+reads them in one read-only transaction that creates nothing in Cursor's directory
+([Connect Jcode](connect-jcode.md)). Some databases that used to launch now stop the launch with
+`cursor_state_unreadable`:
 
-- On Node 22.10 to 22.12 with a Cursor database, Jcode launches stop with
-  `cursor_state_node_unsupported`. Upgrade Node to 22.13 or newer. A host without Cursor is unaffected.
-- A Cursor database that cannot be read, or a WAL-mode one without its `-wal` and `-shm` files, now
-  stops Jcode launches with `cursor_state_unreadable`. The line says why.
+- A WAL-mode database without its `-wal` and `-shm` files. The previous reader created them in
+  Cursor's directory.
+- A database where one of the keys holds a value that is not text or is larger than 16 KB. The
+  previous reader copied it as is.
 
-Seat homes made earlier keep their full copy until the seat's next successful launch replaces it.
-A home whose seat never launches again keeps its copy until you remove it.
+A database the previous reader failed on, such as one that is not SQLite or one Cursor held locked,
+reported `private_state`. It now reports `cursor_state_unreadable` with a reason, after waiting up to
+2 seconds for a lock.
 
 ## Bounded multi-space startup
 

@@ -26,7 +26,7 @@
 import { parentPort, workerData, type MessagePort } from "node:worker_threads";
 import "ses";
 import { EffectResultTooLarge, Journal, JournalAppendRejected, type JournalStore } from "../journal.js";
-import { EngineUnavailable } from "../errors.js";
+import { EngineUnavailable, messageOf, nameOf } from "../errors.js";
 import { assertCrossable } from "../values.js";
 import { Cancelled, EffectError, RootCancellation, RunHeld, RunReleased, type EffectHandler } from "../effects.js";
 import { bridgedSeam } from "./bridge.js";
@@ -181,8 +181,8 @@ async function run(): Promise<WorkerRunResult> {
     const exit = inspectionExit(seam.journal instanceof InspectionJournal ? seam.journal.stop ?? error : error);
     return {
       ok: false,
-      name: error instanceof Error ? error.name : "Error",
-      message: error instanceof Error ? error.message : String(error),
+      name: nameOf(error),
+      message: messageOf(error),
       ...failureOf(error),
       inspection: { orphans: seam.journal!.orphans(), exit },
     };
@@ -223,13 +223,12 @@ function failureOf(e: unknown): WorkerFailure {
 
 /** The answer a thread owes when it cannot give the one it was asked for. */
 const answerWith = (e: unknown): void => {
-  const err = e as { name?: string; message?: string };
   port.postMessage({
     kind: "result",
     result: {
       ok: false,
-      name: typeof err?.name === "string" ? err.name : "Error",
-      message: typeof err?.message === "string" ? err.message : String(e),
+      name: nameOf(e),
+      message: messageOf(e),
       ...failureOf(e),
     } satisfies WorkerRunResult,
   });

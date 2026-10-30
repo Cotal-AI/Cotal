@@ -17,7 +17,6 @@ import {
   classifyReadinessProviderRefusal,
   installJcodeDiagnosticLog,
   JcodeConnectorError,
-  JcodeCursorStateNodeUnsupported,
   JcodeCursorStateUnreadable,
   JcodeSessionsEnumerationFailure,
   JcodeSessionsUnwritableFailure,
@@ -451,8 +450,8 @@ export async function runJcodeHost(): Promise<void> {
     }
     socketHome = shortSocketHome(home);
   } catch (error) {
-    // Cursor's refusals carry their own public code and connector-owned text.
-    if (error instanceof JcodeCursorStateUnreadable || error instanceof JcodeCursorStateNodeUnsupported) throw error;
+    // Cursor's refusal carries its own public code and connector-owned text.
+    if (error instanceof JcodeCursorStateUnreadable) throw error;
     // These refusals name local paths, which the public startup diagnostic never renders, so
     // without their own code they all reported as `(unknown)` and an operator could not tell a
     // wedged seat from a broken connector (#1211).

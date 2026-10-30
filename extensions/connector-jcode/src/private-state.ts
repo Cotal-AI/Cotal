@@ -2,10 +2,10 @@ import { createHash, randomBytes } from "node:crypto";
 import { closeSync, constants, copyFileSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readSync, realpathSync, renameSync, rmSync, rmdirSync, statSync, symlinkSync, unlinkSync, type Dirent } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import type * as Sqlite from "node:sqlite";
+import { DatabaseSync } from "node:sqlite";
 import { userAppConfigDir, userJcodeHome } from "@1jehuang/jcode-sdk";
 import { hardenPrivate } from "@cotal-ai/core";
-import { JcodeCursorStateNodeUnsupported, JcodeCursorStateUnreadable, type CursorStateUnreadableReason } from "./startup-diagnostics.js";
+import { JcodeCursorStateUnreadable, type CursorStateUnreadableReason } from "./startup-diagnostics.js";
 
 const MAX_API_SOCKET_BYTES = 100;
 const JCODE_CREDENTIAL_FILES = [
@@ -544,16 +544,6 @@ export function jcodeCredentialMirrorInventory(home: string, sources: Credential
   return inventory;
 }
 
-/** `node:sqlite`, or undefined on a Node that ships it only behind a flag. It loads synchronously,
- * so it never runs while a working-directory pin is held. */
-export type SqliteLoader = () => typeof Sqlite | undefined;
-const loadSqlite: SqliteLoader = () => process.getBuiltinModule("node:sqlite") as typeof Sqlite | undefined;
-
-interface CursorState {
-  sqlite: typeof Sqlite;
-  values: Map<string, string>;
-}
-
 function isRegularFile(path: string): boolean {
   try {
     return lstatSync(path).isFile();
@@ -581,7 +571,7 @@ function sqliteReason(code: number): CursorStateUnreadableReason {
 /** Read the keys Jcode uses from Cursor's database, read-only, in one transaction. An absent source,
  * or one that is not a regular file, returns undefined. Anything that does not give a consistent read
  * throws, because a seat must not start on a partial or stale login. */
-function readCursorState(source: string, sourceRelative: string, load: SqliteLoader): CursorState | undefined {
+function readCursorState(source: string, sourceRelative: string): Map<string, string> | undefined {
   let stats: ReturnType<typeof statSync>;
   try {
     stats = statSync(source);
@@ -590,8 +580,6 @@ function readCursorState(source: string, sourceRelative: string, load: SqliteLoa
     throw error;
   }
   if (!stats.isFile()) return undefined;
-  const sqlite = load();
-  if (!sqlite) throw new JcodeCursorStateNodeUnsupported(process.version);
   const unreadable = (reason: CursorStateUnreadableReason, code?: number) => new JcodeCursorStateUnreadable(sourceRelative, reason, code);
 
   // Resolve once. SQLite finds -wal and -shm beside the file it opens, so the header, the sidecar
@@ -614,9 +602,9 @@ function readCursorState(source: string, sourceRelative: string, load: SqliteLoa
   // and a read that skips SQLite's locking can return rows from two commits.
   if (wal && !(isRegularFile(`${target}-wal`) && isRegularFile(`${target}-shm`))) throw unreadable("wal_sidecar_missing");
 
-  let db: Sqlite.DatabaseSync | undefined;
+  let db: DatabaseSync | undefined;
   try {
-    db = new sqlite.DatabaseSync(target, { readOnly: true });
+    db = new DatabaseSync(target, { readOnly: true });
     db.exec(`PRAGMA busy_timeout = ${CURSOR_STATE_BUSY_MS}`);
     db.exec("BEGIN");
     if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'ItemTable'").get()) throw unreadable("no_item_table");
@@ -631,7 +619,7 @@ function readCursorState(source: string, sourceRelative: string, load: SqliteLoa
       if (row.value.trim()) values.set(key, row.value);
     }
     db.exec("COMMIT");
-    return { sqlite, values };
+    return values;
   } catch (error) {
     if (error instanceof JcodeCursorStateUnreadable) throw error;
     const code = (error as { errcode?: unknown }).errcode;
@@ -645,19 +633,19 @@ function readCursorState(source: string, sourceRelative: string, load: SqliteLoa
 /** Publish the keys as a fresh database through the same pinned temp-and-rename as every copy. SQLite
  * builds it in a private scratch directory because it names its files by full path, which would walk
  * past the pin. No keys removes the destination, as an absent source does. */
-function publishCursorState(home: string, destinationRelative: string, state: CursorState | undefined): void {
-  if (!state || state.values.size === 0) {
+function publishCursorState(home: string, destinationRelative: string, values: Map<string, string> | undefined): void {
+  if (!values || values.size === 0) {
     removeCredentialMirror(home, destinationRelative);
     return;
   }
   const scratch = mkdtempSync(join(tmpdir(), "cotal-jcode-cursor-"));
   try {
     const file = join(scratch, "state.vscdb");
-    const db = new state.sqlite.DatabaseSync(file);
+    const db = new DatabaseSync(file);
     try {
       db.exec("CREATE TABLE ItemTable (key TEXT UNIQUE ON CONFLICT REPLACE, value BLOB)");
       const insert = db.prepare("INSERT INTO ItemTable (key, value) VALUES (?, ?)");
-      for (const [key, value] of state.values) insert.run(key, value);
+      for (const [key, value] of values) insert.run(key, value);
     } finally {
       db.close();
     }
@@ -671,14 +659,14 @@ function publishCursorState(home: string, destinationRelative: string, state: Cu
  * rotating auth files; current jcode rejects those links in its external mirror, so the connector
  * owns a fresh, owner-only copy instead. Cursor's state database is read before anything is written,
  * so a refusal leaves every destination as it was. */
-export function mirrorJcodeCredentials(home: string, sources = credentialSources(), sqlite: SqliteLoader = loadSqlite): void {
+export function mirrorJcodeCredentials(home: string, sources = credentialSources()): void {
   privateDirectory(home, { pin: true });
   const inventory = jcodeCredentialMirrorInventory(home, sources);
   const cursorStates = inventory
     .filter((entry) => entry.family === "cursor-state")
-    .map((entry) => ({ entry, state: readCursorState(entry.source, relative(sources.externalHome, entry.source), sqlite) }));
+    .map((entry) => ({ entry, values: readCursorState(entry.source, relative(sources.externalHome, entry.source)) }));
   for (const entry of inventory) if (entry.family !== "cursor-state") copyCredentialFile(home, entry.source, entry.destinationRelative);
-  for (const { entry, state } of cursorStates) publishCursorState(home, entry.destinationRelative, state);
+  for (const { entry, values } of cursorStates) publishCursorState(home, entry.destinationRelative, values);
 }
 
 export interface ShortSocketHome {

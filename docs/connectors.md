@@ -7,6 +7,13 @@ and delivery model ([MCP tools](mcp-tools.md)). They differ in how they bind to 
 and which spawn features are wired. Anything unwired **fails loud**: a flag a connector does
 not support throws; nothing silently degrades.
 
+**Running version.** An MCP server's standard `serverInfo.version` names the Cotal release
+that server loaded, not the MCP protocol version or a newer CLI installed on disk.
+`cotal_orientation` reports the release loaded by the host answering the tool. Some clients
+hide MCP server metadata; the orientation card remains available through the tool list.
+Jcode's stdio bridge and tool host are separate processes, so their versions can differ if
+only one has reloaded after an upgrade. Updating files alone does not upgrade a running process.
+
 Connectors track raw NATS transport liveness separately from endpoint readiness. A short broker
 disconnect marks the transport down until nats.js reconnects, without claiming that the connector's
 full Cotal bind was torn down and rebuilt. A clean connector stop clears both states locally.
@@ -22,7 +29,7 @@ it; stopping preserves it so an operator can inspect why the session never conne
 |---|---|---|---|---|---|---|
 | Maturity | stable | beta | beta | alpha | beta | alpha |
 | Binds via | installed plugin + MCP server | in-process plugin (native runtime) | host-mode peer driving `codex app-server` | native Python plugin, socket-bridged | host-mode peer driving Jcode Harness API | native pi extension, in-process |
-| Install | `cotal setup` | none, just `opencode` on PATH (1.x or 2.x) | seeded with the CLI; needs an authenticated `codex` on PATH | BYO `uv` + `hermes-agent` `>=0.18,<0.22`; Unix only | seeded with the CLI; needs `jcode` 0.78.1+ on PATH | pi 0.79.10 (one copied file for interactive/SDK) |
+| Install | `cotal setup` | none, just `opencode` on PATH (1.x or 2.x) | seeded with the CLI; needs an authenticated `codex` on PATH | BYO `uv` + `hermes-agent` `>=0.18,<0.22`; Unix only | seeded with the CLI; needs `jcode` 0.78.1+ on PATH and Node 22.13+ (23.4+ on Node 23) | pi 0.79.10 (one copied file for interactive/SDK) |
 | Watch the real TUI | ✓ | ✓ | ✓ (attached to the mesh-driven thread) | ✗ (headless gateway) | ✓ (attached to the managed Jcode session) | ✓ |
 | Inbound delivery | managed hook drain + idle nudge; personal native inline delivery | injected as a turn | wakes a turn; directed messages steer connector-started turns; external turns defer delivery | fresh agent per message | injected as a Harness API turn; directed messages steer the live session | steered into the live turn |
 | Mid-turn steering | personal native sessions at supported boundaries | ✗ | ✓ (directed messages during connector-started turns) | none | ✓ (directed messages) | ✓ |

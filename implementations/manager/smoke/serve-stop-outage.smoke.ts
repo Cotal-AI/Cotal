@@ -110,7 +110,7 @@ try {
   check("1.3 and the retired serve connection is closed, not left reconnecting", nc.isClosed(), { closed: nc.isClosed() });
   clearTimeout(restoreAt);
   proxy.restore();
-  const stopped = await Promise.race([mgr.stop().then(() => true), wait(60_000).then(() => false)]);
+  const stopped = await Promise.race([mgr.stop({ withAgents: true }).then(() => true), wait(60_000).then(() => false)]);
   check("1.4 the rest of the stop completes once the link is back", stopped);
 
   console.log("\n2. CONTROL: stop with the transport up");
@@ -121,7 +121,7 @@ try {
   await ctlInside.stopServiceServe();
   const ctlMs = Date.now() - t1;
   check("2.1 retiring a serve connection whose transport is up is fast and drains it", ctlMs < OUTAGE_MS / 2 && ctlNc.isClosed(), { ctlMs, closed: ctlNc.isClosed() });
-  await ctl.stop();
+  await ctl.stop({ withAgents: true });
 } finally {
   proxy.close();
   await stopBroker();

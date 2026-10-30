@@ -200,7 +200,9 @@ field matches, and keeps the credential in memory.
 `chat-session-retire` takes `{alias, actor, lifecycleUid}` and runs the static terminal. It refuses
 before any effect unless the alias is a chat alias whose slot this manager instance owns at that
 uid and actor. It answers `retired`, `alreadyRetired`, or `failed` with a `retirement pending:`
-reason while the slot stays held. Retirement marks the credential's ledger row revoked, verifies
+reason while the slot stays held. It answers after the terminal settles, and the terminal waits up
+to 15 seconds for a delivery daemon that does not answer its eviction, so a caller's deadline must
+outlive that wait. Retirement marks the credential's ledger row revoked, verifies
 that the session's principal has no broker connection left, tears down its broker footprint and
 retires the slot. A static mesh has no broker-side credential revocation, so a copy of the leaf
 can still connect with the permissions it carries until its expiry. An ordinary spawn refuses any
