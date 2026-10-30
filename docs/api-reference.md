@@ -105,3 +105,12 @@ The [cotal.ai API reference](https://cotal.ai/api) documents the website's HTTP
 endpoints, including search, feedback and waitlist intake. Its
 [OpenAPI specification](https://cotal.ai/openapi.json) describes those website
 operations. Mesh command contracts are published through endpoint discovery.
+
+### Trusted request observation
+
+`epRequestObservationFilter(space, { route, endpoint, command, issued })` builds a trusted
+host's read filter for one command on the `one` or any-instance `inst` route. `issued` must
+explicitly select the issued or legacy rail. It shares the request head with
+`epRequestSubject`; actual requests still require a concrete instance id. The filter spans
+target/caller suffixes, grants no authority, and does not prove the origin of an observed
+frame. Observers must still parse and authorize it.
