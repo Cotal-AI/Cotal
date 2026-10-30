@@ -32,7 +32,20 @@ const navigation = [
   { section: 'docs', title: 'Docs', children: [
     group('Start here', ['what-is-cotal', 'installation', 'getting-started', 'examples'].map(name => page(`docs/${name}.mdx`))),
     group('Guides', [
-      group('Operate a mesh', ['run-a-mesh', 'setup', 'define-a-team', 'watch-a-mesh', 'deploy', 'UPGRADING'].map(name => page(`docs/${name}.md`))),
+      group('Operate a mesh', [
+        page('docs/setup.md'),
+        page('docs/run-a-mesh.mdx'),
+        page('docs/launch-agents.mdx'),
+        page('docs/define-a-team.md'),
+        page('docs/register-a-mesh.mdx'),
+        page('docs/watch-a-mesh.md'),
+        page('docs/remote-supervision.mdx'),
+        page('docs/supervise-processes.mdx'),
+        page('docs/deploy.md'),
+        page('docs/backup-a-mesh.mdx'),
+        page('docs/recover-a-mesh.mdx'),
+        page('docs/UPGRADING.md'),
+      ]),
       group('Connect agents', ['connectors', 'connect-claude', 'connect-opencode', 'connect-codex', 'connect-hermes', 'connect-jcode', 'connect-pi'].map(name => page(`docs/${name}.md`))),
       group('Build integrations', ['authoring-a-connector', 'build-a-client', 'embedding'].map(name => page(`docs/${name}.md`))),
     ]),

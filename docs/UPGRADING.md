@@ -1,6 +1,6 @@
 # Upgrading a running deployment
 
-> **Guide** (informative) · **For:** operators upgrading a mesh that already exists · **See also:** [Substrate stability](stability.md), [Run a mesh](run-a-mesh.md), [Identity and auth](identity-and-auth.md)
+> **Guide** (informative) · **For:** operators upgrading a mesh that already exists · **See also:** [Substrate stability](stability.md), [Run a mesh](run-a-mesh.mdx), [Identity and auth](identity-and-auth.md)
 
 [Substrate stability](stability.md) tells you what the version numbers promise. This page is the
 other half: what to actually do when the deployment already exists, has credentials in it, and
@@ -1795,7 +1795,7 @@ outage. Mixed versions can refuse discovery or commands; there is no promised ro
 Ordinary agent sessions survive only where their runtime and credentials permit it. If verification
 fails, keep mutations paused and repair forward from the preserved state rather than resetting it.
 This release does not add host-backed enrollment or terminal release for stock participant detached
-agents; see [Remote supervised agents](run-a-mesh.md#remote-supervised-agents).
+agents; see [Remote supervised agents](remote-supervision.mdx#remote-supervised-agents).
 
 ## From 0.48.2 to 0.49.0
 

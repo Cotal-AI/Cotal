@@ -23,7 +23,7 @@ unsupported version is refused with an error naming the version and the two supp
 
 ## Spawn it
 
-Same launch grammar as any agent (see [run-a-mesh.md](run-a-mesh.md)):
+Same launch grammar as any agent (see [Launch agents](launch-agents.mdx)):
 
 ```bash
 cotal spawn --agent opencode                # foreground in this terminal
@@ -211,6 +211,6 @@ Reasoning is off by default.
 ## See also
 
 - [Connectors](connectors.md): the feature matrix across all connectors
-- [Run a mesh](run-a-mesh.md) · [Define a team](define-a-team.md) · [Watch a mesh](watch-a-mesh.md)
+- [Run a mesh](run-a-mesh.mdx) · [Define a team](define-a-team.md) · [Watch a mesh](watch-a-mesh.md)
 - [MCP tools](mcp-tools.md) · [Connect Claude Code](connect-claude.md) · [Connect Hermes](connect-hermes.md) · [Connect pi](connect-pi.md)
 - [Deploy against an external broker](deploy.md): running OpenCode agents in containers

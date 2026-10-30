@@ -75,7 +75,7 @@ One-line definitions of the terms used across these docs and the spec. The base 
 
 - **Manager**, the agent supervisor and provisioner host: spawns and manages agent nodes over a
   pluggable runtime, and pre-creates the durables and membership records agents can't create
-  themselves. [run-a-mesh.md](run-a-mesh.md)
+  themselves. [run-a-mesh.mdx](run-a-mesh.mdx)
 
 - **Manifest**, `cotal.yaml` (`kind: Mesh`): the declarative, channel-centric description of a
   team's channels, agents, and access, launched with one command. [manifest.md](manifest.md)
@@ -119,7 +119,7 @@ One-line definitions of the terms used across these docs and the spec. The base 
   reaches one of them. [SPEC §1](../SPEC.md#1-scope-and-terminology), [§4](../SPEC.md#4-delivery-modes)
 
 - **Runtime (`pty` / `tmux` / `cmux` / `orca` / `herdr`)**, how the manager runs each agent process: the
-  built-in pty, or a native terminal surface via an extension. [run-a-mesh.md](run-a-mesh.md)
+  built-in pty, or a native terminal surface via an extension. [Launch agents](launch-agents.mdx)
 
 - **Space**: an isolated coordination context and tenant boundary; one space maps to one NATS
   account. [SPEC §1](../SPEC.md#1-scope-and-terminology), [spaces.md](spaces.md)

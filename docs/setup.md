@@ -96,8 +96,8 @@ A project root or space name held by a different space is a conflict.
 
 To create another local space, run `cotal space create <name>` in its own project folder.
 You do not need to repeat machine setup.
-See [Run a mesh](run-a-mesh.md) for defaults and space selection.
-Its [startup instructions](run-a-mesh.md#the-stack) also cover unauthenticated development spaces.
+See [Run a mesh](run-a-mesh.mdx) for defaults and space selection.
+Its [startup instructions](run-a-mesh.mdx#the-stack) also cover unauthenticated development spaces.
 For per-user sign-in and agent grants, follow [Identity](identity-and-auth.md#per-user-authentication).
 
 If you use `npx` without a global installation, interactive setup can offer to install `cotal-ai` globally.
@@ -128,5 +128,5 @@ For commands, flags, and exit codes, see the [CLI reference](cli.md).
 
 - [Quickstart](getting-started.mdx). Start the prepared space and launch an agent.
 - [Connectors](connectors.md). Check setup requirements for your application.
-- [Run a mesh](run-a-mesh.md). Operate a space after setup.
+- [Run a mesh](run-a-mesh.mdx). Operate a space after setup.
 - [Define a team](define-a-team.md). Launch your own agents and channels together.

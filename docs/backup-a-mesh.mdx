@@ -1,0 +1,69 @@
+---
+title: "Back up a mesh"
+description: "Preserve a mesh and create or restore an offline backup within its trust boundaries."
+kind: "Informative"
+audience: "operators"
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+Create or restore an offline backup of a preserved mesh.
+Read the [backup and restore contract](cli.md#backups) before attempting a recovery.
+
+<Callout type="warn" title="Controller stacks cannot be preserved">
+
+A controller-owned stack, one whose root holds `.cotal/stack-controller.json`, cannot be preserved
+in this release. There, preserve, backup and restore refuse before any effect. Plain `cotal down`
+and `cotal up` keep that stack's store, channels and history
+([CLI reference](cli.md#backups)).
+
+</Callout>
+
+## Create an offline backup [#offline-backup]
+
+For a coherent durable cut, preserve the whole stack first, then create the artifact while it stays
+down:
+
+```bash
+cotal down --preserve-state
+cotal backup create ./space-backup        # full by default
+# later: deliberately resume the unchanged source
+cotal up --detach
+# or, from another preserved cut, restore before the normal listener opens
+cotal up --restore ./space-backup --detach
+```
+
+A refused cut leaves the mesh running and unfenced: fix what the refusal names and run
+`cotal down --preserve-state` again.
+
+## Restore the preserved state
+
+Use `--store-dir` on both preservation and backup for a custom JetStream store. A store cap set
+with `cotal up --max-file-store <bytes>` travels with the preserved state, and the resume renders it
+again. nats-server reads the cap once at start and refuses a config reload that changes it, so a new
+cap always needs a restart. The cut records the chat stream's frontier per retained seat, so a
+resumed seat catches up from there instead of replaying its channels. `registry` is the
+only partial selection (`backup create ... --only registry`; `up --restore ... --restore-only
+registry`). Backup never stops or restarts a mesh implicitly, never opens the original store, and
+does not contain credentials or trust secrets. Backup/restore in every auth mode, open included,
+uses isolated, operation-specific maintenance logins; normal agent credentials cannot enter that
+listener. Full
+restore requires the same space and exact current local trust continuity, recreates conservative
+consumer checkpoints bound to their snapshot stream sequence state, and resumes retained agents under
+their original principals. The trust commitment includes the cryptographically validated full
+operator/system/data-account root chain as well as static/user authority state. A registry-only
+restore completes canonical empty infrastructure but leaves retained agents stopped because their
+DM/DLV/TASK/ACL state is outside that selection. Authenticated restore validates the complete space
+trust bundle before staging or changing the preserved store. Interrupted ordinary resume retries the
+same durable attempt after its prior listener is stopped. Restore re-entry can recover a surviving normal listener
+only when its attempt nonce, NATS server name, process owner, endpoint, and target-store identity all
+match the fsynced proof. A provably dead uncommitted owner is retired under lock and replaced with a
+fresh attempt-bound listener; an occupied foreign listener or ambiguous owner is never adopted. The
+manager commit validates while retained cleanup is still suppressed; the CLI durably records its
+attempt-bound 64-hex token in `manager-committed` / `resume-committed` before `finalizeResume` can
+release suppression. A new manager launch receives that token as a protected one-read file named by
+path and digest, never on its command line. A retry from either committed state goes straight to exact-token finalization;
+failure preserves the committed gate and retained cleanup suppression. Missing commit evidence,
+interrupted finalization, a live recorded endpoint despite missing pidfiles, or ambiguous proof fails closed. See the [CLI
+backup and restore contract](cli.md#backups) for artifact, checkpoint, fallback,
+disaster-consent, and degraded-recovery details.

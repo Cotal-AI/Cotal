@@ -1,0 +1,205 @@
+---
+title: "Supervise a remote mesh"
+description: "Place the broker and managers on separate hosts and enroll remote agents."
+kind: "Informative"
+audience: "operators"
+---
+
+Separate broker and manager hosts, expose the credential exchange, or enroll an agent on another machine.
+Start with a [prepared local mesh](run-a-mesh.mdx) and the trust model in [Identity](identity-and-auth.md).
+For process monitoring and restart policies, see [Supervise the stack](supervise-processes.mdx).
+
+## Configure the broker bind
+
+The broker and local services bind **loopback** by default. `--host 0.0.0.0` widens the broker
+bind independently of the auth mode, so "network-reachable" never silently means
+"unauthenticated". With no explicit `--server`, `cotal up` auto-selects a free local port when
+the default address is already held by another project; an explicit `--server` fails loud on
+collision.
+
+`--host` is a boot flag, not a live rebind. A fresh `cotal up` writes the generated
+`.cotal/auth/server.conf` (project-local, not `~/.cotal`) with that bind and starts nats against
+it. If anything is already answering at the mesh URL, `up` refreshes the recorded mesh and
+leaves the running nats listener alone, so passing `--host 0.0.0.0` on a live or orphaned
+broker does not change who can connect. To change the bind: `cotal down`, then `cotal up --host
+<addr>` against a stopped broker so the generated file is rewritten. Do not edit `server.conf`
+by hand; the next real boot overwrites it.
+
+On a stopped shared broker, `up` renders every persisted space account and every enabled
+space's auth-callout account into the resolver preload, regardless of which space starts
+the broker. A missing callout account for an enabled space stops the boot rather than
+starting with a reduced resolver. An already-running broker is refreshed without rewriting
+its config.
+
+A broker-only host is a first-class `up` mode. `cotal up --no-manager` boots the broker and, in
+auth mode, the delivery daemon, and no local manager, so the broker host never has a manager to
+stop and never leaves a manager slot stale. A refresh under the flag of a mesh whose manager is
+live refuses rather than keeping or stopping it. Stop a controller stack's manager first with
+`cotal service stop stack-manager --space <s> --yes`. A legacy stack has no command that stops only
+its manager: `cotal down` stops the whole stack, then `cotal up --no-manager --space <s>` starts it
+broker-only. Without the flag,
+auth-mode `up` still starts nats, the delivery daemon, and a
+local manager. A space may run more than one manager, addressed by instance id
+([control surface](control-surface.md#instance-routing)); putting no manager on the broker host
+is a topology choice, not a singleton invariant. A manager whose boot inventory has no
+available connector does not take unpinned `spawn`/`launch` on the class rail, so a sibling
+that can launch the harness can. `describe` still rides the class rail, so an unpinned spawn
+can bind-fence when that skip member answered describe; re-issue, or pin `--on`. Pin one
+instance with `--on` when a partial inventory still answers with a harness refusal. The
+supported split is:
+
+Use this example only when both hosts are connected through your private overlay.
+Replace the example address with the broker's literal overlay address and keep that tunnel active.
+Read [Choose a permitted address](register-a-mesh.mdx#which-addresses-you-may-register) for the overlay risk and required-TLS alternative.
+
+```bash
+# broker host (project root that owns the generated conf, pidfiles, and logs)
+cotal up --detach --host 0.0.0.0 --space main --no-manager
+# no local manager starts: the summary lists nats-server + delivery daemon, and there is no
+# `.cotal/manager.<spaceKey>.log` to wait for on this host
+
+# manager host (registered remote mesh, same space)
+cotal space add main --server nats://100.90.12.34:4222 --root ~/meshes/main --allow-unencrypted-overlay
+cotal supervise --space main --server nats://100.90.12.34:4222
+```
+
+Wait for `✓ manager up` in `.cotal/manager.<spaceKey>.log` on the manager host before spawning
+agents. On a broker host started without `--no-manager`, `cotal up --detach` prints `✓ running in
+the background:` with `manager` listed once the manager pidfile is live; stop that local manager
+only after the `✓ manager up` line. A host started WITH `--no-manager` never runs one, so neither
+the wait nor the stop applies there. That detach stdout is not a safe teardown boundary: it is
+pidfile liveness, not `✓ manager up`. `✓ manager up` is supervise's post-start line after
+`await mgr.start()`. Stopping the manager after only the detach line can still default-terminate
+the child during registration after it has taken the governance slot. Stopping before that
+post-start log line can leave the endpoint governance slot held until the holder's gate
+reopens past the stamp (the successor's boot heal, or
+[`cotal reconcile-gate`](cli.md#reconcile-gate) when that boot cannot run). See
+[Gate recovery](recover-a-mesh.mdx#gate-recovery).
+
+Standalone `cotal deliver --creds` is not a repair for that split. Production renewal needs
+the manager and the daemon to address one credential store. The manager renews its own service
+credential inside that credential's own window and re-dials its service connection with the
+renewed credential; if the connection closes and cannot be restored within about forty seconds
+it releases its lease and exits so a restart can serve, while a broker that is briefly gone is
+waited out. Separate host filesystems still
+leave manager root A writing and the daemon reloading root B; that composition is refused
+while the daemon stays up. Before every remint the manager challenges the delivery daemon's
+store identity, and the answer must come from the process holding the delivery lease: the
+reply names the answering endpoint and the manager reads the lease row itself under its own
+credential, so a non-holder answering on the queue-grouped admin rail is refused instead of
+counting as the daemon's store. A rail that reports no responder is also settled from the
+lease row, so a live holder on record makes that outcome a refusal rather than an absent
+daemon. Keep delivery on the broker host under `up`, and share one store
+only when you are composing a hosted pair ([embedding](embedding.md#supervisor-signing-authority)).
+On the `--no-manager` split above, the manager host's manager stays off the daemon-credential
+renewal lease once its store check finds the daemon on another store. A filesystem store is named
+by its root and by a random id in `.cotal/store.id`, which the copied `.cotal/auth` does not carry,
+so this holds when both hosts use the same root path. `cotal doctor auth --fix` on
+the broker host then renews the daemon credentials once they pass their renewal point.
+
+## Split host bind [#split-host-bind]
+
+A remote manager cannot reach a loopback broker. After changing `--host`, confirm the
+generated `host:` in `.cotal/auth/server.conf` and that nats is listening on that address
+before registering the mesh on the manager host. Detached child logs stay under the **project**
+`.cotal/` that `up` ran in (see [When something looks absent](recover-a-mesh.mdx#when-something-looks-absent));
+they are not `~/.cotal` unless that directory is the mesh root.
+
+A user-auth mesh can expose only its credential exchange through an operator-owned HTTPS reverse
+proxy while leaving the existing local exchange untouched:
+
+```bash
+cotal up --user-auth --idp https://idp.example/api/auth \
+  --exchange-public-port 7443 \
+  --exchange-public-url https://auth.example
+```
+
+The public listener itself still binds `127.0.0.1:7443`; configure the proxy to terminate TLS and
+forward to it. It serves only `/health`, `/jwks`, `/exchange`, `/manager-service-authority`,
+`/manager-instances`, and `/.well-known/cotal-mesh` with the documented methods. It needs no local file capability: the
+signed IdP JWT or managed-agent actor token is the proof, while the original loopback listener
+remains capability-gated. Add
+`--exchange-trusted-proxy` only when that listener is reachable exclusively through your trusted
+proxy; it keys failure throttling by the last `X-Forwarded-For` hop instead of the socket address.
+The well-known bundle includes IdP pins and a deny-all sentinel credential, so fetch it only from
+the configured HTTPS origin. It tells participants to dial `--server` unless `--advertised-server`
+names the address they can reach, such as a `wss://` address behind the proxy. Add
+`--agent-provisioning-url <https://…>` to advertise an endpoint where a participant's `cotal spawn`
+provisions its agent; without one, a participant on another machine needs a one-time enrollment,
+described next. To change these listener flags, stop and restart the mesh; a refresh
+of an already-running service does not replace its bind or proxy policy. See
+[Identity & auth](identity-and-auth.md#per-user-authentication) for the trust boundary.
+
+## Enroll a remote agent [#remote-supervised-seats-by-enrollment]
+
+A remote seat does not need to run `cotal login` when the mesh owner pre-mints a single-use
+enrollment for it. Mount the enrollment URL as a private file, place the seat persona on the remote
+machine, and launch the foreground seat:
+
+```bash
+COTAL_ENROLLMENT_FILE=/run/secrets/cotal-enrollment \
+  cotal spawn --config ./worker.md --space main
+```
+
+The URL is redeemed once with an unauthenticated GET. Redirects, off-machine plain HTTP, retries,
+and login fallback are refused. If the seat has no mesh record yet, the enrollment response's stock
+user-bundle fields register it before the launch. The returned actor token then uses the same remote
+auth-service exchange as a login-provisioned agent. The enrollment URL and file path do not enter the
+preflight or harness environment. A failed or reused enrollment leaves no actor material on disk; ask the owner
+for a fresh enrollment. When the foreground seat exits, this machine's credential files are removed
+and the mesh-side grant stays until the mesh operator revokes it; the launch line says so. The exact
+server contract is in
+[Enrollment redeem](identity-and-auth.md#enrollment-redeem).
+
+## Run a participant manager [#remote-supervised-agents]
+
+On a remote user-auth mesh, foreground `cotal spawn` remains the default participant path. A
+participant can run detached agents only after the host advertises and operates the remote manager
+authority service, and the participant's actor-ledger row includes `supervise`. This is not implied
+by `spawn` or `admin`.
+
+The participant's loopback/operator exchange obtains one closed `manager-service` view for its
+ordinary derived owner, a fixed server-selected manager actor, and one opaque manager instance.
+The host, not the participant, issues the public-nkey JWT material via the replay-safe,
+lifecycle-bound prepare → activate → renew exchange, plus a one-shot target-pinned retirement
+request for a host-managed terminal. It never exports the space signer, a static
+provisioner credential, or generic storage authority. Remote registration publishes its service
+status at the registered revision and current process epoch, so manager-caller selection can find it.
+Every manager-authority request carries the participant's fresh login proof and refuses a redirect,
+so a 3xx answer from the pinned endpoint fails the request rather than sending the proof on.
+An answer whose body is not JSON also fails the request, naming the endpoint and the HTTP status.
+
+Stock participant supervision asks its host to enroll a detached agent and to prepare its terminal
+retirement, over the same manager-authority transport. The stock auth service answers both when it
+runs with a public exchange face: it grants the agent under the participant's owner at a lifecycle
+UID it picks, bounded by the participant actor's own grant, provisions that UID's durables, and on
+retirement releases them and revokes the grant before the manager's terminal rail. It refuses a
+second enrollment of a name whose grant still stands until that agent's retirement is prepared. A
+host platform that keeps these writers in its own storage intercepts both requests on its own route
+instead. Copying host secrets or actor-ledger files to a participant is not supported. Foreground
+spawning and operator-local hosted managers use their existing paths.
+
+The remote manager that `cotal supervise` starts can host workflow runs through its host: the host
+admits each run and signs only the run's own driver, mediator and operator credentials. A logged-in
+user's `cotal run start` against it is admitted: the auth callout issues the user's manager
+connection, and the host binds each run to the owner who registered the manager. The run spawns
+agents that user owns, enrolled by the host like any detached spawn, with the reach the user's own
+row grants when the spawn runs. A spawn may be placed on that manager and on no other instance. The
+host's own manager refuses user-auth runs by name.
+[User-auth run start](design/user-auth-run-start.md)
+records the path.
+
+The registry entry decides the broker URL `supervise` dials, so a mesh published over `wss://` is
+dialed as a websocket. The manager-authority registration it runs first also takes its TLS
+requirement from that entry, so the prepare credential is not exchanged over a plaintext
+connection the record did not describe. `cotal meshes add` records both.
+
+When the authority service, login, or renewal is unavailable, the remote manager degrades
+fail-closed: it refuses new agents, restarts, and credential replacement rather than pretending
+local authority exists. Existing agents remain live only while their independent credentials are
+valid. A hosted composition must revoke the managed grant and finish its resumable release before it
+requests terminal retirement. Deleting DM or delivery consumers is not retirement and must not reset
+a resumable lifecycle's frontier or pending state. The alias remains held until the terminal barrier
+confirms. Restore service and renew successfully before asking it to recover an agent. See
+[Identity & auth](identity-and-auth.md#remote-manager-authority) and the [CLI
+reference](cli.md#supervise).

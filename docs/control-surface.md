@@ -361,7 +361,7 @@ cancellation does not revoke or resubmit the accepted operation.
 
 "Only one manager per space" is not the current invariant. A split topology that keeps the
 broker host manager-free is still a topology choice: `cotal up --no-manager` on that host starts no
-manager, and `cotal supervise --server` runs the manager elsewhere ([Run a mesh](run-a-mesh.md)).
+manager, and `cotal supervise --server` runs the manager elsewhere ([Supervise a remote mesh](remote-supervision.mdx)).
 A broker host that already runs a manager stops it only after `✓ manager up` in
 `.cotal/manager.<spaceKey>.log` (detach stdout listing `manager` is pidfile liveness, not a
 teardown boundary). A controller stack stops it with

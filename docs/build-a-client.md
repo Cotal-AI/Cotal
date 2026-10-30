@@ -43,7 +43,7 @@ receive-side authenticity checks, and the presence/channel loops. See
   Use the resulting UID, not an old inbox coordinate (see [`auth mint`](cli.md#auth-mint)). The creds file
   binds your principal (`owner.actor`, [SPEC §2](../SPEC.md#2-identity)) and your channel
   grants; see
-  [identity-and-auth.md](identity-and-auth.md) and [run-a-mesh.md](run-a-mesh.md).
+  [identity-and-auth.md](identity-and-auth.md) and [run-a-mesh.mdx](run-a-mesh.mdx).
   If your client will **receive** DMs or role anycasts (step 6), mint with `--provision`
   (`--role <role>` for the anycast queue): the DM/task consumers are pre-created and
   bind-only, and the command prints the lifecycle uid your client binds them under.
@@ -130,7 +130,7 @@ joiner's replay. The repository's own smoke suite (`packages/core/smoke/`, `bin/
 TypeScript, driven through `tsx` and the reference endpoint; it is the reference
 implementation's regression harness, **not** a cross-language conformance runner. So for a
 client in another language, the interop scenario against a local `cotal up` mesh (with a
-reference agent as the other party; spawn one via [run-a-mesh.md](run-a-mesh.md) or
+reference agent as the other party; spawn one via [Launch agents](launch-agents.mdx) or
 [define-a-team.md](define-a-team.md)) is the current conformance test.
 
 ## What not to build
@@ -141,7 +141,7 @@ reference agent as the other party; spawn one via [run-a-mesh.md](run-a-mesh.md)
   supply durability and presence yourself, since a live-only pipe has neither.
 - **No orchestrator.** Cotal peers are lateral. A client connects, presents itself, and
   exchanges messages; it does not schedule or supervise other agents. Spawning and supervision
-  live in separate tooling (the [manager](run-a-mesh.md), [mcp-tools.md](mcp-tools.md)), not in
+  live in separate tooling (the [manager](run-a-mesh.mdx), [mcp-tools.md](mcp-tools.md)), not in
   the wire client.
 
 Keep it thin: a NATS client, subject build/parse, envelope validation, the receive-side checks,

@@ -726,7 +726,7 @@ still sets `COTAL_CREDS` itself.
 
 **Denials are loud, never silent.** A publish outside an ACL surfaces as a logged denial
 ("denied, not absent") on the endpoint's error path; an over-tight ACL never looks like a
-missing peer ([run a mesh](run-a-mesh.md)).
+missing peer ([run a mesh](run-a-mesh.mdx)).
 
 ## Standalone endpoint callers
 

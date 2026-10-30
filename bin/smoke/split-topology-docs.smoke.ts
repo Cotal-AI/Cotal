@@ -12,6 +12,8 @@
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { readDocument } from "@cotal-ai/docs-content";
+import { renderDetachedSummary } from "../../implementations/cli/src/lib/up-report.js";
 
 const REPO = join(import.meta.dirname, "..", "..");
 const read = (rel: string): string => readFileSync(join(REPO, rel), "utf8");
@@ -28,7 +30,13 @@ const check = (name: string, condition: boolean, detail?: unknown): void => {
   }
 };
 
-const runAMesh = read("docs/run-a-mesh.md");
+const operationGuides = [
+  "run-a-mesh", "launch-agents", "register-a-mesh", "remote-supervision",
+  "supervise-processes", "backup-a-mesh", "recover-a-mesh",
+];
+const operationGuideText = (await Promise.all(operationGuides.map(async (slug) =>
+  (await readDocument(join(REPO, "docs", `${slug}.mdx`))).markdown,
+))).join("\n\n");
 const cli = read("docs/cli.md");
 const config = read("docs/config.md");
 const control = read("docs/control-surface.md");
@@ -43,6 +51,7 @@ const systemd = read("implementations/cli/src/lib/systemd-supervision.ts");
 const upReport = read("implementations/cli/src/lib/up-report.ts");
 const managerProc = read("implementations/cli/src/lib/manager-proc.ts");
 const supervise = read("implementations/manager/src/commands.ts");
+const detachedStatus = { pid: 42, delivery: true, authService: false, manager: true };
 
 // ── 1. generated server.conf path + --host boot vs live refresh ──────────────
 check(
@@ -59,8 +68,8 @@ check(
 );
 check(
   "claim 1: docs say live refresh does not rebind and hand-edit is not the fix",
-  runAMesh.includes("`--host` is a boot flag, not a live rebind") &&
-    runAMesh.includes("Do not edit `server.conf`") &&
+  operationGuideText.includes("`--host` is a boot flag, not a live rebind") &&
+    operationGuideText.includes("Do not edit `server.conf`") &&
     cli.includes("A live refresh (`✓ mesh already running`) does not rewrite `.cotal/auth/server.conf`") &&
     config.includes("<projectRoot>/.cotal/auth/server.conf") &&
     config.includes("A live refresh does not rewrite this file"),
@@ -73,13 +82,13 @@ check(
 // ── 2. up starts a manager by default; --no-manager is the explicit broker-only mode ──
 check(
   "claim 2: operator guide names the split (--no-manager boot, supervise --server) and each stack's manager stop",
-  runAMesh.includes("A broker-only host is a first-class `up` mode") &&
-    runAMesh.includes("cotal up --no-manager") &&
-    runAMesh.includes("`cotal service stop stack-manager --space <s> --yes`") &&
-    runAMesh.includes("A legacy stack has no command that stops only") &&
-    ![runAMesh, control].some((page) => page.includes("cotal down manager")) &&
+  operationGuideText.includes("A broker-only host is a first-class `up` mode") &&
+    operationGuideText.includes("cotal up --no-manager") &&
+    operationGuideText.includes("`cotal service stop stack-manager --space <s> --yes`") &&
+    operationGuideText.includes("A legacy stack has no command that stops only") &&
+    ![operationGuideText, control].some((page) => page.includes("cotal down manager")) &&
     !cli.includes("`cotal down manager` first") &&
-    runAMesh.includes("cotal supervise --space main --server") &&
+    operationGuideText.includes("cotal supervise --space main --server") &&
     cli.includes("`--no-manager` is the broker-only mode") &&
     control.includes("Only one manager per space") &&
     control.includes("cotal supervise"),
@@ -92,17 +101,17 @@ check(
     up.includes("broker-only boot: start the broker and, in auth mode, the delivery daemon, and no local manager") &&
     /if \(o\.noManager\) return \{\s*running: false\b[^}]*responderBound: delivery\.responderBound[^}]*\}/.test(deliveryProc) &&
     !cli.includes("There is no broker-only mode") &&
-    !runAMesh.includes("There is no broker-only `up`") &&
-    !runAMesh.includes("Broker-only `up` remains a product request"),
+    !operationGuideText.includes("There is no broker-only `up`") &&
+    !operationGuideText.includes("Broker-only `up` remains a product request"),
 );
 check(
   "claim 2: wait signal is supervise post-start, not detach stdout",
-  runAMesh.includes("Wait for `✓ manager up`") &&
-    runAMesh.includes("manager pidfile is live") &&
-    runAMesh.includes("is not a safe teardown boundary") &&
-    runAMesh.includes("`.cotal/manager.<spaceKey>.log`") &&
-    !runAMesh.includes("Wait for `✓ running in the background:` with `manager` listed") &&
-    !runAMesh.includes("`cotal status --components` to report `manager serving`") &&
+  operationGuideText.includes("Wait for `✓ manager up`") &&
+    operationGuideText.includes("manager pidfile is live") &&
+    operationGuideText.includes("is not a safe teardown boundary") &&
+    operationGuideText.includes("`.cotal/manager.<spaceKey>.log`") &&
+    !operationGuideText.includes("Wait for `✓ running in the background:` with `manager` listed") &&
+    !operationGuideText.includes("`cotal status --components` to report `manager serving`") &&
     cli.includes("wait for `.cotal/manager.<spaceKey>.log` to contain `✓ manager up`") &&
     cli.includes("pidfile liveness, not a teardown boundary") &&
     control.includes("after `✓ manager up` in"),
@@ -111,7 +120,9 @@ check(
   "claim 2: detach summary is pidfile-live, ensureManager returns a started manager once it is up; supervise prints manager up after start",
   upReport.includes('if (status.manager) components.push("manager");') &&
     upReport.includes("return `✓ running in the background: ${components.join(\", \")} - ") &&
-    upReport.includes('const stop = status.machineHome ? "cotal down --preserve-state" : "cotal down";') &&
+    renderDetachedSummary(detachedStatus).endsWith("stop with: cotal down") &&
+    renderDetachedSummary({ ...detachedStatus, machineHome: true }).endsWith("stop with: cotal down --preserve-state") &&
+    renderDetachedSummary({ ...detachedStatus, machineHome: true, manager: false }).endsWith("stop with: cotal up to start its manager, then cotal down --preserve-state") &&
     /if \(state === "alive"\) return \{\s*running: true,\s*started: false\b[^}]*\}/.test(managerProc) &&
     /const pid = startManagerDetached\(o\);\s*await awaitManagerUp\(space, identityRecord\(pid\)\);\s*return \{\s*running: true,\s*started: true,\s*pid\b[^}]*\}/.test(managerProc) &&
     supervise.includes('await mgr.start();') &&
@@ -130,8 +141,8 @@ check(
 );
 check(
   "claim 3: docs name project logs and empty journalctl for a oneshot wrapper",
-  runAMesh.includes("Those files live under the **project** `.cotal/`, not `~/.cotal`") &&
-    runAMesh.includes("`journalctl -u <unit>` can be empty") &&
+  operationGuideText.includes("Those files live under the **project** `.cotal/`, not `~/.cotal`") &&
+    operationGuideText.includes("`journalctl -u <unit>` can be empty") &&
     delivery.includes("does not put those lines in that unit's journal"),
 );
 
@@ -140,8 +151,8 @@ check(
   "claim 4: CLI and operator guide refuse standalone deliver as the split repair",
   cli.includes("is not an independent repair") &&
     /the manager and[ \n]the daemon must address one credential store/.test(cli) &&
-    runAMesh.includes("is not a repair for that split") &&
-    runAMesh.includes("manager root A writing and the daemon reloading root B"),
+    operationGuideText.includes("is not a repair for that split") &&
+    operationGuideText.includes("manager root A writing and the daemon reloading root B"),
 );
 
 // ── 5. torn pairing names both pids; pin delete is not recovery ──────────────
@@ -165,27 +176,26 @@ check(
 );
 check(
   "claim 6: docs state what `service install` covers and the example-unit cgroup tradeoff",
-  runAMesh.includes("`cotal service install <name>` writes an owned systemd user unit for a saved direct-process") &&
-    /a preset such as the\s+manager is not installed as a unit in this release/.test(runAMesh) &&
-    !runAMesh.includes("is the supported way to run the manager as a user service") &&
-    /writes a Linux unit only for a saved direct-process service definition, so the manager\s+preset, the broker and its siblings get no unit from it/.test(runAMesh) &&
-    // No sentence on the page may say service install covers, installs or handles only the manager.
-    !runAMesh.includes("covers only the manager") &&
-    !/(service\s+install`?|\binstalls?\b|\binstaller\b)[^.]{0,80}\bonly\s+the\s+manager\b|\bonly\s+the\s+manager\b[^.]{0,80}\b(install|unit)/i.test(runAMesh) &&
-    runAMesh.includes("examples of process models") &&
-    runAMesh.includes("Type=simple") &&
-    runAMesh.includes("nats in the unit's cgroup") &&
-    runAMesh.includes("does not move nats out of that cgroup") &&
-    runAMesh.includes("new process group, not a new systemd cgroup") &&
-    runAMesh.includes("Neither trade is universal from") &&
-    runAMesh.includes("`Type=simple` alone") &&
-    runAMesh.includes("KillMode=control-group") &&
-    runAMesh.includes("this CLI does not ship that escape") &&
-    runAMesh.includes("`cotal status --components` liveness check, not a") &&
-    runAMesh.includes("`--detach` launcher") &&
-    !runAMesh.includes("nats is orphaned outside the cgroup") &&
-    !runAMesh.includes("oneshot + `--detach` launcher") &&
-    !runAMesh.includes("There is no supported `cotal service install`"),
+  operationGuideText.includes("`cotal service install <name>` writes an owned systemd user unit for a saved direct-process") &&
+    /a preset such as the\s+manager is not installed as a unit in this release/.test(operationGuideText) &&
+    !operationGuideText.includes("is the supported way to run the manager as a user service") &&
+    /writes a Linux unit only for a saved direct-process service definition, so the manager\s+preset, the broker and its siblings get no unit from it/.test(operationGuideText) &&
+    !operationGuideText.includes("covers only the manager") &&
+    !/(service\s+install`?|\binstalls?\b|\binstaller\b)[^.]{0,80}\bonly\s+the\s+manager\b|\bonly\s+the\s+manager\b[^.]{0,80}\b(install|unit)/i.test(operationGuideText) &&
+    operationGuideText.includes("examples of process models") &&
+    operationGuideText.includes("Type=simple") &&
+    operationGuideText.includes("nats in the unit's cgroup") &&
+    operationGuideText.includes("does not move nats out of that cgroup") &&
+    operationGuideText.includes("new process group, not a new systemd cgroup") &&
+    operationGuideText.includes("Neither trade is universal from") &&
+    operationGuideText.includes("`Type=simple` alone") &&
+    operationGuideText.includes("KillMode=control-group") &&
+    operationGuideText.includes("this CLI does not ship that escape") &&
+    operationGuideText.includes("`cotal status --components` liveness check, not a") &&
+    operationGuideText.includes("`--detach` launcher") &&
+    !operationGuideText.includes("nats is orphaned outside the cgroup") &&
+    !operationGuideText.includes("oneshot + `--detach` launcher") &&
+    !operationGuideText.includes("There is no supported `cotal service install`"),
 );
 
 console.log(`SPLIT TOPOLOGY DOCS: ${pass}/${pass + fail}`);

@@ -104,7 +104,7 @@ cotal spawn dave --detach   # supervised: the manager runs it in a PTY
 
 A spawn resolves a persona from `.cotal/agents/<name>.md` ([agent files](agent-files.md));
 `--model`, `--variant`, `--cwd`, `--prompt`, ACL overrides, and `--share-tools` apply to
-both forms ([run a mesh](run-a-mesh.md) has the full resolution rules). The session joins
+both forms ([Launch agents](launch-agents.mdx) has the full resolution rules). The session joins
 with identity from its environment and auto-registers presence by the time it is
 interactive.
 
@@ -118,7 +118,7 @@ agent's toolset matches its declared capabilities. `cotal_run` is gated separate
 `run`; use `capabilities: [spawn, run]` for both. Fresh setup defaults include both.
 See [workflow tool setup](workflows.md#from-an-agent-session) for a first run and missing-tool checks.
 Clearing retained history is
-operator-only ([run a mesh](run-a-mesh.md)), never an agent tool.
+operator-only ([run a mesh](run-a-mesh.mdx)), never an agent tool.
 
 ## How it binds
 

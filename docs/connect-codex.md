@@ -34,7 +34,7 @@ support range we can promise ahead of it.
 
 ## Spawn it
 
-Same launch grammar as any agent (see [run-a-mesh.md](run-a-mesh.md)):
+Same launch grammar as any agent (see [Launch agents](launch-agents.mdx)):
 
 ```bash
 cotal spawn --agent codex                # foreground in this terminal
@@ -304,5 +304,5 @@ tightening the workspace over removing the sandbox.
 ## See also
 
 - [Connectors](connectors.md): the feature matrix across all connectors
-- [Run a mesh](run-a-mesh.md) · [Define a team](define-a-team.md) · [Watch a mesh](watch-a-mesh.md)
+- [Run a mesh](run-a-mesh.mdx) · [Define a team](define-a-team.md) · [Watch a mesh](watch-a-mesh.md)
 - [MCP tools](mcp-tools.md) · [Connect Claude Code](connect-claude.md) · [Connect OpenCode](connect-opencode.md)

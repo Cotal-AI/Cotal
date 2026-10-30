@@ -469,7 +469,7 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 | `--exchange-public-url <https://…>` | none | With `--exchange-public-port`: advertise the reverse proxy's HTTPS URL in discovery |
 | `--exchange-trusted-proxy` | off | With `--exchange-public-port`: attribute public failure buckets to the last `X-Forwarded-For` hop. Enable only when the listener is reachable solely through a trusted proxy; otherwise the socket address is used |
 | `--advertised-server <url>` | `--server` | With `--exchange-public-port`: the broker address the public discovery bundle tells participants to dial, such as a `wss://` address behind your proxy. Must be a `nats://`, `tls://`, `ws://` or `wss://` URL |
-| `--agent-provisioning-url <https://…>` | none | With `--exchange-public-port`: the deployment's agent-provisioning endpoint the public bundle advertises. A participant's `cotal spawn` on a remote user-auth mesh sends its login bearer there to provision the agent; without one, that spawn needs a one-time enrollment ([Run a mesh](run-a-mesh.md#remote-supervised-seats-by-enrollment)). HTTPS only |
+| `--agent-provisioning-url <https://…>` | none | With `--exchange-public-port`: the deployment's agent-provisioning endpoint the public bundle advertises. A participant's `cotal spawn` on a remote user-auth mesh sends its login bearer there to provision the agent; without one, that spawn needs a one-time enrollment ([Supervise a remote mesh](remote-supervision.mdx#remote-supervised-seats-by-enrollment)). HTTPS only |
 | `--detach` | on | Run in the background, which is also the no-flag default |
 | `--foreground` | off | Keep native stack lifetime in this terminal. Required when a systemd/launchd unit supervises `up` itself. Cannot combine with `--detach` |
 | `--tls-cert <path>` | none | PEM certificate to serve TLS with. Must be given together with `--tls-key`. Before starting the broker, Cotal checks readability, private-key mode, key/certificate match, the validity window, and host coverage. `nats-server` accepts an expired certificate and leaves the failure to clients, so Cotal performs these checks first. The decision is recorded; a later bare `cotal up` keeps serving TLS |
@@ -505,7 +505,7 @@ than keeping or stopping it. Stop a controller stack's manager first with
 its manager: `cotal down` stops the whole stack, then `cotal up --no-manager --space <s>` starts it
 broker-only. For a split topology with a manager, wait for `.cotal/manager.<spaceKey>.log` to contain `✓ manager up`, then stop that manager the same way on that
 host and run [`supervise`](#supervise) against the remote broker; see
-[Run a mesh](run-a-mesh.md). `cotal up --detach` prints `✓ running in the background:` with
+[Supervise a remote mesh](remote-supervision.mdx). `cotal up --detach` prints `✓ running in the background:` with
 `manager` listed (pidfile liveness, not a teardown boundary); with `--no-manager` the line lists
 only what actually started. Started from the machine home, the line names `cotal down --preserve-state`,
 because bare `down` refuses the home stack. With `--no-manager` it names `cotal up` first, because
@@ -1861,7 +1861,7 @@ A hostname or public address is registrable only when the connection will **requ
 through the record demands the handshake (and `meshes add tls://…` against a plaintext broker is
 refused at registration). Without required TLS the fence admits loopback literals, and
 private-overlay literals only with `--allow-unencrypted-overlay`, which records your acceptance that
-the overlay is protected only while its tunnel is up ([Run a mesh](run-a-mesh.md#which-addresses-you-may-register)). RFC1918 addresses are refused in both modes because a cafe LAN is private but does not belong to you.
+the overlay is protected only while its tunnel is up ([Register a mesh](register-a-mesh.mdx#which-addresses-you-may-register)). RFC1918 addresses are refused in both modes because a cafe LAN is private but does not belong to you.
 
 A **user-auth** mesh registers from supplied pinned trust, never guessed: `--user-auth-file`
 takes the bundle exported where the mesh runs; `--from` asks before it dials the address at all,

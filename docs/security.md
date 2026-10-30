@@ -151,7 +151,7 @@ The guarantees, at a glance, each enforced by the broker per
   surface on the manager host (Claude `--mcp-config`, `--add-dir`, permission flags; OpenCode
   agent-config keys). The boundary is *who* may spawn (the authenticated caller, gated by the
   capability), not *which* flags they pass. Grant `spawn` as host-launch authority, not a narrow
-  "add a teammate" permission ([run a mesh](run-a-mesh.md#spawning-agents)).
+  "add a teammate" permission ([Launch agents](launch-agents.mdx#spawning-agents)).
 - **Seat reap by process-group membership:** a manager reaping a custodied PTY seat
   (`reapSeat` in `@cotal-ai/seat`) signals the custodian and the child only while each still
   carries the start identity in its custody record. The child's descendants are not in that

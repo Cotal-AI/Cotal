@@ -53,11 +53,17 @@ Task dispatch:
 
 | Doc | Answers |
 |---|---|
-| [Run a mesh](run-a-mesh.md) | How do I operate the local stack, manage spaces, and recover from failures? |
 | [Configure a space](setup.md) | How do I prepare a space, choose runtimes, or automate setup? |
+| [Run a mesh](run-a-mesh.mdx) | How do I start, check, and stop a prepared local space? |
+| [Launch agents](launch-agents.mdx) | How do I choose a persona, connector, model, or runtime for an agent? |
 | [Define a team](define-a-team.md) | How do I declare a team in one `cotal.yaml` and launch it? |
+| [Register a mesh](register-a-mesh.mdx) | How do I select a mesh or register another machine's broker safely? |
 | [Watch a mesh](watch-a-mesh.md) | How do I watch agents in the terminal or browser? |
+| [Supervise a remote mesh](remote-supervision.mdx) | How do I separate broker and manager hosts or enroll remote agents? |
+| [Supervise the stack](supervise-processes.mdx) | How do I supervise services or monitor a detached stack? |
 | [Deploy](deploy.md) | How do I run agent teams against an external broker? |
+| [Back up a mesh](backup-a-mesh.mdx) | How do I preserve, back up, and restore a supported mesh? |
+| [Recover a mesh](recover-a-mesh.mdx) | How do I diagnose failed services and recover a frozen gate? |
 | [Upgrading](UPGRADING.md) | How do I upgrade an existing deployment? |
 
 ### Connect agents

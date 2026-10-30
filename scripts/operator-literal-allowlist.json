@@ -27,10 +27,16 @@
       "reason": "macOS home path examples"
     }
   },
-  "docs/run-a-mesh.md": {
+  "docs/register-a-mesh.mdx": {
     "shared-ipv4": {
       "count": 2,
       "reason": "shared address examples"
+    }
+  },
+  "docs/remote-supervision.mdx": {
+    "shared-ipv4": {
+      "count": 2,
+      "reason": "shared address examples for broker and manager hosts"
     }
   },
   "examples/02-self-improving-console/ITERATIONS.md": {
