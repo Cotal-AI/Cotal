@@ -1086,6 +1086,7 @@
     "micromark-util-decode-string": "^2.0.1",
     "micromark-util-sanitize-uri": "^2.0.1",
     "parse5": "^7.3.0",
+    "safe-stable-stringify": "2.5.0",
     "semver": "7.8.5",
     "tar": "7.5.22",
     "ts-json-schema-generator": "^2.9.0",
