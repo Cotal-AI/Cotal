@@ -3764,8 +3764,9 @@ holds the grant that was checked (every channel field named, `[]` included, and 
 never the helper's own event channel, plus role, model, variant, description and body. A name the
 catalog already holds is refused before anything starts, and a refused grant leaves neither file.
 `define-persona` also takes `capabilities`. The manager MUST refuse, before it writes, a capability
-the definer does not hold under the same delegation bound (§13.15), and a spawn of the persona is
-bounded again against its spawner. Revision 44 of the manager cluster adds both fields; both inputs
+the persona would carry that the definer does not hold under the same delegation bound (§13.15). That
+includes a saved list a redefine keeps by omitting the field. The check and the write MUST see the
+same catalog entry. A spawn of the persona is bounded again against its spawner. Revision 44 of the manager cluster adds both fields; both inputs
 are closed, so a revision-43 contract rejects either.
 
 **Effect.** A command declaration carries `effect`, one of `read` or `write`.

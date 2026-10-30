@@ -119,7 +119,10 @@ role, and agent from that block survive, and explicit tool arguments such as `mo
 A malformed leading frontmatter block is refused (`prompt-frontmatter`) rather than
 wrapped. `capabilities` is policy, so the manager's `define-persona` command checks it
 against the definer before it writes: a definer can put into a persona only capabilities
-it holds itself, and a later spawn of the persona is checked again against its spawner.
+it holds itself, and a later spawn of the persona is checked again against its spawner. A
+redefine that omits `capabilities` keeps the saved list, and that list is checked the same way, so
+a definer that no longer holds a saved capability passes the ones it holds, or `[]` to clear them.
+An open mesh checks nothing, and a manager whose user authority is hosted refuses any capability.
 `owner` has no slot, so a peer cannot claim ownership. A persona with no `capabilities:`
 line therefore spawns **without** `spawn`, and a spawn whose effective role is `manager` is
 **refused at spawn time** rather than joining as a labelled manager that silently cannot

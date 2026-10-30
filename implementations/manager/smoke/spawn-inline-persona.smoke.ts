@@ -92,6 +92,7 @@ type Internals = {
   resumeEntryOf: (a: Seat) => ManagerResumeAgent;
   spawnPersona: (opts: Record<string, unknown>, spawner: string | undefined, caller: EpCaller | undefined) => Promise<{ error?: string }>;
   opDefinePersona: (args: Record<string, unknown>, caller: string, admin: boolean, authenticated?: EpCaller) => Promise<ControlReply>;
+  opRemovePersona: (args: Record<string, unknown>, caller: string, admin: boolean) => ControlReply;
 };
 
 /** A manager over a fake endpoint and runtime. `spawned` counts launches per seat name; a name in
@@ -592,6 +593,9 @@ try {
     chmodSync(inlinePersonaDir(root), 0o700);
     check("an open-mesh retirement that cannot remove the snapshot logs its path and leaves the file", existsSync(stuckPath) && lines.some((l) => l.includes("could not be removed") && l.includes(stuckPath)), lines);
     rmSync(stuckPath);
+    // An open mesh mints no credential, so a defined persona's capabilities are not checked there.
+    const openDefine = await O.M.opDefinePersona({ name: "anything", persona: "x", capabilities: ["admin"] }, "local.peer", false);
+    check("an open mesh writes a defined persona's capabilities without a check", openDefine.ok && JSON.stringify(loadAgentFile(join(root, ".cotal", "agents", "anything.md")).capabilities) === JSON.stringify(["admin"]), openDefine);
     const last = okData(await O.mgr.startAgent({ name: "last", agent: "smoke-inline", events: false, persona: { prompt: "x" } }));
     stoppable(O.mgr);
     const stopped = await O.mgr.stop({ withAgents: true }).then(() => "stopped", (e: unknown) => String(e));
@@ -649,6 +653,54 @@ try {
     check("and is refused one its row does not hold, by name, writing nothing", refused(over, /grants more than the definer holds: capabilities run beyond \[spawn\]/) && !existsSync(definedPath("runner")), over);
     const stranger = await defineAs(principalKey(owner, "stranger").key, "foreign", ["spawn"]);
     check("a user-auth definer with no row puts no capability into a persona", refused(stranger, /has no grant in this space/) && !existsSync(definedPath("foreign")), stranger);
+    grantActor(ledger, { owner, actor: "boss", scope: ["admin"], allowSubscribe: [], allowPublish: [], label: "smoke operator" });
+    const exempt = await defineAs(principalKey(owner, "boss").key, "trusted", ["run"]);
+    check("a user-auth definer whose row holds admin is exempt", exempt.ok && JSON.stringify(loadAgentFile(definedPath("trusted")).capabilities) === JSON.stringify(["run"]), exempt);
+    (U.mgr as unknown as { remoteAuthority?: unknown }).remoteAuthority = {};
+    const hostedDefine = await defineAs(spawner, "hosted_def", ["spawn"]);
+    (U.mgr as unknown as { remoteAuthority?: unknown }).remoteAuthority = undefined;
+    check("a hosted manager reads no ledger, so its definer puts no capability into a persona", refused(hostedDefine, /user authority is hosted/) && !existsSync(definedPath("hosted_def")), hostedDefine);
+    // The bound reads the persona as it will be written. A redefine that omits `capabilities` keeps
+    // the saved list, so the saved list is checked against the definer as it holds now.
+    grantActor(ledger, { owner, actor: "demoted", scope: ["run"], allowSubscribe: [], allowPublish: [], label: "smoke definer" });
+    const demoted = principalKey(owner, "demoted").key;
+    const granted = await defineAs(demoted, "keeper", ["run"]);
+    grantActor(ledger, { owner, actor: "demoted", scope: ["spawn"], allowSubscribe: [], allowPublish: [], label: "smoke definer" });
+    const resaved = await U.M.opDefinePersona({ name: "keeper", persona: "new body" }, demoted, false);
+    const keeper = loadAgentFile(definedPath("keeper"));
+    check("control: the definer saved run while its row held it", granted.ok, granted);
+    check("a redefine that omits capabilities is refused the saved ones its definer no longer holds, writing nothing",
+      refused(resaved, /capabilities run beyond \[spawn\].*saved persona/) && keeper.persona?.trim() === "x" && JSON.stringify(keeper.capabilities) === JSON.stringify(["run"]), { resaved, keeper });
+    const cleared = await defineAs(demoted, "keeper", []);
+    check("an explicit [] clears the saved capabilities", cleared.ok && loadAgentFile(definedPath("keeper")).capabilities === undefined, cleared);
+    const held = await U.M.opDefinePersona({ name: "scoped", persona: "new body" }, spawner, false);
+    check("a redefine that omits capabilities keeps the saved ones its definer still holds",
+      held.ok && JSON.stringify(loadAgentFile(definedPath("scoped")).capabilities) === JSON.stringify(["spawn"]) && loadAgentFile(definedPath("scoped")).persona?.trim() === "new body", held);
+    // A definition with a capability yields while the definer's grant resolves. Another definition of
+    // the same name, started in that gap, must not be overwritten by a def composed before it.
+    grantActor(ledger, { owner, actor: "rival", scope: [], allowSubscribe: [], allowPublish: [], label: "smoke rival" });
+    const rival = principalKey(owner, "rival").key;
+    const slow = defineAs(spawner, "contested", ["spawn"]);
+    const fast = await U.M.opDefinePersona({ name: "contested", persona: "rival's" }, rival, false);
+    const slowReply = await slow;
+    const contested = loadAgentFile(definedPath("contested"));
+    check("control: the rival's definition lands while the first one waits on the grant", fast.ok, fast);
+    check("a definition that waited on its grant does not overwrite a persona another principal defined meanwhile",
+      contested.owner === rival && contested.persona?.trim() === "rival's" && refused(slowReply, /not authorized to redefine contested: owned by/), { slowReply, contested });
+    // A removal in the same gap: the waiting definition composes against the catalog it writes to,
+    // so the removed file's fields do not come back with it.
+    const fields = await U.M.opDefinePersona({ name: "removed", persona: "x", role: "auditor" }, spawner, false);
+    const redefining = defineAs(spawner, "removed", ["spawn"]);
+    const removal = U.M.opRemovePersona({ name: "removed" }, spawner, false);
+    const redefined = await redefining;
+    check("control: the persona is defined, then removed while a redefine waits", fields.ok && removal.ok, { fields, removal });
+    check("a definition that waited on its grant is composed against the catalog it writes to, not a removed file",
+      redefined.ok && loadAgentFile(definedPath("removed")).role === undefined && JSON.stringify(loadAgentFile(definedPath("removed")).capabilities) === JSON.stringify(["spawn"]), { redefined, file: loadAgentFile(definedPath("removed")) });
+    // A definition that carries no capability, and whose file carries none, never yields: the write
+    // lands before its promise is awaited.
+    const plain = U.M.opDefinePersona({ name: "plain_def", persona: "x" }, spawner, false);
+    const writtenAtOnce = existsSync(definedPath("plain_def"));
+    check("a definition with no capability writes without yielding", writtenAtOnce && (await plain).ok);
     // A grant can settle on another uid than the one the spawn allocated: a hosted enrollment picks
     // its own. The spawn rebinds to the returned uid on both user-auth arms, so a grant that returns
     // a different one stands in for the host.

@@ -11717,9 +11717,10 @@ export class Manager {
   /** Persist a peer-defined persona as config. After this, `start name` auto-discovers
    *  .cotal/agents/<name>.md and the connector applies its persona/model at spawn.
    *
-   *  CONTENT vs POLICY (P6): `owner` has no slot, so a peer cannot claim ownership, and
-   *  `capabilities` is bounded against the definer before the write, so a peer can put only what it
-   *  holds into a persona that a wider spawner might later launch. Channel grants, role, and agent
+   *  CONTENT vs POLICY (P6): `owner` has no slot, so a peer cannot claim ownership, and the
+   *  capabilities the written persona carries, a saved list a redefine keeps included, are bounded
+   *  against the definer before the write, so a peer can put only what it holds into a persona that
+   *  a wider spawner might later launch. Channel grants, role, and agent
    *  are content: they may
    *  arrive as explicit arguments or as a leading frontmatter block inside `persona`. A prompt
    *  that starts with `---` is parsed and merged (explicit args win) so the written file has one
@@ -11737,71 +11738,99 @@ export class Manager {
     if (!persona) return { ok: false, error: "persona required" };
     const model = args.model !== undefined && args.model !== null && String(args.model) !== "" ? String(args.model) : undefined;
     const path = agentFilePath(this.workspaceRoot, name);
-    let existing: AgentDef | undefined;
-    if (existsSync(path)) {
-      try {
-        existing = loadAgentFile(path);
-      } catch (e) {
-        return { ok: false, error: rejectionText(e) };
-      }
-      if (!admin && existing.owner !== caller) {
-        const owner = existing.owner ? `owned by ${existing.owner}` : "operator-owned (legacy file - no agent owner)";
-        return { ok: false, error: `not authorized to redefine ${name}: ${owner}; only its owner or an operator can` };
-      }
-    }
     const strList = (v: unknown): string[] | undefined => {
       if (v === undefined || v === null) return undefined;
       return (Array.isArray(v) ? v : [v]).map((x) => String(x));
     };
-    let def: AgentDef;
-    try {
-      def = composeWirePersona(
-        {
-          name,
-          owner: this.personaOwner(caller),
-          prompt: persona,
-          model,
-          role: args.role !== undefined && args.role !== null && String(args.role) !== "" ? String(args.role) : undefined,
-          agent: args.agent !== undefined && args.agent !== null && String(args.agent) !== "" ? String(args.agent) : undefined,
-          subscribe: strList(args.subscribe),
-          allowSubscribe: strList(args.allowSubscribe),
-          allowPublish: strList(args.allowPublish),
-          capabilities: strList(args.capabilities),
-        },
-        existing,
-      );
-    } catch (e) {
-      return { ok: false, error: rejectionText(e) };
-    }
     const capabilities = strList(args.capabilities);
-    const refused = capabilities?.length ? await this.definedCapabilitiesRefusal(capabilities, caller, authenticated) : undefined;
-    if (refused) return { ok: false, code: "permission-denied", error: refused };
+    // Read, authorize and compose against the catalog as it is now. Nothing may yield between this
+    // and the write, so a later write cannot land on a file another call changed.
+    const compose = (): { def: AgentDef } | { reply: ControlReply } => {
+      let existing: AgentDef | undefined;
+      if (existsSync(path)) {
+        try {
+          existing = loadAgentFile(path);
+        } catch (e) {
+          return { reply: { ok: false, error: rejectionText(e) } };
+        }
+        if (!admin && existing.owner !== caller) {
+          const owner = existing.owner ? `owned by ${existing.owner}` : "operator-owned (legacy file - no agent owner)";
+          return { reply: { ok: false, error: `not authorized to redefine ${name}: ${owner}; only its owner or an operator can` } };
+        }
+      }
+      try {
+        return {
+          def: composeWirePersona(
+            {
+              name,
+              owner: this.personaOwner(caller),
+              prompt: persona,
+              model,
+              role: args.role !== undefined && args.role !== null && String(args.role) !== "" ? String(args.role) : undefined,
+              agent: args.agent !== undefined && args.agent !== null && String(args.agent) !== "" ? String(args.agent) : undefined,
+              subscribe: strList(args.subscribe),
+              allowSubscribe: strList(args.allowSubscribe),
+              allowPublish: strList(args.allowPublish),
+              capabilities,
+            },
+            existing,
+          ),
+        };
+      } catch (e) {
+        return { reply: { ok: false, error: rejectionText(e) } };
+      }
+    };
+    let composed = compose();
+    if ("reply" in composed) return composed.reply;
+    // The bound reads the persona as written, so a redefine that omits `capabilities` has the list it
+    // keeps checked too. Resolving the definer's grant yields, so the catalog is read again after it.
+    if (composed.def.capabilities?.length) {
+      const refusal = await this.definerCapabilityRefusal(caller, authenticated);
+      composed = compose();
+      if ("reply" in composed) return composed.reply;
+      const kept = composed.def.capabilities ?? [];
+      const refused = kept.length ? refusal(kept) : undefined;
+      if (refused)
+        return {
+          ok: false,
+          code: "permission-denied",
+          error: capabilities === undefined
+            ? `${refused} These come from the saved persona, which a redefine without \`capabilities\` keeps; pass the capabilities the definer holds, or [] to clear them.`
+            : refused,
+        };
+    }
     try {
-      saveAgentFile(path, def);
+      saveAgentFile(path, composed.def);
     } catch (e) {
       return { ok: false, error: rejectionText(e) };
     }
     return { ok: true, data: { name, path } };
   }
 
-  /** The refusal for capabilities a persona's definer does not hold, or `undefined` when it holds
-   *  them all. A static definer is bounded by its issued evidence, as a spawner is; a user-auth
-   *  definer by its own ledger row's scope, under the ledger's token rule, with `admin` exempt. A
-   *  hosted manager reads no ledger, so it refuses. A later spawn of the persona is bounded again
-   *  against its own spawner. */
-  private async definedCapabilitiesRefusal(capabilities: string[], caller: string, authenticated: EpCaller | undefined): Promise<string | undefined> {
-    if (this.meshMode === "open") return undefined;
-    if (this.meshMode === "static") return this.spawnBoundRefusal(await this.staticSpawnBound(authenticated), { capabilities }, false, "define-persona");
+  /** Resolve what a persona's definer may put into it, as a check that returns the refusal for
+   *  capabilities it does not hold, or `undefined` when it holds them all. The check itself does not
+   *  yield. An open mesh mints no credential, so nothing is bounded there. A static definer is
+   *  bounded by its issued evidence, as a spawner is; a user-auth definer by its own ledger row's
+   *  scope, under the ledger's token rule, with `admin` exempt. A hosted manager reads no ledger, so
+   *  it refuses. A later spawn of the persona is bounded again against its own spawner. */
+  private async definerCapabilityRefusal(caller: string, authenticated: EpCaller | undefined): Promise<(capabilities: string[]) => string | undefined> {
+    if (this.meshMode === "open") return () => undefined;
+    if (this.meshMode === "static") {
+      const bound = await this.staticSpawnBound(authenticated);
+      return (capabilities) => this.spawnBoundRefusal(bound, { capabilities }, false, "define-persona");
+    }
     if (this.remoteAuthority)
-      return "define-persona: this manager's user authority is hosted, so it cannot read the definer's grant and its persona can grant no capabilities";
+      return () => "define-persona: this manager's user authority is hosted, so it cannot read the definer's grant and its persona can grant no capabilities.";
     const p = parsePrincipalKey(caller);
     const scope = p ? await resolveAuthProvider().actorScope({ dir: userAuthStateDir(this.workspaceRoot, this.space), owner: p.owner, actor: p.actor }) : undefined;
-    if (scope?.includes("admin")) return undefined;
-    const over = capabilities.filter((c) => !capabilityWithin(scope ?? [], c));
-    if (!over.length) return undefined;
-    return scope === undefined
-      ? `define-persona: the definer ${caller} has no grant in this space, so its persona can grant nothing. This persona asks for capabilities ${over.join(", ")}.`
-      : `define-persona: this persona grants more than the definer holds: capabilities ${over.join(", ")} beyond [${scope.join(", ") || "none"}]. Drop these from the persona, or have the operator widen the definer's grant.`;
+    return (capabilities) => {
+      if (scope?.includes("admin")) return undefined;
+      const over = capabilities.filter((c) => !capabilityWithin(scope ?? [], c));
+      if (!over.length) return undefined;
+      return scope === undefined
+        ? `define-persona: the definer ${caller} has no grant in this space, so its persona can grant nothing. This persona asks for capabilities ${over.join(", ")}.`
+        : `define-persona: this persona grants more than the definer holds: capabilities ${over.join(", ")} beyond [${scope.join(", ") || "none"}]. Drop these from the persona, or have the operator widen the definer's grant.`;
+    };
   }
 
   /** Remove one machine-local persona definition without touching any running lifecycle that was
