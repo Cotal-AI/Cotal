@@ -54,8 +54,8 @@ export const CHANNEL_GUIDANCE =
   "acknowledgement or sign-off starts a wake-up loop. Use cotal_dm only for something one peer alone " +
   "needs, because a DM is invisible to everyone else, and cotal_anycast to ask whoever holds a role. " +
   "A channel's purpose is its registry note (cotal_channel_info); cotal_channels lists them and " +
-  "cotal_join adds one within your read allowance. A helper you spawn starts on no channel unless you " +
-  "pass join, so pass the channel you are working on. Post on #announce only for a deliberate notice " +
+  "cotal_join adds one within your read allowance. A helper you spawn starts only on the channels its " +
+  "persona subscribes to, so pass join with the channel you are working on. Post on #announce only for a deliberate notice " +
   "to the whole space.";
 
 /** A tool the agent can actually call (already gated), as it appears in the card. */
