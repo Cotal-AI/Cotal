@@ -251,8 +251,8 @@
     {
       "name": "core watch: drop the ready texts",
       "file": "packages/core/src/startup-confirm.ts",
-      "find": "    const sequence = new StartupConfirmSequence(prompt, before, ready);",
-      "replace": "    const sequence = new StartupConfirmSequence(prompt, before);",
+      "find": "    const sequence = new StartupConfirmSequence(prompt, before, ready, blockers, notice);",
+      "replace": "    const sequence = new StartupConfirmSequence(prompt, before, [], blockers, notice);",
       "expectRed": "core watch: a launch with no startup choices reads the screen and stops on the ready screen",
       "cell": "core watch: a launch with no startup choices reads the screen and stops on the ready screen",
       "command": "pnpm --filter @cotal-ai/core... build && pnpm exec tsx implementations/manager/smoke/claude-workspace-trust.smoke.ts",
@@ -273,8 +273,8 @@
     {
       "name": "seat gate: match a launch with only ready texts in the raw output",
       "file": "packages/seat/src/startup-confirm.ts",
-      "find": "    this.sequence = before.length || ready.length ? sequence : undefined;",
-      "replace": "    this.sequence = before.length ? sequence : undefined;",
+      "find": "    this.sequence = before.length || ready.length || blockers.length || notice !== undefined ? sequence : undefined;",
+      "replace": "    this.sequence = before.length || blockers.length || notice !== undefined ? sequence : undefined;",
       "expectRed": "seat gate: a launch with no startup choices reads the screen and stops on the ready screen",
       "cell": "seat gate: a launch with no startup choices reads the screen and stops on the ready screen",
       "command": "pnpm --filter @cotal-ai/seat... build && pnpm exec tsx implementations/manager/smoke/claude-workspace-trust.smoke.ts",
