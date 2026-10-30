@@ -1,5 +1,19 @@
 # @cotal-ai/cli
 
+## 0.129.5
+
+### Patch Changes
+
+- 33bb63f: Fail a channel or role completion when the target space's persona catalog folder cannot be read or a
+  persona file in it does not parse, as persona name completion already did, instead of offering
+  nothing as a success. `COTAL_COMPLETE_DEBUG=1` names the folder or file. The legacy `personas list`
+  refuses an unreadable catalog folder with `PERMISSION_DENIED`, as `persona` does, instead of
+  reporting no personas. A space that does not resolve, or a catalog folder that does not exist, still
+  offers or lists nothing.
+- 1f8b7e8: Remove the accidentally tracked negative presence-render probe from the CLI source tree.
+- @cotal-ai/core@0.129.5
+  - @cotal-ai/workspace@0.129.5
+
 ## 0.129.4
 
 ### Patch Changes
