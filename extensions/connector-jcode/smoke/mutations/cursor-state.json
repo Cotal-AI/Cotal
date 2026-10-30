@@ -1,0 +1,123 @@
+{
+  "suite": [
+    "extensions/connector-jcode/smoke/private-state.smoke.ts"
+  ],
+  "guard": "A Jcode seat gets a fresh extract of the four Cursor keys Jcode reads, read consistently without touching Cursor's directory, and every unreadable source refuses the launch before anything is written",
+  "command": "pnpm smoke:jcode-private-state",
+  "progressPattern": "✓",
+  "minTicks": 19,
+  "mutations": [
+    {
+      "name": "Cursor's whole database is copied instead of extracted",
+      "file": "extensions/connector-jcode/src/private-state.ts",
+      "find": "  for (const { entry, state } of cursorStates) publishCursorState(home, entry.destinationRelative, state);",
+      "replace": "  for (const { entry } of cursorStates) copyCredentialFile(home, entry.source, entry.destinationRelative);",
+      "expectRed": "Cursor's state database is published as a fresh four-key extract, replacing a legacy symlink",
+      "cell": "Cursor's state database is published as a fresh four-key extract, replacing a legacy symlink"
+    },
+    {
+      "name": "Cursor's database is read after the other copies are written",
+      "file": "extensions/connector-jcode/src/private-state.ts",
+      "find": "  const cursorStates = inventory\n    .filter((entry) => entry.family === \"cursor-state\")\n    .map((entry) => ({ entry, state: readCursorState(entry.source, relative(sources.externalHome, entry.source), sqlite) }));\n  for (const entry of inventory) if (entry.family !== \"cursor-state\") copyCredentialFile(home, entry.source, entry.destinationRelative);",
+      "replace": "  for (const entry of inventory) if (entry.family !== \"cursor-state\") copyCredentialFile(home, entry.source, entry.destinationRelative);\n  const cursorStates = inventory\n    .filter((entry) => entry.family === \"cursor-state\")\n    .map((entry) => ({ entry, state: readCursorState(entry.source, relative(sources.externalHome, entry.source), sqlite) }));",
+      "expectRed": "a WAL source without its -wal and -shm refuses and writes nothing",
+      "cell": "a WAL source without its -wal and -shm refuses and writes nothing"
+    },
+    {
+      "name": "a WAL database without its sidecars is opened anyway",
+      "file": "extensions/connector-jcode/src/private-state.ts",
+      "find": "  if (wal && !(isRegularFile(`${target}-wal`) && isRegularFile(`${target}-shm`))) throw unreadable(\"wal_sidecar_missing\");",
+      "replace": "  if (false) throw unreadable(\"wal_sidecar_missing\");",
+      "expectRed": "a WAL source without its -wal and -shm refuses and writes nothing",
+      "cell": "a WAL source without its -wal and -shm refuses and writes nothing"
+    },
+    {
+      "name": "an unknown journal mode is not refused",
+      "file": "extensions/connector-jcode/src/private-state.ts",
+      "find": "  if (!wal && !(header[18] === 1 && header[19] === 1)) throw unreadable(\"journal_mode\");",
+      "replace": "  if (false) throw unreadable(\"journal_mode\");",
+      "expectRed": "a header that names neither journal mode refuses",
+      "cell": "a header that names neither journal mode refuses"
+    },
+    {
+      "name": "a hot journal is not named",
+      "file": "extensions/connector-jcode/src/private-state.ts",
+      "find": "  if (code === 776) return \"hot_journal\";",
+      "replace": "  if (code === -1) return \"hot_journal\";",
+      "expectRed": "a hot journal beside a rollback source refuses and stays in place",
+      "cell": "a hot journal beside a rollback source refuses and stays in place"
+    },
+    {
+      "name": "the read does not wait for Cursor's lock",
+      "file": "extensions/connector-jcode/src/private-state.ts",
+      "find": "    db.exec(`PRAGMA busy_timeout = ${CURSOR_STATE_BUSY_MS}`);\n",
+      "replace": "",
+      "expectRed": "a source locked past the 2 s bound refuses after waiting for it",
+      "cell": "a source locked past the 2 s bound refuses after waiting for it"
+    },
+    {
+      "name": "a non-text value is not refused",
+      "file": "extensions/connector-jcode/src/private-state.ts",
+      "find": "      if (row.kind !== \"text\" || typeof row.value !== \"string\") throw unreadable(\"value_type\");",
+      "replace": "      if (false) throw unreadable(\"value_type\");",
+      "expectRed": "a non-text value under a read key refuses instead of being copied",
+      "cell": "a non-text value under a read key refuses instead of being copied"
+    },
+    {
+      "name": "an oversized value is not refused",
+      "file": "extensions/connector-jcode/src/private-state.ts",
+      "find": "      if (Buffer.byteLength(row.value) > CURSOR_STATE_VALUE_MAX_BYTES) throw unreadable(\"value_size\");",
+      "replace": "      if (false) throw unreadable(\"value_size\");",
+      "expectRed": "an oversized value under a read key refuses instead of being truncated",
+      "cell": "an oversized value under a read key refuses instead of being truncated"
+    },
+    {
+      "name": "a source with none of the keys keeps the destination",
+      "file": "extensions/connector-jcode/src/private-state.ts",
+      "find": "  if (!state || state.values.size === 0) {",
+      "replace": "  if (!state) {",
+      "expectRed": "a readable source with none of the keys removes the destination",
+      "cell": "a readable source with none of the keys removes the destination"
+    },
+    {
+      "name": "a blank value is published",
+      "file": "extensions/connector-jcode/src/private-state.ts",
+      "find": "      if (row.value.trim()) values.set(key, row.value);",
+      "replace": "      values.set(key, row.value);",
+      "expectRed": "blank values count as missing, so four of them remove the destination",
+      "cell": "blank values count as missing, so four of them remove the destination"
+    },
+    {
+      "name": "a Node without node:sqlite is not refused",
+      "file": "extensions/connector-jcode/src/private-state.ts",
+      "find": "  if (!sqlite) throw new JcodeCursorStateNodeUnsupported(process.version);",
+      "replace": "  if (!sqlite) return undefined;",
+      "expectRed": "a Node without node:sqlite refuses before any byte is copied when a Cursor source exists",
+      "cell": "a Node without node:sqlite refuses before any byte is copied when a Cursor source exists"
+    },
+    {
+      "name": "sidecars are judged at the link instead of its target",
+      "file": "extensions/connector-jcode/src/private-state.ts",
+      "find": "  const target = realpathSync(source);",
+      "replace": "  const target = source;",
+      "expectRed": "a linked source is read at its target, where its live sidecars are",
+      "cell": "a linked source is read at its target, where its live sidecars are"
+    },
+    {
+      "name": "Cursor refusals are wrapped as private_state",
+      "file": "extensions/connector-jcode/src/host.ts",
+      "find": "    if (error instanceof JcodeCursorStateUnreadable || error instanceof JcodeCursorStateNodeUnsupported) throw error;\n",
+      "replace": "",
+      "expectRed": "an unreadable Cursor source fails the launch with its own public code",
+      "cell": "an unreadable Cursor source fails the launch with its own public code"
+    },
+    {
+      "name": "the public line drops the connector-owned reason",
+      "file": "extensions/connector-jcode/src/host-main.ts",
+      "find": "    writeJcodeDiagnostic(`[cotal-jcode] fatal: Jcode host startup failed (${error.code}): ${error.message}\\n`);",
+      "replace": "    writeJcodeDiagnostic(`[cotal-jcode] fatal: Jcode host startup failed (${error.code}); inspect the private Jcode logs.\\n`);",
+      "expectRed": "an unreadable Cursor source fails the launch with its own public code",
+      "cell": "an unreadable Cursor source fails the launch with its own public code"
+    }
+  ]
+}

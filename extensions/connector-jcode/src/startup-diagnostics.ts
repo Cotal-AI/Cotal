@@ -11,6 +11,8 @@ export type JcodeConnectorFailureCode =
   | "readiness_timeout"
   | "sessions_enumeration_failed"
   | "sessions_unwritable"
+  | "cursor_state_node_unsupported"
+  | "cursor_state_unreadable"
   | "provider_auth_refused"
   | "provider_request_failed";
 
@@ -46,6 +48,46 @@ export class JcodeSessionsUnwritableFailure extends Error {
     readonly errnoCode: string,
   ) {
     super(`stored sessions directory is not writable at ${sessionsPath} (${errnoCode})`);
+  }
+}
+
+/** The first Node release that ships `node:sqlite` without a flag. */
+export const CURSOR_STATE_NODE_FLOOR = "22.13";
+
+/** Reading Cursor's state database needs `node:sqlite`. Raised only when a Cursor source exists,
+ * before anything is mirrored, so a host without Cursor keeps launching on an older Node. */
+export class JcodeCursorStateNodeUnsupported extends Error {
+  readonly code = "cursor_state_node_unsupported" as const;
+
+  constructor(readonly nodeVersion: string) {
+    super(`reading Cursor's state database needs Node ${CURSOR_STATE_NODE_FLOOR} or newer; this is Node ${nodeVersion}`);
+  }
+}
+
+export type CursorStateUnreadableReason =
+  | "not_sqlite"
+  | "journal_mode"
+  | "wal_sidecar_missing"
+  | "locked"
+  | "hot_journal"
+  | "corrupt"
+  | "no_item_table"
+  | "value_type"
+  | "value_size"
+  | "sqlite_error";
+
+/** Cursor's state database exists but gave no consistent read of the keys Jcode uses. The reason is
+ * a connector-owned word and the SQLite result code a number, so no SQLite text reaches the public
+ * line. The path is relative to the operator's home. */
+export class JcodeCursorStateUnreadable extends Error {
+  readonly code = "cursor_state_unreadable" as const;
+
+  constructor(
+    readonly sourceRelative: string,
+    readonly reason: CursorStateUnreadableReason,
+    readonly sqliteCode?: number,
+  ) {
+    super(`Cursor's state database ~/${sourceRelative} could not be read (${reason}${sqliteCode === undefined ? "" : `, SQLite code ${sqliteCode}`})`);
   }
 }
 

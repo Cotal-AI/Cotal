@@ -81,8 +81,8 @@ recorded host is the gate: while it is still alive the seat is still serving, so
 signalled and the second launch meets Jcode's own runtime-directory lock instead.
 
 The private Jcode home lives under `<manager-workspace>/.cotal/jcode/`. It is unique per
-space/name and is owner-only. Jcode's own credential inheritance is used for the private instance,
-so provider logins work without copying its transcript/config tree into the seat. The spawned
+space/name and is owner-only. The connector mirrors the operator's provider logins into it (below),
+so provider logins work without copying Jcode's transcript/config tree into the seat. The spawned
 Jcode process does not inherit `COTAL_*` values or the Cotal launch-material pointer.
 
 Because the home is keyed by space and name, a seat respawned under the same space, name, and
@@ -140,6 +140,34 @@ takes a path: the entered directory's inode must equal the inode of the descript
 earlier, and a mismatch is refused by name. The working directory is restored on every exit,
 including the refusing ones. If neither pin is available, the connector throws a named error and
 mirrors nothing. Once a pin holds, `ENOENT` on a child means the mirror path is absent.
+
+Cursor keeps its login inside `User/globalStorage/state.vscdb`, its editor-state database, which can
+hold hundreds of megabytes of chat history. A seat never gets a copy of that file. Each launch opens
+the operator's file read-only and writes a fresh database at the same mirrored path holding only the
+`ItemTable` rows Jcode 0.99.0 reads: `cursorAuth/accessToken`, `cursorAuth/refreshToken`,
+`storage.serviceMachineId` and `cursorAuth/cachedEmail`. The result is a few kilobytes. If a later
+Jcode reads another key, seats get it only after the connector adds it.
+
+Jcode reads the machine id and the email without its external-auth trust check, so every seat sends
+the operator's Cursor machine id with Cursor requests and can show the operator's Cursor email. It
+uses the two tokens only when the file's own path is trusted for `cursor_vscdb`, and nothing trusts a
+seat's mirrored path unless someone adds it.
+
+The read is one transaction that waits at most 2 seconds for a lock Cursor holds, and it creates
+nothing in Cursor's directory. A blank value counts as missing. A database with none of the keys
+removes the seat's copy, as a missing file does. A database the connector cannot read stops the
+launch with `cursor_state_unreadable` and leaves the seat's files as they were: a file that is not
+SQLite, an unknown journal mode, a write Cursor did not finish (a hot journal), a lock held past the
+wait, no `ItemTable`, or a value under one of the keys that is not text or is larger than 16 KB. A
+WAL-mode database must have its `-wal` and `-shm` files beside it, because a read-only open without
+them would create them in Cursor's directory. Without them the launch stops with the same code. The
+source path follows the rule every mirrored file follows: a link to a regular file is read at its
+target, and a directory counts as missing.
+
+Reading the database needs `node:sqlite`, which Node ships without a flag from 22.13. On an older
+Node, a host that has a Cursor database refuses Jcode launches with `cursor_state_node_unsupported`
+before anything is copied, and a host without one is unaffected. A seat home made before this change
+keeps its full copy of the database until its next successful launch replaces it.
 
 There is no credential-free opt-out today because the private instance must reproduce the operator's
 current provider-login state rather than silently start with stale or partial authorization.
@@ -337,6 +365,9 @@ Model startup refusals are named without exposing provider output: `model_prefix
 Jcode rejected that bare id, and `model_mismatch` means a requested variant could not be tied to one
 active provider route for the selected model. `private_state` names a different step: the seat's
 private home, its credential mirror, or its short socket alias could not be prepared.
+`cursor_state_unreadable` means the operator's Cursor state database could not be read; the line names
+the file relative to the home, a reason word and, when SQLite gave one, its result code.
+`cursor_state_node_unsupported` means that database exists and Node is older than 22.13.
 
 Stored sessions have their own refusals. `sessions_enumeration_failed` means listing the home's
 prior sessions killed the harness. `sessions_unwritable` means the home's `sessions/` directory

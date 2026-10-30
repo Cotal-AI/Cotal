@@ -1,8 +1,13 @@
 import assert from "node:assert/strict";
-import { copyFileSync, constants, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { copyFileSync, constants, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync, writeSync, closeSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import { fileURLToPath } from "node:url";
 import { copyCredentialFile, ensurePinnedPrivateDirectory, jcodeCredentialMirrorInventory, mirrorJcodeCredentials, removeCredentialMirror, shortSocketHome, unlinkThroughSwappedPinForTest } from "../src/private-state.js";
+import { JcodeCursorStateNodeUnsupported, JcodeCursorStateUnreadable } from "../src/startup-diagnostics.js";
 
 let pass = 0;
 const check = (name: string, condition: boolean, actual?: unknown): void => {
@@ -22,6 +27,56 @@ const leafKind = (path: string): { kind: "file" | "dir" | "other" | "absent"; by
     throw error;
   }
 };
+
+// #5298: Cursor-shaped state databases with fake values. Jcode reads four ItemTable keys; the rest
+// stands in for the rows and chat history a real one carries around them.
+const CURSOR_KEYS = ["cursorAuth/accessToken", "cursorAuth/refreshToken", "storage.serviceMachineId", "cursorAuth/cachedEmail"];
+const cursorValues = (generation: string): Record<string, string> => Object.fromEntries(CURSOR_KEYS.map((key) => [key, `${generation}-${key}-fake`]));
+const CURSOR_REL = join(".config", "Cursor", "User", "globalStorage", "state.vscdb");
+function writeCursorDb(path: string, values: Record<string, string | Uint8Array> = cursorValues("v1"), journal: "delete" | "wal" = "delete"): DatabaseSync {
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  const db = new DatabaseSync(path);
+  db.exec(`PRAGMA journal_mode = ${journal}`);
+  db.exec("CREATE TABLE ItemTable (key TEXT UNIQUE ON CONFLICT REPLACE, value BLOB)");
+  db.exec("CREATE TABLE cursorDiskKV (key TEXT UNIQUE ON CONFLICT REPLACE, value BLOB)");
+  const insert = db.prepare("INSERT INTO ItemTable (key, value) VALUES (?, ?)");
+  for (const [key, value] of Object.entries(values)) insert.run(key, value);
+  insert.run("cursorAuth/stripeMembershipType", "not-read-by-jcode");
+  insert.run("workbench.panel.state", "x".repeat(4096));
+  db.prepare("INSERT INTO cursorDiskKV (key, value) VALUES (?, ?)").run("composerData:fake", "chat ".repeat(40_000));
+  if (journal === "wal") db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+  return db;
+}
+function readExtract(path: string): { tables: string[]; rows: Record<string, unknown>; bytes: number } {
+  const db = new DatabaseSync(path, { readOnly: true });
+  try {
+    const tables = (db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all() as { name: string }[]).map((row) => row.name);
+    const rows = Object.fromEntries((db.prepare("SELECT key, value FROM ItemTable").all() as { key: string; value: unknown }[]).map((row) => [row.key, row.value]));
+    return { tables, rows, bytes: statSync(path).size };
+  } finally {
+    db.close();
+  }
+}
+const sameRows = (a: Record<string, unknown>, b: Record<string, unknown>): boolean => JSON.stringify(Object.entries(a).sort()) === JSON.stringify(Object.entries(b).sort());
+const isExtractOf = (path: string, values: Record<string, unknown>): boolean => {
+  const extract = readExtract(path);
+  return extract.tables.join() === "ItemTable" && sameRows(extract.rows, values) && extract.bytes < 32 * 1024 && !lstatSync(path).isSymbolicLink();
+};
+/** Inode, size and content hash of every file in a directory, to show a reader left it alone. */
+function snapshotDir(dir: string): string {
+  return JSON.stringify(readdirSync(dir).sort().map((name) => {
+    const st = lstatSync(join(dir, name));
+    return [name, st.ino, st.size, st.isFile() ? createHash("sha256").update(readFileSync(join(dir, name))).digest("hex") : "-"];
+  }));
+}
+function mirrorError(run: () => void): unknown {
+  try {
+    run();
+  } catch (error) {
+    return error;
+  }
+  return undefined;
+}
 
 const root = mkdtempSync(join(tmpdir(), "cotal-jcode-private-state-"));
 try {
@@ -76,7 +131,7 @@ try {
   mkdirSync(join(sources.externalHome, ".config", "Cursor", "User", "globalStorage"), { recursive: true, mode: 0o700 });
   mkdirSync(sources.jcodeHome, { recursive: true, mode: 0o700 });
   writeFileSync(direct, "first-token", { mode: 0o600 });
-  writeFileSync(external, "cursor-store", { mode: 0o600 });
+  writeCursorDb(external).close();
   writeFileSync(join(sources.appConfigDir, "subscription.env"), "JCODE_TOKEN=first", { mode: 0o600 });
   mkdirSync(home, { recursive: true, mode: 0o700 });
   // Model the legacy SDK output that caused #768. Launch must replace it rather than silently
@@ -93,9 +148,9 @@ try {
   const copiedExternal = join(home, "external", ".config", "Cursor", "User", "globalStorage", "state.vscdb");
   const copiedDirect = join(home, "auth.json");
   check(
-    "external auth mirror is copied rather than symlinked",
-    firstMirrorError === undefined && !lstatSync(copiedExternal).isSymbolicLink() && lstatSync(copiedExternal).isFile() && readFileSync(copiedExternal, "utf8") === "cursor-store",
-    firstMirrorError instanceof Error ? firstMirrorError.message : copiedExternal,
+    "Cursor's state database is published as a fresh four-key extract, replacing a legacy symlink",
+    firstMirrorError === undefined && lstatSync(copiedExternal).isFile() && isExtractOf(copiedExternal, cursorValues("v1")) && statSync(external).size > 200 * 1024,
+    firstMirrorError instanceof Error ? firstMirrorError.message : readExtract(copiedExternal),
   );
   check("copied external auth file is owner-only", mode(copiedExternal) === 0o600, { mode: mode(copiedExternal).toString(8) });
   check("external auth mirror directory is owner-only", mode(join(home, "external", ".config", "Cursor", "User", "globalStorage")) === 0o700);
@@ -380,6 +435,237 @@ try {
         lstatSync(join(pdMkSaved, "managed")).isDirectory() &&
         leafKind(join(pdMkOutside, "managed")).kind === "absent",
       { pdMkError: pdMkError instanceof Error ? pdMkError.message : pdMkError },
+    );
+
+    // #5298: Cursor's state database. Each case has its own source home and seat home.
+    const cursorCase = (name: string) => {
+      const caseRoot = join(root, `cursor-${name}`);
+      const caseSources = { jcodeHome: join(caseRoot, "jcode"), appConfigDir: join(caseRoot, "config", "jcode"), externalHome: join(caseRoot, "home") };
+      const caseHome = join(caseRoot, "managed");
+      mkdirSync(caseSources.jcodeHome, { recursive: true, mode: 0o700 });
+      mkdirSync(caseHome, { recursive: true, mode: 0o700 });
+      writeFileSync(join(caseSources.jcodeHome, "auth.json"), "case-token", { mode: 0o600 });
+      return {
+        home: caseHome,
+        sources: caseSources,
+        source: join(caseSources.externalHome, CURSOR_REL),
+        destination: join(caseHome, "external", CURSOR_REL),
+        mirror: (sqlite?: Parameters<typeof mirrorJcodeCredentials>[2]) => mirrorJcodeCredentials(caseHome, caseSources, sqlite),
+      };
+    };
+    const reasonOf = (error: unknown): string | undefined => (error instanceof JcodeCursorStateUnreadable ? error.reason : undefined);
+    /** A refused launch writes nothing: the seat's other copies and its Cursor destination stay as they were. */
+    const refusedCleanly = (c: ReturnType<typeof cursorCase>, error: unknown, reason: string): boolean =>
+      reasonOf(error) === reason &&
+      (error as JcodeCursorStateUnreadable).sourceRelative === CURSOR_REL &&
+      readFileSync(join(c.home, "auth.json"), "utf8") === "previous" &&
+      readFileSync(c.destination, "utf8") === "previous-cursor";
+    const seedPrevious = (c: ReturnType<typeof cursorCase>): void => {
+      writeFileSync(join(c.home, "auth.json"), "previous", { mode: 0o600 });
+      mkdirSync(dirname(c.destination), { recursive: true, mode: 0o700 });
+      writeFileSync(c.destination, "previous-cursor", { mode: 0o600 });
+    };
+
+    const legacy = cursorCase("legacy");
+    writeCursorDb(legacy.source).close();
+    mkdirSync(dirname(legacy.destination), { recursive: true, mode: 0o700 });
+    copyFileSync(legacy.source, legacy.destination);
+    writeFileSync(join(legacy.home, "session-owned.json"), "keep", { mode: 0o600 });
+    const legacyIno = statSync(legacy.destination).ino;
+    const legacySourceDir = snapshotDir(dirname(legacy.source));
+    legacy.mirror();
+    check(
+      "a legacy full copy is replaced by a fresh extract through the rename, and session files stay",
+      isExtractOf(legacy.destination, cursorValues("v1")) && statSync(legacy.destination).ino !== legacyIno && readFileSync(join(legacy.home, "session-owned.json"), "utf8") === "keep",
+      readExtract(legacy.destination),
+    );
+    check("reading a rollback-journal source leaves its directory unchanged", snapshotDir(dirname(legacy.source)) === legacySourceDir);
+    check("the published extract is owner-only", mode(legacy.destination) === 0o600, { mode: mode(legacy.destination).toString(8) });
+
+    const live = cursorCase("wal-live");
+    const writer = writeCursorDb(live.source, cursorValues("old"), "wal");
+    writer.exec("BEGIN");
+    const update = writer.prepare("INSERT INTO ItemTable (key, value) VALUES (?, ?)");
+    for (const [key, value] of Object.entries(cursorValues("new"))) update.run(key, value);
+    writer.exec("COMMIT");
+    const liveMain = snapshotDir(dirname(live.source));
+    live.mirror();
+    const liveAfter = JSON.parse(snapshotDir(dirname(live.source))) as [string, number, number, string][];
+    const liveBefore = JSON.parse(liveMain) as [string, number, number, string][];
+    const unchangedExceptShm = liveBefore.length === liveAfter.length && liveBefore.every((entry, index) => entry[0].endsWith("-shm") || JSON.stringify(entry) === JSON.stringify(liveAfter[index]));
+    writer.close();
+    check("a live WAL source publishes its uncheckpointed commit", isExtractOf(live.destination, cursorValues("new")), readExtract(live.destination));
+    check("reading a live WAL source changes neither the main file nor the -wal", unchangedExceptShm, { liveBefore, liveAfter });
+
+    const closed = cursorCase("wal-closed");
+    writeCursorDb(closed.source, cursorValues("v1"), "wal").close();
+    seedPrevious(closed);
+    const closedDir = snapshotDir(dirname(closed.source));
+    const closedError = mirrorError(() => closed.mirror());
+    check("a WAL source without its -wal and -shm refuses and writes nothing", refusedCleanly(closed, closedError, "wal_sidecar_missing"), String(closedError));
+    check("that refusal creates no sidecar beside Cursor's file", snapshotDir(dirname(closed.source)) === closedDir);
+    writeFileSync(`${closed.source}-wal`, "");
+    check("a WAL source with a -wal and no -shm refuses", reasonOf(mirrorError(() => closed.mirror())) === "wal_sidecar_missing" && !existsSync(`${closed.source}-shm`));
+    rmSync(`${closed.source}-wal`);
+    writeFileSync(`${closed.source}-shm`, "");
+    check("a WAL source with a -shm and no -wal refuses", reasonOf(mirrorError(() => closed.mirror())) === "wal_sidecar_missing" && !existsSync(`${closed.source}-wal`));
+
+    const odd = cursorCase("journal-mode");
+    writeCursorDb(odd.source).close();
+    const oddFd = openSync(odd.source, "r+");
+    writeSync(oddFd, Buffer.from([3, 3]), 0, 2, 18);
+    closeSync(oddFd);
+    seedPrevious(odd);
+    check("a header that names neither journal mode refuses", refusedCleanly(odd, mirrorError(() => odd.mirror()), "journal_mode"));
+
+    const text = cursorCase("not-sqlite");
+    mkdirSync(dirname(text.source), { recursive: true, mode: 0o700 });
+    writeFileSync(text.source, "cursor-store", { mode: 0o600 });
+    seedPrevious(text);
+    check("a plain-text source refuses as not SQLite instead of being copied", refusedCleanly(text, mirrorError(() => text.mirror()), "not_sqlite"));
+
+    const hot = cursorCase("hot-journal");
+    writeCursorDb(hot.source).close();
+    // A writer killed mid-transaction leaves a hot journal that a read-only open cannot roll back.
+    const crashed = spawnSync(process.execPath, ["-e", `
+      const { DatabaseSync } = require("node:sqlite");
+      const db = new DatabaseSync(${JSON.stringify(hot.source)});
+      db.exec("PRAGMA cache_size = 1; BEGIN");
+      const insert = db.prepare("INSERT INTO ItemTable (key, value) VALUES (?, ?)");
+      for (let n = 0; n < 2000; n++) insert.run("filler" + n, "x".repeat(500));
+      process.kill(process.pid, "SIGKILL");
+    `], { stdio: "ignore" });
+    seedPrevious(hot);
+    const hotJournal = existsSync(`${hot.source}-journal`) ? statSync(`${hot.source}-journal`).size : 0;
+    check("a hot journal beside a rollback source refuses and stays in place", crashed.signal === "SIGKILL" && hotJournal > 0 && refusedCleanly(hot, mirrorError(() => hot.mirror()), "hot_journal") && statSync(`${hot.source}-journal`).size === hotJournal);
+
+    const locked = cursorCase("locked");
+    writeCursorDb(locked.source).close();
+    seedPrevious(locked);
+    const holder = new DatabaseSync(locked.source);
+    holder.exec("BEGIN EXCLUSIVE");
+    const lockedStart = Date.now();
+    const lockedError = mirrorError(() => locked.mirror());
+    const lockedWait = Date.now() - lockedStart;
+    holder.exec("ROLLBACK");
+    holder.close();
+    check("a source locked past the 2 s bound refuses after waiting for it", refusedCleanly(locked, lockedError, "locked") && lockedWait >= 1900, { lockedWait, error: String(lockedError) });
+
+    const noTable = cursorCase("no-item-table");
+    mkdirSync(dirname(noTable.source), { recursive: true, mode: 0o700 });
+    const noTableDb = new DatabaseSync(noTable.source);
+    noTableDb.exec("CREATE TABLE cursorDiskKV (key TEXT, value BLOB)");
+    noTableDb.close();
+    seedPrevious(noTable);
+    check("a SQLite source without ItemTable refuses", refusedCleanly(noTable, mirrorError(() => noTable.mirror()), "no_item_table"));
+
+    const blob = cursorCase("blob");
+    writeCursorDb(blob.source, { ...cursorValues("v1"), "cursorAuth/accessToken": new Uint8Array([1, 2, 3]) }).close();
+    seedPrevious(blob);
+    check("a non-text value under a read key refuses instead of being copied", refusedCleanly(blob, mirrorError(() => blob.mirror()), "value_type"));
+    const huge = cursorCase("oversized");
+    writeCursorDb(huge.source, { ...cursorValues("v1"), "cursorAuth/refreshToken": "r".repeat(17 * 1024) }).close();
+    seedPrevious(huge);
+    check("an oversized value under a read key refuses instead of being truncated", refusedCleanly(huge, mirrorError(() => huge.mirror()), "value_size"));
+
+    const none = cursorCase("no-keys");
+    writeCursorDb(none.source, {}).close();
+    seedPrevious(none);
+    none.mirror();
+    check("a readable source with none of the keys removes the destination", !existsSync(none.destination) && readFileSync(join(none.home, "auth.json"), "utf8") === "case-token");
+    const blank = cursorCase("blank-keys");
+    writeCursorDb(blank.source, Object.fromEntries(CURSOR_KEYS.map((key) => [key, "  "]))).close();
+    seedPrevious(blank);
+    blank.mirror();
+    check("blank values count as missing, so four of them remove the destination", !existsSync(blank.destination));
+    const partial = cursorCase("partial");
+    const partialValues = { "cursorAuth/refreshToken": "only-refresh-fake", "storage.serviceMachineId": "only-machine-fake" };
+    writeCursorDb(partial.source, { ...partialValues, "cursorAuth/accessToken": "" }).close();
+    partial.mirror();
+    check("a partial source publishes only the keys it holds, leaving out a blank one", isExtractOf(partial.destination, partialValues), readExtract(partial.destination));
+
+    const oldNode = cursorCase("old-node");
+    writeCursorDb(oldNode.source).close();
+    seedPrevious(oldNode);
+    const oldNodeError = mirrorError(() => oldNode.mirror(() => undefined));
+    check(
+      "a Node without node:sqlite refuses before any byte is copied when a Cursor source exists",
+      oldNodeError instanceof JcodeCursorStateNodeUnsupported &&
+        oldNodeError.nodeVersion === process.version &&
+        readFileSync(join(oldNode.home, "auth.json"), "utf8") === "previous" &&
+        readFileSync(oldNode.destination, "utf8") === "previous-cursor",
+      String(oldNodeError),
+    );
+    const noCursor = cursorCase("old-node-no-cursor");
+    writeFileSync(join(noCursor.home, "auth.json"), "previous", { mode: 0o600 });
+    noCursor.mirror(() => undefined);
+    check("a Node without node:sqlite still mirrors a host that has no Cursor source", readFileSync(join(noCursor.home, "auth.json"), "utf8") === "case-token");
+
+    const everyPath = cursorCase("six-paths");
+    const cursorEntries = jcodeCredentialMirrorInventory(everyPath.home, everyPath.sources).filter((entry) => entry.family === "cursor-state");
+    cursorEntries.forEach((entry, index) => writeCursorDb(entry.source, cursorValues(`path${index}`)).close());
+    everyPath.mirror();
+    const publishedPaths = cursorEntries.filter((entry, index) => isExtractOf(join(everyPath.home, entry.destinationRelative), cursorValues(`path${index}`)));
+    check("all six Cursor paths are in the inventory and each publishes its own extract", cursorEntries.length === 6 && publishedPaths.length === 6, cursorEntries.map((entry) => entry.destinationRelative));
+
+    const linked = cursorCase("linked-live");
+    const linkedTarget = join(root, "cursor-linked-target", "state.vscdb");
+    const linkedWriter = writeCursorDb(linkedTarget, cursorValues("old"), "wal");
+    const linkedUpdate = linkedWriter.prepare("INSERT INTO ItemTable (key, value) VALUES (?, ?)");
+    for (const [key, value] of Object.entries(cursorValues("new"))) linkedUpdate.run(key, value);
+    mkdirSync(dirname(linked.source), { recursive: true, mode: 0o700 });
+    symlinkSync(linkedTarget, linked.source);
+    linked.mirror();
+    linkedWriter.close();
+    check("a linked source is read at its target, where its live sidecars are", isExtractOf(linked.destination, cursorValues("new")), readExtract(linked.destination));
+    const stray = cursorCase("linked-stray-wal");
+    const strayTarget = join(root, "cursor-stray-target", "state.vscdb");
+    writeCursorDb(strayTarget, cursorValues("v1"), "wal").close();
+    mkdirSync(dirname(stray.source), { recursive: true, mode: 0o700 });
+    symlinkSync(strayTarget, stray.source);
+    writeFileSync(`${stray.source}-wal`, "");
+    writeFileSync(`${stray.source}-shm`, "");
+    seedPrevious(stray);
+    const strayDir = snapshotDir(dirname(strayTarget));
+    check("sidecars named after the link do not stand in for the target's", refusedCleanly(stray, mirrorError(() => stray.mirror()), "wal_sidecar_missing") && snapshotDir(dirname(strayTarget)) === strayDir);
+
+    const folder = cursorCase("directory");
+    mkdirSync(folder.source, { recursive: true, mode: 0o700 });
+    seedPrevious(folder);
+    folder.mirror();
+    check("a directory at the source path counts as absent and removes the destination", !existsSync(folder.destination));
+
+    // The public line carries the code and connector-owned words, never SQLite's text or `unknown`.
+    const publicCase = cursorCase("public-line");
+    mkdirSync(dirname(publicCase.source), { recursive: true, mode: 0o700 });
+    writeFileSync(publicCase.source, "cursor-store", { mode: 0o600 });
+    const env: NodeJS.ProcessEnv = {};
+    for (const [key, value] of Object.entries(process.env)) if (!key.startsWith("COTAL_") && value !== undefined) env[key] = value;
+    const hostRun = spawnSync(fileURLToPath(new URL("../node_modules/.bin/tsx", import.meta.url)), [fileURLToPath(new URL("../src/host-main.ts", import.meta.url))], {
+      cwd: dirname(publicCase.home),
+      env: {
+        ...env,
+        HOME: publicCase.sources.externalHome,
+        JCODE_HOME: publicCase.sources.jcodeHome,
+        COTAL_SPACE: "cursorpublic",
+        COTAL_NAME: "cursorpeer",
+        COTAL_ID: "cursorpeer",
+        COTAL_SERVERS: "nats://127.0.0.1:9",
+        COTAL_JCODE_HOME: dirname(publicCase.home),
+        COTAL_JCODE_TUI: "0",
+        COTAL_CONTROL_SOCKET: join(dirname(publicCase.home), "control.sock"),
+        COTAL_CONTROL_TOKEN: "cursor-public-line-token",
+      },
+      encoding: "utf8",
+      timeout: 60_000,
+    });
+    const fatal = hostRun.stderr.split("\n").find((line) => line.includes("fatal:")) ?? "";
+    check(
+      "an unreadable Cursor source fails the launch with its own public code",
+      hostRun.status === 1 &&
+        fatal.includes(`startup failed (cursor_state_unreadable): Cursor's state database ~/${CURSOR_REL} could not be read (not_sqlite`) &&
+        !/private_state|unknown|file is not a database|ExperimentalWarning/.test(fatal),
+      { status: hostRun.status, stderr: hostRun.stderr.slice(-2000) },
     );
   } else {
     // The connector refuses Windows in buildLaunch, so the pin never runs there. Assert that

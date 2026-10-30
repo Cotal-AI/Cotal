@@ -7,6 +7,20 @@ other half: what to actually do when the deployment already exists, has credenti
 cannot simply be recreated. Every release that breaks a running deployment gets a section here,
 naming what migrates on its own, what does not, and the order to move the pieces in.
 
+## Jcode seats read Cursor's state database instead of copying it
+
+A Jcode seat no longer copies Cursor's `User/globalStorage/state.vscdb` into its private home. It
+reads the four auth rows Jcode uses into a small file at the same path
+([Connect Jcode](connect-jcode.md)). Two hosts see a change:
+
+- On Node 22.10 to 22.12 with a Cursor database, Jcode launches stop with
+  `cursor_state_node_unsupported`. Upgrade Node to 22.13 or newer. A host without Cursor is unaffected.
+- A Cursor database that cannot be read, or a WAL-mode one without its `-wal` and `-shm` files, now
+  stops Jcode launches with `cursor_state_unreadable`. The line says why.
+
+Seat homes made earlier keep their full copy until the seat's next successful launch replaces it.
+A home whose seat never launches again keeps its copy until you remove it.
+
 ## Bounded multi-space startup
 
 Multi-space auth, callout and delivery hosts now admit four lane opens at a time. A ready line may
