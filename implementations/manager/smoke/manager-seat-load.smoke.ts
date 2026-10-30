@@ -21,6 +21,14 @@
  * manager's own ceiling is `MAX_AGENTS` (50) per manager; a step above it is refused by design and
  * the refusal is reported, not hidden.
  *
+ * `--process-memory --seat real` reads process RSS/PSS/USS without heap snapshots. It checks
+ * authenticated manager `ps` before and after each idle window against the successful spawn
+ * identities and their lifecycle UIDs, and requires current mesh presence and running, unchanged
+ * PIDs. Missing samples or failed spawns fail the run. This is sampled mesh readiness, not
+ * continuous application health. The mode is Linux-only and cannot be combined with `--ram`.
+ * Its `MSL_RESULT` rows include the measured counts and memory; `MSL_DONE` counts the checks.
+ * Observer calls and smaps reads sit outside the CPU window, but the observer connection remains.
+ *
  * `--ram` adds the manager's memory at every step: RSS, PSS and USS from outside, V8's heap from
  * inside, and a heap snapshot at the first and last step summarised by class.
  *
@@ -32,12 +40,13 @@
  *
  * `--seat real` launches the REAL Claude Code connector process for every seat (the plugin's MCP
  * server, `dist/mcp.cjs`, with the node flags its `.mcp.json` passes), in place of the stub and its
- * shared seat host, and reads each seat process's RSS, PSS and USS. That process is what one seat
+ * shared seat host. Per-seat RSS, PSS and USS need `--ram` or `--process-memory`. That process is what one seat
  * costs its host besides the model harness itself; it joins the mesh at start, before any MCP
  * traffic, so no Claude process is needed to drive it.
  *
  * Run (needs nats-server on PATH):
  *   pnpm -C implementations/manager smoke:manager-seat-load --steps 10,25,50 --seconds 60 [--ram] [--shape dist] [--seat real]
+ *   pnpm -C implementations/manager smoke:manager-seat-load --shape dist --seat real --process-memory --steps 10,25,50
  */
 import { spawn, execFileSync, type ChildProcess } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, readlinkSync, rmSync, renameSync, statSync } from "node:fs";
@@ -46,7 +55,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { getHeapSpaceStatistics, writeHeapSnapshot } from "node:v8";
 import {
-  createSpaceAuth, mintCreds, newIdentity, registry, setupSpaceStreams,
+  CotalEndpoint, createSpaceAuth, mintCreds, mintLifecycleUid, instanceOnlyManagerCapabilities, newIdentity, registry, setupSpaceStreams,
   type Connector, type LaunchOpts, type LaunchSpec,
 } from "@cotal-ai/core";
 import { MeshAgent, configFromEnv } from "@cotal-ai/connector-core";
@@ -66,7 +75,8 @@ const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const ipcSend = (m: unknown): Promise<void> => new Promise((r) => { process.send!(m, () => r()); });
 const nextCmd = <T>(): Promise<T> => new Promise((r) => process.once("message", (m) => r(m as T)));
 
-interface ManagerJob { kind: "manager"; space: string; servers: string; workspaceRoot: string; seatDir: string; stubToken: string; dist: boolean; realSeat?: string }
+interface ManagerJob { kind: "manager"; space: string; servers: string; workspaceRoot: string; seatDir: string; stubToken: string; dist: boolean; realSeat?: string; observeSeats?: boolean }
+interface SeatReceipt { name: string; id: string; lifecycleUid: string }
 interface SeatsJob { kind: "seats"; seatDir: string }
 type Job = ManagerJob | SeatsJob;
 
@@ -116,7 +126,9 @@ async function runManager(job: ManagerJob): Promise<void> {
   registry.register(stub);
   const mgr = new Manager({ space: job.space, servers: job.servers, runtime: "pty", workspaceRoot: job.workspaceRoot });
   await mgr.start();
-  await ipcSend({ ready: true });
+  const observation = job.observeSeats ? mgr.localServiceObservation() : undefined;
+  if (job.observeSeats && !observation) throw new Error("manager-seat-load: manager service observation is unavailable");
+  await ipcSend({ ready: true, ...(observation ? { instanceId: observation.registration.instanceId, epoch: observation.registration.epoch } : {}) });
   for (;;) {
     const cmd = await nextCmd<{ cmd: "spawn"; from: number; to: number } | { cmd: "sample" } | { cmd: "snapshot"; path: string } | { cmd: "stop" }>();
     if (cmd.cmd === "snapshot") {
@@ -137,16 +149,25 @@ async function runManager(job: ManagerJob): Promise<void> {
     let ok = 0;
     const refusals: string[] = [];
     const spawnMs: number[] = [];
+    const receipts: SeatReceipt[] = [];
     const cpu0 = process.cpuUsage();
     for (let i = cmd.from; i < cmd.to; i++) {
       const t0 = performance.now();
       const r = await mgr.startAgent({ name: `seat${i}`, agent: CONNECTOR, cwd: job.workspaceRoot, events: false });
       spawnMs.push(performance.now() - t0);
-      if (r.ok) ok++;
+      if (r.ok) {
+        ok++;
+        if (job.observeSeats) {
+          const data = r.data as { name?: unknown; id?: unknown; lifecycleUid?: unknown };
+          if (typeof data?.name !== "string" || typeof data.id !== "string" || typeof data.lifecycleUid !== "string")
+            throw new Error("manager-seat-load: successful spawn omitted its identity receipt");
+          receipts.push({ name: data.name, id: data.id, lifecycleUid: data.lifecycleUid });
+        }
+      }
       else if (refusals.length < 5) refusals.push(String(r.error).slice(0, 200));
     }
     const cpu = process.cpuUsage(cpu0);
-    await ipcSend({ spawned: { ok, failed: cmd.to - cmd.from - ok, refusals, spawnMs, cpuMs: (cpu.user + cpu.system) / 1000 } });
+    await ipcSend({ spawned: { ok, failed: cmd.to - cmd.from - ok, refusals, spawnMs, cpuMs: (cpu.user + cpu.system) / 1000, receipts } });
   }
 }
 
@@ -212,10 +233,12 @@ const flag = (name: string, dflt?: string): string => {
   if (dflt === undefined) throw new Error(`manager-seat-load: --${name} is required`);
   return dflt;
 };
-const STEPS = flag("steps", "10,25,50").split(",").map(Number).filter((n) => Number.isInteger(n) && n > 0).sort((a, b) => a - b);
+const requestedSteps = flag("steps", "10,25,50").split(",").map(Number);
+const STEPS = requestedSteps.filter((n) => Number.isInteger(n) && n > 0).sort((a, b) => a - b);
 const SECONDS = Number(flag("seconds", "60"));
 const SETTLE_S = Number(flag("settle", "20"));
 const RAM = argv.includes("--ram");
+const PROCESS_MEMORY = argv.includes("--process-memory");
 const SHAPE = flag("shape", "src");
 /** Extra node flags for the manager child under `--shape dist`, comma-separated and without their
  *  dashes (a flag's value may not start with "--"), e.g. the seat's own
@@ -223,8 +246,17 @@ const SHAPE = flag("shape", "src");
 const MANAGER_NODE_FLAGS = flag("manager-node-flags", "").split(",").map((f) => f.trim().replace(/^-*/, "")).filter(Boolean).map((f) => `--${f}`);
 const REAL_SEATS = flag("seat", "stub") === "real";
 if (SHAPE !== "src" && SHAPE !== "dist") throw new Error("manager-seat-load: --shape is src or dist");
+if (PROCESS_MEMORY) {
+  if (RAM || !REAL_SEATS || process.platform !== "linux")
+    throw new Error("manager-seat-load: --process-memory requires Linux, --seat real and no --ram");
+  if (requestedSteps.length !== STEPS.length || !STEPS.length || new Set(STEPS).size !== STEPS.length
+    || !STEPS.every(Number.isSafeInteger) || !Number.isFinite(SECONDS) || SECONDS <= 0
+    || !Number.isFinite(SETTLE_S) || SETTLE_S < 0)
+    throw new Error("manager-seat-load: process-memory steps must be distinct positive safe integers, seconds positive and settle nonnegative");
+}
 const REPO = execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8", cwd: import.meta.dirname }).trim();
 const SHA = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8", cwd: REPO }).trim();
+const SOURCE_DIRTY = PROCESS_MEMORY && execFileSync("git", ["status", "--porcelain"], { encoding: "utf8", cwd: REPO }).trim() !== "";
 
 const CLK_TCK = 100; // Linux x86_64; this harness is Linux-only, like the rest of the load path.
 const procCpuMs = (pid: number): number => {
@@ -263,9 +295,7 @@ const realSeat = REAL_SEATS ? new URL(import.meta.resolve("@cotal-ai/connector-c
 const auth = await createSpaceAuth(space);
 saveSpaceAuth(authDir(workspaceRoot), auth); // the FS composition the manager's start() reads
 const broker = await bootBroker(auth, { monitor: true });
-// `bootBroker` does not expose its pid; the newest nats-server right after it returns is this one
-// (the field runs no other broker while a harness runs).
-const brokerPid = Number(execFileSync("sh", ["-c", "pgrep -n -x nats-server || true"], { encoding: "utf8" }).trim()) || undefined;
+const brokerPid = broker.pid;
 
 const children: ChildProcess[] = [];
 let stopping = false;
@@ -293,6 +323,13 @@ const table: string[][] = [];
 const ramTable: string[][] = [];
 const snapshots: string[] = [];
 let delivery: Awaited<ReturnType<typeof bootDeliveryDaemon>> | undefined;
+let memoryObserver: CotalEndpoint | undefined;
+let observationErrors = 0, measurementChecks = 0;
+const receipts = new Map<string, SeatReceipt>();
+const verify = (condition: boolean, detail: string): void => {
+  if (!condition) throw new Error(`manager-seat-load: ${detail}`);
+  measurementChecks++;
+};
 try {
   await setupSpaceStreams({ servers: broker.servers, space, creds: await mintCreds(auth, newIdentity(), "provisioner") });
   delivery = await bootDeliveryDaemon({ space, servers: broker.servers, auth, reloadStoreIdentity: workspaceSecretStore(workspaceRoot).identity });
@@ -300,16 +337,83 @@ try {
   const childEnv = { ...cleanEnv, DO_NOT_TRACK: "1", COTAL_TELEMETRY: "off", COTAL_HOME: home, COTAL_SEAT_ROOT: seatRoot };
   const seatHost = startChild({ kind: "seats", seatDir }, childEnv);
   await ask(seatHost, undefined, "ready");
-  const manager = startChild({ kind: "manager", space, servers: broker.servers, workspaceRoot, seatDir, stubToken, dist: SHAPE === "dist", ...(realSeat ? { realSeat } : {}) }, childEnv);
-  await ask(manager, undefined, "ready");
+  const manager = startChild({ kind: "manager", space, servers: broker.servers, workspaceRoot, seatDir, stubToken, dist: SHAPE === "dist", ...(realSeat ? { realSeat } : {}), observeSeats: PROCESS_MEMORY }, childEnv);
+  const managerReady = await ask(manager, undefined, "ready");
+  const instanceId = managerReady.instanceId, epoch = managerReady.epoch;
+  if (PROCESS_MEMORY) {
+    verify(typeof instanceId === "string" && instanceId.length > 0, "manager instance identity missing");
+    verify(typeof epoch === "number" && Number.isSafeInteger(epoch) && epoch >= 0, "manager epoch missing");
+    const expiresInSeconds = Math.ceil((SECONDS + SETTLE_S) * (STEPS.length + 1) + maxSeats * 30 + 120);
+    verify(Number.isSafeInteger(expiresInSeconds), "observation lifetime exceeds a safe integer");
+    const identity = newIdentity(), lifecycleUid = mintLifecycleUid();
+    // This private fixture caller gets only describe/ps beyond the agent baseline, pinned to
+    // the manager that just started. No spawn/admin grant, private manager access or raw rail.
+    memoryObserver = new CotalEndpoint({
+      space, servers: broker.servers, lifecycleUid,
+      creds: await mintCreds(auth, identity, "agent", { lifecycleUid, expiresInSeconds, allowSubscribe: [], allowPublish: [], capabilities: [], endpointCapabilities:
+        instanceOnlyManagerCapabilities(["describe", "ps"].map((command) => ({ endpoint: "manager", command })), instanceId as string) }),
+      card: { id: identity.id, name: "memory-observer", role: "observer", kind: "endpoint" },
+      channels: [], consume: false, registerPresence: false, watchPresence: false, watchChannels: false,
+    });
+    memoryObserver.on("error", () => { observationErrors++; });
+    memoryObserver.on("warning", () => { observationErrors++; });
+    await memoryObserver.start();
+  }
+  const processMemory = (pid: number) => {
+    const mem = procMem(pid);
+    verify(Object.values(mem).every((n) => Number.isFinite(n) && n >= 0) && mem.rssMb > 0, "process memory sample missing or invalid");
+    return { pid, rssMiB: mem.rssMb, pssMiB: mem.pssMb, ussMiB: mem.ussMb };
+  };
+  const observe = async () => {
+    if (!memoryObserver || typeof instanceId !== "string") throw new Error("manager-seat-load: memory observer not started");
+    const reply = await memoryObserver.invokeService("manager", "ps", undefined, { instanceId, deadlineMs: 10_000 });
+    verify(reply.responder.endpoint === "manager" && reply.responder.instanceId === instanceId
+      && reply.responder.epoch === epoch && reply.reply.ok === true, "ps did not answer from this manager incarnation");
+    const rows = reply.reply.data;
+    verify(Array.isArray(rows) && rows.length === receipts.size, "ps row count differs from successful spawn receipts");
+    const records = rows as Array<Record<string, unknown>>;
+    const seats = [...receipts.values()].map((receipt) => {
+      const matches = records.filter((r) => r.name === receipt.name && r.id === receipt.id && r.lifecycleUid === receipt.lifecycleUid);
+      verify(matches.length === 1, "ps did not return one matching spawn identity");
+      const row = matches[0]!;
+      verify(row.meshView === "current" && row.presenceIdentityVerified === true
+        && row.mesh === "idle" && row.instanceId === instanceId
+        && typeof row.presenceObservedAt === "number" && Number.isSafeInteger(row.presenceObservedAt) && row.presenceObservedAt >= 0
+        && row.status === "running", "seat does not have current verified mesh presence and a running process");
+      verify(typeof row.pid === "number" && Number.isSafeInteger(row.pid) && row.pid > 0, "seat process PID unavailable");
+      return processMemory(row.pid as number);
+    });
+    verify(new Set(seats.map((s) => s.pid)).size === seats.length, "seat PIDs are not distinct");
+    verify(observationErrors === 0, "memory observer reported endpoint errors or warnings");
+    return { observedAt: new Date().toISOString(), expected: receipts.size, joined: seats.length,
+      manager: processMemory(manager.pid!), broker: processMemory(brokerPid), seats };
+  };
 
-  const measure = async (seatsNow: number, spawn?: { ok: number; failed: number; refusals: string[]; spawnMs: number[]; cpuMs: number }) => {
+  const measure = async (seatsNow: number, spawn?: { ok: number; failed: number; refusals: string[]; spawnMs: number[]; cpuMs: number; receipts: SeatReceipt[] }) => {
+    if (PROCESS_MEMORY && spawn) {
+      verify(spawn.failed === 0 && spawn.receipts.length === spawn.ok, "not every requested connector started with an identity receipt");
+      for (const receipt of spawn.receipts) {
+        verify(!receipts.has(receipt.name), "duplicate spawn receipt");
+        receipts.set(receipt.name, receipt);
+      }
+      verify(receipts.size === seatsNow, "successful connector count differs from requested cohort");
+    }
     await wait(SETTLE_S * 1000);
+    const before = PROCESS_MEMORY ? await observe() : undefined;
     const m0 = procCpuMs(manager.pid!), h0 = procCpuMs(seatHost.pid!), b0 = brokerPid ? procCpuMs(brokerPid) : NaN;
     const t0 = performance.now();
+    if (before) console.log(`MSL_WINDOW ${JSON.stringify({ seats: seatsNow, managerPid: manager.pid, seatPids: before.seats.map((s) => s.pid) })}`);
     await wait(SECONDS * 1000);
     const s = (performance.now() - t0) / 1000;
-    const mgrCores = (procCpuMs(manager.pid!) - m0) / 1000 / s;
+    const m1 = procCpuMs(manager.pid!), h1 = procCpuMs(seatHost.pid!), b1 = procCpuMs(brokerPid);
+    const mgrCores = (m1 - m0) / 1000 / s;
+    const after = PROCESS_MEMORY ? await observe() : undefined;
+    if (before && after) {
+      verify(before.seats.every((seat, i) => seat.pid === after.seats[i]?.pid), "a connector process changed during the idle window");
+      console.log(`MSL_RESULT ${JSON.stringify({ source: SHA, sourceDirty: SOURCE_DIRTY, requested: seatsNow, windowSeconds: s, shape: SHAPE,
+        seatMode: "real", heapSnapshots: false, observationErrors, checks: measurementChecks,
+        brokerCpuCores: (b1 - b0) / 1000 / s, managerCpuCores: mgrCores, before, after })}`);
+    }
     const host = (await ask(seatHost, { cmd: "sample" }, "sample")).sample as { seats: number; connected: number; failed: number; firstErrors: string[]; rssMb: number };
     const spawnMs = spawn?.spawnMs.slice().sort((a, b) => a - b) ?? [];
     table.push([
@@ -320,9 +424,9 @@ try {
       spawn ? `${spawn.ok} / ${spawn.failed}` : "",
       spawn && spawn.ok ? (spawn.cpuMs / spawn.ok).toFixed(0) : "",
       spawnMs.length ? `${spawnMs[Math.floor(spawnMs.length / 2)].toFixed(0)} / ${spawnMs[spawnMs.length - 1].toFixed(0)}` : "",
-      (((procCpuMs(seatHost.pid!) - h0) / 1000 / s) * 1000).toFixed(2),
+      (((h1 - h0) / 1000 / s) * 1000).toFixed(2),
       host.rssMb.toFixed(0),
-      brokerPid ? (((procCpuMs(brokerPid) - b0) / 1000 / s) * 1000).toFixed(2) : "n/a",
+      brokerPid ? (((b1 - b0) / 1000 / s) * 1000).toFixed(2) : "n/a",
     ]);
     if (RAM) {
       const mgr = procMem(manager.pid!);
@@ -368,7 +472,7 @@ try {
           + `; script source ${(top.sources.bytes / MB).toFixed(1)} MB in ${top.sources.scripts} scripts, largest by package: ` + top.sources.byPackage.map((t) => `${t.name} ${(t.bytes / MB).toFixed(1)} MB (${t.count})`).join(", "));
       }
     }
-    console.error(`  … step ${seatsNow}: manager ${(mgrCores * 1000).toFixed(2)} millicores, RSS ${procRssMb(manager.pid!).toFixed(1)} MB, ${host.connected} seats connected`);
+    console.error(`  … step ${seatsNow}: manager ${(mgrCores * 1000).toFixed(2)} millicores, RSS ${procRssMb(manager.pid!).toFixed(1)} MB, ${host.connected} stub-host seats connected`);
     if (spawn?.refusals.length) for (const r of spawn.refusals) console.error(`    refusal: ${r}`);
     if (host.firstErrors.length) for (const e of host.firstErrors) console.error(`    seat error: ${e}`);
   };
@@ -376,12 +480,13 @@ try {
   await measure(0);
   let have = 0;
   for (const step of STEPS) {
-    const r = (await ask(manager, { cmd: "spawn", from: have, to: step }, "spawned")).spawned as { ok: number; failed: number; refusals: string[]; spawnMs: number[]; cpuMs: number };
+    const r = (await ask(manager, { cmd: "spawn", from: have, to: step }, "spawned")).spawned as { ok: number; failed: number; refusals: string[]; spawnMs: number[]; cpuMs: number; receipts: SeatReceipt[] };
     have = step;
     await measure(step, r);
   }
 
-  const head = ["seats requested", "seats connected / manager children", "manager millicores", "manager RSS MB", "spawned ok / refused", "manager CPU ms per spawn", "spawn wall p50 / max ms", "seat host millicores", "seat host RSS MB", "broker millicores"];
+  if (PROCESS_MEMORY) console.log(`MSL_DONE checks=${measurementChecks} steps=${STEPS.length + 1}`);
+  const head = ["seats requested", "stub connected / manager children", "manager millicores", "manager RSS MB", "spawned ok / refused", "manager CPU ms per spawn", "spawn wall p50 / max ms", "seat host millicores", "seat host RSS MB", "broker millicores"];
   console.log(`\nmanager-seat-load  git ${SHA}  host ${availableParallelism()} cores, ${(totalmem() / 1073741824).toFixed(1)} GB  idle window ${SECONDS}s after ${SETTLE_S}s settle  manager shape ${SHAPE === "dist" ? `dist (plain node${MANAGER_NODE_FLAGS.length ? ` ${MANAGER_NODE_FLAGS.join(" ")}` : ""}, built package)` : "src (tsx over source)"}  seats ${realSeat ? "REAL connector processes" : "stub"}\n`);
   console.log(`| ${head.join(" | ")} |`);
   console.log(`|${head.map(() => "---").join("|")}|`);
@@ -399,6 +504,8 @@ try {
   }
 
   stopping = true;
+  await memoryObserver?.stop();
+  memoryObserver = undefined;
   await ask(manager, { cmd: "stop" }, "stopped").catch(() => undefined);
   await ask(seatHost, { cmd: "stop" }, "stopped").catch(() => undefined);
 } catch (e) {
@@ -406,6 +513,7 @@ try {
   process.exitCode = 1;
 } finally {
   stopping = true;
+  await memoryObserver?.stop().catch(() => {});
   for (const c of children) { try { c.kill("SIGKILL"); } catch { /* already gone */ } }
   // The pty children outlive a killed manager; this run's carry its token and nothing else does.
   try { execFileSync("pkill", ["-f", `sleep 99999.${stubToken}`]); } catch { /* none left */ }

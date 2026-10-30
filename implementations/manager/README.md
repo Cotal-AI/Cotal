@@ -15,6 +15,25 @@ each other; they meet at runtime over NATS.
 See [docs/architecture.md](../../docs/architecture.md) (*Manager supervision*) and the
 [root AGENTS.md](../../AGENTS.md) for the tier rules.
 
+## Load measurements
+
+`pnpm smoke:manager-seat-load --shape dist --seat real --process-memory --steps 10,25,50`
+measures the real connector MCP processes on Linux. Build the CLI closure first and use a short,
+private `TMPDIR` for the per-seat Unix sockets. These processes exclude the model harness.
+
+`--process-memory` emits `MSL_RESULT` JSON at each step and a counted `MSL_DONE` summary.
+It reads RSS/PSS/USS without heap snapshots or forced GC. Before and after the idle window,
+it calls the manager's authenticated `ps` command and matches every successful spawn's ID and
+lifecycle UID. A stale presence view, missing process, changed PID, failed spawn or unreadable
+memory sample fails the run. These observations prove sampled mesh presence, not continuous
+readiness or application health. The observer calls and memory reads are outside the CPU window;
+the observer connection remains open during it. RSS includes shared pages and must not be added
+to PSS or USS.
+
+`--ram` retains the separate heap-profiling mode and cannot be combined with `--process-memory`.
+The ordinary table's stub-connected count belongs to the shared stub host, even with real seats;
+it is not the real connectors' readiness count. Broker CPU uses the helper's owned broker PID.
+
 ## Remote authority clients
 
 The package root exports `remoteManagerClient`, the stock request builders and response validators
