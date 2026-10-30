@@ -149,13 +149,22 @@ try {
   const debtCleared = (task: string) => until(async () => (await readGoalIndex(M.goalWriter.ctx, refOf(task))) === undefined, 60_000);
 
   console.log("1. the task reaches the harness once, its turn ends, and the seat and its tree are gone");
+  // The turn is held open until the launch is checked, or a fast harness ends it, and the seat's tree
+  // with it, before the check can see that tree.
+  const happyRelease = join(scratch, "happy-released");
+  process.env.FAKE_JCODE_HOLD_TURN_ON_CONTENT = "ONCE-HAPPY";
+  process.env.FAKE_JCODE_HOLD_TURN_RELEASE_FILE = happyRelease;
   const a = await spawnOnce("ONCE-HAPPY");
+  delete process.env.FAKE_JCODE_HOLD_TURN_ON_CONTENT;
+  delete process.env.FAKE_JCODE_HOLD_TURN_RELEASE_FILE;
   check("the once spawn on Jcode succeeds", a.terminal?.state === "succeeded" && a.seat !== undefined, a.terminal);
+  const heldA = await until(() => a.runsOf() >= 1, 30_000);
   const idsA = a.identities();
-  check("the host recorded its launch under the seat's uid before launching", idsA.length >= 1 && carriers(idsA).length >= 2, { idsA, carriers: carriers(idsA) });
-  check("the harness runs the task once", await until(() => a.runsOf() >= 1, 30_000) && a.runsOf() === 1, a.runsOf());
+  check("the host recorded its launch under the seat's uid before launching", heldA && idsA.length >= 1 && carriers(idsA).length >= 2, { idsA, carriers: carriers(idsA) });
+  writeFileSync(happyRelease, "released");
   const ra = await resultOf(a.task, 60_000);
   check("the turn's end yields the task: it succeeds", ra?.state === "succeeded", ra);
+  check("the harness runs the task once", a.runsOf() === 1, a.runsOf());
   check("the seat is stopped", await goneSeat(a.name!, a.seat!));
   check("its debt clears, and nothing carrying its launch identities is left", await debtCleared(a.task) && carriers(idsA).length === 0, carriers(idsA));
 
