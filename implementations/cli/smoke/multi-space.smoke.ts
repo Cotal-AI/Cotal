@@ -53,7 +53,7 @@ const {
   accountInventory, assertSingleSpaceBroker, authDir, agentCredsRoot, brokerAuthPath, hasUserAuthState,
   isWorkspaceTargetError, listSpaceAccounts, loadMeshes, loadSpaceAccountAuth, loadSpaceAuth, localProcessPath,
   recordMesh, removeMesh, resolveMeshTarget, saveBrokerAuth, saveSpaceAccountAuth, soleSpaceOf, spaceAccountPath,
-  spaceKey, userAuthSpacesOnDisk, userAuthStateDir,
+  spaceKey, userAuthSpacesOnDisk, userAuthStateDir, workspaceErrorParts,
 } = await import("@cotal-ai/workspace");
 const { down } = await import("../src/commands/down.js");
 const { clean } = await import("../src/commands/clean.js");
@@ -542,6 +542,26 @@ try {
     chmodSync(authDir(unreadable), 0o700);
     check("an unreadable .cotal/auth resolves to a typed unreadable-auth, not a raw EACCES",
       isWorkspaceTargetError(unreadErr) && (unreadErr as { code: string }).code === "unreadable-auth", (unreadErr as Error)?.message);
+
+    // A `.cotal` this account cannot enter hides `.cotal/auth` from `existsSync`. Read as absent, the
+    // inventory found no tenants, the legacy record's EACCES became a corrupt `auth.json`, and every
+    // read here refused as an ambiguity with no candidates: "multiple meshes running: ".
+    const cotal = join(unreadable, ".cotal");
+    chmodSync(cotal, 0o000);
+    let invErr: unknown, localErr: unknown, serverErr: unknown;
+    try { accountInventory(authDir(unreadable)); } catch (e) { invErr = e; }
+    try { resolveMeshTarget(unreadable, {}); } catch (e) { localErr = e; }
+    try { resolveMeshTarget(unreadable, { server: "nats://127.0.0.1:4999" }); } catch (e) { serverErr = e; }
+    chmodSync(cotal, 0o700);
+    check("the inventory of an auth dir behind a .cotal it cannot enter throws EACCES, never reads as absent",
+      (invErr as NodeJS.ErrnoException | undefined)?.code === "EACCES", (invErr as Error)?.message);
+    for (const [how, err] of [["local", localErr], ["--server", serverErr]] as const) {
+      const rendered = isWorkspaceTargetError(err) ? workspaceErrorParts({ kind: "target", error: err }) : undefined;
+      check(`a ${how} target behind a .cotal it cannot enter is unreadable-auth naming the root, not an empty ambiguity`,
+        isWorkspaceTargetError(err) && err.code === "unreadable-auth" && rendered !== undefined &&
+          rendered.message.includes(unreadable) && rendered.message.includes("EACCES") && !rendered.message.includes("multiple meshes") &&
+          !rendered.message.includes("undefined") && (rendered.remedy ?? "").includes("--space <name>"), rendered ?? (err as Error)?.message);
+    }
   } else {
     check("unreadable-auth-dir resolver check skipped (needs a non-root POSIX runner)", true);
   }

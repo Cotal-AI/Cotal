@@ -231,7 +231,7 @@ function assertRootIsSingleTenant(root: string): void {
   try {
     inv = accountInventory(authDir(root));
   } catch (e) {
-    throw new MeshTargetError("unreadable-auth", (e as Error).message, { root });
+    throw new MeshTargetError("unreadable-auth", (e as Error).message, { root }, { cause: e });
   }
   if (inv.corrupt.length > 0)
     throw new MeshTargetError(
@@ -313,6 +313,8 @@ function localTarget(root: string, server: string, source: MeshTarget["source"],
   try {
     space = soleSpaceOf(authDir(root)) ?? preparedSpaceAt(root)?.space ?? DEFAULT_SPACE;
   } catch (e) {
+    // A trust folder this account cannot read names no space at all, which is not several of them.
+    if ((e as NodeJS.ErrnoException).syscall !== undefined) throw new MeshTargetError("unreadable-auth", (e as Error).message, { root }, { cause: e });
     throw new MeshTargetError("ambiguous-target", (e as Error).message, { root });
   }
   const auth = loadTrustOrThrow(root, space);
