@@ -6580,10 +6580,13 @@ same per-action instrument path as `cotal stop` and `cotal ps`, never the observ
 Message bodies, names and other text from peers are untrusted. Both views show a control character
 in them as its `\uXXXX` escape, so a message cannot clear the screen, retitle the terminal or plant
 a hyperlink. The TUI keeps a body's line breaks, and `--plain` prints each message on one line.
-The TUI wraps a body, and a roster seat's status facts, by terminal columns: a wide character such
-as a CJK ideograph or an emoji takes two, and a word wider than the pane breaks between characters,
-never inside one.
-A roster seat's head row wider than its pane ends in `…` after the last whole character that fits.
+The TUI wraps a body, and a roster seat's rows, by terminal columns: a wide character such as a CJK
+ideograph or an emoji takes two, and a word wider than the pane breaks between characters, never
+inside one. On a seat's head, the name, harness tag, activity, the activity's age and the progress
+or heartbeat age each start a new row when they do not fit on the current one, so a long name never
+hides them. The roster draws whole seats around the selected one. A seat taller than the pane shows
+only its first rows, which a long activity can cause below 80 columns, where the roster has at most
+five rows for seats.
 The agent detail's recent traffic cuts each preview by columns too, never inside a character, and a
 preview that leaves any of its text out ends with `…`. Closing a detail returns the feed to the
 message and scroll position it showed.
