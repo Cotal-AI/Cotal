@@ -6,14 +6,17 @@
  *
  * The first scenario waits out the two-minute minimum age between the backup and the restore, so
  * its posts are older than the recorded age when the restore checks them. A restore that applied
- * the age before those checks would watch the broker delete them and refuse.
+ * the age before those checks would watch the broker delete them and refuse. The last scenario runs
+ * `cotal setup --start`, whose start happens in a child process, and checks that setup reports the
+ * move both when its start then fails and when it goes on.
  *
  * Run: pnpm smoke:chat-history-restore:live   (needs nats-server on PATH)
  */
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
-import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { connect, nanos } from "@nats-io/transport-node";
 import { CHAT_HISTORY_DEFAULT, LEGACY_CHAT_HISTORY, PLANE3_MAX_MSGS_PER_SUBJECT, channelBucket, chatStream, dlvStream, inboxStream, type ChatHistoryLimit } from "@cotal-ai/core";
@@ -32,14 +35,15 @@ function sandbox(label: string) {
   const home = realpathSync.native(mkdtempSync(join(tmpdir(), `cotal-chl-${label}-home-`)));
   const configDir = join(home, "xdg");
   const anchor = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: configDir });
-  const env = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_TELEMETRY: "off" };
-  const run = (...args: string[]): SpawnSyncReturns<string> => {
-    const options = { cwd: root, env, encoding: "utf8" as const, timeout: 240_000 };
+  const env = { ...process.env, HOME: home, USERPROFILE: home, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_TELEMETRY: "off" };
+  const runWith = (extra: Record<string, string>, ...args: string[]): SpawnSyncReturns<string> => {
+    const options = { cwd: root, env: { ...env, ...extra }, encoding: "utf8" as const, timeout: 240_000 };
     assertSmokeSandboxDown(anchor, args, options);
     return spawnSync(tsx, [cliPath, ...args], options);
   };
+  const run = (...args: string[]) => runWith({}, ...args);
   const shown = (r: SpawnSyncReturns<string>) => ({ status: r.status, stdout: r.stdout?.slice(-1500), stderr: r.stderr?.slice(-1500) });
-  return { root, home, run, shown, cleanup: () => { for (const dir of [root, home]) rmSync(dir, { recursive: true, force: true }); } };
+  return { root, home, run, runWith, shown, cleanup: () => { for (const dir of [root, home]) rmSync(dir, { recursive: true, force: true }); } };
 }
 
 const limitOf = (config: { max_age?: number; max_msgs_per_subject?: number }): ChatHistoryLimit => ({ maxAgeMs: (config.max_age ?? 0) / 1_000_000, perSender: config.max_msgs_per_subject ?? Number.NaN });
@@ -153,19 +157,12 @@ const same = (a: ChatHistoryLimit, b: ChatHistoryLimit) => a.maxAgeMs === b.maxA
   }
 }
 
-// ── a resume, and a start that fails after the move ────────────────────────────────────────────────
+// ── a resume moves nothing ─────────────────────────────────────────────────────────────────────────
 {
-  const s = sandbox("late");
+  const s = sandbox("resume");
   const port = await freePort();
   const server = `nats://127.0.0.1:${port}`;
-  const space = "chl_late_failure";
-  const seed = join(s.root, "seed.json");
-  writeFileSync(seed, JSON.stringify({ channels: { general: { replay: true } } }));
-  const moved = (r: SpawnSyncReturns<string>) => `${r.stdout}${r.stderr}`.includes("the broker now deletes posts older than 30d");
-  const chatLimit = async () => {
-    const c = await connect({ servers: server });
-    try { return limitOf((await (await jetstreamManager(c)).streams.info(chatStream(space))).config); } finally { await c.close(); }
-  };
+  const space = "chl_resume";
   let up = false;
   try {
     const started = s.run("up", "--detach", "--open", "--server", server, "--space", space);
@@ -175,32 +172,127 @@ const same = (a: ChatHistoryLimit, b: ChatHistoryLimit) => a.maxAgeMs === b.maxA
     const jsm = await jetstreamManager(nc);
     const { config } = await jsm.streams.info(chatStream(space));
     await jsm.streams.update(chatStream(space), { ...config, max_age: 0, max_msgs_per_subject: LEGACY_CHAT_HISTORY.perSender });
-    // A registry entry that does not decode, which a seed for that channel refuses to write over.
-    await jetstream(nc).publish(`$KV.${channelBucket(space)}.general`, "{not json");
     await nc.close();
 
     const preserved = s.run("down", "--preserve-state");
     up = preserved.status !== 0;
     const resumed = s.run("up", "--detach", "--open", "--server", server, "--space", space);
     up = resumed.status === 0;
-    check("a resume after down --preserve-state runs no stream setup, so the old settings stay", up && !moved(resumed) && same(await chatLimit(), LEGACY_CHAT_HISTORY), { down: s.shown(preserved), up: s.shown(resumed) });
+    const c = await connect({ servers: server });
+    const limit = limitOf((await (await jetstreamManager(c)).streams.info(chatStream(space))).config);
+    await c.close();
+    check("a resume after down --preserve-state runs no stream setup, so the old settings stay", up && !`${resumed.stdout}${resumed.stderr}`.includes("the broker now deletes posts older than 30d") && same(limit, LEGACY_CHAT_HISTORY), { down: s.shown(preserved), up: s.shown(resumed), limit });
+  } catch (e) {
+    check(`the resume scenario ran without throwing: ${e instanceof Error ? e.message : String(e)}`, false, e instanceof Error ? e.stack : e);
+  } finally {
+    if (up) s.run("down");
+    s.cleanup();
+  }
+}
 
-    const stopped = s.run("down");
-    up = stopped.status !== 0;
-    const failed = s.run("up", "--detach", "--open", "--server", server, "--space", space, "--channels", seed, "--json");
-    up = failed.status === 0;
-    let envelope: { error?: { code?: string }; changed?: { kind?: string; stream?: string; to?: ChatHistoryLimit }[] } | undefined;
-    try { envelope = JSON.parse(failed.stdout); } catch { envelope = undefined; }
-    check("a start that moves the limit and then fails on a later step says the limit moved", failed.status !== 0 && envelope?.error?.code === "CONFLICT" && moved(failed), s.shown(failed));
-    check("...and its envelope names the chat stream as changed", envelope?.changed?.some((c) => c.kind === "chat-history-limit" && c.stream === chatStream(space) && c.to !== undefined && same(c.to, CHAT_HISTORY_DEFAULT)) === true, envelope?.changed);
+// ── a start that fails after the move, from `cotal up` and from `cotal setup` ──────────────────────
+// A prepared root starts on the controller-owned stack, the start that has a JSON receipt.
+{
+  const s = sandbox("late");
+  const port = await freePort();
+  const server = `nats://127.0.0.1:${port}`;
+  const space = "chl_late";
+  const seed = { channels: { general: { replay: true } } };
+  const seedFile = join(s.root, "seed.json");
+  writeFileSync(seedFile, JSON.stringify(seed));
+  const notice = "the broker now deletes posts older than 30d";
+  type Envelope = {
+    error?: { code?: string; message?: string };
+    warnings?: { code?: string; message?: string }[];
+    changed?: { kind?: string; stream?: string; to?: ChatHistoryLimit }[];
+    result?: { startup?: { state?: string; stack?: unknown; failure?: { code?: string; message?: string } } };
+  };
+  const envelopeOf = (r: SpawnSyncReturns<string>): Envelope | undefined => { try { return JSON.parse(r.stdout) as Envelope; } catch { return undefined; } };
+  const namesMove = (e: Envelope | undefined) => e?.changed?.some((c) => c.kind === "chat-history-limit" && c.stream === chatStream(space) && c.to !== undefined && same(c.to, CHAT_HISTORY_DEFAULT)) === true;
+  const chatLimit = async () => {
+    const c = await connect({ servers: server });
+    try { return limitOf((await (await jetstreamManager(c)).streams.info(chatStream(space))).config); } finally { await c.close(); }
+  };
+  const toLegacy = async () => {
+    const c = await connect({ servers: server });
+    try {
+      const jsm = await jetstreamManager(c);
+      const { config } = await jsm.streams.info(chatStream(space));
+      await jsm.streams.update(chatStream(space), { ...config, max_age: 0, max_msgs_per_subject: LEGACY_CHAT_HISTORY.perSender });
+    } finally { await c.close(); }
+  };
+  const start = (...extra: string[]) => s.run("up", "--space", space, "--open", "--no-manager", "--server", server, ...extra, "--json");
+  const stop = () => s.run("down", "--yes");
+  // Setup prepares this connector, and its launch throws, so setup stops once its start returns.
+  const connector = join(s.home, "connector.mjs");
+  writeFileSync(connector, `import { registry } from ${JSON.stringify(pathToFileURL(join(worktree, "packages/core/dist/index.js")).href)};\nregistry.register({ kind: "connector", name: "chl-smoke", requires: [], buildLaunch() { throw new Error("unexpected harness launch"); } });\n`);
+  const setup = (...hooks: string[]) => s.runWith({ NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} ${[connector, ...hooks].map((hook) => `--import=${pathToFileURL(hook).href}`).join(" ")}` }, "setup", "--destination", "local", "--harness", "chl-smoke", "--project", s.root, "--space", space, "--start", "--detach", "--yes", "--json");
+  const defaultChannels = join(s.root, ".cotal", "channels.json");
+  try {
+    const created = s.run("space", "create", space, "--root", s.root, "--json");
+    check("control: the root is prepared", created.status === 0, s.shown(created));
+    const started = start();
+    check("control: the controller-owned stack starts", started.status === 0, s.shown(started));
+    await toLegacy();
+    const nc = await connect({ servers: server });
+    // A registry entry that does not decode, which a seed for that channel refuses to write over.
+    await jetstream(nc).publish(`$KV.${channelBucket(space)}.general`, "{not json");
+    await nc.close();
+    const stopped = stop();
+    check("control: the stack stops", stopped.status === 0, s.shown(stopped));
 
-    const retry = s.run("up", "--detach", "--open", "--server", server, "--space", space);
-    up = retry.status === 0;
-    check("the next start runs on the moved limit and reports no move", up && !moved(retry) && same(await chatLimit(), CHAT_HISTORY_DEFAULT), s.shown(retry));
+    const failed = start("--channels", seedFile);
+    const refusal = envelopeOf(failed);
+    check("a start that moves the limit and then fails on a later step says the limit moved", failed.status !== 0 && refusal?.error?.code === "CONFLICT" && refusal.error.message?.includes(notice) === true, s.shown(failed));
+    check("...and its envelope names the chat stream as changed", namesMove(refusal), refusal?.changed);
+
+    const retry = start();
+    check("the next start runs on the moved limit and reports no move", retry.status === 0 && !`${retry.stdout}${retry.stderr}`.includes(notice) && same(await chatLimit(), CHAT_HISTORY_DEFAULT), s.shown(retry));
+
+    // Setup's start is a bare `cotal up`, which seeds the root's own channels file.
+    await toLegacy();
+    writeFileSync(defaultChannels, JSON.stringify(seed));
+    const stoppedAgain = stop();
+    check("control: the stack stops again", stoppedAgain.status === 0, s.shown(stoppedAgain));
+    const setupFailed = setup();
+    const setupRefusal = envelopeOf(setupFailed);
+    check("a setup whose start moves the limit and then fails says the limit moved", setupFailed.status !== 0 && setupRefusal?.result?.startup?.state === "refused" && setupRefusal.result.startup.failure?.code === "CONFLICT" && setupRefusal.result.startup.failure.message?.includes(notice) === true, s.shown(setupFailed));
+    check("...and setup's envelope names the chat stream as changed", namesMove(setupRefusal), setupRefusal?.changed);
+
+    rmSync(defaultChannels);
+    const restarted = start();
+    check("control: the stack starts after the setup refusal", restarted.status === 0 && same(await chatLimit(), CHAT_HISTORY_DEFAULT), s.shown(restarted));
+    await toLegacy();
+    const stoppedLast = stop();
+    check("control: the stack stops before the setup that goes on", stoppedLast.status === 0, s.shown(stoppedLast));
+    const setupStarted = setup();
+    const report = envelopeOf(setupStarted);
+    check("control: setup's start returns and its launch fails after it", report?.result?.startup?.stack != null && same(await chatLimit(), CHAT_HISTORY_DEFAULT), s.shown(setupStarted));
+    check("a setup whose start moves the limit and goes on warns that the limit moved", report?.warnings?.some((w) => w.code === "CHAT_HISTORY_MIGRATED" && w.message?.includes(notice) === true) === true, report?.warnings);
+    check("...and names the chat stream as changed", namesMove(report), report?.changed);
+
+    // A manager identity that does not read once the start returns. The hook spoils the file as the
+    // startup child exits and puts it back as setup exits, so the stack still stops afterwards.
+    const spoil = join(s.home, "spoil-identity.mjs");
+    writeFileSync(spoil, `import { copyFileSync, existsSync, readdirSync, renameSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+const dir = join(process.cwd(), ".cotal");
+const records = () => readdirSync(dir, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => join(dir, e.name, "manager-instance.json")).filter((f) => existsSync(f));
+if (process.argv[2] === "__setup-start") process.on("exit", () => { for (const f of records()) { copyFileSync(f, f + ".kept"); writeFileSync(f, "{"); } });
+if (process.argv[2] === "setup") process.on("exit", () => { for (const f of records()) if (existsSync(f + ".kept")) renameSync(f + ".kept", f); });
+`);
+    await toLegacy();
+    const stoppedSpoiled = stop();
+    check("control: the stack stops before the spoiled setup", stoppedSpoiled.status === 0, s.shown(stoppedSpoiled));
+    const setupSpoiled = setup(spoil);
+    const spoiled = envelopeOf(setupSpoiled);
+    check("control: setup's start returns and its manager identity then does not read", spoiled?.result?.startup?.state === "unknown" && spoiled.result.startup.stack == null && same(await chatLimit(), CHAT_HISTORY_DEFAULT), s.shown(setupSpoiled));
+    check("a setup whose manager identity does not read after the move says the limit moved", spoiled?.result?.startup?.failure?.message?.includes(notice) === true, spoiled?.result?.startup?.failure);
+    check("...and that envelope names the chat stream as changed", namesMove(spoiled), spoiled?.changed);
   } catch (e) {
     check(`the late-failure scenario ran without throwing: ${e instanceof Error ? e.message : String(e)}`, false, e instanceof Error ? e.stack : e);
   } finally {
-    if (up) s.run("down");
+    if (existsSync(join(s.root, ".cotal", "stack-controller.json"))) stop();
     s.cleanup();
   }
 }

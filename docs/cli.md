@@ -1342,11 +1342,11 @@ When `cotal up` starts a space's broker, it moves a chat stream still on the set
 before the limit was configurable, no age limit and 1000 posts per sender on each channel, to the
 current default of 30 days and 1000 per sender. **This deletes every channel post older than 30 days at that moment.**
 `up` warns with the old and new limit, as `CHAT_HISTORY_MIGRATED` in the receipt of a controller
-stack or `team boot`. Any other limit is the operator's ([`history limit`](#history)) and is left as
+stack, `team boot` or `setup --start`. Any other limit is the operator's ([`history limit`](#history)) and is left as
 it is, and a chat stream that differs from the canonical settings in anything else refuses the start.
 The move runs after every other stream setup check, so a start that a check refuses deletes nothing.
-A start that fails after the move says so in its error, and its envelope lists the chat stream under
-`changed`. A refresh of a broker that is already running changes no limit, and neither does a resume
+A start that fails after the move says so in its error, which for `setup --start` is the startup
+failure in its receipt, and its envelope lists the chat stream under `changed`. A refresh of a broker that is already running changes no limit, and neither does a resume
 after `down --preserve-state`, which runs no stream setup, so `history limit` can set one before the
 next start. [Upgrading](UPGRADING.md#channel-posts-expire-at-30-days-after-01286) has the steps.
 

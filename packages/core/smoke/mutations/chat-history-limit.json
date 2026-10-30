@@ -51,8 +51,8 @@
     {
       "name": "cotal up moves the chat stream before setup's other checks",
       "file": "packages/core/src/streams.ts",
-      "find": "    await createSpaceStreams(jsm, opts.space);\n    // KV buckets",
-      "replace": "    await createSpaceStreams(jsm, opts.space);\n    await reconcileChatHistory(jsm, opts.space);\n    // KV buckets",
+      "find": "    await createSpaceStreams(jsm, opts.space);\n",
+      "replace": "    await createSpaceStreams(jsm, opts.space);\n    await reconcileChatHistory(jsm, opts.space);\n",
       "expectRed": "a setup the artifact store check refuses leaves a legacy chat stream as it was",
       "cell": "a setup the artifact store check refuses leaves a legacy chat stream as it was",
       "note": "The move deletes posts, so a setup a later check refuses would delete them and report nothing."

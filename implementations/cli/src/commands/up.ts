@@ -250,6 +250,7 @@ import {
   type ExistingStorePin,
   type StackUpNative,
   unparsableDaemonCredsNotice,
+  chatHistoryChanged,
   chatHistoryMigratedNotice,
 } from "./stack-up.js";
 import { handOverStartupNotice, noticeOnInterrupt, releaseStartupNotice } from "../lib/interrupt-notice.js";
@@ -870,22 +871,30 @@ function seedMovedFailure(error: unknown): unknown {
   return new CommandFailure(error.outcome, error.code, message, { remedy: error.remedy, native: error.native, target: error.target, changed: [...(error.changed ?? []), changed], cause: error.cause, selfContained: error.selfContained, remedyIsCommand: error.remedyIsCommand });
 }
 
-/** The chat history limit this run's stream setup moved, recorded the moment setup returns it. */
-let chatHistoryMoved: { space: string; change: ChatHistoryChange } | undefined;
+/** A chat stream's history limit that one start moved, and the space it belongs to. */
+export interface ChatHistoryMove { space: string; change: ChatHistoryChange }
 
-/** A failure after this run moved a chat stream's history limit says so, instead of claiming that
+/** The chat history limit this run's stream setup moved, recorded the moment setup returns it. */
+let chatHistoryMoved: ChatHistoryMove | undefined;
+
+/** The move this process's stream setup made, if it made one. `cotal setup` starts its stack in a
+ *  child whose output it does not read, so that child reports the move from here. */
+export function chatHistoryMovedThisRun(): ChatHistoryMove | undefined {
+  return chatHistoryMoved;
+}
+
+/** A failure after a start moved a chat stream's history limit says so, instead of claiming that
  *  nothing was written: the broker deleted the posts older than the new age, and a later start finds
- *  nothing left to move and reports nothing. */
-export function chatHistoryMovedFailure(error: unknown): unknown {
-  const moved = chatHistoryMoved;
+ *  nothing left to move and reports nothing. `moved` is this run's own move unless the caller names
+ *  the one a child process reported. */
+export function chatHistoryMovedFailure(error: unknown, moved = chatHistoryMoved): unknown {
   if (!moved || !(error instanceof Error)) return error;
   const message = `${error.message.replace(/; nothing was (?:started or )?written$/, "")}; ${chatHistoryMigratedNotice(moved.space, moved.change)}`;
   if (!isCommandFailure(error)) {
     error.message = message;
     return error;
   }
-  const changed = { kind: "chat-history-limit", stream: moved.change.stream, from: moved.change.from, to: moved.change.to };
-  return new CommandFailure(error.outcome, error.code, message, { remedy: error.remedy, native: error.native, target: error.target, changed: [...(error.changed ?? []), changed], cause: error.cause, selfContained: error.selfContained, remedyIsCommand: error.remedyIsCommand });
+  return new CommandFailure(error.outcome, error.code, message, { remedy: error.remedy, native: error.native, target: error.target, changed: [...(error.changed ?? []), chatHistoryChanged(moved.change)], cause: error.cause, selfContained: error.selfContained, remedyIsCommand: error.remedyIsCommand });
 }
 
 /** `inheritedLock` is the root maintenance lock a recovery re-entry hands down (see the re-entry

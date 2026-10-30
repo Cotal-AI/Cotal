@@ -459,6 +459,11 @@ export function chatHistoryMigratedNotice(space: string, change: ChatHistoryChan
   return `the chat history limit of space ${space} moved from ${describeChatHistory(change.from)} to ${describeChatHistory(change.to)}; the broker now deletes posts older than ${formatChatAge(change.to.maxAgeMs)}`;
 }
 
+/** The `changed` entry a receipt carries for a start that moved a chat stream's history limit. */
+export function chatHistoryChanged(change: ChatHistoryChange): { kind: "chat-history-limit" } & ChatHistoryChange {
+  return { kind: "chat-history-limit", stream: change.stream, from: change.from, to: change.to };
+}
+
 /** `cotal up`'s controller route: start, seed the default persona into the root, then write its
  *  own receipt, which names the saved services it does not start. The stack is up by then, so a
  *  persona that cannot be written, or saved services that cannot be listed, is a warning. */

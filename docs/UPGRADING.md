@@ -52,8 +52,8 @@ channel with no age limit.
 **The first `cotal up` that starts an existing space's broker on this release deletes every channel
 post older than 30 days.** It moves a chat stream still on the old settings (no age limit, 1000 per
 sender) to the new default, and the broker removes the older posts at once. Nothing asks first. `up`
-prints a warning that names the old and new limit, and the receipt of a controller stack or
-`team boot` carries it as `CHAT_HISTORY_MIGRATED`. A start that fails after the move says so in its
+prints a warning that names the old and new limit, and the receipt of a controller stack,
+`team boot` or `setup --start` carries it as `CHAT_HISTORY_MIGRATED`. A start that fails after the move says so in its
 error. The posts it deletes are gone from the stream.
 
 ### What changes for you
