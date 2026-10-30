@@ -16,6 +16,8 @@ are not supported.
 
 The connector is seeded with the Cotal CLI. Jcode's released Harness API bridge is a Unix-socket
 surface, so Windows is not supported. Managed seats run on Linux, macOS, and the BSDs.
+This connector requires Node 22.13 or later; Node 23 installations require 23.4 or later.
+It uses the built-in SQLite reader to inherit Cursor authentication without copying editor state.
 Install Jcode 0.78.1 or later from its GitHub release and make the binary available as `jcode` on `PATH`:
 
 ```bash
@@ -140,6 +142,12 @@ takes a path: the entered directory's inode must equal the inode of the descript
 earlier, and a mismatch is refused by name. The working directory is restored on every exit,
 including the refusing ones. If neither pin is available, the connector throws a named error and
 mirrors nothing. Once a pin holds, `ENOENT` on a child means the mirror path is absent.
+
+Cursor SQLite mirrors contain only the access token, refresh token and service machine ID read by
+Jcode. The source is opened read-only, including committed WAL updates. Other editor state is omitted.
+The compact database uses the same private path and atomic publication as the other login files.
+Existing full copies are replaced on the next launch of that seat; this does not clean up retired
+seat homes. Provider selection and external-auth consent remain Jcode's responsibility.
 
 There is no credential-free opt-out today because the private instance must reproduce the operator's
 current provider-login state rather than silently start with stale or partial authorization.

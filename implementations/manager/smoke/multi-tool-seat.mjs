@@ -15,6 +15,8 @@ mesh.managerInvoke = async (...args) => {
 };
 mesh.on("error", (e) => console.error(e.message));
 await mesh.start();
+trace({ identity: { space: config.space, name: config.name, id: config.id,
+  lifecycleUid: config.lifecycleUid, managerInstanceId: config.managerInstanceId } });
 let seen = "", busy = false;
 const timer = setInterval(async () => {
   const path = join(root, "tool-command.json");

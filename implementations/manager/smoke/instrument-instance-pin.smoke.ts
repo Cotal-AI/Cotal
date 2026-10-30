@@ -166,7 +166,12 @@ const readTolerant = async (
     const cacheBefore = cache.get(MANAGER_ENDPOINT)?.responder.instanceId;
     try {
       const r = await ep.invokeService(MANAGER_ENDPOINT, "ps");
-      if (r.reply.ok === true) return { ok: true, tries: i, perAttempt };
+      if (r.reply.ok === true) {
+        // Cross-command fault injection needs a full discovered handle. A narrow ps
+        // invocation, including its recovery path, populates only the command cache.
+        await ep.describeService(MANAGER_ENDPOINT);
+        return { ok: true, tries: i, perAttempt };
+      }
       last = r.reply.error;
       const detail = (r.reply.error?.details ?? []).find(
         (d): d is EpBindRefusedDetail => d.kind === EP_BIND_REFUSED,
@@ -530,7 +535,12 @@ try {
       let readThrew: unknown;
       let readLanded: { reply?: { ok?: boolean; error?: EpError } } | undefined;
       try { readLanded = await ep.invokeService(MANAGER_ENDPOINT, "ps"); } catch (e) { readThrew = e; }
-      const afterRead = cache.get(MANAGER_ENDPOINT)?.responder.instanceId;
+      // Recovery drops the full handle and resolves only the command being retried.
+      const readCache = (ep as unknown as {
+        resolvedCommandServices: Map<string, Map<string, ResolvedService>>;
+      }).resolvedCommandServices;
+      const afterRead = (cache.get(MANAGER_ENDPOINT)
+        ?? readCache.get(MANAGER_ENDPOINT)?.get("ps"))?.responder.instanceId;
       check("a READ with the same forced split self-heals inside ONE call: the guard did not widen",
         afterRead === IID1 || afterRead === IID2, { afterRead, threw: readThrew instanceof Error ? readThrew.message.slice(0, 120) : readThrew });
       // Each re-issue rides the same class queue and can be refused again, so one call may recover

@@ -1,5 +1,111 @@
 # @cotal-ai/connector-codex
 
+## 0.131.1
+
+No changes in this release.
+
+## 0.131.0
+
+No changes in this release.
+
+## 0.130.2
+
+No changes in this release.
+
+## 0.130.1
+
+No changes in this release.
+
+## 0.130.0
+
+No changes in this release.
+
+## 0.129.9
+
+No changes in this release.
+
+## 0.129.8
+
+No changes in this release.
+
+## 0.129.7
+
+No changes in this release.
+
+## 0.129.6
+
+No changes in this release.
+
+## 0.129.5
+
+No changes in this release.
+
+## 0.129.4
+
+No changes in this release.
+
+## 0.129.3
+
+No changes in this release.
+
+## 0.129.2
+
+No changes in this release.
+
+## 0.129.1
+
+No changes in this release.
+
+## 0.129.0
+
+No changes in this release.
+
+## 0.128.7
+
+### Patch Changes
+
+- 7e34db3: Report the Cotal release loaded by Codex's HTTP MCP server and Jcode's stdio MCP bridge in standard `serverInfo.version`, instead of `0.0.0`. The value comes from the bundled release, not a CLI installed on disk; updating files does not change the version reported by an already-running process.
+
+## 0.128.6
+
+### Patch Changes
+
+- ce07fa6: Keep automatically answered native user-input requests (`item/tool/requestUserInput`) from disarming workflow turn completion. A completed Codex turn now yields done after this request without requiring a later command or MCP item. Explicit blocked and handoff yields remain unchanged.
+
+## 0.128.5
+
+No changes in this release.
+
+## 0.128.4
+
+No changes in this release.
+
+## 0.128.3
+
+No changes in this release.
+
+## 0.128.2
+
+No changes in this release.
+
+## 0.128.1
+
+No changes in this release.
+
+## 0.128.0
+
+No changes in this release.
+
+## 0.127.5
+
+No changes in this release.
+
+## 0.127.4
+
+### Patch Changes
+
+- c153779: Refuse mesh tool calls from other Codex root threads and explain that `/new` does not replace the managed conversation. Keep attached turns on the managed thread and in-place app-server recovery bound to the seat's identity.
+
 ## 0.127.3
 
 No changes in this release.

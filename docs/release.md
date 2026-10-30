@@ -82,8 +82,11 @@ no GitHub Release. Tags are separate registry writes, not an atomic transaction.
 
 The following job cuts one GitHub Release for the version, tagged `v<version>`. Its notes open with
 the install command, continue with the changeset summaries, and end with the merged pull requests
-since the previous release. The Discord announcement follows that release. Check the relevant
-existing-installation upgrade before reporting a fix delivered.
+since the previous release. If a version has no changelog section or no summaries, the detail
+script fails with a diagnostic. The job keeps that stderr, emits a warning, and creates the release
+without the optional summaries. Other detail-script failures follow the same non-blocking path.
+The Discord announcement follows that release. Check the relevant existing-installation upgrade
+before reporting a fix delivered.
 
 An accepted upload and a successful install are separate observations. npm may temporarily return
 cached missing-package responses after an upload, and the large `cotal-ai` tarball has taken up to

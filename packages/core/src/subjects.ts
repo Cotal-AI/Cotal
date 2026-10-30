@@ -914,14 +914,32 @@ function presenceOptionalString(value: unknown): boolean {
  *  key it was read under: the key is the identity the write grant proves, and an empty id matches
  *  no key. */
 export function isPresenceRow(value: unknown, key: string): value is Presence {
-  if (!presenceRecord(value) || !presenceRecord(value.card)) return false;
+  return presenceRowProblem(value, key) === undefined;
+}
+
+function presenceRowProblem(value: unknown, key: string): string | undefined {
+  if (!presenceRecord(value)) return "row";
+  if (!presenceRecord(value.card)) return "card";
   const card = value.card;
-  if (card.id !== key || typeof card.id !== "string" || card.id.length === 0 || typeof card.name !== "string") return false;
-  return presenceOptionalString(card.role) &&
-    typeof value.status === "string" && Object.hasOwn(PRESENCE_STATUSES, value.status) &&
-    typeof value.ts === "number" && Number.isFinite(value.ts) &&
-    presenceOptionalString(value.activity) && presenceOptionalString(value.attention) &&
-    (value.condition === undefined || (presenceRecord(value.condition) && typeof value.condition.code === "string"));
+  if (typeof card.id !== "string" || card.id.length === 0 || card.id !== key) return "card.id";
+  if (typeof card.name !== "string") return "card.name";
+  if (!presenceOptionalString(card.role)) return "card.role";
+  if (typeof value.status !== "string" || !Object.hasOwn(PRESENCE_STATUSES, value.status)) return "status";
+  if (typeof value.ts !== "number" || !Number.isFinite(value.ts)) return "ts";
+  if (!presenceOptionalString(value.activity)) return "activity";
+  if (!presenceOptionalString(value.attention)) return "attention";
+  if (value.condition !== undefined) {
+    if (!presenceRecord(value.condition)) return "condition";
+    if (typeof value.condition.code !== "string") return "condition.code";
+  }
+  return undefined;
+}
+
+/** Enforce the same wire shape as {@link isPresenceRow}, naming the invalid field without
+ *  coercing it or including its value. Writers call this before changing their local state. */
+export function assertPresenceRow(value: unknown, key: string): asserts value is Presence {
+  const field = presenceRowProblem(value, key);
+  if (field !== undefined) throw new TypeError(`invalid presence ${field}`);
 }
 
 /** Name of the KV bucket holding the channel registry (config) for a space — sibling of

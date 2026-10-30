@@ -350,15 +350,14 @@ function personaItems(argv: string[]) {
 
 /** Channels/roles declared by the TARGET mesh's personas — the same root {@link personaItems}
  *  uses, so `--role`/`--subscribe` complete from the personas this spawn would actually launch
- *  rather than from whatever project the operator is standing in. Offline (no probe) and FAIL
- *  CLOSED: with no single resolvable target, or a malformed persona file (see `declaredValues`),
- *  offer nothing rather than throw into the operator's shell. */
+ *  rather than from whatever project the operator is standing in. Offline (no probe). With no single
+ *  resolvable target it offers nothing. A resolved catalog that cannot be read, or a malformed persona
+ *  file (see `declaredValues`), throws, so the completion fails and names the reason. */
 function declaredFrom(argv: string[], list: (root: string) => string[]): string[] {
-  try {
-    return list(catalogRoot(argv));
-  } catch {
-    return [];
-  }
+  let root: string;
+  try { root = catalogRoot(argv); }
+  catch { return []; }
+  return list(root);
 }
 
 export { spawnPersona } from "../lib/spawn-defaults.js";

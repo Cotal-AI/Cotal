@@ -424,11 +424,26 @@ export class EngineUnavailable extends Error {
   }
 }
 
-/** The message off anything a foreign body throws, read defensively: other people's code may throw a primitive. */
+/** The name off a foreign throw. Native Error fields are writable too; a non-string or
+ *  throwing accessor is not a wire name. */
+export function nameOf(v: unknown): string {
+  try {
+    const name = (v as { name?: unknown } | null | undefined)?.name;
+    if (typeof name === "string") return name;
+  } catch { /* a foreign accessor cannot replace the failure being reported */ }
+  return "Error";
+}
+
+/** The message off a foreign throw: keep a string field, otherwise stringify the value.
+ *  Both field access and coercion may execute foreign code. If neither yields text, report
+ *  that fact rather than letting error reporting throw or strand the worker's answer. */
 export function messageOf(v: unknown): string {
-  if (v instanceof Error) return v.message;
-  const m = (v as { message?: unknown } | null | undefined)?.message;
-  return typeof m === "string" ? m : String(v);
+  try {
+    const message = (v as { message?: unknown } | null | undefined)?.message;
+    if (typeof message === "string") return message;
+  } catch { /* try the value's normal string representation instead */ }
+  try { return String(v); }
+  catch { return "<unprintable thrown value>"; }
 }
 
 /**

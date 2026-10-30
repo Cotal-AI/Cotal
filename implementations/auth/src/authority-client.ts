@@ -29,7 +29,7 @@
 import { jwtAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { decode, encodeUser } from "@nats-io/jwt";
 import { fromPublic } from "@nats-io/nkeys";
-import { armRenewal, jitteredBackoffMs, nativeNkeySigner, EpEnvelopeError, admissionBucket, dialerFor, sessionsBucket, assertInboxConnId, endpointToken, epAuthBucket, epcStreamName, epfStreamName, newIdentity, recordsBucket, retirementFrontierStreams, spacePrefix, assertPoolToken, principalTags, principalKey, remoteManagerActors, remoteManagerRegistrationProof, assertLifecycleToken, epcredFamilyPrefix, epgateKey, eprepairKey, GOVERN_HEAD, RECORD_KINDS, recordAtomicKey, recordSpecKey, recordStatusKey, BASELINE_LIFECYCLE_ENDPOINT, epCallerGrantRows, instanceOnlyManagerCapabilities, type EpCaller, type PlaneConnTuple } from "@cotal-ai/core";
+import { armRenewal, jitteredBackoffMs, nativeNkeySigner, epRequestObservationFilter, EpEnvelopeError, admissionBucket, dialerFor, sessionsBucket, assertInboxConnId, endpointToken, epAuthBucket, epcStreamName, epfStreamName, newIdentity, recordsBucket, retirementFrontierStreams, spacePrefix, assertPoolToken, principalTags, principalKey, remoteManagerActors, remoteManagerRegistrationProof, assertLifecycleToken, epcredFamilyPrefix, epgateKey, eprepairKey, GOVERN_HEAD, RECORD_KINDS, recordAtomicKey, recordSpecKey, recordStatusKey, BASELINE_LIFECYCLE_ENDPOINT, epCallerGrantRows, instanceOnlyManagerCapabilities, type EpCaller, type PlaneConnTuple } from "@cotal-ai/core";
 import { chatAuthorityWriteSubjects } from "./chat-session-store.js";
 import { authConnectReaderGrants, openConnectReader, type ConnectReader } from "./connect-reader.js";
 import { environmentManagerAdmissionIndexBucket } from "./environment-manager-admission-index.js";
@@ -212,13 +212,12 @@ export function platformReadinessGrants(space: string, connId: string, caller: E
  *  The issuing host reads them and never replies: the broker let only the caller's ceiling publish
  *  each one, so observing it is the host's own evidence that the caller asked. */
 export function servedRunRequestSubjects(space: string): string[] {
-  const p = spacePrefix(space);
-  const m = endpointToken("manager");
+  const filters = (command: string, issued: boolean) => (["inst", "one"] as const)
+    .map((route) => epRequestObservationFilter(space, { route, endpoint: "manager", command, issued }));
   return [
-    ...["run-start", "run-resume", "run-answer", "run-start-keyed", "run-submission-status"].flatMap((c) => [`${p}.ep.v1.inst.${m}.*.${c}.>`, `${p}.ep.v1.one.${m}.${c}.>`]),
+    ...["run-start", "run-resume", "run-answer", "run-start-keyed", "run-submission-status"].flatMap((command) => filters(command, true)),
     // A managed seat answers on the legacy rail, the relay path; nothing else served there is forwarded.
-    `${p}.ep.inst.${m}.*.run-answer.>`,
-    `${p}.ep.one.${m}.run-answer.>`,
+    ...filters("run-answer", false),
   ];
 }
 
@@ -233,7 +232,7 @@ export function servedSpawnRequestSubjects(space: string): string[] {
 
 /** Cancellation observes only the issued untargeted exact-instance rail. */
 export function servedRunCancelRequestSubject(space: string): string {
-  return `${spacePrefix(space)}.ep.v1.inst.${endpointToken("manager")}.*.run-cancel.>`;
+  return epRequestObservationFilter(space, { route: "inst", endpoint: "manager", command: "run-cancel", issued: true });
 }
 
 export { remoteManagerRegistrationProof };

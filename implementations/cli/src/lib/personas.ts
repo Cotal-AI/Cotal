@@ -1,7 +1,8 @@
-import { lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
+import { accessSync, constants, lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { loadAgentFile, personaDir, utf16Problem, type AgentDef } from "@cotal-ai/core";
-import { CommandFailure } from "@cotal-ai/workspace";
+import { codeSpan, CommandFailure, unsearchableFolder } from "@cotal-ai/workspace";
+import { shellWord } from "./endpoint-errors.js";
 
 /**
  * The persona catalog: the local `.cotal/agents/*.md` files an operator manages with
@@ -61,6 +62,22 @@ export function catalogFolderProblem(dir: string): CommandFailure | undefined {
   });
 }
 
+/** The refusal for a catalog folder `dir` that {@link readPersonas} could not read. Its next step
+ *  names a chmod only for a folder this account owns whose owner bits lack read or search. A folder
+ *  above it that this account cannot enter, or a folder another account owns, is named without one,
+ *  and any other error is refused without a step. */
+export function catalogReadRefusal(dir: string, error: unknown): CommandFailure {
+  const refusal = (remedy?: string) => new CommandFailure("refused", "PERMISSION_DENIED", `cannot read persona catalog: ${dir}`, remedy ? { remedy } : {});
+  const code = (error as NodeJS.ErrnoException).code;
+  if ((code !== "EACCES" && code !== "EPERM") || process.getuid === undefined) return refusal();
+  const above = unsearchableFolder(dir);
+  if (above) return refusal(`this account cannot enter ${above}, which holds the catalog; get access to that folder from its owner, then run the command again`);
+  let owner: number, mode: number;
+  try { ({ uid: owner, mode } = statSync(dir)); } catch { return refusal(); }
+  if (owner !== process.getuid()) return refusal("another account owns this folder; ask its owner to let this account read it");
+  return (mode & 0o500) === 0o500 ? refusal() : refusal(`make it readable by you with ${codeSpan(`chmod u+rx ${shellWord(dir)}`)}`);
+}
+
 /** The file `path` links to when it is a symbolic link: its resolved path, or the link's own text
  *  when that does not resolve. Undefined for anything else. */
 export function linkTarget(path: string): string | undefined {
@@ -84,12 +101,14 @@ export function listPersonas(root: string): PersonaEntry[] {
 }
 
 /** {@link listPersonas}, except that only an absent directory is an empty catalog: one that exists
- *  and cannot be read throws, for a report that must not show it as empty. */
+ *  and cannot be read throws, for a report that must not show it as empty. So does one that lists
+ *  but cannot be searched, such as mode 0600, whose files cannot be opened however they are written. */
 export function readPersonas(root: string): PersonaEntry[] {
   const dir = personaDir(root);
   let files: string[];
   try {
     files = readdirSync(dir).filter((f) => f.endsWith(".md"));
+    accessSync(dir, constants.X_OK);
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === "ENOENT") return [];
     throw e;
@@ -115,8 +134,14 @@ export function readPersonas(root: string): PersonaEntry[] {
  *  show/rm`. Only an absent folder is an empty catalog. One that cannot be read throws an error that
  *  names it, so the completion offers nothing and COTAL_COMPLETE_DEBUG says why. */
 export function listPersonaNames(root: string): string[] {
+  return completionPersonas(root).map((p) => p.name);
+}
+
+/** {@link readPersonas} for a completion: a catalog folder that cannot be read throws an error that
+ *  names it. */
+function completionPersonas(root: string): PersonaEntry[] {
   try {
-    return readPersonas(root).map((p) => p.name);
+    return readPersonas(root);
   } catch (e) {
     const code = (e as NodeJS.ErrnoException).code;
     throw new Error(`cannot read the persona catalog ${personaDir(root)}: ${code === "EACCES" || code === "EPERM" ? "permission denied" : code ?? (e as Error).message}`);
@@ -124,12 +149,12 @@ export function listPersonaNames(root: string): string[] {
 }
 
 /** Collect a deduped, sorted set of values declared across every persona file, via `pick`.
- *  Fail-closed: a single malformed file throws — the aggregate can't be trusted, so a derived
- *  completer must decline rather than offer a silently-partial set. The broken file is named loudly
- *  by `cotal personas list`, so the error stays visible; it's just not buried in a <TAB>. */
+ *  Fail-closed: a catalog folder that cannot be read, or a single malformed file, throws — the
+ *  aggregate can't be trusted, so a derived completer must fail rather than offer a silently-partial
+ *  or empty set. COTAL_COMPLETE_DEBUG prints the reason, and `cotal persona` names the broken file. */
 function declaredValues(root: string, pick: (def: AgentDef) => (string | undefined)[]): string[] {
   const out = new Set<string>();
-  for (const e of listPersonas(root)) {
+  for (const e of completionPersonas(root)) {
     if (e.error) throw new Error(`persona "${e.name}" is unparseable: ${e.error}`);
     for (const v of pick(e.def!)) if (v) out.add(v);
   }

@@ -1,5 +1,122 @@
 # @cotal-ai/core
 
+## 0.131.1
+
+No changes in this release.
+
+## 0.131.0
+
+### Patch Changes
+
+- f7c2c28: Use native Ed25519 nonce signing for Node endpoint and standalone connections. Read rotating credentials on every authentication attempt and clear the temporary signer after use.
+
+## 0.130.2
+
+No changes in this release.
+
+## 0.130.1
+
+No changes in this release.
+
+## 0.130.0
+
+### Minor Changes
+
+- 025d175: Build trusted auth request-observation filters through the same core request head as actual endpoint requests. Existing observed commands, routes and rails are unchanged. The focused source census ignores comment prose while still rejecting literal rail construction outside core.
+- 27250e3: Validate presence updates before changing endpoint state or publishing reader-invalid fields. Export `assertPresenceRow` alongside the existing reader predicate, using one shared shape check and field-named TypeErrors without coercion.
+
+## 0.129.9
+
+### Patch Changes
+
+- 1a59b0a: Discard native stored-message provenance at ephemeral endpoint ingress before parsing, authorization, dispatch or replies. Direct requests retain their existing headers and admission checks; read grants are unchanged.
+
+## 0.129.8
+
+No changes in this release.
+
+## 0.129.7
+
+No changes in this release.
+
+## 0.129.6
+
+No changes in this release.
+
+## 0.129.5
+
+No changes in this release.
+
+## 0.129.4
+
+No changes in this release.
+
+## 0.129.3
+
+### Patch Changes
+
+- c6ddccc: Avoid eager native request-origin stack capture on endpoint connections. Request failures retain their error classes and causes, with less caller-origin stack context.
+- 565f465: Avoid known-ungranted watch cleanup deletes while preserving local stop, reconnect rearm and already-permitted immediate reclamation.
+
+## 0.129.2
+
+No changes in this release.
+
+## 0.129.1
+
+No changes in this release.
+
+## 0.129.0
+
+No changes in this release.
+
+## 0.128.7
+
+No changes in this release.
+
+## 0.128.6
+
+No changes in this release.
+
+## 0.128.5
+
+### Patch Changes
+
+- 1c86343: Preserve the pre-submission compatibility refusal when a followed action's service does not advertise goal-result. Narrowed discovery keeps the action required and lets the existing follow preflight report the upgrade notice and not-executed outcome without publishing a mutation.
+
+## 0.128.4
+
+### Patch Changes
+
+- 4bfbede: Derive fresh user identity public keys with the existing native NKey signer while preserving stock NATS seed generation and encoding.
+
+## 0.128.3
+
+No changes in this release.
+
+## 0.128.2
+
+No changes in this release.
+
+## 0.128.1
+
+### Patch Changes
+
+- 20a5c96: Use the existing native NKey signer during space account creation to avoid repeated JavaScript key derivation. NATS key generation, key encoding, JWT claims and account permissions are unchanged.
+- 985519f: Verify broker/account bindings with the existing native NKey and JWT helpers to reduce setup CPU. Signature verification and the required match to the broker operator remain enforced.
+
+## 0.128.0
+
+No changes in this release.
+
+## 0.127.5
+
+No changes in this release.
+
+## 0.127.4
+
+No changes in this release.
+
 ## 0.127.3
 
 ### Patch Changes

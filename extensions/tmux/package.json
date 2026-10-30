@@ -1,7 +1,7 @@
 {
   "name": "@cotal-ai/tmux",
   "description": "Cotal tmux integration: a tmux Runtime and TerminalLayout provider for spawning agents into tmux windows.",
-  "version": "0.127.3",
+  "version": "0.131.1",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -18,7 +18,7 @@
     }
   },
   "scripts": {
-    "test": "pnpm run build && tsx package.smoke.ts && tsx driver-reads.smoke.ts",
+    "test": "pnpm run build && tsx package.smoke.ts && tsx driver-reads.smoke.ts && tsx driver-writes.smoke.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.smoke.json",
     "build": "tsc -p tsconfig.json",
     "prepublishOnly": "pnpm run build"

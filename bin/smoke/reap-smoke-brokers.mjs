@@ -72,18 +72,18 @@ export function listNatsServers() {
   if (process.platform === "win32") return undefined;
   let out;
   try {
-    out = execFileSync("ps", ["-eo", "pid=,args="], { encoding: "utf8", maxBuffer: 8 * 1024 * 1024 });
+    out = execFileSync("ps", ["-eo", "pid=,stat=,ucomm=,args="], { encoding: "utf8", maxBuffer: 8 * 1024 * 1024 });
   } catch {
     return undefined; // no ps: same honesty rule as Windows, reported rather than assumed empty
   }
   const rows = [];
   for (const line of out.split("\n")) {
-    const m = /^\s*(\d+)\s+(.*)$/.exec(line);
+    const m = /^\s*(\d+)\s+(\S+)\s+(\S+)\s+(.*)$/.exec(line);
     if (!m) continue;
-    const [, pid, args] = m;
-    // The executable may be bare or an absolute path, and must not match a `pnpm` line that merely
-    // MENTIONS nats-server, so anchor on the command word itself.
-    if (!/(^|\/)nats-server(\s|$)/.test(args)) continue;
+    const [, pid, state, command, args] = m;
+    // Arguments can mention a broker path without running it. Use the kernel command name and
+    // exclude dead processes; executable paths containing spaces remain intact in args.
+    if (command !== "nats-server" || /^[ZX]/.test(state)) continue;
     rows.push({ pid: Number(pid), args });
   }
   return rows;

@@ -201,7 +201,9 @@ field matches, and keeps the credential in memory.
 `chat-session-retire` takes `{alias, actor, lifecycleUid}` and runs the static terminal. It refuses
 before any effect unless the alias is a chat alias whose slot this manager instance owns at that
 uid and actor. It answers `retired`, `alreadyRetired`, or `failed` with a `retirement pending:`
-reason while the slot stays held. Retirement marks the credential's ledger row revoked, verifies
+reason while the slot stays held. It answers after the terminal settles, and the terminal waits up
+to 15 seconds for a delivery daemon that does not answer its eviction, so a caller's deadline must
+outlive that wait. Retirement marks the credential's ledger row revoked, verifies
 that the session's principal has no broker connection left, tears down its broker footprint and
 retires the slot. A static mesh has no broker-side credential revocation, so a copy of the leaf
 can still connect with the permissions it carries until its expiry. An ordinary spawn refuses any
@@ -388,7 +390,9 @@ refused without being changed. So is a second cancel that arrives while a first 
 turn; a first that fails leaves the turn pending unless something ended it meanwhile. A workflow
 run sends it for the turn, ask attempt or escalation of a branch it cancelled.
 
-A followed mutation requires a manager whose attributed describe includes `goal-result`. Update
+A followed mutation requires a manager whose attributed describe includes `goal-result`. If it
+is absent, preflight refuses with `failed-precondition`, an upgrade notice and `not-executed`
+before submitting the mutation. Narrowed discovery preserves that refusal. Update
 the manager, issuer and client together before using that recovery path. Reloading an issuer alone
 cannot change an already-running participant manager. Recovery re-resolves the accepting instance's
 epoch, preserves the caller lifecycle and validates the result against the accepted goal and any

@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import { createConnection } from "node:net";
 import { chmodSync, closeSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { freePort, recordSmokeSandbox, assertSmokeSandboxDown } from "@cotal-ai/smoke-kit";
+import { freePort, recordSmokeSandbox, assertSmokeSandboxDown, emitSentinel } from "@cotal-ai/smoke-kit";
 import { assertScratchHeld, makeScratch } from "../../../bin/smoke/_scratch.js";
 import { readStackJournal } from "../src/lib/stack-journal.js";
 import { openBrokerLog } from "../src/commands/up.js";
@@ -33,7 +33,9 @@ const shim = join(bin, "nats-server");
 writeFileSync(shim, `#!/bin/sh\nexec ${JSON.stringify(binary)} "$@"\n`, { mode: 0o700 });
 chmodSync(shim, 0o700);
 const sandbox = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: xdg });
-const env = { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}`, COTAL_HOME: home, XDG_CONFIG_HOME: xdg, COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
+const env = { ...process.env };
+for (const key of Object.keys(env)) if (key.startsWith("COTAL_")) delete env[key];
+Object.assign(env, { PATH: `${bin}:${process.env.PATH ?? ""}`, HOME: home, USERPROFILE: home, COTAL_HOME: home, XDG_CONFIG_HOME: xdg, COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" });
 const port = await freePort();
 const server = `nats://127.0.0.1:${port}`;
 const logFile = join(root, "logs", "broker.log");
@@ -115,3 +117,4 @@ try {
   process.umask(priorUmask);
   rmSync(scratch, { recursive: true, force: true });
 }
+emitSentinel({ passed: checks, failed: 0 });

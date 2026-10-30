@@ -40,7 +40,7 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(subcommand)) {
   await new Promise(() => {});
 } else {
   const { spawn } = await import("node:child_process");
-  const { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } = await import("node:fs");
+  const { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } = await import("node:fs");
   const { createServer } = await import("node:http");
   const { tmpdir } = await import("node:os");
   const { join } = await import("node:path");
@@ -203,9 +203,21 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(subcommand)) {
     check("a connection without a selection is not offered spawn", plain !== "" && plainSpawn.isError && /not available on this connection/.test(plainSpawn.text), plainSpawn);
     await tool("cotal_disconnect", { connection_id: plain });
 
+    const issuedIdentities = () => existsSync(join(home, "app-identities")) ? readdirSync(join(home, "app-identities")).filter((n) => existsSync(join(home, "app-identities", n, "actor.token")) || existsSync(join(home, "app-identities", n, "sentinel.creds"))).length : 0;
     const before = identities();
+    const issuedBefore = issuedIdentities();
+    const postsBefore = authority.counts.posts;
+    const issuesBefore = authority.counts.issues;
+    const malformed = await tool("cotal_connect", { name: "wide_conv", context: "native-wide", channels: [{ channel: "team.>.x", access: "read" }] });
+    check("a malformed wildcard is refused before an approval request or identity", malformed.isError && identities() === before && authority.counts.posts === postsBefore && authority.counts.issues === issuesBefore, malformed);
     const wildcard = await tool("cotal_connect", { name: "wide_conv", context: "native-wide", channels: [{ channel: "team.>", access: "read" }] });
-    check("a wildcard channel is refused before any identity is requested", wildcard.isError && /wildcard/.test(wildcard.text) && identities() === before, wildcard);
+    const widePending = authority.pending("wide_conv");
+    check("a valid wildcard waits for the fixture person's approval without an identity", !idOf(wildcard) && /Permission approval required/.test(wildcard.text) && issuedIdentities() === issuedBefore && authority.counts.posts === postsBefore + 1 && authority.counts.issues === issuesBefore && widePending.length === 1, { wildcard, before, records: identities(), issued: issuedIdentities(), posts: authority.counts.posts, issues: authority.counts.issues, pending: widePending.length });
+    assert.deepEqual(widePending[0]!.proposed?.channels, [{ channel: "team.>", access: "read" }]);
+    const pendingRecord = readdirSync(join(home, "app-identities")).map((n) => join(home, "app-identities", n, "identity.json")).filter(existsSync).map((file) => JSON.parse(readFileSync(file, "utf8")) as { requestId: string; state: string; remote?: { material?: unknown }; local?: unknown }).find((r) => r.requestId === widePending[0]!.requestId);
+    check("the saved wildcard request carries no issued material", pendingRecord?.state === "creating" && pendingRecord.remote?.material === undefined && pendingRecord.local === undefined && issuedIdentities() === issuedBefore);
+    authority.decide(widePending[0]!.requestId, "deny");
+    check("the fixture person denies only the synthetic wildcard request", authority.pending("wide_conv").length === 0 && authority.counts.issues === issuesBefore && issuedIdentities() === issuedBefore);
     const narrowed = idOf(await personApproves({ name: "wide_conv", context: "native-wide", role: "auditor",
       channels: [{ channel: "team.beta", access: "read-post" }, { channel: "ops.secret", access: "read" }] }, EMPTY));
     const narrowConnection = await host.find("local", narrowed);
@@ -247,7 +259,7 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(subcommand)) {
     const spawned = await tool("cotal_spawn", { connection_id: sel, name: "helper_seat" });
     check("cotal_spawn starts a child through the Manager with the conversation's own manager-call bearer", !spawned.isError, spawned);
     const child = await cotalAuthProvider.actorScope({ dir: stateDir, owner, actor: "helper_seat" });
-    await until(() => conn!.agent.ep.getRoster().some((p) => p.card.name === "helper_seat"), "the spawned child did not join presence");
+    await until(async () => (await conn!.agent.ep.readPresence()).some((p) => p.card.name === "helper_seat"), "the spawned child did not join presence");
     check("the child joins under its own grant, with no scope the conversation did not hold", JSON.stringify(child) === "[]", child);
     const despawned = await tool("cotal_despawn", { connection_id: sel, name: "helper_seat", graceful: false });
     await until(async () => await cotalAuthProvider.actorScope({ dir: stateDir, owner, actor: "helper_seat" }) === undefined, "the despawned child kept its grant");

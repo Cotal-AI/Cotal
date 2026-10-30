@@ -391,6 +391,29 @@ function caughtEnvelope(e: unknown): EpEnvelopeError | undefined {
   }
 }
 
+/** Why a frozen manager gate stays frozen on an open mesh. Reconciliation must prove the holder
+ *  gone, and an open mesh runs no delivery daemon to prove it, so neither boot self-heal nor
+ *  `cotal manager reconcile` can reopen the gate there. */
+const OPEN_MESH_GATE_LIMIT = "reconciliation needs liveness evidence an open mesh cannot currently provide, so `cotal manager reconcile` refuses this gate. Keep this store intact; upgrading alone does not recover it";
+
+/** The open mesh's registration evictor. An open mesh has no eviction oracle, so the superseded
+ *  family's holders stay unverified as they do with no evictor, and the barrier keeps the gate
+ *  frozen. Throwing instead of answering `false` only puts the reason in the refusal. */
+function openMeshUnverifiedEviction(holders: readonly string[]): never {
+  throw new Error(`principal(s) ${holders.map((h) => `"${h}"`).join(", ")} not verified evicted: ${OPEN_MESH_GATE_LIMIT}`);
+}
+
+/** An open-mesh registration refused by a gate another registration froze, restated without the
+ *  `cotal reconcile-gate` remedy that cannot run there. Code, gate state, blocked op and op id are
+ *  kept. Any other failure is returned as it is. */
+function openMeshFrozenGateRefusal(e: unknown, instanceId: string): unknown {
+  const envelope = caughtEnvelope(e);
+  const blocked = lifecycleBlockedFrom(envelope);
+  if (envelope === undefined || blocked?.gateState !== "frozen" || blocked.blockedOp !== "registration") return e;
+  return lifecycleBlocked(envelope.code, `the issuance gate for "${instanceId}" is frozen under another registration, and this manager cannot register while it is; ${OPEN_MESH_GATE_LIMIT} (SPEC 13.8)`,
+    { blockedOp: blocked.blockedOp, gateState: blocked.gateState, ...(blocked.opId !== undefined ? { opId: blocked.opId } : {}) }, envelope.outcome);
+}
+
 /** The failed terminal a post-accept fallback commits for `error` and `source`'s optional details.
  *  `commitGoalResult` refuses a payload that is not interchangeable JSON, and this terminal must commit
  *  whatever failed, so a lone surrogate in the text becomes U+FFFD and details it cannot read or carry
@@ -3388,17 +3411,17 @@ export class Manager {
       if (refused === undefined) stopped.push(a);
       else failures.push(`${a.name}: stop failed: ${refused}`);
     }
-    // The slot delete above bypasses freeSlot, which is where the reap line lives — so say it here,
-    // once per seat, with the one stop cause that names this path: the shutdown itself. Without
-    // this a `--with-agents` stop left every seat unaccounted for in the log (see #1423).
-    for (const a of managed) this.logSeatReaped(a, { kind: "stopped-shutdown" });
     // A runtime stop request is not exit proof. Do not release the manager lease or registration
     // while any seat may still hold this instance's broker rails: that creates the exact orphan
     // window where a successor sees a dead manager but live predecessor authority. Every shipped
     // runtime now supplies waitForExit; absence or timeout is a failed shutdown, never a clean one.
+    // The slot delete above bypasses freeSlot, which is where the reap line lives, so say it
+    // here once this shutdown has proved the seat exited. A seat whose stop was refused, or
+    // whose exit wait did not prove it gone, is named only by the shutdown error below (#1423, #3404).
     await Promise.all(stopped.map(async (a) => {
       try {
         await this.awaitHandleExit(a.handle);
+        this.logSeatReaped(a, { kind: "stopped-shutdown" });
       } catch (e) {
         failures.push(`${a.name}: ${rejectionText(e)}`);
       }
@@ -8414,7 +8437,7 @@ export class Manager {
   private watchExit(a: ManagedAgent): void {
     const handle = a.handle;
     const current = (): boolean => this.agents.get(a.name) === a && a.handle === handle;
-    const watched = watchProvedExit(handle, () => { if (current()) this.onAgentExit(a); }, current);
+    const watched = watchProvedExit(handle, () => this.onAgentExit(a), current);
     if (!watched)
       console.error(`! ${a.name}: runtime "${handle.kind}" cannot prove a child exit (AgentHandle.waitForExit is not implemented) - it stays managed after it exits, until it is stopped`);
   }
@@ -9094,13 +9117,14 @@ export class Manager {
       // On an AUTH mesh a RE-registration (restart of the persisted instanceId)
       // must VERIFY-EVICT the superseded serve family BEFORE the epoch advances (§13.1 "old authority
       // dies before new authority is visible"). Inject the SCOPED delivery-admin evictor; the OPEN
-      // mesh mints no serve family, so no evictor (the empty-family path never consults it and a
-      // restart there works evictor-free). NO-ORACLE = LOUD: with no reachable delivery daemon the
+      // mesh mints no serve family, so its empty-family restart never consults an evictor, and one
+      // an earlier release staged there stays unverified with the reason in the refusal
+      // ({@link openMeshUnverifiedEviction}). NO-ORACLE = LOUD: with no reachable delivery daemon the
       // evictor THROWS naming the cure, so PHASE 2 fails closed with the delivery-daemon fix in the
       // error text — a crash-restart never silently skips eviction (no-fallbacks).
       const barrier = endpointRegistrationBarrier(authKv, this.space, {
         endpoint: MANAGER_ENDPOINT, instanceId: iid, opId: registrationOpId,
-        ...(auth ? { evict: makeManagerEndpointHolderEvictor({ space: this.space, servers: this.servers ?? DEFAULT_SERVER, auth, log: (line) => console.error(line), unreachableWaitMs: DELIVERY_ADMIN_BOOT_WAIT_MS }) } : {}),
+        evict: auth ? makeManagerEndpointHolderEvictor({ space: this.space, servers: this.servers ?? DEFAULT_SERVER, auth, log: (line) => console.error(line), unreachableWaitMs: DELIVERY_ADMIN_BOOT_WAIT_MS }) : openMeshUnverifiedEviction,
       });
       const spec = { endpoint: MANAGER_ENDPOINT, owner: DEV_OWNER, clusterDigests: [artifacts.closureDigest], protocol: { v: 1 as const } };
       const { grant } = await registerServingInstance(recordsKv, {
@@ -9149,7 +9173,7 @@ export class Manager {
       }));
       registration = await retryExpiredExecutor("registration", () => this.withEndpointServeExecutor(completeRegistration));
     } else {
-      registration = await this.withOpenServeConnection(completeRegistration);
+      registration = await this.withOpenServeConnection(completeRegistration).catch((e: unknown) => { throw openMeshFrozenGateRefusal(e, iid); });
     }
     if (!registration) throw new Error("manager registration produced no serve authority");
     const { grant, creds, goalWriterCreds, sessionLedgerCreds } = registration;
@@ -10722,7 +10746,14 @@ export class Manager {
     const identity = record.agent.identity;
     if (identity.mode !== "static" || identity.id !== row.actor || identity.lifecycleUid !== row.lifecycleUid) return undefined;
     if (record.instanceId !== this.managerInstanceId || record.agent.space !== this.space) return undefined;
-    if (record.agent.launch.runtime !== row.runtime?.kind) {
+    let runtimeMatches = record.agent.launch.runtime === row.runtime?.kind;
+    if (row.runtime === undefined) {
+      // Non-custodial backends such as pty record no slot reference. A custodial backend still
+      // requires one, and an unavailable backend must refuse rather than select a replacement.
+      const runtime = this.runtimeFor(record.agent.launch.runtime);
+      runtimeMatches = runtime.kind === record.agent.launch.runtime && !isCustodialRuntime(runtime);
+    }
+    if (!runtimeMatches) {
       console.error(`! ${row.alias}: its seat ran on runtime "${record.agent.launch.runtime}" and its slot names "${row.runtime?.kind ?? "none"}"; the lifecycle is retired, not restarted`);
       return undefined;
     }
@@ -10887,6 +10918,8 @@ export class Manager {
       servers: this.servers ?? DEFAULT_SERVER,
       auth: this.auth!,
       log: (line) => console.error(`static retirement ${a.name}: ${line}`),
+      // A daemon credential reload briefly removes its responder while it reconnects.
+      unreachableWaitMs: DEPROVISION_TIMEOUT_MS,
     });
     const cleanup = async (): Promise<void> => {
       // SPEC 13.15: every issuance bound to this incarnation's ledger family is retired here,

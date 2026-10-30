@@ -154,7 +154,7 @@ async function askManagerEp(
     // multi-manager space addresses the intended manager, never whichever wins the class anycast.
     const followsGoal = (GOAL_BEARING_COMMANDS as readonly string[]).includes(mapped.command);
     const resolveCommands = [...new Set([mapped.command, ...(mapped.targeted ? ["inspect"] : []), ...(followsGoal ? ["goal-result"] : [])])];
-    const service = await resolveService(nc, space, BASELINE_LIFECYCLE_ENDPOINT, caller, { deadlineMs: 10_000, commands: resolveCommands, ...(instanceId !== undefined ? { instanceId } : {}), ...(pin?.signal ? { signal: pin.signal } : {}) });
+    const service = await resolveService(nc, space, BASELINE_LIFECYCLE_ENDPOINT, caller, { deadlineMs: 10_000, commands: resolveCommands, ...(followsGoal ? { optionalCommands: ["goal-result"] } : {}), ...(instanceId !== undefined ? { instanceId } : {}), ...(pin?.signal ? { signal: pin.signal } : {}) });
     let target: EpVerbTarget | undefined;
     let sendArgs = args;
     if (mapped.self) target = { mode: "self" };

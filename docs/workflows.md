@@ -226,7 +226,9 @@ authority. Static authentication issues it to its credentials. On a user-auth me
 participant manager hosts authorized runs. A managed agent invokes `cotal_run` through its own
 launcher-provided bearer command and immutable manager instance selection. Its current managed
 grant and its direct parent's current grant must both carry `run`. A removed grant, stale lifecycle
-or wrong manager selection refuses rather than borrowing a signed-in user's authority.
+or wrong manager selection refuses rather than borrowing a signed-in user's authority. After a
+parent's `run` grant is restored, the next call checks its new connection's issued authority before
+submitting the workflow.
 
 Open meshes may expose the tool but refuse hosted runs. A local user-mode host without remote
 run authority and an `execution: "none"` control manager also refuse the family. A legacy
@@ -856,3 +858,14 @@ direction; the repair is to resume on the recorded version, or to fork.
 implementation limit and not a language error: it carries no `L` code, so there is nothing to look
 up in the catalog. It is a floor rather than a warning because the engine's frame plumbing rests on
 `AsyncLocalStorage`, and 22 is the lowest node it has been measured on. The walker has no such floor.
+
+### Foreign error text
+
+Worker execution, read-only inspection and the host effect bridge use the same name and
+message projection for plain failures. A string `name` or `message` is retained, including
+an empty string; this also applies to writable fields on native `Error` objects. Other names
+become `Error`. A value without a readable string message uses its normal string conversion.
+If that conversion also throws, the message is `<unprintable thrown value>`, not a successful
+result or a replacement exception that strands the answer. Native typed failure classes
+keep their existing classification. This contains exceptions during name/message formatting;
+it is not a time limit for arbitrary accessor or conversion code.

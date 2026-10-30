@@ -7,6 +7,8 @@ import {
   remoteManagerActors,
   remoteManagerRegistrationProof,
   type RemoteManagerAuthorityMaterial,
+  type Connector,
+  type RuntimeProvider,
 } from "@cotal-ai/core";
 import { Manager as SourceManager, type ManagerOptions } from "../src/manager.js";
 import "@cotal-ai/runtime";
@@ -408,11 +410,11 @@ async function registerPooledFixture() {
   await import("@cotal-ai/auth");
   const hostUrl = process.env.EF_EXEC_HOST_URL!;
   const childCmd = JSON.parse(process.env.EF_CHILD_CMD!) as string[];
-  registry.register({
+  const connector: Connector = {
     kind: "connector", name: "ef-sdk-fixture", readinessTimeoutMs: 30000,
     eventChannel: (principal: { owner: string; actor: string }) => eventChannel(principal),
-    buildLaunch(opts: any) {
-      if (!opts.userAuth || !opts.lifecycleUid) throw new Error("ef-sdk-fixture requires enrolled user authority");
+    buildLaunch(opts) {
+      if (!opts.userAuth || !opts.lifecycleUid || !opts.servers) throw new Error("ef-sdk-fixture requires enrolled user authority and explicit servers");
       return {
         command: childCmd[0]!, args: childCmd.slice(1),
         env: {
@@ -423,16 +425,18 @@ async function registerPooledFixture() {
         },
       };
     },
-  } as never);
+  };
+  registry.register(connector);
   const call = async (path: string, body: unknown) => {
     const r = await fetch(`${hostUrl}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
     return { status: r.status, json: (await r.json().catch(() => ({}))) as Record<string, unknown> };
   };
-  registry.register({
+  const runtime: RuntimeProvider = {
     kind: "runtime", name: "ef-fixture-host", available: () => true,
     create: () => ({
       kind: "ef-fixture-host",
-      spawn(name: string, spec: { command: string; args: string[]; env?: Record<string, string> }, cwd: string) {
+      streamsTerminal: false,
+      spawn(name, spec, cwd) {
         let state: "running" | "exited" = "running";
         let exit: { code?: number } | undefined;
         const exitFns: Array<() => void> = [];
@@ -456,9 +460,10 @@ async function registerPooledFixture() {
           waitForExit: () => new Promise<void>((res) => state === "exited" ? res() : exitFns.push(res)),
           exitInfo: () => exit,
           interrupt: () => {},
-          attach: () => ({ cols: 80, rows: 24, backlog: () => Buffer.alloc(0), onData: () => () => {}, onExit: (f: () => void) => { exitFns.push(f); return () => {}; }, write: () => {}, resize: () => {} }),
+          attach: () => { throw new Error("ef-fixture-host has no terminal stream; inspect the separate fixture execution host"); },
         };
       },
     }),
-  } as never);
+  };
+  registry.register(runtime);
 }

@@ -180,7 +180,7 @@ try {
   let releaseEviction!: () => void;
   const entered = new Promise<void>((resolve) => { evictionHeld = { entered: resolve, release: new Promise((r) => { releaseEviction = r; }) }; });
   const railStart = published.length;
-  const stopping = manager.stop();
+  const stopping = manager.stop({ withAgents: true });
   let held = false;
   await Promise.race([entered.then(() => { held = true; }), wait(120_000)]);
   check("the stop's first eviction reached the daemon and was held there", held);
@@ -225,7 +225,7 @@ try {
   check(`suite ran without throwing: ${(e as Error).stack ?? (e as Error).message}`, false);
 } finally {
   if (seatPoll) clearInterval(seatPoll);
-  await manager?.stop().catch(() => {});
+  await manager?.stop({ withAgents: true }).catch(() => {});
   await Promise.all([...seats.values()].map((s) => s.agent.stop().catch(() => {})));
   try { execFileSync("pkill", ["-f", `sleep 99999.${token}`]); } catch { /* none left */ }
   await observer?.close().catch(() => {});

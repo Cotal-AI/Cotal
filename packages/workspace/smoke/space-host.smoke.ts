@@ -252,6 +252,69 @@ try {
     && bothClosedWhenApplied === true && !slowHost.lanes.has("r") && !slowHost.opening.has("r") && count("r", "open") === 1 && starts.get("r") === 1,
     { bothClosedWhenApplied, events: events.slice(-4) });
 
+  // ---- bounded admission keeps waiting spaces outside the opening deadline -----------------------------
+  const queuedManifest = join(dir, "queued.json");
+  const releaseQueued: Array<() => void> = [];
+  for (let i = 0; i < 4; i++) faults.set(`queued${i}`, { holdOpen: new Promise<void>((r) => releaseQueued.push(r)) });
+  const queuedPorts = Object.fromEntries(Array.from({ length: 9 }, (_, i) => [`queued${i}`, 100 + i]));
+  write(queuedManifest, entries(queuedPorts));
+  let activeOpens = 0, peakOpens = 0;
+  const queuedHost = await runSpaceHost({
+    manifest: queuedManifest, settings, startup: "servable", openDeadlineSeconds: 0.1,
+    open: async (space, value) => {
+      peakOpens = Math.max(peakOpens, ++activeOpens);
+      try { return await openStub(space, value); } finally { activeOpens--; }
+    },
+    label: "queued host", entry: "queued --spaces", serving: "serving", log: (l) => logLines.push(l),
+  });
+  await wait(250);
+  check("at most four real opens run, including opens past their deadlines; queued spaces have no opening deadline",
+    activeOpens === 4 && peakOpens === 4 && queuedHost.opening.size === 4
+    && starts.get("queued4") === undefined && !logLines.some((l) => /space "queued[4-8]" did not open/.test(l)),
+    { activeOpens, peakOpens, opening: [...queuedHost.opening] });
+  delete queuedPorts.queued4;
+  queuedPorts.queued5 = 155;
+  const queuedSha = write(queuedManifest, entries(queuedPorts));
+  check("a queued removal is acknowledged without starting the removed lane", await until(() => applied(queuedManifest) === queuedSha, 3_000) && starts.get("queued4") === undefined);
+  releaseQueued.forEach((release) => release());
+  check("released admission slots eventually serve every remaining space, without opening stale queued settings",
+    await until(() => queuedHost.lanes.size === 8, 5_000) && peakOpens === 4 && starts.get("queued4") === undefined
+    && starts.get("queued5") === 1 && events.find((e) => e.space === "queued5" && e.what === "open")?.port === 155,
+    { lanes: queuedHost.lanes.size, peakOpens });
+
+  // ---- failed lanes rejoin behind spaces that have not had a turn ---------------------------------------
+  const fairManifest = join(dir, "fair.json");
+  for (let i = 0; i < 4; i++) faults.set(`fair${i}`, { openFailures: 1 });
+  write(fairManifest, entries(Object.fromEntries(Array.from({ length: 9 }, (_, i) => [`fair${i}`, 200 + i]))));
+  const fairHost = await runSpaceHost({ manifest: fairManifest, settings, startup: "servable", open: openStub,
+    label: "fair host", entry: "fair --spaces", serving: "serving", log: (l) => logLines.push(l) });
+  check("queued healthy lanes get a turn before failed lanes retry", await until(() => fairHost.lanes.size === 5, 3_000)
+    && [0, 1, 2, 3].every((i) => starts.get(`fair${i}`) === 1));
+  check("failed lanes retry and the full requested cohort eventually serves", await until(() => fairHost.lanes.size === 9, 8_000)
+    && [0, 1, 2, 3].every((i) => starts.get(`fair${i}`) === 2));
+
+  // ---- a cooldown that expires inside an admitted batch still schedules its retry ----------------------
+  const retryBatchManifest = join(dir, "retry-batch.json");
+  faults.set("retryBatchFail", { openFailures: 1 });
+  faults.set("retryBatchSlow", { holdOpen: wait(6_000) });
+  write(retryBatchManifest, entries({ retryBatchFail: 501, retryBatchSlow: 502, retryBatchA: 503, retryBatchB: 504 }));
+  const retryBatchHost = await runSpaceHost({ manifest: retryBatchManifest, settings, startup: "servable", open: openStub,
+    label: "retry batch host", entry: "retry-batch --spaces", serving: "serving", log: (l) => logLines.push(l) });
+  check("a retry already due when another admitted open settles runs without waiting for the backstop",
+    await until(() => retryBatchHost.lanes.size === 4, 2_000) && starts.get("retryBatchFail") === 2);
+
+  // ---- a replacement arriving during a close is read before the next admission -------------------------
+  const beforeClose: Record<string, number> = { ...queuedPorts, staleQueued: 401 };
+  delete beforeClose.queued0;
+  const afterClose: Record<string, number> = { ...beforeClose, freshQueued: 402 };
+  delete afterClose.staleQueued;
+  let freshSha: string | undefined;
+  faults.set("queued0", { closeMs: 400, onClose: () => { freshSha = write(queuedManifest, entries(afterClose)); } });
+  write(queuedManifest, entries(beforeClose));
+  check("a manifest replaced during an awaited close cannot start stale queued work",
+    await until(() => freshSha !== undefined && applied(queuedManifest) === freshSha && queuedHost.lanes.has("freshQueued"), 5_000)
+    && starts.get("staleQueued") === undefined && starts.get("freshQueued") === 1);
+
   // ---- the default startup refuses a hung open at the deadline ------------------------------------------
   const strictSlow = join(dir, "strict-slow.json");
   let releaseK!: () => void;
@@ -276,7 +339,8 @@ try {
   });
   let releaseQ!: () => void;
   faults.set("q", { holdOpen: new Promise<void>((r) => { releaseQ = r; }) });
-  write(stopping, entries({ p: 41, q: 42 }));
+  for (let i = 0; i < 8; i++) faults.set(`stopQueued${i}`, { holdOpen: faults.get("q")!.holdOpen });
+  write(stopping, entries({ p: 41, q: 42, ...Object.fromEntries(Array.from({ length: 8 }, (_, i) => [`stopQueued${i}`, 300 + i])) }));
   check("a reconcile pass is inside the open of a space when the signal lands", await until(() => starts.get("q") === 1, 5_000), starts.get("q"));
   process.kill(process.pid, "SIGTERM");
   let endedBeforeRelease = false;
@@ -290,6 +354,10 @@ try {
   check("the stop waits for the open in flight, closes the lane it opens, and never serves it",
     stopCode === 0 && !endedBeforeRelease && count("q", "open") === 1 && count("q", "closed") === 1 && count("p", "closed") === 1 && stopHost.lanes.size === 0,
     { stopCode, endedBeforeRelease, events: events.slice(-4) });
+  check("shutdown never starts queued lanes and drains every admitted lane",
+    [0, 1, 2].every((i) => count(`stopQueued${i}`, "open") === 1 && count(`stopQueued${i}`, "closed") === 1)
+    && [3, 4, 5, 6, 7].every((i) => starts.get(`stopQueued${i}`) === undefined));
+  await Promise.all([queuedHost.ended, fairHost.ended, retryBatchHost.ended]);
 } finally {
   rmSync(dir, { recursive: true, force: true });
 }

@@ -76,7 +76,7 @@ export async function authorizeRemoteManagerRenewal(args: {
   observeRun: ObserveManagerRun;
 }): Promise<void> {
   const r = parseRemoteManagerAuthorityRequest(args.request);
-  if (r.operation !== "renewStandingBundle" && r.operation !== "renewRunDriver")
+  if (!isRenewal(r.operation))
     requestError("requires a renewal operation");
   if (r.space !== args.space || r.accountPublicKey !== args.accountPublicKey)
     throw new EpEnvelopeError("permission-denied", "manager-service renewal is bound to the host-assigned space and account");
@@ -122,6 +122,11 @@ function requestError(what: string): never {
   throw new EpEnvelopeError("bad-request", `manager-service authority request ${what}`);
 }
 
+/** True when the operation's credential row has a closed set. */
+export function isRenewal(operation: unknown): operation is (typeof RENEWAL_OPERATIONS)[number] {
+  return (RENEWAL_OPERATIONS as readonly unknown[]).includes(operation);
+}
+
 /** Closed request parser: unknown fields and profile-like extensions are refused, never ignored.
  * `allowPlatform` admits a platform `p_…` retirement target owner, for the platform control holder
  * only (SPEC 13.1); the retirement check still requires the target owner to equal the holder's. */
@@ -137,7 +142,7 @@ export function parseRemoteManagerAuthorityRequest(raw: unknown, opts: { allowPl
     requestError("activate requires 1-64 canonical manager contractArtifacts");
   if (o.operation !== "activate" && o.contractArtifacts !== undefined)
     requestError(`${o.operation} must not carry contractArtifacts`);
-  const renewal = o.operation === "renewStandingBundle" || o.operation === "renewRunDriver";
+  const renewal = isRenewal(o.operation);
   if (renewal) {
     if (!isAccountNkey(o.accountPublicKey))
       requestError(`${o.operation} requires an accountPublicKey`);
@@ -221,16 +226,20 @@ export function parseRemoteManagerAuthorityRequest(raw: unknown, opts: { allowPl
   };
 }
 
-const REQUIRED_CREDENTIALS: Record<(typeof REMOTE_MANAGER_AUTHORITY_OPERATIONS)[number], readonly string[]> = Object.freeze({
-  prepare: Object.freeze(["supervisor", "executor"]),
-  activate: Object.freeze(["serve", "goalWriter", "sessionLedger"]),
-  renew: Object.freeze(["supervisor", "executor"]),
-  session: Object.freeze(["sessionServing"]),
-  retire: Object.freeze(["retirementRequester"]),
-  renewStandingBundle: REMOTE_MANAGER_IDENTITY_NAMES,
-  renewRunDriver: Object.freeze(["runDriver", "runMediator"]),
-  transferReader: Object.freeze(["transferReader"]),
+const CREDENTIALS: Record<(typeof REMOTE_MANAGER_AUTHORITY_OPERATIONS)[number], { readonly required: readonly string[]; readonly closed?: true }> = Object.freeze({
+  prepare: Object.freeze({ required: Object.freeze(["supervisor", "executor"]) }),
+  activate: Object.freeze({ required: Object.freeze(["serve", "goalWriter", "sessionLedger"]) }),
+  renew: Object.freeze({ required: Object.freeze(["supervisor", "executor"]) }),
+  session: Object.freeze({ required: Object.freeze(["sessionServing"]) }),
+  retire: Object.freeze({ required: Object.freeze(["retirementRequester"]) }),
+  renewStandingBundle: Object.freeze({ required: REMOTE_MANAGER_IDENTITY_NAMES, closed: true as const }),
+  renewRunDriver: Object.freeze({ required: Object.freeze(["runDriver", "runMediator"]), closed: true as const }),
+  transferReader: Object.freeze({ required: Object.freeze(["transferReader"]) }),
 });
+
+/** Renewal operations are the credential rows with a closed set. Authorization, account
+ * and epoch binding, and that set all read this, so adding or removing a renewal is one row. */
+const RENEWAL_OPERATIONS = (Object.keys(CREDENTIALS) as (keyof typeof CREDENTIALS)[]).filter((operation) => CREDENTIALS[operation].closed);
 
 /** Issue one lifecycle phase after the IdP proof and interactive row were fresh-read. */
 export async function issueRemoteManagerAuthority(args: IssueRemoteManagerAuthorityArgs): Promise<RemoteManagerAuthorityMaterial> {
@@ -243,18 +252,18 @@ export async function issueRemoteManagerAuthority(args: IssueRemoteManagerAuthor
   if (r.run) ids.push(r.run.driverId, r.run.mediatorId);
   if (new Set(ids).size !== ids.length)
     throw new EpEnvelopeError("bad-request", "manager-service identities must be distinct; one nkey cannot collapse separate authority lifetimes");
-  if (r.operation === "renewStandingBundle" || r.operation === "renewRunDriver") {
+  if (isRenewal(r.operation)) {
     if (!args.authorizeRenewal)
       throw new EpEnvelopeError("unavailable", `manager-service ${r.operation} needs a host-owned current-account and duty-fence authorization`);
     await args.authorizeRenewal({ owner: args.owner, request: r });
   }
   const issued = await args.issue({ owner: args.owner, actors, request: r });
   const credentials = issued.credentials;
-  const required = REQUIRED_CREDENTIALS[r.operation];
+  const required = CREDENTIALS[r.operation].required;
   for (const name of required)
     if (!(name in credentials))
       throw new EpEnvelopeError("internal", `manager-service ${r.operation} did not issue required credential ${name}`);
-  if ((r.operation === "renewStandingBundle" || r.operation === "renewRunDriver") &&
+  if (isRenewal(r.operation) &&
       Object.keys(credentials).sort().join(",") !== [...required].sort().join(","))
     throw new EpEnvelopeError("internal", `manager-service ${r.operation} returned credentials outside its closed profile set`);
   const issuedAt = (args.now ?? Date.now)();

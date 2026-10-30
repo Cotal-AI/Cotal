@@ -1,5 +1,290 @@
 # @cotal-ai/cli
 
+## 0.131.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.131.1
+  - @cotal-ai/workspace@0.131.1
+
+## 0.131.0
+
+### Patch Changes
+
+- 0e65b6f: `ProcessRecord` carries only the fields its state has. A missing or empty record is `absent` and carries nothing. A record that is not a pid is `unattributable` and carries that content. `dead` and `unknown` carry the pid. `alive` and `foreign` carry the pid and, when the command line was read, the command. A caller that reads `pid` on an absent or unattributable record, or `content` on any other state, fails to compile. `readProcessRecord` already returned these shapes, and its results are unchanged. The manager and delivery refusals name the same pid they named before.
+- daff420: Inspect user-auth state-directory and provider-pin entries without following symlinks at those entries. Regular pins still count. The directory/pin entry checks treat ENOENT as absence and propagate other inspection errors; this does not change ancestor-path or auth-directory enumeration behavior.
+- Updated dependencies [f7c2c28]
+- Updated dependencies [0e65b6f]
+- Updated dependencies [daff420]
+  - @cotal-ai/core@0.131.0
+  - @cotal-ai/workspace@0.131.0
+
+## 0.130.2
+
+### Patch Changes
+
+- 75721a2: Wrap console text by terminal columns. The feed, DM thread, detail body and roster status facts counted UTF-16 units, so CJK text made rows twice the pane width and lost the cut-off half, and an odd width split an emoji into two replacement characters. Rows now use the display width the CLI already measures elsewhere and break between grapheme clusters. ASCII wrapping is unchanged.
+- @cotal-ai/core@0.130.2
+  - @cotal-ai/workspace@0.130.2
+
+## 0.130.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.130.1
+  - @cotal-ai/workspace@0.130.1
+
+## 0.130.0
+
+### Patch Changes
+
+- Updated dependencies [025d175]
+- Updated dependencies [27250e3]
+  - @cotal-ai/core@0.130.0
+  - @cotal-ai/workspace@0.130.0
+
+## 0.129.9
+
+### Patch Changes
+
+- Updated dependencies [1a59b0a]
+- Updated dependencies [b94f83a]
+  - @cotal-ai/core@0.129.9
+  - @cotal-ai/workspace@0.129.9
+
+## 0.129.8
+
+### Patch Changes
+
+- Updated dependencies [43b7cb9]
+  - @cotal-ai/workspace@0.129.8
+  - @cotal-ai/core@0.129.8
+
+## 0.129.7
+
+### Patch Changes
+
+- af7b921: Refuse a persona catalog folder that lists its file names but cannot be searched, such as one set to
+  mode 0600. `persona` used to report each valid persona there as `SCHEMA_INVALID` (exit 4), the legacy
+  `personas list` marked each one unparseable (exit 0), and name completion offered personas that
+  could not be opened. Both commands now refuse it with `PERMISSION_DENIED` (exit 2) and the same next
+  step as an unreadable catalog, whether the folder is empty or not, and completion fails and names the
+  catalog. A malformed persona file in a readable catalog is still reported as before.
+- Updated dependencies [853005f]
+  - @cotal-ai/workspace@0.129.7
+  - @cotal-ai/core@0.129.7
+
+## 0.129.6
+
+### Patch Changes
+
+- e517d72: Give an unreadable persona catalog a next step. `persona` and the legacy `personas list` suggest
+  `chmod u+rx <folder>` only for a catalog folder you own whose mode denies you read or search. A
+  folder above the catalog that you cannot enter is named instead, and a folder another account owns
+  says to ask its owner. Any other read error keeps the refusal with no next step, and nothing changes
+  a mode. The legacy `personas list` now names the space in that refusal, as `persona` does. Exit codes
+  and the `PERMISSION_DENIED` code are unchanged.
+- @cotal-ai/core@0.129.6
+  - @cotal-ai/workspace@0.129.6
+
+## 0.129.5
+
+### Patch Changes
+
+- 33bb63f: Fail a channel or role completion when the target space's persona catalog folder cannot be read or a
+  persona file in it does not parse, as persona name completion already did, instead of offering
+  nothing as a success. `COTAL_COMPLETE_DEBUG=1` names the folder or file. The legacy `personas list`
+  refuses an unreadable catalog folder with `PERMISSION_DENIED`, as `persona` does, instead of
+  reporting no personas. A space that does not resolve, or a catalog folder that does not exist, still
+  offers or lists nothing.
+- 1f8b7e8: Remove the accidentally tracked negative presence-render probe from the CLI source tree.
+- @cotal-ai/core@0.129.5
+  - @cotal-ai/workspace@0.129.5
+
+## 0.129.4
+
+### Patch Changes
+
+- e48dc5c: `cotal up -f` now refuses a `broker.servers` or `--server` that lists more than one URL, naming which of the two lists them and saying that `up -f` binds a single broker address, and `cotal team boot` refuses such a `broker.servers` the same way. Each entry still passes the usual URL and credential checks first. Such a manifest used to fail with a bare `Invalid URL` and an unknown outcome. The manifest still validates with a list, and `topology view` still shows it.
+- @cotal-ai/core@0.129.4
+  - @cotal-ai/workspace@0.129.4
+
+## 0.129.3
+
+### Patch Changes
+
+- d968671: Wait long enough for a static chat session's retirement answer. With the delivery daemon stopped, closing `cotal chat` now reports the retirement pending and names the daemon (exit 4) instead of timing out as an unknown outcome that blamed the manager.
+- Updated dependencies [c6ddccc]
+- Updated dependencies [565f465]
+  - @cotal-ai/core@0.129.3
+  - @cotal-ai/workspace@0.129.3
+
+## 0.129.2
+
+### Patch Changes
+
+- 244387e: `space forget` now clears, in the root's stack journal, the instances of the stopped stack members it removes. Before, after `up`, `down`, `space forget` and `space create` in the same folder, `up --no-manager` carried the forgotten manager's instance, and `down` refused `TARGET_NOT_FOUND` and stopped nothing. An instance forget did not remove stays in the journal, and a journal an earlier release left that way is not changed.
+- @cotal-ai/core@0.129.2
+  - @cotal-ai/workspace@0.129.2
+
+## 0.129.1
+
+### Patch Changes
+
+- 4bf8933: `cotal doctor auth` without `--space`, run in the root of a space that was prepared and never started, now says to start that space with `cotal up` and then run the same command again. It used to say to run the command in a space's root folder, where the user already was. The report is still partial (exit 4), and `--fix` there still refuses `AUTH_REQUIRED`, with the same step.
+- 8c3d77f: `cotal up --root <root> --no-manager` run from another folder now quotes the root in the `cotal up --root` its Next offers when a shell would split it, so a folder name with a space, an apostrophe or a `$` pastes as one word. It used to print the path raw, which a shell split at its spaces, expanded at its `$`, or refused as an unmatched quote. The `--json` result and the `cotal down` description still name the path as it is.
+- @cotal-ai/core@0.129.1
+  - @cotal-ai/workspace@0.129.1
+
+## 0.129.0
+
+### Patch Changes
+
+- de421cd: `cotal doctor auth --space <space>` for a space that was prepared and never started now says to start it with `cotal up` first, instead of telling the user to run the same command in the folder they are already in. From another folder, that step names the space's root with `--root`, quoted for a shell. The refusal and its exit code are unchanged.
+- Updated dependencies [de421cd]
+  - @cotal-ai/workspace@0.129.0
+  - @cotal-ai/core@0.129.0
+
+## 0.128.7
+
+### Patch Changes
+
+- @cotal-ai/core@0.128.7
+  - @cotal-ai/workspace@0.128.7
+
+## 0.128.6
+
+### Patch Changes
+
+- @cotal-ai/core@0.128.6
+  - @cotal-ai/workspace@0.128.6
+
+## 0.128.5
+
+### Patch Changes
+
+- 1c86343: Preserve the pre-submission compatibility refusal when a followed action's service does not advertise goal-result. Narrowed discovery keeps the action required and lets the existing follow preflight report the upgrade notice and not-executed outcome without publishing a mutation.
+- Updated dependencies [1c86343]
+  - @cotal-ai/core@0.128.5
+  - @cotal-ai/workspace@0.128.5
+
+## 0.128.4
+
+### Patch Changes
+
+- Updated dependencies [4bfbede]
+  - @cotal-ai/core@0.128.4
+  - @cotal-ai/workspace@0.128.4
+
+## 0.128.3
+
+### Patch Changes
+
+- Updated dependencies [76fcf89]
+  - @cotal-ai/workspace@0.128.3
+  - @cotal-ai/core@0.128.3
+
+## 0.128.2
+
+### Patch Changes
+
+- 13de45e: On a store over its `--max-file-store` cap, the Next of a `cotal up` whose member cannot start, and of `cotal status`, now names only `cotal down --yes` and `cotal up --max-file-store <bytes>` with a larger cap, after `kill -TERM <pid>` for a manager that still runs. They no longer lead with `cotal history clear`. A purge frees only the channel history's bytes, so on a new space whose cap is below the stack's own first writes it purged nothing and the store stayed full, and on a space with history it could delete all of it without making room.
+- @cotal-ai/core@0.128.2
+  - @cotal-ai/workspace@0.128.2
+
+## 0.128.1
+
+### Patch Changes
+
+- 00d85b7: Remove an accidentally tracked presence-render census probe from the CLI source tree.
+- 7b54f38: `cotal up` in a new folder under your home now wraps its stderr note `made <root>/.cotal for this folder's records; the machine's home .cotal was not used` at spaces on a terminal, to the width of stderr. A path wider than the line keeps a line of its own and is never split, and each line stays dimmed. When stderr is not a terminal the note is still one line, even when stdout is a terminal, and exit codes are unchanged.
+- Updated dependencies [20a5c96]
+- Updated dependencies [985519f]
+  - @cotal-ai/core@0.128.1
+  - @cotal-ai/workspace@0.128.1
+
+## 0.128.0
+
+### Patch Changes
+
+- 75e06da: When `cotal ps` refuses because no manager runs or is registered for the space, its next step now
+  names the root of this machine's own stack for the space, as bare `cotal up` in that folder. It used
+  to say bare `cotal up` with no folder, and run from another project that starts the other project's
+  manager. A space this machine only registered or records no stack for, or one reached through a
+  `--server` other than its recorded broker, gets a step that says to start the manager where the
+  space's stack runs and names no local command. `cotal status <agent>` and the `attach` picker share
+  the refusal. Its code, message, cause and exit 2 are unchanged.
+- 1f8bfe5: A restore made by an earlier release no longer has its cleanup delete another account's data without
+  consent. Such a restore recorded no other accounts, so its cleanup named none and deleted the store it
+  set aside, an open mesh's account included, with no `--discard-history`. `status`, the
+  `backup cleanup-fallback` preview and the cleanup now read that store while it is still the recorded
+  one and name the accounts the restore's auth mode rules out: every account but `$G` after an open
+  restore, and `$G` after a static or user one. The preview warns with `HISTORY_ONLY_IN_PREVIOUS_STORE`,
+  and `backup cleanup-fallback` and `clean restore-fallback` refuse and delete nothing unless
+  `--discard-history` is given. Which data account a static or user restore brought back is not
+  recorded, so another data account in that store is still not named.
+  
+  The exported restore-summary helpers now require the record's `mode`. Library callers that passed
+  only a partial record must pass the validated maintenance journal, including its mode. This is a
+  breaking TypeScript API change for those callers.
+- 1090d9b: `cotal up` now wraps four more start notes at spaces on a terminal, as other lines do: the note that it selected the space it started, the note that another space stays selected, `wrote default persona` and the note that a new project's space is named after its folder. A path wider than the line keeps a line of its own and is never split, and `cotal use <space>` stays whole. Off a terminal each is still one line on stdout, and exit codes are unchanged.
+- Updated dependencies [1f8bfe5]
+  - @cotal-ai/workspace@0.128.0
+  - @cotal-ai/core@0.128.0
+
+## 0.127.5
+
+### Patch Changes
+
+- 6e9e9c0: `cotal up --detach` now wraps its `Started nats-server` line, its `✓ running in the background` line and a repair's `reopening the recorded store` line at spaces on a terminal, as other lines do. A path wider than the line keeps a line of its own and is never split, the summary's continuation lines start under its text, and `cotal down` stays whole. Off a terminal each is still one line on stdout, and exit codes are unchanged.
+- ad0e5a1: `cotal ps` on a static or open space whose manager registry lists no live manager, such as a legacy
+  stack started with `--no-manager`, now refuses `TARGET_UNAVAILABLE`, exit 2. It says that no
+  manager is registered, so none was asked, and that this does not show that no manager process runs.
+  It used to fail with the generic `OPERATION_FAILED`, exit 5, as if `ps` itself had failed. Scripts
+  that read exit 5 for this case now get exit 2. `cotal status <agent>` and the `attach` picker read
+  the same list and refuse the same way. The registry's own answer stays under `error.cause`, and a
+  controller stack keeps its own refusals.
+- 580afa4: `cotal up` over a manager pidfile that holds no pid no longer tells you to remove the file once
+  `cotal ps` finds no manager running. A manager that does not answer on the mesh, such as a stopped
+  one, still runs and owns the folder while `cotal ps` finds none, and following that step started a
+  second manager beside it. The degraded report and its Next now ask you to confirm yourself that no
+  manager runs for the folder before they name `rm <pidfile>`, in the words `cotal down` uses for the
+  same record. `up` still refuses to start over the file, keeps the broker running, and never removes
+  the file itself.
+- @cotal-ai/core@0.127.5
+  - @cotal-ai/workspace@0.127.5
+
+## 0.127.4
+
+### Patch Changes
+
+- dd13059: `cotal down` over a pidfile that holds content that is not a pid now says the record names no
+  process, so cotal cannot tell whether that component still runs. It used to tell you to stop "that
+  process" when the file named none. It still refuses, keeps the file, does not stop the broker, and
+  keeps the artifacts and the registration. A Next now follows: it asks you to confirm that no such
+  component still runs for the folder, because a manager that does not answer on the mesh may still be
+  running, then names `rm <pidfile>` and the same `cotal down`.
+- 9d69969: The guided `cotal meshes add` on a terminal now reports a TLS broker whose certificate this machine
+  does not trust as the flag form does: the handshake failed, and `NODE_EXTRA_CA_CERTS` names the
+  issuing CA. It used to say the broker did not answer and offer another address first. Cancel is now
+  the first choice there, and registering the address anyway is still an explicit choice. A host name
+  the guided form refuses for lacking TLS now gets the flag form's next step, the `tls://` form of the
+  address, and the question that asks again shows no plaintext example. The guided form's refusals
+  and warnings now wrap to the terminal.
+- 9dc9bc4: A restore no longer leaves another account's data in the store it sets aside without saying so. When
+  open and static meshes ran in one folder, their store holds both accounts, and a backup holds one, so
+  a restore leaves the other account's streams only in the store it moves aside. The restore now
+  journals those accounts. Its receipt names that store in `previousStore` and warns with
+  `OTHER_ACCOUNTS_NOT_RESTORED`, or names the accounts in `otherAccounts` on the left-out warning it
+  already gives. `status` and every next step that names the cleanup include `--discard-history`. The
+  `backup cleanup-fallback` preview warns with `HISTORY_ONLY_IN_PREVIOUS_STORE` and names the accounts,
+  and `backup cleanup-fallback` and `clean restore-fallback` refuse and delete nothing unless
+  `--discard-history` is given. A restore made by an earlier release recorded no other accounts, so its
+  cleanup does not name them.
+- Updated dependencies [9dc9bc4]
+  - @cotal-ai/workspace@0.127.4
+  - @cotal-ai/core@0.127.4
+
 ## 0.127.3
 
 ### Patch Changes
