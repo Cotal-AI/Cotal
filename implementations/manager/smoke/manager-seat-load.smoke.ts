@@ -39,10 +39,13 @@
  * transpiling at run time, not of the manager.
  *
  * `--seat real` launches the REAL Claude Code connector process for every seat (the plugin's MCP
- * server, `dist/mcp.cjs`, with the node flags its `.mcp.json` passes), in place of the stub and its
+ * server through `dist/seat.cjs`, with the node flags its `.mcp.json` passes), in place of the stub and its
  * shared seat host. Per-seat RSS, PSS and USS need `--ram` or `--process-memory`. That process is what one seat
  * costs its host besides the model harness itself; it joins the mesh at start, before any MCP
- * traffic, so no Claude process is needed to drive it.
+ * traffic, so no Claude process is needed to drive it. `--real-entry direct` keeps the legacy
+ * `mcp.cjs` entry as an explicit comparison arm. Each run owns a fresh HOME; its stock compile
+ * cache starts empty, then is shared by subsequent seats in that run. Cache environment
+ * overrides refuse rather than measuring an unrelated cache. Results name the entry used.
  *
  * Run (needs nats-server on PATH):
  *   pnpm -C implementations/manager smoke:manager-seat-load --steps 10,25,50 --seconds 60 [--ram] [--shape dist] [--seat real]
@@ -52,6 +55,7 @@ import { spawn, execFileSync, type ChildProcess } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, readlinkSync, rmSync, renameSync, statSync } from "node:fs";
 import { availableParallelism, tmpdir, totalmem } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { getHeapSpaceStatistics, writeHeapSnapshot } from "node:v8";
 import {
@@ -245,6 +249,14 @@ const SHAPE = flag("shape", "src");
  *  "optimize-for-size,max-semi-space-size=1", to measure what they save. */
 const MANAGER_NODE_FLAGS = flag("manager-node-flags", "").split(",").map((f) => f.trim().replace(/^-*/, "")).filter(Boolean).map((f) => `--${f}`);
 const REAL_SEATS = flag("seat", "stub") === "real";
+const realEntryIndex = argv.indexOf("--real-entry");
+if (realEntryIndex !== -1 && (!argv[realEntryIndex + 1] || argv[realEntryIndex + 1]!.startsWith("--")))
+  throw new Error("manager-seat-load: real-entry needs an explicit value");
+const REAL_ENTRY = flag("real-entry", "stock");
+if (REAL_ENTRY !== "stock" && REAL_ENTRY !== "direct") throw new Error("manager-seat-load: real-entry is stock or direct");
+if (!REAL_SEATS && argv.includes("--real-entry")) throw new Error("manager-seat-load: real-entry requires --seat real");
+if (REAL_SEATS && (cleanEnv.NODE_COMPILE_CACHE || cleanEnv.NODE_DISABLE_COMPILE_CACHE))
+  throw new Error("manager-seat-load: unset NODE_COMPILE_CACHE and NODE_DISABLE_COMPILE_CACHE; this fixture owns its cache");
 if (SHAPE !== "src" && SHAPE !== "dist") throw new Error("manager-seat-load: --shape is src or dist");
 if (PROCESS_MEMORY) {
   if (RAM || !REAL_SEATS || process.platform !== "linux")
@@ -290,8 +302,8 @@ for (let i = 0; i < maxSeats; i++)
 const { bootBroker } = await import("./_boot-broker.js");
 const { bootDeliveryDaemon } = await import("./_boot-delivery.js");
 const { procMem, heapSnapshotTop } = await import("@cotal-ai/smoke-kit");
-/** The plugin's MCP server, built: `--seat real` launches it per seat. */
-const realSeat = REAL_SEATS ? new URL(import.meta.resolve("@cotal-ai/connector-claude-code/mcp")).pathname : undefined;
+/** The stock wrapper is beside the exported MCP bundle in the installed package. */
+const realSeat = REAL_SEATS ? fileURLToPath(new URL(REAL_ENTRY === "stock" ? "seat.cjs" : "mcp.cjs", import.meta.resolve("@cotal-ai/connector-claude-code/mcp"))) : undefined;
 const auth = await createSpaceAuth(space);
 saveSpaceAuth(authDir(workspaceRoot), auth); // the FS composition the manager's start() reads
 const broker = await bootBroker(auth, { monitor: true });
@@ -334,7 +346,7 @@ try {
   await setupSpaceStreams({ servers: broker.servers, space, creds: await mintCreds(auth, newIdentity(), "provisioner") });
   delivery = await bootDeliveryDaemon({ space, servers: broker.servers, auth, reloadStoreIdentity: workspaceSecretStore(workspaceRoot).identity });
 
-  const childEnv = { ...cleanEnv, DO_NOT_TRACK: "1", COTAL_TELEMETRY: "off", COTAL_HOME: home, COTAL_SEAT_ROOT: seatRoot };
+  const childEnv = { ...cleanEnv, HOME: home, DO_NOT_TRACK: "1", COTAL_TELEMETRY: "off", COTAL_HOME: home, COTAL_SEAT_ROOT: seatRoot };
   const seatHost = startChild({ kind: "seats", seatDir }, childEnv);
   await ask(seatHost, undefined, "ready");
   const manager = startChild({ kind: "manager", space, servers: broker.servers, workspaceRoot, seatDir, stubToken, dist: SHAPE === "dist", ...(realSeat ? { realSeat } : {}), observeSeats: PROCESS_MEMORY }, childEnv);
@@ -411,7 +423,7 @@ try {
     if (before && after) {
       verify(before.seats.every((seat, i) => seat.pid === after.seats[i]?.pid), "a connector process changed during the idle window");
       console.log(`MSL_RESULT ${JSON.stringify({ source: SHA, sourceDirty: SOURCE_DIRTY, requested: seatsNow, windowSeconds: s, shape: SHAPE,
-        seatMode: "real", heapSnapshots: false, observationErrors, checks: measurementChecks,
+        seatMode: "real", seatEntry: REAL_ENTRY, heapSnapshots: false, observationErrors, checks: measurementChecks,
         brokerCpuCores: (b1 - b0) / 1000 / s, managerCpuCores: mgrCores, before, after })}`);
     }
     const host = (await ask(seatHost, { cmd: "sample" }, "sample")).sample as { seats: number; connected: number; failed: number; firstErrors: string[]; rssMb: number };
@@ -487,7 +499,7 @@ try {
 
   if (PROCESS_MEMORY) console.log(`MSL_DONE checks=${measurementChecks} steps=${STEPS.length + 1}`);
   const head = ["seats requested", "stub connected / manager children", "manager millicores", "manager RSS MB", "spawned ok / refused", "manager CPU ms per spawn", "spawn wall p50 / max ms", "seat host millicores", "seat host RSS MB", "broker millicores"];
-  console.log(`\nmanager-seat-load  git ${SHA}  host ${availableParallelism()} cores, ${(totalmem() / 1073741824).toFixed(1)} GB  idle window ${SECONDS}s after ${SETTLE_S}s settle  manager shape ${SHAPE === "dist" ? `dist (plain node${MANAGER_NODE_FLAGS.length ? ` ${MANAGER_NODE_FLAGS.join(" ")}` : ""}, built package)` : "src (tsx over source)"}  seats ${realSeat ? "REAL connector processes" : "stub"}\n`);
+  console.log(`\nmanager-seat-load  git ${SHA}  host ${availableParallelism()} cores, ${(totalmem() / 1073741824).toFixed(1)} GB  idle window ${SECONDS}s after ${SETTLE_S}s settle  manager shape ${SHAPE === "dist" ? `dist (plain node${MANAGER_NODE_FLAGS.length ? ` ${MANAGER_NODE_FLAGS.join(" ")}` : ""}, built package)` : "src (tsx over source)"}  seats ${realSeat ? `REAL connector processes (${REAL_ENTRY} entry)` : "stub"}\n`);
   console.log(`| ${head.join(" | ")} |`);
   console.log(`|${head.map(() => "---").join("|")}|`);
   for (const r of table) console.log(`| ${r.join(" | ")} |`);
