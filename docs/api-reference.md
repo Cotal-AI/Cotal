@@ -114,3 +114,15 @@ explicitly select the issued or legacy rail. It shares the request head with
 `epRequestSubject`; actual requests still require a concrete instance id. The filter spans
 target/caller suffixes, grants no authority, and does not prove the origin of an observed
 frame. Observers must still parse and authorize it.
+
+### Presence writer validation
+
+`CotalEndpoint.setActivity`, `setStatus`, `setCondition` and `setAttention` reject values
+that the roster reader cannot accept, before changing endpoint state or publishing. The
+`TypeError` names the field without printing the rejected value. `setCondition(null)`
+still clears the condition. The publisher also checks the final wire row.
+
+`assertPresenceRow(value, key)` uses the same shape rule as `isPresenceRow(value, key)`,
+but throws instead of returning false. It does not coerce values or impose a new enum on
+forward-compatible attention/condition strings. This is wire-shape validation, not an
+authorization or lifecycle check.
