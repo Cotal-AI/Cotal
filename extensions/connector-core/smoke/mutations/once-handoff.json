@@ -14,7 +14,9 @@
     "manager already failed. M3 offers a claimed task again, so a held task is sent twice. M4 and M5",
     "let a send queued behind a gate claim a task its manager settled meanwhile. M6 keeps the timer",
     "running after the dispatch left, so a slow response seals a task the harness has. M7 leaves a",
-    "seat whose report cannot land running, with the task open and nothing to end it."
+    "seat whose report cannot land running, with the task open and nothing to end it.",
+    "M8 drops the forced exit, so a seat whose graceful shutdown stalls keeps its process, with its task",
+    "open and nothing left to end it."
   ],
   "mutations": [
     {
@@ -65,6 +67,13 @@
       "find": "    exitOnceSeat();\n",
       "replace": "",
       "expectRed": "a report that cannot land within the bound starts the seat's graceful shutdown and then exits its process"
+    },
+    {
+      "name": "M8 a seat whose shutdown stalls is never forced out",
+      "file": "extensions/connector-core/src/once.ts",
+      "find": "  setTimeout(() => process.exit(1), ONCE_EXIT_GRACE_MS);\n",
+      "replace": "",
+      "expectRed": "its shutdown starts, and the process exits one grace period later with its teardown still holding the event loop"
     }
   ]
 }

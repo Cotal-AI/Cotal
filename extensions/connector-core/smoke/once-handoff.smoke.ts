@@ -6,13 +6,17 @@
  * a claim that outlives the handoff bound is sealed by its timer. A sealed task is reported to the
  * manager (`turn-unconfirmed`), and a report that never lands ends the seat's own process. Run
  * turns keep today's offer-again behavior. Timers are driven by intercepting `setTimeout`, so the
- * bounds run without waiting them out.
+ * bounds run without waiting them out, except in the last cell: a seat in a process of its own
+ * whose report never lands, which must exit with its shutdown stalled, in real time.
  *
  * Run: pnpm smoke:once-handoff
  */
+import { spawn } from "node:child_process";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { mintLifecycleUid } from "@cotal-ai/core";
 import { MeshAgent } from "../src/agent.js";
-import { ONCE_HANDOFF_MS, onceHandoffState, registerOnceExit } from "../src/once.js";
+import { ONCE_EXIT_GRACE_MS, ONCE_HANDOFF_MS, onceHandoffState, registerOnceExit } from "../src/once.js";
 import type { AgentConfig } from "../src/config.js";
 
 let pass = 0, fail = 0;
@@ -249,7 +253,28 @@ console.log("\n7. the report: retried while the manager is unreachable, and a re
 
 globalThis.setTimeout = realSetTimeout;
 globalThis.clearTimeout = realClearTimeout;
-const EXPECTED_CELLS = 23;
+
+console.log("\n8. a seat whose report cannot land exits its own process, even while its shutdown stalls");
+{
+  const here = dirname(fileURLToPath(import.meta.url));
+  const child = spawn(join(resolve(here, "../../.."), "node_modules", ".bin", "tsx"), [join(here, "_once-exit-child.ts")], { stdio: ["ignore", "pipe", "pipe"] });
+  let out = "", err = "";
+  child.stdout.on("data", (b) => { out += String(b); });
+  child.stderr.on("data", (b) => { err += String(b); });
+  const bound = ONCE_HANDOFF_MS + ONCE_EXIT_GRACE_MS + 30_000;
+  const exit = await new Promise<{ code: number | null; at: number } | undefined>((r) => {
+    const timer = setTimeout(() => r(undefined), bound);
+    child.once("exit", (code) => { clearTimeout(timer); r({ code, at: Date.now() }); });
+  });
+  // A child the bound outlived is killed by its own pid, and the cell fails.
+  if (exit === undefined) { try { process.kill(child.pid!, "SIGKILL"); } catch { /* already gone */ } }
+  const graceful = Number(out.match(/GRACEFUL (\d+)/)?.[1]);
+  const lapse = exit === undefined ? undefined : exit.at - graceful;
+  check("its shutdown starts, and the process exits one grace period later with its teardown still holding the event loop",
+    exit?.code === 1 && Number.isFinite(graceful) && lapse !== undefined && lapse >= ONCE_EXIT_GRACE_MS - 500 && lapse < ONCE_EXIT_GRACE_MS + 5_000,
+    { exit, lapse, out, err: err.slice(-800) });
+}
+const EXPECTED_CELLS = 24;
 console.log(`\n${fail === 0 && pass === EXPECTED_CELLS ? "ONCE HANDOFF SMOKE OK ✅" : "ONCE HANDOFF SMOKE FAILED"}  (${pass} passed, ${fail} failed)`);
 if (pass + fail !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
