@@ -52,3 +52,6 @@ The runtime can also be selected with `runtime: orca` in a mesh manifest.
 runs the complete operator journey against live Orca and Claude Code: install this package with
 `cotal ext`, launch a `runtime: orca` manifest, observe the agent through `cotal ps`, then shut down
 and remove the extension.
+
+The launcher contract checks in `package.smoke.ts` are POSIX-only. On Windows they use the
+shared `skipSuite` helper to report a skip with zero passing cells.

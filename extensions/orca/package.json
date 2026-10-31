@@ -28,6 +28,7 @@
   },
   "devDependencies": {
     "@cotal-ai/core": "workspace:*",
+    "@cotal-ai/smoke-kit": "workspace:*",
     "tsx": "^4.22.4"
   },
   "files": [
