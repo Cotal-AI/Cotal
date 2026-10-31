@@ -1,6 +1,46 @@
 @import 'tailwindcss';
 @import 'fumadocs-ui/css/neutral.css';
 @import 'fumadocs-ui/css/preset.css';
-@theme { --color-fd-primary: #85651d; }
-.dark { --color-fd-primary: #e9c46a; }
+@theme { --color-fd-primary: #cc8b00; }
+:root:not(.dark) { --color-fd-background: #fff; }
+.dark { --color-fd-primary: #fff383; }
 body { font-family: Arial, Helvetica, sans-serif; }
+
+.cotal-layout-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+:is(#nd-sidebar, #nd-sidebar-mobile) [data-radix-scroll-area-viewport] p {
+  color: var(--color-fd-foreground);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+:is(#nd-sidebar, #nd-sidebar-mobile) [data-radix-scroll-area-viewport] a[data-active=true] {
+  @apply rounded-lg bg-fd-primary/10 text-fd-primary font-normal;
+}
+
+:is(#nd-sidebar, #nd-sidebar-mobile) [data-radix-scroll-area-viewport] a[data-active=true]::before {
+  content: none;
+}
+
+.cotal-toc-highlight > div {
+  @apply bg-transparent bg-linear-to-r from-fd-primary/10;
+}
+
+@media (min-width: 768px) {
+  #nd-docs-layout {
+    --fd-sidebar-width: 300px;
+  }
+
+  #nd-sidebar {
+    background-color: #fff;
+    border-inline-end: 1px solid var(--color-fd-border);
+  }
+
+  .dark #nd-sidebar {
+    background-color: var(--color-fd-background);
+  }
+}

@@ -12,5 +12,14 @@ export async function generateMetadata({params}:Props) {
 export default async function Page({params}:Props) {
  const {section,slug}=await params; const page=source.getPage([section,slug]); if(!page) notFound();
  const Content=page.data.body;
- return <DocsPage toc={page.data.toc}><DocsTitle>{page.data.title}</DocsTitle><DocsBody><Content components={useMDXComponents({})}/></DocsBody></DocsPage>;
+ return (
+  <DocsPage
+   toc={page.data.toc}
+   tableOfContent={{ style: 'block', list: { className: 'cotal-toc-highlight' } }}
+   tableOfContentPopover={{ style: 'block', list: { className: 'cotal-toc-highlight' } }}
+  >
+   <DocsTitle>{page.data.title}</DocsTitle>
+   <DocsBody><Content components={useMDXComponents({})}/></DocsBody>
+  </DocsPage>
+ );
 }
