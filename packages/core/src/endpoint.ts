@@ -2688,7 +2688,12 @@ export class CotalEndpoint extends EventEmitter {
    *  auth must pass `chatWildcard(space)` since its `sub.allow` only covers chat (DM/anycast
    *  stay confidential), and an admin must tap the messaging planes individually
    *  (`chat`/`inst`/`svc` — its enumerated `sub.allow` excludes the v0.4 endpoint rails,
-   *  SPEC 13.9/13.11), otherwise the space-wildcard subscribe is denied and the feed dies. */
+   *  SPEC 13.9/13.11), otherwise the space-wildcard subscribe is denied and the feed dies.
+   *
+   *  A messaging frame (`chat`, `inst`, `svc`) is checked the way every other read of those planes
+   *  is (SPEC §5): one whose payload sender is not the subject's sender is dropped, and one that
+   *  passes carries the channel, recipient or role its subject names, not the payload's (#3741).
+   *  Any other frame reaches the handler as decoded. */
   tap(
     handler: (subject: string, msg: CotalMessage | undefined) => void,
     opts?: { subject?: string },
@@ -2710,6 +2715,11 @@ export class CotalEndpoint extends EventEmitter {
           decoded = m.json<CotalMessage>();
         } catch {
           decoded = undefined;
+        }
+        const parsed = parseSubject(m.subject);
+        if (decoded !== undefined && (parsed?.kind === "chat" || parsed?.kind === "inst" || parsed?.kind === "svc")) {
+          if (!isRecord(decoded) || !decoded.from || decoded.from.id !== parsed.sender || !isPrincipalOwnerToken(parsed.owner)) continue;
+          decoded = authenticatedMessage(decoded, parsed);
         }
         tap.handler(m.subject, decoded);
       }

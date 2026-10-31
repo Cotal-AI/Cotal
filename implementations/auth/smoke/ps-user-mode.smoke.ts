@@ -32,6 +32,7 @@ import { toNodeHandler } from "better-auth/node";
 import { pickFreePort } from "./_free-port.js";
 import { assertScratchHeld, foreignRootFor, killManagerAtRoot, makeScratch } from "../../../bin/smoke/_scratch.js";
 import { assertSmokeSandboxDown, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
+import { approveDevice } from "./_device-approval.js";
 
 // Sandbox the temp root BEFORE minting the fixture. `findCotalRoot` walks to `/` unbounded, so a
 // `.cotal` above `tmpdir()` makes `cotal up` write `manager.pid` into that ancestor. Step 4 then
@@ -278,15 +279,7 @@ try {
   rmSync(scratch, { recursive: true, force: true });
   throw new Error(`fixture setup failed (scratch removed, IdP: ${closed}): ${(e as Error).message}`, { cause: e });
 }
-async function approve(userCode: string): Promise<void> {
-  await fetch(`${base}/device?user_code=${encodeURIComponent(userCode)}`, { headers: { cookie, origin } });
-  const res = await fetch(`${base}/device/approve`, {
-    method: "POST",
-    headers: { "content-type": "application/json", cookie, origin },
-    body: JSON.stringify({ userCode }),
-  });
-  if (!res.ok) throw new Error(`device/approve failed: HTTP ${res.status}`);
-}
+const approve = (userCode: string) => approveDevice({ base, cookie, origin }, userCode);
 
 try {
   console.log("1) up --user-auth");
@@ -325,7 +318,7 @@ try {
   console.log("2) device login + admin grant");
   const { sub } = await establishIdpSession({
     dir: home, idpUrl: base, clientId: CLIENT_ID,
-    onPrompt: (p: DeviceLoginPrompt) => void approve(p.userCode),
+    onPrompt: (p: DeviceLoginPrompt) => approve(p.userCode),
   });
   const grant = await cotal(["actor", "grant", "cli", "--sub", sub, "--full", "--scope", "spawn,role:default,admin", "--label", "ps human"]);
   check("actor grant succeeds", grant.status === 0 && /^Actor grant stored$/m.test(grant.out), grant.out.slice(-300));

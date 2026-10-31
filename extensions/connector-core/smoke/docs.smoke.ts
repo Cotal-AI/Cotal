@@ -216,6 +216,8 @@ console.log("✓ 6 — the built docs module serves every page in docs/ at the s
     mkdirSync(join(tree, "bin"), { recursive: true });
     cpSync(join(repoRoot, "bin", "package.json"), join(tree, "bin", "package.json"));
     cpSync(gen, join(tree, "scripts", "generate-docs-bundle.mjs"));
+    mkdirSync(join(tree, "extensions", "connector-core", "src"), { recursive: true });
+    cpSync(join(repoRoot, "extensions", "connector-core", "src", "docs-index-core.js"), join(tree, "extensions", "connector-core", "src", "docs-index-core.js"));
     const copied = join(tree, "scripts", "generate-docs-bundle.mjs");
 
     // ACCEPT CONTROL FOR THE COPY. The refuse legs below are only evidence if the copy itself is
