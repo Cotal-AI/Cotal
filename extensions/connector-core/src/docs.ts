@@ -11,7 +11,8 @@
  * installed release. When that path is absent (version-pinned docs are not published yet) or
  * unreachable, the tool falls back to the bundled copy and reports which source answered.
  */
-import { loadDocsBundle, loadDocsMetadata } from "./docs-bundle.generated.js";
+import { DOCS_VERSION, loadDocsBundle, loadDocsIndex, loadDocsMetadata } from "./docs-bundle.generated.js";
+import { decodeIndex, STOP, tokenize } from "./docs-index-core.js";
 import type { ToolResult } from "./tool-specs.js";
 
 export { DOCS_VERSION } from "./docs-bundle.generated.js";
@@ -134,109 +135,39 @@ function renderPage(p: DocsPage, note: string): string {
 // architecture (index → fetch full page, the model is the retriever); search is the shortcut
 // for "I don't yet know which page."
 
-interface Section {
-  slug: string;
-  pageTitle: string;
-  /** Heading path shown to the agent, e.g. "Channels and permissions › The three verbs". */
-  heading: string;
-  /** The section's raw Markdown (its heading line included). */
-  text: string;
-  /** Field-boosted term frequencies (page title / heading repeated) used for scoring. */
-  tf: Map<string, number>;
-  /** The boosted token count, the BM25 document length. */
-  len: number;
-}
-
-/** Keep identifiers and subjects whole: `cotal_send`, `$SYS.ACCOUNT`, `#general`, `allowSubscribe`. */
-const TOKEN = /[a-z0-9_$.#>*-]+/gi;
-/** Trailing/leading subject-wildcard and punctuation noise: `$SYS.>` → `$SYS`, `team.*` → `team`. */
-const EDGE = /^[.>*#-]+|[.>*#-]+$/g;
-function tokenize(s: string): string[] {
-  const raw = s.toLowerCase().match(TOKEN);
-  if (!raw) return [];
-  const out: string[] = [];
-  for (const r of raw) {
-    // The raw form first, so an exact wildcard/identifier match (`team.>`, `cotal_send`) keeps
-    // its full weight and out-scores a mere base-subject match.
-    if (r.length >= 2) out.push(r);
-    // The wildcard-stripped base, so `$SYS.>` still finds the section documenting `$SYS`.
-    const t = r.replace(EDGE, "");
-    if (t.length >= 2 && t !== r) out.push(t);
-    // Dotted segments, so `cotal.schema.json` matches a `schema` query.
-    if (t.includes(".")) for (const seg of t.split(".")) if (seg.length >= 2) out.push(seg);
-  }
-  return out;
-}
-
-// Query-side stopwords only (the corpus keeps everything so IDF stays honest).
-const STOP = new Set(
-  "a an and are as at be by do for from has how in is it of on or that the this to use using was what when where which who with you your".split(" "),
-);
-
-/** Term frequencies of boosted token groups, each group counted `weight` times. */
-function termFrequencies(groups: [tokens: string[], weight: number][]): { tf: Map<string, number>; len: number } {
-  const tf = new Map<string, number>();
-  let len = 0;
-  for (const [tokens, weight] of groups) {
-    for (const t of tokens) tf.set(t, (tf.get(t) ?? 0) + weight);
-    len += tokens.length * weight;
-  }
-  return { tf, len };
-}
-
-function sectionsOf(slug: string, pageTitle: string, body: string): Section[] {
-  const out: Section[] = [];
-  let heading = pageTitle;
-  let buf: string[] = [];
-  const flush = () => {
-    const text = buf.join("\n").trim();
-    if (text) {
-      const { tf, len } = termFrequencies([
-        [tokenize(pageTitle), 3], // title ×3
-        [tokenize(heading), 2], // heading ×2
-        [tokenize(text), 1],
-      ]);
-      out.push({ slug, pageTitle, heading, text, tf, len });
-    }
-    buf = [];
-  };
-  let inFence = false;
-  for (const line of body.split("\n")) {
-    if (line.trimStart().startsWith("```")) inFence = !inFence;
-    const h = inFence ? null : line.match(/^#{2,6}\s+(.+?)\s*$/);
-    if (h) {
-      flush();
-      heading = `${pageTitle} › ${h[1].trim()}`;
-    }
-    buf.push(line);
-  }
-  flush();
-  return out;
-}
-
 const K1 = 1.2;
 const B = 0.75;
 
-function buildIndex(): { sections: Section[]; df: Map<string, number>; avgdl: number } {
-  const sections: Section[] = [];
-  for (const p of bundle().pages) sections.push(...sectionsOf(p.slug, p.title, p.body));
-  sections.push(...sectionsOf("spec", bundle().spec.title, bundle().spec.body));
-  sections.push(...sectionsOf("lang", bundle().lang.title, bundle().lang.body));
-  // The schema is JSON (no Markdown headings) — index it as a single section.
-  const { tf, len } = termFrequencies([[tokenize(bundle().schema.title), 2], [tokenize(bundle().schema.body), 1]]);
-  sections.push({ slug: "schema", pageTitle: bundle().schema.title, heading: bundle().schema.title, text: bundle().schema.body, tf, len });
-
-  const df = new Map<string, number>();
-  let total = 0;
-  for (const s of sections) {
-    total += s.len;
-    for (const t of s.tf.keys()) df.set(t, (df.get(t) ?? 0) + 1);
-  }
-  return { sections, df, avgdl: total / Math.max(1, sections.length) };
+/** The sources the index numbers, in its order: each page, the spec, the language reference, the schema. */
+function sources(): { slug: string; title: string; body: string }[] {
+  const b = bundle();
+  return [
+    ...b.pages,
+    { slug: "spec", ...b.spec },
+    { slug: "lang", ...b.lang },
+    { slug: "schema", ...b.schema },
+  ];
 }
 
-// Built on the first search, for the same reason as the bundle.
-let index: ReturnType<typeof buildIndex> | undefined;
+// Read, checked and decoded on the first search from the index asset the generator precomputed, for the same reason as the bundle.
+let index: ReturnType<typeof decodeIndex> | undefined;
+function searchIndex(): ReturnType<typeof decodeIndex> {
+  return (index ??= decodeIndex(loadDocsIndex(), sources().map((source) => source.body.length), DOCS_VERSION));
+}
+
+/** The id of a term in the sorted term list, by binary search, or -1. */
+function termId(terms: string[], term: string): number {
+  let low = 0;
+  let high = terms.length - 1;
+  while (low <= high) {
+    const mid = (low + high) >>> 1;
+    const candidate = terms[mid];
+    if (candidate === term) return mid;
+    if (candidate < term) low = mid + 1;
+    else high = mid - 1;
+  }
+  return -1;
+}
 
 export interface DocHit {
   /** Page slug to fetch in full via cotal_docs(page: slug). */
@@ -257,29 +188,35 @@ export function searchDocs(query: string, limit = 5): DocHit[] {
   const termSet = new Set(terms);
   if (!termSet.size) return [];
 
-  const { sections, df, avgdl } = (index ??= buildIndex());
-  const N = sections.length;
-  const scored: { s: Section; score: number }[] = [];
-  for (const s of sections) {
-    let score = 0;
-    for (const t of termSet) {
-      const f = s.tf.get(t) ?? 0;
-      if (!f) continue;
-      const n = df.get(t) ?? 0;
-      const idf = Math.log(1 + (N - n + 0.5) / (n + 0.5));
-      score += idf * ((f * (K1 + 1)) / (f + K1 * (1 - B + (B * s.len) / avgdl)));
+  const idx = searchIndex();
+  const N = idx.sections;
+  const scores = new Float64Array(N);
+  for (const t of termSet) {
+    const id = termId(idx.terms, t);
+    if (id < 0) continue;
+    const from = idx.offsets[id];
+    const to = idx.offsets[id + 1];
+    const n = to - from;
+    const idf = Math.log(1 + (N - n + 0.5) / (n + 0.5));
+    for (let p = from; p < to; p++) {
+      const s = idx.postSection[p];
+      const f = idx.postWeight[p];
+      scores[s] += idf * ((f * (K1 + 1)) / (f + K1 * (1 - B + (B * idx.length[s]) / idx.avgdl)));
     }
-    if (score > 0) scored.push({ s, score });
   }
+  const scored: { s: number; score: number }[] = [];
+  for (let s = 0; s < N; s++) if (scores[s] > 0) scored.push({ s, score: scores[s] });
   scored.sort((a, b) => b.score - a.score);
 
+  const all = sources();
   const perPage = new Map<string, number>();
   const hits: DocHit[] = [];
   for (const { s, score } of scored) {
-    const seen = perPage.get(s.slug) ?? 0;
+    const source = all[idx.source[s]];
+    const seen = perPage.get(source.slug) ?? 0;
     if (seen >= 2) continue; // don't let one page crowd out the rest
-    perPage.set(s.slug, seen + 1);
-    hits.push({ slug: s.slug, pageTitle: s.pageTitle, heading: s.heading, text: s.text, score });
+    perPage.set(source.slug, seen + 1);
+    hits.push({ slug: source.slug, pageTitle: source.title, heading: idx.headings[s], text: source.body.slice(idx.start[s], idx.end[s]), score });
     if (hits.length >= limit) break;
   }
   return hits;

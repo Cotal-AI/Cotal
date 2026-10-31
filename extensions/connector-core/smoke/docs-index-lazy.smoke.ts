@@ -23,11 +23,17 @@ if (!mode) {
   assert.ok(modes.some(value => value === mode), "known cold path");
   const session = new Session();
   const generatedUrl = new URL("../dist/docs-bundle.generated.js", import.meta.url).href;
-  const calls = (coverage: Profiler.TakePreciseCoverageReturnType): number => coverage.result
+  const callsOf = (coverage: Profiler.TakePreciseCoverageReturnType, name: string): number => coverage.result
     .filter(script => script.url === generatedUrl)
     .flatMap(script => script.functions)
-    .filter(fn => fn.functionName === "loadDocsBundle")
+    .filter(fn => fn.functionName === name)
     .reduce((total, fn) => total + fn.ranges[0].count, 0);
+  // The search index payload has its own loader; `indexCalls` is its count in the coverage `calls` last read.
+  let indexCalls = 0;
+  const calls = (coverage: Profiler.TakePreciseCoverageReturnType): number => {
+    indexCalls = callsOf(coverage, "loadDocsIndex");
+    return callsOf(coverage, "loadDocsBundle");
+  };
   let checks = 0;
   const check = (label: string, run: () => void): void => { run(); checks++; console.log(`✓ ${mode}: ${label}`); };
   session.connect();
@@ -36,10 +42,10 @@ if (!mode) {
     await session.post("Profiler.startPreciseCoverage", { callCount: true, detailed: true });
     const docs = await import("@cotal-ai/connector-core/docs");
     const imported = calls(await session.post("Profiler.takePreciseCoverage"));
-    check("import does not decode the full corpus", () => assert.equal(imported, 0));
+    check("import does not decode the full corpus or the search index", () => { assert.equal(imported, 0); assert.equal(indexCalls, 0); });
     const first = mode === "text" ? docs.renderDocsIndex() : mode === "structured" ? docs.docsIndex() : await docs.runDocs({ refresh: true });
     const firstCalls = calls(await session.post("Profiler.takePreciseCoverage"));
-    check("cold index does not decode the full corpus", () => assert.equal(firstCalls, 0));
+    check("cold index does not decode the full corpus or the search index", () => { assert.equal(firstCalls, 0); assert.equal(indexCalls, 0); });
 
     const text = docs.renderDocsIndex();
     const structured = docs.docsIndex();
@@ -70,7 +76,7 @@ if (!mode) {
       assert.deepEqual(first, mode === "text" ? text : mode === "structured" ? structured : refresh);
     });
     const callsResult = calls(await session.post("Profiler.takePreciseCoverage"));
-    check("warm indexes still do not decode the full corpus", () => assert.equal(callsResult, 0));
+    check("warm indexes still do not decode the full corpus or the search index", () => { assert.equal(callsResult, 0); assert.equal(indexCalls, 0); });
 
     async function page(): Promise<void> {
       const result = await docs.runDocs({ page: "architecture" });
@@ -85,9 +91,11 @@ if (!mode) {
     if (mode === "structured") search(); else await page();
     const laterCalls = calls(await session.post("Profiler.takePreciseCoverage"));
     check("later content call positively witnesses the full loader", () => assert.equal(laterCalls, 1));
+    check("only a search decodes the search index", () => assert.equal(indexCalls, mode === "structured" ? 1 : 0));
     if (mode === "structured") await page(); else search();
     const cachedCalls = calls(await session.post("Profiler.takePreciseCoverage"));
     check("page and search share the existing full-corpus cache", () => assert.equal(cachedCalls, 0));
+    check("the search index is decoded once, by the search", () => assert.equal(indexCalls, mode === "structured" ? 0 : 1));
 
     const { loadDocsBundle, loadDocsMetadata } = await import("../dist/docs-bundle.generated.js");
     const bundle = loadDocsBundle();
