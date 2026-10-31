@@ -73,8 +73,9 @@ examples ──→ implementations ──→ workspace ──→ core ←(peer)�
 - **`@cotal-ai/core`**, the protocol: subjects, schemas, the NATS client layer, and the
   extension contracts (`Connector`, `Command`, `Runtime`) with the `Registry` they
   self-register into. Depends on nothing else in the repo.
-- **`@cotal-ai/workspace`**, the machine-local operator layer over `~/.cotal`: mesh
-  registry, target resolution, auth-path helpers. Not part of the wire standard, so a
+- **`@cotal-ai/workspace`**, the machine-local operator and client-surface layer over
+  `~/.cotal`: mesh registry, target resolution, auth-path helpers, and the live space model
+  that terminal surfaces share. Not part of the wire standard, so a
   third party can embed core without inheriting workstation plumbing.
 - **`@cotal-ai/lang`**, the workflow language: validator, interpreter, journal. Depends on
   nothing else in the repo.
@@ -300,10 +301,10 @@ stay operator-only.
 
 A watch surface uses a non-consuming endpoint: it registers no presence, binds no inbox
 durable and reads through the endpoint's tap, history and presence APIs. The terminal
-console and its plain stream share the CLI's [MeshView](mesh-view.md) model. The web
-dashboard owns a separate endpoint and exposes HTTP snapshots and SSE events; it does
-not import the CLI model. The console's authorized operator actions use separate control
-calls. See [Watch a mesh](watch-a-mesh.md).
+console, its plain stream and `cotal watch` share the [MeshView](mesh-view.md) model from
+`@cotal-ai/workspace/view`. The web dashboard owns a separate endpoint and exposes HTTP
+snapshots and SSE events; it does not import that model. The console's authorized operator
+actions use separate control calls. See [Watch a mesh](watch-a-mesh.md).
 
 ## Addressing
 

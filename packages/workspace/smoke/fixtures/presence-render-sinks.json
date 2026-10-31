@@ -1675,42 +1675,42 @@
       }
     },
     {
-      "path": "implementations/cli/src/view/mesh-view.ts",
+      "path": "packages/workspace/src/view/mesh-view.ts",
       "kind": "indexed-map",
       "anchor": "STATUS_ORDER[a.status]",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
-      "path": "implementations/cli/src/view/mesh-view.ts",
+      "path": "packages/workspace/src/view/mesh-view.ts",
       "kind": "indexed-map",
       "anchor": "STATUS_ORDER[b.status]",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
-      "path": "implementations/cli/src/view/mesh-view.ts",
+      "path": "packages/workspace/src/view/mesh-view.ts",
       "kind": "indexed-map",
       "anchor": "counts[p.status as keyof StatusCounts]",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
-      "path": "implementations/cli/src/view/mesh-view.ts",
+      "path": "packages/workspace/src/view/mesh-view.ts",
       "kind": "status-token",
       "anchor": "\"waiting\"",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
-      "path": "implementations/cli/src/view/mesh-view.ts",
+      "path": "packages/workspace/src/view/mesh-view.ts",
       "kind": "status-token",
       "anchor": "ter((p) => p.status !== \"offline\");\n    return {\n      co",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
-      "path": "implementations/cli/src/view/mesh-view.ts",
+      "path": "packages/workspace/src/view/mesh-view.ts",
       "kind": "status-token",
       "anchor": "d.id === id)?.status ?? \"offline\";\n    const roleOf = (id",
       "class": "non-render/control",
@@ -2656,7 +2656,7 @@
       "rationale": "Persistence payload: serializes the status into a checkpoint file; no terminal or DOM rendering."
     },
     {
-      "path": "implementations/cli/src/view/mesh-view.ts",
+      "path": "packages/workspace/src/view/mesh-view.ts",
       "kind": "derived-output",
       "anchor": "pe.lastTs = Math.max(pe.lastTs, c.last)",
       "class": "non-render/control",

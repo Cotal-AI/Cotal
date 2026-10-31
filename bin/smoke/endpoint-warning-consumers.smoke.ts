@@ -227,10 +227,10 @@ const sites: Site[] = [
   },
   {
     cell: "MeshView consumes endpoint warnings into its shared operator model",
-    consumer: "CLI MeshView",
+    consumer: "workspace MeshView",
     disposition: "surface",
-    source: "implementations/cli/src/view/mesh-view.ts",
-    dist: "implementations/cli/dist/view/mesh-view.js",
+    source: "packages/workspace/src/view/mesh-view.ts",
+    dist: "packages/workspace/dist/view/mesh-view.js",
     sourceNeedle: 'this.ep.on("warning", this.onWarning);',
     distNeedle: 'this.ep.on("warning",this.onWarning);',
     proof: "behavioral",
@@ -322,7 +322,7 @@ for (const path of BUNDLED_MESH_AGENT_ARTIFACTS) {
   );
 }
 
-const builtRoots = [join(root, "extensions"), join(root, "implementations")];
+const builtRoots = [join(root, "extensions"), join(root, "implementations"), join(root, "packages")];
 const discovered = new Set<string>();
 const walkBuilt = (path: string): void => {
   for (const entry of readdirSync(path, { withFileTypes: true })) {
@@ -330,7 +330,7 @@ const walkBuilt = (path: string): void => {
     const child = join(path, entry.name);
     if (entry.isDirectory()) {
       if (entry.name === "dist" || entry.name === "plugin" || path.includes("/dist") || path.includes("/plugin")) walkBuilt(child);
-      else if (path === join(root, "extensions") || path === join(root, "implementations")) walkBuilt(child);
+      else if (builtRoots.includes(path)) walkBuilt(child);
       continue;
     }
     if (!/\.(?:js|cjs)$/.test(entry.name) || statSync(child).size > 8_000_000) continue;

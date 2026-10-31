@@ -59,7 +59,7 @@ built `dist/`, so run `pnpm build` after `pnpm install` and after editing a pack
 
 | Path                                    | What it is                                                                                                                                                                                                                        |
 | --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `packages/*`                            | The standard plus the local workstation layer. `@cotal-ai/core` is the wire protocol (generic; depends on nothing else in the repo); `@cotal-ai/workspace` is machine-local operator tooling over `~/.cotal` and depends on core; `@cotal-ai/lang` is the cotal-lang workflow language and depends on nothing else here; `@cotal-ai/seat` is local PTY seat custody (one detached custodian per seat) and depends on nothing else here; `@cotal-ai/smoke-kit` is private test-only helpers for the smoke suites, never published and never imported by shipped code. |
+| `packages/*`                            | The standard plus the local workstation layer. `@cotal-ai/core` is the wire protocol (generic; depends on nothing else in the repo); `@cotal-ai/workspace` is the machine-local operator and client-surface layer over `~/.cotal` and depends on core; `@cotal-ai/lang` is the cotal-lang workflow language and depends on nothing else here; `@cotal-ai/seat` is local PTY seat custody (one detached custodian per seat) and depends on nothing else here; `@cotal-ai/smoke-kit` is private test-only helpers for the smoke suites, never published and never imported by shipped code. |
 | `extensions/*`                          | Pluggable adapters (connectors, runtimes). Peer-depend core; self-register on import.                                                                                                                                             |
 | `implementations/*`                     | Opinionated surfaces over core (CLI, manager, delivery daemon, the cotal-lang runtime host). Self-contained; never import each other.                                                                                                                          |
 | `examples/*`                            | Use-cases / composition roots. Private, never published. Each self-documents in its README.                                                                                                                                       |
@@ -85,9 +85,10 @@ with no silent fallback.
 - `**@cotal-ai/core**` (`packages/core`): endpoint, subjects, message types; the NATS client
 layer plus the extension contracts (`Connector`, `Command`, `Runtime`) and the `Registry`
 they self-register into. The wire standard — depends on nothing else in the repo.
-- `**@cotal-ai/workspace**` (`packages/workspace`): the machine-local operator/workstation layer
-over `~/.cotal` — the mesh registry, target resolution, preflight, the `.cotal/` auth-path
-helpers, and the command-copy renderer. Depends on core; not part of the wire standard.
+- `**@cotal-ai/workspace**` (`packages/workspace`): the machine-local operator and client-surface
+layer over `~/.cotal` — the mesh registry, target resolution, preflight, the `.cotal/` auth-path
+helpers, the command-copy renderer, and the live space model (`MeshView`, `openObserver`) that
+terminal surfaces share. Depends on core; not part of the wire standard.
 - `**@cotal-ai/smoke-kit**` (`packages/smoke-kit`): private test-only helpers shared by the smoke
 suites — the broker ownership that kills a spawned `nats-server` when a suite is
 *signalled* rather than only when it returns, and the spawn-site census behind

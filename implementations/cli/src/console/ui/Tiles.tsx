@@ -1,5 +1,5 @@
 import { Box, Text } from "ink";
-import type { StatusCounts } from "../../view/mesh-view.js";
+import type { StatusCounts } from "@cotal-ai/workspace/view";
 import { STATUS, ago } from "./theme.js";
 
 /** Golden-signal strip (one row): working/waiting/idle/offline counts + the stalest live

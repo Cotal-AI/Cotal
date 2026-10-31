@@ -5,7 +5,7 @@
 // `ctx.control` (one per-action call on the CLI's control path, console/control.ts), gated on
 // `canControl`; the observer endpoint never carries control.
 import { resolvePeer, AmbiguousPeerError, peerLabel, type CotalEndpoint, type Presence } from "@cotal-ai/core";
-import type { MeshSnapshot } from "../view/mesh-view.js";
+import type { MeshSnapshot } from "@cotal-ai/workspace/view";
 import type { ManagerReply } from "../lib/control.js";
 import type { ControlOp, ManagedRow, PsReply } from "./control.js";
 import { mentionsIn } from "../lib/mentions.js";

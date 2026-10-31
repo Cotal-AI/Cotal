@@ -1,7 +1,7 @@
 import { oneLine, peerLabel, presenceText, type CotalEndpoint, type PresenceEvent } from "@cotal-ai/core";
 import { brokerAddressForDisplay, localeIsUtf8, plainPunctuation, type ConnectRefusal, type Connection } from "@cotal-ai/workspace";
 import { credentialEnded } from "./lib/connect.js";
-import { MeshView, type FeedEntry } from "./view/mesh-view.js";
+import { MeshView, type FeedEntry } from "@cotal-ai/workspace/view";
 import { activityAge, c, color256, presenceDetail, statusBadge } from "./ui.js";
 
 // ---- per-agent color (ANSI) ------------------------------------------------

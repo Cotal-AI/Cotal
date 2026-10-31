@@ -13,7 +13,8 @@
 import { EventEmitter } from "node:events";
 import type { CotalEndpoint, MembershipChange, MembershipSnapshot, Presence } from "@cotal-ai/core";
 import type { FeedEntry } from "../src/console/mesh.js";
-import { MeshView, type MembershipView } from "../src/view/mesh-view.js";
+// By dist path, the same module the package name resolves to, so a MeshView mutation is graded against the build its command runs.
+import { MeshView, type MembershipView } from "../../../packages/workspace/dist/view/index.js";
 import { foldTopo, membershipFreshness } from "../src/console/ui/topo/model.js";
 
 let failures = 0;

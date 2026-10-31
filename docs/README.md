@@ -109,7 +109,7 @@ For protocol implementers:
 | [Channels & permissions](channels-and-permissions.md) | The three access verbs and how to grant them. |
 | [Config & env](config.md) | The config file, the operator-facing `COTAL_*` variables, the on-disk layout. |
 | [Telemetry](telemetry.md) | What CLI usage reporting sends, including identifiers, and how to turn it off. |
-| [MeshView](mesh-view.md) | The CLI observer model behind the terminal console and plain stream. |
+| [MeshView](mesh-view.md) | The observer model behind the terminal console, its plain stream and `cotal watch`. |
 | [Glossary](glossary.md) | Definitions of every term. |
 | [cotal-lang card](lang-card.md) | The one-page cotal-lang card: effects and results, the await rule, branch keys, top refusals. |
 

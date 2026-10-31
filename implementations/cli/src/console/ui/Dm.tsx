@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Box, Text, useFocus, useInput } from "ink";
 import { peerLabel } from "@cotal-ai/core";
-import type { DmMessage, DmThread, DmPeer } from "../../view/mesh-view.js";
+import type { DmMessage, DmThread, DmPeer } from "@cotal-ai/workspace/view";
 import { agentColor, STATUS, fmtTime, wrapText, sidePaneSize } from "./theme.js";
 import type { FocusId } from "../mesh.js";
 
