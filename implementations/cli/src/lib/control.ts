@@ -41,13 +41,12 @@ import {
 } from "@cotal-ai/core";
 import { PermissionViolationError, type NatsConnection } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
-import { CommandFailure, ConnectRefusal, controlCaller, loadSpaceAuth, oneLine, renderWorkspaceError, type ControlAuth, type RefusalCode } from "@cotal-ai/workspace";
+import { CommandFailure, ConnectRefusal, controlCaller, loadSpaceAuth, nativeEndpointRefusal, oneLine, renderWorkspaceError, staleStoreHint, type ControlAuth, type RefusalCode } from "@cotal-ai/workspace";
 import { DEV_OWNER, EP_UNANSWERED, type SpaceAuth } from "@cotal-ai/core";
-import { c, staleStoreHint, stderrLine } from "../ui.js";
+import { c, stderrLine } from "../ui.js";
 import { cliVersion } from "./version.js";
 import { compareSemver } from "../seed/reconcile.js";
 import { DIAL_TIMEOUT_MS, DialNotAdmitted, dialWithRetry, notAdmittedRefusal } from "./dial-retry.js";
-import { nativeEndpointRefusal } from "./endpoint-errors.js";
 
 /** The control auth shape and target resolver live in `@cotal-ai/workspace` (shared with every
  *  command surface that addresses the manager: this CLI, `cotal run`, the web dashboard). Re-exported

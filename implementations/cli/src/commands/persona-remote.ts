@@ -10,9 +10,9 @@ import {
   parseCommaList, CommandFailure, canonicalRoot, isCommandFailure, isConnectRefusal, presentationOf,
   readLocalRecordSource, writeResult, type OutputWarning, type Report,
   recordOperationSpace,
+  nativeEndpointRefusal,
 } from "@cotal-ai/workspace";
 import { openEndpointConnection } from "../lib/endpoint-client.js";
-import { nativeEndpointRefusal } from "../lib/endpoint-errors.js";
 import { onInstance } from "../lib/control.js";
 import { managerPin } from "../lib/manager-choice.js";
 import { openTransient } from "../lib/transient.js";
