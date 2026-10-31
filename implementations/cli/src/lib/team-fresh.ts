@@ -144,19 +144,29 @@ export function findFreshTeamSummary(root: string, id: string): FreshTeamSummary
 }
 
 /** Never read a source manifest or launch spec to infer what a fresh boot did. Invalid native
- *  summary files stay visible as refused, rather than disappearing from the inventory. */
-export function listFreshTeamSummaries(root: string): { valid: FreshTeamSummary[]; refused: { path: string; why: string }[] } {
+ *  summary files stay visible as refused, rather than disappearing from the inventory. A readable
+ *  summary that names another root, as one does after its folder was moved or copied, is listed in
+ *  `elsewhere`: it settles nothing here and reports only that root's earlier boot. */
+export function listFreshTeamSummaries(root: string): { valid: FreshTeamSummary[]; refused: { path: string; why: string }[]; elsewhere: { path: string; deploymentId: string; root: string }[] } {
   const dir = realDirNoSymlink(root, ".cotal", "team-summaries");
-  if (!dir) return { valid: [], refused: [] };
-  const valid: FreshTeamSummary[] = [], refused: { path: string; why: string }[] = [];
+  if (!dir) return { valid: [], refused: [], elsewhere: [] };
+  const valid: FreshTeamSummary[] = [], refused: { path: string; why: string }[] = [], elsewhere: { path: string; deploymentId: string; root: string }[] = [];
   for (const name of readdirSync(dir).filter((file) => file.endsWith(".json") && !file.startsWith(".")).sort()) {
     const path = join(dir, name), id = name.slice(0, -5);
+    let record: FreshTeamSummary;
     try {
       if (!ID.test(id)) throw new Error("not a full fresh deployment ID");
-      const record = readSummary(path, id);
-      if (canonicalRoot(record.root) !== canonicalRoot(root)) throw new Error("summary names a different root");
-      valid.push(record);
-    } catch { refused.push({ path, why: "the fresh launch summary is unreadable or does not match this root" }); }
+      record = readSummary(path, id);
+    } catch { refused.push({ path, why: "the fresh launch summary is unreadable" }); continue; }
+    if (canonicalRoot(record.root) === canonicalRoot(root)) valid.push(record);
+    else elsewhere.push({ path, deploymentId: id, root: record.root });
   }
-  return { valid, refused };
+  return { valid, refused, elsewhere };
+}
+
+/** The other root a readable summary for this ID names, so a refusal can say where it was recorded.
+ *  Undefined when there is no such summary or the inventory cannot be read. */
+export function freshTeamSummaryRecordedElsewhere(root: string, id: string): string | undefined {
+  try { return listFreshTeamSummaries(root).elsewhere.find((row) => row.deploymentId === id)?.root; }
+  catch { return undefined; }
 }

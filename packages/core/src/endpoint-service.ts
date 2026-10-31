@@ -19,16 +19,21 @@ import {
   endpointToken, assertBoundedOwner, assertLifecycleToken, assertCommandToken, assertPoolToken,
   type EpAuthzMode,
 } from "./endpoint-subjects.js";
-import { EpEnvelopeError, lifecycleBlocked, type EpClass, type EpErrorCode, type EpErrorDetail } from "./endpoint-envelope.js";
+import { EpEnvelopeError, EP_NO_LIVE_INSTANCES, lifecycleBlocked, type EpClass, type EpErrorCode, type EpErrorDetail, type EpNoLiveInstancesDetail } from "./endpoint-envelope.js";
 import {
   RECORD_KINDS, GOVERN_HEAD, recordSpecKey, recordStatusKey, recordAtomicKey, readRecord, recordsBucket,
-  createRecordEntry, updateRecordEntry, deleteRecordEntry, assertStatusValue,
+  createRecordEntry, updateRecordEntry, deleteRecordEntry, assertStatusValue, decodeRecordJson,
 } from "./endpoint-records.js";
 import { verifyClusterManifest, verifyClusterRoot, deriveDescriptor, GOVERNED_TRAIT_URNS, type ClusterDocument, type DescribeDescriptor } from "./endpoint-cluster.js";
+import { createPublicKey, verify as verifySignature } from "node:crypto";
+import { canonicalJson, contractDigest } from "./canonical.js";
+import { isCanonicalEd25519PublicCoordinate } from "./remote-service-authority.js";
+import type { ServiceAuthorityInfo, ServiceAuthorityResult, ServiceIssuerKey, ServiceRegistration, ServiceRegistrationWitness } from "./remote-service-authority.js"; // type-only: the runtime graph stays authority → service
 import { isSupervisorWrite, type SupervisorWriteGrant } from "./endpoint-supervisor.js";
 import { EVICT_PRINCIPALS_MAX } from "./evict.js";
 import type { EpRegistrationState } from "./endpoint-verbs.js"; // type-only: the runtime graph stays verbs → service
 import { ISSUANCE_GATE_OP_KINDS, type EndpointRepairCursor, type GateStateOp } from "./lifecycle-state.js";
+import type { ServiceEndpointCredential } from "./auth-provider.js";
 
 // ---- value shapes (§13.7 "Descriptor and describe") ------------------------------------------
 
@@ -332,7 +337,7 @@ async function readEndpointGovernance(kv: KV, endpoint: string): Promise<ParsedE
   if (!entry) return { commands: new Map(), provisional: null, revision: null };
   if (entry.operation !== "PUT")
     throw new EpEnvelopeError("failed-precondition", `the endpoint governance head ${key} carries a ${entry.operation} marker; a monotonic history-bearing record is never deleted, so this is tampering or a storage fault - reconcile the head before registering, a deletion never resets governance history (SPEC 13.7)`);
-  return { ...parseEndpointGovernance(decodeJson(entry.value, key), key), revision: entry.revision };
+  return { ...parseEndpointGovernance(decodeRecordJson(entry.value, key), key), revision: entry.revision };
 }
 
 /** Union the new spec's governed declarations into the binding governance (monotonic: a governed
@@ -438,7 +443,7 @@ export async function registerServiceInstance(
   if (obs.state !== "open" && !resuming) {
     if (typeof obs.op?.opId !== "string" || !ISSUANCE_GATE_OP_KINDS.has(obs.op.kind))
       throw new EpEnvelopeError("internal", `the issuance gate for "${args.instanceId}" is frozen without a valid op intent; a frozen gate is op-bound (SPEC 13.1)`);
-    throw lifecycleBlocked("conflict", `the issuance gate for "${args.instanceId}" is ${obs.state}; another barrier holds it; if the holder is a dead predecessor, run: cotal reconcile-gate (SPEC 13.8)`, {
+    throw lifecycleBlocked("conflict", `the issuance gate for "${args.instanceId}" is ${obs.state}; another barrier holds it; if the holder is a dead predecessor, run: \`cotal reconcile-gate\` (SPEC 13.8)`, {
       blockedOp: obs.op.kind,
       gateState: "frozen",
       opId: obs.op.opId,
@@ -480,9 +485,12 @@ export async function registerServiceInstance(
       },
     });
     if (finished.completed) {
+      // The reopen has committed, so a later registration may already have frozen the gate and
+      // saved its own cursor. Clear only the cursor this freeze saved.
       try {
         const stored = await args.barrier.progress?.load();
-        if (stored) await args.barrier.progress?.clear(stored.revision);
+        if (stored && stored.cursor.opId === args.barrier.operationId && stored.cursor.freezeToken === token)
+          await args.barrier.progress?.clear(stored.revision);
       } catch { /* the gate is open; stale progress is freeze-bound and safe to retain */ }
       return { registrationRevision: finished.registrationRevision, processEpoch: finished.processEpoch };
     }
@@ -506,7 +514,7 @@ export async function registerServiceInstance(
       throw new EpEnvelopeError("conflict", `a name-authority transfer raced this registration: owner "${spec.owner}" is authorized at nameAuthorityRevision ${authorizedNameRevision} but the frozen gate is at ${obs.nameAuthorityRevision}; re-read and re-decide (SPEC 13.9)`);
     current = await kv.get(key);
     if (current && current.operation === "PUT") {
-      const stored = parseServiceSpec(decodeJson(current.value, key), { endpoint: spec.endpoint });
+      const stored = parseServiceSpec(decodeRecordJson(current.value, key), { endpoint: spec.endpoint });
       if (stored.owner !== spec.owner)
         throw new EpEnvelopeError("permission-denied", `instance "${args.instanceId}" is registered to owner "${stored.owner}"; a re-registration can never change ownership (SPEC 13.1: instance ids are never reused across identities)`);
     }
@@ -761,7 +769,7 @@ async function recoverCommittedSpecWrite(
   if (prior && again.revision === prior.revision) return fail("; spec read-back shows the write did not commit");
   let got: unknown;
   try {
-    got = decodeJson(again.value, key);
+    got = decodeRecordJson(again.value, key);
   } catch (e) {
     return fail(`; spec read-back is garbled: ${(e as Error)?.message ?? String(e)}`);
   }
@@ -810,7 +818,7 @@ export async function completeFrozenRegistrationFromSpec(
   if (!specEntry || specEntry.operation !== "PUT" || specEntry.revision <= args.gate.registrationRevision)
     return { completed: false, raced: false };
   try {
-    parseServiceSpec(decodeJson(specEntry.value, specKey), { endpoint: args.endpoint });
+    parseServiceSpec(decodeRecordJson(specEntry.value, specKey), { endpoint: args.endpoint });
   } catch (e) {
     throw new EpEnvelopeError("unavailable", `the frozen registration's spec is unreadable; the gate stays frozen (SPEC 13.1): ${(e as Error)?.message ?? String(e)}`);
   }
@@ -906,7 +914,7 @@ async function assertForeignSlotIsOrphaned(
   if (observed < slot.generation)
     throw refuse("unavailable", "behind", `${held} at generation ${slot.generation}, ahead of its observed live gate generation ${observed}; refusing rather than treating an ahead or garbled observation as an abandoned slot (SPEC 13.7)`);
   if (observed === slot.generation)
-    throw refuse("conflict", "in-flight", `${held}; its issuance gate is still at generation ${slot.generation}, so that registration is IN FLIGHT and this one must wait; re-read and re-decide. If its holder is gone, reopen that instance's gate first (its own restart heals it on boot, or run: cotal reconcile-gate --instance ${slot.instanceId}), which advances the generation past the slot and lets this registration reclaim it (SPEC 13.7/13.8)`);
+    throw refuse("conflict", "in-flight", `${held}; its issuance gate is still at generation ${slot.generation}, so that registration is IN FLIGHT and this one must wait; re-read and re-decide. If its holder is gone, reopen that instance's gate first (its own restart heals it on boot, or run: \`cotal reconcile-gate --instance ${slot.instanceId}\`), which advances the generation past the slot and lets this registration reclaim it (SPEC 13.7/13.8)`);
   // observed > slot.generation: the holder's gate has reopened past the stamp, so the slot can
   // never satisfy the promote's generation equality. It is dead, and the slot-take replaces it.
 }
@@ -996,14 +1004,6 @@ async function reopenGateAfterAbort(barrier: EpIssuanceBarrier, token: number, s
   }
 }
 
-function decodeJson(value: Uint8Array, key: string): unknown {
-  try {
-    return JSON.parse(new TextDecoder().decode(value));
-  } catch (e) {
-    throw new EpEnvelopeError("internal", `record ${key} does not decode as JSON: ${(e as Error).message}`);
-  }
-}
-
 /** Write an instance's status with the FULL §13.9 writer fence. `epoch` is the
  *  WRITER-AUTHENTICATED epoch — in production the record writer reads it from the
  *  broker-authenticated `epr` subject (§13.9), never from the payload; this helper trusts its
@@ -1080,7 +1080,7 @@ export async function writeServiceStatus(
       throw new EpEnvelopeError("conflict", `the status for "${args.endpoint}/${args.instanceId}" moved (observed revision ${args.expectedStatusRevision}, stored ${current}); a derived write against a moved base would merge-lose the concurrent write, re-read and re-derive (SPEC 13.6)`);
   }
   if (stored && stored.operation === "PUT") {
-    const recorded = parseServiceStatus(decodeJson(stored.value, key));
+    const recorded = parseServiceStatus(decodeRecordJson(stored.value, key));
     // ESCALATED is IRREVERSIBLE here (§13.6): no later write, any epoch, replaces it. The only
     // permitted touch on an escalated row is the supervisor's retirement mark, which the
     // escalation reconciler writes DIRECTLY (never through this writer).
@@ -1222,7 +1222,7 @@ export async function deregisterServiceInstance(
   let statusRevision: number | undefined;
   if (statusEntry && statusEntry.operation === "PUT") {
     // A successor's status: deleting it would leave that successor registered and never live.
-    if (parseServiceStatus(decodeJson(statusEntry.value, statusKey)).observedSpecRevision > specEntry.revision)
+    if (parseServiceStatus(decodeRecordJson(statusEntry.value, statusKey)).observedSpecRevision > specEntry.revision)
       return { removed: false, reason: "superseded" };
     try {
       await deleteRecordEntry(kv, statusKey, statusEntry.revision);
@@ -1309,8 +1309,10 @@ export async function freezeExpectedSet(jsm: JetStreamManager, space: string, en
     if (status.observedSpecRevision < spec.revision) continue; // staleProjection: liveness predates the CURRENT registration
     frozen.push({ instanceId, registrationRevision: spec.revision, epoch: status.epoch });
   }
+  // An empty registry is never an empty scatter success (SPEC 13.5). The detail reaches operators, so
+  // it says what is missing and leaves the rule here.
   if (frozen.length === 0)
-    throw new EpEnvelopeError("failed-precondition", `service "${endpoint}" has no live registered instances; an empty registry is never an empty scatter success (SPEC 13.5)`);
+    throw new EpEnvelopeError("failed-precondition", `service "${endpoint}" has no live registered instances`, [{ kind: EP_NO_LIVE_INSTANCES, endpoint } satisfies EpNoLiveInstancesDetail]);
   return frozen;
 }
 
@@ -1337,7 +1339,7 @@ export async function readSvcRecordLeader(
   }
   if (!m) return undefined;
   if (m.header?.get("KV-Operation")) return { deleted: true }; // a deregistration, not corruption (§13.5)
-  return { value: decodeJson(m.data, key), revision: m.seq };
+  return { value: decodeRecordJson(m.data, key), revision: m.seq };
 }
 
 /** The PRODUCTION `reconcileRegistration` hook for {@link epScatter} (§13.5): a bounded post-T
@@ -1589,7 +1591,7 @@ export async function authorizeServeGrant(
   const specEntry = await kv.get(specKey);
   if (!specEntry || specEntry.operation !== "PUT")
     throw new EpEnvelopeError("failed-precondition", `no registered spec for "${args.endpoint}/${args.instanceId}"; a serve credential is minted only for a REGISTERED instance (SPEC 13.9)`);
-  const spec = parseServiceSpec(decodeJson(specEntry.value, specKey), { endpoint: args.endpoint });
+  const spec = parseServiceSpec(decodeRecordJson(specEntry.value, specKey), { endpoint: args.endpoint });
   assertBoundedOwner(args.holder.owner, "serve credential holder");
   if (args.holder.owner !== spec.owner)
     throw new EpEnvelopeError("permission-denied", `the serve credential holder "${args.holder.owner}" is not the registered owner "${spec.owner}" of "${args.endpoint}" (SPEC 13.9: serving is the registered owner's authority)`);
@@ -1600,65 +1602,7 @@ export async function authorizeServeGrant(
   // old-owner credential.
   const nameAuthorityRevision = await assertServiceNameAuthority(spec.endpoint, spec.owner, args.authority);
 
-  // §13.7 two-stage content-address read: the registered digest is a CLOSURE digest naming a
-  // MANIFEST; the manifest's `root` names the cluster DOCUMENT. Both fetched, both verified —
-  // a raw root document presented at a closure-digest key would conflate the two identities.
-  const read = async (digest: string, what: string): Promise<unknown> => {
-    let raw: unknown;
-    try {
-      raw = await args.readClusterArtifact(digest);
-    } catch (err) {
-      throw new EpEnvelopeError("unavailable", `the contract-store read seam failed for ${what} ${digest}; serve authorization fails closed (SPEC 13.7): ${(err as Error)?.message ?? String(err)}`);
-    }
-    if (raw === undefined)
-      throw new EpEnvelopeError("failed-precondition", `${what} ${digest} is not readable from the contract store; an unverifiable registered surface never authorizes (SPEC 13.7)`);
-    return raw;
-  };
-  // Null-prototype: "constructor" is a valid command token, and on a plain `{}` the duplicate
-  // check below would resolve the inherited `Object.prototype.constructor` (falsely refusing a
-  // legitimate command as "declared twice") while every downstream `surface[command]` lookup
-  // (serve construction, governed-surface verification) would leak through the prototype.
-  const surface: Record<string, EpCommandAuthority> = Object.create(null);
-  const commands: string[] = [];
-  const clusters: { digest: string; document: ClusterDocument; raw: Record<string, unknown> }[] = [];
-  for (const closureDigest of spec.clusterDigests) {
-    const manifestRaw = await read(closureDigest, "registered cluster manifest");
-    let root: string;
-    try {
-      ({ root } = verifyClusterManifest(closureDigest, manifestRaw));
-    } catch (err) {
-      throw new EpEnvelopeError("internal", `registered cluster manifest ${closureDigest} of "${args.endpoint}/${args.instanceId}" fails verification; mediated registered state that does not verify is a writer/store bug, never authority (SPEC 13.7): ${(err as Error).message}`);
-    }
-    const rootRaw = await read(root, "registered cluster document");
-    let document: ClusterDocument;
-    try {
-      document = verifyClusterRoot(root, rootRaw);
-    } catch (err) {
-      throw new EpEnvelopeError("internal", `registered cluster document ${root} (closure ${closureDigest}) fails verification; mediated registered state that does not verify is never authority (SPEC 13.7): ${(err as Error).message}`);
-    }
-    for (const cmd of document.commands) {
-      if (surface[cmd.name] !== undefined)
-        throw new EpEnvelopeError("internal", `the registered clusters of "${args.endpoint}" declare command "${cmd.name}" twice; an ambiguous registered surface never authorizes (SPEC 13.7)`);
-      surface[cmd.name] = Object.freeze({
-        clusterDigest: closureDigest,
-        class: cmd.class,
-        targeted: cmd.targeted,
-        modes: Object.freeze([...(cmd.modes ?? [])]) as readonly EpAuthzMode[],
-        capability: cmd.capability,
-        inputDigest: cmd.inputDigest,
-        outputDigest: cmd.outputDigest,
-        traits: Object.freeze([...(cmd.traits ?? [])]) as readonly string[],
-      });
-      commands.push(cmd.name);
-    }
-    // The inline copy for describe is the verified ROOT cluster DOCUMENT (its command
-    // declarations), never the manifest: a consumer verifies it against the advertised closure
-    // digest by reconstructing the single-member manifest `{v:1, root: digest(document),
-    // members:[]}` (§13.7 two-digest read). Inlining the manifest would ship bytes whose
-    // `commands` disagree with the sibling command list.
-    clusters.push({ digest: closureDigest, document, raw: rootRaw as Record<string, unknown> });
-  }
-  commands.sort(); // deterministic full surface
+  const { surface, commands, clusters, journalClass } = await verifiedServeSurface(spec, iId, args.readClusterArtifact);
 
   // §13.9 bind-row inputs: journal class is REGISTERED truth (derived from the verified
   // surface, never caller-asserted); pools are PROVISIONING truth (the authorizing provisioner
@@ -1666,7 +1610,6 @@ export async function authorizeServeGrant(
   // names, routes are per-acceptance policy decisions, §13.6). Pools without a journal-class
   // surface are refused: only journal acceptances route to pools, so the combination is a
   // caller bug, never a silent no-op.
-  const journalClass = commands.some((cmd) => surface[cmd].class === "journal");
   const pools = [...(args.pools ?? [])].map((p) => assertPoolToken(p)).sort();
   if (new Set(pools).size !== pools.length)
     throw new EpEnvelopeError("internal", `the pools list for "${args.endpoint}/${args.instanceId}" carries duplicates; the provisioner enumerates each pre-created pool once (SPEC 13.9)`);
@@ -1700,6 +1643,250 @@ export async function authorizeServeGrant(
     space: args.space, endpoint: spec.endpoint, instanceId: iId, epoch: args.epoch,
     owner: spec.owner, registrationRevision: specEntry.revision, nameAuthorityRevision, commands: [...commands],
     journalClass, pools: [...pools],
+  });
+  return grant;
+}
+
+/** The §13.7 two-stage content-address read behind every serve authorization: a registered
+ *  digest is a CLOSURE digest naming a MANIFEST, whose `root` names the cluster DOCUMENT. Both
+ *  are fetched through `readClusterArtifact` and both are verified; a raw root document presented
+ *  at a closure-digest key would conflate the two identities. */
+async function verifiedServeSurface(
+  spec: ServiceSpec,
+  instanceId: string,
+  readClusterArtifact: (digest: string) => Promise<unknown> | unknown,
+): Promise<{
+  surface: Record<string, EpCommandAuthority>;
+  commands: string[];
+  clusters: { digest: string; document: ClusterDocument; raw: Record<string, unknown> }[];
+  journalClass: boolean;
+}> {
+  const read = async (digest: string, what: string): Promise<unknown> => {
+    let raw: unknown;
+    try {
+      raw = await readClusterArtifact(digest);
+    } catch (err) {
+      throw new EpEnvelopeError("unavailable", `the contract-store read seam failed for ${what} ${digest}; serve authorization fails closed (SPEC 13.7): ${(err as Error)?.message ?? String(err)}`);
+    }
+    if (raw === undefined)
+      throw new EpEnvelopeError("failed-precondition", `${what} ${digest} is not readable from the contract store; an unverifiable registered surface never authorizes (SPEC 13.7)`);
+    return raw;
+  };
+  // Null-prototype: "constructor" is a valid command token, and on a plain `{}` the duplicate
+  // check below would resolve the inherited `Object.prototype.constructor` (falsely refusing a
+  // legitimate command as "declared twice") while every downstream `surface[command]` lookup
+  // (serve construction, governed-surface verification) would leak through the prototype.
+  const surface: Record<string, EpCommandAuthority> = Object.create(null);
+  const commands: string[] = [];
+  const clusters: { digest: string; document: ClusterDocument; raw: Record<string, unknown> }[] = [];
+  for (const closureDigest of spec.clusterDigests) {
+    const manifestRaw = await read(closureDigest, "registered cluster manifest");
+    let root: string;
+    try {
+      ({ root } = verifyClusterManifest(closureDigest, manifestRaw));
+    } catch (err) {
+      throw new EpEnvelopeError("internal", `registered cluster manifest ${closureDigest} of "${spec.endpoint}/${instanceId}" fails verification; mediated registered state that does not verify is a writer/store bug, never authority (SPEC 13.7): ${(err as Error).message}`);
+    }
+    const rootRaw = await read(root, "registered cluster document");
+    let document: ClusterDocument;
+    try {
+      document = verifyClusterRoot(root, rootRaw);
+    } catch (err) {
+      throw new EpEnvelopeError("internal", `registered cluster document ${root} (closure ${closureDigest}) fails verification; mediated registered state that does not verify is never authority (SPEC 13.7): ${(err as Error).message}`);
+    }
+    for (const cmd of document.commands) {
+      if (surface[cmd.name] !== undefined)
+        throw new EpEnvelopeError("internal", `the registered clusters of "${spec.endpoint}" declare command "${cmd.name}" twice; an ambiguous registered surface never authorizes (SPEC 13.7)`);
+      surface[cmd.name] = Object.freeze({
+        clusterDigest: closureDigest,
+        class: cmd.class,
+        targeted: cmd.targeted,
+        modes: Object.freeze([...(cmd.modes ?? [])]) as readonly EpAuthzMode[],
+        capability: cmd.capability,
+        inputDigest: cmd.inputDigest,
+        outputDigest: cmd.outputDigest,
+        traits: Object.freeze([...(cmd.traits ?? [])]) as readonly string[],
+      });
+      commands.push(cmd.name);
+    }
+    // The inline copy for describe is the verified ROOT cluster DOCUMENT (its command
+    // declarations), never the manifest: a consumer verifies it against the advertised closure
+    // digest by reconstructing the single-member manifest `{v:1, root: digest(document),
+    // members:[]}` (§13.7 two-digest read). Inlining the manifest would ship bytes whose
+    // `commands` disagree with the sibling command list.
+    clusters.push({ digest: closureDigest, document, raw: rootRaw as Record<string, unknown> });
+  }
+  commands.sort(); // deterministic full surface
+  // Journal class is REGISTERED truth: derived from the verified surface, never caller-asserted.
+  const journalClass = commands.some((cmd) => surface[cmd].class === "journal");
+  return { surface, commands, clusters, journalClass };
+}
+
+/** What makes a guest's access bearer a signed credential rather than bytes it was handed: the
+ *  exact `iss` the pinned authority mints and the keys that authority publishes at its JWKS. Both
+ *  come from the registered space's authority URL the guest already pins, tenant path included:
+ *  the auth provider's `serviceEndpointInfo` answer carries them and satisfies this type as it is.
+ *  A key set chosen by the caller or read from a bare shared origin proves nothing. The bearer
+ *  never names where its key comes from. */
+export interface GuestServeAuthenticity {
+  issuer: string;
+  keys: readonly ServiceIssuerKey[];
+}
+
+/** The authenticity a guest takes from the authority's own info answer. A door that predates the
+ *  issuer identity answers without it, and a guest that cannot verify its bearer refuses to serve
+ *  rather than brand on bytes it cannot check. */
+export function serveAuthenticityOf(info: ServiceAuthorityInfo): GuestServeAuthenticity {
+  if (info.issuer === undefined || info.keys === undefined)
+    throw new EpEnvelopeError("failed-precondition", "the service authority does not publish its issuer identity; a guest cannot verify its access bearer until the authority is upgraded");
+  return { issuer: info.issuer, keys: info.keys };
+}
+
+/** The user-token `ver` a service access bearer carries (the host validator's constant). */
+const SERVICE_ACCESS_BEARER_VER = 1;
+/** Clock tolerance on `iat` and `nbf` only; expiry is refused at the original second (SPEC 13.9). */
+const SERVICE_ACCESS_CLOCK_TOLERANCE_SEC = 5;
+
+// A declared `never` return narrows the control flow after each call; an inferred arrow does not.
+function refuseBearer(why: string): never {
+  throw new EpEnvelopeError("permission-denied", `the access bearer ${why}; an unverified bearer binds no serve grant (SPEC 13.9)`);
+}
+const closedRecord = (value: unknown, fields: readonly string[]): Record<string, unknown> | undefined =>
+  value !== null && typeof value === "object" && !Array.isArray(value)
+    && fields.every((k) => Object.hasOwn(value, k)) && Object.keys(value).every((k) => fields.includes(k))
+    ? (value as Record<string, unknown>) : undefined;
+const jsonPart = (part: string): unknown => {
+  try { return JSON.parse(Buffer.from(part, "base64url").toString("utf8")); } catch { return undefined; }
+};
+
+/**
+ * Verify a service access bearer the way the host's token validator does, with the issuer's published
+ * key: EdDSA over the compact JWS with the key the header's `kid` names, no embedded key
+ * material, the closed service-access claim set (SPEC 13.9), the exact issuer, the space as the
+ * only audience, the registered owner as subject, the fixed at-most-60-second lifetime, and the
+ * serve duty on exactly `witness`. Returns nothing: a bearer that does not verify refuses.
+ */
+function verifyServiceAccessBearer(bearer: string, witness: ServiceRegistrationWitness, auth: GuestServeAuthenticity): void {
+  const parts = bearer.split(".");
+  if (parts.length !== 3 || parts.some((p) => !/^[A-Za-z0-9_-]+$/.test(p))) refuseBearer("is not a compact JWS");
+  const header = closedRecord(jsonPart(parts[0]), ["alg", "kid"]);
+  if (!header || header.alg !== "EdDSA" || typeof header.kid !== "string" || !header.kid || header.kid.length > 256)
+    refuseBearer("header is not {alg: EdDSA, kid}");
+  const key = auth.keys.find((k) => k.kid === header!.kid);
+  if (!key || key.kty !== "OKP" || key.crv !== "Ed25519" || typeof key.x !== "string" || !isCanonicalEd25519PublicCoordinate(key.x))
+    refuseBearer("names a kid the issuer does not publish as a full-order Ed25519 key");
+  let publicKey;
+  try { publicKey = createPublicKey({ key: { kty: "OKP", crv: "Ed25519", x: key.x }, format: "jwk" }); } catch { refuseBearer("names a published key that does not import"); }
+  if (!verifySignature(null, Buffer.from(`${parts[0]}.${parts[1]}`), publicKey!, Buffer.from(parts[2], "base64url")))
+    refuseBearer("signature does not verify under the issuer's published key");
+
+  const payload = closedRecord(jsonPart(parts[1]), ["iss", "aud", "sub", "iat", "nbf", "exp", "scope", "ver", "act"]);
+  if (!payload) refuseBearer("payload is not the closed service access claim set");
+  const act = closedRecord(payload!.act, ["owner", "actor", "scope", "lifecycleUid", "credentialId", "view", "service"]);
+  const service = act && closedRecord(act.service, ["duty", "witness"]);
+  const { iat, nbf, exp } = payload! as { iat: unknown; nbf: unknown; exp: unknown };
+  // The process clock, never a caller's: a clock the caller picks would brand an expired or
+  // not-yet-issued bearer the host then refuses.
+  const now = Math.floor(Date.now() / 1000);
+  if (payload!.iss !== auth.issuer) refuseBearer("was not minted by the pinned issuer");
+  if (payload!.aud !== witness.space) refuseBearer("is not scoped to exactly this space");
+  if (payload!.sub !== witness.principal.owner) refuseBearer("subject is not the registered owner");
+  if (payload!.ver !== SERVICE_ACCESS_BEARER_VER || !Array.isArray(payload!.scope) || payload!.scope.length !== 0)
+    refuseBearer("version or scope is not the service access shape");
+  if (!Number.isSafeInteger(iat) || !Number.isSafeInteger(nbf) || !Number.isSafeInteger(exp) || (iat as number) < 0
+    || nbf !== iat || (exp as number) <= (iat as number) || (exp as number) - (iat as number) > SERVICE_ACCESS_TTL_SECONDS)
+    refuseBearer("lifetime is not the fixed service access lifetime");
+  if ((iat as number) > now + SERVICE_ACCESS_CLOCK_TOLERANCE_SEC) refuseBearer("is issued in the future");
+  if ((exp as number) <= now) refuseBearer("has expired");
+  if (!act || !service || act.view !== "service-endpoint" || service.duty !== "serve" || act.owner !== payload!.sub
+    || act.actor !== witness.principal.actor || act.lifecycleUid !== witness.principal.lifecycleUid
+    || act.credentialId !== witness.rootCredentialId || !Array.isArray(act.scope) || act.scope.length !== 0)
+    refuseBearer("actor claim is not the serve duty for this registered principal");
+  if (canonicalJson(service.witness) !== canonicalJson(witness)) refuseBearer("names another registration witness");
+}
+
+/**
+ * The guest-side reconstitution seam (SPEC §13.6: "Registration returns the host-authorized
+ * serving snapshot ... An additive stock reconstitution seam explicitly validates this
+ * authenticated host-to-guest direction and produces the process-local branded serve grant").
+ * A service that registered through the service door holds a parsed `credential` result and its
+ * own embedded contract closure, and no store access, so {@link authorizeServeGrant} is out of
+ * its reach and {@link authorizeTrustedServeSnapshot} is the host's. This seam takes those
+ * inputs plus the pinned issuer's published keys and proves the binding before it brands:
+ *   - the result is a `credential` for the serve duty whose witness names the pinned account
+ *     (the parser already bound the snapshot's owner, revisions and epoch to the witness);
+ *   - the access bearer the guest will present is a signed credential: its EdDSA signature
+ *     verifies under the key the pinned issuer publishes, and its closed claims name the pinned
+ *     issuer, this space, the registered owner, the serve duty and exactly this witness
+ *     ({@link verifyServiceAccessBearer}, the claim checks the host's token validator runs);
+ *   - the snapshot's closure set is the guest's embedded closure, digest for digest, and every
+ *     artifact the host answered is byte-identical to the guest's own copy;
+ *   - every closure verifies as manifest and root, the same §13.7 read the registry runs.
+ * What the bearer signs is the witness: the account, instance, epoch and revisions the grant
+ * carries are signed values, so a bearer the issuer did not sign for exactly this witness cannot
+ * pass. The closure is not in the witness; it is bound to the caller's own registration, which is
+ * the guest's embedded contract and nothing a bearer vouches for. Pools are provisioning truth a
+ * guest cannot assert, so the grant carries none.
+ */
+export async function authorizeGuestServeGrant(args: {
+  /** The pinned DATA-account public key of the authority the result came from. */
+  accountPublicKey: string;
+  /** The `credential` result as {@link parseServiceAuthorityResult} returned it, or the renewal
+   *  source's copy of it without the renewal material; the seam reads no renewal field. */
+  result: ServiceEndpointCredential;
+  /** The guest's embedded closure: the registration it submitted. */
+  registration: ServiceRegistration;
+  /** The pinned issuer and its published keys, read from the origin the guest already pins. */
+  authenticity: GuestServeAuthenticity;
+}): Promise<EpServeGrant> {
+  const { result } = args;
+  if (result.state !== "credential" || result.duty !== "serve")
+    throw new EpEnvelopeError("permission-denied", "a guest serve grant needs a serve-duty credential result (SPEC 13.9)");
+  const { witness, snapshot } = result;
+  if (witness.accountPublicKey !== args.accountPublicKey || witness.space !== result.space)
+    throw new EpEnvelopeError("permission-denied", "the credential's witness belongs to another native account or space (SPEC 13.9)");
+  const spec = snapshot.spec.value;
+  if (spec.endpoint !== witness.endpoint || spec.owner !== witness.principal.owner
+    || snapshot.spec.revision !== witness.registrationRevision || snapshot.name.authorized !== true
+    || snapshot.name.revision !== witness.nameAuthorityRevision || snapshot.processEpoch !== witness.processEpoch)
+    throw new EpEnvelopeError("permission-denied", "the snapshot disagrees with the registration witness (SPEC 13.9)");
+  verifyServiceAccessBearer(result.accessBearer, witness, args.authenticity);
+  const sorted = (digests: readonly string[]) => canonicalJson([...digests].sort());
+  if (sorted(spec.clusterDigests) !== sorted(args.registration.clusterDigests))
+    throw new EpEnvelopeError("permission-denied", `the host registered a closure set for "${spec.endpoint}" that is not the guest's embedded closure (SPEC 13.7)`);
+  const embedded = new Map(args.registration.contractArtifacts.map((artifact) => [contractDigest(artifact), canonicalJson(artifact)] as const));
+  const answered = new Map<string, unknown>();
+  for (const artifact of snapshot.contractArtifacts) {
+    const digest = contractDigest(artifact);
+    if (embedded.get(digest) !== canonicalJson(artifact))
+      throw new EpEnvelopeError("permission-denied", `the host answered contract artifact ${digest} that the guest did not embed (SPEC 13.7)`);
+    answered.set(digest, artifact);
+  }
+  if (answered.size !== embedded.size)
+    throw new EpEnvelopeError("permission-denied", `the host answered ${answered.size} contract artifacts for ${embedded.size} embedded (SPEC 13.7)`);
+  const iId = assertLifecycleToken(witness.instanceId, "instanceId");
+  const { surface, commands, clusters, journalClass } = await verifiedServeSurface(spec, iId, (digest) => answered.get(digest));
+  const grant: EpServeGrant = Object.freeze({
+    space: witness.space,
+    endpoint: spec.endpoint,
+    instanceId: iId,
+    epoch: witness.processEpoch,
+    owner: spec.owner,
+    registrationRevision: snapshot.spec.revision,
+    nameAuthorityRevision: snapshot.name.revision,
+    commands: Object.freeze([...commands]) as readonly string[],
+    surface: Object.freeze(surface),
+    journalClass,
+    pools: Object.freeze([]) as readonly string[],
+    descriptor: deriveDescriptor(
+      { endpoint: spec.endpoint, owner: spec.owner, ...(spec.endpointType !== undefined ? { endpointType: spec.endpointType } : {}) },
+      clusters,
+    ),
+  });
+  AUTHORIZED_SERVE.set(grant, {
+    space: witness.space, endpoint: spec.endpoint, instanceId: iId, epoch: witness.processEpoch,
+    owner: spec.owner, registrationRevision: snapshot.spec.revision, nameAuthorityRevision: snapshot.name.revision,
+    commands: [...commands], journalClass, pools: [],
   });
   return grant;
 }
@@ -1845,8 +2032,10 @@ export interface EpIssuanceGate {
   /** Write the staged credential-ledger row (the §13.1 "write rows" step), before the CAS.
    *  CREATE-ONLY / idempotent-if-identical: staging a `credentialId` that is already present must
    *  succeed only when the row is byte-identical (a retry of the SAME issuance), and CONFLICT when
-   *  it differs (a different holder/lineage must never overwrite the row revocation/audit relies
-   *  on). Because `credentialId` is a per-JWT digest, a re-mint is a new id, never an overwrite. */
+   *  it differs (a different holder/lineage or a revoked row must never be overwritten or
+   *  resurrected). Because `credentialId` is a per-JWT digest, a distinct JWT (a new epoch's grant
+   *  or a later second's renewal) gets a new id, while a byte-identical same-second re-mint at one
+   *  epoch re-stages the active row. */
   stage: (row: EpServeLedgerRow) => Promise<void> | void;
   /** Revision-pinned CAS: keep the gate `open`, unchanged, at `expectedRevision`. TRUE iff this
    *  mint won the single-key serialization; FALSE on any change (a freeze/retire, or a
@@ -1912,8 +2101,9 @@ export interface EpIssuanceBarrier {
  *  `mintCreds` supplies these from the same values it stamps into the JWT — the ledger row and
  *  the credential describe ONE credential, never two. */
 export interface EpServeCredential {
-  /** PER-ISSUED-JWT identity (a digest of the credential): the ledger key, unique per JWT so a
-   *  standing renewal never overwrites the prior row. */
+  /** PER-ISSUED-JWT identity (a digest of the credential): the ledger key; a distinct JWT (a new
+   *  epoch's grant or a later second's renewal) writes a new row instead of overwriting the prior
+   *  one, while a byte-identical same-second re-mint at one epoch re-stages the active row. */
   credentialId: string;
   /** The stable holder NKEY (public key) the broker revokes by; many JWTs share it. */
   credentialKey: string;

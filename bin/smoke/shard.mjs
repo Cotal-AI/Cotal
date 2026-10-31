@@ -90,6 +90,11 @@ const started = new Set();
 const RUN_MARKER = process.env.COTAL_RUN ?? `smoke-shard-${shard}-${count}-${process.pid}`;
 process.env.COTAL_RUN = RUN_MARKER;
 
+// A suite's CLI runs in a fresh home, where usage telemetry would arm at its default level and
+// count the run as a new install. DO_NOT_TRACK is not a COTAL_ variable, so it also reaches the
+// children of suites that drop every COTAL_ variable.
+process.env.DO_NOT_TRACK = "1";
+
 if (mutationExcluded.length > 0) {
   console.log(`Mutation execution disabled: ${mutationExcluded.length} infrastructure suite(s) skipped by policy:`);
   for (const cmd of mutationExcluded) console.log(`  skipped ${cmd} (mutation execution disabled)`);
@@ -203,7 +208,8 @@ async function main() {
     const scope = randomUUID();
     // Keep the runner's existing inherited test configuration, including caller-supplied pins.
     process.env.SMOKE_BROKER_SCOPE = scope;
-    const r = await runSuite(bin, args);
+    // Suppress pnpm's own progress rows, which the legacy sentinel reader could count as cells.
+    const r = await runSuite(bin, ["--silent", ...args]);
     // Reap before deciding the exit status, but claim only this suite's brokers. Another run's owner
     // can exit while this suite is active, so arrival after the pre-sweep does not establish ownership.
     const after = reapSmokeBrokers({ scope });

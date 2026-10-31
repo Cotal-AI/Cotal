@@ -5,13 +5,15 @@
   "type": "module",
   "description": "Cotal documentation site powered by Next.js and Fumadocs.",
   "scripts": {
-    "sync": "node scripts/sync-docs.mjs",
+    "sync": "node scripts/generate-openapi-docs.mjs --check && node scripts/sync-docs.mjs",
     "dev": "npm run sync && next dev --webpack",
-    "build": "npm run sync && next build --webpack && node scripts/export.mjs && node scripts/check-dist.mjs && node scripts/check-migration.mjs && node scripts/check-start-here.mjs && node scripts/check-operate-mesh.mjs && node scripts/check-connect-agents.mjs && node scripts/check-build-integrations.mjs && node scripts/check-api-reference.mjs && node scripts/check-fundamentals.mjs && node scripts/check-messaging.mjs && node scripts/check-security-coordination.mjs && node scripts/assert-plain-markdown.test.mjs",
+    "build": "npm run sync && npm test && next build --webpack && node scripts/export.mjs && node scripts/check-dist.mjs && node scripts/check-migration.mjs && node scripts/check-start-here.mjs && node scripts/check-operate-mesh.mjs && node scripts/check-connect-agents.mjs && node scripts/check-build-integrations.mjs && node scripts/check-api-reference.mjs && node scripts/check-fundamentals.mjs && node scripts/check-messaging.mjs && node scripts/check-security-coordination.mjs && node scripts/assert-plain-markdown.test.mjs && node scripts/check-openapi-dist.mjs",
     "typecheck": "npm run sync && fumadocs-mdx && next typegen && tsc --noEmit",
     "preview": "wrangler pages dev",
     "postinstall": "fumadocs-mdx",
-    "check:runtime": "node scripts/check-runtime.mjs"
+    "check:runtime": "node scripts/check-runtime.mjs",
+    "gen:api": "node scripts/generate-openapi-docs.mjs",
+    "test": "node --test scripts/http-api.test.mjs"
   },
   "dependencies": {
     "@cotal-ai/docs-content": "file:../tools/docs-content",
@@ -39,6 +41,7 @@
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "typescript": "^5.9.0",
-    "wrangler": "^4.156.0"
+    "wrangler": "^4.156.0",
+    "@readme/openapi-parser": "4.1.2"
   }
 }

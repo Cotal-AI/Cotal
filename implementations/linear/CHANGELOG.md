@@ -1,5 +1,697 @@
 # @cotal-ai/linear
 
+## 0.132.1
+
+No changes in this release.
+
+## 0.132.0
+
+No changes in this release.
+
+## 0.131.6
+
+No changes in this release.
+
+## 0.131.5
+
+No changes in this release.
+
+## 0.131.4
+
+No changes in this release.
+
+## 0.131.3
+
+No changes in this release.
+
+## 0.131.2
+
+No changes in this release.
+
+## 0.131.1
+
+No changes in this release.
+
+## 0.131.0
+
+No changes in this release.
+
+## 0.130.2
+
+No changes in this release.
+
+## 0.130.1
+
+No changes in this release.
+
+## 0.130.0
+
+No changes in this release.
+
+## 0.129.9
+
+No changes in this release.
+
+## 0.129.8
+
+No changes in this release.
+
+## 0.129.7
+
+No changes in this release.
+
+## 0.129.6
+
+No changes in this release.
+
+## 0.129.5
+
+No changes in this release.
+
+## 0.129.4
+
+No changes in this release.
+
+## 0.129.3
+
+No changes in this release.
+
+## 0.129.2
+
+No changes in this release.
+
+## 0.129.1
+
+No changes in this release.
+
+## 0.129.0
+
+No changes in this release.
+
+## 0.128.7
+
+No changes in this release.
+
+## 0.128.6
+
+No changes in this release.
+
+## 0.128.5
+
+No changes in this release.
+
+## 0.128.4
+
+No changes in this release.
+
+## 0.128.3
+
+No changes in this release.
+
+## 0.128.2
+
+No changes in this release.
+
+## 0.128.1
+
+No changes in this release.
+
+## 0.128.0
+
+No changes in this release.
+
+## 0.127.5
+
+No changes in this release.
+
+## 0.127.4
+
+No changes in this release.
+
+## 0.127.3
+
+No changes in this release.
+
+## 0.127.2
+
+No changes in this release.
+
+## 0.127.1
+
+No changes in this release.
+
+## 0.127.0
+
+No changes in this release.
+
+## 0.126.3
+
+No changes in this release.
+
+## 0.126.2
+
+No changes in this release.
+
+## 0.126.1
+
+No changes in this release.
+
+## 0.126.0
+
+No changes in this release.
+
+## 0.125.0
+
+No changes in this release.
+
+## 0.124.3
+
+No changes in this release.
+
+## 0.124.2
+
+No changes in this release.
+
+## 0.124.1
+
+No changes in this release.
+
+## 0.124.0
+
+No changes in this release.
+
+## 0.123.0
+
+No changes in this release.
+
+## 0.122.0
+
+No changes in this release.
+
+## 0.121.7
+
+### Patch Changes
+
+- 9f84bea: `linearClusterDocument` and `linearClusterArtifacts` now build their single-document closure manifests and digests with `singleDocumentClosure` from `@cotal-ai/core`, matching the auth and manager service contracts. Every published artifact and digest is unchanged.
+
+## 0.121.6
+
+No changes in this release.
+
+## 0.121.5
+
+No changes in this release.
+
+## 0.121.4
+
+No changes in this release.
+
+## 0.121.3
+
+No changes in this release.
+
+## 0.121.2
+
+No changes in this release.
+
+## 0.121.1
+
+No changes in this release.
+
+## 0.121.0
+
+No changes in this release.
+
+## 0.120.2
+
+No changes in this release.
+
+## 0.120.1
+
+No changes in this release.
+
+## 0.120.0
+
+No changes in this release.
+
+## 0.119.5
+
+No changes in this release.
+
+## 0.119.4
+
+### Patch Changes
+
+- ed5c23f: Remedies, hints and messages from `run`, `actor` and `auth`, `logout`, `supervise` and `manager`, `deliver`, `docs`, `daemon`, `linear`, the web dashboard, the console, the Claude Code connector, a run's checkpoint prompt and the endpoint issuance gate now name the commands they suggest in backticks, so a terminal keeps each one whole and `--json` carries the same text. They named them bare after other words, as in "list the recorded runs with cotal run", which split inside the command when the line wrapped.
+
+## 0.119.3
+
+No changes in this release.
+
+## 0.119.2
+
+No changes in this release.
+
+## 0.119.1
+
+No changes in this release.
+
+## 0.119.0
+
+No changes in this release.
+
+## 0.118.3
+
+No changes in this release.
+
+## 0.118.2
+
+No changes in this release.
+
+## 0.118.1
+
+No changes in this release.
+
+## 0.118.0
+
+No changes in this release.
+
+## 0.117.1
+
+No changes in this release.
+
+## 0.117.0
+
+No changes in this release.
+
+## 0.116.5
+
+No changes in this release.
+
+## 0.116.4
+
+No changes in this release.
+
+## 0.116.3
+
+No changes in this release.
+
+## 0.116.2
+
+No changes in this release.
+
+## 0.116.1
+
+No changes in this release.
+
+## 0.116.0
+
+No changes in this release.
+
+## 0.115.4
+
+No changes in this release.
+
+## 0.115.3
+
+No changes in this release.
+
+## 0.115.2
+
+No changes in this release.
+
+## 0.115.1
+
+No changes in this release.
+
+## 0.115.0
+
+No changes in this release.
+
+## 0.114.1
+
+No changes in this release.
+
+## 0.114.0
+
+No changes in this release.
+
+## 0.113.3
+
+No changes in this release.
+
+## 0.113.2
+
+No changes in this release.
+
+## 0.113.1
+
+No changes in this release.
+
+## 0.113.0
+
+No changes in this release.
+
+## 0.112.0
+
+No changes in this release.
+
+## 0.111.1
+
+No changes in this release.
+
+## 0.111.0
+
+No changes in this release.
+
+## 0.110.0
+
+No changes in this release.
+
+## 0.109.25
+
+No changes in this release.
+
+## 0.109.24
+
+No changes in this release.
+
+## 0.109.23
+
+No changes in this release.
+
+## 0.109.22
+
+No changes in this release.
+
+## 0.109.21
+
+No changes in this release.
+
+## 0.109.20
+
+No changes in this release.
+
+## 0.109.19
+
+No changes in this release.
+
+## 0.109.18
+
+No changes in this release.
+
+## 0.109.17
+
+No changes in this release.
+
+## 0.109.16
+
+No changes in this release.
+
+## 0.109.15
+
+No changes in this release.
+
+## 0.109.14
+
+No changes in this release.
+
+## 0.109.13
+
+No changes in this release.
+
+## 0.109.12
+
+No changes in this release.
+
+## 0.109.11
+
+No changes in this release.
+
+## 0.109.10
+
+No changes in this release.
+
+## 0.109.9
+
+No changes in this release.
+
+## 0.109.8
+
+No changes in this release.
+
+## 0.109.7
+
+No changes in this release.
+
+## 0.109.6
+
+No changes in this release.
+
+## 0.109.5
+
+No changes in this release.
+
+## 0.109.4
+
+No changes in this release.
+
+## 0.109.3
+
+No changes in this release.
+
+## 0.109.2
+
+No changes in this release.
+
+## 0.109.1
+
+No changes in this release.
+
+## 0.109.0
+
+No changes in this release.
+
+## 0.108.1
+
+No changes in this release.
+
+## 0.108.0
+
+No changes in this release.
+
+## 0.107.0
+
+### Patch Changes
+
+- c883f4a: `cotal linear serve` on a user-auth mesh now names the proposal it is waiting on. Its `PERMISSION_DENIED` refusal used to say only "approve the original proposal in the selected space", so the owner had no id to approve. The Next line now names the proposal and the exact command, `cotal service-endpoint approve <proposalId> --caller-ceiling linear.mcp --space <space>`; the `linear.mcp` ceiling lets callers be granted the five Linear commands, which an approval without it never allows.
+  
+  A flag a `cotal linear` operation does not take is refused naming that flag, the flags the operation does take and its usage, instead of "a supplied flag does not belong to this Linear operation". `linear serve --json` now says that serve is a foreground service with no `--json` or `--plain` output, and `linear account login --json` names `--plain` as its only output flag.
+  
+  `cotal help` shows a usage that declares several forms, one per line, with each form on its own lines. `cotal linear --help` used to print its nine forms joined by an escaped `\u000a`. Each `linear` operation's help now shows its own usage line too.
+
+## 0.106.1
+
+No changes in this release.
+
+## 0.106.0
+
+No changes in this release.
+
+## 0.105.1
+
+No changes in this release.
+
+## 0.105.0
+
+No changes in this release.
+
+## 0.104.2
+
+No changes in this release.
+
+## 0.104.1
+
+No changes in this release.
+
+## 0.104.0
+
+### Patch Changes
+
+- e0c4e6e: Correct the documentation page by page against the implementation, including CLI commands, connector delivery and activity sharing, authentication, observer surfaces, hosted composition, telemetry and historical design status. Refresh package guides and generated tool and HTTP references while preserving existing links and normative contracts.
+
+## 0.103.4
+
+No changes in this release.
+
+## 0.103.3
+
+No changes in this release.
+
+## 0.103.2
+
+No changes in this release.
+
+## 0.103.1
+
+No changes in this release.
+
+## 0.103.0
+
+No changes in this release.
+
+## 0.102.0
+
+No changes in this release.
+
+## 0.101.7
+
+No changes in this release.
+
+## 0.101.6
+
+No changes in this release.
+
+## 0.101.5
+
+No changes in this release.
+
+## 0.101.4
+
+No changes in this release.
+
+## 0.101.3
+
+No changes in this release.
+
+## 0.101.2
+
+No changes in this release.
+
+## 0.101.1
+
+No changes in this release.
+
+## 0.101.0
+
+### Minor Changes
+
+- e8f0aed: Serve registered Linear endpoints on user-auth meshes through the existing remote service authority and shared renewal source. Keep the original approval request and instance across retries and restarts, verify the signed serving grant against the embedded contract, and acknowledge readiness after subscribing. Caller access still requires an explicit instance-scoped grant. Stopping closes the local service and retains its approved registration without claiming remote revocation.
+
+## 0.100.2
+
+No changes in this release.
+
+## 0.100.1
+
+No changes in this release.
+
+## 0.100.0
+
+No changes in this release.
+
+## 0.99.3
+
+No changes in this release.
+
+## 0.99.2
+
+No changes in this release.
+
+## 0.99.1
+
+No changes in this release.
+
+## 0.99.0
+
+No changes in this release.
+
+## 0.98.0
+
+No changes in this release.
+
+## 0.97.1
+
+No changes in this release.
+
+## 0.97.0
+
+No changes in this release.
+
+## 0.96.1
+
+No changes in this release.
+
+## 0.96.0
+
+No changes in this release.
+
+## 0.95.2
+
+No changes in this release.
+
+## 0.95.1
+
+No changes in this release.
+
+## 0.95.0
+
+No changes in this release.
+
+## 0.94.7
+
+No changes in this release.
+
+## 0.94.6
+
+No changes in this release.
+
+## 0.94.5
+
+No changes in this release.
+
+## 0.94.4
+
+No changes in this release.
+
+## 0.94.3
+
+No changes in this release.
+
+## 0.94.2
+
+No changes in this release.
+
+## 0.94.1
+
+No changes in this release.
+
+## 0.94.0
+
+No changes in this release.
+
+## 0.93.0
+
+No changes in this release.
+
+## 0.92.2
+
+No changes in this release.
+
+## 0.92.1
+
+No changes in this release.
+
+## 0.92.0
+
+### Minor Changes
+
+- 88cc5a1: A Linear account with no record now refuses with `TARGET_NOT_FOUND` and the `cotal linear account add` route, in `linear account show` and when a `linear` service starts. The service refuses in its launch plan, so no child is started and no failed process exit is reported. A record that exists but cannot be read is still `DEPENDENCY_UNAVAILABLE`. The service checks the account in the Cotal home of the process that starts it, and refuses with `UNSUPPORTED` before a child when `COTAL_HOME` is unset and the definition's `envRefs` set `HOME` (on Windows, `LOCALAPPDATA` or `USERPROFILE`), because the child could read another home. A service adapter's launch hook now receives the definition's `envRefs` names, never their values. The endpoint name is checked when the service starts.
+
+  `cotal update --check` and the version read in `cotal update` run npm with a temporary cache that is removed afterwards, no log files and no npm update notifier, so they leave nothing in npm's cache, log directory or notifier stamp. From a source checkout, the `update --self` hint says it installs a separate global copy.
+
+  `service add --preset` offers no `--no-<option>` flag for a boolean option whose schema admits only true, so the web preset no longer lists `--no-read-only`. An absent `web` preset names `cotal ext add @cotal-ai/web` in its remedy. A background `service start` ends with the `service logs` command for the new instance. Re-adding an existing definition names the remove-and-add route, and an `ext remove` blocked by service instances names each one. A managed dashboard logs an endpoint error or warning by its class, the error's name and code, and never its message.
+
 ## 0.91.0
 
 ### Minor Changes

@@ -1,7 +1,7 @@
 import { resolve } from "node:path";
 import * as prompts from "../lib/prompts.js";
 import type { FlagSpec, ParsedArgs } from "@cotal-ai/core";
-import { CommandFailure, recordOperationSpace, isCommandFailure, isConnectRefusal, isWorkspaceTargetError, oneLine, presentationOf, resolveMeshTarget, targetErrorCode, writeResult, type Report } from "@cotal-ai/workspace";
+import { ConfirmationRequired, CommandFailure, recordOperationSpace, isCommandFailure, isConnectRefusal, isWorkspaceTargetError, oneLine, presentationOf, resolveMeshTarget, targetErrorCode, writeResult, type Report } from "@cotal-ai/workspace";
 import { endpointDeregister, validateEndpointDeregisterArguments } from "./endpoint-deregister.js";
 import { endpointAuthoring, validateEndpointAuthoringArguments } from "./endpoint-authoring.js";
 import { readEndpointInventory } from "../lib/endpoint-inventory.js";
@@ -101,7 +101,7 @@ export async function endpoint(args: ParsedArgs): Promise<void> {
     const row = readEndpointReference(space, suppliedName!);
     if (!row) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no saved reference has this full name in the selected space");
     if (!args.values.yes) {
-      if (!canPrompt() || presentation === "json") throw new CommandFailure("refused", "USAGE_INVALID", "forgetting a saved reference outside interactive input requires --yes", { target: { space, name: row.name } });
+      if (!canPrompt() || presentation === "json") throw new ConfirmationRequired("forgetting a saved reference outside interactive input requires --yes", { target: { space, name: row.name }, remedy: `confirm with \`cotal endpoint remove ${row.name} --yes\`` });
       const answer = await prompts.confirm({ message: `Forget ${oneLine(row.name)} in ${oneLine(space)}? No endpoint, process or credential will be removed.`, initialValue: false });
       if (prompts.isCancel(answer) || !answer) { writeResult(presentation, { command: "endpoint", target: { space, name: row.name }, result: { kind: "reference-removal", removed: false }, noOp: true }, () => ({ sections: [{ title: "Reference kept", blocks: [{ kind: "lines", lines: ["No local record or remote resource was changed."] }] }] })); return; }
     }

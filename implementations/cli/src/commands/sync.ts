@@ -20,7 +20,7 @@ import {
   type MeshEntry,
   type RefusalCode,
 } from "@cotal-ai/workspace";
-import { checkUserBundle, type UserBundle } from "./meshes-add.js";
+import { checkBundleDocument, type UserBundle } from "./meshes-add.js";
 import { c } from "../ui.js";
 
 export interface CatalogSpace {
@@ -113,7 +113,7 @@ export function validateCatalogSnapshot(value: unknown, account: AuthSpaceCatalo
     for (const key of ["id", "slug", "name", "kind", "role"] as const)
       if (typeof row[key] !== "string" || row[key].length === 0)
         throw new Error(`space catalog entry ${i + 1} has no ${key}`);
-    const checked = checkUserBundle(JSON.stringify(row.registration));
+    const checked = checkBundleDocument(row.registration);
     if (!checked.ok) throw new Error(`space catalog entry "${row.name}": ${checked.message.replace(/^✗ /, "")}`);
     assertRegistrationAccountBinding(checked.value, account, `space catalog entry "${row.name}"`);
     if (checked.value.space !== row.slug)
@@ -128,14 +128,16 @@ function catalogRoot(ownerKey: string, space: string): string {
   return join(homeCotalDir(), "catalog", ownerKey, encodeURIComponent(space));
 }
 
-function entryFor(account: AuthSpaceCatalogAccount, row: CatalogSpace, fetchedAt?: string, error?: string): MeshEntry {
-  const root = catalogRoot(account.ownerKey, row.slug);
-  const dir = userAuthStateDir(root, row.slug);
+function entryFor(account: AuthSpaceCatalogAccount, row: CatalogSpace, prior?: MeshEntry, fetchedAt?: string, error?: string): MeshEntry {
+  const custodyRoot = prior?.catalogRoot ?? catalogRoot(account.ownerKey, row.slug);
+  const root = prior?.root ?? custodyRoot;
+  const dir = userAuthStateDir(custodyRoot, row.slug);
   const sentinelCredsPath = join(dir, "sentinel.creds");
   return {
     space: row.slug,
     server: row.registration.server,
     root,
+    catalogRoot: custodyRoot,
     mode: "user",
     origin: "catalog",
     catalogOwner: account.ownerKey,
@@ -156,7 +158,7 @@ function entryFor(account: AuthSpaceCatalogAccount, row: CatalogSpace, fetchedAt
 function writeCatalogCredential(entry: MeshEntry, row: CatalogSpace): void {
   const path = entry.userAuth?.sentinelCredsPath;
   if (!path) throw new Error(`catalog registration for "${entry.space}" has no sentinel credential path`);
-  mkSecretDir(userAuthStateDir(entry.root, entry.space));
+  mkSecretDir(userAuthStateDir(entry.catalogRoot ?? entry.root, entry.space));
   writeSecretFileAtomic(path, row.registration.sentinelCreds);
 }
 
@@ -223,8 +225,8 @@ function applyResult(result: AuthSpaceCatalogResult): CatalogDiff {
         diff.collisions.push(row.slug);
         continue;
       }
-      const next = entryFor(result.account, row, result.fetchedAt);
       const prior = priorByName.get(row.slug);
+      const next = entryFor(result.account, row, prior, result.fetchedAt);
       writeCatalogCredential(next, row);
       if (!prior) diff.added.push(row.slug);
       else if (sameEntry(prior, next)) diff.unchanged.push(row.slug);
@@ -271,9 +273,9 @@ export class CatalogPreparationError extends Error {
 
 /** Shared once-per-command preparation. Every target-resolving call gives each signed-in account a
  * chance to refresh inside the provider's freshness window. An operational catalog target scopes
- * that work to its own account and treats its failure as fatal. Other targets warn per account;
- * diagnostics retain every result for `status` and never refuse the command. Unknown names force a
- * refresh even inside the freshness window. */
+ * that work to its own account and treats its failure as fatal. Other targets warn once per account
+ * outage; diagnostics retain every result for `status` and never refuse the command. Unknown names
+ * force a refresh even inside the freshness window. */
 export async function prepareCatalogCommand(args: ParsedArgs, diagnostics = false, command?: "meshes" | "use"): Promise<void> {
   catalogDiagnostics = [];
   const values = args.values as { space?: string };
@@ -316,8 +318,10 @@ export async function prepareCatalogCommand(args: ParsedArgs, diagnostics = fals
   if (diagnostics) return;
   if (targetCatalog && failures.length)
     throw new CatalogPreparationError(failures.map((r) => `space catalog for ${r.account.idpUrl} failed: ${r.error}`).join("; "), "DEPENDENCY_UNAVAILABLE");
-  for (const failure of failures)
-    console.error(c.yellow(`space catalog for ${failure.account.idpUrl} failed: ${failure.error}`));
+  // One warning per outage: a failure that continues one an earlier command already warned about
+  // stays quiet until the catalog answers again. A failing target still refuses above.
+  for (const failure of failures.filter((r) => !r.ongoing))
+    console.error(c.yellow(`space catalog for ${failure.account.idpUrl} failed: ${failure.error}; its last snapshot stays in use, and this warning is not repeated while it keeps failing`));
 }
 
 /** One signed-in account's refresh, as `cotal sync` reports it. */

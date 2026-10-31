@@ -1,10 +1,9 @@
 import type { RunHostPlanes, RunAdmissionView } from "@cotal-ai/core";
 import { digest, type EffectContext, type EffectHandler, type JournalEntry } from "@cotal-ai/lang";
-import { MeshHandler, type MeshHandlerBinding } from "./mesh-handler.js";
+import { EpfSettleWatcher, MeshHandler, type MeshHandlerBinding } from "./mesh-handler.js";
 import { createRunPauseHost } from "./run-pause-host.js";
 import { createRunWaitHost } from "./run-wait-host.js";
 import { RunScopeAuthority, isHold } from "./run-scope-authority.js";
-import { delay } from "./delay.js";
 
 export interface RunEffectHost extends EffectHandler {
   adopted(entries: readonly JournalEntry[]): Promise<string[]>;
@@ -20,19 +19,12 @@ export function createRunEffectHost(
   binding: MeshHandlerBinding,
   authority: RunScopeAuthority,
   admission: () => Promise<RunAdmissionView>,
+  cancellationObserved?: () => string | undefined,
 ): RunEffectHost {
   const pinned = structuredClone(binding);
   const pauses = createRunPauseHost(broker, pinned, authority);
-  const waits = createRunWaitHost(broker, authority, admission);
-  const handler = new MeshHandler(broker.nc, broker.kv, broker.js, broker.jsm, pinned, {
-    async awaitSettle(ref) {
-      for (;;) {
-        const settled = await pauses.readSettle(ref.token);
-        if (settled !== undefined) return settled;
-        await delay(2_000);
-      }
-    },
-  }, Date.now, { pauses, waits, authority, admission });
+  const waits = createRunWaitHost(broker, authority, admission, cancellationObserved);
+  const handler = new MeshHandler(broker.nc, broker.kv, broker.js, broker.jsm, pinned, new EpfSettleWatcher((ref) => pauses.readSettle(ref.token)), Date.now, { pauses, waits, authority, admission, ...(cancellationObserved !== undefined ? { cancellationObserved } : {}) });
 
   async function dispatch<R, T>(kind: string, req: R, ctx: EffectContext, call: (request: R, context: EffectContext) => Promise<T>): Promise<T> {
     const request = structuredClone(req);
@@ -59,6 +51,7 @@ export function createRunEffectHost(
 
   return Object.freeze({
     now: () => handler.now(),
+    participant: (req, ctx) => dispatch("participant", req, ctx, (request, current) => handler.participant(request, current)),
     spawn: (req, ctx) => dispatch("spawn", req, ctx, (request, current) => handler.spawn(request, current)),
     turn: (req, ctx) => dispatch("turn", req, ctx, (request, current) => handler.turn(request, current)),
     ask: (req, ctx) => dispatch("ask", req, ctx, (request, current) => handler.ask(request, current)),

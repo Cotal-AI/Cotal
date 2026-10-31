@@ -21,7 +21,7 @@
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { lstatSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -223,7 +223,7 @@ try {
     retainedRow?.lifecycleUid === RETAINED_UID, { row: retainedRow?.lifecycleUid, minted: RETAINED_UID });
   await must("seed channel registry",
     ["channel", "set", "preserved", "--desc", "survives user-mode restore", "--space", SPACE]);
-  await must("user-mode send seeds a CHAT message", ["send", "msg", CHANNEL, SEEDED_TEXT, "--space", SPACE]);
+  await must("user-mode send seeds a CHAT message", ["send", "--channel", CHANNEL, SEEDED_TEXT, "--space", SPACE]);
   const seededTexts = textsOf(await chatHistory());
   check("the seeded message is on the wire before the cut", seededTexts.includes(SEEDED_TEXT), seededTexts);
 
@@ -258,7 +258,7 @@ try {
   // THE IDENTITY PLANE, not just the broker: a user-mode connect has to go login → exchange →
   // bearer → callout on the RESTORED mesh, and land on the wire as the derived principal.
   const afterText = "posted after the user-mode restore";
-  await must("the restored mesh serves a USER-MODE connect", ["send", "msg", CHANNEL, afterText, "--space", SPACE]);
+  await must("the restored mesh serves a USER-MODE connect", ["send", "--channel", CHANNEL, afterText, "--space", SPACE]);
   const restored = await chatHistory();
   const restoredTexts = textsOf(restored);
   check("the seeded message survived the restore", restoredTexts.includes(SEEDED_TEXT), restoredTexts);
@@ -286,10 +286,20 @@ try {
   check("…and the resumed principal is the derived owner.actor key",
     adopted.ok && principalKey(OWNER, "worker").key === `${OWNER}.worker`);
 
+  // A user-mode artifact holds no workflow runs, so the store this restore set aside holds their only
+  // copy: the preview names them, and the cleanup deletes that store only with --discard-history.
+  const previousStore = (JSON.parse(readFileSync(journalPath, "utf8")) as { restore?: { previousSource?: { identity: { path: string } } } }).restore?.previousSource?.identity.path ?? "";
+  const cleanupPreview = await cotal(["backup", "cleanup-fallback", active.restore!.attemptId, "--dry-run"]);
+  check("the cleanup-fallback preview names the workflow runs only the previous store holds",
+    cleanupPreview.status === 0 && cleanupPreview.out.includes(`the previous store at ${previousStore} holds the only copy of the workflow runs`), cleanupPreview.out);
+  const unconsented = await cotal(["clean", "restore-fallback", "--attempt", active.restore!.attemptId, "--force"]);
+  check("…and the cleanup refuses without --discard-history, keeping that store",
+    unconsented.status !== 0 && previousStore !== "" && existsSync(previousStore) && unconsented.out.includes("--discard-history"), unconsented.out);
+
   // ---------- F. one drift refusal, on a second restore ----------
   console.log("F) owner-secret drift before a second restore must fail CLOSED");
   await must("retire the first restore's fallback",
-    ["clean", "restore-fallback", "--attempt", active.restore!.attemptId, "--force"]);
+    ["clean", "restore-fallback", "--attempt", active.restore!.attemptId, "--force", "--discard-history"]);
   await must("second preserve cut", ["down", "--preserve-state"]);
   check("the second cut is ready", readJournal().state === "ready");
   const journalBefore = readFileSync(journalPath, "utf8");
@@ -301,7 +311,7 @@ try {
     // the artifact's authority fingerprint can no longer match the current trust state.
     writeFileSync(ownerSecretPath, JSON.stringify({ ver: 1, secretB64: Buffer.alloc(32, 7).toString("base64") }, null, 2));
     const drifted = await cotal(["up", "--restore", artifact, "--detach", "--server", SERVER, "--space", SPACE]);
-    check("owner-secret drift refuses the restore", drifted.status !== 0, drifted.out);
+    check("owner-secret drift refuses the restore with exit 2, not an unknown outcome", drifted.status === 2, drifted.out);
     check("…naming the authority-fingerprint mismatch",
       /authority fingerprint does not match current trust state/.test(drifted.out), drifted.out);
     check("…leaving the ready journal byte-identical", readFileSync(journalPath, "utf8") === journalBefore);
@@ -323,7 +333,7 @@ try {
   if (fail) process.exitCode = 1;
 } catch (e) {
   fail++;
-  console.error("  ✗ scenario threw:", (e as Error).stack ?? (e as Error).message);
+  console.error("  ✗ scenario threw:", e);
   process.exitCode = 1;
 } finally {
   await cotal(["down"], 60_000); // idempotent — kills by ITS OWN pid files only

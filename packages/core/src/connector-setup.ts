@@ -20,6 +20,19 @@ export interface ConnectorSetupInput {
   readonly cotal: readonly string[];
   /** Current authored skills for refreshing an already installed skills integration. */
   readonly skills?: ConnectorSkillsSetupInput;
+  /** The space setup is for, when its members sign in. */
+  readonly signedIn?: SignedInSpace;
+}
+
+/** A space whose members sign in. A chat app that cannot join it through this computer's server
+ *  joins through the hosted connector the space's discovery document advertises. */
+export interface SignedInSpace {
+  readonly space: string;
+  /** The hosted connector's URL. Absent when the space advertises none or `unread` says why it is
+   *  unknown. */
+  readonly hostedConnector?: string;
+  /** Why the space's discovery document could not be read. */
+  readonly unread?: string;
 }
 
 /** Inputs shared by connector-specific skills installers. The authored skills themselves use the
@@ -56,6 +69,8 @@ export interface ConnectorStatusInput {
   readonly version: string;
   /** The command that repairs connector skills on this machine. */
   readonly skillsRemedy: string;
+  /** The selected space, when its members sign in. */
+  readonly signedIn?: SignedInSpace;
 }
 
 /** One machine-status row a provider reports for its harness. `ok` renders green, `warn` yellow,

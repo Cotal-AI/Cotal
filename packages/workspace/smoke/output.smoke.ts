@@ -19,7 +19,9 @@ import {
   outputDeclarationProblems,
   outputFlags,
   plainFlag,
+  recordOperationWarning,
   renderReport,
+  runOperation,
   streamRecord,
   USAGE_CODES,
   type Envelope,
@@ -91,6 +93,12 @@ check("an unset target is null", bare.target === null, bare);
 const attemptId = "restore-00000000-0000-4000-8000-000000000000";
 const attemptReport = renderReport(commandFailureReport(new CommandFailure("unknown", "OPERATION_UNKNOWN", "the restore did not finish", { target: { attemptId } })), "plain");
 check("a failure report prints the attempt id its target carries", new RegExp(`Attempt: +${attemptId}`).test(attemptReport), attemptReport);
+// A request ID the caller gave that names nothing is labelled as given; any other stays the original request.
+const requestId = "00000000-0000-4000-8000-000000000001";
+const givenReport = renderReport(commandFailureReport(new CommandFailure("refused", "TARGET_NOT_FOUND", "no member retains a stop request with that ID", { target: { requestId }, given: "requestId" })), "plain");
+check("a failure report labels a request ID the caller gave as given, not as the original request", new RegExp(`Given ID: +${requestId}`).test(givenReport) && !givenReport.includes("Original request"), givenReport);
+const originalReport = renderReport(commandFailureReport(new CommandFailure("refused", "TARGET_NOT_FOUND", "the endpoint refused the call", { target: { requestId } })), "plain");
+check("a failure report still labels a request ID it was not given as the original request", new RegExp(`Original request: +${requestId}`).test(originalReport) && !originalReport.includes("Given ID"), originalReport);
 
 const ok: Envelope = { schemaVersion: 1, command: "version", target: null, outcome: "ok", completeness: "complete", result: { v: 1 }, warnings: [] };
 const line = envelopeLine(ok);
@@ -120,6 +128,21 @@ check("a plain output needs --plain", outputDeclarationProblems({ name: "a", out
 // No command may declare a global flag's name.
 check("a command that declares --no-color or --no-input is refused", globalFlagDeclarationProblems({ name: "a", flags: [{ name: "no-color", type: "string" }, { name: "no-input", type: "boolean" }] }).length === 2);
 check("a command with other flags is accepted", globalFlagDeclarationProblems({ name: "a", flags: [jsonFlag, plainFlag] }).length === 0);
+
+// A warning on stderr wraps to the terminal like the report it precedes, each continuation line
+// under its text. It used to be one line however wide the message was.
+{
+  const err = process.stderr as unknown as { isTTY?: boolean; columns?: number; write: (chunk: string) => boolean };
+  const saved = { isTTY: err.isTTY, columns: err.columns, write: err.write };
+  let written = "";
+  Object.assign(err, { isTTY: true, columns: 40, write: (chunk: string) => { written += chunk; return true; } });
+  try {
+    await runOperation({}, async () => recordOperationWarning({ code: "SELECTION_NOT_FOLDER_SPACE", target: null, message: 'this targets the selected space "b", not this folder\'s space "a"; pass --space a to target it' }));
+  } finally { Object.assign(err, saved); }
+  const lines = written.replace(/\n$/, "").split("\n");
+  check("a warning wraps to a 40-column terminal, its first line marked and the rest under its text",
+    lines.length > 1 && lines.every((line) => line.length <= 40) && lines[0]!.startsWith("! this targets") && lines.slice(1).every((line) => line.startsWith("  ") && line[2] !== " "), lines);
+}
 
 if (failed) {
   console.log(`OUTPUT SMOKE: ${failed} failed`);

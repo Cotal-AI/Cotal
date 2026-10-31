@@ -13,7 +13,7 @@ import {
   createSpaceAuth, mintCreds, newIdentity, mintLifecycleUid,
   epRequestGrantRows, epJournalGrantRow, epCallerReplyGrantRow, epGoalProgressGrantRow,
   epCallerGrantRows, epServeSubscribeRows, epServePublishRows, epServeGrantRows,
-  epBaselineGrantRows, spawnCallerCapabilities, runCallerCapabilities, operatorInstrumentCapabilities, baselineCallerCapabilities, permissionsFor,
+  epBaselineGrantRows, spawnCallerCapabilities, runCallerCapabilities, operatorInstrumentCapabilities, instancePinnedInstrumentCapabilities, baselineCallerCapabilities, permissionsFor,
   SPAWN_CREATE_COMMANDS,
   MAX_CONTROL_LINE_BYTES, CONNECT_ENVELOPE_OVERHEAD_BYTES, MAX_MINTED_JWT_BYTES,
   type EpCapability, type EpCaller,
@@ -98,12 +98,13 @@ c("issued per-goal progress row is the plain triple: the subject the endpoint pu
 const baseline = epBaselineGrantRows("demo", caller);
 c("baseline: the ONE wildcard-endpoint form is describe-only, caller pinned, nonce-tailed",
   baseline.pub[0] === `cotal.demo.ep.one.*.describe.u_abc.cli.${UID}.*`);
-c("baseline: delivery join/leave/list untargeted + manager stop/turn-pending/turn-yield/run-answer self-mode + the ONE epc-subject-scoped store fetch, nothing else",
-  baseline.pub.length === 9
+c("baseline: delivery join/leave/list untargeted + manager stop/turn-participate/turn-pending/turn-yield/run-answer self-mode + the ONE epc-subject-scoped store fetch, nothing else",
+  baseline.pub.length === 10
   && baseline.pub.includes(`cotal.demo.ep.one.delivery.join.u_abc.cli.${UID}.*`)
   && baseline.pub.includes(`cotal.demo.ep.one.delivery.leave.u_abc.cli.${UID}.*`)
   && baseline.pub.includes(`cotal.demo.ep.one.delivery.list.u_abc.cli.${UID}.*`)
   && baseline.pub.includes(`cotal.demo.ep.one.manager.stop.self.u_abc.cli.${UID}.*`)
+  && baseline.pub.includes(`cotal.demo.ep.one.manager.turn-participate.self.u_abc.cli.${UID}.*`)
   // The turn relay's seat half rides self mode too: a seat that cannot pull its own turns has no
   // relay at all, and the manager pushes nothing.
   && baseline.pub.includes(`cotal.demo.ep.one.manager.turn-pending.self.u_abc.cli.${UID}.*`)
@@ -119,10 +120,10 @@ c("baseline: the reply rail is ALWAYS granted (no capability required)",
   baseline.sub.length === 1 && baseline.sub[0] === epCallerReplyGrantRow("demo", caller));
 c("baseline: no journal rows (the baseline is ephemeral request forms only)",
   baseline.pub.every((r) => !r.includes(".epj.")));
-c("the spawn set: spawn and resolve-agent are UNTARGETED (virgin child); despawn/attach ride owner-mode (no owner-stop synonym of despawn); define-persona + inspect + list-personas + show-persona + goal-result ride untargeted (the 1c table's connector reads)",
-  spawnCallerCapabilities("u_abc").length === 9
+c("the spawn set: spawn and resolve-agent are UNTARGETED (virgin child); despawn/attach ride owner-mode (no owner-stop synonym of despawn); define/remove persona + inspect + list-personas + show-persona + goal-result ride untargeted (the 1c table's connector reads)",
+  spawnCallerCapabilities("u_abc").length === 10
   && epCallerGrantRows("demo", spawnCallerCapabilities("u_abc"), caller).pub.join("|")
-  === `cotal.demo.ep.one.manager.spawn.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.resolve-agent.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.despawn.owner.u_abc.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.attach.owner.u_abc.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.define-persona.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.inspect.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.list-personas.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.show-persona.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.goal-result.u_abc.cli.${UID}.*`);
+  === `cotal.demo.ep.one.manager.spawn.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.resolve-agent.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.despawn.owner.u_abc.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.attach.owner.u_abc.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.define-persona.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.remove-persona.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.inspect.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.list-personas.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.show-persona.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.goal-result.u_abc.cli.${UID}.*`);
 // THE REGRESSION GUARD FOR THE `input` PLACEMENT, and it is a cell rather than a comment because
 // the mistake it stops is a ONE-WORD edit that reads as tidying: adding "input" to
 // SPAWN_OWNER_LIFECYCLE_COMMANDS beside its two obvious siblings. That edit hands every
@@ -139,10 +140,29 @@ c("the spawn capability grants NO `input` row in either mode: seat input is oper
 // only, §13.2 - the broker grant IS the tier boundary), BOTH modes of `input` and `turn` (the two
 // seat writes, granted nowhere else; the run driver submits its turns under this instrument), and
 // the untargeted `manager.admin` family.
-c("the privileged instrument set: reads + spawn + resolve-agent + define-persona + the chat-session pair + the run family with the keyed pair, with run-answer self-targeted",
-  operatorInstrumentCapabilities("privileged").length === 20
+c("the privileged instrument set: reads + spawn + resolve-agent + resolve-cwd + persona writes + the chat-session pair + the run family with the keyed pair, with run-answer self-targeted",
+  operatorInstrumentCapabilities("privileged").length === 23
   && operatorInstrumentCapabilities("privileged").filter((cap) => cap.target !== undefined).every((cap) => cap.command === "run-answer" && cap.target?.mode === "self")
-  && operatorInstrumentCapabilities("privileged").map((cap) => cap.command).join(",") === "status,ps,slots,inspect,models,list-personas,show-persona,goal-result,spawn,resolve-agent,define-persona,chat-session-open,chat-session-retire,run-status,run-ps,run-start,run-resume,run-start-keyed,run-submission-status,run-answer");
+  && operatorInstrumentCapabilities("privileged").map((cap) => cap.command).join(",") === "status,ps,slots,inspect,models,list-personas,show-persona,goal-result,spawn,resolve-agent,resolve-cwd,define-persona,remove-persona,chat-session-open,chat-session-retire,run-status,run-ps,run-start,run-resume,run-start-keyed,run-submission-status,run-cancel,run-answer");
+// `resolve-cwd` is the placement read the folder question of a managed launch calls, and on a static
+// mesh the instrument IS that caller: without this row the question offers typing and every typed
+// folder is refused at the broker. It stays out of the standing agent `spawn` set, which reaches
+// every manager in the space on the class rail, and it is minted untargeted on the `one` route like
+// the `spawn` row of its own `manager.spawn` capability class.
+c("both instrument tiers carry resolve-cwd untargeted and off the scatter rail, and the standing spawn set does not",
+  ["privileged", "admin"].every((tier) => {
+    const row = operatorInstrumentCapabilities(tier as "privileged" | "admin").find((cap) => cap.command === "resolve-cwd");
+    return row !== undefined && row.endpoint === "manager" && row.target === undefined && row.routes === undefined;
+  })
+  && !spawnCallerCapabilities("u_abc").some((cap) => cap.command === "resolve-cwd")
+  && !runCallerCapabilities("u_abc").some((cap) => cap.command === "resolve-cwd")
+  && !baselineCallerCapabilities().some((cap) => cap.command === "resolve-cwd"));
+// The pin is what makes the row usable: the instrument is minted per control call, so the typed
+// folder's check reaches exactly the manager `--on` named and no other instance.
+c("a pinned instrument's resolve-cwd row names that one instance and no class rail",
+  epCallerGrantRows("demo", instancePinnedInstrumentCapabilities("privileged", IID), caller).pub
+    .filter((r) => r.includes(".resolve-cwd."))
+    .join("|") === `cotal.demo.ep.one.manager.resolve-cwd.u_abc.cli.${UID}.*|cotal.demo.ep.inst.manager.${IID}.resolve-cwd.u_abc.cli.${UID}.*`);
 // The chat-session pair mints or ends a credential for a fresh session principal, so it rides the
 // operator instruments only. A spawn-capable or run-capable agent must never carry it.
 c("chat-session-open/retire are untargeted operator rows and absent from the spawn and run capability sets",
@@ -154,19 +174,19 @@ c("chat-session-open/retire are untargeted operator rows and absent from the spa
 // test's broker refusal on a static mesh: the CLI scatters it like `ps`.
 c("the instrument's `ps` and `slots` rows are the only reads minted on the scatter rail",
   operatorInstrumentCapabilities("privileged").filter((cap) => cap.routes?.includes("all")).map((cap) => cap.command).join(",") === "ps,slots");
-// The `run` capability (SPEC 14.3): six untargeted run-* rows (the keyed `run-start-keyed` and
-// `run-submission-status` pair included), self-targeted run-answer, PLUS the whole spawn set, and
+// The `run` capability (SPEC 14.3): seven untargeted run-* rows (the keyed pair and run-cancel
+// included), self-targeted run-answer, PLUS the whole spawn set, and
 // nothing targeted beyond what spawn already carries. The implication is one-way: a spawn-only
 // caller gains no run row.
-c("the run capability set: run-start/run-resume/run-start-keyed/run-submission-status/run-status/run-ps untargeted, run-answer self-targeted + the spawn set",
-  runCallerCapabilities("u_abc").length === 16
-  && runCallerCapabilities("u_abc").slice(0, 7).map((cap) => cap.command).join(",") === "run-start,run-resume,run-start-keyed,run-submission-status,run-answer,run-status,run-ps"
-  && runCallerCapabilities("u_abc").slice(0, 7).every((cap) => cap.command === "run-answer" ? cap.target?.mode === "self" : cap.target === undefined)
-  && JSON.stringify(runCallerCapabilities("u_abc").slice(7)) === JSON.stringify(spawnCallerCapabilities("u_abc"))
+c("the run capability set: run-start/run-resume/run-start-keyed/run-submission-status/run-cancel/run-status/run-ps untargeted, run-answer self-targeted + the spawn set",
+  runCallerCapabilities("u_abc").length === 18
+  && runCallerCapabilities("u_abc").slice(0, 8).map((cap) => cap.command).join(",") === "run-start,run-resume,run-start-keyed,run-submission-status,run-cancel,run-answer,run-status,run-ps"
+  && runCallerCapabilities("u_abc").slice(0, 8).every((cap) => cap.command === "run-answer" ? cap.target?.mode === "self" : cap.target === undefined)
+  && JSON.stringify(runCallerCapabilities("u_abc").slice(8)) === JSON.stringify(spawnCallerCapabilities("u_abc"))
   && !spawnCallerCapabilities("u_abc").some((cap) => cap.command.startsWith("run-")));
 const adminCaps = operatorInstrumentCapabilities("admin", "u_abc");
 c("the admin instrument set adds any-mode despawn/attach + BOTH modes of input and turn + the manager.admin family",
-  adminCaps.length === 35
+  adminCaps.length === 38
   && adminCaps.filter((cap) => cap.target?.mode === "any").map((cap) => cap.command).join(",") === "despawn,attach,input,turn"
   && adminCaps.filter((cap) => cap.target?.mode === "owner").map((cap) => cap.command).join(",") === "input,turn"
   && adminCaps.filter((cap) => cap.target?.mode === "owner").every((cap) => (cap.target as { tOwner?: string }).tOwner === "u_abc")
@@ -259,11 +279,12 @@ const BASELINE_PUB = [
   `cotal.epg.ep.one.delivery.leave.u_abc.cli.${UID}.*`,
   `cotal.epg.ep.one.delivery.list.u_abc.cli.${UID}.*`,
   `cotal.epg.ep.one.manager.stop.self.u_abc.cli.${UID}.*`,
+  `cotal.epg.ep.one.manager.turn-participate.self.u_abc.cli.${UID}.*`,
   `cotal.epg.ep.one.manager.turn-pending.self.u_abc.cli.${UID}.*`,
   `cotal.epg.ep.one.manager.turn-yield.self.u_abc.cli.${UID}.*`,
   `cotal.epg.ep.one.manager.run-answer.self.u_abc.cli.${UID}.*`,
 ];
-c("no-capability mint carries EXACTLY the Appendix-B baseline ep rows (describe-all + delivery join/leave/list + self stop/turn-pending/turn-yield/run-answer), nothing wider",
+c("no-capability mint carries EXACTLY the Appendix-B baseline ep rows (describe-all + delivery join/leave/list + self stop/turn-participate/turn-pending/turn-yield/run-answer), nothing wider",
   JSON.stringify(without.pub.allow.filter((r) => r.includes(".ep.") || r.includes(".epj.")).sort())
   === JSON.stringify([...BASELINE_PUB].sort()),
   JSON.stringify(without.pub.allow.filter((r) => r.includes(".ep."))));

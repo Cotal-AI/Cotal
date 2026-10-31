@@ -6,7 +6,10 @@
  * status-sorted roster split, and the derived operator signals (counts + DM roll-up).
  */
 import { EventEmitter } from "node:events";
+import { renderReport } from "@cotal-ai/workspace";
 import { MeshView } from "../src/view/mesh-view.js";
+import { runLog } from "../src/render.js";
+import { feedLine, observedText, watchReport, WATCH_TEXT_LIMIT } from "../src/watch-data.js";
 import {
   chatSubject,
   unicastSubject,
@@ -112,6 +115,25 @@ check(
   s.signals.counts.working === 1 && s.signals.counts.waiting === 1 && s.signals.counts.idle === 1 && s.signals.counts.offline === 0,
 );
 check("signals.waiting surfaces the blocked agent", s.signals.waiting.length === 1 && s.signals.waiting[0].card.name === "bob");
+const watchRoster = renderReport(watchReport(s, "roster"), "plain", 200).split("\n");
+check("the watch roster names a working agent's progress as unknown", watchRoster.some((line) => /\balice\b.*working - progress unknown/.test(line)) && !watchRoster.some((line) => /\bbob\b.*progress unknown/.test(line)));
+{
+  // A message past the row bound is cut, and the line says how much it lost and which read shows it whole.
+  const long = `${"x".repeat(200_000)}END-MARK`;
+  const from = { id: ids.alice, name: "alice" };
+  const post = { id: "long", ts: Date.now(), from, delivery: "multicast" as const, channel: "general", text: long };
+  const cut = observedText(long);
+  const lost = long.length - WATCH_TEXT_LIMIT;
+  const marker = (line: string) => line.match(/ \[(\d+) text code units not shown(.*)\]$/);
+  const whole = marker(feedLine(post));
+  const row = marker(feedLine({ ...post, text: cut.text, omittedCodeUnits: cut.omittedCodeUnits }));
+  const dm = marker(feedLine({ ...post, delivery: "unicast", channel: undefined, toIds: [ids.bob], text: cut.text, omittedCodeUnits: cut.omittedCodeUnits }));
+  check("a watch line cut at the row bound names the code units not shown and the history read that shows it whole",
+    whole?.[1] === String(lost) && whole[2] === "; `cotal history general` shows it whole" && !feedLine(post).includes("END-MARK"));
+  check("a stream row already cut keeps the count it lost", row?.[1] === String(lost) && row[2] === "; `cotal history general` shows it whole");
+  check("a cut direct message points at cotal history --dms", dm?.[1] === String(lost) && dm[2] === "; `cotal history --dms` shows it whole");
+  check("control: a message within the bound has no marker", marker(feedLine({ ...post, text: "short" })) === null);
+}
 
 const aliceDm = s.signals.dms.find((p) => p.name === "alice");
 check("DM roll-up: alice has 2 conversations (bob, carol)", aliceDm?.conversations.length === 2);
@@ -170,5 +192,64 @@ check(
 );
 
 await view.stop();
+
+// ---- stop after the connection is closed for good ----
+{
+  // The real endpoint keeps a membership watch's own stop pending until its broker consumer is
+  // deleted, which a closed connection cannot do, and settles it from the endpoint's own stop.
+  class ClosedForGood extends MockEndpoint {
+    private settle?: () => void;
+    async readMembership(): Promise<{ asOf: undefined; members: [] }> {
+      return { asOf: undefined, members: [] };
+    }
+    async watchMembership(): Promise<{ stop(): Promise<void> }> {
+      return { stop: () => new Promise<void>((resolve) => { this.settle = resolve; }) };
+    }
+    override async stop(): Promise<void> {
+      this.settle?.();
+    }
+  }
+  const closed = new MeshView(new ClosedForGood() as unknown as CotalEndpoint);
+  await closed.start();
+  await wait(20);
+  const stopped = await Promise.race([closed.stop().then(() => true), wait(2_000).then(() => false)]);
+  check("stop returns when only the endpoint's stop settles the membership watch (Ctrl-C after the connection is gone)", stopped);
+}
+
+// ---- the line stream (console --plain and pipes): ASCII on --plain and under a non-UTF-8 locale ----
+/** The lines one runLog prints for a join and two feed entries, under `LC_ALL=locale`. */
+async function streamLines(plain: boolean, locale: string): Promise<string[]> {
+  const lines: string[] = [];
+  const log = console.log;
+  const prior = process.env.LC_ALL;
+  const ep = new MockEndpoint();
+  process.env.LC_ALL = locale;
+  console.log = (...args: unknown[]) => { lines.push(args.join(" ").replace(/\x1b\[[0-9;]*m/g, "")); };
+  try {
+    void runLog(ep as unknown as CotalEndpoint, space, undefined, plain);
+    await wait(20);
+    ep.emit("presence", { type: "join", presence: roster[0] });
+    ep.tapHandler!(chatSubject(space, DEV_OWNER, ids.alice, "general"), msg(ids.alice, "alice", { channel: "general" }, "a → b", "p1"));
+    for (const [to, id] of [[ids.bob, "p2"], [ids.carol, "p3"], [ids.bob, "p4"]] as const)
+      ep.tapHandler!(unicastSubject(space, DEV_OWNER, to, DEV_OWNER, ids.alice), msg(ids.alice, "alice", { to }, "ping", id));
+    await wait(550);
+  } finally {
+    console.log = log;
+    if (prior === undefined) delete process.env.LC_ALL;
+    else process.env.LC_ALL = prior;
+  }
+  return lines;
+}
+for (const [what, plain, locale] of [["--plain under a UTF-8 locale", true, "C.UTF-8"], ["a pipe under LC_ALL=C", false, "C"]] as const) {
+  const text = (await streamLines(plain, locale)).join("\n");
+  check(`line stream on ${what} is ASCII: no status marks, -> for the arrow, x for a count`,
+    !/[^\x00-\x7F]/.test(text) && /alice\/alice working - progress unknown/.test(text) && /alice\/alice -> #general: a -> b/.test(text) && /\(3x\)/.test(text));
+}
+{
+  const text = (await streamLines(false, "C.UTF-8")).join("\n");
+  check("control: a pipe under a UTF-8 locale draws the status mark, the arrow and the count sign",
+    /● working · progress unknown/.test(text) && /alice\/alice → #general: a → b/.test(text) && /\(3×\)/.test(text));
+}
+
 console.log(failures ? `\n${failures} check(s) failed` : "\nall checks passed");
 process.exit(failures ? 1 : 0);

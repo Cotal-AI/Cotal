@@ -2,7 +2,8 @@
  * The Codex connector: launches a host-mode peer that embeds the Cotal endpoint and drives a
  * `codex app-server` thread over JSON-RPC (see host.ts). A mesh message becomes a real
  * Codex turn — wake an idle thread (`turn/start`) or steer a directed message into one already
- * running (`turn/steer`) — and the cotal_* tools are served by the host over a loopback MCP
+ * started by the connector (`turn/steer`). Externally started turns defer delivery until they end.
+ * The cotal_* tools are served by the host over a loopback MCP
  * endpoint, so the session is a full lateral peer at parity with the other connectors. Presence
  * is read off the app-server event stream; with a terminal the host attaches the real Codex TUI,
  * and without one it prints an activity feed. Self-registers on import; the manager resolves it
@@ -11,7 +12,7 @@
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
-import { registry, type Connector, type LaunchOpts, type LaunchSpec, type ModelCatalog, type ModelInfo } from "@cotal-ai/core";
+import { registry, type Connector, type LaunchOpts, type LaunchSpec, type ModelCatalog, type ModelCatalogOpts, type ModelInfo } from "@cotal-ai/core";
 import { aclEnv, connectorLaunchOptions, controlEndpoint, eventChannel, launchArmsEvents, launchEnv, materialEnv } from "@cotal-ai/connector-core";
 
 /** The bundled host loop (self-contained — core + connector-core inlined, see package.json's
@@ -43,8 +44,12 @@ interface CodexModelEntry {
 
 /** Query the model catalog over a short-lived `codex app-server` (`model/list` — there is no
  *  `codex models` subcommand). Times out rather than hanging the manager's selector UI. */
-async function listCodexModels(): Promise<ModelCatalog> {
-  const child = spawn("codex", ["app-server"], { env: discoveryEnv(), stdio: ["pipe", "pipe", "ignore"] });
+async function listCodexModels(opts: ModelCatalogOpts = {}): Promise<ModelCatalog> {
+  // The file a launch runs: the operator pin, then the path boot resolved, then the bare name. The
+  // pin is read here because discoveryEnv strips every COTAL_* key, which is what keeps a catalog
+  // probe from looking like a managed seat. A later PATH change cannot pick a different file.
+  const bin = process.env.COTAL_CODEX_BIN?.trim() || opts.resolvedBinaries?.codex || "codex";
+  const child = spawn(bin, ["app-server"], { env: discoveryEnv(), stdio: ["pipe", "pipe", "ignore"] });
   const kill = (): void => {
     try {
       child.kill("SIGKILL");
@@ -194,7 +199,7 @@ export const codexConnector: Connector = {
     // decides there (one setting for every codex agent it supervises), while a foreground spawn
     // reads the shell that ran it. Passing it through the spawn request instead would make it a
     // per-agent launch option, which is a bigger surface than a display toggle earns; the split is
-    // documented in docs/connect-codex.md rather than half-wired.
+    // documented in docs/connect-codex.mdx rather than half-wired.
     const tuiPref = process.env.COTAL_CODEX_TUI?.trim();
     if (tuiPref) env.COTAL_CODEX_TUI = tuiPref;
 

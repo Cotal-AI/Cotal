@@ -580,7 +580,7 @@ registry.register({
   writeFileSync(join(extensionRoot, "extensions.json"), JSON.stringify({ extensions: [{
     pkg: "stock-acceptance-extension", version: "1.0.0", spec: "file:stock-acceptance-extension",
     provides: [{ kind: "connector", name: "stock-acceptance" }], commands: [],
-    connectors: [{ name: "stock-acceptance", requires: [] }],
+    connectors: [{ name: "stock-acceptance", requires: [], eventPlane: false }],
   }] }, null, 2));
 
   const supervisorEnv: NodeJS.ProcessEnv = {};

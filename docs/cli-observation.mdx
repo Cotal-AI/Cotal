@@ -9,6 +9,7 @@ import { Callout } from 'fumadocs-ui/components/callout';
 
 The console, observer, and dashboard expose different control boundaries. Their reports describe observed state and do not establish task completion.
 
+
 ## console [#console]
 
 ```bash
@@ -20,7 +21,12 @@ cotal console [--plain] [--space <s>]
 | `--space <s>` / `--server <url>` / `--creds <path>` | resolved mesh | Space to watch |
 | `--plain` | off | Line stream instead of the TUI |
 
-A live protocol view for a space: a lazygit-style TUI, or a plain line stream on `--plain`. On a
+A live protocol view for a space: a lazygit-style TUI, or a plain line stream on `--plain`. The
+line stream is also what a pipe gets. On `--plain`, and under a locale that is not UTF-8, it writes
+no status marks and its punctuation in ASCII. The line stream reports a lost connection in one line
+while it re-establishes it. A credential that can no longer connect ends it with the refusal a
+one-shot command with that credential gets, as [`history --follow`](cli-messaging.mdx#history) does. Ctrl-C or
+SIGTERM ends either view at any time. On a
 user-auth mesh it rides the read-only admin view over your login, which needs ledger scope
 `admin`. Inside the TUI, operator control (`D` kill, `:spawn`, `:status`, `:purge`) rides the
 same per-action instrument path as `cotal stop` and `cotal ps`, never the observer; a raw
@@ -28,7 +34,27 @@ same per-action instrument path as `cotal stop` and `cotal ps`, never the observ
 [`cotal attach`](cli-agent-control.mdx#managed-seats) in place and returns to the console on detach. See
 [Watch a mesh](watch-a-mesh.mdx).
 
+Message bodies, names and other text from peers are untrusted. Both views show a control character
+in them as its `\uXXXX` escape, so a message cannot clear the screen, retitle the terminal or plant
+a hyperlink. The TUI keeps a body's line breaks, and `--plain` prints each message on one line.
+The TUI wraps a body, and a roster seat's rows, by terminal columns: a wide character such as a CJK
+ideograph or an emoji takes two, and a word wider than the pane breaks between characters, never
+inside one. On a seat's head, the name, harness tag, activity, the activity's age and the progress
+or heartbeat age each start a new row when they do not fit on the current one, so a long name never
+hides them. The roster draws whole seats around the selected one. When some do not fit, its title
+starts with how many whole seats are left out above and below the window, as in `roster ↑2 ↓1 more`,
+and `j` and `k` reach them. A seat taller than the pane shows only its first rows under the title,
+which a long activity can cause below 80 columns, where the roster has at most five rows for seats.
+The count leaves out those cut rows, since it counts whole seats.
+The agent detail's recent traffic cuts each preview by columns too, never inside a character, and a
+preview that leaves any of its text out ends with `…`. Closing a detail returns the feed to the
+message and scroll position it showed, and the roster to the seat it had selected, or to that row if
+the seat has left.
+
+
+
 ## Web dashboard [#web-dashboard]
+
 
 ### Dashboard command [#web]
 
@@ -44,6 +70,7 @@ cotal service logs web --space main
 cotal service stop web --space main --yes
 ```
 
+
 ### Dashboard authority
 
 This route requires a registered static-auth target, an existing protected credential file
@@ -51,13 +78,11 @@ and explicit read-only intent. `--host` chooses a concrete bind/browser address,
 `127.0.0.1`; wildcard binds refuse. `--port` is 1 to 65535, default 7799. Broker coordinates and
 required TLS come from the registered target. Broker TLS does not encrypt the dashboard's HTTP
 listener. The file supplies the only connection authority.
-Before native initialization, that credential must match the selected root's full validated static trust chain,
-current issuer, native user key, and validity window.
-No signer is forwarded to an HTTP handler or used to mint a replacement credential.
 No cached human login, managed-seat identity, operator signer or channel-purger credential is
 substituted. User-auth/open targets refuse, because no supported caller handoff is connected for them.
 The page marks this service read-only and hides channel delete; the server also refuses it before
 reading a delete body or opening a mutation connection. The broker still enforces the file's scope.
+
 
 ### Private launch record
 
@@ -76,6 +101,7 @@ parity are not supported. An old cached `command:web` descriptor is hidden and r
 extension-update remedy before package loading or repair. It is not resolved by removing the
 dashboard, starting a second process or silently reinstalling it.
 
+
 ## watch [#watch]
 
 `cotal watch` opens the read-only activity screen for the selected space. `w` is its shorthand.
@@ -83,14 +109,26 @@ It uses the existing observer view authority; a user-auth space requires the cor
 admin view grant. It does not register a participant, bind an inbox or expose local process
 controls. Leaving with `q`, Esc or Ctrl-C stops only this observer.
 
-`--view events` and `--view messages` select a feed. The terminal changes views with `f`. Arrow keys scroll; `g` returns to the latest observations. The feed retains at most
+Use `--view events` or `--view messages` to select a feed, or press `f` to change it in the
+terminal. Arrow keys scroll; `g` returns to the latest observations. The feed retains at most
 300 entries. A reported turn ending is not task completion. An interrupted feed keeps its
-last observations and reports the gap instead of showing them as current.
+last observations and reports the gap instead of showing them as current. When the connection
+comes back, after a broker restart too, the feed resumes and reports the transition as a gap.
 
 `--plain` or a noninteractive invocation uses the attributed line stream. Interactive filters
-are not supported by that stream. Authenticated observer views keep direct messages out of
+are not supported by that stream. A line carries at most 16,384 code units of a message's text, the
+observer stream's row bound. A longer message is cut there, and its line ends with the count not
+shown and the read that shows it whole: `cotal history <channel>`, or `cotal history --dms` for a
+direct message. Authenticated observer views keep direct messages out of
 the channel tap. Opening this view never launches, stops or attaches an agent. If the reader
-of the stream closes it, as `| head` does, the observer stops the same way.
+of the stream closes it, as `| head` does, the observer stops at its next line, so on a quiet mesh it
+runs until a message arrives or Ctrl-C ends it with exit 130.
+
+A target this observer cannot open, such as a stopped project's space, is refused before any view
+exists, under the refusal's own code and exit 2, as `history`, `channel` and `chat` refuse it in that
+folder. The terminal gets the refusal's report, with the mesh it resolved and its next step;
+`--json` gets that code, message and next step in the stream's `error` record, ahead of its `end`.
+
 
 ### Observer stream [#observer-stream]
 
@@ -100,15 +138,12 @@ scope, reported roster state, native channel counts and membership-read failures
 native message IDs and timestamps; coalesced updates are identified as observed rows, not new
 message publications or proof of task completion. No global sequence is invented.
 
-<Callout type="warn" title="Bounded observations">
-
 The feed has a 300-entry window and bounded per-channel prefill, not a complete history export.
 Window loss, connection transitions and text beyond the 16,384-code-unit row bound produce gap
-records. Identity fields are not clipped. The stream does not claim that arbitrary publisher
+records, and a cut row carries `textTruncated` and `omittedCodeUnits`. Identity fields are not clipped. The stream does not claim that arbitrary publisher
 content is secret-redacted. Leaving the observer stops its own connection and sends no agent
 control request. Connection or authorization failure is an error, not an empty conversation.
 
-</Callout>
 
 ### Watch views [#watch-views]
 
@@ -120,6 +155,8 @@ patterns and durable channels, not task dependencies or permission grants. Missi
 membership is explicit, never an empty complete graph. Long identities wrap without clipping.
 
 The authenticated observer remains narrowed to channel traffic. Its DM view refuses instead of
-broadening credentials or inventing a private conversation identity. Open-space DM observations
+broadening credentials or inventing a private conversation identity, and with `--json` its `error`
+record names the space and the reason. Open-space DM observations
 retain native sender and target IDs. Use `--json` for versioned view records or `--plain` for line-oriented reports outside a
-terminal. Both use the same bounded observer lifecycle and shared view model.
+terminal. Both use the same bounded observer lifecycle and shared view model. A line-oriented
+roster, channels, waiting or topology view prints its report again each time that report changes.

@@ -19,7 +19,7 @@ the coordination guarantees as well as carry the message bytes.
 
 The Cotal protocol is the normative wire contract in the [SPEC](../SPEC.md).
 It defines message shapes, space and channel addressing, delivery modes, presence,
-discovery, history, and version rules. Sender identity and delivery class come from
+discovery, history, and version rules. Sender identity and delivery kind come from
 the delivery path. A payload cannot turn a channel post into a direct message or
 claim a different sender.
 
@@ -44,7 +44,7 @@ must supply the missing behavior above it.
 
 | Capability | Guarantee to preserve |
 | --- | --- |
-| Addressed routing | Hierarchical channel names and wildcard subscriptions. Multicast reaches channel subscribers, unicast addresses one instance, and anycast assigns work to one holder of a role. Control requests can address services. The delivery path attributes the sender and delivery class. |
+| Addressed routing | Hierarchical channel names and wildcard subscriptions. Multicast reaches channel subscribers, unicast addresses one instance, and anycast assigns work to one holder of a role. Control requests can address services. The delivery path attributes the sender and delivery kind, whether channel, DM, or anycast. |
 | Durable delivery and history | At-least-once delivery within retention for unicast, anycast, and durable-channel backstops. Per-instance pending state and per-role queued work survive disconnects. Receivers acknowledge after surfacing or handling a copy, tolerate duplicates by message id, and support bounded history replay. Live channel copies remain at-most-once. |
 | Presence and registry state | Per-space presence records with own-key writes, liveness derived from TTL expiry, stale timestamps, or deletion, and persistent channel configuration. |
 | Identity | An authenticated principal identifies an instance across reconnects. Managed lifecycle identity distinguishes a same-name successor from its predecessor. |
@@ -73,7 +73,7 @@ cotal.<space>.inst.<recipientOwner>.<recipientActor>.<senderOwner>.<senderActor>
 cotal.<space>.svc.<role>.<owner>.<actor>
 ```
 
-The reference client's `parseSubject` recovers the sender and delivery class from
+The reference client's `parseSubject` recovers the sender and delivery kind from
 these subjects. `*` matches one subject token, and a final `>` matches one or more
 remaining tokens. A publisher names one concrete channel, while a subscriber can
 name a channel subtree. Typed commands use the separate
@@ -140,6 +140,12 @@ builders. Open development mode is outside these security claims.
 [Identity and authentication](identity-and-auth.mdx),
 [SPEC §9](../SPEC.md#9-nats--jetstream-security-and-authorization), and
 [Appendix B](../SPEC.md#appendix-b-profile-acls) define the boundaries.
+
+### Transport heartbeat defaults
+
+Endpoints use a 10-second transport ping interval and two outstanding pings by default. With the current NATS client, a silent link normally disconnects within about 30 seconds, subject to event-loop scheduling. The delivery daemon keeps its 2.5-second override. `transportConnectTimeoutMs` bounds the first connection attempt and defaults to the NATS limit of 20 seconds.
+
+Transport liveness does not prove bind readiness, presence health, or a send outcome. A send can time out before a silent socket is detected. See [endpoint transport options](embedding-exports.mdx#native-transport-liveness).
 
 ### Client lifecycle details
 

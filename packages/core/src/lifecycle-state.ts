@@ -10,13 +10,13 @@
  * live with their executors; a second copy of either is the dual-encoder drift this module
  * exists to prevent.
  */
+import { DIGEST_PREFIX, rawDigest } from "./canonical.js";
 import { parseServiceConnectionBinding, parseServiceGateAuthority, type ServiceConnectionBinding, type ServiceGateAuthority } from "./service-gate.js";
 import { EpEnvelopeError } from "./endpoint-envelope.js";
-import { LIFECYCLE_HEAD, UID_RESERVATION, recordAtomicKey } from "./endpoint-records.js";
+import { LIFECYCLE_HEAD, UID_RESERVATION, recordAtomicKey, decodeRecordJson } from "./endpoint-records.js";
 import { assertLifecycleToken, endpointNameOf, endpointToken } from "./endpoint-subjects.js";
 import { parsePrincipalKey, isPrincipalOwnerToken } from "./subjects.js";
 
-const dec = new TextDecoder();
 const isRec = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
 const uint = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
 
@@ -69,12 +69,7 @@ export function uidReservationKey(lifecycleUid: string): string {
 /** Validate a head value at the consuming boundary — CLOSED schema (nested `op` included), and
  *  the embedded owner/actor MUST agree with the key so a key-mismatched row never authorizes. */
 export function parseLifecycleHead(raw: Uint8Array, key: string, owner: string, actor: string): LifecycleMapping {
-  let o: unknown;
-  try {
-    o = JSON.parse(dec.decode(raw));
-  } catch {
-    throw new EpEnvelopeError("internal", `the lifecycle head ${key} is not JSON; garbled trusted-path state never authorizes (SPEC 13.1)`);
-  }
+  const o = decodeRecordJson(raw, key);
   if (!isRec(o)) throw new EpEnvelopeError("internal", `the lifecycle head ${key} is not an object`);
   const allowed = new Set(["owner", "actor", "lifecycleUid", "managerInstance", "processEpoch", "state", "currentCredentialId", "lastTakeoverOpId", "op"]);
   for (const k of Object.keys(o)) if (!allowed.has(k)) throw new EpEnvelopeError("internal", `the lifecycle head ${key} carries the unknown field "${k}" (closed schema, SPEC 13.1)`);
@@ -177,12 +172,7 @@ function assertGateOp(op: unknown, state: string, label: string): void {
 /** Validate a gate row at the consuming boundary — CLOSED schema; key/uid agreement; the
  *  per-kind STATE x KIND transition invariants (§13.1). */
 export function parseIssuanceGate(raw: Uint8Array, key: string, lifecycleUid: string): EpGateRow {
-  let o: unknown;
-  try {
-    o = JSON.parse(dec.decode(raw));
-  } catch {
-    throw new EpEnvelopeError("internal", `the issuance gate ${key} is not JSON; garbled trusted-path state never authorizes (SPEC 13.1)`);
-  }
+  const o = decodeRecordJson(raw, key);
   if (!isRec(o)) throw new EpEnvelopeError("internal", `the issuance gate ${key} is not an object`);
   for (const k of Object.keys(o)) if (k !== "lifecycleUid" && k !== "state" && k !== "generation" && k !== "op") throw new EpEnvelopeError("internal", `the issuance gate ${key} carries the unknown field "${k}" (closed schema, SPEC 13.1)`);
   if (o.lifecycleUid !== lifecycleUid || typeof o.state !== "string" || !ISSUANCE_GATE_STATES.has(o.state) || !uint(o.generation))
@@ -208,6 +198,13 @@ export function assertCredentialIdTail(v: unknown, what: string): string {
   if (typeof v !== "string" || v.length === 0 || v.length > 256 || !v.split(".").every((s) => KEY_SEGMENT.test(s)))
     throw new EpEnvelopeError("failed-precondition", `${what} ${JSON.stringify(v)} is not a bounded dotted credential id (SPEC 13.1)`);
   return v;
+}
+
+/** The key-safe per-credential ledger id `sha256-<hex>` over raw credential bytes or UTF-8 text:
+ *  the id becomes a segment of the durable `cred.`, `epcred.` and `bysrc.` KV keys, whose grammar
+ *  forbids the `:` in the §13.7 `sha256:` artifact form. */
+export function credentialIdOf(credential: Uint8Array | string): string {
+  return `sha256-${rawDigest(credential).slice(DIGEST_PREFIX.length)}`;
 }
 
 /** A holder principal `<owner>.<actor>` with a REAL owner (derived `u_…`, platform `p_…` or the dev owner) —
@@ -287,12 +284,7 @@ export interface EndpointRepairCursor {
 }
 
 export function parseEndpointRepairCursor(raw: Uint8Array, key: string): EndpointRepairCursor {
-  let o: unknown;
-  try {
-    o = JSON.parse(dec.decode(raw));
-  } catch {
-    throw new EpEnvelopeError("internal", `the repair cursor ${key} is not JSON; garbled progress never authorizes a skip (SPEC 13.1)`);
-  }
+  const o = decodeRecordJson(raw, key);
   if (!isRec(o)) throw new EpEnvelopeError("internal", `the repair cursor ${key} is not an object`);
   const allowed = new Set(["v", "opId", "freezeToken", "holders", "verified"]);
   for (const k of Object.keys(o)) if (!allowed.has(k)) throw new EpEnvelopeError("internal", `the repair cursor ${key} carries the unknown field "${k}" (closed schema)`);
@@ -367,12 +359,7 @@ export function epgateKey(endpoint: string, instanceId: string): string {
  *  serving principal; the per-kind STATE x KIND + successor invariants (§13.1). Byte-for-byte the
  *  parser the auth session ledger carried, now shared. */
 export function parseEndpointGate(raw: Uint8Array, key: string): EndpointGateRow {
-  let o: unknown;
-  try {
-    o = JSON.parse(dec.decode(raw));
-  } catch {
-    throw new EpEnvelopeError("internal", `the endpoint gate ${key} is not JSON (SPEC 13.1)`);
-  }
+  const o = decodeRecordJson(raw, key);
   if (!isRec(o)) throw new EpEnvelopeError("internal", `the endpoint gate ${key} is not an object`);
   const allowed = new Set(["state", "generation", "processEpoch", "registrationRevision", "nameAuthorityRevision", "principal", "op", "authorityFamily", "serviceAuthority"]);
   for (const k of Object.keys(o)) if (!allowed.has(k)) throw new EpEnvelopeError("internal", `the endpoint gate ${key} carries the unknown field "${k}" (closed schema, SPEC 13.1)`);
@@ -434,12 +421,7 @@ export interface CredentialLedgerRow {
  *  identity MUST rebuild the row's own key, so a key-mismatched or family-swapped poison row
  *  never authorizes (SPEC 13.1/13.3). */
 export function parseLedgerRow(raw: Uint8Array, key: string): CredentialLedgerRow {
-  let o: unknown;
-  try {
-    o = JSON.parse(dec.decode(raw));
-  } catch {
-    throw new EpEnvelopeError("internal", `the credential-ledger row ${key} is not JSON; garbled trusted-path state never authorizes (SPEC 13.1)`);
-  }
+  const o = decodeRecordJson(raw, key);
   if (!isRec(o)) throw new EpEnvelopeError("internal", `the credential-ledger row ${key} is not an object`);
   const allowed = new Set(["credentialId", "holderPrincipal", "lifecycleUid", "endpoint", "serviceConnection", "sourceChain", "state", "exp"]);
   for (const k of Object.keys(o)) if (!allowed.has(k)) throw new EpEnvelopeError("internal", `the credential-ledger row ${key} carries the unknown field "${k}" (closed schema, SPEC 13.1)`);
@@ -491,8 +473,8 @@ export function parseLedgerRow(raw: Uint8Array, key: string): CredentialLedgerRo
 export const STATIC_SLOT_PHASES: ReadonlySet<string> = new Set(["provisioning", "active", "terminalizing", "retired"]);
 export type StaticSlotPhase = "provisioning" | "active" | "terminalizing" | "retired";
 
-/** The static manager's durable alias -> (owner, actor, lifecycleUid) slot mapping (Unit B,
- *  the F5-bind split-coordinates design): the ALIAS is routing/display, protected by this
+/** The static manager's durable alias -> (owner, actor, lifecycleUid) slot mapping
+ *  (split-coordinates design): the ALIAS is routing/display, protected by this
  *  name-keyed row plus the uid reservation and the manager's freeSlot hold; the AUTHORITY
  *  coordinate is the incarnation-unique wire `actor` (the nkey) recorded here as DATA. The row
  *  lives in the records store — the same durability domain as the head — and survives manager
@@ -552,12 +534,7 @@ function isRuntimeReference(v: unknown): v is { kind: string; id: string } {
 }
 
 export function parseStaticSlotRow(raw: Uint8Array, key: string): StaticManagedSlotRow {
-  let o: unknown;
-  try {
-    o = JSON.parse(dec.decode(raw));
-  } catch {
-    throw new EpEnvelopeError("internal", `the static slot row ${key} is not JSON; garbled trusted-path state never drives supervision (SPEC 13.1)`);
-  }
+  const o = decodeRecordJson(raw, key);
   if (!isRec(o)) throw new EpEnvelopeError("internal", `the static slot row ${key} is not an object`);
   const allowed = new Set(["owner", "alias", "actor", "lifecycleUid", "phase", "credentialIds", "managerInstance", "ownerInstanceId", "cleanupComplete", "runtime"]);
   for (const k of Object.keys(o)) if (!allowed.has(k)) throw new EpEnvelopeError("internal", `the static slot row ${key} carries the unknown field "${k}" (closed schema)`);

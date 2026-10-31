@@ -50,8 +50,8 @@
     {
       "name": "bare show ignores the selection",
       "file": "implementations/cli/src/commands/space.ts",
-      "find": "const name = rest[0] ?? current;",
-      "replace": "const name = rest[0] ?? null;",
+      "find": "const name = rest[0] ?? folder ?? current;",
+      "replace": "const name = rest[0] ?? folder ?? null;",
       "expectRed": "bare show shows the selected space",
       "cell": "bare show shows the selected space",
       "afterRestore": "pnpm --filter cotal-ai... build"
@@ -68,8 +68,8 @@
     {
       "name": "use selects an unregistered name",
       "file": "implementations/cli/src/commands/use.ts",
-      "find": "if (!m && !p) throw new CommandFailure(\"refused\", \"TARGET_NOT_FOUND\", `no space named \"${name}\" is registered here`, { remedy: \"see the registered spaces with `cotal space`\" });",
-      "replace": "if (!m && !p) {\n    setCurrent(name);\n    return;\n  }",
+      "find": "    throw new CommandFailure(\"refused\", \"TARGET_NOT_FOUND\", `no space named \"${boundedValue(name, SHOWN_VALUE_MAX)}\" is registered or prepared here",
+      "replace": "    setCurrent(name);\n    return;\n    throw new CommandFailure(\"refused\", \"TARGET_NOT_FOUND\", `no space named \"${boundedValue(name, SHOWN_VALUE_MAX)}\" is registered or prepared here",
       "expectRed": "use refuses an unregistered name with TARGET_NOT_FOUND and keeps the selection",
       "cell": "use refuses an unregistered name with TARGET_NOT_FOUND and keeps the selection",
       "afterRestore": "pnpm --filter cotal-ai... build"
@@ -95,8 +95,8 @@
     {
       "name": "a selection that names no registration falls through",
       "file": "packages/workspace/src/mesh-target.ts",
-      "find": "if (current) {\n    const cur = meshes.find((m) => m.space === current);\n    if (!cur)",
-      "replace": "if (current && meshes.some((m) => m.space === current)) {\n    const cur = meshes.find((m) => m.space === current);\n    if (!cur)",
+      "find": "  if (current && selectionTargetsHere(cwd, current, meshes, offline)) {\n    const cur = meshes.find((m) => m.space === current);\n    if (!cur) {",
+      "replace": "  if (current && selectionTargetsHere(cwd, current, meshes, offline) && meshes.some((m) => m.space === current)) {\n    const cur = meshes.find((m) => m.space === current);\n    if (!cur) {",
       "expectRed": "a command run under that selection refuses with TARGET_NOT_FOUND rather than reaching another space",
       "cell": "a command run under that selection refuses with TARGET_NOT_FOUND rather than reaching another space",
       "afterRestore": "pnpm --filter cotal-ai... build"

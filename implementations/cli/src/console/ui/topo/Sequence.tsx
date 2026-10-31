@@ -1,9 +1,9 @@
-import { useEffect, useRef, useState } from "react";
 import { Box, Text, useInput } from "ink";
 import type { FeedEntry } from "../../mesh.js";
 import { agentColor, fmtTime, STATUS } from "../theme.js";
-import { targetsOf, type TopoGraph } from "./model.js";
+import { nodeLabel, targetsOf, type TopoGraph } from "./model.js";
 import { blankRow, stamp, toSegments, type Cell, type CellStyle } from "./raster.js";
+import { useListCursor } from "../useListCursor.js";
 
 const MIN_LANE_W = 13;
 const FOLD = "__fold__";
@@ -51,23 +51,14 @@ export function Sequence({
     return i * laneW + Math.floor(laneW / 2);
   };
 
-  // Selection follows the tail (like the feed) unless the user moved off it.
-  const [sel, setSel] = useState(0);
-  const prevLen = useRef(0);
-  useEffect(() => {
-    if (entries.length !== prevLen.current) {
-      setSel((s) => (s >= prevLen.current - 1 ? Math.max(0, entries.length - 1) : Math.min(s, entries.length - 1)));
-      prevLen.current = entries.length;
-    }
-  }, [entries.length]);
-  const selClamped = Math.min(sel, Math.max(0, entries.length - 1));
+  const { index: selClamped, up, down, first, last } = useListCursor(entries.length, { followTail: true });
 
   useInput(
     (input, key) => {
-      if (key.upArrow || input === "k") setSel(Math.max(0, selClamped - 1));
-      else if (key.downArrow || input === "j") setSel(Math.min(entries.length - 1, selClamped + 1));
-      else if (input === "g" || key.home) setSel(0);
-      else if (input === "G" || key.end) setSel(Math.max(0, entries.length - 1));
+      if (key.upArrow || input === "k") up();
+      else if (key.downArrow || input === "j") down();
+      else if (input === "g" || key.home) first();
+      else if (input === "G" || key.end) last();
       else if (key.return && entries.length) onOpenMessage(entries[selClamped]);
     },
     { isActive: active },
@@ -80,13 +71,14 @@ export function Sequence({
   const top = Math.max(0, Math.min(selClamped - room + 1, entries.length - room));
   const visible = entries.slice(top, top + room);
 
-  // Header: one cell per lane — status glyph + colored name.
+  // Header: one cell per lane — status glyph + colored label.
   const header = blankRow(laneRegionW);
   for (const n of keptOrdered) {
     const glyph = STATUS[n.status ?? "offline"];
-    const x = centerOf(n.key) - Math.floor(Math.min(laneW - 1, n.name.length + 2) / 2);
+    const label = nodeLabel(n);
+    const x = centerOf(n.key) - Math.floor(Math.min(laneW - 1, label.length + 2) / 2);
     stamp(header, x, glyph.dot, { color: glyph.color });
-    stamp(header, x + 2, trunc(n.name, laneW - 3), { color: agentColor(n.name) });
+    stamp(header, x + 2, trunc(label, laneW - 3), { color: agentColor(n.name) });
   }
   if (folded) stamp(header, centerOf(FOLD) - 1, "…+" + folded, { dim: true });
 

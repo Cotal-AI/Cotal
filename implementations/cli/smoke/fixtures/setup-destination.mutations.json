@@ -13,8 +13,8 @@
     {
       "name": "a script runs with inputs missing",
       "file": "implementations/cli/src/commands/setup.ts",
-      "find": "  if (missing.length > 0) throw usage(",
-      "replace": "  if (missing.length > 99) throw usage(",
+      "find": "  if (missing.length > 0) throw new MissingFlags(",
+      "replace": "  if (missing.length > 99) throw new MissingFlags(",
       "expectRed": "a script missing inputs is USAGE_INVALID, exit 1, naming each missing flag",
       "cell": "a script missing inputs is USAGE_INVALID, exit 1, naming each missing flag",
       "afterRestore": "pnpm --filter cotal-ai... build"
@@ -59,8 +59,8 @@
     {
       "name": "the space name is checked only after a write",
       "file": "implementations/cli/src/commands/setup.ts",
-      "find": "  if (problem) throw usage(problem);\n",
-      "replace": "  if (problem && inputs.space === \"\") throw usage(problem);\n",
+      "find": "  if (problem) throw usage(problem, ",
+      "replace": "  if (problem && inputs.space === \"\") throw usage(problem, ",
       "expectRed": "no refusal wrote anything",
       "cell": "no refusal wrote anything",
       "afterRestore": "pnpm --filter cotal-ai... build"
@@ -140,8 +140,8 @@
     {
       "name": "Cloud can be chosen on a terminal",
       "file": "implementations/cli/src/commands/setup.ts",
-      "find": "{ value: \"cloud\", label: \"Cloud\", hint: \"in development\", disabled: true }",
-      "replace": "{ value: \"cloud\", label: \"Cloud\", hint: \"in development\", disabled: false }",
+      "find": "{ value: \"cloud\", label: \"Cloud\", hint: \"sign in with `cotal login`, then choose Self-hosted\", disabled: true }",
+      "replace": "{ value: \"cloud\", label: \"Cloud\", hint: \"sign in with `cotal login`, then choose Self-hosted\", disabled: false }",
       "expectRed": "Cloud cannot be chosen: moving past Self-hosted comes back to Local",
       "cell": "Cloud cannot be chosen: moving past Self-hosted comes back to Local",
       "afterRestore": "pnpm --filter cotal-ai... build"

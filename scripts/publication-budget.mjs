@@ -16,6 +16,18 @@ export function publicationDeadline(requestedAt, now = Date.now()) {
   return deadline;
 }
 
+// A delayed command may still finish, but its original service deadline never moves.
+// The workflow records this attempt's start once, before checkout or any registry work.
+export function publicationExecutionDeadline(requestedAt, attemptStartedAt, now = Date.now()) {
+  if (attemptStartedAt === undefined) return publicationDeadline(requestedAt, now);
+  const requested = publicationStartedAt(requestedAt, now);
+  const started = publicationStartedAt(attemptStartedAt, now);
+  assert(started >= requested, "publication attempt predates its original request");
+  const deadline = started + PUBLICATION_BUDGET_MS;
+  assert(deadline > now, "publication execution attempt exceeded its ten-minute deadline");
+  return deadline;
+}
+
 export function remainingBudget(deadline, limit = PUBLICATION_BUDGET_MS) {
   assert(Number.isFinite(deadline) && Number.isFinite(limit) && limit > 0, "publication budget is invalid");
   const remaining = Math.min(deadline - Date.now(), limit);
@@ -58,6 +70,6 @@ export async function publicationMap(items, concurrency, run) {
 if (isMainEntry(import.meta.url)) {
   try {
     assert.equal(process.argv[2], "--seconds-left", "usage: publication-budget.mjs --seconds-left");
-    console.log(remainingBudget(publicationDeadline(process.env.RELEASE_REQUESTED_AT)) / 1_000);
+    console.log(remainingBudget(publicationExecutionDeadline(process.env.RELEASE_REQUESTED_AT, process.env.RELEASE_ATTEMPT_STARTED_AT)) / 1_000);
   } catch (error) { console.error(error.message); process.exitCode = 1; }
 }

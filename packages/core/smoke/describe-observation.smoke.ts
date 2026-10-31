@@ -1,4 +1,4 @@
-import assert from "node:assert/strict";
+import nodeAssert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -7,12 +7,15 @@ import { join } from "node:path";
 import { connect, type NatsConnection } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
-import { SMOKE_BROKER_TOKEN, awaitBrokerReady, freePort, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, awaitBrokerReady, countedAssert, emitSentinel, freePort, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import {
   authorizeServeGrant, compileContract, contractDigest, createEndpointStreams, epCallerReplyFilter, epRequestSubject,
   isReachable, mintLifecycleUid, openRecordsBucket, parseDescribeObservation, parseEpSubject, recordSpecKey, RECORD_KINDS,
   serveEndpoint, VOID_SCHEMA, type DescribeRequestContext, type EpCaller, type EndpointReply,
 } from "../src/index.js";
+
+const counted = countedAssert(nodeAssert);
+const assert: typeof nodeAssert = counted.assert;
 
 const space = "describe-observation", endpoint = "org.example.describe", owner = `u_${"a".repeat(26)}`;
 const caller = { owner, actor: "caller", uid: mintLifecycleUid() }, instanceId = mintLifecycleUid();
@@ -92,6 +95,7 @@ try {
   }
   assert.equal(contexts.length, 6);
   console.log("Describe observation: full-envelope fingerprints and immutable real receive context passed on both rails/all routes; no remote policy authority claimed");
+  emitSentinel({ passed: counted.cells(), failed: 0 });
 } finally {
   await serving?.stop(); await nc?.close(); await killAndAwaitExit(broker);
   rmSync(dir, { recursive: true, force: true }); release();

@@ -1,0 +1,2 @@
+# Linux advisory lock identity and zombie checks share one process snapshot.
+smoke:advisory-lock-stat

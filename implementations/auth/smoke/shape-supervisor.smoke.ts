@@ -12,7 +12,8 @@
  *  BLOCKER 1 (fail-closed reader): a renewal-mint failure must down the supervised reader NOW
  *  (connects deny immediately, not at the old credential's eventual expiry), and a disconnect must
  *  leave the reader UNPROVED until the rebind shape proof re-runs — the every-(re)bind gate,
- *  driven here by a real broker bounce.
+ *  driven here by a real broker bounce. A RENEWAL is not a disconnect: the successor is proved on its
+ *  own connection before it serves, so a renewal rebind leaves no window in which a connect is denied.
  *
  * Run: pnpm smoke:shape-supervisor:auth   (needs nats-server on PATH; local-only)
  */
@@ -104,6 +105,21 @@ try {
     throwsSync(() => failReader!.current()));
   await failReader.close();
   failReader = undefined;
+
+  // ---- BLOCKER 1c: a renewal rebind leaves no unbound window ----
+  // Read current() back to back across several replacements, as the callout reads it per connect.
+  reader = await openSupervisedConnectReader({ server: SERVERS, space, dataAccount, log: quiet, probeRenewal: { intervalMs: 400 } });
+  const seen = new Set<unknown>();
+  let reads = 0, refused = 0;
+  for (const end = Date.now() + 3_000; Date.now() < end;) {
+    try { seen.add(reader.current()); } catch { refused++; }
+    reads++;
+    await wait(2);
+  }
+  check("BLOCKER 1c: renewal replaced the reader several times inside the window", seen.size >= 4, { readers: seen.size });
+  check("BLOCKER 1c: current() never refused across those rebinds", refused === 0 && reads > 500, { reads, refused });
+  await reader.close();
+  reader = undefined;
 
   // ---- BLOCKER 1b: disconnect leaves the reader unproved until the rebind shape proof re-runs ----
   reader = await openSupervisedConnectReader({ server: SERVERS, space, dataAccount, log: quiet });

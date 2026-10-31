@@ -1,0 +1,91 @@
+name: CLI startup
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    name: macOS fresh and prepared startup
+    runs-on: macos-15
+    timeout-minutes: 15
+    env:
+      DO_NOT_TRACK: "1"
+      COTAL_TELEMETRY: "off"
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6.0.8
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter "cotal-ai..." build
+      - name: Read macOS process identity through the native binding
+        run: pnpm exec tsx packages/workspace/smoke/darwin-process-native.smoke.ts
+      - name: Start, query, refresh and stop both project routes
+        env:
+          COTAL_STARTUP_RESULTS: ${{ runner.temp }}/cli-startup-result.json
+        run: pnpm exec tsx bin/smoke/startup-native.smoke.ts
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cli-startup-macos
+          path: |
+            ${{ runner.temp }}/cli-startup-result.json
+            ${{ runner.temp }}/cli-startup-result.json.logs
+          if-no-files-found: warn
+
+  windows:
+    name: Windows fresh and prepared startup
+    runs-on: windows-latest
+    timeout-minutes: 20
+    env:
+      DO_NOT_TRACK: "1"
+      COTAL_TELEMETRY: "off"
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6.0.8
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Compile the Windows process binding
+        shell: cmd
+        run: |
+          set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+          if not exist "%VSWHERE%" exit /b 1
+          for /f "usebackq delims=" %%i in (`"%VSWHERE%" -latest -products * -property installationPath`) do set "VS=%%i"
+          if not defined VS exit /b 1
+          call "%VS%\Common7\Tools\VsDevCmd.bat" -no_logo -arch=amd64 -host_arch=amd64
+          if errorlevel 1 exit /b 1
+          node packages/workspace/scripts/build-native.mjs
+          if errorlevel 1 exit /b 1
+      - run: pnpm install --frozen-lockfile
+      - id: build
+        run: pnpm --filter "cotal-ai..." build
+      - name: Start programs inside kill-on-close jobs through the native binding
+        run: pnpm exec tsx packages/workspace/smoke/win32-job-native.smoke.ts
+      - name: Hold a service job in its custodian
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: pnpm exec tsx packages/workspace/smoke/win32-custody.smoke.ts
+      - name: Run the pty runtime inside a service job
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: pnpm exec tsx implementations/manager/smoke/windows-pty-job.smoke.ts
+      - name: Start, query, refresh and stop both project routes
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        env:
+          COTAL_STARTUP_RESULTS: ${{ runner.temp }}/cli-startup-result.json
+        run: pnpm exec tsx bin/smoke/startup-native.smoke.ts
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cli-startup-windows
+          path: |
+            ${{ runner.temp }}/cli-startup-result.json
+            ${{ runner.temp }}/cli-startup-result.json.logs
+          if-no-files-found: warn

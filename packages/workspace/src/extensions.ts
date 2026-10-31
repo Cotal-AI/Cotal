@@ -2,9 +2,10 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, 
 import { randomBytes } from "node:crypto";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { Command, Connector, Extension, ExtensionRef, FlagSpec, OutputMode, Subcommand } from "@cotal-ai/core";
+import type { Command, CommandExample, Connector, Extension, ExtensionRef, FlagSpec, OutputMode, Subcommand } from "@cotal-ai/core";
 import { globalConfigDir } from "@cotal-ai/core";
 import { inspectLock } from "./advisory-lock.js";
+import { globalConfigDirProblem } from "./cotal-config.js";
 import { canonicalLocalProcessPath, localProcessPath, type LocalProcess } from "./local-process.js";
 import type { ServicePreset } from "./service-preset.js";
 import { serviceAdapterDeclaration } from "./service-adapter.js";
@@ -38,7 +39,7 @@ export interface CachedCommand {
   readonly positionals?: string;
   readonly subcommands?: readonly Subcommand[];
   readonly outputs?: readonly OutputMode[];
-  readonly examples?: readonly string[];
+  readonly examples?: readonly CommandExample[];
   /** The bare command opts out of connector seeding before materialization. */
   readonly reads?: true;
 }
@@ -53,6 +54,9 @@ export interface ProvidedRef extends ExtensionRef {
 export interface CachedConnector {
   readonly name: string;
   readonly requires: readonly string[];
+  /** Whether the connector publishes the AG-UI event plane. Cached explicitly so a manager can
+   *  report the fact before importing the connector. Never inferred true from its name. */
+  readonly eventPlane: boolean;
   /** The connector's declared setup provider, `null` when it declares none. Absent only in a
    *  manifest written before this was cached. */
   readonly setup?: ExtensionRef | null;
@@ -110,8 +114,10 @@ export function extensionMutationLockState(): ExtensionMutationLockState {
   return found.state === "active" ? { state: "active", owner: found.owner.pid } : { state: found.state };
 }
 
-/** Load the manifest. Missing file → no extensions. A CORRUPT or unreachable file is a loud error
- *  (never treat installed extensions as absent — commands would silently vanish from help). */
+/** Load the manifest. Missing file → no extensions, and so is a config folder that is a file, which
+ *  can hold none (every command that would use that folder is refused, naming it). A CORRUPT or
+ *  unreachable file is a loud error (never treat installed extensions as absent — commands would
+ *  silently vanish from help). */
 export function loadExtensionsManifest(): ExtensionsManifest {
   const p = extensionsManifestPath();
   let parsed: unknown;
@@ -119,6 +125,7 @@ export function loadExtensionsManifest(): ExtensionsManifest {
     parsed = JSON.parse(readFileSync(p, "utf8"));
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === "ENOENT") return { extensions: [] };
+    if ((e as NodeJS.ErrnoException).code === "ENOTDIR" && globalConfigDirProblem()) return { extensions: [] };
     throw new Error(`corrupt extensions manifest ${p}: ${(e as Error).message} - fix or delete it, then \`cotal ext add\` again`);
   }
   const m = parsed as ExtensionsManifest;
@@ -130,7 +137,7 @@ export function loadExtensionsManifest(): ExtensionsManifest {
  *  truncate the live manifest into corrupt JSON that would then vanish every installed extension. */
 export function saveExtensionsManifest(m: ExtensionsManifest): void {
   const dir = extensionsDir();
-  mkdirSync(dir, { recursive: true });
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
   const path = extensionsManifestPath();
   const tmp = join(dir, `.${basename(path)}.${randomBytes(6).toString("hex")}.tmp`);
   writeFileSync(tmp, `${JSON.stringify(m, null, 2)}\n`, { flag: "wx" });
@@ -170,16 +177,20 @@ export function cacheConnector(connector: Connector): CachedConnector {
   return {
     name: connector.name,
     requires: [...(connector.requires ?? [])],
+    eventPlane: connector.eventChannel !== undefined,
     setup: connector.setup ? { kind: connector.setup.kind, name: connector.setup.name } : null,
   };
 }
 
 /** True when an entry's connector metadata predates what `cacheConnector` records now: an advertised
- *  connector with no cached entry, or one cached before setup providers were. Never throws. */
+ *  connector with no cached entry, or one cached before setup providers or event-plane facts were.
+ *  Never throws. */
 export function connectorMetadataStale(ext: InstalledExtension): boolean {
-  return extensionProvides(ext).some((ref) =>
-    ref.kind === "connector" && ext.connectors?.find((connector) => connector.name === ref.name)?.setup === undefined,
-  );
+  return extensionProvides(ext).some((ref) => {
+    if (ref.kind !== "connector") return false;
+    const connector = ext.connectors?.find((candidate) => candidate.name === ref.name);
+    return connector?.setup === undefined || connector.eventPlane === undefined;
+  });
 }
 
 /** Connector boot metadata from one installed package. An older manifest that advertised a
@@ -192,6 +203,9 @@ export function extensionConnectors(ext: InstalledExtension): readonly CachedCon
   for (const ref of advertised)
     if (!ext.connectors.some((connector) => connector.name === ref.name))
       throw new Error(`installed extension ${ext.pkg}@${ext.version} advertises connector ${ref.name} without cached requirements - re-run \`cotal ext add ${ext.pkg}\``);
+  for (const connector of ext.connectors)
+    if (typeof connector.eventPlane !== "boolean")
+      throw new Error(`installed extension ${ext.pkg}@${ext.version} connector ${connector.name} has no cached event-plane fact - re-run \`cotal ext add ${ext.pkg}\``);
   return ext.connectors;
 }
 

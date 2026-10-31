@@ -1,7 +1,9 @@
 import { Bucket, KvWatchInclude } from "@nats-io/kv/internal";
 import type { KV, KvEntry, KvWatchEntry } from "@nats-io/kv";
 import { JetStreamApiError, type ConsumerAPI, type ConsumerInfo, type MsgRequest, type NextMsgRequest } from "@nats-io/jetstream";
+import type { NatsConnection } from "@nats-io/nats-core";
 import { isPublishPermissionDenied } from "./endpoint.js";
+import { openPublishDenialWatch } from "./endpoint-publish-denial.js";
 import { isConsumerNotFound } from "./jetstream-missing.js";
 
 /**
@@ -119,6 +121,8 @@ export interface LiveKvEntriesOptions {
  *
  * Throws {@link IncompleteKvScan} if the pass is cut short. Returns `[]` for a bucket that is
  * genuinely empty (proven at bind time, not inferred from silence).
+ * The temporary ordered consumer keeps its state in native memory storage. This changes neither
+ * the backing bucket's persistence nor the fresh-read and completeness checks.
  */
 export async function liveKvEntries(
   kv: KV,
@@ -157,6 +161,9 @@ export async function liveKvEntries(
     );
   const bucket: Bucket = kv;
   const cc = bucket._buildCC(filter ?? ">", KvWatchInclude.AllHistory, { headers_only: false });
+  // Only this temporary scan's cursor is volatile. The backing KV records keep their storage;
+  // an interrupted pass still has to prove completeness or throw before returning any result.
+  cc.mem_storage = true;
   const oc = await bucket.js.consumers.getPushConsumer(bucket.stream, cc);
   // nats.js rebuilds the consumer after a stall or a sequence gap as `<prefix>_<serial + 1>` and sends
   // that create without awaiting it, so a delete the broker answers first lets the consumer land after
@@ -339,36 +346,74 @@ export async function walkKvLatest(kv: KV, filter: string): Promise<KvEntry[]> {
   return [...latest.values()];
 }
 
+/** Messages per batched Direct Get page in {@link lastKvEntries}. */
+const DIRECT_BATCH = 1024;
+
 /**
  * The last entry of every key in `kv`, DEL and PURGE markers included, read WITHOUT a consumer.
  *
- * One batched Direct Get (`multi_last` over the whole bucket) answers in a single round trip however
- * many keys there are. It exists for short-lived readers that must leave nothing on the broker when
- * they exit: a watch's or a scan's consumer outlives its reader by the five-minute inactive threshold
- * nats.js gives it whenever the reader's profile holds no CONSUMER.DELETE (#691), and one per process
- * piles up until the broker refuses new consumers on the bucket (#4091).
+ * Batched Direct Gets walk the bucket's subjects in sequence order (`next_by_subj` over the whole
+ * bucket), {@link DIRECT_BATCH} messages a request, so a bucket of K keys costs ceil(K / 1024) round
+ * trips and K messages. It exists for readers that must leave nothing on the broker: a watch's or a
+ * scan's consumer outlives its reader by the five-minute inactive threshold nats.js gives it whenever
+ * the reader's profile holds no CONSUMER.DELETE (#691), and one per read piles up until the broker
+ * refuses new consumers on the bucket (#4091). `multi_last` would answer in one request but refuses a
+ * bucket of more than 1024 keys ("too many results", measured on nats-server 2.15.1).
  *
- * The broker answers at most 1024 keys and refuses a larger bucket with "too many results" rather
- * than truncating, so the error reaches the caller. Each delivered message reports how many are still
- * behind it, so a batch that stops early (its request timed out after a dropped link) throws
- * {@link IncompleteKvScan} instead of returning a short list.
+ * A key rewritten during the walk only moves to a higher sequence, so the walk still reaches it, and
+ * the greatest revision per key wins, as in {@link walkKvLatest}. Each message reports how many are
+ * still behind it; the walk ends at 0 or when the broker has nothing at or after the cursor, and a
+ * page that ends with neither throws {@link IncompleteKvScan} instead of returning a short list.
+ *
+ * A credential that may not publish the Direct Get request fails with the broker's
+ * `PermissionViolationError` as soon as the broker reports it.
  */
 export async function lastKvEntries(kv: KV): Promise<KvEntry[]> {
   if (!(kv instanceof Bucket))
     throw new Error(`lastKvEntries needs the @nats-io/kv Bucket implementation to address its backing stream (got ${kv?.constructor?.name ?? typeof kv})`);
   const bucket: Bucket = kv;
-  // Not gated on `bucket.direct`: `kvm.open` binds without reading the stream, so that flag holds the
-  // caller's open options, not the stream's `allow_direct`. A stream without it has no Direct Get
-  // responder and the request fails.
-  const iter = await bucket.jsm.direct.getLastMessagesFor(bucket.stream, { multi_last: [`${bucket.prefix}.>`] });
-  const out: KvEntry[] = [];
-  let pending = 0;
-  for await (const sm of iter) {
-    out.push(bucket.smToEntry(sm));
-    pending = sm.pending;
+  // The batch publishes its request and waits on its own inbox, and the client ties a publish
+  // violation only to a request it sent itself, so a denied read would wait out the inbox's
+  // five-second timeout and report "timeout". The broker's violation for this subject ends it instead.
+  const nc = (bucket.jsm as Partial<{ getConnection(): NatsConnection }>).getConnection?.();
+  if (nc === undefined)
+    throw new Error("lastKvEntries needs the bucket's JetStream manager to expose its connection, to tell a denied Direct Get from a slow one");
+  const watch = openPublishDenialWatch(nc, `${bucket.jsm.getOptions().apiPrefix || "$JS.API"}.DIRECT.GET.${bucket.stream}`, (err) => err, "Direct Get");
+  let page: { stop(err?: Error): void } | undefined;
+  try {
+    const read = (async () => {
+      const latest = new Map<string, KvEntry>();
+      for (let seq = 1; ;) {
+        let last = 0, pending = -1;
+        try {
+          // Not gated on `bucket.direct`: `kvm.open` binds without reading the stream, so that flag holds
+          // the caller's open options, not the stream's `allow_direct`. A stream without it has no Direct
+          // Get responder and the request fails.
+          const iter = await bucket.jsm.direct.getBatch(bucket.stream, { seq, batch: DIRECT_BATCH, next_by_subj: `${bucket.prefix}.>` });
+          page = iter;
+          for await (const sm of iter) {
+            const e = bucket.smToEntry(sm);
+            const prior = latest.get(e.key);
+            if (prior === undefined || e.revision >= prior.revision) latest.set(e.key, e);
+            last = sm.seq;
+            pending = sm.pending;
+          }
+        } catch (e) {
+          // 404 is the stream saying nothing at or after `seq` matches: an empty bucket, or the end.
+          if (last === 0 && (e as { code?: unknown })?.code === 404) break;
+          throw e;
+        }
+        if (pending === 0) break;
+        if (last === 0) throw new IncompleteKvScan(bucket.bucket, latest.size, latest.size + Math.max(pending, 1));
+        seq = last + 1;
+      }
+      return [...latest.values()];
+    })();
+    read.catch(() => { /* the race reports this read's failure; after a denial, its stopped iterator is not a second one */ });
+    return await Promise.race([read, watch.denied.catch((err: Error) => { page?.stop(err); throw err; })]);
+  } finally {
+    watch.release();
   }
-  if (pending !== 0) throw new IncompleteKvScan(bucket.bucket, out.length, out.length + pending);
-  return out;
 }
 
 /** {@link liveKvEntries}, decoded. `decode` returning `undefined` drops the entry — for callers that

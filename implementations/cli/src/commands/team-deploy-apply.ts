@@ -8,8 +8,10 @@ import { verifyOriginalIncarnations } from "../lib/team-retained.js";
 import { hashManifestSource, listLedgerFiles } from "../lib/manifest/ledger.js";
 import { loadManifest } from "../lib/manifest/index.js";
 import { additiveChannelAttemptSettled, listAdditiveTeamAttempts, retainedAdditiveTeamAttempts, writeAdditiveChannelReceipt, writeAdditiveChannelStep, writeAdditiveTeamAttempt, type AdditiveChannelReceipt, type AdditiveTeamAttempt } from "../lib/team-additive-attempt.js";
-import { readOwnedChannelRevisions } from "../lib/team-deploy-inspection.js";
+import { cardsWithoutLiveDelivery, LIVE_DELIVERY_REMEDY, readOwnedChannelRevisions } from "../lib/team-deploy-inspection.js";
 import { openAdditiveChannelWriter } from "../lib/team-additive-native.js";
+import { shellWord } from "../lib/endpoint-errors.js";
+import { retainedRemovalRemedy } from "../lib/team-text.js";
 import { cotalRoot } from "../lib/paths.js";
 import { freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries } from "../lib/team-fresh.js";
 import type { TeamValues } from "./team.js";
@@ -41,8 +43,9 @@ export async function applyChannelOnlyTeam(file: string, values: TeamValues): Pr
     throw new CommandFailure("refused", "CONFLICT", "the manifest authentication mode differs from this registered mesh; no identity mode was substituted", { target: { root, space, recordedMode: registered.mode, requestedMode } });
   if (registered.mode === "open" && manifest.channels.some((channel) => channel.deliveryClass === "durable"))
     throw new CommandFailure("refused", "UNSUPPORTED", "an open mesh has no durable delivery daemon; no durable channel card was created", { target: { root, space } });
-  if (manifest.channels.some((channel) => channel.deliveryClass !== "live"))
-    throw new CommandFailure("refused", "UNSUPPORTED", "channel-only additive apply currently needs explicit live delivery on every card; inherited or durable delivery needs a verified daemon before creation", { target: { root, space } });
+  const notLive = cardsWithoutLiveDelivery(manifest.channels);
+  if (notLive)
+    throw new CommandFailure("refused", "UNSUPPORTED", `channel-only additive apply creates a card only with explicit live delivery, and ${notLive.cards} ${notLive.verb} not set deliveryClass: live; inherited or durable delivery needs a verified daemon first, so nothing was created`, { target: { root, space, cards: notLive.names }, remedy: LIVE_DELIVERY_REMEDY });
   try { for (const channel of manifest.channels) validateChannelConfig(cardOf(channel)); }
   catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "a declared channel card exceeds native policy or text limits; no intent or channel was written", { target: { root, space } }); }
   let source: string;
@@ -73,7 +76,7 @@ export async function applyChannelOnlyTeam(file: string, values: TeamValues): Pr
     const prior = listAdditiveTeamAttempts(root);
     const returnedIds = new Set(prior.returned.map((row) => row.deploymentId)), retained = retainedAdditiveTeamAttempts(prior);
     if (prior.refused.length || retained.some((row) => !returnedIds.has(row.deploymentId)))
-      throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "an additive attempt is unreadable or unsettled; no uncertain operation was retried", { target: { root, space, deploymentIds: prior.valid.map((row) => row.deploymentId), unreadable: prior.refused.map(({ path }) => path) } });
+      throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "an additive attempt is unreadable or unsettled; no uncertain operation was retried", { target: { root, space, deploymentIds: prior.valid.map((row) => row.deploymentId), unreadable: prior.refused.map(({ path }) => path) }, remedy: retainedRemovalRemedy(retained.filter((row) => !returnedIds.has(row.deploymentId)).map((row) => row.deploymentId), prior.refused.map(({ path }) => path), `cotal team deploy ${shellWord(file)}`) });
     const matching = retained.filter((row) => row.space === space && row.manifestHash === manifestHash);
     if (matching.length > 1) throw new CommandFailure("refused", "TARGET_AMBIGUOUS", "several retained deployments name this manifest; no ownership was selected", { target: { root, space, deploymentIds: matching.map((row) => row.deploymentId) } });
     const previous = matching[0];
@@ -94,7 +97,7 @@ export async function applyChannelOnlyTeam(file: string, values: TeamValues): Pr
       catch (error) {
         const cause = (error as { code?: unknown }).code;
         const code = cause === "signed-out" ? "AUTH_REQUIRED" : cause === "refused" ? "PERMISSION_DENIED" : "DEPENDENCY_UNAVAILABLE";
-        throw new CommandFailure("refused", code, "the user-auth deployer view was not issued; no identity or broader credential was substituted", { target: { root, space }, remedy: code === "AUTH_REQUIRED" ? "sign in with cotal login, then inspect the selected space" : "inspect the caller's team deploy grant on this exact space" });
+        throw new CommandFailure("refused", code, "the user-auth deployer view was not issued; no identity or broader credential was substituted", { target: { root, space }, remedy: code === "AUTH_REQUIRED" ? "sign in with `cotal login`, then inspect the selected space" : "inspect the caller's team deploy grant on this exact space" });
       }
     }
     if (userRead && (!conn.epCaller || userRead.owner !== conn.epCaller.owner || userRead.actor !== conn.epCaller.actor))

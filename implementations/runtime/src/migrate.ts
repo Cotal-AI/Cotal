@@ -505,7 +505,7 @@ function classify(
         };
       return reject(
         "L5004",
-        `the edit would discard a decision${raw.by !== undefined ? ` ${raw.by} actually made` : " a person actually made"}; pass --discard-approvals if that is intended`,
+        `the edit would discard a decision${raw.by !== undefined ? ` ${raw.by} actually made` : " a person actually made"}; keep the checkpoint in the edited program, or discard the decision in a migration commit under the --discard-approvals override`,
       );
     }
 

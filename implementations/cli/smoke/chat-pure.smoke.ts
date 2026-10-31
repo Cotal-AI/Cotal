@@ -9,24 +9,29 @@
  *     leave/discard/quit, disconnect and ended handling, publish results, slash parsing, escaping;
  *   - replies and shared names (view.ts, picker.ts): the reply recipient, `/reply`, and the principal
  *     shown beside a display name another principal carries;
+ *   - the `/who` roster line (controller.ts) and the picker detail (picker.ts) for a working peer;
  *   - resolveDmTarget (native-session.ts) over plain roster data and a real ParticipantEngine, with
  *     senders heard on a DM and on a channel;
  *   - grantRefusal (native-session.ts): the pre-effect refusal for a channel outside the grant;
- *   - transcript times, shown in local time as `history` shows them.
+ *   - transcript times, shown in local time as `history` shows them;
+ *   - the inbox bound (engine.ts MAX_BUFFER): a replay past it keeps the newest, and docs/cli.mdx
+ *     states the same number.
  * It constructs plain data values (SessionIdentity, SessionMessage, PublishResult, CloseReport,
  * Presence) and NEVER an AdmittedChatSession: no fake session, no factory, no authority claim.
  * runStdio (EPIPE, backpressure), StdioParticipant and the controller's publish routing need an
  * admitted session and are deliberately NOT covered here. Nothing here proves admission,
  * confinement, delivery or any native behavior.
  */
+import { readFileSync } from "node:fs";
 import { LineFramer } from "../src/chat/stdio-io.js";
 import { MAX_REQUEST_ID, MAX_REQUEST_LINE, MAX_MESSAGE_ID, INVOKE_DEFAULT_TIMEOUT_MS, INVOKE_MAX_TIMEOUT_MS, messageRecord, parseRequestLine, serializeRecord } from "../src/chat/stdio.js";
 import {
   MAX_DRAFT, MAX_TRANSCRIPT, addNotice, applyEvent, applyKey, applyPublishResult, closeSummary, composerRows, headerRows,
-  initialState, parseSlash, replyTo, replyToLatest, transcriptRows, type ChatState,
+  initialState, parseSlash, replyTo, replyToLatest, runsOffline, transcriptRows, type ChatState,
 } from "../src/chat/view.js";
-import { listChoices } from "../src/chat/picker.js";
-import { ParticipantEngine } from "../src/chat/engine.js";
+import { listChoices, parseRecipient } from "../src/chat/picker.js";
+import { rosterLines, runSlash } from "../src/chat/controller.js";
+import { MAX_BUFFER, ParticipantEngine } from "../src/chat/engine.js";
 import { grantRefusal, resolveDmTarget } from "../src/chat/native-session.js";
 import type { Presence } from "@cotal-ai/core";
 import type { CloseReport, RosterView, SessionIdentity, SessionMessage } from "../src/chat/session.js";
@@ -121,7 +126,17 @@ check("...and Object.prototype is untouched", ({} as Record<string, unknown>).po
 check("a \"constructor\" key → refused", refused(req({ type: "roster", constructor: 1 }), "r1", /constructor/));
 check("a missing required field → refused", refused(req({ type: "send", text: "hi" }), "r1", /requires the field "channel"/));
 check("send.text must be a string", refused(req({ type: "send", text: 5, channel: "general" }), "r1"));
+check("an empty or blank message body is refused with the sentence cotal send gives, for send, dm and anycast",
+  ["", "  \n"].every((text) => refused(req({ type: "send", text, channel: "general" }), "r1", /^the message is empty$/)
+    && refused(req({ type: "dm", to: "bob", text }), "r1", /^the message is empty$/)
+    && refused(req({ type: "anycast", role: "reviewer", text }), "r1", /^the message is empty$/)));
+check("a body with text around spaces is kept as sent", (() => { const p = parseRequestLine(req({ type: "send", text: " hi ", channel: "general" })); return p.ok && p.request.type === "send" && p.request.text === " hi "; })());
 check("a wildcard channel is refused", refused(req({ type: "join", channel: "team.*" }), "r1") && refused(req({ type: "join", channel: "team.>" }), "r1"));
+check("a channel holding * or > gets the sentence cotal send -c gives, never a list naming '*' and '>' as allowed",
+  ["gen*", "team.*", "team.>"].every((channel) => refused(req({ type: "send", text: "x", channel }), "r1", /^name one concrete channel, without wildcards$/)));
+check("a channel outside the grammar gets the rule it breaks, naming the segment",
+  refused(req({ type: "join", channel: "gen eral" }), "r1", /^invalid channel "gen eral": segment "gen eral" must be a NATS-safe token/));
+check("a channel that is not a string says so, naming the field", refused(req({ type: "channelInfo", channel: 5 }), "r1", /^channelInfo\.channel must be a string$/));
 check("mentions must be an array of non-empty strings", refused(req({ type: "send", text: "x", channel: "general", mentions: [""] }), "r1") && refused(req({ type: "send", text: "x", channel: "general", mentions: "bob" }), "r1"));
 check("dm.replyTo longer than MAX_MESSAGE_ID → refused", refused(req({ type: "dm", to: "bob", text: "x", replyTo: "m".repeat(MAX_MESSAGE_ID + 1) }), "r1"));
 check("dm.to empty → refused", refused(req({ type: "dm", to: "", text: "x" }), "r1"));
@@ -271,7 +286,21 @@ check("/history 0, 1001, 2.5 and abc are refused", ["/history 0", "/history 1001
 check("/inbox --peek peeks; /inbox x is refused", (sl("/inbox --peek") as { command: { peek: boolean } }).command.peek === true && !sl("/inbox x").ok);
 check("/who takes no arguments", !sl("/who x").ok);
 check("/join needs exactly one channel", !sl("/join").ok && !sl("/join a b").ok && sl("/join a").ok);
+{
+  // The view prints a channel as #name, so a channel slash command reads it with or without the #.
+  const channelOf = (l: string) => (sl(l) as { command?: { channel?: string } }).command?.channel;
+  check("a channel slash command strips one leading #", ["/join #bad", "/leave #bad", "/info #bad", "/quiet #bad", "/mute #bad", "/normal #bad"].every((l) => channelOf(l) === "bad"));
+  check("a bare # names no channel", !sl("/join #").ok && !sl("/quiet #").ok);
+}
 check("/status keeps a multi-word activity", (sl("/status working on it") as { command: { activity?: string } }).command.activity === "on it");
+check("/help is a command, takes no arguments and runs while disconnected",
+  (sl("/help") as { command: { name: string } }).command?.name === "help" && !sl("/help x").ok && runsOffline({ name: "help" }));
+{
+  // /help talks to no one, so a session that answers nothing is enough.
+  const { state: helped } = await runSlash({} as never, s0(), { name: "help" });
+  const shown = transcriptRows(helped, 1000).map((r) => r.text).join("\n");
+  check("/help lists every slash command with its arguments", ["/who", "/history [n]", "/leave <channel>", "/help", "/quit"].every((c) => shown.includes(c)), shown);
+}
 {
   const r = sl("/bogus\u001b[2J");
   check("an unknown command is refused with its name escaped", !r.ok && (r as { error: string }).error.includes("\\u001b") && !(r as { error: string }).error.includes("\u001b"));
@@ -356,6 +385,22 @@ const task = msg({ id: "t1", kind: "anycast", service: "reviewer", from: { id: "
   check("without such a sender the picker shows the name alone", listChoices(undefined, roster, identity.principal).some((c) => c.label === "DM alice"));
 }
 {
+  const typed = (text: string) => { const parsed = parseRecipient(text); return parsed.ok ? undefined : parsed.error; };
+  check("a typed channel holding * or > gets the sentence cotal send -c gives",
+    ["#gen*", "#team.*", "#team.>"].every((text) => typed(text) === "name one concrete channel, without wildcards"));
+  check("a typed channel outside the grammar gets the rule it breaks, naming the segment",
+    typed("#gen eral")?.startsWith('invalid channel "gen eral": segment "gen eral" must be a NATS-safe token') === true, typed("#gen eral"));
+  const general = parseRecipient("#general");
+  check("a typed concrete channel is chosen", general.ok && general.recipient.kind === "channel" && general.recipient.channel === "general", general);
+}
+{
+  const working: RosterView = { view: "current", rows: [{ id: "o.carol", name: "carol", kind: "agent", status: "working", activity: "building" }] };
+  const choice = listChoices(undefined, working, identity.principal).find((c) => c.label === "DM carol");
+  check("the picker names a working peer's progress as unknown", choice?.detail === "agent · working · progress unknown", choice);
+  const who = rosterLines(s0())(working);
+  check("/who names a working peer's progress as unknown", who.length === 1 && who[0] === "carol · agent · working · progress unknown · building", who);
+}
+{
   const roster = [presence("u_c.alice", "alice"), presence("o.bob", "bob")];
   const engine = heard(["u_a.alice", "alice"]);
   const both = resolveDmTarget("alice", roster, "current", engine, identity.principal);
@@ -384,6 +429,20 @@ const task = msg({ id: "t1", kind: "anycast", service: "reviewer", from: { id: "
   check("an exact target that is this session refuses as usage", "outcome" in self && self.code === "USAGE_INVALID", self);
   const unknown = resolveDmTarget("zed", roster, "stale", engine, identity.principal);
   check("an unknown name on a stale roster is unavailable, never absent", "outcome" in unknown && unknown.code === "TARGET_UNAVAILABLE", unknown);
+  // Two one-shot sends under one name used to be told to use the full principal, which no one reads.
+  const gone = heard(["o.send1", "dev@host"], ["o.send2", "dev@host"]);
+  const exited = resolveDmTarget("dev@host", roster, "current", gone, identity.principal);
+  check("a name only absent senders carry refuses, saying they are no longer present and how to answer one message",
+    "outcome" in exited && exited.code === "TARGET_AMBIGUOUS" && exited.message.includes("names 2 senders that are no longer present (o.send1, o.send2)")
+      && exited.message.includes("answer one message with /reply, or over --stdio with to set to its from.id and replyTo to its id"), exited);
+  const unsure = resolveDmTarget("dev@host", roster, "stale", gone, identity.principal);
+  check("on a roster that is not current, absent senders are not called gone", "outcome" in unsure && unsure.code === "TARGET_AMBIGUOUS" && !unsure.message.includes("no longer present"), unsure);
+  // A DM to the session's own name used to say no peer has it.
+  const ownName = resolveDmTarget("Dana", roster, "current", engine, identity.principal, "dana");
+  check("a name only this session carries refuses as usage, saying it is the session's own name",
+    "outcome" in ownName && ownName.code === "USAGE_INVALID" && ownName.message === `"Dana" is this session's own name; a direct message needs another participant`, ownName);
+  const sharedOwn = resolveDmTarget("bob", roster, "current", engine, identity.principal, "bob");
+  check("a name this session shares with a present peer still resolves to that peer", !("outcome" in sharedOwn) && sharedOwn.id === "o.bob", sharedOwn);
 }
 /** An engine that received one message on #review from each sender. A channel's subject names its
  *  sender as a DM's does, so each is a heard sender. */
@@ -413,17 +472,18 @@ const heardOnChannel = (...senders: readonly (readonly [string, string])[]): Par
 // ---- 8. a channel outside the grant --------------------------------------------------------------
 console.log("8. a channel outside the session's grant refuses before any effect");
 {
-  const none = grantRefusal([], "review", "post");
+  const reopen = (channel: string) => `cotal chat ${channel} --stdio --space a2`;
+  const none = grantRefusal([], "review", "post", reopen);
   check("a session opened on no channel refuses a post as a permission denial",
     none?.outcome === "refused" && none.code === "PERMISSION_DENIED", none);
-  check("...says so and names the command that opens a session on the channel",
-    /opened on no channel/.test(none?.message ?? "") && (none?.message ?? "").includes("cotal chat review"), none);
-  const read = grantRefusal(["general"], "other", "read");
+  check("...says so and names the command that opens a session on the channel with this session's flags",
+    /opened on no channel/.test(none?.message ?? "") && (none?.message ?? "").includes("Leave and run `cotal chat review --stdio --space a2` to open"), none);
+  const read = grantRefusal(["general"], "other", "read", reopen);
   check("a channel outside a read grant refuses as a permission denial", read?.code === "PERMISSION_DENIED" && read.message === "#other is outside this session's read grant", read);
   check("no refusal shows a broker subject or calls the session an agent",
     [none, read].every((r) => !/cotal\.|subject|agent/i.test(r?.message ?? "")), [none, read]);
   check("a granted channel, a matching wildcard and an open grant pass",
-    grantRefusal(["general"], "general", "post") === undefined && grantRefusal(["team.>"], "team.a", "read") === undefined && grantRefusal([">"], "review", "post") === undefined);
+    grantRefusal(["general"], "general", "post", reopen) === undefined && grantRefusal(["team.>"], "team.a", "read", reopen) === undefined && grantRefusal([">"], "review", "post", reopen) === undefined);
 }
 
 // ---- 9. times -------------------------------------------------------------------------------------
@@ -441,6 +501,20 @@ console.log("9. transcript times are local, as history shows them");
     if (saved === undefined) delete process.env.TZ;
     else process.env.TZ = saved;
   }
+}
+
+console.log("10. a session's inbox keeps the newest MAX_BUFFER replayed channel messages, as the docs say");
+{
+  const engine = new ParticipantEngine(identity.principal);
+  for (let i = 1; i <= MAX_BUFFER + 100; i++)
+    engine.accept({ id: `r${i}`, ts: i, space: "selected-space", from: { id: "u_a.alice", name: "alice" }, channel: "general", parts: [{ kind: "text", text: `msg-${i}` }] },
+      { ack() {}, nak() {}, durable: false }, { historical: true, kind: "channel" }, false);
+  const held = engine.inbox();
+  check(`a replay of ${MAX_BUFFER + 100} channel messages leaves the newest ${MAX_BUFFER} in the inbox, the oldest dropped`,
+    held.length === MAX_BUFFER && held[0]?.text === "msg-101" && held.at(-1)?.text === `msg-${MAX_BUFFER + 100}`, { held: held.length, first: held[0]?.text, last: held.at(-1)?.text });
+  const doc = readFileSync(new URL("../../../docs/cli.mdx", import.meta.url), "utf8").replace(/\s+/g, " ");
+  check(`docs/cli.mdx states the inbox bound as MAX_BUFFER (${MAX_BUFFER})`,
+    doc.includes(`The inbox keeps at most ${MAX_BUFFER} unread messages, so a channel that holds more replays only its newest ${MAX_BUFFER}`));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

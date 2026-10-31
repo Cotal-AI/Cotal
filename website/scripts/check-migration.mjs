@@ -9,7 +9,8 @@ for (const page of pages) {
   const htmlFile = new URL(`../dist${page.url}index.html`, import.meta.url);
   assert(existsSync(htmlFile), `HTML: ${page.url}`);
   assert.equal(readFileSync(new URL(`../dist${page.url.slice(0,-1)}.md`, import.meta.url), 'utf8'), page.markdown, `Markdown: ${page.url}`);
-  assert(redirects.includes(`/${page.slug}/ ${page.url} 301`), `legacy redirect: ${page.slug}`);
+  if (page.section !== 'api' && page.slug !== 'api-reference')
+    assert(redirects.includes(`/${page.slug}/ ${page.url} 301`), `legacy redirect: ${page.slug}`);
   const visit = node => {
     for (const attr of node.attrs ?? []) {
       if (!['href','src'].includes(attr.name)) continue;

@@ -62,6 +62,13 @@ needs for the residual case in 3.3, and everything in section 4. The harness sto
 in Open points) remain an operator input by decision rather than by omission: this repository does
 not know where a harness keeps its transcript, and `--session-store` is where the operator says so.
 
+One connector fact in section 5.3 has changed. Since 0.59.0 (`569cb6f3a`) the jcode connector
+declares `supportsResume`: `spawn --resume` forks the named session from the operator's Jcode home
+into the seat's private home (`extensions/connector-jcode/src/session-fork.ts`). It still refuses
+`continueSession`. `sessionContinuityClass` therefore gives `fork` for a jcode seat, not
+`drain-only`. Of the three harnesses open point 6 names, pi is `exact` and Claude Code and jcode are
+`fork`. Open points 2 and 3 describe the tree before the generation and recency gate above landed.
+
 Two shipped pieces are narrower than the sections they implement, and the difference matters:
 
 - **The writer generation fences one workspace root, not one seat across hosts.** 3.2 describes a

@@ -48,6 +48,7 @@ OpenCode needs no install and auto-wires when spawned. The full tool surface is
 
 ## When done
 
-Tell the user what is running and how to watch it: `cotal console` in a terminal, or
-`cotal web` for the browser dashboard. For any follow-up task, route through
+Tell the user what is running and how to watch it: `npx cotal-ai console` in a terminal.
+The browser dashboard needs a separate service definition and protected credential;
+follow <https://docs.cotal.ai/watch-a-mesh.md> if requested. For follow-up tasks, use
 <https://docs.cotal.ai/llms.txt>.

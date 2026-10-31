@@ -21,8 +21,8 @@
     {
       "name": "native history drops the authenticated lifecycle coordinate",
       "file": "implementations/cli/src/commands/history.ts",
-      "find": "    ...(conn.mode === \"user\" ? { lifecycleUid: conn.epCaller?.uid } : {}),\n",
-      "replace": "",
+      "find": "    ...(conn.mode === \"user\" ? { lifecycleUid: conn.epCaller?.uid } : reader?.lifecycleUid ? { lifecycleUid: reader.lifecycleUid } : {}),\n",
+      "replace": "    ...(conn.mode === \"user\" ? {} : reader?.lifecycleUid ? { lifecycleUid: reader.lifecycleUid } : {}),\n",
       "expectRed": "native user-auth history reads the sent channel message with no stream sequence",
       "cell": "native user-auth history reads the sent channel message with no stream sequence",
       "afterRestore": "pnpm --filter cotal-ai... build"

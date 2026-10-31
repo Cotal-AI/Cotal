@@ -5,8 +5,6 @@ kind: Reference
 audience: integrators
 ---
 
-Service authority combines exported contracts with host-only prerequisites. Public native service registration and a complete service lifecycle are not implemented.
-
 ## Account connection census [#account-connection-census]
 
 `mintAccountCensusCreds` creates a host-only SYS user with at most five minutes of authority.
@@ -22,45 +20,35 @@ registration or terminal retirement.
 
 ## Service authority contracts [#service-authority-contracts]
 
-### Client transport
-
 `@cotal-ai/core` exports closed service-authority request, proof and result types and their
 runtime parsers. The parsers bind a result to the submitted request and registration witness.
 `AuthProvider.serviceEndpointAuthority` is an optional provider hook for this protocol. A provider
 without the hook must refuse service setup. The user-auth provider implements the HTTP client,
 including `serviceEndpointInfo` for the DATA-account binding. It uses the pinned exchange origin,
 refuses redirects and does not retry an unknown mutation outcome. Server-side HTTP failures
-remain unconfirmed even when their bodies resemble a protocol denial.
-
-A registered snapshot must name the submitted closure set. Inline artifacts include each closure
-manifest and its documents within the envelope byte limit. Native per-closure walk limits still
-apply. The client transmits no local host capability and reads no callout signing material.
-Local setup requires the client sentinel projection written by `prepareServer`. A missing
-projection refuses instead of reading server secrets.
+remain unconfirmed even when their bodies resemble a protocol denial. A registered snapshot must
+name the submitted closure set. Inline artifacts include each closure manifest as well as its
+documents, within the envelope byte limit; native per-closure walk limits still apply. The client does not transmit
+the local host capability or read callout signing material. Local setup needs the client sentinel
+projection written by `prepareServer`; a missing projection refuses rather than reading server secrets.
 
 ### Host lifecycle requirements
 
 `@cotal-ai/auth` exports host request and view types with `parseServiceHostRequest`. Parsing checks
-structure only. It does not check owner consent, current grants, or admission state. The host
-handlers and complete native service lifecycle are not implemented, so these interfaces do not
-enable service registration.
-
-The native endpoint gate carries service approval and activation fields. Registration and serving
-guards retain those fields and refuse expired or revoked approval. The missing host lifecycle is
-still required.
-
-Internal host gate transitions bind approval to a current native root and make activation
-monotonic. Registration completion is stamped in the reopen CAS. A definite abort preserves the
-previous stamp. These transitions provide no consent, public handlers, or terminal retirement.
-Pre-activation registration requires an empty issuance family, including deleted records. Release
-rechecks fixed expiry after asynchronous work.
+structure only, not owner consent, current grants or admission state. A context opened with `serviceEndpoints` now composes the native host operations and service registration described in [Service endpoint hosting](embedding-service-host.mdx). Terminal lifecycle retirement and restore remain unsupported.
+The native endpoint gate also carries service approval and activation fields. Registration and
+serving guards retain those fields and refuse expired or revoked approval; these guards are not
+a replacement for authenticated host admission. Internal host gate transitions bind approval to a
+current native root and make activation monotonic. Registration completion is stamped in the
+reopen CAS; a definite abort preserves the previous stamp. The opt-in host provides consent decisions and public handlers; these gate transitions alone provide neither. Terminal retirement remains unavailable. Pre-activation registration requires an empty issuance family, including
+deleted records, and release rechecks fixed expiry after asynchronous work.
 
 ### Renewal proofs
 
 `UserTokenIssuer.issueServiceRenewal` signs a separate registration-bound renewal proof.
 `validateServiceRenewalProof` checks its signature, fixed expiry and full witness binding.
 It is not a connect bearer. These primitives do not authenticate a current approval or native root;
-the host must do that before issuing or accepting authority. No client refresh loop is provided yet.
+the host must do that before issuing or accepting authority. `AuthProvider.serviceEndpointRenewal` now provides the client renewal source described in [Service endpoint access](embedding-service-access.mdx).
 
 ### Service access
 
@@ -70,8 +58,7 @@ ordinary parent, manager, session and transfer claims. Ordinary exchange and per
 refuse this view before actor lookup. Callout
 refuses it unless a sealed native service authority is configured. The private composition binds
 the current assignment, native root, registered serving grant and receipt before an encrypted
-response. Normal authority-plane startup does not enable it yet; public registration, restore
-readiness and coordinated root retirement remain required.
+response. Default authority-plane startup keeps this composition off. `serviceEndpoints` explicitly enables the service callout and public registration. Restore and coordinated terminal root retirement remain unsupported.
 
 Internal service-access reads retain native credential-root authorization and check the activated
 registration, assignment, current name and fixed expiry. They do not create a serving grant or
@@ -81,24 +68,23 @@ authorization when explicitly configured.
 Service serving-issuance evidence binds the authenticated broker user key, server key and client id.
 The native release fence rechecks that record and the gate after its CAS. Ordinary serving and
 credential-root records cannot use this service binding. This is not proof of broker acceptance;
-production authority-plane wiring and terminal retirement remain unfinished.
+the opt-in authority plane now composes this evidence, while terminal retirement remains unfinished.
 
-`mintServiceCalloutJwt` is a host-only mint function. It uses the native serving grant, the actual
+`mintServiceCalloutJwt` is a host-only mint seam. It uses the native serving grant, the actual
 principal name and tags, the authenticated broker user key and a separate client inbox nonce.
 Expiry stays bounded by the original admission and access deadline. It does not authenticate the
 callout request, record natkey evidence or release an encrypted response; the host must do those.
 
 Native service receipts bind the same epcred connection and registration witness to the broker user
 key. Recording rechecks the evidence, receipt, native authority and fixed expiry. Expired service
-receipts are retained, not pruned on elapsed JWT time. Qualified retirement and production
-authority-plane wiring are still required before enabling the service path for clients.
+receipts are retained, not pruned on elapsed JWT time. The opt-in authority plane now records this evidence for service connections. Qualified terminal retirement remains unsupported.
 
 ### Service name bindings
 
 Internal service-name bindings are create-only and return owner and revision from one native read.
 The trusted host must authenticate the operator and verify the namespace claim before writing.
 Native auth, delivery and manager names keep their existing authority; they cannot be application
-service bindings. No transfer, release or public name-binding handler is implemented yet.
+service bindings. An operator uses the loopback host `name-bind` operation after verifying the claim. No transfer, release, or public name-binding handler is implemented.
 
 ### Caller policy storage
 
@@ -107,8 +93,7 @@ space and grantee UID. Grant ids are immutable; an append cannot replace or reac
 Initial writes require no prior native key history. A deletion arriving after an absence read
 cannot recreate a policy or a pending service gate.
 Revocation begins with a revision-pinned deny-new intent that unrelated appends preserve.
-These are storage operations, not entitlement checks. The effective policy resolver, host operations,
-cutoff evidence and terminal caller revocation are not implemented yet.
+These are storage operations, not entitlement checks; the [service endpoint host](embedding-service-host.mdx) is their only writer. The effective resolver and native issuance are described under [service endpoint callers](embedding-service-callers.mdx). Receipts and terminal caller revocation remain unsupported.
 
 ### Describe observations
 
@@ -167,7 +152,7 @@ The host carries only the bound door over its authenticated worker channel.
 
 ### Registration limits
 
-`remoteManagerClient` and `registerRemoteManagerAuthority` from `@cotal-ai/manager` provide the
+Use `remoteManagerClient` and `registerRemoteManagerAuthority` from `@cotal-ai/manager` for the
 existing registration ceremony. The result keeps the stock manager material shape and five nkeys.
 All returned credentials expire no later than the assignment. The supervisor and executor ceilings
 are recorded in the native issued store. The recorded permission set must be byte-identical to the
@@ -187,7 +172,7 @@ ledger row. It verifies the current manager registration proof, space, account a
 no owner or attribution from the body.
 
 `AuthAuthorityPlane.revokeManagerRun` implements the operation. `AuthProvider.requestRemoteRunRevoke`
-transports it, and `remoteRunHosting` supplies `RunHostingContext.revokeRun` for a signerless
+transports it, and `remoteManagerClient.remoteRunHosting` supplies `RunHostingContext.revokeRun` for a signerless
 manager. The callback returns the stored `RunRevocation`, including on repeats. A host composing
 its own remote authority must supply that callback to revoke. No signer reaches the participant.
 CLI and MCP revoke verbs are a follow-up described in the [run-start design](design/user-auth-run-start.md).
@@ -197,34 +182,27 @@ CLI and MCP revoke verbs are a follow-up described in the [run-start design](des
 `@cotal-ai/auth` exports `createToolResultRevocationCustody`,
 `recordToolResultRevocation`, `snapshotToolResultRevocations` and one-shot
 `consumeToolResultSnapshot`. These are host-only prerequisites, not material issuance,
-service registration, or a browser or private-result serving path.
-`requireToolResultClockPrerequisite` always refuses with `unavailable`. No native runtime proof
-establishes the clock domain, generation, and suspension state, and the helper invents no numeric
-delta.
+service registration or a browser/private-result path. `requireToolResultClockPrerequisite`
+always refuses `unavailable`: no native runtime clock-domain/generation/suspension proof
+exists, and no numeric delta is invented.
 
 ### Custody creation
 
-Custody exclusively creates a fresh auth store after a private fsynced intent and generation.
-It never adopts an existing store or journal. Support requires a standalone broker and an
-owner-private local ext4 journal parent. Only the creating process may use the sealed,
-non-reconnecting reader and writer custody.
-
-Unknown writes, missing or changed journals, stream identity or configuration drift, and connection
-loss invalidate custody. Crash and rebind recovery are unavailable. A routine broker restart,
-upgrade, network loss, or process restart therefore leaves gate 1 permanently unavailable for that
-space. The refusal is `revocation custody lost; no reopen from current INFO`.
-
-This increment has no retirement or reprovision recovery protocol. Gate 2 cannot assume custody
-survives broker maintenance. The trusted composition supplies current authenticated consent and
-target authorizers and exclusively holds the account and provisioning keys. Independently running
-privileged provisioners, uncontrolled legacy writers, and existing roots are unsupported because
-they have no qualified custody. Custody does not protect against a malicious host administrator
-or copied signing keys.
-
 ### Credential lifetime
 
+Custody exclusively creates a **fresh** auth store after a private fsynced intent/generation.
+Existing stores or journals are never adopted. Only a standalone broker and owner-private local ext4 journal parent are supported. Only the creating process may use its sealed,
+non-reconnecting reader/writer custody. Unknown writes, missing/changed journals, stream
+identity/configuration drift or connection loss invalidate it. Crash/rebind recovery stays
+unavailable. Routine broker restart, upgrade, network loss or process restart therefore leaves
+gate 1 permanently unavailable for that space. Recognize this as `revocation custody lost; no reopen from current INFO`.
+No retirement/reprovision recovery protocol exists in this increment. Gate 2 cannot assume
+custody survives broker maintenance. The trusted composition supplies current authenticated consent/target authorizers
+and exclusively holds account/provisioning keys. Independently running privileged provisioners,
+uncontrolled legacy writers and existing roots have no qualified custody and are unsupported.
+This is not protection from a malicious host administrator or copied signing keys.
 The separate internal custody profile uses two non-expiring, non-reconnecting credentials,
-without `planeCandidate` or a renewal timer. With the two sealed scanners this is four standing
+without planeCandidate or a renewal timer. With the two sealed scanners this is four standing
 connections across three profiles. The CREATE provisioner still expires and closes after CREATE.
 A leaked custody JWT plus user seed no longer has a 900-second expiry bound. Stopping the
 service closes its own sockets, not copied credentials. Signing-key removal invalidates copied
@@ -233,142 +211,61 @@ credentials as well. This remains inside the trusted-process/account-signer resi
 ### Revocation outcomes
 
 Revocation creates only `revocation.<targetDigest>.<consentId>` with native expected-last-subject
-sequence zero. It uses no operation or TTL headers and fsyncs acknowledgement receipts
-independently. Consent bytes must match the recorded target and expiry.
-
-| Effect outcome | Meaning |
-| --- | --- |
-| `unknown` | Persistence is uncertain. No automatic repeat follows. |
-| `executed` | The write was acknowledged, even if receipt or later custody checks fail. |
-| `not-executed` | Publication was refused before it began. |
-
-Markers persist indefinitely in this increment. A separate retention implementation must prove
-consent expiry plus `EP_AUTH_MARKER_TTL_MS` and snapshot safety before introducing pruning or TTL.
+sequence zero, no operation/TTL headers and independently fsynced acknowledgement receipts.
+Consent bytes must match the recorded target and expiry. Persistence uncertainty reports effect
+outcome `unknown`. Acknowledged writes report `executed` even if receipt or later custody checks
+fail. Refusals before publication report `not-executed`. No automatic repeat follows uncertainty.
+Markers persist indefinitely in this
+slice. A separate bounded-retention successor must prove consent expiry plus
+`EP_AUTH_MARKER_TTL_MS` and snapshot safety before a pruner/TTL may exist.
 
 ### Snapshot evidence
 
-A snapshot fixes T0 before IO and a leader W once. It walks only through W, bounds count, bytes,
-and time, and compares exact native sequence, subject, and payload evidence to custody receipts.
-The committed-W artifact is a process-private invocation seal. It binds that evidence, account,
-generation, and native creation and configuration identity. It cannot be parsed, copied, reused,
-or used after custody loss. Current INFO equality and an operator safe flag cannot establish
-historical integrity.
-
-Journals are exclusive 0600 files with file and directory fsync, checked before and after IO.
-They are never adopted on restart. Clustered brokers and leader failover are unsupported.
-Any connection loss refuses. Current INFO cannot restore custody.
+A snapshot fixes T0 before IO and a leader W once, walks only through W, bounds count/bytes/time,
+and compares exact native sequence/subject/payload evidence to custody receipts. The committed-W
+artifact is a process-private invocation seal binding that evidence, account, generation and
+native created/config identity. It cannot be parsed, copied, reused or used after custody loss.
+No current INFO equality or operator safe flag establishes historical integrity. Journals are
+exclusive 0600 files with file and directory fsync, checked before/after IO, not adopted on restart.
+Clustered brokers and leader failover are unsupported. Any connection loss refuses; current INFO cannot restore custody.
 
 ### Grant boundaries
 
-A short-lived create-only provisioner holds API discovery and exact auth-stream CREATE, then closes.
-Separate package-internal grants split revocation-only publish from INFO/MSG.GET reader authority.
-Retained issuance writers can already enumerate auth metadata. Raw ACLs cannot enforce CAS,
-DEL, TTL, schema, or target conventions. Every raw MSG.GET profile retains the foreign-subject
-response-injection risk from caller-selected replies described in SPEC §13.9. This remains true
-even when the profile subscribes only to its own inbox.
-
 ### Verification suites
 
-Routine PR CI runs `smoke:tool-result-prerequisites`. It checks bounded fixtures, broker-observed
-non-expiring exact grants, a no-renewal timer probe, census, and actual KICK and key-removal
-refusals. It does not wait for credential expiry and does not prove serving acceptance.
-
+A short-lived create-only provisioner holds API discovery and exact auth-stream CREATE, then closes.
+Separate package-internal grants split revocation-only publish from INFO/MSG.GET reader authority.
+Retained issuance writers **already can enumerate** auth metadata. Raw ACLs cannot enforce CAS,
+DEL/TTL/schema/target conventions. Every raw MSG.GET profile carries SPEC13.9's caller-selected
+reply **foreign-subject response-injection** residual, even with only its own inbox subscription.
+Routine PR CI runs `smoke:tool-result-prerequisites`: bounded fixtures, broker-observed
+non-expiring exact grants, a no-renewal timer probe, census and actual KICK/key-removal
+refusals. It does not wait for credential expiry and is not serving acceptance.
 `pnpm smoke:tool-result-custody-lifetime` additionally waits `AUTHORITY_CLIENT_TTL_SEC + 15`
-seconds and checks unchanged identities plus successful recording and snapshots. It runs
-explicitly or through the manual or weekly Custody lifetime workflow. Historical lifetime
-receipts remain evidence tied to their source version. They do not verify a later composition.
+seconds and checks unchanged identities plus record/snapshot success. Run it explicitly or
+through the manual/weekly Custody lifetime workflow. Historical lifetime receipts remain
+source-pinned evidence, not a grade for a composed successor.
 
 ## Native service custody guards [#native-service-custody-guards]
 
-Ordinary lifecycle executors refuse a UID reservation carrying `kind: "native-service-uid"`.
-The reservation has closed `native`, `assignment` and `creation` objects. It is not an ordinary
-`{ owner, actor, mintedBy }` audit, and a reader must not project it into one. Its assignment
-binds the full account, space, owner, endpoint, instance and serve-duty tuple. The actor is derived
-from that tuple, and the creation operation and request digest remain fixed.
-
-These guards run before ordinary root reuse, activation, gate and head changes, mint finalization,
-and native retirement. Ordinary connect and currency reads also refuse service custody, including
-rows whose head or credential mirror is missing. Existing ordinary reservation bytes are unchanged.
-Closed head, gate and credential parsers continue to reject service markers. No product path writes
-a service reservation or mints a marked root. A service access-view contract and
-optional sealed native access/callout composition are shipped, but production registration and
-lifecycle wiring remain unavailable. Those unwired seams do not authorize service admission.
-
-### Internal active-root reader
-
-The package-internal service prerequisite reader is separate from ordinary connect and lifecycle
-currency readers. It leader-reads immutable UID custody, the exact active service head, native
-`gate.<uid>` open at generation 1, and the exact active root credential. All three custody mirrors
-must match the full reservation digest.
-
-Service head `managerInstance` equals immutable assignment `instanceId`, and native `processEpoch`
-is fixed at 1. These differ from ordinary enrollment coordinates and the separate endpoint gate
-and witness registration epochs. Creating or cancelling heads and their RootPlan recovery
-obligations remain outside this read-only active path. An endpoint gate cannot replace missing
-or malformed native gate evidence.
-
-The reader provides no writer, bootstrap, root mint or abort, rotation, cancellation, or terminal
-retirement authority. Its reads do not form an atomic multi-key snapshot. Positive fixtures seed
-synthetic marked records directly. They do not exercise production service admission.
-
-The account is trusted host configuration. Sealed readers neither attest the broker account nor
-detect a cross-account pair of legitimately constructed handles. Future service integration must
-construct the registry, reader, and callout from the same authenticated account context.
-
-### Dormant custody writer
-
-A package-internal dormant custody writer is unexported and has no product caller. Its bootstrap
-writes these records in order:
-
-1. The reservation.
-2. The pending-root endpoint gate.
-3. A creating head.
-4. A frozen activation native gate opened at generation 1.
-5. A RootPlan fixed once by head CAS.
-6. The planned active root.
-7. An identical-bytes native gate touch.
-8. The active head stamp.
-
-It rechecks the endpoint gate at open and before the plan, root, and stamp writes.
-
-Cancellation denies the endpoint gate first. It then writes the cancelling head and freezes the
-native gate under the cancel operation. An unstamped planned root is fenced by creating revoked
-bytes or by CAS of the exact active row. A stamped root remains retained. Every cancellation
-result is nonterminal. An absent reservation leaves endpoint deny residue and reports unconfirmed.
-A foreign or deleted reservation refuses without a write.
-
-Each write uses a per-key create or revision CAS under a sealed host, with a fatal latch. The
-host's genuine plane-claim hold is re-read before and after the write. This controls local
-readiness, but does not exclude broker writers. A paused writer can still complete one late
-conditional write.
-
-### Writer deadlines
-
-Every request is bounded by the remaining original deadline. After bootstrap fixes or reads the
-RootPlan, its requests are also bounded by that plan's expiry. Cancellation keeps only its own
-deadline, so an accepted cancellation can proceed after the root expires. At the bound, the writer
-stops waiting for a request without cancelling it at the broker.
-
-The writer issues every endpoint-gate request itself. No such request starts after the invocation
-returns. The writer re-reads the endpoint gate before every plan, root, and stamp write attempt.
-
-Bootstrap's final active-root proof performs several read-only reads behind one bounded wait.
-If that wait reaches its bound, remaining reads can run after the invocation returns. Those reads
-write nothing. Bootstrap holds if its final synchronous check observes an expired active root.
-No await separates that check from the return, but the result can still become stale before the
-caller acts on it.
-
-The caller supplies the deadline and reservation. The writer authenticates no host, approves no
-serving, and provides no terminal retirement, alias release, or root rotation.
-
 ### Unsupported admission
 
-These guards establish refusals. They do not enable service endpoint admission. The dormant writer
-has no product caller, so service bootstrap and cancellation remain unavailable to embedders.
-Terminal retirement, complete observer evidence, writer exclusion, and restore readiness are also
-unavailable.
+[Native service custody](embedding-service-custody.mdx) describes reservation, bootstrap, and cancellation guards. [Service endpoint hosting](embedding-service-host.mdx), [service access](embedding-service-access.mdx), and [caller policy](embedding-service-callers.mdx) describe the opt-in production composition. Terminal retirement and restore remain unsupported.
 
-Seeding service reservations in an existing space, adopting old service-shaped rows, and using
-ordinary retirement to make them terminal are unsupported. A signing-key or raw-store holder can
-bypass helper guards, so schema rejection alone cannot make mixed-version writers safe. Restore
-must quarantine service work until a supported reconciliation protocol exists.
+## Related contracts
+
+### Client transport [#client-transport]
+
+Client transports bind their request and response to the service registration witness. See [the detailed contract](embedding-service-authority.mdx#service-authority-contracts).
+
+### Internal active-root reader [#internal-active-root-reader]
+
+The custody reference describes the internal active-root reader and its limits. See [the detailed contract](embedding-service-custody.mdx#internal-active-root-reader).
+
+### Native custody writer [#dormant-custody-writer]
+
+The formerly dormant writer now participates in the host service path. Its original fragment remains here for existing links. See [the detailed contract](embedding-service-custody.mdx#dormant-custody-writer).
+
+### Writer deadlines [#writer-deadlines]
+
+Custody write deadlines bound waiting without cancelling broker operations already issued. See [the detailed contract](embedding-service-custody.mdx#dormant-custody-writer).

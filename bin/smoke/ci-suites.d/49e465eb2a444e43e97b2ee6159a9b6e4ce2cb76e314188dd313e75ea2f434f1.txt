@@ -1,0 +1,3 @@
+# A retiring lifecycle gains no membership row after its inventory: the manager fences its ACL row
+# first and every durable join re-reads that row around the row it writes (#4984).
+smoke:retire-fence-lifetime

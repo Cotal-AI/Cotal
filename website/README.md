@@ -78,3 +78,11 @@ not run Pages middleware or redirects; use the Pages preview for compatibility c
 Build checks verify installer safety, skill digests, page exports, legacy redirects,
 and local links and assets. Existing unresolved fragment links await page cleanup.
 Verify a preview deployment before production cutover.
+
+## HTTP references
+
+The Auth and Dashboard OpenAPI contracts live in their implementation packages.
+`npm run gen:api` generates canonical MDX, and sync checks that it remains current.
+The site publishes `/api/auth/` and `/api/dashboard/` with operation pages, native
+endpoint copy controls, complete Markdown twins, schema definitions, and portable
+OpenAPI downloads. These canonical sources also reach offline `cotal_docs` without Next.js.

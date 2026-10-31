@@ -539,7 +539,7 @@ try {
   await nc.drain().catch(() => {});
 } catch (e) {
   fail++;
-  console.error("  ✗ scenario threw:", (e as Error).stack ?? (e as Error).message);
+  console.error("  ✗ scenario threw:", e);
 } finally {
   for (const conn of [victim1, victim2, servingConn, wedgeConn, sysObserver, sysEvictor]) { try { await conn?.close(); } catch { /* closed */ } }
   broker.kill("SIGKILL"); // exact PID — never pkill nats-server

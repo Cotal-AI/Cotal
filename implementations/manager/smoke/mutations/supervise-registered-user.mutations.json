@@ -29,7 +29,7 @@
     {
       "name": "an absent registration falls through instead of emitting the host-or-join recovery",
       "file": "implementations/manager/src/commands.ts",
-      "find": "      throw new Error(`neither hosting '${localSpace}' (no cotal up root here) nor registered to it (no meshes entry) — \\`cotal up\\` to host, or \\`cotal meshes add\\` to join`);",
+      "find": "      throw new Error(`neither hosting '${localSpace}' (no \\`cotal up\\` root here) nor registered to it (no meshes entry) — \\`cotal up\\` to host, or \\`cotal meshes add\\` to join`);",
       "replace": "      void 0;",
       "expectRed": "neither hosting nor registered gets the exact host-or-join recovery",
       "cell": "neither hosting nor registered gets the exact host-or-join recovery",

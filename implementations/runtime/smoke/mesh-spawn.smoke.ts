@@ -161,6 +161,7 @@ const SPAWN_INPUT = {
     model: { type: "string" }, variant: { type: "string" },
     cwd: { type: "string" },
     subscribe: { type: "array", items: { type: "string" } },
+    runtime: { type: "string" },
   },
 } as const;
 const SPAWN_OUTPUT = {

@@ -1,7 +1,10 @@
-import stringWidth from "string-width";
-import { c } from "./colors.js";
+import { c, paintFor } from "./colors.js";
 import { oneLine } from "@cotal-ai/core";
-import { CommandFailure, exitCode, writeEnvelope, type Completeness, type OutputWarning } from "./output.js";
+import { CommandFailure, exitCode, operationSpaceNote, operationWarnings, writeEnvelope, type Completeness, type OutputWarning } from "./output.js";
+import { codeSpan, displayWidth, terminalWidth, wrapWords } from "./text-wrap.js";
+
+// Defined in a leaf module so that output.ts can wrap its warnings without importing this one.
+export { codeSpan, displayWidth, terminalWidth, wrapWords };
 
 /**
  * The terminal presentation every command surface shares: one view model of a finished report,
@@ -89,57 +92,77 @@ const tones: Record<Tone, (s: string) => string> = {
   title: c.bold,
 };
 
-/** The columns `text` occupies on a terminal: grapheme clusters, wide East Asian and emoji
- *  characters as two, combining marks and zero-width characters as none, ANSI sequences as none. */
-export function displayWidth(text: string): number {
-  return stringWidth(text);
-}
-
 /** Punctuation as plain writes it, wherever it appears, so a plain report is ASCII apart from
  *  other characters of the content itself, such as the letters of a name. */
 const PLAIN_PUNCTUATION: Readonly<Record<string, string>> = { "·": "-", "…": "...", "→": "->", "↳": "->", "—": "-", "–": "-" };
 
+/** `text` with its punctuation in ASCII, as plain writes it. */
+export function plainPunctuation(text: string): string {
+  return text.replace(/[·…→↳—–]/g, (glyph) => PLAIN_PUNCTUATION[glyph]!).replace(/§ ?/g, "section ");
+}
+
+/** Whether the locale's character set is UTF-8. POSIX takes the character type from `LC_ALL`, else
+ *  `LC_CTYPE`, else `LANG`, the first that is set and not empty. With none set the answer is yes,
+ *  as common Node CLIs read it, so only a locale that names another character set, such as `C` or
+ *  ISO-8859-1, draws rich output's marks and punctuation as plain does. A Windows console takes
+ *  Unicode whatever these say. */
+export function localeIsUtf8(env: NodeJS.ProcessEnv = process.env): boolean {
+  if (process.platform === "win32") return true;
+  const locale = env.LC_ALL || env.LC_CTYPE || env.LANG;
+  return !locale || /utf-?8/i.test(locale);
+}
+
+/** `prefix` then `text` wrapped to `width`, each continuation line indented under the text, each
+ *  piece painted on its own. */
+export function hang(prefix: string, text: string | readonly string[], width: number, paint: (s: string) => string = (s) => s): string[] {
+  return wrapWords(text, width - prefix.length).map((piece, i) => (i === 0 ? prefix : " ".repeat(prefix.length)) + paint(piece));
+}
+
+/** The lines of a `✗` failure or `↳` hint on stderr, wrapped at spaces to the terminal, each
+ *  continuation line under the text. Its control characters are shown as escapes, as a report shows
+ *  them (see {@link oneLine}), because the text can quote a file or an argument. Under a locale that
+ *  is not UTF-8 it is written as plain writes it: `!` for the failure mark and the punctuation in
+ *  ASCII. A `whole` text, such as a remedy that is one command, is never broken: one wider than the
+ *  line runs past it. `paint` colors only when stderr is colored. */
+export function stderrLines(prefix: string, text: string, paint: (s: string) => string, whole = false): string[] {
+  const ascii = !localeIsUtf8();
+  const lead = ascii ? plainPunctuation(prefix.replace("✗", "!")) : prefix;
+  const shown = oneLine(text);
+  const words = ascii ? plainPunctuation(shown) : shown;
+  return paintFor(process.stderr, () => hang(lead, whole ? [words] : words, terminalWidth(process.stderr)).map(paint));
+}
+
+/** A `✗` failure or `↳` hint on stderr, in the {@link stderrLines} that fit the terminal. */
+export function stderrLine(prefix: string, text: string, paint: (s: string) => string, whole = false): void {
+  for (const line of stderrLines(prefix, text, paint, whole)) console.error(line);
+}
+
+/** Whether `style` draws marks: rich style does, under a UTF-8 locale. */
+const marks = (style: Style): boolean => style === "rich" && localeIsUtf8();
+
 const textOf = (cell: Cell, style: Style): string => {
   const text = oneLine(typeof cell === "string" ? cell : cell.text);
-  return style === "plain" ? text.replace(/[·…→↳—–]/g, (glyph) => PLAIN_PUNCTUATION[glyph]!).replace(/§ ?/g, "section ") : text;
+  return marks(style) ? text : plainPunctuation(text);
 };
 
 /** One cell as `style` draws it. The width it occupies is that of its escaped text, plus the mark
- *  and a space in rich style. */
+ *  and a space when the style draws marks. */
 function draw(cell: Cell, style: Style): { shown: string; width: number } {
   const text = textOf(cell, style);
   if (typeof cell !== "string" && cell.mark && !cell.text.trim()) throw new Error(`internal error: the mark ${cell.mark} names no state in words`);
   if (typeof cell === "string" || style === "plain") return { shown: text, width: displayWidth(text) };
-  const marked = cell.mark ? `${oneLine(cell.mark)} ${text}` : text;
+  const marked = cell.mark && marks(style) ? `${oneLine(cell.mark)} ${text}` : text;
   return { shown: cell.tone ? tones[cell.tone](marked) : marked, width: displayWidth(marked) };
 }
 
-/** `text` in lines of at most `width` display columns, broken at spaces, or only between the given
- *  words. A word wider than `width` keeps a line of its own, so an identity, path or command is never
- *  split. Below 20 columns, and when the output is not a terminal, nothing is wrapped. */
-export function wrapWords(text: string | readonly string[], width: number): string[] {
-  const words = typeof text === "string" ? text.split(" ") : text;
-  if (!(width >= 20) || displayWidth(words.join(" ")) <= width) return [words.join(" ")];
-  const lines: string[] = [];
-  let line = "";
-  for (const word of words) {
-    const next = line ? `${line} ${word}` : word;
-    if (line && displayWidth(next) > width) {
-      lines.push(line);
-      line = word;
-    } else line = next;
-  }
-  lines.push(line);
-  return lines;
-}
-
 /** A cell drawn in lines that fit `width` columns, each line toned on its own. A continuation line
- *  starts under the first line's text, past its leading spaces and the mark, plus `hang` columns. */
-function drawWrapped(cell: Cell, style: Style, width: number, hang = 0): string[] {
+ *  starts under the first line's text, past its leading spaces and the mark, plus `hang` columns. A
+ *  `whole` cell, as a command is, is never broken: one wider than the line runs past it. */
+function drawWrapped(cell: Cell, style: Style, width: number, hang = 0, whole = typeof cell !== "string" && cell.tone === "command"): string[] {
   const text = textOf(cell, style);
   const lead = /^ */.exec(text)![0];
-  const markWidth = typeof cell !== "string" && cell.mark && style === "rich" ? displayWidth(oneLine(cell.mark)) + 1 : 0;
-  const [first = "", ...rest] = wrapWords(text.slice(lead.length), width - lead.length - markWidth - hang);
+  const markWidth = typeof cell !== "string" && cell.mark && marks(style) ? displayWidth(oneLine(cell.mark)) + 1 : 0;
+  const [first = "", ...rest] = wrapWords(whole ? [text.slice(lead.length)] : text.slice(lead.length), width - lead.length - markWidth - hang);
   const piece = (words: string): Cell => (typeof cell === "string" ? words : { text: words, ...(cell.tone ? { tone: cell.tone } : {}) });
   return [
     draw(typeof cell === "string" ? lead + first : { ...cell, text: lead + first }, style).shown,
@@ -179,6 +202,7 @@ function renderTable(table: Table, style: Style, width: number, indent: string):
 }
 
 /** Each value starts after its padded label; a value too long for the line continues under itself.
+ *  A value with a word too wide for the room beside its label starts on the line under the label.
  *  Below 48 columns each label takes a line of its own, with its value on the lines under it. */
 function renderFields(fields: Fields, style: Style, indent: string, width: number): string[] {
   if (width < 48) {
@@ -191,6 +215,8 @@ function renderFields(fields: Fields, style: Style, indent: string, width: numbe
   const start = indent.length + pad + 1;
   return fields.rows.flatMap(([name, value]) => {
     const [first, ...rest] = drawWrapped(value, style, width - start);
+    if ([first!, ...rest].some((line) => displayWidth(line) > width - start))
+      return [indent + draw({ text: `${name}:`, tone: "label" }, style).shown, ...drawWrapped(value, style, width - indent.length - 2).map((line) => indent + "  " + line)];
     return [`${indent}${drawPadded({ text: `${name}:`, tone: "label" }, style, pad)} ${first}`, ...rest.map((line) => " ".repeat(start) + line)];
   });
 }
@@ -201,9 +227,12 @@ function renderCommands(block: Commands, style: Style, width: number, indent: st
   // A description that would have fewer than 30 columns beside its command goes on the lines under it.
   const stacked = width - indent.length - pad - 2 < 30;
   return block.items.flatMap((item, index) => {
+    // A command with no description is its line alone, with no padding after it.
+    if (!item.description) return [indent + draw(commands[index]!, style).shown];
     const description: Cell = { text: item.description, tone: "hint" };
+    // A command is never split, so a copied line is a whole command; one too wide keeps its own line.
     if (stacked) return [
-      ...drawWrapped(commands[index]!, style, width - indent.length).map((line) => indent + line),
+      indent + draw(commands[index]!, style).shown,
       ...drawWrapped(description, style, width - indent.length - 2).map((line) => indent + "  " + line),
     ];
     const [first = "", ...rest] = drawWrapped(description, style, width - indent.length - pad - 2);
@@ -215,13 +244,17 @@ function renderCommands(block: Commands, style: Style, width: number, indent: st
 }
 
 /** A report as lines of text, fitted to `width` columns (unbounded when output is not a terminal):
- *  tables fit or become records, and long values and lines wrap at spaces. */
-export function renderReport(report: Report, style: Style, width = Number.POSITIVE_INFINITY): string {
+ *  tables fit or become records, and long values and lines wrap at spaces. Given the stream it is
+ *  written to in place of a width, it fits that stream's terminal and is painted for that stream. */
+export function renderReport(report: Report, style: Style, width: number | NodeJS.WriteStream = Number.POSITIVE_INFINITY): string {
+  if (typeof width !== "number") return paintFor(width, () => renderReport(report, style, terminalWidth(width)));
+  const note = report.space ? operationSpaceNote(report.space) : undefined;
   const out: string[] = report.space ? drawWrapped({ text: `Mesh: ${report.space}`, tone: "selected" }, style, width) : [];
+  if (note) out.push(...drawWrapped({ text: note, tone: "hint" }, style, width - 2).map((line) => `  ${line}`));
   for (const section of report.sections) {
     if (out.length) out.push("");
     const indent = section.title === undefined ? "" : "  ";
-    if (section.title !== undefined) out.push(draw({ text: section.title, tone: "title" }, style).shown);
+    if (section.title !== undefined) out.push(...drawWrapped({ text: section.title, tone: "title" }, style, width));
     for (const block of section.blocks) {
       if (block.kind === "table") out.push(...renderTable(block, style, width, indent));
       else if (block.kind === "fields") out.push(...renderFields(block, style, indent, width));
@@ -230,11 +263,6 @@ export function renderReport(report: Report, style: Style, width = Number.POSITI
     }
   }
   return out.join("\n");
-}
-
-/** The columns a stream can show: its terminal's width, or unbounded when it is not a terminal. */
-export function terminalWidth(stream: { readonly isTTY?: boolean; readonly columns?: number }): number {
-  return stream.isTTY && stream.columns ? stream.columns : Number.POSITIVE_INFINITY;
 }
 
 /** The presentation `--json` and `--plain` ask for. Both at once is a usage error. */
@@ -269,6 +297,9 @@ export function writeResult<R>(
   const outcome = out.failure?.outcome ?? (out.partial ? "partial" : out.noOp ? "no-op" : "ok");
   const code = out.failure?.code ?? (out.partial ? "OPERATION_PARTIAL" : undefined);
   const error = out.failure?.detail() ?? (out.partial ? { code: "OPERATION_PARTIAL" as const, message: out.partial.message, ...(out.partial.remedy === undefined ? {} : { remedy: out.partial.remedy }) } : undefined);
+  // A warning the run already recorded was printed then, and its envelope carries it once.
+  const recorded = operationWarnings();
+  const warnings = (out.warnings ?? []).filter((w) => !recorded.some((r) => r.code === w.code && r.message === w.message));
   if (presentation === "json") {
     writeEnvelope({
       schemaVersion: 1,
@@ -277,20 +308,21 @@ export function writeResult<R>(
       outcome,
       completeness: out.completeness ?? "complete",
       result: out.result,
-      warnings: out.warnings ?? [],
+      warnings: [...recorded, ...warnings],
       ...(error ? { error } : {}),
       ...(out.failure?.changed === undefined ? {} : { changed: out.failure.changed }),
     });
   } else {
     const target = out.target !== null && typeof out.target === "object" && !Array.isArray(out.target) ? out.target as Record<string, unknown> : undefined;
     const report = view(out.result);
-    console.log(renderReport({ ...report, ...(typeof target?.space === "string" && target.space ? { space: target.space } : {}) }, presentation, terminalWidth(process.stdout)));
+    console.log(renderReport({ ...report, ...(typeof target?.space === "string" && target.space ? { space: target.space } : {}) }, presentation, process.stdout));
     const errWidth = terminalWidth(process.stderr);
-    const say = (cell: Styled, hang: number) => { for (const line of drawWrapped(cell, presentation, errWidth, hang)) console.error(line); };
-    for (const warning of out.warnings ?? []) say({ text: `! ${warning.message}`, tone: "waiting" }, 2);
+    const say = (cell: Styled, hang: number, whole?: boolean) => { for (const line of paintFor(process.stderr, () => drawWrapped(cell, presentation, errWidth, hang, whole))) console.error(line); };
+    // The run's own warnings were printed on stderr when they were recorded.
+    for (const warning of warnings) say({ text: `! ${warning.message}`, tone: "waiting" }, 2);
     if (error) {
-      say({ text: `${presentation === "plain" ? "!" : "✗"} ${error.message}`, tone: outcome === "partial" || outcome === "unknown" ? "waiting" : "failed" }, 2);
-      if (error.remedy) say({ text: `  ↳ ${error.remedy}`, tone: "hint" }, 2);
+      say({ text: `${marks(presentation) ? "✗" : "!"} ${error.message}`, tone: outcome === "partial" || outcome === "unknown" ? "waiting" : "failed" }, 2);
+      if (error.remedy) say({ text: `  ↳ ${error.remedy}`, tone: "hint" }, 2, out.failure?.remedyIsCommand);
     }
   }
   process.exitCode = exitCode(outcome, code);
@@ -302,7 +334,7 @@ export function commandFailureReport(failure: CommandFailure): Report {
   const fields: (readonly [string, Cell])[] = [["Outcome", { text: failure.outcome, tone: failure.outcome === "unknown" || failure.outcome === "partial" ? "waiting" : "failed" }], ["Code", failure.code]];
   const target = object(failure.target);
   const labels: readonly (readonly [string, string])[] = [["space", "Space"], ["endpoint", "Endpoint"], ["command", "Native command"], ["name", "Name"], ["deploymentId", "Deployment"], ["attemptId", "Attempt"], ["instanceId", "Instance"], ["requestedInstanceId", "Requested instance"], ["managerInstanceId", "Manager"], ["requestId", "Original request"], ["requestedGoalId", "Requested goal"], ["acceptedGoalId", "Accepted goal"]];
-  for (const [key, label] of labels) if (typeof target?.[key] === "string" && target[key]) fields.push([label, target[key] as string]);
+  for (const [key, label] of labels) if (typeof target?.[key] === "string" && target[key]) fields.push([key === failure.given ? "Given ID" : label, target[key] as string]);
   const accepted = object(target?.accepted);
   if (typeof accepted?.goalId === "string") fields.push(["Accepted goal", accepted.goalId]);
   if (typeof accepted?.fingerprint === "string") fields.push(["Goal fingerprint", accepted.fingerprint]);
@@ -326,11 +358,20 @@ export function commandFailureReport(failure: CommandFailure): Report {
     ...(typeof native?.unconfirmed === "string" ? [{ state: "unconfirmed", name: native.unconfirmed }] : []),
     ...names(native?.remaining).filter((name) => name !== native?.refused && name !== native?.unconfirmed).map((name) => ({ state: "remaining or unresolved", name })),
   ];
+  // The live managers a refused selection could not choose between, one row each. Only a manager
+  // started by a cotal before 0.100.0 puts no host in its presence.
+  const text = (value: unknown, absent = "-"): string => typeof value === "string" && value ? value : absent;
+  const managers = (Array.isArray(native?.managers) ? native.managers : []).flatMap((item) => {
+    const row = object(item);
+    return typeof row?.instanceId === "string" ? [{ name: text(row.name), instanceId: row.instanceId, host: text(row.host, "not reported (started by an older cotal)"), activity: text(row.activity), since: text(row.since) }] : [];
+  });
   return { ...(typeof target?.space === "string" && target.space ? { space: target.space } : {}), sections: [
     { title: failure.outcome === "unknown" ? "Outcome unconfirmed" : failure.outcome === "partial" ? "Partly completed" : failure.outcome === "refused" ? "Request refused" : "Request failed", blocks: [{ kind: "lines", lines: [{ text: failure.message, tone: failure.outcome === "unknown" || failure.outcome === "partial" ? "waiting" : "failed" }] }, { kind: "fields", rows: fields }] },
     ...(purges.length ? [{ title: "Acknowledged history changes", blocks: [{ kind: "table" as const, columns: [{ key: "stream", label: "Native stream" }, { key: "purged", label: "Messages purged" }], rows: purges }] }] : []),
     ...(nativeRows.length ? [{ title: "Native target details", blocks: [{ kind: "table" as const, columns: [{ key: "state", label: "State" }, { key: "name", label: "Target" }], rows: nativeRows.slice(0, 100) }, ...(nativeRows.length > 100 ? [{ kind: "lines" as const, lines: [`Showing 100 of ${nativeRows.length} targets; --json retains every row.`] }] : [])] }] : []),
-    ...(failure.changed?.length && !purges.length && !nativeRows.length ? [{ title: "Confirmed changes", blocks: [{ kind: "lines" as const, lines: [`${failure.changed.length} change receipt(s) retained. Choose structured output before the operation to retain their data; do not repeat a mutation merely to view its receipt.`] }] }] : []),
-    ...(failure.remedy ? [{ title: "Next", blocks: [{ kind: "lines" as const, lines: [failure.remedy] }] }] : []),
+    // Receipts that are plain strings, such as file paths, are listed; structured ones need structured output.
+    ...(failure.changed?.length && !purges.length && !nativeRows.length ? [{ title: "Confirmed changes", blocks: [{ kind: "lines" as const, lines: names(failure.changed).length === failure.changed.length ? [...names(failure.changed)] : [`${failure.changed.length} change receipt(s) retained. Choose structured output before the operation to retain their data; do not repeat a mutation merely to view its receipt.`] }] }] : []),
+    ...(managers.length ? [{ title: "Live managers", blocks: [{ kind: "table" as const, columns: [{ key: "name", label: "Manager" }, { key: "instanceId", label: "Instance" }, { key: "host", label: "Host" }, { key: "activity", label: "Activity" }, { key: "since", label: "Running since" }], rows: managers }] }] : []),
+    ...(failure.remedy ? [{ title: "Next", blocks: [{ kind: "lines" as const, lines: [failure.remedyIsCommand ? { text: failure.remedy, tone: "command" as const } : failure.remedy] }] }] : []),
   ] };
 }

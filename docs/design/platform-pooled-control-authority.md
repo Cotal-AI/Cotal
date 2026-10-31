@@ -5,6 +5,13 @@ Status: the door shipped in `@cotal-ai/core` and `@cotal-ai/auth` 0.60.0, and it
 what landed and what did not. The source inventory in section 1 was checked at
 `06f48f40473f809bcb31f2ba21b3ceb1d33ccc18` (v0.58.0), before the door existed.
 
+Two later changes touch this record. Since 0.92.0 `PlatformControlInnerRequest` also carries
+`RemoteRunSubmissionRequest`, so the closed union has eight kinds where sections 3.1 and 8 (R4)
+say seven. Since 0.76.0 `AuthServiceHandle.platformSupervisorAuthority(owner)` issues manager
+registration material for a platform-owned supervisor under a derived user owner. That door is
+separate from this one, and [Embedding](../embedding.mdx#owner-bound-platform-supervisors) and
+[user-auth run start](user-auth-run-start.md#platform-supervisor-registration) describe it.
+
 The question is how a platform runs one administrative control manager per account in `pooled`
 mode without holding any human's login session. The answer reuses everything the human remote
 supervision path already proves (the closed request family, the five identities, the registration

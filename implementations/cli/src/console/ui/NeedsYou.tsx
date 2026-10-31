@@ -1,10 +1,11 @@
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { Box, Text, useFocus, useInput } from "ink";
 import { peerLabel, presenceText, type Presence } from "@cotal-ai/core";
 import { activityAge } from "../../ui.js";
 import { factRow, statusLine } from "./Roster.js";
 import { agentColor, STATUS, ago, windowAround, wrapFacts } from "./theme.js";
 import type { FocusId } from "../mesh.js";
+import { useListCursor } from "./useListCursor.js";
 
 /** NEEDS-YOU rail: agents that are waiting / blocked, oldest-first (already sorted by the model).
  *  Mirrors the web's amber WAITING cards. A selection cursor (↑/↓) highlights one; `Enter` drills
@@ -31,12 +32,11 @@ export function NeedsYou({
     if (isFocused) onFocus("needsyou");
   }, [isFocused, onFocus]);
 
-  const [sel, setSel] = useState(0);
-  const selClamped = Math.min(sel, Math.max(0, waiting.length - 1));
+  const { index: selClamped, up, down } = useListCursor(waiting.length);
   useInput(
     (input, key) => {
-      if (key.upArrow || input === "k") setSel((v) => Math.max(0, v - 1));
-      else if (key.downArrow || input === "j") setSel((v) => Math.min(Math.max(0, waiting.length - 1), v + 1));
+      if (key.upArrow || input === "k") up();
+      else if (key.downArrow || input === "j") down();
       else if (key.return && waiting.length) onOpenDetail(waiting[selClamped]);
     },
     { isActive: isFocused && !blocked },

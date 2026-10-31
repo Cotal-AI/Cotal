@@ -2,6 +2,8 @@
 
 Status: proposed implementation contract. This is not a shipped pooled runtime or a wire change. The source inventory below was checked at `6b7694671fffcde331c3676b267cd0d2b3c523b2`. [The machine-readable interface and ownership record](hosted-runtime-ownership.json) assigns the follow-on work. A worker must still test the exact head it implements.
 
+Since that inventory, 0.58.0 shipped parts of the follow-on work: `startAuthService` and `startDeliveryService` return the `HostedServiceHandle` lifetime, and the closed `renewStandingBundle` and `renewRunDriver` operations have a parser, an issuance arm in the auth plane and a remote-manager caller. Source presence is not an operational pooled guarantee. The slot supervisor, the peer-uid credential adapter, the assignment manifest and cell mapping, and the OS role projection have no implementation. The table and the ownership record keep their states as of the inventory head. [Embedding](../embedding.mdx) states what a host can rely on today, including that these handles are not a complete pooled auth and delivery host.
+
 ## Existing seams and remaining gaps
 
 | Contract | Shipped entry and consumer | Required addition |
@@ -13,11 +15,11 @@ Status: proposed implementation contract. This is not a shipped pooled runtime o
 | Serve recovery | `scheduleServeRenewal`, `pushRenewedCreds`, `onServeConnectionClosed` and `boundedReconnect` in manager already implement local serve renewal and closed-connection redial. `manager-renewal-boundary.smoke.ts` includes phase/no-push/log-only mutants. | Reuse, do not reimplement the local repair. Remote authority currently renews the executor alone; it has no equivalent all-duty adoption. A live PID is not readiness. |
 | Runs | `RunHosting.renew()` mints run-driver and run-mediator credentials from a local signer; the remote manager does not construct `RunHosting`. `RunHostLease` carries holder, epoch, fencingToken and takeoverId, and run-driver grants pin runId/takeoverId/instanceId/epoch. | A closed host callback renews only the caller's still-active run and takeover, for the same nkey. Preserve the mediator split, admission and effect gates. A signerless hosted run cannot be claimed supported until it is actually enabled and tested. |
 
-These are source contracts, not readiness claims. The published embedding guide still describes the standalone CLI daemons. PR #1321 proposes multiplexed daemons, but remains an unmerged design. PR #1479 proposes full remote-credential renewal, but remains unmerged. Neither is an implementation dependency. The public issue #2073 closure note names local serve repairs now present in this tree; it does not prove the remote path.
+These are source contracts, not readiness claims. The published embedding guide still describes the standalone CLI daemons. PR #1321 proposes multiplexed daemons and was still open and unmerged on 26 October 2026. PR #1479 proposes full remote-credential renewal and was also still open. Neither is an implementation dependency. The public issue #2073 closure note names local serve repairs now present in this tree; it does not prove the remote path.
 
 ## Narrow interfaces for implementers
 
-Use the existing `SecretStore`, `SecretStoreIdentity`, `RemoteManagerAuthorityRequest`, `ManagerOptions.remoteAuthority`, `EpServeGrant` and `RunHostLease` rather than duplicating them. `@cotal-ai/workspace` exports the provider-neutral `HostedContextInputs`, `HostedContextKey`, `HostedServiceState` and `HostedServiceHandle` types. No service implements the handle yet. The types describe explicit context inputs and lifecycle outputs:
+Use the existing `SecretStore`, `SecretStoreIdentity`, `RemoteManagerAuthorityRequest`, `ManagerOptions.remoteAuthority`, `EpServeGrant` and `RunHostLease` rather than duplicating them. `@cotal-ai/workspace` exports the provider-neutral `HostedContextInputs`, `HostedContextKey`, `HostedServiceState` and `HostedServiceHandle` types. At the inventory head no service implemented the handle. Since 0.58.0 `startDeliveryService` and `startAuthService` return it. The types describe explicit context inputs and lifecycle outputs:
 
 ```ts
 type HostedContextInputs = {

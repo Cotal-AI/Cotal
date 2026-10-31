@@ -109,9 +109,9 @@ export type LocalHookAnswer = (event: unknown, session: { managed: boolean }) =>
 
 /** Relay one hook event from stdin to the connector's control socket and print the reply. `answer`
  *  runs first, so a decision that needs no connector state holds even when the socket is down. */
-export async function runHookRelay(answer?: LocalHookAnswer): Promise<void> {
+export async function runHookRelay(answer?: LocalHookAnswer, observe?: (event: unknown, session: { managed: boolean }) => Promise<void>): Promise<void> {
   const managed = hasIdentity();
-  if (!managed && !answer) return done(""); // plain session with nothing to answer — no-op
+  if (!managed && !answer && !observe) return done(""); // plain session with nothing to answer — no-op
   const raw = (await readStdin()).trim() || "{}";
   let event: unknown = {};
   try {
@@ -126,6 +126,7 @@ export async function runHookRelay(answer?: LocalHookAnswer): Promise<void> {
     /* an answer that throws must not block the session; relay the event instead */
   }
   if (local) return done(JSON.stringify(local));
+  try { await observe?.(event, { managed }); } catch { /* observation cannot block a native hook */ }
   if (!managed) return done(""); // plain session, not a managed one — no connector to relay to
   // The socket path comes from the launch env; the token comes from the launch-material file that
   // env points at (the same file the in-agent server reads), never recomputed from public identity.

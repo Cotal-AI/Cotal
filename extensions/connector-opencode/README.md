@@ -7,5 +7,6 @@ over [`@cotal-ai/connector-core`](../connector-core).
 **Tier:** `extensions/`. Peer-depends [`@cotal-ai/core`](../../packages/core); self-registers on
 import.
 
-See [docs/architecture.mdx](../../docs/architecture.mdx) (*Connector runtime*) and the
-[root AGENTS.md](../../AGENTS.md) for the tier rules.
+See [docs/connect-opencode.mdx](../../docs/connect-opencode.mdx) for the integration guide,
+[docs/architecture.mdx](../../docs/architecture.mdx) (*Connector runtime*) for the shared runtime, and
+the [root AGENTS.md](../../AGENTS.md) for the tier rules.

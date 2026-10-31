@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { Kvm } from "@nats-io/kv";
 import * as prompts from "@clack/prompts";
@@ -17,6 +17,7 @@ import {
   DEFAULT_SERVER,
   DEFAULT_SPACE,
   DEV_OWNER,
+  isAuthRejection,
   registry,
   parseCommandArgs,
   token,
@@ -24,16 +25,19 @@ import {
   type Command,
   type FlagSpec,
   type ParsedArgs,
+  type RemoteManagerMaintenanceRequest,
 } from "@cotal-ai/core";
 import {
-  authDir, canonicalLocalProcessPath, claimServicePid, consumeManagerShutdownIntent, findCotalRoot, getSpaceAuth, hasUserAuthState, isWorkspaceTargetError, listenForLocalStop, loadManagerInstanceIdentity, loadSpaceAccountAuth, parsePositiveIntegerFlag, publishManagerSpareCapability, reclaimDeadPreUpgradeRecord, removePidPair, resolveMeshTarget, soleSpaceOf, userAuthStateDir, workspaceSecretStore, writePidPair,
-  c, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, untilInputEnds,
-  brokerAddressForDisplay, CommandFailure, inputDisabledByFlag, isCommandFailure, jsonFlag, plainFlag, presentationOf, renderReport, resolveNativeServiceTarget, terminalWidth, writeResult, type Report,
+  assertManagerName, authDir, canonicalLocalProcessPath, canonicalRoot, claimServicePid, consumeManagerShutdownIntent, findCotalRoot, getSpaceAuth, hasUserAuthState, isWorkspaceTargetError, listenForLocalStop, loadManagerInstanceIdentity, loadSpaceAccountAuth, parsePositiveIntegerFlag, parseSeatCapFlag, publishManagerSpareCapability, readManagerName, readManagerSeatCap, reclaimDeadPreUpgradeRecord, recordManagerName, recordManagerSeatCap, removePidPair, resolveMeshTarget, soleSpaceOf, userAuthStateDir, workspaceSecretStore, writePidPair,
+  c, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, stderrLines, UNTRUSTED_CERTIFICATE, untilInputEnds,
+  brokerAddressForDisplay, brokerUrlCredentialRefusal, brokerUrlHasUserinfo, CommandFailure, exitCode, inputDisabledByFlag, isCommandFailure, jsonFlag, plainFlag, presentationOf, renderReport, resolveNativeServiceTarget, writeResult, type Report,
   refreshRegistrationPolicy, publishServiceStartup, serviceStartupPath, publishServiceStopReceipt, publishServedContract, protectedCredentialReference, readLocalRecordSource, type NativeServiceStopRequest,
-  deprecatedDaemonEntry, type MeshEntry,
+  ConfirmationRequired, findMesh, folderSpace, folderSpaceHeld, getCurrent, targetErrorCode, targetErrorSpace, workspaceErrorParts, type MeshEntry, type MeshTargetError, type SeatCap,
+  deprecatedDaemonEntry, DEPRECATED_MANAGER_ENTRY,
 } from "@cotal-ai/workspace";
 import { Manager } from "./manager.js";
-import { acceptManagerServiceStop, armManagerServiceObserver, bindManagerServiceIdentity, managerServiceChild, type ManagerServiceChild } from "./service-child.js";
+import { rejectionText } from "./rejection-text.js";
+import { acceptManagerServiceStop, armManagerServiceObserver, bindManagerServiceIdentity, managerServiceChild, managerServiceStopRequested, type ManagerServiceChild } from "./service-child.js";
 import { MANAGER_ENDPOINT } from "./manager-service-contract.js";
 import { makeManagerEndpointHolderEvictor } from "./endpoint-evict.js";
 import { makeManagerHolderLivenessProbe } from "./holder-liveness.js";
@@ -44,7 +48,7 @@ import { loadLaunchSpec, materializePersona, launchAgentToStartOpts } from "./la
 import { type RuntimeMode } from "./runtime/index.js";
 import { custodyRoot } from "./runtime/custodial-pty.js";
 import { drainSeats } from "@cotal-ai/seat";
-import { currentRegistrationProof, loadOrCreateRemoteManagerIdentity, materialCredential, remoteStandingBundleRenewal, remoteManagedAgentEnrollmentMaterial, remoteManagedAgentEnrollmentRequest, remoteManagedAgentPrepareRetirementRequest, remoteManagedAgentRetirementPrepared, remoteManagerAdminAuthorizationRequest, remoteManagerAdminAuthorized, remoteManagerAuthorityRequest, remoteManagerGoalIndexEntries, remoteManagerGoalIndexScanRequest, remoteManagerMaintenanceRequest, remoteManagerMaintenanceResult, remoteRetainedAgentValidationRequest, retainedAgentAuthority, remoteRunHosting } from "./remote-authority.js";
+import { currentRegistrationProof, loadOrCreateRemoteManagerIdentity, materialCredential, remoteStandingBundleRenewal, remoteManagedAgentEnrollmentMaterial, remoteManagedAgentEnrollmentRequest, remoteManagedAgentPrepareRetirementRequest, remoteManagedAgentRetirementPrepared, remoteManagerAdminAuthorizationRequest, remoteManagerAdminAuthorized, remoteManagerParticipationAuthorizationRequest, remoteManagerParticipationAuthorized, remoteManagerAuthorityRequest, remoteManagerGoalIndexEntries, remoteManagerGoalIndexScanRequest, remoteManagerMaintenanceRequest, remoteManagerMaintenanceResult, remoteRetainedAgentValidationRequest, retainedAgentAuthority, remoteRunHosting } from "./remote-authority.js";
 import { registerRemoteManagerAuthority } from "./remote-register.js";
 import { managerClusterArtifacts } from "./manager-service-contract.js";
 
@@ -132,6 +136,23 @@ function spaceFor(v: Values, root = findCotalRoot()): string {
   return v.space ?? soleSpaceOf(authDir(root)) ?? DEFAULT_SPACE;
 }
 
+/** The space and root a `supervise` runs for. `--space` or `COTAL_SPACE` names the space, and the
+ *  manager then runs in this folder's root. Otherwise the space is the one every other command
+ *  targets here, this folder's registered space or else the `cotal use` selection, and the manager
+ *  runs in the root that space is registered at, so its identity and name are the same whichever
+ *  folder it is started from. A space a folder only holds on disk, such as a stopped one or one a
+ *  `cotal up` in a parent folder left, does not take the run from the selection. With nothing
+ *  selected that held space takes the run, so a prepared or stopped one is refused as not started.
+ *  With none, {@link superviseTarget} supervises the space this folder hosts, and refuses a folder
+ *  that hosts none. */
+function superviseSelection(v: Values): { values: Values; root: string } {
+  const root = findCotalRoot();
+  if (v.space !== undefined || process.env.COTAL_SPACE !== undefined) return { values: v, root };
+  const space = folderSpace(process.cwd()) ?? getCurrent() ?? folderSpaceHeld(process.cwd())?.space;
+  if (space === undefined) return { values: v, root };
+  return { values: { ...v, space }, root: findMesh(space)?.root ?? root };
+}
+
 /**
  * Resolve the public supervisor's target without ever recasting a registered participant as the
  * hosting root. A local user-auth marker is the host proof; only when it is absent can a matching
@@ -163,7 +184,8 @@ export function superviseTarget(v: Values, root = findCotalRoot()): { space: str
         throw new Error(`--server ${ve.server} does not match hosting space "${localSpace}" at ${target.server} - supervise refuses to split its local auth state from its broker`);
       return { space: localSpace, server: target.server, remoteUser: false, tlsRequired: target.tlsRequired, eventsRequired: target.policy?.events === "required", ...(target.policy ? { policy: target.policy } : {}) };
     } catch (error) {
-      if (!isWorkspaceTargetError(error)) throw error;
+      // A space this folder prepared whose stack here is stopped, or not started, is refused as such.
+      if (!isWorkspaceTargetError(error) || error.code === "not-started") throw error;
       return { space: localSpace, server: ve.server ?? DEFAULT_SERVER, remoteUser: false, tlsRequired: false, eventsRequired: false };
     }
   }
@@ -196,7 +218,16 @@ export function superviseTarget(v: Values, root = findCotalRoot()): { space: str
       // the flag/env, exactly what a service unit's EnvironmentFile supplies.
       if (loadSpaceAccountAuth(authDir(root), localSpace))
         return { space: localSpace, server: ve.server ?? DEFAULT_SERVER, remoteUser: false, tlsRequired: false, eventsRequired: false };
-      throw new Error(`neither hosting '${localSpace}' (no cotal up root here) nor registered to it (no meshes entry) — \`cotal up\` to host, or \`cotal meshes add\` to join`);
+      // Nothing named or selected a space and this folder hosts none, so the default name is no one's
+      // space and the refusal does not name it. It words that state as `cotal manager start` does, and
+      // leads with the commands that start a hosted space's manager from any folder: `supervise
+      // --space` runs in this folder, which holds no signer for a space another folder hosts.
+      if (ve.space === undefined)
+        throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no space is selected, and this folder is not a space's project, so no manager started", {
+          target: { root },
+          remedy: "for a space a folder on this machine hosts, run `cotal manager start --space <name>` or select it with `cotal use <name>`; for a space no folder here hosts, run `cotal supervise --space <name>`; to host one here, run `cotal up`",
+        });
+      throw new Error(`neither hosting '${localSpace}' (no \`cotal up\` root here) nor registered to it (no meshes entry) — \`cotal up\` to host, or \`cotal meshes add\` to join`);
     }
     throw error;
   }
@@ -225,6 +256,71 @@ function superviseExecution(v: Values): "runtime" | "none" {
   return v.execution ?? "runtime";
 }
 
+/** Where a manager that the broker trusts starts: the folder that hosts `space`, when the registry
+ *  names one other than `root`, else the folder whose `cotal up` started the broker. */
+function hostFolderStep(space: string, root: string, broker: string): string {
+  const host = findMesh(space);
+  return host !== undefined && host.root !== root
+    ? `start the manager from ${host.root}, the folder that hosts space "${space}": \`cd ${host.root} && cotal manager start\`${host.mode === "user" ? `. A manager on another machine joins a user-auth space as a signed-in participant (\`cotal meshes add\`, then \`cotal login\`) once its host grants the supervise scope` : ""}`
+    : `start the manager from the folder whose \`cotal up\` started the broker at ${broker}`;
+}
+
+/** The broker's refusal of the credential a starting manager presented, as a classified refusal:
+ *  which credential, which broker, and where a manager that broker trusts starts. A local manager
+ *  signs with the space signer of the root it runs in, so a root whose signer the broker does
+ *  not trust, or that has none, is told to start it from the folder that hosts the space. */
+async function refusedManagerCredential(error: Error, space: string, root: string, server: string, remote: boolean): Promise<CommandFailure> {
+  const broker = brokerAddressForDisplay(server) ?? "the broker";
+  const target = { space, root, broker };
+  const native = { code: error.name, detail: error.message };
+  if (remote)
+    return new CommandFailure("refused", "PERMISSION_DENIED", `the broker at ${broker} refused the manager-service credential the host issued for space "${space}", so no manager started`, { target, native, remedy: "sign in again with `cotal login`, then start the manager again; the space host must still grant your sign-in the supervise scope" });
+  const credential = await getSpaceAuth(workspaceSecretStore(root), space)
+    ? `the manager credential this folder's signer for space "${space}" minted (${root})`
+    : `a manager with no credential, because this folder holds no signer for space "${space}" (${root})`;
+  return new CommandFailure("refused", "PERMISSION_DENIED", `the broker at ${broker} refused ${credential}, so no manager started`, { target, native, remedy: hostFolderStep(space, root, broker) });
+}
+
+/** A target this folder cannot start a manager for, as the refusal its code and next step name,
+ *  before anything is written or dialed. A space whose own stack here is stopped names how to start
+ *  it, and a broker named with `--server` also gets the folder whose `cotal up` started it. */
+function managerTargetRefusal(error: MeshTargetError, v: Values, root: string): CommandFailure {
+  const server = v.server ?? process.env.COTAL_SERVER;
+  const space = targetErrorSpace(error.details) ?? spaceFor(v, root);
+  const { message, remedy } = workspaceErrorParts({ kind: "target", error });
+  const elsewhere = server === undefined ? undefined : hostFolderStep(space, root, brokerAddressForDisplay(server) ?? "the broker");
+  const next = [remedy, elsewhere].filter((step) => step !== undefined).join(", or ");
+  return new CommandFailure("refused", targetErrorCode(error.code), `${message}, so no manager started`, { target: { space, root }, ...(next ? { remedy: next } : {}) });
+}
+
+/** A static or user-auth space that another folder hosts, named before this folder writes a manager
+ *  identity: this folder holds no signer for it, so a manager started here would have no credential. */
+function foreignHostRefusal(space: string, root: string, server: string): CommandFailure | undefined {
+  const host = findMesh(space);
+  if (host === undefined || host.mode === "open" || host.userAuth?.remote === true || canonicalRoot(host.root) === canonicalRoot(root)) return undefined;
+  if (host.mode === "user" ? hasUserAuthState(root, space) : loadSpaceAccountAuth(authDir(root), space)) return undefined;
+  return new CommandFailure("refused", "PERMISSION_DENIED", `this folder holds no signer for ${host.mode === "user" ? "user-auth " : ""}space "${space}" (${root}), so no manager started`, { target: { space, root }, remedy: hostFolderStep(space, root, brokerAddressForDisplay(server) ?? "the broker") });
+}
+
+/** The next step for a native manager child whose startup did not confirm, in the words the
+ *  service controller uses for a native start it could not confirm. */
+const UNCONFIRMED_START = "inspect the original full instance and its launch request before another start";
+
+/** The next step when a startup failure ends in a certificate this host does not trust, as the
+ *  `--tls-cert` row of docs/cli.mdx gives it. */
+const TRUST_CA = "trust the certificate's CA, or a self-signed certificate itself, by setting `NODE_EXTRA_CA_CERTS` to that PEM file for the command that starts the manager, then start it again";
+
+/** A native manager child's startup that did not confirm, wrapping `cause`, with one next step: the
+ *  cause's own when it names one, {@link TRUST_CA} when its chain ends in a certificate this host
+ *  does not trust, else {@link UNCONFIRMED_START}. */
+function unconfirmedStart(cause: unknown, message = "the native manager child did not confirm startup"): CommandFailure {
+  let last = cause;
+  while (last instanceof Error && last.cause !== undefined) last = last.cause;
+  const code = (last as NodeJS.ErrnoException | null | undefined)?.code;
+  const remedy = typeof code === "string" && UNTRUSTED_CERTIFICATE.has(code) ? TRUST_CA : UNCONFIRMED_START;
+  return new CommandFailure("unknown", "OPERATION_UNKNOWN", message, { cause, ...(isCommandFailure(cause) && cause.remedy ? {} : { remedy }) });
+}
+
 /** Run a manager daemon in this process (the long-lived supervisor), then block.
  *  `pty` ships with the manager; every other runtime needs a registered provider. The published
  *  CLI lazy-loads installed providers, while library roots import their integrations explicitly.
@@ -237,8 +333,7 @@ function superviseExecution(v: Values): "runtime" | "none" {
 // the cmux-tab manager.
 async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service?: ManagerServiceChild): Promise<void> {
   stampConsole();
-  const v = args.values as Values;
-  const managerRoot = service?.root ?? findCotalRoot();
+  const { values: v, root: managerRoot } = service ? { values: args.values as Values, root: service.root } : superviseSelection(args.values as Values);
   const execution = superviseExecution(v);
   let runtime: RuntimeMode | undefined = execution === "none" ? undefined : defaultRuntime;
   if (defaultRuntime === "auto" && v.runtime) {
@@ -250,11 +345,15 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
     if (execution === "none" && target.remoteUser)
       throw new Error("execution: none on supervise requires a genuine hosting user-auth root, not a participant registration");
   } catch (e) {
-    if (service) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native manager child did not confirm startup; inspect the original protected launch records before another start");
-    console.error(c.red(`✗ ${(e as Error).message}`));
+    if (service) throw unconfirmedStart(e);
+    if (isWorkspaceTargetError(e)) throw managerTargetRefusal(e, v, managerRoot);
+    if (isCommandFailure(e)) throw e;
+    console.error(c.red(`✗ ${rejectionText(e)}`));
     process.exit(1);
   }
   const { space, server } = target;
+  const foreign = service || target.remoteUser ? undefined : foreignHostRefusal(space, managerRoot, server);
+  if (foreign) throw foreign;
   // Claim before hosted registration/issuance or local endpoint initialization. Starting
   // custody proves only this process; no startup/serving phase exists and no contender is adopted.
   const releaseStartingCustody = service ? claimServicePid({ root: managerRoot, space }, MANAGER_PIDFILE) : undefined;
@@ -288,7 +387,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
       if (material.owner.length === 0 || material.instanceId !== state.instanceId || material.lifecycleUid !== state.lifecycleUid ||
           JSON.stringify(material.actors) !== JSON.stringify(actors))
         throw new Error("the host returned manager-service material for different lifecycle coordinates");
-      const maintain = async (operation: "evict-family-principal" | "reconcile-registration", targetInstanceId: string, principals?: string[]) => {
+      const maintain = async (operation: RemoteManagerMaintenanceRequest["operation"], targetInstanceId: string, principals?: string[]) => {
         const maintenanceRequest = remoteManagerMaintenanceRequest(state, "cli", operation, targetInstanceId, principals);
         const response = await provider.maintainRemoteManager!({ ...providerCall, request: maintenanceRequest });
         return remoteManagerMaintenanceResult(response, maintenanceRequest, material.owner);
@@ -352,6 +451,10 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
             return provider.requestRemoteRunSubmission({ ...providerCall, request });
           },
           requestRunAttempt: (request) => provider.requestRemoteRunAttempt!({ ...providerCall, request }),
+          requestRunCancel: async (request) => {
+            if (!provider.requestRemoteRunCancel) throw new Error("auth provider does not implement the observed run-cancel protocol");
+            return provider.requestRemoteRunCancel({ ...providerCall, request });
+          },
           requestRunRevoke: async (request) => {
             if (provider.requestRemoteRunRevoke === undefined) throw new Error(`the registered auth provider "${provider.name}" does not implement closed hosted-run revoke`);
             return provider.requestRemoteRunRevoke({ ...providerCall, request });
@@ -462,6 +565,19 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
           const result = await provider.scanRemoteManagerGoalIndex!({ ...providerCall, request });
           return remoteManagerGoalIndexEntries(result, request, material.owner);
         },
+        authorizeParticipation: async (caller) => {
+          if (!provider.authorizeRemoteManagerParticipation)
+            throw new Error(`the registered auth provider "${provider.name}" does not implement native workflow participation authorization`);
+          const request = remoteManagerParticipationAuthorizationRequest(
+            state,
+            "cli",
+            retainedRegistrationProof,
+            registered.processEpoch,
+            caller,
+          );
+          const result = await provider.authorizeRemoteManagerParticipation({ ...providerCall, request });
+          return remoteManagerParticipationAuthorized(result, request, material.owner);
+        },
         authorizeAdmin: async (caller) => {
           const request = remoteManagerAdminAuthorizationRequest(
             state,
@@ -475,9 +591,9 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
         },
       };
     } catch (e) {
-      if (service) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native manager child did not confirm hosted authority preparation; it was not retried");
+      if (service) throw unconfirmedStart(e, "the native manager child did not confirm hosted authority preparation; it was not retried");
       console.error(c.red(
-        `✗ remote supervision for space "${space}" was refused: ${(e as Error).message}. ` +
+        `✗ remote supervision for space "${space}" was refused: ${rejectionText(e)}. ` +
         `Foreground \`cotal spawn\` remains available; detached/managed agents require a live host-approved manager-service authority.`,
       ));
       process.exit(1);
@@ -499,7 +615,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
   try { resumeDurableCommitToken = resumeCommitToken(v, !service); }
   catch (e) {
     if (service) throw e;
-    console.error(c.red(`✗ ${(e as Error).message}`));
+    console.error(c.red(`✗ ${rejectionText(e)}`));
     process.exit(1);
   }
   // The registration policy is read AFTER every local refusal above and before the first dial: a
@@ -509,12 +625,12 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
   try {
     eventsRequired = (await refreshRegistrationPolicy(target))?.events === "required";
   } catch (e) {
-    if (service) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native manager child did not confirm startup; inspect the original protected launch records before another start");
-    console.error(c.red(`✗ ${(e as Error).message}`));
+    if (service) throw unconfirmedStart(e);
+    console.error(c.red(`✗ ${rejectionText(e)}`));
     process.exit(1);
   }
   if (!(await isReachable(server))) {
-    console.error(c.red(`Can't reach NATS at ${server}. Run: cotal up`));
+    console.error(c.red(`Can't reach NATS at ${server}. Run: \`cotal up\``));
     process.exit(1);
   }
   const consolePort = v["console-port"] ? Number(v["console-port"]) : undefined;
@@ -529,7 +645,29 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
   try {
     maxSessions = parsePositiveIntegerFlag("--max-sessions", v["max-sessions"]);
   } catch (e) {
-    if (service) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native manager child did not confirm startup; inspect the original protected launch records before another start");
+    if (service) throw unconfirmedStart(e);
+    console.error(c.red(`✗ ${rejectionText(e)}`));
+    process.exit(1);
+  }
+  // The per-owner seat ceiling, resolved like the name below: the flag wins, else what this root
+  // recorded at an earlier start, else the shipped default. Reading the record is what makes a
+  // bare restart, a repair, or a `spawn -f` that relaunches the manager keep a cap the operator
+  // set, instead of silently reopening the host to one owner.
+  let seatCap: SeatCap | undefined;
+  try {
+    seatCap = parseSeatCapFlag("--seat-cap", v["seat-cap"]) ?? readManagerSeatCap({ root: managerRoot, space });
+  } catch (e) {
+    if (service) throw unconfirmedStart(e);
+    console.error(c.red(`✗ ${rejectionText(e)}`));
+    process.exit(1);
+  }
+  // A name given here is recorded for this root's manager once it is up, so a restart keeps it.
+  // Without one, the name an earlier start recorded applies.
+  let name: string | undefined;
+  try {
+    name = v.name !== undefined ? assertManagerName(v.name) : readManagerName({ root: managerRoot, space });
+  } catch (e) {
+    if (service) throw unconfirmedStart(e);
     console.error(c.red(`✗ ${(e as Error).message}`));
     process.exit(1);
   }
@@ -551,15 +689,20 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
       wsPort,
       attachHost,
       maxSessions,
+      ...(seatCap !== undefined ? { seatCap } : {}),
+      ...(name !== undefined ? { name } : {}),
       installedExtensions: true,
       resumeAttemptId: v["resume-attempt"],
       resumeDurableCommitToken,
       remoteAuthority,
-      ...(service ? { workspaceRoot: managerRoot, onServiceIdentity: bindManagerServiceIdentity(service) } : {}),
+      // The root resolved above holds the manager's identity, records and signer. For a registered
+      // or selected space that is its registered root, whichever folder the run started from.
+      workspaceRoot: managerRoot,
+      ...(service ? { onServiceIdentity: bindManagerServiceIdentity(service) } : {}),
     });
   } catch (e) {
-    if (service) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native manager child did not confirm startup; inspect the original protected launch records before another start");
-    console.error(c.red(`✗ ${(e as Error).message}`));
+    if (service) throw unconfirmedStart(e);
+    console.error(c.red(`✗ ${rejectionText(e)}`));
     process.exit(1);
   }
   const managerContext = { root: managerRoot, space };
@@ -568,18 +711,24 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
   let releaseSettledRecord: (() => void) | undefined;
   const releasePidRecord = () => { releaseSettledRecord?.(); releaseStartingCustody?.(); };
   // Signals and cooperative requests share the sparing default. Only the process-bound
-  // `cotal down --with-agents` intent authorizes an agent reap; a managed child accepts only its
-  // request-bound native stop handoff.
+  // `cotal down --with-agents` intent authorizes an agent reap; a managed child accepts its
+  // request-bound native stop handoff, or a plain SIGTERM when none is published.
   let shuttingDown = false;
   // A start that failed under a pending stop leaves the exit to its own error once that stop settles.
   let startFailed = false;
   let stopped: Promise<void> | undefined;
   let disposeObserver: (() => void) | undefined;
-  const shutdown = () => {
+  const shutdown = (signal?: NodeJS.Signals) => {
     if (shuttingDown) return;
     let request: NativeServiceStopRequest | undefined;
     let withAgents: boolean;
-    if (service) {
+    if (service && signal === "SIGTERM" && !managerServiceStopRequested(service)) {
+      // A SIGTERM from kill, a systemd stop or a system shutdown carries no request, so it runs the
+      // sparing stop and leaves no stop receipt. A SIGINT without one is still ignored below: Ctrl-C
+      // reaches this child together with the CLI that publishes the request.
+      console.error(`• manager: received SIGTERM with no stop request; stopping with the default agent policy (space ${space})`);
+      withAgents = false;
+    } else if (service) {
       try { request = acceptManagerServiceStop(mgr, service); withAgents = request.withAgents; }
       catch { console.error(c.yellow("! the managed manager stop handoff was not accepted; inspect its original request and phase records")); return; }
     } else {
@@ -607,7 +756,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
           catch { /* Missing terminal evidence stays unknown to the original controller. */ }
         }
         console.error(c.red("✗ the native managed manager stop did not confirm completion; its phase evidence was retained"));
-      } else console.error(c.red(`✗ ${(e as Error).message}`));
+      } else console.error(c.red(`✗ ${rejectionText(e)}`));
       if (!startFailed) process.exit(1);
     });
   };
@@ -628,7 +777,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
     // settles, so wait for it to release the lease first; the start error still decides the exit.
     startFailed = true;
     await stopped;
-    throw error;
+    throw !service && isAuthRejection(error) ? await refusedManagerCredential(error as Error, space, managerRoot, server, target.remoteUser) : error;
   }
   // A stop that arrived during start owns the exit; this process never announces itself ready.
   if (shuttingDown) return;
@@ -637,11 +786,19 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
   // managed child already owns its exact starting PID slot; it settles that same process here.
   releaseSettledRecord = recordManagerPid(managerRoot, space);
   publishManagerSpareCapability(managerContext, mgr.spareSeats);
+  if (v.name !== undefined && name !== undefined) {
+    try { if (readManagerName(managerContext) !== name) recordManagerName(managerContext, name); }
+    catch (e) { console.error(c.yellow(`! the manager name was not recorded, so the next start does not keep it: ${(e as Error).message}`)); }
+  }
+  if (v["seat-cap"] !== undefined && seatCap !== undefined) {
+    try { if (readManagerSeatCap(managerContext) !== seatCap) recordManagerSeatCap(managerContext, seatCap); }
+    catch (e) { console.error(c.yellow(`! the manager seat cap was not recorded, so the next start does not keep it: ${(e as Error).message}`)); }
+  }
   if (!service) console.log(
     c.green("✓ manager up") +
-      c.dim(` (space ${space} · ${mgr.runtimeKind})`) +
+      c.dim(` (space ${space} · ${name !== undefined ? `${name} · ` : ""}${mgr.runtimeKind})`) +
       `\n  console: ${mgr.consoleUrl}` +
-      c.dim("\n  spawn: cotal spawn --detach <persona>   ·   stop: cotal stop --name <n>   (Ctrl-C to shut down)"),
+      c.dim("\n  spawn: `cotal spawn --detach <persona>`   ·   stop: `cotal stop --name <n>`   (Ctrl-C to shut down)"),
   );
   if (service) {
     // The served-contract binding precedes the serving receipt, so a serving child always has it.
@@ -694,7 +851,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
       try {
         configPath = materializePersona(root, launchSpec.runId, la);
       } catch (e) {
-        console.error(c.red(`✗ ${la.name}: ${(e as Error).message}`));
+        console.error(c.red(`✗ ${la.name}: ${rejectionText(e)}`));
         continue;
       }
       const reply = await mgr.startAgent(launchAgentToStartOpts(la, configPath, launchSpec.owner, launchSpec.runId));
@@ -726,8 +883,8 @@ function validateMaintenanceArguments(args: ParsedArgs, mode: "reconcile" | "sea
 async function confirmMaintenance(args: ParsedArgs, target: unknown, review: Report, question: string): Promise<boolean> {
   if (args.values.yes === true) return true;
   const presentation = presentationOf(args.values);
-  if (presentation === "json" || !process.stdin.isTTY || !process.stdout.isTTY || inputDisabledByFlag() || process.env.COTAL_NO_PROMPT === "1") throw new CommandFailure("refused", "USAGE_INVALID", "manager maintenance requires --yes outside an interactive terminal", { target, remedy: "inspect the same operation with --dry-run before confirming its scope" });
-  console.log(renderReport(review, presentation, terminalWidth(process.stdout)));
+  if (presentation === "json" || !process.stdin.isTTY || !process.stdout.isTTY || inputDisabledByFlag() || process.env.COTAL_NO_PROMPT === "1") throw new ConfirmationRequired("manager maintenance requires --yes outside an interactive terminal", { target, remedy: "inspect the same operation with --dry-run before confirming its scope, then run it with --yes" });
+  console.log(renderReport(review, presentation, process.stdout));
   const answer = await untilInputEnds((signal) => prompts.confirm({ message: question, initialValue: false, signal }));
   if (!prompts.isCancel(answer) && answer) return true;
   writeResult(presentation, { command: "manager", target, result: { kind: "manager-maintenance-cancelled", changed: false }, noOp: true }, (): Report => ({ sections: [{ title: "Manager maintenance cancelled", blocks: [{ kind: "lines", lines: ["The maintenance action was not submitted. No repair or seat drain was performed."] }] }] }));
@@ -786,6 +943,9 @@ async function runReconcileGate(args: ParsedArgs): Promise<void> {
   } catch (error) {
     if (isCommandFailure(error)) throw error;
     const beforeEffects = error instanceof GateReconcileRefused && ["no-gate", "not-frozen", "wrong-op-kind", "holder-alive", "holder-unknown", "liveness-unestablishable"].includes(error.condition);
+    // An open gate, or no gate, is a healthy coordinate: there is nothing to repair there.
+    const nothing = error instanceof GateReconcileRefused && (error.condition === "not-frozen" || error.condition === "no-gate");
+    if (nothing) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${error.condition === "not-frozen" ? `the ${endpoint} gate for instance ${instanceId} is open` : `there is no ${endpoint} gate for instance ${instanceId}`}, so there is nothing to repair`, { target: { ...target, condition: error.condition }, native: { code: error.condition, detail: error.message }, remedy: "nothing to do; if you meant another gate, name it with --endpoint and --instance" });
     // The guard's own sentence names the freeze-holder and the next step for this condition.
     if (beforeEffects) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `the native gate-repair guard refused (${error.condition}); the repair did not pass its pre-effect guard`, { target: { ...target, condition: error.condition }, native: { code: error.condition, detail: error.message }, remedy: "inspect the selected gate and the delivery liveness oracle; a timeout is not proof that its holder is gone" });
     throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native gate repair did not confirm completion; revocation, eviction or reopen work may have occurred. No mutation was retried", { target: { ...target, ...(error instanceof GateReconcileRefused ? { condition: error.condition } : {}) }, remedy: "re-observe this gate and its operation-bound native repair cursor before another explicit repair" });
@@ -822,6 +982,15 @@ async function runSeats(args: ParsedArgs): Promise<void> {
   writeResult(presentation, { command: "manager", target, result: { kind: "manager-seat-drain", entries, preview: false, drainSubmitted: true }, ...(incomplete ? { completeness: "partial" as const, failure: new CommandFailure("unknown", "OPERATION_UNKNOWN", "some native drains did not confirm completion; confirmed removals are retained, but an unresolved custodian effect was not treated as unchanged", { target, changed, remedy: "re-read the full seat IDs; no drain was retried" }) } : { noOp: changed.length === 0 }) }, view);
 }
 
+/** A failure on one line: its code, message, the error it wraps and its remedy; another error's native
+ *  code when it has one, its message and the error it wraps. */
+function failureLine(error: unknown): string {
+  if (isCommandFailure(error)) return `${error.code}: ${error.message}${error.cause === undefined ? "" : `; cause: ${failureLine(error.cause)}`}${error.remedy ? `; next: ${error.remedy}` : ""}`;
+  if (!(error instanceof Error)) return rejectionText(error);
+  const code = (error as NodeJS.ErrnoException).code;
+  return `${typeof code === "string" ? `${code}: ` : ""}${rejectionText(error)}${error.cause === undefined ? "" : `; cause: ${failureLine(error.cause)}`}`;
+}
+
 const maintenanceOutputFlags = [jsonFlag, plainFlag,
   { name: "yes", short: "y", type: "boolean", description: "confirm the selected guarded gate repair or childless-seat drain" },
   { name: "dry-run", type: "boolean", description: "review the selected maintenance scope without submitting repair or drain effects" },
@@ -846,9 +1015,11 @@ const managerCommands: Command[] = [
       { name: "console-host", type: "string", description: "explicit native console bind host" },
       { name: "ws-port", type: "string", description: "the prepared broker websocket port" },
       { name: "max-sessions", type: "string", description: "explicit positive native session ceiling" },
+      { name: "seat-cap", type: "string", description: "explicit native per-owner seat ceiling, or unlimited" },
       { name: "launch", type: "string", description: "private native launch spec for this selected space" },
       { name: "launch-sha256", type: "string", description: "full digest pinned by the saved service definition" },
       { name: "roster", type: "string", description: "absolute roster file whose agents start at launch" },
+      { name: "name", type: "string", description: "manager name for presence and --on; recorded for this root" },
       { name: "service-instance", type: "string", description: "full controller-assigned instance ID" },
       { name: "launch-request", type: "string", description: "full original launch request ID" },
       { name: "state-directory", type: "string", description: "owned private launch state directory" },
@@ -861,20 +1032,26 @@ const managerCommands: Command[] = [
     run: async (args) => {
       const service = managerServiceChild(args);
       try { await runManager(args, "auto", service); }
-      catch { throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native manager child did not establish its complete startup receipt; no replacement was launched and no diagnostic body was copied to stdout"); }
+      catch (error) {
+        // The controller quotes the last line this child logs, so that line names the cause: on one
+        // line in its log in the background, and on the terminal in the foreground wrapped as the
+        // CLI's own lines are.
+        const line = `the manager did not start: ${failureLine(error)}`;
+        writeSync(2, process.stderr.isTTY ? `${stderrLines("✗ ", line, c.red).join("\n")}\n` : `✗ ${line}\n`);
+        process.exit(exitCode("unknown", "OPERATION_UNKNOWN"));
+      }
     },
   },
   {
     kind: "command",
-    // The manager daemon `up` launches. `supervise` is the same entry for persisted callers, plus the
-    // deprecation warning; help and completion list neither.
+    // The manager daemon `up` launches. `supervise` is the same entry, listed in help.
     name: "__daemon-manager",
     hidden: true,
     group: "Manager",
     summary:
-      "run a manager - [--runtime <name>] (default pty; extension runtimes are explicit-only) [--space <s>] [--server <url>] [--console-port <n>] [--max-sessions <n>] [--roster <file>] [--launch <spec>] [--resume-attempt <id>]",
+      "run a manager for a space in this terminal; the default runtime is pty",
     flags: [
-      { name: "space", type: "string", value: "<s>", description: "space to supervise (default: this folder's auth space; env COTAL_SPACE when unset)" },
+      { name: "space", type: "string", value: "<s>", description: "space to supervise (default: env COTAL_SPACE, else this folder's space, else the one `cotal use` selected)" },
       { name: "server", type: "string", value: "<url>", description: "broker URL (default: the local mesh; env COTAL_SERVER when unset)" },
       { name: "runtime", type: "string", value: "<name>", description: "agent runtime (default pty; others come from installed extensions)" },
       { name: "execution", type: "string", value: "<runtime|none>", description: "runtime by default; none requires a fresh hosting user-auth control instance and no runtime or startup workload" },
@@ -882,15 +1059,22 @@ const managerCommands: Command[] = [
       { name: "console-host", type: "string", value: "<host>", description: "bind host for the console endpoint (default: loopback)" },
       { name: "ws-port", type: "string", value: "<n>", description: "broker ws listener port for the console session client" },
       { name: "max-sessions", type: "string", value: "<n>", description: "live-session ceiling (default 64; one session per console pane, so size for agents × panes)" },
+      { name: "seat-cap", type: "string", value: "<n|unlimited>", description: "live seats this manager admits per owner (default unlimited); kept for later starts in this root" },
+      { name: "name", type: "string", value: "<name>", description: "the name who --all, the manager choice and --on use for this manager; kept for later starts in this root" },
       { name: "roster", type: "string", value: "<file>", description: "declarative roster to boot at startup" },
-      { name: "launch", type: "string", value: "<spec>", description: "resolved mesh-manifest launch spec (cotal up -f / spawn -f)" },
+      { name: "launch", type: "string", value: "<spec>", description: "resolved mesh-manifest launch spec (`cotal up -f` / `spawn -f`)" },
       { name: "resume-attempt", type: "string", value: "<id>", description: "maintenance restore attempt accepted by resumePreserved" },
       { name: "resume-commit-token", type: "string", value: "<token>", description: "deprecated: durable resume commit evidence on argv; prefer --resume-commit-file" },
       { name: "resume-commit-file", type: "string", value: "<path>", description: "protected one-read resume commit handoff file" },
       { name: "resume-commit-sha256", type: "string", value: "<hex>", description: "full digest of the resume commit handoff" },
       { name: "spawn", type: "string", value: "<names>", description: "comma-separated personas to pre-spawn at startup" },
     ],
-    validate: (args) => { superviseExecution(args.values as Values); },
+    validate: (args) => {
+      superviseExecution(args.values as Values);
+      // COTAL_SERVER stands in for --server (see superviseTarget), so it is refused as the flag is.
+      const server = process.env.COTAL_SERVER;
+      if (args.values.server === undefined && server !== undefined && brokerUrlHasUserinfo(server)) throw brokerUrlCredentialRefusal("COTAL_SERVER");
+    },
     requiredExtensions: (args) => {
       if (superviseExecution(args.values as Values) === "none") return [];
       const runtime = args.values.runtime;
@@ -927,8 +1111,8 @@ const managerCommands: Command[] = [
       { name: "endpoint", type: "string", value: "<e>", description: `endpoint the instance serves (default: ${MANAGER_ENDPOINT})` },
       { name: "instance", type: "string", value: "<id>", description: "instance id to deregister, the whole id as `cotal ps` prints it (default: this folder's persisted manager instance)" },
     ],
-    validate: () => { throw new CommandFailure("refused", "USAGE_INVALID", "the legacy deregistration spelling no longer executes", { remedy: "use cotal endpoint deregister <class> <full-instance-id> [--space <space>] [--yes|--dry-run]" }); },
-    run: async () => { throw new CommandFailure("refused", "USAGE_INVALID", "use cotal endpoint deregister <class> <full-instance-id> instead"); },
+    validate: () => { throw new CommandFailure("refused", "USAGE_INVALID", "the legacy deregistration spelling no longer executes", { remedy: "use cotal endpoint deregister <class> <full-instance-id> [--space <space>] [--yes|--dry-run], which needs a static space's signing authority; an open or user-auth space has no command that removes a registration", selfContained: true }); },
+    run: async () => { throw new CommandFailure("refused", "USAGE_INVALID", "use `cotal endpoint deregister <class> <full-instance-id>` instead"); },
   },
   {
     kind: "command",
@@ -948,8 +1132,8 @@ const managerCommands: Command[] = [
 ];
 
 const maintenance = [
-  { name: "reconcile", source: "reconcile-gate", summary: "repair an owned manager issuance gate from its mesh root" },
-  { name: "seats", source: "seats", summary: "inspect retained local seats; --drain removes only childless records" },
+  { name: "reconcile", source: "reconcile-gate", summary: "repair an owned manager issuance gate from its mesh root", examples: [{ command: "cotal manager reconcile --dry-run", note: "show whether its issuance gate needs repair" }, { command: "cotal manager reconcile --yes", note: "repair it" }] },
+  { name: "seats", source: "seats", summary: "inspect retained local seats; --drain removes only childless records", examples: [{ command: "cotal manager seats", note: "list the seats an earlier manager left" }, { command: "cotal manager seats --drain --dry-run", note: "preview draining the finished seats" }] },
 ].map((mode) => {
   const source = managerCommands.find((command) => command.name === mode.source);
   if (!source) throw new Error(`manager command ${mode.source} is not registered`);
@@ -962,15 +1146,27 @@ for (const mode of maintenance) for (const flag of mode.command.flags ?? []) {
   maintenanceFlags.set(flag.name, { ...flag, description: shared ? flag.description : `${mode.name}: ${flag.description ?? ""}` });
 }
 
+/** The manager's lifecycle, which the CLI runs as `service <verb> manager` before this group parses. */
+const lifecycle = [
+  { name: "start", summary: "start the manager for this folder's or the selected space; pty runtime and its registered broker by default", examples: [{ command: "cotal manager start", note: "start it with the pty runtime" }, { command: "cotal manager start --foreground", note: "keep it in this terminal" }, { command: "cotal manager start --name <name>", note: "name it, so commands can pick it with --on" }], usage: "cotal manager start [--runtime <name>] [--roster <file>] [--name <name>] [--foreground|--dry-run] [--space <s>]" },
+  { name: "stop", summary: "stop it; its agents follow the runtime's default unless --with-agents", examples: [{ command: "cotal manager stop", note: "stop the manager" }, { command: "cotal manager stop --with-agents", note: "stop it and every agent it runs" }], usage: "cotal manager stop [--with-agents] [--yes|--dry-run] [--space <s>]" },
+  { name: "restart", summary: "stop it, then start it again", examples: [{ command: "cotal manager restart", note: "stop the manager, then start it again" }], usage: "cotal manager restart [--with-agents] [--yes|--dry-run] [--space <s>]" },
+  { name: "status", summary: "show whether it runs, and its process and endpoint", examples: [{ command: "cotal manager status", note: "show whether it runs, its process and endpoint" }], usage: "cotal manager status [--space <s>]" },
+  { name: "logs", summary: "read what it logged", examples: [{ command: "cotal manager logs", note: "read what the manager logged" }, { command: "cotal manager logs --follow", note: "keep following it" }], usage: "cotal manager logs [--tail <n>] [--follow] [--space <s>]" },
+  { name: "install", summary: "start it at login with a systemd user unit", examples: [{ command: "cotal manager install", note: "start it at login with a systemd user unit" }, { command: "cotal manager install --dry-run", note: "show the unit it would install" }], usage: "cotal manager install [--dry-run] [--space <s>]" },
+  { name: "uninstall", summary: "remove that unit", examples: [{ command: "cotal manager uninstall", note: "remove its login unit" }], usage: "cotal manager uninstall [--yes|--dry-run] [--space <s>]" },
+] as const;
+
 function managerInvocation(args: ParsedArgs): { command: Command; args: ParsedArgs } | undefined {
   const parsed = parseCommandArgs(managerGroup, [...args.raw]);
   const mode = parsed.positionals[0];
   if (mode === undefined) {
-    if (Object.keys(parsed.values).some((key) => !["json", "plain"].includes(key))) throw new CommandFailure("refused", "USAGE_INVALID", "choose manager reconcile or manager seats before its options");
+    if (Object.keys(parsed.values).some((key) => !["json", "plain"].includes(key))) throw new CommandFailure("refused", "USAGE_INVALID", "choose a manager command, such as manager start, before its options");
     return undefined;
   }
+  if (lifecycle.some((item) => item.name === mode)) throw new CommandFailure("refused", "UNSUPPORTED", `manager ${mode} runs through the cotal CLI's service controller, which this composition does not include`, { remedy: `cotal service ${mode} manager`, remedyIsCommand: true });
   const child = maintenance.find((item) => item.name === mode);
-  if (!child) throw new CommandFailure("refused", "USAGE_INVALID", "manager takes reconcile or seats");
+  if (!child) throw new CommandFailure("refused", "USAGE_INVALID", `manager takes ${[...lifecycle, ...maintenance].map((item) => item.name).join(", ")}`);
   const index = parsed.positionalIndices?.[0];
   if (index === undefined) throw new Error("the manager subcommand has no parsed argument index");
   const words = args.raw.filter((_, position) => position !== index);
@@ -981,25 +1177,33 @@ const managerGroup: Command = {
   kind: "command",
   name: "manager",
   aliases: ["mgr"],
-  group: "Manager",
-  summary: "inspect retained local seats or repair an owned manager gate",
-  usage: "cotal manager [reconcile [--yes|--dry-run] | seats [--drain [--yes|--dry-run]]] [--json|--plain]",
-  positionals: "[reconcile | seats]",
+  group: "Services",
+  summary: "start, stop and check the manager that runs your agents",
+  usage: "cotal manager [start | stop | restart | status | logs | install | uninstall | reconcile | seats] [options]",
+  examples: [{ command: "cotal manager start", note: "start the manager that runs your agents" }, { command: "cotal manager status", note: "check whether it runs" }, { command: "cotal manager logs --follow", note: "follow what it logs" }],
+  positionals: "[start | stop | restart | status | logs | install | uninstall | reconcile | seats]",
   outputs: ["json", "plain"],
   flags: [...maintenanceFlags.values()],
-  subcommands: maintenance.map((mode) => ({ name: mode.name, summary: mode.summary, flagNames: mode.command.flags?.map((flag) => flag.name), outputs: mode.command.outputs, usage: mode.name === "seats" ? "cotal manager seats [--drain [--yes|--dry-run]] [--json|--plain]" : "cotal manager reconcile [--space <space>] [--server <url>] [--instance <id>] [--yes|--dry-run] [--json|--plain]" })),
+  subcommands: [
+    ...lifecycle.map((mode) => ({ name: mode.name, summary: mode.summary, usage: mode.usage, examples: mode.examples, flagNames: ["json", "plain"], outputs: mode.name === "logs" ? ["json", "ndjson", "plain"] as const : ["json", "plain"] as const })),
+    ...maintenance.map((mode) => ({ name: mode.name, summary: mode.summary, examples: mode.examples, flagNames: mode.command.flags?.map((flag) => flag.name), outputs: mode.command.outputs, usage: mode.name === "seats" ? "cotal manager seats [--drain [--yes|--dry-run]] [--json|--plain]" : "cotal manager reconcile [--space <space>] [--server <url>] [--instance <id>] [--yes|--dry-run] [--json|--plain]" })),
+  ],
   reads: true,
   prepareMeshTarget: false,
   validate: (args) => { presentationOf(args.values); const invocation = managerInvocation(args); return invocation?.command.validate?.(invocation.args); },
   async run(args) {
     const invocation = managerInvocation(args);
     if (invocation) return invocation.command.run(invocation.args);
-    writeResult(presentationOf(args.values), { command: "manager", target: null, result: { kind: "manager-maintenance-commands", operations: maintenance.map(({ name, summary }) => ({ name, summary })), managerStarted: false } }, (): Report => ({ sections: [
-      { title: "Manager maintenance", blocks: [{ kind: "commands", items: maintenance.map((mode) => ({ command: `cotal mgr ${mode.name}`, description: mode.summary })) }] },
-      { blocks: [{ kind: "lines", lines: [{ text: "These commands start no manager. Repair and drain default to cancellation; scripted maintenance requires --yes. Preview the scope with --dry-run.", tone: "hint" }] }] },
+    writeResult(presentationOf(args.values), { command: "manager", target: null, result: { kind: "manager-maintenance-commands", lifecycle: lifecycle.map(({ name, summary }) => ({ name, summary })), operations: maintenance.map(({ name, summary }) => ({ name, summary })), managerStarted: false } }, (): Report => ({ sections: [
+      { title: "Manager", blocks: [{ kind: "commands", items: lifecycle.map((mode) => ({ command: `cotal manager ${mode.name}`, description: mode.summary })) }] },
+      { title: "Maintenance", blocks: [{ kind: "commands", items: maintenance.map((mode) => ({ command: `cotal manager ${mode.name}`, description: mode.summary })) }] },
+      { blocks: [{ kind: "lines", lines: [{ text: "Bare manager starts nothing. `cotal manager start` is `cotal service start manager`; `cotal service` lists it with the other services.", tone: "hint" }] }] },
     ] }));
   },
 };
 
 const daemonManager = managerCommands.find((command) => command.name === "__daemon-manager")!;
-registry.register(...managerCommands.map((command) => command.name === "seats" || command.name === "reconcile-gate" ? { ...command, hidden: true } : command), deprecatedDaemonEntry("supervise", daemonManager), managerGroup, endpointDeregisterAction);
+/** The manager's daemon entry, kept for the units, scripts and containers that run it: hidden, with
+ *  its parser and foreground run unchanged, and a warning naming `cotal manager start` each run. */
+const supervise: Command = { ...deprecatedDaemonEntry(DEPRECATED_MANAGER_ENTRY, daemonManager), hidden: true };
+registry.register(...managerCommands.map((command) => command.name === "seats" || command.name === "reconcile-gate" ? { ...command, hidden: true } : command), supervise, managerGroup, endpointDeregisterAction);

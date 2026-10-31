@@ -2,6 +2,7 @@ import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { mkSecretDir } from "@cotal-ai/core";
 import { homeCotalDir } from "@cotal-ai/workspace";
 
 /**
@@ -103,16 +104,16 @@ function readManifest(): Manifest {
   try {
     parsed = JSON.parse(readFileSync(path, "utf8"));
   } catch {
-    throw new Error(`Corrupt Cotal skills manifest at ${path} (invalid JSON). Fix or delete it, then re-run cotal setup.`);
+    throw new Error(`Corrupt Cotal skills manifest at ${path} (invalid JSON). Fix or delete it, then re-run \`cotal setup\`.`);
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
-    throw new Error(`Corrupt Cotal skills manifest at ${path} (unexpected shape). Fix or delete it, then re-run cotal setup.`);
+    throw new Error(`Corrupt Cotal skills manifest at ${path} (unexpected shape). Fix or delete it, then re-run \`cotal setup\`.`);
   const skills = (parsed as { skills?: unknown }).skills;
   // Must be a plain object, never an array: array indices ("0", "1") pass a slug check, so an array
   // would let a numeric "name" be treated as owned (and deleted), and a string property assigned to an
   // array is dropped by JSON.stringify, so ownership would silently fail to persist. Reject it outright.
   if (typeof skills !== "object" || skills === null || Array.isArray(skills))
-    throw new Error(`Corrupt Cotal skills manifest at ${path} (skills is not an object). Fix or delete it, then re-run cotal setup.`);
+    throw new Error(`Corrupt Cotal skills manifest at ${path} (skills is not an object). Fix or delete it, then re-run \`cotal setup\`.`);
   for (const [name, dig] of Object.entries(skills as Record<string, unknown>)) {
     if (!validSkillName(name)) throw new Error(`Corrupt Cotal skills manifest at ${path}: illegal skill name ${JSON.stringify(name)}.`);
     if (typeof dig !== "string" || !DIGEST.test(dig)) throw new Error(`Corrupt Cotal skills manifest at ${path}: bad digest for ${JSON.stringify(name)}.`);
@@ -123,7 +124,7 @@ function readManifest(): Manifest {
 /** Write the manifest atomically (temp + rename) so a crash can't leave a half-written ledger. */
 function writeManifest(m: Manifest): void {
   const path = manifestPath();
-  mkdirSync(dirname(path), { recursive: true });
+  mkSecretDir(dirname(path)); // the Cotal home holds secrets, so it is made, or kept, private to you
   writeOwnedFile(path, Buffer.from(JSON.stringify(m, null, 2) + "\n")); // stage-and-rename: its temp is unlinked + `wx`-created, so it can't be a symlink/hard-link clobber vector
 }
 

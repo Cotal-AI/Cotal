@@ -1,4 +1,4 @@
-import assert from "node:assert/strict";
+import nodeAssert from "node:assert/strict";
 import { createAccount } from "@nats-io/nkeys";
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { connect, type NatsConnection } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
-import { SMOKE_BROKER_TOKEN, awaitBrokerReady, freePort, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, awaitBrokerReady, countedAssert, emitSentinel, freePort, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import {
   buildContractClosureManifest, contractArtifactCanonicalBytes, contractStoreContext, fetchContractClosure,
   parseServiceAuthorityRequest, publishContractArtifact, publishContractClosureManifest,
@@ -15,6 +15,9 @@ import {
   isReachable, mintLifecycleUid, parseEndpointGate, parseServiceGateAuthority, serviceGateApprovalLive,
   serveIssuanceGateKv, type EndpointGateRow, type ServiceGateAuthority,
 } from "../src/index.js";
+
+const counted = countedAssert(nodeAssert);
+const assert: typeof nodeAssert = counted.assert;
 
 const space = "service-gate-smoke", endpoint = "org.example.orders", instanceId = mintLifecycleUid();
 const key = epgateKey(endpoint, instanceId), enc = new TextEncoder();
@@ -111,6 +114,7 @@ try {
     contractArtifacts: [valid.manifest, valid.root, second.manifest, second.root, ...leaves.slice(0, 63)],
   } }), "transport accounts for a deduplicated union of multiple closures");
   console.log("service gate: native KV registration and release guards passed; host activation/retirement not exercised");
+  emitSentinel({ passed: counted.cells(), failed: 0 });
 } finally {
   await nc?.close();
   await killAndAwaitExit(broker);

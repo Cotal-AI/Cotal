@@ -114,10 +114,11 @@ try {
   ok("a launch spec was written", specs.length === 1, specs);
   ok("launch spec is 0600", (statSync(join(runDir, specs[0])).mode & 0o777) === 0o600);
 
-  // 4) up -f again, broker still running → refuse (never re-seed as fresh, never adopt the broker).
+  // 4) up -f again, this folder's mesh still running → refuse (never re-seed as fresh, never adopt
+  //    the broker), naming the mesh as running and the routes that change it.
   const again = cli("up", "-f", manifest, "--server", SERVER);
-  ok("up -f refuses when a broker is already reachable", /already has a broker/.test(again.stderr), again.stderr + again.stdout);
-  ok("...and says a fresh boot will not adopt it", /a fresh boot will not adopt it/.test(again.stderr) && again.status === 1, { status: again.status, stderr: again.stderr });
+  ok("up -f refuses when this folder's mesh is already running", new RegExp(`mesh "${SPACE}" is already running at .* from this folder`).test(again.stderr) && again.status === 1, { status: again.status, stderr: again.stderr });
+  ok("...and names team deploy and down before another up -f", again.stderr.includes(`cotal team deploy ${manifest}`) && again.stderr.includes(`cotal up -f ${manifest}`), again.stderr);
 
   // 5) down tears the mesh down + clears the run dir — including the manager (nothing orphaned).
   //    `cotal down` now awaits real exit; keep a backstop poll keyed on the EXACT manager pid

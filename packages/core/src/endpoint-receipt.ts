@@ -32,6 +32,7 @@ import { headers as natsHeaders, type NatsConnection } from "@nats-io/transport-
 import { canonicalJson, contractDigest, isContractDigest } from "./canonical.js";
 import { EpEnvelopeError } from "./endpoint-envelope.js";
 import { withDeadline } from "./deadline.js";
+import { isCasLoss } from "./endpoint-records.js";
 import { epfSubject, assertIdToken, type EpCaller } from "./endpoint-subjects.js";
 import { epfStreamName, readLastFact, type AcceptanceFact } from "./endpoint-journal.js";
 import { verifyArtifactSignature, resolveAnchorForUse, assertAnchorScopeCovers, signArtifact, type AnchorResolver, type SignerAnchor } from "./endpoint-signing.js";
@@ -386,8 +387,7 @@ export async function publishReceipt(
     await js.publish(subject, new TextEncoder().encode(canonicalJson(candidate)), { headers: h });
     return { won: true, receipt: candidate };
   } catch (e) {
-    const code = (e as { code?: unknown })?.code;
-    if (code !== 10071 && code !== 10164) throw e;
+    if (!isCasLoss(e)) throw e;
     const winner = await readReceipt(ctx, refSnap);
     if (winner === undefined)
       throw new EpEnvelopeError("internal", `the receipt CAS for ${subject} was lost but no winning receipt is readable (SPEC 13.4)`);

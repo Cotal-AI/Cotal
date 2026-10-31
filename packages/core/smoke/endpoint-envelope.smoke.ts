@@ -14,6 +14,7 @@ import {
   checkRequestSubjectAgreement, assertClassMatches, assertArgsValid, assertOutputValid, authDigest,
   epRequestSubject, parseEpSubject, type ParsedEpRequest,
   compileContractSchema, VOID_SCHEMA, VOID_SCHEMA_DIGEST, SCHEMA_PROFILE,
+  compileContract, epCast, undeclaredArg, undeclaredArgInstance,
 } from "../src/index.js";
 
 let ok = 0, fail = 0;
@@ -230,6 +231,23 @@ rejects("present args against the void schema are bad-request", "bad-request",
   let typeMsg = "";
   try { assertArgsValid(closed, { name: 7 }); } catch (e) { typeMsg = (e as Error).message; }
   c("a non-additionalProperties refusal does not grow a property name", !typeMsg.includes("additional properties:"), typeMsg);
+}
+
+// The caller-side refusal marks the key AND the instance the request binds, so a surface can ask
+// that instance which release it runs. Refused before publish, so the connection is never touched.
+{
+  const contract = { input: compileContract({ root: { type: "object", properties: { name: { type: "string" } }, additionalProperties: false } }), output: compileContract({ root: VOID_SCHEMA }) };
+  const IID = "b".repeat(26);
+  const refusal = async (bind?: { instanceId: string; epoch: number }): Promise<unknown> => {
+    try { await epCast(undefined as never, "s", { mode: "one" }, { endpoint: "manager", command: "spawn", contract, caller, args: { name: "x", runtime: "pty" }, ...(bind ? { bind } : {}) }); }
+    catch (e) { return e; }
+    return undefined;
+  };
+  const bound = await refusal({ instanceId: IID, epoch: 3 });
+  c("an undeclared key in a bound request names the key and the bound instance, not-executed",
+    undeclaredArg(bound) === "runtime" && undeclaredArgInstance(bound) === IID && (bound as EpEnvelopeError).outcome === "not-executed", bound);
+  const unbound = await refusal();
+  c("an unbound request names the key and no instance", undeclaredArg(unbound) === "runtime" && undeclaredArgInstance(unbound) === undefined, unbound);
 }
 
 // The §13.8 validation budget on the REQUEST path is REPORTED, not enforced. No available

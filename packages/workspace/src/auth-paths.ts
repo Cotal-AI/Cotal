@@ -1,12 +1,14 @@
 import { CommandFailure } from "./output.js";
-import { existsSync, linkSync, lstatSync, readFileSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, type Stats } from "node:fs";
+import { existsSync, linkSync, lstatSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, type Dirent, type Stats } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { join, dirname, resolve } from "node:path";
+import { join, dirname, resolve, sep } from "node:path";
+import { homeCotalDir, homeRecordEntries, userCotalDir } from "./cotal-home.js";
 import {
   composeSpaceAuth,
   jwtIssuedAt,
   mkSecretDir,
   newIdentity,
+  oneLine,
   validateSpaceAuthForRead,
   writeSecretFile,
   writeSecretFileAtomic,
@@ -44,6 +46,39 @@ export function authDir(root: string): string {
 /** `<root>/.cotal/stack-controller.json`, the whole-stack journal `cotal up` writes for this root. */
 export function stackJournalPath(root: string): string {
   return join(root, ".cotal", "stack-controller.json");
+}
+
+/** The root a folder's stack journal names, read for that field alone. Undefined when the folder has
+ *  no journal, or one that is not a small regular file naming a root. */
+export function stackJournalRoot(root: string): string | undefined {
+  const path = stackJournalPath(root);
+  try {
+    const file = lstatSync(path);
+    if (!file.isFile() || file.size > 64 * 1024) return undefined;
+    const value = JSON.parse(readFileSync(path, "utf8")) as { root?: unknown } | null;
+    return typeof value?.root === "string" ? value.root : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The way back for a project folder moved away from `recordedRoot`, the folder its records name. A
+ *  broker from an earlier release that kept running there may have created empty folders at that path,
+ *  which a plain move back would nest the project inside. */
+export function movedRootRemedy(recordedRoot: string): string {
+  return existsSync(recordedRoot)
+    ? `move what is now at ${recordedRoot} aside, such as empty folders a running broker created there, then move this folder back to ${recordedRoot} and run the command again there`
+    : `move this folder back to ${recordedRoot}, then run the command again there`;
+}
+
+/** The longest space name `space create` and `cotal up` accept. A local file that carries a space
+ *  spells its {@link spaceKey}, twice the name's length, beside up to about 90 other bytes, and a
+ *  file name holds at most 255 bytes, so a longer name could be prepared but not started. */
+export const SPACE_NAME_MAX = 64;
+
+/** The one-line refusal for a space name longer than {@link SPACE_NAME_MAX}, or undefined. */
+export function spaceNameTooLong(space: string): string | undefined {
+  return space.length > SPACE_NAME_MAX ? `the space name has ${space.length} characters, and a space name holds at most ${SPACE_NAME_MAX}, because the names of the local files that carry it spell it twice over` : undefined;
 }
 
 /** The ONE injective, case-safe space key: lowercase hex of the space's UTF-8 bytes. Every
@@ -129,8 +164,8 @@ export function spaceFromSegment(name: string): string | undefined {
 
 /** The SPACE-SCOPED user-auth state dir (`<root>/.cotal/auth/space.<hex>`) — the one layout fact
  *  the workstation layer owns about user auth: the auth provider persists its material under this
- *  dir (opaque to us), and its EXISTENCE marks the space as user-auth-enabled on disk. Keyed by
- *  {@link spaceSegment} so two case-differing tenants can never share one state dir and no space
+ *  dir (opaque to us). A regular provider pin inside the real directory marks user-auth state.
+ *  Keyed by {@link spaceSegment} so two case-differing tenants can never share one state dir and no space
  *  name can alias a reserved sibling of the auth dir. Fails loud on a degenerate space — BEFORE
  *  any caller can mutate at an aliased path.
  *
@@ -212,7 +247,7 @@ const USER_AUTH_MARKER_FILES = ["idp.json", "callout.json"] as const;
 function pathHasUserAuthMarker(dir: string): boolean {
   let st;
   try {
-    st = statSync(dir);
+    st = lstatSync(dir);
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === "ENOENT") return false;
     throw e;
@@ -225,7 +260,7 @@ function pathHasUserAuthMarker(dir: string): boolean {
   // about a trust marker, and uncertainty fails CLOSED (loud), never open.
   return USER_AUTH_MARKER_FILES.some((f) => {
     try {
-      return statSync(join(dir, f)).isFile();
+      return lstatSync(join(dir, f)).isFile();
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code === "ENOENT") return false;
       throw e;
@@ -291,6 +326,71 @@ export function findCotalRoot(start: string = process.cwd()): string {
     const parent = dirname(dir);
     if (parent === dir) return resolve(start);
     dir = parent;
+  }
+}
+
+/** Why `<root>/.cotal` cannot hold the folder's records: it exists and is not a directory, such as a
+ *  notes file named `.cotal`. Undefined when it is a directory or absent. */
+export function cotalDirProblem(root: string): string | undefined {
+  const path = join(root, ".cotal");
+  let stat: Stats;
+  try {
+    stat = statSync(path);
+  } catch {
+    return undefined;
+  }
+  return stat.isDirectory() ? undefined : `${path} is a ${stat.isFile() ? "file" : "special file"}, not a directory, so it cannot hold this folder's Cotal records`;
+}
+
+/** Why a project folder's path cannot hold a stack: it contains a control character, such as a tab or a
+ *  newline, which a stack journal does not record, or a bidirectional formatting mark, which can make
+ *  one path display as another. The path is named as {@link oneLine} shows it. Undefined when it can. */
+export function rootPathProblem(root: string): string | undefined {
+  const found = /[\p{Cc}\p{Bidi_Control}]/u.exec(root)?.[0];
+  if (found === undefined) return undefined;
+  const code = found.codePointAt(0)!, hex = code.toString(16).toUpperCase().padStart(4, "0");
+  const names: Record<number, string> = { 9: "a tab", 10: "a newline", 13: "a carriage return", 27: "an escape character", 127: "a delete character" };
+  const name = names[code] ?? (/\p{Cc}/u.test(found) ? `the control character U+${hex}` : `the bidirectional formatting mark U+${hex}`);
+  return `the folder path ${oneLine(root)} contains ${name}, and a project path may hold neither control characters nor bidirectional formatting marks`;
+}
+
+/** The control directory `path` is or lies in: a root's `.cotal`, or the Cotal home. The default home
+ *  holds records only, so every path under it lies in it. A home `COTAL_HOME` redirects may hold
+ *  project folders beside its records, so under it only the home itself and its record entries
+ *  ({@link homeRecordEntries}) count. */
+export function controlDirectory(path: string): string | undefined {
+  const home = resolve(homeCotalDir());
+  if (path === home) return home;
+  if (path.startsWith(`${home}${sep}`)) {
+    if (home === resolve(userCotalDir()) || homeRecordEntries.has(path.slice(home.length + 1).split(sep)[0]!)) return home;
+  }
+  const parts = path.split(sep), at = parts.indexOf(".cotal");
+  return at === -1 ? undefined : parts.slice(0, at + 1).join(sep);
+}
+
+/** Why `root` cannot be a project folder: it is, or is in, a control directory, by its own path or by
+ *  the physical path its links lead to. A `.cotal` made there would sit among that directory's
+ *  credentials and records, and start a second stack inside another project's. `project` is the
+ *  folder that control directory belongs to, absent for the machine home's. Undefined when it can. */
+export function rootControlProblem(root: string): { controlDirectory: string; project?: string; message: string } | undefined {
+  const path = resolve(root);
+  let physical: string | undefined;
+  try { physical = realpathSync.native(path); } catch { physical = undefined; }
+  const control = controlDirectory(path) ?? (physical === undefined ? undefined : controlDirectory(physical));
+  if (control === undefined) return undefined;
+  const project = control === resolve(homeCotalDir()) ? undefined : dirname(control);
+  const holds = project === undefined ? "this machine's own records" : `the Cotal records of the project ${project}`;
+  return { controlDirectory: control, project, message: `${path} is ${path === control || physical === control ? "" : "in "}the control directory ${control}, which holds ${holds}, so it cannot be a project folder` };
+}
+
+/** Where `<root>/.cotal` leads when it is a symlink, such as a link to another project's `.cotal`.
+ *  Undefined when it is a real directory, absent, or a link that leads nowhere. */
+export function cotalDirLink(root: string): string | undefined {
+  const path = join(root, ".cotal");
+  try {
+    return lstatSync(path).isSymbolicLink() ? realpathSync(path) : undefined;
+  } catch {
+    return undefined;
   }
 }
 
@@ -1091,33 +1191,40 @@ export function assertSingleSpaceBroker(dir: string, operation: string): void {
 export function accountInventory(dir: string): { spaces: string[]; corrupt: string[] } {
   const spaces: string[] = [];
   const corrupt: string[] = [];
-  if (existsSync(dir)) {
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      if (!entry.name.startsWith(SPACE_ACCOUNT_PREFIX) || !entry.name.endsWith(SPACE_ACCOUNT_SUFFIX)) continue;
-      // From here the entry CLAIMS the account namespace; anything wrong is corruption, never a skip.
-      const fromName = spaceFromAccountFile(entry.name);
-      if (fromName === undefined || !entry.isFile()) {
-        corrupt.push(entry.name);
-        continue;
-      }
-      let doc: { space?: unknown; account?: unknown };
-      try {
-        doc = JSON.parse(readFileSync(join(dir, entry.name), "utf8")) as { space?: unknown; account?: unknown };
-      } catch {
-        corrupt.push(entry.name);
-        continue;
-      }
-      // The name must round-trip AND the record must carry the account material it claims to.
-      // "Validated inventory" has to mean the shape a reader will compose, or a semantically-empty
-      // record (`{"space":"alpha"}`, no `account`) counts as a tenant here and then crashes the very
-      // `status`/compose path this inventory exists to keep fail-closed. Match the SpaceAccountAuth
-      // fields those readers dereference; a missing/blank one is corruption, not a tenant.
-      if (typeof doc.space !== "string" || doc.space !== fromName || !isAccountShape(doc.account)) {
-        corrupt.push(entry.name);
-        continue;
-      }
-      spaces.push(doc.space);
+  // Only absence is absent: `existsSync` would read a folder this account cannot enter as missing,
+  // and count no tenants under a `.cotal` it cannot read. That failure propagates like any other.
+  let entries: Dirent[];
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+    entries = [];
+  }
+  for (const entry of entries) {
+    if (!entry.name.startsWith(SPACE_ACCOUNT_PREFIX) || !entry.name.endsWith(SPACE_ACCOUNT_SUFFIX)) continue;
+    // From here the entry CLAIMS the account namespace; anything wrong is corruption, never a skip.
+    const fromName = spaceFromAccountFile(entry.name);
+    if (fromName === undefined || !entry.isFile()) {
+      corrupt.push(entry.name);
+      continue;
     }
+    let doc: { space?: unknown; account?: unknown };
+    try {
+      doc = JSON.parse(readFileSync(join(dir, entry.name), "utf8")) as { space?: unknown; account?: unknown };
+    } catch {
+      corrupt.push(entry.name);
+      continue;
+    }
+    // The name must round-trip AND the record must carry the account material it claims to.
+    // "Validated inventory" has to mean the shape a reader will compose, or a semantically-empty
+    // record (`{"space":"alpha"}`, no `account`) counts as a tenant here and then crashes the very
+    // `status`/compose path this inventory exists to keep fail-closed. Match the SpaceAccountAuth
+    // fields those readers dereference; a missing/blank one is corruption, not a tenant.
+    if (typeof doc.space !== "string" || doc.space !== fromName || !isAccountShape(doc.account)) {
+      corrupt.push(entry.name);
+      continue;
+    }
+    spaces.push(doc.space);
   }
   // The pre-W4 monolith counts as a tenant too; one that will not read counts as CORRUPT, not as
   // absent - a reader like `status` must see the uncertainty, not crash or under-count on it.

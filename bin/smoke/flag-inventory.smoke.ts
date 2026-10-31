@@ -22,12 +22,16 @@
  *    (e.g. `stop --model` was accepted-and-ignored, now a usage error); the dead `--drive` flag
  *    is gone.
  *
+ * It also checks the Commands table in docs/cli.mdx against the registry: one row per command,
+ * hidden ones included, under the section help lists it in, linked to a heading of that page.
+ *
  * Run: pnpm smoke:flag-inventory
  */
 import nodeAssert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
-import { registry, type Command } from "@cotal-ai/core";
-import { GLOBAL_FLAGS } from "@cotal-ai/workspace";
+import { commandUsage, registry, type Command, type Subcommand } from "@cotal-ai/core";
+import { GLOBAL_FLAGS, parseCommaList } from "@cotal-ai/workspace";
 import "@cotal-ai/cli"; // registers the base CLI commands
 import "@cotal-ai/manager"; // registers supervise/start/stop/ps/attach
 import "@cotal-ai/delivery"; // registers deliver
@@ -40,6 +44,20 @@ const TARGET = ["creds:string", "server:string", "space:string:s"];
 const counted = countedAssert(nodeAssert);
 const assert: typeof nodeAssert = counted.assert;
 const cells = counted.cells;
+// One list rule serves the ACL/persona flags; command-specific validation stays at each caller.
+for (const [input, expected] of [
+  [undefined, undefined], ["", []], ["   ", []], [",", []],
+  [" review , , ops ", ["review", "ops"]], ["none", ["none"]],
+  ["review,review", ["review", "review"]], ["review.>,ops.*", ["review.>", "ops.*"]],
+] as const) assert.deepEqual(parseCommaList(input), expected, `comma-list flag ${JSON.stringify(input)}`);
+
+for (const [file, calls] of [["spawn", 6], ["mint", 2], ["persona", 1], ["persona-remote", 6], ["personas", 1]] as const) {
+  const source = readFileSync(new URL(`../../implementations/cli/src/commands/${file}.ts`, import.meta.url), "utf8");
+  assert.match(source, /import\s*\{[^}]*\bparseCommaList\b[^}]*\}\s*from\s*["']@cotal-ai\/workspace["']/s, `${file} imports the shared list rule`);
+  assert.equal([...source.matchAll(/\bparseCommaList\(/g)].length, calls, `${file} routes its list flags through the shared rule`);
+  assert.doesNotMatch(source, /\.split\(\s*["'],["']\s*\)/, `${file} does not carry another comma splitter`);
+}
+
 const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: boolean }> = {
   // ---- Canonical commands -------------------------------------------------------------------
   // Stage 2b: setup is configure-only; --open's home is `cotal up`, and `go` (a pure alias of setup)
@@ -53,7 +71,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   // The command kernel's local entries (2026-10): `help [command…] [--all]` and `version`.
   help: { flags: ["all:boolean"], positionals: true },
   version: { flags: ["json:boolean:j"], positionals: false },
-  completion: { flags: ["json:boolean:j", "plain:boolean"], positionals: true },
+  completion: { flags: ["force:boolean", "json:boolean:j", "plain:boolean"], positionals: true },
   // `config` (2026-10): personal preferences, read through or written to your defaults or one space;
   // `--verbose` also shows the shadowed values.
   config: { flags: ["json:boolean:j", "plain:boolean", "space:string:s", "user:boolean", "verbose:boolean:v"], positionals: true },
@@ -63,8 +81,8 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   docs: { flags: ["json:boolean:j", "plain:boolean", "refresh:boolean", "search:string"], positionals: true },
   up: {
     flags: [
-      "channels:string", "detach:boolean", "dry-run:boolean", "file:string:f", "host:string",
-      "idp:string", "max-sessions:string", "open:boolean", "runtime:string", "server:string", "space:string",
+      "channels:string", "detach:boolean:d", "dry-run:boolean", "file:string:f", "host:string",
+      "idp:string", "manager-name:string", "max-sessions:string", "open:boolean", "runtime:string", "seat-cap:string", "server:string", "space:string",
       // `up` starts in the background by default; `--foreground` keeps the stack in this terminal
       // and `--root` names the prepared project.
       "foreground:boolean", "root:string", "json:boolean:j", "plain:boolean",
@@ -85,8 +103,24 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
       "rotate-sys:boolean",
       // `--max-file-store` (2026-09): the broker's JetStream file storage cap, fixed at start (#1888).
       "max-file-store:string",
+      // `--auth-timeout` (2026-10): the broker's auth callout timeout, threaded to the auth-service
+      // daemon as its callout deadline; every auth-service inventory carries it.
+      "auth-timeout:string",
+      // `--max-payload` (2026-10): the broker's own `max_payload`, which service endpoint caller
+      // grants need at or above the caller floor. The auth-service daemon does not take it: the
+      // broker configuration renders it and the auth host observes it.
+      "max-payload:string",
+      // `--log-file`, `--logfile-size-limit`, `--logfile-max-num` (2026-10): nats-server native log
+      // file rotation, recorded with the controller stack.
+      "log-file:string", "logfile-size-limit:string", "logfile-max-num:string",
       // `--no-manager` (2026-09): broker-only boot, the broker and in auth mode the delivery daemon (#1856).
       "no-manager:boolean",
+      // `--service-endpoints` (2026-10, #4396): hosts the service endpoint authority door and host
+      // route, threaded to the auth-service daemon; every auth-service inventory carries it.
+      "service-endpoints:boolean",
+      // `--recreate-issued-stores` (2026-10): on a fresh broker start, back up the space's pre-0.111.0
+      // issued-authority stores into a new directory, delete them and create them again.
+      "recreate-issued-stores:string",
       "store-dir:string", "tls-cert:string", "tls-key:string", "user-auth:boolean",
     ],
     positionals: false,
@@ -94,26 +128,28 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   // Named owned services or the recorded whole stack. `--instance` qualifies one name, `--yes` and
   // `--dry-run` confirm or preview the reviewed scope. `--session-store` (2026-09) is the repeatable
   // harness transcript store a preserve-state cut captures. `--file`/`--run` are the historical
-  // `spawn -f` teardown, which the redesign moves to `team remove <deployment-id>`.
-  down: { flags: ["dry-run:boolean", "file:string:f", "instance:string", "json:boolean:j", "plain:boolean", "preserve-state:boolean", "run:string", "session-store:string", "space:string:s", "store-dir:string", "with-agents:boolean", "yes:boolean:y"], positionals: true },
-  backup: { flags: ["accept-missing-source:boolean", "dry-run:boolean", "json:boolean:j", "only:string", "plain:boolean", "store-dir:string", "yes:boolean:y"], positionals: true },
+  // `spawn -f` teardown, which the redesign moves to `team remove <deployment-id>`. `--abandon-stop`
+  // (2026-10) names the one member stop request a controller stack's down abandons.
+  down: { flags: ["abandon-launch:string", "abandon-stop:string", "dry-run:boolean", "file:string:f", "instance:string", "json:boolean:j", "plain:boolean", "preserve-state:boolean", "run:string", "session-store:string", "space:string:s", "store-dir:string", "with-agents:boolean", "yes:boolean:y"], positionals: true },
+  backup: { flags: ["accept-missing-source:boolean", "discard-history:boolean", "dry-run:boolean", "json:boolean:j", "only:string", "plain:boolean", "store-dir:string", "yes:boolean:y"], positionals: true },
   reset: { flags: ["dry-run:boolean", "json:boolean:j", "plain:boolean", "yes:boolean:y"], positionals: true },
   // `space` (2026-10): the registered spaces and one in full, on the structured output contract.
   // `space add` (2026-10) registers a space that runs elsewhere, from `--server` or a user-auth bundle;
   // `space delete` previews with `--dry-run`.
-  space: { flags: ["allow-unencrypted-overlay:boolean", "dry-run:boolean", "file:string:f", "force:boolean", "from:string", "json:boolean:j", "mode:string", "plain:boolean", "root:string", "server:string", "tls:boolean", "yes:boolean:y"], positionals: true },
+  space: { flags: ["adopt:boolean", "allow-unencrypted-overlay:boolean", "dry-run:boolean", "file:string:f", "force:boolean", "from:string", "json:boolean:j", "mode:string", "plain:boolean", "root:string", "server:string", "tls:boolean", "yes:boolean:y"], positionals: true },
   // `sync` (2026-09): refresh the signed-in space catalogs; `--idp` narrows the refresh to one account.
   // `--json` and `--plain` (2026-10): the refresh on the structured output contract.
   sync: { flags: ["idp:string", "json:boolean:j", "plain:boolean"], positionals: false },
   // `--json` and `--plain` (2026-10): `use` reports or changes the selection on the structured output contract.
-  use: { flags: ["json:boolean:j", "plain:boolean"], positionals: true },
+  // `--clear` (2026-10) removes the selection, so a command targets its folder's space again.
+  use: { flags: ["clear:boolean", "json:boolean:j", "plain:boolean"], positionals: true },
   // Bare status is the infrastructure inventory; `status <agent> [--on]` inspects one incarnation.
   // `--components` (2026-08) is the historical health pass the bare service inventory replaces.
-  status: { flags: ["all:boolean", "components:boolean", "creds:string", "json:boolean:j", "on:string", "plain:boolean", "server:string", "space:string:s", "verbose:boolean:v"], positionals: true },
+  status: { flags: ["all:boolean", "components:boolean", "creds:string", "json:boolean:j", "on:string", "plain:boolean", "server:string", "space:string:s", "verbose:boolean:v", "wide:boolean"], positionals: true },
   doctor: { flags: ["fix:boolean", "json:boolean:j", "plain:boolean", "space:string"], positionals: true },
   // `who` and `whoami` (2026-10): the roster and the CLI's own identity, on the structured output contract.
   who: { flags: [...TARGET, "all:boolean", "waiting:boolean", "json:boolean:j", "plain:boolean"], positionals: false },
-  whoami: { flags: ["space:string:s", "server:string", "json:boolean:j", "plain:boolean"], positionals: false },
+  whoami: { flags: ["space:string:s", "server:string", "creds:string", "json:boolean:j", "plain:boolean"], positionals: false },
   // Stage 2a: spawn absorbs the detached mode: the full launch grammar (launchFlags) + --detach,
   // and gains --model/--cwd (parity) + --creds (control-caller, --detach only, guarded in run).
   // The shared short forms are -n/-m/-C/-p/-H. `--harness` picks the application, `--foreground`
@@ -197,12 +233,23 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   // Held DMs of one agent, or one exact retired durable with `--durable`.
   pending: { flags: ["creds:string", "durable:string", "json:boolean:j", "limit:string", "plain:boolean", "server:string", "space:string"], positionals: true },
   // `service` (2026-10): one registry for built-in presets and user definitions; the action and the
-  // name are positional. A preset's own options are declared by its adapter, not here.
+  // name are positional. A preset's own options are declared by its adapter, not here. `--exec` and
+  // `--cwd` save a person's own program in one line (2026-10-26).
   service: {
     flags: [
-      "dry-run:boolean", "file:string:f", "follow:boolean", "foreground:boolean", "instance:string",
+      "cwd:string:C", "dry-run:boolean", "exec:string", "file:string:f", "follow:boolean", "foreground:boolean", "instance:string",
       "json:boolean:j", "new-instance:boolean", "plain:boolean", "preset:string", "space:string:s",
       "tail:string", "with-agents:boolean", "yes:boolean:y",
+    ],
+    positionals: true,
+  },
+  // `service-endpoint` (2026-10, #4396): an owner's decisions and an operator's name binding over the
+  // auth service's host route, plus the reads behind them.
+  "service-endpoint": {
+    flags: [
+      "caller-ceiling:string", "claim:string", "commands:string", "cursor:string", "json:boolean:j",
+      "lifecycle:string", "owner:string", "plain:boolean", "request-id:string", "space:string:s",
+      "to:string",
     ],
     positionals: true,
   },
@@ -236,17 +283,20 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     positionals: true,
   },
   login: { flags: ["client-id:string", "idp:string", "plain:boolean"], positionals: false },
-  logout: { flags: ["idp:string", "json:boolean:j", "plain:boolean"], positionals: false },
+  logout: { flags: ["idp:string", "json:boolean:j", "local:boolean", "plain:boolean"], positionals: false },
   // Account metadata, actor grants (the actor ledger's flags), credential mint (`--endpoint` mints an
   // endpoint caller), signer export and `retire --yes`, which refuses until its native path exists.
   // `--full` (2026-10): a grant takes the wide ACL defaults only when asked; without it the grant
-  // must name --scope, --allow-subscribe and --allow-publish.
+  // must name --scope, --allow-subscribe and --allow-publish. `--no-expiry` (2026-10): `auth mint`
+  // issues a credential with no expiry only when asked, and records the request; the default is 24 h.
+  // `--replace` (2026-10): `auth mint` replaces a label's standing credential that has expired or has
+  // no expiry.
   auth: {
     flags: [
       "allow-publish:string", "allow-subscribe:string", "channels:string", "endpoint:string", "expires-at:string",
       "expires-in:string", "force:boolean", "full:boolean", "identity:string", "json:boolean:j", "label:string",
-      "out:string", "owner:string", "parent:string", "plain:boolean", "profile:string", "provision:boolean",
-      "role:string", "scope:string", "server:string", "space:string:s", "sub:string", "yes:boolean:y",
+      "no-expiry:boolean", "out:string", "owner:string", "parent:string", "plain:boolean", "profile:string", "provision:boolean",
+      "replace:boolean", "role:string", "scope:string", "server:string", "space:string:s", "sub:string", "yes:boolean:y",
     ],
     positionals: true,
   },
@@ -259,7 +309,11 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     ],
     positionals: true,
   },
-  // Guarded maintenance over the hidden `reconcile-gate` and `seats` command objects below.
+  // Anonymous usage telemetry: the bare form reports the level, a level word writes it.
+  telemetry: { flags: ["json:boolean:j", "plain:boolean"], positionals: true },
+  // The manager's lifecycle verbs and guarded maintenance over the hidden `reconcile-gate` and `seats`
+  // command objects below. The CLI runs `manager <verb>` as `service <verb> manager`, with the service
+  // flags and the manager preset's options, so the group itself declares only maintenance flags.
   manager: { flags: ["drain:boolean", "dry-run:boolean", "endpoint:string", "instance:string", "json:boolean:j", "plain:boolean", "server:string", "space:string:s", "yes:boolean:y"], positionals: true },
 
   // ---- Hidden entries the design keeps --------------------------------------------------------
@@ -267,11 +321,11 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   // scripts, containers) and warn on each run. `up` launches the twins, which share each entry's
   // declaration without the warning.
   supervise: {
-    flags: ["console-host:string", "console-port:string", "execution:string", "launch:string", "max-sessions:string", "resume-attempt:string", "resume-commit-file:string", "resume-commit-sha256:string", "resume-commit-token:string", "roster:string", "runtime:string", "server:string", "space:string", "spawn:string", "ws-port:string"],
+    flags: ["console-host:string", "console-port:string", "execution:string", "launch:string", "max-sessions:string", "name:string", "resume-attempt:string", "resume-commit-file:string", "resume-commit-sha256:string", "resume-commit-token:string", "roster:string", "runtime:string", "seat-cap:string", "server:string", "space:string", "spawn:string", "ws-port:string"],
     positionals: false,
   },
   "__daemon-manager": {
-    flags: ["console-host:string", "console-port:string", "execution:string", "launch:string", "max-sessions:string", "resume-attempt:string", "resume-commit-file:string", "resume-commit-sha256:string", "resume-commit-token:string", "roster:string", "runtime:string", "server:string", "space:string", "spawn:string", "ws-port:string"],
+    flags: ["console-host:string", "console-port:string", "execution:string", "launch:string", "max-sessions:string", "name:string", "resume-attempt:string", "resume-commit-file:string", "resume-commit-sha256:string", "resume-commit-token:string", "roster:string", "runtime:string", "seat-cap:string", "server:string", "space:string", "spawn:string", "ws-port:string"],
     positionals: false,
   },
   deliver: {
@@ -281,14 +335,14 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     // `--root` (2026-10): name the workspace root instead of inheriting it from the cwd walk.
     flags: [
       "creds:string", "dev-mint:boolean", "durable:string", "json:boolean", "limit:string",
-      "root:string", "server:string", "shard:string", "shards:string", "space:string", "tls:boolean",
+      "root:string", "server:string", "shard:string", "shards:string", "space:string", "spaces:string", "tls:boolean",
     ],
     positionals: true,
   },
   "__daemon-deliver": {
     flags: [
       "creds:string", "dev-mint:boolean", "durable:string", "json:boolean", "limit:string",
-      "root:string", "server:string", "shard:string", "shards:string", "space:string", "tls:boolean",
+      "root:string", "server:string", "shard:string", "shards:string", "space:string", "spaces:string", "tls:boolean",
     ],
     positionals: true,
   },
@@ -300,16 +354,23 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
       // `--agent-provisioning-url` (2026-08): threaded from `up` like --advertised-server; both
       // inventories carry it.
       "agent-provisioning-url:string",
+      // `--callout-only` (2026-10): a callout replica in the space's queue group. The daemon entry and
+      // its twin take it; the native service child, which runs the one primary, does not.
+      "callout-only:boolean",
       "exchange-public-port:string", "exchange-public-url:string", "exchange-trusted-proxy:boolean",
-      "port:string", "server:string", "space:string",
+      "port:string", "server:string", "service-endpoints:boolean", "space:string",
+      // `--auth-timeout` (2026-10): the broker's auth callout timeout in seconds, from `up`.
+      "auth-timeout:string",
+      // `--spaces` (2026-10, #4819): several spaces served from one callout process.
+      "spaces:string",
     ],
     positionals: false,
   },
   "__daemon-auth-service": {
     flags: [
-      "advertised-server:string", "agent-provisioning-url:string",
+      "advertised-server:string", "agent-provisioning-url:string", "callout-only:boolean",
       "exchange-public-port:string", "exchange-public-url:string", "exchange-trusted-proxy:boolean",
-      "port:string", "server:string", "space:string",
+      "port:string", "server:string", "service-endpoints:boolean", "space:string", "auth-timeout:string", "spaces:string",
     ],
     positionals: false,
   },
@@ -333,14 +394,15 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   },
   // `app-identity` (2026-10, #4082): hidden plumbing the Claude connector's local server runs to
   // open (`provision`) or retire one Claude app conversation's identity on a local mesh.
-  "app-identity": { flags: ["dir:string", "name:string", "space:string"], positionals: true },
+  "app-identity": { flags: ["dir:string", "events:boolean", "name:string", "require-approval:boolean", "selection:string", "session:string", "space:string"], positionals: true },
   // The children `service start` execs under controller custody, the owned user-unit entry and the
   // startup child `setup --start` execs. Each takes only the arguments its launcher writes.
   "__service-auth": {
     flags: [
       "advertised-server:string", "agent-provisioning-url:string", "exchange-public-port:string",
       "exchange-public-url:string", "exchange-trusted-proxy:boolean", "launch-request:string", "port:string",
-      "ready-file:string", "root:string", "server:string", "service-instance:string", "space:string",
+      "ready-file:string", "root:string", "server:string", "service-endpoints:boolean", "service-instance:string",
+      "space:string", "auth-timeout:string",
     ],
     positionals: false,
   },
@@ -368,8 +430,8 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   "__service-manager": {
     flags: [
       "console-host:string", "console-port:string", "launch:string", "launch-request:string", "launch-sha256:string",
-      "max-sessions:string", "resume-attempt:string", "resume-commit-file:string", "resume-commit-sha256:string",
-      "root:string", "roster:string", "runtime:string", "server:string", "service-instance:string", "space:string",
+      "max-sessions:string", "name:string", "resume-attempt:string", "resume-commit-file:string", "resume-commit-sha256:string",
+      "root:string", "roster:string", "runtime:string", "seat-cap:string", "server:string", "service-instance:string", "space:string",
       "state-directory:string", "ws-port:string",
     ],
     positionals: false,
@@ -389,12 +451,13 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   // Each refuses with its literal replacement and keeps the old flags so the old line parses.
   // Stage 2a: `start` errors naming `spawn --detach`; never a silent alias.
   start: { flags: [], positionals: true, rawArgs: true },
-  // `mint` moved to `auth mint` / `auth signer --out`.
+  // `mint` moved to `auth mint` / `auth signer --out`. It declares `auth mint`'s flags, so a line
+  // written for either parses and reaches the replacement.
   mint: {
     flags: [
       "allow-publish:string", "allow-subscribe:string", "channels:string", "endpoint:string", "expires-at:string",
-      "expires-in:string", "force:boolean", "identity:string", "json:boolean:j", "out:string", "plain:boolean",
-      "profile:string", "provision:boolean", "role:string", "server:string", "signer:boolean", "space:string:s",
+      "expires-in:string", "force:boolean", "identity:string", "json:boolean:j", "no-expiry:boolean", "out:string",
+      "plain:boolean", "profile:string", "provision:boolean", "replace:boolean", "role:string", "server:string", "signer:boolean", "space:string:s",
     ],
     positionals: true,
   },
@@ -439,12 +502,12 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     positionals: true,
   },
   topology: { flags: ["file:string:f"], positionals: true },
-  clean: { flags: [...TARGET, "attempt:string", "dms:boolean", "force:boolean", "store-dir:string"], positionals: true },
+  clean: { flags: [...TARGET, "attempt:string", "discard-history:boolean", "dms:boolean", "dry-run:boolean", "force:boolean", "store-dir:string"], positionals: true },
   // Per-user auth (D4c): the actor-ledger operator surface.
   actor: {
     flags: [
-      "allow-publish:string", "allow-subscribe:string", "full:boolean", "label:string", "owner:string",
-      "parent:string", "role:string", "scope:string", "space:string", "sub:string",
+      "allow-publish:string", "allow-subscribe:string", "full:boolean", "json:boolean:j", "label:string", "owner:string",
+      "parent:string", "plain:boolean", "role:string", "scope:string", "space:string", "sub:string",
     ],
     positionals: true,
   },
@@ -468,6 +531,43 @@ for (const cmd of commands) {
   for (const f of cmd.flags ?? []) {
     assert.ok(f.name && (f.type === "string" || f.type === "boolean"), `flag spec sane on ${cmd.name} --${f.name}`);
   }
+}
+
+// The Commands table in docs/cli.mdx has one row per command, the hidden ones `cotal help` leaves
+// out included, under the section help lists it in. The composition root also registers `daemon`,
+// which GOLDEN leaves out, so it is imported only after the golden check above.
+await import("../daemon/command.js");
+const helpAll = registry.all<Command>("command").filter((cmd) => !cmd.name.startsWith("__"));
+const doc = readFileSync(new URL("../../docs/cli.mdx", import.meta.url), "utf8");
+const tableStart = doc.indexOf("\n## Commands\n");
+const table = doc.slice(tableStart, doc.indexOf("\n## ", tableStart + 1));
+const rows = [...table.matchAll(/^\| ([^|]+?) \| \[`([^`]+)`\]\(#([^)]+)\) \|/gm)].map((match) => ({ section: match[1]!, name: match[2]!, anchor: match[3]! }));
+assert.deepEqual(rows.map((row) => row.name).sort(), helpAll.map((cmd) => cmd.name).sort(), "the docs Commands table has one row per command, hidden ones included");
+for (const row of rows) assert.equal(row.section, helpAll.find((cmd) => cmd.name === row.name)?.group ?? "Commands", `the docs Commands table puts \`${row.name}\` under its help section`);
+// Each row links a heading of the page, slugged as GitHub and the docs site slug it: a repeated
+// heading takes `-1`, `-2` and so on.
+const headings = new Set<string>(), seen = new Map<string, number>();
+for (const [, text] of doc.replace(/^```[\s\S]*?^```/gm, "").matchAll(/^#{1,6} (.+)$/gm)) {
+  const slug = text!.trim().toLowerCase().replace(/[^\p{L}\p{N}\s_-]/gu, "").replace(/\s/g, "-");
+  const n = seen.get(slug) ?? 0;
+  seen.set(slug, n + 1);
+  headings.add(n ? `${slug}-${n}` : slug);
+}
+for (const row of rows) assert.ok(headings.has(row.anchor), `the docs Commands table links \`${row.name}\` to #${row.anchor}, a heading of docs/cli.mdx`);
+// Help: every listed command's usage and every listed subcommand's starts with its whole `cotal …`
+// path, and a subcommand of a command with flags names its own, so `help channel set` neither drops
+// the channel name nor offers `--purge`.
+for (const cmd of commands.filter((c) => !c.hidden)) {
+  assert.ok(commandUsage(cmd).startsWith(`cotal ${cmd.name}`), `usage of \`${cmd.name}\` starts with cotal ${cmd.name}`);
+  const walk = (path: string, subs: readonly Subcommand[] = []): void => {
+    for (const sub of subs.filter((s) => !s.hidden)) {
+      const at = `${path} ${sub.name}`;
+      assert.ok(sub.usage?.startsWith(`cotal ${at}`), `\`${at}\` declares a usage that starts with cotal ${at}`);
+      if (cmd.flags?.length) assert.ok(sub.flagNames, `\`${at}\` names its own options`);
+      walk(at, sub.subcommands);
+    }
+  };
+  walk(cmd.name, cmd.subcommands);
 }
 
 console.log(`✓ flag-inventory smoke passed (${commands.length} commands)`);

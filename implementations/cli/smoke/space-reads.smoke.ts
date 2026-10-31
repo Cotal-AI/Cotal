@@ -4,13 +4,15 @@
  * binary reads the records a real `up`, `meshes add` or catalog sync leaves. A real broker answers
  * for one space; another points at a port nothing listens on; a discovered one points at a listener
  * that counts connections, so the suite can show a read never dials it.
+ * A registry record that does not parse refuses the listing and show with SCHEMA_INVALID, and so does
+ * every other command that reads the registry, changing nothing.
  *
  * Needs `nats-server` on PATH.
  *
  * Run: pnpm smoke:space-reads
  */
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -130,14 +132,41 @@ recordMesh({ space: "gamma", server: CATALOG, root, mode: "user", origin: "catal
   const swap = json(["use", "alpha"]);
   check("use reports the selection it replaced", swap.status === 0 && swap.env?.result.current === "alpha" && swap.env.result.previous === "beta" && swap.env.target?.space === "alpha", shown(swap));
   const unknown = json(["use", "nope"]);
-  check("use refuses an unregistered name with TARGET_NOT_FOUND and keeps the selection", unknown.status === 2 && unknown.env?.error?.code === "TARGET_NOT_FOUND" && getCurrent() === "alpha", shown(unknown));
+  check("use refuses an unregistered name with TARGET_NOT_FOUND, naming the known spaces, and keeps the selection",
+    unknown.status === 2 && unknown.env?.error?.code === "TARGET_NOT_FOUND" && (unknown.env.error.message as string).startsWith(`no space named "nope" is registered or prepared here; known spaces: alpha, beta`) && getCurrent() === "alpha", shown(unknown));
+  const unknownHuman = run(["use", "nope"]);
+  check("the refusal of an unregistered name has no target and no Mesh heading", unknown.env?.target === null && unknownHuman.stderr.startsWith("Request refused\n"), shown(unknownHuman));
   const two = json(["use", "alpha", "beta"]);
   check("use with two names is a usage error", two.status === 1 && two.env?.error?.code === "USAGE_INVALID", shown(two));
   const listed = json(["space"]);
   check("the listing marks the selected space", itemOf(listed.env, "alpha")?.current === true && itemOf(listed.env, "beta")?.current === false && listed.env?.result.current === "alpha", listed.env?.result);
   const human = run(["use", "beta"], { FORCE_COLOR: "1" });
   check("use names the space it selected and the one it replaced", human.status === 0 && /selected beta \(was alpha\)/.test(human.stdout.replace(/\x1b\[[0-9;]*m/g, "")), shown(human));
+  // --clear removes the selection; nothing else could, so a folder's space could not apply again.
+  const cleared = json(["use", "--clear"]);
+  check("use --clear removes the selection and names the one it removed", cleared.status === 0 && cleared.env?.outcome === "ok" && cleared.env.result.current === null && cleared.env.result.previous === "beta" && cleared.env.target === null && getCurrent() === undefined, shown(cleared));
+  const clearedAgain = json(["use", "--clear"]);
+  check("use --clear with nothing selected is a no-op", clearedAgain.status === 0 && clearedAgain.env?.outcome === "no-op" && clearedAgain.env.result.previous === null, shown(clearedAgain));
+  const named = json(["use", "alpha", "--clear"]);
+  check("use --clear with a name is a usage error and selects nothing", named.status === 1 && named.env?.error?.code === "USAGE_INVALID" && getCurrent() === undefined, shown(named));
+  const clearText = run(["use", "beta"]) && run(["use", "--clear"]);
+  check("its receipt says what was cleared", clearText.status === 0 && /cleared the selection \(was beta\)/.test(clearText.stdout), shown(clearText));
+  const none = json(["use", "none"]);
+  check("with nothing selected, an unknown name's refusal does not name --clear", none.status === 2 && none.env?.error?.remedy === "see the registered and prepared spaces with `cotal space`", shown(none));
   run(["use", "alpha"]);
+  const kept = json(["use", "none"]);
+  check("with a space selected, an unknown name's refusal names --clear", kept.status === 2 && /cotal use --clear/.test(kept.env?.error?.remedy ?? "") && getCurrent() === "alpha", shown(kept));
+  // A name of any length is looked up whole. The refusal repeats its first 128 characters and its
+  // length, so one over-long argument does not print a line as long as itself.
+  const long = "x".repeat(100_000);
+  const longName = json(["use", long]);
+  check("an over-long unregistered name is refused with its first 128 characters and its length, and the selection is kept",
+    longName.status === 2 && longName.env?.error?.code === "TARGET_NOT_FOUND" && (longName.env.error.message as string).startsWith(`no space named "${"x".repeat(128)}… (100000 characters)" is registered or prepared here; known spaces: alpha, beta`) && longName.stdout.length < 1_000 && getCurrent() === "alpha", shown(longName));
+  check("its target is what a short name's refusal carries", JSON.stringify(longName.env?.target) === JSON.stringify(kept.env?.target), { long: longName.env?.target, short: kept.env?.target });
+  const longText = run(["use", long]);
+  check("its text refusal repeats the name the same way", longText.status === 2 && longText.stderr.includes(`no space named "${"x".repeat(128)}… (100000 characters)"`) && longText.stderr.length < 1_000, shown(longText));
+  const edge = json(["use", "w".repeat(128)]);
+  check("control: a 128-character unregistered name is repeated whole", edge.status === 2 && (edge.env?.error?.message as string).startsWith(`no space named "${"w".repeat(128)}" is registered`) && !/characters\)/.test(edge.stdout), shown(edge));
 }
 
 // ── show ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -153,6 +182,8 @@ recordMesh({ space: "gamma", server: CATALOG, root, mode: "user", origin: "catal
   check("show leaves the credential path out", !gamma.stdout.includes("sentinel") && !gamma.stdout.includes("auth.test"), shown(gamma));
   const unknown = json(["space", "show", "nope"]);
   check("show refuses an unregistered name with TARGET_NOT_FOUND", unknown.status === 2 && unknown.env?.error?.code === "TARGET_NOT_FOUND", shown(unknown));
+  const unknownHuman = run(["space", "show", "nope"]);
+  check("the show refusal names the requested value without claiming a resolved mesh", unknown.env?.target?.requested === "nope" && unknown.env?.target?.space === undefined && unknownHuman.stderr.startsWith("Request refused\n") && !unknownHuman.stderr.includes("Mesh: nope"), shown(unknownHuman));
   const human = run(["space", "show", "beta"]);
   check("the show report offers the command that selects it", human.status === 0 && /tls:\s+required/.test(human.stdout) && /cotal use beta/.test(human.stdout), shown(human));
   clearCurrent();
@@ -191,18 +222,71 @@ recordMesh({ space: "gamma", server: CATALOG, root, mode: "user", origin: "catal
   check("the refusal tells how to select a registered space", whoHuman.status === 2 && whoHuman.stdout === "" && /select one with `cotal use <name>`/.test(whoHuman.stderr), shown(whoHuman));
 }
 
+// ── An over-long space name ──────────────────────────────────────────────────────────────────────────
+{
+  // The name is looked up whole; what a refusal or report repeats is its first 128 characters and its
+  // length.
+  const previous = getCurrent();
+  const long = "x".repeat(100_000);
+  const shownLong = `"${"x".repeat(128)}… (100000 characters)"`;
+  const short = json(["who", "--space", "nope"]);
+  const who = json(["who", "--space", long]);
+  check("an over-long --space is refused with its first 128 characters and its length", who.status === 2 && who.env?.error?.code === "TARGET_NOT_FOUND" && who.env.error.message === `no space named ${shownLong} is registered here` && who.stdout.length < 1_000, shown(who));
+  check("its target is what a short name's refusal carries", JSON.stringify(who.env?.target) === JSON.stringify(short.env?.target), { long: who.env?.target, short: short.env?.target });
+  const whoText = run(["who", "--space", long]);
+  check("its text refusal repeats the name the same way", whoText.status === 2 && whoText.stderr.includes(`no space named ${shownLong}`) && whoText.stderr.length < 1_000, shown(whoText));
+  const status = json(["status", "--space", long]);
+  check("status --space reports the over-long name the same way", status.status === 0 && status.env?.result?.selected?.message === `no space named ${shownLong} is registered here` && status.stdout.length < 10_000, shown(status));
+  const statusText = run(["status", "--space", long]);
+  check("its text report has no line longer than a few hundred characters", statusText.status === 0 && statusText.stdout.includes(`no space named ${shownLong}`) && Math.max(...statusText.stdout.split("\n").map((l) => l.length)) < 400, shown(statusText));
+  setCurrent(long);
+  const selected = json(["who"]);
+  check("a selected over-long name is repeated the same way", selected.status === 2 && selected.env?.error?.message === `the selected space ${shownLong} is not registered here`, shown(selected));
+  check("the selection itself is kept whole", getCurrent() === long);
+  const edge = json(["who", "--space", "w".repeat(128)]);
+  check("control: a 128-character --space is repeated whole", edge.status === 2 && edge.env?.error?.message === `no space named "${"w".repeat(128)}" is registered here`, shown(edge));
+  if (previous === undefined) clearCurrent();
+  else setCurrent(previous);
+}
+
 // ── help and completion ──────────────────────────────────────────────────────────────────────────────
 {
   const help = run(["help", "space"]);
   check("help space lists show and its structured output", help.status === 0 && /^\s+show\s/m.test(help.stdout) && /Structured output: json, plain/.test(help.stdout), shown(help));
   const useHelp = run(["help", "use"]);
-  check("help use gives the optional space", useHelp.status === 0 && /cotal use \[<space>\]/.test(useHelp.stdout), shown(useHelp));
+  check("help use gives the optional space and --clear", useHelp.status === 0 && /cotal use \[<space> \| --clear\]/.test(useHelp.stdout), shown(useHelp));
   const subs = run(["__complete", "space", ""]);
   check("completion offers show after space", /^show(\t|$)/m.test(subs.stdout), shown(subs));
   const names = run(["__complete", "space", "show", ""]);
   check("completion offers the registered names after space show", ["alpha", "beta", "gamma"].every((n) => new RegExp(`^${n}$`, "m").test(names.stdout)), shown(names));
   const useNames = run(["__complete", "use", ""]);
   check("completion offers the registered names after use", ["alpha", "beta", "gamma"].every((n) => new RegExp(`^${n}$`, "m").test(useNames.stdout)), shown(useNames));
+  // A --space value is a space on every command, so each completes the names use does.
+  // `down` is a template literal, which the sandbox guard reads as text: this completes it and never runs it.
+  for (const words of [["status"], ["watch"], [`down`], ["team", "boot"], ["config", "set"]]) {
+    const spaces = run(["__complete", ...words, "--space", ""]);
+    check(`completion offers the registered names for ${words.join(" ")} --space`, ["alpha", "beta", "gamma"].every((n) => new RegExp(`^${n}$`, "m").test(spaces.stdout)) && !/^--/m.test(spaces.stdout) && spaces.stdout.trimEnd().endsWith(":nofiles"), shown(spaces));
+  }
+  const modes = run(["__complete", "space", "add", "x", "--mode", ""]);
+  check("completion offers auth, open and user after space add --mode", ["auth", "open", "user"].every((n) => new RegExp(`^${n}$`, "m").test(modes.stdout)), shown(modes));
+  for (const flag of ["--root", "--file"]) {
+    const files = run(["__complete", "space", "add", "x", flag, ""]);
+    check(`space add ${flag} completes from the shell's file names`, files.stdout.trimEnd() === ":default", shown(files));
+  }
+}
+
+// ── A record that does not parse ─────────────────────────────────────────────────────────────────────
+{
+  const file = join(meshesDir(), "space.6f6d656761.json");
+  writeFileSync(file, '{"space":"omega"');
+  const selected = getCurrent();
+  const elsewhere = mkdtempSync(join(home, "create-root-"));
+  for (const args of [["space"], ["space", "show", "alpha"], ["use"], ["use", "alpha"], ["space", "forget", "alpha"], ["space", "create", "zeta", "--root", elsewhere], ["send", "-c", "general", "hi"], ["persona"]]) {
+    const r = json(args);
+    check(`cotal ${args.join(" ")} refuses a record that does not parse with SCHEMA_INVALID, exit 1, naming the file`, r.status === 1 && r.env?.outcome === "refused" && r.env.error?.code === "SCHEMA_INVALID" && String(r.env.error.message).includes(file), shown(r));
+  }
+  rmSync(file);
+  check("those refusals changed nothing: alpha is registered, the selection is kept and zeta was not prepared", findMesh("alpha") !== undefined && getCurrent() === selected && !existsSync(join(elsewhere, ".cotal")), { selected, now: getCurrent() });
 }
 
 // The broker and the listener would keep the process alive past the last cell.

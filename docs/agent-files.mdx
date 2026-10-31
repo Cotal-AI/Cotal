@@ -24,6 +24,9 @@ capabilities: [spawn, run] # may manage teammates and start workflow runs
 You are a builder on a shared mesh of peer agents…
 ```
 
+The file accepts LF or CRLF line endings and an optional UTF-8 byte order mark.
+A UTF-16 file is refused by name with the instruction to save it as UTF-8.
+
 The frontmatter supplies the presence [AgentCard](../SPEC.md#6-presence-and-discovery).
 The body supplies the persona text that the connector applies to the session's system prompt at launch.
 Channel authorization follows [SPEC §9](../SPEC.md#9-nats--jetstream-security-and-authorization) and [Appendix B](../SPEC.md#appendix-b-profile-acls).
@@ -57,9 +60,9 @@ It requires a YAML mapping between `---` fences and a valid `name`.
 | `model` | string | Model passed to the application. Claude accepts aliases such as `opus` or a full ID; OpenCode uses `provider/model`. A role's `modelPolicy` entry requires an allowed model and refuses a missing model. Whitespace-only values are refused when the file loads. See [Model policy](config.mdx#model-policy). |
 | `variant` | string | Connector-defined model variant, listed by `cotal models` where supported. A role's `modelPolicy` variants restrict the value when present. Whitespace-only values are refused when the file loads. |
 | `agent` | string | Connector pinned by the persona, such as `claude` or `jcode`. An explicit `--harness` overrides it; the legacy `--agent` spelling is also accepted. The pin overrides caller and manager defaults. An unregistered connector is refused. See [Persona lookup](#persona-lookup). |
-| `launchOptions` | map | Connector-specific options passed through to the application. Claude uses flags; OpenCode uses agent configuration. Hermes and pi refuse options. `--opt key=value` overrides the same key in the file. A role governed by `modelPolicy` launches without options. See [Launch agents](launch-agents.mdx#spawning-agents). |
+| `launchOptions` | map | Connector-specific options passed through to the application. Claude uses flags; OpenCode uses agent configuration; Codex uses `-c` overrides. Hermes, Jcode, and pi refuse options. `--opt key=value` overrides the same key in the file. A role governed by `modelPolicy` launches without options. See [Launch agents](launch-agents.mdx#spawning-agents). |
 | `capabilities` | string[] | Control permissions. `spawn` grants host-launch authority, named stop, and persona definition. `run` grants workflow start, resume, answer, status, and list, plus the spawn permissions needed by programs; it also exposes `cotal_run`. Missing capabilities grant none. On a user-auth mesh, `role:<r>` permits delegation of role `r`; `admin` is never a persona capability. See [Identity and auth](identity-and-auth.mdx). |
-| `owner` | string | Policy set by `definePersona` to the creator's identity. Only that owner or an admin can redefine the file over the wire. An operator-written file without an owner requires admin authority for wire redefinition. This field is not peer-supplied content. |
+| `owner` | string | Policy set by `definePersona` to a signed-in creator or one of the manager's own seats. On a static space, another creator, including the CLI, leaves the file operator-owned. Only that owner or an admin can redefine the file over the wire. An operator-written file without an owner requires admin authority for wire redefinition. This field is not peer-supplied content. |
 | Any other scalar key | string | Stored in `meta` for connector-specific hints. Unmodeled maps and lists are not stored. A saved definition cannot use `meta` to overwrite modeled fields or the renamed `channels` and `publish` fields. The live session overlays connector-owned `connector`, `model`, `variant`, and `host` metadata, so the file cannot misstate its connector or machine. |
 
 The parser refuses the old `channels` and `publish` keys.
@@ -91,9 +94,9 @@ See [Preferences](config.mdx#preferences).
 
 | Launch mode | Persona source and terminal behavior |
 | --- | --- |
-| Managed, `cotal spawn dave` | Reads the manager's `.cotal/agents/dave.md`, waits for readiness, and attaches this terminal to the allocated agent. |
+| Managed with attachment, `cotal spawn dave --on <instance>` | Reads the manager's `.cotal/agents/dave.md`, waits for readiness, and attaches this terminal when the runtime supports it. |
 | Managed without attachment, `cotal spawn dave --detach` | Uses the same manager-side resolution and returns after readiness. |
-| Direct, `cotal spawn dave --foreground` | Reads the selected local catalog and runs the native application in this terminal. |
+| Direct, `cotal spawn dave` or `cotal spawn dave --foreground` | Reads the selected local catalog and runs the native application in this terminal. |
 | Explicit file, `cotal spawn --file <persona-file>` | Reads a persona file on the execution host. It does not upload a local file or deploy a Mesh manifest. The public CLI reserves `--config` for persisted internal callers. |
 
 The launch modes accept model, variant, working-directory, kickoff-prompt, ACL, and shared-tool overrides.
@@ -121,7 +124,7 @@ For a new definition, its grants, role, and agent survive unless an explicit too
 On redefinition, existing fields remain unless an explicit tool argument changes them; the prompt replaces the body.
 Malformed leading frontmatter is refused with `prompt-frontmatter`.
 `capabilities` and `owner` remain policy and have no tool argument; prompt frontmatter cannot grant capabilities or claim ownership.
-A new definition records its creator as owner.
+A new definition records a signed-in creator or one of the manager's own seats as owner. Other static-space definitions remain operator-owned.
 
 A persona without `capabilities` has no `spawn` permission.
 A launch with effective role `manager` and no `spawn` capability is refused before allocation.

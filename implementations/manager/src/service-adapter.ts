@@ -1,13 +1,16 @@
+import { lstatSync } from "node:fs";
+import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { registry } from "@cotal-ai/core";
+import { ensureDirNoSymlink, registry, unansweredRequest } from "@cotal-ai/core";
 import {
   CommandFailure, MANAGER_PIDFILE, MANAGER_SHUTDOWN_INTENT, armManagerShutdownIntent,
-  assertRecordIdentity, canonicalLocalProcessPath, canonicalRoot, clearRefusedServiceStopRequest,
+  assertManagerName, assertRecordIdentity, canonicalLocalProcessPath, canonicalRoot, clearRefusedServiceStopRequest,
   colorEnabled, commandIsCotalSupervisor, controllerAttemptBinding, cutController, localProcessPath, maintenanceAdmitsStackWork, publishServiceStopRequest,
-  readLocalRecordSource, readMaintenanceJournal, readPidfile, readProcessRecord, readServiceStopReceipts,
-  reserveNativeServiceStop, resolveNativeServiceTarget, serviceAdapterAttempt, serviceMetadataDigest,
-  stopReservationPath, type LocalProcess, type NativeServiceStopRequest, type ServiceAdapterAttempt, type ServiceAdapterContext,
-  type ServiceAdapterStopContext, type ServiceAdapterStopPlan, type ServiceAdapterStopResult,
+  readLocalRecordSource, readMaintenanceJournal, readPidfile, readProcessRecord, readServiceStopReceipts, removePidPair, readServiceStopRequest, releaseRetainedServiceStop, clearRetainedRefusedServiceStopRequest,
+  clearAbandonedServiceStopRequest, connectUserControlOrThrow, credentialRefusalMessage, disarmManagerShutdownIntent, isCommandFailure, managerShutdownIntentArmedBy, protectedLocalDirectory,
+  releaseExitedServiceStopReservation, requestLocalStop, reserveNativeServiceStop, resolveNativeServiceTarget, serviceAdapterAttempt, serviceMetadataDigest,
+  stopReservationPath, userViewAuth, type LocalProcess, type NativeServiceStopRequest, type ProcessIdentityRecord, type ServiceAdapterAttempt, type ServiceAdapterContext,
+  type ServiceAdapterStopAbandonment, type ServiceAdapterStopContext, type ServiceAdapterStopPlan, type ServiceAdapterStopRefusal, type ServiceAdapterStopResult,
   type ServicePreset,
 } from "@cotal-ai/workspace";
 import { managerServiceLaunchSpec, managerServicePreservedExitScope, managerServiceStopScope } from "./service-child.js";
@@ -15,7 +18,8 @@ import { managerServiceReadiness, observeManagerService } from "./service-observ
 
 export const managerPreset: ServicePreset = {
   kind: "service-preset", name: "manager", adapter: "manager-service", timeoutMs: 60000,
-  summary: "native manager with selected-root custody; caller-attributed agent impact, or the child's local receipt on an open space",
+  summary: "the manager that starts and keeps your agents running in this space",
+  defaults: { root: { space: "root" }, runtime: { value: "pty" } },
 };
 
 /** Journal states in which a controller attempt starts or relaunches its manager. */
@@ -41,14 +45,24 @@ export function maintenanceAdmits(root: string, server: string, context: Service
 
 async function prepareStop(context: ServiceAdapterStopContext): Promise<ServiceAdapterStopPlan> {
   if (context.preserved && context.withAgents) throw new CommandFailure("refused", "USAGE_INVALID", "a preserved-exit stop retains agents; --with-agents cannot be combined with it");
-  const observation = await observeManagerService(context);
+  let observation: Awaited<ReturnType<typeof observeManagerService>>;
+  try { observation = await observeManagerService(context, { stop: true }); }
+  catch (error) {
+    // A manager that does not answer cannot report its stop impact, so no stop is submitted. Its
+    // process is the operator's to end, and a stop run after that finds it gone.
+    if (!unansweredRequest(error)) throw error;
+    const pid = context.process.pid;
+    throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `the manager process ${pid} is running but did not answer its endpoint (${(error as Error).message}); no stop was submitted`, { target: { space: context.space, instanceId: context.instanceId, pid }, remedy: `if it stays unresponsive, end that process with kill -KILL ${pid}; the same command then finds it gone and goes on` });
+  }
   if (!observation) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "the exact native manager has no complete attributed startup observation; no stop was submitted");
   const registration = observation.registration;
   // An attributed status names the binding the manager holds and must equal the request. An open
   // space's local receipt keeps its older shape, so the request is digested and the native child
   // recomputes the scope against its own binding at acceptance.
   const held = observation.stopImpact.preservation ?? context.preserved;
-  const scopeSha256 = context.preserved ? managerServicePreservedExitScope(observation, context.preserved, held) : managerServiceStopScope(observation, context.withAgents);
+  let scopeSha256: string;
+  try { scopeSha256 = context.preserved ? managerServicePreservedExitScope(observation, context.preserved, held) : managerServiceStopScope(observation, context.withAgents); }
+  catch (error) { throw await withAdminRegrant(context, error); }
   return {
     scopeSha256, observedAt: new Date().toISOString(), withAgents: context.withAgents,
     native: { endpoint: registration.endpoint, instanceId: registration.instanceId, epoch: registration.epoch, owner: registration.principal.owner, actor: registration.principal.actor, lifecycleUid: registration.principal.uid },
@@ -58,12 +72,33 @@ async function prepareStop(context: ServiceAdapterStopContext): Promise<ServiceA
   };
 }
 
+/** On a user-auth space the manager shows its whole impact only to a caller whose grant holds
+ *  `admin`. When it answered with owner-filtered impact, this asks the auth plane for that scope; its
+ *  refusal names the whole-row re-grant built from the current ledger row, which becomes the remedy.
+ *  No other caller is tried, and when the grant already holds `admin` the refusal stays as it was. */
+async function withAdminRegrant(context: ServiceAdapterStopContext, error: unknown): Promise<unknown> {
+  const blockers = isCommandFailure(error) ? (error.native?.detail as { blockers?: unknown } | undefined)?.blockers : undefined;
+  if (!isCommandFailure(error) || !Array.isArray(blockers) || !blockers.includes("owner-filtered-visibility")) return error;
+  const selected = resolveNativeServiceTarget(String(context.options.root), context.space, context.options.server as string | undefined);
+  if (selected.mode !== "user") return error;
+  let regrant: string | undefined;
+  try { await userViewAuth(await connectUserControlOrThrow({ space: selected.space, server: selected.server }), "admin"); }
+  catch (refusal) { regrant = credentialRefusalMessage(refusal); }
+  if (regrant === undefined) return error;
+  return new CommandFailure(error.outcome, error.code, error.message, { target: error.target, native: error.native, remedy: `stopping the whole manager needs the admin scope on your grant; ${regrant}` });
+}
+
 /** The reservation is retained after any unconfirmed submission. Only a known refusal or both a
  *  native returned receipt and the exact process exit can release it. There is no force kill. */
 async function stop(context: ServiceAdapterStopContext & { requestId: string; plan: ServiceAdapterStopPlan }): Promise<ServiceAdapterStopResult> {
   const root = String(context.options.root), pidPath = canonicalLocalProcessPath(MANAGER_PIDFILE, { root, space: context.space });
+  // A reservation whose stopper exited before it published a request handed this launch nothing, so
+  // it is released under the definition hold rather than refusing every later stop.
+  let published: boolean;
+  try { published = readServiceStopRequest(context) !== undefined; } catch { published = true; }
+  if (!published) releaseExitedServiceStopReservation(stopReservationPath(pidPath));
   const reservation = reserveNativeServiceStop(stopReservationPath(pidPath));
-  let submitted = false, releasable = true;
+  let submitted = false, releasable = true, clearWake: ((gone: boolean) => void) | undefined;
   try {
     const current = await prepareStop(context);
     if (current.scopeSha256 !== context.plan.scopeSha256 || current.withAgents !== context.withAgents || current.evidence !== context.plan.evidence || serviceMetadataDigest(current.native) !== serviceMetadataDigest(context.plan.native) || serviceMetadataDigest(current.preserved ?? null) !== serviceMetadataDigest(context.plan.preserved ?? null)) throw new CommandFailure("refused", "CONFLICT", "the manager impact or native incarnation changed after confirmation; no signal was sent");
@@ -80,7 +115,10 @@ async function stop(context: ServiceAdapterStopContext & { requestId: string; pl
     context.signal.throwIfAborted();
     if (assertRecordIdentity(context.process).kind !== "match") throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the manager process changed after its stop handoff; no successor was signalled");
     submitted = true;
-    process.kill(context.process.pid, "SIGTERM");
+    // Windows has no SIGTERM to deliver, so the manager is woken through its cooperative local stop
+    // capability, under the reservation this stop holds.
+    if (process.platform === "win32") clearWake = requestLocalStop(pidPath, { target: context.process, stopper: { pid: reservation.stopper.pid, marker: stopReservationPath(pidPath) } });
+    else process.kill(context.process.pid, "SIGTERM");
     const deadline = Date.now() + 30000;
     while (Date.now() < deadline) {
       context.signal.throwIfAborted();
@@ -104,7 +142,61 @@ async function stop(context: ServiceAdapterStopContext & { requestId: string; pl
   } catch (error) {
     if (error instanceof CommandFailure) throw error;
     throw new CommandFailure(submitted || !releasable ? "unknown" : "refused", submitted || !releasable ? "OPERATION_UNKNOWN" : "LIFECYCLE_BLOCKED", submitted || !releasable ? "the native manager stop submission or observation was not confirmed; its original request was retained and not retried" : "the native manager preflight did not establish its exact current scope; no stop was submitted");
-  } finally { if (releasable) reservation.release(); }
+  } finally {
+    clearWake?.(assertRecordIdentity(context.process).kind !== "match");
+    if (releasable) reservation.release();
+  }
+}
+
+/** Settle an ordinary request that outlived its stop call from this launch's own evidence: its
+ *  published request and either that request's `completed` receipt with the exact process exit, or
+ *  a `refused` receipt as its only one, which a child writes when it started no stop. Only then is
+ *  the reservation the request took released, and only once its stopper is gone; a refused request
+ *  is also removed, as a refusal within the stop call removes it. Anything less retains the request
+ *  and the reservation. A preserved-exit request is left to its maintenance attempt, which reads
+ *  its own receipts. */
+function settleStop(context: ServiceAdapterContext & { readonly process: ProcessIdentityRecord; readonly requestId: string }): ServiceAdapterStopResult | ServiceAdapterStopRefusal | undefined {
+  const request = readServiceStopRequest(context);
+  if (!request || request.preserved || request.requestId !== context.requestId || request.target.pid !== context.process.pid || request.target.token !== context.process.token) return undefined;
+  const phases = readServiceStopReceipts(context, request);
+  const marker = stopReservationPath(canonicalLocalProcessPath(MANAGER_PIDFILE, { root: String(context.options.root), space: context.space }));
+  const refused = phases.length === 1 ? phases.find((row) => row.phase === "refused") : undefined;
+  if (refused) {
+    if (!releaseRetainedServiceStop(marker, request.stopper) || !clearRetainedRefusedServiceStopRequest(context, request)) return undefined;
+    return { requestId: request.requestId, nativeStop: "refused", observedAt: refused.observedAt };
+  }
+  const completed = phases.find((row) => row.phase === "completed");
+  const identity = assertRecordIdentity(request.target).kind;
+  if (!completed || identity !== "gone" && identity !== "mismatch") return undefined;
+  if (!releaseRetainedServiceStop(marker, request.stopper)) return undefined;
+  return { requestId: request.requestId, scopeSha256: request.scopeSha256, process: { ...request.target }, nativeStop: "returned", cleanup: "not-checked", observedAt: completed.observedAt };
+}
+
+/** Abandon, on an operator's explicit request, an ordinary request no receipt settles: the child wrote
+ *  neither `completed` nor `refused`, and its exact process and the stopper that published it have both
+ *  exited. Everything is checked before anything is removed. Then the `--with-agents` intent that same
+ *  stop armed, the reservation and the request are removed, in that order, so a retry after a partial
+ *  removal finds the rest. The phase receipts stay. */
+function abandonStop(context: ServiceAdapterContext & { readonly process: ProcessIdentityRecord; readonly requestId: string }): ServiceAdapterStopAbandonment {
+  const refuse = (message: string): never => { throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${message}; nothing was abandoned`); };
+  const request = readServiceStopRequest(context);
+  if (!request || request.requestId !== context.requestId || request.target.pid !== context.process.pid || request.target.token !== context.process.token) return refuse("this launch holds no published stop request with that ID for its recorded process");
+  if (request.preserved) return refuse("the request is a preserved-exit stop, which its own maintenance attempt decides");
+  const phases = readServiceStopReceipts(context, request);
+  if (phases.some((row) => row.phase === "completed" || row.phase === "refused")) return refuse("the manager wrote a terminal receipt for this request, so a bare `cotal up` or `cotal down` settles it");
+  const live = (record: ProcessIdentityRecord) => !["gone", "mismatch"].includes(assertRecordIdentity(record).kind);
+  if (live(request.target)) return refuse("the manager process this request names still runs, and it may still act on the request");
+  if (live(request.stopper)) return refuse("the `cotal down` that published this request still runs");
+  const root = String(context.options.root), local = { root, space: context.space };
+  const marker = stopReservationPath(canonicalLocalProcessPath(MANAGER_PIDFILE, local));
+  const reservation = readLocalRecordSource(marker, 128, true)?.toString("utf8");
+  if (reservation !== undefined && reservation !== String(request.stopper.pid)) return refuse("the manager's stop reservation names another process");
+  const intent = managerShutdownIntentArmedBy(local, request.target, request.stopper);
+  if (intent === "other") return refuse("a manager shutdown intent that this request did not arm is retained");
+  if (intent === "exact") disarmManagerShutdownIntent(local);
+  if (!releaseRetainedServiceStop(marker, request.stopper) || !clearAbandonedServiceStopRequest(context, request))
+    throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the request changed while it was abandoned; inspect it before retrying");
+  return { requestId: request.requestId, nativeStop: "abandoned", receipts: phases.map((row) => row.phase as "accepted" | "failed"), withAgents: request.withAgents, cleanup: "not-checked" };
 }
 
 export const managerService: LocalProcess = {
@@ -124,6 +216,7 @@ export const managerService: LocalProcess = {
       launch: { type: "string", minLength: 1, maxLength: 4096, description: "existing private resolved native launch spec for the selected space" },
       "launch-sha256": { type: "string", minLength: 64, maxLength: 64, description: "full SHA-256 of the exact resolved launch file; required with launch" },
       roster: { type: "string", minLength: 1, maxLength: 4096, description: "existing roster file whose agents the manager starts at each launch; a resumed manager takes none" },
+      name: { type: "string", minLength: 1, maxLength: 128, description: "manager name for presence and --on; recorded for this root, so later launches keep it" },
     } },
   },
   buildServiceLaunch(context) {
@@ -149,12 +242,26 @@ export const managerService: LocalProcess = {
       extra.push("--launch", context.options.launch, "--launch-sha256", context.options["launch-sha256"]);
     }
     if (context.options.roster !== undefined) extra.push("--roster", String(context.options.roster));
+    if (context.options.name !== undefined) extra.push("--name", assertManagerName(String(context.options.name)));
+    // A killed child leaves its custody record, and the next child claims the slot create-only and
+    // never reclaims. A record whose pid is dead is retired here, under the controller's definition
+    // lock, after every refusal above; a live, foreign or unreadable one refused there.
+    if (state.state === "dead") removePidPair(path, String(state.pid));
+    // A root that only `space add --root` registered has no `.cotal` until a command writes there,
+    // and the child requires one. It is made here after every refusal above, in the root registered
+    // for this space and only once that root is protected, as a 0700 directory through no link.
+    if (!lstatSync(join(target.root, ".cotal"), { throwIfNoEntry: false })) {
+      protectedLocalDirectory(target.root, "the manager root");
+      ensureDirNoSymlink(target.root, ".cotal");
+    }
     const [executable, ...self] = context.cliInvocation;
     return { executable: executable!, cwd: target.root, args: [...self, ...(colorEnabled() ? [] : ["--no-color"]), "__service-manager", "--root", target.root, "--space", context.space, "--server", target.server, "--runtime", String(context.options.runtime), "--service-instance", context.instanceId, "--launch-request", context.launchRequestId, "--state-directory", context.stateDirectory, ...extra] };
   },
   checkServiceReadiness: managerServiceReadiness,
   prepareServiceStop: prepareStop,
   stopService: stop,
+  settleServiceStop: settleStop,
+  abandonServiceStop: abandonStop,
 };
 
 registry.register(managerService, managerPreset);

@@ -1,4 +1,5 @@
 export * from "./types.js";
+export { decodeNatsJwt, nativeNkeySigner } from "./nkey-signer.js";
 export * from "./advisory-lock.js";
 export * from "./local-consumer-custody.js";
 export * from "./subjects.js";
@@ -55,6 +56,7 @@ export * from "./presence-ages.js";
 export * from "./process-runtime.js";
 export * from "./presence-text.js";
 export * from "./one-line.js";
+export * from "./text-encoding.js";
 export * from "./link.js";
 export * from "./identity.js";
 export * from "./secret-store.js";
@@ -106,6 +108,8 @@ export * from "./environment.js";
 export * from "./terminal.js";
 export * from "./registry.js";
 export * from "./auth-provider.js";
+export * from "./conversation-selection.js";
+export * from "./conversation-approval.js";
 export * from "./manager-caller.js";
 export * from "./remote-manager-authority.js";
 export * from "./remote-service-authority.js";
@@ -130,9 +134,14 @@ export * from "./private-tool-results.js";
 export * from "./sealed-reply.js";
 export * from "./run-host.js";
 export * from "./issued-authority.js";
+export * from "./issued-store-recreate.js";
 export * from "./run-admission.js";
+export * from "./run-cancel.js";
 export * from "./run-submission.js";
 export * from "./run-submission-client.js";
 export * from "./issuer-session.js";
 
 export * from "./service-gate.js";
+
+export { parseClosureManifest } from "./contract-manifest.js";
+export { armRenewal, jitteredBackoffMs } from "./renewal.js";

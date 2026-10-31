@@ -5,7 +5,7 @@ import {
   type ConsumerConfig,
   type ConsumerInfo,
 } from "@nats-io/jetstream";
-import { nanos, type Msg, type NatsConnection } from "@nats-io/transport-node";
+import { type Msg, type NatsConnection } from "@nats-io/transport-node";
 import {
   canonicalBackupStreamConfig,
   spaceBackupInventory,
@@ -15,6 +15,7 @@ import {
   type SpaceBackupSelection,
 } from "./backup-config.js";
 import { withDeadline } from "./deadline.js";
+import { wfjStreamName } from "./endpoint-binding.js";
 import {
   dlvDurableConfig,
   dmDurableConfig,
@@ -395,19 +396,20 @@ export function isRestoredConsumer(space: string, stream: string, info: Consumer
   return true;
 }
 
-/** Validate the complete consumer inventory for all eight streams and extract conservative checkpoints. */
+/** Validate the complete consumer inventory for every stream an artifact holds, by default every
+ *  backed-up stream, and extract conservative checkpoints. */
 export function validatePersistentConsumerInventory(
   space: string,
   consumersByStream: Readonly<Record<string, readonly ConsumerInfo[]>>,
   statesByStream: Readonly<Record<string, BackupStreamState>>,
+  expectedStreams: readonly string[] = spaceBackupInventory(space).full,
 ): PersistentConsumerCheckpoint[] {
-  const expectedStreams = spaceBackupInventory(space).full;
   const supplied = Object.keys(consumersByStream).sort();
   if (JSON.stringify(supplied) !== JSON.stringify([...expectedStreams].sort()))
-    throw new Error("consumer inventory must contain exactly the eight backed-up streams");
+    throw new Error("consumer inventory must contain exactly the backed-up streams");
   const suppliedStates = Object.keys(statesByStream).sort();
   if (JSON.stringify(suppliedStates) !== JSON.stringify([...expectedStreams].sort()))
-    throw new Error("stream state inventory must contain exactly the eight backed-up streams");
+    throw new Error("stream state inventory must contain exactly the backed-up streams");
 
   const checkpoints: PersistentConsumerCheckpoint[] = [];
   for (const stream of expectedStreams) {
@@ -543,10 +545,20 @@ export type RestorePermissionScope =
   | { operation: "initiate"; stream: string }
   | { operation: "upload"; stream: string; deliverSubject: string }
   | { operation: "validate"; stream: string }
-  | { operation: "checkpoint"; checkpoint: PersistentConsumerCheckpoint };
+  | { operation: "checkpoint"; checkpoint: PersistentConsumerCheckpoint }
+  | { operation: "journal" };
 
-/** Exact snapshot permission set. It has no stream read/admin verbs beyond one snapshot API; chunk
- * ACK authority is created dynamically for the exact reply received, never granted as a wildcard. */
+/** The publish grant that ACKs one stream's snapshot chunks and nothing else. The broker sends each
+ * ACKable chunk with a reply under `$JS.SNAPSHOT.ACK.<stream>.<nuid>`, to which current servers
+ * append the chunk's length and index, so the grant covers every token after the stream. A
+ * response permission would instead let the holder answer any reply subject a message to its
+ * inbox carries, a JetStream API subject included. */
+export function snapshotAckGrant(stream: string): string {
+  return `$JS.SNAPSHOT.ACK.${stream}.>`;
+}
+
+/** Exact snapshot permission set. It has no stream read/admin verbs beyond one snapshot API, and
+ * its chunk ACKs reach only this stream's snapshot ACK subjects ({@link snapshotAckGrant}). */
 export function backupProfilePermissions(
   space: string,
   connId: string,
@@ -578,11 +590,8 @@ export function backupProfilePermissions(
   if (!scope.deliverSubject.startsWith(`_INBOX_${connId}.`))
     throw new Error("backup deliverSubject must be inside the credential's private inbox");
   return {
-    pub: { allow: [`$JS.API.STREAM.SNAPSHOT.${scope.stream}`] },
+    pub: { allow: [`$JS.API.STREAM.SNAPSHOT.${scope.stream}`, snapshotAckGrant(scope.stream)] },
     sub: { allow: [inbox, scope.deliverSubject] },
-    // Each received chunk creates a one-use, short-lived permission for its exact server-generated
-    // reply subject. A guessed or wrong snapshot ACK id remains denied.
-    resp: { max: 1, ttl: nanos(60_000) },
   };
 }
 
@@ -606,6 +615,12 @@ export function restoreProfilePermissions(
       },
       sub: { allow: [inbox] },
     };
+  }
+  // A restore over a newer cut reads the step journals of the store it set aside, from a private
+  // clone, and of the store it restored, to name the runs it rolled back. Read-only, on WFJ alone.
+  if (scope.operation === "journal") {
+    const stream = assertBackupStream(space, wfjStreamName(space));
+    return { pub: { allow: [`$JS.API.STREAM.INFO.${stream}`, `$JS.API.STREAM.MSG.GET.${stream}`] }, sub: { allow: [inbox] } };
   }
   if (scope.operation !== "initiate" && scope.operation !== "upload" && scope.operation !== "validate")
     throw new Error(`unsupported restore operation ${(scope as { operation?: unknown }).operation}`);

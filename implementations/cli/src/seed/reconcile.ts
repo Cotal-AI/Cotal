@@ -1,26 +1,30 @@
 import { existsSync, renameSync } from "node:fs";
-import { spawnSync } from "node:child_process";
+import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import {
   CorruptExtensionPackageError,
   SEEDED_EXTENSIONS,
+  bindExtensionPeers,
   connectorMetadataStale,
   extensionPackageDir,
+  extensionsDir,
   installedExtensionPackage,
   loadExtensionsManifest,
+  provenance,
   quarantineExtensionsManifest,
   type InstalledExtension,
 } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
 import { selfArgv, verifiedCotalExecutables } from "../lib/self-exec.js";
 import { claimExtensionMutation } from "../lib/ext-mutation.js";
-import { assertReleasedSeedWriter, entryScript, isValidSemver, parseSemver, SEED_BUILTINS, seedGeneration, stampPath, type Semver } from "./paths.js";
+import { assertReleasedSeedWriter, entryScript, isValidSemver, parseSemver, SEED_BUILTINS, seedDir, seedGeneration, stampPath, type Semver } from "./paths.js";
 import {
   acquireReconcileLock,
   clearChildMarker,
   clearCursor,
   clearRecovery,
+  markCursorFailed,
   readCursor,
   readRecovery,
   reconcileLockActive,
@@ -45,6 +49,7 @@ import {
   type Stamp,
 } from "./authority.js";
 import { gcSeedStore, stageSeedPayload } from "./store.js";
+import { prefixLockDiffers, seededInstallDiffers } from "./verify.js";
 
 /**
  * The connector seeding reconcile: makes the four first-party connectors present on a fresh install
@@ -68,18 +73,24 @@ import { gcSeedStore, stageSeedPayload } from "./store.js";
  *    upgrade; an operator-managed official entry (a manual `ext add` at a chosen version) is left alone.
  */
 
-type Mode = "auto" | "force" | "repair" | "reset";
+/** `verify` is `cotal update`'s mode: every built-in is reconciled under the locks like `force`, but a
+ *  seeded entry at the running generation whose installed copy is proven identical to the shipped
+ *  payload ({@link seededInstallDiffers}) is kept rather than reinstalled. */
+type Mode = "auto" | "force" | "repair" | "reset" | "verify";
 
 export interface SeedFlags {
   readonly repair?: boolean;
   readonly reset?: boolean;
   readonly force?: boolean;
+  /** Reinstall only a built-in whose installed copy differs from the shipped payload. */
+  readonly verify?: boolean;
 }
 
 export interface ReconcileResult {
   readonly noop: boolean;
   readonly seeded: string[];
   readonly refreshed: string[];
+  readonly verified: string[];
   readonly removedKept: string[];
 }
 
@@ -90,7 +101,7 @@ export async function reconcileSeededConnectors(): Promise<void> {
 
 /** `cotal ext seed [--repair|--reset|--force]`: the maintenance entry. Prints a summary. */
 export async function runSeed(flags: SeedFlags): Promise<void> {
-  const mode: Mode = flags.reset ? "reset" : flags.repair ? "repair" : flags.force ? "force" : "auto";
+  const mode: Mode = flags.reset ? "reset" : flags.repair ? "repair" : flags.force ? "force" : flags.verify ? "verify" : "auto";
   const result = await reconcile(mode);
   if (result.noop) {
     console.log(c.green("✓ built-in connectors up to date"));
@@ -99,11 +110,12 @@ export async function runSeed(flags: SeedFlags): Promise<void> {
   const parts: string[] = [];
   if (result.seeded.length) parts.push(`seeded ${result.seeded.join(", ")}`);
   if (result.refreshed.length) parts.push(`refreshed ${result.refreshed.join(", ")}`);
+  if (result.verified.length) parts.push(`verified ${result.verified.join(", ")}`);
   if (result.removedKept.length) parts.push(`kept removed ${result.removedKept.join(", ")}`);
   console.log(c.green(`✓ connectors reconciled`) + (parts.length ? c.dim(` - ${parts.join("; ")}`) : ""));
 }
 
-const NOOP: ReconcileResult = { noop: true, seeded: [], refreshed: [], removedKept: [] };
+const NOOP: ReconcileResult = { noop: true, seeded: [], refreshed: [], verified: [], removedKept: [] };
 
 async function reconcile(mode: Mode): Promise<ReconcileResult> {
   const generation = seedGeneration();
@@ -126,13 +138,14 @@ async function reconcile(mode: Mode): Promise<ReconcileResult> {
         if (migration && cursor) {
           console.error(
             c.dim(
-              `resuming an interrupted connector upgrade (seed store ${migration.from} -> ${generation}; ` +
+              `resuming ${cursor.failed ? "a failed" : "an interrupted"} connector upgrade (seed store ${migration.from} -> ${generation}; ` +
                 `package "${cursor.package}", phase ${cursor.phase}) …`,
             ),
           );
           await reconcile("repair");
           return NOOP;
         }
+        if (cursor?.failed) throw failedSeed(cursor);
         if (cursor) {
           const storeGeneration = readStamp()?.generation ?? "absent";
           throw new Error(
@@ -175,6 +188,12 @@ async function reconcile(mode: Mode): Promise<ReconcileResult> {
         if (JSON.stringify(loadExtensionsManifest()) !== before)
           throw new Error("installed extensions changed during connector refresh; retry the upgrade before committing its generation");
       });
+    } catch (e) {
+      // This process is alive to see the failure, so the cursor it leaves says so: the next run
+      // reports why the seed failed, not an interruption. Failing to note it leaves that cursor as an
+      // interruption, and the seed's own error is still the one reported.
+      try { markCursorFailed(lock.nonce, e instanceof Error ? e.message : String(e)); } catch { /* reported below */ }
+      throw e;
     } finally {
       releaseMutation();
     }
@@ -256,29 +275,8 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
   //
   // Every mode refuses a backward migration, including force/reset. A shadowed older executable
   // must not replace a newer machine-wide generation. Check before any maintenance quarantine.
-  let storeGeneration: string | undefined;
-  try {
-    storeGeneration = readStamp()?.generation;
-  } catch {
-    storeGeneration = undefined; // corrupt JSON: the maintenance path below quarantines it
-  }
-  if (
-    storeGeneration !== undefined &&
-    isValidSemver(storeGeneration) &&
-    isStrictlyNewer(storeGeneration, generation)
-  ) {
-    const newerExecutable = verifiedCotalExecutables().find(
-      (candidate) => compareSemver(candidate.version, storeGeneration) >= 0,
-    );
-    const recovery = newerExecutable
-      ? `run the cotal-ai ${newerExecutable.version} executable at ${JSON.stringify(newerExecutable.path)}`
-      : "run the newer cotal";
-    const stampProvenance = describeStampProvenance(readStamp());
-    throw new Error(
-      `this cotal ${generation} is older than the seed store's generation ${storeGeneration}${stampProvenance} - ` +
-        `${recovery}; this executable will not downgrade the shared connector store`,
-    );
-  }
+  const downgrade = seedDowngradeRefusal(generation);
+  if (downgrade) throw downgrade;
 
   // Maintenance modes must survive a corrupt manifest / corrupt seed state: quarantine the unreadable
   // file(s) aside so the reads below (and the commit) can't wedge on them. `manifestRebuilt` ⇒ reconcile
@@ -296,11 +294,12 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
   // seed/repair was interrupted. In maintenance mode they are kept and cleared only at the final commit.
   const cursor = readCursor();
   if (cursor) {
+    if (mode === "auto" && cursor.failed) throw failedSeed(cursor);
     if (mode === "auto")
       throw new Error(
         `a previous connector seed was interrupted (package "${cursor.package}", phase ${cursor.phase}) - run \`cotal ext seed --repair\``,
       );
-    console.error(c.dim(`recovering from an interrupted seed (package "${cursor.package}") …`));
+    console.error(c.dim(`recovering from ${cursor.failed ? "a failed" : "an interrupted"} seed (package "${cursor.package}") …`));
   }
   if (mode === "auto" && !cursor && recoveryPending())
     throw new Error("a previous connector repair was interrupted - run `cotal ext seed --repair`");
@@ -333,7 +332,24 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
   const repairTarget = mode === "repair" ? cursor?.package : undefined;
   const seeded: string[] = [];
   const refreshed: string[] = [];
+  const verified: string[] = [];
   const removedKept: string[] = [];
+  // A verify run keeps a built-in only on proof. An interrupted or failed earlier run and a prefix
+  // that is not the tree its lock records each void that proof for every built-in at once, so the run
+  // reinstalls all of them the way `--force` does, and says why. Read when the first installed
+  // built-in asks, so a first boot with nothing installed yet reports no prefix at all.
+  let voided: string | undefined;
+  let voidedRead = false;
+  const unverifiable = (): string | undefined => {
+    if (!voidedRead) {
+      voidedRead = true;
+      voided = cursor ? `a previous seed of "${cursor.package}" did not finish`
+        : recoveryPending() ? "a previous repair did not finish"
+        : prefixLockDiffers();
+      if (voided) console.error(c.dim(`reinstalling every built-in: ${voided}`));
+    }
+    return voided;
+  };
 
   for (const name of SEED_BUILTINS) {
     const entry = installedEntry(name);
@@ -360,7 +376,20 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
       const isSeeded = entry.source === "seeded";
       const torn = mode === "repair" && isSeeded && (repairAllSeeded || installState(name) !== "intact");
       const metadataStale = isSeeded && connectorMetadataStale(entry);
-      const refresh = mode === "force" || torn || metadataStale || (isSeeded && isStrictlyNewer(generation, stampGen));
+      let refresh = mode === "force" || torn || metadataStale || (isSeeded && isStrictlyNewer(generation, stampGen));
+      if (mode === "verify" && !refresh) {
+        const differs = unverifiable() ?? seededInstallDiffers(name, generation, entry);
+        if (differs === undefined) {
+          // Proven identical to the shipped payload. The reinstall it replaces also rebinds the shared
+          // peers to this binary's copies, so a stale link is rebound here too, under the same locks.
+          for (const link of bindExtensionPeers([entry.pkg], entry.pkg))
+            provenance.wrote(`${link.peer} link (${link.owner} → this CLI's copy)`, link.destination);
+          verified.push(name);
+        } else {
+          if (!voided) console.error(c.dim(`${name}: ${differs}; reinstalling`));
+          refresh = true;
+        }
+      }
       if (refresh) {
         seedOne(name, generation, nonce, true);
         verifyInstalled(name, generation);
@@ -389,6 +418,7 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
   writeAuthority(everSeeded);
   ensureWitness(generation);
   const committedStamp = writeStamp(generation, entryScript());
+  if (stampGen !== generation) moved = { ...(stampGen === undefined ? {} : { from: stampGen }), to: generation };
   if (migrationFrom) announceSeedMigration(migrationFrom, committedStamp);
   clearCursor();
   clearRecovery();
@@ -396,7 +426,65 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
     generation,
     loadExtensionsManifest().extensions.map((e) => e.spec),
   );
-  return { noop: false, seeded, refreshed, removedKept };
+  return { noop: false, seeded, refreshed, verified, removedKept };
+}
+
+/** What refuses an `up` at the boot gate, where it defers its seed to its first launch, in the order
+ *  {@link reconcile} would refuse: a writer that may not write a store that is not current, then an
+ *  executable older than the store. Neither check writes anything. */
+export function deferredSeedRefusal(): Error | undefined {
+  const generation = seedGeneration();
+  let current = false;
+  try {
+    current = !readCursor() && !recoveryPending() && !!readWitness() && authorityIntact() && builtinsAccounted() && builtinsMetadataCurrent() && readStamp()?.generation === generation;
+  } catch {
+    current = false; // unreadable seed state: the deferred reconcile reports it
+  }
+  if (current) return undefined;
+  try {
+    assertReleasedSeedWriter(generation, "reconcile");
+  } catch (error) {
+    return error as Error;
+  }
+  return seedDowngradeRefusal(generation);
+}
+
+/** The refusal an executable older than the seed store's generation meets before it writes anything,
+ *  or undefined when the store is not newer than `generation`. It names the store, because restoring
+ *  that store is what lets this executable run, and gives the versions as context. */
+export function seedDowngradeRefusal(generation: string = seedGeneration()): Error | undefined {
+  let storeGeneration: string | undefined;
+  try {
+    storeGeneration = readStamp()?.generation;
+  } catch {
+    storeGeneration = undefined; // corrupt JSON: the maintenance path quarantines it
+  }
+  if (
+    storeGeneration !== undefined &&
+    isValidSemver(storeGeneration) &&
+    isStrictlyNewer(storeGeneration, generation)
+  ) {
+    const newerExecutable = verifiedCotalExecutables().find(
+      (candidate) => compareSemver(candidate.version, storeGeneration) >= 0,
+    );
+    const newer = newerExecutable
+      ? `; the cotal-ai ${newerExecutable.version} executable at ${JSON.stringify(newerExecutable.path)} uses the store as it is`
+      : "";
+    const stampProvenance = describeStampProvenance(readStamp());
+    return new Error(
+      `the connector seed store ${seedDir()} is at generation ${storeGeneration}${stampProvenance}, and this cotal ${generation} does not move it back to an older one - ` +
+        `to run this cotal, restore that store and the extensions folder ${extensionsDir()} from a backup taken before the store moved to ${storeGeneration}${newer}`,
+    );
+  }
+  return undefined;
+}
+
+/** The seed store generation this process moved, from the one its stamp named (absent on a first
+ *  seed) to its own; undefined while it moved none. */
+let moved: { readonly from?: string; readonly to: string } | undefined;
+
+export function seedStoreMoved(): { readonly from?: string; readonly to: string } | undefined {
+  return moved;
 }
 
 function describeStampProvenance(stamp: Stamp | undefined): string {
@@ -555,10 +643,27 @@ function seedOne(name: string, generation: string, nonce: string, force: boolean
   // runs this ahead of whatever command was typed, so on stdout it would land in front of that
   // command's result (a first-boot `cotal meshes --json` printed seven non-JSON lines).
   if (r.stdout) process.stderr.write(r.stdout);
-  if (r.status !== 0) {
-    const tail = `${r.stderr ?? ""}`.trim().split("\n").slice(-8).join("\n");
-    throw new Error(`failed to seed connector "${name}" from ${storePath}:\n${tail}`);
+  if (r.status !== 0) throw new Error(`failed to seed connector "${name}" from ${storePath}: ${childFailure(r)}`);
+}
+
+/** Why a seed child failed. It writes its progress and then its `✗` failure to stderr: the progress
+ *  is relayed as progress and the failure is the reason. A child that printed no failure is
+ *  described by its last lines, or by how it ended. */
+function childFailure(r: SpawnSyncReturns<string>): string {
+  const plain = (text: string) => text.replace(/\x1b\[[0-9;]*m/g, "");
+  const lines = `${r.stderr ?? ""}`.trimEnd().split("\n");
+  const at = lines.findLastIndex((line) => plain(line).startsWith("✗ "));
+  if (at < 0) {
+    const tail = lines.slice(-8).join("\n").trim();
+    return tail || (r.error?.message ?? (r.signal ? `the seed child ended on ${r.signal}` : `the seed child exited with status ${r.status}`));
   }
+  if (at > 0) process.stderr.write(`${lines.slice(0, at).join("\n")}\n`);
+  return plain(lines.slice(at).join("\n")).slice(2);
+}
+
+/** The refusal after a seed that failed: what failed, and that `--repair` finishes it. */
+function failedSeed(cursor: ReconcileCursor): Error {
+  return new Error(`a previous connector seed failed (package "${cursor.package}", phase ${cursor.phase}): ${cursor.failed} - fix that, then run \`cotal ext seed --repair\``);
 }
 
 /** Confirm a connector the reconcile claims to have (re)installed is recorded AND on disk at the

@@ -1,7 +1,15 @@
 # Portable lifecycle bootstrap
 
-Status: contract for issue #2420, implemented with the symbols spelled as declared below. The source
-inventory was checked at `d00f18cd62f5933c7dceb93b56559498b66656bc`.
+Status: contract for issue #2420, implemented with the symbols spelled as declared below and shipped
+in 0.63.0 (`22e210acd`). SPEC §13.17 states the normative contract. The source inventory was checked
+at `d00f18cd62f5933c7dceb93b56559498b66656bc`.
+
+One later change narrows the custody section. Since 0.101.0 (`87c852dac`), `runCli` drops the
+`COTAL_MANAGED_HANDOFF_FILE` variable for every command, after reading its leading global flags,
+but only `spawn` takes and unlinks the file. Another command leaves the file in place, and the
+old-Node refusal in `bin/cotal.ts` unlinks it only for `spawn`. A spawn whose file cannot be taken
+is refused `USAGE_INVALID` before its other checks. The custody text and acceptance row A14 below
+describe the original every-command behavior.
 
 ## Problem
 
@@ -201,6 +209,8 @@ export interface DelegatedSeatLaunch {
   readonly agent: string;
   /** The agent-definition file text the manager resolved for this spawn. */
   readonly persona: string;
+  /** The launching manager's stable instance id (`COTAL_MANAGER_INSTANCE`). */
+  readonly managerInstanceId: string;
   /** The role the manager resolved (the `--role` override, else the persona's `role:`), the same
    *  value the enrollment carried. */
   readonly role?: string;
@@ -246,7 +256,7 @@ export function delegatedSeatCommand(
 `delegatedSeatCommand` returns
 `["spawn", "--config", files.persona, "--space", target.space, "--name", target.actor, "--agent", launch.agent, "--expect-owner", target.owner, "--expect-lifecycle-uid", target.lifecycleUid, ...]`
 with `--role`, `--model`, `--variant`, `--prompt`, one `--opt k=v` per launch option and `--events`
-or `--no-events` appended when set, and `env` equal to `{ COTAL_MANAGED_HANDOFF_FILE: files.handoff }`.
+or `--no-events` appended when set, and `env` equal to `{ COTAL_MANAGED_HANDOFF_FILE: files.handoff, COTAL_MANAGER_INSTANCE: launch.managerInstanceId }`.
 It never emits `--cwd`, `--resume`, `--share-tools` or an access-list flag: the child's working
 directory is the provider resource's own, and its channel lists come from the handoff.
 
@@ -308,11 +318,17 @@ The handoff path through `spawn(args)`:
    check, and the text stays in memory only. The file and the variable are already gone, so no
    refusal below can leave either behind. `scrubEnrollmentEnv` is unchanged.
 2. Refuse the conflicts and the shapes the redeem input refuses: `COTAL_ENROLLMENT_URL` or
-   `COTAL_ENROLLMENT_FILE` also set, `--detach`, `-f`, `--creds`, a missing `--space`,
-   `--expect-owner` or `--expect-lifecycle-uid`, and a missing or unloadable `--config` file.
-3. `parseManagedLifecycleHandoff(text, { space: --space, owner: --expect-owner, actor: --name,
-   lifecycleUid: --expect-lifecycle-uid })`. Any mismatch exits non-zero here, before mesh
-   registration, before any broker connection and before any exchange request.
+   `COTAL_ENROLLMENT_FILE` also set, `--detach`, `-f`, `--creds`, a missing `--space`, `--name`,
+   `--expect-owner` or `--expect-lifecycle-uid`, a missing or unloadable `--config` file, and an
+   absent `COTAL_MANAGER_INSTANCE` (`COTAL_MANAGED_HANDOFF_FILE requires
+   COTAL_MANAGER_INSTANCE`; `DelegatedSeatLaunch.managerInstanceId` is required and a newer CLI
+   child under an older manager or runtime refuses every delegated launch before any plane is
+   touched, so managers and the CLI must be upgraded together).
+3. Validate `COTAL_MANAGER_INSTANCE` with `assertLifecycleToken` (refusing a malformed value with
+   `COTAL_MANAGER_INSTANCE "<value>" is not a valid lifecycle token ([a-z0-9]{26,32})`), then
+   `parseManagedLifecycleHandoff(text, { space: --space, owner: --expect-owner, actor: --name,
+   lifecycleUid: --expect-lifecycle-uid })`. Any failure or mismatch exits non-zero here, before
+   mesh registration, before any broker connection and before any exchange request.
 4. `handoffEnrollmentBundle` builds the bundle; `stock.userAuth` is
    `{ provider: authProvider, idp, endpoints: { url: exchangeUrl }, remote: true }`. From here the
    existing redeem branches run unchanged: `registerEnrollmentMesh` when the space is unregistered,
@@ -320,7 +336,8 @@ The handoff path through `spawn(args)`:
    `provisionRemoteUserForeground(target, name, { body: bundle, exchangeUrl })`.
 5. `provisionRemoteUserForeground` writes the token and sentinel to the child's own 0600 files,
    runs the bearer preflight with `agent-bearer --exchange-url <exchangeUrl> --token-file <child path>`,
-   and the connector launches with `COTAL_LIFECYCLE_UID` equal to the handoff's `lifecycleUid`.
+   and the connector launches with `COTAL_LIFECYCLE_UID` equal to the handoff's `lifecycleUid` and
+   `COTAL_MANAGER_INSTANCE` copied onto `spec.env` via `applyHandoffManagerInstance`.
 
 The existing `COTAL_ENROLLMENT_URL` and `COTAL_ENROLLMENT_FILE` behavior is unchanged.
 

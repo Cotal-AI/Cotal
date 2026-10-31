@@ -26,9 +26,9 @@
 import { parentPort, workerData, type MessagePort } from "node:worker_threads";
 import "ses";
 import { EffectResultTooLarge, Journal, JournalAppendRejected, type JournalStore } from "../journal.js";
-import { EngineUnavailable } from "../errors.js";
+import { EngineUnavailable, messageOf, nameOf } from "../errors.js";
 import { assertCrossable } from "../values.js";
-import { EffectError, RunHeld, RunReleased, type EffectHandler } from "../effects.js";
+import { Cancelled, EffectError, RootCancellation, RunHeld, RunReleased, type EffectHandler } from "../effects.js";
 import { bridgedSeam } from "./bridge.js";
 import { runOnEngine } from "./host.js";
 import { InspectionJournal, inspectionExit } from "./inspection.js";
@@ -40,6 +40,24 @@ lockdown();
 
 if (parentPort === null) throw new Error("cotal-lang engine worker: no parent port; this module is a worker entry, not a library");
 const port = parentPort;
+const cancellation = new RootCancellation();
+let started = false;
+let start!: () => void;
+const ready = new Promise<void>((resolve) => { start = resolve; });
+port.on("message", (message: unknown) => {
+  if (message === null || typeof message !== "object" || Object.keys(message).length !== 2)
+    throw new Error("cotal-lang engine worker: invalid root control message");
+  const { kind, reason } = message as { kind?: unknown; reason?: unknown };
+  if (kind === "root-start" && !started && (reason === null || typeof reason === "string")) {
+    started = true;
+    if (reason !== null) cancellation.cancel(reason);
+    start();
+  } else if (kind === "root-cancel" && started && typeof reason === "string") {
+    cancellation.cancel(reason);
+  } else {
+    throw new Error("cotal-lang engine worker: invalid root control transition");
+  }
+});
 
 const { request, stop, bridge } = workerData as {
   request: WorkerRunRequest;
@@ -93,7 +111,7 @@ async function buildSeam(): Promise<{ handler: EffectHandler; journal?: Journal 
     return {
       handler: {
         now: () => request.pins!.startedAt,
-        spawn: stop, turn: stop, ask: stop, checkpoint: stop, sleep: stop,
+        spawn: stop, participant: stop, turn: stop, ask: stop, checkpoint: stop, sleep: stop,
         wait: stop, notify: stop, monitor: stop, openConclave: stop, closeConclave: stop,
       } as unknown as EffectHandler,
       journal: new InspectionJournal(request.runId, request.entries ?? [], request.cutAt),
@@ -143,6 +161,7 @@ async function run(): Promise<WorkerRunResult> {
     handler: seam.handler,
     evaluate: confined,
     shouldStop,
+    cancellation,
     ...(request.handler === "inspection" ? { migration: true } : {}),
     ...(request.file !== undefined ? { file: request.file } : {}),
     ...(request.pins !== undefined ? { pins: request.pins } : {}),
@@ -162,8 +181,8 @@ async function run(): Promise<WorkerRunResult> {
     const exit = inspectionExit(seam.journal instanceof InspectionJournal ? seam.journal.stop ?? error : error);
     return {
       ok: false,
-      name: error instanceof Error ? error.name : "Error",
-      message: error instanceof Error ? error.message : String(error),
+      name: nameOf(error),
+      message: messageOf(error),
       ...failureOf(error),
       inspection: { orphans: seam.journal!.orphans(), exit },
     };
@@ -191,6 +210,7 @@ async function run(): Promise<WorkerRunResult> {
 
 /** The class a run failed as, by `instanceof`: a value the program threw is never a host class by its shape. */
 function failureOf(e: unknown): WorkerFailure {
+  if (e instanceof Cancelled) return { class: "cancelled", reason: e.reason };
   if (e instanceof RunReleased) return { class: "released", reason: e.reason };
   if (e instanceof RunHeld) return { class: "held", step: e.step, reason: e.reason, pending: e.pending };
   if (e instanceof EffectError) return { class: "effect", code: e.code, kind: e.kind, ...(e.detail !== undefined ? { detail: e.detail } : {}) };
@@ -203,13 +223,12 @@ function failureOf(e: unknown): WorkerFailure {
 
 /** The answer a thread owes when it cannot give the one it was asked for. */
 const answerWith = (e: unknown): void => {
-  const err = e as { name?: string; message?: string };
   port.postMessage({
     kind: "result",
     result: {
       ok: false,
-      name: typeof err?.name === "string" ? err.name : "Error",
-      message: typeof err?.message === "string" ? err.message : String(e),
+      name: nameOf(e),
+      message: messageOf(e),
       ...failureOf(e),
     } satisfies WorkerRunResult,
   });
@@ -229,4 +248,5 @@ const answerWith = (e: unknown): void => {
 //
 // THAT LIST IS AN ENUMERATION, so it is true of the fields it names and silent about any other.
 // This line names no known route; it makes the day a new field is added LOUD instead of silent.
-run().then((result) => port.postMessage({ kind: "result", result }), answerWith).catch(answerWith);
+port.postMessage({ kind: "ready" });
+ready.then(run).then((result) => port.postMessage({ kind: "result", result }), answerWith).catch(answerWith);

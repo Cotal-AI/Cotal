@@ -1,0 +1,2 @@
+# The CLI usage telemetry hook, the `telemetry` command, and the request bodies, against a local intake.
+smoke:telemetry

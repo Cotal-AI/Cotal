@@ -17,13 +17,15 @@ Current lifecycle commands are `cotal team check`, `team boot`, `team deploy`, a
 Older `spawn -f` deployment ledgers retain a separate `down -f` cleanup route described in the guide.
 Authorization follows [SPEC §9](../SPEC.md#9-nats--jetstream-security-and-authorization).
 
+The manifest must be UTF-8. A UTF-16 file is refused with `SCHEMA_INVALID` and the instruction to save it as UTF-8.
+
 ## Top level
 
 | Key | Required | Meaning |
 | --- | --- | --- |
 | `apiVersion` | yes | Must be `cotal/v1`. |
 | `kind` | yes | Must be `Mesh`. |
-| `space` | yes | One space name. `spaces` is not supported in v1. Fresh team boot requires a prepared local root and refuses a root that retains another space's account or local registration. See [Define a team](define-a-team.mdx#quickstart). |
+| `space` | yes | One space name of 1 to 200 letters, digits, underscores, or hyphens. `spaces` is not supported in v1. `space create` and `up --space` accept at most 64 characters, so keep the name within that limit to prepare it. Fresh team boot requires a prepared local root and refuses a root that retains another space's account or local registration. See [Define a team](define-a-team.mdx#quickstart). |
 | `broker` | no | Broker address, bind interface, and auth settings. See [Broker settings](#broker-settings). |
 | `runtime` | no | Registered manager runtime name. `pty` is built in. Optional providers such as `tmux`, `cmux`, `orca`, and `herdr` are installed with `cotal ext add`. |
 | `agent` | no | Default connector for agents without their own manifest `agent` setting. Each declared agent needs a per-agent or top-level choice; there is no implicit connector default. |
@@ -44,7 +46,9 @@ The resolver reports schema and semantic errors with the manifest's file and lin
 | `auth` | Omitted, `true`, or `static` selects per-agent JWT credentials. `false` selects an open development mesh. `user` selects per-user auth through `cotal login` and the actor ledger. |
 | `idp` | IdP auth base URL, valid only with `auth: user`. Uses HTTPS, or HTTP on a loopback IP literal such as `127.0.0.1`. Embedded credentials, a query, and a fragment are refused. Pins the IdP when user auth is first enabled. |
 
-The schema accepts a broker list, but current additive `team deploy` requires one registered broker address.
+The schema and `topology view` accept a broker list, but `up -f` and `team boot` bind one broker URL. A list refuses `USAGE_INVALID` before writing.
+For `up -f`, a `tls://` URL requires `--tls-cert` and `--tls-key`; with those flags, a `nats://` URL is refused.
+Additive `team deploy` also requires one registered broker address.
 Fresh boot and additive deployment have different supported operations.
 [Define a team](define-a-team.mdx#deploying-onto-a-shared-mesh-spawn--f) lists the current deployment limits.
 
@@ -67,7 +71,8 @@ agents:
     prompt: Introduce yourself in #general and assign the first task.
 ```
 
-A relative `persona` path resolves against the manifest's directory.
+A relative `persona` path resolves against the manifest's directory. It names a file, not a catalog entry.
+For catalog persona `p20` at the project root, use `./.cotal/agents/p20.md`. A bare name without a matching file is refused with that rule.
 A manifest's agent map key names the deployed agent.
 Behavior fields come from the persona unless the manifest overrides them.
 Permissions follow `personaPermissions`; a bare persona path does not bypass that policy.
@@ -156,6 +161,8 @@ These are the same verbs described in [Channels and permissions](channels-and-pe
 
 The `defaults` block supplies omitted `replay`, `replayWindow`, and `deliveryClass` values.
 [SPEC §7](../SPEC.md#7-channels) defines their semantics.
+`team deploy` adds only cards with `deliveryClass: live`. Fresh `up -f` and `team boot` can seed either class.
+An open mesh has no delivery daemon and refuses durable channels.
 
 | Grant | Meaning |
 | --- | --- |

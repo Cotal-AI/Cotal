@@ -6,10 +6,31 @@
  *  1. `up --detach` (auth default) brings up ALL THREE: nats-server, delivery daemon, manager —
  *     pid files written, processes alive, the delivery-aware marker bound to the manager pid.
  *  2. a real `cotal ps` is ANSWERED by the detached manager (control plane reachable, creds minted
- *     from this folder's auth — the exact "spawn --detach works right after up" promise).
+ *     from this folder's auth — the exact "spawn --detach works right after up" promise), and with
+ *     no agents it lists that manager's instance id, which `ps --on` takes. With no connector
+ *     installed, an unpinned `spawn -d` is refused and names that manager and the `cotal ext add` to run. Its
+ *     `Managed launch` plan is on stdout and only the refusal is on stderr. A `spawn -d` pinned to
+ *     that manager is refused by it, and the manager's log holds one line naming that request's
+ *     id, the persona and the reason the caller got.
  *  2b. a refresh whose delivery launch LOSES the single-flight lease exits non-zero and says so,
  *     instead of reporting a healthy control plane over a child that is already dead (#837).
  *  3. `cotal down` stops all three: pid files gone, processes dead, port closed.
+ *  3b. A SIGINT to that bare `down --yes` names the members it stopped and those still running and
+ *     exits 130: after the heading, in each member's stop (the stop finishes and prints its line
+ *     first, and `status` reads no stale pidfile), and twice in the manager's stop (at once).
+ *  3c. #3892: in a fresh open root, a refresh ensures the manager as the first boot did. Healthy
+ *     refreshes with and without `--runtime` exit 0, keep the manager pid and print no line about
+ *     starting a stopped stack. Once that manager is retired, a `--no-manager` refresh stays
+ *     broker-only, and a refresh over a manager pidfile that holds no pid exits 1 with the degraded
+ *     report with or without `--runtime`. The report names no internal component and wraps on an
+ *     80-column terminal. `down` refuses that pidfile too, so its Next first asks the operator to
+ *     confirm that no manager runs for the folder, which this fixture knows because it retired the
+ *     manager itself, then names removing the file and a bare `cotal up`, which restores the manager.
+ *  3d. In the first root, which still holds the static stack's accounts, an open `up --detach` exits
+ *     0 and starts no delivery daemon, and its `down` stops the broker and manager and nothing else.
+ *  3e. Static and open boots then alternate in that root, twice. Every boot exits 0 with a manager
+ *     that answers `ps`, a static boot runs one delivery daemon and an open boot none, and every
+ *     `down` leaves no broker, manager or delivery daemon of the space running.
  *  4. #1307: Ctrl-C on a FOREGROUND `up` follows the same sparing rule as bare `down`. One managed
  *     seat (a shim `claude` on PATH: a real core-dist endpoint that joins presence and stays alive)
  *     runs on the in-process pty runtime, so it cannot outlive the manager: after the SIGINT the
@@ -17,18 +38,21 @@
  *     and the process exits within a bounded time.
  *
  * Sandboxes COTAL_HOME + a temp project root; tears down via `cotal down` + own-pid SIGTERM only —
- * never pkill, so a co-running broker on :4222 is untouched. Needs `nats-server` on PATH.
+ * never pkill, so a co-running broker on :4222 is untouched. Needs `nats-server` on PATH. On a host
+ * other stacks share, set COTAL_SMOKE_SHARED_HOST=1: the default-port cells then skip rather than
+ * start an open broker on a free :4222.
  * Run: pnpm smoke:up-stack:live
  */
 import { spawn as spawnProc, spawnSync, type ChildProcess } from "node:child_process";
 import { createConnection } from "node:net";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { renderDetachedSummary } from "../../implementations/cli/src/lib/up-report.js";
+import { shellWord } from "../../implementations/cli/src/lib/endpoint-errors.js";
+import { clean, cotalPty } from "../../implementations/cli/smoke/_console-pty.js";
 import { assertSmokeSandboxDown, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
-import { DEFAULT_SPACE } from "@cotal-ai/core";
-import { canonicalLocalProcessPath, deliveryCredsKey, DELIVERY_PIDFILE, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_LOGFILE, MANAGER_PIDFILE, MANAGER_SPARE_CAPABILITY, workspaceSecretStore } from "@cotal-ai/workspace";
+import { canonicalLocalProcessPath, deliveryCredsKey, DELIVERY_PIDFILE, displayWidth, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_LOGFILE, MANAGER_PIDFILE, MANAGER_SPARE_CAPABILITY, workspaceSecretStore } from "@cotal-ai/workspace";
 
 // Ephemeral OS-assigned port: no fixed-port collision across back-to-back / concurrent runs.
 const PORT = await freePort();
@@ -43,6 +67,7 @@ const root = mkdtempSync(join(tmpdir(), "cotal-upstack-root-"));
 const autoRoot = mkdtempSync(join(tmpdir(), "cotal-upstack-auto-"));
 const occupantRoot = mkdtempSync(join(tmpdir(), "cotal-upstack-occupant-"));
 const warningRoot = mkdtempSync(join(tmpdir(), "cotal-upstack-warning-"));
+const openRoot = mkdtempSync(join(tmpdir(), "cotal-upstack-open-"));
 const fakeBin = mkdtempSync(join(tmpdir(), "cotal-upstack-bin-"));
 const configDir = join(home, "xdg");
 const anchors = new Map([
@@ -50,6 +75,7 @@ const anchors = new Map([
   [autoRoot, recordSmokeSandbox({ root: autoRoot, cotalHome: home, xdgConfigHome: configDir })],
   [occupantRoot, recordSmokeSandbox({ root: occupantRoot, cotalHome: home, xdgConfigHome: configDir })],
   [warningRoot, recordSmokeSandbox({ root: warningRoot, cotalHome: home, xdgConfigHome: configDir })],
+  [openRoot, recordSmokeSandbox({ root: openRoot, cotalHome: home, xdgConfigHome: configDir })],
 ]);
 const env = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1" };
 
@@ -71,6 +97,16 @@ const cliInEnv = (cwd: string, extraEnv: NodeJS.ProcessEnv, ...args: string[]) =
 };
 const cli = (...args: string[]) => cliIn(root, ...args);
 const plain = (text: string) => text.replace(/\x1b\[[0-9;]*m/g, "");
+/** The rows of a report's last Next section, each as its command and description. */
+const nextRows = (stdout: string) => {
+  const lines = plain(stdout).trimEnd().split("\n");
+  return lines.slice(lines.lastIndexOf("Next") + 1).map((line) => /^ {2}(\S.*?) {2,}(\S.*)$/.exec(line)?.slice(1));
+};
+/** The first line under Next, for a Next that states a check before its commands. */
+const nextCheck = (stdout: string) => {
+  const lines = plain(stdout).trimEnd().split("\n");
+  return lines[lines.lastIndexOf("Next") + 1]?.trim();
+};
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const alive = (pid: number) => {
   try {
@@ -82,8 +118,9 @@ const alive = (pid: number) => {
 };
 const pidOf = (file: string) => Number(readFileSync(join(root, ".cotal", file), "utf8").trim());
 // The runtime records are per-space now, so their names come from the SHIPPED expansion rather than
-// a literal. This suite ups without `--space`, which is the default space.
-const record = (template: string) => canonicalLocalProcessPath(template, { root, space: DEFAULT_SPACE });
+// a literal. This suite ups without `--space`, so a new project's space takes its folder's name.
+const SPACE = basename(root);
+const record = (template: string) => canonicalLocalProcessPath(template, { root, space: SPACE });
 const recordName = (template: string) => record(template).slice(join(root, ".cotal").length + 1);
 const portOpenAt = (port: number) =>
   new Promise<boolean>((res) => {
@@ -92,6 +129,17 @@ const portOpenAt = (port: number) =>
     s.setTimeout(400, () => { s.destroy(); res(false); });
   });
 const portOpen = () => portOpenAt(PORT);
+/** The pids of the running `daemon` processes for `space`, read from the process table (Linux). */
+const daemonsOf = (daemon: "__daemon-deliver" | "__daemon-manager", space: string) => readdirSync("/proc").filter((entry) => /^\d+$/.test(entry)).filter((entry) => {
+  try {
+    const argv = readFileSync(`/proc/${entry}/cmdline`, "utf8").split("\0");
+    const at = argv.indexOf(daemon);
+    return at >= 0 && argv[at + 1] === "--space" && argv[at + 2] === space;
+  } catch {
+    return false;
+  }
+}).map(Number);
+const deliveryDaemons = (space: string) => daemonsOf("__daemon-deliver", space);
 
 const pids: number[] = [];
 let startedOccupant = false;
@@ -101,13 +149,13 @@ try {
     delivery: false,
     authService: false,
     manager: false,
-  }) === "✓ running in the background: nats-server (pid 42) - stop with: cotal down");
+  }) === "✓ running in the background: nats-server (pid 42) - stop with: `cotal down`");
   ok("detached summary reports partial component availability independently", renderDetachedSummary({
     pid: 42,
     delivery: true,
     authService: false,
     manager: false,
-  }) === "✓ running in the background: nats-server (pid 42), delivery daemon - stop with: cotal down");
+  }) === "✓ running in the background: nats-server (pid 42), delivery daemon - stop with: `cotal down`");
   // Bare `down` refuses the machine home, so the home stack's summary names the stop that works.
   ok("a machine-home summary names down --preserve-state, the stop that reaches the home stack", renderDetachedSummary({
     pid: 42,
@@ -115,7 +163,7 @@ try {
     authService: false,
     manager: true,
     machineHome: true,
-  }) === "✓ running in the background: nats-server (pid 42), delivery daemon, manager - stop with: cotal down --preserve-state");
+  }) === "✓ running in the background: nats-server (pid 42), delivery daemon, manager - stop with: `cotal down --preserve-state`");
   // With no manager, --preserve-state refuses until one serves the space, so the summary names both steps.
   ok("a machine-home summary with no manager names cotal up before down --preserve-state", renderDetachedSummary({
     pid: 42,
@@ -123,23 +171,31 @@ try {
     authService: false,
     manager: false,
     machineHome: true,
-  }) === "✓ running in the background: nats-server (pid 42), delivery daemon - stop with: cotal up to start its manager, then cotal down --preserve-state");
+  }) === "✓ running in the background: nats-server (pid 42), delivery daemon - stop with: `cotal up` to start its manager, then `cotal down --preserve-state`");
 
   // Default-port collision: `up` without an explicit `--server` should allocate a free port and
   // record it, not fail with "use --server ...:<port>". If the developer already has a real :4222
-  // broker, leave it alone; otherwise start a sandbox occupant and tear it down below.
-  if (!(await portOpenAt(4222))) {
-    const occupant = cliIn(occupantRoot, "up", "--detach", "--open");
-    ok("default-port occupant starts for auto-port regression", occupant.status === 0, occupant.stdout + occupant.stderr);
-    startedOccupant = true;
+  // broker, leave it alone; otherwise start a sandbox occupant and tear it down below. The default
+  // address is fixed, so that occupant is an open broker on :4222 that any client on the host can
+  // join while it runs. COTAL_SMOKE_SHARED_HOST=1 says other stacks share this host, so a free :4222
+  // skips these cells instead.
+  const defaultFree = !(await portOpenAt(4222));
+  if (defaultFree && process.env.COTAL_SMOKE_SHARED_HOST === "1") {
+    console.log("  - skipped: the default-port collision cells, because COTAL_SMOKE_SHARED_HOST=1 and :4222 is free, so they would start an open broker there");
+  } else {
+    if (defaultFree) {
+      const occupant = cliIn(occupantRoot, "up", "--detach", "--open");
+      ok("default-port occupant starts for auto-port regression", occupant.status === 0, occupant.stdout + occupant.stderr);
+      startedOccupant = true;
+    }
+    const auto = cliIn(autoRoot, "up", "--detach", "--open", "--space", "auto");
+    ok("up --detach auto-selects a free port when :4222 is occupied", auto.status === 0, auto.stdout + auto.stderr);
+    const autoEntry = JSON.parse(readFileSync(join(home, "meshes", "space.6175746f.json"), "utf8")) as { server: string };
+    ok("auto-port mesh is not recorded on the default server", autoEntry.server !== DEFAULT_SERVER, autoEntry);
+    ok("auto-port mesh broker is reachable", await portOpenAt(Number(new URL(autoEntry.server).port)), autoEntry);
+    cliIn(autoRoot, "down");
+    if (startedOccupant) cliIn(occupantRoot, "down");
   }
-  const auto = cliIn(autoRoot, "up", "--detach", "--open", "--space", "auto");
-  ok("up --detach auto-selects a free port when :4222 is occupied", auto.status === 0, auto.stdout + auto.stderr);
-  const autoEntry = JSON.parse(readFileSync(join(home, "meshes", "space.6175746f.json"), "utf8")) as { server: string };
-  ok("auto-port mesh is not recorded on the default server", autoEntry.server !== DEFAULT_SERVER, autoEntry);
-  ok("auto-port mesh broker is reachable", await portOpenAt(Number(new URL(autoEntry.server).port)), autoEntry);
-  cliIn(autoRoot, "down");
-  if (startedOccupant) cliIn(occupantRoot, "down");
 
   // The warning needs a real invocation id, 32 hex characters, and the unit's MainPID equal to the
   // up process. up runs systemctl as its own direct child, so the fake's $PPID is that pid.
@@ -150,7 +206,7 @@ try {
   const warned = cliInEnv(warningRoot, {
     INVOCATION_ID: invocationId,
     PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
-  }, "up", "--detach", "--open", "--space", "warning");
+  }, "up", "--detach", "--open", "--space", "warning", "--server", `nats://127.0.0.1:${await freePort()}`);
   const warnedOutput = plain(warned.stdout + warned.stderr);
   ok("up --detach keeps starting under the false-green unit shape", warned.status === 0, warnedOutput);
   ok("up --detach warns about the exact systemd unit", warnedOutput.includes("cotal-warning.service is Type=oneshot with RemainAfterExit=yes"), warnedOutput);
@@ -162,16 +218,29 @@ try {
   ok("up --detach exits 0", up.status === 0, up.stdout + up.stderr);
   ok(
     "auth up reports the exact running component set",
-    /^✓ running in the background: nats-server \(pid \d+\), delivery daemon, manager - stop with: cotal down$/m.test(plain(up.stdout)),
+    /^✓ running in the background: nats-server \(pid \d+\), delivery daemon, manager - stop with: `cotal down`$/m.test(plain(up.stdout)),
     up.stdout,
   );
   ok("old generic background wording is absent", !/mesh running in the background/.test(up.stdout), up.stdout);
+  const upText = plain(up.stdout);
+  ok("the receipt begins with the mesh it started", upText.startsWith(`Mesh: ${SPACE}\n\n`), up.stdout);
+  ok("it says the new project's space is named after its folder", upText.includes(`This new project's space is named after its folder, "${SPACE}"`), up.stdout);
+  ok("it ends with a Next that launches an agent and stops the stack", new RegExp(`\nNext\n\\s+cotal spawn --space ${SPACE}\\s+Launch your default agent\n\\s+cotal down\\s+Stop the stack\\s*$`).test(upText), up.stdout);
   for (const [file, label] of [["nats.pid", "nats-server"], [recordName(DELIVERY_PIDFILE), "delivery daemon"], [recordName(MANAGER_PIDFILE), "manager"]] as const) {
     const pid = pidOf(file);
     pids.push(pid);
     ok(`${label} is up (${file} + alive)`, Number.isFinite(pid) && alive(pid), pid);
   }
   ok("delivery-aware marker is bound to the manager pid", pidOf(recordName(MANAGER_DELIVERY_AWARE_MARKER)) === pidOf(recordName(MANAGER_PIDFILE)));
+  // The launcher starts each daemon under the daemon node flag: it is among the node flags before
+  // the entry script, which is what the daemon's own process.execArgv holds.
+  if (process.platform === "linux") {
+    for (const [file, label] of [[recordName(DELIVERY_PIDFILE), "delivery daemon"], [recordName(MANAGER_PIDFILE), "manager"]] as const) {
+      const argv = readFileSync(`/proc/${pidOf(file)}/cmdline`, "utf8").split("\0").filter(Boolean);
+      const entry = argv.indexOf(CLI);
+      ok(`the ${label} runs under node --max-semi-space-size=1`, entry > 0 && argv.slice(1, entry).includes("--max-semi-space-size=1"), argv);
+    }
+  }
   ok("auth material was provisioned (.cotal/auth)", existsSync(join(root, ".cotal", "auth")));
   const persona = join(root, ".cotal", "agents", "default.md");
   ok("up --detach writes the default persona into the root's catalog and says so", existsSync(persona) && /wrote default persona: .*default\.md/.test(plain(up.stdout)), up.stdout);
@@ -188,6 +257,33 @@ try {
     if (!answered) await sleep(2000);
   }
   ok("cotal ps is answered by the detached manager", answered, last);
+  // With no agents, `ps` still lists the manager that answered by the instance id `--on` takes.
+  const listed = /^Manager\n\s+instance:\s+([a-z0-9]{26,32})$/m.exec(plain(last.stdout))?.[1];
+  const census = (() => { try { return (JSON.parse(cli("ps", "--json").stdout) as { result?: { managers?: { instanceId: string }[] } }).result?.managers; } catch { return undefined; } })();
+  const pinned = listed ? cli("ps", "--on", listed) : undefined;
+  ok("with no agents, ps lists the answering manager's instance id, and ps --on takes it",
+    listed !== undefined && census?.length === 1 && census[0]?.instanceId === listed && pinned?.status === 0 && plain(pinned.stdout).includes(`instance: ${listed}`), { stdout: last.stdout, census, pinned: pinned?.stdout ?? pinned?.stderr });
+  // No connector is installed, so the manager leaves the class queue and the broker answers an
+  // unpinned launch with no responders: a refusal that says why and what to add, never an unknown.
+  const unserved = cli("spawn", "-d");
+  const unservedOut = plain(unserved.stdout + unserved.stderr);
+  ok("an unpinned spawn -d with no agent application refuses DEPENDENCY_UNAVAILABLE, exit 2, naming the manager and the cotal ext add",
+    unserved.status === 2 && unservedOut.includes(`no manager of yours takes unpinned launches: none has an agent application installed (manager ${listed} on host `)
+      && /Code:\s+DEPENDENCY_UNAVAILABLE/.test(unservedOut) && /Native outcome:\s+not-executed/.test(unservedOut) && /`cotal ext add [^`]+`, then restart that manager/.test(unservedOut),
+    { status: unserved.status, out: unservedOut });
+  // The plan a managed launch prints is this command's report, so it goes to stdout; only the refusal is on stderr.
+  ok("its Managed launch plan is on stdout, and stderr holds the refusal without it",
+    /Managed launch\n/.test(plain(unserved.stdout)) && !/Managed launch\n/.test(plain(unserved.stderr)) && /Request refused/.test(plain(unserved.stderr)), { stdout: unserved.stdout, stderr: unserved.stderr });
+  // A launch pinned to this manager reaches it, and the manager refuses it: it has no agent application.
+  const pinnedSpawn = cli("spawn", "-d", "--on", String(listed));
+  const pinnedErr = plain(pinnedSpawn.stderr);
+  const request = /Original request:\s+([0-9a-f-]{36})/.exec(pinnedErr)?.[1];
+  const reason = /Request refused\n\s+(.+)\n/.exec(pinnedErr)?.[1];
+  ok("a spawn -d pinned to that manager is refused DEPENDENCY_UNAVAILABLE, exit 2, with its plan on stdout and its request id on stderr",
+    pinnedSpawn.status === 2 && /Code:\s+DEPENDENCY_UNAVAILABLE/.test(pinnedErr) && request !== undefined && reason !== undefined && /Managed launch\n/.test(plain(pinnedSpawn.stdout)), { stdout: pinnedSpawn.stdout, stderr: pinnedErr });
+  const logged = readFileSync(record(MANAGER_LOGFILE), "utf8").split("\n").filter((line) => request !== undefined && line.includes(request));
+  ok("the manager logs one correlated refusal with the persona, native code and missing-connector reason",
+    logged.length === 1 && logged[0]!.includes(`! spawn request ${request} for persona "default" refused (failed-precondition): `) && /no connector "claude"(?: installed - add it with | - install its integration with )/.test(logged[0]!), logged);
 
   // 2b) #837: a delivery launch that LOSES the single-flight lease is not a healthy control plane.
   //     Drop the pidfile - the operator-visible shape of a lost record - while the real daemon keeps
@@ -204,7 +300,7 @@ try {
   const deliveryIdentityFile = `${deliveryPidFile}.identity`;
   const liveDeliveryIdentity = readFileSync(deliveryIdentityFile, "utf8");
   const secrets = workspaceSecretStore(root);
-  const credsKey = deliveryCredsKey(DEFAULT_SPACE, { injected: false, root });
+  const credsKey = deliveryCredsKey(SPACE, { injected: false, root });
   const liveDeliveryCreds = (await secrets.get(credsKey))!;
   rmSync(deliveryPidFile);
   rmSync(deliveryIdentityFile);
@@ -267,8 +363,21 @@ try {
   ok("a no-op refresh does not print the restore line", !/✓ restored in the background: manager/.test(noopOut), noopOut);
   ok(
     "a no-op refresh prints the already-running line",
-    new RegExp(`✓ mesh "${DEFAULT_SPACE}" already running at`).test(noopOut),
+    new RegExp(`✓ mesh "${SPACE}" already running at`).test(noopOut),
     noopOut,
+  );
+  // A refresh is a receipt like a launch: it names its mesh first and ends with the steps to take.
+  // It used to print the green line alone, so `up` in a running project answered without saying
+  // which mesh it reached or what to do next.
+  ok(
+    "a no-op refresh names its mesh before the already-running line",
+    plain(noop.stdout).startsWith(`Mesh: ${SPACE}\n\n✓ mesh "${SPACE}" already running at`),
+    plain(noop.stdout),
+  );
+  ok(
+    "a no-op refresh ends with the Next a launch ends with: spawn, because its manager runs, and the stop",
+    /\nNext\n\s+cotal spawn --space \S+\s+Launch your default agent\n\s+cotal down\s+Stop the stack\s*$/.test(plain(noop.stdout)),
+    plain(noop.stdout),
   );
   ok("the manager pidfile is unchanged by the no-op refresh", pidOf(recordName(MANAGER_PIDFILE)) === restoredPid, managerPidFile);
   ok("a no-op refresh leaves an edited default persona byte-identical and prints no write", readFileSync(persona, "utf8") === editedPersona && !/wrote default persona/.test(noopOut), noopOut);
@@ -277,6 +386,7 @@ try {
   //    down gracefully, which can take a few seconds on slow CI.
   const down = cli("down");
   ok("down exits 0", down.status === 0, down.stdout + down.stderr);
+  ok("its stop lines follow the mesh heading and end with the step that starts it again", plain(down.stdout).startsWith(`Mesh: ${SPACE}\n\n✓ stopped`) && /\nNext\n\s+cotal up\s+Start it again\s*$/.test(plain(down.stdout)), down.stdout);
   let dead = false;
 
   for (let i = 0; i < 24 && !dead; i++) {
@@ -286,19 +396,185 @@ try {
   ok("all pid files removed by down", [join(root, ".cotal", "nats.pid"), record(DELIVERY_PIDFILE), record(MANAGER_PIDFILE)].every((f) => !existsSync(f)));
   ok("all three processes are dead + broker port closed", dead, pids.filter(alive));
 
+  // A space named after its folder keeps its registration after down, so another folder of the same
+  // name is refused and does not take the name over, and a bare up starts it again on the retained
+  // launcher, where the registration would otherwise have sent it to the controller stack.
+  const keptFile = join(home, "meshes", `space.${Buffer.from(SPACE).toString("hex")}.json`);
+  const kept = existsSync(keptFile) ? JSON.parse(readFileSync(keptFile, "utf8")) as { root: string; server: string } : undefined;
+  ok("down keeps the registration of a space named after its folder", kept?.root === realpathSync(root) && kept.server === SERVER, kept);
+  const twin = join(mkdtempSync(join(tmpdir(), "cotal-upstack-twin-")), SPACE);
+  mkdirSync(twin);
+  const twinUp = cliIn(twin, "up", "--detach", "--server", `nats://127.0.0.1:${await freePort()}`);
+  if (twinUp.status === 0) cliIn(twin, "down");
+  ok("a bare up in another folder of the same name refuses CONFLICT, exit 2, naming this one, and writes nothing",
+    twinUp.status === 2 && /Code:\s+CONFLICT/.test(plain(twinUp.stderr)) && plain(twinUp.stderr).includes(`"${SPACE}" is already registered at ${SERVER} for ${realpathSync(root)}`) && !existsSync(join(twin, ".cotal")), twinUp.stdout + twinUp.stderr);
+  rmSync(resolve(twin, ".."), { recursive: true, force: true });
+  // Its address is kept with the name: another folder's up given that address is refused as an
+  // occupied one is, and starts nothing there.
+  const other = mkdtempSync(join(tmpdir(), "cotal-upstack-other-"));
+  const otherUp = cliIn(other, "up", "--detach", "--server", SERVER);
+  if (otherUp.status === 0) cliIn(other, "down");
+  ok("another folder's up at this stopped space's address refuses CONFLICT, exit 2, naming this one, and writes nothing",
+    otherUp.status === 2 && /Code:\s+CONFLICT/.test(plain(otherUp.stderr)) && plain(otherUp.stderr).includes(`${SERVER} is the broker address of "${SPACE}", registered for ${realpathSync(root)} and stopped`) && !existsSync(join(other, ".cotal")), otherUp.stdout + otherUp.stderr);
+  // A manifest names its broker in `broker.servers`, and that address is held by the same rule, so
+  // `up -f` is refused there too and its next step names the field to change.
+  const manifestRoot = mkdtempSync(join(tmpdir(), "cotal-upstack-manifest-"));
+  writeFileSync(join(manifestRoot, "cotal.yaml"), `apiVersion: cotal/v1\nkind: Mesh\nspace: upstackmanifest\nbroker:\n  servers: ${SERVER}\n  auth: false\nchannels:\n  general:\n    description: address reservation cell\n`, { mode: 0o600 });
+  const manifestUp = cliIn(manifestRoot, "up", "-f", "cotal.yaml");
+  if (manifestUp.status === 0) cliIn(manifestRoot, "down", "--yes");
+  ok("an up -f whose broker.servers is this stopped space's address refuses CONFLICT, exit 2, naming this one and broker.servers, and writes nothing",
+    manifestUp.status === 2 && /Code:\s+CONFLICT/.test(plain(manifestUp.stderr)) &&
+      plain(manifestUp.stderr).includes(`${SERVER} is the broker address of "${SPACE}", registered for ${realpathSync(root)} and stopped`) &&
+      plain(manifestUp.stderr).includes("point broker.servers in cotal.yaml at another address") &&
+      plain(manifestUp.stderr).includes(`cotal space forget ${SPACE}`) && !existsSync(join(manifestRoot, ".cotal")), manifestUp.stdout + manifestUp.stderr);
+  rmSync(manifestRoot, { recursive: true, force: true });
+  const restart = cli("up", "--detach", "--server", SERVER);
+  if (existsSync(join(root, ".cotal", "nats.pid"))) pids.push(pidOf("nats.pid"));
+  ok("a bare up starts it again on the retained launcher, with no stack journal",
+    restart.status === 0 && /^✓ running in the background: nats-server \(pid \d+\), delivery daemon, manager - stop with: `cotal down`$/m.test(plain(restart.stdout)) && !existsSync(join(root, ".cotal", "stack-controller.json")),
+    restart.stdout + restart.stderr);
+  // A read of a registration whose address this running stack serves is refused by the holder's
+  // name, and the record stays: deleting it would leave its folder naming no space at all, and the
+  // address is held rather than reused.
+  const heldRoot = mkdtempSync(join(tmpdir(), "cotal-upstack-held-"));
+  const heldFile = join(home, "meshes", `space.${Buffer.from("upstackheld").toString("hex")}.json`);
+  writeFileSync(heldFile, `${JSON.stringify({ space: "upstackheld", server: SERVER, root: heldRoot, mode: "open", origin: "up", ts: new Date().toISOString() })}\n`, { mode: 0o600 });
+  const heldRead = cliIn(heldRoot, "ps", "--space", "upstackheld");
+  ok("a read of another space registered at this running stack's address refuses CONFLICT, names this space as the holder, and keeps that registration",
+    heldRead.status === 2 && /Code:\s+CONFLICT/.test(plain(heldRead.stderr)) &&
+      plain(heldRead.stderr).includes(`"${SPACE}" is registered at that address`) &&
+      plain(heldRead.stderr).includes("the registry entry was kept") &&
+      plain(heldRead.stderr).includes(`cotal space forget ${SPACE}`) && existsSync(heldFile), heldRead.stdout + heldRead.stderr);
+  rmSync(heldFile, { force: true });
+  rmSync(heldRoot, { recursive: true, force: true });
+  ok("its down exits 0", cli("down").status === 0);
+  // The kept registration does not make the stopped stack look like one to stop.
+  const again = cli("down");
+  ok("a second down reports the stack not running, names cotal up, and exits 0",
+    again.status === 0 && plain(again.stdout).includes(`The stack in ${realpathSync(root)} is not running`) && /cotal up\s+Start it/.test(plain(again.stdout)), again.stdout + again.stderr);
+
+  // 3c) #3892: an open refresh ensures the manager under the decision its first boot followed, so its
+  //     exit status follows the manager's health, not whether it carried `--runtime`. A bare refresh
+  //     used to skip the ensure and exit 0 over a manager pidfile that the `--runtime` refresh
+  //     reported degraded. Its own root, which holds no trust material from an earlier stack.
+  const openServer = `nats://127.0.0.1:${await freePort()}`;
+  const openRecord = (template: string) => canonicalLocalProcessPath(template, { root: openRoot, space: basename(openRoot) });
+  const openManagerPid = () => Number(readFileSync(openRecord(MANAGER_PIDFILE), "utf8").trim());
+  const openRefresh = (...extra: string[]) => cliIn(openRoot, "up", "--detach", "--open", "--server", openServer, ...extra);
+  const openBoot = openRefresh();
+  ok("a fresh open up --detach starts the broker and manager", openBoot.status === 0 && /^✓ running in the background: nats-server \(pid \d+\), manager - stop with: `cotal down`$/m.test(plain(openBoot.stdout)), plain(openBoot.stdout + openBoot.stderr));
+  const openManager = openManagerPid();
+  pids.push(Number(readFileSync(join(openRoot, ".cotal", "nats.pid"), "utf8").trim()), openManager);
+  for (const extra of [[], ["--runtime", "pty"]]) {
+    const healthy = openRefresh(...extra);
+    ok(`a healthy open refresh${extra.length ? " with --runtime" : ""} exits 0, keeps the manager pid and says nothing about starting a stopped stack`,
+      healthy.status === 0 && openManagerPid() === openManager && alive(openManager) && !/control plane degraded/.test(healthy.stderr) && !/stopped stack/.test(healthy.stdout), plain(healthy.stdout + healthy.stderr));
+  }
+  process.kill(openManager, "SIGTERM");
+  for (let i = 0; i < 24 && alive(openManager); i++) await sleep(500);
+  ok("the open manager is retired before the refreshes over its record", !alive(openManager) && !existsSync(openRecord(MANAGER_PIDFILE)), openManager);
+  const openBrokerOnly = openRefresh("--no-manager");
+  ok("a --no-manager open refresh stays broker-only and exits 0",
+    openBrokerOnly.status === 0 && !existsSync(openRecord(MANAGER_PIDFILE)) && !/restored in the background/.test(openBrokerOnly.stdout), plain(openBrokerOnly.stdout + openBrokerOnly.stderr));
+  writeFileSync(openRecord(MANAGER_PIDFILE), "not-a-pid");
+  // `down` refuses that record as well, so the Next names the steps that work in this state: the
+  // check only the operator can make, then removing the file and refreshing. Its report uses no
+  // internal names.
+  const removal = `rm ${shellWord(openRecord(MANAGER_PIDFILE))}`;
+  const recordCheck = "The manager pidfile names no process, so cotal cannot check whether a manager still runs for this folder, and one that does not answer on the mesh may still be running. Confirm yourself that none runs before you remove that file.";
+  const recoveryNext = [[removal, "Remove it once no manager runs for this folder"], ["cotal up", "Then start the manager"]];
+  for (const extra of [[], ["--runtime", "pty"]]) {
+    const degraded = openRefresh(...extra);
+    const degradedOut = plain(degraded.stdout + degraded.stderr);
+    ok(`an open refresh${extra.length ? " with --runtime" : ""} over a manager pidfile that holds no pid exits 1 with the degraded line, and its Next states the operator's check, then removes that file and refreshes instead of a down that refuses it`,
+      degraded.status === 1 && degradedOut.includes(`! control plane degraded: the manager pidfile at ${openRecord(MANAGER_PIDFILE)} holds content that is not a pid ("not-a-pid")`) &&
+        nextCheck(degraded.stdout) === recordCheck && JSON.stringify(nextRows(degraded.stdout).slice(1)) === JSON.stringify(recoveryNext) && !/stopped stack/.test(degraded.stdout) && !/cutover preflight|Plane-3|fanout\/reader/.test(degradedOut), degradedOut);
+  }
+  // On an 80-column terminal the report wraps as every other warning does. Only the words wider than
+  // the line stay whole: the pidfile path, and the Next command that removes it.
+  let wrapped = "";
+  const terminal = cotalPty(["up", "--detach", "--open", "--server", openServer], { cwd: openRoot, env: env as Record<string, string>, cols: 80, rows: 200 });
+  terminal.onData((data) => { wrapped += data; });
+  const terminalExit = await new Promise<number>((done) => terminal.onExit((e) => done(e.exitCode)));
+  const wrappedLines = clean(wrapped).split(/\r?\n/);
+  // The degraded report is its `!` line and the indented lines under it; Next runs to the end.
+  const reportAt = wrappedLines.findIndex((line) => line.startsWith("! control plane degraded: the manager pidfile at"));
+  const reportEnd = wrappedLines.findIndex((line, i) => i > reportAt && !line.startsWith("  "));
+  const reportLines = [...wrappedLines.slice(reportAt, reportEnd), ...wrappedLines.slice(wrappedLines.lastIndexOf("Next"))];
+  ok("on an 80-column terminal the degraded report and its Next fit every line but the pidfile path and its rm command",
+    terminalExit === 1 && reportAt >= 0 && reportEnd - reportAt > 3 &&
+      reportLines.every((line) => displayWidth(line) <= 80 || [openRecord(MANAGER_PIDFILE), removal].includes(line.trim())), wrappedLines);
+  // The check the Next asks for: no answer on the mesh would show it, but this fixture retired the
+  // manager itself and saw it exit.
+  ok("the manager this fixture retired is still gone before the file is removed", !alive(openManager), openManager);
+  rmSync(openRecord(MANAGER_PIDFILE));
+  const openHealed = cliIn(openRoot, "up");
+  const openHealedPid = Number(/✓ restored in the background: manager \(pid (\d+)\)/.exec(plain(openHealed.stdout))?.[1]);
+  if (openHealedPid) pids.push(openHealedPid);
+  ok("the Next's bare cotal up restores the missing manager and exits 0",
+    openHealed.status === 0 && alive(openHealedPid) && openManagerPid() === openHealedPid && !/stopped stack/.test(openHealed.stdout), plain(openHealed.stdout + openHealed.stderr));
+  const openRootDown = cliIn(openRoot, "down");
+  for (let i = 0; i < 24 && alive(openHealedPid); i++) await sleep(500);
+  ok("down stops the open root's stack", openRootDown.status === 0 && !alive(openHealedPid), plain(openRootDown.stdout + openRootDown.stderr));
+
   // Open mode in the SAME root retains static-auth files from the prior boot. Reporting follows the
   // effective live mode, not stale on-disk auth material: broker + manager, never delivery/auth-service.
+  // The mode also decides what starts: no delivery daemon, so the next down has none to stop.
   ok("static auth material remains before the open-mode reporting check", existsSync(join(root, ".cotal", "auth")));
   const open = cli("up", "--detach", "--open", "--server", SERVER);
   ok("open up --detach exits 0", open.status === 0, open.stdout + open.stderr);
+  const openStack = [pidOf("nats.pid"), pidOf(recordName(MANAGER_PIDFILE))];
+  pids.push(...openStack);
+  ok("an open up over static accounts starts no delivery daemon",
+    !existsSync(record(DELIVERY_PIDFILE)) && (process.platform !== "linux" || deliveryDaemons(SPACE).length === 0),
+    { pidfile: existsSync(record(DELIVERY_PIDFILE)), daemons: process.platform === "linux" ? deliveryDaemons(SPACE) : "not read" });
   ok(
     "open up reports the exact running component set",
-    /^✓ running in the background: nats-server \(pid \d+\), manager - stop with: cotal down$/m.test(plain(open.stdout)),
+    /^✓ running in the background: nats-server \(pid \d+\), manager - stop with: `cotal down`$/m.test(plain(open.stdout)),
     open.stdout,
   );
   ok("open summary omits auth-only components", !/running in the background:.*(?:delivery daemon|user-auth service)/.test(open.stdout), open.stdout);
+  ok("a folder that now names its space gets no default-space note", !/names no space/.test(open.stdout), open.stdout);
   const openDown = cli("down");
   ok("open down exits 0", openDown.status === 0, openDown.stdout + openDown.stderr);
+  for (let i = 0; i < 24 && openStack.some(alive); i++) await sleep(500);
+  ok("open down stops the broker and manager, names no delivery daemon, and leaves nothing running",
+    !openStack.some(alive) && !(await portOpen()) && !/stopped delivery daemon/.test(plain(openDown.stdout)) && (process.platform !== "linux" || deliveryDaemons(SPACE).length === 0),
+    { openStack, alive: openStack.filter(alive), out: plain(openDown.stdout) });
+
+  // 3e) Static and open boots alternate in this root. An open boot used to run its manager on the
+  //     static stack's accounts, so it minted credentials into the open account's registry. The next
+  //     open boot could then re-register only by verify-evicting them through a delivery daemon that
+  //     an open mesh does not run: it exited 1 after about a minute and its manager was gone.
+  for (let round = 1; round <= 2; round++) {
+    for (const mode of ["static", "open"] as const) {
+      const cell = `round ${round}, ${mode}`;
+      const boot = cli("up", "--detach", ...(mode === "open" ? ["--open"] : []), "--server", SERVER);
+      ok(`${cell}: up --detach exits 0`, boot.status === 0, plain(boot.stdout + boot.stderr));
+      const deliveryPid = existsSync(record(DELIVERY_PIDFILE)) ? pidOf(recordName(DELIVERY_PIDFILE)) : undefined;
+      const stack = [pidOf("nats.pid"), pidOf(recordName(MANAGER_PIDFILE)), ...(deliveryPid === undefined ? [] : [deliveryPid])];
+      pids.push(...stack);
+      const answers = (r: { status: number | null; stdout: string }) => r.status === 0 && /^\s*No managed agents\.$/m.test(r.stdout);
+      let ps = cli("ps");
+      for (let i = 0; i < 14 && !answers(ps); i++) {
+        await sleep(2000);
+        ps = cli("ps");
+      }
+      ok(`${cell}: the manager answers ps`, answers(ps), plain(ps.stdout + ps.stderr));
+      const delivery = process.platform === "linux" ? deliveryDaemons(SPACE) : undefined;
+      ok(`${cell}: the boot runs ${mode === "static" ? "one delivery daemon" : "no delivery daemon"}`,
+        mode === "static"
+          ? deliveryPid !== undefined && (delivery === undefined || (delivery.length === 1 && delivery[0] === deliveryPid))
+          : deliveryPid === undefined && (delivery === undefined || delivery.length === 0),
+        { deliveryPid, daemons: delivery ?? "not read" });
+      const stop = cli("down");
+      ok(`${cell}: down exits 0`, stop.status === 0, plain(stop.stdout + stop.stderr));
+      for (let i = 0; i < 24 && stack.some(alive); i++) await sleep(500);
+      const left = process.platform === "linux" ? [...deliveryDaemons(SPACE), ...daemonsOf("__daemon-manager", SPACE)] : [];
+      ok(`${cell}: down leaves no broker, manager or delivery daemon of the space running`,
+        !stack.some(alive) && !(await portOpen()) && left.length === 0, { stack, alive: stack.filter(alive), left });
+    }
+  }
 
   // 4) #1417 broker-only boot: `up --detach --no-manager` starts broker + delivery daemon (auth
   //    mode) and NO manager — no manager pidfile, no manager process, no stale slot to leave —
@@ -308,7 +584,7 @@ try {
   ok("broker-only up --detach exits 0", brokerOnly.status === 0, brokerOnly.stdout + brokerOnly.stderr);
   ok(
     "broker-only up reports the exact running component set (no manager)",
-    /^✓ running in the background: nats-server \(pid \d+\), delivery daemon - stop with: cotal down$/m.test(brokerOnlyOut),
+    /^✓ running in the background: nats-server \(pid \d+\), delivery daemon - stop with: `cotal down`$/m.test(brokerOnlyOut),
     brokerOnly.stdout,
   );
   ok("broker-only boot writes no manager pidfile", !existsSync(record(MANAGER_PIDFILE)), record(MANAGER_PIDFILE));
@@ -317,6 +593,37 @@ try {
   pids.push(boDeliveryPid);
   ok("the delivery daemon is up and alive under the flag", Number.isFinite(boDeliveryPid) && alive(boDeliveryPid), boDeliveryPid);
   ok("the broker still answers under the flag", await portOpen());
+  // An empty manager registry is a refusal before any manager is asked. It used to fail
+  // OPERATION_FAILED, exit 5, as if ps itself had failed. A registration is not proof of a process,
+  // so it says no more than the registry showed and names nothing to remove.
+  const emptyPs = cli("ps", "--json");
+  const emptyError = (() => { try { return (JSON.parse(emptyPs.stdout) as { error?: { code?: string; message?: string; remedy?: string; cause?: { detail?: string } } }).error; } catch { return undefined; } })();
+  ok("ps on the broker-only stack refuses TARGET_UNAVAILABLE, exit 2, saying no manager is registered and not that none runs",
+    emptyPs.status === 2 && emptyError?.code === "TARGET_UNAVAILABLE" &&
+      emptyError.message?.startsWith("no manager is registered for this space, so none was asked and nothing was listed.") === true &&
+      emptyError.message.includes("this does not show that no manager process runs") &&
+      emptyError.cause?.detail === 'failed-precondition: service "manager" has no live registered instances' &&
+      emptyError.remedy === `start the stack's manager with bare \`cotal up\` in ${realpathSync(root)}; a stack started with --no-manager has none`,
+    emptyPs.stdout + emptyPs.stderr);
+  // Bare `cotal up` starts the manager only in the stack's own root. From another folder it would act
+  // on that folder's stack, so the step names the root, and a machine that only registered the
+  // space is not told to run `cotal up` at all.
+  const remedyOf = (r: ReturnType<typeof cli>) => { try { return (JSON.parse(r.stdout) as { error?: { code?: string; remedy?: string } }).error; } catch { return undefined; } };
+  const elsewherePs = cliIn(autoRoot, "ps", "--space", SPACE, "--json");
+  ok("ps --space from another folder names the stack's root in its step",
+    elsewherePs.status === 2 && remedyOf(elsewherePs)?.code === "TARGET_UNAVAILABLE" &&
+      remedyOf(elsewherePs)?.remedy === `start the stack's manager with bare \`cotal up\` in ${realpathSync(root)}; a stack started with --no-manager has none`,
+    elsewherePs.stdout + elsewherePs.stderr);
+  const clientHome = mkdtempSync(join(tmpdir(), "cotal-upstack-client-"));
+  const clientEnv = { COTAL_HOME: clientHome, XDG_CONFIG_HOME: join(clientHome, "xdg") };
+  const registered = cliInEnv(clientHome, clientEnv, "space", "add", SPACE, "--server", SERVER, "--root", root);
+  ok("another Cotal home registers the space with space add", registered.status === 0, registered.stdout + registered.stderr);
+  const clientPs = cliInEnv(clientHome, clientEnv, "ps", "--space", SPACE, "--json");
+  ok("ps where the space is only registered keeps TARGET_UNAVAILABLE, exit 2, and names no local cotal up",
+    clientPs.status === 2 && remedyOf(clientPs)?.code === "TARGET_UNAVAILABLE" &&
+      remedyOf(clientPs)?.remedy === "start this space's manager where its stack runs; a stack started with --no-manager has none",
+    clientPs.stdout + clientPs.stderr);
+  rmSync(clientHome, { recursive: true, force: true });
   // --preserve-state takes its inventory from a manager. With none serving the space it refuses
   // before any stop, where it used to stop the delivery daemon and then wait on a manager that never ran.
   const preserveStarted = Date.now();
@@ -329,6 +636,13 @@ try {
   const maintenanceFiles = ["journal.json", "resume.json", "prepare-intent.json", "commit-intent.json"].filter((name) => existsSync(join(root, ".cotal", "maintenance", "v1", name)));
   ok("that refusal stopped nothing: delivery and the broker still run, and no maintenance journal or intent was written",
     alive(boDeliveryPid) && await portOpen() && maintenanceFiles.length === 0, { boDeliveryPid, maintenanceFiles });
+  const spawnStarted = Date.now();
+  const noManagerSpawn = cli("spawn", "-d");
+  const noManagerSpawnOut = plain(noManagerSpawn.stdout + noManagerSpawn.stderr);
+  ok("a broker-only spawn -d refuses TARGET_UNAVAILABLE, exit 2, before sending and naming bare cotal up",
+    noManagerSpawn.status === 2 && /no manager is running for this space to launch an agent/.test(noManagerSpawnOut) && /Code:\s+TARGET_UNAVAILABLE/.test(noManagerSpawnOut)
+      && /start the stack's manager with bare `cotal up`/.test(noManagerSpawnOut) && Date.now() - spawnStarted < 9_000,
+    { status: noManagerSpawn.status, ms: Date.now() - spawnStarted, out: noManagerSpawnOut });
   const brokerOnlyDown = cli("down");
   ok("broker-only down exits 0", brokerOnlyDown.status === 0, brokerOnlyDown.stdout + brokerOnlyDown.stderr);
   let boDead = false;
@@ -338,6 +652,95 @@ try {
   }
   ok("broker-only down stops broker + delivery daemon", boDead, { boDeliveryPid });
   ok("broker-only down leaves no manager pidfile behind", !existsSync(record(MANAGER_PIDFILE)));
+
+  // 3b) A signal to the retained launcher's bare `down --yes` ends the stop where it is and names the
+  //     members it stopped and those still running. One that lands after a member was signalled waits
+  //     for that member's exit, so its stop line comes first and `status` reads no stale pidfile; a
+  //     second one ends the stop at once. Each member's window is held open on any host by freezing
+  //     the member (SIGSTOP) as its stop reservation appears, before it can exit.
+  type Member = "manager" | "delivery" | "nats";
+  const MEMBERS: Member[] = ["manager", "delivery", "nats"];
+  const LABEL: Record<Member, string> = { manager: "manager", delivery: "delivery daemon", nats: "nats-server" };
+  const ROW: Record<Member, string> = { manager: "Manager", delivery: "Delivery", nats: "Broker" };
+  const until = async (cond: () => boolean, ms: number) => {
+    for (const end = Date.now() + ms; !cond() && Date.now() < end;) await sleep(2);
+    return cond();
+  };
+  const interruptedDown = async (window: "heading" | Member, signals: 1 | 2 = 1) => {
+    const name = `${window === "heading" ? "after the heading" : `in the ${LABEL[window]}'s stop`}${signals === 2 ? ", twice" : ""}`;
+    const irRoot = mkdtempSync(join(tmpdir(), "cotal-upstack-intr-"));
+    anchors.set(irRoot, recordSmokeSandbox({ root: irRoot, cotalHome: home, xdgConfigHome: configDir }));
+    const irSpace = basename(irRoot);
+    const file: Record<Member, string> = {
+      manager: canonicalLocalProcessPath(MANAGER_PIDFILE, { root: irRoot, space: irSpace }),
+      delivery: canonicalLocalProcessPath(DELIVERY_PIDFILE, { root: irRoot, space: irSpace }),
+      nats: join(irRoot, ".cotal", "nats.pid"),
+    };
+    let frozen: number | undefined;
+    try {
+      const irUp = cliIn(irRoot, "up", "--detach", "--server", `nats://127.0.0.1:${await freePort()}`);
+      ok(`${name}: up --detach starts the retained launcher`, irUp.status === 0, irUp.stdout + irUp.stderr);
+      const pid = Object.fromEntries(MEMBERS.map((m) => [m, Number(readFileSync(file[m], "utf8").trim())])) as Record<Member, number>;
+      pids.push(...Object.values(pid));
+      const options = { cwd: irRoot, env };
+      assertSmokeSandboxDown(anchors.get(irRoot), ["down", "--yes"], options);
+      // Node with the tsx loader, not the tsx CLI: that parent relays each signal and SIGKILLs a
+      // child that does not acknowledge it within 30 ms, so each signal here reaches the down once.
+      const downProc = spawnProc(process.execPath, ["--import", import.meta.resolve("tsx"), CLI, "down", "--yes"], { ...options, stdio: ["ignore", "pipe", "pipe"] });
+      let out = "", err = "";
+      downProc.stdout?.on("data", (b: Buffer) => void (out += b.toString()));
+      downProc.stderr?.on("data", (b: Buffer) => void (err += b.toString()));
+      const exited = new Promise<number | null>((res) => downProc.once("exit", (code) => res(code)));
+      if (window === "heading") {
+        ok(`${name}: down prints its heading`, await until(() => plain(out).includes(`Mesh: ${irSpace}`), 60_000), out + err);
+        downProc.kill("SIGINT");
+      } else {
+        ok(`${name}: down reserves the ${LABEL[window]}'s stop`, await until(() => existsSync(`${file[window]}.stopping`), 60_000), out + err);
+        process.kill(pid[window], "SIGSTOP");
+        frozen = pid[window];
+        downProc.kill("SIGINT");
+        await sleep(1500);
+        ok(`${name}: the signal waits for the signalled ${LABEL[window]} to exit`, downProc.exitCode === null && !new RegExp(`stopped ${LABEL[window]} \\(pid`).test(plain(out)), out + err);
+        if (signals === 2) downProc.kill("SIGINT");
+        else { process.kill(frozen, "SIGCONT"); frozen = undefined; }
+      }
+      const code = await Promise.race([exited, sleep(30_000).then(() => "timeout" as const)]);
+      ok(`${name}: down exits 130`, code === 130, { code, out, err });
+      if (frozen !== undefined) {
+        ok(`${name}: the second signal ended the stop with the ${LABEL[window as Member]} still running`, alive(frozen), frozen);
+        process.kill(frozen, "SIGCONT");
+        frozen = undefined;
+      }
+      // The stop lines are the members this down stopped, and the notice names them and the rest.
+      const stopped = MEMBERS.filter((m) => new RegExp(`✓ stopped ${LABEL[m]} \\(pid ${pid[m]}\\)`).test(plain(out)));
+      const expected = window === "heading" || signals === 2 ? [] : MEMBERS.slice(0, MEMBERS.indexOf(window) + 1);
+      ok(`${name}: it prints the stop line of each member it stopped, and only those`, stopped.join() === expected.join(), out);
+      ok(`${name}: each member it stopped is gone with its pidfile`, stopped.every((m) => !alive(pid[m]) && !existsSync(file[m])), stopped);
+      const running = MEMBERS.filter((m) => !stopped.includes(m));
+      const done = stopped.length ? `${stopped.map((m) => LABEL[m]).join(", ")} ${stopped.length === 1 ? "was" : "were"} stopped` : "no member was stopped";
+      const left = running.length ? `${running.map((m) => LABEL[m]).join(", ")} ${running.length === 1 ? "is" : "are"} still running` : "no member is running";
+      const next = signals === 2 ? `The stop of ${LABEL[window as Member]} is not confirmed. Run \`cotal down --yes\` to finish the stop.` : running.length ? "Run `cotal down --yes` to finish the stop." : "Run `cotal up` to start it again.";
+      const notice = `Interrupted while stopping the stack in ${realpathSync(irRoot)}; ${done}, and ${left}. ${next}`;
+      ok(`${name}: the notice names the members it stopped, the ones still running and the next step`, plain(err).includes(notice), { notice, err });
+      if (signals === 1) ok(`${name}: the members it did not stop are still running`, running.every((m) => alive(pid[m])), running);
+      else await until(() => !alive(pid[window as Member]), 15_000);
+      // A folder's stopped space is not selected on its own, so status names it.
+      const st = plain(cliIn(irRoot, "status", "--space", irSpace).stdout);
+      ok(`${name}: status reads the members it stopped as not started, and no stale pidfile or exited broker`,
+        stopped.every((m) => new RegExp(`${ROW[m]}\\s+○ not started`).test(st)) && !/stale pidfile|which exited/.test(st), st);
+      const finish = cliIn(irRoot, "down", "--yes");
+      ok(`${name}: cotal down --yes finishes the stop`, finish.status === 0 && await until(() => MEMBERS.every((m) => !alive(pid[m])), 20_000), finish.stdout + finish.stderr);
+    } finally {
+      if (frozen !== undefined) { try { process.kill(frozen, "SIGCONT"); } catch { /* gone */ } }
+      cliIn(irRoot, "down", "--yes");
+      rmSync(irRoot, { recursive: true, force: true });
+    }
+  };
+  await interruptedDown("heading");
+  await interruptedDown("manager");
+  await interruptedDown("delivery");
+  await interruptedDown("nats");
+  await interruptedDown("manager", 2);
 
   // 4) #1307: Ctrl-C on a FOREGROUND up stops the stack and reports the managed seat, exactly like
   //    bare down. The default pty runtime keeps the seat's PTY inside the manager process, so the
@@ -385,13 +788,15 @@ try {
   try {
     // The manager's spawn rail needs a connector inventory: seed the built-ins into this sandbox
     // config (the documented checkout opt-in), or boot reports "no connector available" and the
-    // detached spawn finds no responder on the class rail.
-    cliInEnv(fgRoot, { ...fgEnv, COTAL_ALLOW_CHECKOUT_SEED: "1" }, "ext", "seed", "--repair");
+    // detached spawn finds no responder on the class rail. The seed installs through npm, so a host
+    // without npm on PATH fails here, by name, rather than at the spawn.
+    const fgSeed = cliInEnv(fgRoot, { ...fgEnv, COTAL_ALLOW_CHECKOUT_SEED: "1" }, "ext", "seed", "--repair");
+    ok("the checkout connector seed succeeds", fgSeed.status === 0, plain(fgSeed.stderr));
     fgUp = spawnProc(TSX, [CLI, "up", "--foreground", "--server", fgServer], { cwd: fgRoot, env: fgEnv, stdio: ["ignore", "pipe", "pipe"] });
     let fgOutText = "";
     fgUp.stdout?.on("data", (b: Buffer) => void (fgOutText += b.toString()));
     fgUp.stderr?.on("data", (b: Buffer) => void (fgOutText += b.toString()));
-    const fgRecord = (template: string) => canonicalLocalProcessPath(template, { root: fgRoot, space: DEFAULT_SPACE });
+    const fgRecord = (template: string) => canonicalLocalProcessPath(template, { root: fgRoot, space: basename(fgRoot) });
     let managerUpSeen = false;
     for (let i = 0; i < 60 && !managerUpSeen; i++) {
       await sleep(1000);
@@ -451,12 +856,13 @@ try {
   };
   let rgUp: ChildProcess | undefined;
   try {
-    cliInEnv(rgRoot, { ...rgEnv, COTAL_ALLOW_CHECKOUT_SEED: "1" }, "ext", "seed", "--repair");
+    const rgSeed = cliInEnv(rgRoot, { ...rgEnv, COTAL_ALLOW_CHECKOUT_SEED: "1" }, "ext", "seed", "--repair");
+    ok("the refusal rig's checkout connector seed succeeds", rgSeed.status === 0, plain(rgSeed.stderr));
     rgUp = spawnProc(TSX, [CLI, "up", "--foreground", "--server", `nats://127.0.0.1:${rgPort}`], { cwd: rgRoot, env: rgEnv, stdio: ["ignore", "pipe", "pipe"] });
     let rgOutText = "";
     rgUp.stdout?.on("data", (b: Buffer) => void (rgOutText += b.toString()));
     rgUp.stderr?.on("data", (b: Buffer) => void (rgOutText += b.toString()));
-    const rgRecord = (template: string) => canonicalLocalProcessPath(template, { root: rgRoot, space: DEFAULT_SPACE });
+    const rgRecord = (template: string) => canonicalLocalProcessPath(template, { root: rgRoot, space: basename(rgRoot) });
     let rgManagerUp = false;
     for (let i = 0; i < 60 && !rgManagerUp; i++) {
       await sleep(1000);
@@ -467,15 +873,16 @@ try {
     // The shape under test: a pinned manager whose spare capability is NOT proven.
     rmSync(rgRecord(MANAGER_SPARE_CAPABILITY), { force: true });
     rgUp.kill("SIGINT");
-    // The refusal path must return quickly; give the would-be teardown a moment to betray itself.
+    // The stop prints its refusal only after its own round trip to the manager, which a loaded host
+    // slows, so the output is polled up to a deadline. Then the would-be teardown gets a moment to
+    // betray itself before the gate is checked.
+    const refusal = () => /refusing bare manager stop/.test(plain(rgOutText)) && /cotal down --with-agents/.test(plain(rgOutText));
+    for (let i = 0; i < 120 && !refusal(); i++) await sleep(500);
+    ok("the refusal names the bare-stop rule and the reap route", refusal(), rgOutText);
     await sleep(3000);
     ok("the refusal gate leaves the manager and broker running",
       alive(rgManagerPid) && (await portOpenAt(rgPort)) && rgUp !== undefined && alive(rgUp.pid ?? 0),
       { manager: rgManagerPid, managerAlive: alive(rgManagerPid), upAlive: rgUp ? alive(rgUp.pid ?? 0) : false });
-    ok("the refusal names the bare-stop rule and the reap route",
-      /refusing bare manager stop/.test(plain(rgOutText)) &&
-      /cotal down --with-agents/.test(plain(rgOutText)),
-      rgOutText);
     ok("no spared report is printed on the refusal path", !/left \d+ managed agent/.test(plain(rgOutText)), rgOutText);
     // The operator's route ends the run: down --with-agents, then up exits via the broker-exit path.
     cliInEnv(rgRoot, rgEnv, "down", "--with-agents");
@@ -500,7 +907,8 @@ try {
   cliIn(autoRoot, "down");
   if (startedOccupant) cliIn(occupantRoot, "down");
   cliIn(warningRoot, "down");
+  cliIn(openRoot, "down");
   for (const p of pids) if (alive(p)) { try { process.kill(p, "SIGTERM"); } catch { /* gone */ } }
   rmSync(home, { recursive: true, force: true });
-  for (const d of [root, autoRoot, occupantRoot, warningRoot, fakeBin]) rmSync(d, { recursive: true, force: true });
+  for (const d of [root, autoRoot, occupantRoot, warningRoot, openRoot, fakeBin]) rmSync(d, { recursive: true, force: true });
 }

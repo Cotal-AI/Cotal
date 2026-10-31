@@ -8,16 +8,23 @@
  *  • renderWorkspaceError — one canonical sentence per failure kind (unreachable names the recorded root).
  *  • preflightTarget — probe a DEAD port and assert it classifies unreachable + prunes by source,
  *    WITHOUT mutating the registry (it returns the decision; the caller mutates).
+ *  • an inferred auth-required (an auth greeting, then a reset handshake) refuses but never deletes a
+ *    record, while a real refusal behind the same greeting still drops an `up` record.
  *  • pruneStaleMeshes — a registered entry whose broker is gone is kept as offline; an explicit call only.
- *  • resolveControlTarget — a space-less control resolve sweeps once, and the sweep it reads is the
- *    one the caller handed in when there is one (#3872).
+ *    Given a `--server`, it probes only the records at that address.
+ *  • resolveControlTarget — a space-less control resolve of the selected space dials no other recorded
+ *    broker; one that picks among the running meshes sweeps once, and the sweep it reads is the one
+ *    the caller handed in when there is one (#3872).
  *
  * Run: pnpm smoke:preflight
  */
 import { strict as assert } from "node:assert";
-import { mkdtempSync, rmSync } from "node:fs";
+import fs from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { mock } from "node:test";
 import type { MeshTarget, PreflightFailure } from "@cotal-ai/workspace"; // erased at runtime — safe before the COTAL_HOME sandbox
 
 // Sandbox the registry BEFORE importing core — homeCotalDir() reads COTAL_HOME per call, so the
@@ -36,18 +43,22 @@ const {
   recordMesh,
   removeMesh,
   loadMeshes,
+  meshFile,
+  meshesDir,
+  preflightOrThrow,
   renderWorkspaceError,
   reachableOrThrow,
   ConnectRefusal,
   resolveControlTarget,
+  resolveTargetOrThrow,
   setCurrent,
   clearCurrent,
 } = await import("@cotal-ai/workspace");
 
 // The canonical preflight copy now comes from the renderer (workspace's optional, command-agnostic
 // presentation helper); this shim keeps the message assertions below reading unchanged.
-const preflightMessage = (kind: PreflightFailure, t: MeshTarget, pruned: boolean): string =>
-  renderWorkspaceError({ kind: "preflight", failure: kind, target: t, pruned });
+const preflightMessage = (kind: PreflightFailure, t: MeshTarget, pruned: boolean, heldBy?: string): string =>
+  renderWorkspaceError({ kind: "preflight", failure: kind, target: t, pruned, ...(heldBy === undefined ? {} : { heldBy }) });
 
 let pass = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -55,6 +66,19 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
   pass++;
   console.log(`  ✓ ${name}`);
 };
+
+// Spy on the builtin the built workspace imports, while retaining real filesystem operations.
+async function registryListings<T>(run: () => Promise<T>): Promise<{ value: T; listings: number }> {
+  const listing = mock.method(fs, "readdirSync");
+  syncBuiltinESMExports();
+  try {
+    const value = await run();
+    return { value, listings: listing.mock.calls.filter((c) => String(c.arguments[0]) === meshesDir()).length };
+  } finally {
+    listing.mock.restore();
+    syncBuiltinESMExports();
+  }
+}
 
 // A closed loopback port — probeConnect refuses fast (no listener), so every probe below is "unreachable".
 const DEAD = "nats://127.0.0.1:14991";
@@ -91,6 +115,36 @@ check("auth-required + local + open → NO prune + 'open-wants-auth'", (() => {
   const r = classifyPreflightFailure("flag-server", "auth-required", false);
   return r.prune === false && r.kind === "open-wants-auth";
 })());
+// INFERRED auth-required (an auth greeting, then a reset handshake): no refusal was read, so it
+// names the same failure as a real refusal but never prunes, whatever the source.
+for (const s of REGISTRY)
+  for (const hasAuth of [true, false])
+    check(`inferred auth-required + ${s} / auth=${hasAuth} → NO prune + '${hasAuth ? "registry-creds-rejected" : "registry-open-now-auth"}'`, (() => {
+      const r = classifyPreflightFailure(s, "auth-required", hasAuth, true);
+      return r.prune === false && r.kind === (hasAuth ? "registry-creds-rejected" : "registry-open-now-auth");
+    })());
+// ADDRESS HELD: a broker answered and refused the credentials, and another registered space names
+// this exact address, so the broker there is that space's. The entry is not stale, and the prune
+// that a bare rejection earns would delete a sound record and leave its folder naming no space.
+for (const s of REGISTRY)
+  for (const hasAuth of [true, false])
+    for (const inferred of [true, false])
+      check(`auth-required + ${s} / auth=${hasAuth} / inferred=${inferred} + a holder → NO prune + 'address-held'`, (() => {
+        const r = classifyPreflightFailure(s, "auth-required", hasAuth, inferred, "beta");
+        return r.prune === false && r.kind === "address-held";
+      })());
+// A non-registry source keeps its own kinds: its endpoint was operator-supplied, and it never pruned.
+for (const s of NON_REGISTRY)
+  for (const hasAuth of [true, false])
+    check(`auth-required + ${s} / auth=${hasAuth} + a holder keeps its own kind`, (() => {
+      const r = classifyPreflightFailure(s, "auth-required", hasAuth, false, "beta");
+      return r.prune === false && r.kind === (hasAuth ? "creds-rejected" : "open-wants-auth");
+    })());
+// No holder is the unchanged decision, so the arm above is the holder's doing and not the source's.
+check("auth-required + registry + has-auth with no holder still prunes as 'registry-creds-rejected'", (() => {
+  const r = classifyPreflightFailure("registry", "auth-required", true, false, undefined);
+  return r.prune === true && r.kind === "registry-creds-rejected";
+})());
 // STALE-AUTH (D5 slice 6): a dead CREDENTIAL on a LIVE broker — never a prune, whatever the
 // source (deleting a live mesh's entry for an expired cred would misdirect the repair).
 for (const s of [...REGISTRY, ...NON_REGISTRY])
@@ -126,6 +180,24 @@ check("tls-trust preflight copy names NODE_EXTRA_CA_CERTS, NATS listener, unauth
     && msg.includes("unauthenticated")
     && msg.includes("conservatively kept")
     && !msg.includes("removed");
+})());
+
+// ADDRESS HELD copy: names the space holding the address, the `space forget` that frees it and the
+// address this one can move to, says the entry was kept, and never claims a removal.
+check("address-held preflight copy names the holder, space forget, the move, and the kept entry", (() => {
+  const t = { space: "team", server: "nats://127.0.0.1:14990", root: "/tmp/p", source: "registry", mode: "auth" } as never;
+  const msg = renderWorkspaceError({ kind: "preflight", failure: "address-held", target: t, pruned: false, heldBy: "beta" });
+  return msg.includes('"beta" is registered at that address')
+    && msg.includes("the registry entry was kept")
+    && msg.includes("`cotal space forget beta`")
+    && msg.includes("`cotal up --server nats://127.0.0.1:<port>`")
+    && !msg.includes("removed");
+})());
+// With no holder name the copy still works and names the lister instead of an undefined space.
+check("address-held copy with no holder name points at `cotal space` and names no undefined space", (() => {
+  const t = { space: "team", server: "nats://127.0.0.1:14990", root: "/tmp/p", source: "registry", mode: "auth" } as never;
+  const msg = renderWorkspaceError({ kind: "preflight", failure: "address-held", target: t, pruned: false });
+  return msg.includes("another registered space names that address") && msg.includes("`cotal space`") && !msg.includes("undefined");
 })());
 
 // `auth-required` on the RAW probe splits the same way the registry path splits it. Both cells are
@@ -169,6 +241,17 @@ check("message: unreachable keeps `no mesh running at` and names the recorded ro
 check("message: unreachable + pruned still names the recorded root (liveness no longer deletes)",
   preflightMessage("unreachable", T, true).includes(`recorded at ${T.root}`) && preflightMessage("unreachable", T, true).includes(`no mesh running at ${DEAD}`) && !preflightMessage("unreachable", T, true).includes("stale registry entry - removed"));
 check("message: prune flag does not change the unreachable sentence (record is kept)", preflightMessage("unreachable", T, true) === preflightMessage("unreachable", T, false));
+// A broker address `--server` supplied that is not the recorded one says nothing about the recorded
+// mesh: the sentence names that address, and the recorded broker only where one is recorded.
+check("message: an unreachable overriding --server names that address and the space's recorded broker", (() => {
+  const m = preflightMessage("unreachable", { ...T, source: "flag-space-override", recordedServer: "nats://127.0.0.1:14993" }, false);
+  return m === `✗ nothing answered at ${DEAD}, the broker address --server named - check that address, or drop --server to reach "alpha" at nats://127.0.0.1:14993, where it is recorded`;
+})(), preflightMessage("unreachable", { ...T, source: "flag-space-override", recordedServer: "nats://127.0.0.1:14993" }, false));
+check("message: an unreachable --server with no recorded broker names only that address, and no recorded mesh",
+  preflightMessage("unreachable", { ...T, source: "flag-server" }, false) === `✗ nothing answered at ${DEAD}, the broker address --server named - check that address and that a broker runs there`,
+  preflightMessage("unreachable", { ...T, source: "flag-server" }, false));
+check("message: a --server that is the recorded broker still names the recorded mesh as not running",
+  preflightMessage("unreachable", { ...T, source: "flag-server", recordedServer: DEAD }, false) === preflightMessage("unreachable", T, false));
 for (const kind of ["registry-creds-rejected", "registry-open-now-auth", "creds-rejected", "open-wants-auth"] as const)
   check(`message: ${kind} names the server + leads with ✗`, (() => {
     const m = preflightMessage(kind, T, true);
@@ -179,6 +262,30 @@ for (const kind of ["registry-creds-rejected", "registry-open-now-auth", "creds-
 for (const kind of ["registry-creds-rejected", "registry-open-now-auth", "creds-rejected"] as const)
   check(`message: ${kind} also names the space`, preflightMessage(kind, T, true).includes("alpha"));
 check("message: open-wants-auth does NOT claim a space name", !preflightMessage("open-wants-auth", T, true).includes("alpha"));
+
+// A folder whose `.cotal/` holds records but names no space, as after `space forget` of a prepared
+// space, resolves to the default space with nothing recording it there. An unreachable broker then
+// names the folder and the step that prepares a space in it, not a default mesh recorded there.
+{
+  const forgotten = mkdtempSync(join(home, "forgotten-"));
+  mkdirSync(join(forgotten, ".cotal", "agents"), { recursive: true });
+  writeFileSync(join(forgotten, ".cotal", "agents", "default.md"), "---\nname: default\n---\n");
+  const empty = mkdtempSync(join(home, "empty-"));
+  mkdirSync(join(empty, ".cotal"));
+  const t = resolveMeshTarget(forgotten);
+  check("a folder whose records name no space resolves local-space, flagged as naming no space", t.source === "local-space" && t.namesNoSpace === true, t);
+  check("control: an empty .cotal/ is not flagged", resolveMeshTarget(empty).namesNoSpace === undefined);
+  const m = preflightMessage("unreachable", t, false);
+  check("message: unreachable for that folder names it and space create, not the default mesh or address",
+    m === `✗ no space is registered or prepared here for ${t.root} - prepare one there with \`cotal space create <name> --root ${t.root}\`, or select one with \`cotal use <name>\`` && !m.includes(t.server), m);
+  check("control: the same target without the flag keeps the recorded-mesh sentence", preflightMessage("unreachable", { ...t, namesNoSpace: undefined }, false).includes(`mesh "${t.space}" is recorded at ${t.root}`));
+  // The refusal's target names the folder only, so no report is headed by the assumed space.
+  const refusal = await preflightOrThrow({ ...t, server: DEAD }).then(() => undefined, (e: unknown) => e);
+  check("preflightOrThrow on that folder refuses with a target naming only the folder, not the assumed space",
+    refusal instanceof ConnectRefusal && refusal.code === "TARGET_UNAVAILABLE" && JSON.stringify(refusal.target) === JSON.stringify({ root: t.root }) && !Object.hasOwn(refusal.failure().target as object, "space"), refusal instanceof ConnectRefusal ? refusal.target : String(refusal));
+  const recorded = await preflightOrThrow({ ...t, server: DEAD, namesNoSpace: undefined }).then(() => undefined, (e: unknown) => e);
+  check("control: without the flag the refusal's target keeps the space", recorded instanceof ConnectRefusal && (recorded.target as { space?: string } | undefined)?.space === t.space, recorded instanceof ConnectRefusal ? recorded.target : String(recorded));
+}
 
 // ── preflightTarget: probe a dead broker, classify, but DO NOT mutate the registry ────────────────
 recordMesh({ space: "probe-victim", server: DEAD, root: "/tmp/proj", mode: "open", ts: new Date(0).toISOString() });
@@ -198,6 +305,8 @@ check("resolveMeshTarget: --space + overriding --server → source 'flag-space-o
   const t = resolveMeshTarget("/nonexistent/cwd", { space: "team-ov", server: "nats://127.0.0.1:19998" });
   return t.source === "flag-space-override" && t.server === "nats://127.0.0.1:19998";
 })());
+check("resolveMeshTarget: an overriding --server carries the space's recorded broker as recordedServer",
+  resolveMeshTarget("/nonexistent/cwd", { space: "team-ov", server: "nats://127.0.0.1:19998" }).recordedServer === "nats://127.0.0.1:14993");
 check("resolveMeshTarget: --space + --server EQUAL to recorded → still 'flag-space' (registry-owned)",
   resolveMeshTarget("/nonexistent/cwd", { space: "team-ov", server: "nats://127.0.0.1:14993" }).source === "flag-space");
 check("resolveMeshTarget: --space without --server → 'flag-space'",
@@ -214,6 +323,25 @@ for (const m of loadMeshes()) removeMesh(m.space);
 recordMesh({ space: "ghost-2", server: "nats://127.0.0.1:14992", root: "/tmp/p2", mode: "open", ts: new Date(0).toISOString() });
 await pruneStaleMeshes();
 check("pruneStaleMeshes keeps every dead entry as offline", loadMeshes().length === 1 && loadMeshes()[0]!.space === "ghost-2", loadMeshes());
+// Given the `--server` a command resolves with, the sweep probes only the records at that address,
+// so a record's broker at another address is not dialed. The control sweep, with no address, dials it.
+{
+  const { createServer } = await import("node:net");
+  let dials = 0;
+  const srv = createServer((sock) => {
+    dials++;
+    sock.on("error", () => { /* the probe tears its own sockets down */ });
+    sock.end('INFO {"server_id":"recorded","version":"2.12.12","proto":1,"max_payload":1048576}\r\n');
+  });
+  const recorded = await new Promise<string>((resolve) => srv.listen(0, "127.0.0.1", () => resolve(`nats://127.0.0.1:${(srv.address() as { port: number }).port}`)));
+  recordMesh({ space: "recorded-elsewhere", server: recorded, root: "/tmp/p-rec", mode: "open", ts: new Date(0).toISOString() });
+  const named = await pruneStaleMeshes("nats://127.0.0.1:14992");
+  check("a sweep given --server dials no record at another address", dials === 0 && named.offline.join(",") === "ghost-2", { dials, named });
+  const control = await pruneStaleMeshes();
+  check("CONTROL: a sweep with no --server dials that record", dials > 0 && control.offline.join(",") === "ghost-2", { dials, control });
+  removeMesh("recorded-elsewhere");
+  await new Promise<void>((r) => srv.close(() => r()));
+}
 
 // ── ORIGIN: a liveness prune never deletes; a mismatch prune still drops `up` ────────────────────
 // REVERSAL of the previous design (test-locked at preflight.smoke.ts:206-212): an `up` record whose
@@ -222,28 +350,103 @@ check("pruneStaleMeshes keeps every dead entry as offline", loadMeshes().length 
 const DEAD_2 = "nats://127.0.0.1:14989";
 recordMesh({ space: "ours", server: DEAD_2, root: "/tmp/p3", mode: "open", origin: "up", ts: new Date(0).toISOString() });
 recordMesh({ space: "theirs", server: DEAD_2, root: "/tmp/p3", mode: "open", origin: "manual", ts: new Date(0).toISOString() });
-const sweep = await pruneStaleMeshes();
+const listingControl = await registryListings(async () => loadMeshes());
+check("registry listing counter observes a real registry load", listingControl.listings === 1, listingControl);
+const swept = await registryListings(() => pruneStaleMeshes());
+const sweep = swept.value;
+check("liveness sweep lists the registry once, without a no-op prune read per offline record", swept.listings === 1, swept);
 check("sweep KEEPS the `up` record", findMesh("ours") !== undefined, loadMeshes());
 check("sweep KEEPS the operator-registered record", findMesh("theirs") !== undefined, loadMeshes());
-check("sweep reports both as offline (none pruned)", sweep.pruned.length === 0 && sweep.offline.includes("ours") && sweep.offline.includes("theirs"), sweep);
+check("sweep reports only offline state", Object.keys(sweep).join(",") === "offline" && sweep.offline.includes("ours") && sweep.offline.includes("theirs"), sweep);
 assert.throws(() => resolveMeshTarget("/nonexistent/cwd", { offline: sweep.offline }), /no mesh running/);
 check("all-offline is still no-meshes; both records remain", findMesh("ours") !== undefined && findMesh("theirs") !== undefined);
 check("pruneMesh reports refusing to delete a manual record", pruneMesh("theirs") === false && findMesh("theirs") !== undefined);
-check("pruneMesh reports refusing to delete an `up` record on liveness", pruneMesh("ours") === false && findMesh("ours") !== undefined);
+const offlinePreflight = await registryListings(() => preflightOrThrow({ ...T, space: "ours", source: "registry" }).then(() => undefined, (e: unknown) => e));
+check("unreachable preflight refuses without reading the registry for a no-op prune", offlinePreflight.listings === 0 && offlinePreflight.value instanceof ConnectRefusal && offlinePreflight.value.code === "TARGET_UNAVAILABLE", offlinePreflight);
+check("unreachable preflight keeps the `up` record", findMesh("ours") !== undefined);
 check("pruneMesh reports nothing removed for an absent record", pruneMesh("never-recorded") === false);
-check("pruneMesh mismatch still drops an `up` record", pruneMesh("ours", "mismatch") === true && findMesh("ours") === undefined);
-check("pruneMesh mismatch still refuses a manual record", pruneMesh("theirs", "mismatch") === false && findMesh("theirs") !== undefined);
+check("pruneMesh mismatch still drops an `up` record", pruneMesh("ours") === true && findMesh("ours") === undefined);
+recordMesh({ space: "pre-origin", server: DEAD_2, root: "/tmp/p3", mode: "open", ts: new Date(0).toISOString() });
+check("pruneMesh mismatch drops a pre-origin record", pruneMesh("pre-origin") === true && findMesh("pre-origin") === undefined);
+recordMesh({ space: "catalog-kept", server: DEAD_2, root: "/tmp/p3", mode: "open", origin: "catalog", catalogOwner: "test-account", ts: new Date(0).toISOString() });
+check("pruneMesh mismatch refuses a catalog record", pruneMesh("catalog-kept") === false && findMesh("catalog-kept") !== undefined);
+removeMesh("catalog-kept");
 // …and the copy stops telling the operator to `cotal up` a mesh that runs somewhere else.
 const manualT = { ...T, space: "theirs", origin: "manual" as const };
 check("unreachable copy for a registered mesh names `cotal meshes rm`, not `cotal up`", (() => {
   const m = preflightMessage("unreachable", manualT, false);
   return m.includes("cotal meshes rm theirs") && !m.includes("cotal up");
 })(), preflightMessage("unreachable", manualT, false));
+// A user-mode target never reaches preflightTarget, so this arm has to throw the same refusal.
+{
+  const userBase = { ...T, mode: "user" as const, space: "hosted", root: "/tmp/hosted-root" };
+  const manualUser = await preflightOrThrow({ ...userBase, origin: "manual" }).then(() => undefined, (e: unknown) => e);
+  check("user-mode preflight of a hand-registered mesh refuses through the shared unreachable sentence",
+    manualUser instanceof ConnectRefusal && manualUser.kind === "transient" && manualUser.code === "TARGET_UNAVAILABLE"
+      && manualUser.rendered === preflightMessage("unreachable", { ...userBase, origin: "manual" }, false)
+      && manualUser.rendered.includes("cotal meshes rm hosted") && !manualUser.rendered.includes("cotal up"),
+    manualUser instanceof ConnectRefusal ? manualUser.rendered : String(manualUser));
+  const upUser = await preflightOrThrow({ ...userBase, origin: "up" }).then(() => undefined, (e: unknown) => e);
+  check("user-mode preflight of an up record still names `cotal up` at the recorded root",
+    upUser instanceof ConnectRefusal && upUser.rendered === preflightMessage("unreachable", { ...userBase, origin: "up" }, false)
+      && upUser.rendered.includes(`no mesh running at ${DEAD}`) && upUser.rendered.includes("run `cotal up` there to restart"),
+    upUser instanceof ConnectRefusal ? upUser.rendered : String(upUser));
+  const { createServer } = await import("node:net");
+  const live = createServer((sock) => {
+    sock.on("error", () => { /* the probe closes its own socket */ });
+    sock.end('INFO {"server_id":"live-user","version":"2.12.12","proto":1,"max_payload":1048576,"auth_required":true}\r\n');
+  });
+  const liveServer = await new Promise<string>((resolve) => live.listen(0, "127.0.0.1", () => resolve(`nats://127.0.0.1:${(live.address() as { port: number }).port}`)));
+  const reached = await preflightOrThrow({ ...userBase, origin: "manual", server: liveServer }).then(() => "ok", (e: unknown) => e);
+  check("control: a user-mode broker that answers the liveness probe is not refused", reached === "ok", String(reached));
+  await new Promise<void>((r) => live.close(() => r()));
+}
 check("stale-auth-root copy claims a removal only when one happened", (() => {
   const kept = renderWorkspaceError({ kind: "target", error: new MeshTargetError("stale-auth-root", "x", { space: "theirs", root: "/tmp/p3", found: "other", removed: false }) });
   const gone = renderWorkspaceError({ kind: "target", error: new MeshTargetError("stale-auth-root", "x", { space: "ours", root: "/tmp/p3", found: "other", removed: true }) });
   return !kept.includes("removed") && kept.includes("cotal meshes add") && gone.includes("stale entry removed");
 })());
+
+// ── INFERRED auth: a reset after an auth greeting names the failure but never deletes a record ───
+// A listener that greets like an auth broker and resets the handshake gives the client what Windows
+// gives it when the reset discards the broker's `-ERR`. The control greets the same way, reads the
+// whole handshake, refuses with the real `-ERR` and closes cleanly. That refusal still drops its
+// `up` record, which is what shows these cells can see a deletion.
+{
+  const { createServer } = await import("node:net");
+  const listen = (onConnect: (sock: import("node:net").Socket) => void) =>
+    new Promise<{ server: string; close: () => Promise<void> }>((resolve) => {
+      const srv = createServer((sock) => {
+        sock.on("error", () => { /* the probe tears its own sockets down */ });
+        sock.write('INFO {"server_id":"inferred","version":"2.12.12","proto":1,"max_payload":1048576,"auth_required":true}\r\n');
+        onConnect(sock);
+      });
+      srv.listen(0, "127.0.0.1", () =>
+        resolve({ server: `nats://127.0.0.1:${(srv.address() as { port: number }).port}`, close: () => new Promise((r) => srv.close(() => r())) }));
+    });
+  const reset = await listen((sock) => sock.once("data", () => sock.resetAndDestroy()));
+  const refuse = await listen((sock) => {
+    let seen = "";
+    sock.on("data", (chunk: Buffer) => {
+      seen += chunk.toString("utf8");
+      if (seen.includes("PING\r\n")) sock.end("-ERR 'Authorization Violation'\r\n");
+    });
+  });
+  for (const [space, server] of [["inferred-auth", reset.server], ["refused-auth", refuse.server]] as const)
+    recordMesh({ space, server, root: `/tmp/${space}`, mode: "open", origin: "up", ts: new Date(0).toISOString() });
+  const inferredT: MeshTarget = { ...T, space: "inferred-auth", server: reset.server, root: "/tmp/inferred-auth", origin: "up" };
+  const classified = await preflightTarget(inferredT);
+  check("an inferred auth-required classifies registry-open-now-auth with NO prune", !classified.ok && classified.kind === "registry-open-now-auth" && classified.prune === false, classified);
+  const before = readFileSync(meshFile("inferred-auth"));
+  const inferredRefusal = await preflightOrThrow(inferredT).then(() => undefined, (e: unknown) => e);
+  check("preflightOrThrow refuses the command on it as AUTH_REQUIRED", inferredRefusal instanceof ConnectRefusal && inferredRefusal.code === "AUTH_REQUIRED", String(inferredRefusal));
+  check("…and the `up` record's registry bytes survive unchanged", Buffer.compare(before, readFileSync(meshFile("inferred-auth"))) === 0);
+  const refusedT: MeshTarget = { ...T, space: "refused-auth", server: refuse.server, root: "/tmp/refused-auth", origin: "up" };
+  const refused = await preflightOrThrow(refusedT).then(() => undefined, (e: unknown) => e);
+  check("CONTROL: a real auth refusal behind the same greeting is AUTH_REQUIRED and drops the `up` record", refused instanceof ConnectRefusal && refused.code === "AUTH_REQUIRED" && findMesh("refused-auth") === undefined, { refused: String(refused), meshes: loadMeshes() });
+  await reset.close();
+  await refuse.close();
+}
 
 // ── S10 delayed-INFO confirm: first 1s INFO read misses; second longer read must still save. ─────
 // A TCP peer that greets with INFO {tls_required:true} only after 1.5s and then answers the TLS
@@ -428,8 +631,8 @@ check("stale-auth-root copy claims a removal only when one happened", (() => {
   }
   const s12bElapsed = Date.now() - t12b0;
   check(
-    "S12 held-open plain peer: a peer that never greets is the unreachable sentence, not the timeout one (#2156: the gate now requires the greeting on a socket it owns)",
-    s12bMsg !== undefined && s12bMsg.includes("is it running") && !s12bMsg.includes("did not complete within"),
+    "S12 held-open plain peer: a peer that took the connection and never greets is not answering, not \"is it running\" (the gate still requires the greeting on a socket it owns, #2156)",
+    s12bMsg !== undefined && s12bMsg.includes("is not answering") && s12bMsg.includes("did not complete within") && !s12bMsg.includes("is it running"),
     s12bMsg,
   );
   check(
@@ -457,13 +660,49 @@ check("stale-auth-root copy claims a removal only when one happened", (() => {
     s12cElapsed < 2_000,
     { s12cElapsed },
   );
+
+  // A broker still accepts a credential until the last second of its life ends, so a credential
+  // that has passed its own expiry is refused without a dial. A peer that takes any CONNECT stands
+  // in for that broker.
+  let lenientDials = 0;
+  const lenientSrv = createServer((sock) => {
+    lenientDials++;
+    sock.on("error", () => { /* client tears down after its probe; not a test failure */ });
+    sock.write('INFO {"server_id":"s12d","version":"2.12.0","proto":1,"headers":true,"max_payload":1048576,"auth_required":true,"nonce":"bm9uY2U"}\r\n');
+    sock.on("data", (d: Buffer) => {
+      if (d.includes("PING")) {
+        try { sock.write("PONG\r\n"); } catch { /* client gone */ }
+      }
+    });
+  });
+  const lenientPort = await new Promise<number>((resolve) => {
+    lenientSrv.listen(0, "127.0.0.1", () => resolve((lenientSrv.address() as { port: number }).port));
+  });
+  const lenient = `nats://127.0.0.1:${lenientPort}`;
+  const { createSpaceAuth, mintCreds, newIdentity } = await import("@cotal-ai/core");
+  const s12dAuth = await createSpaceAuth("s12d");
+  const current = await mintCreds(s12dAuth, newIdentity(), "observer", { expiresInSeconds: 600 });
+  const brief = await mintCreds(s12dAuth, newIdentity(), "observer", { expiresInSeconds: 1 });
+  let s12dControl = true;
+  try { await reachableOrThrow(lenient, { creds: current }); } catch { s12dControl = false; }
+  check("S12 control: a peer that takes any CONNECT accepts a current credential", s12dControl && lenientDials > 0, { lenientDials });
+  await new Promise((resolve) => setTimeout(resolve, 2_100));
+  const dialsBefore = lenientDials;
+  let s12d: InstanceType<typeof ConnectRefusal> | undefined;
+  try { await reachableOrThrow(lenient, { creds: brief }); } catch (e) { s12d = e instanceof ConnectRefusal ? e : undefined; }
+  check(
+    "S12 expired credential: refused AUTH_REQUIRED as credential death before any dial, where the broker would still take it",
+    s12d?.code === "AUTH_REQUIRED" && s12d.message.includes("credential EXPIRED at") && lenientDials === dialsBefore,
+    { code: s12d?.code, message: s12d?.message, dials: lenientDials - dialsBefore },
+  );
+  lenientSrv.close();
 }
 
 // ── One sweep per control resolve (#3872) ────────────────────────────────────────────────────────
 // `beta` is a bystander that only a registry sweep dials, so its dial count is the sweep count. The
-// mode peek and the connect read one sweep, a named `--space` reads none, and a sweep the caller
-// already took is the verdict the whole chain reads. The cwd is `/` so the walk-up can never select
-// a real project once `current` is skipped.
+// selected space and a named `--space` read none, a sweep the caller already took is the verdict the
+// whole chain reads, and with nothing selected the mode peek and the connect read one sweep. The cwd
+// is `/` so the walk-up can never select a real project once `current` is skipped.
 {
   const { createServer } = await import("node:net");
   const greeter = () => new Promise<{ server: string; dials: () => number; close: () => void }>((resolve) => {
@@ -495,9 +734,16 @@ check("stale-auth-root copy claims a removal only when one happened", (() => {
   let before = beta.dials();
   const spaceless = await control({});
   check(
-    "a space-less control resolve sweeps the registry once: its mode peek and its connect read one sweep (#3872)",
-    spaceless.space === "alpha" && beta.dials() - before === 1,
+    "a space-less control resolve of the selected space dials no other recorded broker",
+    spaceless.space === "alpha" && beta.dials() - before === 0,
     { space: spaceless.space, sweeps: beta.dials() - before },
+  );
+  before = beta.dials();
+  const command = await resolveTargetOrThrow({});
+  check(
+    "...and so does a command's space-less resolve of it",
+    command.space === "alpha" && beta.dials() - before === 0,
+    { space: command.space, sweeps: beta.dials() - before },
   );
   before = beta.dials();
   const named = await control({ space: "alpha" });
@@ -516,9 +762,29 @@ check("stale-auth-root copy claims a removal only when one happened", (() => {
     handed.space === "beta" && alpha.dials() - before === 0,
     { space: handed.space, alphaDials: alpha.dials() - before },
   );
+  // With nothing selected the resolve picks among the running meshes, so it sweeps. `gamma` takes
+  // every connection and drops it, so it is offline and alpha is the one running mesh; its dials for
+  // one explicit sweep are counted first.
+  let gammaDials = 0;
+  const dropper = createServer((sock) => { gammaDials++; sock.on("error", () => { /* the probe sees the drop */ }); sock.destroy(); });
+  const gamma = await new Promise<string>((resolve) => dropper.listen(0, "127.0.0.1", () => resolve(`nats://127.0.0.1:${(dropper.address() as { port: number }).port}`)));
+  removeMesh("beta");
+  recordMesh({ space: "gamma", server: gamma, root: "/tmp/s3872-gamma", mode: "open", origin: "manual", ts: new Date(0).toISOString() });
+  before = gammaDials;
+  await pruneStaleMeshes();
+  const perSweep = gammaDials - before;
+  before = gammaDials;
+  const picked = await control({});
+  check(
+    "with nothing selected, a space-less control resolve sweeps the registry once: its mode peek and its connect read one sweep (#3872)",
+    picked.space === "alpha" && perSweep > 0 && gammaDials - before === perSweep,
+    { space: picked.space, perSweep, dials: gammaDials - before },
+  );
+  removeMesh("gamma");
   process.chdir(cwd);
   alpha.close();
   beta.close();
+  dropper.close();
 }
 
 rmSync(home, { recursive: true, force: true });

@@ -73,7 +73,7 @@ const GATE = /refusing to reconcile the operator-global seed store/;
     { seed: existsSync(join(xdg, "cotal", "seed")), manifest: existsSync(join(xdg, "cotal", "extensions", "extensions.json")) });
   const human = run(["status"], { NO_COLOR: "1" });
   check("status on a fresh machine says no agent application is set up and points at cotal setup",
-    human.status === 0 && /^ +Agent applications: +○ not set up$/m.test(human.stdout) && /^Next\n +cotal setup +Set up an agent application/m.test(human.stdout), shown(human));
+    human.status === 0 && /^ +Agent applications: +○ not set up · `pnpm cotal setup` adds one$/m.test(human.stdout) && /^Next\n +pnpm cotal setup +Set up an agent application/m.test(human.stdout), shown(human));
 }
 
 // ── A command that is not a read still meets the gate ───────────────────────────────────────────────
@@ -98,7 +98,7 @@ const GATE = /refusing to reconcile the operator-global seed store/;
     extensions: [{
       pkg, version: "0.0.1", spec: `${pkg}@0.0.1`, source: "seeded",
       provides: [{ kind: "connector", name: "claude" }, { kind: "connector-setup", name: "claude" }], commands: [],
-      connectors: [{ name: "claude", requires: [], setup: { kind: "connector-setup", name: "claude" } }],
+      connectors: [{ name: "claude", requires: [], eventPlane: true, setup: { kind: "connector-setup", name: "claude" } }],
     }],
   }));
   const r = run(["status", "--json"]);

@@ -59,8 +59,8 @@
     {
       "name": "the parallel/race worktree check is gone, so two branches share one tree",
       "file": "packages/lang/src/grammar.ts",
-      "find": "  if (name === \"parallel\" || name === \"race\") {\n    const branches = args[0];",
-      "replace": "  if (false) {\n    const branches = args[0];",
+      "find": "  if (name === \"parallel\" || name === \"race\") {\n    const branches = args[0];\n    if (branches !== undefined && (branches.type === \"ObjectExpression\" || branches.type === \"ArrayExpression\")) {",
+      "replace": "  if (false) {\n    const branches = args[0];\n    if (branches !== undefined && (branches.type === \"ObjectExpression\" || branches.type === \"ArrayExpression\")) {",
       "expectRed": "two parallel branches spawning into one literal worktree",
       "completionMarker": "ok even in arithmetic that never crosses a boundary",
       "cell": "two parallel branches spawning into one literal worktree",

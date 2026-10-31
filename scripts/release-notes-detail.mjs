@@ -5,7 +5,8 @@
  * descriptions that changesets writes into each package's changelog, so a release reads as more than a
  * list of one-line PR titles.
  *
- * Usage: node scripts/release-notes-detail.mjs <version>   (prints nothing if there are no summaries)
+ * Usage: node scripts/release-notes-detail.mjs <version> [--max-bytes=<n>]
+ * Missing version sections or sections without summaries fail with a diagnostic on stderr.
  *
  * Reads the `## <version>` section of every package CHANGELOG (the basic `@changesets/cli/changelog`
  * format: top-level `- <hash>: <summary>` bullets, plus `- Updated dependencies …` lines we skip).
@@ -17,7 +18,15 @@ import { join } from "node:path";
 
 const version = process.argv[2];
 if (!version) {
-  process.stderr.write("usage: release-notes-detail.mjs <version>\n");
+  process.stderr.write("usage: release-notes-detail.mjs <version> [--max-bytes=<n>]\n");
+  process.exit(1);
+}
+// A GitHub release body is capped at 125000 characters. The caller passes what is left after the
+// generated PR list; the block ends at the last summary that fits, with a line saying where the rest is.
+const maxArg = process.argv.slice(3).find((a) => a.startsWith("--max-bytes="));
+const maxBytes = maxArg ? Number(maxArg.slice("--max-bytes=".length)) : Infinity;
+if (!(maxBytes > 0)) {
+  process.stderr.write(`release-notes-detail.mjs: --max-bytes must be a positive number, got ${JSON.stringify(maxArg)}\n`);
   process.exit(1);
 }
 
@@ -32,6 +41,7 @@ for (const root of ["packages", "extensions", "implementations"]) {
 }
 
 const summaries = new Set();
+let foundSection = false;
 for (const file of changelogs) {
   const lines = readFileSync(file, "utf8").split("\n");
   let inSection = false;
@@ -39,6 +49,7 @@ for (const file of changelogs) {
     const line = lines[i];
     if (line.startsWith("## ")) {
       inSection = line.slice(3).trim() === version; // a `## <version>` header starts/ends a section
+      if (inSection) foundSection = true;
       continue;
     }
     if (!inSection) continue;
@@ -59,9 +70,28 @@ for (const file of changelogs) {
   }
 }
 
+if (!foundSection) {
+  process.stderr.write(`release-notes-detail.mjs: no changelog section for version ${JSON.stringify(version)}\n`);
+  process.exit(1);
+}
+if (!summaries.size) {
+  process.stderr.write(`release-notes-detail.mjs: no release summaries in changelog sections for version ${JSON.stringify(version)}\n`);
+  process.exit(1);
+}
+
 if (summaries.size) {
-  process.stdout.write("## Changes in this release\n\n");
+  const note = (left) => `\n_${left} more changes did not fit in this release body; each package's CHANGELOG.md at v${version} lists them all._\n`;
+  const reserve = Buffer.byteLength(note(summaries.size)); // the longest note the cut could need
+  let out = "## Changes in this release\n\n";
+  let shown = 0;
   // Each summary is `<first line>\n<already 2-space-indented continuation>`, so it re-emits as a
   // valid multi-paragraph markdown list item under the bullet.
-  for (const s of summaries) process.stdout.write(`- ${s}\n`);
+  for (const s of summaries) {
+    const item = `- ${s}\n`;
+    if (Buffer.byteLength(out + item) + reserve > maxBytes) break;
+    out += item;
+    shown++;
+  }
+  if (shown < summaries.size) out += note(summaries.size - shown);
+  process.stdout.write(out);
 }

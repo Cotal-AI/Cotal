@@ -319,7 +319,7 @@ console.log("a restart refuses before any stop when its start would be refused")
   const id = refusedBrokerInstance(f.space);
   const before = serviceInstanceStore(f.space).read(id)!.record.value;
   let refusal: unknown;
-  try { await serviceAction({ positionals: ["restart", "stack-broker"], values: { yes: true, json: true } } as unknown as ParsedArgs, f.space); } catch (error) { refusal = error; }
+  try { await serviceAction({ positionals: ["restart", "stack-broker"], values: { yes: true, json: true } } as unknown as ParsedArgs, f.space, f.root); } catch (error) { refusal = error; }
   await check("a broker restart under a pre-commit restore refuses before its stop", isCommandFailure(refusal) && refusal.code === "LIFECYCLE_BLOCKED" && refusal.message.includes("nothing was stopped"));
   const after = serviceInstanceStore(f.space).read(id)!.record.value;
   await check("the broker instance record is unchanged", after.launchRequestId === before.launchRequestId && after.state === before.state && after.updatedAt === before.updatedAt);
@@ -344,6 +344,7 @@ console.log("a preserve refuses what the broker's stop would cut off, before any
   const dependants = isCommandFailure(stranded) ? (stranded.target as { dependants?: Array<{ definition: string; instanceId: string }> }).dependants ?? [] : [];
   await check("another live service instance in the space refuses the preserve and is named", isCommandFailure(stranded) && stranded.code === "LIFECYCLE_BLOCKED" && dependants.some((row) => row.definition === "web" && row.instanceId === web));
   await check("its remedy names the preserve to run again", isCommandFailure(stranded) && (stranded.remedy ?? "").includes("cotal down --preserve-state"));
+  await check("and the stop of that instance by its full ID, with no placeholder", isCommandFailure(stranded) && (stranded.remedy ?? "").includes(`cotal svc stop web --instance ${web} --space ${other.space} --yes`) && !(stranded.remedy ?? "").includes("<name>"));
   await check("no prepare intent, stack operation, maintenance journal or member stop was written", untouched(other, otherBefore, undefined));
 
   const shared = preservable("scope-shared");

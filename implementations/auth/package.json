@@ -1,7 +1,7 @@
 {
   "name": "@cotal-ai/auth",
-  "description": "Cotal per-user auth bridge: opaque owner-token derivation and strict user-token validation for the NATS auth-callout cutover (Plane 1 ↔ Plane 2).",
-  "version": "0.91.0",
+  "description": "Cotal per-user auth bridge: opaque owner-token derivation and strict user-token validation for the NATS auth-callout cutover (Plane 1 \u2194 Plane 2).",
+  "version": "0.132.1",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -15,20 +15,39 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./agent-bearer": {
+      "types": "./dist/agent-bearer.d.ts",
+      "import": "./dist/agent-bearer.js"
     }
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.smoke.json",
     "build": "tsc -p tsconfig.json",
-    "test": "tsx smoke/backup-continuity.smoke.ts && tsx smoke/retained-manager-validation.smoke.ts && tsx smoke/manager-admin-authorization.smoke.ts && tsx smoke/views.smoke.ts && tsx smoke/chat-session-row.smoke.ts && tsx smoke/managed-grant-transaction.smoke.ts && tsx smoke/chat-session-authority.smoke.ts",
+    "test": "tsx smoke/auth-response-json.smoke.ts && tsx smoke/backup-continuity.smoke.ts && tsx smoke/retained-manager-validation.smoke.ts && tsx smoke/manager-admin-authorization.smoke.ts && tsx smoke/views.smoke.ts && tsx smoke/chat-session-row.smoke.ts && tsx smoke/managed-grant-transaction.smoke.ts && tsx smoke/chat-session-authority.smoke.ts",
     "smoke:chat-session-authority": "tsx smoke/chat-session-authority.smoke.ts",
     "smoke:chat-session-row": "tsx smoke/chat-session-row.smoke.ts",
+    "smoke:callout-load": "tsx smoke/callout-load.smoke.ts",
+    "smoke:callout-replica": "tsx smoke/callout-replica.smoke.ts",
+    "smoke:callout-multi-tenant": "tsx smoke/callout-multi-tenant.smoke.ts",
+    "smoke:auth-service-multi-space": "tsx smoke/auth-service-multi-space.smoke.ts",
     "prepublishOnly": "pnpm run build",
     "smoke:service-custody": "tsx smoke/service-custody.smoke.ts",
     "smoke:service-custody-writer": "tsx smoke/service-custody-writer.smoke.ts",
     "smoke:service-custody-recovery": "tsx smoke/service-custody-recovery.smoke.ts",
+    "smoke:service-host-ops": "tsx smoke/service-host-ops.smoke.ts",
+    "smoke:service-caller-issuance": "tsx smoke/service-caller-issuance.smoke.ts && tsx smoke/service-caller-issuance.smoke.ts --second && tsx smoke/service-caller-issuance.smoke.ts --cli",
+    "smoke:service-caller-reload": "tsx smoke/service-caller-reload.smoke.ts",
+    "smoke:service-caller-payload": "tsx smoke/service-caller-payload-bootstrap.smoke.ts && tsx smoke/service-caller-issuance.smoke.ts --payload-withdraw && tsx smoke/service-caller-issuance.smoke.ts --policy-during-observe && tsx smoke/service-caller-issuance.smoke.ts --close-during-observe && tsx smoke/service-caller-issuance.smoke.ts --reopen-payload",
+    "smoke:service-caller-host": "tsx smoke/service-caller-host.smoke.ts",
+    "smoke:service-host-effect": "tsx smoke/service-host-effect.smoke.ts",
+    "smoke:service-host-plane": "tsx smoke/service-host-plane.smoke.ts",
+    "smoke:service-endpoint-authority": "tsx smoke/service-endpoint-authority.smoke.ts",
+    "smoke:service-serving": "tsx smoke/service-serving.smoke.ts",
+    "smoke:service-endpoint-renewal": "tsx smoke/service-endpoint-renewal.smoke.ts",
     "smoke:public-surfaces": "tsx smoke/auth-public-closure.smoke.ts && tsx smoke/plane-claim-public.smoke.ts && tsx smoke/account-liveness-public.smoke.ts",
-    "smoke:managed-grant-transaction": "tsx smoke/managed-grant-transaction.smoke.ts"
+    "smoke:managed-grant-transaction": "tsx smoke/managed-grant-transaction.smoke.ts",
+    "smoke:system-signing-seed-custody": "tsx smoke/system-signing-seed-custody.smoke.ts"
   },
   "dependencies": {
     "@cotal-ai/core": "workspace:*",
@@ -40,7 +59,8 @@
     "jose": "^6.2.3",
     "@nats-io/jetstream": "^3.4.0",
     "@nats-io/kv": "^3.4.0",
-    "@clack/prompts": "^1.0.0"
+    "@clack/prompts": "^1.0.0",
+    "tweetnacl": "^1.0.3"
   },
   "devDependencies": {
     "@cotal-ai/smoke-kit": "workspace:*",

@@ -1,14 +1,14 @@
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
-import { registry, type Connector, type LaunchOpts, type LaunchSpec, type ModelCatalog, type ModelInfo } from "@cotal-ai/core";
+import { registry, type Connector, type LaunchOpts, type LaunchSpec, type ModelCatalog, type ModelCatalogOpts, type ModelInfo } from "@cotal-ai/core";
 import { aclEnv, connectorLaunchOptions, eventChannel, launchArmsEvents, launchEnv, controlEndpoint, materialEnv, MODEL_PROVIDER_KEYS } from "@cotal-ai/connector-core";
 import { opencodeLine } from "./opencode-line.js";
 
 /** The bundled in-process plugin (esbuild → `dist/plugin/index.js`). A DIRECTORY target, not a
- *  file: OpenCode 2.x drops a file plugin path (`configured plugin path must be a directory`,
- *  measured in `fx105/measurements.md`) but loads a directory whose `index.js` is the module, and
- *  1.x loads the same directory too — one bundle target serves both lines. `opencode serve` loads
+ *  file: OpenCode 2.x drops a file plugin path (`configured plugin path must be a directory`)
+ *  but loads a directory whose `index.js` is the module. 1.x loads the same directory too — one
+ *  bundle target serves both lines. `opencode serve` loads
  *  it by absolute path from the inline config, so it runs *inside* the server and shares its SDK
  *  client. Resolved relative to this module — beside the built `dist/extension.js`, so the
  *  connector must be built+bundled (`pnpm build`). */
@@ -76,12 +76,16 @@ function parseModels(stdout: string): ModelInfo[] {
   return models;
 }
 
-function listOpenCodeModels(opts: { refresh?: boolean } = {}): ModelCatalog {
+function listOpenCodeModels(opts: ModelCatalogOpts = {}): ModelCatalog {
   const env = discoveryEnv();
-  // Detect the line first (same rule launch.ts uses), on the same binary the discovery below would
-  // run, before running any 2.x-incompatible subcommand: `opencode models --pure --verbose` exits 1
-  // on 2.x with the help text (measured, fx105/measurements.md M4) rather than a real catalog.
-  const versionRaw = execFileSync("opencode", ["--version"], {
+  // The file a launch runs: the operator pin, then the path boot resolved, then the bare name. The
+  // pin is read here because discoveryEnv strips every COTAL_* key, which is what keeps a catalog
+  // probe from looking like a managed seat. A later PATH change cannot pick a different file.
+  const bin = process.env.COTAL_OPENCODE_BIN?.trim() || opts.resolvedBinaries?.opencode || "opencode";
+  // Detect the line first (same rule launch.ts uses), on that file, before running any 2.x-incompatible
+  // subcommand: `opencode models --pure --verbose` exits 1 on 2.x with the help text rather than a
+  // real catalog.
+  const versionRaw = execFileSync(bin, ["--version"], {
     encoding: "utf8",
     env,
     stdio: ["ignore", "pipe", "pipe"],
@@ -95,7 +99,7 @@ function listOpenCodeModels(opts: { refresh?: boolean } = {}): ModelCatalog {
   const args = ["models", "--pure", "--verbose"];
   if (opts.refresh) args.push("--refresh");
   try {
-    const stdout = execFileSync("opencode", args, {
+    const stdout = execFileSync(bin, args, {
       encoding: "utf8",
       env,
       stdio: ["ignore", "pipe", "pipe"],

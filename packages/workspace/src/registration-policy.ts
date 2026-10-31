@@ -3,8 +3,8 @@ import { isLoopbackHost } from "./join-target.js";
 import type { RefusalCode } from "./output.js";
 
 /** A rule's verdict: the value it produced, or the operator-facing sentence explaining the refusal
- *  and, where the rule knows it, the stable code a structured refusal carries. */
-export type Check<T> = { ok: true; value: T } | { ok: false; message: string; code?: RefusalCode };
+ *  and, where the rule knows them, the stable code a structured refusal carries and what to run next. */
+export type Check<T> = { ok: true; value: T } | { ok: false; message: string; code?: RefusalCode; remedy?: string };
 /** A bundle that fails a rule here is invalid input, unless the rule says otherwise. */
 const bad = (message: string, code: RefusalCode = "SCHEMA_INVALID"): Check<never> => ({ ok: false, message, code });
 const good = <T>(value: T): Check<T> => ({ ok: true, value });
@@ -51,7 +51,10 @@ export async function checkDiscoveryDocument(res: Response): Promise<Check<UserB
   return checkBundleDocument(doc);
 }
 
-function checkBundleDocument(parsed: unknown): Check<UserBundle> {
+/** The object checks {@link checkUserBundle} runs after it parses. Callers that already hold the
+ *  value use this directly: serialising it first turns an absent value into the not-JSON refusal,
+ *  which belongs only to text the caller asked this package to parse. */
+export function checkBundleDocument(parsed: unknown): Check<UserBundle> {
   const doc = parsed as Partial<UserBundle> & { userAuth?: unknown };
   if (doc === null || typeof doc !== "object") return bad("✗ the user-auth bundle must be a JSON object");
   if (typeof doc.space !== "string" || !doc.space) return bad("✗ the user-auth bundle names no space");
@@ -87,7 +90,10 @@ function checkBundleDocument(parsed: unknown): Check<UserBundle> {
       return bad("✗ the user-auth bundle's agent-provisioning endpoint (userAuth.endpoints.agentProvisioningUrl) is not a URL");
     }
     const refusal = assertPinnedFetchUrl(pu, "the bundle's agent-provisioning endpoint (userAuth.endpoints.agentProvisioningUrl)");
-    if (refusal) return bad(refusal, "UNSUPPORTED");
+    // The sentence is unmarked, because a pinned-fetch caller classifies the error rather than its
+    // text. A bundle check is the other way around: its message is what the front end prints, and
+    // every other refusal from this function already carries the glyph.
+    if (refusal) return bad(`✗ ${refusal}`, "UNSUPPORTED");
   }
   if (typeof doc.sentinelCreds !== "string" || !doc.sentinelCreds)
     return bad("✗ the user-auth bundle carries no sentinelCreds - the sentinel identity is part of the export");
@@ -98,18 +104,18 @@ function checkBundleDocument(parsed: unknown): Check<UserBundle> {
  *  registration, where patience is cheaper than a wrong record. */
 const EXCHANGE_PROBE_TIMEOUT_MS = 5_000;
 
-/**
- * Fetch that CANNOT be walked off HTTPS.
- *
- * `fetch` follows redirects by default and will happily follow `https://` → `http://`, so a
- * 302 from anyone on the path turns a pinned, encrypted fetch into a plaintext one — and the
- * document being fetched IS the trust being adopted. `redirect: "manual"` stops the hop here;
- * a redirect is then reported as the refusal it is, rather than silently followed.
- *
- * Loopback `http://` stays usable for tests and for an exchange on this machine (nothing leaves
- * the box), which is also what keeps the suites honest without a TLS fixture. Everything else
- * must be `https:`.
- */
+/** A pinned fetch that the policy itself refused: a target that is not https (and not a loopback
+ *  http literal), or an answer that is a redirect. A transport failure is not one of these: it
+ *  escapes as whatever `fetch` threw, so a caller tells a refusal from a failure with `instanceof`
+ *  rather than by a character in the message. The message is unmarked; the front end that prints
+ *  it adds its own glyph. */
+export class PinnedFetchRefused extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PinnedFetchRefused";
+  }
+}
+
 export function assertPinnedFetchUrl(u: URL, what: string): string | undefined {
   if (u.protocol === "https:") return undefined;
   // The loopback exception is decided by PARSING the host as an address, never by how the text
@@ -122,7 +128,7 @@ export function assertPinnedFetchUrl(u: URL, what: string): string | undefined {
   // Name the ACTUAL rule. "must be https://" alone misleads the developer whose local flow used
   // http://localhost: it blames the scheme, when the same scheme on 127.0.0.1 would have passed.
   return (
-    `✗ ${what} must be https:// (got ${u.protocol}//) - the pins this registration adopts cannot be fetched over a channel the network can rewrite` +
+    `${what} must be https:// (got ${u.protocol}//) - the pins this registration adopts cannot be fetched over a channel the network can rewrite` +
     (u.protocol === "http:"
       ? `. Plain http is accepted only for a loopback LITERAL (127.0.0.1, ::1), where nothing leaves this machine - "${u.hostname}" is a name, and a hosts entry or a poisoned lookup could point it anywhere, so use the literal`
       : "")
@@ -141,15 +147,26 @@ export async function pinnedFetchProbe(target: string): Promise<{ refused: boole
   }
 }
 
-/** One hop, no downgrade, no redirect-following. */
+/**
+ * One hop, no downgrade, no redirect-following: a fetch that CANNOT be walked off HTTPS.
+ *
+ * `fetch` follows redirects by default and will happily follow `https://` → `http://`, so a
+ * 302 from anyone on the path turns a pinned, encrypted fetch into a plaintext one — and the
+ * document being fetched IS the trust being adopted. `redirect: "manual"` stops the hop here;
+ * a redirect is then reported as the refusal it is, rather than silently followed.
+ *
+ * Loopback `http://` stays usable for tests and for an exchange on this machine (nothing leaves
+ * the box), which is also what keeps the suites honest without a TLS fixture. Everything else
+ * must be `https:`.
+ */
 export async function pinnedFetch(target: string, what: string): Promise<Response> {
   const u = new URL(target);
   const bad = assertPinnedFetchUrl(u, what);
-  if (bad) throw new Error(bad);
+  if (bad) throw new PinnedFetchRefused(bad);
   const res = await fetch(u, { redirect: "manual", signal: AbortSignal.timeout(EXCHANGE_PROBE_TIMEOUT_MS) });
   if (res.status >= 300 && res.status < 400)
-    throw new Error(
-      `✗ ${what} answered ${res.status} (a redirect to ${JSON.stringify(res.headers.get("location") ?? "")}) - a redirect can move a pinned fetch onto plaintext or onto another host, so it is refused rather than followed; publish the document at the pinned URL itself`,
+    throw new PinnedFetchRefused(
+      `${what} answered ${res.status} (a redirect to ${JSON.stringify(res.headers.get("location") ?? "")}) - a redirect can move a pinned fetch onto plaintext or onto another host, so it is refused rather than followed; publish the document at the pinned URL itself`,
     );
   return res;
 }
@@ -202,12 +219,7 @@ export async function refreshRegistrationPolicy(target: { space: string; policy?
   } catch {
     throw new Error(`manual registration for "${entry.space}" has an invalid pinned exchange URL`);
   }
-  let response: Response;
-  try {
-    response = await pinnedFetch(base.toString(), `manual registration "${entry.space}" policy refresh at ${entry.userAuth.endpoints.url}`);
-  } catch (error) {
-    throw new Error((error as Error).message.replace(/^✗ /, ""));
-  }
+  const response = await pinnedFetch(base.toString(), `manual registration "${entry.space}" policy refresh at ${entry.userAuth.endpoints.url}`);
   if (!response.ok)
     throw new Error(`manual registration "${entry.space}" policy refresh at ${entry.userAuth.endpoints.url} answered HTTP ${response.status}`);
   const checked = await checkDiscoveryDocument(response);

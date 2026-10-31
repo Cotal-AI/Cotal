@@ -11,142 +11,134 @@ The connector does not include a pi runtime.
 
 ## Host integration
 
-This release targets `@earendil-works/pi-coding-agent@0.79.10`.
-Cotal requires Node 22 or later; that pi host requires Node 22.19 or later.
-The installed `pi` binary is required for managed spawning.
+One standalone artifact supports three Pi-hosted surfaces:
 
-The standalone extension supports managed spawning, interactive pi extension discovery, and SDK hosts using pi's default resource loader.
-The copied artifact has no repository-local or sibling-file imports.
-SDK hosts must bind extension lifecycle events if Cotal is expected to drive an idle session proactively.
-The extension requires pi's custom-message lifecycle API and refuses an incompatible host.
+1. `cotal spawn --harness pi --detach` launches the installed `pi` binary in the manager's PTY. `--prompt` is
+   delivered as Pi's initial message (its first turn); a prompt that is empty or starts with `-` or
+   `@` refuses the launch, since Pi would read it as an option or a file reference.
+2. Interactive Pi discovers a copied `~/.pi/agent/extensions/cotal.js`.
+3. Pi SDK applications using the default resource loader discover that same copy. SDK applications
+   must bind Pi's extension lifecycle when they expect an idle session to be driven proactively.
 
-Without a Cotal mesh identity, the extension is inactive.
-`COTAL_HOME` or `COTAL_DEFAULT_AGENT` alone does not activate it.
-A partial managed control endpoint is refused.
-Cooperative stop uses connector-core's authenticated control server and the active pi context's `shutdown()`.
+This release pins Pi `0.79.10`. The Cotal package requires Node 22.10; the separately
+installed Pi host requires Node 22.19 or newer.
 
-Peer traffic uses custom messages with `triggerTurn: true` and `deliverAs: "steer"`.
-That path can steer a streaming turn and avoids an idle-to-streaming race during dispatch.
-The structured batch details remain attached to the custom message.
-Human `input` transformations are bypassed because the message is peer context.
-Provider, tool, permission, and sandbox hooks remain active.
-A text response in pi is not automatically a peer reply.
-Peer replies are explicit `cotal_dm`, `cotal_send`, or `cotal_anycast` calls.
+### Project trust
+
+A managed seat cannot ask a user to answer Pi's **Trust project folder?** prompt. The connector
+therefore reads Pi's saved trust decision for the launch directory. A saved approval keeps project
+resources enabled, and a saved denial remains denied and prints that project resources were skipped.
+With project resources but no saved decision, the seat chooses untrusted for that run only. Pi
+skips the directory's `.pi` resources and any ancestor `.agents/skills`; Cotal does not write Pi's
+trust store or approve project code.
+
+The seat prints `[cotal-pi/trust] Project resources in <directory> were skipped...` and tells the
+operator to run `pi` once in that directory in a foreground terminal to review and save trust. A
+foreground `cotal spawn` keeps Pi's native interactive choice. If Pi still stops at that native
+prompt before its session starts, the launch failure names **Trust project folder?** and the
+directory instead of reporting only a missing session-state file.
 
 ## Delivery confirmation
 
-Delivery uses separate observations of one batch:
+The adapter sends peer traffic as Pi custom messages with `triggerTurn: true` and
+`deliverAs: "steer"`. This removes an idle/streaming race while preserving structured batch details.
+Reliability uses three distinct points:
 
-1. A matching custom `message_start` proves pi dequeued the batch locally.
-2. A provider `context` containing the same batch proves it entered that request.
-3. A successful `after_provider_response` confirms provider acceptance when the transport exposes that hook.
+1. The matching custom `message_start` proves Pi dequeued the batch locally.
+2. A `context` event containing that exact batch proves it entered one provider request.
+3. A successful `after_provider_response` proves acceptance early when the transport exposes an HTTP
+   response. Some transports, including the Codex subscription, omit that hook; their following clean
+   terminal assistant boundary proves acceptance for the exact context instead.
 
-Some transports, including the Codex subscription, omit `after_provider_response`.
-For those transports, a clean terminal assistant boundary following the matching context confirms acceptance.
-Local dequeue alone does not acknowledge the message.
+Only provider-confirmed IDs become eligible for acknowledgement, and only at a terminal agent
+boundary. The Pi-local ledger commits those IDs through `MeshAgent.drainInboxIds()`, which removes
+only exact matches even when quiet ambient is physically interleaved or older IDs were overflow-
+evicted. Missing confirmed IDs are marked handled and tombstoned so late copies cannot resurface.
 
-Only provider-confirmed IDs can be acknowledged, and acknowledgement waits for a terminal agent boundary.
-The pi-local ledger commits those IDs through `MeshAgent.drainInboxIds()`.
-It removes exact IDs even when older quiet traffic is interleaved or some IDs were already evicted by inbox overflow.
-Missing confirmed IDs are marked handled and tombstoned so later copies do not reappear.
-A crash or quit before the terminal boundary leaves durable traffic available for redelivery.
+A run turn rides the batch that carries it and counts as shown once the provider takes that batch's
+request: at a successful `after_provider_response`, or, on a transport without that hook, when Pi
+runs a tool from the answer or reaches the clean terminal boundary. The seat can therefore
+`cotal_yield` it during the Pi turn that carries it. A batch the provider never takes leaves the run
+turn unshown, and a later batch carries it again.
 
-Quiet ambient never enters automatic or continuation batches.
-Quiet mentions remain automatic.
-`cotal_inbox` explicitly returns and clears quiet ambient while the driver owns automatic traffic.
-Focus recall displayed alongside the inbox is read-only.
+Pi emits `agent_end` to extensions without exposing whether it will retry. Error and unknown
+reasons, and zero/missing-output `length`, therefore retain the delivery association in `waiting`
+while the driver itself attempts the continuation: it re-dispatches the retained batch through the
+same send path, with a fixed 50 ms backoff and at most two attempts, and each attempt's `agent_start`
+proves continuation the same way an externally-triggered one does. A clean terminal boundary on any
+attempt commits the retained work as usual. Once the attempts are spent, the driver holds with a
+presence that names the state as needing intervention, states the attempt count, and says what the
+intervention is: start a new turn in the session, or replace the seat. User abort never retries; it
+is identified from the `AbortSignal` captured while the turn is active and stays a plain hold, since
+the person who aborted is the party who continues. Non-aborted `stop`, `toolUse`, and positive-output
+`length` are locally provable terminal boundaries and may commit confirmed work.
 
-### Run turns
+`session_before_compact { reason: "overflow", willRetry: true }` identifies the overflow path but is
+not itself a terminal decision. An abort or dispatch watchdog blocks automatic replay. In managed
+headless use, restart is the safe recovery because it terminates any possibly-live provider call
+before durable redelivery.
 
-A run turn is carried by its inbox batch.
-It becomes shown when the provider takes that request.
-`after_provider_response` proves this on transports that expose it.
-Without that hook, a tool execution from the answer or a clean terminal boundary proves it for the matching context.
-The seat can then call `cotal_yield` during the same pi turn.
-A batch the provider never accepts leaves the run turn unshown for later delivery.
+`reload`, `new`, `resume`, and `fork` tear down Pi's extension runtime. The adapter keeps its mesh,
+control listener, delivery association, and ordered presence chain in a process-global identity map,
+then binds the replacement runtime on its next `session_start`. It also atomically records the new
+Pi session id. Only `session_shutdown { reason: "quit" }` stops the mesh.
 
-### Continuation rules
+For managed PTY seats, `cotal spawn --harness pi --detach --resume <pi-session-id>` forks that transcript into
+a new meshed Pi session (`pi --fork`; the source is untouched). After readiness, the manager binds
+the exact current Pi session through the token-authenticated local control socket. An unexpected Pi
+process exit reopens that session with the same Cotal identity, lifecycle UID, credentials and durable
+inbox. Three restarts are allowed in a rolling two-minute window; a fourth is a crash loop and retires
+the seat loud. A deliberate stop/despawn/maintenance cut never restarts it.
 
-Pi's `agent_end` does not state whether another attempt will follow.
-The driver uses the active `AbortSignal`, the last assistant stop reason, and output count to decide whether work is terminal.
-
-| Stop outcome | Delivery behavior |
-| --- | --- |
-| Non-aborted `stop` or `toolUse` | Confirmed IDs can commit. |
-| Non-aborted `length` with positive output | Confirmed IDs can commit. |
-| Error, unknown reason, or `length` without positive output | The association is retained and automatic continuation is bounded. |
-| User abort | The association is retained without automatic retry. |
-
-A nonterminal outcome with pending delivery starts at most two automatic continuation attempts, separated by a fixed 50 ms backoff.
-Each attempt re-dispatches the retained batch through the same send path.
-Its `agent_start` and subsequent provider evidence must prove the continuation.
-A clean terminal boundary commits confirmed work.
-After the attempts are exhausted, presence names the need for intervention and the attempt count.
-The remedies are a new turn in that session or replacement of the seat.
-The person who aborted a turn controls its continuation, so abort remains a plain hold.
-
-`session_before_compact` with `reason: "overflow"` and `willRetry: true` identifies overflow but does not itself prove a terminal outcome.
-An abort or dispatch watchdog blocks automatic replay.
-In managed headless use, restart ends a possibly live provider call before durable redelivery.
-
-## Session lifecycle
-
-`reload`, `new`, `resume`, and `fork` tear down the extension runtime.
-A process-global map retains the mesh connection, control listener, delivery association, and ordered presence updates for the same identity.
-The next `session_start` binds the replacement runtime and atomically records the new pi session ID.
-Only `session_shutdown` with reason `quit` stops the mesh.
-
-### Managed recovery
-
-`--resume <id>` uses `pi --fork <id>` to create a new meshed session without changing the source transcript.
-A fresh managed seat receives a session UUID before its first turn, so an idle seat still has a recoverable identity.
-After readiness, the manager obtains the current native session ID through the token-authenticated control socket.
-
-An unexpected managed pi process exit reopens that session with the same Cotal identity, lifecycle UID, credentials, and durable inbox.
-Three restarts are allowed in a rolling two-minute window.
-A fourth crash retires the seat as a crash loop.
-Deliberate stop, despawn, or maintenance does not trigger restart.
-
-A manifest with `continuity: exact` uses `pi --session <id>`.
-A missing session is refused rather than replaced by an empty transcript with the same ID.
-Forking, same-session continuation, and reopening are mutually exclusive launch requests.
+A manifest agent declared `continuity: exact` is reopened with `pi --session <id>`, which
+fails when Pi no longer has that session instead of creating an empty one under the same id.
 
 ## Event plane
 
-Managed pi publishes AG-UI events on `events.<owner>.<actor>` using pi's native session ID as the thread ID.
-The durable source is the native session JSONL file.
-Extension hooks wake the reader after persistence; they are not the event record.
+A managed Pi seat publishes AG-UI runs, completed assistant text messages, and tool start/end
+boundaries to `events.<owner>.<actor>`. The thread id is Pi's native session id. Pi's native
+session JSONL is the durable source; extension hooks only wake the reader after persistence.
+The event plane is enabled by default. `--no-events` opts out only on unrestricted spaces.
+A registration that requires events arms the plane independently of the environment flag, and
+the seat must hold the channel's publish grant. An event-enabled launch needs a stable
+workspace root for its write-ahead log. If the event plane stops, the seat keeps running on every
+space, and Pi's log records `AG-UI emitter stopped` with the reason and the delay before the
+extension re-establishes the plane. The re-establish is a fresh start of the same session: it
+settles any frame the outage left pending and rebuilds the mapper from the run and tool calls
+that frame opened, so a tool result written after the outage closes the call the plane came back
+with.
 
-Published records include runs, completed assistant text, and tool start and end boundaries.
-Live text deltas cannot be recovered after a crash and are not published.
-Tool arguments and results, reasoning, usage, branch records, and compaction records are excluded.
-User text is excluded because native user records cannot distinguish human-authored text from peer-authored context.
-
-Events are enabled by default.
-`--no-events` can disable them only on an unrestricted space.
-An event-required registration arms the plane independently of an ambient flag.
-The seat still needs the channel's publish grant and a stable workspace root for its write-ahead log.
-
-A stopped emitter leaves the seat running on every space.
-The pi log records `AG-UI emitter stopped` with the reason and re-establishment delay.
-Re-establishment starts the same session from its durable event state.
-It settles any pending frame and restores the run and tool calls opened by that frame, so a later persisted result can close its tool call.
-
-Reload keeps the same native session and event frontier.
-A new, resumed, or forked session gets its own thread and log on the same principal channel.
-Existing transcript history is excluded when a newly adopted session starts publishing.
-An acknowledged event cursor takes precedence during process restart.
+Text is published at **completed-message granularity**, not as live token deltas. Pi emits
+live text updates before writing the assistant record, so those deltas cannot be recovered
+after a crash. Tool arguments and results, reasoning, usage, branch and compaction entries
+are not published. User text is never published: Pi's native user record cannot separate
+peer-authored content from human-authored content. A reload keeps the same native session
+and event frontier. A new, resumed or forked session gets its own thread and log on the same
+principal channel.
 
 ## Launch restrictions
 
-Model variants, MCP tool sharing, and arbitrary launch options are not implemented and are refused.
-Persona text is passed through a private file as pi's appended system prompt.
-`--model` overrides the persona model and is passed to pi unchanged.
-Provider variables come from the connector's declared keys plus the explicit `spawn.env` allowance.
-The connector does not pass the whole shell environment.
+- With no mesh identity the extension is inert, even if `COTAL_HOME` or `COTAL_DEFAULT_AGENT` exists.
+- A partial managed control endpoint fails loudly; cooperative stop uses connector-core's existing
+  authenticated control server and Pi's active `ctx.shutdown()`.
+- Peer traffic bypasses Pi's human `input` transformations, but provider, tool, permission, and
+  sandbox hooks remain on the normal agent path.
+- `cotal_inbox` destructively pulls quiet ambient while the driver retains ownership of automatic
+  traffic; normal focus recall shown alongside it remains read-only.
+- Pi model variants, MCP sharing, and raw launch options fail loudly until implemented.
 
-An initial prompt is pi's final positional argument after every option.
-An empty prompt or a prompt beginning with `-` or `@` is refused before persona material is written.
-Those prefixes would be parsed as a flag or a file reference.
-Cotal credentials and the control token are carried in private launch material.
-The extension removes the material pointer after reading it, so shell commands do not accidentally inherit that pointer.
+### Run turns
+
+See [Host integration](#host-integration) for the current connector contract.
+
+### Continuation rules
+
+See [Host integration](#host-integration) for the current connector contract.
+
+### Session lifecycle
+
+See [Host integration](#host-integration) for the current connector contract.
+
+### Managed recovery
+
+See [Host integration](#host-integration) for the current connector contract.

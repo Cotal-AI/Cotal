@@ -10,11 +10,17 @@
  *    on that sweep and on every later one; a pre-origin record is `up` and is kept the same way.
  *    (REVERSAL of the previous origin split: redness of "sweep prunes a dead mesh this machine
  *    started" / "absent origin = `up`" is expected and intended.)
- *  • `add` verifies against the real broker before recording, and records nothing when that fails;
+ *  • `add` verifies against the real broker before recording, and records nothing when that fails,
+ *    over TLS too: a host name whose broker requires TLS registers through the handshake, and the
+ *    guided form on a terminal names a certificate this machine does not trust as that;
  *  • `--force` is the explicit record-without-verifying / replace escape;
- *  • `rm` drops records, releases the `current` pointer, and refuses a mesh running here.
+ *  • `add` refuses a space name `space create` refuses, and `rm` still removes one an earlier
+ *    release registered;
+ *  • `rm` drops records, releases the `current` pointer, and refuses a mesh running here, saying
+ *    that on its pidfile root `cotal down` drops the record.
  *
- * Needs `nats-server` on PATH (as the rest of smoke:ci does) for the live-broker probes.
+ * Needs `nats-server` on PATH (as the rest of smoke:ci does) for the live-broker probes, and
+ * `openssl` for the test certificates.
  *
  * KNOWN LIMIT: the live broker here is open and JetStream-less, so the AUTH admission path is
  * covered only by its refusals (a broker that enforces nothing, a root whose trust does not
@@ -25,10 +31,11 @@
 import { strict as assert } from "node:assert";
 import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { createServer } from "node:net";
+import { connect as netConnect, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { SMOKE_BROKER_TOKEN, freePort, listenOn, onFreePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { clean, cotalPty, screen } from "./_console-pty.js";
 
 // Sandbox the machine-home BEFORE anything reads the registry — homeCotalDir() reads COTAL_HOME per
 // call, so the real ~/.cotal is never touched.
@@ -40,7 +47,7 @@ process.env.COTAL_HOME = home;
 // exactly as the real binary does, or the check silently has nothing to look at.
 await import("../src/index.js");
 const { createSpaceAuth, isReachable, registry } = await import("@cotal-ai/core");
-const { acquireMaintenanceLock, authDir, beginMaintenanceCut, findMesh, getCurrent, loadMeshes, loadSpaceAuth, pruneMesh, pruneStaleMeshes, recordMesh, releaseMaintenanceLock, removeMesh, saveSpaceAuth, setCurrent, writeMaintenanceResumeDocument } = await import("@cotal-ai/workspace");
+const { acquireMaintenanceLock, authDir, beginMaintenanceCut, findMesh, getCurrent, isCommandFailure, loadMeshes, loadSpaceAuth, pruneMesh, pruneStaleMeshes, recordMesh, recordPreparedSpace, releaseMaintenanceLock, removeMesh, removePreparedSpace, resolveNativeServiceTarget, saveSpaceAuth, setCurrent, writeMaintenanceResumeDocument } = await import("@cotal-ai/workspace");
 const { meshes, meshesComplete } = await import("../src/commands/meshes.js");
 
 let pass = 0;
@@ -84,7 +91,11 @@ async function run(positionals: string[], values: Record<string, string | boolea
   try {
     await meshes({ positionals, values, raw: [] });
   } catch (e) {
-    if (!(e instanceof ExitSignal)) throw e;
+    // A typed refusal is what the binary prints with exit 2: its message, then its remedy.
+    if (isCommandFailure(e)) {
+      code = 2;
+      lines.push(e.message, e.remedy ?? "");
+    } else if (!(e instanceof ExitSignal)) throw e;
   } finally {
     console.log = log;
     console.error = err;
@@ -93,6 +104,37 @@ async function run(positionals: string[], values: Record<string, string | boolea
   return { out: lines.join("\n"), code };
 }
 class ExitSignal extends Error {}
+
+/** The runner's environment for a child that trusts `ca` from startup (Node reads
+ *  NODE_EXTRA_CA_CERTS only then), without session credentials or instrument knobs. */
+function trustingChildEnv(ca: string): NodeJS.ProcessEnv {
+  // NO SESSION CREDENTIALS AND NO INSTRUMENT KNOBS IN ANY CHILD.
+  //
+  // Spreading the runner's whole environment handed a child a live managed session's credential and
+  // broker URL, and no child here needs any of it: the downgrade fixture inlines its key, cert and
+  // redirect target into its source, and a registration child is handed its sandbox home explicitly.
+  // Not "reviewed safe" — that would claim inheritance was measured harmless; these children simply
+  // have no business holding connection material.
+  //
+  // The named knobs go too, and NODE_TLS_REJECT_UNAUTHORIZED is the one that matters: an ambient
+  // `0` would switch off exactly the certificate verification these children exercise, and a cell
+  // would then pass for a reason that has nothing to do with the policy under test.
+  // A deny-list rather than a whitelist on purpose — a whitelist breaks the child the first time it
+  // legitimately needs a new variable, and the repair for that is always to widen it back to
+  // everything.
+  const DENIED_KNOBS = /^(NODE_OPTIONS|NODE_TLS_REJECT_UNAUTHORIZED|SSL_CERT_FILE|SSL_CERT_DIR|(HTTP|HTTPS|ALL|NO)_PROXY)$/i;
+  const childEnv: NodeJS.ProcessEnv = { NODE_EXTRA_CA_CERTS: ca };
+  for (const [k, v] of Object.entries(process.env)) {
+    // The `startsWith("COTAL_")` test is written out rather than folded into DENIED_KNOBS because
+    // the census matches that exact spelling (`suite-ambient-env.smoke.ts:52`). Folding it into one
+    // regex is a STRICTER filter that the census reads as NO filter at all — measured: the combined
+    // form failed the census naming this file. One more way that instrument grades a spelling
+    // rather than the property, noted here because the next person to tidy this loop will hit it.
+    if (k.startsWith("COTAL_") || DENIED_KNOBS.test(k)) continue;
+    childEnv[k] ??= v;
+  }
+  return childEnv;
+}
 
 /**
  * Run the REAL pinned-fetch policy against an `https://` source whose 302 points at plaintext,
@@ -125,31 +167,7 @@ async function httpsDowngradeFixture(
   ], { stdio: "ignore" });
   if (gen.status !== 0 || !existsSync(cert)) return { ok: false, why: "openssl unavailable" };
 
-  // NO SESSION CREDENTIALS AND NO INSTRUMENT KNOBS IN EITHER CHILD.
-  //
-  // Spreading the runner's whole environment handed a child a live managed session's credential and
-  // broker URL, and neither child needs any of it: the server's key, cert and redirect target are
-  // inlined into its source at write time, and the probe imports one function and fetches one URL.
-  // Not "reviewed safe" — that would claim inheritance was measured harmless; these children simply
-  // have no business holding connection material.
-  //
-  // The named knobs go too, and NODE_TLS_REJECT_UNAUTHORIZED is the one that matters: an ambient
-  // `0` would switch off exactly the certificate verification this fixture exists to exercise, and
-  // the downgrade cell would then pass for a reason that has nothing to do with the redirect policy.
-  // A deny-list rather than a whitelist on purpose — a whitelist breaks the child the first time it
-  // legitimately needs a new variable, and the repair for that is always to widen it back to
-  // everything.
-  const DENIED_KNOBS = /^(NODE_OPTIONS|NODE_TLS_REJECT_UNAUTHORIZED|SSL_CERT_FILE|SSL_CERT_DIR|(HTTP|HTTPS|ALL|NO)_PROXY)$/i;
-  const childEnv: NodeJS.ProcessEnv = { NODE_EXTRA_CA_CERTS: cert };
-  for (const [k, v] of Object.entries(process.env)) {
-    // The `startsWith("COTAL_")` test is written out rather than folded into DENIED_KNOBS because
-    // the census matches that exact spelling (`suite-ambient-env.smoke.ts:52`). Folding it into one
-    // regex is a STRICTER filter that the census reads as NO filter at all — measured: the combined
-    // form failed the census naming this file. One more way that instrument grades a spelling
-    // rather than the property, noted here because the next person to tidy this loop will hit it.
-    if (k.startsWith("COTAL_") || DENIED_KNOBS.test(k)) continue;
-    childEnv[k] ??= v;
-  }
+  const childEnv = trustingChildEnv(cert);
   const serverJs = join(dir, "server.mjs");
   writeFileSync(serverJs, `import { createServer } from "node:https";\nimport { readFileSync } from "node:fs";\nconst s = createServer({ key: readFileSync(${JSON.stringify(key)}), cert: readFileSync(${JSON.stringify(cert)}) }, (_q, res) => { res.statusCode = 302; res.setHeader("location", ${JSON.stringify(`${plaintextTarget}/health`)}); res.end(); });\ns.listen(0, "127.0.0.1", () => console.log(JSON.stringify({ port: s.address().port })));\n`);
   const server = spawn(process.execPath, [serverJs], { stdio: ["ignore", "pipe", "ignore"], env: childEnv });
@@ -232,6 +250,21 @@ try {
     const enforces = await probeEnforcement(AUTH_LIVE);
     assert.equal(enforces, "auth", `the auth broker never came up enforcing (probe said "${enforces}")`);
   }
+  // A reset after an auth greeting is only an inferred auth-required. It read no refusal, so it does
+  // not verify that the broker enforces auth.
+  {
+    const { createServer } = await import("node:net");
+    const srv = createServer((sock) => {
+      sock.on("error", () => { /* the probe tears its own sockets down */ });
+      sock.write('INFO {"server_id":"reset","version":"2.12.12","proto":1,"max_payload":1048576,"auth_required":true}\r\n');
+      sock.once("data", () => sock.resetAndDestroy());
+    });
+    await new Promise<void>((r) => srv.listen(0, "127.0.0.1", r));
+    const { probeEnforcement } = await import("../src/commands/meshes-add.js");
+    const enforces = await probeEnforcement(`nats://127.0.0.1:${(srv.address() as { port: number }).port}`);
+    await new Promise<void>((r) => srv.close(() => r()));
+    check("an auth greeting followed by a reset does not verify enforcement", enforces === "unreachable", enforces);
+  }
   const root = projectRoot("remote");
 
   // ── add: verified registration of a mesh this machine did not start ────────────────────────────
@@ -258,6 +291,36 @@ try {
   check("add refuses a space that is already registered", dup.code === 1 && dup.out.includes("already registered"), dup.out);
   const replaced = await run(["add", "beta"], { server: DEAD, root, force: true });
   check("add --force replaces an existing record", replaced.code === 0 && findMesh("beta")?.server === DEAD, findMesh("beta"));
+  // A registration this machine started is how `cotal down` finds that stack. Replacing it, as
+  // `--force` once did, left a running stack that no command could stop, so `meshes add` refuses it
+  // the way `space add` does, with or without `--force`.
+  const startedHere = { space: "started-here", server: LIVE, root, mode: "open" as const, origin: "up" as const, ts: new Date(0).toISOString() };
+  recordMesh(startedHere);
+  const overStarted = await run(["add", "started-here"], { server: DEAD, root, force: true });
+  check("add --force refuses a space this machine started (exit 2)", overStarted.code === 2 && overStarted.out.includes("a space this machine started, so --force does not replace it"), overStarted.out);
+  check("…naming `space show` as the next step", overStarted.out.includes("cotal space show started-here"), overStarted.out);
+  check("…and the registration is unchanged", findMesh("started-here")?.server === LIVE && findMesh("started-here")?.origin === "up", findMesh("started-here"));
+  const besideStarted = await run(["add", "started-here"], { server: DEAD, root });
+  check("add without --force refuses it without offering --force", besideStarted.code === 2 && besideStarted.out.includes("it is a space this machine started") && !besideStarted.out.includes("--force"), besideStarted.out);
+  // A service whose root or broker disagrees with the registration is refused, and the refusal says
+  // which one disagrees and where to look. It used to name neither and carry no next step.
+  const targetRefusal = (work: () => unknown): Error | undefined => {
+    try { work(); } catch (e) { return e as Error; }
+    return undefined;
+  };
+  const otherBroker = targetRefusal(() => resolveNativeServiceTarget(root, "started-here", DEAD));
+  check("a service broker that disagrees with the registration is refused CONFLICT, naming both addresses",
+    isCommandFailure(otherBroker) && otherBroker.code === "CONFLICT" && otherBroker.message.includes(`"started-here" is registered at ${LIVE}, not ${DEAD}`), otherBroker?.message);
+  check("…with a next step", isCommandFailure(otherBroker) && (otherBroker.remedy ?? "").includes("cotal space show started-here"), isCommandFailure(otherBroker) ? otherBroker.remedy : otherBroker);
+  const otherRoot = projectRoot("other-service-root");
+  const elsewhere = targetRefusal(() => resolveNativeServiceTarget(otherRoot, "started-here"));
+  check("a service root that disagrees with the registration is refused, naming both folders",
+    isCommandFailure(elsewhere) && elsewhere.code === "CONFLICT" && elsewhere.message.includes(`"started-here" is registered for ${root}, not ${otherRoot}`), elsewhere?.message);
+  removeMesh("started-here");
+  recordPreparedSpace({ space: "prepared-here", root, ts: new Date(0).toISOString() });
+  const overPrepared = await run(["add", "prepared-here"], { server: DEAD, root, force: true });
+  check("add --force refuses a space prepared on this machine", overPrepared.code === 2 && overPrepared.out.includes("a space prepared on this machine") && findMesh("prepared-here") === undefined, overPrepared.out);
+  removePreparedSpace("prepared-here");
   const noServer = await run(["add", "nowhere"], { root });
   check("add without --server fails loud", noServer.code === 1 && noServer.out.includes("--server"), noServer.out);
   const authless = await run(["add", "needs-auth"], { server: LIVE, root, mode: "auth" });
@@ -272,6 +335,19 @@ try {
   check("add --mode with a junk value fails loud", badMode.code === 1 && badMode.out.includes("auth, open or user"), badMode.out);
   const badUsage = await run(["add"], { server: LIVE, root });
   check("add without a space name prints usage", badUsage.code === 1 && badUsage.out.includes("usage:"), badUsage.out);
+  // A name that starts with - reads as an option, so `use`, `--space` and the stack's own children could not take it.
+  const dashed = await run(["add", "-x"], { server: DEAD, root, force: true });
+  check("add refuses a space name that starts with -, even with --force, naming the rule, and records nothing",
+    dashed.code === 1 && dashed.out.includes('the space name "-x" starts with "-", so it cannot be passed as a flag value') &&
+      dashed.out.includes("choose a name that starts with a letter, digit or underscore") && findMesh("-x") === undefined, dashed.out);
+  // A name `space create` refuses cannot be registered either. One an earlier release registered is
+  // still removed by rm.
+  const starred = await run(["add", "a*b"], { server: DEAD, root, force: true });
+  check("add refuses a space name space create refuses, even with --force, naming the rule, and records nothing",
+    starred.code === 1 && starred.out.includes("a space name is 1 to 64 letters, digits, underscores or hyphens") && findMesh("a*b") === undefined, starred.out);
+  recordMesh({ space: "a*b", server: DEAD, root, mode: "open", origin: "manual", ts: new Date().toISOString() });
+  const oddRemoved = await run(["rm", "a*b"]);
+  check("  rm still removes a registration an earlier release made under such a name", oddRemoved.code === 0 && findMesh("a*b") === undefined, oddRemoved.out);
 
   // MODE HONESTY. A NATS broker with no auth configured accepts a credential-bearing CONNECT and
   // ignores it, so "the creds were accepted" is not evidence of enforcement. Registering `auth`
@@ -305,6 +381,12 @@ try {
   const creddy = await run(["add", "leaky"], { server: "nats://alice:swordfish@127.0.0.1:1", root });
   check("add refuses a --server with embedded credentials", creddy.code === 1 && findMesh("leaky") === undefined, creddy.out);
   check("…and does not echo the password back", !creddy.out.includes("swordfish"), creddy.out);
+  // One sentence and next step for every broker-URL credential refusal, a value with no scheme included.
+  check("…in the words and next step every broker-URL credential refusal uses",
+    creddy.out.includes("--server must not embed credentials") && creddy.out.includes("name the broker URL without user:password@, and pass the credential with --creds, a login or the space's own trust"), creddy.out);
+  const schemeless = await run(["add", "leaky"], { server: "alice:swordfish@127.0.0.1:1", root });
+  check("a --server with no scheme and a user name is refused the same way, with no part of it echoed",
+    schemeless.code === 1 && schemeless.out.includes("--server must not embed credentials") && !schemeless.out.includes("alice") && !schemeless.out.includes("swordfish") && findMesh("leaky") === undefined, schemeless.out);
   for (const [label, url] of [["a non-broker scheme", "http://127.0.0.1:4222"], ["junk", "not-a-url"]] as const) {
     const bad = await run(["add", "badurl"], { server: url, root });
     check(`add refuses ${label} in --server`, bad.code === 1 && findMesh("badurl") === undefined, bad.out);
@@ -339,6 +421,88 @@ try {
   const cafeTls = await run(["add", "cafe"], { server: "tls://192.168.1.10:4222", root, tls: true, force: true });
   check("RFC1918 stays refused even with TLS intent (a cafe LAN is private too)",
     cafeTls.code === 1 && findMesh("cafe") === undefined, cafeTls.out);
+
+  // The production shape, verified rather than forced: a broker that requires TLS, whose certificate
+  // names only a host name, registered by that name through the probe and the trust check. The CLI
+  // runs in a child that trusts the test CA from startup.
+  {
+    const pki = mkdtempSync(join(tmpdir(), "cotal-tlshost-"));
+    roots.push(pki);
+    const openssl = (...args: string[]) => assert.equal(spawnSync("openssl", args, { stdio: "ignore" }).status, 0, `openssl ${args.join(" ")}`);
+    openssl("req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", join(pki, "ca.key"), "-out", join(pki, "ca.pem"), "-days", "1", "-subj", "/CN=meshes-registry test CA");
+    openssl("req", "-newkey", "rsa:2048", "-nodes", "-keyout", join(pki, "leaf.key"), "-out", join(pki, "leaf.csr"), "-subj", "/CN=localhost");
+    writeFileSync(join(pki, "leaf.ext"), "subjectAltName=DNS:localhost\n");
+    openssl("x509", "-req", "-in", join(pki, "leaf.csr"), "-CA", join(pki, "ca.pem"), "-CAkey", join(pki, "ca.key"), "-CAcreateserial", "-out", join(pki, "leaf.pem"), "-days", "1", "-extfile", join(pki, "leaf.ext"));
+    const tlsPort = await freePort();
+    const tlsBroker = spawn("nats-server", ["-a", "127.0.0.1", "-p", String(tlsPort), "--tls", "--tlscert", join(pki, "leaf.pem"), "--tlskey", join(pki, "leaf.key"), "-sd", mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN))], { stdio: "ignore" });
+    teardownOnSignal(tlsBroker);
+    try {
+      const accepts = () => new Promise<boolean>((done) => { const s = netConnect(tlsPort, "127.0.0.1", () => { s.destroy(); done(true); }); s.on("error", () => done(false)); });
+      for (let i = 0; i < 50 && !(await accepts()); i++) await new Promise((r) => setTimeout(r, 100));
+      const bin = new URL("../../../bin/cotal.ts", import.meta.url).pathname;
+      const env = { ...trustingChildEnv(join(pki, "ca.pem")), COTAL_HOME: home, COTAL_NO_PROMPT: "1", COTAL_SKIP_CONNECTOR_SEED: "1" };
+      const add = (server: string, flags: string[], extra: NodeJS.ProcessEnv = {}) =>
+        spawnSync(process.execPath, ["--import", "tsx", bin, "meshes", "add", "tls-host-live", "--server", server, "--root", root, ...flags], { encoding: "utf8", env: { ...env, ...extra }, timeout: 60_000 });
+      // The trust check runs: without the CA the handshake fails and nothing is recorded.
+      const untrusted = add(`tls://localhost:${tlsPort}`, [], { NODE_EXTRA_CA_CERTS: "" });
+      check("add tls://<host name> without the issuing CA is refused at the handshake",
+        untrusted.status === 1 && untrusted.stderr.includes("could not complete the handshake") && findMesh("tls-host-live") === undefined, untrusted.stdout + untrusted.stderr);
+      const byScheme = add(`tls://localhost:${tlsPort}`, []);
+      check("add tls://<host name> registers a TLS broker through the probe, recording the requirement",
+        byScheme.status === 0 && findMesh("tls-host-live")?.tlsRequired === true, { out: byScheme.stdout + byScheme.stderr, entry: findMesh("tls-host-live") });
+      removeMesh("tls-host-live");
+      const byFlag = add(`nats://localhost:${tlsPort}`, ["--tls"]);
+      check("add nats://<host name> --tls registers the same broker the same way",
+        byFlag.status === 0 && findMesh("tls-host-live")?.tlsRequired === true, { out: byFlag.stdout + byFlag.stderr, entry: findMesh("tls-host-live") });
+      removeMesh("tls-host-live");
+
+      // The guided form on an 80-column terminal. Without the CA the broker still answers, so the
+      // guided form gives the flag form's handshake failure and its NODE_EXTRA_CA_CERTS step, with
+      // Cancel first, instead of the choices for an address where no broker answered. With the CA it
+      // registers. Each run answers its prompts in order and keeps the screen as each was asked.
+      const guided = async (args: string[], ca: string, answers: [prompt: string, keys: string][]) => {
+        const ptyEnv: Record<string, string> = { TERM: "xterm-256color" };
+        for (const [k, v] of Object.entries({ ...env, NODE_EXTRA_CA_CERTS: ca })) if (v !== undefined && k !== "COTAL_NO_PROMPT") ptyEnv[k] = v;
+        const pty = cotalPty(["meshes", "add", ...args, "--root", root], { cwd: root, env: ptyEnv, cols: 80, rows: 60 });
+        let raw = "";
+        let exitCode: number | undefined;
+        pty.onData((d) => { raw += d; });
+        pty.onExit((e) => { exitCode = e.exitCode; });
+        const until = async (done: () => boolean) => {
+          for (const t0 = Date.now(); !done() && exitCode === undefined && Date.now() - t0 < 30_000;) await new Promise((r) => setTimeout(r, 50));
+          return done();
+        };
+        const asked: string[] = [];
+        let from = 0;
+        for (const [prompt, keys] of answers) {
+          if (!(await until(() => clean(raw).includes(prompt, from)))) break;
+          from = clean(raw).indexOf(prompt, from) + prompt.length;
+          asked.push(await screen(raw, 80, 60));
+          pty.write(keys);
+        }
+        if (!(await until(() => exitCode !== undefined))) pty.kill();
+        return { exitCode, asked, raw };
+      };
+      const fits = (shown: string) => shown.split("\n").every((line) => [...line].length <= 80);
+      const untrustedGuided = await guided(["--server", `nats://localhost:${tlsPort}`, "--tls", "--no-color"], "", [["Register it anyway", "\r"]]);
+      // A wrapped line continues under clack's bar, so the text is read with those breaks joined.
+      const trustAsk = (untrustedGuided.asked[0] ?? "").replace(/\n│ {2}/g, " ");
+      check("guided add of a TLS broker whose CA is not trusted gives the handshake failure and NODE_EXTRA_CA_CERTS, fitting 80 columns",
+        trustAsk.includes("could not complete the handshake") && trustAsk.includes("`NODE_EXTRA_CA_CERTS`") && trustAsk.includes("This machine does not trust that broker's certificate.") &&
+          !trustAsk.includes("did not answer") && !trustAsk.includes("No broker answered there") && fits(untrustedGuided.asked[0] ?? ""),
+        untrustedGuided.asked[0]);
+      check("…offers Cancel first, which Enter takes, recording nothing", /● Cancel/.test(trustAsk) && untrustedGuided.exitCode === 0 && !loadMeshes().some((m) => m.server.endsWith(`:${tlsPort}`)),
+        { exitCode: untrustedGuided.exitCode, trustAsk });
+      check("…with no ANSI color under --no-color", !/\x1b\[[0-9;]*m/.test(untrustedGuided.raw), JSON.stringify(untrustedGuided.raw.slice(0, 300)));
+      const trustedGuided = await guided(["tls-guided-live"], join(pki, "ca.pem"), [["Broker URL of the mesh", `tls://localhost:${tlsPort}\r`], ["Register this mesh?", "\r"]]);
+      check("guided add of the same broker with its CA trusted registers it with the TLS requirement",
+        trustedGuided.exitCode === 0 && trustedGuided.asked.length === 2 && findMesh("tls-guided-live")?.tlsRequired === true && fits(trustedGuided.asked[1] ?? ""),
+        { asked: trustedGuided.asked.at(-1), entry: findMesh("tls-guided-live") });
+      removeMesh("tls-guided-live");
+    } finally {
+      tlsBroker.kill("SIGKILL");
+    }
+  }
 
   // ── add: --mode user with SUPPLIED pinned trust ────────────────────────────────────────────────────
   // The old refusal's reasoning — IdP pins must be established, not guessed — is satisfied by
@@ -393,6 +557,16 @@ try {
   const bundlePath = join(root, "bundle.json");
   writeFileSync(bundlePath, JSON.stringify(bundleFor()));
   const hostedRoot = projectRoot("hosted");
+  const dashedPath = join(root, "dashed-bundle.json");
+  writeFileSync(dashedPath, JSON.stringify(bundleFor({ space: "-hosted" })));
+  const dashedUser = await run(["add"], { mode: "user", "user-auth-file": dashedPath, root: hostedRoot });
+  check("a user-auth bundle for a space whose name starts with - is refused, and records nothing",
+    dashedUser.code === 1 && dashedUser.out.includes("cannot be passed as a flag value") && findMesh("-hosted") === undefined, dashedUser.out);
+  const creddyPath = join(root, "creddy-bundle.json");
+  writeFileSync(creddyPath, JSON.stringify(bundleFor({ server: "nats://alice:swordfish@127.0.0.1:1" })));
+  const creddyUser = await run(["add"], { mode: "user", "user-auth-file": creddyPath, root: hostedRoot });
+  check("a bundle whose server carries credentials is refused in the shared words and next step, naming the bundle's server",
+    creddyUser.code === 1 && creddyUser.out.includes("the bundle's server must not embed credentials") && creddyUser.out.includes("name the broker URL without user:password@") && !creddyUser.out.includes("swordfish") && findMesh("hosted") === undefined, creddyUser.out);
 
   // ── REMOTE CONSUMER IS LIVE ───────────────────────────────────────────────────────────────────
   // The remote bearer client consumes the pinned exchange and sentinel carried by this entry, so
@@ -693,7 +867,7 @@ try {
   check("sweep KEEPS a dead mesh this machine started", findMesh("local-dead")?.space === "local-dead", loadMeshes());
   check("sweep KEEPS a dead pre-origin record (absent origin = `up`)", findMesh("legacy-dead")?.space === "legacy-dead", loadMeshes());
   check("sweep KEEPS a dead operator-registered mesh", findMesh("remote-dead")?.space === "remote-dead", loadMeshes());
-  check("sweep reports every dead record as offline", sweep.offline.includes("remote-dead") && sweep.offline.includes("local-dead") && sweep.offline.includes("legacy-dead") && sweep.pruned.length === 0, sweep);
+  check("sweep reports every dead record as offline", sweep.offline.includes("remote-dead") && sweep.offline.includes("local-dead") && sweep.offline.includes("legacy-dead"), sweep);
   const sweep2 = await pruneStaleMeshes();
   check("a second sweep still keeps them (not a one-time reprieve)", findMesh("remote-dead") !== undefined && findMesh("local-dead") !== undefined && sweep2.offline.includes("remote-dead") && sweep2.offline.includes("local-dead"), sweep2);
   // The keep invariant is proven. Drop the local `up` fixtures so later `rm` emptiness
@@ -722,8 +896,8 @@ try {
   // teardown, liveness pruning and a different account must never remove or overwrite them.
   recordMesh({ space: "catalog_one", server: LIVE, root: shared, mode: "user", origin: "catalog", catalogOwner: "acct-a", catalogSlug: "catalog_one", catalogName: "Catalog one", ts: new Date(0).toISOString() });
   recordMesh({ space: "catalog_two", server: LIVE, root: shared, mode: "user", origin: "catalog", catalogOwner: "acct-b", catalogSlug: "catalog_two", catalogName: "Catalog two", ts: new Date(0).toISOString() });
-  check("a liveness or mismatch prune never removes a discovered entry",
-    pruneMesh("catalog_one", "mismatch") === false && findMesh("catalog_one") !== undefined, findMesh("catalog_one"));
+  check("a mismatch prune never removes a discovered entry",
+    pruneMesh("catalog_one") === false && findMesh("catalog_one") !== undefined, findMesh("catalog_one"));
   check("a root teardown keeps discovered entries", removeMeshesByRoot(shared).length === 0 && findMesh("catalog_one") !== undefined, loadMeshes());
   const { removeCatalogMeshes } = await import("@cotal-ai/workspace");
   check("account cleanup removes only that account's discovered entries",
@@ -781,6 +955,21 @@ try {
   check("a dead account transport error never recommends cotal login",
     localRefresh.err.includes(deadIdp) && localRefresh.err.includes("fetch failed") && !localRefresh.err.includes("cotal login"),
     localRefresh.err);
+  // A failure that continues an outage is warned about once, and a target in that account still refuses.
+  Object.assign(deadResult, { ongoing: true });
+  const quietRefresh = await capture(() => prepareCatalogCommand({ positionals: [], values: {}, raw: [] }));
+  check("a failure that continues an outage is not warned about again", !quietRefresh.err.includes(deadIdp), quietRefresh.err);
+  recordMesh({
+    space: "dead-selected", server: DEAD, root: shared, mode: "user", origin: "catalog", catalogOwner: "dead-owner",
+    userAuth: { provider: "cotal", idp: { url: deadIdp, issuer: "https://dead.example", audience: "catalog" }, remote: true, sentinelCredsPath: join(shared, "sentinel.creds") },
+    ts: new Date(0).toISOString(),
+  });
+  let deadTargetError: Error | undefined;
+  await prepareCatalogCommand({ positionals: [], values: { space: "dead-selected" }, raw: [] }).catch((e: Error) => void (deadTargetError = e));
+  check("a target in that account still refuses while its outage continues",
+    deadTargetError?.name === "CatalogPreparationError" && deadTargetError.message.includes(deadIdp), deadTargetError?.message);
+  removeMesh("dead-selected");
+  delete (deadResult as { ongoing?: boolean }).ongoing;
 
   recordMesh({
     space: "catalog-selected", server: catalogServer, root: shared, mode: "user", origin: "catalog", catalogOwner: "live-owner",
@@ -798,14 +987,16 @@ try {
   catalogCalls.length = 0;
   process.exitCode = undefined;
   await prepareCatalogCommand({ positionals: [], values: {}, raw: [] }, true);
-  // The default report names a failed account under Brokers; `--verbose` lists every account. A
-  // terminal-width wrap or a color code is not a different line.
+  // The default report names a failed account under Spaces, by the ACCOUNT whose catalog failed
+  // rather than by its token URL; `--verbose` lists every account with its IdP. A terminal-width
+  // wrap or a color code is not a different line.
   const flat = (text: string) => text.replace(/\x1b\[[0-9;]*m/g, "").replace(/\s+/g, " ");
   const diagnostic = await capture(() => status({ positionals: [], values: {}, raw: [] }));
   const detailed = await capture(() => status({ positionals: [], values: { verbose: true }, raw: [] }));
   check("status lists every catalog account including a dead sibling and exits zero",
     catalogCalls.length === 1 && catalogCalls[0] === undefined &&
-      flat(diagnostic.out).includes(flat(`Space catalog for ${deadIdp}: ${deadResult.error}`)) &&
+      flat(diagnostic.out).includes(flat(`Space catalog for dead-owner could not be refreshed: ${deadResult.error}`)) &&
+      !flat(diagnostic.out).includes(flat(`Space catalog for ${deadIdp}`)) &&
       flat(detailed.out).includes(flat(`${liveIdp}  not-modified`)) && flat(detailed.out).includes(flat(`${deadIdp}  failed: ${deadResult.error}`)) &&
       (process.exitCode === undefined || process.exitCode === 0),
     { catalogCalls, out: diagnostic.out, verbose: detailed.out, exitCode: process.exitCode });
@@ -863,7 +1054,6 @@ try {
   // unreachable is not proof that mesh is gone, and the reclaim happens BEFORE the broker starts,
   // so an `up` that then fails would leave the operator with neither mesh and no way back.
   const { claimSpace } = await import("../src/commands/up.js");
-  const { isCommandFailure } = await import("@cotal-ai/workspace");
   // Every claim refusal is typed as refused with its own code and remedy, which is what lets both
   // `up` routes show the reason and the next step with exit 2.
   const claimRefused = (e: Error | undefined, code: string) => isCommandFailure(e) && e.outcome === "refused" && e.code === code;
@@ -910,7 +1100,7 @@ try {
   let busyError: Error | undefined;
   await claimSpace("claimed-busy", DEAD, localRoot).catch((e: Error) => void (busyError = e));
   check("a live holder at another root is refused as in use, naming `cotal down`",
-    claimRefused(busyError, "CONFLICT") && busyError?.message.includes(`already in use by a mesh at ${LIVE}`) === true && remedyOf(busyError).includes("`cotal down` it first") && JSON.stringify(findMesh("claimed-busy")) === busyBefore,
+    claimRefused(busyError, "CONFLICT") && busyError?.message.includes(`already in use by a mesh at ${LIVE}`) === true && remedyOf(busyError).includes("cotal up --space <name>") && remedyOf(busyError).includes(`\`cotal down\` in ${root}`) && JSON.stringify(findMesh("claimed-busy")) === busyBefore,
     claimText(busyError));
   removeMesh("claimed-busy");
   recordMesh({ space: "reclaimable", server: DEAD, root: localRoot, mode: "open", origin: "up", ts: new Date(0).toISOString() });
@@ -1035,6 +1225,13 @@ try {
   check("list shows the offline registered mesh", listed.out.includes("remote-dead") && listed.out.includes("offline"), listed.out);
   check("list tags it as registered", listed.out.includes("registered"), listed.out);
   check("`meshes list` is the same as bare `meshes`", (await run(["list"])).out === listed.out);
+  // The table ran past a narrow terminal; it now gets one labeled record per mesh, as other tables do.
+  setCurrent("remote-dead");
+  const { isTTY, columns } = process.stdout;
+  Object.assign(process.stdout, { isTTY: true, columns: 60 });
+  const narrow = (await run([]).finally(() => Object.assign(process.stdout, { isTTY, columns }))).out.replace(/\x1b\[[0-9;]*m/g, "");
+  check("a narrow terminal lists each mesh as a labeled record, the default marked after its name",
+    /^space: +remote-dead \(default\)$/m.test(narrow) && /^notes: +registered (·|-) offline$/m.test(narrow) && !/^SPACE /m.test(narrow), narrow);
 
   // ── rm ────────────────────────────────────────────────────────────────────────────────────────
   setCurrent("remote-dead");
@@ -1091,18 +1288,25 @@ try {
     watched.code === 0 && findMesh("watched") === undefined, watched.out);
   watcher.kill("SIGKILL");
 
-  const dropped = await run(["rm", "live-local"], { force: true });
-  check("rm --force drops a running mesh's record", dropped.code === 0 && findMesh("live-local") === undefined, loadMeshes());
-  // …and --force must not be defeated by the guard it is meant to skip. The ownership probe reads
-  // the root's local process state; on a root it cannot make sense of, that probe throws, and
-  // running it anyway would make the documented override unusable exactly when it is needed.
+  // `--force` does not drop it either: `cotal down` finds the mesh by this record, and dropping it
+  // once left a running stack that no command could stop.
+  const forcedLive = await run(["rm", "live-local"], { force: true });
+  check("rm --force refuses a mesh this machine is running, keeping its record", forcedLive.code === 1 && findMesh("live-local") !== undefined, forcedLive.out);
+  check("…pointing at `cotal down` and saying why --force does not drop it",
+    forcedLive.out.includes("`cotal down` there stops it") && forcedLive.out.includes("--force does not drop it while the mesh runs"), forcedLive.out);
+  check("…and, on this pidfile root, that its down drops the record", forcedLive.out.includes("`cotal down` there stops it and drops the record"), forcedLive.out);
+  removeMesh("live-local");
+  // …and --force must not be defeated by a probe that cannot answer. The ownership probe reads
+  // the root's local process state; on a root where that read fails, the probe throws, and the
+  // override is what is left for a record nothing can check.
   const brokenRoot = projectRoot("broken");
-  saveSpaceAuth(authDir(brokenRoot), await createSpaceAuth("tenant-a"));
-  writeFileSync(join(authDir(brokenRoot), "account.deadbeef.json"), "{ not json"); // unreadable tenant
-  writeFileSync(join(brokenRoot, ".cotal", "nats.pid"), String(process.pid), { mode: 0o600 });
+  mkdirSync(join(brokenRoot, ".cotal", "nats.pid")); // a pidfile that cannot be read
   recordMesh({ space: "tenant-a", server: LIVE, root: brokenRoot, mode: "open", origin: "up", ts: new Date(0).toISOString() });
+  const unforcedOnBroken = await run(["rm", "tenant-a"]).then(() => undefined, (e: Error) => e);
+  check("rm without --force does not drop a record whose root cannot be checked",
+    unforcedOnBroken !== undefined && findMesh("tenant-a") !== undefined, String(unforcedOnBroken));
   const forcedOnBroken = await run(["rm", "tenant-a"], { force: true });
-  check("rm --force works on a root whose space cannot be resolved",
+  check("rm --force drops a record whose root cannot be checked",
     forcedOnBroken.code === 0 && findMesh("tenant-a") === undefined, forcedOnBroken.out);
   brokerStandIn.kill("SIGKILL");
 
@@ -1129,7 +1333,7 @@ try {
   // suite can catch that: asserting the rules alone stayed green while `add <already-registered>`
   // silently overwrote a record and "point at a different folder" asked nothing.
   const { addWizard } = await import("../src/commands/meshes-wizard.js");
-  interface Asked { kind: "text" | "select" | "confirm"; message: string; initialValue?: boolean }
+  interface Asked { kind: "text" | "select" | "confirm"; message: string; initialValue?: boolean; options?: unknown[] }
   /** A scripted terminal: answers in order, and records what it was asked. */
   const driver = (answers: unknown[]) => {
     const asked: Asked[] = [];
@@ -1148,7 +1352,7 @@ try {
         log: { info() {}, warn() {}, error() {} },
         spinner: () => ({ start() {}, stop() {} }),
         async text(o: { message: string }) { asked.push({ kind: "text", message: o.message }); return nextAnswer(o.message) as string; },
-        async select<T>(o: { message: string }) { asked.push({ kind: "select", message: o.message }); return nextAnswer(o.message) as T; },
+        async select<T>(o: { message: string; options?: { value: unknown }[] }) { asked.push({ kind: "select", message: o.message, options: o.options?.map((x) => x.value) }); return nextAnswer(o.message) as T; },
         async confirm(o: { message: string; initialValue?: boolean }) { asked.push({ kind: "confirm", message: o.message, initialValue: o.initialValue }); return nextAnswer(o.message) as boolean; },
       },
     };
@@ -1256,7 +1460,23 @@ try {
   const seededOut = await addWizard({ server: LIVE, root, allowUnencryptedOverlay: true } as never, root, seededSafe.io as never);
   check("a pre-seeded acceptance does not attach itself to a loopback registration",
     seededOut === true && findMesh("seeded-safe")?.unencryptedOverlay === undefined, findMesh("seeded-safe"));
+  const newAsk = seededSafe.asked.find((a) => a.kind === "confirm");
+  check("a new record's last question keeps its default", newAsk?.message === "Register this mesh?" && newAsk.initialValue === undefined, seededSafe.asked);
   removeMesh("seeded-safe");
+
+  // `--tls` holds in the guided form as it does in the flag form: the probe requires the handshake,
+  // and a host name passes the address rule and is recorded with the requirement.
+  const tlsPlain = driver(["tls-guided", "cancel"]);
+  const tlsPlainOut = await addWizard({ server: LIVE, root, tls: true }, root, tlsPlain.io as never);
+  check("guided --tls against a plaintext broker fails the check and writes nothing",
+    tlsPlainOut === false && tlsPlain.asked.some((a) => a.message === "The check did not pass. What next?") && findMesh("tls-guided") === undefined, tlsPlain.asked);
+  const tlsHost = driver(["anyway", "tls-host", true]);
+  const tlsHostOut = await addWizard({ server: DEAD.replace("127.0.0.1", "localhost"), root, tls: true }, root, tlsHost.io as never);
+  check("guided --tls registers a host name with the TLS requirement",
+    tlsHostOut === true && findMesh("tls-host")?.tlsRequired === true, { asked: tlsHost.asked, entry: findMesh("tls-host") });
+  check("…where nothing listens, it is offered as no broker there, not as an untrusted certificate",
+    tlsHost.asked[0]?.message === "No broker answered there." && tlsHost.asked[0]?.options?.[0] === "retype", tlsHost.asked);
+  removeMesh("tls-host");
 
   // 1. A name that came in on the command line must still hit the clash gate.
   recordMesh({ space: "taken", server: LIVE, root, mode: "open", origin: "manual", ts: new Date(0).toISOString() });
@@ -1265,7 +1485,27 @@ try {
   check("the wizard asks before replacing a record named on the command line",
     clashOut === false && clash.asked.some((a) => a.kind === "select" && a.message.includes("already registered")), clash.asked);
   check("…and cancelling there writes nothing", findMesh("taken")?.ts === new Date(0).toISOString(), findMesh("taken"));
+  // Pressing Enter must never replace a record: another name is the first choice, and a confirmed
+  // replacement defaults to No.
+  const clashAsk = clash.asked.find((a) => a.kind === "select" && a.message.includes("already registered"));
+  check("…offering another name first, ahead of replacing", clashAsk?.options?.[0] === "rename" && clashAsk.options.includes("replace"), clashAsk);
+  // Taking Replace and passing the checks, the last question is the one Enter must not answer yes.
+  const replaceKept = driver(["replace", false]);
+  const replaceKeptOut = await addWizard({ space: "taken", server: LIVE, root }, root, replaceKept.io as never);
+  const replaceAsk = replaceKept.asked.find((a) => a.kind === "confirm");
+  check("replacing a record asks a default-No question naming it, and No writes nothing",
+    replaceKeptOut === false && replaceAsk?.message === 'Replace the record for "taken"?' && replaceAsk.initialValue === false && findMesh("taken")?.ts === new Date(0).toISOString(), { asked: replaceKept.asked, record: findMesh("taken") });
   removeMesh("taken"); // this block's fixture; later cases assert on an empty registry
+  // A registration this machine started is never offered for replacement, even under --force: it is
+  // how `cotal down` finds that stack.
+  recordMesh({ space: "taken-here", server: LIVE, root, mode: "open", origin: "up", ts: new Date(0).toISOString() });
+  const owned = driver(["cancel"]);
+  const ownedOut = await addWizard({ space: "taken-here", server: LIVE, force: true }, root, owned.io as never);
+  const ownedAsk = owned.asked.find((a) => a.kind === "select" && a.message.includes("a space this machine started, so it is not replaced"));
+  check("the wizard does not offer to replace a space this machine started",
+    ownedOut === false && ownedAsk !== undefined && !ownedAsk.options?.includes("replace") && ownedAsk.options?.includes("rename") === true, owned.asked);
+  check("…and the registration is unchanged", findMesh("taken-here")?.server === LIVE && findMesh("taken-here")?.origin === "up", findMesh("taken-here"));
+  removeMesh("taken-here");
 
   // 2. "Point at a different folder" must ASK for one, not re-infer the folder it just rejected.
   const noTrust = projectRoot("wiz-notrust");

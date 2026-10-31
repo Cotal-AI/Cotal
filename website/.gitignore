@@ -35,3 +35,8 @@ public/api-reference/
 public/llms*.txt
 public/sitemap*.xml
 public/_redirects
+
+public/dashboard.openapi.json
+public/auth.openapi.json
+
+public/api/

@@ -20,6 +20,8 @@ import {
   openPrivateAppend,
   writePrivateRecord,
   type CotalMessage,
+  type MembershipChange,
+  type MembershipSnapshot,
   type ParsedArgs,
 } from "@cotal-ai/core";
 import {
@@ -30,7 +32,8 @@ import {
   parsePid,
   probeLiveness,
   probeWebReadiness,
-  progressSignal,
+  webBoundUrl as boundUrl,
+  readPidfile,
   readWebSession,
   removePidPair,
   userViewAuth,
@@ -346,10 +349,10 @@ export interface ActivitySource {
  * about what a channel is.
  *
  * WHAT IS NOT FILTERED, DELIBERATELY, IN TWO PLACES. The live SSE tap still carries frames, marked
- * rather than dropped: dropping them would delete the only traffic this release taught the surface
- * to draw, and delete it silently. And `/api/channels/<name>/history` still serves an event channel
- * when a caller names one, because that route answers a question about a channel the caller already
- * identified; a filter there would mean the dashboard could render a frame it could never fetch. */
+ * rather than dropped: dropping them would silently delete the live event traffic the surface draws.
+ * And `/api/channels/<name>/history` still serves an event channel when a caller names one, because
+ * that route answers a question about a channel the caller already identified; a filter there would
+ * mean the dashboard could render a frame it could never fetch. */
 export function chatOnly<T extends { channel: string }>(rows: readonly T[]): T[] {
   return rows.filter((row) => !isEventChannel(row.channel));
 }
@@ -853,7 +856,7 @@ export async function web(args: ParsedArgs, lifecycle?: WebServiceLifecycle): Pr
   // both browser renderers can say so honestly without deriving progress from the heartbeat.
   const rosterSnapshot = () => ep.getRoster().map((presence) => ({
     ...presence,
-    progress: presence.status === "working" ? progressSignal(undefined, Date.now()) : undefined,
+    progress: presence.status === "working" ? { kind: "unknown" as const } : undefined,
   }));
 
   const clients = new Set<ServerResponse>();
@@ -877,15 +880,28 @@ export async function web(args: ParsedArgs, lifecycle?: WebServiceLifecycle): Pr
   // feed (no delivery daemon, or provisioned before this feature) simply never emits, and the graph
   // degrades to traffic-only. The admin cred carries the read grant; agents never do.
   let membershipWatch: { stop(): Promise<void> } | undefined;
+  let lastMembership: MembershipSnapshot | undefined;
   const pushMembership = debounce(() => {
-    // A swallowed rejection here left the graph showing its LAST GOOD snapshot indefinitely, which
-    // is worse than the HTTP case: the display was not merely empty, it was stale and confident.
+    // A rejected membership read clears `lastMembership` and broadcasts `MEMBERSHIP_READ_FAILED`;
+    // swallowing it would leave the graph showing its last good snapshot as current.
     void ep.readMembership()
-      .then((m) => broadcast("membership", m))
-      .catch((e) => broadcast(MEMBERSHIP_READ_FAILED, { reason: (e as Error).message }));
+      .then((m) => { lastMembership = m; broadcast("membership", m); })
+      .catch((e) => { lastMembership = undefined; broadcast(MEMBERSHIP_READ_FAILED, { reason: (e as Error).message }); });
   }, 150);
+  // The daemon rewrites the heartbeat key every poll with nothing else changed; re-reading the whole
+  // bucket for it was a full ordered-consumer rescan per heartbeat per dashboard (#4904). The watch
+  // delivers the heartbeat's `asOf`, so only a member change (or a failed last read) costs a read.
+  const onMembership = (change: MembershipChange) => {
+    if (change.type === "replayed") return;
+    if (change.type === "heartbeat" && change.update && lastMembership) {
+      lastMembership = { ...lastMembership, asOf: change.asOf };
+      broadcast("membership", lastMembership);
+      return;
+    }
+    pushMembership();
+  };
   try {
-    membershipWatch = await ep.watchMembership(pushMembership, (e) => broadcast(MEMBERSHIP_READ_FAILED, { reason: e.message }));
+    membershipWatch = await ep.watchMembership(onMembership, (e) => broadcast(MEMBERSHIP_READ_FAILED, { reason: e.message }));
   } catch (e) {
     console.error(c.dim(`• membership feed unavailable - graph shows traffic only (${(e as Error).message})`));
   }
@@ -1148,8 +1164,8 @@ export async function web(args: ParsedArgs, lifecycle?: WebServiceLifecycle): Pr
   const httpServer = createServer((req, res) => {
     void handleRequest(req, res).catch((e: unknown) => {
       const why = e instanceof Error ? e.message : String(e);
-      // A caller error and a server fault are different facts and must not share a status. Before
-      // this split, a malformed query read in the log exactly like the dashboard breaking.
+      // A caller error and a server fault are different facts and must not share a status, so a
+      // malformed query does not read in the log like the dashboard breaking.
       const status = e instanceof PayloadTooLarge ? 413 : e instanceof BadRequest ? 400 : 500;
       const caller = status < 500;
       console.error(c[caller ? "yellow" : "red"](lifecycle ? `native dashboard request ${caller ? "refused" : "failed"}; diagnostic body omitted` : `${caller ? "~" : "!"} ${req.method ?? "GET"} ${requestTargetForLog(req, gate.launchToken)} ${caller ? "refused" : "failed"}: ${why}`));
@@ -1178,19 +1194,15 @@ export async function web(args: ParsedArgs, lifecycle?: WebServiceLifecycle): Pr
         ? { "content-type": "application/json", connection: "close" }
         : { "content-type": "application/json" });
       res.end(JSON.stringify({ error: why }));
-      // NO DRAIN HERE, DELIBERATELY. An earlier version resumed the request after answering, on the
-      // theory that discarding the remainder let more closes be clean and so let more callers read
-      // the 413. Three independent measurements, two of them from other people on another machine,
-      // could not reproduce any effect: the direction did not hold, and a real `fetch` client read
-      // the refusal in every arm with or without it. A line whose only defence is that it is
-      // harmless is not worth carrying, and once the refusal closes the connection there is no
-      // socket being kept for it to be for.
+      // NO DRAIN HERE, DELIBERATELY. Once the refusal closes the connection, no socket is kept for
+      // a drain to return to the pool, and resuming the request after answering does not help a
+      // client read the 413.
       //
       // WHETHER THE UPLOADING PEER READS THE 413 IS BEST EFFORT AND NOT CLAIMED. Cutting a caller
       // off mid-upload leaves unread bytes in its receive buffer, that close goes out as an RST,
       // and an RST makes the peer discard the response it had already buffered. That is the trade
-      // the cap exists to make, and the alternative is the unbounded read this replaces. The
-      // refusal that is never lost is the operator line above, written before the response is.
+      // the cap makes over reading the body to the end. The refusal that is never lost is the
+      // operator line above, written before the response is.
     });
   });
 
@@ -1328,7 +1340,7 @@ async function launchDetachedWeb(
   console.log(c.green(`✓ web dashboard ready at ${url} (pid ${child.pid})`));
   printLaunchLink(session.launchUrl, host, port, "(single-use link)");
   console.log(c.dim(`  log: ${logPath}`));
-  console.log(c.dim("  stop: cotal down web"));
+  console.log(c.dim("  stop: `cotal down web`"));
   if (!noOpen) openBrowser(session.launchUrl);
 }
 
@@ -1413,9 +1425,13 @@ export async function waitForDetachedWeb(
     if (spawnError) throw new Error(`web dashboard failed to start: ${spawnError.message}`);
     if (child.exitCode !== null || child.signalCode !== null || probeLiveness(pid) === "dead")
       throw new Error(`web dashboard exited before becoming ready (pid ${pid})`);
-    if (pidFileOwned(opts.pidPath, pid)) {
+    // Absent is "not claimed yet". A file that exists and cannot be read is not: treating that as
+    // absent waits out the whole window and then reports a timeout with no probe, over a dashboard
+    // that is up. `readPidfile` throws that error, naming the path.
+    const recorded = readPidfile(opts.pidPath);
+    if (recorded === String(pid)) {
       // The child writes its readiness nonce only after `listen()` succeeded, so an absent, empty or
-      // partial file simply means "not up yet" and the loop keeps waiting — exactly as it did
+      // partial file simply means "not up yet" and the loop keeps waiting, exactly as it did
       // before this surface required authentication. The probe is otherwise unchanged: a squatter on
       // the port still answers with its own space/pid and still fails the match below.
       const session = readWebSession(opts.sessionPath);
@@ -1456,11 +1472,6 @@ export async function terminateDetachedWeb(child: ChildProcess, pidPath: string)
     }
   }
   removePidPair(pidPath, String(pid));
-}
-
-function pidFileOwned(path: string, pid: number): boolean {
-  try { return readFileSync(path, "utf8").trim() === String(pid); }
-  catch { return false; }
 }
 
 async function waitForDeath(child: ChildProcess, pid: number, timeoutMs: number): Promise<boolean> {
@@ -1528,13 +1539,6 @@ function parseWebPort(input: string | undefined): number {
 export function webUrl(host: string, port: number): string {
   if (host === WEB_HOST && port === WEB_PORT) return WEB_URL;
   return boundUrl(host, port);
-}
-
-/** The address the server binds, for a client that does not resolve `cotal.localhost` itself: that
- *  name is a browser convention, and a system resolver such as WSL2's has no answer for it. */
-function boundUrl(host: string, port: number): string {
-  const literal = host.includes(":") ? `[${host}]` : host;
-  return `http://${literal}:${port}/`;
 }
 
 /** On the branded default the link is printed a second time at the bound address, so an operator

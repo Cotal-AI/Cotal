@@ -71,10 +71,8 @@ type UngatedExemption = { reason: string; recheckBy: string };
 // manifest suite does.
 const EXPECTED_EXEMPTIONS = 16;
 const standing = (reason: string): UngatedExemption => ({ reason, recheckBy: "2026-11-30" });
-const untriagedExemption = (reason: string): UngatedExemption => ({ reason, recheckBy: "2026-09-30" });
-/** The BROKEN class carried `untriagedExemption`, which says nobody has looked. Someone had: each
- *  backup entry below names its issue, its commit, and the assertion that failed. What they need is a
- *  fuse tied to the issue rather than a marker that misreports the state of the record. Premise
+/** Each BROKEN backup entry below names its issue, commit and failed assertion, with a review
+ *  date tied to that investigated debt. Premise
  *  re-verified 2026-10-01: #643 and #1285 are both still OPEN, so every entry's stated cause still
  *  holds and none of them can enter CI while red. Re-dated with that decision, not bumped. These
  *  cannot be discharged by running them here: #1285 is under a standing instruction not to resume,
@@ -116,7 +114,7 @@ const UNGATED: Record<string, UngatedExemption> = {
   // plane3-activation:auth 6/0, plane3-gate:auth 3/0, self-serve-join-coverage:auth 17/0. All ten
   // passed, so all ten were GATED through `bin/smoke/ci-suites.d/` fragments rather than
   // re-explained, which is the exit this gate asks for and the one that takes the count down instead
-  // of resetting its clock. `untriagedExemption` is kept because the next entry will want it.
+  // of resetting its clock.
 };
 
 /**
@@ -180,16 +178,25 @@ const pkg = JSON.parse(packageText) as { scripts: Record<string, string> };
 const GATE_SCRIPTS = new Set(["smoke:ci", "smoke:ci:offline"]);
 const all = new Set(Object.keys(pkg.scripts).filter((k) => (k === "smoke" || k.startsWith("smoke:")) && !GATE_SCRIPTS.has(k)));
 
-/** Suites INVOKED by a script body. Anchored on `pnpm [run] <name>`, because a script is reached by
- *  being invoked, not by being mentioned.
- *
- *  A delimiter-anchored match on the bare word is NOT sufficient and briefly shipped here: every
- *  suite path contains `/smoke/`, so `tsx packages/core/smoke/members.smoke.ts` matched the bare
- *  `smoke` script and marked it reached. The audited set then looked one larger AND one more
- *  reached, and the unreached count did not move — a wrong answer that changed nothing visible.
- *  The pattern written to be careful about boundaries was less careful than the one it replaced. */
+type SmokeInvocation = { script: string; selector?: string };
+const invocationCache = new Map<string, SmokeInvocation[]>();
+
+/** One interpretation for direct and package-filtered pnpm smoke invocations. */
+function smokeInvocations(body: string): SmokeInvocation[] {
+  const cached = invocationCache.get(body);
+  if (cached) return cached;
+  const pattern = /\bpnpm\s+(?:(?:-F|--filter)(?:=|\s+)(?:"([^"]+)"|'([^']+)'|([^\s;&|]+))\s+)?(?:run\s+)?(smoke(?::[A-Za-z0-9:_-]+)?)(?![A-Za-z0-9:_/.-])/g;
+  const invocations = [...body.matchAll(pattern)].map((match) => {
+    const selector = match[1] ?? match[2] ?? match[3];
+    return { script: match[4]!, ...(selector === undefined ? {} : { selector }) };
+  });
+  invocationCache.set(body, invocations);
+  return invocations;
+}
+
+/** Package-local invocations do not make same-named root scripts reachable. */
 function suitesIn(body: string): string[] {
-  return [...body.matchAll(/\bpnpm\s+(?:run\s+)?(smoke(?::[A-Za-z0-9:_-]+)?)(?![A-Za-z0-9:_/.-])/g)].map((m) => m[1]);
+  return smokeInvocations(body).filter((call) => call.selector === undefined).map((call) => call.script);
 }
 
 /** The body to GRADE for a script. `smoke:ci` runs a list file rather than naming its suites inline
@@ -335,20 +342,13 @@ const workspaceManifest = (pkgName: string): Record<string, string> | null => {
 };
 const dangling: Array<[string, string]> = [];
 for (const name of Object.keys(pkg.scripts))
-  for (const segment of bodyOf(name).split("&&")) {
-    const filtered = /(?:^|\s)(?:-F|--filter)\s+(\S+)/.exec(segment);
-    if (filtered) {
-      // `pnpm -F <pkg>... build` selects a dependency closure; only a smoke target needs resolving.
-      const target = suitesIn(segment).find((t) => t !== name);
-      if (!target) continue;                       // a build step, nothing to resolve
-      const pkgName = filtered[1].replace(/\.\.\.$/, "");
+  for (const { script: target, selector } of smokeInvocations(bodyOf(name))) {
+    if (selector !== undefined) {
+      const pkgName = selector.replace(/\.\.\.$/, "");
       const scripts = workspaceManifest(pkgName);
       if (scripts === null) dangling.push([name, `${target} (in unresolvable package ${pkgName})`]);
       else if (!(target in scripts)) dangling.push([name, `${target} (absent from ${pkgName})`]);
-      continue;
-    }
-    for (const target of suitesIn(segment))
-      if (target !== name && !(target in pkg.scripts)) dangling.push([name, target]);
+    } else if (target !== name && !(target in pkg.scripts)) dangling.push([name, target]);
   }
 if (dangling.length) {
   fail++;

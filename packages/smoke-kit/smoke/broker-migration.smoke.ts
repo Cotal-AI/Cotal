@@ -156,6 +156,39 @@ cell("the enumerator detects a newly added untokened spawn site", () => {
   }
 });
 
+cell("root smoke entrypoints remain in scope outside test naming conventions", () => {
+  for (const file of ["packages/core/smoke-auth.ts", "packages/core/smoke.ts"]) {
+    const found = sites.filter((site) => site.file === file);
+    assert.ok(found.length > 0, `${file} must have an enumerated broker`);
+    assert.ok(found.every(inScope), `${file} is a declared smoke, not shipped code`);
+    assert.ok(found.every(isAdopted), `${file} must adopt every broker`);
+  }
+});
+
+cell("a declared entrypoint is in scope but a source path passed as data stays shipped", () => {
+  const scratch = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}entrypoint-selfcheck-`));
+  try {
+    execFileSync("git", ["init", "-q", scratch]);
+    // SMOKE_BROKER_UNADOPTED_OK: inert source text for the negative control below.
+    const source = 'const broker = spawn("nats-server", ["-js", "-sd", "unowned"]);\n';
+    writeFileSync(join(scratch, "odd-entry.ts"), source);
+    writeFileSync(join(scratch, "production.ts"), source);
+    writeFileSync(join(scratch, "package.json"), JSON.stringify({ scripts: {
+      "smoke:odd": 'node --import tsx "./odd-entry.ts" production.ts',
+    } }));
+    execFileSync("git", ["-C", scratch, "add", "-A"]);
+    const found = enumerateSpawnSites(scratch);
+    assert.equal(found.length, 2, "both broker sites are enumerated");
+    const argument = found.find((site) => site.file === "production.ts")!;
+    assert.equal(argument.shipped, true, "a source path argument is not an executed entrypoint");
+    const entry = found.find((site) => site.file === "odd-entry.ts")!;
+    assert.equal(inScope(entry), true, "the manifest names the test even without a test-shaped path");
+    assert.equal(isAdopted(entry), false, "declaring a test does not excuse its untokened broker");
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
 // The token the gate requires must be the one the reaper matches. Two literals that drift apart
 // would leave every suite "migrated" against a prefix nothing reaps.
 cell("the required token is the prefix the reaper matches", async () => {

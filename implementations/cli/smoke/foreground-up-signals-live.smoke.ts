@@ -3,6 +3,10 @@
  * is replaced. POSIX process-group signals model terminal Ctrl-C, unlike CLI-only kill().
  * Ready static stacks are probed through public status/ps. A bounded startup-refusal cell suspends
  * only its pinned manager before natural capability publication and always resumes it for cleanup.
+ * A controller-route cell interrupts a prepared root's foreground `up` while it is still starting,
+ * and again as it writes its start receipt, and another cuts a ready one's stop as a closed terminal
+ * does. A third shows that a second foreground `up` refuses while one holds the stack, and that one
+ * over a stack whose holder was killed says it takes the running stack over before a signal stops it.
  * Run: pnpm smoke:foreground-up-signals:live */
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -10,11 +14,12 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, statSyn
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { canonicalLocalProcessPath, DELIVERY_PIDFILE, MANAGER_PIDFILE, MANAGER_SPARE_CAPABILITY, spaceKey, verifyIdentityPin, type ProcessIdentityRecord } from "@cotal-ai/workspace";
+import { canonicalLocalProcessPath, DELIVERY_PIDFILE, isCommandFailure, MANAGER_PIDFILE, MANAGER_SPARE_CAPABILITY, spaceKey, verifyIdentityPin, type ProcessIdentityRecord } from "@cotal-ai/workspace";
 import { finishOwnedChild, observeOwnedChild, ownedBirthLive as live, waitForOwnedChild } from "./_foreground-owned-child.js";
 import { foregroundCliProbe } from "./_foreground-cli-probe.js";
+import { observeServiceProcess, serviceInstances } from "../src/lib/service-instances.js";
 import { checkInheritedPipeCleanup } from "./_foreground-pipe-fixture.js";
-import { emitSentinel, freePort } from "@cotal-ai/smoke-kit";
+import { assertSmokeSandboxDown, emitSentinel, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 
 if (process.platform === "win32") {
   console.log("SKIP foreground-up-signals: POSIX terminal process groups do not apply on Windows");
@@ -50,6 +55,7 @@ function token(path: string): ProcessIdentityRecord | undefined {
 async function cell(name: string, options: { auth?: boolean; ready?: boolean; refusal?: boolean; signal?: "SIGINT" | "SIGTERM"; twice?: boolean; crash?: boolean }): Promise<boolean> {
   const root = join(base, name), home = join(root, "home"), mesh = join(root, "mesh");
   for (const p of [root, home, mesh, join(mesh, ".cotal"), join(home, "xdg"), join(home, "machine")]) mkdirSync(p, { recursive: true, mode: 0o700 });
+  const sandbox = recordSmokeSandbox({ root: mesh, cotalHome: join(home, "machine"), xdgConfigHome: join(home, "xdg") });
   const rootIdentity = statSync(mesh, { bigint: true });
   const markerIdentity = statSync(join(mesh, ".cotal"), { bigint: true });
   const port = await freePort(); assert.notEqual(port, 4222);
@@ -142,6 +148,7 @@ async function cell(name: string, options: { auth?: boolean; ready?: boolean; re
       assert.equal(registration.space, space);
       assert.equal(registration.server, `nats://127.0.0.1:${port}`);
       assert.deepEqual(Object.keys(env).filter((key) => /^COTAL_/i.test(key)).sort(), ["COTAL_HOME", "COTAL_SKIP_CONNECTOR_SEED"]);
+      assertSmokeSandboxDown(sandbox, ["down", "--with-agents"], { cwd: mesh, env });
       const down = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["down", "--with-agents"]);
       writeFileSync(join(root, "down.json"), JSON.stringify(down), { mode: 0o600 });
       assert.equal(down.code, 0, "own-root public down --with-agents succeeds after resume and serving readiness"); passed++;
@@ -207,6 +214,194 @@ async function cell(name: string, options: { auth?: boolean; ready?: boolean; re
     }
   }
 }
+/** A prepared root takes the controller route. Ctrl-C while its foreground `up` waits for the
+ *  manager's readiness lets the start settle, then runs the guarded whole-stack stop: exit 130, the
+ *  stop completed for every member, and the broker listener closed. With `receipt`, the CLI sends
+ *  itself SIGTERM while it writes its start receipt, and the same stop runs with exit 143. */
+async function controllerStartupCell(receipt = false): Promise<void> {
+  const name = receipt ? "controller-receipt" : "controller-startup";
+  const root = join(base, name), home = join(root, "home"), mesh = join(root, "mesh");
+  for (const p of [root, home, mesh, join(home, "xdg"), join(home, "machine")]) mkdirSync(p, { recursive: true, mode: 0o700 });
+  recordSmokeSandbox({ root: mesh, cotalHome: join(home, "machine"), xdgConfigHome: join(home, "xdg") });
+  const port = await freePort(); assert.notEqual(port, 4222);
+  const space = `foreground-${name}`;
+  const env = { ...cleanEnv, HOME: home, COTAL_HOME: join(home, "machine"), XDG_CONFIG_HOME: join(home, "xdg"), XDG_DATA_HOME: join(home, "data"), XDG_CACHE_HOME: join(home, "cache"), XDG_STATE_HOME: join(home, "state"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
+  const created = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["space", "create", space, "--root", mesh]);
+  assert.equal(created.code, 0, `space create prepares the controller root: ${created.err}`); passed++;
+  const preload = receipt ? ["--import", join(import.meta.dirname, "_foreground-receipt-signal.ts")] : [];
+  const child: ChildProcess = spawn(process.execPath, ["--import", tsx, ...preload, cliEntry, "up", "--foreground", "--server", `nats://127.0.0.1:${port}`], { cwd: mesh, env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+  let out = "", err = "";
+  child.stdout?.on("data", (b: Buffer) => { out += b.toString(); });
+  child.stderr?.on("data", (b: Buffer) => { err += b.toString(); });
+  const state = observeOwnedChild(child);
+  try {
+    if (!receipt) {
+      await until(() => {
+        if (state.error) throw state.error;
+        if (state.exited) throw new Error(`CLI exited before the manager start: ${err}`);
+        return /Starting stack-manager; waiting/.test(err);
+      }, 90_000, () => err.slice(-3000));
+      assert.ok(child.pid); process.kill(-child.pid, "SIGINT");
+    }
+    await until(() => { if (state.error) throw state.error; return state.exited; }, 120_000, () => err.slice(-3000));
+    await waitForOwnedChild(() => state.closed, 3_000, `${root}: startup-interrupt owner streams drained`);
+    assert.equal(state.code, receipt ? 143 : 130, `a signal during startup exits ${receipt ? 143 : 130} after the stop: ${err}`); passed++;
+    if (!receipt) { assert.match(err, /Stop requested; the whole-stack stop runs once the start settles/, "the interrupt is acknowledged while the start runs"); passed++; }
+    assert.ok(out.includes("Controller stack started") && out.indexOf("Controller stack started") < out.indexOf("Controller stack stopped"), `the start settles before the guarded stop: ${out.slice(-2000)}`); passed++;
+    // A member the mode has no role for, such as a static stack's auth service, has no instance.
+    const journal = JSON.parse(readFileSync(join(mesh, ".cotal", "stack-controller.json"), "utf8")) as { operation: { kind: string; phase: string }; members: { instanceId: string | null; state: string }[] };
+    assert.ok(journal.operation.kind === "down" && journal.operation.phase === "completed" && journal.members.every((member) => member.instanceId === null ? member.state === "not-attempted" : member.state === "stopped"), `the stop completed for every member: ${JSON.stringify(journal)}`); passed++;
+    assert.equal(await portOpen(port), false, "the broker listener closed"); passed++;
+    console.log(`PASS foreground-up-signals ${name}`);
+  } finally {
+    try {
+      if (!state.exited && child.pid) process.kill(-child.pid, "SIGKILL");
+      // A failed cell still stops what its start left, through the product's own down.
+      if (await portOpen(port)) await foregroundCliProbe(cliEntry, tsx, mesh, env, ["down", "--yes"]);
+    } finally {
+      writeFileSync(join(root, "stdout.log"), out, { mode: 0o600 });
+      writeFileSync(join(root, "stderr.log"), err, { mode: 0o600 });
+      writeFileSync(join(root, "exit.json"), JSON.stringify({ code: state.code, signal: state.signal, closed: state.closed, port }), { mode: 0o600 });
+    }
+  }
+}
+
+/** Terminal loss on a ready foreground controller stack. `script` answers a hangup by sending the
+ *  foreground `up` SIGTERM and SIGKILL two seconds later, so its guarded stop can be cut part way.
+ *  Cut here once the broker's record reads `stopping`, the kill lands before or after the broker's
+ *  signal. Before it, the broker still runs, and the next `down --yes` settles that stop and stops
+ *  the stack. After it, the broker is gone under an unconfirmed request: the next `down --yes`
+ *  refuses and names `down --abandon-stop <request> --yes`, which records the broker failed. Either
+ *  way `up` then `down --yes` cycle the stack. */
+async function controllerHangupCell(): Promise<void> {
+  const name = "controller-hangup";
+  const root = join(base, name), home = join(root, "home"), mesh = join(root, "mesh");
+  for (const p of [root, home, mesh, join(home, "xdg"), join(home, "machine")]) mkdirSync(p, { recursive: true, mode: 0o700 });
+  recordSmokeSandbox({ root: mesh, cotalHome: join(home, "machine"), xdgConfigHome: join(home, "xdg") });
+  const port = await freePort(); assert.notEqual(port, 4222);
+  const space = `foreground-${name}`;
+  const env = { ...cleanEnv, HOME: home, COTAL_HOME: join(home, "machine"), XDG_CONFIG_HOME: join(home, "xdg"), XDG_DATA_HOME: join(home, "data"), XDG_CACHE_HOME: join(home, "cache"), XDG_STATE_HOME: join(home, "state"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
+  const created = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["space", "create", space, "--root", mesh]);
+  assert.equal(created.code, 0, `space create prepares the controller root: ${created.err}`); passed++;
+  const child: ChildProcess = spawn(process.execPath, ["--import", tsx, cliEntry, "up", "--foreground", "--server", `nats://127.0.0.1:${port}`], { cwd: mesh, env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+  let out = "", err = "";
+  child.stdout?.on("data", (b: Buffer) => { out += b.toString(); });
+  child.stderr?.on("data", (b: Buffer) => { err += b.toString(); });
+  const state = observeOwnedChild(child);
+  // The stack's records are read in this suite's process from the cell's own Cotal home.
+  const previousHome = process.env.COTAL_HOME;
+  process.env.COTAL_HOME = join(home, "machine");
+  // A read that meets the CLI's own write of the record refuses CONFLICT; a poll takes that as not yet.
+  const broker = () => {
+    try { return serviceInstances(space, "stack-broker")[0]?.record.value; }
+    catch (error) { if (isCommandFailure(error) && error.code === "CONFLICT") return undefined; throw error; }
+  };
+  const envelope = (r: { out: string }) => { try { return JSON.parse(r.out) as { outcome?: string; error?: { code?: string; remedy?: string }; warnings?: { code: string; target?: { requestId?: string } }[] }; } catch { return undefined; } };
+  try {
+    await until(() => {
+      if (state.error) throw state.error;
+      if (state.exited) throw new Error(`CLI exited before the stack was ready: ${err}`);
+      return out.includes("Controller stack started");
+    }, 120_000, () => err.slice(-3000));
+    assert.ok(child.pid); process.kill(child.pid, "SIGTERM");
+    let stopping: ReturnType<typeof broker>;
+    await until(() => {
+      if (state.exited) throw new Error(`the foreground stop finished before the broker was stopping: ${err}`);
+      stopping = broker();
+      return stopping?.state === "stopping";
+    }, 120_000, () => err.slice(-3000), 2);
+    const request = stopping!.requestId;
+    process.kill(child.pid, "SIGKILL");
+    await until(() => state.exited, 10_000, () => "the killed foreground up did not exit");
+    await waitForOwnedChild(() => state.closed, 3_000, `${root}: hangup owner streams drained`);
+    // A signalled broker exits within moments; one the kill reached first keeps running.
+    await until(() => observeServiceProcess(broker()!) === "gone", 5_000, () => "").catch(() => undefined);
+    const signalled = observeServiceProcess(broker()!) === "gone";
+    assert.equal(broker()?.state, "stopping", `the cut stop left the broker stopping under its request (${signalled ? "signalled, gone" : "not signalled, running"})`); passed++;
+    if (signalled) {
+      const refused = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["down", "--yes", "--json"], 60_000);
+      assert.ok(refused.code === 2 && envelope(refused)?.error?.code === "LIFECYCLE_BLOCKED" && envelope(refused)?.error?.remedy?.includes(`cotal down --abandon-stop ${request} --yes`), `the next down refuses and names the abandon command for that request: ${refused.out}${refused.err}`); passed++;
+      const abandoned = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["down", "--abandon-stop", request, "--yes", "--json"], 60_000);
+      assert.ok(abandoned.code === 0 && envelope(abandoned)?.warnings?.some((w) => w.code === "STOP_ABANDONED" && w.target?.requestId === request) && broker()?.state === "failed", `down --abandon-stop records the broker failed with a warning: ${abandoned.out}${abandoned.err}`); passed++;
+    } else {
+      const settled = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["down", "--yes", "--json"], 120_000);
+      assert.ok(settled.code === 0 && envelope(settled)?.outcome === "ok" && envelope(settled)?.warnings?.some((w) => w.code === "OPERATION_SETTLED"), `the next down settles the cut stop and the earlier down: ${settled.out}${settled.err}`); passed++;
+      assert.ok(broker()?.state === "stopped" && !(await portOpen(port)), "and stops the broker it had never signalled"); passed++;
+    }
+    const restarted = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["up", "--json"], 120_000);
+    const stopped = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["down", "--yes", "--json"], 120_000);
+    assert.ok(restarted.code === 0 && stopped.code === 0 && !(await portOpen(port)), `up then down cycle the stack: ${restarted.err}${stopped.err}`); passed++;
+    console.log(`PASS foreground-up-signals ${name}: the kill landed ${signalled ? "after" : "before"} the broker's signal`);
+  } finally {
+    if (previousHome === undefined) delete process.env.COTAL_HOME; else process.env.COTAL_HOME = previousHome;
+    try {
+      if (!state.exited && child.pid) process.kill(-child.pid, "SIGKILL");
+      // A failed cell still stops what its start left, through the product's own down.
+      if (await portOpen(port)) await foregroundCliProbe(cliEntry, tsx, mesh, env, ["down", "--yes"], 120_000);
+    } finally {
+      writeFileSync(join(root, "stdout.log"), out, { mode: 0o600 });
+      writeFileSync(join(root, "stderr.log"), err, { mode: 0o600 });
+      writeFileSync(join(root, "exit.json"), JSON.stringify({ code: state.code, signal: state.signal, closed: state.closed, port }), { mode: 0o600 });
+    }
+  }
+}
+
+async function controllerHoldCell(): Promise<void> {
+  const name = "controller-hold";
+  const root = join(base, name), home = join(root, "home"), mesh = join(root, "mesh");
+  for (const p of [root, home, mesh, join(home, "xdg"), join(home, "machine")]) mkdirSync(p, { recursive: true, mode: 0o700 });
+  recordSmokeSandbox({ root: mesh, cotalHome: join(home, "machine"), xdgConfigHome: join(home, "xdg") });
+  const port = await freePort(); assert.notEqual(port, 4222);
+  const space = `foreground-${name}`;
+  const env = { ...cleanEnv, HOME: home, COTAL_HOME: join(home, "machine"), XDG_CONFIG_HOME: join(home, "xdg"), XDG_DATA_HOME: join(home, "data"), XDG_CACHE_HOME: join(home, "cache"), XDG_STATE_HOME: join(home, "state"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
+  const created = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["space", "create", space, "--root", mesh]);
+  assert.equal(created.code, 0, `space create prepares the controller root: ${created.err}`); passed++;
+  const foreground = (args: string[]) => {
+    const child: ChildProcess = spawn(process.execPath, ["--import", tsx, cliEntry, "up", "--foreground", ...args], { cwd: mesh, env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+    const io = { out: "", err: "" };
+    child.stdout?.on("data", (b: Buffer) => { io.out += b.toString(); });
+    child.stderr?.on("data", (b: Buffer) => { io.err += b.toString(); });
+    return { child, io, state: observeOwnedChild(child) };
+  };
+  const holder = foreground(["--server", `nats://127.0.0.1:${port}`]);
+  let taker: ReturnType<typeof foreground> | undefined;
+  try {
+    await until(() => {
+      if (holder.state.error) throw holder.state.error;
+      if (holder.state.exited) throw new Error(`CLI exited before the stack was ready: ${holder.io.err}`);
+      return holder.io.out.includes("Controller stack started");
+    }, 120_000, () => holder.io.err.slice(-3000));
+    assert.ok(holder.child.pid);
+    const second = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["up", "--foreground"], 60_000);
+    assert.ok(second.code === 2 && second.err.includes(`a foreground \`cotal up\` in process ${holder.child.pid} already holds this stack's lifetime`) && !holder.state.exited, `a second foreground up refuses CONFLICT, naming the holder, and the holder keeps the stack: ${second.out}${second.err}`); passed++;
+    // A killed holder leaves its record and the running stack, which the next foreground up takes over.
+    process.kill(holder.child.pid, "SIGKILL");
+    await until(() => holder.state.exited, 10_000, () => "the killed foreground up did not exit");
+    await waitForOwnedChild(() => holder.state.closed, 3_000, `${root}: holder streams drained`);
+    assert.ok(existsSync(join(mesh, ".cotal", "stack-foreground.hold")) && await portOpen(port), "the killed holder left its record and the running stack"); passed++;
+    taker = foreground([]);
+    await until(() => {
+      if (taker!.state.error) throw taker!.state.error;
+      if (taker!.state.exited) throw new Error(`the taking-over foreground up exited: ${taker!.io.err}`);
+      return taker!.io.out.includes("Controller stack already running");
+    }, 120_000, () => taker!.io.err.slice(-3000));
+    assert.ok(taker.io.out.includes("This stack is already running, and this terminal now takes over its lifetime") && taker.io.out.indexOf("takes over its lifetime") < taker.io.out.indexOf("Controller stack already running"), `a foreground up over the running stack says it takes it over before it blocks: ${taker.io.out}`); passed++;
+    assert.ok(taker.child.pid); process.kill(taker.child.pid, "SIGTERM");
+    await until(() => taker!.state.exited, 120_000, () => taker!.io.err.slice(-3000));
+    assert.ok(taker.state.code === 143 && !(await portOpen(port)) && !existsSync(join(mesh, ".cotal", "stack-foreground.hold")), `SIGTERM there stops the whole stack and removes the hold record: ${taker.state.code} ${taker.io.err.slice(-1500)}`); passed++;
+    console.log(`PASS foreground-up-signals ${name}`);
+  } finally {
+    try {
+      for (const run of [holder, taker]) if (run && !run.state.exited && run.child.pid) process.kill(-run.child.pid, "SIGKILL");
+      // A failed cell still stops what its start left, through the product's own down.
+      if (await portOpen(port)) await foregroundCliProbe(cliEntry, tsx, mesh, env, ["down", "--yes"], 120_000);
+    } finally {
+      writeFileSync(join(root, "stdout.log"), holder.io.out + (taker?.io.out ?? ""), { mode: 0o600 });
+      writeFileSync(join(root, "stderr.log"), holder.io.err + (taker?.io.err ?? ""), { mode: 0o600 });
+    }
+  }
+}
+
 console.log(`foreground-up-signals retained evidence: ${base}`);
 await checkInheritedPipeCleanup();
 passed += 10;
@@ -221,5 +416,9 @@ for (let attempt = 1; attempt <= 3 && !refusalObserved; attempt++) {
 }
 assert.ok(refusalObserved, "native unavailable-capability refusal must be observed within three owned attempts, never manufactured");
 await cell("crash", { crash: true });
+await controllerStartupCell();
+await controllerStartupCell(true);
+await controllerHangupCell();
+await controllerHoldCell();
 console.log(`foreground-up-signals: ${passed} passed, 0 failed`);
 emitSentinel({ cells: passed, passed, failed: 0 });

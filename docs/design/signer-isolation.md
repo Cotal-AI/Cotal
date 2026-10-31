@@ -4,8 +4,18 @@
 > ("The remaining hosted gap is signer isolation"). Wire contract unchanged: no new subject, no new
 > stream, no new message type. This is a composition-root and OS-custody seam.
 
-**Status:** design. Nothing here is implemented. Review gate: this doc is approved before any code
-lands.
+Review gate: this doc is approved before any code lands.
+
+**Status on 26 October 2026.** Not implemented. No signer process, `sign-user` or `mac` socket,
+`cotal-seat-launch` helper or `adopterUid` exists, and `runCustodian` still `chmod`s its socket
+`0600` and requires a peer uid equal to its own. Two things in the tree have moved since
+`c5c462886`. The CLI redesign in 0.91.0 renamed `cotal mint` to `cotal auth mint`, and
+`cotal mint --signer` became `cotal auth signer --out <file>`, which still exports the stripped
+signer with its signing seed. Since 0.59.0 the default `pty` runtime spawns seats in-process on
+every platform, and on Linux `CustodialPtyRuntime` only adopts and reaps seats an earlier manager
+left under a custodian, so section 2.1's "production Linux goes through `CustodialPtyRuntime.spawn`"
+and the `defaultCustodyRoot` name (now `custodyRoot`) describe the tree at the citation head. The
+seat-launch design below still assumes a custodial spawn path.
 
 **Citations.** Every `file` / function below was read in this worktree at `c5c462886`. No seed, key,
 or credential value is reproduced.
@@ -133,7 +143,7 @@ offline caller.
 (`implementations/cli/src/commands/mint.ts`); `up` (provisioner, membership-rw, control-caller-admin);
 `spawn` (operator, provisioner, deprovisioner); `join` (provisioner); `status` (observer, deployer);
 `agents` (session-caller); `down-manifest` (`teardown`); `backup` / restore; `delivery-proc`
-(`delivery`); `spawn-manifest` (`channel-writer`); attach scatter probe
+(`delivery`); `team-deploy-apply` and `team-agent-apply` (`channel-writer`); attach scatter probe
 (`implementations/cli/src/lib/control.ts`, `control-caller-privileged`). They run as a uid on the
 signer allowlist after §6, never as `cotal-agent`.
 
@@ -161,7 +171,7 @@ are not only JWT minting:
 |---|---|---|
 | JWT `encodeUser` | `startAuthCallout` (`callout.ts`) `fromSeed(opts.dataAccount.signingSeed)` as `userSigner` | connect-time user JWTs |
 | JWT `encodeUser` | `openAuthorityClient` (`authority-client.ts`) `fromSeed(opts.dataAccount.signingSeed)` | self-minted infra connections |
-| JWT `mintCreds` | `withDeliveryAdminEndpoint` (`delivery-admin.ts`) mints `supervisor` or `endpoint-evictor` from `dataAccountAuth` (`store.ts`), the same stripped `SpaceAuth` the plane signs with | per-call delivery-admin evictors and liveness oracles (`barrier-evict.ts`, `plane-claim.ts`) |
+| JWT `mintCreds` | `withDeliveryAdminEndpoint` (`delivery-admin.ts`) mints `supervisor` or `endpoint-evictor` from `dataAccountAuth` (`store.ts`), the same stripped `SpaceAuth` the plane signs with | per-call delivery-admin evictors and liveness oracles (`barrier-evict.ts`, `plane-claim.ts`), and `cotal actor revoke` eviction (`commands.ts`) |
 | JWT `openAuthorityClient` | `makeDrainRepairers` (`drain-repair.ts`) | per-repair applier credential |
 | JWT `mintPublicUserJwt` | `openAuthAuthorityPlane` (`service.ts`) `issueManagerServiceAuthority` | remote-manager user JWTs |
 | HMAC-SHA256 | `remoteManagerCurrentRegistrationProof` (`retained-manager-validation.ts`) `createHmac("sha256", secret)` | registration proof over a domain-separated payload |

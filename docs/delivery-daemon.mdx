@@ -24,7 +24,7 @@ The daemon separates the work of retaining messages, checking access, and record
   the channel. That peer need not be joined when the mention arrives. Routing a copy does not
   authorize its release.
 - The trusted reader checks each stored entry before handing the authorized copy to the member's
-  durable inbox. The member acknowledges the copy after surfacing or handling it. A crash before
+  `dlv_<owner>-<actor>-<uid>` DELIVER consumer. The copy does not use the reply inbox. The member acknowledges the copy after surfacing or handling it. A crash before
   that acknowledgement causes redelivery.
 - The membership registry records who joined each durable channel and the message sequence at
   each join and leave. These cursors determine which posts belong to the membership interval,
@@ -79,6 +79,10 @@ readiness, transport checks, credential renewal, and timer writer. The CLI refer
 
 Open development mode has no delivery daemon or durable channel backstop. Durable channel
 delivery requires an authenticated mesh with a running delivery service.
+
+A daemon process can host one isolated lane per space from a manifest. Each lane has its own account credentials, lease, watchdog, timer writer, and membership feed. A failed lane closes and reopens independently.
+
+The reference still serves agent membership operations on `ctl.delivery` and administration on `ctl.delivery-admin`. These are implementation residue despite the hard cut in [SPEC §13.11](../SPEC.md#1311-the-hard-cut). The [delivery service reference](delivery-service-reference.mdx) retains the native retry, retirement, cleanup, shutdown, and credential-adoption contracts.
 
 ## Without it
 

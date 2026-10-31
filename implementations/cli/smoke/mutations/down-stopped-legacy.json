@@ -16,7 +16,7 @@
     {
       "name": "a stopped legacy root is refused instead of answered",
       "file": "implementations/cli/src/commands/down.ts",
-      "find": "    if (stopped) return nothingRunning(presentationOf(args.values), stopped, values[\"with-agents\"] === true && values[\"dry-run\"] !== true);\n",
+      "find": "      return nothingRunning(presentationOf(args.values), target, values[\"with-agents\"] === true && started, [], values[\"dry-run\"] === true);\n",
       "replace": "",
       "expectRed": "a second bare down of a stopped legacy root says its stack is not running, names cotal up, and exits 0",
       "cell": "a second bare down of a stopped legacy root says its stack is not running, names cotal up, and exits 0",
@@ -25,7 +25,7 @@
     {
       "name": "--json stays refused on a stopped legacy root",
       "file": "implementations/cli/src/commands/down.ts",
-      "find": " && !(bareStop(args.values) && stoppedLegacyStack())) throw",
+      "find": " && !(bareStop(args.values) && (stoppedLegacyStack() || recordsElsewhere(canonicalRoot(cotalRoot()), \"stop\")))) throw",
       "replace": ") throw",
       "expectRed": "--json reports the same no-op",
       "cell": "--json reports the same no-op",
@@ -34,8 +34,8 @@
     {
       "name": "--with-agents on a stopped stack answers with the no-op",
       "file": "implementations/cli/src/commands/stack-down.ts",
-      "find": "  if (withAgents) throw new CommandFailure(\"refused\", \"LIFECYCLE_BLOCKED\", \"--with-agents needs the stack's running manager",
-      "replace": "  if (withAgents && false) throw new CommandFailure(\"refused\", \"LIFECYCLE_BLOCKED\", \"--with-agents needs the stack's running manager",
+      "find": "  if (agents && !preview) throw agents;",
+      "replace": "  if (agents && !preview && false) throw agents;",
       "expectRed": "--with-agents on the stopped root refuses LIFECYCLE_BLOCKED, because no manager runs to stop its agents",
       "cell": "--with-agents on the stopped root refuses LIFECYCLE_BLOCKED, because no manager runs to stop its agents",
       "afterRestore": "pnpm --filter @cotal-ai/cli... build > /dev/null"
@@ -43,7 +43,7 @@
     {
       "name": "a folder with no rendered broker configuration counts as stopped",
       "file": "implementations/cli/src/commands/down.ts",
-      "find": "  if (!prepared && !existsSync(join(root, \".cotal\", \"server-open.conf\")) && !existsSync(join(authDir(root), \"server.conf\"))) return undefined;\n",
+      "find": "  if (!prepared && !started) return undefined;\n",
       "replace": "",
       "expectRed": "a folder that never had a stack refuses TARGET_NOT_FOUND and names where to run down",
       "cell": "a folder that never had a stack refuses TARGET_NOT_FOUND and names where to run down",
@@ -52,8 +52,8 @@
     {
       "name": "a leftover process record does not stop the no-op",
       "file": "implementations/cli/src/commands/down.ts",
-      "find": " || meshesForRoot(root).length || pidRecordsUnder(root)) return undefined;\n",
-      "replace": " || meshesForRoot(root).length) return undefined;\n",
+      "find": " || !realDirNoSymlink(root, \".cotal\") || pidRecordsUnder(root)) return undefined;\n",
+      "replace": " || !realDirNoSymlink(root, \".cotal\")) return undefined;\n",
       "expectRed": "a process record with no registration refuses CONFLICT, points at cotal status, and keeps the record",
       "cell": "a process record with no registration refuses CONFLICT, points at cotal status, and keeps the record",
       "afterRestore": "pnpm --filter @cotal-ai/cli... build > /dev/null"

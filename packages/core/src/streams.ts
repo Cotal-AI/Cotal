@@ -10,7 +10,8 @@ import {
   type StreamConfig,
 } from "@nats-io/jetstream";
 import { randomUUID } from "node:crypto";
-import { connect, credsAuthenticator, tokenAuthenticator, nanos, type NatsConnection } from "@nats-io/transport-node";
+import { tokenAuthenticator, nanos, type NatsConnection } from "@nats-io/transport-node";
+import { dialerFor } from "./endpoint.js";
 import { Kvm } from "@nats-io/kv";
 import { Objm } from "@nats-io/obj";
 import {
@@ -48,10 +49,12 @@ import {
 } from "./subjects.js";
 import type { KV } from "@nats-io/kv";
 import { idFromCreds } from "./identity.js";
+import { nativeCredsAuthenticator } from "./creds-authenticator.js";
 import { requireBrokerFloor } from "./broker-floor.js";
 import { isConsumerNotFound } from "./jetstream-missing.js";
+import { isCasLoss } from "./endpoint-records.js";
 import { createEndpointStreams } from "./endpoint-binding.js";
-import { openAclRegistry, deleteAcl } from "./acls.js";
+import { openAclRegistry, deleteAcl, fenceAcl } from "./acls.js";
 import { openMembersRegistry, deleteMember } from "./members.js";
 import {
   BACKUP_MAX_MSGS_PER_SUBJECT,
@@ -128,11 +131,14 @@ export const MANAGER_LEASE_TTL_MS = 10_000;
 export const MANAGER_LEASE_RENEW_MS = MANAGER_LEASE_TTL_MS / 4;
 export const MANAGER_LEASE_ATTEMPT_MS = 2_000;
 
-/** Bucket-level `max_bytes` cap on the derived membership feed (`cotal_membership_<space>`). The
- *  per-agent keying keeps each value tiny (a handful of channel patterns), so 64 MiB bounds the footprint
- *  far above any realistic readership while keeping the bucket from growing unbounded. A deliberate cap,
- *  not a guess at scale — the design is cap-safe by construction (per-agent, store-patterns-not-expanded). */
-export const MEMBERSHIP_MAX_BYTES = 64 * 1024 * 1024;
+/** The `max_bytes` the membership KV carried before its reservation was removed. Kept only so
+ *  {@link ensureMembershipStore} can recognize the stock value and release that reservation. */
+export const LEGACY_MEMBERSHIP_MAX_BYTES = 64 * 1024 * 1024;
+
+/** Maximum serialized value in the derived membership KV. One key holds one agent's normalized
+ *  subscription patterns, history is one, and the feed is display-only, so an agent that exceeds
+ *  this native per-message bound loses its derived view rather than reserving storage for every space. */
+export const MEMBERSHIP_MAX_VALUE_SIZE = 256 * 1024;
 
 /** The `max_bytes` a per-space artifact Object Store carried before the reservation was removed:
  *  4 GiB, the stock value every store created by that code holds. Kept for ONE purpose —
@@ -150,7 +156,9 @@ export interface ClearSpaceHistoryResult {
  *  pair (a view bearer + the deny-all sentinel creds) — exactly what the endpoint's user mode
  *  presents. Never both. Empty = open mode. */
 export interface StandaloneAuth {
-  creds?: string;
+  /** A creds file, or a getter nats.js reads on every connect and reconnect attempt, so a
+   *  long-lived connection presents its owner's current credential instead of the one it dialed with. */
+  creds?: string | (() => string);
   bearer?: string;
   sentinelCreds?: string;
   /** Whether this connection must REQUIRE TLS rather than merely tolerate it.
@@ -208,17 +216,17 @@ export function standaloneConnectOpts(auth: StandaloneAuth): Record<string, unkn
     return {
       name: nonce,
       inboxPrefix: `_INBOX_${nonce}`,
-      authenticator: [credsAuthenticator(new TextEncoder().encode(auth.sentinelCreds)), tokenAuthenticator(auth.bearer)],
+      authenticator: [nativeCredsAuthenticator(auth.sentinelCreds), tokenAuthenticator(auth.bearer)],
       ...tlsOpt,
     };
   }
-  return auth.creds
-    ? {
-        authenticator: credsAuthenticator(new TextEncoder().encode(auth.creds)),
-        inboxPrefix: `_INBOX_${idFromCreds(auth.creds)}`,
-        ...tlsOpt,
-      }
-    : { ...tlsOpt };
+  const creds = auth.creds;
+  if (!creds) return { ...tlsOpt };
+  return {
+    authenticator: nativeCredsAuthenticator(creds),
+    inboxPrefix: `_INBOX_${idFromCreds(typeof creds === "function" ? creds() : creds)}`,
+    ...tlsOpt,
+  };
 }
 
 /** Native message-stream creation fields shared by bootstrap and schema planning. */
@@ -235,7 +243,51 @@ export function spaceRegistryStreamConfigs(space: string) {
 
 /** Native derived-membership creation inputs, not evidence of observed membership. */
 export function membershipStoreDefinition(space: string) {
-  return { bucket: membershipBucket(space), createOptions: { history: 1, max_bytes: MEMBERSHIP_MAX_BYTES } };
+  return {
+    bucket: membershipBucket(space),
+    createOptions: { history: 1, max_bytes: -1, maxValueSize: MEMBERSHIP_MAX_VALUE_SIZE },
+  };
+}
+
+/** Create or verify the derived membership KV, releasing only this code's legacy reservation.
+ *
+ * A positive `max_bytes` reserves that whole number against the broker's `max_file_store` before
+ * the bucket stores one byte. The old 64 MiB setting therefore capped spaces by disk capacity rather
+ * than membership use. This bucket now reserves nothing. Its footprint is bounded by construction:
+ * one key per agent, native history 1 (`max_msgs_per_subject`), and a native per-value ceiling
+ * (`max_msg_size`). Reaching the broker's real file-store cap or the value ceiling refuses a write.
+ *
+ * Exactly the former 64 MiB cap is reconciled to `-1`. Any other positive `max_bytes` is deliberate
+ * drift and is left untouched. Likewise, an existing positive value ceiling other than ours is not
+ * widened or narrowed silently. The pre-bound `-1` value ceiling is upgraded to the native bound. */
+export async function ensureMembershipStore(
+  jsm: JetStreamManager,
+  kvm: Kvm,
+  space: string,
+): Promise<void> {
+  const definition = membershipStoreDefinition(space);
+  const stream = `KV_${definition.bucket}`;
+  await kvm.create(definition.bucket, definition.createOptions);
+  let { config } = await jsm.streams.info(stream);
+  const drift: string[] = [];
+  if (config.max_bytes !== -1 && config.max_bytes !== LEGACY_MEMBERSHIP_MAX_BYTES)
+    drift.push(`max_bytes is ${config.max_bytes}, expected -1 (a deliberate cap is not widened by setup)`);
+  if (config.max_msgs_per_subject !== 1)
+    drift.push(`max_msgs_per_subject is ${config.max_msgs_per_subject}, expected 1`);
+  if (config.max_msg_size !== -1 && config.max_msg_size !== MEMBERSHIP_MAX_VALUE_SIZE)
+    drift.push(`max_msg_size is ${config.max_msg_size}, expected ${MEMBERSHIP_MAX_VALUE_SIZE} (a deliberate value cap is not changed by setup)`);
+  if (drift.length)
+    throw new Error(`membership store ${stream} has drifted: ${drift.join("; ")}`);
+
+  if (config.max_bytes === LEGACY_MEMBERSHIP_MAX_BYTES || config.max_msg_size === -1) {
+    await jsm.streams.update(stream, { ...config, max_bytes: -1, max_msg_size: MEMBERSHIP_MAX_VALUE_SIZE });
+    ({ config } = await jsm.streams.info(stream));
+  }
+  if (config.max_bytes !== -1 || config.max_msgs_per_subject !== 1 || config.max_msg_size !== MEMBERSHIP_MAX_VALUE_SIZE)
+    throw new Error(
+      `membership store ${stream} reconcile did not take: max_bytes=${config.max_bytes}, ` +
+      `max_msgs_per_subject=${config.max_msgs_per_subject}, max_msg_size=${config.max_msg_size}`,
+    );
 }
 
 /**
@@ -301,7 +353,7 @@ export function dmDurableConfig(
  * The TASK work-queue durable for a role — ONE definition, shared by the privileged
  * pre-create (auth mode) and the endpoint's open-mode self-create. The durable is shared
  * across all instances of a role (queue group); the privileged creator sets the
- * filter_subject to svc.<role>.* so an agent can't bind a consumer filtered to another
+ * filter_subject to svc.<role>.> so an agent can't bind a consumer filtered to another
  * role's queue (the same create-time-filter attack surface as DM). Idempotent per role.
  */
 export function taskDurableConfig(
@@ -528,7 +580,7 @@ export async function reconcileSpaceTtls(opts: {
   /** Privileged creds for an authed mesh; omit on an open mesh (a bare connection has the rights). */
   creds?: string;
 }): Promise<TtlReconciled[]> {
-  const nc = await connect({ servers: opts.servers, ...standaloneConnectOpts({ creds: opts.creds, tls: false }) });
+  const nc = await dialerFor(opts.servers)({ servers: opts.servers, ...standaloneConnectOpts({ creds: opts.creds, tls: false }) });
   try {
     // SPEC §13.12: the control surface requires nats-server >= 2.12; this runs on every
     // fresh connection, including reconnects.
@@ -676,7 +728,7 @@ export async function setupSpaceStreams(opts: {
   /** Privileged creds for an authed mesh; omit on an open mesh (a bare connection has the rights). */
   creds?: string;
 }): Promise<void> {
-  const nc = await connect({ servers: opts.servers, ...standaloneConnectOpts({ creds: opts.creds, /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }) });
+  const nc = await dialerFor(opts.servers)({ servers: opts.servers, ...standaloneConnectOpts({ creds: opts.creds, /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }) });
   try {
     // SPEC §13.12: the control surface requires nats-server >= 2.12; this runs on every
     // fresh connection, including reconnects.
@@ -693,14 +745,13 @@ export async function setupSpaceStreams(opts: {
     // config without TTL. Agents cannot create them; delivery re-auths against the read-ACL rows.
     for (const definition of spaceRegistryStreamConfigs(opts.space)) await jsm.streams.add(definition);
     // Derived channel-membership feed (broker CONNZ ∪ members registry): privileged-write (the
-    // `membership-rw` cred), admin/observer-read, no TTL (the daemon prunes departed agents). `history:1`
-    // (only the latest record per agent matters) + a `max_bytes` cap (footprint bound). Pre-created so the
-    // scoped writer holds no STREAM.CREATE. Idempotent.
-    const membership = membershipStoreDefinition(opts.space);
-    await kvm.create(membership.bucket, membership.createOptions);
+    // `membership-rw` cred), admin/observer-read, no TTL (the daemon prunes departed agents). Its
+    // one-key-per-agent history and native value-size ceiling bound it without a storage reservation.
+    // Pre-created so the scoped writer holds no STREAM.CREATE; legacy stock reservations reconcile.
+    await ensureMembershipStore(jsm, kvm, opts.space);
     // The two §13.12 AUTHORITY stores (records + auth): every auth-mode mesh now carries a
     // lifecycle registry — user mode's service re-ensures at its own boot, the STATIC manager's
-    // start reconcile re-ensures for pre-existing spaces (Unit B) — and the up-time seed creates
+    // start reconcile re-ensures for pre-existing spaces — and the up-time seed creates
     // them so neither daemon needs first-write stream creation. Create-or-verify, idempotent,
     // drift fails loud.
     await createEndpointStreams(jsm, kvm, opts.space);
@@ -732,7 +783,7 @@ export async function clearSpaceHistory(opts: {
   sentinelCreds?: string;
   includeDms?: boolean;
 }): Promise<ClearSpaceHistoryResult> {
-  const nc = await connect({ servers: opts.servers, ...standaloneConnectOpts({ ...opts, /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }) });
+  const nc = await dialerFor(opts.servers)({ servers: opts.servers, ...standaloneConnectOpts({ ...opts, /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }) });
   try {
     const jsm = await jetstreamManager(nc);
     const chat = (await jsm.streams.purge(chatStream(opts.space))).purged;
@@ -749,7 +800,8 @@ export async function clearSpaceHistory(opts: {
  *  registry config so it stops surfacing as an empty channel. Needs PURGE rights and the
  *  registry key delete: pass a `channel-purger` cred; a bare connection (open mode) has them by default.
  *  Throws on a wildcard channel (a subtree is not a deletable channel). A missing channel
- *  registry bucket/key is a no-op — the purge alone already emptied the channel. */
+ *  registry bucket/key is a no-op — the purge alone already emptied the channel. `removed` says
+ *  whether this call deleted the channel's registry entry. */
 export async function clearChannel(opts: {
   servers: string;
   space: string;
@@ -758,22 +810,26 @@ export async function clearChannel(opts: {
   /** User mode: a `channel-purger`-view bearer + the space's sentinel creds (instead of a creds file). */
   bearer?: string;
   sentinelCreds?: string;
-}): Promise<{ channel: string; purged: number }> {
+}): Promise<{ channel: string; purged: number; removed: boolean }> {
   if (!isConcreteChannel(opts.channel))
     throw new Error(`"${opts.channel}" is a wildcard, not a deletable channel`);
-  const nc = await connect({ servers: opts.servers, ...standaloneConnectOpts({ ...opts, /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }) });
+  const nc = await dialerFor(opts.servers)({ servers: opts.servers, ...standaloneConnectOpts({ ...opts, /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }) });
   try {
     const jsm = await jetstreamManager(nc);
     const { purged } = await jsm.streams.purge(chatStream(opts.space), {
       filter: chatSubject(opts.space, "*", "*", opts.channel),
     });
+    let removed = false;
     try {
       const registry = await new Kvm(nc).open(channelBucket(opts.space));
-      await registry.delete(opts.channel);
+      if ((await registry.get(opts.channel))?.operation === "PUT") {
+        await registry.delete(opts.channel);
+        removed = true;
+      }
     } catch {
       /* no channel registry bucket or no config for this channel — purge already emptied it */
     }
-    return { channel: opts.channel, purged };
+    return { channel: opts.channel, purged, removed };
   } finally {
     await nc.drain();
   }
@@ -804,6 +860,33 @@ export interface DeprovisionResourceAccounting {
   members: { examined: number; deleted: number; absent: number; refused: number; disappeared: number };
 }
 
+/** Add `part` into `total`. A null `deleted` on either side keeps the sum null, since one
+ *  unattributable removal leaves the whole count unattributable. */
+export function addDeprovisionAccounting(total: DeprovisionResourceAccounting, part: DeprovisionResourceAccounting): void {
+  total.examined += part.examined;
+  total.deleted = total.deleted === null || part.deleted === null ? null : total.deleted + part.deleted;
+  total.absent += part.absent;
+  total.refused += part.refused;
+  total.acknowledged += part.acknowledged;
+  total.disappeared += part.disappeared;
+  total.consumers.examined += part.consumers.examined;
+  total.consumers.deleted = total.consumers.deleted === null || part.consumers.deleted === null ? null : total.consumers.deleted + part.consumers.deleted;
+  total.consumers.absent += part.consumers.absent;
+  total.consumers.refused += part.consumers.refused;
+  total.consumers.acknowledged += part.consumers.acknowledged;
+  total.consumers.disappeared += part.consumers.disappeared;
+  total.acls.examined += part.acls.examined;
+  total.acls.deleted += part.acls.deleted;
+  total.acls.absent += part.acls.absent;
+  total.acls.refused += part.acls.refused;
+  total.acls.disappeared += part.acls.disappeared;
+  total.members.examined += part.members.examined;
+  total.members.deleted += part.members.deleted;
+  total.members.absent += part.members.absent;
+  total.members.refused += part.members.refused;
+  total.members.disappeared += part.members.disappeared;
+}
+
 /** Error raised when deprovisioning encounters an unexpected failure, retaining partial deletion accounting. */
 export class DeprovisionError extends Error {
   public readonly accounting: DeprovisionResourceAccounting;
@@ -811,6 +894,36 @@ export class DeprovisionError extends Error {
     super(message, cause !== undefined ? { cause } : undefined);
     this.name = "DeprovisionError";
     this.accounting = accounting;
+  }
+}
+
+/** Fence a retiring LIFECYCLE before its membership inventory is read: narrow its read-ACL row to no
+ *  reads ({@link fenceAcl}, a compare-and-set update that never creates the row). The delivery daemon
+ *  re-reads that exact row around every membership row a join creates, so after this returns no join
+ *  of the lifecycle keeps a row the inventory does not list. Pass a `deprovisioner` credential pinned to
+ *  this lifecycle: its exact-key ACL grants cover the read and the update, and it needs no member
+ *  channels. Reads the row through that exact-key direct get, so on a clustered broker a stale read
+ *  only loses the compare-and-set and retries. */
+export async function fenceLifecycleAcl(opts: {
+  servers: string;
+  space: string;
+  targetId: string;
+  lifecycleUid: string;
+  creds?: string;
+}): Promise<"fenced" | "absent"> {
+  const nc = await dialerFor(opts.servers)({
+    servers: opts.servers,
+    ...standaloneConnectOpts({ creds: opts.creds, tls: false }),
+    // A teardown step: fail fast, as deprovisionAgent does.
+    maxReconnectAttempts: 0,
+    timeout: 5_000,
+  });
+  try {
+    const t = deprovisionTargetPrincipal({ principal: opts.targetId, lifecycleUid: opts.lifecycleUid });
+    const kv = await new Kvm(nc).open(aclBucket(opts.space), { allow_direct: true });
+    return await fenceAcl(kv, principalKey(t.owner, t.actor).key, t.lifecycleUid);
+  } finally {
+    await nc.drain();
   }
 }
 
@@ -837,7 +950,7 @@ export async function deprovisionAgent(opts: {
   memberChannels?: readonly string[];
   creds?: string;
 }): Promise<DeprovisionResourceAccounting> {
-  const nc = await connect({
+  const nc = await dialerFor(opts.servers)({
     servers: opts.servers,
     ...standaloneConnectOpts({ creds: opts.creds, /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }),
     // This is a detached, fire-and-forget teardown — it must FAIL FAST, never hang, so the caller's
@@ -1011,8 +1124,7 @@ async function purgeKvKeyWithAccounting(
     await kv.purge(key, { previousSeq: before.seq });
     return before.live ? { outcome: "deleted", status: "won" } : { outcome: "absent", status: "already-tombstoned" };
   } catch (err: unknown) {
-    const m = (err as Error)?.message ?? "";
-    if ((err as { code?: number }).code === 10071 || m.includes("10071") || m.includes("wrong last sequence")) {
+    if (isCasLoss(err)) {
       const after = await observe();
       if (after.live) throw new Error(`CAS loss left a live ${bucket}/${key}`, { cause: err });
       return { outcome: before.live ? "disappeared" : "absent", status: "raced-loss" };

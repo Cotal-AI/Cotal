@@ -1,7 +1,7 @@
 {
   "name": "@cotal-ai/connector-core",
   "description": "Shared MCP-bridge runtime for Cotal connectors: the mesh agent, cotal_* tools, and hook relay.",
-  "version": "0.91.0",
+  "version": "0.132.1",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -27,10 +27,14 @@
     "./relay": {
       "types": "./dist/relay.d.ts",
       "import": "./dist/relay.js"
+    },
+    "./seat-cache": {
+      "types": "./dist/seat-compile-cache.d.ts",
+      "import": "./dist/seat-compile-cache.js"
     }
   },
   "scripts": {
-    "test": "tsx smoke/spawn-args.smoke.ts",
+    "test": "tsx smoke/spawn-args.smoke.ts && tsx smoke/inline-delivery.smoke.ts && tsx smoke/persona-outcome.smoke.ts",
     "gen:docsbundle": "node ../../scripts/generate-docs-bundle.mjs",
     "typecheck": "pnpm run gen:docsbundle && tsc -p tsconfig.json --noEmit && tsc -p tsconfig.smoke.json",
     "build": "pnpm run gen:docsbundle && tsc -p tsconfig.json",
@@ -44,6 +48,8 @@
     "@cotal-ai/core": ">=0.1.0"
   },
   "devDependencies": {
+    "@cotal-ai/auth": "workspace:*",
+    "jose": "^6.2.3",
     "@cotal-ai/smoke-kit": "workspace:*",
     "@ag-ui/core": "0.0.57",
     "@cotal-ai/core": "workspace:*",

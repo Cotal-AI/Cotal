@@ -21,6 +21,8 @@ The endpoint stays off the roster and creates no inbox, chat, or anycast durable
 It reads through a live tap, history reads, and presence and membership watches.
 The web server creates its own endpoint with the same observer flags. Browsers read its HTTP APIs and event stream.
 
+History reads can create temporary consumers. Stopping or rebinding a watch first disarms local delivery. If the presented credentials exclude consumer deletion, cleanup sends no delete and leaves broker expiry to reclaim it after five minutes. Permitted deletes reclaim immediately. SDK-internal ordered-consumer recovery is unchanged.
+
 The console narrows its tap to `chatWildcard(space)` whenever it has credentials or a user bearer.
 That view exposes multicast traffic and hides DMs and anycast.
 An open-mesh console uses the whole-space tap.
@@ -159,7 +161,7 @@ Offline agents are excluded because their heartbeat ages continue to grow after 
 Self-addressed messages do not form conversations. The model resolves names, roles, and statuses from the roster by ID.
 An absent peer has status `offline`. Message lists sort oldest first. Conversations and peers sort by their latest message, newest first.
 The log retains at most 1,000 raw DMs. Startup history merges with live DMs by sender ID, recipient ID, and timestamp.
-A chat-only observer leaves `dms` empty. The console topology also uses endpoint IDs as keys and display names as labels, so equal names do not merge nodes.
+A chat-only observer leaves `dms` empty. The console topology also uses endpoint IDs as keys and roster `name/role` labels for display, so equal names do not merge nodes.
 
 ### Membership feed [#membership-feed]
 

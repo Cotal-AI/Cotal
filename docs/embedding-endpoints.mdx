@@ -61,6 +61,12 @@ These checks prevent a malformed timestamp from leaving a row live indefinitely 
 They are separate from the timestamp checks used to render optional ages.
 The complete wire field definitions are in [SPEC §6](../SPEC.md#6-presence-and-discovery).
 
+## On-demand presence [#on-demand-presence]
+
+Agent seats call `CotalEndpoint.readPresence()` when a tool needs a roster. Batched Direct Gets bind no consumer, apply presence validation and liveness rules, share concurrent calls, and retain a missing previously observed peer as offline. They need `$JS.API.DIRECT.GET.KV_cotal_presence_<space>`. Older issuers can mint credentials without it. Upgrade the issuer, mint replacement credentials, and connect with those credentials. Reconnecting the same credential adds no grant. A refused read remains an authorization failure.
+
+A failed read leaves a last-known roster. A DM or mention with a name that the failed read cannot verify refuses with that same reason. A name verified by an earlier read remains accepted. Watching managers, delivery, chat, and dashboard endpoints retain their transition watches.
+
 ## Presence diagnosis [#presence-view-and-write-diagnosis]
 
 `presenceView()` reports the trust state of this endpoint's local presence watch.
@@ -158,3 +164,7 @@ Reconnect uses the endpoint's normal credential-renewal and recovery paths and w
 A copy already received by the client cannot reach a new handler after stop begins or its connection is replaced.
 That copy stays unacknowledged and can redeliver after the durable's acknowledgement wait.
 An acknowledgement, negative acknowledgement, or in-progress signal from a handler on a closed connection throws.
+
+## Watch cleanup [#watch-cleanup]
+
+Presence and channel-registry watch cleanup first disarms local delivery. A known excluded consumer-delete subject causes no delete request. Unknown credential context still asks the broker, and refused deletes leave the consumer to inactivity expiry. Permitted deletes reclaim immediately. Endpoint stop, silent-watch rebind, and manual reconnect retire their owned watches, including an in-flight bind. A connection that closes on its own leaves the watch to the broker threshold. SDK-internal ordered-consumer recovery remains unchanged.

@@ -19,6 +19,8 @@ import { pickFreePort } from "./_free-port.js";
 console.log = () => {}; console.error = () => {};
 const root = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}local-none-state-`));
 const home = join(root, "home"); mkdirSync(home);
+// The CLI children inherit this environment, so they must see only the suite's own COTAL_ keys.
+for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
 process.env.COTAL_HOME = home;
 const identity = (pid: number) => ({ pid, cwd: readlinkSync(`/proc/${pid}/cwd`), start: readFileSync(`/proc/${pid}/stat`, "utf8").split(") ").pop()!.split(" ")[19] });
 const children: ReturnType<typeof identity>[] = [];

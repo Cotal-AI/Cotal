@@ -1,7 +1,7 @@
 ---
 title: Embedding Cotal
 description: Choose the published packages and authority boundaries for a service built on Cotal.
-kind: Informative
+kind: Concept
 audience: integrators
 ---
 
@@ -11,6 +11,8 @@ import { Callout } from 'fumadocs-ui/components/callout';
 Build your service from the published `@cotal-ai/*` packages.
 Your application's entry point imports the packages it needs and owns their configuration and lifecycle.
 The `cotal` CLI uses the same composition pattern in [`bin/cotal.ts`](../bin/cotal.ts).
+
+For CLI automation, agent tools, and wire clients, see the [API reference](api-reference.mdx).
 
 Read [Architecture](architecture.mdx), [Identity and auth](identity-and-auth.mdx), and the [Delivery daemon](delivery-daemon.mdx) before composing server processes.
 
@@ -82,6 +84,26 @@ Use the `Manager` class for an in-process supervisor.
 
 The topic links below preserve section links from the earlier combined guide.
 
+### Workspace registry liveness [#workspace-registry-liveness]
+
+A liveness sweep keeps registrations and reports offline names. Mismatch pruning is a separate operation. See [registry liveness](embedding-exports.mdx#workspace-registry-liveness).
+
+### Node connection signing [#node-connection-signing]
+
+Node connections sign each authentication challenge with fresh credential material. See [connection signing](embedding-exports.mdx#node-connection-signing).
+
+### User credential authority [#user-credential-authority]
+
+A provider may return its authoritative grant alongside a bearer. An absent grant answer remains unknown. See [user credential authority](embedding-exports.mdx#user-credential-authority).
+
+### Login confirmation [#login-confirmation]
+
+Manager startup confirms a cached login before saving or launching. See [login confirmation](embedding-exports.mdx#login-confirmation).
+
+### Older issued-authority stores [#issued-authority-stores-from-before-01110]
+
+Pre-0.111.0 stores require explicit handling before current issuance. See [issued-authority stores](embedding-provisioning.mdx#issued-authority-stores-from-before-01110).
+
 ### Interactive Manager selection [#interactive-manager-primary]
 
 A trusted host can select the local Manager for an unpinned interactive exchange.
@@ -94,7 +116,7 @@ See [Account connection census](embedding-service-authority.mdx#account-connecti
 
 ### Service authority [#service-authority-contracts]
 
-Service-access proof, registration, and renewal have separate contracts.
+Service-access proof, registration, and renewal have separate contracts. Opt-in hosted service authority now performs owner approval, name binding, registration, activation, and native caller issuance. See [host operations](embedding-service-host.mdx), [verified serving access](embedding-service-access.mdx), and [caller policy](embedding-service-callers.mdx).
 See [Service authority contracts](embedding-service-authority.mdx#service-authority-contracts).
 
 ### Owner-bound platform supervisors [#owner-bound-platform-supervisors]

@@ -6,6 +6,12 @@ the file and the function it was read from. Everything else is proposed and says
 **Citations.** Every `file` and function below was read in this worktree at `d3fbeb1fd`. No seed, key,
 token, or credential value is reproduced anywhere.
 
+**Status on 26 October 2026.** Still a design. No `ai.cotal.tasks` cluster, tasks endpoint, record kind
+or command exists in source. Some current-state facts below have moved since `d3fbeb1fd`: the manager
+cluster document is at revision 39 rather than 15, and the tree now also declares the
+`ai.cotal.auth` and `ai.cotal.linear` cluster URNs. `ServiceSpec` still pins `protocol.v` to 1, and
+no CLI command calls `epWatchEvents`.
+
 ## The question
 
 Nothing in this repository lets a kanban board or an issue tracker take part in a space. Work is

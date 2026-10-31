@@ -1,5 +1,699 @@
 # @cotal-ai/seat
 
+## 0.132.1
+
+No changes in this release.
+
+## 0.132.0
+
+No changes in this release.
+
+## 0.131.6
+
+No changes in this release.
+
+## 0.131.5
+
+No changes in this release.
+
+## 0.131.4
+
+No changes in this release.
+
+## 0.131.3
+
+No changes in this release.
+
+## 0.131.2
+
+No changes in this release.
+
+## 0.131.1
+
+No changes in this release.
+
+## 0.131.0
+
+No changes in this release.
+
+## 0.130.2
+
+No changes in this release.
+
+## 0.130.1
+
+No changes in this release.
+
+## 0.130.0
+
+No changes in this release.
+
+## 0.129.9
+
+No changes in this release.
+
+## 0.129.8
+
+No changes in this release.
+
+## 0.129.7
+
+No changes in this release.
+
+## 0.129.6
+
+No changes in this release.
+
+## 0.129.5
+
+No changes in this release.
+
+## 0.129.4
+
+No changes in this release.
+
+## 0.129.3
+
+No changes in this release.
+
+## 0.129.2
+
+No changes in this release.
+
+## 0.129.1
+
+No changes in this release.
+
+## 0.129.0
+
+No changes in this release.
+
+## 0.128.7
+
+No changes in this release.
+
+## 0.128.6
+
+No changes in this release.
+
+## 0.128.5
+
+No changes in this release.
+
+## 0.128.4
+
+No changes in this release.
+
+## 0.128.3
+
+No changes in this release.
+
+## 0.128.2
+
+No changes in this release.
+
+## 0.128.1
+
+No changes in this release.
+
+## 0.128.0
+
+No changes in this release.
+
+## 0.127.5
+
+No changes in this release.
+
+## 0.127.4
+
+No changes in this release.
+
+## 0.127.3
+
+No changes in this release.
+
+## 0.127.2
+
+No changes in this release.
+
+## 0.127.1
+
+No changes in this release.
+
+## 0.127.0
+
+No changes in this release.
+
+## 0.126.3
+
+No changes in this release.
+
+## 0.126.2
+
+No changes in this release.
+
+## 0.126.1
+
+No changes in this release.
+
+## 0.126.0
+
+No changes in this release.
+
+## 0.125.0
+
+No changes in this release.
+
+## 0.124.3
+
+No changes in this release.
+
+## 0.124.2
+
+No changes in this release.
+
+## 0.124.1
+
+No changes in this release.
+
+## 0.124.0
+
+No changes in this release.
+
+## 0.123.0
+
+No changes in this release.
+
+## 0.122.0
+
+No changes in this release.
+
+## 0.121.7
+
+No changes in this release.
+
+## 0.121.6
+
+No changes in this release.
+
+## 0.121.5
+
+No changes in this release.
+
+## 0.121.4
+
+No changes in this release.
+
+## 0.121.3
+
+### Patch Changes
+
+- a8404e4: Share one validated `/proc/<pid>/stat` parser across seat record, reap, launcher, and custodian readers so a malformed stat line is rejected consistently instead of slicing from an unguarded offset.
+
+## 0.121.2
+
+No changes in this release.
+
+## 0.121.1
+
+No changes in this release.
+
+## 0.121.0
+
+No changes in this release.
+
+## 0.120.2
+
+No changes in this release.
+
+## 0.120.1
+
+No changes in this release.
+
+## 0.120.0
+
+No changes in this release.
+
+## 0.119.5
+
+No changes in this release.
+
+## 0.119.4
+
+No changes in this release.
+
+## 0.119.3
+
+No changes in this release.
+
+## 0.119.2
+
+No changes in this release.
+
+## 0.119.1
+
+No changes in this release.
+
+## 0.119.0
+
+No changes in this release.
+
+## 0.118.3
+
+No changes in this release.
+
+## 0.118.2
+
+No changes in this release.
+
+## 0.118.1
+
+No changes in this release.
+
+## 0.118.0
+
+### Minor Changes
+
+- 6b262cf: Install the Linux machine daemon as a systemd user service, and let a restarted daemon come back by itself.
+  
+  `cotal daemon install` writes one systemd user unit, enables linger for the invoking user and starts it. The unit starts at login and restarts the daemon when it dies. `cotal daemon uninstall` stops it, disables autostart and removes the unit it recorded. Both take `--dry-run`, and a linger that cannot be enabled fails the install rather than leaving a service that stops at logout.
+  
+  Both daemon forms now hold one kernel `flock` lifetime lock, the default daemon's at `<COTAL_HOME>/daemon/daemon.lock`. The kernel releases it when the holder dies, so a start knows its predecessor is gone without judging a recorded pid. The lock record names the socket its holder published by device and inode, and a start removes that socket and no other: a socket the record does not name, or one that appears after a clean shutdown, is refused and left in place. A crashed daemon no longer needs an operator to remove its socket before it can start again.
+  
+  A service connection the space accepted is recorded per space, and a starting daemon connects every space it holds a record for, so the connections a daemon held before a crash come back with nothing to run. `service-disconnect` removes that record, so an explicit disconnect outlives a restart.
+  
+  `@cotal-ai/seat` exports `flockExclusiveNb`, an exclusive non-blocking `flock(2)` added to the Linux native helper it already ships. `@cotal-ai/cli` exports the owned systemd user-unit primitives the daemon's install reuses, so there is one mechanism for writing and registering this CLI's units.
+
+## 0.117.1
+
+No changes in this release.
+
+## 0.117.0
+
+No changes in this release.
+
+## 0.116.5
+
+No changes in this release.
+
+## 0.116.4
+
+No changes in this release.
+
+## 0.116.3
+
+No changes in this release.
+
+## 0.116.2
+
+No changes in this release.
+
+## 0.116.1
+
+No changes in this release.
+
+## 0.116.0
+
+No changes in this release.
+
+## 0.115.4
+
+No changes in this release.
+
+## 0.115.3
+
+No changes in this release.
+
+## 0.115.2
+
+No changes in this release.
+
+## 0.115.1
+
+No changes in this release.
+
+## 0.115.0
+
+No changes in this release.
+
+## 0.114.1
+
+No changes in this release.
+
+## 0.114.0
+
+No changes in this release.
+
+## 0.113.3
+
+No changes in this release.
+
+## 0.113.2
+
+No changes in this release.
+
+## 0.113.1
+
+No changes in this release.
+
+## 0.113.0
+
+No changes in this release.
+
+## 0.112.0
+
+No changes in this release.
+
+## 0.111.1
+
+No changes in this release.
+
+## 0.111.0
+
+No changes in this release.
+
+## 0.110.0
+
+No changes in this release.
+
+## 0.109.25
+
+No changes in this release.
+
+## 0.109.24
+
+No changes in this release.
+
+## 0.109.23
+
+No changes in this release.
+
+## 0.109.22
+
+No changes in this release.
+
+## 0.109.21
+
+No changes in this release.
+
+## 0.109.20
+
+No changes in this release.
+
+## 0.109.19
+
+No changes in this release.
+
+## 0.109.18
+
+No changes in this release.
+
+## 0.109.17
+
+No changes in this release.
+
+## 0.109.16
+
+No changes in this release.
+
+## 0.109.15
+
+No changes in this release.
+
+## 0.109.14
+
+### Patch Changes
+
+- 60e6671: A managed Claude Code seat that stops on Claude's first-run text style picker, its login method choice or its Bypass Permissions warning now fails at the startup bound naming that screen and the step that clears it. It used to fail saying the development-channels prompt did not appear, which pointed at the wrong cause. Cotal still never answers any of these screens: the Bypass Permissions warning stays for the user to accept once, or the launch passes `--opt permission-mode=default` (`launchOptions: {permission-mode: default}` in a manifest). A launch recipe declares such screens in the new optional `LaunchSpec.confirmBlockers`. The pty, custody, tmux, cmux, Orca and Herdr runtimes send no key while one is on screen and name its reason when the bound ends there. A runtime that ignores the field fails as before, with the generic message.
+  
+  A foreground `cotal spawn` of Claude Code no longer passes `--permission-mode bypassPermissions`. It runs in your terminal, so Claude keeps its own permission mode and you answer its prompts there; before, it opened on the Bypass Permissions warning while the spawn's hint said to press Enter at the development-channels prompt, and Enter there exits Claude. A managed seat keeps bypass as its default, and a permission option you pass still wins in both.
+  
+  `cotal up -f` no longer prints a success mark for its agents. It says the stack is up and the agents' launch is pending, that it does not wait for them to join, and names `cotal ps --space <space>` and the manager's log, where a failed launch is recorded with its reason.
+  
+  The quickstart and the team guide now say to finish Claude's first run once before the manager launches Claude Code, and give both permission routes.
+
+## 0.109.13
+
+No changes in this release.
+
+## 0.109.12
+
+No changes in this release.
+
+## 0.109.11
+
+No changes in this release.
+
+## 0.109.10
+
+No changes in this release.
+
+## 0.109.9
+
+No changes in this release.
+
+## 0.109.8
+
+No changes in this release.
+
+## 0.109.7
+
+No changes in this release.
+
+## 0.109.6
+
+No changes in this release.
+
+## 0.109.5
+
+No changes in this release.
+
+## 0.109.4
+
+No changes in this release.
+
+## 0.109.3
+
+No changes in this release.
+
+## 0.109.2
+
+No changes in this release.
+
+## 0.109.1
+
+No changes in this release.
+
+## 0.109.0
+
+No changes in this release.
+
+## 0.108.1
+
+No changes in this release.
+
+## 0.108.0
+
+No changes in this release.
+
+## 0.107.0
+
+No changes in this release.
+
+## 0.106.1
+
+No changes in this release.
+
+## 0.106.0
+
+No changes in this release.
+
+## 0.105.1
+
+No changes in this release.
+
+## 0.105.0
+
+No changes in this release.
+
+## 0.104.2
+
+No changes in this release.
+
+## 0.104.1
+
+No changes in this release.
+
+## 0.104.0
+
+### Patch Changes
+
+- e0c4e6e: Correct the documentation page by page against the implementation, including CLI commands, connector delivery and activity sharing, authentication, observer surfaces, hosted composition, telemetry and historical design status. Refresh package guides and generated tool and HTTP references while preserving existing links and normative contracts.
+
+## 0.103.4
+
+No changes in this release.
+
+## 0.103.3
+
+No changes in this release.
+
+## 0.103.2
+
+No changes in this release.
+
+## 0.103.1
+
+No changes in this release.
+
+## 0.103.0
+
+No changes in this release.
+
+## 0.102.0
+
+No changes in this release.
+
+## 0.101.7
+
+No changes in this release.
+
+## 0.101.6
+
+No changes in this release.
+
+## 0.101.5
+
+No changes in this release.
+
+## 0.101.4
+
+No changes in this release.
+
+## 0.101.3
+
+No changes in this release.
+
+## 0.101.2
+
+No changes in this release.
+
+## 0.101.1
+
+No changes in this release.
+
+## 0.101.0
+
+### Patch Changes
+
+- 7b0e5f2: Stop accepting startup confirmation input before a timeout stops the child, so shutdown output cannot receive an automatic Enter.
+
+## 0.100.2
+
+No changes in this release.
+
+## 0.100.1
+
+No changes in this release.
+
+## 0.100.0
+
+No changes in this release.
+
+## 0.99.3
+
+No changes in this release.
+
+## 0.99.2
+
+No changes in this release.
+
+## 0.99.1
+
+No changes in this release.
+
+## 0.99.0
+
+No changes in this release.
+
+## 0.98.0
+
+No changes in this release.
+
+## 0.97.1
+
+No changes in this release.
+
+## 0.97.0
+
+No changes in this release.
+
+## 0.96.1
+
+No changes in this release.
+
+## 0.96.0
+
+No changes in this release.
+
+## 0.95.2
+
+No changes in this release.
+
+## 0.95.1
+
+No changes in this release.
+
+## 0.95.0
+
+No changes in this release.
+
+## 0.94.7
+
+No changes in this release.
+
+## 0.94.6
+
+No changes in this release.
+
+## 0.94.5
+
+No changes in this release.
+
+## 0.94.4
+
+No changes in this release.
+
+## 0.94.3
+
+No changes in this release.
+
+## 0.94.2
+
+No changes in this release.
+
+## 0.94.1
+
+No changes in this release.
+
+## 0.94.0
+
+No changes in this release.
+
+## 0.93.0
+
+No changes in this release.
+
+## 0.92.2
+
+No changes in this release.
+
+## 0.92.1
+
+No changes in this release.
+
+## 0.92.0
+
 ## 0.91.0
 
 ### Patch Changes

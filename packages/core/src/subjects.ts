@@ -27,6 +27,7 @@
  * Presence lives in a JetStream KV bucket, not a subject (see presenceBucket()).
  */
 import { fromPublic } from "@nats-io/nkeys";
+import type { Presence, PresenceStatus } from "./types.js";
 
 const ILLEGAL = /[^A-Za-z0-9_-]/g;
 
@@ -157,9 +158,11 @@ export function assertValidChannel(channel: string): string {
       return;
     }
     if (s === "*") return;
+    // The wildcard segments are named only to a segment that holds one, so a refusal never offers
+    // `*` or `>` to a name that did not try a wildcard.
     if (!/^[A-Za-z0-9_-]+$/.test(s))
       throw new Error(
-        `invalid channel "${channel}": segment "${s}" must be a NATS-safe token ([A-Za-z0-9_-]), '*', or '>' - ` +
+        `invalid channel "${channel}": segment "${s}" must be a NATS-safe token ([A-Za-z0-9_-])${/[*>]/.test(s) ? ", '*', or '>'" : ""} - ` +
           `policy channel names can't contain characters the wire layer would rewrite`,
       );
   });
@@ -185,11 +188,7 @@ export function assertValidChannel(channel: string): string {
  */
 export const MAX_CHANNEL_LENGTH = 4096;
 
-/** Validate an **owner or actor token** of the owner+actor grammar (the per-user-auth cutover).
- *  Defined AHEAD of use: today this has no call sites — persisted owner-bearing keys
- *  ({@link memberKey}, {@link aclKey}, {@link dinboxSubject}, {@link dlvSubject}) still ride raw
- *  nkeys through `token()`/`routeToken()` (a no-op on base32) — the cutover wires this in at every
- *  mint/callout boundary and persisted owner/actor-bearing key. STRICTER than
+/** Validate an **owner or actor token** of the owner+actor grammar. STRICTER than
  *  {@link assertValidChannel}: a token is exactly ONE NATS-safe segment — `[A-Za-z0-9_]+`, with NO
  *  dots, NO `*`, NO `>`, and NO `-`. Dots/wildcards in an id are lane breakout or aliasing (they would
  *  let one owner's grant span, or collide with, another's); `-` is excluded because it is reserved as
@@ -890,6 +889,51 @@ export function deliveryOf(subject: string): DeliveryMode | null {
 /** Name of the KV bucket holding presence for a space. */
 export function presenceBucket(space: string): string {
   return `cotal_presence_${token(space)}`;
+}
+
+const PRESENCE_STATUSES: Record<PresenceStatus, true> = { idle: true, waiting: true, working: true, offline: true };
+
+function presenceRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function presenceOptionalString(value: unknown): boolean {
+  return value === undefined || typeof value === "string";
+}
+
+/** The presence row shape every reader relies on (SPEC §6). A record whose `card.id` differs from
+ *  its KV key, whose `card.name` or `status` has the wrong type, whose `ts` is not finite, whose
+ *  printed display fields are present and not strings, or whose `condition` is present and is not
+ *  an object with a string `code`, is not a row. `card.id` must be a non-empty string and equal the
+ *  key it was read under: the key is the identity the write grant proves, and an empty id matches
+ *  no key. */
+export function isPresenceRow(value: unknown, key: string): value is Presence {
+  return presenceRowProblem(value, key) === undefined;
+}
+
+function presenceRowProblem(value: unknown, key: string): string | undefined {
+  if (!presenceRecord(value)) return "row";
+  if (!presenceRecord(value.card)) return "card";
+  const card = value.card;
+  if (typeof card.id !== "string" || card.id.length === 0 || card.id !== key) return "card.id";
+  if (typeof card.name !== "string") return "card.name";
+  if (!presenceOptionalString(card.role)) return "card.role";
+  if (typeof value.status !== "string" || !Object.hasOwn(PRESENCE_STATUSES, value.status)) return "status";
+  if (typeof value.ts !== "number" || !Number.isFinite(value.ts)) return "ts";
+  if (!presenceOptionalString(value.activity)) return "activity";
+  if (!presenceOptionalString(value.attention)) return "attention";
+  if (value.condition !== undefined) {
+    if (!presenceRecord(value.condition)) return "condition";
+    if (typeof value.condition.code !== "string") return "condition.code";
+  }
+  return undefined;
+}
+
+/** Enforce the same wire shape as {@link isPresenceRow}, naming the invalid field without
+ *  coercing it or including its value. Writers call this before changing their local state. */
+export function assertPresenceRow(value: unknown, key: string): asserts value is Presence {
+  const field = presenceRowProblem(value, key);
+  if (field !== undefined) throw new TypeError(`invalid presence ${field}`);
 }
 
 /** Name of the KV bucket holding the channel registry (config) for a space — sibling of

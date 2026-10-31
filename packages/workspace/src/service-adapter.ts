@@ -1,13 +1,14 @@
 import { createHash } from "node:crypto";
-import { accessSync, constants, lstatSync, type Stats } from "node:fs";
-import { dirname, isAbsolute } from "node:path";
+import { accessSync, constants, lstatSync, readlinkSync, realpathSync, type Stats } from "node:fs";
+import { isAbsolute, sep } from "node:path";
 import { Ajv2020, type ValidateFunction } from "ajv/dist/2020.js";
 import { endpointToken, token } from "@cotal-ai/core";
 import type { ControllerStackView } from "./maintenance.js";
 import type { ProcessIdentityRecord } from "./pid.js";
 import { schemaErrorLocation, type ServiceDefinitionInput } from "./service-definition.js";
 import { CommandFailure } from "./output.js";
-import { assertProtectedEntry, protectedCredentialReference, protectedLocalDirectory } from "./protected-records.js";
+import { launcherInstallRoot } from "./cotal-home.js";
+import { protectedCredentialReference, protectedLocalEntry } from "./protected-records.js";
 
 /** Workstation ABI only. A declaration grants no native endpoint or OS process authority. */
 export interface ServiceAdapterDeclaration {
@@ -114,6 +115,24 @@ export interface ServiceAdapterStopResult {
   readonly observedAt: string;
 }
 
+/** A native stop the child refused before it started any stop. Its `refused` receipt is the outcome. */
+export interface ServiceAdapterStopRefusal {
+  readonly requestId: string;
+  readonly nativeStop: "refused";
+  readonly observedAt: string;
+}
+
+/** A native stop an operator abandoned: no receipt settles it, and its process and the stopper that
+ *  published it have both exited. `receipts` are the phases the child wrote before it exited. What it
+ *  stopped, agents included, is not confirmed. */
+export interface ServiceAdapterStopAbandonment {
+  readonly requestId: string;
+  readonly nativeStop: "abandoned";
+  readonly receipts: readonly ("accepted" | "failed")[];
+  readonly withAgents: boolean;
+  readonly cleanup: "not-checked";
+}
+
 /** The exact local broker configuration a kernel-exit stop is bound to. It names no mesh endpoint,
  *  principal or epoch, because a broker process has none. */
 export interface ServiceAdapterBrokerBinding {
@@ -157,6 +176,17 @@ export interface ServiceAdapterHooks {
   readonly observeKernelStop?: (context: ServiceAdapterContext & { readonly process: ProcessIdentityRecord }) => "ports-file-removed" | "ports-file-retained";
   readonly prepareServiceStop?: (context: ServiceAdapterStopContext) => Promise<ServiceAdapterStopPlan>;
   readonly stopService?: (context: ServiceAdapterStopContext & { readonly requestId: string; readonly plan: ServiceAdapterStopPlan }) => Promise<ServiceAdapterStopResult>;
+  /** A native stop request that outlived its `stopService` call. Returns the same returned result
+   *  once this adapter's own `completed` receipt for `requestId` and the exact process exit are both
+   *  on record, or the refusal once the child's `refused` receipt is its only one and the request is
+   *  removed. Either answer comes after releasing the reservation that request took. Undefined
+   *  retains both. */
+  readonly settleServiceStop?: (context: ServiceAdapterContext & { readonly process: ProcessIdentityRecord; readonly requestId: string }) => ServiceAdapterStopResult | ServiceAdapterStopRefusal | undefined;
+  /** An operator's abandon of a native stop request no receipt settles. Only once its exact process
+   *  and the stopper that published it have both exited, this releases the reservation, removes the
+   *  request and anything else that request armed, and returns the abandonment. Otherwise it throws
+   *  a refusal and changes nothing. */
+  readonly abandonServiceStop?: (context: ServiceAdapterContext & { readonly process: ProcessIdentityRecord; readonly requestId: string }) => ServiceAdapterStopAbandonment;
   readonly buildServiceLaunch?: (context: ServiceAdapterContext) => ServiceAdapterLaunch | Promise<ServiceAdapterLaunch>;
   readonly checkServiceReadiness?: (context: ServiceAdapterContext & { readonly process: ProcessIdentityRecord; readonly signal: AbortSignal }) => Promise<ServiceAdapterReadiness>;
 }
@@ -240,12 +270,13 @@ export function serviceAdapterDeclaration(input: unknown): ServiceAdapterDeclara
   return input as unknown as ServiceAdapterDeclaration;
 }
 
-export function validateServiceAdapterOptions(declaration: ServiceAdapterDeclaration, options: Readonly<Record<string, unknown>>): void {
+/** `name` gives how an option reads in a refusal, such as the flag a preset gives it. */
+export function validateServiceAdapterOptions(declaration: ServiceAdapterDeclaration, options: Readonly<Record<string, unknown>>, name = (option: string) => option): void {
   serviceAdapterDeclaration(declaration);
   let check: ValidateFunction, valid: boolean;
   try { check = new Ajv2020({ strict: true, ownProperties: true, validateFormats: false }).compile(declaration.optionsSchema); valid = check(options) === true; }
   catch { return invalid("the adapter options could not be validated against its closed declaration"); }
-  if (!valid) return invalid(`the service options do not match the installed adapter's closed schema${schemaErrorLocation(check.errors)}; option values were not printed`);
+  if (!valid) return invalid(`the service options do not match the installed adapter's closed schema${schemaErrorLocation(check.errors, name)}; option values were not printed`);
 }
 
 /** Public readiness evidence is closed and bound to a creation-pinned process. The installed
@@ -274,48 +305,51 @@ export function serviceAdapterReadiness(input: unknown): ServiceAdapterReadiness
 function pathFacts(path: string): string {
   let entry: Stats;
   try { entry = lstatSync(path); } catch { return `${path} is missing or cannot be read`; }
-  const type = entry.isSymbolicLink() ? "a symlink" : entry.isDirectory() ? "a directory" : entry.isFile() ? "a file" : "a special file";
+  // A symlink's own mode bits grant nothing, so they are not reported.
+  if (entry.isSymbolicLink()) return `${path} is a symlink to ${readlinkSync(path)}`;
+  const type = entry.isDirectory() ? "a directory" : entry.isFile() ? "a file" : "a special file";
   const writable = (entry.mode & 0o022) !== 0 ? ", so group or others can write it" : "";
   return `${path} is ${type} owned by uid ${entry.uid} with mode ${(entry.mode & 0o7777).toString(8).padStart(4, "0")}${writable}`;
 }
 
-/** The shallowest directory on `path`'s chain that {@link protectedLocalDirectory} refuses. The rule
- *  is applied from the filesystem root down instead of restated here. */
-function refusedAncestor(path: string): string {
-  const chain: string[] = [];
-  for (let dir = path; ; dir = dirname(dir)) {
-    chain.unshift(dir);
-    if (dirname(dir) === dir) break;
-  }
-  for (const dir of chain) {
-    try { protectedLocalDirectory(dir); } catch { return dir; }
-  }
-  return path;
-}
-
 /** Reference protection is checked without reading file contents or importing provider code. A
- *  refusal names the option, the path that failed and what that path's metadata shows. */
-export function validateServiceAdapterPaths(declaration: ServiceAdapterDeclaration, options: Readonly<Record<string, unknown>>): void {
+ *  refusal names the option as `label` reads it and, as the protected-path rule does, every
+ *  unprotected entry on the path once, with its reason and one remedy, so a single change fixes them all. */
+export function validateServiceAdapterPaths(declaration: ServiceAdapterDeclaration, options: Readonly<Record<string, unknown>>, label = (option: string) => option): void {
   for (const [name, kind] of Object.entries(declaration.paths ?? {})) {
     const path = options[name];
     if (path === undefined) continue;
-    if (typeof path !== "string" || !isAbsolute(path) || /[\u0000-\u001f\u007f]/u.test(path)) return invalid(`the ${name} option must be an absolute path with no terminal controls`);
+    if (typeof path !== "string" || !isAbsolute(path) || /[\u0000-\u001f\u007f]/u.test(path)) return invalid(`the ${label(name)} option must be an absolute path with no terminal controls`);
     if (kind === "private-file") { protectedCredentialReference(path); continue; }
-    const unprotected = (refused: string): never => {
-      throw new CommandFailure("refused", "PERMISSION_DENIED", `the declared adapter path ${name} is not protected against other local writers: ${pathFacts(refused)}`, { target: { option: name, path, refused } });
+    const unprotected = (refusal: CommandFailure): never => {
+      const { path: deepest, paths = [deepest] } = refusal.target as { path: string; paths?: string[] };
+      const link = paths.find((entry) => lstatSync(entry, { throwIfNoEntry: false })?.isSymbolicLink());
+      if (link) linked(link);
+      const refused = paths.at(-1)!;
+      // An installer from before its 022 umask left Cotal's own install group-writable under a umask
+      // of 0002, so a path in it, such as the runtime Node, is fixed by the update that repairs it.
+      const install = launcherInstallRoot();
+      if (install && paths.every((entry) => entry === install || entry.startsWith(install + sep)))
+        throw new CommandFailure("refused", "PERMISSION_DENIED", `${refusal.message}; ${paths.length === 1 ? "that folder belongs" : "those folders belong"} to Cotal's own install at ${install}`, { target: { option: name, path, refused, paths }, remedy: "cotal update, which removes group and other write from Cotal's own install" });
+      throw new CommandFailure("refused", "PERMISSION_DENIED", refusal.message, { target: { option: name, path, refused, paths }, remedy: refusal.remedy });
+    };
+    // A link can be repointed after this check, so only a physical path is checked and pinned.
+    const linked = (link: string): never => {
+      let physical: string | undefined;
+      try { physical = realpathSync(path); } catch { physical = undefined; }
+      throw new CommandFailure("refused", "PERMISSION_DENIED", `the declared adapter path ${label(name)} crosses a symlink, which could be repointed after this check: ${pathFacts(link)}`, {
+        target: { option: name, path, refused: link }, remedy: physical === undefined ? "use a physical path owned by you or root, without symlinks" : `use the physical path ${physical}`,
+      });
     };
     try {
-      const parent = kind === "directory" ? path : dirname(path);
-      try { protectedLocalDirectory(parent, "the declared adapter path"); }
-      catch (error) { if (error instanceof CommandFailure && error.code === "PERMISSION_DENIED") unprotected(refusedAncestor(parent)); throw error; }
+      try { protectedLocalEntry(path, `the declared adapter path ${label(name)}`); }
+      catch (error) { if (error instanceof CommandFailure && error.code === "PERMISSION_DENIED") unprotected(error); throw error; }
       const entry = lstatSync(path);
-      if (entry.isSymbolicLink() || (kind === "directory" ? !entry.isDirectory() : !entry.isFile())) throw new Error();
-      try { assertProtectedEntry("the declared adapter path", path, entry); }
-      catch (error) { if (error instanceof CommandFailure && error.code === "PERMISSION_DENIED") unprotected(path); throw error; }
+      if (kind === "directory" ? !entry.isDirectory() : !entry.isFile()) throw new Error();
       accessSync(path, constants.R_OK | (kind === "directory" ? constants.X_OK : 0));
     } catch (error) {
       if (error instanceof CommandFailure) throw error;
-      throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the declared adapter path ${name} is missing, unreadable or not a physical ${kind === "directory" ? "directory" : "file"}: ${pathFacts(path)}; no contents were printed`, { target: { option: name, path } });
+      throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the declared adapter path ${label(name)} is missing, unreadable or not a physical ${kind === "directory" ? "directory" : "file"}: ${pathFacts(path)}; no contents were printed`, { target: { option: name, path } });
     }
   }
 }
@@ -360,6 +394,19 @@ export function serviceAdapterKernelStopResult(input: unknown): ServiceAdapterKe
   serviceOperationId(input.requestId);
   serviceAdapterReadiness({ state: "ready", process: input.process, observedAt: input.observedAt });
   return input as unknown as ServiceAdapterKernelStopResult;
+}
+
+export function serviceAdapterStopRefusal(input: unknown): ServiceAdapterStopRefusal {
+  if (!plainObject(input) || Object.keys(input).length !== 3 || Object.keys(input).some((key) => !["requestId", "nativeStop", "observedAt"].includes(key)) || input.nativeStop !== "refused" || typeof input.observedAt !== "string" || !Number.isFinite(Date.parse(input.observedAt))) invalid("the native stop refusal must name only its request, the refused outcome and its observation time");
+  serviceOperationId((input as Record<string, unknown>).requestId);
+  return input as unknown as ServiceAdapterStopRefusal;
+}
+
+export function serviceAdapterStopAbandonment(input: unknown): ServiceAdapterStopAbandonment {
+  const receipts = plainObject(input) ? input.receipts : undefined;
+  if (!plainObject(input) || Object.keys(input).length !== 5 || Object.keys(input).some((key) => !["requestId", "nativeStop", "receipts", "withAgents", "cleanup"].includes(key)) || input.nativeStop !== "abandoned" || typeof input.withAgents !== "boolean" || input.cleanup !== "not-checked" || !Array.isArray(receipts) || !["", "accepted", "accepted,failed"].includes(receipts.join(","))) invalid("the native stop abandonment must name only its request, the abandoned outcome, the receipts it found, its agent policy and unchecked cleanup");
+  serviceOperationId((input as Record<string, unknown>).requestId);
+  return input as unknown as ServiceAdapterStopAbandonment;
 }
 
 export function serviceAdapterStopResult(input: unknown): ServiceAdapterStopResult {

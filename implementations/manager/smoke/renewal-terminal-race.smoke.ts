@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { connect, type NatsConnection } from "@nats-io/transport-node";
 import { Kvm } from "@nats-io/kv";
 import {
-  createSpaceAuth, gateObserve, headCandidate, mintCreds, newIdentity, principalKey, rawDigest,
+  createSpaceAuth, gateObserve, headCandidate, mintCreds, newIdentity, principalKey, credentialIdOf,
   standaloneConnectOpts, registry, DEV_OWNER, setupSpaceStreams, recordsBucket, epAuthBucket,
   parseLedgerRow, credRowKey, type AgentHandle, type AttachSession,
   type Connector, type LaunchSpec, type Presence, type CredentialLedgerRow,
@@ -31,7 +31,7 @@ const SCENARIOS = [
   { name: "racer_despawn", renewal: "direct", terminal: "despawn" },
   { name: "racer_exit", renewal: "sweep", terminal: "natural-exit" },
 ] as const;
-const SCENARIO_CELLS = SCENARIOS.length * 23;
+const SCENARIO_CELLS = SCENARIOS.length * 25;
 let pass = 0;
 let fail = 0;
 
@@ -219,6 +219,16 @@ const M = mgr as unknown as {
   renewManagedStaticCred(agent: Agent): Promise<void>;
   renewDaemonCreds(): Promise<void>;
   despawnAuthorized(agent: Agent, graceful: boolean, trackNonAdmin: boolean): { ok: boolean };
+  driveStaticRetirement(target: { name: string }, surfaceFailure?: boolean): Promise<void>;
+};
+
+// What each alias's static terminal was handed: its teardown target, which must carry the accepted
+// renewal as a declared field and none of the live record's own fields.
+const terminalTargets = new Map<string, Record<string, unknown>>();
+const driveStaticRetirement = M.driveStaticRetirement.bind(mgr);
+M.driveStaticRetirement = (target, surfaceFailure) => {
+  terminalTargets.set(target.name, target);
+  return driveStaticRetirement(target, surfaceFailure);
 };
 
 async function openLifecycleView(alias: string, actor: string, uid: string): Promise<{
@@ -247,7 +257,7 @@ async function stageExpiringCredential(agent: Agent, transport: LifecycleStateTr
     lifecycleUid: agent.lifecycleUid,
     expiresAt: exp,
   });
-  const credentialId = rawDigest(creds).replace("sha256:", "sha256-");
+  const credentialId = credentialIdOf(creds);
   await recordSlotCredential(transport, DEV_OWNER, agent.name, agent.lifecycleUid, credentialId);
   await appendStaticCredentialRow(transport, {
     lifecycleUid: agent.lifecycleUid,
@@ -308,7 +318,8 @@ try {
 
       const pausedKey = await bounded(pause.reached, 5_000);
       check(`${name}: renewal reaches the secret-store put after journaling`, pausedKey === secretKey, pausedKey);
-      check(`${name}: renewal publishes its accepted flight`, agent.staticCredentialRenewal !== undefined);
+      const acceptedFlight = agent.staticCredentialRenewal;
+      check(`${name}: renewal publishes its accepted flight`, acceptedFlight !== undefined);
 
       const duringSlot = await readStaticSlot(view.transport, DEV_OWNER, name);
       const duringIds = duringSlot?.row.credentialIds ?? [];
@@ -326,6 +337,11 @@ try {
       check(`${name}: ${scenario.terminal} enters the terminal path`, terminalEntered);
       check(`${name}: the terminal latch closes synchronously`, agent.terminalizing === true);
       check(`${name}: terminalization registers the lifecycle hold`, M.retiring.get(name)?.target.lifecycleUid === agent.lifecycleUid, M.retiring.get(name));
+      await until(() => terminalTargets.has(name), 1_000);
+      const terminalTarget = terminalTargets.get(name);
+      check(`${name}: the static terminal is handed the accepted renewal`, acceptedFlight !== undefined && terminalTarget?.staticCredentialRenewal === acceptedFlight);
+      const recordFields = terminalTarget && ["handle", "seed", "spawner", "startedAt"].filter((key) => key in terminalTarget);
+      check(`${name}: the static terminal is handed a teardown target, not the live record`, recordFields?.length === 0, recordFields);
 
       let lateOutcome: string | undefined;
       const late = M.renewManagedStaticCred(agent)

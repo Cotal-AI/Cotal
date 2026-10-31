@@ -42,6 +42,7 @@ import {
   assertManagedGrantCustody,
   assertValidChannel,
   assertValidOwnerToken,
+  eventChannel,
   mintLifecycleUid,
   mkSecretDir,
   parseActorLedgerSource,
@@ -386,7 +387,11 @@ export function assertWithinSpawnerGrant(
       );
     const overScope = child.scope.filter((s) => !parent.scope.includes(s));
     const overSub = child.allowSubscribe.filter((ch) => !patternInAllow(parent.allowSubscribe, ch));
-    const overPub = child.allowPublish.filter((ch) => !patternInAllow(parent.allowPublish, ch));
+    // A spawner that may post its own events may hand each child that child's own event channel
+    // and no other. The channel names the child, so it reaches nothing the spawner holds, and the
+    // walk still checks the spawner's own event channel against its parent up to the root.
+    const ownEvents = patternInAllow(parent.allowPublish, eventChannel({ owner: pOwner, actor: pActor })) ? eventChannel(child) : undefined;
+    const overPub = child.allowPublish.filter((ch) => ch !== ownEvents && !patternInAllow(parent.allowPublish, ch));
     // A role is RECEIVE reach (bind/consume the shared `svc_<role>` task queue), so it is a
     // delegated capability like any other: the spawner's scope must carry `role:<r>` to hand it
     // down. Rides the scope list — no extra row field, and scope's own per-link inclusion makes
@@ -535,6 +540,10 @@ export interface ManagedGrantTransaction {
   read(owner: string, actor: string): (ActorRow & { kind: ActorKind }) | undefined;
   grantManaged(row: ManagedGrantInput): ActorRow;
   grantInteractive(row: Omit<ActorRow, "grantedAt">): ActorRow;
+  /** Set an interactive row's display label and keep every other field, its lifecycle UID and grant
+   *  time included. The label is outside the authorization digest, so a bearer issued under the row
+   *  stays valid. Undefined when the owner has no interactive row for the actor. */
+  relabelInteractive(owner: string, actor: string, label: string): ActorRow | undefined;
   revokeInteractive(owner: string, actor: string): boolean;
   revokeManaged(owner: string, actor: string): boolean;
   revokeManagedAt(owner: string, actor: string, lifecycleUid: string): boolean;
@@ -575,6 +584,13 @@ export function withManagedGrantTransaction<T>(dir: string, body: (tx: ManagedGr
     read: live((owner: string, actor: string) => findActorUnified(dir, owner, actor)),
     grantManaged: live((row: ManagedGrantInput) => rawGrantManaged(dir, row)),
     grantInteractive: live((row: Omit<ActorRow, "grantedAt">) => rawGrantInteractive(dir, row)),
+    relabelInteractive: live((owner: string, actor: string, label: string) => {
+      const row = findIn(dir, "interactive", owner, actor);
+      if (!row) return undefined;
+      const relabeled: ActorRow = { ...row, label };
+      writeRow(dir, "interactive", relabeled);
+      return relabeled;
+    }),
     revokeInteractive: live((owner: string, actor: string) => revokeIn(dir, "interactive", owner, actor)),
     revokeManaged: live((owner: string, actor: string) => revokeIn(dir, "managed-agent", owner, actor)),
     revokeManagedAt: live((owner: string, actor: string, lifecycleUid: string) => rawRevokeManagedAt(dir, owner, actor, lifecycleUid)),
@@ -592,6 +608,13 @@ export function withManagedGrantTransaction<T>(dir: string, body: (tx: ManagedGr
   }
 }
 
+/** How a refused exchange opens when the signed-in human has no interactive grant for `actor`. The
+ *  rest of that refusal is the operator's grant command. A client with no ledger for the space
+ *  recognizes this opening, because exchange services send no structured refusal code. */
+export function notGrantedReason(actor: string): string {
+  return `actor "${actor}" is not granted for this user`;
+}
+
 /** The IdP bridge's `authorizeActor` hook (bearer-MINT boundary) — INTERACTIVE rows only, by
  *  construction. A name that exists only as a managed agent gets the exact managed-path answer
  *  (never "not granted", which would read as a permissions problem, and never a mint). */
@@ -605,7 +628,7 @@ export function ledgerAuthorizeGrant(dir: string): (owner: string, actor: string
       if (findManagedActor(dir, owner, actor))
         throw new Error(`actor "${actor}" is a managed agent - it authenticates with its own spawn-time secret; interact with it via the mesh, or respawn it with \`cotal spawn\``);
       throw new Error(
-        `actor "${actor}" is not granted for this user - the mesh operator lets them in with \`cotal actor grant ${actor} --owner ${owner} --full\` (or --sub <their IdP subject>, printed by their \`cotal login\`), which is the FULL grant: all channels, may spawn. For a narrow row, name --scope, --allow-subscribe and --allow-publish instead of --full`,
+        `${notGrantedReason(actor)} - the mesh operator lets them in with \`cotal actor grant ${actor} --owner ${owner} --full\` (or --sub <their IdP subject>, printed by their \`cotal login\`), which is the FULL grant: all channels, may spawn. For a narrow row, name --scope, --allow-subscribe and --allow-publish instead of --full`,
       );
     }
     // MINT-boundary lifecycle stamp (SPEC 13.1): EVERY minted bearer - view or not - carries the

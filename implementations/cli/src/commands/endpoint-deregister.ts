@@ -1,6 +1,7 @@
 import * as prompts from "../lib/prompts.js";
 import { assertLifecycleToken, endpointToken, registry, type ParsedArgs } from "@cotal-ai/core";
 import {
+  ConfirmationRequired,
   CommandFailure, brokerAddressForDisplay, isCommandFailure, isWorkspaceTargetError, oneLine,
   presentationOf, resolveMeshTarget, targetErrorCode, writeResult,
   type EndpointDeregisterAction, type EndpointDeregisterRequest, type Report,
@@ -38,7 +39,7 @@ export async function endpointDeregister(args: ParsedArgs): Promise<void> {
     return;
   }
   if (!args.values.yes) {
-    if (!canPrompt() || presentation === "json") throw new CommandFailure("refused", "USAGE_INVALID", "scripted deregistration requires --yes after reviewing the full class, instance, space and root", { target, remedy: "run the same exact target with --dry-run first" });
+    if (!canPrompt() || presentation === "json") throw new ConfirmationRequired("scripted deregistration requires --yes after reviewing the full class, instance, space and root", { target, remedy: "run the same exact target with --dry-run first, then with --yes" });
     const confirmed = await prompts.confirm({ message: `Deregister ${oneLine(endpoint)}/${oneLine(instanceId)} in ${oneLine(selected.space)} at ${oneLine(target.server)}? Root ${oneLine(selected.root)}. This removes registration metadata only if the broker affirms that instance gone; it does not stop a process.`, initialValue: false });
     if (prompts.isCancel(confirmed) || !confirmed) {
       writeResult(presentation, { command: "endpoint deregister", target, result: { kind: "endpoint-deregister-cancelled", removed: false }, noOp: true }, () => ({ sections: [{ title: "Registration kept", blocks: [{ kind: "lines", lines: ["No probe or deletion was requested."] }] }] }));

@@ -4,6 +4,12 @@
 > and [#1207](https://github.com/Cotal-AI/Cotal/issues/1207). Measured against `544a974b7`.
 > Phase 2 (implementation) does not start until the operator has read this.
 >
+> **Status on 26 October 2026.** Not implemented. The tree has none of the four `cotal_mesh*` tools,
+> the `list-meshes`, `register-mesh`, `mesh-material` and `mesh-disconnect` commands, `MeshSessionSet`,
+> the `mesh` capability, the `tools:` persona field, a `hosted` connector or runtime, or a control-frame
+> `revoke` op. File and line citations are to `544a974b7` and have moved since. The CLI's registry
+> verbs are now documented under `cotal space`, with `cotal meshes` kept as the mesh registry.
+>
 > **No delivery-plane wire change.** No new subject family, no new stream, no new message kind. What
 > this adds: four manager-endpoint commands, one control-frame op, one capability, one persona field,
 > one connector, one runtime, and a per-tool mesh selector.

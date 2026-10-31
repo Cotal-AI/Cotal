@@ -1,7 +1,7 @@
 ---
 title: "Install Cotal"
 description: "Install the cotal command with the shell installer or npm."
-kind: "Informative"
+kind: Start here
 audience: "first-time users"
 ---
 
@@ -25,7 +25,7 @@ curl -fsSL https://get.cotal.ai | sh -s -- --no-setup
 
 Run the installer as your own user, without sudo.
 It installs inside your home directory and checks downloaded Node.js files against their published SHA-256 sums.
-It uses a suitable Node.js 22 or newer already on your machine, or installs one for Cotal.
+It uses a suitable Node.js 22.10 or newer already on your machine, or installs one for Cotal.
 
 The launcher goes in `~/.local/bin/cotal`.
 The install root defaults to `${XDG_DATA_HOME:-~/.local/share}/cotal`.
@@ -43,7 +43,7 @@ The Quickstart starts the prepared space separately.
 
 ## Install with npm
 
-If you already have Node.js 22 or newer, run:
+If you already have Node.js 22.10 or newer, run:
 
 ```bash
 npm install -g cotal-ai
@@ -54,10 +54,14 @@ The shell installer does not support Windows shells.
 You can also use the shell installer inside WSL.
 
 Cotal includes a `nats-server` binary for its local broker.
-If you put your own `nats-server` on PATH, Cotal uses that binary instead.
-It must be version 2.12 or newer.
+If you put your own `nats-server` on PATH, Cotal uses it when its folder is not writable by other accounts.
+Otherwise it uses the bundled binary. `cotal up` refuses a selected broker older than 2.12 and names its path and version.
+`cotal status` shows which binary Cotal will run.
 An older deployment with a file-backed presence bucket needs 2.14.5 or newer to avoid a known write failure.
 See [Run a mesh](run-a-mesh.mdx#the-stack) before reusing an existing broker.
+
+The CLI sends usage telemetry by default. Run `cotal telemetry off` to disable it.
+[Telemetry](telemetry.mdx) lists the fields and other opt-outs.
 
 ## Check the installation
 

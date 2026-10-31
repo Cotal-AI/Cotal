@@ -29,7 +29,7 @@ import { arrayMethods, numberMethods, stringMethods } from "../src/library.js";
 import { parse } from "acorn";
 import { stripPositions } from "../src/interpret.js";
 import { BUILTINS } from "../src/primitives.js";
-import { Prng, assertNoCode } from "../src/values.js";
+import { Prng, assertNoCode, assertWritable, born } from "../src/values.js";
 import { EngineFault, createCtx, createEngine, type EngineCtx, type EngineRun, type Site } from "../src/engine/ctx.js";
 import { NODE_FLOOR, assertNodeFloor, runOnEngine, resumeOnEngine } from "../src/engine/host.js";
 import * as workerModule from "../src/engine/worker.js";
@@ -1331,6 +1331,56 @@ await parallel({
   const inRoom = await caught(() => withFrame(room, () => h.ctx.set(outer, "n", 2)));
   ok("and so does the same write inside a conclave body", codeOf(inRoom) === "L2032", String(inRoom));
   ok("and neither landed", outer.n === 0, outer.n);
+
+  const protoDesc = Object.getOwnPropertyDescriptor(EngineFrame.prototype, "depth");
+  const interpretSrc = readFileSync(fileURLToPath(new URL("../src/interpret.ts", import.meta.url)), "utf8").replace(/\r\n/g, "\n");
+  const walkerFrameSrc = interpretSrc.slice(interpretSrc.indexOf("class Frame {"), interpretSrc.indexOf("// ---- the run"));
+  ok(
+    "both Frame and EngineFrame derive depth as a prototype getter over keys.path.length with a three-argument constructor",
+    typeof protoDesc?.get === "function" &&
+      protoDesc.set === undefined &&
+      !Object.hasOwn(root, "depth") &&
+      EngineFrame.length === 3 &&
+      walkerFrameSrc.includes("get depth(): number {\n    return this.keys.path.length;\n  }") &&
+      !walkerFrameSrc.includes("readonly depth") &&
+      !walkerFrameSrc.includes("this.depth + 1"),
+  );
+
+  const branchedKeys = new KeyScope().branch("parallel", "outer", 0, "a");
+  const direct = new EngineFrame(branchedKeys, new RunClock(0), new Signal());
+  const directWrite = (() => {
+    try {
+      assertWritable(born({}, 0), direct);
+      return "allowed";
+    } catch (e) {
+      return codeOf(e);
+    }
+  })();
+  ok(
+    "an EngineFrame built directly over a branched KeyScope derives depth from its path and refuses an outer write with L2032",
+    direct.depth === 1 && direct.keys.path.length === 1 && directWrite === "L2032",
+    { depth: direct.depth, pathLength: direct.keys.path.length, directWrite },
+  );
+
+  const extraArg = new (EngineFrame as unknown as new (...a: unknown[]) => EngineFrame)(
+    branchedKeys,
+    new RunClock(0),
+    new Signal(),
+    2,
+  );
+  const sameDepthWrite = (() => {
+    try {
+      assertWritable(born({}, 1), extraArg);
+      return "allowed";
+    } catch (e) {
+      return (e as Error).name;
+    }
+  })();
+  ok(
+    "and an extra constructor argument in untyped callers cannot skew depth past keys.path.length",
+    extraArg.depth === 1 && sameDepthWrite === "allowed",
+    { depth: extraArg.depth, sameDepthWrite },
+  );
 }
 
 {
@@ -1666,6 +1716,7 @@ const SIM_HANDLER = new URL("./_sim-handler.mjs", import.meta.url).href;
   const sim = new SimHandler(SCRIPT);
   const recording: EffectHandler = {
     now: () => sim.now(),
+    participant: (req, ctx) => sim.participant(req, ctx),
     spawn: (req, ctx) => { events.push("effect:spawn"); return sim.spawn(req, ctx); },
     turn: (req, ctx) => { events.push("effect:turn"); return sim.turn(req, ctx); },
     ask: (req, ctx) => sim.ask(req, ctx),
@@ -1829,6 +1880,7 @@ log("winner", r.index)
     const sim = new SimHandler({});
     return {
       now: () => sim.now(),
+      participant: (req, ctx) => sim.participant(req, ctx),
       spawn: async (req, ctx) => {
         events.push(`enter:${req.persona}`);
         ctx.signal.onCancel(() => events.push(`cancel:${req.persona}`));
@@ -2878,7 +2930,9 @@ let n = 1;
     const hostSrc = readFileSync(fileURLToPath(new URL("../src/engine/worker.ts", import.meta.url)), "utf8");
     // EVERY NAME BELOW IS THE DECLARED SIDE, never the found side: a cell that reports what it found
     // renames itself under exactly the mutant meant to red it, and the config can no longer name it.
-    const KINDS = ["log", "result"];
+    // `ready` is the boot handshake the host waits on before it posts a root cancellation; its
+    // behaviour is celled by root-cancellation.smoke.ts's worker boot and parked cells.
+    const KINDS = ["log", "ready", "result"];
     const REQUEST_FIELDS = ["cutAt", "effectCeiling", "entries", "file", "handler", "module", "pins", "resultBytes", "runId", "seed", "source", "stepBudget"];
     const WORKER_DATA = ["bridge", "request", "stop"];
     const posted = [...new Set([...entrySrc.matchAll(/postMessage\(\{\s*kind: "(\w+)"/g)].map((m) => m[1] as string))].sort();

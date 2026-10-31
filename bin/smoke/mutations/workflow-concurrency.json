@@ -31,11 +31,11 @@
   ],
   "mutations": [
     {
-      "name": "changesets.yml goes back to the short concurrency form",
+      "name": "changesets.yml's publish job goes back to the short concurrency form",
       "file": ".github/workflows/changesets.yml",
-      "find": "concurrency:\n  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}\n  cancel-in-progress: false\n  queue: max\n",
-      "replace": "concurrency: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}\n",
-      "expectRed": "changesets.yml: uses the mapping form",
+      "find": "    concurrency:\n      group: ${{ github.workflow }}-publish\n      cancel-in-progress: false\n      queue: max\n",
+      "replace": "    concurrency: ${{ github.workflow }}-publish\n",
+      "expectRed": "changesets.yml job publish: uses the mapping form",
       "cell": "uses the mapping form, so it can carry"
     },
     {

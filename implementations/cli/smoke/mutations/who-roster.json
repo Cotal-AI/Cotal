@@ -18,8 +18,8 @@
     {
       "name": "infrastructure endpoints are listed by default",
       "file": "implementations/cli/src/commands/who.ts",
-      "find": "const listed = roster.filter((p) => v.all || p.card.kind !== \"endpoint\");",
-      "replace": "const listed = roster.filter((p) => true || p.card.kind !== \"endpoint\");",
+      "find": "const listed = roster.filter((p) => v.all || p.card.kind !== \"endpoint\" || isChatSession(p));",
+      "replace": "const listed = roster.filter((p) => true || p.card.kind !== \"endpoint\" || isChatSession(p));",
       "expectRed": "every agent is listed and the infrastructure endpoint is not",
       "cell": "every agent is listed and the infrastructure endpoint is not",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
@@ -88,12 +88,12 @@
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
     },
     {
-      "name": "a grant ledger on another machine reads as complete",
+      "name": "an unavailable remote authority reads as complete",
       "file": "implementations/cli/src/commands/whoami.ts",
-      "find": "      warnings.push({ code: \"GRANT_NOT_LOCAL\", target,",
-      "replace": "      void ({ code: \"GRANT_NOT_LOCAL\", target,",
-      "expectRed": "a grant ledger on another machine is a partial read, exit 4",
-      "cell": "a grant ledger on another machine is a partial read, exit 4",
+      "find": "      warnings.push(authorityWarning ?? { code: \"GRANT_NOT_LOCAL\", target,",
+      "replace": "      void (authorityWarning ?? { code: \"GRANT_NOT_LOCAL\", target,",
+      "expectRed": "a grant with no local row or issuer answer is a partial read, exit 4",
+      "cell": "a grant with no local row or issuer answer is a partial read, exit 4",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
     },
     {
@@ -108,8 +108,8 @@
     {
       "name": "a signer's identity is reported as an open mesh",
       "file": "implementations/cli/src/commands/whoami.ts",
-      "find": "? { ...base, identity: { kind: \"space-signer\", ...none },",
-      "replace": "? { ...base, identity: { kind: \"open\", ...none },",
+      "find": "t.auth\n      ? { ...base, identity: { kind: \"space-signer\", ...none },",
+      "replace": "t.auth\n      ? { ...base, identity: { kind: \"open\", ...none },",
       "expectRed": "whoami on a signer's mesh is one complete envelope naming the signer",
       "cell": "whoami on a signer's mesh is one complete envelope naming the signer",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
@@ -128,15 +128,15 @@
       "file": "implementations/cli/src/commands/whoami.ts",
       "find": "    const signedIn = st.login !== undefined;\n",
       "replace": "    const signedIn = st.login !== undefined && st.owner !== undefined;\n",
-      "expectRed": "the native remote provider leaves a logged-in user's grant unknown, not empty",
-      "cell": "the native remote provider leaves a logged-in user's grant unknown, not empty",
+      "expectRed": "an unavailable remote issuer leaves a logged-in user's grant unknown, not empty",
+      "cell": "an unavailable remote issuer leaves a logged-in user's grant unknown, not empty",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
     },
     {
       "name": "an unsigned user identity is called a cached login",
       "file": "implementations/cli/src/commands/whoami.ts",
-      "find": "    [\"identity\", id.kind === \"user\" && !id.subject ? \"not signed in\" : KIND_TEXT[id.kind]],",
-      "replace": "    [\"identity\", KIND_TEXT[id.kind]],",
+      "find": "[\"identity\", id.kind === \"user\" && !id.subject ? \"not signed in\" : ",
+      "replace": "[\"identity\", ",
       "expectRed": "a remote registration without a cached login says not signed in",
       "cell": "a remote registration without a cached login says not signed in",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"

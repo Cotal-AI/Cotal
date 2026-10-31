@@ -1,6 +1,10 @@
-import assert from "node:assert/strict";
+import nodeAssert from "node:assert/strict";
+import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import { endpointCapabilitiesWithin, parseEndpointCapabilities, validateEndpointCapabilities } from "../src/endpoint-capability-policy.js";
 import type { EpCapability } from "../src/endpoint-grants.js";
+
+const counted = countedAssert(nodeAssert);
+const assert: typeof nodeAssert = counted.assert;
 
 const space = "endpoint-policy-smoke";
 const owner = "u_aaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -36,3 +40,4 @@ assert.throws(() => validateEndpointCapabilities(space, [{ ...call, target: { mo
 assert.doesNotThrow(() => validateEndpointCapabilities(space, [{ ...call, target: { mode: "any", tOwner: "*" } }], child, { allowOperatorTargets: true }));
 assert.throws(() => validateEndpointCapabilities(space, [{ ...call, target: { mode: "owner", tOwner: "u_bbbbbbbbbbbbbbbbbbbbbbbbbb" } }], child, { allowOperatorTargets: false }));
 console.log("endpoint capability policy: route, instance, target, journal and provenance-neutral containment passed");
+emitSentinel({ passed: counted.cells(), failed: 0 });

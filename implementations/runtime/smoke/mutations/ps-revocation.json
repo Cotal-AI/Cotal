@@ -86,7 +86,7 @@
     {
       "name": "revoke stops saying what the table will show",
       "file": "implementations/runtime/src/run-command.ts",
-      "find": "    console.log(`run ps now lists ${runId} as revoked; the status record is left as its driver last wrote it`);",
+      "find": "    console.log(`cotal run now lists ${runId} as revoked; the status record is left as its driver last wrote it`);",
       "replace": "    void runId;",
       "cell": "...and says what the table will now show, so the two surfaces cannot drift apart unnoticed",
       "expectRed": "...and says what the table will now show, so the two surfaces cannot drift apart unnoticed",
@@ -95,8 +95,8 @@
     {
       "name": "an unreadable marker leaves the record's own state in the STATE column",
       "file": "implementations/runtime/src/workflow-views.ts",
-      "find": "row.revocationUnreadable !== undefined ? { text: \"revocation not checked\", tone: \"waiting\" } : recordedState(row.state)",
-      "replace": "recordedState(row.state)",
+      "find": "row.revocationUnreadable !== undefined ? { text: \"revocation not checked\", tone: \"waiting\" } : recordedState(row.state, row.failure)",
+      "replace": "recordedState(row.state, row.failure)",
       "cell": "ps prints unchecked in the STATE column of a held run whose marker it could not read, never its record's running",
       "expectRed": "ps prints unchecked in the STATE column of a held run whose marker it could not read, never its record's running",
       "note": "The shape the panel measured at 1d3b9099: the row keeps `running` for a run whose marker nobody read, so `awk '{print $3}'` reads the word #1621 was filed about."
@@ -104,8 +104,8 @@
     {
       "name": "the failed read is not reported at all",
       "file": "implementations/runtime/src/workflow-views.ts",
-      "find": "    warnings: unread.map((row) => ({ code: \"REVOCATION_NOT_CHECKED\"",
-      "replace": "    warnings: ([] as typeof unread).map((row) => ({ code: \"REVOCATION_NOT_CHECKED\"",
+      "find": "    warnings: [...unread.map((row) => ({ code: \"REVOCATION_NOT_CHECKED\"",
+      "replace": "    warnings: [...([] as typeof unread).map((row) => ({ code: \"REVOCATION_NOT_CHECKED\"",
       "cell": "...warns on stderr, and the JSON names that run, the failed read and the record's own state",
       "expectRed": "...warns on stderr, and the JSON names that run, the failed read and the record's own state",
       "note": "A bare `unchecked` with no reason sends the operator elsewhere to learn whether the store is down or the marker is newer than this build."
@@ -151,8 +151,8 @@
     {
       "name": "the writer accepts a revocation with an empty by and reason",
       "file": "packages/core/src/run-admission.ts",
-      "find": "  if (snap.by.length === 0 || snap.reason.length === 0)",
-      "replace": "  if (false)",
+      "find": "  if (snap.by.length === 0 || snap.reason.length === 0)\n    throw new Error(`run revocation of ${snap.runId} names who revoked it and why; by and reason must be non-empty`);",
+      "replace": "  if (false)\n    throw new Error(`run revocation of ${snap.runId} names who revoked it and why; by and reason must be non-empty`);",
       "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:runtime-run-command",
       "afterRestore": "pnpm --filter @cotal-ai/core build",
       "cell": "revoke refuses an empty --by and --reason",

@@ -9,6 +9,7 @@ import { Callout } from "fumadocs-ui/components/callout";
 
 `manager` provides retained-seat inspection and guarded issuance-gate repair.
 
+
 ## `manager reconcile` [#reconcile-gate]
 
 ```bash
@@ -25,9 +26,10 @@ cotal manager reconcile [--space <s>] [--server <url>] [--endpoint <e>] [--insta
 | `--dry-run` | off | Resolve the local coordinate without minting or checking native guards |
 | `--json`, `--plain` | terminal report | Finite structured receipt or plain shared report |
 
+
 ### Frozen gate recovery
 
-A manager restart killed after deregistration begins but before the new
+**When you need this.** A manager restart killed after deregistration begins but before the new
 incarnation finishes leaves the endpoint's issuance gate *frozen*, held by a
 process that no longer exists. The freeze is what stops two incarnations serving at once, which is
 correct. The successor manager now completes that dead registration itself on boot, including on
@@ -62,9 +64,7 @@ cursor is harmless because its old gate revision cannot authorize a later freeze
 release after the reopen is cleanup in the same way: a slot it fails to release does not fail the
 repair, because the reopened gate is already past the slot's generation.
 
-### Gate repair refusals
-
-A refusal identifies the guard that blocked repair:
+**It refuses far more often than it acts, on purpose**, and always says which check stopped it:
 
 | Refusal | What it means | What to do |
 |---|---|---|
@@ -74,7 +74,8 @@ A refusal identifies the guard that blocked repair:
 | `not-frozen` / `no-gate` | The gate is open, or there is no gate at that coordinate | Nothing to repair: check `--endpoint` / `--instance` |
 | `wrong-op-kind` | Frozen under a takeover or retirement, not a registration | Out of scope for this command; it will not reinterpret another operation's intent |
 | `eviction-unverified` | The holder looked gone but eviction could not be verified | The gate is left frozen, unchanged. Investigate the broker before retrying |
-| `raced` | A newer manager moved the gate mid-repair | Re-run `cotal doctor` and look again |
+| `raced` | A newer manager moved the gate mid-repair, and nothing was reopened | Run the command again, which reads the gate afresh |
+
 
 ### Delivery lease observations
 
@@ -108,16 +109,13 @@ outcome is unknown, such as one whose acknowledgement was lost, fails with an `u
 that says it may have committed. Re-run the command: it refuses `not-frozen` if that reopen landed and
 finishes the repair if it did not.
 
-<Callout type="warn">
-
 There is no `--force`, and no path that discards gate state: the only way this reopens a gate is by
 proving the holder is gone and then completing the operation properly.
 
-</Callout>
 
 ### Governance slot after repair
 
- A registration takes the
+**What reopening the gate does for the endpoint's governance slot.** A registration takes the
 endpoint-wide governance slot before it publishes its spec, and holds it until its gate reopens. An
 instance that died between those two points leaves the slot held with no registration behind it.
 This command does not write that slot and never has; the registration path is its only writer. What
@@ -158,10 +156,6 @@ verdict. A reopened gate with retained cursor cleanup returns exit 4.
 
 ## Manager stop impact [#manager-stop-impact]
 
-A fully preserved manager, or an active manager awaiting resume commitment, can answer `status` through the same membership gate.
-The counted read writes nothing. Other ordinary commands stay fenced in those states.
-A preserving or stopping manager does not admit that read.
-
 The native manager status contract includes its selected `lifecycleUid` and a caller-scoped `stopImpact` observation. It lists
 visible managed principals and lifecycle IDs, their runtime modes and the seat actions a default
 stop or `--with-agents` would request. In-process PTYs without a release hook stop by default;
@@ -177,18 +171,23 @@ The manager resolves visibility through the same fresh owner/admin policy as `ps
 `owner-filtered` observation is not the full manager impact, even if its rows happen to match a
 count. A refused stop reports the selected manager, visibility, maintenance state and pending-work
 counts that blocked its preflight, without exposing other owners' agent rows. Owner-filtered
-visibility blocks the stop. Whole-manager visibility requires the stack operator or an authorized
-admin-scoped caller; the command never substitutes one. No stop policy is accepted while any blocker remains. This is
+visibility requires the stack operator or an authorized admin-scoped caller; the command never
+substitutes one. On a user-auth space, the refusal's next step is the whole-row
+`cotal actor grant` that adds `admin` to your current grant, as the auth plane prints it from the
+ledger row. A stop in the folder that hosts the space reads the manager's own local receipt
+instead, so its owner stops the whole manager without that scope or a sign-in. No stop policy is
+accepted while any blocker remains. This is
 an observation at the reported time, not a reservation, permission to stop or a guarantee that the
 set cannot change. Older managers can omit it; the native service adapter refuses when the
 required process/lifecycle correlation is absent. Generic process launch/stop still refuses managers.
+
 
 ### Native manager service definition
 
 The `manager` service preset uses the `manager-service` adapter. It requires the selected registered
 `root` and an explicit installed `runtime`; an optional `server` can repeat the registered broker.
 The optional `console-port`, `console-host`, `ws-port` and `max-sessions` pass explicit native
-settings. Omitting the host keeps the native loopback binding; port zero requests an allocated
+settings, and an optional `name` names the manager as `supervise --name` does. Omitting the host keeps the native loopback binding; port zero requests an allocated
 console port. A declared `launch` also requires `launch-sha256`. It names an existing private
 resolved launch spec, pins its full SHA-256 and must name this space. The child parses those
 verified bytes before authority preparation and keeps that snapshot through startup. An optional
@@ -200,11 +199,19 @@ joined. Saving it starts nothing and grants no authority. Its native child start
 delivery daemon, does not adopt an existing legacy manager, and never prints its private console URL.
 It declares one instance per definition and runs in the background or with `start --foreground`.
 It is not OS-supervised installation or platform parity.
+A root that `space add --root` registered has no `.cotal` until a command writes there. A start
+makes it, as a directory private to you, after its other checks pass and once the root itself is
+protected against other local writers. It does not replace a `.cotal` that is already there, such
+as a link, which the child refuses.
+
 
 ### Manager service startup proof
 
 The real child exclusively claims its creation-pinned native PID custody before hosted authority
 preparation or local endpoint initialization. That starting record is not readiness; another existing slot is not adopted or reclaimed.
+After a crash, the record the killed child left names a dead pid. The manager adapter removes that
+record before the next launch, so the next `up` relaunches the manager; a live, foreign or
+unreadable record still refuses.
 It binds its actual native identity before endpoint construction. A startup phase appears only
 after native start, settled custody and signal handlers. On authenticated meshes the adapter also
 requires a current status response pinned to that native instance and epoch, with the same process
@@ -212,11 +219,13 @@ lifecycle UID. It preserves the invoking managed-seat caller, registered root/br
 TLS. Missing caller support refuses without an operator substitution. The completed status read's
 own admission is excluded from stop impact; other admitted work remains counted.
 
-An open mesh uses the pinned child's private request-bound local observation. Its service, launch,
+An open mesh uses the pinned child's private request-bound local observation, and so does a stop
+in the folder that hosts a user-auth space. Its service, launch,
 request and both process creation identities must match, and its registration must match the
 launch identity. Output labels this a child-local receipt, not a broker-attributed endpoint
 response. A retained stop handoff blocks readiness adoption on either route instead of treating
 a live PID as a new serving launch.
+
 
 ### Manager service stop policy
 
@@ -226,12 +235,129 @@ confirmation defaults to cancel and shows every affected identity, lifecycle and
 action. Scripts require `--yes`. The offline `--dry-run` still imports no provider and performs no
 native impact query; it is not stop authorization.
 
-The native stop reserves its original PID custody without reclaiming an existing reservation.
+The native stop reserves its original PID custody. It reclaims an existing reservation only when
+the pid it names has exited and no request was published for this launch, and otherwise refuses and
+names that pid.
 It rechecks the confirmed scope, binds the full service/launch/stop request and both process creation
 identities, and uses the existing native shutdown intent for agent reap. The child rechecks the
 same complete scope before accepting. Changed or incomplete scope refuses without a broader policy.
 The controller requires immutable accepted/returned evidence and the original process exit before
 recording a native stopped state. An unconfirmed request retains its reservation and never escalates
-to force kill, restarts, or treats PID disappearance as completion. Reported cleanup remains not
+to force kill, restarts, or treats PID disappearance as completion. A later bare `up` or `down`
+settles it only from the same evidence, and only then releases the reservation. Reported cleanup remains not
 checked. Retained native-policy markers prevent a metadata change from selecting generic signals,
 and an unconfirmed native stop cannot be forgotten just because its process disappeared. Legacy shutdown refuses the native child rather than bypassing that boundary.
+
+
+## manager [#manager]
+
+```bash
+cotal manager start [--runtime <name>] [--roster <file>] [--name <name>] [--foreground|--dry-run] [--space <s>]
+cotal manager stop [--with-agents] [--yes|--dry-run] [--space <s>]
+cotal manager restart [--with-agents] [--yes|--dry-run] [--space <s>]
+cotal manager status [--space <s>]
+cotal manager logs [--tail <n>] [--follow] [--space <s>]
+cotal manager install [--dry-run] [--space <s>]
+cotal manager uninstall [--yes|--dry-run] [--space <s>]
+cotal manager reconcile ...
+cotal manager seats [--drain]
+```
+
+The manager starts and keeps your agents running. `cotal up` starts one with the rest of the stack;
+`cotal manager start` starts one on its own, for this folder's space or the one `cotal use`
+selected, with the `pty` runtime and the broker the space is registered at. Nothing has to be added
+first, and no other service is started for it. `mgr` is an alias.
+
+`cotal manager <verb>` is `cotal service <verb> manager`: every [`service`](cli-services.mdx#service) rule applies,
+and its flags and the manager preset's options (`--runtime`, `--roster`, `--name`, `--server`,
+`--console-port`, `--console-host`, `--ws-port`, `--max-sessions`) are taken on the line.
+`cotal help manager <verb>` and `cotal manager <verb> --help` print the verb's help with those
+options. The first
+start saves the space's `manager` service from the preset's defaults and says so on stderr; `cotal
+service show manager` reads it. A start that names another `--runtime` or other option for a
+stopped manager saves it again with that option, and says so. A running one refuses
+`LIFECYCLE_BLOCKED` and names `cotal manager stop` first.
+
+On a user-auth space this folder hosts, `start` and `restart` need your signed-in, granted login,
+as `cotal up` does for its manager. On a user-auth space registered here from another host, they
+need your sign-in. Before anything is saved, stopped or launched, they confirm the sign-in with its
+IdP. Without one, or when the IdP rejects it because it expired or was revoked, they refuse
+`AUTH_REQUIRED` (exit 2), and Next names `cotal login --idp <base>`, then the command again. A
+refused `restart` leaves a running manager as it was and says the running manager was left
+running. Any other failure of that check, such as an IdP that does not answer, is left to the start.
+In a folder
+that hosts the space, `stop` and `cotal down` need no sign-in: the broker, the records and the
+process belong to this folder, so the stop reads the manager's own local receipt.
+
+The manager these verbs act on is the space's one manager service: `manager` when `cotal manager
+start` saved it, or `stack-manager` when `cotal up` did. Stderr names the saved service when it is
+not `manager`. So after `cotal up`, `cotal manager status` and `cotal manager stop` act on the
+stack's manager, and `cotal manager start` reports it running and starts no second one. Two saved
+manager services in one space refuse `TARGET_AMBIGUOUS`, naming each with its `cotal service`
+command. A manager that `cotal up` or `cotal supervise` started without a saved service is reported
+by `start` and `status` with its PID, and starts nothing beside it. `logs` reads the log `cotal up`
+opened for it, `<root>/.cotal/manager.<spaceKey>.log`, and changes nothing. It takes `--tail`,
+`--follow` and `--json` as a service's `logs` does, and a follow ends when that manager's process is
+gone. After `cotal down` stops that manager, `logs` still reads the log it left: the text says the
+manager is stopped, with its PID while its record still names one, and names `cotal up` under Next,
+and `--json` carries `recordedProcess` with `state` set to `stopped`. With no such log, `logs`
+refuses `TARGET_NOT_FOUND` and names the file. If the folder's records show a manager ran there (a
+PID record that names a dead manager, or the instance identity a manager keeps once it starts), the
+refusal says the log is no longer there and names only `cotal up`. Otherwise it says no manager has
+been started and names `cotal up` or `cotal manager start`. `cotal service logs stack-manager` reads
+the same file when no `stack-manager` is saved. A
+manager that `cotal supervise` runs in a terminal writes to that terminal instead. `stop`, `install`
+and the other verbs refuse it while it runs, because no saved service owns it; it stops with its
+stack through `cotal down`, or where `cotal supervise` runs it.
+
+`--foreground` keeps the manager in this terminal until Ctrl-C, which stops it through its native
+stop. A unit or container you write that runs a manager uses `cotal manager start --foreground`.
+`cotal manager install` refuses `UNSUPPORTED` in this release, because a Cotal-written unit runs
+only a direct-process service. It names the `ExecStart=` line for a unit of your own instead, whether
+or not a manager was started, with one exception: while a manager that `cotal up` started with no
+saved service runs, `install` refuses it as `stop` does and names `cotal down`.
+
+A manager that fails while it starts writes one last line that names the cause:
+`the manager did not start`, then the failure's code and message, the error it wraps and its
+one next step after `; next:`. `start` fails `OPERATION_FAILED`, exit 5, and quotes that line,
+whole up to 1000 characters. A longer line is quoted by its start and its `; next:` step, with its
+length where the middle was cut. `cotal service logs manager --instance <id>` shows the whole line.
+When the error ends in a certificate this machine does not trust, such as
+`UNABLE_TO_VERIFY_LEAF_SIGNATURE`, Node's message stays as the cause, and the next step is to set
+`NODE_EXTRA_CA_CERTS` to the CA file, or the self-signed certificate, for the command that starts
+the manager, as the `--tls-cert` row of [up](cli-startup.mdx#up) says. The manager forwards that CA-file path to
+the seats it launches without a `spawn.env` entry. With `--foreground` the line goes to this
+terminal on stderr, wrapped at its width as the CLI's own lines are, after the `Mesh:` heading and
+lifetime notice that `start` prints there first, and the refusal says
+`its output went to this terminal and was not captured in its log` and names no log.
+
+`manager start` and `manager restart` run the first-run connector seed, as `cotal supervise` does,
+so a fresh machine or container has its connectors before the manager boots; `status`, `logs`,
+`stop` and the maintenance verbs install nothing.
+
+`reconcile` and `seats` are the [manager maintenance](#manager-maintenance) commands. Bare
+`cotal manager` lists every verb and starts nothing.
+
+
+## Start a manager for a hosted space [#start-a-manager-for-a-hosted-space]
+
+A hosted space runs its broker elsewhere, so nothing on your machine starts a manager for it. Start
+one:
+
+```bash
+cotal manager start --space <space> --runtime <orca|tmux|pty>
+```
+
+It needs you signed in to the space (`cotal login`) and the space registered on this machine
+(`cotal meshes add`). A sign-in the IdP rejects because it expired or was revoked counts as none:
+the start refuses `AUTH_REQUIRED` before it launches anything, as [manager](#manager) says. With
+the space selected by `cotal use <space>`, a bare `cotal manager start`
+is enough: it uses the `pty` runtime, which every platform has built in. `orca` and `tmux` need
+their extension first, such as `cotal ext add @cotal-ai/orca`. The command returns once the manager
+answers; `--foreground` keeps it in this terminal instead. `cotal ps` then lists it with the agents
+it runs, and `cotal spawn -d <persona>` launches an agent through it.
+
+
+### Gate repair refusals [#gate-repair-refusals]
+
+See the [current command contract](cli-maintenance.mdx#reconcile-gate) for this behavior.

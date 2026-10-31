@@ -130,6 +130,17 @@ rejects(
   "L3013",
   'async function f(n) { await checkpoint(n, "ok?", { timeout: "10m" }); }',
 );
+rejects(
+  "a record-form branch key with a reserved character would forge a scope path",
+  "L3025",
+  'await parallel({ "a/b": async () => 1 }, { name: "p" });',
+);
+// A fanOut's first argument is its items, so their property names are not branch keys. The keys it
+// does mint are refused at run time (keys.smoke.ts).
+accepts(
+  "a fanOut's items are not read as branch keys",
+  'await fanOut({ "a/b": 1 }, async (x) => x, { name: "f", key: (x) => x });',
+);
 
 // ---- 5) closed option bags answer with a signature ----------------------------------------
 
@@ -287,6 +298,17 @@ accepts(
   'const a = await spawn("x");\nawait monitor(a);\nawait parallel({ one: () => turn(a, { name: "b" }) }, { name: "p" });',
 );
 
+// ---- 5d') `once` admits only `ask`, and the validator refuses any other effect it can see (L2033) --
+
+// Every step under `once` is at-most-once and only an `ask` can be held on resume, so the run refuses
+// anything else with L4028; these passed validate and a hosted start, then failed every run.
+rejects("a sleep inside once is refused before the run", "L2033", 'const r = await once(async () => {\n  await sleep("1s")\n  return 1\n}, { name: "nap-once" });\nlog("r", r);');
+rejects("and so is one in a helper the body calls by name", "L2033", 'async function nap() {\n  await sleep("1s")\n}\nconst r = await once(async () => {\n  await nap()\n  return 1\n}, { name: "nap-once" });\nlog("r", r);');
+rejects("a checkpoint inside once is refused", "L2033", 'const r = await once(async () => await checkpoint("go", "Go?"), { name: "o" });\nlog("r", r);');
+rejects("an effect in a scope nested in once is refused", "L2033", 'const a = await spawn("x");\nconst r = await once(async () => await parallel({ t: () => turn(a, { name: "t" }) }, { name: "p" }), { name: "o" });\nlog("r", r);');
+accepts("an ask inside once is admitted", 'const a = await spawn("one");\nconst r = await once(async () => await ask(a, { name: "publish", schema: { commentId: "number" } }), { name: "publish-360" });\nlog(r.commentId);');
+accepts("a helper with a sleep is fine where once does not call it", 'async function nap() {\n  await sleep("1s")\n}\nawait nap();\nconst a = await spawn("one");\nconst r = await once(async () => await ask(a, { name: "q", schema: { n: "number" } }), { name: "o" });\nlog(r.n);');
+
 // ---- 5e) a branch may not write a binding it captured (L2032) ---------------------------------
 
 // This is the program that was found by EXECUTING rather than by reading, and it is the
@@ -413,6 +435,20 @@ accepts(
   'const r = await waitUntil(async () => { let own = "x"; own = own + "y"; return own; }, { name: "c", every: "1m", deadline: "1h", terminal: (o) => o === "xy" });\nlog(r);',
 );
 
+// ---- 5f) a literal written where a duration goes must be one (L2034) --------------------------
+
+// Each passed validate and a hosted start, then failed its run at the call with the same text.
+for (const lit of ['""', '"-1s"', '"1.5s"', '"PT5M"', '"5"', "5000", '" 5s"', '"5S"', '"5sec"', '"5m30s"', '"1w"', "null", "-1000", "`5`"])
+  rejects(`sleep(${lit}) is refused before the run`, "L2034", `await sleep(${lit});`);
+rejects("a checkpoint timeout is checked", "L2034", 'await checkpoint("gate", "Go?", { timeout: "PT5M" });');
+rejects("a wait timeout is checked", "L2034", 'await wait(replied(await spawn("x")), { timeout: "5" });');
+rejects("an idle duration is checked", "L2034", 'await wait(idle(channel("team"), "10 min"), { timeout: "1h" });');
+rejects("a turn deadline is checked", "L2034", 'const a = await spawn("x");\nawait turn(a, { name: "t", deadline: "1.5h" });');
+rejects("an ask deadline is checked", "L2034", 'const a = await spawn("x");\nawait ask(a, { name: "q", schema: { n: "number" }, deadline: 60 });');
+rejects("a waitUntil cadence is checked", "L2034", 'await waitUntil(async () => true, { name: "w", every: "1.5s", deadline: "1h" });');
+rejects("and so is duration()", "L2034", 'log(duration("5"));');
+accepts("a well-formed duration, a template one and a computed one are fine", 'const d = "1m";\nawait sleep("5s");\nawait sleep(`0ms`);\nawait sleep(d);\nawait checkpoint("gate", "Go?", { timeout: null });\nlog(duration("10m"));');
+
 // ---- 6) the Jessie diff --------------------------------------------------------------------
 
 rejects("no classes", "L1001", "class Foo { }");
@@ -437,8 +473,18 @@ accepts("semicolon-free source is ordinary", 'const a = await spawn("x")\nlog(a)
 // The TITLE is part of the error, and it was naming a rule this language does not have: an author
 // reading "Missing semicolon" over semicolon-free code that the validator accepts everywhere else
 // is being told the opposite of what is true.
-ok("L1008 is titled for the hazard, not for a semicolon rule that does not exist", CATALOG.L1008 === "Newline hazard", CATALOG.L1008);
+ok("L1008 is titled for invalid syntax and the hazard, not for a semicolon rule that does not exist", CATALOG.L1008 === "Invalid syntax or newline hazard", CATALOG.L1008);
 accepts("explicit terminators are fine too", 'const a = await spawn("x");\nlog(a);\n');
+// Source that does not parse, a NUL byte included, keeps L1008, and its fix used to say there is no
+// automatic semicolon insertion, the opposite of the rule above.
+try {
+  validate('log("a")\u0000\nlog("b")\n');
+  ok("a NUL byte is refused as source that does not parse, with no claim about semicolons", false, "accepted");
+} catch (e) {
+  const err = e instanceof LangErrors ? e.errors[0] : undefined;
+  ok("a NUL byte is refused as source that does not parse, with no claim about semicolons",
+    err?.code === "L1008" && err.cause.includes("not valid JavaScript") && err.cause.includes("Unexpected character") && err.fix === "Fix the syntax at the marked position.", err ?? e);
+}
 rejects(
   "a return whose value is on the next line is a hazard",
   "L1008",

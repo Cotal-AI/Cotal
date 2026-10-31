@@ -23,6 +23,8 @@ export interface ResetSpaceIdentityPlan {
   providerKeys: readonly string[];
   agentKeys: readonly string[];
   secretKeys: readonly string[];
+  /** The public key of the space account this reset removes; absent on an open space. */
+  accountPub: string | undefined;
 }
 
 const within = (parent: string, path: string): boolean => {
@@ -116,12 +118,12 @@ export async function planResetSpaceIdentity(root: string, space: string, mode: 
     if (mode === "open" ? trust !== undefined : trust === undefined) throw new Error("registered authentication mode and local full trust disagree");
     const after = observePaths(root, space, planned.paths);
     if (JSON.stringify(before) !== JSON.stringify(after)) throw new Error("identity paths changed while trust was validated");
-    return { root, space, controlIdentity: planned.controlIdentity, paths: after, provider, providerKeys: planned.providerKeys, agentKeys: planned.agentKeys, secretKeys: planned.secretKeys };
+    return { root, space, controlIdentity: planned.controlIdentity, paths: after, provider, providerKeys: planned.providerKeys, agentKeys: planned.agentKeys, secretKeys: planned.secretKeys, accountPub: trust?.account.pub };
   } catch (error) {
     // A refusal about one path names it and what is wrong with it, so the reader can act.
     if (error instanceof ScopePathRefusal) {
       const path = join(root, error.path);
-      throw new CommandFailure("refused", "CONFLICT", `the named reset could not establish one complete unchanged local identity scope: ${path} ${error.message}; no identity deletion was submitted`, { target: { root, space, path }, remedy: error.writable ? `remove group and other write permission (chmod go-w ${path}), then preview again with cotal reset space ${space} --dry-run` : `inspect ${path}; the reset removes only owned physical files and directories with one link` });
+      throw new CommandFailure("refused", "CONFLICT", `the named reset could not establish one complete unchanged local identity scope: ${path} ${error.message}; no identity deletion was submitted`, { target: { root, space, path }, remedy: error.writable ? `remove group and other write permission (chmod go-w ${path}), then preview again with \`cotal reset space ${space} --dry-run\`` : `inspect ${path}; the reset removes only owned physical files and directories with one link` });
     }
     throw new CommandFailure("refused", "CONFLICT", "the named reset could not establish one complete unchanged local identity scope, valid trust and declared provider keys; no identity deletion was submitted", { target: { root, space }, remedy: "shared roots, foreign segments, links and providers without cleanup metadata cannot be reset by this route; inspect the root's .cotal directory" });
   }

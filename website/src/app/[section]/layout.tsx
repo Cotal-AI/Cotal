@@ -22,7 +22,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         {
           title: <span className="cotal-layout-tab"><Blocks size={16} strokeWidth={1.75} aria-hidden="true" />API Reference</span>,
           url: '/api-reference/overview/',
-          urls: new Set(source.getPages().filter(page => page.slugs[0] === 'api-reference').map(page => page.url)),
+          urls: new Set(source.getPages().filter(page => page.slugs[0] === 'api-reference' || page.slugs[0] === 'api').map(page => page.url)),
         },
       ]}
       nav={{

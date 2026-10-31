@@ -4,17 +4,24 @@
  *
  *  1. Legacy root. An unprepared folder started with `up --server` takes the retained launcher and
  *     writes no stack journal. After `down` removes its registration, `space create` refuses
- *     CONFLICT and names `cotal up`, and plain `up` starts it again with the same store and account
- *     identity, still with no stack journal.
+ *     CONFLICT and names `cotal up`, and plain `up` starts it again at its own address with the same
+ *     store and account identity, still with no stack journal.
  *  2. Controller root without its registration. After `down` and `space forget`, `up` refuses
  *     TARGET_UNAVAILABLE (exit 2), and after `space add --force` it refuses CONFLICT (exit 2, not 3).
  *     Neither writes the stack journal, `server.conf` or a new service instance record.
+ *  3. Open legacy root deployed from a manifest. It holds no account, so after `down` its plain `up`
+ *     starts it again as the manifest's space, not as `main`. With a broker configuration that names
+ *     no space, as an earlier release rendered, its fresh team summary names it. A later plain open
+ *     start of another space there names that one, and the next plain `up` starts it.
+ *  4. Open legacy root started with `up --open --space`. After `down` its plain `up` starts it again
+ *     as that space, at its own address, and starts no `main`, and so does a restart that names that
+ *     address with `--server`, which says the mode it started in.
  *
  * Sandboxes COTAL_HOME and both project roots. Run: pnpm smoke:legacy-root-upgrade:live
  */
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
@@ -79,6 +86,9 @@ try {
     check("space create refuses CONFLICT and names cotal up", create.status === 2 && create.env?.error?.code === "CONFLICT" && Boolean(create.env.error.remedy?.includes("cotal up")), shown(create));
     const again = cli(root, "up", "--space", space);
     check("plain up starts the stopped legacy root again", again.status === 0, shown(again));
+    // Its registration went with the down, so the address comes from the broker configuration it
+    // rendered, never the default one.
+    check("it starts again at its own address", findMesh(space)?.server === server && again.stdout.includes(`as it last ran: ${server}`), shown(again));
     check("it still has no stack journal", !existsSync(join(root, ".cotal", "stack-controller.json")));
     check("its store identity is unchanged", digest(join(root, ".cotal", "store.id")) === store);
     check("its account records are unchanged", JSON.stringify(accountFiles(root).map((name) => `${name}:${digest(join(root, ".cotal", "auth", name))}`)) === JSON.stringify(accounts));
@@ -114,6 +124,61 @@ try {
     check("up over a manual registration refuses CONFLICT, exit 2, not an unknown outcome", manual.status === 2 && manual.env?.error?.code === "CONFLICT", shown(manual));
     check("that refusal wrote nothing either", snapshot() === before, { before, after: snapshot() });
     cli(home, "space", "forget", space, "--json");
+  }
+
+  // 3. An open root deployed from a manifest, after a normal down.
+  {
+    const space = "openmf1";
+    const root = folder(space);
+    const server = `nats://127.0.0.1:${await freePort()}`;
+    writeFileSync(join(root, "cotal.yaml"), `apiVersion: cotal/v1\nkind: Mesh\nspace: ${space}\nbroker: { servers: "${server}" }\nchannels:\n  general: {}\n`);
+    const first = cli(root, "up", "-f", "cotal.yaml", "--open", "--no-manager");
+    anchor(root);
+    check("an unprepared folder deploys an open manifest on the retained launcher", first.status === 0 && findMesh(space)?.mode === "open", shown(first));
+    const stopped = cli(root, "down");
+    check("down stops the open root and removes its registration", stopped.status === 0 && findMesh(space) === undefined, shown(stopped));
+    const conf = join(root, ".cotal", "server-open.conf");
+    const named = readFileSync(conf, "utf8");
+    check("the open broker configuration names its space", named.includes(`# space key: ${Buffer.from(space).toString("hex")}\n`), named);
+    writeFileSync(conf, named.replace(/^# space key: .*\n/m, ""), { mode: 0o600 });
+    const again = cli(root, "up", "--no-manager");
+    check("with a configuration that names no space, plain up starts the manifest's space, open, at its own address, and starts no main",
+      again.status === 0 && findMesh(space)?.server === server && findMesh(space)?.mode === "open" && findMesh("main") === undefined && again.stdout.includes(`Mesh: ${space}`), shown(again));
+    check("down stops the manifest's space", cli(root, "down").status === 0);
+    const other = "openmf2";
+    const plain = cli(root, "up", "--open", "--space", other, "--server", server, "--no-manager");
+    check("a plain open start of another space at that root starts it", plain.status === 0 && findMesh(other)?.mode === "open", shown(plain));
+    check("down stops it", cli(root, "down").status === 0);
+    const latest = cli(root, "up", "--no-manager");
+    check("plain up starts the space that last ran there, over the older manifest's summary",
+      latest.status === 0 && findMesh(other)?.server === server && findMesh(space) === undefined && latest.stdout.includes(`Mesh: ${other}`), shown(latest));
+    const last = cli(root, "down");
+    check("down stops the open root again", last.status === 0, shown(last));
+  }
+
+  // 4. An open root started with --space and no manifest, after a normal down.
+  {
+    const space = "openplain1";
+    const root = folder(space);
+    const server = `nats://127.0.0.1:${await freePort()}`;
+    const first = cli(root, "up", "--open", "--space", space, "--server", server, "--no-manager");
+    anchor(root);
+    check("an unprepared folder starts an open space on the retained launcher", first.status === 0 && findMesh(space)?.mode === "open", shown(first));
+    const stopped = cli(root, "down");
+    check("down stops it and removes its registration", stopped.status === 0 && findMesh(space) === undefined, shown(stopped));
+    const again = cli(root, "up", "--no-manager");
+    check("plain up starts that space again, open, at its own address, and starts no main",
+      again.status === 0 && findMesh(space)?.server === server && findMesh(space)?.mode === "open" && findMesh("main") === undefined && again.stdout.includes(`Mesh: ${space}`), shown(again));
+    check("down stops it again", cli(root, "down").status === 0);
+    // NAMING THE ADDRESS DOES NOT CHANGE THE MODE. `--server` says where the broker listens, not
+    // whether it authenticates, and reading the two off one condition brought this root back in
+    // static auth, with a delivery daemon and no line about it, whenever a restart pinned the
+    // address it already ran on.
+    const pinned = cli(root, "up", "--server", server, "--no-manager");
+    check("a restart naming the address it already ran on starts it open again, and says the mode it started in",
+      pinned.status === 0 && findMesh(space)?.mode === "open" && pinned.stdout.includes("starting this folder's stopped stack in the mode it last ran: open"), shown(pinned));
+    const last = cli(root, "down");
+    check("down stops the restarted open root", last.status === 0, shown(last));
   }
 } finally {
   for (const root of roots) if (anchors.has(root) && !existsSync(join(root, ".cotal", "stack-controller.json"))) cli(root, "down");

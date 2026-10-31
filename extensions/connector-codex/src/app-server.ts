@@ -24,7 +24,7 @@
  * they share a uid, so a sibling that can read this agent's home (or the environment of the
  * attached TUI, which holds the token for the listener's lifetime) can present it. Cotal does not
  * claim mutually-hostile same-uid agent isolation here; that needs OS-level isolation, not a
- * file mode. See docs/connect-codex.md#limits.
+ * file mode. See docs/connect-codex.mdx#limits.
  *
  * Protocol: app-server **v2** (the API the Codex TUI itself runs on — feature
  * `tui_app_server` is permanently on), verified live against codex-cli 0.145.0.
@@ -276,9 +276,9 @@ export class AppServerDriver extends EventEmitter {
     return this.liveTurns.size > 0;
   }
 
-  /** The turn to steer into or interrupt: OURS if one is running, else the human's. (Steering a
-   *  peer message into a TUI-owned turn is deliberate — the person sees it — and safe, because
-   *  only a turn we own can ack, so anything steered elsewhere simply redelivers.) */
+  /** The current turn: prefer ours, otherwise return an externally started turn. The host's
+   *  automatic-batch steering requires an open connector-started turn; observing an external
+   *  turn here does not make it eligible to acknowledge the host's batch. */
   get currentTurnId(): string | undefined {
     for (const id of this.liveTurns) if (this.ownedTurns.has(id)) return id;
     for (const id of this.liveTurns) return id;

@@ -5,7 +5,10 @@
  * taps, and prunes a live subscriber when it disconnects while keeping its durable arm.
  *
  * Spins up a real auth broker, mints the two scoped membership creds, connects silent subscribers + an
- * admin god-tap, seeds a durable member, runs the core feed, and reads the derived bucket back.
+ * admin god-tap, seeds a durable member, runs the core feed, and reads the derived bucket back. It
+ * also reads the feed through the shipped `CotalEndpoint.readMembership()` on an admin credential,
+ * which binds no consumer on the feed's stream, and on one minted without the Direct Get row, which
+ * is refused naming that grant (#4123).
  *
  * Run: pnpm smoke:membership-feed:auth   (needs `nats-server` on PATH; auth/JetStream, local-only)
  */
@@ -15,8 +18,13 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
+import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
+import { encodeUser, fmtCreds } from "@nats-io/jwt";
+import { fromPublic, fromSeed } from "@nats-io/nkeys";
 import {
+  CotalEndpoint,
+  permissionsFor,
   isReachable,
   createSpaceAuth,
   mintCreds,
@@ -170,6 +178,58 @@ try {
   check("only the three real agents have records (infra conns contribute nothing)", out.size === 3, [...out.keys()]);
   check("feed freshness heartbeat is stamped", typeof asOf === "number");
 
+  // --- the shipped snapshot read (#4123): paged batched Direct Gets on an admin endpoint bind no
+  // consumer on the feed's stream, and a credential minted without the Direct Get row is refused with
+  // the grant it lacks rather than scanned with a consumer the profile could not delete. ---
+  const jsm = await jetstreamManager(readNc);
+  const feedConsumers = async () => (await jsm.streams.info(`KV_${membershipBucket(space)}`)).state.consumer_count;
+  const consumersBeforeRead = await feedConsumers();
+  const reader = new CotalEndpoint({ space, servers: SERVERS, creds: adminCreds, channels: [], consume: false, watchPresence: false, registerPresence: false, watchChannels: false, card: { name: "snapshot-reader", kind: "endpoint" } });
+  reader.on("error", () => {});
+  await reader.start();
+  const snapshot = await reader.readMembership();
+  const consumersAfterRead = await feedConsumers();
+  check("CotalEndpoint.readMembership returns the feed's three records and its heartbeat",
+    snapshot.members.length === 3 && snapshot.asOf === asOf, { members: snapshot.members.map((m) => m.id), asOf: snapshot.asOf, feedAsOf: asOf });
+  check("…and binds no consumer on the feed's stream (#4123)", consumersAfterRead === consumersBeforeRead, { before: consumersBeforeRead, after: consumersAfterRead });
+  await reader.stop();
+  // Historical down-f uses this short-lived profile on static meshes. It already reads the
+  // feed via consumers, but must also carry the bare batched snapshot subject (#3738).
+  const teardownId = newIdentity();
+  const teardownUid = mintLifecycleUid();
+  const teardownCreds = await mintCreds(auth, teardownId, "teardown", { lifecycleUid: teardownUid });
+  const teardownReader = new CotalEndpoint({ space, servers: SERVERS, creds: teardownCreds, lifecycleUid: teardownUid,
+    channels: [], consume: false, watchPresence: false, registerPresence: false, watchChannels: false,
+    card: { name: "teardown-snapshot-reader", kind: "endpoint" } });
+  teardownReader.on("error", () => {});
+  await teardownReader.start();
+  try {
+    const teardownSnapshot = await teardownReader.readMembership();
+    check("teardown reads the same membership census as the admin reader (#3738)",
+      teardownSnapshot.asOf === snapshot.asOf && teardownSnapshot.members.length === snapshot.members.length);
+    check("teardown snapshot binds no membership consumer", await feedConsumers() === consumersAfterRead);
+    const grants = permissionsFor("teardown", space,
+      { owner: DEV_OWNER, actor: teardownId.id, connId: teardownId.id, lifecycleUid: teardownUid }, {}) as { pub: { allow: string[] } };
+    check("teardown membership grants cannot write the census",
+      !grants.pub.allow.some((row) => row.startsWith(`$KV.${membershipBucket(space)}.`)));
+  } finally { await teardownReader.stop(); }
+  const oldId = newIdentity();
+  const current = permissionsFor("admin", space, { owner: DEV_OWNER, actor: oldId.id, connId: oldId.id }, {}) as { pub: { allow: string[] }; sub: { allow: string[] } };
+  const directRow = `$JS.API.DIRECT.GET.KV_${membershipBucket(space)}`;
+  check("the current admin profile carries the feed's Direct Get row", current.pub.allow.includes(directRow));
+  const oldJwt = await encodeUser("pre-direct-get-admin", fromPublic(oldId.id), fromPublic(auth.account.pub),
+    { pub: { allow: current.pub.allow.filter((row) => row !== directRow) }, sub: current.sub },
+    { signer: fromSeed(enc(auth.account.signingSeed)) });
+  const oldReader = new CotalEndpoint({ space, servers: SERVERS, creds: new TextDecoder().decode(fmtCreds(oldJwt, fromSeed(enc(oldId.seed)))), channels: [], consume: false, watchPresence: false, registerPresence: false, watchChannels: false, card: { name: "old-admin", kind: "endpoint" } });
+  oldReader.on("error", () => {});
+  await oldReader.start();
+  const refused = await oldReader.readMembership().then(() => "answered", (e: Error) => e.message);
+  const consumersAfterRefused = await feedConsumers();
+  check("a credential minted without that row is refused naming the grant and the remint (#4123)",
+    refused.includes(directRow) && refused.includes("mint a new credential"), refused);
+  check("…and the refused read leaves no consumer either", consumersAfterRefused === consumersAfterRead, { before: consumersAfterRead, after: consumersAfterRefused });
+  await oldReader.stop();
+
   // --- prune: alice's live connections drop; durable arm persists (the key reframe) ---
   await a1.drain(); await a1b.drain();
   await wait(300);
@@ -222,7 +282,7 @@ try {
   if (fail) process.exitCode = 1;
 } catch (e) {
   fail++;
-  console.error("  ✗ scenario threw:", (e as Error).stack ?? (e as Error).message);
+  console.error("  ✗ scenario threw:", e);
   process.exitCode = 1;
 } finally {
   try { await feed?.stop(); } catch { /* gone */ }

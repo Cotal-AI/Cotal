@@ -169,7 +169,7 @@ export const BASELINE_DELIVERY_COMMANDS = Object.freeze(["join", "leave", "list"
  *  broker-denied at its first `turn-pending` and the relay is silently dead for every spawned
  *  agent (measured: the connector reads the denial as "no manager here" and stays quiet). */
 export const BASELINE_LIFECYCLE_ENDPOINT = "manager";
-export const BASELINE_SELF_LIFECYCLE_COMMANDS = Object.freeze(["stop", "turn-pending", "turn-yield", "run-answer"] as const);
+export const BASELINE_SELF_LIFECYCLE_COMMANDS = Object.freeze(["stop", "turn-participate", "turn-pending", "turn-yield", "run-answer"] as const);
 /** `spawn` is CREATION: a virgin spawn has no target lifecycle UID or current mapping yet, so it
  *  CANNOT ride owner mode (§13.2 owner mode resolves a body `{owner, actor, lifecycleUid}` against
  *  the CURRENT mapping — there is nothing to resolve for a not-yet-existing child). It is minted
@@ -215,11 +215,11 @@ export const SPAWN_OWNER_LIFECYCLE_COMMANDS = Object.freeze(["despawn", "attach"
  *  so a run on an auth mesh had its every turn submit dropped at the broker. */
 export const OPERATOR_SEAT_COMMANDS = Object.freeze(["input", "turn"] as const);
 /** The spawn capability's UNTARGETED additions (the 1c grant-migration table): the connector's
- *  persona write (`define-persona`, caller-scoped by the pinned triple), per-agent status read
+ *  persona writes (`define-persona` / `remove-persona`, caller-scoped by the pinned triple), per-agent status read
  *  (`inspect` - the responder narrows the view to the caller's owner domain, like `ps`), and the
  *  persona-catalog reads (`list-personas` / `show-persona`). These ride the v0.3 privileged tier
  *  today; minting them with `spawn` keeps that tier's surface 1:1. */
-export const SPAWN_SERVICE_COMMANDS = Object.freeze(["define-persona", "inspect", "list-personas", "show-persona", "goal-result"] as const);
+export const SPAWN_SERVICE_COMMANDS = Object.freeze(["define-persona", "remove-persona", "inspect", "list-personas", "show-persona", "goal-result"] as const);
 /** The `run` capability's commands (SPEC 14.3): the manager-hosted workflow-run surface. The
  *  writes start a run, take one over and answer its open pause, and the keyed pair starts a run
  *  under a submission ID and reads that submission's binding; the two reads list runs and render
@@ -227,7 +227,7 @@ export const SPAWN_SERVICE_COMMANDS = Object.freeze(["define-persona", "inspect"
  *  block names it, and the manager scopes what a caller may see by the run's own record.
  *  A program can `spawn`, so the `run` capability implies the spawn set as well
  *  ({@link runCallerCapabilities}): a caller that may start a program that spawns may spawn. */
-export const RUN_WRITE_COMMANDS = Object.freeze(["run-start", "run-resume", "run-start-keyed", "run-submission-status"] as const);
+export const RUN_WRITE_COMMANDS = Object.freeze(["run-start", "run-resume", "run-start-keyed", "run-submission-status", "run-cancel"] as const);
 export const RUN_ANSWER_COMMAND = "run-answer" as const;
 export const RUN_READ_COMMANDS = Object.freeze(["run-status", "run-ps"] as const);
 /** A static manager's chat-session admission and retirement. Both MINT or END a credential for a
@@ -380,7 +380,7 @@ export function runCallerCapabilities(callerOwner: string): EpCapability[] {
  *  this for their ep rails; no new minting authority.
  *
  *  `privileged` (the ps/start instrument): the manager reads (incl. persona catalog list/show) +
- *  untargeted `spawn` + `define-persona` + the static chat-session open/retire pair - structurally
+ *  untargeted `spawn` + persona writes + the static chat-session open/retire pair - structurally
  *  barred from cross-agent reach: no any-mode row.
  *
  *  `admin` (the stop/attach/deploy instrument): everything above plus ANY-mode `despawn`/`attach`
@@ -404,7 +404,16 @@ export function operatorInstrumentCapabilities(tier: "privileged" | "admin", cal
       ...(command === "ps" || command === "slots" ? { routes: ["one", "all"] as ("one" | "all")[] } : {}),
     })),
     ...SPAWN_CREATE_SNAP.map((command) => ({ endpoint: BASELINE_LIFECYCLE_ENDPOINT, command })),
+    // The placement read of the same `manager.spawn` class as the `spawn` row above: it has one
+    // manager canonicalize an absolute path on its own host, creates nothing, and is what the
+    // folder question a managed launch asks must call before anything is launched. The instrument
+    // IS the caller on a static mesh, so without this row that question's typed-folder arm is
+    // refused at the broker on every static mesh, while the user-auth `manager-caller` view carries
+    // it. The standing agent `spawn` set still does not: it reaches every manager in the space
+    // through the class rail, and this instrument is pinned and one-shot.
+    { endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: "resolve-cwd" },
     { endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: "define-persona" },
+    { endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: "remove-persona" },
     ...CHAT_SESSION_SNAP.map((command) => ({ endpoint: BASELINE_LIFECYCLE_ENDPOINT, command })),
     // The workflow-run surface (SPEC 14.3) rides the privileged tier as `cotal run`'s instrument:
     // the reads beside the manager reads, the writes beside `spawn`, which is the tier's existing

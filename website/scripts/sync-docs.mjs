@@ -11,6 +11,8 @@ import { normalizeUri } from 'micromark-util-sanitize-uri';
 import { parse as parseHtml, parseFragment } from 'parse5';
 import { readDocument } from '@cotal-ai/docs-content';
 import { connectorIcons } from '../src/lib/connector-icons.mjs';
+import { httpReferences } from '../src/http-references.js';
+import { publishHttpReferences } from './publish-http.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..', '..');
@@ -31,7 +33,7 @@ const page = (source) => ({ kind: 'page', source });
 const group = (title, children) => ({ kind: 'group', title, children });
 const navigation = [
   { section: 'docs', title: 'Docs', children: [
-    group('Start here', ['what-is-cotal', 'installation', 'getting-started', 'examples'].map(name => page(`docs/${name}.mdx`))),
+    group('Start here', ['what-is-cotal', 'installation', 'getting-started', 'using-cotal', 'examples'].map(name => page(`docs/${name}.mdx`))),
     group('Guides', [
       group('Operate a mesh', [
         page('docs/setup.mdx'),
@@ -40,6 +42,7 @@ const navigation = [
         page('docs/define-a-team.mdx'),
         page('docs/register-a-mesh.mdx'),
         page('docs/watch-a-mesh.mdx'),
+        page('docs/telemetry.mdx'),
         page('docs/console.mdx'),
         page('docs/web-dashboard.mdx'),
         page('docs/remote-supervision.mdx'),
@@ -52,7 +55,7 @@ const navigation = [
       group('Connect agents', ['connectors', 'connect-claude', 'connect-opencode', 'connect-codex', 'connect-hermes', 'connect-jcode', 'connect-pi'].map(name => page(`docs/${name}.mdx`))),
       group('Build integrations', [
         ...['authoring-a-connector', 'build-a-client', 'embedding'].map(name => page(`docs/${name}.mdx`)),
-        group('Embedding reference', ['exports', 'endpoints', 'remote-clients', 'daemons', 'provisioning', 'schema-inspection', 'service-authority', 'manager', 'delegated-seats'].map(name => page(`docs/embedding-${name}.mdx`))),
+        group('Embedding reference', ['exports', 'endpoints', 'remote-clients', 'daemons', 'provisioning', 'schema-inspection', 'service-authority', 'service-custody', 'service-host', 'service-access', 'service-callers', 'manager', 'delegated-seats'].map(name => page(`docs/embedding-${name}.mdx`))),
         group('Connector reference', [
           page('docs/connector-runtime-reference.mdx'),
           ...['claude', 'opencode', 'codex', 'hermes', 'jcode', 'pi'].map(name => page(`docs/${name}-connector-reference.mdx`)),
@@ -61,7 +64,10 @@ const navigation = [
     ]),
     group('Concepts', [
       group('Fundamentals', ['architecture', 'spaces', 'transport'].map(name => page(`docs/${name}.mdx`))),
-      group('Messaging', ['presence-and-delivery', 'delivery-daemon'].map(name => page(`docs/${name}.mdx`))),
+      group('Messaging', [
+        ...['presence-and-delivery', 'delivery-daemon'].map(name => page(`docs/${name}.mdx`)),
+        group('Reference', [page('docs/delivery-service-reference.mdx')]),
+      ]),
       group('Security', [
         ...['identity-and-auth', 'security'].map(name => page(`docs/${name}.mdx`)),
         group('Reference', ['identity-authority', 'identity-user-auth', 'identity-service-auth', 'security-boundaries'].map(name => page(`docs/${name}.mdx`))),
@@ -76,6 +82,7 @@ const navigation = [
   ] },
   { section: 'api-reference', title: 'API Reference', children: [
     page('docs/overview.mdx'),
+    page('docs/api-reference.mdx'),
     group('CLI', [
       page('docs/cli.mdx'),
       group('Workstation', ['cli-usage', 'cli-installation', 'cli-selection'].map(name => page(`docs/${name}.mdx`))),
@@ -99,16 +106,19 @@ const collectPages = (children, section) => {
   }
 };
 for (const section of navigation) collectPages(section.children, section.section);
-const sources = publications.map(page => page.source);
+const referenceSources = new Set(httpReferences.map(reference => reference.docSource));
+const sources = [...publications.map(page => page.source), ...referenceSources];
 const sectionBySource = new Map(publications.map(page => [page.source, page.section]));
-if (sectionBySource.size !== sources.length) throw new Error('page appears more than once in navigation');
+if (sectionBySource.size !== publications.length) throw new Error('page appears more than once in navigation');
 const sectionFor = rel => {
   const section = sectionBySource.get(rel);
   if (!section) throw new Error(`page is absent from navigation: ${rel}`);
   return section;
 };
-const knownSlugs = new Map(sources.map(rel => [rel, `${sectionFor(rel)}/${slugFor(basename(rel).replace(/\.mdx?$/, ''))}`]));
+const knownSlugs = new Map(publications.map(({ source: rel }) => [rel, `${sectionFor(rel)}/${slugFor(basename(rel).replace(/\.mdx?$/, ''))}`]));
+for (const reference of httpReferences) knownSlugs.set(reference.docSource, reference.base);
 if (new Set(knownSlugs.values()).size !== sources.length) throw new Error('duplicate published page URL');
+const fragmentLinks = [];
 
 // The site publishes only SPEC.md and top-level docs pages, so one of these the group map
 // leaves out is drift, and every other repo file stays on GitHub.
@@ -140,7 +150,10 @@ function rewriteTarget(target, rel) {
     return url.href.slice(GITHUB_BLOB.length);
   }
   if (repoPath === 'docs/README.md') return `/${suffix}`;
-  if (knownSlugs.has(repoPath)) return `/${knownSlugs.get(repoPath)}/${suffix}`;
+  if (knownSlugs.has(repoPath)) {
+    if (url.hash) fragmentLinks.push([rel, repoPath, url.hash]);
+    return `/${knownSlugs.get(repoPath)}/${suffix}`;
+  }
   if (isSitePage(repoPath)) throw new Error(`link to unpublished doc: ${target}`);
   if (!existsSync(join(repoRoot, repoPath))) throw new Error(`link to missing file: ${target}`);
   // Anything else in the repo (design notes, sources, examples, extension READMEs) → GitHub.
@@ -163,6 +176,7 @@ const urlInput = (value) => value.replace(/^[\x00-\x20]+|[\x00-\x20]+$/g, '').re
 function rewriteAttr(name, value, rel) {
   const rewrite = (url) => {
     const target = urlInput(url);
+    if (name === 'href' && target.startsWith('#')) fragmentLinks.push([rel, rel, target]);
     return isRepoRelative(target) ? rewriteTarget(target, rel) : url;
   };
   if (name !== 'srcset') return rewrite(value);
@@ -211,6 +225,7 @@ function rewriteLinks(md, rel, extensions) {
     if (kind !== 'enter') continue;
     if (type === 'resourceDestinationString' || type === 'definitionDestinationString') {
       const target = normalizeUri(decodeString(context.sliceSerialize(token)));
+      if (target.startsWith('#')) fragmentLinks.push([rel, rel, target]);
       if (!isRepoRelative(target)) continue;
       edits.set(start.offset, [end.offset, rewriteTarget(target, rel).replace(/[&()]/g, '\\$&')]);
     } else if (type === 'htmlFlow' || type === 'htmlText') {
@@ -263,7 +278,7 @@ const documents = new Map(await Promise.all(sources.map(async rel =>
 )));
 
 mkdirSync(outDir, { recursive: true });
-for (const section of ['docs', 'api-reference']) rmSync(join(outDir, section), { recursive: true, force: true });
+for (const section of ['docs', 'api-reference', 'api']) rmSync(join(outDir, section), { recursive: true, force: true });
 mkdirSync(genDir, { recursive: true });
 
 // Publish the machine-readable schema at its canonical URL (/cotal.schema.json).
@@ -276,6 +291,7 @@ copyFileSync(join(repoRoot, 'spec', 'cotal.schema.json'), join(pubDir, 'cotal.sc
 copyFileSync(join(repoRoot, 'install.sh'), join(pubDir, 'install.sh'));
 
 for (const [rel, document] of documents) {
+  if (referenceSources.has(rel)) continue;
   const slug = slugFor(basename(rel).replace(/\.mdx?$/, ''));
   const extensions = document.format === 'mdx' ? [mdxjs(), gfm()] : [gfm()];
   const body = rewriteLinks(document.content, rel, extensions);
@@ -355,15 +371,66 @@ console.log(
   `sync-docs: wrote ${sources.length} pages + cotal.schema.json + ${assetRefs.size} images + ${skills.length} skills`,
 );
 
+
+const textOf = node => node.nodeName === '#text' ? node.value : (node.childNodes ?? []).map(textOf).join('');
+function anchorsOf(document) {
+  const label = text => textOf(parseFragment(marked.parseInline(text))).replace(/\s+/g, ' ').trim();
+  const explicit = new Map();
+  let fence;
+  for (const line of document.content.split('\n')) {
+    const marker = /^\s{0,3}(`{3,}|~{3,})/.exec(line);
+    if (marker) {
+      if (!fence) fence = { char: marker[1][0], length: marker[1].length };
+      else if (marker[1][0] === fence.char && marker[1].length >= fence.length) fence = undefined;
+      continue;
+    }
+    if (fence) continue;
+    const heading = /^#{2,6}\s+(.+?)\s+\[#([^\]]+)\]\s*$/.exec(line);
+    if (!heading) continue;
+    const key = label(heading[1]);
+    const ids = explicit.get(key) ?? [];
+    ids.push(heading[2]);
+    explicit.set(key, ids);
+  }
+  const ids = new Set();
+  const seen = new Map();
+  const walk = tokens => {
+    for (const token of tokens ?? []) {
+      if (token.type === 'heading' && token.depth !== 1) {
+        const text = label(token.text.replace(/\s+\[#[^\]]+\]\s*$/, ""));
+        const native = explicit.get(text)?.shift();
+        if (native) ids.add(native);
+        else {
+          const base = text.toLowerCase().replace(/[^\p{L}\p{M}\p{N}\p{Pc}\- ]/gu, '').replace(/ /g, '-');
+          const n = seen.get(base) ?? 0;
+          seen.set(base, n + 1);
+          ids.add(n ? `${base}-${n}` : base);
+        }
+      }
+      walk(token.tokens);
+      walk(token.items);
+    }
+  };
+  walk(marked.lexer(document.markdown));
+  for (const [, id] of document.content.matchAll(/<a\s+(?:id|name)="([^"]+)"/g)) ids.add(id);
+  return ids;
+}
+const anchors = new Map([...documents].map(([rel, document]) => [rel, anchorsOf(document)]));
+
 // The manifest drives static exports, navigation and legacy redirects.
-for (const section of ['docs', 'api-reference']) {
+for (const section of ['docs', 'api-reference', 'api']) {
   rmSync(join(pubDir, section), { recursive: true, force: true });
 }
-const pages = [...documents].map(([rel, document]) => {
+const http = publishHttpReferences({
+  outDir, pubDir, genDir, documents,
+  rewriteMarkdown: (markdown, rel) => rewriteLinks(markdown, rel, [gfm()]),
+});
+const pages = [...documents].filter(([rel]) => !referenceSources.has(rel)).map(([rel, document]) => {
   const slug = slugFor(basename(rel).replace(/\.mdx?$/, ''));
   return { slug, title: document.metadata.title, section: sectionFor(rel), url: `/${sectionFor(rel)}/${slug}/`,
     markdown: rewriteLinks(document.markdown, rel, [gfm()]) };
 });
+pages.push(...http.pages);
 const agents = await readDocument(join(here, '../src/content/docs/docs-for-agents.mdx'));
 const routeAgentLinks = text => text.replace(/\/([a-z-]+)(\/|\.md)/g, (match, slug, end) => {
   const page = pages.find(p => p.slug === slug);
@@ -378,6 +445,7 @@ const publishedNavigation = navigation.map(section => {
     ? { kind: 'page', url: `/${knownSlugs.get(node.source)}/` }
     : { kind: 'group', title: node.title, children: node.children.map(convert) };
   const children = section.children.map(convert);
+  if (section.section === 'api-reference') children.push(...http.navigation);
   if (section.section === 'docs') children.push({ kind: 'group', title: 'For agents', children: [{ kind: 'page', url: '/docs/docs-for-agents/' }] });
   const order = pages.filter(page => page.section === section.section).map(page => page.slug);
   writeFileSync(join(outDir, section.section, 'meta.json'), JSON.stringify({ title: section.title, root: true, pages: order }, null, 2));
@@ -387,7 +455,9 @@ writeFileSync(join(genDir, 'navigation.mjs'), `// @ts-check\n/** @type {import('
 writeFileSync(join(genDir, 'pages.json'), JSON.stringify(pages, null, 2));
 writeFileSync(join(genDir, 'routes.json'), JSON.stringify(pages.map(({slug,url}) => ({slug,url}))));
 const redirects = ['/ /docs/what-is-cotal/ 301', '/docs /docs/what-is-cotal/ 301', '/docs/ /docs/what-is-cotal/ 301', '/api-reference /api-reference/overview/ 301', '/api-reference/ /api-reference/overview/ 301', '/agent-frameworks /docs/connect-pi/ 301', '/agent-frameworks/ /docs/connect-pi/ 301', '/agent-frameworks.md /docs/connect-pi.md 301'];
-for (const page of pages) redirects.push(`/${page.slug} ${page.url} 301`, `/${page.slug}/ ${page.url} 301`, `/${page.slug}.md ${page.url.slice(0, -1)}.md 301`);
+for (const page of pages.filter(page => page.section !== 'api' && page.slug !== 'api-reference')) redirects.push(`/${page.slug} ${page.url} 301`, `/${page.slug}/ ${page.url} 301`, `/${page.slug}.md ${page.url.slice(0, -1)}.md 301`);
+redirects.push('/api-reference.md /api-reference/api-reference.md 301');
+for (const reference of httpReferences) redirects.push(`/${reference.docSlug} /${reference.base}/ 301`, `/${reference.docSlug}/ /${reference.base}/ 301`);
 writeFileSync(join(pubDir, '_redirects'), redirects.join('\n') + '\n');
 for (const page of pages) {
   const file = join(pubDir, page.url.slice(1, -1) + '.md');
@@ -395,9 +465,12 @@ for (const page of pages) {
   writeFileSync(file, page.markdown);
 }
 const origin = 'https://docs.cotal.ai';
-writeFileSync(join(pubDir, 'llms.txt'), '# Cotal\n\nA standard wire interface for agents over NATS + JetStream. The normative wire specification wins where other pages disagree. Roadmap content is not shipped behavior.\n\n- [All documentation](https://docs.cotal.ai/llms-full.txt)\n- [Compact documentation](https://docs.cotal.ai/llms-small.txt)\n- [Agent setup prompt](https://docs.cotal.ai/prompt.md)\n- [Message schema](https://docs.cotal.ai/cotal.schema.json)\n\n' + pages.map(p => `- [${p.title}](${origin}${p.url.slice(0, -1)}.md)`).join('\n') + '\n');
+writeFileSync(join(pubDir, 'llms.txt'), '# Cotal\n\nA standard wire interface for agents over NATS + JetStream. The normative wire specification wins where other pages disagree. Roadmap content is not shipped behavior.\n\n- [All documentation](https://docs.cotal.ai/llms-full.txt)\n- [Compact documentation](https://docs.cotal.ai/llms-small.txt)\n- [Agent setup prompt](https://docs.cotal.ai/prompt.md)\n- [Message schema](https://docs.cotal.ai/cotal.schema.json)\n\n' + httpReferences.map(reference => `- [${reference.label} OpenAPI](${origin}/${reference.specFile})`).join('\n') + '\n' + pages.map(p => `- [${p.title}](${origin}${p.url.slice(0, -1)}.md)`).join('\n') + '\n');
 for (const [name, subset] of [['full', pages], ['small', pages.filter(p => !['release', 'setup-internals', 'roadmap'].includes(p.slug))]]) {
   writeFileSync(join(pubDir, `llms-${name}.txt`), subset.map(p => `Source: ${origin}${p.url}\n\n${p.markdown}`).join('\n\n'));
 }
 writeFileSync(join(pubDir, 'sitemap.xml'), '<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">' + pages.map(p => `<url><loc>${origin}${p.url}</loc></url>`).join('') + '</urlset>');
 writeFileSync(join(pubDir, 'sitemap-index.xml'), '<?xml version="1.0" encoding="UTF-8"?><sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><sitemap><loc>https://docs.cotal.ai/sitemap.xml</loc></sitemap></sitemapindex>');
+
+const missingFragments = fragmentLinks.filter(([, target, hash]) => !anchors.get(target)?.has(decodeURIComponent(hash.slice(1))));
+if (missingFragments.length) throw new Error(`link to a missing anchor:\n${missingFragments.map(([from, target, hash]) => `  ${from}: ${target === from ? '' : target}${hash}`).join('\n')}`);

@@ -1,7 +1,7 @@
 import nodeAssert from "node:assert/strict";
 import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import { spawnSync } from "node:child_process";
-import { readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
@@ -275,10 +275,11 @@ if (selectedProbe) {
   const probe = PROBES.find(([id]) => id === selectedProbe);
   assert.ok(probe, `unknown presence-render probe case: ${selectedProbe}`);
   const [, name, expectedKind, source, dir] = probe;
-  const path = join(dir ?? probeDir, `presence-render-probe-${name}`);
+  const probeRoot = mkdtempSync(join(dir ?? probeDir, "presence-render-probe-"));
+  const path = join(probeRoot, name);
   const rel = relative(root, path).split("\\").join("/");
   try {
-    writeFileSync(path, source);
+    writeFileSync(path, source, { flag: "wx" });
     const scan = spawnSync("pnpm", ["exec", "tsx", self], {
       cwd: root,
       env: { ...cleanEnv, COTAL_PRESENCE_RENDER_PROBE_CASE: "", COTAL_PRESENCE_RENDER_SINGLE_PROBE: rel, COTAL_PRESENCE_RENDER_EXPECT_KIND: expectedKind },
@@ -288,7 +289,7 @@ if (selectedProbe) {
     const output = `${scan.stdout ?? ""}${scan.stderr ?? ""}`;
     assert.equal(scan.status, 0, output);
   } finally {
-    rmSync(path, { force: true });
+    rmSync(probeRoot, { recursive: true, force: true });
   }
   console.log(`presence-render probe case passed: ${selectedProbe}`);
   emitSentinel({ passed: cells(), failed: 0 });
@@ -324,11 +325,11 @@ for (const renderer of manifest.renderers) {
   assert.ok(uses.length > 0, `renderer declaration has no scanned call sites: ${renderer.name}`);
 }
 
-const sharedStatusBadgeAnchor = 'return c.green("● working · progress unknown");';
+const sharedStatusBadgeAnchor = 'return c.green(`${mark("●")}working · progress unknown`);';
 const connectorHonestStatusAnchor = 'status === "working" ? "working · progress unknown" : status;';
 const connectorRosterProgressAnchor = 'const progress = p.status === "working" ? `working${condition} · progress unknown` : `${p.status}${condition}`;';
 const inkDetailStatusAnchor = '<Text color={s.color}>{s.dot + " " + s.word + (status === "working" ? " · progress unknown" : "")}</Text>';
-const inkRosterProgressAnchor = 'return progressSignal(undefined, Date.now()).kind === "unknown" ? "progress unknown" : "progress observed";';
+const inkRosterProgressAnchor = 'return "progress unknown";';
 const webMonitorProgressAnchor = 'const progress = p.status === "working" && p.progress?.kind === "unknown" ? "working · progress unknown" : p.status;';
 const webGraphProgressAnchor = '<div class="d-status ${sel.status}"><span class="dot"></span>${esc(sel.status === "working" && sel.progress?.kind === "unknown" ? "working · progress unknown" : sel.status)}</div>';
 const proofAnchors = new Map<string, string>([
@@ -370,39 +371,57 @@ assert.deepEqual(actual, manifest.expected, "presence render census count drifte
 console.log(`presence-render AST census: ${actual.total} candidates (${actual["honest-text"]} honest-text, ${actual["presence-only-glyph/count"]} presence-only-glyph/count, ${actual["command-ack"]} command-ack, ${actual["non-render/control"]} non-render/control)`);
 
 if (process.env.COTAL_PRESENCE_RENDER_PROBE_CHILD !== "1") {
-  for (const [, name, expectedKind, source, dir] of PROBES) {
-    const path = join(dir ?? probeDir, `presence-render-probe-${name}`);
-    try {
-      writeFileSync(path, source);
-      const rel = relative(root, path).split("\\").join("/");
-      if (expectedKind === "none") {
-        // A negative probe asserts its exemption is honoured: the scan of the probe file alone
-        // must find no candidate, so the full-census run below stays green with the file present.
+  // A legacy fixed probe name may belong to the caller. Both entry modes must leave it alone.
+  const preservedPath = join(probeDir, "presence-render-probe-negative-ends-with.ts");
+  const preserved = "// This existing file belongs to the caller, not the probe.\n";
+  writeFileSync(preservedPath, preserved, { flag: "wx" });
+  try {
+    const selected = spawnSync("pnpm", ["exec", "tsx", self], {
+      cwd: root,
+      env: { ...cleanEnv, COTAL_PRESENCE_RENDER_PROBE_CASE: "negative-ends-with" },
+      encoding: "utf8",
+      timeout: 120_000,
+    });
+    assert.equal(selected.status, 0, `${selected.stdout ?? ""}${selected.stderr ?? ""}`);
+    assert.equal(readFileSync(preservedPath, "utf8"), preserved, "selected probe must preserve an existing file at its old fixed name");
+    for (const [, name, expectedKind, source, dir] of PROBES) {
+      const probeRoot = mkdtempSync(join(dir ?? probeDir, "presence-render-probe-"));
+      const path = join(probeRoot, name);
+      try {
+        writeFileSync(path, source, { flag: "wx" });
+        const rel = relative(root, path).split("\\").join("/");
+        if (expectedKind === "none") {
+          // A negative probe asserts its exemption is honoured: the scan of the probe file alone
+          // must find no candidate, so the full-census run below stays green with the file present.
+          const scan = spawnSync("pnpm", ["exec", "tsx", self], {
+            cwd: root,
+            env: { ...cleanEnv, COTAL_PRESENCE_RENDER_SINGLE_PROBE: rel, COTAL_PRESENCE_RENDER_EXPECT_KIND: "none" },
+            encoding: "utf8",
+            timeout: 120_000,
+          });
+          assert.equal(scan.status, 0, `negative presence-render probe was flagged; its exemption is not honoured: ${rel}\n${scan.stdout ?? ""}${scan.stderr ?? ""}`);
+          const run = spawnSync("pnpm", ["exec", "tsx", self], { cwd: root, env: { ...cleanEnv, COTAL_PRESENCE_RENDER_PROBE_CHILD: "1" }, encoding: "utf8", timeout: 120_000 });
+          assert.equal(run.status, 0, `negative presence-render probe escaped into the full census and red it: ${rel}\n${run.stdout ?? ""}${run.stderr ?? ""}`);
+          continue;
+        }
         const scan = spawnSync("pnpm", ["exec", "tsx", self], {
           cwd: root,
-          env: { ...cleanEnv, COTAL_PRESENCE_RENDER_SINGLE_PROBE: rel, COTAL_PRESENCE_RENDER_EXPECT_KIND: "none" },
+          env: { ...cleanEnv, COTAL_PRESENCE_RENDER_SINGLE_PROBE: rel, COTAL_PRESENCE_RENDER_EXPECT_KIND: expectedKind },
           encoding: "utf8",
           timeout: 120_000,
         });
-        assert.equal(scan.status, 0, `negative presence-render probe was flagged; its exemption is not honoured: ${rel}\n${scan.stdout ?? ""}${scan.stderr ?? ""}`);
+        assert.equal(scan.status, 0, `${scan.stdout ?? ""}${scan.stderr ?? ""}`);
         const run = spawnSync("pnpm", ["exec", "tsx", self], { cwd: root, env: { ...cleanEnv, COTAL_PRESENCE_RENDER_PROBE_CHILD: "1" }, encoding: "utf8", timeout: 120_000 });
-        assert.equal(run.status, 0, `negative presence-render probe escaped into the full census and red it: ${rel}\n${run.stdout ?? ""}${run.stderr ?? ""}`);
-        continue;
+        const output = `${run.stdout ?? ""}${run.stderr ?? ""}`;
+        assert.notEqual(run.status, 0, `adversarial presence-render probe unexpectedly escaped the AST census: ${rel}`);
+        assert.match(output, new RegExp(rel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), `probe failure did not name its new shipped path: ${rel}`);
+      } finally {
+        rmSync(probeRoot, { recursive: true, force: true });
       }
-      const scan = spawnSync("pnpm", ["exec", "tsx", self], {
-        cwd: root,
-        env: { ...cleanEnv, COTAL_PRESENCE_RENDER_SINGLE_PROBE: rel, COTAL_PRESENCE_RENDER_EXPECT_KIND: expectedKind },
-        encoding: "utf8",
-        timeout: 120_000,
-      });
-      assert.equal(scan.status, 0, `${scan.stdout ?? ""}${scan.stderr ?? ""}`);
-      const run = spawnSync("pnpm", ["exec", "tsx", self], { cwd: root, env: { ...cleanEnv, COTAL_PRESENCE_RENDER_PROBE_CHILD: "1" }, encoding: "utf8", timeout: 120_000 });
-      const output = `${run.stdout ?? ""}${run.stderr ?? ""}`;
-      assert.notEqual(run.status, 0, `adversarial presence-render probe unexpectedly escaped the AST census: ${rel}`);
-      assert.match(output, new RegExp(rel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), `probe failure did not name its new shipped path: ${rel}`);
-    } finally {
-      rmSync(path, { force: true });
     }
+    assert.equal(readFileSync(preservedPath, "utf8"), preserved, "full census must preserve an existing file at a probe's old fixed name");
+  } finally {
+    rmSync(preservedPath, { force: true });
   }
 }
 console.log("PRESENCE-RENDER-CENSUS: 17 checks passed");

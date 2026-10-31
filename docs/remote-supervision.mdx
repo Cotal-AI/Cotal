@@ -1,7 +1,7 @@
 ---
 title: "Supervise a remote mesh"
 description: "Separate broker and manager hosts, publish an exchange, and enroll remote agents."
-kind: "Informative"
+kind: Guide
 audience: "operators"
 ---
 
@@ -48,10 +48,11 @@ cotal up --detach --host 0.0.0.0 --space main --no-manager
 
 # manager host (registered remote mesh, same space)
 cotal space add main --server nats://100.90.12.34:4222 --root ~/meshes/main --allow-unencrypted-overlay
-cotal supervise --space main --server nats://100.90.12.34:4222
+cotal manager start --space main
 ```
 
-Wait for `✓ manager up` in the manager host's `.cotal/manager.<spaceKey>.log` before spawning agents.
+`manager start` dials the registered broker and returns once its endpoint serves, with `Readiness observation: endpoint-serving`.
+Use `cotal manager logs --space main` to read its log and `cotal manager stop --space main` to stop it.
 The log path is under the project root, not `~/.cotal`, unless the home directory is the root.
 
 If the broker host already runs a manager, wait for that manager's `✓ manager up` line before stopping it.
@@ -147,6 +148,8 @@ Register the hosted user-auth mesh first, then run its manager through the regis
 The entry determines the broker URL, including websocket transport for `wss://`, and the TLS requirement for the authority exchange.
 Every authority request carries fresh login proof and refuses redirects.
 A non-JSON response also fails, naming the endpoint and HTTP status.
+Credential exchange, agent provisioning, and interactive actor retirement report unreadable JSON the same way.
+An unreadable retirement reply leaves the outcome unknown and the actor row unchanged.
 
 The host issues a restricted `manager-service` view for the participant's derived owner, a server-selected manager actor, and one manager instance.
 Its prepare, activate, and renew operations are replay-safe and bound to that lifecycle.

@@ -31,6 +31,7 @@ import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import type { EndpointKind } from "./types.js";
 import { assertValidName } from "./resolve.js";
 import { writePrivateRecord } from "./secret-fs.js";
+import { utf16Problem } from "./text-encoding.js";
 import { assertValidChannel, assertValidOwnerToken, channelInAllow, isConcreteChannel, resolveReadAcl } from "./subjects.js";
 
 export interface AgentDef {
@@ -137,14 +138,29 @@ function assertLaunchSelectors(def: Pick<AgentDef, "model" | "variant">, where: 
   }
 }
 
+/** Validate an endpoint **kind** (`card.kind`, `COTAL_KIND`, or an agent file's `kind:`): the
+ *  closed `"agent" | "endpoint"` set ({@link EndpointKind}). The endpoint branches on
+ *  `card.kind === "agent"` for the authed agent's `dm_` incarnation proof before presence
+ *  publishes, so an unvalidated string would skip that proof. */
+export function assertValidKind(kind: unknown, where?: string): EndpointKind {
+  if (kind === "agent" || kind === "endpoint") return kind;
+  throw new Error(
+    `${where ? `${where}: ` : `invalid kind ${JSON.stringify(kind)}: `}"kind" must be "agent" or "endpoint"`,
+  );
+}
+
 /** Load and parse an agent definition file (Markdown + `---` frontmatter). */
 export function loadAgentFile(path: string): AgentDef {
   return parseAgentFileSource(readFileSync(path, "utf8"), path);
 }
 
-/** Parse an agent-file document already in memory. `path` is only for error text. */
+/** Parse an agent-file document already in memory. `path` is only for error text. A leading UTF-8
+ *  BOM and CRLF line endings, as Windows editors and git's `core.autocrlf` write them, read as LF. A
+ *  file saved as UTF-16 is refused by its encoding (see {@link utf16Problem}). */
 export function parseAgentFileSource(src: string, path: string): AgentDef {
-  const m = AGENT_FILE_FENCE.exec(src);
+  const encoding = utf16Problem(src);
+  if (encoding) throw new Error(`agent file ${path}: ${encoding}; save it as UTF-8`);
+  const m = AGENT_FILE_FENCE.exec(src.replace(/^\uFEFF/, "").replace(/\r\n/g, "\n"));
   if (!m) throw new Error(`agent file ${path}: missing "---" frontmatter block`);
   const fm = parseFrontmatter(m[1], path);
   const persona = m[2].trim();
@@ -170,9 +186,8 @@ export function parseAgentFileSource(src: string, path: string): AgentDef {
   const model = str("model");
   const variant = str("variant");
   assertLaunchSelectors({ model, variant }, `agent file ${path}`);
-  const kind = str("kind");
-  if (kind && kind !== "agent" && kind !== "endpoint")
-    throw new Error(`agent file ${path}: "kind" must be "agent" or "endpoint"`);
+  const rawKind = str("kind");
+  const kind = rawKind !== undefined ? assertValidKind(rawKind, `agent file ${path}`) : undefined;
 
   // The pre-ACL field names were renamed (channels→subscribe, publish→allowPublish, +allowSubscribe).
   // Fail loud on the old names rather than silently sweeping them into meta and ignoring them —
@@ -246,7 +261,7 @@ export function parseAgentFileSource(src: string, path: string): AgentDef {
   return {
     name,
     role: str("role"),
-    kind: kind as EndpointKind | undefined,
+    kind,
     description: str("description"),
     tags: list("tags"),
     agent: str("agent"),
@@ -273,6 +288,7 @@ export function parseAgentFileSource(src: string, path: string): AgentDef {
 export function saveAgentFile(path: string, def: AgentDef): void {
   if (!def.name) throw new Error('saveAgentFile: "name" is required');
   assertValidName(def.name);
+  if (def.kind !== undefined) assertValidKind(def.kind, "saveAgentFile");
   assertLaunchSelectors(def, "saveAgentFile");
   for (const k of Object.keys(def.meta ?? {}))
     if (MODELED_KEYS.has(k) || RENAMED_KEYS.includes(k))
@@ -317,14 +333,15 @@ export function saveAgentFile(path: string, def: AgentDef): void {
   if (def.meta) for (const [k, v] of Object.entries(def.meta)) fm[k] = v;
   const frontmatter = stringifyYaml(fm, { lineWidth: 0 }).trimEnd();
   const body = def.persona ? `${def.persona.trim()}\n` : "";
-  mkdirSync(dirname(path), { recursive: true });
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   writePrivateRecord(path, `---\n${frontmatter}\n---\n\n${body}`);
 }
 
 /** Content a peer may name on `define-persona`. Policy (`capabilities`, `owner`) has no slot. */
 export type WirePersonaArgs = {
   name: string;
-  owner: string;
+  /** The principal a fresh file records as its owner; absent, the file is operator-owned. */
+  owner?: string;
   prompt: string;
   model?: string;
   role?: string;

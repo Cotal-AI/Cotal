@@ -145,9 +145,11 @@ Out of scope:
   and `manager.ts:3239-3240` keeps refusing.
 - CLI and MCP revoke verbs. The issuing-host request in section 11 is shipped, but these verbs need
   a served manager command and caller observation, not a one-line routing change.
-- Platform authority and lifecycle intent. [Platform control authority](platform-pooled-control-authority.md)
-  (on main) and the portable lifecycle bootstrap and delegated user launch intent records (on their
-  own branches) cover a `p_` holder and its launches. This path does not use or change them, and it
+- Platform authority and lifecycle intent. [Platform control authority](platform-pooled-control-authority.md),
+  [portable lifecycle bootstrap](portable-lifecycle-bootstrap.md) and
+  [delegated user launch intent](delegated-user-launch-intent.md) cover a `p_` holder and its
+  launches. When this record was written the last two were on their own branches; both have since
+  shipped (0.63.0 and 0.62.0). This path does not use or change them, and it
   admits no `p_` caller. Under the owner rule of section 4.6 a `p_` holder's manager admits no `u_`
   caller either; a user's launch through a platform is the delegated intent record's concern.
 
@@ -509,7 +511,7 @@ interactive path.
 | A served resume or answer the issuing host did not observe on the broker, or a second forward of one it did | issuing host | `permission-denied`, not observed |
 | A forwarded resume naming another run than the observed request, or an answer naming another endpoint or amendment | issuing host | `permission-denied`, another operation |
 | An amendment for a pause that has no accepted answer | issuing host | `failed-precondition` |
-| A boot-reconcile attempt for a revoked run | issuing host | existing refusal, `run <runId> was revoked; a revoked run is issued nothing (SPEC 14.8)` |
+| A boot-reconcile attempt for a revoked run | issuing host | existing refusal, `run <runId> was revoked; no attempt or answering authority is issued (SPEC 14.8)` |
 
 ## 8. Residual risk
 
@@ -532,12 +534,15 @@ interactive path.
   own owner, but it does not observe that this caller published it. A dishonest participant manager
   can therefore start runs for its own owner's live issuances and, as on main, for a static caller's,
   never for another user. Resumes and answers are bound to a request the issuing host observed;
-  issue #2465 tracks the same binding for `run-start`.
+  issue #2465 tracked the same binding for `run-start`. It closed with `426d72e2e` (0.69.0), which
+  admits a forwarded `run-start` only for a request the issuing host observed.
 - The pause token an answering issuance pins is still the manager's word. The issuing host checks the
   observed answer's endpoint and amendment and that the pause is waiting, or settled for an
   amendment, but a token is derived inside the run and only the run's journal maps it to a run and
   step. A dishonest participant manager holding one observed answer can therefore ask for a different
-  pause on the `manager` endpoint than the one that answer named. Issue #2535 tracks it.
+  pause on the `manager` endpoint than the one that answer named. Issue #2535 tracked it and closed
+  with `6141e7b5b` (0.68.0), which pins an answering run operator to the pause its run's journal
+  records.
 
 ## 9. Acceptance for the implementation round
 
@@ -646,6 +651,9 @@ request. `remoteRunHosting` binds the closed response to its request before retu
 The remote path does not forward its local `by` argument. That argument is not authenticated
 identity evidence to the issuer. The signer-holding path keeps trusted-operator attribution.
 
-`cotal run revoke` and the `cotal_run` revoke verb remain follow-up. They need a manager command
-schema, capability grants, observed request subjects, serve-time caller checks and CLI/tool
-parsing. Neither surface currently routes a revoke, so this is not a one-line addition.
+`cotal run revoke` on a hosted run and the `cotal_run` revoke verb remain follow-up. They need a
+manager command schema, capability grants, observed request subjects, serve-time caller checks and
+CLI/tool parsing. Neither surface routes a revoke through the issuing host. The shipped
+`cotal run revoke <runId> --local --by <who> --reason <text>` writes the marker from the space's
+trust material in the project folder and refuses without `--local`, so this is not a one-line
+addition.

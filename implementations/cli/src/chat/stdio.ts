@@ -1,6 +1,6 @@
 /**
  * `cotal chat --stdio`: the versioned NDJSON participant protocol, documented for programs in
- * docs/cli.md under "The --stdio protocol".
+ * docs/cli.mdx under "The --stdio protocol".
  *
  * Pure protocol. It parses and validates one request per line, dispatches a valid request to an
  * already admitted {@link AdmittedChatSession}, and serializes responses and unsolicited records
@@ -16,12 +16,14 @@
  *   error     {schemaVersion, type:"error", id:null, error}   (a line that names no usable id)
  *   end       {schemaVersion, type:"end", reason, close?}
  *
- * Requests run one at a time in arrival order, so results come back in request order. Unknown
- * types, unknown fields and malformed values refuse with USAGE_INVALID and never reach the session.
+ * Requests run one at a time in arrival order, and a refusal waits its turn, so every result and
+ * error comes back in line order. Unknown types, unknown fields and malformed values refuse with
+ * USAGE_INVALID and never reach the session.
  */
-import { assertValidChannel, assertValidRole, isConcreteChannel, MAX_NAME_LENGTH } from "@cotal-ai/core";
+import { assertValidRole, MAX_NAME_LENGTH } from "@cotal-ai/core";
 import type { AttentionMode, ChannelMode } from "@cotal-ai/core";
 import type { AdmittedChatSession, CloseReport, PublishResult, Result, SessionEvent, SessionMessage } from "./session.js";
+import { concreteChannelProblem } from "../lib/concrete-channel.js";
 
 export const STDIO_SCHEMA_VERSION = 1;
 /** Bound on one request line, in UTF-16 code units. Provisional; set at review. */
@@ -96,15 +98,10 @@ function validId(v: unknown): v is string {
   return typeof v === "string" && v.length > 0 && v.length <= MAX_REQUEST_ID && /^[\x21-\x7e]+$/.test(v);
 }
 
-/** A concrete, policy-valid channel, or the reason it is not. */
-function channelProblem(v: unknown): string | undefined {
-  if (typeof v !== "string") return "must be a string";
-  try {
-    assertValidChannel(v);
-  } catch (e) {
-    return (e as Error).message;
-  }
-  return isConcreteChannel(v) ? undefined : "must be a concrete channel (no * or >)";
+/** A concrete, policy-valid channel, or the refusal for it. A string gets the sentence `cotal send -c`
+ *  gives for the same name. */
+function channelProblem(type: string, v: unknown): string | undefined {
+  return typeof v === "string" ? concreteChannelProblem(v) : `${type}.channel must be a string`;
 }
 
 /** Parse and validate one request line. Never throws and never touches a session. */
@@ -140,14 +137,19 @@ function validateFields(id: string, type: RequestType, r: Record<string, unknown
     if (max !== undefined && (v.length === 0 || v.length > max)) return usage(id, `${type}.${key} must be 1-${max} characters`);
     return v;
   };
+  // A message body that is empty or only whitespace is refused with the sentence `cotal send` gives.
+  const body = (): string | ParsedLine => {
+    const text = str("text");
+    return typeof text === "string" && !text.trim() ? usage(id, "the message is empty") : text;
+  };
   const isErr = (v: unknown): v is ParsedLine => typeof v === "object" && v !== null && "ok" in v;
   const ok = (request: StdioRequest): ParsedLine => ({ ok: true, request });
   switch (type) {
     case "send": {
-      const text = str("text");
+      const text = body();
       if (isErr(text)) return text;
-      const problem = channelProblem(r.channel);
-      if (problem) return usage(id, `send.channel ${problem}`);
+      const problem = channelProblem(type, r.channel);
+      if (problem) return usage(id, problem);
       const mentions = r.mentions ?? [];
       if (!Array.isArray(mentions) || mentions.some((m) => typeof m !== "string" || m.length === 0 || m.length > MAX_NAME_LENGTH))
         return usage(id, `send.mentions must be an array of names of 1-${MAX_NAME_LENGTH} characters`);
@@ -156,7 +158,7 @@ function validateFields(id: string, type: RequestType, r: Record<string, unknown
     case "dm": {
       const to = str("to", MAX_DM_TARGET);
       if (isErr(to)) return to;
-      const text = str("text");
+      const text = body();
       if (isErr(text)) return text;
       if (r.replyTo !== undefined) {
         const replyTo = str("replyTo", MAX_MESSAGE_ID);
@@ -173,7 +175,7 @@ function validateFields(id: string, type: RequestType, r: Record<string, unknown
       } catch (e) {
         return usage(id, (e as Error).message);
       }
-      const text = str("text");
+      const text = body();
       if (isErr(text)) return text;
       return ok({ type, id, role, text });
     }
@@ -191,8 +193,8 @@ function validateFields(id: string, type: RequestType, r: Record<string, unknown
       return ok({ type, id, mode });
     }
     case "channelMode": {
-      const problem = channelProblem(r.channel);
-      if (problem) return usage(id, `channelMode.channel ${problem}`);
+      const problem = channelProblem(type, r.channel);
+      if (problem) return usage(id, problem);
       const mode = r.mode;
       if (mode !== "normal" && mode !== "quiet" && mode !== "muted") return usage(id, "channelMode.mode must be normal, quiet or muted");
       return ok({ type, id, channel: r.channel as string, mode });
@@ -200,8 +202,8 @@ function validateFields(id: string, type: RequestType, r: Record<string, unknown
     case "join":
     case "leave":
     case "channelInfo": {
-      const problem = channelProblem(r.channel);
-      if (problem) return usage(id, `${type}.channel ${problem}`);
+      const problem = channelProblem(type, r.channel);
+      if (problem) return usage(id, problem);
       return ok({ type, id, channel: r.channel as string });
     }
     case "inbox": {
@@ -346,21 +348,23 @@ export class StdioParticipant {
     this.unsubscribe = session.subscribe((event) => this.onEvent(event));
   }
 
-  /** Queue one input line. Blank lines are ignored. After the end record nothing is written. */
+  /** Queue one input line. Blank lines are ignored. After the end record nothing is written. A
+   *  refusal is decided on arrival but written in its turn, so every line's record comes back in
+   *  arrival order. */
   acceptLine(line: string): void {
     if (this.ended || line.trim() === "") return;
     const parsed = parseRequestLine(line);
     if (!parsed.ok) {
-      this.emitRefusal(parsed.id, parsed.error);
+      this.queueRefusal(parsed.id, parsed.error);
       return;
     }
     const req = parsed.request;
     if (this.closing) {
-      this.emitRefusal(req.id, { code: "LIFECYCLE_BLOCKED", message: "the session is ending; no new requests are accepted" });
+      this.queueRefusal(req.id, { code: "LIFECYCLE_BLOCKED", message: "the session is ending; no new requests are accepted" });
       return;
     }
     if (this.inFlight.has(req.id)) {
-      this.emitRefusal(req.id, { code: "USAGE_INVALID", message: `request id ${JSON.stringify(req.id)} is already in flight` });
+      this.queueRefusal(req.id, { code: "USAGE_INVALID", message: `request id ${JSON.stringify(req.id)} was still in flight when this request arrived` });
       return;
     }
     this.inFlight.add(req.id);
@@ -379,17 +383,34 @@ export class StdioParticipant {
     });
   }
 
-  /** stdin closed: finish already accepted requests in order, close the session, then write the end record. */
-  async endOfInput(): Promise<CloseReport | undefined> {
+  /** Refuse a line that never reached {@link acceptLine}, such as one too long to frame, in its turn
+   *  with the other records. */
+  refuseLine(error: ProtocolError): void {
+    if (this.ended) return;
+    this.queueRefusal(null, error);
+  }
+
+  /** stdin closed: finish already accepted requests in order, close the session, then write the end
+   *  record. Its reason is the signal that ended input, or `input closed`. */
+  async endOfInput(reason = "input closed"): Promise<CloseReport | undefined> {
     this.closing = true;
-    await this.chain;
-    return this.finish("input closed");
+    await this.drain();
+    return this.finish(reason);
+  }
+
+  /** Wait until every queued record is written, including refusals queued while waiting. */
+  private async drain(): Promise<void> {
+    for (let queued = this.chain; ; queued = this.chain) {
+      await queued;
+      if (queued === this.chain) return;
+    }
   }
 
   private async finish(reason: string): Promise<CloseReport | undefined> {
     if (this.ended) return undefined;
-    this.ended = true;
+    // Unsubscribing reports what the session has not reported yet, such as a full inbox's drops.
     this.unsubscribe();
+    this.ended = true;
     let close: CloseReport;
     try {
       close = await this.session.close();
@@ -420,15 +441,17 @@ export class StdioParticipant {
           this.emit({ schemaVersion: 1, type: "gap", scope: "live", reason: event.reason ?? `connection ${event.state}: live channel messages may be missed until it returns` });
         else if (event.state === "ended") {
           this.closing = true;
-          void this.chain.then(() => this.finish(event.reason ?? "session ended"));
+          void this.drain().then(() => this.finish(event.reason ?? "session ended"));
         }
         return;
     }
   }
 
-  private emitRefusal(id: string | null, error: ProtocolError): void {
-    if (id === null) this.emit({ schemaVersion: 1, type: "error", id: null, error });
-    else this.emit({ schemaVersion: 1, type: "result", id, outcome: "refused", error });
+  private queueRefusal(id: string | null, error: ProtocolError): void {
+    this.chain = this.chain.then(() => {
+      if (id === null) this.emit({ schemaVersion: 1, type: "error", id: null, error });
+      else this.emit({ schemaVersion: 1, type: "result", id, outcome: "refused", error });
+    });
   }
 
   private emit(record: OutputRecord): void {

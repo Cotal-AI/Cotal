@@ -1,0 +1,2 @@
+# Hold-aware retirement failures through public spawn and native endpoint rails.
+smoke:retirement-copy

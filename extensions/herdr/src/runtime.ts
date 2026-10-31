@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   hardenPrivate,
+  launcherSource,
   registry,
   SpawnRefused,
   confirmWatch,
@@ -20,32 +21,10 @@ const GRACE_MS = 2_000;
  *  loop. */
 const CONFIRM_CALL = { timeoutMs: 1_000 };
 
-interface LauncherPayload {
-  cwd: string;
-  command: string;
-  args: string[];
-  env: Record<string, string>;
-}
-
 export interface PrivateLauncher {
   argv: string[];
   dir: string;
   script: string;
-}
-
-function launcherSource(payload: LauncherPayload): string {
-  return `import { spawn } from "node:child_process";\n` +
-    `import { rmSync } from "node:fs";\n` +
-    `const launch = ${JSON.stringify(payload)};\n` +
-    `try { rmSync(new URL(".", import.meta.url), { recursive: true, force: true }); } catch {}\n` +
-    `process.chdir(launch.cwd);\n` +
-    `const child = spawn(launch.command, launch.args, { env: launch.env, stdio: "inherit", windowsHide: false });\n` +
-    `let exiting = false;\n` +
-    `const forward = (signal) => { if (!exiting && child.pid) child.kill(signal); };\n` +
-    `process.on("SIGINT", () => forward("SIGINT"));\n` +
-    `process.on("SIGTERM", () => forward("SIGTERM"));\n` +
-    `child.on("error", (err) => { console.error("[cotal-herdr-launch] " + launch.command + ": " + err.message); process.exit(127); });\n` +
-    `child.on("exit", (code, signal) => { exiting = true; if (signal) process.exit(128); process.exit(code ?? 0); });\n`;
 }
 
 /** The connector-declared env (identity, creds, control token) must never appear on herdr's
@@ -59,7 +38,7 @@ export function privateLauncher(spec: LaunchSpec, cwd: string): PrivateLauncher 
   const dir = mkdtempSync(join(tmpdir(), "cotal-herdr-launch-"));
   hardenPrivate(dir, "dir");
   const script = join(dir, "launch.mjs");
-  writeSecretFile(script, launcherSource({ cwd, command: spec.command, args: spec.args, env: spec.env ?? {} }));
+  writeSecretFile(script, launcherSource("[cotal-herdr-launch]", { cwd, command: spec.command, args: spec.args, env: spec.env ?? {} }));
   return { argv: [process.execPath, script], dir, script };
 }
 
@@ -101,6 +80,7 @@ function cleanupLauncher(launcher: PrivateLauncher): void {
  */
 export class HerdrRuntime implements Runtime {
   readonly kind = "herdr" as const;
+  readonly streamsTerminal = false;
 
   constructor(private readonly session: string) {}
 
@@ -126,8 +106,8 @@ export class HerdrRuntime implements Runtime {
     let tabsBefore: string[];
     let launcher: PrivateLauncher;
     try {
-      if ((spec.confirmBefore?.length || spec.confirmReady?.length) && spec.confirm === undefined) throw new Error("startup choices require a final confirmation prompt");
-      watch = spec.confirm === undefined ? undefined : confirmWatch(spec.confirm, spec.confirmBefore, spec.confirmReady);
+      if ((spec.confirmBefore?.length || spec.confirmReady?.length || spec.confirmBlockers?.length) && spec.confirm === undefined) throw new Error("startup choices require a final confirmation prompt");
+      watch = spec.confirm === undefined ? undefined : confirmWatch(spec.confirm, spec.confirmBefore, spec.confirmReady, spec.confirmBlockers);
       herdr.ensureServer(this.session);
       // `split` shares a tab, so the tab set has to be sampled BEFORE this agent adds its own.
       tabsBefore = layout === "split" ? herdr.tabIds(this.session) : [];

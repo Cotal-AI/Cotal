@@ -9,34 +9,57 @@ import { Callout } from "fumadocs-ui/components/callout";
 
 The process controller records custody, readiness, and stop evidence for each service instance.
 
+
 ## supervise [#supervise]
 
 ```bash
-cotal supervise [--execution runtime|none] [--runtime <name>] [--space <s>] [--server <url>] [--spawn <names>]
+cotal supervise [--execution runtime|none] [--runtime <name>] [--space <s>] [--server <url>] [--name <name>] [--spawn <names>]
 ```
 
-`supervise` is a deprecated entry kept for existing units, scripts and containers, and help and
-completion omit it. It accepts the same flags and prints a warning on every run naming the
-`manager` service preset and the release that removes it; see
-[deprecated daemon entries](UPGRADING.md#deprecated-daemon-entries). The manager that `cotal up`
-starts runs the same code through a hidden entry and prints no warning.
+`supervise` runs a manager in this terminal until Ctrl-C. It is deprecated, hidden from help and
+completion, and removed in `1.0.0`, with the other [deprecated daemon
+entries](UPGRADING.md#deprecated-daemon-entries): every run prints one stderr warning naming
+`cotal manager start`, and `cotal manager start --foreground` for a terminal or a unit. On a
+terminal it wraps like any other warning. A run given
+`--execution`, `--spawn`, `--seat-cap` or a resume flag, which `manager start` does not take yet,
+says to keep `supervise` for that run instead. It keeps its flags and its run for existing units,
+scripts and containers. The manager that `cotal up` starts
+runs the same code through a hidden entry. Without `--space` it
+supervises the space other commands target here: `COTAL_SPACE`, else the running space this folder
+hosts or is registered for, else the one `cotal use` selected, else the space this folder holds or
+hosts. A space the folder only holds, such as a prepared or stopped one or one a `cotal up` in a
+folder above it left, does not take the run from the selection. With nothing selected, a prepared or
+stopped space is refused as not started, and the refusal names the `cotal up` that starts it. A
+folder that holds no space, with nothing selected, is refused `TARGET_NOT_FOUND` in the words
+`cotal manager start` uses there. Next leads with `cotal manager start --space <name>` or
+`cotal use <name>`, which start the manager of a space a folder on this machine hosts from any
+folder. It keeps `cotal supervise --space <name>` for a space no folder here hosts, and names
+`cotal up` to host one here. A registered or selected space runs its manager
+in the folder that space is registered at, with that folder's records and signer, so a start from
+any folder is the same manager, with the same instance and name. With `--space` or `COTAL_SPACE`
+the manager runs in this folder. For a static or user-auth space that another folder hosts, a
+folder that holds no signer for it is refused `PERMISSION_DENIED` before anything is written, and
+Next names the folder that hosts the space.
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--space <s>` | this folder's auth space | Space to supervise. On a root that hosts several spaces, name one of them here |
+| `--space <s>` | `COTAL_SPACE`, this folder's space, or the `cotal use` selection | Space to supervise. On a root that hosts several spaces, name one of them here |
 | `--server <url>` | hosting mesh, or matching registered mesh | Broker URL. A registered mesh supplies it when omitted; a different explicit value is refused before anything is dialed. |
 | `--runtime <name>` | `pty` | Agent runtime (`pty` built in; extension runtimes are explicit-only) |
-| `--execution runtime\|none` | `runtime` | NONE is a genuine hosting user-auth control instance with no Runtime, connector inspection, workload or terminal execution |
+| `--execution <runtime\|none>` | `runtime` | `none` starts a control instance for a hosting user-auth root, with no runtime, connector inspection, workload or terminal execution |
 | `--console-port <n>` | none | Protocol-console port |
-| `--console-host <host>` | loopback | Bind host for the console endpoint. Loopback keeps it machine-local; `cotal up` passes the address it bound the broker to, which lets the browser console reach this manager from another machine. `cotal attach` does not use this face: it redeems a mesh session grant over the broker |
-| `--max-sessions <n>` | 64 | Live-session ceiling. Each console pane and each `cotal attach` is one session, so size for agents × panes, not agent count. A capacity refusal names this flag. `cotal up --max-sessions` records the same number on the mesh so a later `supervise` started by repair or a retained legacy manifest launcher keeps it |
+| `--console-host <host>` | loopback | Bind host for the console endpoint. Loopback keeps it machine-local; `cotal up` passes the address it bound the broker to, which is what lets the browser console reach this manager from another machine. `cotal attach` does not use this face: it redeems a mesh session grant over the broker |
+| `--max-sessions <n>` | 64 | Live-session ceiling. Each console pane and each `cotal attach` is one session, so size for agents × panes, not agent count. A capacity refusal names this flag. `cotal up --max-sessions` records the same number on the mesh so a later `supervise` started by repair keeps it |
+| `--seat-cap <n\|unlimited>` | `unlimited` | Live seats this manager admits for one owner. `unlimited` leaves the manager's own 50-slot ceiling as the only bound, so a mesh with one owner keeps every slot. Set a number where several owners share a manager, and one owner cannot take the host. A launch over it is refused before anything is reserved, naming the owner's count, the cap and the remedy. It is recorded in this root, so a later start without the flag keeps it. A recorded cap that cannot be read fails the start, naming the record's path, and the next step is to remove or repair that record. With no record, the start uses `unlimited` |
+| `--name <name>` | none | The manager's name. Its presence card carries it, `who --all` and the manager choice show it, and `--on` takes it on a user-auth mesh. It is recorded in this root, so a later start without `--name` keeps it. Without a name, the manager shows as `<host>/<runtime>` |
 | `--roster <file>` | none | Declarative roster to boot at startup. See [Roster files](define-a-team.mdx#roster-files) |
-| `--launch <spec>` | none | Resolved manifest launch spec (from `up -f` / `spawn -f`) |
+| `--launch <spec>` | none | Resolved manifest launch spec (from `up -f` / `team boot`) |
 | `--spawn <names>` | none | Comma-separated personas to pre-spawn at startup |
 
-`--ws-port`, `--resume-attempt` and `--resume-commit-token` are passed by `cotal up` when it starts
-the manager, for the console session client and for resuming preserved seats. They are not for
-direct use.
+`--ws-port`, `--resume-attempt`, `--resume-commit-file` and `--resume-commit-sha256` are passed by
+`cotal up` when it starts the manager, for the console session client and for resuming preserved
+seats. They are not for direct use. `--resume-commit-token` is the deprecated argv form of the
+resume commit, still accepted for older callers (see [Backups](cli-backups.mdx#backups)).
 
 The manager is the agent supervisor and control plane: it answers `spawn --detach`, `stop`, `ps`,
 `attach`, and the `cotal_*` manager tools. `cotal up --detach` starts one for you; run `supervise`
@@ -46,20 +69,13 @@ select it explicitly. A missing provider or app fails loudly; there is no fallba
 Boot inventory decides whether this process takes unpinned `spawn`/`launch` on the class rail:
 if every declared connector is unavailable, those commands stay on this instance rail only
 (`status` reports `classSpawn: false`). `describe` still answers on the class rail, so an
-unpinned spawn can bind-fence against a skip member; re-issue, or pin `--on`. A partial
+unpinned spawn can bind-fence against a skip member; re-issue, or pin `--on`. With no member
+on the class rail, an unpinned spawn is refused and names the agent application to add. A partial
 inventory keeps the class rail and names `--on` on a harness refusal, because sibling
 inventories are not readable from the serve credential. See [control surface](control-surface.mdx#instance-routing).
+The manager prints what its boot inventory found once it is up, so a start that is refused prints
+no boot line.
 
-### Managed child environment
-
-A managed agent receives the fixed OS environment allow-list, including PATH, HOME, and locale,
-the machine-wide `COTAL_*` operator settings, connector-declared provider inputs,
-explicitly shared MCP references, and names selected through `spawn.env`.
-The PATH retains entries for connector binaries.
-Other ambient variables, including host-session markers such as `CLAUDE_CODE_CHILD_SESSION`, do not cross automatically.
-They can cross when explicitly selected by a connector, a shared MCP reference, or `spawn.env`.
-Connection material is passed through a private file.
-This environment policy does not isolate children from processes running as the same OS user.
 
 ### Control-only execution
 
@@ -81,23 +97,38 @@ Its native registration, lease, renewal, session-ledger and goal maintenance can
 Local runtime startup now records identity and execution mode during admission. A later failed
 authentication or registration can leave those files classified as runtime. Invalid supervise
 arguments refuse before connector seeding, with one error line rather than seeding first.
+A refusal names the caught value's `message`, or the value itself when it has none, so an auth
+provider that rejects with `null` or a string still gets its refusal line and exit status 1.
+When the broker refuses the credential the manager presents, such as one this folder's signer
+minted for a space another folder hosts, `supervise` exits 2 with a `PERMISSION_DENIED` refusal
+under a `Mesh:` heading that names the credential and the broker, and its Next names the folder
+that hosts the space. Before it connects, `supervise` refuses the same way, with exit 2 under a
+`Mesh:` heading, and writes nothing in this folder. A space whose own stack in this folder is
+stopped or not started gets `TARGET_UNAVAILABLE` and `cotal up` there, and with `--server` also the
+folder whose `cotal up` started that broker. A static or user-auth space that another folder hosts
+gets `PERMISSION_DENIED` and the folder that hosts it, when this folder holds no signer for it.
 
-### Manager successor recovery
-
-Normal `SIGINT`/`SIGTERM` uses the sparing stop policy. The manager stops seats bound to its process,
-releases seats the runtime can leave running, and applies the retained-state policy to preserved seats.
-For a seat selected for stop, the runtime must prove exit before the manager releases authority. A stop that
+Normal `SIGINT`/`SIGTERM` uses the sparing stop policy. The manager stops process-bound seats, releases seats the runtime can leave running, and applies retained-state policy to preserved seats. For a seat selected for stop, the runtime must prove exit before the manager releases its lease or service registration. A stop that
 cannot prove exit fails loud and keeps manager authority instead of reporting a clean shutdown while
 an orphan still holds broker rails. When the runtime refuses the stop itself, the shutdown fails at
-once and its error names the refusal as `stop failed: <message>`. After an abrupt manager death, the same logical successor
+once and its error names the refusal as `stop failed: <message>`. A manager that a controller stack
+or `service start` runs stops this way on a plain `SIGTERM` that carries no stop request, such as
+one from `kill`, a systemd stop or a system shutdown, with the default agent policy. Its log shows
+`received SIGTERM with no stop request`, it writes no stop receipt, and the next `cotal down`
+records it as already gone. It ignores a `SIGINT` that carries no stop request and logs one
+warning line, because Ctrl-C reaches it together with the CLI that publishes the request. A
+manager that does not answer its endpoint, such as a hung or stopped process, cannot report its
+stop impact, so `cotal down`, `service stop` and `service restart` refuse it `LIFECYCLE_BLOCKED`,
+exit 2, submit no stop and name its pid. Once that process is ended, as with `kill -KILL <pid>`, the
+same command finds it gone and goes on. After an abrupt manager death, the same logical successor
 terminalizes only its own durable static slots, verify-evicts the predecessor's broker principal,
 records that result in the lifecycle's caller-readable audit detail, reaps the predecessor's seat
-process through the runtime's custody reference recorded on the slot (the pty runtime verifies the
-process start identity in its seat record, so a reused pid is never signalled), and only then
-retires the lifecycle and frees the alias. A seat whose spawn carried `supervise` with restarts left
-is restarted instead of retired: the successor reaps any seat the slot still names, relaunches it
-under the same name, lifecycle uid, credential, persona and cwd, and counts the restart against the
-policy. A seat on a runtime that can adopt a live seat (tmux) and still running when the successor
+process through any runtime custody reference recorded on the slot, and only then retires the
+lifecycle and frees the alias. A seat whose spawn carried `supervise` with restarts left is restarted
+instead of retired: the successor reaps any seat the slot still names, relaunches it under the same
+name, lifecycle uid, credential, persona and cwd, and counts the restart against the policy. New
+built-in `pty` seats have no custody reference. Their supervised recovery validates the runtime
+saved in the seat record; a custodial runtime still requires its matching slot reference. A seat on a runtime that can adopt a live seat (tmux) and still running when the successor
 starts is adopted in place: the successor checks that the recorded tmux server, window and pane are
 the ones the slot names and that the pane's process still runs, then manages that seat again under
 its existing credential, without a restart. Both paths read the record the manager writes to
@@ -118,6 +149,7 @@ rollback reaps the seat through the same reserved reference before the lifecycle
 terminalizing, and so does a runtime that cannot reap by reference. While the name stays held, a
 same-name spawn or a resume re-drives that teardown with the same recorded reference, so it reaps
 the seat again or keeps the name held.
+
 
 ### Participant manager authority
 
@@ -147,8 +179,8 @@ The record also decides whether that registration requires TLS, so a participant
 the credential exchange to a plaintext connection the registry did not describe.
 
 Without that advertised host service or scope, `supervise` refuses before it starts a manager.
-Direct `cotal spawn --foreground` launches one foreground agent. Detached agents require the
-space host's authority service and a `supervise` grant. If a running remote manager loses
+Run `cotal spawn` without `--detach` to launch a foreground agent, or ask the space host to enable
+the authority service and grant `supervise` for detached agents. If a running remote manager loses
 renewal, it reports degraded state and refuses unsafe new starts and restarts; live agents are not
 silently replaced. Do not run `cotal down` or `cotal up` on a participant machine to repair this
 condition.
@@ -164,13 +196,16 @@ proof that an application, dependency or service is ready. Linux direct-process
 instances can use the owned systemd user-unit route described below. An adapter
 does not acquire that mechanism from its name or preset.
 
-### Platform custody requirements
+The direct-process driver pins the machine, the boot, the OS user and each process's start. On
+Linux these are the machine ID, the kernel boot ID and the process start ticks. On macOS they are
+the hardware UUID, the boot session UUID and the process start in microseconds, read through the
+bundled binding described under the identity pins above. On Windows they are the system ID that
+Windows gives this publisher's apps on the machine (`GetSystemIdForPublisher`), the account's SID and
+each process's creation time, read through the same binding. The record also keeps where Windows
+derived that ID: a TPM, UEFI or the registry. An ID from the registry changes when Windows is
+installed again. When Windows has none of these, the driver refuses. Windows records no boot pin.
+The custodian described below holds each instance's job instead, and a restart ends it.
 
-The direct-process driver pins Linux machine/boot IDs and process start ticks.
-macOS and Windows still refuse: their generic process custody needs a stable
-machine, boot, owner and subsecond creation pin before any signal is safe.
-The existing macOS `ps -o lstart` timestamp has only second precision, so
-hashing it would not distinguish a PID reused within that second.
 
 ### Supervisor observations
 
@@ -189,12 +224,13 @@ ambiguous observations stay partial. It neither prints unit/environment contents
 ownership from names or cwd. This observation proves neither endpoint readiness nor effective
 login/reboot autostart. Inventory and direct-process dry-runs perform no OS query;
 Linux native-unit removal dry-runs make one bounded exact-unit status read.
-### Unit installation
-
 On Linux, `service install <name> --instance <full-id> --dry-run` asks the
 systemd user manager for its config directory, then renders a
 bounded direct-process unit and private environment candidates and reports
 their paths and digests without printing their bytes or the inherited `PATH`.
+A user manager that does not answer `systemctl --user show-environment` refuses
+`DEPENDENCY_UNAVAILABLE`, naming that command, with a Next to run from a
+logged-in session.
 With no existing instance, the inspection checks the declared process,
 durable CLI entry and user manager, then reports that apply would allocate a
 stopped full ID; it
@@ -221,8 +257,6 @@ writes, isolated connector seeding, a bounded private-tree fingerprint, user
 manager reload, enable without `--now`, and the exact supervisor receipt. It
 returns the full instance and observed unit-file state, not a process-readiness
 or effective reboot-autostart claim.
-### Uncertain native attempts
-
 A retained installation or removal intent blocks a new install and is reported
 as partial by `service status` with its exact unit path, private-store path,
 current step and last acknowledged step. A bounded native read for each retained install, removal or start/stop/reseed
@@ -235,9 +269,8 @@ pre-effect target leaves a planned step and a partial receipt; an unconfirmed
 submitted effect is unknown and is never automatically repeated.
 `service remove` refuses while any native attempt names the definition. There is no
 explicit reconciliation for an uncertain attempt.
-### Unit removal
-
-`service uninstall <name> --instance <full-id> --dry-run` reads only a matching recorded systemd unit,
+`service uninstall <name>
+--instance <full-id> --dry-run` reads only a matching recorded systemd unit,
 its private-store directory and one native status snapshot. A retained native
 action, or missing, modified or foreign receipt files, refuses. An owned private
 directory does not prove its descendants unchanged. A separate unexposed
@@ -249,6 +282,7 @@ unchanged loaded inactive unit and private tree, with `--yes` in scripts or a
 scoped terminal confirmation. It disables autostart, removes only the pinned
 unit and private tree, reloads the user manager, then removes the supervisor
 receipt. The definition and stopped instance record remain.
+
 
 ### Native unit lifecycle
 
@@ -262,6 +296,7 @@ start does not confirm, the stopped original remains in its result.
 Uninstall retains a step before disable, exact unit unlink, reload, private
 tree removal and receipt deletion. A non-confirming step remains visible in
 `service status`; a missing unit alone never clears its attempt.
+
 
 ### Private unit entry
 
@@ -281,12 +316,28 @@ Install dry-run makes only the bounded native directory read above; uninstall
 dry-run reads the exact recorded unit and private-store directory. Neither
 allocates an instance, enables autostart nor removes a receipt or unit.
 
+
 ### Direct process lifecycle
 
-Process definitions support `service start/stop/restart/status/logs <name>`. The driver currently
-requires Linux stable machine identity, boot identity and readable process-creation tokens. It
+Process definitions support `service start/stop/restart/status/logs <name>`. The driver requires a
+stable machine identity and readable process-creation tokens. Linux and macOS add the boot identity.
+Windows adds the account's SID and a custodian that holds the service's job, described below. It
 refuses another platform instead of using PID-only ownership. It launches executable and argv
 separately without a shell. No broker, manager or other dependency is started implicitly.
+
+On Windows each background instance runs under its own custodian. The custodian is a detached
+Cotal process that creates the program inside a new job object. The job ends every member when its
+last handle closes and allows no breakaway, and only the custodian holds that handle. So a
+custodian that exits for any reason, a restart of the computer included, ends the service and
+everything it started. Commands reach the custodian over a named pipe and prove that they hold the
+instance's 32-byte capability, and the custodian proves the same back before anything is done. The
+capability lives in a protected file beside the instance records, which name only that file. A stop
+terminates the whole job and waits until it is empty, and its receipt records the signal
+`job-terminate`. When the program has exited but processes it started still run, `service status`
+reports the process as `members-running` rather than gone, and a stop ends them. `cotal down`
+refuses a stack with such a member and names that stop. Windows has no foreground start. A
+manager's agents run in its job, so a manager stop without `--with-agents` is refused while the job
+still holds them.
 
 Instance IDs are assigned once and printed in full. With several records, scripts need
 `--instance <full-id>`; a terminal can choose from those IDs. `start --new-instance` explicitly
@@ -301,18 +352,6 @@ bytes. Control credentials are not inherited wholesale. The program still runs a
 OS user; this is not a process sandbox. Native managers require their service adapter and
 agent-impact guards and are refused by generic process launch/stop.
 
-### Local process declarations
-
-The CLI and composed native packages register broker and control-plane `local-process` descriptors.
-Installed packages can contribute their own descriptors, so local status and shutdown use provider metadata
-rather than package-specific PID-file rules in the base CLI.
-A legacy extension process claims its declared PID file with exclusive create.
-Extension removal reserves that same path, preventing a new start from crossing uninstall.
-Controller-only services instead use launch intents and instance-based removal guards.
-
-A descriptor's `cooperativeStop` selects the workspace's process-bound local cleanup capability on Windows.
-Manager and delivery declare it. Injected hosted services do not use this workstation channel.
-The channel provides local process cleanup, not wire authority.
 
 ### Adapter declarations
 
@@ -322,7 +361,13 @@ bounded objects, arrays and scalar fields, with no schema references, regular ex
 coercion, defaults or unknown-option removal. Every object closes its declared fields. An
 unsupported schema refuses rather than being widened. A declared path option and its ancestors
 follow the [`space create`](cli-selection.mdx#selecting-a-space) rule for other local writers; a private file stays
-owner-only.
+owner-only. One refusal names the option's entry and every unsafe directory above it, with one
+`chmod` that fixes them all. `npm i -g` under umask 0002, an ordinary Ubuntu user's default, leaves the bundled
+`nats-server` and its directories group-writable, so where the private-group proof is unavailable,
+`up` refuses the broker's `binary` path and names that `chmod g-w`. When every unsafe folder is
+inside Cotal's own install root, as it is for the runtime Node an earlier installer left
+group-writable, the refusal says the folders belong to Cotal's own install and names `cotal update`
+as the fix.
 
 The provider declares foreground, multi-instance and log capabilities. An explicit start records
 its definition revision, full instance, launch request and adapter package/version/declaration
@@ -342,25 +387,41 @@ observation time. Local status does not refresh them or promote them to current 
 A failed or timed-out hook retains an unknown receipt and is not retried. A cancellation signal
 does not prove third-party code stopped working.
 
-A trusted Manager embedding can capture its selected public identity through `onServiceIdentity`
-before endpoint construction. The native service adapter binds that selection privately to the full
-service instance, launch request, and process creation identity.
-The selection supplies no epoch, readiness, credential, or grant.
-Dotted endpoint classes keep their native grammar; encoding validates the class without replacing it.
-Delivery registers its adapter over shared workspace custody metadata, so CLI stop clients do not import
-the delivery implementation. Startup receipts remain private, request-specific local observations.
-
 Extension removal checks retained service records in every local service space, including spaces
 absent from the mesh-selection registry. Live, foreign, unreadable or unresolved instances block
 removal. A starting intent and the extension writer lock prevent an uninstall from crossing the
 controller's final provider check. Providers still run as the current OS user, not in a sandbox.
 
-### Process readiness
-
-Process readiness reports a live creation-pinned direct process as Running. HTTP readiness uses
+Process readiness waits up to one second, or its deadline when that is shorter, for the process to
+exit. One that exits by then fails the start with `OPERATION_FAILED`, exit 5, and its exit code is
+recorded; a restart whose replacement exits so is partial, exit 4, and names that exit code. A
+background start also quotes the last line the process logged during that launch, and says its log
+records the cause when it logged nothing. A line over 1000 characters is quoted by its start and its
+last `; next:` step. A foreground start says its output went to this terminal
+and was not captured in its log, and names no log to read. A live
+creation-pinned direct process is reported Running. HTTP readiness uses
 a bounded loopback request with credentials omitted and redirects disabled. Its success is
 Reachable, not proof that the child owns that listener or serves a native endpoint. Status labels
 the stored readiness observation and its time separately from the current process observation.
+Before it launches a process with HTTP readiness, `service start` sends one such request. When
+something already answers there, such as an instance of the same definition on its port, any answer
+could come from it rather than the new process, so the start refuses `CONFLICT`, exit 2, names the
+address and that instance, and launches nothing. When no instance answers there, the refusal names
+each process of this account that listens there by PID and program name, as `SERVICE_ADDRESS_HELD`
+does, and its Next says to stop that process. The start does not signal it. When the HTTP deadline passes first, `service start`
+names the loopback address without the URL's path, the expected status and the deadline. When the
+service kept answering another status, such as 503, it exits 5 with `OPERATION_FAILED` and names that
+status. When the last check got no answer, such as a refused connection, it exits 3, names what it
+saw, and its Next also names `cotal service show <name>`, which shows the readiness deadline. Either
+way the process is left running, and the Next names the `service logs` and `service stop` for that
+exact instance.
+
+A Ctrl-C or `SIGTERM` while a background `service start` waits does not reach the service, which
+keeps running. The start exits 130 or 143 and names the instance it left. Its Next is
+`cotal service start <name>` to wait for that instance's readiness again, or the `service stop` for
+it. Until a later command settles that start, `service status` and `cotal status` say the start was
+interrupted.
+
 
 ### Process stop policy
 
@@ -370,20 +431,26 @@ PID is never signalled as the old process. Restart holds the definition operatio
 confirmed old-process exit and one replacement launch. An unconfirmed stop cannot cause a
 replacement. `--dry-run` creates no instance and sends no process signal.
 
+
 ### Foreground process lifetime
 
 `start --foreground` is an owned foreground process, not an attachable view. It rejects JSON and
 cannot adopt an already running background instance into the terminal. Before allocation it prints
-the terminal lifetime and output policy. Native auth and Linear presets use their installed signal
+the terminal lifetime and output policy on stderr. Native auth and Linear presets use their installed signal
 handlers through this same flow; neither endpoint readiness nor native cleanup is inferred from
 process exit. A foreground manager stops through the same request-bound native stop as
 `service stop`, keeping its agents: the SIGINT or SIGTERM the CLI receives is the confirmation.
-Ctrl-C also reaches the native child, which ignores a signal that carries no stop request and
-prints one warning line for it.
+Ctrl-C also reaches the native child, which ignores a `SIGINT` that carries no stop request and
+prints one warning line for it. A plain `SIGTERM` stops it with the default agent policy.
 Native service child boot never repairs or seeds connector packages. Background stdout/stderr
-go to owner-private logs. `logs --tail <1..1000>` reads a bounded tail; omitted earlier bytes make
-the result partial. Foreground output is not captured there. Log text is not promised to be
-secret-redacted. Live following uses the bounded read-only stream described below.
+go to owner-private logs. A start or restart moves a log of 16 MiB or more to `<log>.1`, replacing
+an earlier one, and the run writes a fresh log, so the log grows until the next start.
+`logs --tail <1..1000>` reads back from the end of the log until it has that many lines, reading at
+most 16 MiB. The result is partial only when those 16 MiB hold fewer lines than the tail asked for.
+`service remove` deletes `<log>` and `<log>.1` for each instance it removes. Foreground output is
+not captured there. Log text is not promised to be secret-redacted. Live following uses the bounded
+read-only stream described below.
+
 
 ### Systemd journal logs
 
@@ -402,17 +469,21 @@ retention may omit messages, and an empty result does not prove there was no out
 Journald must retain an accessible per-user journal; no alternate file, privilege escalation or
 remote log service is used. These are authorized local logs and can contain secrets.
 
-### Descendant process limits
+A background start runs its process as the leader of its own process group. `service stop`, and
+the stop half of a restart, signal that group and wait until the process and every member of the
+group are gone, so a descendant left in the group, such as a server a shell backgrounded, ends with
+it. A foreground start shares the command's group, so only its own process is signalled.
+`service stop --dry-run` names which it would signal, the process group with its member count or
+the process alone, and the grace period before `SIGKILL`; `--json` carries it as `stopSignal`. A
+descendant that leaves the group, such as one started with `setsid`, is not followed, and a
+stopped/direct-process-gone observation is not proof that all external work ended. When the HTTP
+readiness address of a saved service still answers while none of its instances runs, `service
+stop`, `service status`, `cotal service`, `cotal status` and `cotal down` print a
+`SERVICE_ADDRESS_HELD` warning. It names the address and any process of this account that listens
+there, by PID and program name. The process driver itself provides no service presets, agent-aware
+manager control, owned OS units, non-Linux lifecycle parity or full preset and OS-supervisor
+integration.
 
-<Callout type="warn">
-
-The process driver tracks its direct child, not arbitrary descendants a program creates. A
-stopped/direct-process-gone observation must not be interpreted as proof that all external work
-or descendant processes ended. The generic direct-process driver supplies no service presets or agent-aware manager control.
-Owned systemd user units use the separate native-unit controller described above. Non-Linux
-lifecycle parity and full preset integration with OS supervisors remain unsupported.
-
-</Callout>
 
 ### Direct child file logs
 
@@ -424,18 +495,27 @@ truncation. Instance-generation changes are attributed. UTF-8 decoding can repla
 and is labeled accordingly. Output backpressure pauses the reader instead of growing a buffer
 without bounds. Ctrl-C, termination and closed output end the view, not the service.
 
-### Unsupported auth lifecycle commands
-
 `auth retire <full-lifecycle-uid> [--space <space>] [--yes]` validates the native UID and resolves
-the selected auth target. The CLI then refuses unsupported caller context: the registered
-auth endpoint requires the requester's own current serve identity/gate, which the standalone CLI
-does not provide. It neither borrows a manager identity nor substitutes the interactive/managed
-loopback host doors. `--yes` cannot create authority, and no retirement request is sent.
+the selected auth target. A lifecycle UID is 26 to 32 lowercase letters and digits, and
+`cotal ps --wide` shows each seat's. On a user-auth mesh that runs elsewhere and advertises an
+agent-provisioning endpoint, it releases that one lifecycle there with your login
+([Held agent names](identity-and-auth.mdx#held-agent-names)) and reports the mesh's answer: revoked,
+already revoked (`no-op`), `TARGET_NOT_FOUND` (exit 2) for a lifecycle the mesh does not list, or
+`OPERATION_UNKNOWN` (exit 3) for a release the mesh could not confirm, which is not repeated. A
+revoked lifecycle may still be retiring. On any other mesh the CLI refuses `UNSUPPORTED` (exit 2): the registered auth
+endpoint accepts retirement only from the requester's own current serve identity and gate, which this
+CLI does not have. It neither borrows a manager identity nor substitutes the interactive or managed
+loopback host doors. `--yes` cannot create authority, and no retirement request is sent. The refusal
+names the levers that work: [auth revoke-credential](cli-auth.mdx#auth-revoke-credential) for one minted
+credential, which keeps the store, and rotating the space identity, which stops every credential the
+space issued and removes the space's store with its history (see [auth mint](cli-auth.mdx#auth-mint)). The rotation also leaves
+earlier full backups of the space restoring only their registry.
 
 `auth redeem <private-handle-file> [--space <space>]` selects the existing local auth target and
 refuses with `UNSUPPORTED` because its conferring-handle redemption path is not exposed. It does
 not read the file, consume a handle or issue credentials. Session grants, agent enrollment and
 parsing an unverified handle are not substituted for that authority.
+
 
 ### Scoped help
 
@@ -445,3 +525,285 @@ starts no service and opens no credential file. A command's `-h` selects the dee
 mode before its data arguments; it does not execute that mode. Scoped options refer to the
 command's shared flag definitions. Completion uses the same declared subgroups and option names,
 without treating an option's value as another command word.
+
+
+## daemon [#daemon]
+
+```bash
+cotal daemon setup --space <s> [--idp <auth base URL>] [--client-id <id>] [--wait <seconds>] [--daemon-home <dir>] [--json|--plain]
+cotal daemon install [--daemon-home <dir>] [--dry-run] [--json|--plain]
+cotal daemon uninstall [--daemon-home <dir>] [--yes|--dry-run] [--json|--plain]
+cotal daemon serve [--daemon-home <dir>] [--json|--plain]
+cotal daemon status [--daemon-home <dir>] [--json|--plain]
+cotal daemon login --idp <auth base URL> [--client-id <id>] [--daemon-home <dir>] [--json|--plain]
+cotal daemon connect-check --space <s> [--daemon-home <dir>] [--json|--plain]
+cotal daemon register --space <s> [--daemon-home <dir>] [--json|--plain]
+cotal daemon service-connect --space <s> [--daemon-home <dir>] [--json|--plain]
+cotal daemon service-disconnect --space <s> [--daemon-home <dir>] [--json|--plain]
+cotal daemon service-status --space <s> [--daemon-home <dir>] [--json|--plain]
+```
+
+This release serves a local endpoint for status, sign-in, a connection check, a registration request
+and the daemon's own service connection, and installs itself as a systemd user service. It does not
+start a Manager, serve any command on its service, or connect to Cloud. It supports Linux only. On other
+platforms, an unset `XDG_RUNTIME_DIR` produces
+`TARGET_UNAVAILABLE` (`NO_RUNTIME_DIR`); with it set, the platform check refuses `UNSUPPORTED`.
+
+`setup` connects a machine with no browser on it, in one command. It installs the user service,
+waits for the daemon to answer, signs it in by device code when it is not signed in already, asks
+the space to register it, and connects it once the space owner approves. It prints one plain line
+per stage to stderr as it goes, so `--json` still writes one document on stdout. Pausing, renaming
+and disconnecting stay their own commands.
+
+Every stage is skipped when it is already done, so running `setup` again after an interruption
+continues from where it stopped. That matters because the owner's approval in the middle belongs to
+a person. `--wait <seconds>` bounds how long it waits for that approval, 900 by default; `--wait 0`
+reports what it reached and stops. A wait that runs out is `partial` (`OPERATION_PARTIAL`) with
+`APPROVAL_PENDING` as the native code: the service is installed and the registration is sent, and
+the message says so, so nothing is lost by running it again. An answer that cannot improve is a
+refusal carrying the space's own reason, such as `PERMISSION_DENIED` (`PROPOSAL_REFUSED`), and the
+connection stage is never reached. Only a connected machine exits 0.
+
+`--idp` is needed only when this machine is not signed in. Without it, a machine that needs a
+sign-in refuses `AUTH_REQUIRED` (`NOT_SIGNED_IN`) and names the flag, before any registration.
+A daemon that is already answering while no installed unit is recorded for it refuses `CONFLICT`
+(`RUNNING_WITHOUT_UNIT`): installing then would start a second daemon that the lifetime lock
+refuses, and the running one is not a persistent service. Stop it and run `setup` again, or keep it
+and use `register` and `service-connect` by hand.
+
+`install` runs the daemon as a systemd user service. It writes one unit to the user manager's own
+configuration directory, enables it, and starts it. The unit starts at login, restarts the daemon
+when it dies, and keeps running after you log out, which on a headless server is what linger
+provides. `install` enables linger for the invoking user and says so in its receipt. A linger it
+cannot enable fails the install, naming `loginctl enable-linger <user>`, because a unit without it
+stops at logout. `uninstall` stops the service, disables autostart and removes the unit, and leaves
+linger enabled, because other user services may rely on it.
+
+The unit is `cotal-daemon.service`, or `cotal-daemon-<16 hex>.service` for a daemon with its own
+`--daemon-home`, derived from that directory as its socket is. `--dry-run` reports the unit name,
+path and the sha256 of the bytes it would write, and writes, enables and starts nothing. A second
+`install` for the same daemon refuses `CONFLICT` and names `cotal daemon uninstall`. Outside a
+terminal `uninstall` needs `--yes`. `uninstall` acts on the unit `install` recorded: a unit file
+that is gone refuses `TARGET_NOT_FOUND`, and one whose bytes changed refuses `CONFLICT`, with
+nothing removed either way.
+
+`install`, `--dry-run` included, needs a logged-in session of the user who will run the daemon. It
+reads that user from `USER`, or from `LOGNAME` when `USER` is unset, and the user manager's config
+directory from `systemctl --user show-environment`. When neither variable names a user it refuses
+`TARGET_UNAVAILABLE` and names both. When the user manager does not answer, as from a shell whose
+`XDG_RUNTIME_DIR` is not the user manager's runtime directory, it refuses `DEPENDENCY_UNAVAILABLE`
+and names that command. Each refusal's Next says to run it from a logged-in session.
+
+`serve` runs in the foreground and prints one ready line, `daemon ready at <socket>`, on stdout once
+the endpoint is bound and checked. Its log lines, such as a recovered socket, go to stderr. That
+success line is plain text; `--json` shapes its refusals. `status` prints the
+state, version, protocol, process ID, start time and uptime. `state: "ready"` means only that the
+local control listener is bound and verified, not that a mesh or Cloud connection exists.
+
+The endpoint is `$XDG_RUNTIME_DIR/cotal/daemon.sock`. Without `XDG_RUNTIME_DIR` both forms refuse
+`TARGET_UNAVAILABLE` (`NO_RUNTIME_DIR`). Both refuse `PERMISSION_DENIED` for a runtime directory
+that is a symlink, not a directory, not owned by you, or not mode `0700`. `status` also refuses
+`PERMISSION_DENIED` for an endpoint entry that is not a socket, not yours, or not mode `0600`. For
+a socket of another mode (`SOCKET_WRONG_MODE`), Next says to find the process listening there with
+`ss -xlp` and stop it, then start the daemon with `cotal daemon serve`.
+The daemon drops connections from other users. The kernel separates users, not processes of one
+user: any process running as you can use the local controls, including sign-in and cancellation.
+
+`status` with no daemon running refuses `TARGET_UNAVAILABLE` (`NOT_RUNNING`).
+SIGTERM and SIGINT shut down cleanly and remove only the daemon's own socket. SIGKILL or SIGHUP,
+including closing the terminal, leaves a stale socket, and the next `serve` recovers it by itself.
+
+That recovery rests on the lifetime lock below. Each `serve` holds a kernel `flock` on its lock
+file, which the kernel releases when the holder dies, SIGKILL included, and records the socket it
+publishes there by device and inode number. A `serve` that takes the lock therefore knows its
+predecessor is gone, and because publishing the socket needs the lock, nobody else can be putting
+one at that path while it holds it. It removes the one socket its own record names, once a connect
+to it is refused, and binds its own. A filesystem can give a new file the inode number of one it
+freed, so a socket with the recorded numbers that a process answers on belongs to someone else. A
+`serve` whose state directory is unreadable, or which finds a socket its record does not name or a
+process answers on, removes nothing and refuses `CONFLICT` (`ALREADY_RUNNING`), naming the path.
+When a process answers, the refusal says another process is listening at that path and `serve` does
+not start until it releases it, and Next names `ss -xlp` and `fuser <path>` to find that process. A
+clean shutdown clears the record, and so does a refused `serve`, so a socket at the path afterwards
+is refused the same way, and the reason says the record names no socket. A non-socket entry there refuses `PERMISSION_DENIED` (`SOCKET_NOT_SOCKET`) and is left
+alone.
+
+`--daemon-home <dir>` runs or reaches a separate daemon whose own state lives in `<dir>`: its
+sign-in session, its per-space identity, register request and service store, all at the paths
+below with `<dir>` in place of `<COTAL_HOME>`. Spaces are still read from the shared Cotal home's
+mesh registry, which this daemon never writes. Its socket is
+`$XDG_RUNTIME_DIR/cotal/home-<16 hex>/daemon.sock`, derived from the directory, so it runs beside
+the default daemon. `<dir>` must already exist as an absolute directory you own with mode `0700`,
+and cannot be the Cotal home. A relative path or the Cotal home refuses `USAGE_INVALID`, a missing
+directory `TARGET_NOT_FOUND`, and a symlinked, foreign or loose one `PERMISSION_DENIED`. Nothing is
+created or repaired.
+
+`serve` holds the lifetime lock `<dir>/daemon.lock` while it runs. The default daemon holds the
+same lock at `<COTAL_HOME>/daemon/daemon.lock`. A second `serve` for the same daemon refuses
+`CONFLICT` (`LOCK_HELD`), naming the live holder and when it started. A start that fails for any
+other reason releases the lock again. Every client command sends nothing unless the process at its
+socket is the live owner (same pid and process start) of its daemon's lock: `<dir>/daemon.lock`
+with `--daemon-home`, and `<COTAL_HOME>/daemon/daemon.lock` in the client's own Cotal home without
+it. Otherwise it refuses `PERMISSION_DENIED` (`PEER_NOT_LOCK_OWNER`). So a client whose
+`COTAL_HOME` is not the one the default daemon runs with is refused, because that daemon keeps
+another Cotal home's state. Next says to find the process listening at the socket with `ss -xlp`,
+to run the command with that daemon's `COTAL_HOME` when it is a daemon started with another Cotal
+home, and otherwise to stop it and start the daemon with `cotal daemon serve`.
+
+This daemon is a different machine identity. Nothing is copied from the default daemon: it needs
+its own `login`, its own `register`, and the space owner's approval of its own instance. Without
+`--daemon-home` every command reaches the default daemon.
+
+`login` signs the running daemon in with device approval. The daemon runs the same sign-in as
+`cotal login` and keeps the session in the machine's Cotal home, where `cotal login` keeps it. The
+command prints only the approval link, code and expiry to stderr, then the signed-in account. No
+session token crosses the endpoint or reaches the terminal. `--idp` takes an HTTPS auth URL, or an
+HTTP loopback IP URL; `--client-id` defaults to `cotal-cli`.
+
+One sign-in runs at a time: a second `login` refuses `CONFLICT` (`LOGIN_IN_PROGRESS`) without
+contacting the provider. Ctrl-C, or the command's connection closing, requests cancellation on this
+machine. If cancellation takes effect before persistence, nothing is saved, even if device approval
+already happened. An already-completed attempt remains completed; cancellation revokes nothing
+at the provider. A cancelled attempt reports `USAGE_INVALID` (`CANCELLED`). A denied or expired
+approval refuses `PERMISSION_DENIED` (`DENIED` or `EXPIRED`), and an unreachable provider refuses
+`DEPENDENCY_UNAVAILABLE`
+(`UNREACHABLE`); none of these saves a session. Any other provider answer fails `OPERATION_FAILED`
+(`REFUSED`). Such a failure can come after the session was saved, so run `login` again. A failure
+is reported with a fixed sentence; the provider's own error text is never relayed. `status`
+keeps answering while a sign-in waits.
+
+`connect-check` asks the running daemon whether it could register with a space as its own service.
+The daemon is not a Manager and never borrows a Manager's identity or authority. The check reads
+the space's registration on this machine and the daemon's sign-in, then the space's public account
+identity from its auth service (`GET <exchange>/service-endpoint-authority`, no redirects). It sends
+no registration and holds no credential. A space whose auth service does not host service endpoints
+refuses `UNSUPPORTED` (`UNSUPPORTED_BY_SPACE`). The daemon does not fall back to anything else.
+
+The other refusals are `TARGET_NOT_FOUND` (`NOT_REGISTERED`) for a space this machine has not
+registered, `UNSUPPORTED` (`NOT_USER_AUTH`) for a space without user sign-in, `AUTH_REQUIRED`
+(`NOT_SIGNED_IN`) when the machine is not signed in to the space's provider, and
+`DEPENDENCY_UNAVAILABLE` (`UNREACHABLE` or `REFUSED`) when the auth service cannot be reached or
+answers with something unusable.
+
+On success it reports `ready-to-register` with the space's account, the daemon's service name
+`ai.cotal.machine` and the daemon's own instance ID. Nothing has been registered. The space owner must
+still approve the daemon, and the service name needs the space operator's binding. The first
+success creates the daemon's identity for that space at
+`<COTAL_HOME>/daemon/<space segment>/service-identity.json` (mode `0600`). It holds the instance ID
+and the account, and no credential. Later checks reuse it. If the space later answers with a
+different account, the check refuses `CONFLICT` (`ACCOUNT_MISMATCH`) and changes nothing: confirm
+the space was not replaced before you remove that file by hand.
+
+`register` asks the running daemon to request its own service registration with a space. It first
+runs `connect-check` and returns any outcome other than `ready-to-register` unchanged, without
+contacting the space again. Otherwise it sends one registration request for the daemon's instance
+with this machine's sign-in, through the space's stock service authority. The daemon never sees or
+relays that sign-in proof. The request ID is saved before the first send, at
+`<COTAL_HOME>/daemon/<space segment>/register-request.json`, and every later `register`, including
+after a restart, replays the same request unchanged. The stock writer does not guarantee durability
+across power loss.
+
+The fixed service name binds to one owner per space. Different owners in a shared space need distinct
+operator-approved endpoint names; this command does not yet select one. The operator must verify or
+delegate the namespace before binding it.
+
+The space answers in one of three ways, each reported with exit 0:
+
+- `approval-required`: the space owner must approve this daemon and the space operator must bind its
+  service name `ai.cotal.machine`.
+- `pending`: the space is processing an approved registration.
+- `registered`: the registration is recorded. It is not activated or serving, so the machine is
+  still not connected.
+
+No release ships a command or page that lets an owner approve the daemon or an operator bind its
+name. A refusal by the space is `PERMISSION_DENIED` with the space's reason as the native code, such
+as `PROPOSAL_REFUSED`. A reason the daemon does not recognize is reported as `UNRECOGNIZED`, and the
+space's own text is never shown. A new proposal after a refusal needs a new request, which `register`
+does not send. A sign-in the provider rejects (expired or revoked) is `AUTH_REQUIRED`: run
+`cotal daemon login` again. A failure before anything was sent is `DEPENDENCY_UNAVAILABLE`. Only a
+request whose outcome is unconfirmed is `OPERATION_UNKNOWN`: run the same command again
+to replay it. A changed registration for the same instance is refused `CONFLICT` and nothing is sent.
+
+`service-connect` connects the running daemon to the space as its own registered service. It replays
+the saved register request unchanged to read its registration, gets its service credential from the
+space's auth provider, verifies the bearer signature and witness against the pinned authority's
+issuer keys, checks the serving snapshot against its embedded contract, and connects to the broker
+as that service. It binds the registered
+responder before reporting ready. It succeeds, exit 0, only after the broker accepts the connection,
+the responder subscriptions are flushed and the space accepts the daemon as ready. The renewal and ready request IDs are kept in
+`<COTAL_HOME>/daemon/<space segment>/service-store/`, mode `0600`, and reused after a restart.
+
+Every other answer is a refusal and nothing is connected. Not yet approved is `LIFECYCLE_BLOCKED`
+(`APPROVAL_PENDING`). A refused registration is `PERMISSION_DENIED`, and so is a space that ended the
+daemon's authority, with its code as the native code, such as `APPROVAL_REVOKED`; connecting again
+does not reconnect it. A space or broker that cannot be reached is `DEPENDENCY_UNAVAILABLE`, and
+connecting again retries the same requests. Without a register request the answer is
+`TARGET_NOT_FOUND`.
+
+While the daemon runs, the connection renews itself and reconnects on its own. The access bearer
+lives at most 60 seconds, so the broker drops the connection when each one expires and the daemon
+reconnects with the next. While the broker connection is down, for that reason or any other, the
+answer is `connecting`, not connected; it is connected again only after the broker is back and the
+space accepts the daemon as ready again.
+
+A connection the space accepted is remembered across a restart. `service-connect` records that
+intent for the space once it is connected, and a starting daemon connects every space it has a
+record for, so the connections it held before a crash come back with nothing to run. The records
+are at `<COTAL_HOME>/daemon/<space segment>/service-connect.json`, mode `0600`. A connect that
+never reached connected records nothing, so a space that refuses is not retried at every start.
+The resume runs after the local endpoint is published, so a space that is slow or unreachable does
+not delay `status`, and `service-status` reports what each one actually reached. An ended
+connection is remembered only until the daemon stops.
+`service-status` reads the daemon's current answer without contacting the space. `service-disconnect`
+drains the responder and closes the connection, removes that space's resume record so the
+disconnect outlives a restart, and stopping the daemon closes all of them without removing a record.
+
+The service answers its existing `machine-status` command with `null`. This is a liveness response;
+it contains no vitals, hostname or machine metadata. Its stock Describe answer is explicitly public:
+it identifies the endpoint and derived owner token and includes the protocol and command schemas.
+Callers still need broker-enforced invoke access to the selected instance and command. Connecting the
+daemon grants no caller access. Owner approval, operator name binding and caller grants remain
+separate actions. An authority that does not publish its issuer identity cannot support this
+serving connection; the daemon refuses rather than trusting a decoded token or using Manager
+credentials. The registration contract is unchanged.
+
+
+### Managed child environment [#managed-child-environment]
+
+See the [current command contract](cli-processes.mdx#supervise) for this behavior.
+
+### Manager successor recovery [#manager-successor-recovery]
+
+See the [current command contract](cli-processes.mdx#supervise) for this behavior.
+
+### Platform custody requirements [#platform-custody-requirements]
+
+See the [current command contract](cli-processes.mdx#owned-process-services) for this behavior.
+
+### Unit installation [#unit-installation]
+
+See the [current command contract](cli-processes.mdx#owned-process-services) for this behavior.
+
+### Uncertain native attempts [#uncertain-native-attempts]
+
+See the [current command contract](cli-processes.mdx#owned-process-services) for this behavior.
+
+### Unit removal [#unit-removal]
+
+See the [current command contract](cli-processes.mdx#owned-process-services) for this behavior.
+
+### Local process declarations [#local-process-declarations]
+
+See the [current command contract](cli-processes.mdx#owned-process-services) for this behavior.
+
+### Process readiness [#process-readiness]
+
+See the [current command contract](cli-processes.mdx#owned-process-services) for this behavior.
+
+### Descendant process limits [#descendant-process-limits]
+
+See the [current command contract](cli-processes.mdx#owned-process-services) for this behavior.
+
+### Unsupported auth lifecycle commands [#unsupported-auth-lifecycle-commands]
+
+See the [current command contract](cli-processes.mdx#owned-process-services) for this behavior.

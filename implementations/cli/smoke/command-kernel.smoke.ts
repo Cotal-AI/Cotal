@@ -5,16 +5,16 @@
  */
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { commandUsage, parseCommandArgs, registry, type Command } from "@cotal-ai/core";
+import { commandUsage, findCommand, parseCommandArgs, registry, type Command } from "@cotal-ai/core";
 import type { InstalledExtension } from "@cotal-ai/workspace";
 import "../src/index.js"; // self-register the CLI commands (for the completion check)
 import { complete } from "../src/commands/completion.js";
 import { EXT_UPDATE_PARENT_ENV, ext } from "../src/commands/ext.js";
-import { isCommandFailure, MeshTargetError, seededCommandsMismatch } from "@cotal-ai/workspace";
-import { executeUpdate, parseNpmVersion, reportRunningManagers, update, verifyGlobalEntry, type UpdateRuntime } from "../src/commands/update.js";
+import { hostPackageDir, isCommandFailure, MeshTargetError, seededCommandsMismatch } from "@cotal-ai/workspace";
+import { executeUpdate, parseNpmVersion, printLegacyReport, reportRunningManagers, update, verifyCurrentExtension, verifyGlobalEntry, type UpdateRuntime } from "../src/commands/update.js";
 import { claimExtensionMutation, claimExtensionUpdatePass } from "../src/lib/ext-mutation.js";
 import { compareSemver } from "../src/seed/reconcile.js";
 
@@ -31,6 +31,7 @@ function updateRuntime(opts: {
   npm?: (args: string[], inherit?: boolean) => { status: number | null; stdout?: string; stderr?: string; error?: string };
   spawn?: (file: string, args: string[], env: NodeJS.ProcessEnv) => { status: number | null; stdout?: string; stderr?: string; error?: string };
   reportRunningManager?: () => Promise<"none" | "legacy">;
+  verifyExtension?: UpdateRuntime["verifyExtension"];
   checkout?: boolean;
 }) {
   const events: string[] = [];
@@ -47,6 +48,7 @@ function updateRuntime(opts: {
       return await opts.reportRunningManager?.() ?? "none";
     },
     extensions: () => opts.extensions ?? [],
+    verifyExtension: opts.verifyExtension ?? (() => "not installed on disk"),
     claimUpdatePass: () => {
       events.push("claim-mutation");
       return () => void events.push("release-mutation");
@@ -247,11 +249,14 @@ async function completionOut(positionals: string[]): Promise<string> {
   const sandbox = mkdtempSync(join(tmpdir(), "cotal-output-exit-"));
   const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_")));
   const run = (...words: string[]) => runWith({}, ...words);
-  const runWith = (extra: Record<string, string>, ...words: string[]) => {
-    const r = spawnSync(process.execPath, [...process.execArgv, fixture, ...words], {
+  const spawnProbe = (extra: Record<string, string>, stdout: "pipe" | number, words: string[]) =>
+    spawnSync(process.execPath, [...process.execArgv, fixture, ...words], {
       encoding: "utf8",
+      stdio: ["pipe", stdout, "pipe"],
       env: { ...env, COTAL_HOME: join(sandbox, "home"), XDG_CONFIG_HOME: join(sandbox, "cfg"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1", ...extra },
     });
+  const runWith = (extra: Record<string, string>, ...words: string[]) => {
+    const r = spawnProbe(extra, "pipe", words);
     const lines = r.stdout.split("\n").filter(Boolean);
     return { status: r.status, stdout: r.stdout, stderr: r.stderr, envelope: lines.length === 1 && lines[0]!.startsWith("{") ? JSON.parse(lines[0]!) : undefined };
   };
@@ -268,11 +273,24 @@ async function completionOut(positionals: string[]): Promise<string> {
     assert.equal(conflict.envelope?.error?.code, "CONFLICT", "a refusal's envelope carries its stable code");
     assert.deepEqual(conflict.envelope?.error?.cause, { code: "E_LEASE", outcome: "not-executed" }, "a refusal's envelope keeps the native cause");
     assert.deepEqual(conflict.envelope?.target, { space: "s1" }, "a refusal's envelope names its target");
-    assert.match(conflict.stderr, /the lease is held[\s\S]*wait for the holder to release it/u, "a refusal prints its message and remedy on stderr");
+    assert.equal(conflict.stderr, "", "under --json the envelope alone reports a refusal, with nothing on stderr");
 
     const human = run("probe", "--fail", "conflict");
     assert.equal(human.status, 2, "a refusal without --json exits 2 as well");
     assert.equal(human.stdout, "", "a refusal without --json writes nothing on stdout");
+    assert.match(human.stderr, /the lease is held[\s\S]*wait for the holder to release it/u, "a refusal without --json prints its message and remedy on stderr");
+
+    // A stdout the envelope cannot be written to: the text report goes to stderr instead.
+    const readOnly = join(sandbox, "read-only");
+    writeFileSync(readOnly, "");
+    const readOnlyFd = openSync(readOnly, "r");
+    try {
+      const lost = spawnProbe({}, readOnlyFd, ["probe", "--json", "--fail", "conflict"]);
+      assert.equal(lost.status, 2, "a refusal whose envelope cannot be written still exits 2");
+      assert.match(lost.stderr, /could not write to stdout[\s\S]*the lease is held[\s\S]*wait for the holder to release it/u, "a refusal whose envelope cannot be written prints its report on stderr");
+    } finally {
+      closeSync(readOnlyFd);
+    }
 
     const usage = run("probe", "--json", "--fail", "usage");
     assert.equal(usage.status, 1, "a usage refusal raised by the command exits 1");
@@ -352,13 +370,48 @@ async function completionOut(positionals: string[]): Promise<string> {
   const denied = endpointFailure(new EpEnvelopeError("permission-denied", "refused by the broker", undefined, "not-executed"), { space: "s" }, true);
   const named = withPairedCallerRemedy(denied, "com.example.reviews", { space: "s" });
   assert.equal(`${named.outcome}/${named.code}`, "refused/PERMISSION_DENIED", "naming a paired caller keeps the refusal");
-  assert.equal(named.remedy, "issue a caller for com.example.reviews with cotal auth mint <name> --endpoint com.example.reviews --space s --out <private-file>, then rerun with --creds <private-file>", "a refused call to another endpoint names the caller file that makes it");
+  assert.equal(named.remedy, "issue a caller for com.example.reviews with `cotal auth mint <name> --endpoint com.example.reviews --space s --out <private-file>`, then rerun with --creds <private-file>", "a refused call to another endpoint names the caller file that makes it");
   assert.deepEqual([named.native, named.target], [denied.native, denied.target], "the remedy keeps the native cause and the target");
-  assert.equal(withPairedCallerRemedy(denied, "com.example.reviews", { space: "s", server: "nats://127.0.0.1:4333" }).remedy, "issue a caller for com.example.reviews with cotal auth mint <name> --endpoint com.example.reviews --space s --server nats://127.0.0.1:4333 --out <private-file>, then rerun with --creds <private-file>", "the caller remedy keeps the --server the call was given");
-  assert.equal(withPairedCallerRemedy(denied, "com.example.reviews", { space: "s", server: "nats://h:1 o'k" }).remedy, "issue a caller for com.example.reviews with cotal auth mint <name> --endpoint com.example.reviews --space s --server 'nats://h:1 o'\\''k' --out <private-file>, then rerun with --creds <private-file>", "a server a shell would split is quoted in the caller remedy");
+  assert.equal(withPairedCallerRemedy(denied, "com.example.reviews", { space: "s", server: "nats://127.0.0.1:4333" }).remedy, "issue a caller for com.example.reviews with `cotal auth mint <name> --endpoint com.example.reviews --space s --server nats://127.0.0.1:4333 --out <private-file>`, then rerun with --creds <private-file>", "the caller remedy keeps the --server the call was given");
+  assert.equal(withPairedCallerRemedy(denied, "com.example.reviews", { space: "s", server: "nats://h:1 o'k" }).remedy, "issue a caller for com.example.reviews with `cotal auth mint <name> --endpoint com.example.reviews --space s --server 'nats://h:1 o'\\''k' --out <private-file>`, then rerun with --creds <private-file>", "a server a shell would split is quoted in the caller remedy");
   assert.equal(withPairedCallerRemedy(denied, "manager", { space: "s" }).remedy, undefined, "a refused manager call names no caller file, because the operator instrument already requests the manager");
   const unknown = endpointFailure(new Error("lost"), { space: "s" }, true);
   assert.equal(withPairedCallerRemedy(unknown, "com.example.reviews", { space: "s" }), unknown, "only a refusal gains the caller-file remedy");
+}
+
+// --- a contract read no instance answered says so, and names how to start what serves it ----------
+// `auth mint --endpoint`, `ep describe` and `ep invoke` read the contract first, and with nothing
+// serving the endpoint that read used to end as a failed read with no Next.
+{
+  const { EP_UNANSWERED, EpEnvelopeError } = await import("@cotal-ai/core");
+  const { endpointFailure } = await import("../src/lib/endpoint-errors.js");
+  const target = { space: "s", endpoint: "com.example.reviews" };
+  const silent = new EpEnvelopeError("deadline-exceeded", "no describe reply from com.example.reviews within 10000ms on the ep rail", [{ kind: EP_UNANSWERED, endpoint: "com.example.reviews", command: "describe", rail: "ep" }]);
+  const read = endpointFailure(silent, target, false);
+  assert.equal(`${read.outcome}/${read.code}`, "refused/TARGET_UNAVAILABLE", "an unanswered contract read is an unavailable target");
+  assert.equal(read.message, "no instance of com.example.reviews answered its contract read, so nothing is serving it or none could be reached", "the refusal says no instance answered");
+  assert.equal(read.remedy, "start the service that serves com.example.reviews, then run the command again; `cotal service --space s` lists this space's services", "its Next names how to start what serves it");
+  assert.equal(endpointFailure(silent, target, true).outcome, "unknown", "an unanswered call that may have run stays unknown");
+  assert.equal(endpointFailure(new EpEnvelopeError("deadline-exceeded", "the closure walk exhausted its budget"), target, false).code, "OPERATION_FAILED", "a deadline without the unanswered marker stays a failed read");
+}
+
+// --- a paired caller's issuance intent reads back as `auth mint --endpoint` wrote it --------------
+// The mint writes the record `standaloneCallerIntent` returns, and describe and invoke read the file
+// back through it. It used to return the endpoint's wire token, which that second read refused.
+{
+  const { randomUUID } = await import("node:crypto");
+  const { mintLifecycleUid, newIdentity } = await import("@cotal-ai/core");
+  const { standaloneCallerIntent } = await import("@cotal-ai/workspace");
+  const written = standaloneCallerIntent({
+    schemaVersion: 1, kind: "endpoint-caller-issuance-intent", requestId: randomUUID(), createdAt: new Date(0).toISOString(), space: "s",
+    endpoint: "com.example.reviews", identity: newIdentity().id, owner: "local", lifecycleUid: mintLifecycleUid(), output: "/private/caller.creds",
+    channels: [], expiresInSeconds: null, phase: "local-intent-only", secretIncluded: false,
+    scope: { source: "fresh-native-resolution", supportedMode: "untargeted-synchronous-ephemeral", owner: "local", responder: { instanceId: mintLifecycleUid(), epoch: 0 }, instancePinned: false,
+      commands: [{ command: "echo", class: "ephemeral", capability: "echo", inputDigest: "sha256:in", outputDigest: "sha256:out" }] },
+  });
+  assert.equal(written.endpoint, "com.example.reviews", "the written intent keeps the dotted endpoint name");
+  assert.deepEqual(standaloneCallerIntent(JSON.parse(JSON.stringify(written))), written, "the written intent reads back unchanged");
+  assert.throws(() => standaloneCallerIntent({ ...written, endpoint: "com_example_reviews" }), (e: unknown) => isCommandFailure(e) && e.code === "SCHEMA_INVALID" && e.remedy !== undefined, "an intent that records the endpoint's wire token is refused with a remedy");
 }
 
 // --- the caller remedy names the space the refused call resolved, not the current one -------------
@@ -454,6 +507,39 @@ async function completionOut(positionals: string[]): Promise<string> {
   }
 }
 
+// --- up refuses a --server with no port, an IPv6 address or a host name, a --host that is no bind host or names
+// another address than --server, and a --server that the default bind host does not serve, before
+// project lookup ---
+{
+  const cmd = registry.resolve<Command>("command", "up")!;
+  const missingRoot = join(tmpdir(), "cotal-up-address-no-project", `${process.pid}-${Date.now()}`);
+  const refused: [string[], RegExp, string?][] = [
+    [["--server", "nats://127.0.0.1"], /^--server names no port/],
+    // The example keeps the scheme and port the person chose, and never the host or a credential.
+    [["--server", "nats://[::1]:29888"], /^--server names an IPv6 address/, "pass the IP address the local broker listens on, for example --server nats://127.0.0.1:29888"],
+    [["--server", "tls://[::1]:29888"], /^--server names an IPv6 address/, "pass the IP address the local broker listens on, for example --server tls://127.0.0.1:29888"],
+    [["--server", "nats://u:p@127.0.0.1:29888"], /^--server must not embed credentials/, "pass the IP address the local broker listens on, for example --server nats://127.0.0.1:29888"],
+    [["--server", "nats://localhost:4222"], /^--server names the host localhost/, "pass the IP address the local broker listens on, for example --server nats://127.0.0.1:4222"],
+    [["--host", "::1"], /^--host names an IPv6 address/],
+    [["--host", "[::1]"], /^--host names an IPv6 address/],
+    [["--host", "nats://127.0.0.1"], /^--host nats:\/\/127\.0\.0\.1 looks like a URL/],
+    [["--host", "127.0.0.1:4222"], /^--host 127\.0\.0\.1:4222 is not a valid bind host/],
+    [["--host", "localhost:4222"], /^--host localhost:4222 is not a valid bind host/],
+    [["--server", "nats://127.0.0.1:4222", "--host", "127.0.0.2"], /^--host 127\.0\.0\.2 and --server nats:\/\/127\.0\.0\.1:4222 name different addresses/],
+    [["--server", "nats://127.0.0.2:4222"], /^--server nats:\/\/127\.0\.0\.2:4222 names 127\.0\.0\.2, and with no --host the broker binds 127\.0\.0\.1/, "pass --host 127.0.0.2 to bind the broker there"],
+  ];
+  for (const [flags, said, remedy] of refused) {
+    assert.throws(() => cmd.validate!(parseCommandArgs(cmd, [...flags, "--root", missingRoot])), (error: unknown) =>
+      isCommandFailure(error) && error.code === "USAGE_INVALID" && said.test(error.message) && Boolean(error.remedy) && (remedy === undefined || error.remedy === remedy),
+    `${flags.join(" ")} is refused as usage before project lookup`);
+  }
+  for (const flags of [["--server", "nats://127.0.0.1:4222"], ["--host", "::"], ["--host", "0.0.0.0"], ["--host", "127.0.0.2"], ["--server", "nats://127.0.0.1:4222", "--host", "127.0.0.1"], ["--server", "nats://127.0.0.1:4222", "--host", "0.0.0.0"], ["--server", "nats://127.0.0.2:4222", "--host", "127.0.0.2"]]) {
+    assert.throws(() => cmd.validate!(parseCommandArgs(cmd, [...flags, "--root", missingRoot])), (error: unknown) =>
+      isCommandFailure(error) && !/names no port|IPv6|--host/.test(error.message),
+    `${flags.join(" ")} passes the address checks and stops only at the missing root`);
+  }
+}
+
 // --- __complete offers declared flag names on a `-` prefix --------------------------------------
 {
   const spawnCmd = registry.all<Command>("command").find((c) => c.name === "spawn");
@@ -517,8 +603,11 @@ async function completionOut(positionals: string[]): Promise<string> {
   for (const name of ["to", "channel", "role"]) assert.ok(send.flags?.some((flag) => flag.name === name), `send declares the ${name} destination flag`);
   assert.ok(!flaggedSend.includes("spawn\t"), "flagged send does not fall back to top-level commands");
 
+  const flaggedPersona = await completionOut(["persona", "--space", "demo", ""]);
+  assert.ok(/^show$/mu.test(flaggedPersona), "flags before persona subcommands are ignored");
+  // The legacy `personas` is hidden, so completion offers nothing for it.
   const flaggedPersonas = await completionOut(["personas", "--space", "demo", ""]);
-  assert.ok(flaggedPersonas.includes("show\tprint a persona's card"), "flags before personas subcommands are ignored");
+  assert.ok(!/^show/mu.test(flaggedPersonas), "the hidden legacy personas command completes nothing");
 
   const exactUp = await completionOut(["up"]);
   assert.ok(exactUp.includes("--space"), "exact flag-only commands offer their flags");
@@ -530,6 +619,26 @@ async function completionOut(positionals: string[]): Promise<string> {
   const attachName = await completionOut(["attach", "--name", ""]);
   assert.ok(!attachName.includes("--space"), "attach --name value completion does not fall back to flags");
   assert.ok(attachName.trimEnd().endsWith(":nofiles"), "attach --name suppresses filename fallback");
+}
+
+// --- values the CLI knows offline complete in place of option names ------------------------------
+{
+  for (const sub of ["get", "set", "unset"]) {
+    const keys = await completionOut(["config", sub, ""]);
+    assert.ok(["harness", "persona", "detach-key", "color", "editor"].every((key) => new RegExp(`^${key}\t`, "mu").test(keys)) && !/^--/mu.test(keys), `config ${sub} offers the preference keys`);
+  }
+  const colors = await completionOut(["config", "set", "color", ""]);
+  assert.ok(["auto", "always", "never"].every((value) => new RegExp(`^${value}$`, "mu").test(colors)) && colors.trimEnd().endsWith(":nofiles"), "config set color offers its values");
+  assert.match(await completionOut(["config", "set", "harness", ""]), /^claude$/mu, "config set harness offers the known harnesses");
+  const views = await completionOut(["watch", "--view", ""]);
+  assert.ok(["feed", "events", "messages", "roster", "channels", "waiting", "dms", "topology"].every((view) => new RegExp(`^${view}$`, "mu").test(views)) && !/^activity$/mu.test(views), "watch --view offers the views help names");
+  assert.equal((await completionOut(["watch", "--server", ""])).trimEnd(), ":nofiles", "watch --server offers no option names as its value");
+}
+
+// --- a value that is not a path offers no file names --------------------------------------------
+{
+  for (const flag of ["--window", "--desc", "--instructions"]) assert.equal((await completionOut(["channel", "set", "ops", flag, ""])).trimEnd(), ":nofiles", `channel set ${flag} offers no file names`);
+  assert.equal((await completionOut(["channel", "set", "ops", "--creds", ""])).trimEnd(), ":default", "channel --creds completes from the shell's file names");
 }
 
 // --- endpoint describe has no contract cache, so --refresh refuses before any request ------------
@@ -596,6 +705,63 @@ async function completionOut(positionals: string[]): Promise<string> {
   );
 }
 
+// --- a first-party extension npm's prefix record proves current is verified, not reinstalled -------
+// Every `cotal update` used to spawn `ext __update-add` for each recorded extension, and the add deletes
+// the installed copy so npm must fetch and install it again: one npm install per extension per run on a
+// machine that was already current. Each case writes a real prefix and runs the production check.
+{
+  const priorXdg = process.env.XDG_CONFIG_HOME;
+  const xdg = mkdtempSync(join(tmpdir(), "cotal-update-verify-"));
+  process.env.XDG_CONFIG_HOME = xdg;
+  const prefix = join(xdg, "cotal", "extensions");
+  const pkg = "@cotal-ai/orca";
+  const installedDir = join(prefix, "node_modules", "@cotal-ai", "orca");
+  const prefixAt = (version: string, onDisk = version): void => {
+    rmSync(prefix, { recursive: true, force: true });
+    mkdirSync(installedDir, { recursive: true });
+    const meta = { name: pkg, version, peerDependencies: { "@cotal-ai/core": "*" } };
+    writeFileSync(join(prefix, "package.json"), JSON.stringify({ name: "cotal-extensions", private: true, dependencies: { [pkg]: `^${version}` } }));
+    writeFileSync(join(prefix, "package-lock.json"), JSON.stringify({
+      name: "cotal-extensions", lockfileVersion: 3,
+      packages: { "": { name: "cotal-extensions", dependencies: { [pkg]: `^${version}` } }, [`node_modules/${pkg}`]: meta },
+    }));
+    writeFileSync(join(installedDir, "package.json"), JSON.stringify({ ...meta, version: onDisk }));
+  };
+  const run = async (entry: InstalledExtension) => {
+    const r = updateRuntime({ extensions: [entry], verifyExtension: verifyCurrentExtension });
+    assert.equal(await executeUpdate(false, r.rt), 0);
+    return { ...r, replays: r.events.filter((event) => event.startsWith("spawn:")) };
+  };
+  try {
+    prefixAt("0.13.1");
+    const current = await run(installed(pkg, "0.13.1", `${pkg}@0.13.1`));
+    assert.deepEqual(current.replays, [], "an extension recorded and installed at this generation starts no reinstall child");
+    assert.ok(current.events.some((event) => event.startsWith("out:") && event.includes(`✓ verified ${pkg}@0.13.1`)), "the kept extension is reported as verified");
+    assert.equal(
+      realpathSync(join(installedDir, "node_modules", "@cotal-ai", "core")),
+      realpathSync(hostPackageDir("@cotal-ai/core")),
+      "the kept extension's shared peer is bound to this binary's copy, as its reinstall would bind it",
+    );
+
+    for (const [why, setup, entry, reason] of [
+      ["recorded at an older version", () => prefixAt("0.13.0"), installed(pkg, "0.13.0", `${pkg}@0.13.0`), "recorded at 0.13.0, not 0.13.1"],
+      ["installed at an older version than recorded", () => prefixAt("0.13.1", "0.13.0"), installed(pkg, "0.13.1", `${pkg}@0.13.1`), `node_modules/${pkg} is 0.13.0 on disk and 0.13.1 in the prefix lock`],
+      ["missing its package tree", () => { prefixAt("0.13.1"); rmSync(installedDir, { recursive: true }); }, installed(pkg, "0.13.1", `${pkg}@0.13.1`), `node_modules/${pkg} is recorded in the prefix lock but not installed`],
+    ] as const) {
+      setup();
+      const stale = await run(entry);
+      assert.equal(stale.replays.length, 1, `an extension ${why} is reinstalled`);
+      assert.ok(stale.replays[0].includes(`ext __update-add ${pkg} ${pkg}@0.13.1`), `an extension ${why} is reinstalled at this generation`);
+      assert.ok(stale.events.includes(`err:${pkg}: ${reason}; reinstalling`), `the reinstall of an extension ${why} names its reason`);
+      assert.ok(!stale.events.some((event) => event.includes("✓ verified")), `an extension ${why} is not reported as verified`);
+    }
+  } finally {
+    rmSync(xdg, { recursive: true, force: true });
+    if (priorXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = priorXdg;
+  }
+}
+
 // --- a connector refresh that fails fails the update ----------------------------------------------
 {
   const failing = updateRuntime({});
@@ -614,6 +780,16 @@ async function completionOut(positionals: string[]): Promise<string> {
   assert.ok(!legacy.events.includes("claim-mutation"), "legacy report refuses before extension replay can mutate packages");
   assert.ok(!legacy.events.some((event) => event.startsWith("spawn:")), "legacy report starts no extension replay subprocess");
   assert.equal(code, 1);
+}
+
+// --- #5027: the legacy verdict names the cold path past it, not just that this is not a hot update --
+{
+  const lines: string[] = [];
+  printLegacyReport({ custody: "legacy", seats: [{ name: "linkedin-animator", agent: "claude", continuity: "fork" }] }, "alpha", (line) => lines.push(line));
+  assert.ok(lines[0]?.includes("this update is not a hot update"), "the verdict line comes first");
+  assert.ok(lines[1]?.includes("linkedin-animator: fork"), "each seat's continuity class is printed");
+  assert.ok(lines[2]?.startsWith("  Next: stop that mesh with `cotal down --space alpha`"), `the next step names the stop for that space: ${lines[2]}`);
+  assert.ok(lines[2]?.includes("then run this update again"), "and the rerun after it");
 }
 
 // --- #1879: the continuity refusal carries the workspace renderer's remedy ------------------------
@@ -811,6 +987,70 @@ async function completionOut(positionals: string[]): Promise<string> {
   }
 }
 
+// --- update --self from a folder whose prepared space never started, and from a folder that holds
+// two remote registrations: neither names a manager here, so neither refuses the software update.
+// Reproduced on a published 0.105.0 (2026-10-26): `cotal setup --configure-only`, then a bare
+// `cotal update --self` in that folder refused with `"<space>" is prepared but not started - start it
+// with cotal up`; two Cloud spaces registered with `space add --from` from one folder, nothing
+// selected, refused with `multiple meshes running: a (/f), b (/f)` and read neither.
+{
+  const { readManagerContinuity } = await import("../src/commands/update.js");
+  const { recordMesh, recordPreparedSpace, removeMesh, removePreparedSpace } = await import("@cotal-ai/workspace");
+  const realHome = process.env.COTAL_HOME, cwd = process.cwd();
+  const sandbox = realpathSync(mkdtempSync(join(tmpdir(), "cotal-update-prepared-")));
+  process.env.COTAL_HOME = join(sandbox, "home");
+  const capture = async (run: () => Promise<"none" | "legacy">) => {
+    let out = "";
+    const realLog = console.log;
+    console.log = (s?: unknown) => void (out += `${s}\n`);
+    try { return { verdict: await run(), out }; } finally { console.log = realLog; }
+  };
+  try {
+    // A folder whose space was prepared and never started: no broker, no journal, no manager.
+    const prepared = join(sandbox, "prepared");
+    mkdirSync(join(prepared, ".cotal", "agents"), { recursive: true });
+    recordPreparedSpace({ space: "drafted", root: prepared, ts: new Date(0).toISOString() });
+    process.chdir(prepared);
+    const inFolder = await capture(() => readManagerContinuity({}));
+    assert.equal(inFolder.verdict, "none", "a prepared space that never started holds no custody, so the update proceeds");
+    assert.ok(inFolder.out.includes(`drafted: prepared in ${prepared}, not started; no manager running`), "the skip names the prepared space and its folder");
+    assert.ok(!inFolder.out.includes("manager-caller"), "the skip reaches no exchange");
+    const named = await capture(() => readManagerContinuity({ space: "drafted" }));
+    assert.equal(named.verdict, "none", "the same prepared space named with --space holds no custody either");
+    process.chdir(cwd);
+
+    // Two remote user meshes registered from one folder: each is read by name and skipped.
+    const shared = join(sandbox, "shared");
+    mkdirSync(join(shared, ".cotal"), { recursive: true });
+    for (const space of ["cloud_a", "cloud_b"]) {
+      recordMesh({
+        space, server: "nats://127.0.0.1:9", mode: "user", origin: "catalog", catalogOwner: "owner-key", root: shared, tlsRequired: false,
+        userAuth: {
+          provider: "cotal", remote: true,
+          idp: { url: "http://127.0.0.1:9/idp", issuer: "http://127.0.0.1:9/idp", audience: "cotal-mesh" },
+          endpoints: { url: "http://127.0.0.1:9/" },
+          sentinelCredsPath: join(shared, "sentinel.creds"),
+        },
+        ts: new Date().toISOString(),
+      });
+    }
+    process.chdir(shared);
+    const pair = await capture(() => reportRunningManagers({}, readManagerContinuity));
+    assert.equal(pair.verdict, "none", "two remote registrations in one folder name no manager here, so the update proceeds");
+    for (const space of ["cloud_a", "cloud_b"])
+      assert.ok(pair.out.includes(`${space}: this mesh's manager runs elsewhere; no custody on this machine`), `${space} is read by name and skipped`);
+    assert.ok(pair.out.includes("2 meshes running; reading each manager's continuity"), "the folder's two registrations are enumerated, not refused");
+    console.log("  ✓ update --self skips a never-started prepared space and reads a folder's two remote registrations by name");
+  } finally {
+    process.chdir(cwd);
+    removePreparedSpace("drafted");
+    for (const space of ["cloud_a", "cloud_b"]) removeMesh(space);
+    if (realHome === undefined) delete process.env.COTAL_HOME;
+    else process.env.COTAL_HOME = realHome;
+    rmSync(sandbox, { recursive: true, force: true });
+  }
+}
+
 // --- #1620: update observes the running manager BEFORE it rewrites the global seed store ----------
 // `rt.reconcile()` is `runSeed({force: true})` — it rewrites the operator-global seed store,
 // manifest and npm prefix. Running it before the continuity check meant an `update --self` against
@@ -968,6 +1208,34 @@ async function completionOut(positionals: string[]): Promise<string> {
     assert.equal(process.exitCode, 7, "the global child status reaches the top-level process exit code");
   } finally {
     process.exitCode = priorExitCode;
+  }
+}
+
+// --- interrupts retain update custody until verification and reconciliation finish --------------
+for (const signal of ["SIGINT", "SIGTERM"] as const) {
+  for (const phase of ["install", "reconcile"] as const) {
+    const beforeInt = process.listenerCount("SIGINT");
+    const beforeTerm = process.listenerCount("SIGTERM");
+    const { rt, events } = updateRuntime({
+      npm: (args) => ({ status: 0, stdout: args[0] === "view" ? '"0.13.2"' : "/global/node_modules" }),
+    });
+    const spawnGlobal = rt.spawnGlobal;
+    rt.spawnGlobal = async (...args) => {
+      if (args[1] === phase) {
+        process.emit(signal, signal);
+        process.emit(signal, signal);
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        assert.ok(!events.includes("release-global:/global/node_modules"), "interrupt keeps the global mutation lock until the child settles");
+      }
+      return spawnGlobal(...args);
+    };
+    assert.equal(await executeUpdate(true, rt), signal === "SIGINT" ? 130 : 143);
+    assert.ok(events.includes("verify:/global/node_modules:0.13.2"), "interruption still verifies the installed package");
+    assert.ok(events.some((event) => event.startsWith("global:reconcile:")), "interruption still reconciles matching extensions");
+    assert.equal(events.filter((event) => event.includes("Interrupt received;")).length, 1, "repeated interrupts produce one explanation");
+    assert.equal(events.at(-1), "release-global:/global/node_modules");
+    assert.equal(process.listenerCount("SIGINT"), beforeInt, "SIGINT handling is restored after the update");
+    assert.equal(process.listenerCount("SIGTERM"), beforeTerm, "SIGTERM handling is restored after the update");
   }
 }
 
@@ -1170,6 +1438,193 @@ async function completionOut(positionals: string[]): Promise<string> {
     else process.env.COTAL_HOME = priorHome;
     rmSync(home, { recursive: true, force: true });
   }
+}
+
+{
+  // A refused selection among several live managers is restated as the choice, with each manager
+  // and the caller's own command again with `--on` for it. Other failures pass through untouched.
+  const { CommandFailure, commandFailureReport, renderReport } = await import("@cotal-ai/workspace");
+  const { managerChoiceFailure } = await import("../src/lib/manager-choice.js");
+  const { displayCmd } = await import("../src/lib/self-exec.js");
+  const refusal = new CommandFailure("refused", "PERMISSION_DENIED", 'signed in, but the exchange for actor "cli" (view "manager-caller") was refused: manager-caller selection found 2 live remote manager candidates for owner u_own (aaa1, bbb2); exactly one is required, so name one with --on <instanceId>');
+  const roster = [
+    { card: { id: "u_own.manager_aaa1", name: "manager", kind: "endpoint", meta: { host: "box-a" } }, status: "idle", activity: "supervisor (orca)", runtime: { id: "r", startedAt: Date.UTC(2026, 9, 1), source: "process" }, ts: 0 },
+    { card: { id: "u_own.manager_bbb2", name: "manager", kind: "endpoint" }, status: "idle", ts: 0 },
+  ] as unknown as import("@cotal-ai/core").Presence[];
+  const restated = await managerChoiceFailure(refusal, async () => roster, ["stop", "--name", "x y", "--json"]);
+  assert.ok(restated, "the several-live refusal is restated");
+  assert.equal(restated.outcome, "refused", "the outcome is kept");
+  assert.equal(restated.code, "PERMISSION_DENIED", "the code is kept");
+  assert.deepEqual((restated.native?.detail as { managers: unknown }).managers, [
+    { name: "box-a/orca", instanceId: "aaa1", host: "box-a", activity: "supervisor (orca)", runtime: "orca", terminal: null, since: "2026-10-01T00:00:00.000Z" },
+    { name: "manager", instanceId: "bbb2", host: null, activity: null, runtime: null, terminal: null, since: null },
+  ], "each manager carries what its presence reports, and nothing it does not; one without a name shows as <host>/<runtime>, and a presence that does not say whether a terminal attaches reports neither way");
+  assert.equal(restated.remedy, `rerun it on one: ${displayCmd()} stop --name 'x y' --json --on box-a/orca or ${displayCmd()} stop --name 'x y' --json --on bbb2`, "the Next reruns the caller's own command with --on for each manager, by the shortest value that picks it");
+  const runRestated = await managerChoiceFailure(refusal, async () => roster, ["run", "--json"]);
+  assert.equal(runRestated?.remedy, `rerun it on one: ${displayCmd()} run --json --on aaa1 or ${displayCmd()} run --json --on bbb2`, "a hosted run verb is pinned by the instance id, which is the only --on that verb accepts");
+  const priorRun = findCommand(registry.all<Command>("command"), "run");
+  if (priorRun === undefined) registry.register({ kind: "command", name: "run", aliases: ["r"], summary: "fixture", run: async () => {} } as Command);
+  try {
+    const aliasRestated = await managerChoiceFailure(refusal, async () => roster, ["r", "--json"]);
+    assert.equal(aliasRestated?.remedy, `rerun it on one: ${displayCmd()} r --json --on aaa1 or ${displayCmd()} r --json --on bbb2`, "a registered alias of run is pinned by instance id too");
+    const showAlias = await managerChoiceFailure(refusal, async () => roster, ["r", "show", "run-1", "--json"]);
+    assert.equal(showAlias?.remedy, `rerun it on one: ${displayCmd()} r show run-1 --json --on aaa1 or ${displayCmd()} r show run-1 --json --on bbb2`, "the alias keeps the instance id on show");
+    for (const argv of [["run", "start", "flow.ts"], ["run", "list"], ["r", "ps"], ["run", "amend", "run-1", "step"], ["--json", "run"], ["--json", "r", "resume", "run-1"], ["cotal", "--plain", "run", "show", "run-1"]]) {
+      const hosted = await managerChoiceFailure(refusal, async () => roster, argv);
+      assert.match(hosted?.remedy ?? "", /--on aaa1 or .+--on bbb2$/, `${argv.join(" ")} is a hosted run verb, so both pins are instance ids`);
+      assert.doesNotMatch(hosted?.remedy ?? "", /box-a\/orca/, `${argv.join(" ")} does not suggest the host/runtime selector`);
+    }
+    for (const argv of [["run", "validate", "flow.ts"], ["r", "plan", "flow.ts"], ["run", "simulate", "flow.ts"], ["run", "turns"], ["run", "yield", "turn-1"], ["run", "revoke", "run-1"], ["run", "check", "run-1", "flow.ts"], ["run", "show", "run-1", "--local"], ["--json", "run", "--local"]]) {
+      const offline = await managerChoiceFailure(refusal, async () => roster, argv);
+      assert.match(offline?.remedy ?? "", /--on box-a\/orca/, `${argv.join(" ")} is not a hosted run verb, so it keeps the short selector`);
+    }
+    const otherCommand = await managerChoiceFailure(refusal, async () => roster, ["--json", "ps"]);
+    assert.match(otherCommand?.remedy ?? "", /--on box-a\/orca/, "a leading flag on a command other than run still uses the short selector");
+  } finally {
+    if (priorRun === undefined) registry.unregister("command", "run");
+  }
+  const shown = renderReport(commandFailureReport(restated), "plain");
+  assert.match(shown, /Live managers[\s\S]*Manager\s+Instance[\s\S]*box-a\/orca\s+aaa1\s+box-a\s+supervisor \(orca\)\s+2026-10-01T00:00:00\.000Z/, "the report lists each manager on its own row, by name first");
+  const reported = [{ ...(roster[0] as unknown as { card: Record<string, unknown> }), card: { ...(roster[0] as unknown as { card: Record<string, unknown> }).card, meta: { host: "box-a", terminal: "none" } } }] as unknown as import("@cotal-ai/core").Presence[];
+  const said = await managerChoiceFailure(refusal, async () => reported, ["ps"]);
+  assert.equal(((said?.native?.detail as { managers: { terminal: unknown }[] }).managers[0])?.terminal, "none", "a manager that reports no terminal attach is carried as reporting none");
+  const unread = await managerChoiceFailure(refusal, async () => { throw new Error("no roster"); }, ["ps"]);
+  assert.deepEqual((unread?.native?.detail as { managers: { instanceId: string }[] }).managers.map((m) => m.instanceId), ["aaa1", "bbb2"], "an unreadable roster still names the instance ids");
+  let read = false;
+  const other = await managerChoiceFailure(new CommandFailure("refused", "PERMISSION_DENIED", "manager-caller selection found no manager candidate for owner u_own"), async () => { read = true; return roster; }, ["ps"]);
+  assert.equal(other, undefined, "any other refusal passes through");
+  assert.equal(read, false, "and reads no roster");
+}
+
+{
+  // A manager shows by the name it was started with, or by <host>/<runtime> without one. A `--on`
+  // that picks no single manager is restated with the command again on each candidate, replacing
+  // the `--on` the caller gave in either spelling.
+  const { ManagerPinUnmatched, managerChoiceFailure, managerLabel } = await import("../src/lib/manager-choice.js");
+  const { displayCmd } = await import("../src/lib/self-exec.js");
+  const row = (name: string, meta: Record<string, string>, activity?: string) => ({ card: { id: "u_own.manager_x", name, kind: "endpoint", role: "manager", meta }, status: "idle", ...(activity ? { activity } : {}), ts: 0 }) as unknown as import("@cotal-ai/core").Presence;
+  assert.equal(managerLabel(row("factory", { host: "pc" }, "supervisor (tmux)")), "factory", "a named manager shows by its name");
+  assert.equal(managerLabel(row("manager", { host: "pc" }, "supervisor (tmux)")), "pc/tmux", "an unnamed one shows by <host>/<runtime>");
+  assert.equal(managerLabel(row("manager", { host: "pc" }, "busy")), "pc", "without a runtime in its activity, by its host");
+  assert.equal(managerLabel(row("manager", {}, "supervisor (orca)")), "orca", "without a host, as a manager started by a cotal before 0.100.0, by its runtime");
+  const { CommandFailure, commandFailureReport, renderReport } = await import("@cotal-ai/workspace");
+  const hostless = new CommandFailure("refused", "PERMISSION_DENIED", "2 of your managers are live, and this command needs exactly one of them", { native: { detail: { managers: [{ name: "orca", instanceId: "c".repeat(30), host: null, activity: "supervisor (orca)", since: null }] } } });
+  assert.match(renderReport(commandFailureReport(hostless), "plain"), /orca\s+c{30}\s+not reported \(started by an older cotal\)\s+supervisor \(orca\)/, "a manager with no host in its presence reads as started by an older cotal, not as a bare dash");
+  const candidates = [
+    { name: "factory", instanceId: "a".repeat(30), host: "pc", activity: "supervisor (tmux)", runtime: "tmux", terminal: "none" as const, since: null },
+    { name: "pc/pty", instanceId: "b".repeat(30), host: "pc", activity: "supervisor (pty)", runtime: "pty", terminal: "stream" as const, since: null },
+  ];
+  const ambiguous = new ManagerPinUnmatched("pc", candidates, 2);
+  assert.equal(ambiguous.code, "TARGET_AMBIGUOUS", "a value that matches several managers is ambiguous");
+  assert.equal(new ManagerPinUnmatched("nosuch", candidates, 0).code, "TARGET_NOT_FOUND", "one that matches none names no target");
+  const restated = await managerChoiceFailure(ambiguous, async () => { throw new Error("not read"); }, ["ps", "--on", "pc", "--json"]);
+  assert.equal(restated?.remedy, `rerun it on one: ${displayCmd()} ps --on factory --json or ${displayCmd()} ps --on pc/pty --json`, "the Next replaces the caller's --on with the name of each candidate");
+  const equals = await managerChoiceFailure(ambiguous, async () => { throw new Error("not read"); }, ["ps", "--on=pc"]);
+  assert.equal(equals?.remedy, `rerun it on one: ${displayCmd()} ps --on factory or ${displayCmd()} ps --on pc/pty`, "and replaces an --on=<value> the same way");
+  assert.equal(await managerChoiceFailure(new ManagerPinUnmatched("x", [], 0), async () => [], ["ps", "--on", "x"]), undefined, "with no manager to offer, the refusal stands as it is");
+
+  // The question's rows carry the backend, so the choice is informed BEFORE a launch: picking a
+  // manager whose runtime streams no terminal is what sent an operator through a complete launch to
+  // a partial failure, and the row that offered it said only `supervisor (tmux)`.
+  const { managerOptions } = await import("../src/lib/manager-choice.js");
+  const hints = managerOptions(candidates).options.map((option) => option.hint);
+  assert.match(hints[0]!, /tmux · no terminal attach/, "an external runtime's row says no terminal attaches to its seats");
+  assert.match(hints[1]!, /pty · terminal attach/, "a pty manager's row says one does");
+  assert.doesNotMatch(hints.join("\n"), /supervisor \(/, "the runtime cell replaces the activity line it was read from, rather than repeating it");
+  const unreported = managerOptions([{ ...candidates[0]!, terminal: null }]).options[0]!.hint;
+  assert.match(unreported, /tmux · terminal attach not reported/, "a manager that does not report it is shown as not reporting it, never as attachable");
+  const activityOnly = managerOptions([{ ...candidates[0]!, runtime: null, activity: "busy", terminal: null }]).options[0]!.hint;
+  assert.match(activityOnly, /busy/, "and one whose presence carries no runtime keeps the activity it does carry");
+}
+
+{
+  // The question offers the managers a refused selection names by what presence shows: the name, or
+  // <host>/<runtime> without one, most recently started first, with the instance id and host in each
+  // hint. A roster read that is refused leaves the instance ids and says why above the question.
+  const { CommandFailure } = await import("@cotal-ai/workspace");
+  const { managerOptions, severalLive } = await import("../src/lib/manager-choice.js");
+  const [tmuxNew, named, orca, tmuxOld] = ["2xs0pq4rk85tv8jbn3u5141f5cx943m", "66m64nqra6qn8q6xlakgpiwelikogaw", "ggpyg3ywn99ar1oj6bm0x96x4i3a2l", "r28s306ioyo368fsrkdhro2bxjb6b36"];
+  const selection = `signed in, but the exchange for actor "cli" (view "manager-caller") was refused: manager-caller selection found 4 live remote manager candidates for owner u_own (${tmuxNew}, ${named}, ${orca}, ${tmuxOld}); exactly one is required, so name one with --on <instanceId>`;
+  const refusal = new CommandFailure("refused", "PERMISSION_DENIED", selection);
+  const row = (id: string, name: string, activity: string, meta: Record<string, string>, startedAt?: number) => ({ card: { id: `u_own.manager_${id}`, name, kind: "endpoint", role: "manager", meta }, status: "idle", activity, ...(startedAt ? { runtime: { id: "r", startedAt, source: "process" } } : {}), ts: 0 }) as unknown as import("@cotal-ai/core").Presence;
+  const roster = [
+    row(tmuxNew, "manager", "supervisor (tmux)", {}, Date.UTC(2026, 9, 23)),
+    row(named, "n7401ze", "supervisor (pty)", { host: "david-n7401ze" }, Date.UTC(2026, 9, 27)),
+    row(orca, "manager", "supervisor (orca)", { host: "netcup-vps" }, Date.UTC(2026, 9, 25)),
+    row(tmuxOld, "manager", "supervisor (tmux)", {}),
+  ];
+  const read = await severalLive(refusal, async () => roster);
+  assert.equal(read?.unread, undefined, "a roster that is read leaves nothing to explain");
+  const { options } = managerOptions(read?.managers ?? []);
+  assert.deepEqual(options.map((o) => o.label), ["n7401ze", "netcup-vps/orca", "tmux", "tmux"], "each manager is offered by its name or <host>/<runtime>, never by its instance id, most recently started first");
+  assert.deepEqual(options.map((o) => o.hint.split(" · ").slice(0, 2)), [[named, "david-n7401ze"], [orca, "netcup-vps"], [tmuxNew, "host not reported (started by an older cotal)"], [tmuxOld, "host not reported (started by an older cotal)"]], "each hint starts with the instance id and the host");
+  assert.match(options[0]!.hint, / · most recent$/, "the first is marked most recent");
+
+  const denied = new CommandFailure("refused", "PERMISSION_DENIED", 'the connection the auth service of cotal_cloud minted for your user may not read the presence bucket or the channel registry with one batched read: Permissions Violation for Publish to "$JS.API.DIRECT.GET.KV_cotal_channels_cotal_cloud"', {
+    remedy: "update the auth service of cotal_cloud to a release whose agent profile grants $JS.API.DIRECT.GET.KV_cotal_channels_cotal_cloud",
+  });
+  const unread = await severalLive(refusal, async () => { throw denied; });
+  assert.deepEqual(unread?.managers.map((m) => m.instanceId), [tmuxNew, named, orca, tmuxOld], "a refused roster read still names the choice by instance id");
+  assert.equal(unread?.unread, `names unavailable: ${denied.message}; ${denied.remedy}`, "and says why, with the refusal's message and its remedy");
+  const asked = spawnSync(process.execPath, [...process.execArgv, join(import.meta.dirname, "manager-question.fixture.ts"), selection, denied.message, denied.remedy!], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    env: { ...Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_"))), NO_COLOR: "1" },
+  });
+  const shown = asked.stderr.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "").replace(/\n[│ ]*/g, " ");
+  assert.match(shown, /names unavailable: the connection the auth service of cotal_cloud minted for your user may not read .* update the auth service of cotal_cloud to a release whose agent profile grants .*4 of your managers are live\. Which one should run this\?/, `the question says why above itself, rather than offering bare ids with no reason: ${asked.stderr}`);
+}
+
+{
+  // A bare spawn runs the application in this terminal; a manager runs it only with -d or --on.
+  // This process has no terminal, so an attaching launch is refused and a spawn in this terminal is not.
+  const { validateSpawnArguments } = await import("../src/commands/spawn.js");
+  const { spawnUsesManager } = await import("../src/lib/spawn-defaults.js");
+  assert.equal(spawnUsesManager({}), false, "a bare spawn asks no manager");
+  assert.equal(spawnUsesManager({ detach: true }), true, "-d hands the launch to a manager");
+  assert.equal(spawnUsesManager({ on: "a".repeat(30) }), true, "and so does --on");
+  const refusal = (values: Record<string, unknown>) => {
+    try { validateSpawnArguments({ values, positionals: [], raw: [] } as never); return undefined; } catch (error) { return error as { code?: string; message: string; remedy?: string }; }
+  };
+  assert.equal(refusal({}), undefined, "a bare spawn without a terminal is not refused as a managed attachment");
+  const json = refusal({ json: true });
+  assert.equal(json?.code, "USAGE_INVALID", "a bare spawn with --json is refused");
+  assert.match(json?.message ?? "", /a spawn in this terminal takes no structured receipt/, "because a spawn in this terminal writes no receipt");
+  assert.match(json?.remedy ?? "", /add -d/, "and the Next adds -d");
+  assert.equal(refusal({ json: true, detach: true }), undefined, "with -d, --json is a manager's receipt");
+  assert.match(refusal({ restarts: "2", "restart-window": "1000" })?.remedy ?? "", /add -d, or --on/, "--restarts without a manager names -d or --on");
+  assert.match(refusal({ on: "a".repeat(30) })?.message ?? "", /attaching to a manager's launch needs usable input and output terminals/, "--on without -d attaches, which needs terminals");
+}
+
+{
+  // A host that granted a managed agent other channels than it asked for: the receipt shows what was
+  // granted on one line, and the result `--json` writes carries both lists.
+  const { managedLaunchAcl, managedLaunchView } = await import("../src/commands/spawn.js");
+  const { renderReport } = await import("@cotal-ai/workspace");
+  const acl = { requested: { allowSubscribe: [">"], allowPublish: [">"] }, effective: { allowSubscribe: ["general"], allowPublish: [] } };
+  assert.deepEqual(managedLaunchAcl(acl), acl, "the manager's acl field is carried as it was sent");
+  assert.equal(managedLaunchAcl(undefined), null, "a launch without one carries null");
+  assert.equal(managedLaunchAcl({ requested: acl.requested }), undefined, "one that cannot be read is told apart from none");
+  const result = { kind: "managed-launch", name: "worker", id: "u_own.worker", lifecycleUid: "a".repeat(26), space: "demo", managerInstanceId: "b".repeat(26), harness: "probe", runtime: "pty", role: null, request: null, intent: null, readiness: "joined", requestedModel: null, detached: true, streamsTerminal: true } as const;
+  const narrowed = renderReport(managedLaunchView({ ...result, acl }), "plain");
+  assert.match(narrowed, /Granted:\s+read general [·-] post none; asked for read > [·-] post >\n/, "the receipt lists what was granted");
+  assert.equal(narrowed.match(/Granted/g)?.length, 1, "on one line");
+  assert.doesNotMatch(renderReport(managedLaunchView({ ...result, acl: null }), "plain"), /Granted/, "a launch granted what it asked for shows no such line");
+
+  // A seat on a runtime that streams no terminal: the receipt says so where the runtime and the
+  // view are named, and its Next is what actually reaches the agent. `attach` is named once, as
+  // the thing that is not available, and never offered as a command to run.
+  const { displayCmd: cmd } = await import("../src/lib/self-exec.js");
+  const external = renderReport(managedLaunchView({ ...result, acl: null, runtime: "orca", detached: false, streamsTerminal: false }), "plain");
+  assert.match(external, /Runtime:\s+orca [·-] no terminal stream\n/, "the runtime row says it streams no terminal");
+  assert.match(external, /View:\s+not attached; the seat runs in the manager's orca session\n/, "and the view row says where the seat runs instead");
+  assert.match(external, new RegExp(`${cmd()} watch --space demo`), "the Next follows the mesh");
+  assert.match(external, new RegExp(`${cmd()} send -t worker`), "and gives the agent work over it");
+  assert.match(external, /attach is not available here: the orca runtime streams no terminal\./, "and says once that attach is not available");
+  assert.doesNotMatch(external, new RegExp(`${cmd()} attach worker`), "never offering the attach command itself");
+  const streaming = renderReport(managedLaunchView({ ...result, acl: null, detached: false }), "plain");
+  assert.match(streaming, /View:\s+attaching to the allocated incarnation\n/, "a streaming runtime still attaches in this terminal");
+  assert.match(renderReport(managedLaunchView({ ...result, acl: null, streamsTerminal: null }), "plain"), /Runtime:\s+pty\n/, "a manager too old to report it is shown as before");
 }
 
 console.log("✓ command-kernel smoke passed");

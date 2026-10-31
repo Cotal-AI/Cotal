@@ -45,9 +45,13 @@ concurrency:
 #   • live  — the Linux-only live/lifecycle e2es (real broker + real agents, tmux/cmux/opencode).
 #   • platforms — the suites in bin/smoke/platform-suites.txt, run the same way on Linux, macOS and
 #             Windows, so each must pass on all three.
-# `ci-ok` fans them back in to one status. That status is advisory: `attribution` is the only
-# required status context on main, so a red `ci-ok` reports and the merge can still proceed. See
-# docs/design/upgrade-section-gate.md for why it was not made required.
+# `ci-ok` fans them back in to one advisory status. A red `ci-ok` reports the result without
+# blocking a merge unless repository rules make it required.
+# The CLI runs for real in these jobs; its usage telemetry would count our runners as users.
+# DO_NOT_TRACK also reaches the suites that drop every COTAL_ variable from a child's env.
+env:
+  DO_NOT_TRACK: 1
+
 jobs:
   unit:
     if: ${{ github.event_name != 'workflow_dispatch' }}
@@ -109,19 +113,25 @@ jobs:
       - name: Released schemasafe public-error diagnostic
         if: ${{ !cancelled() }}
         run: pnpm smoke:schema-schemasafe-public-errors
+      # The direct-engine diagnostic above keeps its known wrong verdicts as failing tests, so a
+      # step after it with no `if:` never runs. Each check below reports its own result.
       - name: View smoke
+        if: ${{ !cancelled() }}
         run: pnpm smoke:view
       - name: Verify Claude connector package
+        if: ${{ !cancelled() }}
         run: pnpm --filter @cotal-ai/connector-claude-code pack --dry-run
       # Grades the convention, not one suite: every file that defaults COTAL_SERVERS with `||=`
       # must also print what it resolved. Pure — reads sources, spawns nothing, dials nothing.
       # Placed here rather than in the smoke:ci chain so the chain migration lands without a
       # rebase; `gate-inventory` counts a suite named in a workflow as reached.
       - name: Broker disclosure
+        if: ${{ !cancelled() }}
         run: pnpm smoke:broker-disclosure
 
   smoke:
     if: ${{ github.event_name != 'workflow_dispatch' }}
+    needs: [workspace-native, seat-native-linux-x64, seat-native-linux-arm64]
     name: smoke (shard ${{ matrix.shard }}/4)
     # Shard 2/4 runs ~39-40 min, so the previous 40 left a median margin of 15 seconds and
     # cancelled healthy runs (#1220 died at 40m18s). Sized at ~1.5x the slowest observed
@@ -180,6 +190,42 @@ jobs:
         run: echo "$HOME/nats-bin" >> "$GITHUB_PATH"
       - name: Build
         run: pnpm build
+      - uses: actions/download-artifact@v4
+        with:
+          name: workspace-native-x64
+          path: ${{ runner.temp }}/workspace-native-x64
+      - uses: actions/download-artifact@v4
+        with:
+          name: workspace-native-arm64
+          path: ${{ runner.temp }}/workspace-native-arm64
+      - uses: actions/download-artifact@v4
+        with:
+          name: workspace-native-darwin-x64
+          path: ${{ runner.temp }}/workspace-native-darwin-x64
+      - uses: actions/download-artifact@v4
+        with:
+          name: workspace-native-darwin-arm64
+          path: ${{ runner.temp }}/workspace-native-darwin-arm64
+      - name: Assemble source-matched Windows and macOS process identity bindings
+        run: node scripts/workspace-assemble-natives.mjs
+        env:
+          WORKSPACE_NATIVE_X64: ${{ runner.temp }}/workspace-native-x64
+          WORKSPACE_NATIVE_ARM64: ${{ runner.temp }}/workspace-native-arm64
+          WORKSPACE_NATIVE_DARWIN_X64: ${{ runner.temp }}/workspace-native-darwin-x64
+          WORKSPACE_NATIVE_DARWIN_ARM64: ${{ runner.temp }}/workspace-native-darwin-arm64
+      - uses: actions/download-artifact@v4
+        with:
+          name: seat-native-linux-x64
+          path: ${{ runner.temp }}/seat-native-linux-x64
+      - uses: actions/download-artifact@v4
+        with:
+          name: seat-native-linux-arm64
+          path: ${{ runner.temp }}/seat-native-linux-arm64
+      - name: Assemble the seat SO_PEERCRED helpers
+        run: node scripts/seat-assemble-natives.mjs
+        env:
+          SEAT_NATIVE_X64: ${{ runner.temp }}/seat-native-linux-x64/peercred.node
+          SEAT_NATIVE_ARM64: ${{ runner.temp }}/seat-native-linux-arm64/peercred.node
       - name: Protocol & security smoke tests (shard ${{ matrix.shard }}/4)
         # The detector grades committed blobs. Earlier steps must not change inputs or execution hooks.
         shell: /usr/bin/env -u BASH_ENV -u ENV -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -e -o pipefail {0}
@@ -237,6 +283,19 @@ jobs:
       # of join-external:live passed 19 checks at 2850a5a2e.
       - name: Join an external broker
         run: pnpm smoke:join-external:live
+      - name: Broker-only credential renewal warning
+        run: pnpm smoke:no-manager-credential-warning:live
+      - name: Stock broker logging and rotation
+        # This suite pins 2.15.1 separately; the other smoke suites keep their 2.12.12 broker.
+        shell: bash
+        run: |
+          set -euo pipefail
+          broker_dir="$(mktemp -d "$RUNNER_TEMP/broker-logging.XXXXXX")"
+          curl -fsSL "https://github.com/nats-io/nats-server/releases/download/v2.15.1/nats-server-v2.15.1-linux-amd64.tar.gz" -o "$broker_dir/nats-server.tar.gz"
+          echo "bf5edc7b1ce98e885c368cb43a886eb148dc5d0551d99f3cf6141fb5e1954c70  $broker_dir/nats-server.tar.gz" | sha256sum -c -
+          mkdir "$broker_dir/extracted"
+          tar -xzf "$broker_dir/nats-server.tar.gz" -C "$broker_dir/extracted"
+          COTAL_BROKER_LOG_NATS="$broker_dir/extracted/nats-server-v2.15.1-linux-amd64/nats-server" pnpm smoke:broker-logging:live
       - name: Manager lifecycle e2e (real broker + real agents)
         run: pnpm smoke:lifecycle-e2e
       - name: Runtime smoke tests (tmux, orca, herdr)
@@ -265,12 +324,14 @@ jobs:
         run: pnpm smoke:transport-liveness
 
   # The Windows identity binding needs an MSVC Developer Command Prompt, so it is built once here and
-  # downloaded by the Windows platforms leg, as windows.yml does.
+  # downloaded by the Windows platforms leg, as windows.yml does. The smoke shards take both
+  # architectures of the Windows and the macOS bindings: their pack suites pack @cotal-ai/workspace
+  # and @cotal-ai/seat, whose prepacks require them all.
   workspace-native:
     if: ${{ github.event_name != 'workflow_dispatch' }}
     uses: ./.github/workflows/workspace-native.yml
     with:
-      architectures: '["x64"]'
+      darwin: true
 
   platforms:
     if: ${{ github.event_name != 'workflow_dispatch' }}
@@ -508,8 +569,8 @@ jobs:
           EOF
 
   ci-ok:
-    # One aggregate status, advisory on main: no ruleset requires it, and `attribution` is the only
-    # required context. A ruleset that did require it would have to name the check run
+    # One aggregate status, advisory on main: no ruleset requires it.
+    # A ruleset that did require it would have to name the check run
     # `ci-ok (live outcome classified)`, since a context spelled `ci-ok` matches nothing.
     # It owns the explicit live diagnosis too: adding a separate
     # always-running dependent job was measured on PR #1043 and left a superseded run queued

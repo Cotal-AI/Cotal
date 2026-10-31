@@ -28,14 +28,14 @@ import { connect } from "@nats-io/transport-node";
 import {
   createSpaceAuth, mintCreds, newIdentity, mintLifecycleUid, standaloneConnectOpts, setupSpaceStreams,
   DEV_OWNER, epCall, invokeCommand, resolveService, readAcceptedRow, readGoalResult, readGoalIndex, registry,
-  startTimerWriter,
-  type Connector, type EpCaller, type IssuedCaller, type LaunchOpts, type LaunchSpec, type TimerWriterHandle,
+  type Connector, type EpCaller, type IssuedCaller, type LaunchOpts, type LaunchSpec,
 } from "@cotal-ai/core";
 import { authDir, saveSpaceAuth, agentLifecycleSecretFilePaths, workspaceSecretStore } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
 import { MANAGER_ENDPOINT, MANAGER_CONTRACTS } from "../src/manager-service-contract.js";
 import { bootBroker } from "./_boot-broker.js";
 import { bootDeliveryDaemon } from "./_boot-delivery.js";
+import { hostTimerWriter, type HostedTimerWriter } from "./_timer-writer.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "../../..");
@@ -70,7 +70,7 @@ registry.register(stubCon);
 
 let manager: Manager | undefined;
 let delivery: Awaited<ReturnType<typeof bootDeliveryDaemon>> | undefined;
-let writer: TimerWriterHandle | undefined;
+let writer: HostedTimerWriter | undefined;
 let writerNc: Awaited<ReturnType<typeof connect>> | undefined;
 let runnerNc: Awaited<ReturnType<typeof connect>> | undefined;
 let seatNc: Awaited<ReturnType<typeof connect>> | undefined;
@@ -84,7 +84,7 @@ try {
   // The timer writer the delivery daemon hosts on a live mesh, under the delivery credential: the
   // deadline cell below waits on a pause armed through it, never through a suite pump.
   writerNc = await connect({ servers: broker.servers, ...standaloneConnectOpts({ creds: await mintCreds(auth, newIdentity(), "delivery"), tls: false }), maxReconnectAttempts: 0 });
-  writer = await startTimerWriter(writerNc, space, { pollMs: 1_000 });
+  writer = await hostTimerWriter(writerNc, space, { pollMs: 1_000 });
 
   manager = new Manager({ space, servers: broker.servers, runtime: "pty", workspaceRoot });
   await manager.start();
@@ -139,6 +139,12 @@ try {
     (a1 as { ok?: boolean }).ok === true && ((a1 as { data?: { goalId?: string } }).data?.goalId === g1), a1);
   const early = await readGoalResult(actx, { endpoint: MANAGER_ENDPOINT, caller: runner, goalId: g1 });
   check("...and no `failed` terminal was unwound onto it", early === undefined, early);
+  // The acceptance floor names the whole seat triple, owner included, as the spawn floor does: a
+  // successor adopting this relay reads the seat from the floor, and the note carries no copy.
+  const accepted = await readGoalIndex(actx, { endpoint: MANAGER_ENDPOINT, caller: runner, goalId: g1 });
+  check("the turn's acceptance floor records the seat's owner, and its note does not repeat it",
+    accepted?.allocated?.owner === DEV_OWNER && accepted.allocated.actor === seat.id && accepted.allocated.uid === seat.lifecycleUid
+      && accepted.note !== undefined && !("owner" in (JSON.parse(accepted.note) as object)), accepted);
 
   console.log("\n3. the seat pulls and yields under ITS OWN credential: the relay rows are in the agent baseline");
   seatNc = await connect({ servers: broker.servers, ...standaloneConnectOpts({ creds: seatCreds, tls: false }), maxReconnectAttempts: 0 });
@@ -197,7 +203,7 @@ try {
   await broker.stop().catch(() => {});
 }
 
-const EXPECTED_CELLS = 13;
+const EXPECTED_CELLS = 14;
 console.log(`\n${fail === 0 && pass === EXPECTED_CELLS ? "TURN RELAY AUTH SMOKE OK ✅" : "TURN RELAY AUTH SMOKE FAILED"}  (${pass} passed, ${fail} failed)`);
 if (pass + fail !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);

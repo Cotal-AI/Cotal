@@ -2,16 +2,15 @@
  * The Cotal OpenCode plugin, OpenCode 2.x adapter. Loaded from the same bundle directory as the
  * 1.x factory (`plugin.ts`) — `plugin.entry.ts`'s default export carries both `server` (1.x) and
  * `setup` (this module's `setupCotal`, 2.x); the 2.x loader calls `setup(context)` only, never
- * `server`. See `fx105/measurements.md` for the measured 2.x plugin context, routes and events this
- * adapter is built against.
+ * `server`. The context subset this adapter reads is declared in `opencode2-types.ts`.
  *
  * The smallest port that joins, checks the model, creates ONE session, drives turns into it over
  * the authenticated HTTP API (`/api/session/:id/prompt` — 2.x has no `prompt_async`), registers the
- * cotal_* tools and maps the event stream to presence (M3c). Reuses `plugin.ts`'s exported seams
+ * cotal_* tools and maps the event stream to presence. Reuses `plugin.ts`'s exported seams
  * (env config, `MeshAgent` construction, `modelRefusalSentence`, `computeInjection`,
  * `settleWithin`) rather than duplicating them; the model check and session/turn routes are 2.x's
- * own (`/api/model`, `/api/session`, `/api/session/:id/prompt`), measured separately because the
- * 2.x response shapes differ from 1.x's (`{data:...}` wrapping, no `prompt_async`).
+ * own (`/api/model`, `/api/session`, `/api/session/:id/prompt`) because the 2.x response shapes
+ * differ from 1.x's (`{data:...}` wrapping, no `prompt_async`).
  */
 import { loadAgentFile, type PresenceStatus } from "@cotal-ai/core";
 import {
@@ -39,16 +38,13 @@ function log(msg: string): void {
 const guard = globalThis as { __cotalOpencodeSetup?: boolean };
 
 /** The 2.x `/api/session/:id/message` shape is `{data:[{type, text|content, model, agent}]}` and
- *  the `content` element shape was not measured, so `agui-source.ts` cannot read it truthfully —
- *  maintainer's call (fx105/brief.md M3). Refusing loud beats shipping an AG-UI plane that lies. */
+ *  the `content` element shape was not measured, so `agui-source.ts` cannot read it truthfully. */
 const EVENTS_REFUSAL =
   "opencode connector: the AG-UI event plane is not carried on OpenCode 2.x yet; spawn with --no-events";
 
 /** 2.x model check: `GET /api/model` lists the configured model directly (no `/provider.all`
  *  nesting to walk, unlike 1.x's `verifyServerModel`). Same refusal sentence shape, different
- *  route and body — measured in fx105/measurements.md (routes). The server answers `/api/model`
- *  with an empty listing for up to about a second after the location boot its first `/api/config`
- *  triggers (fx105/brief-g.md measurement), so an empty listing is polled every 200 ms until the
+ *  route and body. An empty listing during location boot is polled every 200 ms until the
  *  provider appears rather than refused on the first read. The wait is bounded: a server that
  *  never lists anything within the deadline is a real refusal, not a hang. */
 export const MODEL_LIST_SETTLE_MS = 10_000;
@@ -116,12 +112,19 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
   })();
 
   const agent = new MeshAgent(config);
+  const controller = new AbortController(); // aborted when teardown begins
   // Same non-blocking shape as plugin.ts: awaiting the model check INSIDE setup would deadlock the
   // server if setup is running while answering the very request the check's fetch targets. Refuse
-  // loud and exit rather than wait forever or join with an unverified model.
+  // loud and exit rather than wait forever or join with an unverified model. A teardown that lands
+  // before the check settles owns what is queued here: it must neither start the stopped agent nor
+  // exit the host process over a refusal nobody is waiting for.
   void modelReady.then(
-    () => agent.start(),
+    () => {
+      if (controller.signal.aborted) return;
+      return agent.start();
+    },
     (error: Error) => {
+      if (controller.signal.aborted) return;
       log(error.message);
       process.exit(1);
     },
@@ -159,7 +162,6 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
   let ended: OpenCode2Event["durable"]; // log position of the event that ended the last turn
   let started: OpenCode2Event["durable"]; // log position of the running execution's start
   let submitting: Promise<void> | undefined; // the prompt POST in flight; what it carries settles when it answers
-  const controller = new AbortController(); // aborted when teardown begins
 
   /** Create the session this agent owns and announce its id to the serve shim, exactly as
    *  plugin.ts's `sessionReady` does (the shim scans stderr for this exact line to find which
@@ -288,12 +290,15 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
   }
 
   /** Whether an execution event is a replay: at or before `mark`, by default the last turn's end, in
-   *  the same session's durable log. 2.x gives every execution event that position, so one without it cannot be told
-   *  from a replay and is refused. */
+   *  the same session's durable log. 2.x gives every execution event that position. One that is missing,
+   *  or whose aggregate is not a non-empty string or whose sequence is not a finite number, cannot be
+   *  ordered, so it is refused the same way a missing position is. */
   function replayed(ev: OpenCode2Event, mark = ended): boolean {
     const at = ev.durable;
-    if (!at) log(`${ev.type} carries no durable log position; ignored`);
-    return !at || (at.aggregateID === mark?.aggregateID && at.seq <= mark.seq);
+    const seq = at?.seq;
+    const ordered = typeof at?.aggregateID === "string" && at.aggregateID.length > 0 && typeof seq === "number" && Number.isFinite(seq);
+    if (!ordered) log(`${ev.type} carries no durable log position; ignored`);
+    return !ordered || (at.aggregateID === mark?.aggregateID && seq <= mark.seq);
   }
 
   /** A turn ended: release `execution`, settle the batch it carried, then drive whatever waited
@@ -323,7 +328,7 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
   }
 
   // Inbound mesh → drive (never interrupt a running turn). Mirrors plugin.ts's `agent.on`
-  // wiring, trimmed to this adapter's simpler single-session, no-swap scope (M3c's event stream
+  // wiring, trimmed to this adapter's simpler single-session, no-swap scope (the event stream
   // is what actually clears `execution`; these wakes only ask "is there anything to submit now").
   agent.on("incoming", (item: { kind: string; mentionsMe?: boolean; recvKey: string }) => {
     if (execution) return;
@@ -368,9 +373,10 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
     for (const t of buildCotalTools2(agent, config)) ed.add(t);
   });
 
-  // The event stream — a detached loop, never awaited here (setup must return). Maps the measured
-  // event names (fx105/measurements.md) to presence and turn-end/ack the same way plugin.ts's own
-  // event switch does, trimmed to this adapter's single-session scope (no swap, no `/new` reset).
+  // The event stream — a detached loop, never awaited here (setup must return). Maps
+  // `session.execution.*`, `permission.asked` and session lifecycle events to presence and
+  // turn-end/ack the same way plugin.ts's own event switch does, trimmed to this adapter's
+  // single-session scope (no swap, no `/new` reset).
   const eventLoop = (async () => {
     try {
       for await (const ev of ctx.event.subscribe({ signal: controller.signal })) {

@@ -47,10 +47,22 @@
  * lifecycle commands were covered "transitively" by the `ps` cells; they were not, and that
  * over-read is the same one that let the original defect ship.
  *
- * What is still NOT graded here: cells 4 and 5 prove the pin ROUTES (an absent instance deadlines
- * rather than falling through), not that a pinned `spawn`/`stop`/`attach` completes against a real
+ * What is still NOT graded here: cells 4 and 5 prove the pin ROUTES (an absent instance is refused
+ * or deadlines rather than falling through), not that a pinned `spawn`/`stop`/`attach` completes against a real
  * instance; those mutate, and a live-mutation cell is a different fixture. And this suite does not
  * grade the class-queue split itself (SPEC 13.2 behaviour, not this seam).
+ *
+ * Cell 11 starts a manager with no agent application installed and grades the refusal a pinned and
+ * an unpinned `spawn --detach` meet there: the code, the manager and host it names, and its Next.
+ * Cell 12 adds a second manager whose catalog lacks a persona the first one has, and grades the
+ * refusal of a spawn pinned to it: the manager, host and file it names, and the manager its Next pins.
+ * Cell 13 invokes an endpoint nothing serves with `--timeout 1000` and grades that the refusal comes
+ * within that deadline, with the same code and `--json` keys, a message naming that `--timeout` and a
+ * Next offering a longer one, and that the same invoke without the flag keeps its message and Next.
+ * Cell 14 invokes the manager with a `--timeout` its contract read outruns and grades the failure
+ * that names the flag and the read, with a Next naming a longer `--timeout`.
+ * Cell 15 sweeps `--timeout` until a contract read returns after the deadline and the call fails
+ * before it publishes, and grades that this failure's Next names a longer `--timeout` as well.
  *
  * Mutation-proof target `cli-on-mint`: drop the instance from the mint (in
  * `packages/workspace/src/connect.ts`, force `pinned` to `undefined`) and cell 3's
@@ -60,8 +72,8 @@
  */
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   isReachable, createSpaceAuth, serverConfig, setupSpaceStreams, mintCreds, newIdentity, registry, type Connector, type LaunchOpts, type LaunchSpec,
@@ -151,7 +163,7 @@ const strip = (s: string): string => s.replace(/\x1b\[[0-9;]*m/g, "");
 
 type PsEnvelope = {
   outcome: string; completeness: string; target: { scope?: string; managerInstanceId?: string | null } | null;
-  result: { items: { name?: string }[]; managers: { instanceId: string; state: string }[] } | null;
+  result: { items: { name?: string }[]; managers: { instanceId: string; state: string; reportedHost?: string }[] } | null;
   warnings: { code: string; target: { managerInstanceId?: string } }[]; error?: { code: string };
 };
 /** stdout as the one envelope `--json` promises, or undefined when it is anything else. */
@@ -210,6 +222,34 @@ try {
       JSON.stringify(census.result?.managers.map((m) => m.instanceId).sort()) === JSON.stringify([IID1, IID2].sort()) &&
       census.result?.managers.every((m) => m.state === "answered") === true && census.warnings.length === 0,
     { status: unpinnedJson.status, stdout: unpinnedJson.stdout.slice(-600) });
+  // Each answering manager's header carries the host it reports in its own status reply, for
+  // reading only. The label sits after the full id, so the id check above still holds.
+  check("...and each answering manager's header and JSON row carry the host it reports",
+    [IID1, IID2].every((iid) => unpinnedOut.includes(`manager ${iid} · reports host ${hostname()}`)) &&
+      census?.result?.managers.every((m) => m.reportedHost === hostname()) === true,
+    { host: hostname(), out: unpinnedOut.slice(-400), managers: census?.result?.managers });
+
+  // An unpinned `models` goes to the one manager the class queue picks. It names the other as not
+  // asked, and an empty catalog list says the answering manager has no application installed.
+  check("rig: no connector is registered yet, so each manager lists no catalog", registry.all<Connector>("connector").length === 0, registry.all<Connector>("connector").map((c) => c.name));
+  const modelsUnpinned = await cotal(["models", "--json", "--space", space], root1);
+  mustHaveRun(modelsUnpinned, "the unpinned `models --json`");
+  let modelsEnv: { result?: { answeringManagerInstanceId?: string | null; notAskedManagerInstanceIds?: string[] | null; items?: unknown[] } } | undefined;
+  try { modelsEnv = JSON.parse(modelsUnpinned.stdout) as typeof modelsEnv; } catch { modelsEnv = undefined; }
+  const answering = modelsEnv?.result?.answeringManagerInstanceId;
+  check("an unpinned models --json names the live manager it did not ask",
+    modelsUnpinned.status === 0 && (answering === IID1 || answering === IID2) && modelsEnv?.result?.items?.length === 0 &&
+      JSON.stringify(modelsEnv.result.notAskedManagerInstanceIds) === JSON.stringify([answering === IID1 ? IID2 : IID1]),
+    { status: modelsUnpinned.status, stdout: modelsUnpinned.stdout.slice(-600) });
+  const modelsHuman = await cotal(["models", "--space", space], root1);
+  mustHaveRun(modelsHuman, "the unpinned `models`");
+  const modelsOut = strip(modelsHuman.out);
+  const asked = /Answering manager: +(\S+)/.exec(modelsOut)?.[1];
+  const notAsked = asked === IID1 ? IID2 : IID1;
+  check("...and its report says why no catalog came back, names the other manager and asks it with --on",
+    modelsHuman.status === 0 && modelsOut.includes("No model catalogs were returned: the answering manager has no agent application installed.") &&
+      (asked === IID1 || asked === IID2) && new RegExp(`Not asked: +${notAsked}$`, "m").test(modelsOut) && modelsOut.includes(`cotal models --space ${space} --on ${notAsked}`),
+    modelsOut.slice(-900));
 
   // ---- 2. THE FLAG IS ACCEPTED AND VALIDATED --------------------------------------------------
   // Cheap, but it separates "the flag is gone" from "the flag is dead", which are different bugs
@@ -314,7 +354,7 @@ try {
   // typed `spawn -f ... --on <id>` was pinned to nothing and never told. Manifest deploys are now
   // `team deploy`, which has no `--on` at all.
   for (const [what, argv, refusal] of [
-    ["a foreground spawn", ["spawn", "no-such-persona", "--foreground", "--on", IID1, "--space", space], /direct --foreground execution takes no structured receipt, manager credential or manager pin/],
+    ["a foreground spawn", ["spawn", "no-such-persona", "--foreground", "--on", IID1, "--space", space], /a spawn in this terminal takes no structured receipt, manager credential or manager pin/],
     ["a manifest deploy", ["team", "deploy", "no-such-manifest.yaml", "--on", IID1, "--space", space], /Unknown option '--on'/],
   ] as const) {
     const r = await cotal([...argv], root1);
@@ -333,15 +373,17 @@ try {
   const ghostOut = strip(ghost.out);
   check("it FAILS rather than being answered by whichever manager won the class queue",
     ghost.status !== 0, { status: ghost.status, tail: ghostOut.slice(-300) });
-  check("...and fails as an unanswered pinned describe (the no-fallbacks shape, not some other error)",
-    /no describe reply from manager( instance \S+)? within/i.test(ghostOut), ghostOut.slice(-300));
+  // The registry lists no manager with that id, so ps refuses before any describe, naming the two that run.
+  check("...and is refused before any describe, naming the managers that run (the no-fallbacks shape, not some other error)",
+    new RegExp(`--on ${absent} names no manager running for space ${space}; the ones running are `).test(ghostOut) && ghostOut.includes(IID1) && ghostOut.includes(IID2) && !/no describe reply/.test(ghostOut),
+    ghostOut.slice(-300));
   // WHAT THE HEADLINE SAYS. Two live managers answered `ps` seconds earlier; the operator typed an
   // instance that is not there. The CLI wrapper used to prefix EVERY ep-rail failure with "no
   // manager reachable", so a typo in `--on` read as an empty mesh and sent the operator to the
   // broker (measured on a live three-manager mesh in review). A pinned call that went unanswered
   // must name the instance and must not pronounce on the mesh.
-  check("...and the headline names the INSTANCE that did not answer, not an unreachable mesh",
-    new RegExp(`manager instance ${absent} did not answer`).test(ghostOut) && !/no manager reachable/i.test(ghostOut),
+  check("...and the headline names the INSTANCE that was asked for, not an unreachable mesh",
+    new RegExp(`--on ${absent} names no manager`).test(ghostOut) && !/no manager reachable/i.test(ghostOut),
     ghostOut.slice(-300));
 
   // ---- 5. THE OTHER FORWARDING SITES ----------------------------------------------------------
@@ -366,13 +408,18 @@ try {
   // cover the whole chain; neither covers it alone.
   console.log("\n5. every OTHER `--on` site forwards it too (spawn/stop/attach have their own)");
   const pinnedDescribeDeadline = /no describe reply from manager( instance \S+)? within/i;
+  const unregistered = new RegExp(`--on ${absent} names no manager running for space ${space}; the ones running are `);
   const sites: ReadonlyArray<{ what: string; argv: string[]; deadline?: RegExp }> = [
     // --on is a `--detach` flag on spawn (foreground runs in this process, not on a manager). The
     // persona ref is deliberately nonexistent so that a dropped pin cannot start anything: the
     // worst case is a manager refusal, which is a DIFFERENT message and still fails this cell.
-    { what: "spawn --detach", argv: ["spawn", `no-such-persona-${randomUUID().slice(0, 6)}`, "--detach", "--on", absent, "--space", space] },
-    { what: "stop", argv: ["stop", "--name", `no-such-agent-${randomUUID().slice(0, 6)}`, "--on", absent, "--space", space] },
-    { what: "attach", argv: ["attach", "--name", `no-such-agent-${randomUUID().slice(0, 6)}`, "--on", absent, "--space", space] },
+    // spawn, stop, models, attach and input read the registry first, so an absent instance is refused
+    // naming the running ones, before any describe; a dropped pin would reach the class queue instead.
+    { what: "spawn --detach", argv: ["spawn", `no-such-persona-${randomUUID().slice(0, 6)}`, "--detach", "--on", absent, "--space", space], deadline: unregistered },
+    { what: "stop", argv: ["stop", "--name", `no-such-agent-${randomUUID().slice(0, 6)}`, "--on", absent, "--space", space], deadline: unregistered },
+    { what: "models", argv: ["models", "--on", absent, "--space", space], deadline: unregistered },
+    { what: "attach", argv: ["attach", "--name", `no-such-agent-${randomUUID().slice(0, 6)}`, "--on", absent, "--space", space], deadline: unregistered },
+    { what: "input", argv: ["input", "--name", `no-such-agent-${randomUUID().slice(0, 6)}`, "--text", "x", "--on", absent, "--space", space], deadline: unregistered },
     // describe reports the read as a failed request that names the pinned instance and the native deadline.
     { what: "describe", argv: ["describe", "manager", "--on", absent, "--space", space], deadline: new RegExp(`^ +Requested instance: +${absent}\n +Native code: +deadline-exceeded$`, "m") },
   ];
@@ -385,6 +432,10 @@ try {
       { status: r.status, tail: out.slice(-400) });
     check(`...and ${site.what}'s headline names the instance, not an unreachable mesh`,
       !/no manager reachable/i.test(out), out.slice(-300));
+    // The launch and attach blocks name the space as a field; only the refusal's heading names the mesh.
+    if (site.what === "spawn --detach" || site.what === "attach")
+      check(`...and ${site.what} names the mesh once, in the refusal's heading`,
+        (out.match(/^Mesh: /gm) ?? []).length === 1 && !/using mesh/.test(out), out.slice(0, 700));
   }
 
   // ---- 6. AN EMPTY `--on` IS REFUSED AT THE FLAG, ON EVERY SITE ------------------------------
@@ -412,9 +463,41 @@ try {
       { status: r.status, tail: out.slice(-300) });
   }
 
+  // A persona created on m2 lands in root2's catalog, the root the space is registered at, so the
+  // receipt names the file it wrote. Each static call mints its own caller, so the manager records
+  // no owner and the file is operator-owned: the receipt's Next reads it locally, a later
+  // show --on names that command, and the --on listing's Next offers the local show.
+  console.log("\n7. a persona created on the exact manager names the file it wrote and a Next that works");
+  const createdJson = await cotal(["persona", "create", "remote-rev", "--prompt", "review", "--subscribe", "", "--on", IID2, "--space", space, "--json"], root2);
+  mustHaveRun(createdJson, "`persona create --on --json`");
+  let created: { outcome?: string; result?: { localFilesChanged?: boolean; perCallCaller?: boolean } } | undefined;
+  try { created = JSON.parse(createdJson.stdout); } catch { created = undefined; }
+  const remoteRev = join(root2, ".cotal", "agents", "remote-rev.md");
+  check("persona create --on writes this root's catalog file with no owner, and its JSON says local files changed",
+    createdJson.status === 0 && created?.outcome === "ok" && created.result?.localFilesChanged === true && created.result.perCallCaller === true && existsSync(remoteRev) && !/^owner:/m.test(readFileSync(remoteRev, "utf8")),
+    { status: createdJson.status, stdout: createdJson.stdout.slice(-600) });
+  const createdText = await cotal(["persona", "create", "remote-rev2", "--prompt", "review", "--subscribe", "", "--on", IID2, "--space", space], root2);
+  mustHaveRun(createdText, "`persona create --on`");
+  const receipt = strip(createdText.out);
+  check("the receipt names the file the manager wrote and offers the local show, not a show --on that would refuse",
+    createdText.status === 0 && /Local files:\s+\S*remote-rev2\.md, written by the manager in this root's catalog/.test(receipt) &&
+      /cotal p show remote-rev2\s/.test(receipt) && !receipt.includes("cotal p show remote-rev2 --on") && receipt.includes(`cotal spawn remote-rev2 --on ${IID2}`),
+    { status: createdText.status, out: receipt.slice(-900) });
+  const shownRemote = await cotal(["persona", "show", "remote-rev", "--on", IID2, "--space", space], root2);
+  mustHaveRun(shownRemote, "`persona show --on` by a later caller");
+  check("a later show --on is refused not-found and names the local show for the file in this root",
+    shownRemote.status === 2 && /TARGET_NOT_FOUND/.test(strip(shownRemote.out)) && strip(shownRemote.out).includes("read it here with `cotal p show remote-rev`"),
+    { status: shownRemote.status, out: strip(shownRemote.out).slice(-600) });
+  const remoteListed = await cotal(["persona", "--on", IID2, "--space", space], root2);
+  mustHaveRun(remoteListed, "`persona --on`");
+  const remoteListing = strip(remoteListed.out);
+  check("the --on listing's Next offers the local show, not a show --on that would refuse",
+    remoteListed.status === 0 && /cotal p show <name>\s/.test(remoteListing) && !remoteListing.includes("cotal p show <name> --on"),
+    { status: remoteListed.status, out: remoteListing.slice(-600) });
+
   // One compiled manager build serves a different ps output contract. Copying the compiled build
   // into the disposable root keeps this variant isolated from the normal manager and CLI imports.
-  console.log("\n7. a mixed-contract class census is incomplete, not a successful seat list");
+  console.log("\n8. a mixed-contract class census is incomplete, not a successful seat list");
   const variant = join(dir, "variant");
   writeFileSync(join(dir, "package.json"), '{"type":"module"}');
   cpSync(join(repoRoot, "implementations/manager/dist"), variant, { recursive: true });
@@ -482,7 +565,7 @@ try {
 
   // A catalog the connector could not read leaves the read partial. One the install has no way to
   // list is a connector without a catalog: complete, exit 0, with the reason shown.
-  console.log("\n8. models: an unreadable catalog is partial, one the install cannot list is not");
+  console.log("\n9. models: an unreadable catalog is partial, one the install cannot list is not");
   const catalogStub = (name: string, listModels: NonNullable<Connector["listModels"]>): Connector =>
     ({ kind: "connector", name, requires: ["node"], buildLaunch: connector.buildLaunch, listModels });
   registry.register(catalogStub("models-listed", () => ({ source: "fixture catalog", models: [{ id: "fixture-model" }] })));
@@ -530,7 +613,7 @@ try {
 
   // A manager on installed extensions lists every connector its manifest names, so one whose package
   // cannot be loaded still has a row. That row is an unread catalog, not a connector without one.
-  console.log("\n9. models: an installed connector the manager cannot load leaves the read partial");
+  console.log("\n10. models: an installed connector the manager cannot load leaves the read partial");
   await m1.stop({ withAgents: true });
   await mixedManager.stop({ withAgents: true });
   process.env.XDG_CONFIG_HOME = join(home, "xdg");
@@ -538,7 +621,7 @@ try {
     extensions: [{
       pkg: "@fixture/models-unloadable", version: "1.0.0", spec: "@fixture/models-unloadable@1.0.0",
       provides: [{ kind: "connector", name: "models-listed" }, { kind: "connector", name: "models-unloadable" }], commands: [],
-      connectors: [{ name: "models-listed", requires: ["node"] }, { name: "models-unloadable", requires: ["node"] }],
+      connectors: [{ name: "models-listed", requires: ["node"], eventPlane: false }, { name: "models-unloadable", requires: ["node"], eventPlane: false }],
     }],
   });
   m1 = new Manager({ space, servers: SERVERS, runtime: "pty", workspaceRoot: mkRoot("ws4"), installedExtensions: true });
@@ -555,6 +638,175 @@ try {
   check("the report names the load failure under that connector, not a missing catalog",
     installedHuman.status === 4 && /models-unloadable[\s\S]*not installed at/.test(strip(installedHuman.out)) && !strip(installedHuman.out).includes("no model catalog exposed"),
     { status: installedHuman.status, out: strip(installedHuman.out).slice(-600) });
+
+  // A manager with no agent application installed takes no unpinned launch and refuses a pinned one.
+  // Both refusals carry the code a spawn in this terminal gives and name the manager and its host,
+  // because the application is added where that manager runs.
+  console.log("\n11. a manager with no agent application: a pinned and an unpinned spawn name it and its host");
+  await m1.stop({ withAgents: true });
+  saveExtensionsManifest({ extensions: [] });
+  const root5 = mkRoot("ws5");
+  writeFileSync(join(root5, ".cotal", "agents", "bare.md"), "---\nname: bare\nrole: worker\n---\n");
+  m1 = new Manager({ space, servers: SERVERS, runtime: "pty", workspaceRoot: root5, installedExtensions: true });
+  await m1.start();
+  const IID5 = (m1 as unknown as MgrPriv).managerInstanceId;
+  const onHost = `manager ${IID5} on host ${hostname()}`;
+  const addThere = "add it where that manager runs, such as `cotal ext add @cotal-ai/connector-claude-code`, then restart that manager";
+  const pinnedApp = await cotal(["spawn", "bare", "--detach", "--on", IID5, "--harness", "claude", "--space", space], root1);
+  mustHaveRun(pinnedApp, "a pinned spawn with no agent application");
+  const pinnedAppOut = strip(pinnedApp.out);
+  check("a pinned spawn the manager has no connector for is DEPENDENCY_UNAVAILABLE, exit 2, naming the manager, its host and the restart",
+    pinnedApp.status === 2 && /Code:\s+DEPENDENCY_UNAVAILABLE/.test(pinnedAppOut) && pinnedAppOut.includes(`no connector "claude" is installed on ${onHost}; nothing was launched`) &&
+      pinnedAppOut.includes(addThere),
+    { status: pinnedApp.status, out: pinnedAppOut.slice(-900) });
+  const pinnedAppJson = await cotal(["spawn", "bare", "--detach", "--on", IID5, "--harness", "claude", "--space", space, "--json"], root1);
+  mustHaveRun(pinnedAppJson, "a pinned spawn --json with no agent application");
+  let pinnedAppEnv: { error?: { code?: string; message?: string; remedy?: string } } | undefined;
+  try { pinnedAppEnv = JSON.parse(pinnedAppJson.stdout); } catch { pinnedAppEnv = undefined; }
+  check("...and its --json refusal carries the same code, manager and Next",
+    pinnedAppJson.status === 2 && pinnedAppEnv?.error?.code === "DEPENDENCY_UNAVAILABLE" && pinnedAppEnv.error.message?.includes(onHost) === true && pinnedAppEnv.error.remedy?.startsWith(addThere) === true,
+    { status: pinnedAppJson.status, stdout: pinnedAppJson.stdout.slice(-900) });
+  const unpinnedApp = await cotal(["spawn", "bare", "--detach", "--harness", "claude", "--space", space], root1);
+  mustHaveRun(unpinnedApp, "an unpinned spawn with no agent application");
+  const unpinnedAppOut = strip(unpinnedApp.out);
+  check("an unpinned spawn no manager takes is DEPENDENCY_UNAVAILABLE, exit 2, naming the manager, its host and the restart",
+    unpinnedApp.status === 2 && /Code:\s+DEPENDENCY_UNAVAILABLE/.test(unpinnedAppOut) &&
+      unpinnedAppOut.includes(`no manager of yours takes unpinned launches: none has an agent application installed (${onHost}); nothing was launched`) &&
+      unpinnedAppOut.includes("add one where that manager runs, such as `cotal ext add @cotal-ai/connector-claude-code`, then restart that manager"),
+    { status: unpinnedApp.status, out: unpinnedAppOut.slice(-900) });
+
+  // A second manager whose catalog lacks the persona refuses a spawn pinned to it. The refusal names
+  // that manager, its host and the file to create there, and its Next pins the spawn to the live
+  // manager whose catalog has the persona. A persona no manager has gets the create step alone.
+  console.log("\n12. a pinned spawn of a persona the manager lacks names it, its host and file, and a manager that has it");
+  const root6 = mkRoot("ws6");
+  m2 = new Manager({ space, servers: SERVERS, runtime: "pty", workspaceRoot: root6, installedExtensions: true });
+  await m2.start();
+  const IID6 = (m2 as unknown as MgrPriv).managerInstanceId;
+  const lacking = await cotal(["spawn", "bare", "--detach", "--on", IID6, "--harness", "claude", "--space", space, "--json"], root1);
+  mustHaveRun(lacking, "a pinned spawn of a persona that manager lacks");
+  let lackingEnv: { error?: { code?: string; message?: string; remedy?: string } } | undefined;
+  try { lackingEnv = JSON.parse(lacking.stdout); } catch { lackingEnv = undefined; }
+  check("it names the manager, its host and the catalog file to create there, and not --config or a local personas list",
+    lacking.status === 2 && lackingEnv?.error?.message === `no persona "bare" in the catalog of manager ${IID6} on host ${hostname()}: ${join(root6, ".cotal", "agents", "bare.md")} not found; create it there`,
+    { status: lacking.status, stdout: lacking.stdout.slice(-900) });
+  check("...and its Next runs the spawn again on the live manager whose catalog has it",
+    lackingEnv?.error?.remedy?.startsWith('nothing was launched; this manager of yours has persona "bare": ') === true && lackingEnv.error.remedy.includes(`--on ${IID5}`) && !lackingEnv.error.remedy.includes(IID6),
+    { remedy: lackingEnv?.error?.remedy });
+  const nowhere = await cotal(["spawn", "nowhere", "--detach", "--on", IID6, "--harness", "claude", "--space", space], root1);
+  mustHaveRun(nowhere, "a pinned spawn of a persona no manager has");
+  const nowhereOut = strip(nowhere.out);
+  check("a persona no live manager has is refused with the create step on that manager's host",
+    nowhere.status === 2 && nowhereOut.includes(`no persona "nowhere" in the catalog of manager ${IID6} on host ${hostname()}`) &&
+      nowhereOut.includes("nothing was launched; create that file on the manager's host, then run the spawn again") && !nowhereOut.includes("--config"),
+    { status: nowhere.status, out: nowhereOut.slice(-900) });
+
+  // `--timeout` is one deadline for the call, the contract read included. Nothing serves `nosuch`, so
+  // its contract read is never answered and the refusal comes when the flag's 1000ms run out. The
+  // resolver used to wait a fixed 10s here whatever the flag said. The 5s bound leaves room for load.
+  // A served endpoint whose describe is slower than the flag meets the same silence, so the refusal
+  // names the flag and offers a longer one. Without the flag it keeps its message and Next.
+  console.log("\n13. invoke --timeout bounds the contract read of an endpoint nothing serves");
+  const unservedMessage = "no instance of nosuch answered its contract read within the 1000ms --timeout, so nothing is serving it, none could be reached, or the deadline was too short";
+  const unservedRemedy = `start the service that serves nosuch, then run the command again, or rerun it with a longer --timeout such as \`cotal invoke nosuch ping --timeout 10000\`; \`cotal service --space ${space}\` lists this space's services`;
+  let startedAt = performance.now();
+  const unserved = await cotal(["invoke", "nosuch", "ping", "--timeout", "1000", "--space", space], root1);
+  const unservedMs = Math.round(performance.now() - startedAt);
+  mustHaveRun(unserved, "an invoke of an endpoint nothing serves");
+  const unservedOut = strip(unserved.out);
+  const nextOf = (out: string): string => /^Next\n\s+(.+)$/m.exec(out)?.[1] ?? "";
+  const unservedNext = nextOf(unservedOut);
+  check("invoke nosuch ping --timeout 1000 is refused TARGET_UNAVAILABLE, exit 2, within 5s, naming the 1000ms --timeout",
+    unserved.status === 2 && unservedMs < 5000 && /Code:\s+TARGET_UNAVAILABLE/.test(unservedOut) && unservedOut.includes(unservedMessage),
+    { status: unserved.status, elapsedMs: unservedMs, out: unservedOut.slice(-900) });
+  check("...and its Next says to start the service that serves nosuch or rerun with a longer --timeout",
+    unservedNext.includes("start the service that serves nosuch") && unservedNext.includes("--timeout"),
+    { next: unservedNext });
+  startedAt = performance.now();
+  const unservedJson = await cotal(["invoke", "nosuch", "ping", "--timeout", "1000", "--space", space, "--json"], root1);
+  const unservedJsonMs = Math.round(performance.now() - startedAt);
+  mustHaveRun(unservedJson, "an invoke --json of an endpoint nothing serves");
+  let unservedEnv: { target?: { requestId?: unknown } } | undefined;
+  try { unservedEnv = JSON.parse(unservedJson.stdout); } catch { unservedEnv = undefined; }
+  const expectedEnv = {
+    schemaVersion: 1, command: "invoke", target: { space, endpoint: "nosuch", command: "ping", requestedInstanceId: null, requestId: "<id>", accepted: null },
+    outcome: "refused", completeness: "not-checked", result: null, warnings: [],
+    error: { code: "TARGET_UNAVAILABLE", message: unservedMessage, remedy: unservedRemedy, cause: { code: "deadline-exceeded" } },
+  };
+  check("...and its --json envelope keeps its shape, within 5s",
+    unservedJson.status === 2 && unservedJsonMs < 5000 && typeof unservedEnv?.target?.requestId === "string" &&
+      JSON.stringify({ ...unservedEnv, target: { ...unservedEnv.target, requestId: "<id>" } }) === JSON.stringify(expectedEnv),
+    { status: unservedJson.status, elapsedMs: unservedJsonMs, stdout: unservedJson.stdout.slice(-900) });
+  const flagless = await cotal(["invoke", "nosuch", "ping", "--space", space], root1);
+  mustHaveRun(flagless, "an invoke without --timeout of an endpoint nothing serves");
+  const flaglessOut = strip(flagless.out);
+  check("invoke nosuch ping without --timeout keeps the refusal's message and Next",
+    flagless.status === 2 && /Code:\s+TARGET_UNAVAILABLE/.test(flaglessOut) &&
+      flaglessOut.includes("no instance of nosuch answered its contract read, so nothing is serving it or none could be reached") &&
+      nextOf(flaglessOut) === `start the service that serves nosuch, then run the command again; \`cotal service --space ${space}\` lists this space's services`,
+    { status: flagless.status, out: flaglessOut.slice(-900) });
+
+  // The manager serves, so a contract read that runs out of `--timeout` after its describe was
+  // answered is the flag's deadline, not a missing service. A budget that short can also end before
+  // the describe is answered, which is cell 13's refusal, so the budget starts at 1ms and doubles
+  // until the describe was answered. `invoke` and `endpoint invoke` share this path and name
+  // themselves in the Next.
+  console.log("\n14. invoke --timeout says it ran out during the contract read of an endpoint that is served");
+  const ranOut = async (argv: string[]): Promise<{ ms: number; run: Run }> => {
+    for (let ms = 1; ; ms *= 2) {
+      const run = await cotal([...argv, "--timeout", String(ms), "--space", space], root1);
+      mustHaveRun(run, `\`${argv.join(" ")} --timeout ${ms}\``);
+      if (ms === 1024 || run.status !== 2 || !strip(run.out).includes(`no instance of manager answered its contract read within the ${ms}ms --timeout`)) return { ms, run };
+    }
+  };
+  const short = await ranOut(["invoke", "manager", "ps"]);
+  const shortOut = strip(short.run.out);
+  check("invoke manager ps whose contract read outruns --timeout fails OPERATION_FAILED, exit 5, naming the flag, the read and a longer --timeout",
+    short.run.status === 5 && /Code:\s+OPERATION_FAILED/.test(shortOut) &&
+      shortOut.includes(`the ${short.ms}ms --timeout ran out during the endpoint contract read; no command was published`) &&
+      /^Next\n\s+rerun it with a longer --timeout and the same other flags, such as `cotal invoke manager ps --timeout 10000`$/m.test(shortOut),
+    { timeoutMs: short.ms, status: short.run.status, out: shortOut.slice(-900) });
+  const shortJson = await ranOut(["endpoint", "invoke", "manager", "ps", "--json"]);
+  let shortEnv: { target?: { requestId?: unknown } } | undefined;
+  try { shortEnv = JSON.parse(shortJson.run.stdout); } catch { shortEnv = undefined; }
+  const expectedShortEnv = {
+    schemaVersion: 1, command: "endpoint", target: { space, endpoint: "manager", command: "ps", requestedInstanceId: null, requestId: "<id>", accepted: null },
+    outcome: "failed", completeness: "not-checked", result: null, warnings: [],
+    error: { code: "OPERATION_FAILED", message: `the ${shortJson.ms}ms --timeout ran out during the endpoint contract read; no command was published`, remedy: "rerun it with a longer --timeout and the same other flags, such as `cotal endpoint invoke manager ps --timeout 10000`", cause: { code: "deadline-exceeded" } },
+  };
+  check("...and endpoint invoke --json carries that failure, its Next as the remedy and the native deadline-exceeded cause",
+    shortJson.run.status === 5 && typeof shortEnv?.target?.requestId === "string" &&
+      JSON.stringify({ ...shortEnv, target: { ...shortEnv.target, requestId: "<id>" } }) === JSON.stringify(expectedShortEnv),
+    { timeoutMs: shortJson.ms, status: shortJson.run.status, stdout: shortJson.run.stdout.slice(-900) });
+
+  // A contract read can be answered inside `--timeout` and still return after it: the validators
+  // compile after the last store read. The call then fails before it publishes, and that failure
+  // names the same longer `--timeout` as cell 14. Nothing in the binary can hold the call in that
+  // window, so each budget from 1ms is tried three times, doubling, until a run lands in it.
+  console.log("\n15. invoke --timeout that runs out after the contract read and before the publish names a longer --timeout");
+  const published = (ms: number): string => `the ${ms}ms --timeout ran out before the command was published`;
+  const beforePublish = async (argv: string[]): Promise<{ ms: number; run: Run }> => {
+    let last!: { ms: number; run: Run };
+    for (let ms = 1; ms <= 1024; ms *= 2) for (let attempt = 0; attempt < 3; attempt++) {
+      const run = await cotal([...argv, "--timeout", String(ms), "--space", space], root1);
+      mustHaveRun(run, `\`${argv.join(" ")} --timeout ${ms}\``);
+      last = { ms, run };
+      if (strip(run.out).includes(published(ms))) return last;
+    }
+    return last;
+  };
+  const late = await beforePublish(["invoke", "manager", "ps"]);
+  const lateOut = strip(late.run.out);
+  check("invoke manager ps whose --timeout runs out before the publish fails OPERATION_FAILED, exit 5, and its Next names a longer --timeout",
+    late.run.status === 5 && /Code:\s+OPERATION_FAILED/.test(lateOut) && lateOut.includes(published(late.ms)) &&
+      /^Next\n\s+rerun it with a longer --timeout and the same other flags, such as `cotal invoke manager ps --timeout 10000`$/m.test(lateOut),
+    { timeoutMs: late.ms, status: late.run.status, out: lateOut.slice(-900) });
+  const lateJson = await beforePublish(["endpoint", "invoke", "manager", "ps", "--json"]);
+  let lateEnv: { error?: unknown } | undefined;
+  try { lateEnv = JSON.parse(lateJson.run.stdout); } catch { lateEnv = undefined; }
+  check("...and endpoint invoke --json carries that failure with the longer --timeout as its remedy",
+    lateJson.run.status === 5 && JSON.stringify(lateEnv?.error) === JSON.stringify({ code: "OPERATION_FAILED", message: published(lateJson.ms), remedy: "rerun it with a longer --timeout and the same other flags, such as `cotal endpoint invoke manager ps --timeout 10000`" }),
+    { timeoutMs: lateJson.ms, status: lateJson.run.status, stdout: lateJson.run.stdout.slice(-900) });
 
   console.log(`\n${fail === 0 ? "PASS" : "FAIL"}: ${pass} passed, ${fail} failed`);
 } finally {

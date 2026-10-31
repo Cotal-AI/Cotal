@@ -19,6 +19,8 @@ The normative contracts are in [SPEC §4](../SPEC.md#4-delivery-modes), [§6](..
 Presence is a per-space directory keyed by instance ID.
 Each peer writes its own identity card and state. The card describes its name, role, kind, tags, and capabilities.
 The state reports whether the peer is `idle`, `waiting`, `working`, or `offline`.
+
+A connector publishes a changed status and its activity in one record, so readers never combine the new activity with the old status.
 `waiting` can mean that the agent needs input, approval, or another peer.
 
 A peer refreshes its record with heartbeats. Observers use those timestamps to detect a peer that stops publishing.
@@ -38,6 +40,10 @@ Those reports help explain what an observer sees. They do not grant access or pr
 The [endpoint presence reference](embedding-endpoints.mdx#presence-metadata) defines the timestamps, runtime observation, and record validation.
 The [view and write diagnosis reference](embedding-endpoints.mdx#presence-view-and-write-diagnosis) describes incomplete snapshots, stale-watch recovery, and failed heartbeats.
 The [connector display reference](connector-runtime-reference.mdx#presence-display-and-name-verification) explains how tools report those limits and refuse an unverifiable name.
+
+Agent seats read presence on demand with `CotalEndpoint.readPresence()` rather than watching every heartbeat. Direct Get batches create no consumer. Concurrent reads share one request, and an earlier peer missing from a later read stays visible as offline. A refused read reports an authorization failure and a last-known roster. It never means an empty space. See [presence reads](embedding-endpoints.mdx#on-demand-presence).
+
+Managers, delivery, chat, and dashboard observers retain watches because they act on transitions. An invisible observer completes its initial snapshot immediately when the bucket has no keys.
 
 ## Plane liveness [#plane-liveness]
 
@@ -81,6 +87,8 @@ That target need not be subscribed. Mentioning a peer cannot give it access to u
 
 Receivers derive the delivery mode from the broker-authorized subject.
 Payload routing fields are advisory and cannot establish that a message is a private DM or role request.
+
+The endpoint sets the subject-derived `channel`, `to`, or `toService` field before calling listeners and removes the other two routing fields.
 See [SPEC §4](../SPEC.md#4-delivery-modes) and [Identity and auth](identity-and-auth.mdx).
 The connector then frames received content as peer messages and reminds the agent to do requested work, verify it, and reply.
 That instruction cannot prove that the agent followed it. The [framing reference](connector-runtime-reference.mdx#message-framing) describes the boundary.
@@ -101,7 +109,7 @@ The [send receipt reference](connector-runtime-reference.mdx#send-receipts) desc
 A DM durable belongs to the recipient's lifecycle.
 The same lifecycle can receive pending DMs after reconnect, while a new agent spawned under the same name starts a new inbox interval.
 The [NATS binding](../SPEC.md#8-nats--jetstream-binding) defines that interval.
-[`cotal deliver pending`](cli-services.mdx#deliver) exposes the pending DM count.
+[`cotal pending`](cli-messaging.mdx#pending) exposes the pending DM count.
 
 Connectors acknowledge a durable copy at their handoff boundary, which varies by integration.
 A queued DM evicted from a full local inbox stays unacknowledged so that the broker can offer it again.
@@ -112,6 +120,8 @@ At-least-once delivery permits repeated work.
 A worker can act, crash before acknowledging, and leave the broker to deliver the request again.
 The same can happen when renewal stops and another role consumer receives the request.
 Broker redelivery counts appear in the injected frame, but a stored sequence cannot establish that only one worker acted.
+
+A redelivery count proves that an earlier copy outlived its acknowledgement wait. Without a separate handoff record, including after restart, the connector labels the prior model handoff unknown.
 Work with effects that must not repeat needs its own ownership rule or idempotency key.
 
 ### Reading only your own DMs [#reading-only-your-own-dms]
@@ -139,8 +149,7 @@ Local and self-hosted deployments default to `durable`.
 
 Replay is a separate decision about recent history for a fresh joiner.
 Backfilled messages carry a historical marker so an agent can distinguish an old conversation from current traffic.
-Historical ambient channel messages stay pull-only through `cotal_inbox` and do not start automatic turns.
-Historical mentions and DMs remain directed traffic, subject to attention policy.
+All historical channel messages, including mentions, stay pull-only through `cotal_inbox` in every attention mode. They do not wake the session or instruct it to act on old requests. New mentions and DMs retain their normal wake behavior. Redelivery of unhandled live mail is separate from join replay.
 Disabling replay suppresses automatic backfill while leaving authorized on-demand history reads available.
 The [replay reference](channels-and-permissions.mdx#replay) defines the configuration and limits.
 

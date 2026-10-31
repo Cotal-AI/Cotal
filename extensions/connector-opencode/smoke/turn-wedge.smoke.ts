@@ -598,8 +598,7 @@ try {
     await disposeMR?.();
     delete process.env.COTAL_MODEL;
 
-    // 2.x model check: the server's listing is empty for a while after boot (measured race,
-    // fx105/brief-g.md), so an empty listing is waited on rather than refused immediately.
+    // 2.x model check: an empty listing after boot is waited on rather than refused immediately.
     modelReads = 0;
     modelListing = [];
     process.env.COTAL_MODEL = "prov/m";

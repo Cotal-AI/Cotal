@@ -14,8 +14,14 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MeshAgent } from "../src/agent.js";
+import { registerCotalTools } from "../src/tools.js";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { connect } from "@nats-io/transport-node";
+import { jetstreamManager } from "@nats-io/jetstream";
 import type { AgentConfig } from "../src/config.js";
-import { isReachable } from "@cotal-ai/core";
+import { isReachable, chatStream, chatSubject, dmStream, unicastSubject, parsePrincipalKey, setupSpaceStreams } from "@cotal-ai/core";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { assertEphemeralBroker, scrubAmbientBrokerEnv } from "../../../packages/core/smoke/_ephemeral-only.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
@@ -81,6 +87,10 @@ let overlapAgent: MeshAgent | undefined;
 let blockerAgent: MeshAgent | undefined;
 let blocker2Agent: MeshAgent | undefined;
 let orderingAgent: MeshAgent | undefined;
+let jsAgent: MeshAgent | undefined;
+let jsBroker: ChildProcess | undefined;
+let jsClient: Client | undefined;
+let jsServer: McpServer | undefined;
 
 try {
   check("the owned throwaway broker starts", await until(() => false, 0) || await (async () => {
@@ -584,8 +594,8 @@ try {
   );
 
   // #636 / #2055: PRESENCE WRITES FROM ONE AGENT LAND IN CALL ORDER. The cells above drive
-  // endpoint.publishPresence directly, which says nothing about MeshAgent: setStatus is two or
-  // three awaited puts (an entering-working condition clear, then setActivity, then setStatus)
+  // endpoint.publishPresence directly, which says nothing about MeshAgent: setStatus is one or
+  // two awaited puts (an entering-working condition clear, then the status and activity in one)
   // and every connector fires it without awaiting, so two overlapping calls interleave their puts
   // and the record that lands last is whichever call's last put finished last — measured at a
   // driven turn's end as working, idle, working (#2055). The stimulus is the same held-put kv
@@ -600,9 +610,9 @@ try {
   await orderingAgent.start(100);
   await until(() => orderingAgent!.connected, 30_000);
   const orderingEp = orderingAgent.ep as unknown as { kv?: unknown; status?: string };
-  const heldOrdering: Array<{ resolve: () => void; reject: (e: Error) => void }> = [];
+  const heldOrdering: Array<{ resolve: () => void; reject: (e: Error) => void; record: string }> = [];
   const liveOrderingKv = orderingEp.kv;
-  orderingEp.kv = { put: () => new Promise<void>((resolve, reject) => heldOrdering.push({ resolve, reject })) };
+  orderingEp.kv = { put: (_key: string, record: string) => new Promise<void>((resolve, reject) => heldOrdering.push({ resolve, reject, record })) };
   const takeOrdering = async () => { await until(() => heldOrdering.length > 0, 10_000); return heldOrdering.shift()!; };
   // Settle every put that arrives until none has arrived for 300ms, polling the array directly.
   // A racing takeOrdering() call left running past its own 300ms loss would keep polling in the
@@ -638,9 +648,7 @@ try {
   const orderA = orderingAgent!.setStatus("working", "").catch(() => {});
   const clearPut = await takeOrdering(); // entering working clears the condition first
   clearPut.resolve();
-  const activityPut = await takeOrdering(); // setActivity("")
-  activityPut.resolve();
-  const statusPut = await takeOrdering(); // setStatus("working") — HELD
+  const statusPut = await takeOrdering(); // setStatus("working", "") — HELD
   const orderB = orderingAgent!.setStatus("idle").catch(() => {});
   // Give an unserialized idle write every chance to land its put while the working call's last
   // put is still held: this is the window the fix must keep empty.
@@ -657,6 +665,13 @@ try {
     !idleStartedWhileHeld && orderingAgent!.status === "idle" && orderingEp.status === "idle",
     { idleStartedWhileHeld, agentStatus: orderingAgent!.status, epStatus: orderingEp.status },
   );
+  // A status with an activity is one put: a peer never reads the new activity beside the old status.
+  const statusRecord = JSON.parse(statusPut.record) as { status?: string; activity?: string };
+  check(
+    "a status write with an activity is one presence put carrying both",
+    statusRecord.status === "working" && statusRecord.activity === "",
+    { status: statusRecord.status, activity: statusRecord.activity },
+  );
 
   // Cell (b): a status write's put is held open when stop() is called. Departure is ordered
   // behind writes already in flight (#636): the offline put must not start until the held put
@@ -664,17 +679,15 @@ try {
   // the held put settles the offline put arrives, is settled, and only then does stop() return.
   await quietOrdering();
   const orderC = orderingAgent!.setStatus("waiting", "ordered departure").catch(() => {});
-  const heldPut = await takeOrdering(); // setActivity("ordered departure") — held
+  const heldPut = await takeOrdering(); // setStatus("waiting", "ordered departure") — held
   const stopPromise = orderingAgent!.stop().catch(() => {});
   // Give stop()'s offline publish every chance to start while the write already in flight is
   // still held: this is the window the fix must keep empty.
   await sleep(150);
   const offlineStartedWhileHeld = heldOrdering.length > 0;
   heldPut.resolve();
-  // Two more puts are owed after this (orderC's own second put, and the offline publish), in
-  // whichever order the tree under test produces — a defect-under-test can legitimately deliver
-  // them in either order, so drain until both calls have settled rather than assuming which put
-  // is which.
+  // The offline publish is owed after this, and a defect-under-test can deliver puts in any
+  // order, so drain until both calls have settled rather than assuming which put is which.
   const departureDone = { v: false };
   void Promise.all([orderC, stopPromise]).then(() => { departureDone.v = true; });
   await drainUntil(departureDone);
@@ -778,7 +791,322 @@ try {
     stragglerRefusal === "agent is stopping; presence writes are refused" && !offlineStartedWhileHeldStraggler && !putAfterOffline,
     { stragglerRefusal, offlineStartedWhileHeldStraggler, putAfterOffline },
   );
+  // A real WebSocket dial can reject with ConnectionError whose message is empty on Node 24.
+  // Drive the actual transport and registered MCP routes, without constructing an error object.
+  {
+    const wsPort = await pickFreePort();
+    const wsTcpPort = await pickFreePort();
+    const wsProxyPort = await pickFreePort();
+    const wsConfig = join(dir, "ws-reason.conf");
+    writeFileSync(wsConfig, `host: 127.0.0.1\nport: ${wsTcpPort}\njetstream { store_dir: "${join(dir, "ws-reason")}" }\nwebsocket { host: 127.0.0.1\nport: ${wsPort}\nno_tls: true }\n`);
+    const wsBroker = startBroker(wsConfig);
+    const releaseWs = teardownOnSignal(wsBroker, dir);
+    const wsSockets = new Set<Socket>();
+    let refuseWs = false;
+    const wsProxy = createServer((socket) => {
+      wsSockets.add(socket);
+      socket.on("error", () => {});
+      socket.on("close", () => wsSockets.delete(socket));
+      if (refuseWs) { socket.destroy(); return; }
+      const upstream = netConnect(wsPort, "127.0.0.1", () => {
+        socket.pipe(upstream);
+        upstream.pipe(socket);
+      });
+      wsSockets.add(upstream);
+      upstream.on("error", () => socket.destroy());
+      upstream.on("close", () => { wsSockets.delete(upstream); socket.destroy(); });
+    });
+    const wsCfg = { ...cfg, name: "ws-reason-agent", space: `ws-reason-${wsPort}`, servers: `ws://127.0.0.1:${wsProxyPort}` };
+    const wsAgent = new MeshAgent(wsCfg);
+    const wsServer = new McpServer({ name: "ws-reason", version: "0.0.0" });
+    registerCotalTools(wsServer, wsAgent, wsCfg, "smoke");
+    const [wsClientTransport, wsServerTransport] = InMemoryTransport.createLinkedPair();
+    const wsClient = new Client({ name: "ws-reason-client", version: "0.0.0" });
+    const wsTool = async (name: string): Promise<string> => {
+      const reply = await wsClient.callTool({ name, arguments: {} });
+      const content = reply.content as Array<{ type: string; text?: string }>;
+      const text = content.find((part) => part.type === "text")?.text;
+      if (text === undefined) throw new Error(`${name} returned no text`);
+      return text;
+    };
+    try {
+      await new Promise<void>((resolve) => wsProxy.listen(wsProxyPort, "127.0.0.1", resolve));
+      for (let i = 0; i < 80; i++) { if (await isReachable(`nats://127.0.0.1:${wsTcpPort}`)) break; await sleep(50); }
+      await wsAgent.start();
+      await Promise.all([wsClient.connect(wsClientTransport), wsServer.connect(wsServerTransport)]);
+      check("a real WebSocket MCP session starts ready before the socket fault", JSON.parse(await wsTool("cotal_connection_status")).state === "ready");
+      refuseWs = true;
+      for (const socket of wsSockets) socket.destroy();
+      const terminal = await until(() => !wsAgent.connected && !!wsAgent.connectionIssue?.startsWith("mesh connection closed"), 30_000);
+      const wsIssue = JSON.parse(await wsTool("cotal_connection_status")).connectionIssue as string | undefined;
+      check("a REAL WebSocket terminal close keeps a nonempty native error reason", terminal && typeof wsIssue === "string" && /^mesh connection closed: \S/.test(wsIssue), wsIssue);
+      const failedWsReconnect = await wsTool("cotal_reconnect");
+      check("a REAL failed WebSocket reconnect keeps a nonempty native error reason", /^Reconnect failed: \S/.test(failedWsReconnect) && !/^Reconnect failed: \./.test(failedWsReconnect), failedWsReconnect);
+      refuseWs = false;
+      const wsRecovered = await until(() => wsAgent.connected && wsAgent.transportConnected, 45_000);
+      check("the WebSocket reason change preserves automatic recovery and clears the issue", wsRecovered && !("connectionIssue" in JSON.parse(await wsTool("cotal_connection_status"))));
+    } finally {
+      refuseWs = false;
+      for (const socket of wsSockets) socket.destroy();
+      await wsClient.close().catch(() => {});
+      await wsServer.close().catch(() => {});
+      await wsAgent.stop().catch(() => {});
+      for (const socket of wsSockets) socket.destroy();
+      await new Promise<void>((resolve) => wsProxy.close(() => resolve()));
+      wsBroker.kill("SIGTERM");
+      await awaitExit(wsBroker);
+      releaseWs();
+    }
+  }
+
+  // JetStream can fail while core NATS continues answering. Exercise an actual broker reload,
+  // not a replaced KV put, and read the registered MCP route that connectors expose.
+  const jsPort = await pickFreePort();
+  const jsServers = `nats://127.0.0.1:${jsPort}`;
+  assertEphemeralBroker(jsServers);
+  const jsConfig = join(dir, "js-health.conf");
+  const writeJsConfig = (enabled: boolean): void => writeFileSync(jsConfig,
+    `host: 127.0.0.1\nport: ${jsPort}\n${enabled ? `jetstream { store_dir: "${join(dir, "js-health")}" }` : "jetstream: disabled"}\n`);
+  writeJsConfig(true);
+  jsBroker = startBroker(jsConfig);
+  releases.push(teardownOnSignal(jsBroker, dir));
+  for (let i = 0; i < 80; i++) { if (await isReachable(jsServers)) break; await sleep(50); }
+  const jsCfg = { ...cfg, servers: jsServers, space: `js-health-${jsPort}`, name: "js-health-agent", subscribe: ["publish-timeout"], allowSubscribe: ["publish-timeout"], allowPublish: ["publish-timeout"] };
+  jsAgent = new MeshAgent(jsCfg);
+  await jsAgent.start();
+  await jsAgent.waitUntilConnected();
+  jsServer = new McpServer({ name: "js-health", version: "0.0.0" });
+  registerCotalTools(jsServer, jsAgent, jsCfg, "smoke");
+  const [jsClientTransport, jsServerTransport] = InMemoryTransport.createLinkedPair();
+  jsClient = new Client({ name: "js-health-client", version: "0.0.0" });
+  await Promise.all([jsClient.connect(jsClientTransport), jsServer.connect(jsServerTransport)]);
+  const tool = async (name: string): Promise<{ text: string; isError?: boolean }> => {
+    const reply = await jsClient!.callTool({ name, arguments: {} });
+    const content = reply.content as Array<{ type: string; text?: string }>;
+    const text = content.find((part) => part.type === "text")?.text;
+    if (text === undefined) throw new Error(`${name} returned no text`);
+    return { text, isError: reply.isError === true };
+  };
+  const jsStatus = async (): Promise<Record<string, unknown>> => JSON.parse((await tool("cotal_connection_status")).text);
+  const healthyJs = await jsStatus();
+  check("a live JetStream-enabled MCP session starts ready", healthyJs.state === "ready", healthyJs);
+
+  writeJsConfig(false);
+  jsBroker.kill("SIGHUP");
+  const refusedJs = await until(() => (jsAgent!.presenceWriteFailure?.consecutiveFailures ?? 0) >= 2, 15_000);
+  const coreConnection = await connect({ servers: jsServers });
+  try {
+    await coreConnection.flush();
+    check("core NATS still answers after the owned broker disables JetStream", refusedJs && jsAgent.transportConnected, jsAgent.presenceWriteFailure);
+  } finally { await coreConnection.close(); }
+  const failedJs = await jsStatus();
+  const degradedInbox = await tool("cotal_inbox");
+  check("a REAL presence-degraded inbox identifies its local-only view", degradedInbox.text.includes("Mesh connection is not ready (degraded)") && degradedInbox.text.includes("empty buffer does not mean no new mesh messages"), degradedInbox);
+  check(
+    "repeated REAL JetStream write failures report degraded despite bound and live transport",
+    failedJs.state === "degraded" && failedJs.connected === true && failedJs.transportConnected === true,
+    failedJs,
+  );
+  check(
+    "the degraded MCP status names the current presence bucket and broker refusal",
+    typeof failedJs.connectionIssue === "string" &&
+      failedJs.connectionIssue.includes(`cotal_presence_${jsCfg.space}`) &&
+      failedJs.connectionIssue.includes("jetstream is not enabled"),
+    failedJs,
+  );
+  const refusedReconnect = await tool("cotal_reconnect");
+  check(
+    "reconnect while JetStream remains unavailable does not claim success",
+    refusedReconnect.isError === true && refusedReconnect.text.startsWith("Reconnect failed: ") &&
+      !refusedReconnect.text.includes("Reconnected ✓") && (await jsStatus()).state !== "ready",
+    refusedReconnect,
+  );
+
+  writeJsConfig(true);
+  jsBroker.kill("SIGHUP");
+  await sleep(500);
+  const restoredReconnect = await tool("cotal_reconnect");
+  const restoredJs = await jsStatus();
+  check(
+    "a successful REAL rebind clears the write failure and restores ready",
+    restoredReconnect.isError !== true && restoredJs.state === "ready" &&
+      !("connectionIssue" in restoredJs) && !("presenceWriteFailure" in restoredJs),
+    { restoredReconnect, restoredJs },
+  );
+  const fresh = new MeshAgent({ ...jsCfg, name: "not-started" });
+  const freshServer = new McpServer({ name: "unbound-inbox", version: "0.0.0" });
+  registerCotalTools(freshServer, fresh, jsCfg, "smoke");
+  const [freshCt, freshSt] = InMemoryTransport.createLinkedPair();
+  const freshClient = new Client({ name: "unbound-inbox", version: "0.0.0" });
+  await Promise.all([freshClient.connect(freshCt), freshServer.connect(freshSt)]);
+  try {
+    const reply = await freshClient.callTool({ name: "cotal_inbox", arguments: {} });
+    check("an unbound inbox does not present its empty buffer as a live mesh read", JSON.stringify(reply).includes("Mesh connection is not ready (disconnected)"), reply);
+  } finally { await freshClient.close(); await freshServer.close(); await fresh.stop(); }
+
+
+  // A real accepted put with its acknowledgement withheld, not a rejected put stub.
+  // Only this owned TCP proxy drops downstream bytes, and no endpoint timing changes.
+  const ackPort = await pickFreePort();
+  const ackSpace = `ack-loss-${ackPort}`;
+  let holdAck = false;
+  const ackSockets: Socket[] = [];
+  const ackProxy = createServer((client) => {
+    const upstream = netConnect(port, "127.0.0.1");
+    ackSockets.push(client, upstream);
+    client.on("error", () => {}); upstream.on("error", () => {});
+    client.pipe(upstream);
+    upstream.on("data", (bytes) => { if (!holdAck) client.write(bytes); });
+    client.on("close", () => upstream.destroy()); upstream.on("close", () => client.destroy());
+  });
+  await new Promise<void>((resolve) => ackProxy.listen(ackPort, "127.0.0.1", resolve));
+  const ackCfg = { ...cfg, space: ackSpace, servers: `nats://127.0.0.1:${ackPort}`, name: "ack-loss-agent" };
+  const ackAgent = new MeshAgent(ackCfg);
+  const observer = new MeshAgent({ ...cfg, space: ackSpace, name: "ack-loss-observer" });
+  const ackServer = new McpServer({ name: "ack-loss", version: "0.0.0" });
+  registerCotalTools(ackServer, ackAgent, ackCfg, "smoke");
+  const [ackCt, ackSt] = InMemoryTransport.createLinkedPair();
+  const ackClient = new Client({ name: "ack-loss", version: "0.0.0" });
+  try {
+    await ackAgent.start(); await observer.start();
+    await Promise.all([ackClient.connect(ackCt), ackServer.connect(ackSt)]);
+    await ackAgent.setActivity("healthy control");
+    check("ack-loss fixture starts with a successfully stored presence control", (await observer.readRoster()).roster.some((p) => p.card.name === "ack-loss-agent" && p.activity === "healthy control"));
+    holdAck = true;
+    const marker = `accepted-${ackPort}`;
+    const pending = ackClient.callTool({ name: "cotal_status", arguments: { activity: marker } });
+    const accepted = await (async () => {
+      for (let i = 0; i < 30; i++) {
+        if ((await observer.readRoster()).roster.some((p) => p.card.name === "ack-loss-agent" && p.activity === marker)) return true;
+        await sleep(50);
+      }
+      return false;
+    })();
+    const reply = await pending;
+    holdAck = false;
+    check("an accepted status whose REAL acknowledgement times out reports outcome unknown", accepted && reply.isError === true && JSON.stringify(reply).includes("presence write outcome is unknown") && JSON.stringify(reply).includes("Read the roster before retrying"), reply);
+    await ackAgent.setActivity("recovery control");
+    check("ack-loss fixture can store presence again after the proxy releases replies", (await observer.readRoster()).roster.some((p) => p.card.name === "ack-loss-agent" && p.activity === "recovery control"));
+  } finally {
+    holdAck = false;
+    await ackAgent.stop(); await observer.stop(); await ackClient.close(); await ackServer.close();
+    for (const socket of ackSockets) socket.destroy();
+    await new Promise<void>((resolve) => ackProxy.close(() => resolve()));
+  }
+
+  // After JetStream disable/re-enable, nats-server 2.12.1 can delete an existing stream
+  // but reply 404. Restart only this owned broker so the publish-fault cells do not
+  // depend on that reload artifact. The same MCP session must rebind ready first.
+  jsBroker.kill("SIGTERM");
+  await awaitExit(jsBroker);
+  if (jsBroker.exitCode !== 0) throw new Error("the owned reload broker did not stop cleanly");
+  jsBroker = startBroker(jsConfig);
+  releases.push(teardownOnSignal(jsBroker, dir));
+  for (let i = 0; i < 80; i++) { if (await isReachable(jsServers)) break; await sleep(50); }
+  const publishRebind = await tool("cotal_reconnect");
+  const publishReady = await jsStatus();
+  if (publishRebind.isError || publishReady.state !== "ready") {
+    throw new Error(`the owned publish fixture did not rebind ready: ${JSON.stringify({ publishRebind, publishReady })}`);
+  }
+
+  // A native stream fault leaves presence healthy. A missing PubAck cannot prove non-delivery:
+  // the real DM below times out while its exact message remains readable from the broker.
+  await setupSpaceStreams({ servers: jsServers, space: jsCfg.space });
+  const publishConnection = await connect({ servers: jsServers });
+  try {
+    const manager = await jetstreamManager(publishConnection);
+    const dmName = dmStream(jsCfg.space);
+    const principal = parsePrincipalKey(jsAgent.ep.card.id);
+    if (!principal) throw new Error("the live agent has no principal");
+    const dmSubject = unicastSubject(jsCfg.space, principal.owner, principal.actor, principal.owner, principal.actor);
+    const invoke = async (name: string, args: Record<string, unknown>): Promise<string> => {
+      const reply = await jsClient!.callTool({ name, arguments: args });
+      const text = (reply.content as Array<{ type: string; text?: string }>).find((part) => part.type === "text")?.text;
+      if (text === undefined) throw new Error(`${name} returned no text`);
+      return text;
+    };
+    const dmText = "owned-puback-timeout";
+    const healthySend = await invoke("cotal_send", { channel: "publish-timeout", text: "owned-publish-control" });
+    check(
+      "the channel publish control succeeds before its stream is removed",
+      healthySend.startsWith("Sent to #publish-timeout"), healthySend,
+    );
+    await manager.streams.update(dmName, { no_ack: true });
+    let dmError: Error | undefined;
+    try { await jsAgent.ep.unicastAttributed(jsAgent.ep.card.id, dmText); }
+    catch (error) { if (error instanceof Error) dmError = error; else throw error; }
+    const stored = await manager.streams.getMessage(dmName, { last_by_subj: dmSubject });
+    if (stored === null) throw new Error("the timed-out DM was not stored by the owned broker");
+    check(
+      "a REAL DM publish timeout names its subject and unknown outcome while the message is stored",
+      dmError?.message.includes(JSON.stringify(dmSubject)) === true &&
+        dmError.message.includes("The send outcome is unknown") && dmError.cause instanceof Error &&
+        dmError.cause.name === "TimeoutError" && stored.json<{ parts: Array<{ text?: string }> }>().parts[0]?.text === dmText,
+      { error: dmError?.message, cause: (dmError?.cause as Error | undefined)?.name, stored: stored.seq },
+    );
+    await manager.streams.update(dmName, { no_ack: false });
+    const acked = await jsAgent.ep.unicastAttributed(jsAgent.ep.card.id, "owned-puback-recovery");
+    check("the same REAL DM path returns its storage ack after PubAck recovery", acked.ack.seq > stored.seq, acked.ack);
+
+    const chatName = chatStream(jsCfg.space);
+    await manager.streams.delete(chatName);
+    const channel = "publish-timeout";
+    const subject = chatSubject(jsCfg.space, principal.owner, principal.actor, channel);
+    const refusedSend = await invoke("cotal_send", { channel, text: "owned-missing-chat" });
+    check(
+      "a REAL channel publish timeout names its subject through the registered MCP route",
+      refusedSend.includes(JSON.stringify(subject)) && refusedSend.includes("The send outcome is unknown") &&
+        !refusedSend.includes("was not sent"),
+      refusedSend,
+    );
+    const afterPublishFailure = await jsStatus();
+    check(
+      "a publish-only fault does not invent a presence or transport failure",
+      afterPublishFailure.state === "ready" && afterPublishFailure.transportConnected === true &&
+        !("presenceWriteFailure" in afterPublishFailure),
+      afterPublishFailure,
+    );
+    const recoveredPublish = await tool("cotal_reconnect");
+    const recoveredSend = await invoke("cotal_send", { channel, text: "owned-recreated-chat" });
+    check(
+      "recreating the missing stream restores the same REAL channel publish path",
+      recoveredPublish.isError !== true && recoveredSend.startsWith(`Sent to #${channel}`),
+      { recoveredPublish, recoveredSend },
+    );
+  } finally { await publishConnection.close(); }
+  // Run irreversible sealing only after publish-timeout recovery cells on this broker.
+  // The bucket is owned by this fixture and never reused after sealing.
+  const sealedNc = await connect({ servers: jsServers });
+  const sealedJsm = await jetstreamManager(sealedNc);
+  const sealedInfo = await sealedJsm.streams.info(`KV_cotal_presence_${jsCfg.space}`);
+  const sealedConfig = { ...sealedInfo.config, sealed: true };
+  await sealedJsm.streams.update(sealedInfo.config.name, sealedConfig);
+  const refused = new MeshAgent({ ...jsCfg, name: "first-write-refused" });
+  const refusedStart = refused.start().catch(() => {});
+  const refusedServer = new McpServer({ name: "refused-presence", version: "0.0.0" });
+  registerCotalTools(refusedServer, refused, jsCfg, "smoke");
+  const [refusedCt, refusedSt] = InMemoryTransport.createLinkedPair();
+  const refusedClient = new Client({ name: "refused-presence", version: "0.0.0" });
+  await Promise.all([refusedClient.connect(refusedCt), refusedServer.connect(refusedSt)]);
+  try {
+    check("first-write fixture observes the REAL presence registration refusal", await until(() => refused.connectionIssue?.includes("presence registration failed") === true), refused.connectionIssue);
+    for (const [name, args] of [
+      ["cotal_send", { channel: "publish-timeout", text: "refused" }],
+      ["cotal_dm", { to: "js-health-agent", text: "refused" }],
+    ] as const) {
+      const reply = await refusedClient.callTool({ name, arguments: args });
+      const text = JSON.stringify(reply);
+      check(`${name} names the recorded first presence write refusal rather than broker-start advice`, reply.isError === true && text.includes("presence registration failed") && text.includes(`cotal_presence_${jsCfg.space}`) && text.includes("sealed stream") && !text.includes("cotal up"), reply);
+    }
+  } finally {
+    await refused.stop(); await refusedStart;
+    await refusedClient.close(); await refusedServer.close(); await sealedNc.close();
+  }
 } finally {
+  await jsClient?.close().catch(() => {});
+  await jsServer?.close().catch(() => {});
+  await jsAgent?.stop().catch(() => {});
+  if (jsBroker) { jsBroker.kill("SIGKILL"); await awaitExit(jsBroker); }
   await orderingAgent?.stop().catch(() => {});
   await blocker2Agent?.stop().catch(() => {});
   await blockerAgent?.stop().catch(() => {});
@@ -794,7 +1122,7 @@ try {
   for (const release of releases) release();
 }
 
-const EXPECTED_CELLS = 27;
+const EXPECTED_CELLS = 52;
 const ran = pass + fail;
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"}: ${pass} passed, ${fail} failed`);
 console.log(`SUITE COMPLETE: ${ran} cells`);

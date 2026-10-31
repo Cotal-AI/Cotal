@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, lstatSync, readdirSync, realpathSync, renameSync, rmSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, realpathSync, renameSync, rmdirSync, rmSync } from "node:fs";
 import { dirname, isAbsolute, join, parse, relative, resolve } from "node:path";
 import { clearSpaceHistory, isReachable, registry, resolveAuthProvider, type AuthProvider, type CompletionResult, type ParsedArgs, type SecretStore } from "@cotal-ai/core";
 import {
@@ -15,51 +15,104 @@ import {
   assertSingleSpaceBroker,
   authDir,
   cleanupRestoreFallback,
+  codeSpan,
   deleteSpaceAuth,
   localProcessPath,
+  foreignStoreEntries,
   localMeshesForRoot,
+  presentationOf,
   readMaintenanceJournal,
+  recordsElsewhereError,
   releaseMaintenanceLock,
   renewalRecordPath,
   removeMeshesByRoot,
   resolveRuntimeSpace,
   resolveSpace,
+  STORE_ENTRY_NAMES,
   SYSTEM_CREDS_FILES,
+  spaceRootTarget,
+  targetErrorSpace,
+  workspaceErrorParts,
   workspaceSecretStore,
   type LocalProcess,
   type LocalProcessContext,
+  restoreLeftOut,
+  restoreLeftOutReason,
+  userAuthSpacesOnDisk,
 } from "@cotal-ai/workspace";
 import { connectOrExit, userViewAuthOrExit } from "../lib/connect.js";
-import { c } from "../ui.js";
-import { cotalRoot } from "../lib/paths.js";
+import { reportOnInterrupt } from "../lib/interrupt-report.js";
+import { c, stderrLine } from "../ui.js";
+import { cotalRoot, linkedCotalRefusal } from "../lib/paths.js";
 import { pidfileState, pidfileTargets } from "./down.js";
 import { localProcessSurface } from "../ext-loader.js";
 import { readStackJournal, STACK_DEFINITION } from "../lib/stack-journal.js";
 import { rollbackRestoreWithBroker } from "../lib/controller-restore.js";
+import { maintenanceNextStep } from "../lib/restore.js";
+import { displayCmd } from "../lib/self-exec.js";
+import { MissingFlags } from "../lib/missing-flags.js";
+import { attemptProcessesGone } from "../lib/isolated-broker.js";
 import { observeServiceProcess, serviceInstances } from "../lib/service-instances.js";
+import { foreignEntriesRefusal, lastServedStore, listEntries, oldStoreForeignEntries, refuseSharedStoreRemoval } from "../lib/store-dir.js";
+import { shellWord } from "../lib/endpoint-errors.js";
 
 const TARGETS = ["history", "store", "all", "restore-fallback", "restore-attempt"] as const;
+/** How a removed trust record is labeled. A full backup is bound to the trust it was taken under,
+ *  so once that trust is removed it no longer restores into this root. */
+const SPACE_TRUST = "(space trust)";
+/** How a removed user-auth state directory is labeled. It holds the space's pinned IdP and its
+ *  actor ledger, so the next start names the IdP again and every actor is granted again. */
+const USER_AUTH_TRUST = "(IdP trust and actor ledger)";
+
+/** What removing a user-auth space's IdP trust and actor ledger leaves the next start to do. */
+export function userAuthTrustNote(done: boolean): string {
+  return `${done ? "Removed" : "Removes"} the IdP trust and the actor ledger of this user-auth space, so every actor grant is lost. A later up needs \`cotal up --user-auth --idp <auth base URL>\`, and each actor needs \`cotal actor grant\` again.`;
+}
 type Target = (typeof TARGETS)[number];
+
+/** The Next a restore verb's refusal gives: the attempt this root's maintenance record names and its
+ *  step, or `none` when the root records no maintenance state. */
+function recordedAttemptStep(root: string, journal: ReturnType<typeof readMaintenanceJournal>, none: string): string {
+  if (!journal) return none;
+  const recorded = maintenanceNextStep(root, journal);
+  return `this root's maintenance record names attempt ${recorded.attemptId} (state ${journal.state})${recorded.next ? `; ${recorded.next}` : ""}`;
+}
 
 /** `cotal clean <history|store|all>` - one configurable cleanup verb.
  *   - `history`: purge the retained message backlog on the RUNNING broker (CHAT, plus DMs with
  *     `--dms`) via the least-privilege purger cred. `cotal history clear` is a thin alias.
  *   - `store`: delete the STOPPED mesh's JetStream store (`.cotal/nats` or `--store-dir`) - streams,
  *     durables, and messages. The reset for stale on-disk state (e.g. durables minted by an older,
- *     incompatible protocol generation).
+ *     incompatible protocol generation). A store directory that holds anything else is refused.
  *   - `all`: `store` plus the space identity (`.cotal/auth`) and every local cred derived from it;
  *     the next `cotal up` mints a fresh identity.
  *  `history` needs the mesh UP (it is a live purge); `store`/`all` need it DOWN (files can't be
  *  deleted under a live server) and refuse loudly while any recorded process is still alive.
+ *  `--dry-run` lists what `store`/`all` would remove and removes nothing.
  *  Personas (`.cotal/agents`) are source and are never touched. */
 export async function clean(args: ParsedArgs): Promise<void> {
   const target = args.positionals[0] as Target | undefined;
   const values = args.values as {
-    server?: string; space?: string; creds?: string; dms?: boolean; force?: boolean; "store-dir"?: string; attempt?: string;
+    server?: string; space?: string; creds?: string; dms?: boolean; force?: boolean; "store-dir"?: string; attempt?: string; "discard-history"?: boolean; "dry-run"?: boolean;
   };
   if (!target || !TARGETS.includes(target))
     throw new CommandFailure("refused", "USAGE_INVALID", target ? `clean has no target "${target}"; it takes ${TARGETS.join(", ")}` : `clean needs a target: ${TARGETS.join(", ")}`);
-  if (!values.force) throw new CommandFailure("refused", "USAGE_INVALID", `clean ${target} deletes without prompting, so it requires --force`, { remedy: `cotal clean ${target} --force` });
+  if (args.positionals.length > 1)
+    throw new CommandFailure("refused", "USAGE_INVALID", target === "history" ? "clean history takes no channel name; it clears all retained channel history, so nothing was purged" : `clean ${target} takes no extra positional arguments; nothing was removed`);
+  const dryRun = values["dry-run"] === true;
+  if (dryRun && target !== "store" && target !== "all")
+    throw new CommandFailure("refused", "USAGE_INVALID", `--dry-run previews clean store and clean all only, not clean ${target}`);
+  // --space, --server and --creds pick the running mesh that `history` purges. Every other target acts
+  // on the root of the folder it runs in, which no flag selects, so they are refused there before any read.
+  const meshFlags = (["space", "server", "creds"] as const).filter((flag) => values[flag] !== undefined).map((flag) => `--${flag}`);
+  if (meshFlags.length && target !== "history")
+    throw new CommandFailure("refused", "USAGE_INVALID", `${meshFlags.join(", ")} ${meshFlags.length === 1 ? "picks" : "pick"} the mesh for clean history only; clean ${target} acts on the root of the folder it runs in, so nothing was removed`, { remedy: `run \`cotal clean ${target}\` in the project folder of the root to clean, without ${meshFlags.join(" or ")}` });
+  if (!values.force && !dryRun) {
+    // The restore verbs act on one attempt, so the command to run names it, as given or as a placeholder.
+    const attempt = target === "restore-attempt" || target === "restore-fallback" ? ` --attempt ${values.attempt || "<id>"}` : "";
+    const discard = target === "restore-fallback" && values["discard-history"] ? " --discard-history" : "";
+    throw new CommandFailure("refused", "USAGE_INVALID", `clean ${target} deletes without prompting, so it requires --force`, { remedy: `cotal clean ${target}${attempt} --force${discard}`, remedyIsCommand: true });
+  }
   if (target === "history") return purgeHistory(values);
 
   // Everything below acts on the SHARED broker, never one space: `store`/`all` delete the single
@@ -68,19 +121,33 @@ export async function clean(args: ParsedArgs): Promise<void> {
   // scoped by a space name, so refuse on a multi-space root HERE - before any branch takes a
   // maintenance lock or touches the preserved source. Guarding only the `store`/`all` path (below)
   // left `restore-attempt`/`restore-fallback` a broker-wide bypass.
+  // Nothing is read or removed through a `.cotal` link, and one that leads nowhere is not passed
+  // over to the records of a folder above it.
+  const linked = linkedCotalRefusal("clean");
+  if (linked) throw linked;
   const root = cotalRoot();
   assertSingleSpaceBroker(authDir(root), `cotal clean ${target}`);
 
   if (target === "restore-attempt") {
     // The explicit pre-commit recovery action: roll back one exact stale attempt. A live claim
-    // (deadline not elapsed, or any recorded owner alive) is always refused.
-    if (!values.attempt) throw new Error("clean restore-attempt requires --attempt <id>");
+    // (any recorded owner alive, or the deadline not elapsed while a broker it started is not
+    // proven gone) is always refused.
+    if (!values.attempt)
+      throw new MissingFlags("clean restore-attempt requires --attempt <id>, the pre-commit restore attempt to roll back", recordedAttemptStep(root, readMaintenanceJournal(root), "this root holds no restore attempt; `cotal status` shows the root's maintenance state"));
     const lock = acquireMaintenanceLock(root);
     try {
       const journal = readMaintenanceJournal(root);
-      if (!journal || journal.state !== "restore-ready" || journal.restore.attemptId !== values.attempt)
-        throw new Error(`no pre-commit restore attempt ${values.attempt} is recorded${journal ? ` (maintenance state is ${journal.state}${"restore" in journal ? ` for attempt ${journal.restore.attemptId}` : ""})` : ""}`);
-      rollbackRestoreWithBroker(lock);
+      if (!journal || !("restore" in journal) || journal.restore.attemptId !== values.attempt)
+        throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no maintenance record at this root names restore attempt ${values.attempt}; nothing was rolled back`, {
+          target: { root, attemptId: values.attempt },
+          remedy: recordedAttemptStep(root, journal, "this root holds no restore attempt; `cotal status` shows the root's maintenance state"),
+        });
+      if (journal.state !== "restore-ready")
+        throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `restore attempt ${values.attempt} is ${journal.state}, past the pre-commit point, so it recovers forward instead of rolling back; nothing was rolled back`, {
+          target: { root, attemptId: values.attempt, state: journal.state },
+          remedy: maintenanceNextStep(root, journal).next ?? "`cotal status` shows the root's maintenance state",
+        });
+      rollbackRestoreWithBroker(lock, { unrecordedOwnersDead: attemptProcessesGone(root) });
       console.log(c.green(`✓ rolled back stale restore attempt ${values.attempt}`));
       console.log(c.dim("  the preserved source is back at ready; resume with `cotal up` or retry `cotal up --restore`"));
     } finally {
@@ -89,28 +156,68 @@ export async function clean(args: ParsedArgs): Promise<void> {
     return;
   }
   if (target === "restore-fallback") {
-    if (!values.attempt) throw new Error("clean restore-fallback requires --attempt <id>");
+    if (!values.attempt)
+      throw new MissingFlags("clean restore-fallback requires --attempt <id>, the completed restore whose old store it removes", recordedAttemptStep(root, readMaintenanceJournal(root), "this root holds no restore attempt; `cotal status` shows the root's maintenance state"));
     const lock = acquireMaintenanceLock(root);
     try {
-      const record = cleanupRestoreFallback(lock, values.attempt);
-      console.log(c.green(`✓ removed retained source for restore ${record.restore.attemptId}`));
+      // A restore that left something out set its old store aside as the only copy of it.
+      const journal = readMaintenanceJournal(root);
+      // A completed fallback cleanup retires the journal, so a repeat finds no record of its attempt.
+      if (!journal || !("restore" in journal) || journal.restore.attemptId !== values.attempt)
+        throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no maintenance record at this root names restore attempt ${values.attempt}; nothing was deleted`, {
+          target: { root, attemptId: values.attempt },
+          remedy: recordedAttemptStep(root, journal, "this root holds no restore attempt: a completed restore-fallback retires its journal, so the restore has settled and a repeat has nothing to remove; `cotal status` shows the root's maintenance state"),
+        });
+      const active = journal.state === "active" && journal.restore.attemptId === values.attempt && !journal.restore.cleanup ? journal : undefined;
+      const leftOut = active ? restoreLeftOut(active) : undefined;
+      const onlyCopy = leftOut ? active?.restore.previousSource?.identity.path : undefined;
+      const oldStore = active?.restore.previousSource?.identity.path;
+      const foreign = oldStoreForeignEntries(oldStore);
+      if (foreign.length) throw foreignEntriesRefusal(oldStore!, foreign, "the previous store", "nothing was deleted", `\`cotal clean restore-fallback --attempt ${values.attempt} --force${values["discard-history"] ? " --discard-history" : ""}\``, { root, attemptId: values.attempt });
+      if (onlyCopy && !values["discard-history"])
+        throw new MissingFlags(`${values.attempt}: ${restoreLeftOutReason(active!)}, so the previous store at ${onlyCopy} holds the only copy of the ${leftOut} it left out; nothing was deleted`, `keep that store, or delete it and the ${leftOut} it holds with \`cotal clean restore-fallback --attempt ${values.attempt} --force --discard-history\``);
+      const record = cleanupRestoreFallback(lock, values.attempt, { discardHistory: values["discard-history"] === true });
+      console.log(c.green(record.restore.method === "disaster" ? `✓ retired restore ${record.restore.attemptId}; it replaced a missing source, so no old store was removed` : `✓ removed retained source for restore ${record.restore.attemptId}`));
     } finally {
       releaseMaintenanceLock(lock);
     }
     return;
   }
 
+  // A copy, a moved folder and one whose name a later `up` took over hold the records of a stack that
+  // runs from another folder, and their store may be its only history. They refuse as every command
+  // that resolves its target there does, naming that folder, before the liveness checks below, whose
+  // `cotal down` refuses there too.
+  const elsewhere = recordsElsewhereError(root);
+  if (elsewhere) {
+    const { message, remedy } = workspaceErrorParts({ kind: "target", error: elsewhere });
+    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `${message}; nothing was removed`, { target: { ...spaceRootTarget({ root, space: targetErrorSpace(elsewhere.details) }), recordedRoot: elsewhere.details.recordedRoot }, ...(remedy ? { remedy } : {}) });
+  }
+
   // store | all: the JetStream store delete, plus (for `all`) the space identity. The broker-wide
-  // refusal already ran above, before this branch could take the lock.
-  const lock = acquireMaintenanceLock(root);
+  // refusal already ran above, before this branch could take the lock. A dry run writes nothing,
+  // the lock included, so it reads the same state without one.
+  // From here an interrupt says what the clean left, and releases the lock so the next run does not find it held.
+  // The handler is in place before the lock is taken: without one, an interrupt ends the process with the lock held.
+  let lock: ReturnType<typeof acquireMaintenanceLock> | undefined;
+  const progress: string[] = [];
+  const stopReporting = dryRun ? undefined : reportOnInterrupt(presentationOf(args.values), "clean", () => progress.length
+    ? new CommandFailure("unknown", "OPERATION_UNKNOWN", `clean ${target} was interrupted after it removed ${progress.join(", ")}; the rest may remain`, { target: { root }, changed: progress, remedy: `see what remains with \`cotal clean ${target} --dry-run\`, then run \`cotal clean ${target} --force\` again` })
+    : new CommandFailure("failed", "OPERATION_FAILED", `clean ${target} was interrupted before it removed anything`, { target: { root }, remedy: `run \`cotal clean ${target} --force\` again` }),
+  () => { if (lock) releaseMaintenanceLock(lock); });
   let removed: string[];
   try {
+    lock = dryRun ? undefined : acquireMaintenanceLock(root);
     const maintenance = readMaintenanceJournal(root);
-    if (maintenance)
-      throw new Error(`clean ${target} is refused while maintenance state is ${maintenance.state}; use the recorded restore recovery or fallback-cleanup command`);
-    const running = liveMeshProcess(root);
+    if (maintenance) {
+      // The store holds the attempt's preserved or restored data, so the step that moves the attempt
+      // on is the one `cotal status` shows for it.
+      const { attemptId, next } = maintenanceNextStep(root, maintenance);
+      throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `clean ${target} is refused while this root holds maintenance attempt ${attemptId} (state ${maintenance.state}); nothing was removed`, { target: { root, attemptId, state: maintenance.state }, remedy: `${next ?? "cotal status shows this root's maintenance state"}; once the root holds no maintenance state and its mesh is stopped, run \`${displayCmd()} clean ${target} --force\` again` });
+    }
+    const running = liveMeshProcess(root, undefined, true);
     if (running) {
-      console.error(c.red(`✗ the mesh is still running (${running}) - stop it first: \`cotal down\`, then \`cotal clean ${target}\``));
+      stderrLine("✗ ", `the mesh is still running (${running}) - stop it first: \`cotal down\`, then \`cotal clean ${target}\``, c.red);
       process.exitCode = 1;
       return;
     }
@@ -121,18 +228,40 @@ export async function clean(args: ParsedArgs): Promise<void> {
       if (await isReachable(mesh.server))
         throw new Error(`clean ${target} is refused while the recorded mesh endpoint ${mesh.server} is reachable; stop the broker and verify it is offline first`);
     }
-    removed = await removeLocalState(root, { includeAuth: target === "all", storeDir: values["store-dir"] });
+    // With no --store-dir, read the record a start reads: while the default store holds no data, the
+    // store the last broker served is this root's store, and a bare `up` refuses and names it.
+    const defaultStore = join(root, ".cotal", "nats");
+    const storeDir = values["store-dir"] ?? (existsSync(join(defaultStore, "jetstream")) ? undefined : lastServedStore(root, defaultStore));
+    const requested = resolve(storeDir ?? defaultStore);
+    if (existsSync(requested) && lstatSync(requested).isSymbolicLink()) {
+      const linked = realpathSync.native(requested);
+      throw new CommandFailure("refused", "CONFLICT", `the store cleanup path ${requested} is a link to ${linked}, and cleanup removes only a real directory; nothing was removed`, { target: { root, storeDir: requested, linkTarget: linked }, remedy: "replace the link with the directory it points to, then run this command again" });
+    }
+    removed = await removeLocalState(root, { includeAuth: target === "all", storeDir, dryRun, onRemoved: (label) => progress.push(label) });
     // Keep registry/current-pointer cleanup in the same lock transaction as local identity removal.
-    if (target === "all") removeMeshesByRoot(root);
+    if (target === "all" && dryRun) removed.push(...localMeshesForRoot(root).map((mesh) => `the registration of space ${mesh.space}`));
+    else if (target === "all") removeMeshesByRoot(root);
   } finally {
-    releaseMaintenanceLock(lock);
+    if (lock) releaseMaintenanceLock(lock);
+    stopReporting?.();
   }
   if (removed.length === 0) {
     console.log(c.dim("nothing to clean - no local state found"));
     return;
   }
+  const trustRemoved = removed.some((path) => path.endsWith(SPACE_TRUST));
+  const userAuthRemoved = removed.some((path) => path.endsWith(USER_AUTH_TRUST));
+  if (dryRun) {
+    for (const path of removed) console.log(`would remove ${path}`);
+    console.log(c.dim(`dry run - nothing was removed; ${codeSpan(`cotal clean ${target}${values["store-dir"] ? ` --store-dir ${shellWord(values["store-dir"])}` : ""} --force`)} removes these`));
+    if (userAuthRemoved) console.error(c.yellow("! this clean would remove the IdP trust and the actor ledger of this user-auth space, so every actor grant would be lost. A later up would need `cotal up --user-auth --idp <auth base URL>`, and each actor `cotal actor grant` again"));
+    if (trustRemoved) console.error(c.yellow("! full backups taken before this clean would no longer restore into this root: each is bound to the space trust it removes. Only their registry would restore, with backup restore <dir> --only registry, and chat and DM history would start empty"));
+    return;
+  }
   for (const path of removed) console.log(c.green(`✓ removed ${path}`));
-  if (target === "all") console.log(c.dim("a fresh space identity is minted on the next `cotal up`"));
+  if (target === "all") console.log(c.dim(`a fresh space identity is minted on the next \`cotal up${userAuthRemoved ? " --user-auth --idp <auth base URL>" : ""}\``));
+  if (userAuthRemoved) console.error(c.yellow("! this clean removed the IdP trust and the actor ledger of this user-auth space, so every actor grant is lost. A later up needs `cotal up --user-auth --idp <auth base URL>`, and each actor needs `cotal actor grant` again"));
+  if (trustRemoved) console.error(c.yellow("! full backups taken before this clean no longer restore into this root: each is bound to the space trust it removed. Only their registry restores, with backup restore <dir> --only registry, and chat and DM history start empty. Take a new full backup after the next `cotal up`"));
 }
 
 /** The live-purge half, shared with the `cotal history clear` alias. Resolves the running mesh (from
@@ -158,8 +287,8 @@ export async function purgeHistory(values: { server?: string; space?: string; cr
  *  or undefined when everything is stopped. A stale pidfile (recorded pid proven dead) does not
  *  block: a crashed broker must not wedge its own cleanup. Liveness rides the shared hardened
  *  probe (`pidfileState`): pid > 0 only, EPERM counts as alive. */
-export function liveMeshProcess(root: string, space?: string): string | undefined {
-  return liveMeshProcesses(root, space)[0];
+export function liveMeshProcess(root: string, space?: string, settledByDown = false): string | undefined {
+  return liveMeshProcesses(root, space, settledByDown)[0];
 }
 
 /**
@@ -191,23 +320,32 @@ export function liveMeshOwner(root: string, space?: string): string | undefined 
 /** `space` names the tenant whose pidfiles to look at. Pass it whenever the caller already knows
  *  which mesh it means (a registry entry does): re-deriving it from the root can resolve a
  *  DIFFERENT tenant on a multi-space root, and the derivation throws outright on an unreadable or
- *  ambiguous one — a caller asking a yes/no liveness question should not inherit that failure. */
-export function liveMeshProcesses(root: string, space?: string): string[] {
+ *  ambiguous one — a caller asking a yes/no liveness question should not inherit that failure.
+ *  `settledByDown` is for the commands that remove the store, as {@link liveStackMembers} says. */
+export function liveMeshProcesses(root: string, space?: string, settledByDown = false): string[] {
   const context: LocalProcessContext = { root, space: space ?? resolveRuntimeSpace(root) };
-  const running: string[] = [];
+  // A stack member's process can also hold its component's record, such as the manager's pidfile.
+  // That process is named once, as the member with the record's pid.
+  const members = stackMembers(root, undefined, settledByDown).filter((row) => !row.gone || !row.receipted);
+  const memberPids = new Set(members.flatMap((row) => row.gone || row.pid === undefined ? [] : [row.pid]));
+  const held = new Set<number>(), running: string[] = [];
   for (const component of localProcessSurface()) {
-    const record = possiblyRunning(component, context);
+    const record = possiblyRunning(component, context, memberPids, held);
     if (record) running.push(record);
   }
-  return [...running, ...liveStackMembers(root)];
+  return [...running, ...members.map((row) => row.pid !== undefined && held.has(row.pid) ? `${row.definition}, pid ${row.pid}, instance ${row.instance}` : `${row.label}${row.gone ? ", no stop receipt" : ""}`)];
 }
 
 /** The members of the controller stack recorded at this root that may still run. A member counts as
  *  live unless its process is gone and its record carries the stop receipt its role requires.
  *  Backup, reset store and reset space share this rule. With `unreceipted` false, a member whose
- *  process is proven gone does not count even without its receipt, as `space forget` asks. */
-function liveStackMembers(root: string, space?: string, unreceipted = true): string[] {
-  return stackMembers(root, space).filter((row) => !row.gone || unreceipted && !row.receipted).map((row) => `${row.label}${row.gone ? ", no stop receipt" : ""}`);
+ *  process is proven gone does not count even without its receipt, as `space forget` asks. With
+ *  `settledByDown`, which reset and clean pass because they remove the store rather than keep it, a
+ *  gone member also counts as stopped when the stack's last whole-stack operation is a completed
+ *  `down` that recorded it already stopped: after a crash that `down` has nothing left to stop, and
+ *  only a full restart could add a receipt. */
+function liveStackMembers(root: string, space?: string, unreceipted = true, settledByDown = false): string[] {
+  return stackMembers(root, space, settledByDown).filter((row) => !row.gone || unreceipted && !row.receipted).map((row) => `${row.label}${row.gone ? ", no stop receipt" : ""}`);
 }
 
 /** The members of the controller stack recorded at this root for `space` whose process is proven
@@ -220,15 +358,19 @@ export function unsettledStackMembers(root: string, space: string): string[] {
  *  stack's own recorded space. A space derived from the root's pidfiles or accounts can name another
  *  tenant, or the default, once the stack is stopped. `space` limits the answer to that space's
  *  stack. */
-function stackMembers(root: string, space?: string): { label: string; gone: boolean; receipted: boolean }[] {
+function stackMembers(root: string, space?: string, settledByDown = false): { definition: string; instance: string; label: string; gone: boolean; receipted: boolean; pid?: number }[] {
   const stack = readStackJournal(root);
   if (!stack || space !== undefined && stack.journal.space !== space) return [];
+  const { operation, members } = stack.journal;
+  const down = settledByDown && operation.kind === "down" && operation.phase === "completed";
   return Object.values(STACK_DEFINITION).flatMap((definition) => serviceInstances(stack.journal.space, definition).map((row) => {
     const value = row.record.value;
     return {
-      label: `${definition}, instance ${row.name}`,
+      definition, instance: row.name, label: `${definition}, instance ${row.name}`,
+      pid: value.process?.pid,
       gone: ["gone", "previous-boot"].includes(observeServiceProcess(value)),
-      receipted: value.state === "stopped" && Boolean(value.nativeStop ?? value.kernelStop ?? value.processStop),
+      receipted: value.state === "stopped" && Boolean(value.nativeStop ?? value.kernelStop ?? value.processStop)
+        || down && members.some((member) => member.instanceId === row.name && member.state === "already-stopped"),
     };
   }));
 }
@@ -236,10 +378,12 @@ function stackMembers(root: string, space?: string): { label: string; gone: bool
 /** "label, pid N" for a record that may still front a process, with the probe's note when it is not
  *  proven alive; undefined only for no record, an empty husk or a pid proven dead. Every caller
  *  guards a delete or a snapshot, so a record `cotal down` refuses as unattributable or of unknown
- *  liveness must not read as stopped here. */
-function possiblyRunning(component: LocalProcess, context: LocalProcessContext): string | undefined {
+ *  liveness must not read as stopped here. A record whose pid is in `members` is a stack member's
+ *  own, so it is added to `held` instead, and the caller names it with that member. */
+function possiblyRunning(component: LocalProcess, context: LocalProcessContext, members?: ReadonlySet<number>, held?: Set<number>): string | undefined {
   const state = pidfileState(localProcessPath(component.pidFile, context));
   if (state.liveness === "dead") return undefined;
+  if (held && state.pid !== undefined && members?.has(state.pid)) { held.add(state.pid); return undefined; }
   return `${component.label}, ${[state.pid && `pid ${state.pid}`, state.note].filter(Boolean).join(", ")}`;
 }
 
@@ -263,10 +407,11 @@ export interface ReviewedIdentityCleanup {
 }
 
 /** Delete the stopped mesh's local state and return what was removed (paths relative to the root).
- *  `store`: the JetStream store directory. `all` adds the space identity (`.cotal/auth`), the
- *  locally persisted creds/markers tied to it - all invalid once the identity regenerates, and
- *  re-minted by the next fresh `cotal up` - plus crash residue a normal `down` would have swept
- *  (stale pidfiles, `run/`). Callers guard liveness first (`liveMeshProcess`).
+ *  With `dryRun`, remove nothing and return what would be removed.
+ *  `store`: the JetStream store directory, refused when it holds anything else. `all` adds the
+ *  space identity (`.cotal/auth`), the locally persisted creds/markers tied to it - all invalid
+ *  once the identity regenerates, and re-minted by the next fresh `cotal up` - plus crash residue a
+ *  normal `down` would have swept (stale pidfiles, `run/`). Callers guard liveness first (`liveMeshProcess`).
  *
  *  MIGRATED SECRET KINDS are removed through the SecretStore seam FIRST — `delivery.creds` via
  *  its workspace key, the auth kinds via the registered provider's `deprovisionSecrets` — and a
@@ -276,10 +421,12 @@ export interface ReviewedIdentityCleanup {
  *  as-is, with `auth.json` still present to name the space. This surface stays the LOCAL
  *  filesystem composition (hosted resets ride the closed composition's own store + the same
  *  provider hook, never a KMS mode on this CLI). */
-export async function removeLocalState(root: string, opts: { includeAuth: boolean; storeDir?: string; space?: string; expectedStore?: { path: string; identity?: { dev: bigint; ino: bigint } }; onRemoved?: (label: string) => void; identity?: ReviewedIdentityCleanup }): Promise<string[]> {
+export async function removeLocalState(root: string, opts: { includeAuth: boolean; storeDir?: string; space?: string; expectedStore?: { path: string; identity?: { dev: bigint; ino: bigint } }; onRemoved?: (label: string) => void; identity?: ReviewedIdentityCleanup; dryRun?: boolean }): Promise<string[]> {
   const removed: string[] = [];
   const recordRemoved = (label: string) => { removed.push(label); opts.onRemoved?.(label); };
+  const dryRun = opts.dryRun === true;
   const rm = (path: string, label: string) => {
+    if (dryRun) { if (existsSync(path)) recordRemoved(label); return; }
     opts.identity?.beforeRemove(path);
     if (!existsSync(path)) return;
     rmSync(path, { recursive: true, force: true });
@@ -291,14 +438,19 @@ export async function removeLocalState(root: string, opts: { includeAuth: boolea
   if (opts.includeAuth && opts.space !== undefined) throw new Error("identity cleanup cannot take a caller-selected space");
   const space = opts.space ?? resolveSpace(root);
   const store = safeStoreCleanupPath(root, opts.storeDir);
+  if (store.identity) refuseSharedStoreRemoval(store.path, space);
   if (opts.expectedStore && (store.path !== opts.expectedStore.path || Boolean(store.identity) !== Boolean(opts.expectedStore.identity) || store.identity && (store.identity.dev !== opts.expectedStore.identity?.dev || store.identity.ino !== opts.expectedStore.identity?.ino)))
     throw new Error("store path or pinned filesystem identity changed before cleanup; no directory was removed");
   if (store.identity) {
-    removePinnedStoreDirectory(store.path, store.identity);
-    recordRemoved(opts.storeDir ? store.path : ".cotal/nats (JetStream store)");
+    const entries = readdirSync(store.path).sort();
+    const label = `${opts.storeDir ? store.path : ".cotal/nats"} (${entries.length ? `JetStream store: ${entries.join(", ")}` : "empty store directory"})`;
+    if (!dryRun) removePinnedStoreDirectory(store.path, store.identity);
+    recordRemoved(label);
   }
   if (opts.includeAuth) {
     const targets = localIdentityCleanupTargets(root, space);
+    // Read before the provider's deprovision below removes any of their pins.
+    const userAuthDirs = new Set(userAuthSpacesOnDisk(targets.auth).map(spaceSegment));
     // ---- the seam deletes, before ANY raw identity removal (see the doc above) ----
     const secrets = opts.identity?.store ?? workspaceSecretStore(root);
     const failures: string[] = [];
@@ -315,7 +467,7 @@ export async function removeLocalState(root: string, opts: { includeAuth: boolea
       // through it too — never a raw rm below (which would leave a non-FS store's copy authoritative).
       try {
         if ((await secrets.get(key)) !== undefined) {
-          await secrets.delete(key);
+          if (!dryRun) await secrets.delete(key);
           recordRemoved(`.cotal/${key}`);
         }
       } catch (e) {
@@ -337,7 +489,7 @@ export async function removeLocalState(root: string, opts: { includeAuth: boolea
     // `agentCredsDir`.
     for (const key of opts.identity?.agentKeys ?? agentSecretKeysUnder(root)) {
       try {
-        await secrets.delete(key);
+        if (!dryRun) await secrets.delete(key);
         recordRemoved(`.cotal/${key}`);
       } catch (e) {
         failures.push(`${key}: ${e instanceof Error ? e.message : String(e)}`);
@@ -347,7 +499,11 @@ export async function removeLocalState(root: string, opts: { includeAuth: boolea
     // reset there must not start failing. With one registered, its deprovision must SUCCEED
     // (absent keys are idempotent no-ops) before the identity goes.
     const provider = opts.identity ? opts.identity.provider : registry.all<AuthProvider>("auth-provider").length ? resolveAuthProvider() : null;
-    if (provider) {
+    if (provider && dryRun) {
+      if (!provider.deprovisionSecretKeys) recordRemoved(`the secrets the auth provider holds for space ${space}`);
+      for (const key of provider.deprovisionSecretKeys?.(space) ?? [])
+        if ((await secrets.get(key)) !== undefined) recordRemoved(`.cotal/${key}`);
+    } else if (provider) {
       try {
         await provider.deprovisionSecrets({ store: secrets, space });
       } catch (e) {
@@ -404,13 +560,17 @@ export async function removeLocalState(root: string, opts: { includeAuth: boolea
     const trustRecord = (entry: string) => entry === "auth.json" || entry === "broker.json" || (entry.startsWith("account.") && entry.endsWith(".json"));
     if (existsSync(authDirPath))
       for (const entry of readdirSync(authDirPath))
-        if (!trustRecord(entry)) rm(join(authDirPath, entry), `.cotal/auth/${entry}`);
+        if (!trustRecord(entry)) rm(join(authDirPath, entry), `.cotal/auth/${entry}${userAuthDirs.has(entry) ? ` ${USER_AUTH_TRUST}` : ""}`);
     // The trust records — the space-NAMER last among them — die ABSOLUTELY LAST, as a single
     // authoritative op: the store delete is real for a non-FS store, and on the FS composition it
     // removes the same files.
     const trustPaths = existsSync(authDirPath) ? readdirSync(authDirPath).filter(trustRecord) : [];
+    if (dryRun) {
+      for (const entry of trustPaths) recordRemoved(`.cotal/auth/${entry} ${SPACE_TRUST}`);
+      return removed;
+    }
     await deleteSpaceAuth(secrets, space);
-    for (const entry of trustPaths) recordRemoved(`.cotal/auth/${entry} (space trust)`);
+    for (const entry of trustPaths) recordRemoved(`.cotal/auth/${entry} ${SPACE_TRUST}`);
     opts.identity?.beforeRemove(authDirPath);
     rmSync(authDirPath, { recursive: true, force: true }); // drop the now-empty auth dir (nothing lockable left)
     opts.identity?.afterRemove(authDirPath);
@@ -435,9 +595,15 @@ export function safeStoreCleanupPath(root: string, override: string | undefined)
   const cotal = join(canonicalRoot, ".cotal");
   const defaultStore = join(cotal, "nats");
   const protectedTrees = [join(cotal, "auth"), join(cotal, "agents"), join(cotal, "maintenance"), join(cotal, "run")];
-  if (target === parse(target).root || pathContains(target, canonicalRoot) || target === cotal ||
+  if (target === parse(target).root || target === cotal ||
       protectedTrees.some((path) => pathContains(path, target)) || (override && pathContains(cotal, target) && target !== defaultStore))
     throw new Error(`refusing unsafe store cleanup target: ${target}`);
+  // A store in the project folder, as `up --store-dir .` makes, lies beside the project's own files,
+  // so no cleanup removes the folder; its store entries are named for removal by hand.
+  if (pathContains(target, canonicalRoot)) {
+    const entries = STORE_ENTRY_NAMES.filter((entry) => existsSync(join(target, entry)));
+    throw new CommandFailure("refused", "CONFLICT", `refusing unsafe store cleanup target: ${target} holds this project${target === canonicalRoot ? "'s .cotal" : ` folder ${canonicalRoot}`}; nothing was removed`, { target: { storeDir: target, root: canonicalRoot }, ...(entries.length ? { remedy: `stop the space with \`cotal down\`, then remove the store's own entries by hand: rm -r ${entries.map((entry) => shellWord(join(target, entry))).join(" ")}` } : {}) });
+  }
   if (override) {
     const generation = join(target, ".cotal-store-id");
     const jetstream = join(target, "jetstream");
@@ -446,18 +612,53 @@ export function safeStoreCleanupPath(root: string, override: string | undefined)
     if (!hasGeneration && !hasJetStream)
       throw new Error(`refusing custom cleanup target without a Cotal or JetStream store marker: ${target}`);
   }
+  refuseForeignStoreEntries(target, foreignStoreEntries(target));
   return { path: target, identity: { dev: stat.dev, ino: stat.ino } };
 }
 
+/** A store directory holds only the broker's `jetstream` tree, the generation marker and the
+ *  broker's `ocsp` folder, so a directory that holds anything else may be someone's folder; nothing
+ *  in it is removed. */
+function refuseForeignStoreEntries(path: string, foreign: readonly string[]): void {
+  if (foreign.length)
+    throw new CommandFailure("refused", "CONFLICT", `the store directory ${path} also holds ${listEntries(foreign)}, which no Cotal store writes; nothing was removed`, { target: { storeDir: path, entries: [...foreign] }, remedy: `move ${foreign.length === 1 ? "it" : "them"} out of ${path}, then run this command again` });
+}
+
+/** Move the pinned store directory aside, then remove its store entries by name and the directory
+ *  only once it is empty, so an entry that appeared after the check is never removed. */
 function removePinnedStoreDirectory(path: string, identity: { dev: bigint; ino: bigint }): void {
   const tomb = join(dirname(path), `.cotal-clean-${randomUUID()}`);
   renameSync(path, tomb);
+  const putBack = () => { if (!existsSync(path)) renameSync(tomb, path); };
   const moved = lstatSync(tomb, { bigint: true });
   if (!moved.isDirectory() || moved.isSymbolicLink() || moved.dev !== identity.dev || moved.ino !== identity.ino) {
-    if (!existsSync(path)) renameSync(tomb, path);
+    putBack();
     throw new Error(`store cleanup target changed before deletion: ${path}`);
   }
-  rmSync(tomb, { recursive: true });
+  const foreign = foreignStoreEntries(tomb);
+  if (foreign.length) {
+    putBack();
+    refuseForeignStoreEntries(path, foreign);
+  }
+  try { for (const entry of STORE_ENTRY_NAMES) rmSync(join(tomb, entry), { recursive: true, force: true }); }
+  catch (error) { throw movedStoreLeft(path, tomb, error); }
+  try { rmdirSync(tomb); }
+  catch (error) { putBack(); throw error; }
+}
+
+/** A removal that stopped inside the moved-aside store leaves what it did not remove there, partly
+ *  deleted, so it is not moved back. Nothing else records that folder, and a later clean or reset
+ *  finds no store at the old path, so the failure names the folder and the step that removes it. */
+function movedStoreLeft(path: string, tomb: string, error: unknown): CommandFailure {
+  const code = (error as NodeJS.ErrnoException).code ?? "an error";
+  let left: string[] | undefined;
+  try { left = readdirSync(tomb).sort(); } catch { left = undefined; }
+  const remove = `rm -r ${shellWord(tomb)}`;
+  return new CommandFailure("partial", "OPERATION_PARTIAL", `the store ${path} was moved to ${tomb} for removal, and removing it stopped (${code}) with ${left === undefined ? "contents that could not be listed" : left.length ? listEntries(left) : "nothing"} left there; ${path} no longer exists, so a later clean or reset finds no store`, {
+    target: { storeDir: path, movedTo: tomb, ...(left ? { remaining: left } : {}) },
+    changed: [`moved ${path} to ${tomb}`],
+    remedy: code === "EACCES" || code === "EPERM" ? `make it removable by you with chmod -R u+w ${shellWord(tomb)} and then remove it with ${remove}` : `once the cause is fixed, remove it with ${remove}`,
+  });
 }
 
 export function cleanComplete(argv: string[]): CompletionResult {

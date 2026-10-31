@@ -105,8 +105,9 @@ function newPage(opts: { refuseMembershipRead?: boolean } = {}) {
   // by a defence as narrow as "ignore an empty roster", so a suite built on one proves less than it
   // reads; an OLDER NON-EMPTY snapshot can only be beaten by ordering. `local.O` is in the
   // bootstrap and absent from the live roster, and the live roster is a FULL snapshot on every
-  // presence event (`ep.on("presence", () => broadcast("roster", ep.getRoster()))`, web.ts:462,
-  // the same call `/api/roster` serves), so it supersedes rather than merges: `local.O` is gone.
+  // presence event (`web()` in web.ts wires `ep.on("presence", () => pushRoster())`, and
+  // `pushRoster` broadcasts `rosterSnapshot()`, which `/api/roster` also serves), so it supersedes
+  // rather than merges: `local.O` is gone.
   const STALE_ROSTER = [{ card: { id: "local.O", name: "old", kind: "agent" }, status: "waiting", ts: 1 }];
   const STALE_MEMBERS = { asOf: 1, members: [{ id: "local.O", live: ["general"], durable: [] }] };
   const payload = (u: string) => {

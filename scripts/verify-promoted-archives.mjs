@@ -4,16 +4,16 @@ import { createHash } from "node:crypto";
 import { readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { closureFromConfig, versionUrl } from "./verify-publish-closure.mjs";
-import { PUBLICATION_BUDGET_MS, publicationStartedAt, publicationMap, remainingBudget, withinPublicationBudget } from "./publication-budget.mjs";
+import { PUBLICATION_BUDGET_MS, publicationStartedAt, publicationExecutionDeadline, publicationMap, remainingBudget, withinPublicationBudget } from "./publication-budget.mjs";
 import { isMainEntry } from "./main-entry.mjs";
 
 const sha = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const requireArtifact = (condition, message) => { if (!condition) throw Object.assign(new Error(message), { code: "ERR_RELEASE_ARTIFACT" }); };
 
-export async function verifyPromotedArchives({ root, manifestFile, requestedAt, expectedSha256, tag = "latest", registry = "https://registry.npmjs.org", fetchImpl = fetch, pollIntervalMs = 1_000, recheck = false, log = console.log }) {
+export async function verifyPromotedArchives({ root, manifestFile, requestedAt, expectedSha256, tag = "latest", registry = "https://registry.npmjs.org", fetchImpl = fetch, pollIntervalMs = 1_000, recheck = false, attemptStartedAt, log = console.log }) {
   const originalDeadline = publicationStartedAt(requestedAt) + PUBLICATION_BUDGET_MS;
   // Read-only recovery has its own observation window. It never resets the publication clock.
-  const deadline = recheck ? Date.now() + 60_000 : originalDeadline;
+  const deadline = recheck ? Date.now() + 60_000 : publicationExecutionDeadline(requestedAt, attemptStartedAt);
   remainingBudget(deadline);
   const bytes = readFileSync(manifestFile);
   assert.equal(sha(bytes), expectedSha256, "availability probe received another candidate");
@@ -65,7 +65,7 @@ export async function verifyPromotedArchives({ root, manifestFile, requestedAt, 
       return { complete: true, candidateSha256: expectedSha256, requestedAt, verifiedAt: new Date().toISOString(), withinPublicationBudget: Date.now() <= originalDeadline, recheck, packages: rows };
     }
     const remaining = deadline - Date.now();
-    if (remaining <= 0) throw new Error(`publication availability was not verified before its original ten-minute availability deadline: ${rows.filter(({ available }) => !available).map(({ name, reason }) => `${name}: ${reason}`).join("; ")}`);
+    if (remaining <= 0) throw new Error(`publication availability was not verified before its execution deadline: ${rows.filter(({ available }) => !available).map(({ name, reason }) => `${name}: ${reason}`).join("; ")}`);
     log(`Registry convergence pending for ${rows.filter(({ available }) => !available).length}/${rows.length} packages`);
     await new Promise((resolve) => setTimeout(resolve, Math.min(pollIntervalMs, remaining)));
   }
@@ -73,7 +73,7 @@ export async function verifyPromotedArchives({ root, manifestFile, requestedAt, 
 
 if (isMainEntry(import.meta.url)) {
   const [manifestFile, tag = "latest", output, ...flags] = process.argv.slice(2);
-  const options = { requestedAt: process.env.RELEASE_REQUESTED_AT, expectedSha256: process.env.RELEASE_CANDIDATE_SHA256, recheck: false };
+  const options = { requestedAt: process.env.RELEASE_REQUESTED_AT, attemptStartedAt: process.env.RELEASE_ATTEMPT_STARTED_AT, expectedSha256: process.env.RELEASE_CANDIDATE_SHA256, recheck: false };
   for (const flag of flags) {
     if (flag === "--recheck") options.recheck = true;
     else if (flag.startsWith("--requested-at=")) options.requestedAt = flag.slice("--requested-at=".length);

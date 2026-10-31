@@ -14,7 +14,7 @@
  * stale when superseded), and commits are epoch-fenced at the record seam
  * ({@link writeServiceStatus}).
  */
-import type { NatsConnection, Subscription } from "@nats-io/transport-node";
+import type { Msg, NatsConnection, Subscription } from "@nats-io/transport-node";
 import type { ValidateFunction } from "ajv";
 import { spacePrefix } from "./subjects.js";
 import {
@@ -603,7 +603,12 @@ function encodeReply(reply: EndpointReply): Uint8Array {
 
   for (const def of defs) {
     const cmd = def.command;
-    const cb = (_err: unknown, msg: { subject: string; data: Uint8Array }) => {
+    const cb = (_err: unknown, msg: Pick<Msg, "subject" | "data" | "headers">) => {
+      // Stored-message delivery is not a caller publication on this subject. Drop native
+      // provenance before parsing, authorization or replies: there is no authenticated caller
+      // to answer. Match header names, not values; an empty marker is still a marker.
+      for (const [name] of msg.headers ?? [])
+        if (/^Nats-(Stream|Subject|Sequence|Time-Stamp)$/i.test(name)) return;
       const run = handle(def, msg).catch(() => { /* handle() reports via the reply; never unhandled */ });
       pending.add(run);
       void run.finally(() => pending.delete(run));
@@ -621,7 +626,11 @@ function encodeReply(reply: EndpointReply): Uint8Array {
 
   return {
     async stop() {
-      await Promise.all(subs.map((s) => s.drain())); // no new deliveries
+      // No new deliveries. A drain settles on the server's PONG, and nats-core rejects no pending
+      // flush when the connection closes, so a close mid-drain would strand stop() forever: each
+      // drain is bounded by the connection's own closed() instead.
+      const gone = nc.closed().then(() => undefined);
+      await Promise.all(subs.map((s) => Promise.race([s.drain().catch(() => undefined), gone])));
       await Promise.allSettled([...pending]); // in-flight handlers finish before "stopped"
     },
   };

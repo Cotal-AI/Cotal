@@ -137,9 +137,8 @@ const credsPathF = join(dir, "delivery-f.creds");
 // be forced by a hard resource ceiling — every space's artifact Object Store was created at 4 GiB,
 // JetStream RESERVED the whole cap against the server's store the moment the space was provisioned,
 // and eight of them exceeded what one test broker could promise, so the suite failed with
-// "insufficient storage resources available" before a single cell ran. The artifact store now carries
-// `max_bytes: -1` and reserves nothing, so the ceiling is gone: the six spaces reserve 384 MiB, six
-// 64 MiB membership buckets, and an eighth space would no longer be refused for it.
+// "insufficient storage resources available" before a single cell ran. Artifact and membership stores
+// now carry `max_bytes: -1` and reserve nothing, so that empty-space ceiling is gone.
 //
 // The reuse stays because it was always sound on its own merits, which is the second reason below —
 // not because the suite still cannot afford eight spaces. `setupSpaceStreams` is called six times and
@@ -179,15 +178,20 @@ const daemons: Daemon[] = [];
 /** Spawn the real daemon with stderr CAPTURED, so an exit can be attributed to its stated reason
  *  rather than merely counted, and DETACHED so it owns a process group.
  *
- *  THE PROCESS GROUP IS LOAD-BEARING, NOT TIDINESS. The daemon is started through `tsx`, which
- *  execs; a signal aimed at the pid this function returns can freeze a wrapper and leave the node
- *  that is under test running normally. The cell would then pass by never applying its stimulus,
- *  which is the worst kind of green. Its own group means `kill(-pgid)` reaches everything in the
- *  pipeline. The child's operator surfaces are isolated the way the other daemon-spawning suites do
- *  it: scratch XDG_CONFIG_HOME/COTAL_HOME keep it off the operator's real seed store and mesh
- *  registry, and a scratch workspace root WITH a `.cotal` pins findCotalRoot's cwd walk, without
- *  it the walk climbs out of the repo, adopts a developer's live workspace, and the daemon's
- *  tenancy guard correctly refuses the foreign account before it ever reaches the code under test. */
+ *  ONE NODE PROCESS WITH TSX AS A LOADER, the way `cotal up` and `cotal service start delivery` start
+ *  the daemon (`daemonArgv`: this node, its loader flags, the CLI entry). NOT THE `tsx` CLI: that
+ *  parent relays a signal to the child it spawned and SIGKILLs the child when no acknowledgement
+ *  arrives within about 60ms. Under load a daemon that was handling SIGTERM died mid-release, and
+ *  the W cells graded the wrapper instead of the daemon.
+ *
+ *  THE PROCESS GROUP IS LOAD-BEARING, NOT TIDINESS. Every cell signals `kill(-pgid)`, so a stimulus
+ *  reaches the daemon and anything it starts, and a cell cannot pass by never applying its
+ *  stimulus, which is the worst kind of green. The child's operator surfaces are isolated the way
+ *  the other daemon-spawning suites do it: scratch XDG_CONFIG_HOME/COTAL_HOME keep it off the
+ *  operator's real seed store and mesh registry, and a scratch workspace root WITH a `.cotal` pins
+ *  findCotalRoot's cwd walk, without it the walk climbs out of the repo, adopts a developer's live
+ *  workspace, and the daemon's tenancy guard correctly refuses the foreign account before it ever
+ *  reaches the code under test. */
 function spawnDaemon(inSpace: string, creds: string, via: string = SERVERS, extraEnv: NodeJS.ProcessEnv = {}): Daemon {
   const env: NodeJS.ProcessEnv = { ...process.env };
   for (const k of Object.keys(env)) if (k.startsWith("COTAL_")) delete env[k];
@@ -197,8 +201,8 @@ function spawnDaemon(inSpace: string, creds: string, via: string = SERVERS, extr
   env.COTAL_DELIVERY_BROKER_GONE_MS = String(WINDOW_MS);
   Object.assign(env, extraEnv);
   const proc = spawn(
-    join(repoRoot, "node_modules", ".bin", "tsx"),
-    [join(repoRoot, "bin", "cotal.ts"), "deliver", "--space", inSpace, "--server", via, "--creds", creds],
+    process.execPath,
+    ["--import", import.meta.resolve("tsx"), join(repoRoot, "bin", "cotal.ts"), "deliver", "--space", inSpace, "--server", via, "--creds", creds],
     { cwd: wsRoot, stdio: ["ignore", "pipe", "pipe"], detached: true, env },
   );
   const d: Daemon = { proc, exited: false, closed: false, code: null, stderr: "" };
@@ -1379,6 +1383,45 @@ try {
   signalGroup(afterX, "SIGKILL");
   await untilExit(afterX, 5000);
 
+  // ── V. A STOP THAT LANDS WHILE THE CONNECTION REDIALS MUST STILL GIVE THE SHARD BACK ─────────
+  //
+  // `cotal up` starts the manager right after the daemon, and the manager's boot renewal moves the
+  // daemon's connection onto the renewed credential with a deliberate reconnect. nats.js holds a
+  // redial until 2s after the previous dial, and the daemon dialled moments before, so for about a
+  // second it has no connection. A request written then is never answered. A SIGTERM there sent its
+  // release into that gap, and the 2s hard exit ended the process with the row still on the broker:
+  // `cotal down` refused, and the next `up` waited out the TTL.
+  //
+  // THE STIMULUS IS THE SAME THROTTLE, made through the proxy instead of a renewal: cut the daemon's
+  // sockets, let them redial, and cut them again. The second redial waits out nats.js's reconnect
+  // wait, and the signal lands inside it. The daemon runs at the shipped broker-gone window, so the
+  // redial wait it is given is the shipped one.
+  console.log("\nV. an ordinary stop while the connection redials");
+  await deleteLease(spaceH, credsPathH);
+  const vProxy = startFreshConnectBlackholeProxy();
+  const vd = spawnDaemon(spaceH, credsPathH, `nats://127.0.0.1:${await vProxy.listening}`, { COTAL_DELIVERY_BROKER_GONE_MS: "15000" });
+  check("V1 the daemon is up through the proxy", await untilUp(vd), tail(vd));
+  const vFirst = vProxy.established;
+  vProxy.dropEstablished();
+  for (let i = 0; i < 100 && vProxy.established === vFirst; i++) await wait(20);
+  vProxy.dropEstablished();
+  const vSecond = vProxy.established;
+  await wait(150);
+  const vHeld = vProxy.established === vSecond && !vd.exited;
+  signalGroup(vd, "SIGTERM");
+  check("V2 the signal landed while the daemon's redial was held", vSecond > vFirst && vHeld, { vFirst, vSecond, now: vProxy.established });
+  check("V3 the daemon exited 0", await untilExit(vd, 15_000) && vd.code === 0, { code: vd.code, tail: tail(vd) });
+  check("V4 it redialed before it exited", vProxy.established > vSecond, { vSecond, now: vProxy.established });
+  // THE CLAIM, off the BROKER rather than the daemon's log.
+  const vRow = await readLease(spaceH, credsPathH);
+  check("V5 the lease row is GONE, released once the connection was back", vRow === undefined, vRow);
+  const afterV = spawnDaemon(spaceH, credsPathH);
+  check("V6 a real replacement daemon comes up on that shard, never refused a live lease",
+    await untilUp(afterV) && !/a live lease already exists/.test(afterV.stderr), tail(afterV));
+  signalGroup(afterV, "SIGKILL");
+  await untilExit(afterV, 5000);
+  vProxy.close();
+
   // ── B. BROKER GONE: the real thing still ends the daemon ────────────────────────────────────────
   console.log("\nB. the broker is actually killed");
   const coupled = spawnDaemon(spaceB, credsPathB);
@@ -1400,6 +1443,7 @@ try {
   // the successor row that must NOT be adopted as our own).
   // 80 -> 87: cells W1-W7 (an ordinary stop inside the start-up window must give the shard back).
   // 87 -> 93: cells X1-X6 (a start-up failure the CALLER catches must give the shard back too).
+  // V1-V6: a stop while the connection redials must give the shard back too.
   // ── P. THE SUITE'S OWN ENVIRONMENT DISCRIMINATOR ────────────────────────────────────────────────
   // Graded because it SHIPPED BROKEN: the condition was evaluated after the catch had incremented
   // the failure counter, so it was false on every path and the diagnostic beneath it could never
@@ -1436,7 +1480,7 @@ try {
   // that only fires on a broken environment is never walked by a passing suite. It is a pure
   // function now precisely so it can be walked without one.
   // E8-E11 retain the prolonged-loss case after the bounded scheduling-burst control.
-  const EXPECTED_CELLS = 101;
+  const EXPECTED_CELLS = 107;
   check(`every cell ran (${EXPECTED_CELLS} before this sentinel)`, pass + fail === EXPECTED_CELLS, pass + fail);
 
   console.log(`\nDELIVERY-STARVATION SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
@@ -1476,10 +1520,9 @@ try {
   if (isProvisioningRefusal(gradedBeforeThrow, why)) {
     console.error(`  ✗ the BROKER refused to provision this suite's spaces: ${why}`);
     console.error(`     This is the test environment, not the daemon. This suite provisions SIX spaces (cells`);
-    console.error(`     G and H alias earlier ones rather than adding more), and each reserves a 64 MiB membership`);
-    console.error(`     bucket - 384 MiB in total - before a single cell runs. The artifact Object Store reserves`);
-    console.error(`     NOTHING (max_bytes -1), so a refusal here now means the store is genuinely out of room`);
-    console.error(`     rather than promised away to empty caps.`);
+    console.error(`     G and H alias earlier ones rather than adding more). Membership and artifact stores reserve`);
+    console.error(`     NOTHING (max_bytes -1), so a refusal here means the store is genuinely out of room rather`);
+    console.error(`     than promised away to empty per-space caps.`);
     console.error(`     The broker's JetStream directory is under TMPDIR, currently ${tmpdir()}.`);
     console.error(`     Point TMPDIR at a filesystem with room to spare (and NOT under the workstation root,`);
     console.error(`     which the daemon's own root walk would then pick up) and re-run before reading this`);

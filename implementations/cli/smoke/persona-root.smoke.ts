@@ -26,8 +26,11 @@
  * which is itself part of the claim. Run: pnpm smoke:persona-root
  */
 import { strict as assert } from "node:assert";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import type { CommandFailure } from "@cotal-ai/workspace";
 import { makeScratch } from "../../../bin/smoke/_scratch.js";
 
 // Isolate the machine-home AND the temp root before importing anything that resolves a root.
@@ -56,6 +59,7 @@ let loadAgentFile!: typeof import("@cotal-ai/core").loadAgentFile;
 let listPersonas!: typeof import("../src/lib/personas.js").listPersonas;
 let personas!: typeof import("../src/commands/personas.js").personas;
 let personasComplete!: typeof import("../src/commands/personas.js").personasComplete;
+let persona!: typeof import("../src/commands/persona.js").persona;
 let spawnComplete!: typeof import("../src/commands/spawn.js").spawnComplete;
 let sendComplete!: typeof import("../src/commands/send.js").sendComplete;
 let mint!: typeof import("../src/commands/mint.js").mint;
@@ -71,6 +75,7 @@ try {
   ({ agentFilePath, loadAgentFile } = await import("@cotal-ai/core"));
   ({ listPersonas } = await import("../src/lib/personas.js"));
   ({ personas, personasComplete } = await import("../src/commands/personas.js"));
+  ({ persona } = await import("../src/commands/persona.js"));
   ({ spawnComplete } = await import("../src/commands/spawn.js"));
   ({ sendComplete } = await import("../src/commands/send.js"));
   ({ mint } = await import("../src/commands/mint.js"));
@@ -140,6 +145,24 @@ async function captureMint(positionals: string[], values: Record<string, unknown
   return lines.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
 }
 
+/** Run `cotal persona --json` for real: the envelope it wrote, or the refusal it threw for the CLI
+ *  kernel to print. The exit code a partial result sets is put back, so it does not end the suite. */
+async function personaJson(values: { space?: string }): Promise<{ envelope?: { outcome?: string; warnings?: { code: string; target?: { name?: string } }[] }; failure?: CommandFailure }> {
+  const out: string[] = [];
+  const realWrite = process.stdout.write, exitCode = process.exitCode;
+  process.stdout.write = ((chunk: string | Uint8Array) => (out.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8")), true)) as typeof process.stdout.write;
+  try {
+    await persona({ values: { ...values, json: true }, positionals: [], raw: [] });
+    return { envelope: JSON.parse(out.join("")) };
+  } catch (error) {
+    if (isCommandFailure(error)) return { failure: error };
+    throw error;
+  } finally {
+    process.stdout.write = realWrite;
+    process.exitCode = exitCode;
+  }
+}
+
 /** Persona names out of a captured listing: printed flush-left, descriptions indented under them. */
 function personaNamesFrom(out: string): string[] {
   return [...new Set(
@@ -184,7 +207,7 @@ async function captureCmd(
 // MESH and CWD are disjoint in every dimension — persona names, roles, and channels — so a wrong
 // answer NAMES itself rather than merely failing an expectation. A suite whose two sides overlap
 // cannot tell "read the right root" from "read either root".
-let MESH!: string, CWD!: string, ALPHA!: string, BETA!: string;
+let MESH!: string, CWD!: string, ALPHA!: string, BETA!: string, EMPTY!: string;
 try {
   MESH = project("mesh", [
     { name: "mesh-default", role: "mesh-reviewer", channel: "mesh-alpha" },
@@ -196,6 +219,7 @@ try {
   ]);
   ALPHA = project("alpha", [{ name: "alpha-only", role: "alpha-role", channel: "alpha-chan" }]);
   BETA = project("beta", [{ name: "beta-only", role: "beta-role", channel: "beta-chan" }]);
+  EMPTY = project("empty", []);
 } catch (e) { cleanScratch(e); }
 
 const entry = (space: string, root: string, server: string) =>
@@ -241,6 +265,72 @@ try {
   check("--space: two spaces give two DIFFERENT answers from one cwd", alphaListed.join(",") !== betaListed.join(","));
   check("--space: neither answer is the cwd's catalog", !alphaListed.concat(betaListed).some((n) => n.startsWith("cwd-")), { alphaListed, betaListed });
 
+  // A catalog folder this account cannot read is refused with a next step that names no chmod when
+  // the folder withholding it is above the catalog or owned by another account: a chmod there would
+  // change a folder the operator may not own. Root reads through any mode, so only an ordinary user.
+  if (process.platform !== "win32" && process.getuid?.() !== 0) {
+    const refusal = () => captureList({ space: "alpha" }).then(() => undefined, (error: unknown) => (isCommandFailure(error) ? error : undefined));
+    const dotCotal = join(realpathSync(ALPHA), ".cotal"), agents = join(dotCotal, "agents");
+    const mode = statSync(dotCotal).mode & 0o7777;
+    chmodSync(dotCotal, 0o000);
+    let above: Awaited<ReturnType<typeof refusal>>;
+    try { above = await refusal(); } finally { chmodSync(dotCotal, mode); }
+    check("unreadable catalog: a folder above it that this account cannot enter is named, with no chmod",
+      above?.code === "PERMISSION_DENIED" && above.message === `cannot read persona catalog: ${agents}` &&
+        above.remedy === `this account cannot enter ${dotCotal}, which holds the catalog; get access to that folder from its owner, then run the command again`, above && { message: above.message, remedy: above.remedy });
+    // A folder another account owns and this account cannot list, such as /root, when the host has one.
+    const foreign = ["/root", "/var/root"].find((dir) => {
+      try { if (statSync(dir).uid === process.getuid!()) return false; readdirSync(dir); return false; }
+      catch (error) { return (error as NodeJS.ErrnoException).code === "EACCES"; }
+    });
+    if (foreign) {
+      renameSync(agents, `${agents}.real`);
+      symlinkSync(foreign, agents);
+      let owned: Awaited<ReturnType<typeof refusal>>;
+      try { owned = await refusal(); } finally { unlinkSync(agents); renameSync(`${agents}.real`, agents); }
+      check(`unreadable catalog: a folder another account owns (${foreign}) says to ask its owner, with no chmod`,
+        owned?.code === "PERMISSION_DENIED" && owned.message === `cannot read persona catalog: ${agents}` &&
+          owned.remedy === "another account owns this folder; ask its owner to let this account read it", owned && { message: owned.message, remedy: owned.remedy });
+    } else console.log("  - no folder another account owns and this account cannot list; that cell did not run");
+
+    // A catalog folder at mode 0600 lists its file names but opens none of them. Empty or not, it is
+    // refused as an unreadable one is, with the chmod, rather than listing valid personas as
+    // unparseable, and the run leaves its mode as it was.
+    recordMesh(entry("empty", EMPTY, "nats://127.0.0.1:4303"));
+    for (const [label, root, space] of [["populated", ALPHA, "alpha"], ["empty", EMPTY, "empty"]] as const) {
+      const dir = join(realpathSync(root), ".cotal", "agents"), was = statSync(dir).mode & 0o7777;
+      const message = `cannot read persona catalog: ${dir}`, remedy = `make it readable by you with \`chmod u+rx ${dir}\``;
+      const thrown = (complete: () => unknown) => { try { complete(); return undefined; } catch (error) { return (error as Error).message; } };
+      chmodSync(dir, 0o600);
+      let listed: Awaited<ReturnType<typeof refusal>>, json: Awaited<ReturnType<typeof personaJson>>, names: string | undefined, roles: string | undefined, left: number;
+      try {
+        listed = await captureList({ space }).then(() => undefined, (error: unknown) => (isCommandFailure(error) ? error : undefined));
+        json = await personaJson({ space });
+        names = thrown(() => personasComplete(["--space", space, "show", ""]));
+        roles = thrown(() => spawnComplete(["--space", space, "--role", ""]));
+        left = statSync(dir).mode & 0o777;
+      } finally { chmodSync(dir, was); }
+      check(`search-denied ${label} catalog: personas list refuses it with the chmod`,
+        listed?.code === "PERMISSION_DENIED" && listed.message === message && listed.remedy === remedy, listed && { message: listed.message, remedy: listed.remedy });
+      check(`search-denied ${label} catalog: persona --json refuses it with the chmod, not as unparseable personas`,
+        json.failure?.code === "PERMISSION_DENIED" && json.failure.message === message && json.failure.remedy === remedy, json.failure ? { message: json.failure.message, remedy: json.failure.remedy } : json.envelope);
+      check(`search-denied ${label} catalog: name and role completion fail and name the catalog`,
+        names === `cannot read the persona catalog ${dir}: permission denied` && roles === names, { names, roles });
+      check(`search-denied ${label} catalog: its mode is left as it was`, left === 0o600, left.toString(8));
+    }
+  }
+
+  // A file that does not parse, in a catalog that can be read, is still listed by name as unparseable
+  // beside the personas that do parse.
+  const broken = join(realpathSync(ALPHA), ".cotal", "agents", "broken.md");
+  writeFileSync(broken, "not a persona\n");
+  let malformedList: string, malformed: Awaited<ReturnType<typeof personaJson>>;
+  try { malformedList = await captureList({ space: "alpha" }); malformed = await personaJson({ space: "alpha" }); } finally { unlinkSync(broken); }
+  check("malformed file: personas list names it unparseable and still lists the persona that parses",
+    /^broken +⨯ unparseable agent file .*broken\.md: missing "---" frontmatter block$/m.test(malformedList) && /^alpha-only /m.test(malformedList), malformedList);
+  check("malformed file: persona --json is partial with one SCHEMA_INVALID warning naming it",
+    malformed.envelope?.outcome === "partial" && malformed.envelope.warnings?.map((w) => `${w.code} ${w.target?.name}`).join() === "SCHEMA_INVALID broken", malformed.envelope ?? malformed.failure?.message);
+
   // 3. COMPLETERS. argv EXCLUDES the command name (same convention as spawn-from-anywhere's
   // `spawnComplete([""])`); the trailing "" is the word being completed.
   check("completion: spawn --role offers the MESH's declared roles", sorted(spawnComplete(["--role", ""])).join(",") === "mesh-builder,mesh-reviewer", sorted(spawnComplete(["--role", ""])));
@@ -272,12 +362,17 @@ try {
   // `rm` is the one that matters most: resolving the wrong root deletes a file from a directory the
   // operator never named, and nothing in the repo reddened.
 
-  // show — prints the resolved path as its first line, so the path itself is the observation.
-  const shownPath = (await captureCmd(["show", "mesh-lead"], {})).split("\n").find((l) => l.trim())?.trim();
-  check("show: opens the card under the MESH root", shownPath === join(MESH, ".cotal", "agents", "mesh-lead.md"), shownPath);
+  // show — the card it writes is the observation: the MESH root's file, which no cwd card matches.
+  // Piped, it writes only the file, so stdout is read here as well as console.log.
+  const shown: string[] = [];
+  const realWrite = process.stdout.write;
+  process.stdout.write = ((chunk: string | Uint8Array) => { shown.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8")); return true; }) as typeof process.stdout.write;
+  try { await captureCmd(["show", "mesh-lead"], {}); } finally { process.stdout.write = realWrite; }
+  check("show: opens the card under the MESH root", shown.join("") === readFileSync(join(MESH, ".cotal", "agents", "mesh-lead.md"), "utf8"), shown.join("").slice(0, 160));
   // …and refuses a name that exists ONLY in the cwd, rather than silently opening the cwd's copy.
-  const shownCwdOnly = await captureCmd(["show", "cwd-one"], {});
-  check("show: a cwd-only persona is NOT found (it is not in the mesh's catalog)", /no persona "cwd-one"/.test(shownCwdOnly), shownCwdOnly.slice(0, 120));
+  // The refusal is the one `persona show` gives, and it names the path it looked for under MESH.
+  const shownCwdOnly = await captureCmd(["show", "cwd-one"], {}).then(() => undefined, (error: Error) => error);
+  check("show: a cwd-only persona is NOT found (it is not in the mesh's catalog)", shownCwdOnly?.message === `no persona at ${join(MESH, ".cotal", "agents", "cwd-one.md")}`, shownCwdOnly?.message);
 
   // new — the file must appear under the MESH root and NOT under the cwd.
   await captureCmd(["new", "fresh-one"], { prompt: "made by the smoke", subscribe: "mesh-alpha" });
@@ -300,9 +395,10 @@ try {
   check("rm: leaves the cwd's same-named card untouched", existsSync(join(CWD, ".cotal", "agents", "fresh-one.md")));
 
   // edit — shares `show`'s resolution and is not driven here (it hands the terminal to $EDITOR).
-  // Witnessed instead by pointing EDITOR at a no-op and checking which path it was handed.
+  // Witnessed instead by pointing EDITOR at a no-op: the card it found and validated is reported
+  // unchanged, so nothing is saved.
   const edited = await captureCmd(["edit", "mesh-default"], {}, { EDITOR: "true" });
-  check("edit: re-validates the card under the MESH root", /✓ saved "mesh-default"/.test(edited), edited.slice(0, 120));
+  check("edit: re-validates the card under the MESH root", /"mesh-default" is unchanged, so nothing was saved/.test(edited), edited.slice(0, 120));
 
   // 5. `cotal mint --profile agent` READS ITS ACLs FROM THE SAME ROOT.
   //
@@ -367,6 +463,44 @@ try {
   check("mint: default credential storage does NOT use the cwd root", !existsSync(cwdStored), cwdStored);
 
 
+
+  // Exercise the built CLI parser and the three local command paths, not just a split helper.
+  const binary = fileURLToPath(new URL("../../../bin/dist/cotal.js", import.meta.url));
+  const cases: [string, string | undefined, string[]][] = [
+    ["absent", undefined, []], ["empty", "", []], ["space", "   ", []],
+    ["comma", ",", []], ["trimmed", " review , , ops ", ["review", "ops"]],
+    ["literal", "none", ["none"]],
+  ];
+  const childEnv: NodeJS.ProcessEnv = { ...process.env, HOME: home, DO_NOT_TRACK: "1" };
+  for (const key of Object.keys(childEnv)) if (key.startsWith("COTAL_")) delete childEnv[key];
+  childEnv.COTAL_HOME = home;
+  const native = (args: string[]) => spawnSync(process.execPath, [binary, ...args], {
+    cwd: MESH, env: childEnv, encoding: "utf8", timeout: 30_000,
+  });
+  for (const [label, raw, expected] of cases) {
+    for (const verb of ["persona", "personas"] as const) {
+      const name = `list-${verb}-${label}`;
+      const args = [verb, verb === "persona" ? "create" : "new", name, "--prompt", "list fixture"];
+      if (raw !== undefined) args.push("--subscribe", raw);
+      const result = native(args);
+      const path = agentFilePath(MESH, name);
+      if (raw === undefined) {
+        check(`${verb}: absent subscribe is refused by the real CLI`, result.status === 1 && !existsSync(path));
+      } else {
+        check(`${verb}: ${label} list reaches the saved definition`, result.status === 0 && existsSync(path));
+        check(`${verb}: ${label} list preserves tokens`, JSON.stringify(loadAgentFile(path).subscribe) === JSON.stringify(expected));
+      }
+    }
+    const name = `list_mint_${label}`;
+    writeFileSync(agentFilePath(MESH, name), `---\nname: ${name}\nsubscribe: []\nallowSubscribe: [default-read]\nallowPublish: [default-post]\n---\n\nlist fixture\n`);
+    const args = ["auth", "mint", name, "--profile", "agent", "--json"];
+    if (raw !== undefined) args.push("--allow-subscribe", raw, "--allow-publish", raw);
+    const result = native(args);
+    check(`mint: ${label} list succeeds through the real CLI`, result.status === 0);
+    const grants = JSON.parse(result.stdout).result.grants as { read: string[]; post: string[] };
+    check(`mint: ${label} read list keeps absence distinct from empty`, JSON.stringify(grants.read) === JSON.stringify(raw === undefined ? ["default-read"] : expected));
+    check(`mint: ${label} post list keeps absence distinct from empty`, JSON.stringify(grants.post) === JSON.stringify(raw === undefined ? ["default-post"] : expected));
+  }
 
   // FAIL CLOSED. A completer must never throw into the operator's interactive shell, and must not
   // guess a root when none resolves. With `--space` naming a mesh that is not registered there is

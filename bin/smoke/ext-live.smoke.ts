@@ -21,7 +21,8 @@
  * Run: pnpm smoke:ext:live   (needs npm on PATH)
  */
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { recordMesh } from "@cotal-ai/workspace";
@@ -162,9 +163,9 @@ ok("ext list starts empty", /No extensions installed\./.test(cotal(["ext", "list
 {
   const good = readFileSync(installedIndex, "utf8");
   writeFileSync(installedIndex, 'throw new Error("BOOM — cache must not import me");\n');
-  // The bare --help entry screen is curated; every command group, extensions included, is under help --all.
-  const help = cotal(["help", "--all"]);
-  ok("help --all lists the extension command WITHOUT importing it", help.status === 0 && /hello-ext/.test(help.stdout), help.stdout.slice(-400));
+  // Help lists every command group, extensions included, under the entry screen.
+  const help = cotal(["help"]);
+  ok("help lists the extension command WITHOUT importing it", help.status === 0 && /hello-ext/.test(help.stdout), help.stdout.slice(-400));
   const comp = cotal(["__complete", "hello-ext", "--"]);
   ok("<TAB> offers cached flags WITHOUT importing", comp.status === 0 && /--shout/.test(comp.stdout), comp.stdout);
   const run = cotal(["hello-ext"]);
@@ -252,7 +253,7 @@ registry.register({ kind: "command", name: "hello-ext", summary: "barrier", run:
   const m = JSON.parse(readFileSync(manifestPath, "utf8"));
   delete m.extensions[0].provides;
   writeFileSync(manifestPath, JSON.stringify(m, null, 2));
-  const help = cotal(["help", "--all"]);
+  const help = cotal(["help"]);
   const completion = cotal(["__complete", "hello-ext", "--"]);
   const run = cotal(["hello-ext", "legacy"]);
   ok("legacy command-only manifest still renders, completes, and dispatches", help.status === 0 && /hello-ext/.test(help.stdout) && completion.status === 0 && /--shout/.test(completion.stdout) && run.status === 0 && /hello legacy/.test(run.stdout), help.stdout + completion.stdout + run.stdout + run.stderr);
@@ -377,7 +378,7 @@ registry.register({
   ok("an extension that declares an alias installs", added.status === 0, added.stderr.slice(-400));
   const viaAlias = cotal(["ax", "there"]);
   ok("the alias runs the extension's command", viaAlias.status === 0 && viaAlias.stdout.includes("alias-ext there"), viaAlias.stdout + viaAlias.stderr.slice(-200));
-  const help = cotal(["help", "--all"]);
+  const help = cotal(["help"]);
   ok("help lists the alias beside its command", /alias-ext, ax/.test(help.stdout), help.stdout.slice(-600));
   const builtin = cotal(["ext", "add", fixture("cotal-ext-claims-sp", aliased("other-ext", ["sp"]))]);
   ok("an alias a built-in claims fails the add", builtin.status === 1 && /cotal-ext-claims-sp/.test(builtin.stderr) && /command:sp/.test(builtin.stderr), builtin.stderr.slice(-300));
@@ -395,6 +396,50 @@ registry.register({
   ok("the aliased extension removes", removed.status === 0, removed.stderr.slice(-200));
   const gone = cotal(["ax"]);
   ok("a removed extension's alias is unknown again", gone.status === 1 && /unknown command: ax/.test(gone.stderr), gone.stderr.slice(0, 200));
+}
+
+
+// -- E4: a refused NEW package is staged, so the live prefix is never replaced ------------------
+{
+  const live = fixture("cotal-ext-live-link", GOOD.replace('name: "hello-ext"', 'name: "live-link"'));
+  const added = cotal(["ext", "add", live]);
+  ok("a package is installed before the refused new add", added.status === 0, added.stderr.slice(-300));
+  const link = join(extDir, "node_modules", "cotal-ext-live-link");
+  const files = ["package.json", "package-lock.json", "extensions.json"].map((name) => join(extDir, name));
+  const linkBefore = { ino: statSync(link).ino, dev: statSync(link).dev, target: realpathSync(link) };
+  const links = (dir: string): { path: string; ino: number; dev: number; target: string }[] =>
+    readdirSync(dir).flatMap((name) => {
+      const path = join(dir, name);
+      const stat = lstatSync(path);
+      if (stat.isSymbolicLink()) return [{ path, ino: stat.ino, dev: stat.dev, target: realpathSync(path) }];
+      return stat.isDirectory() ? links(path) : [];
+    });
+  const linksBefore = links(join(extDir, "node_modules"));
+  ok("the refusal identity census includes pre-existing peer links", linksBefore.length > 0);
+  const filesBefore = files.map((path) => ({ path, ino: statSync(path).ino, dev: statSync(path).dev, sha: createHash("sha256").update(readFileSync(path)).digest("hex") }));
+  const refused = fixture("cotal-ext-refused-new", GOOD, { peerDependencies: undefined });
+  const add = cotal(["ext", "add", refused]);
+
+  ok(
+    "a new package without the core peer exits 1 with that reason",
+    add.status === 1 && /cotal-ext-refused-new does not declare @cotal-ai\/core as a peerDependency/.test(add.stderr),
+    add.stderr.slice(-400),
+  );
+  const linkAfter = statSync(link);
+  ok("the refused new add leaves the live package inode and target", linkBefore.ino === linkAfter.ino && linkBefore.dev === linkAfter.dev && linkBefore.target === realpathSync(link));
+  ok("the refused new add preserves every pre-existing link inode and target", linksBefore.every((before) => {
+    const after = lstatSync(before.path);
+    return after.isSymbolicLink() && before.ino === after.ino && before.dev === after.dev && before.target === realpathSync(before.path);
+  }), { links: linksBefore.length });
+  for (const file of filesBefore) {
+    const after = statSync(file.path);
+    const sha = createHash("sha256").update(readFileSync(file.path)).digest("hex");
+    ok("refused new add leaves " + file.path.split("/").pop() + " inode and bytes", file.ino === after.ino && file.dev === after.dev && file.sha === sha, { before: file.ino, after: after.ino, shaSame: file.sha === sha });
+  }
+  const leftovers = readdirSync(join(configDir, "cotal")).filter((name) => name.startsWith(".extensions.stage-") || name.startsWith(".extensions.rollback-"));
+  ok("the refused new add leaves no stage or rollback directory", leftovers.length === 0, leftovers);
+  const removed = cotal(["ext", "remove", "cotal-ext-live-link"]);
+  ok("the pre-existing package still removes after the refusal", removed.status === 0, removed.stderr.slice(-200));
 }
 
 // -- E2: a multi-peer extension — the linked workspace peer is importable at run time -------------
@@ -488,8 +533,9 @@ registry.register(
   writeFileSync(join(sandbox, ".cotal", "fixture.secret"), "keep");
   for (const name of ["fixture-worker", "manager", "nats", "managre"]) {
     const named = cotal(["down", name]);
-    ok(`named down ${name} refuses as an unknown saved service and signals nothing`,
-      named.status === 2 && /no saved service definition resolves this name/.test(named.stderr) && alive(fixturePid) && existsSync(join(sandbox, ".cotal", "fixture.secret")),
+    const reason = name === "manager" ? /no manager has been started/ : /no saved service definition resolves this name/;
+    ok(`named down ${name} refuses without an owned service and signals nothing`,
+      named.status === 2 && reason.test(named.stderr) && alive(fixturePid) && existsSync(join(sandbox, ".cotal", "fixture.secret")),
       named.stdout + named.stderr);
   }
 
@@ -512,6 +558,19 @@ registry.register(
     whole.status === 0 && !alive(fixturePid) && !existsSync(join(sandbox, ".cotal", "fixture.pid")) && !existsSync(join(sandbox, ".cotal", "fixture.secret")),
     whole.stdout + whole.stderr);
   ok("provider extension removes cleanly", cotal(["ext", "remove", "cotal-ext-providers"]).status === 0);
+
+  // A provider whose records sit in a folder of their own: remove reserves that folder before the
+  // process has ever run, and under a group-writable umask, which the binary inherits, it is 0700.
+  const nested = fixture("cotal-ext-nested", `import { registry } from "@cotal-ai/core";
+registry.register({ kind: "local-process", name: "nested-worker", label: "nested worker", order: 36, pidFile: "nested-worker/{space}.pid" });
+`);
+  ok("an extension with a nested process record adds", cotal(["ext", "add", nested]).status === 0);
+  const previousUmask = process.umask(0o002);
+  const nestedRemoved = cotal(["ext", "remove", "cotal-ext-nested"]);
+  process.umask(previousUmask);
+  const folder = join(sandbox, ".cotal", "nested-worker");
+  ok("under umask 0002, remove creates the provider's record folder 0700",
+    nestedRemoved.status === 0 && (process.platform === "win32" || (statSync(folder).mode & 0o777) === 0o700), nestedRemoved.stderr.slice(-300));
 }
 
 // -- G: remove -------------------------------------------------------------------------------------

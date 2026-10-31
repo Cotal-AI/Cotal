@@ -146,6 +146,8 @@ console.log("✓ 4 — an unknown page fails loud and lists what is available");
   // page, so it holds whatever the corpus says: a hardcoded cut of any value fails one of these.
   assert.equal(searchDocs("cotal", 1).length, 1, "a limit of one returns one section");
   assert.equal(searchDocs("cotal", 4).length, 4, "a limit of four returns four, so the argument is read");
+  assert.deepEqual(searchDocs("cotal", 0), [], "a limit of zero returns no sections");
+  assert.deepEqual(searchDocs("cotal", -1), [], "a negative limit returns no sections");
   assert.ok(searchDocs("cotal.schema.json").length > 0, "a dotted path matches on its segments");
 
   // `refresh` is page-only: on a search it is flagged, not silently ignored.

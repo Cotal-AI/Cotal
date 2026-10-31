@@ -1,15 +1,16 @@
 import * as prompts from "../lib/prompts.js";
-import { acquireMaintenanceLock, brokerAddressForDisplay, canonicalRoot, CommandFailure, oneLine, presentationOf, releaseMaintenanceLock, writeResult, type Report } from "@cotal-ai/workspace";
+import { ConfirmationRequired, acquireMaintenanceLock, brokerAddressForDisplay, canonicalRoot, CommandFailure, oneLine, presentationOf, releaseMaintenanceLock, writeResult, type Report } from "@cotal-ai/workspace";
 import { personaCatalog } from "../lib/persona-files.js";
-import { listAdditiveTeamAttempts, type AdditiveAgentReceipt } from "../lib/team-additive-attempt.js";
+import { listAdditiveTeamAttempts, removalOriginal, type AdditiveAgentReceipt, type AdditiveStoppedReceipt } from "../lib/team-additive-attempt.js";
 import { agentOutcomeRows, agentSettlementRows, AGENT_RECONCILE_NOTE, prepareAgentReconcile, prepareAgentRetirement, withInterruptGuard, type AgentReconcileRun, type AgentRetirementRun } from "./team-agent-remove.js";
 import { CARD_SCOPE_NOTE, cardImpactBlocks, cardOutcomeRows, cardSettlementRows, prepareCardReconcile, prepareCardRemoval, RECONCILE_NOTE, type CardReconcileRun, type CardRemovalRun } from "./team-channel-remove.js";
 import { canPrompt } from "./meshes-wizard.js";
 import type { TeamValues } from "./team.js";
 
-type MixedReceipt = AdditiveAgentReceipt & { kind: "additive-team-receipt" };
+type MixedReceipt = (AdditiveAgentReceipt & { kind: "additive-team-receipt" }) | AdditiveStoppedReceipt;
 
-/** Remove a returned static-auth mixed deployment in one guarded operation: retire every original
+/** Remove a returned static-auth mixed deployment, or a stopped attempt that created both cards and
+ * agent allocations, in one guarded operation: retire every original
  * agent incarnation natively, then delete each original unchanged card by revision CAS. Each phase
  * keeps its own journal, and the card journal is valid only after a complete retirement receipt.
  * Any unknown or partial outcome stops immediately; later members stay unattempted and nothing is
@@ -22,9 +23,10 @@ export async function removeMixedTeam(deploymentId: string, values: TeamValues):
   catch { throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the additive and removal records could not be read; no stop or delete was submitted", { target }); }
   if (inventory.refused.length) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "unreadable deployment or removal records remain; no removal target was inferred", { target, remedy: "inspect team show <deployment-id> and the listed records before any removal" });
   const original = inventory.valid.find((row) => row.deploymentId === deploymentId);
-  const found = inventory.returned.find((row) => row.deploymentId === deploymentId);
-  if (!original || !found || found.kind !== "additive-team-receipt" || found.authMode !== "auth" || original.authMode !== "auth" || !original.managerInstanceId || !found.createdChannels.length || found.createdChannels.length > 100 || found.createdAgents.length > 100 || found.createdChannels.length !== original.declaredChannels.length)
-    throw new CommandFailure("refused", "UNSUPPORTED", "guarded mixed removal needs a full static-auth returned team receipt with its recorded manager and 1 to 100 cards; open, user-auth, legacy and unsettled deployments were not routed here", { target });
+  const found = removalOriginal(inventory, deploymentId);
+  const mixed = found?.kind === "additive-team-receipt" ? found.createdChannels.length === original?.declaredChannels.length : found?.kind === "additive-stopped-receipt" && found.createdAgents.length > 0;
+  if (!original || !found || (found.kind !== "additive-team-receipt" && found.kind !== "additive-stopped-receipt") || !mixed || found.authMode !== "auth" || original.authMode !== "auth" || !original.managerInstanceId || !found.createdChannels.length || found.createdChannels.length > 100 || found.createdAgents.length > 100)
+    throw new CommandFailure("refused", "UNSUPPORTED", "guarded mixed removal needs a full static-auth returned team receipt, or an unsettled attempt whose journal records both its card creates and agent allocations, with its recorded manager and 1 to 100 cards; open, user-auth and legacy deployments and unknown steps were not routed here", { target });
   if (original.space !== space || canonicalRoot(original.root) !== root) throw new CommandFailure("refused", "CONFLICT", "the deployment belongs to another selected root or space; it was not rebound", { target });
   const receipt = found as MixedReceipt;
   const agentsDone = inventory.removal?.returned.find((row) => row.deploymentId === deploymentId);
@@ -51,9 +53,9 @@ export async function removeMixedTeam(deploymentId: string, values: TeamValues):
       { kind: "lines", lines: ["Apply retires each original incarnation once and waits for native retirement and cleanup, then deletes the cards. Cards are not touched unless every retirement is confirmed. Any unknown or partial step stops the operation without replay."] }] },
     { title: "Channel cards", blocks: cardImpactBlocks(data.cards) },
   ] });
-  if (values["dry-run"]) { writeResult(presentationOf(values), { command: "team remove", target, result: preview, completeness: "partial", partial: { message: "Native slots and card revisions were read in order, not atomically. The membership feed is display-only. Nothing was stopped or deleted." } }, previewReport); return; }
+  if (values["dry-run"]) { writeResult(presentationOf(values), { command: "team remove", target, result: preview, completeness: "partial" }, (data) => ({ sections: [...previewReport(data).sections, { blocks: [{ kind: "lines", lines: ["Native slots and card revisions were read in order, not atomically. The membership feed is display-only. Nothing was stopped or deleted."] }] }] })); return; }
   if (!values.yes) {
-    if (!canPrompt() || values.json) throw new CommandFailure("refused", "USAGE_INVALID", "scripted mixed team removal needs --yes after reviewing its retirements, policy fallback and impact", { target });
+    if (!canPrompt() || values.json) throw new ConfirmationRequired("scripted mixed team removal needs --yes after reviewing its retirements, policy fallback and impact", { target, remedy: `review it with \`cotal team remove ${deploymentId} --dry-run\`, then run \`cotal team remove ${deploymentId} --yes\`` });
     const cardsText = `${receipt.createdChannels.length} recorded channel card(s) from ${oneLine(space)}`;
     const answer = await prompts.confirm({ message: `${resume ? `Remove ${cardsText}` : `Retire ${receipt.createdAgents.length} recorded agent incarnation(s), then remove ${cardsText}`}? The space defaults then apply to those channels (delivery ${previewCards.preview.defaults.deliveryClass}). History, grants and other readers are not changed.`, initialValue: false });
     if (prompts.isCancel(answer) || !answer) { writeResult(presentationOf(values), { command: "team remove", target, result: { kind: "mixed-team-removal", removed: false }, noOp: true }, () => ({ sections: [{ title: "Team kept", blocks: [{ kind: "lines", lines: ["No removal intent, stop or delete was submitted."] }] }] })); return; }
@@ -116,9 +118,9 @@ async function reconcileMixedTeam(input: { root: string; space: string; deployme
       ...(data.agents ? [{ title: "Original incarnations", blocks: [{ kind: "table" as const, columns: [{ key: "name", label: "Agent" }, { key: "uid", label: "Original lifecycle" }, { key: "state", label: "Observation" }], rows: agentSettlementRows(data.agents) }, { kind: "lines" as const, lines: [AGENT_RECONCILE_NOTE] }] }] : []),
       ...(data.cards ? [{ title: "Channel cards", blocks: [{ kind: "table" as const, columns: [{ key: "channel", label: "Channel" }, { key: "created", label: "Create revision" }, { key: "state", label: "Observation" }], rows: cardSettlementRows(data.cards) }, { kind: "lines" as const, lines: [RECONCILE_NOTE] }] }] : [{ title: "Channel cards", blocks: [{ kind: "lines" as const, lines: ["Cards are observed only after a complete retirement receipt; none was read."] }] }]),
     ] });
-    if (values["dry-run"]) { writeResult(presentationOf(values), { command: "team remove", target, result: preview, completeness: "partial", partial: { message: "Native slots and card revisions were read in order, not atomically. Nothing was recorded, stopped or deleted." } }, view); return; }
+    if (values["dry-run"]) { writeResult(presentationOf(values), { command: "team remove", target, result: preview, completeness: "partial" }, (data) => ({ sections: [...view(data).sections, { blocks: [{ kind: "lines", lines: ["Native slots and card revisions were read in order, not atomically. Nothing was recorded, stopped or deleted."] }] }] })); return; }
     if (!values.yes) {
-      if (!canPrompt() || values.json) throw new CommandFailure("refused", "USAGE_INVALID", "scripted reconciliation needs --yes after reviewing which observations it records", { target });
+      if (!canPrompt() || values.json) throw new ConfirmationRequired("scripted reconciliation needs --yes after reviewing which observations it records", { target, remedy: `review it with \`cotal team remove ${deploymentId} --dry-run\`, then run \`cotal team remove ${deploymentId} --yes\`` });
       const answer = await prompts.confirm({ message: "Record the observed outcomes for this unsettled mixed removal? Nothing is stopped, deleted or retried.", initialValue: false });
       if (prompts.isCancel(answer) || !answer) { writeResult(presentationOf(values), { command: "team remove", target, result: { kind: "mixed-team-removal-reconcile", recorded: false }, noOp: true }, () => ({ sections: [{ title: "Nothing recorded", blocks: [{ kind: "lines", lines: ["The unsettled intents are unchanged."] }] }] })); return; }
     }

@@ -186,7 +186,7 @@ try {
   );
   const restoreLog = tail(restore);
   ok("the restore did not fail on a maintenance-lock refusal",
-    !/held by a live owner|recovery is already in progress|maintenance lock/i.test(restoreLog),
+    !/held by a live owner|holds this root|recovery is already in progress|maintenance lock/i.test(restoreLog),
     { status: restore.status, log: restoreLog.slice(-2000) });
   ok("the restore stopped at the listener-bind boundary (exit 86)", restore.status === 86,
     { status: restore.status, log: restoreLog.slice(-2000) });
@@ -202,7 +202,7 @@ try {
   const recovered = runSync(["up", "--detach", "--server", server, "--space", space]);
   const log = tail(recovered);
   ok("the re-entry did not fail on a maintenance-lock refusal",
-    !/held by a live owner|recovery is already in progress|maintenance lock/i.test(log),
+    !/held by a live owner|holds this root|recovery is already in progress|maintenance lock/i.test(log),
     { status: recovered.status, log: log.slice(-2000) });
   ok("the restore re-entry exited 0", recovered.status === 0, { status: recovered.status, log: log.slice(-2000) });
 

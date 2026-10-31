@@ -11,3 +11,5 @@ allowBuilds:
   esbuild: true
   msgpackr-extract: false
   protobufjs: false
+patchedDependencies:
+  '@changesets/cli@3.0.3': patches/@changesets__cli@3.0.3.patch

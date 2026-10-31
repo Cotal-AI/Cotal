@@ -47,7 +47,6 @@ import {
   readRunRecord,
   serverConfig,
   setupSpaceStreams,
-  startTimerWriter,
   standaloneConnectOpts,
 } from "@cotal-ai/core";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
@@ -60,6 +59,7 @@ import {
   ledgerAuthorizeGrant,
 } from "../../auth/src/index.js";
 import { pickFreePort } from "./_free-port.js";
+import { hostTimerWriter, type HostedTimerWriter } from "./_timer-writer.js";
 
 const PORT = await pickFreePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
@@ -77,7 +77,7 @@ const releaseBroker = teardownOnSignal(broker, BROKER_DIR);
 let httpServer: import("node:http").Server | undefined;
 let managerProc: ChildProcess | undefined;
 let timerNc: Awaited<ReturnType<typeof connect>> | undefined;
-let timerWriter: Awaited<ReturnType<typeof startTimerWriter>> | undefined;
+let timerWriter: HostedTimerWriter | undefined;
 
 let pass = 0;
 let fail = 0;
@@ -122,7 +122,7 @@ try {
 
   const dlvCreds = await mintCreds(auth, newIdentity(), "delivery");
   timerNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: dlvCreds, tls: false }), maxReconnectAttempts: 0 });
-  timerWriter = await startTimerWriter(timerNc, SPACE, { pollMs: 1_000 });
+  timerWriter = await hostTimerWriter(timerNc, SPACE, { pollMs: 1_000 });
 
   const idpPair = generateKeyPairSync("ed25519");
   const IDP_ISS = "https://idp.example/ef-joint";
@@ -301,6 +301,8 @@ try {
     COTAL_HOME: homeDir,
     XDG_CONFIG_HOME: xdgDir,
     COTAL_SKIP_CONNECTOR_SEED: "1",
+    DO_NOT_TRACK: "1",
+    COTAL_TELEMETRY: "off",
     ...(process.env.EF_PUBLIC_AUTHORITY === "1" ? { EF_PUBLIC_AUTHORITY: "1" } : {}),
   };
 
@@ -642,6 +644,14 @@ try {
   // under its original admission, never an auto-revival by `run answer`.
   const runRecoveredCli = async (args: string[]) => {
     try {
+      // Each call holds the 10s standing family, so a call that outlasts it under load lets it
+      // expire and the manager re-dials on its own. The next call waits for that recovery rather
+      // than starting on a closed service connection.
+      const recovered = await until(async () => {
+        const s = (await probeHeld(activeRunId)).standing;
+        return ["supervisor", "executor", "serve", "goalWriter", "sessionLedger"].every((k) => s[k]?.live) && s.debt === null && s.serveConnClosed === false;
+      }, 45_000);
+      assert.ok(recovered, "standing duties and the service connection must be live before a recovery call");
       const boundary = await witnessOp("PREPARE_RECOVERY", activeRunId);
       assert.equal(boundary.prepared, true, boundary.error ?? "service reconnect and subscription flush must finish before the recovery call");
       assert.equal(boundary.inFlight, 0, "no renewal may race the recovery call");
@@ -708,7 +718,8 @@ try {
     }
     assert.ok((recAfter?.status?.value.epoch ?? 0) > (recBefore?.status?.value.epoch ?? 0), "resume must fence with a new epoch");
     const j = await runRecoveredCli(["journal", activeRunId]);
-    assert.ok(j.stdout.includes("/sleep") || j.stdout.includes("sleep"), "resumed run must keep its native journal");
+    assert.ok(j.stdout.includes("/sleep") || j.stdout.includes("sleep"),
+      `resumed run must keep its native journal (journal exit=${j.code} err=${j.stderr.trim().split("\n")[0]?.slice(0, 200)})`);
   });
 
   await cell("6. Resumed run (same run id) completes; the checkpoint answer is recorded once (before or after resume)", async () => {
@@ -718,7 +729,11 @@ try {
     if (!answeredWhileExpired) {
       const res = await runRecoveredCli(["answer", activeRunId, "/checkpoint:review#0", "--value", '"approved"']);
       console.log(`    evidence: answer exit=${res.code} err=${res.stderr.trim().split("\n")[0]?.slice(0, 200)}`);
-      assert.equal(res.code, 0, `run-answer failed: ${res.stderr}`);
+      // 4b's answer can time out with its outcome unknown and still land. Its step is then
+      // settled, this second answer is refused, and the run must still complete on that one answer.
+      const earlierLanded = res.code !== 0 && /that step has already settled/.test(res.stderr);
+      if (earlierLanded) console.log("    evidence: 4b's timed-out answer had landed; the resumed drive consumes it");
+      else assert.equal(res.code, 0, `run-answer failed: ${res.stderr}`);
     } else console.log("    evidence: answer was recorded while expired; resumed drive consumes it");
     const completed = await until(async () => {
       const rec = await readRunRecord(recordsKv, "manager", activeRunId);

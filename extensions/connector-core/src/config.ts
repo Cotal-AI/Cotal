@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { userInfo } from "node:os";
-import { DEFAULT_SERVER, DEV_OWNER, LAUNCH_MATERIAL_ENV, discardLaunchMaterial, assertLifecycleToken, assertValidChannel, channelInAllow, credsClaims, eventChannel, idFromCreds, isConcreteChannel, loadAgentFile, parseJoinLink, resolveReadAcl, type AgentDef, type ChannelMode, type EndpointKind } from "@cotal-ai/core";
+import { DEFAULT_SERVER, DEV_OWNER, LAUNCH_MATERIAL_ENV, brokerUrlHasUserinfo, discardLaunchMaterial, assertLifecycleToken, assertValidChannel, assertValidKind, channelInAllow, credsClaims, eventChannel, idFromCreds, isConcreteChannel, loadAgentFile, parseJoinLink, resolveReadAcl, type AgentDef, type EndpointKind } from "@cotal-ai/core";
 import { readMaterial } from "./session-env.js";
 
 /** Keyed beta intake — used when a `COTAL_FEEDBACK_KEY` is configured. */
@@ -71,6 +71,10 @@ export interface AgentConfig {
    *  **Default-deny** (empty): publishing must be declared. Informational only here; the broker
    *  enforces it under auth. */
   allowPublish: string[];
+  /** A conversation gateway's connection is not a managed seat. Native personal participation may
+   *  temporarily arm its turn relay through an exact, expiring host-authorized lease, but this flag
+   *  still denies managed-seat custody such as self stop. */
+  turnRelay?: false;
   /** The trusted registration requires this session's event plane. */
   eventsRequired?: boolean;
   /** Per-channel attention DEFAULTS (operator, one-way from the agent file): channels to receive but
@@ -248,6 +252,10 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): AgentConfig
   // BROKEN LAUNCH, not a precedence question: two sources of identity for one session is exactly
   // the ambiguity that ends with a seat connected as something nobody chose, so it throws.
   const material = readMaterial(env);
+  // The client would drop a user and password from the URL, and the session would then fail
+  // authorization with nothing saying why, or print them back in a not-connected line.
+  if (env.COTAL_SERVERS?.trim() && brokerUrlHasUserinfo(env.COTAL_SERVERS))
+    throw new Error("COTAL config: COTAL_SERVERS must not embed credentials; name the broker URL without user:password@, and pass the credential in COTAL_CREDS, COTAL_TOKEN or a COTAL_LINK");
   const credsPath = material?.creds ?? env.COTAL_CREDS?.trim();
   // Read once to pin the connection identity at boot, then preserve the FILE as the endpoint's
   // standing-renewal source. Every later read is checked against this id by CotalEndpoint, so a
@@ -363,7 +371,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): AgentConfig
     eventsRequired,
     quiet: resolvedQuiet,
     muted: resolvedMuted,
-    kind: (env.COTAL_KIND?.trim() as EndpointKind) || def?.kind || "agent",
+    kind: assertValidKind(env.COTAL_KIND?.trim() || def?.kind || "agent"),
     token: material?.token || env.COTAL_TOKEN?.trim() || link?.token,
     user: link?.user,
     pass: link?.pass,

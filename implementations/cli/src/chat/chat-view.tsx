@@ -17,6 +17,7 @@ import {
   applyEvent,
   applyKey,
   composerRows,
+  endingNotice,
   headerRows,
   heardFrom,
   initialState,
@@ -29,7 +30,7 @@ import {
   type Tone,
 } from "./view.js";
 import { closeSession, runPublish, runSlash } from "./controller.js";
-import { discloseChoice, listChoices, parseRecipient, type Choice } from "./picker.js";
+import { discloseChoice, listChoices, parseRecipient, refusedDm, type Choice } from "./picker.js";
 
 const TONE_COLOR: Record<Tone, string | undefined> = {
   ok: "green",
@@ -109,6 +110,14 @@ export function ChatView({ session, initialRecipient, notice, shiftEnterDistinct
     };
   }, [stdout, session, update]);
 
+  // A session with a set end says so a minute before it.
+  useEffect(() => {
+    const ending = endingNotice(session.identity());
+    if (!ending) return;
+    const timer = setTimeout(() => update(addNotice(latest.current, "waiting", ending.text)), Math.max(0, ending.at - Date.now()));
+    return () => clearTimeout(timer);
+  }, [session, update]);
+
   // Acknowledge only after the frame that shows the messages has been committed.
   useEffect(() => {
     if (!unacked.current.length) return;
@@ -137,6 +146,9 @@ export function ChatView({ session, initialRecipient, notice, shiftEnterDistinct
   }, [session, update]);
 
   const choose = useCallback(async (recipient: Recipient) => {
+    // A typed name that reaches no one is refused with the picker still open.
+    const refused = await refusedDm(session, recipient);
+    if (refused) return update(addNotice(latest.current, "failed", refused));
     setPicker(undefined);
     const warning = await discloseChoice(session, recipient);
     let s = setRecipient(latest.current, recipient);

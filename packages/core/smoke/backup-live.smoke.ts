@@ -16,6 +16,7 @@ import {
   chatStream,
   chatSubject,
   createSpaceAuth,
+  credsClaims,
   dmStream,
   downloadStreamSnapshot,
   fanoutDurableConfig,
@@ -38,6 +39,7 @@ import {
   validatePersistentConsumerInventory,
 } from "../src/index.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { answerInjectedDelete, countSnapshotAcks, openSigned } from "./_snapshot-ack.js";
 
 const PORT = 12000 + Math.floor(Math.random() * 8000);
 const servers = `nats://127.0.0.1:${PORT}`;
@@ -168,14 +170,31 @@ try {
   assert.equal(inspectCredHealth(backupCreds).state, "healthy");
   const backupNc = await connect({ servers, ...standaloneConnectOpts({ creds: backupCreds, tls: false }) });
   const chunks: Uint8Array[] = [];
-  const snapshot = await downloadStreamSnapshot(backupNc, chatStream(space), {
+  // The chunk ACKs leave under the profile's own ACK grant; a tap counts the ones the broker let out.
+  const ackTap = await openSigned(servers, auth, "acktap", { sub: { allow: ["$JS.SNAPSHOT.ACK.>"] }, pub: { allow: [] } });
+  const { result: snapshot, acks } = await countSnapshotAcks(ackTap, chatStream(space), () => downloadStreamSnapshot(backupNc, chatStream(space), {
     deliverSubject: snapshotSubject,
     onChunk: (chunk) => { chunks.push(chunk); },
-  });
+  }));
+  await ackTap.drain();
   validateCanonicalBackupStreamConfig(space, chatStream(space), snapshot.config);
   assert.ok(chunks.length >= 3, "snapshot payload spans multiple native chunks");
+  assert.ok(acks > 0, `the snapshot sent no chunk ACK (${acks}), so the ACK grant was not exercised`);
+  console.log(`  ${chatStream(space)}: ${chunks.length} chunks, ${acks} chunk ACK(s) out under the backup credential`);
   assert.ok(chunks.reduce((bytes, chunk) => bytes + chunk.length, 0) > snapshotPayload.length);
   assert.equal(snapshot.state.messages, 1);
+
+  // No response permission: a message to the credential's inbox whose reply is another stream's
+  // DELETE, answered as a chunk is answered, is refused and that stream keeps its message.
+  assert.equal(Object.hasOwn(credsClaims(backupCreds).nats ?? {}, "resp"), false, "the backup snapshot credential carries a response permission");
+  const injector = await openSigned(servers, auth, "injector", { pub: { allow: [`_INBOX_${backup.id}.>`] }, sub: { allow: [] } });
+  const injected = await answerInjectedDelete(backupNc, injector, `_INBOX_${backup.id}.injected`, taskStream(space));
+  await injector.drain();
+  assert.equal(injected.answered, true, "the backup connection did not send the answer, so nothing was tested");
+  assert.match(injected.refusal ?? "", /Permissions Violation for Publish to "\$JS\.API\.STREAM\.DELETE\./);
+  const victimNc = await connect({ servers, ...standaloneConnectOpts({ creds: provisionerCreds, tls: false }) });
+  assert.equal((await (await jetstreamManager(victimNc)).streams.info(taskStream(space))).state.messages, 1, "the TASK stream lost its message");
+  await victimNc.drain();
   await backupNc.drain();
 
   assert.equal(
@@ -189,9 +208,9 @@ try {
     "backup cannot restore",
   );
   assert.equal(
-    await requestPermission(backupCreds, backup.id, `$JS.SNAPSHOT.ACK.${chatStream(space)}.wrong`),
+    await requestPermission(backupCreds, backup.id, `$JS.SNAPSHOT.ACK.${dmStream(space)}.${"n".repeat(22)}.131072.1`),
     "denied",
-    "backup cannot publish a guessed snapshot ACK id",
+    "backup cannot ACK another stream's snapshot",
   );
   assert.equal(
     await requestPermission(

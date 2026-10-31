@@ -5,199 +5,286 @@ kind: Reference
 audience: Workflow authors and runtime implementers
 ---
 
-The mesh handler implements these effects durably. [Runtime contracts](workflow-runtime.mdx) describe replay, wire records, authority, and engine limits.
+## Personal native participants [#participant]
+
+A run started by an approved personal native conversation may bind that same session as a durable
+turn target:
+
+```js
+const session = await participant({ name: "native-session" })
+await turn(session, { name: "review", deadline: "30m" })
+```
+
+The program cannot name an actor or lifecycle. `participant()` reads the immutable run admission,
+pins the exact personal lifecycle in the journal, and refuses if that lifecycle is not live. Before
+starting the program, the conversation opts in with `cotal_turn_participate`. The manager issues a
+short lease for its self-only turn relay. The lease grants no stop, attach or terminal custody, and
+must be renewed after a reconnect or manager restart.
+
 
 ## Spawn ownership [#spawn-ownership-and-cleanup]
 
-`spawn` submits the manager's spawn action under the step's recorded request ID. Resume attaches to the same seat. A failed spawn
-goal produces catchable `L4002` with the manager's reason. Admission refusals have the separate codes described under
-[placement](#worktrees-and-placement).
-
-A losing race branch despawns its seats through cancellation cleanup. A completed run despawns all its seats, including a race
-winner and a failed spawn whose process stayed up. A failed or released run retains seats until a successful resume completes, or
-an operator stops them with `cotal stop`. Independently spawned seats created through `cotal spawn` can outlive a run.
-
-A seat from `onFork: "adopt"` remains up because a fork can share it and the run cannot establish whether another run still uses
-it. It requires `cotal stop` after all sharing runs finish. A migrated seat follows its adopting spawn's policy. If any earlier
-holder used `onFork: "adopt"`, the seat remains up because an earlier fork might still share it.
-
-In a multi-manager space, only the allocating manager's answer establishes that a seat is already gone.
+`spawn` is
+the manager's spawn action submitted under the step's own identity: the goal binds under the step's
+request id, so a resumed run re-attaches to the same seat instead of allocating a second one, a
+spawn whose seat fails to come up is catchable as L4002 with the manager's recorded reason (one the
+endpoint refuses at accept is L4000, described below), and a spawn on a
+race branch that loses is despawned by the run's own cancellation sweep. A seat belongs to the run
+that spawned it: when the run completes, it despawns every seat it spawned, including a race
+winner's and one whose spawn failed while its process stayed up. A spawn marked `onFork: "adopt"`
+is the exception: a fork can share that seat and no run can see whether another still uses it, so
+the seat stays up until you stop it with `cotal stop` once every run sharing it is done. A seat a
+migration handed to a later spawn follows that spawn's policy, and it stays up if any spawn that held
+it was marked `onFork: "adopt"`, because a fork taken before the migration may still share it. In a
+space with several managers, a despawn counts a seat as already gone only when the manager that
+allocated it says so. A run that
+fails or is released keeps its seats until a resume completes it or you stop them with
+`cotal stop`. Start a seat with `cotal spawn` when it should outlive any run.
 
 ## Seat budgets [#seat-budgets]
 
-The host meters `permits.turns`, the number of turns dispatched, and `permits.wallClock`, the duration since spawn after which it
-admits no more turns. A turn exceeding either budget raises catchable `L4001`, kind `permit-turns` or `permit-wall-clock`. A turn
-deadline beyond the remaining wall-clock budget also exceeds that budget. Adopted runs count the turns already recorded in their
-journals.
-
-The host refuses unmetered budgets, including `tokens` and `spend`, at spawn.
+`permits` are the budgets
+this host meters: `turns`, how many turns the run may dispatch to the agent, and `wallClock`, a
+duration from the spawn after which no turn is admitted. The turn that would exceed one is the
+catchable L4001 (kind `permit-turns` or `permit-wall-clock`; a deadline the remaining wall clock
+cannot hold counts as exceeding it), an adopted run counts the turns its journal recorded, and a
+budget the host has no meter for, such as `tokens` or `spend`, is refused at the spawn rather than
+accepted and ignored.
 
 ## Supervision [#supervision]
 
-`supervise.restarts` limits process deaths that may restart under the same handle. `supervise.window` is the counting duration,
-default `10m`. Restart retains the name, lifecycle UID, persona, worktree, and permits. `monitor` does not fire for a restart.
-`wait(down)` observes only permanent loss. An exhausted restart budget retires the seat, and its next `turn` raises catchable
-`L4002`.
-
-On a static mesh, recovery also covers manager death. The next process serving that instance restarts an unstopped seat and counts
-one restart. This includes a crash and a PTY seat that ended with its manager. An interrupted accepted turn is served again.
-Finished turns are not. A spent budget, changed persona file, or changed or expired credential causes retirement instead.
-
-Spawn refuses a policy the host cannot enforce. Causes include an unknown key, a user-mode seat, and a runtime unable to respawn a
-name in place.
+`supervise` is the restart policy this host asks the manager to enforce:
+`restarts`, how many in-window process deaths may come back under the same handle, and `window`,
+the duration those deaths are counted in (default `10m`). The manager restarts the process in
+place under the same name, lifecycle uid, persona, worktree and permits; `monitor` does not fire
+for a restart, and `wait(down)` fires only when the seat is gone for good. Spending the budget
+retires the seat, and the next `turn` is the catchable L4002. The policy also covers the manager's
+own death. On a static mesh, when the manager ends without stopping the seat (a crash, or a pty seat
+that ended with its manager), the next manager of the same instance restarts the seat the same way
+and counts that as one restart. A turn the dead manager had accepted for the seat is served to the
+restarted seat, so the interrupted turn runs again and finished turns do not. A turn an older
+manager accepted is not served again, because its record does not name the seat's owner, and it
+ends at its deadline as L4003. A seat whose budget
+is spent, or whose persona file or credential changed or expired while no manager ran, is retired instead. A policy this host cannot enforce
+(an unknown key, a user-mode seat, or a runtime that cannot respawn a name in place) is refused
+at the spawn rather than accepted and ignored.
 
 ## Event plane [#event-plane]
 
-`events: false` matches `cotal spawn --no-events` and disables the seat's AG-UI event plane. Omission enables the plane. A
-connector without event publication, such as Hermes, therefore requires `events: false` or the manager refuses spawn. A nonboolean
-value also refuses at spawn.
+`events: false` is the workflow form of
+`cotal spawn --no-events`: the seat starts without its AG-UI event plane. A connector that
+publishes none, such as Hermes, needs it, because an omitted `events` arms the plane and the
+manager refuses that connector at the spawn. A value that is not a boolean is refused at the
+spawn. `runtime` names the terminal runtime of this one seat (`pty`, or an installed extension such
+as `tmux`). Omitted, the seat uses the serving manager's own runtime. A name that manager cannot
+resolve refuses the spawn and starts nothing, and the other seats keep the runtime they already have.
+
 
 ## Conclave membership [#conclave-membership]
 
-`conclave` writes durable membership rows for its members. An unnamed channel derives from the step's request ID. A program-named
-channel is borrowed and is never torn down. Membership that predates the conclave survives close.
-
-Each handle resolves to a principal through the seat's presence row. An absent member raises catchable `L4002`. Cancellation
-cleanup releases conclaves on losing branches.
+`conclave` joins its
+members to a real channel as durable membership rows: the channel derives from the step's own
+request id when the program names none (a program-named channel is borrowed, never torn down, and
+a membership that predates the conclave survives its close), each member handle resolves to its
+principal through the seat's own presence row (an absent member is catchable as L4002), each
+member's row is written under that lifecycle's exact read ACL (read just before the write and again
+after it, so a member retiring meanwhile gets no row and keeps none), and a
+conclave cancelled on a losing branch is released by the same cancellation sweep.
 
 ## Ask attempts [#ask-attempts]
 
-`ask` opens one checkpoint-plane pause and one seat relay per attempt, under the attempt's token. `cotal run answer` answers the
-pause. The relay carries the schema, attempt count, absolute deadline, and previous refusal. The connector renders the requested
-record and the hosted command that answers it. The manager stops serving the relay when the pause expires and refuses an already
-expired relay.
+`ask` parks one
+checkpoint-plane pause per attempt, answered through `cotal run answer` as a checkpoint is, and
+tells the agent through the same relay `turn` uses: one relay per attempt under the attempt's own
+token, carrying the schema, the attempt count, the deadline and the previous refusal, which the
+seat's connector renders as the record wanted and the native command that answers it. The relay
+names the ask's absolute deadline, so the manager stops serving an attempt at the instant its
+pause expires and refuses a relay already past it. The seat calls `cotal_describe` for endpoint
+`manager`, then `cotal_invoke` with `endpoint: "manager"`, `command: "run-answer"`, `self: true`
+and `args` containing the relayed `runId`, `stepKey` and requested `value`. This uses the native
+connection's own identity even when the harness strips the shell's mesh environment. It needs no
+`run` grant or `run-status` read. Answer before ending the host turn. `cotal_yield` submits no
+answer value and can withdraw the pending relay that authorizes a baseline answer.
+The manager records the authenticated caller as the answerer. A spawned seat's
+baseline credential carries only the self-targeted `run-answer` row, and the manager accepts it only
+for the open ask or escalation relayed to that exact incarnation. It cannot answer another seat's
+ask, an unrelayed checkpoint, another run, or start and resume commands. An ask addresses
+an agent the run spawned (anything else refuses before an attempt opens), a resumed attempt tells
+the seat nothing twice, and a seat gone at the relay is L4002. On the pause itself:
+the shorthand of the language reference §6.5 is enforced (an unreadable schema is L4022), a
+non-conforming answer costs one attempt and its refusal reason is recorded on the entry for the
+answerer to read, exhausted attempts (default one) are the catchable L4006, and so is the one
+absolute deadline for the whole ask passing with no conforming record (its kind is `ask-deadline`),
+including one that passes before an attempt's pause is armed.
 
-Inside the managed seat, that command reuses the seat's lifecycle credential and issued identity. It accepts no `--by`. The
-manager attributes the answer to the authenticated caller. A baseline seat credential has only a self-targeted `run-answer` row.
-It can answer only the open ask or escalation relayed to that incarnation. It cannot answer a peer's ask, an unrelayed checkpoint,
-or another run, and it cannot start or resume a run.
-
-An ask must address an agent this run spawned. Other agents refuse before an attempt opens. Resume does not repeat an attempt's
-notification. A seat gone at relay produces `L4002`.
-
-Handlers enforce the schema shorthand in language reference §6.5. An unreadable schema produces `L4022`. A nonconforming answer
-consumes an attempt and records its refusal reason for the answerer. Exhausted attempts, default one, produce catchable `L4006`.
-The ask has one absolute deadline across all attempts. Expiry without a conforming answer also produces `L4006`, kind
-`ask-deadline`, even if expiry precedes pause arming.
 
 ## Checkpoint journal entries [#checkpoint-journal-entries]
 
-A checkpoint entry records its question. While open, `cotal run journal` prints the question beneath the step key used by
-`answer`. The entry also records the attempt deadline and its armed `onExpiry`, both exposed by `run journal --json`. Source still
-determines the expiry behavior.
+`checkpoint` binds what it asks on its own entry, so `cotal run show` prints the question under
+the step key an answer is addressed by while the pause is open: the address alone left whoever was
+asked reading the source to find out what "approve" meant. The entry also records the open
+attempt's deadline and the `onExpiry` it was armed with, which `run show --json` reports; what
+an expiry does is still decided from the program's source. An escalation's attempt records its own
+deadline, one `timeout` after it opens, and a resumed attempt keeps the deadline it recorded. After a checkpoint or `ask` accepts an
+answer, the journal prints that accepted answer's recorded value and attribution under the settled
+step. A checkpoint's comes from its frozen result, and the journal never substitutes another filed
+answer or invents fields that result does not hold. An `ask`'s result is the value alone, so its line
+is read from the answer record its last attempt's settle named, even when that value is a record with
+fields named like a checkpoint's. Amendments print on their own lines after it.
 
-An escalation attempt records a deadline one `timeout` after opening. Resume keeps that deadline.
-
-After settlement, the journal prints only the accepted answer's value and attribution. A checkpoint uses its frozen result,
-without substituting another filed answer or inventing missing fields. An ask returns the value alone, so the journal reads the
-answer record named by the last attempt's settle. Fields in that value that resemble checkpoint fields have no special meaning.
-Amendments print on separate lines afterwards.
 
 ## Escalation [#escalation]
 
-For a `to` naming a seat this run spawned, `escalate` uses the seat relay with the prompt, answer token, and pause deadline. Any
-other `to` names a person. That pause remains answerable by anyone with the required authority, and the journal records and
-displays the addressee beside the question.
+An `escalate` addressed to an agent this
+run spawned is relayed to that seat through the same turn relay an `ask` uses, carrying the prompt
+and the token to answer under, held to the pause's own deadline; a `to` naming anyone else is a
+person, and their pause stays the one anybody can answer, with the addressee recorded and rendered
+beside the question.
+
 
 ## Presence liveness [#presence-and-down-waits]
 
-`monitor` records interest in a handle in its journal entry. Monitoring an already dead agent succeeds. `wait(down(...))` observes
-that death and refuses a handle the run never monitored.
+`monitor` registers interest in an agent, and the
+registration is the journal entry itself, carrying the handle it registered: monitoring an agent
+that is already dead succeeds, and the death is the wait's to observe. `wait(down(...))` observes
+a monitored agent, and refuses one the run never performed `monitor` on. It reads the death off presence liveness, the
+same witness a conclave join resolves members through: the value carries the handle, the reason
+(`lapsed` when nothing live holds the name any more, `superseded` when a live row holds it under
+a different incarnation) and the time of observation. Presence liveness skips any value without a
+string `card.id` equal to its key, a string `card.name`, a known `status` and a finite `ts`, so a
+participant that publishes a malformed row under its own key
+cannot fail another run's wait, turn or conclave join. A superseded incarnation is down at once. A
+lapsed one is down only after its presence row has stayed gone for 30 seconds, because a seat whose
+connector stalls past the row's 6-second TTL, under host load or across a reconnect, renews it under
+the same incarnation and is still working. The 30 seconds count only across presence reads that
+each end within 6 seconds of the previous one starting, so a slow read or a run of failed reads, which
+could hide a renewal, starts the count over. Even then the run asks the manager first: a seat whose
+process the manager still runs is alive however long its row has been gone, so the count starts over.
+Only the manager that spawned the seat can report it gone, because another manager in the space knows
+only its own seats, so the run asks again until that one answers. When it does not answer, the presence
+row is the only witness and the lapse stands. The asking stops at the wait's timeout or cancellation,
+and at a turn's deadline, yield or cancellation, which then decide. A wait that begins
+after the death resolves once that holds, and a timeout resolves null on one absolute deadline a
+resumed run re-attaches to.
 
-Presence also resolves conclave members. A death observation contains the handle, observation time, and reason. `superseded` means
-a live row uses the name under a different incarnation. `lapsed` means no live row holds the name. Values without string `card.id`
-and `card.name` fields are ignored, so a malformed row cannot fail another run's wait, turn, or conclave join.
-
-Supersession establishes death immediately. A lapse requires 30 seconds of confirmed absence. The presence TTL is 6 seconds, so
-connector stalls or reconnects can briefly remove a working seat. Each confirming read must finish within 6 seconds of the
-previous read's start. A slow read or failed reads restart the count because they could conceal renewal.
-
-Before confirming a lapse, the run asks the allocating manager. If it still runs the process, the absence count restarts. A
-sibling manager cannot establish death, so the run asks again until the allocating manager answers. If that manager does not
-answer, the confirmed presence lapse remains the evidence. Queries stop at the wait's timeout or cancellation, or the turn's
-deadline, yield, or cancellation.
-
-A wait started after death resolves when the same conditions hold. Timeout returns `null` at one absolute deadline retained across
-resume.
 
 ## Turn relay [#turn-relay]
 
-`turn` submits a goal under the step's identity, pinned to the seat's incarnation. The seat pulls that relay before its next host
-turn. The manager does not inject it during a turn. The payload identifies the run and step, includes rendered run context, and
-consumes pending notices for that seat.
+`turn` wakes one seat for one host turn through the manager: the run
+submits the turn under the step's own identity, the manager holds it as a goal pinned to the
+seat's incarnation, and the seat pulls it under its own reach ahead of its next host turn, so
+nothing is pushed into a session mid-thought. The manager sends the seat a turn notice whenever
+its pending turns change, and repeats it every 5 seconds until the seat pulls a new turn. The seat
+pulls when a notice arrives, when it first connects, and after a reconnect while it holds a turn,
+so an idle seat sends no requests ([SPEC §14.3](../SPEC.md#143-the-run-record)). The payload the seat reads names the run and the
+step and carries the rendered run context, plus any pending notices addressed to it, which the
+turn consumes. The seat yields through `cotal_yield` (`done`, `blocked`, or `handoff` with an
+addressee), and ending its host turn yields `done` for every turn it was shown. A
+`cotal_status` call changes presence only, including when it sets `idle`. It does not yield a turn.
+If a yield times out with an unknown outcome, it may already be recorded. After reconnecting,
+retry the same turn id and intended status. An already-settled reply confirms a terminal turn,
+not which attempt settled it. Success records a still-active turn, so this retry is not a
+read-only check.
+A `handoff` names another seat the same run spawned: the next `turn` in the same scope to that seat records the
+link, a handoff to a name the run never spawned is the catchable L4005, and one to a seat bound
+to a different worktree is L4004. The deadline elapsing before any yield is the catchable L4003:
+the acceptance names the instant, the manager's goal-bound hold denies at it, and the run arms its
+own pause on that same instant, so either side outliving the other still converges on the same
+answer. A seat that pulled the turn earlier stops showing it to its session at that same
+instant. A seat that dies mid-turn is read off its own presence row by the run itself, with the
+same 30-second confirmation for a lapsed row, and is the catchable L4002, and a death the manager
+marked on the deadline terminal reads the same way. Two
+turns on one seat, from two branches or from two runs, reach it one at a time: the language
+dispatches the second when the first settles, and the manager shows a seat the oldest unsettled
+turn alone. A turn's goal id belongs to the caller that submitted it, so two callers may each submit
+a turn under the same id. A seat yields by goal id alone, so the manager refuses to hand one seat
+a second caller's turn under an id it already holds. On an auth mesh the relay needs no extra grant: every spawned seat's baseline
+credential carries its own pull, yield, and caller-bound answer rows, the run driver's operator instrument carries the
+turn request and the `inspect` read that confirms a lapse, and the manager arms the deadline hold over its own serve grant and expires it
+itself once due. An accept the manager cannot finish is unwound to a failed terminal on the goal
+it bound, and a retry of that submission is refused naming the terminal rather than accepted a
+second time.
 
-`cotal_yield` returns `done`, `blocked`, or `handoff` with an addressee. Ending a host turn yields `done` for every displayed
-turn. A handoff must name another seat spawned by this run. The next turn to that seat in the same scope records the link. An
-unknown addressee raises catchable `L4005`. A different worktree raises `L4004`.
-
-The acceptance, manager hold, run pause, and seat display use the same absolute deadline. Expiry before yield raises catchable
-`L4003`. A seat that already pulled the relay stops displaying it at that instant. Seat death raises `L4002`, including a death
-recorded in the manager's deadline terminal. A lapsed presence row uses the same 30-second confirmation as [down
-waits](#presence-and-down-waits).
-
-Turns from different branches or runs reach a seat one at a time. The language waits for the previous turn to settle. The manager
-displays only the oldest unsettled turn. Goal IDs are caller-scoped, but seat yields identify only a goal ID. The manager
-therefore refuses to give one seat another caller's turn under an ID already held there.
-
-On an authenticated mesh, baseline seat credentials include their own pull, yield, and caller-bound answer rows. The run driver's
-operator instrument carries the turn request and `inspect` read for lapse confirmation. The manager uses its serve grant to arm
-and expire the deadline hold. No extra relay grant is required.
-
-An acceptance the manager cannot complete ends in a failed goal terminal. A duplicate submission refuses with that terminal
-instead of accepting again.
 
 ## Reply waits [#reply-waits]
 
-`wait(replied(...))` observes completed turns from another branch. It returns the handle, yield status, note, and yield timestamp.
-An existing reply resolves immediately. Multiple replies resolve to the latest yield timestamp.
+`wait(replied(...))` observes those turns from another branch: a completed turn is a reply, and
+the wait resolves with the observation record (the handle, the yield's status and note, the
+yield's own stamp). It reads as a level, the way `wait(down)` does: a reply that already exists
+resolves the wait at once, and two replies resolve to the latest by the yield's stamp. A denied
+or cancelled turn is never a reply, so an unanswered wait rides its own mediated timeout to
+`null`, and a handle the run never spawned or turned refuses loudly, since only this run's turns
+are observable. A turn the run itself ended without an accepted yield (its deadline, a
+cancellation, a refused handoff) is never a reply, whatever the seat yields to the relay later.
 
-Only this run's spawned and turned handles are observable. Other handles refuse. Denied or cancelled turns are not replies.
-Neither is a turn ended without an accepted yield, including deadline expiry, cancellation, or refused handoff, even if the seat
-yields later. An unanswered wait returns `null` at its mediated timeout.
 
 ## Cancellation [#cancellation]
 
-Before a branch's cancellation completes, its turn, ask attempt, or escalation relay ends `cancelled` through the manager's
-reserved `cancel` command in SPEC §13.6. The seat cannot display that relay after scope settlement. Later turns do not queue
-behind it.
+A cancelled branch also withdraws what it relayed to a seat before its cancellation completes: its
+turn, its ask attempt or its escalation ends `cancelled` through the manager's reserved `cancel`
+(SPEC §13.6), so the seat is not shown it after the branch's scope settles and the next turn to
+that seat does not wait behind it. Only the manager that accepted the relay holds it, so in a
+space with more than one manager the run sends the cancel again while another manager refuses it,
+until the accepting one answers. A cancel refused as `unavailable`, such as by a manager still
+reconciling at boot, or one whose reply is lost (`deadline-exceeded`) is sent again until it
+lands or the relay's deadline passes, so the branch's cancellation does not complete while the
+seat can still be shown the relay. Any other refusal fails the branch's step at once under its
+code, since sending it again changes nothing: a manager that serves no `cancel` is refused
+`not-found` before anything is sent, and an accepting manager with no such relay pending refuses
+`failed-precondition`. The run reads the relay's deadline from its goal and retries a failed
+read, since the relay may still be served until the deadline is known. A goal record
+that can never yield a deadline, such as one that is not JSON, fails the branch's step at once,
+and so does a refusal that lasts past the deadline.
 
-Only the accepting manager holds the relay. In a multi-manager space, the run repeats cancellation after a sibling refuses. It
-also retries `unavailable`, including boot reconciliation, and lost replies reported as `deadline-exceeded`. Retries continue
-until cancellation lands or the relay deadline passes. Cancellation cannot finish while the relay can still be displayed.
-
-Any other refusal fails the branch step immediately under that code. A manager without `cancel` produces `not-found` before
-publication. An accepting manager without a pending relay produces `failed-precondition`.
-
-The run reads the deadline from the goal and retries failed reads. A goal that cannot yield a deadline, including malformed JSON,
-fails the step immediately. A refusal continuing past the deadline also fails the step.
 
 ## Placement [#worktrees-and-placement]
 
-`spawn("builder", { worktree: "wt-1" })` puts a logical worktree ID in the handle. Two agents cannot share it concurrently. The
-validator rejects two concurrent branches using the same literal ID with `L3022`, including named branch functions.
+A `spawn` may bind its agent to a **logical worktree** (`spawn("builder", { worktree: "wt-1" })`):
+the handle carries the id, and the run enforces the one rule the language states about it: two
+agents never share a worktree concurrently. The validator rejects the literal case up front
+(L3022: two branches of one concurrent scope spawning into one literal worktree, named branch
+functions included), and the runtime guards the rest, computed ids included: a spawn claims its
+tree before it submits, so a second spawn into a tree held by a live seat or by a spawn still
+bringing one up is the catchable L4008, a spawn that ends without a handle gives the tree back,
+and the tree is reusable the moment a holder's presence row is gone, so a discharged race loser
+or a crashed seat releases its tree with no bookkeeping. A spawn the endpoint refuses at accept
+is the catchable L4000 (L4001 when the refusal is the endpoint's seat capacity), and one whose
+seat never came up is L4002. A refusal that states the command did not run is answered
+before it gets that far. In a space served by more than one manager the resolve and the invoke
+are separate trips through the same anycast queue, so a run's call can reach an instance it did
+not resolve against, and that instance refuses ahead of any effect. The run drops its resolved
+handle, re-describes and re-issues, for a bounded number of attempts; after them the refusal
+surfaces as the effect's own failure and still states that nothing ran. A spawn that names a
+`placement` addresses one instance by name, so a refusal from it is that incarnation answering
+about itself and is never re-issued. When the spawn also names `cwd`, that manager resolves the
+existing absolute directory to its canonical host path before accepting the spawn. A missing,
+relative or non-directory path refuses with no seat and never falls back to the manager workspace.
+One hosted run may name one placement instance; a program naming several is refused instead of
+widening one run credential across hosts. Placement is accepted only from an object-literal spawn
+option bag whose `endpoint` and `instanceId` are string literals. A computed option bag, a computed
+placement field, or a spread in either object refuses at `run-start`. The option argument may be
+absent, and an object-literal bag without placement is accepted when it names no `cwd`.
+A spawn that names `cwd` must also name `placement`, because that directory belongs to one host.
+Without placement it refuses with L4000 before submitting a spawn. Read the manager instance with
+`cotal ps`, then put its full instance ID into the program as a literal:
 
-The runtime also checks computed IDs. Spawn claims the worktree before submission. Another spawn while a live seat or unfinished
-spawn holds it raises catchable `L4008`. A spawn ending without a handle releases its claim. A holder's absent presence row makes
-the worktree reusable, including after a race loser is discharged or a seat crashes.
+```js
+const worker = await spawn("worker", {
+  placement: { endpoint: "manager", instanceId: "abcdefghijklmnopqrstuvwxyz" },
+  cwd: "/home/operator/project"
+})
+```
 
-An endpoint admission refusal produces catchable `L4000`, or `L4001` for seat capacity. A seat that never comes up produces
-`L4002`. A resolve-invoke incarnation mismatch that proves `not-executed` is handled before those failures. The run drops the
-resolved handle, re-describes, and reissues within the same bounded retry policy as [endpoint
-calls](control-discovery.mdx#instance-mismatch-and-reissue). Exhaustion returns the effect failure while retaining the evidence
-that nothing ran.
+Replace both example values with the manager instance and an existing absolute directory on that
+manager's host. No manager is chosen by class anycast for this spawn.
 
-A spawn with `placement` pins an instance and is never reissued. With `cwd`, that manager canonicalizes an existing absolute host
-directory before acceptance. Missing, relative, or nondirectory paths refuse with no seat. They never select the manager workspace
-as a substitute.
-
-A hosted run can name one placement instance. Several instances refuse rather than widen the credential across hosts. Placement
-requires an object-literal option bag, with literal strings for `endpoint` and `instanceId`. A computed bag, computed placement
-field, or spread in either object refuses at `run-start`. An absent option argument or literal bag without placement is accepted.
 
 ## Recovery cleanup [#recovery-cleanup]
 
-Resume reconstructs the roster, worktree holders, and handoff records from the journal. Cross-worktree handoff remains `L4004`.
-
-Before the engine performs a new step, driver adoption reissues recorded cancellations whose cleanup has not completed. This
-releases seats and worktrees left by a crash. The sweep also withdraws cancelled relays and undelivered notices. A cancelled
-decision record therefore cannot appear at an agent's next turn.
+A turn handoff across worktrees is the L4004 described above. Recovery keeps these honest: a resumed run
+reseeds its roster, holders and handoff memos from its own journal, and the driver re-issues any
+recorded-but-undischarged cancellation at adoption, before the engine performs a new step, so a
+loser a crash left alive does not keep its seat or its tree while the resumed run works on. The
+same sweep withdraws a cancelled branch's relays and undelivered notices: a notice waits on the run for its
+addressee's next turn, so a decision the run cancelled would otherwise arrive at an agent with
+nothing to distinguish it from one that stood.

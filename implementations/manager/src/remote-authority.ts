@@ -4,17 +4,24 @@ import {
   admissionSnapshot,
   revocationSnapshot,
   type RemoteRunRevokeRequest,
+  type RemoteRunCancelRequest,
+  type RemoteRunCancelResult,
   type RemoteRunRevokeResult,
   accountFromCreds,
   managedRetirementOpId,
   mintLifecycleUid,
   newIdentity,
+  parseGoalIndexEntry,
   parseRemoteManagedAgentRuntimeResult,
   remoteManagerActors,
+  remoteManagerParticipationAuthorizationRequest as coreParticipationAuthorizationRequest,
+  remoteManagerParticipationAuthorized as coreParticipationAuthorized,
   REMOTE_MANAGER_IDENTITY_NAMES,
   type Identity,
   type RemoteManagerAdminAuthorizationRequest,
   type RemoteManagerAdminAuthorizationResult,
+  type RemoteManagerParticipationAuthorizationRequest,
+  type RemoteManagerParticipationAuthorizationResult,
   type RemoteManagerAuthorityMaterial,
   type RemoteManagerAuthorityRequest,
   type RemoteManagerGoalIndexScanRequest,
@@ -84,8 +91,8 @@ export function remoteRunAttemptRequest(state: RemoteManagerIdentityState, proof
   return { ...runRequestBase(state, proof, account, epoch), kind: "manager-run-attempt", ...coordinates };
 }
 
-function exactKeys(value: unknown, keys: string[], what: string): Record<string, unknown> {
-  if (value === null || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join(",") !== keys.sort().join(","))
+function exactKeys(value: unknown, keys: readonly string[], what: string): Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join(",") !== [...keys].sort().join(","))
     throw new Error(`${what} returned a non-closed result`);
   return value as Record<string, unknown>;
 }
@@ -156,8 +163,9 @@ export function remoteRunHosting(args: {
   requestRunSubmission?: (request: import("@cotal-ai/core").RemoteRunSubmissionRequest) => Promise<import("@cotal-ai/core").RemoteRunSubmissionResult>;
   requestRunAttempt: (request: RemoteRunAttemptRequest) => Promise<RemoteRunAttemptResult>;
   requestRunRevoke?: (request: RemoteRunRevokeRequest) => Promise<RemoteRunRevokeResult>;
+  requestRunCancel?: (request: RemoteRunCancelRequest) => Promise<RemoteRunCancelResult>;
   call: (request: RemoteManagerAuthorityRequest) => Promise<RemoteManagerAuthorityMaterial>;
-}): Required<Pick<RunHostingContext, "admitRun" | "issueAttempt" | "issueOperator" | "renewRun" | "revokeRun">> & Pick<RunHostingContext, "submitRun"> {
+}): Required<Pick<RunHostingContext, "admitRun" | "issueAttempt" | "issueOperator" | "renewRun" | "revokeRun">> & Pick<RunHostingContext, "submitRun" | "cancelRun"> {
   const { state, owner, registrationProof, accountPublicKey, processEpoch } = args;
   return {
     submitRun: async ({ subject }) => {
@@ -171,6 +179,29 @@ export function remoteRunHosting(args: {
         || r.requestId !== request.requestId || typeof r.winner !== "boolean" || !r.view)
         throw new Error("invalid keyed submission issuer response");
       return { ...r, ...(r.admission ? { admission: admissionSnapshot(r.admission) } : {}) };
+    },
+    cancelRun: async ({ stage, subject, cancel }) => {
+      if (!args.requestRunCancel) throw new Error("issuing host does not implement observed run cancellation");
+      const request: RemoteRunCancelRequest = { ...runRequestBase(state, registrationProof, accountPublicKey, processEpoch), kind: "manager-run-cancel", stage, subject, cancel };
+      const result = await args.requestRunCancel(request);
+      exactKeys(result, ["v", "kind", "requestId", "runId", "stage", stage === "inspect" ? "authority" : "result"], "manager run cancel");
+      if (result.v !== 1 || result.kind !== request.kind || result.requestId !== request.requestId || result.runId !== cancel.runId || result.stage !== stage)
+        throw new Error("manager run cancel returned different request coordinates");
+      if (result.stage === "inspect") {
+        if (!["original", "owner-interactive", "admin"].includes(result.authority)) throw new Error("manager run cancel returned an unknown authority class");
+        return result;
+      }
+      const answer = result.result;
+      if (answer?.kind === "committed") {
+        exactKeys(answer, ["kind", "outcome", "revocation"], "manager run cancel committed");
+        if (answer.outcome !== "created" && answer.outcome !== "existed") throw new Error("manager run cancel returned an unknown write outcome");
+        return { ...result, result: { ...answer, revocation: revocationSnapshot(answer.revocation, cancel.runId) } };
+      }
+      exactKeys(answer, ["kind", "code"], "manager run cancel refusal");
+      if ((answer.kind !== "refused-before-dispatch" && answer.kind !== "outcome-unknown")
+        || !["permission-denied", "failed-precondition", "deadline-exceeded", "resource-exhausted", "unavailable"].includes(answer.code))
+        throw new Error("manager run cancel returned an unknown dispatch disposition");
+      return result;
     },
     revokeRun: async (revoke) => {
       if (args.requestRunRevoke === undefined) throw new Error("the issuing host supplies no closed run revoke request");
@@ -238,9 +269,7 @@ export function remoteManagerAdminAuthorized(
   request: RemoteManagerAdminAuthorizationRequest,
   expectedOwner: string,
 ): boolean {
-  const fields = ["v", "kind", "space", "owner", "actor", "instanceId", "managerLifecycleUid", "requestId", "registrationProof", "serveEpoch", "identities", "caller", "authorized"];
-  if (result === null || typeof result !== "object" || Array.isArray(result) || Object.keys(result).sort().join(",") !== fields.sort().join(","))
-    throw new Error("manager admin authorization returned a non-closed result");
+  exactKeys(result, ["v", "kind", "space", "owner", "actor", "instanceId", "managerLifecycleUid", "requestId", "registrationProof", "serveEpoch", "identities", "caller", "authorized"], "manager admin authorization");
   if (result.v !== 1 || result.kind !== "manager-admin-authorization" || result.space !== request.space ||
       result.owner !== expectedOwner || result.actor !== request.actor || result.instanceId !== request.instanceId ||
       result.managerLifecycleUid !== request.managerLifecycleUid || result.requestId !== request.requestId ||
@@ -249,6 +278,31 @@ export function remoteManagerAdminAuthorized(
       typeof result.authorized !== "boolean")
     throw new Error("manager admin authorization returned different lifecycle, identity, caller, owner, or boolean coordinates");
   return result.authorized;
+}
+
+export function remoteManagerParticipationAuthorizationRequest(
+  state: RemoteManagerIdentityState,
+  actor: string,
+  registrationProof: string,
+  serveEpoch: number,
+  caller: { owner: string; actor: string; lifecycleUid: string },
+): RemoteManagerParticipationAuthorizationRequest {
+  return coreParticipationAuthorizationRequest(
+    { space: state.space, instanceId: state.instanceId, lifecycleUid: state.lifecycleUid, identities: publicIdentities(state) },
+    actor,
+    registrationProof,
+    serveEpoch,
+    caller,
+    `participate${mintLifecycleUid()}`,
+  );
+}
+
+export function remoteManagerParticipationAuthorized(
+  result: RemoteManagerParticipationAuthorizationResult,
+  request: RemoteManagerParticipationAuthorizationRequest,
+  expectedOwner: string,
+): boolean {
+  return coreParticipationAuthorized(result, request, expectedOwner);
 }
 
 function stateFile(root: string, space: string): string {
@@ -340,14 +394,20 @@ export function remoteManagerMaintenanceResult(
   request: RemoteManagerMaintenanceRequest,
   expectedOwner: string,
 ): RemoteManagerMaintenanceResult {
+  let resultField: "evictions" | "reconciliation";
+  if (request.operation === "evict-family-principal") resultField = "evictions";
+  else if (request.operation === "reconcile-registration") resultField = "reconciliation";
+  else {
+    const unhandled: never = request.operation;
+    throw new Error(`manager maintenance has no result for operation ${unhandled}`);
+  }
   const expectedKeys = [
     "v", "kind", "operation", "space", "owner", "actor", "instanceId", "managerLifecycleUid",
     "requestId", "identities", "targetInstanceId", ...(request.principals ? ["principals"] : []),
-    request.operation === "evict-family-principal" ? "evictions" : "reconciliation",
+    resultField,
   ];
-  if (!result || typeof result !== "object" || Array.isArray(result) ||
-      Object.keys(result).sort().join(",") !== expectedKeys.sort().join(",") ||
-      result.v !== 1 || result.kind !== "manager-service-maintenance" || result.owner !== expectedOwner ||
+  exactKeys(result, expectedKeys, "manager maintenance");
+  if (result.v !== 1 || result.kind !== "manager-service-maintenance" || result.owner !== expectedOwner ||
       result.operation !== request.operation || result.space !== request.space || result.actor !== request.actor ||
       result.instanceId !== request.instanceId || result.managerLifecycleUid !== request.managerLifecycleUid ||
       result.requestId !== request.requestId || result.targetInstanceId !== request.targetInstanceId ||
@@ -367,22 +427,25 @@ export function remoteManagerMaintenanceResult(
       if (e.verifiedGone && (!e.scanComplete || e.remaining !== 0))
         throw new Error("manager maintenance returned contradictory eviction evidence");
     }
-  } else {
+  } else if (request.operation === "reconcile-registration") {
     const r = result.reconciliation;
     const reportKeys = [
       "endpoint", "instanceId", "holderPrincipal", "opId", "freezeToken", "before", "after", "liveness",
       "familyRows", "revoked", "evicted", "holders", "holdersVerifiedBeforeAttempt",
       "holdersVerifiedThisAttempt", "holdersRemaining", "repairCursorCleanup", "reopenedAtGeneration",
     ];
-    if (!r || typeof r !== "object" || Array.isArray(r) || Object.keys(r).sort().join(",") !== reportKeys.sort().join(",") ||
-        r.endpoint !== "manager" || r.instanceId !== request.targetInstanceId ||
-        !Number.isSafeInteger(r.freezeToken) || !Number.isSafeInteger(r.familyRows) || !Number.isSafeInteger(r.reopenedAtGeneration) ||
-        ![r.holderPrincipal, r.opId].every((value) => typeof value === "string" && value.length > 0) ||
-        ![r.revoked, r.evicted, r.holders, r.holdersVerifiedBeforeAttempt, r.holdersVerifiedThisAttempt, r.holdersRemaining]
+    const report = exactKeys(r, reportKeys, "manager maintenance reconciliation") as unknown as NonNullable<RemoteManagerMaintenanceResult["reconciliation"]>;
+    if (report.endpoint !== "manager" || report.instanceId !== request.targetInstanceId ||
+        !Number.isSafeInteger(report.freezeToken) || !Number.isSafeInteger(report.familyRows) || !Number.isSafeInteger(report.reopenedAtGeneration) ||
+        ![report.holderPrincipal, report.opId].every((value) => typeof value === "string" && value.length > 0) ||
+        ![report.revoked, report.evicted, report.holders, report.holdersVerifiedBeforeAttempt, report.holdersVerifiedThisAttempt, report.holdersRemaining]
           .every((value) => Array.isArray(value) && value.every((item) => typeof item === "string")) ||
-        (r.repairCursorCleanup !== "deleted" && r.repairCursorCleanup !== "retained") ||
-        !r.liveness || r.liveness.state !== "gone" || typeof r.liveness.detail !== "string")
+        (report.repairCursorCleanup !== "deleted" && report.repairCursorCleanup !== "retained") ||
+        !report.liveness || report.liveness.state !== "gone" || typeof report.liveness.detail !== "string")
       throw new Error("manager maintenance returned no closed matching reconciliation report");
+  } else {
+    const unhandled: never = request.operation;
+    throw new Error(`manager maintenance has no result for operation ${unhandled}`);
   }
   return result;
 }
@@ -429,12 +492,10 @@ export function retainedAgentAuthority(
   result: RemoteRetainedAgentValidationResult,
   request: RemoteRetainedAgentValidationRequest,
 ): RetainedAgentAuthority {
-  if (result === null || typeof result !== "object" || Array.isArray(result) ||
-      Object.keys(result).sort().join(",") !== [
-        "actor", "authority", "instanceId", "kind", "managerLifecycleUid", "owner",
-        "registrationProof", "requestId", "serveEpoch", "space", "target", "v",
-      ].sort().join(","))
-    throw new Error("manager retained-agent validation returned a non-closed result");
+  exactKeys(result, [
+    "actor", "authority", "instanceId", "kind", "managerLifecycleUid", "owner",
+    "registrationProof", "requestId", "serveEpoch", "space", "target", "v",
+  ], "manager retained-agent validation");
   if (result.v !== 1 || result.kind !== "manager-retained-agent-validation" ||
       result.space !== request.space || result.actor !== request.actor || result.instanceId !== request.instanceId ||
       result.managerLifecycleUid !== request.managerLifecycleUid || result.requestId !== request.requestId ||
@@ -482,27 +543,17 @@ export function remoteManagerGoalIndexEntries(
   request: RemoteManagerGoalIndexScanRequest,
   expectedOwner: string,
 ): import("@cotal-ai/core").GoalIndexEntry[] {
-  const envelopeKeys = ["v", "kind", "space", "owner", "actor", "instanceId", "managerLifecycleUid", "requestId", "registrationProof", "serveEpoch", "entries"];
-  if (result === null || typeof result !== "object" || Array.isArray(result) || Object.keys(result).sort().join(",") !== envelopeKeys.sort().join(","))
-    throw new Error("manager goal-index scan returned a non-closed result");
+  exactKeys(result, ["v", "kind", "space", "owner", "actor", "instanceId", "managerLifecycleUid", "requestId", "registrationProof", "serveEpoch", "entries"], "manager goal-index scan");
   if (result.v !== 1 || result.kind !== "manager-goal-index-scan" || result.space !== request.space ||
       result.owner !== expectedOwner || result.actor !== request.actor || result.instanceId !== request.instanceId ||
       result.managerLifecycleUid !== request.managerLifecycleUid || result.requestId !== request.requestId ||
       result.registrationProof !== request.registrationProof || result.serveEpoch !== request.serveEpoch || !Array.isArray(result.entries))
     throw new Error("manager goal-index scan returned different lifecycle coordinates");
-  return result.entries.map((entry, index) => {
-    if (!entry || typeof entry !== "object" || Array.isArray(entry) ||
-        Object.keys(entry).some((key) => !["v", "endpoint", "owner", "actor", "uid", "goalId", "iid", "allocated", "note"].includes(key)) ||
-        entry.v !== 1 || entry.endpoint !== "manager" || entry.owner !== expectedOwner ||
-        ![entry.actor, entry.uid, entry.goalId, entry.iid].every((value) => typeof value === "string" && value.length > 0) ||
-        (entry.note !== undefined && (typeof entry.note !== "string" || entry.note.length === 0 || entry.note.length > 65_536)))
+  // The entry's shape is core's record contract; the scan adds only the endpoint and the owner.
+  return result.entries.map((raw, index) => {
+    const entry = parseGoalIndexEntry(raw, `${index} of the manager goal-index scan`);
+    if (entry.endpoint !== "manager" || entry.owner !== expectedOwner)
       throw new Error(`manager goal-index scan returned invalid entry ${index}`);
-    if (entry.allocated !== undefined && (!entry.allocated || typeof entry.allocated !== "object" || Array.isArray(entry.allocated) ||
-        Object.keys(entry.allocated).some((key) => !["name", "owner", "actor", "uid", "readinessDeadlineMs"].includes(key)) ||
-        ![entry.allocated.name, entry.allocated.actor, entry.allocated.uid].every((value) => typeof value === "string" && value.length > 0) ||
-        (entry.allocated.owner !== undefined && (typeof entry.allocated.owner !== "string" || entry.allocated.owner.length === 0)) ||
-        (entry.allocated.readinessDeadlineMs !== undefined && (!Number.isSafeInteger(entry.allocated.readinessDeadlineMs) || entry.allocated.readinessDeadlineMs <= 0))))
-      throw new Error(`manager goal-index scan returned invalid allocation in entry ${index}`);
     return entry;
   });
 }
@@ -661,9 +712,9 @@ export function remoteManagedAgentEnrollmentMaterial(
   if (runtimeIntent !== undefined && (runtimeIntent === null || typeof runtimeIntent !== "object" ||
       Object.keys(runtimeIntent).join(",") !== "state" || runtimeIntent.state !== "reserved"))
     throw new Error('managed agent enrollment returned a runtimeIntent other than { state: "reserved" }');
-  if (result === null || typeof result !== "object" || Array.isArray(result) ||
-      Object.keys(envelope).sort().join(",") !== envelopeKeys.sort().join(","))
+  if (result === null || typeof result !== "object" || Array.isArray(result))
     throw new Error("managed agent enrollment returned a non-closed result");
+  exactKeys(envelope, envelopeKeys, "managed agent enrollment");
   if (result.v !== 1 || result.kind !== "manager-managed-agent-enrollment" || result.space !== request.space ||
       result.actor !== request.actor || result.instanceId !== request.instanceId ||
       result.managerLifecycleUid !== request.managerLifecycleUid || result.requestId !== request.requestId ||
@@ -672,8 +723,7 @@ export function remoteManagedAgentEnrollmentMaterial(
     throw new Error("managed agent enrollment returned different lifecycle, request, or owner coordinates");
   const m = result.material;
   const materialKeys = ["owner", "actor", "lifecycleUid", "sentinelCreds", "subscribe", "allowSubscribe", "allowPublish", "agentBearerExchangeUrl"];
-  if (!m || typeof m !== "object" || Array.isArray(m) || Object.keys(m).sort().join(",") !== materialKeys.sort().join(","))
-    throw new Error("managed agent enrollment returned non-closed material");
+  exactKeys(m, materialKeys, "managed agent enrollment material");
   // The envelope owner and the material owner are the SAME authority. A result that disagreed with
   // itself would let one field name the audited owner and the other the owner actually granted.
   if (m.owner !== result.owner)
@@ -696,6 +746,28 @@ export function remoteManagedAgentEnrollmentMaterial(
   if (url.protocol !== "https:" && !(url.protocol === "http:" && (url.hostname === "127.0.0.1" || url.hostname === "localhost" || url.hostname === "[::1]")))
     throw new Error(`managed agent enrollment returned a non-HTTPS agent bearer exchange URL (${url.protocol}//) - the actor token must never cross plaintext off this machine`);
   return m;
+}
+
+/** A managed agent's read and post channels as its enrollment asked for them and as the host
+ *  granted them. */
+export interface EnrolledAcl {
+  requested: { allowSubscribe: string[]; allowPublish: string[] };
+  effective: { allowSubscribe: string[]; allowPublish: string[] };
+}
+
+/** What the host granted beside what `requested` asked for, when the host's read or post list is
+ *  not the one asked for: a host may narrow a request to the account's grant instead of refusing
+ *  it. Undefined when the host granted what was asked. */
+export function enrolledAcl(
+  requested: { allowSubscribe?: readonly string[]; allowPublish?: readonly string[] },
+  material: Pick<RemoteManagedAgentEnrollmentResult["material"], "allowSubscribe" | "allowPublish">,
+): EnrolledAcl | undefined {
+  const asked = { allowSubscribe: [...(requested.allowSubscribe ?? [])], allowPublish: [...(requested.allowPublish ?? [])] };
+  const granted = { allowSubscribe: [...material.allowSubscribe], allowPublish: [...material.allowPublish] };
+  const same = (a: string[], b: string[]) => a.length === b.length && a.every((channel) => b.includes(channel));
+  return same(asked.allowSubscribe, granted.allowSubscribe) && same(asked.allowPublish, granted.allowPublish)
+    ? undefined
+    : { requested: asked, effective: granted };
 }
 
 /** Build one host-owned prepare-retirement request (#1972 phase P0/P1). The opId is DERIVED from the
@@ -737,9 +809,7 @@ export function remoteManagedAgentRetirementPrepared(
     "v", "kind", "space", "owner", "actor", "instanceId", "managerLifecycleUid",
     "requestId", "target", "opId", "prepared",
   ];
-  if (result === null || typeof result !== "object" || Array.isArray(result) ||
-      Object.keys(result).sort().join(",") !== keys.sort().join(","))
-    throw new Error("managed agent prepare-retirement returned a non-closed result");
+  exactKeys(result, keys, "managed agent prepare-retirement");
   if (result.v !== 1 || result.kind !== "manager-managed-agent-prepare-retirement" || result.space !== request.space ||
       result.actor !== request.actor || result.instanceId !== request.instanceId ||
       result.managerLifecycleUid !== request.managerLifecycleUid || result.requestId !== request.requestId ||

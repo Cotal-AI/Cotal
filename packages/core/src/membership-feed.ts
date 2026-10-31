@@ -27,7 +27,8 @@
  * would undo the daemon's least-privilege extraction. The barrel exports {@link startMembershipFeed}, but
  * the **scoped creds are the real gate**: with no system-account observer cred it simply cannot connect.
  */
-import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
+import { credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
+import { dialerFor } from "./endpoint.js";
 import { Kvm, type KV } from "@nats-io/kv";
 import {
   membershipBucket,
@@ -59,7 +60,7 @@ export interface MembershipFeedOpts {
    *  read's issuer and its exact permission block (so its account scope); the user nkey may change. */
   observerCreds: string | (() => string | Promise<string>);
   /** Scoped DATA-account read/write creds (conn B — members read + feed write): a literal string, or
-   *  a SOURCE (D5 slice 5 class 2) that reads them through the {@link SecretStore} seam — the manager
+   *  a SOURCE that reads them through the {@link SecretStore} seam — the manager
    *  re-signs the SAME nkey into the store and the feed adopts it. May be async (a hosted `store.get`)
    *  or sync (a local FS read / literal). A source-fed cred is renewed on a 75% timer that PROVES each
    *  candidate on a disposable preflight before conn B ever presents it; conn B's authenticator only
@@ -119,7 +120,7 @@ const MEMBERSHIP_CREDS_RETRY_MS = 60_000;
  *  the candidate, so the proof is unambiguous. */
 async function brokerAcceptsCreds(servers: string, creds: string, timeoutMs: number): Promise<boolean> {
   try {
-    const probe = await connect({ servers, timeout: timeoutMs, reconnect: false, maxReconnectAttempts: 0, authenticator: credsAuthenticator(enc(creds)) });
+    const probe = await dialerFor(servers)({ servers, timeout: timeoutMs, reconnect: false, maxReconnectAttempts: 0, authenticator: credsAuthenticator(enc(creds)) });
     await probe.close();
     return true;
   } catch {
@@ -201,7 +202,7 @@ async function startFeed(opts: MembershipFeedOpts, opened: NatsConnection[]): Pr
     log(why);
     throw new Error(why);
   };
-  const connectObs = () => connect({
+  const connectObs = () => dialerFor(opts.servers)({
     servers: opts.servers,
     authenticator: (nonce?: string) => { refuseExpiredObsCreds(); return credsAuthenticator(enc(currentObsCreds))(nonce); },
     name: "cotal-membership-observer",
@@ -252,7 +253,7 @@ async function startFeed(opts: MembershipFeedOpts, opened: NatsConnection[]): Pr
   // Shared by the initial dial and by a later revive: the authenticator always presents the last
   // BROKER-PROVEN cache, never a fresh un-preflighted source read. The 75% timer / explicit reload
   // advance `currentRwCreds` only AFTER a disposable preflight proves the broker accepts the candidate.
-  const connectRw = () => connect({
+  const connectRw = () => dialerFor(opts.servers)({
     servers: opts.servers,
     authenticator: (nonce?: string) => { refuseExpiredRwCreds(); return credsAuthenticator(enc(currentRwCreds))(nonce); },
     name: "cotal-membership-rw",
@@ -264,6 +265,20 @@ async function startFeed(opts: MembershipFeedOpts, opened: NatsConnection[]): Pr
   let connB = await connectRw();
   opened.push(connB);
   connB.closed().then((err) => { if (err) log(`conn B (data) closed: ${err.message}`); });
+  // conn B's own drops, from its status stream. Adopting a renewed rw cred reconnects conn B in place,
+  // and until the redial lands the broker has no conn B to report, so a sweep in that window did not
+  // miss connections.
+  let connBDown = false;
+  let connBDrops = 0;
+  const watchConnB = (nc: NatsConnection): void => {
+    void (async () => {
+      for await (const s of nc.status()) {
+        if (s.type === "disconnect") { connBDown = true; connBDrops++; }
+        else if (s.type === "reconnect") connBDown = false;
+      }
+    })().catch(() => {});
+  };
+  watchConnB(connB);
 
   const kvm = new Kvm(connB);
   let feedKv: KV = await kvm.open(membershipBucket(space));
@@ -359,6 +374,8 @@ async function startFeed(opts: MembershipFeedOpts, opened: NatsConnection[]): Pr
       feedKv = nextFeed;
       membersKv = nextMembers;
       connB.closed().then((err) => { if (err) log(`conn B (data) closed: ${err.message}`); });
+      connBDown = false;
+      watchConnB(connB);
       // Assign first so a concurrent stop() drains THIS connection rather than the already-closed
       // predecessor. If stop already ran, drain the fresh dial here.
       if (rwStopped) {
@@ -503,6 +520,7 @@ async function startFeed(opts: MembershipFeedOpts, opened: NatsConnection[]): Pr
     const serverMore = new Set<string>(); // server ids still reporting a full page this round
     const serversSeen = new Set<string>(); // distinct responders across the whole sweep
     let gotReply = false, exhausted = false, seenSelf = false;
+    const dropsBefore = connBDrops;
     for (let page = 0; page < MAX_PAGES; page++) {
       const offset = page * pageLimit;
       const replies = await connzRound(offset);
@@ -539,7 +557,9 @@ async function startFeed(opts: MembershipFeedOpts, opened: NatsConnection[]): Pr
     // would still pass this canary. The sufficient multi-server check is `distinct responding server_ids
     // == expected server count` (expected set discovered via $SYS.REQ.SERVER.PING); deferred with the rest
     // of multi-broker support — a conscious deferral, not a single-server bake-in.
-    if (gotReply && exhausted && !seenSelf)
+    // A sweep that ran while conn B itself was down (its own reconnect) is still incomplete, but it
+    // missed nothing: conn B's return emits a CONNECT event, which polls again.
+    if (gotReply && exhausted && !seenSelf && !connBDown && connBDrops === dropsBefore)
       log(`CONNZ sweep omitted our own rw connection - treating as incomplete (keeping last membership)`);
     // NO-SILENT-DEGRADATION (socrates): in a real cluster the conn-B floor only proves conn B's OWN server
     // answered — a DIFFERENT silent server would still pass `complete` yet under-report its agents. Until
@@ -655,7 +675,7 @@ async function startFeed(opts: MembershipFeedOpts, opened: NatsConnection[]): Pr
   return {
     poll,
     async reloadRwCreds(expected?: string) {
-      // Explicit class-2 adoption for conn B (D5 slice 5). Capture the ABSOLUTE deadline at ENTRY,
+      // Explicit class-2 adoption for conn B. Capture the ABSOLUTE deadline at ENTRY,
       // before the single-flight enqueue, so a reload queued behind a hung-store 75% tick is bounded by
       // the SAME window (the queue wait counts) and can never commit/swap after the renewal owner's
       // request bound has already elapsed. The prove-then-adopt transaction runs under runRwTxn so it

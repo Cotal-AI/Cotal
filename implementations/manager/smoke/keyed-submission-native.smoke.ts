@@ -55,7 +55,7 @@ try {
   await manager.start();
   const identity = core.newIdentity();
   const uid = core.mintLifecycleUid();
-  const issued = { generation: core.mintGeneration(), acceptedToken: core.mintAcceptedToken() };
+  const issued = { generation: core.mintGeneration(Math.floor(Date.now() / 1000) + 172_800), acceptedToken: core.mintAcceptedToken() };
   const caller = { owner: core.DEV_OWNER, actor: identity.id, uid, generation: issued.generation } as import("@cotal-ai/core").EpCaller;
   const creds = await core.withIssuerSession({ servers, space, auth, tls: false }, (session) => core.mintCreds(auth, identity, "agent", {
     lifecycleUid: uid, capabilities: ["run"], expiresInSeconds: 300, issued,
@@ -64,7 +64,7 @@ try {
   nc = await connect({ servers, ...core.standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: 0 });
   const any = await core.resolveService(nc, space, "manager", caller, { deadlineMs: 10_000 });
   await nc.close();
-  const pinnedIssued = { generation: core.mintGeneration(), acceptedToken: core.mintAcceptedToken() };
+  const pinnedIssued = { generation: core.mintGeneration(Math.floor(Date.now() / 1000) + 172_800), acceptedToken: core.mintAcceptedToken() };
   Object.assign(caller, { generation: pinnedIssued.generation });
   const pinnedCreds = await core.withIssuerSession({ servers, space, auth, tls: false }, (session) => core.mintCreds(auth, identity, "manager-caller", {
     lifecycleUid: uid, managerInstanceId: any.responder.instanceId, capabilities: ["run"], expiresInSeconds: 300, issued: pinnedIssued,
@@ -144,7 +144,7 @@ try {
   }
 } finally {
   const cleanupErrors: unknown[] = [];
-  for (const stop of [() => nc?.close(), () => manager?.stop(), () => delivery?.stop(), () => killAndAwaitExit(broker)]) {
+  for (const stop of [() => nc?.close(), () => manager?.stop({ withAgents: true }), () => delivery?.stop(), () => killAndAwaitExit(broker)]) {
     try { await stop(); } catch (error) { cleanupErrors.push(error); }
   }
   releaseBroker();

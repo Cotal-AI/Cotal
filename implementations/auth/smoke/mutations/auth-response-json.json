@@ -1,0 +1,82 @@
+{
+  "suite": [
+    "implementations/auth/smoke/auth-response-json.smoke.ts"
+  ],
+  "guard": "auth client responses must decode before shape and outcome checks",
+  "command": "pnpm --filter @cotal-ai/auth build && pnpm smoke:auth-response-json",
+  "proveWith": "pnpm mutation-proof --config implementations/auth/smoke/mutations/auth-response-json.json",
+  "mutations": [
+    {
+      "name": "local exchange refusal fabricates an empty object for unreadable JSON",
+      "file": "implementations/auth/src/provider.ts",
+      "find": "      const body = (await readAuthResponseJson(res, `the auth service's exchange at ${info.url}/exchange`)) as { error?: string };",
+      "replace": "      const body = (await res.json().catch(() => ({}))) as { error?: string };",
+      "expectRed": "local exchange reports unreadable JSON with face and status",
+      "cell": "local exchange reports unreadable JSON with face and status",
+      "afterRestore": "pnpm --filter @cotal-ai/auth build"
+    },
+    {
+      "name": "local exchange success fabricates an empty object for unreadable JSON",
+      "file": "implementations/auth/src/provider.ts",
+      "find": "    const out = (await readAuthResponseJson(res, `the auth service's exchange at ${info.url}/exchange`)) as { token?: string };",
+      "replace": "    const out = (await res.json().catch(() => ({}))) as { token?: string };",
+      "expectRed": "local exchange reports unreadable JSON with face and status",
+      "cell": "local exchange reports unreadable JSON with face and status",
+      "afterRestore": "pnpm --filter @cotal-ai/auth build"
+    },
+    {
+      "name": "provisioning refusal fabricates an empty object for unreadable JSON",
+      "file": "implementations/auth/src/provider.ts",
+      "find": "    const body: unknown = await readAuthResponseJson(res, `the mesh's agent-provisioning endpoint at ${url}`);",
+      "replace": "    const body: unknown = await res.json().catch(() => ({}));",
+      "expectRed": "provisioning reports unreadable JSON with face and status",
+      "cell": "provisioning reports unreadable JSON with face and status",
+      "afterRestore": "pnpm --filter @cotal-ai/auth build"
+    },
+    {
+      "name": "remote exchange refusal fabricates an empty object for unreadable JSON",
+      "file": "implementations/auth/src/provider.ts",
+      "find": "    const body = (await readAuthResponseJson(res, `the exchange at ${exchangeUrl}`)) as { error?: string };",
+      "replace": "    const body = (await res.json().catch(() => ({}))) as { error?: string };",
+      "expectRed": "remote exchange reports unreadable JSON with face and status",
+      "cell": "remote exchange reports unreadable JSON with face and status",
+      "afterRestore": "pnpm --filter @cotal-ai/auth build"
+    },
+    {
+      "name": "remote exchange success fabricates an empty object for unreadable JSON",
+      "file": "implementations/auth/src/provider.ts",
+      "find": "  const out = (await readAuthResponseJson(res, `the exchange at ${exchangeUrl}`)) as { token?: string };",
+      "replace": "  const out = (await res.json().catch(() => ({}))) as { token?: string };",
+      "expectRed": "remote exchange reports unreadable JSON with face and status",
+      "cell": "remote exchange reports unreadable JSON with face and status",
+      "afterRestore": "pnpm --filter @cotal-ai/auth build"
+    },
+    {
+      "name": "actor retirement refusal fabricates an empty object for unreadable JSON",
+      "file": "implementations/auth/src/commands.ts",
+      "find": "  const body = await readAuthResponseJson(response, `the auth service's lifecycle retirement endpoint at ${service.url}${INTERACTIVE_RETIRE_PATH}`)",
+      "replace": "  const body = await response.json().catch(() => ({}))",
+      "expectRed": "actor retirement preserves unknown outcome and reports unreadable JSON",
+      "cell": "actor retirement preserves unknown outcome and reports unreadable JSON",
+      "afterRestore": "pnpm --filter @cotal-ai/auth build"
+    },
+    {
+      "name": "bearer CLI refusal fabricates an empty object for unreadable JSON",
+      "file": "implementations/auth/src/agent-bearer.ts",
+      "find": "      const body = (await readAuthResponseJson(res, `agent-bearer: the exchange at ${exchangeUrl}`)) as { error?: string };",
+      "replace": "      const body = (await res.json().catch(() => ({}))) as { error?: string };",
+      "expectRed": "local bearer CLI reports unreadable JSON with face and status",
+      "cell": "local bearer CLI reports unreadable JSON with face and status",
+      "afterRestore": "pnpm --filter @cotal-ai/auth build"
+    },
+    {
+      "name": "bearer CLI success fabricates an empty object for unreadable JSON",
+      "file": "implementations/auth/src/agent-bearer.ts",
+      "find": "    const out = (await readAuthResponseJson(res, `agent-bearer: the exchange at ${exchangeUrl}`)) as { token?: string };",
+      "replace": "    const out = (await res.json().catch(() => ({}))) as { token?: string };",
+      "expectRed": "local bearer CLI reports unreadable JSON with face and status",
+      "cell": "local bearer CLI reports unreadable JSON with face and status",
+      "afterRestore": "pnpm --filter @cotal-ai/auth build"
+    }
+  ]
+}

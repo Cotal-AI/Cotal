@@ -746,7 +746,7 @@ function renderRail() {
     el.onclick = () => selectAgent(el.dataset.agent);
 }
 
-// ── Agent Detail drill-down (centre) — per-agent frame, rendered from the peer's card (docs/watch-a-mesh.md) ──
+// ── Agent Detail drill-down (centre) — per-agent frame, rendered from the peer's card (docs/watch-a-mesh.mdx) ──
 function selectAgent(id) {
   agentSel = id;
   dmSel = null;
@@ -897,28 +897,26 @@ async function select(key) {
     selecting = { key, promise: new Promise((r) => (release = r)) };
     renderCenter();
     // Same reason as the activity feed: a failed history read must not leave the boundary unpassed
-    // and the frames of this channel held out of the view that was opened to look at them. What it
-    // is NOT any more is an empty batch: it is the last history that was actually read, so a refused
-    // poll on the open channel keeps what is on screen instead of emptying it.
+    // and the frames of this channel held out of the view that was opened to look at them. On a
+    // refused poll of the open channel, the batch is the last history that was actually read, so
+    // what is on screen is kept instead of emptied.
     let msgs = [];
     let refused = null;
     try {
-      // READ THROUGH THE SAME GATE AS EVERY OTHER SOURCE. This was the one read on either page that
-      // still consumed a body without consulting the status, and it is the read behind the open
-      // channel. A 500 here answers `{"error":"..."}`, which is valid JSON that `fetch` does not
-      // reject, so the catch below never fired: the object was handed to the order machine as a
-      // history, the channel drew empty, and nothing said why. Measured on the shipped code before
-      // this line changed: last-good gone, no backfill-failed note, no stale mark.
+      // READ THROUGH THE SAME GATE AS EVERY OTHER SOURCE. A 500 here answers `{"error":"..."}`,
+      // which is valid JSON that `fetch` does not reject; reading through `readJson` turns a
+      // non-200 into a throw so the refusal reaches the catch below instead of being handed to the
+      // order machine as a history.
       msgs = await window.COTAL_SNAPSHOT.readJson(
         await fetch(`/api/channels/${encodeURIComponent(key)}/history?limit=200`),
         `#${key} history`,
       );
     } catch (err) {
       // A REFUSED READ KEEPS WHAT THE READER ALREADY HAD, for the same reason the four polled
-      // sources do. `refresh()` re-selects the open channel on EVERY poll, so on a link where the
-      // read keeps missing, an empty batch here emptied the open channel once per poll. The held
-      // messages take the place of the history that could not be read, which keeps the merge and
-      // the ordering below identical to the successful path.
+      // sources do. `refresh()` re-selects the open channel on EVERY poll, so the held messages
+      // take the place of the history that could not be read, keeping the merge and the ordering
+      // below identical to the successful path instead of emptying the open channel on each missed
+      // poll.
       refused = err && err.message ? err.message : String(err);
       msgs = held;
       noteOrder([{ type: "backfill-failed", channel: key, reason: refused }]);
@@ -965,17 +963,12 @@ function selectDM(peer, w) {
 async function refresh() {
   // ── ONE BOOTSTRAP AT A TIME, AND IT ALWAYS ENDS ─────────────────────────────────────────────────
   //
-  // SINGLE FLIGHT. Arming a machine and settling it are two ends of ONE bootstrap, and this function
-  // could previously be re-entered between them. The stock startup does exactly that: the file ends
-  // with `refresh(); connect();`, and `connect()`'s open handler calls `refresh()` again, so a second
-  // call re-armed `feedOrder` while the first was still fetching. The first machine, holding whatever
-  // arrived in that window, was then unreachable: the settle ran on the NEW binding and the old
-  // machine's buffer went with it. Measured on the shipped merge logic, a frame held on the first
-  // machine was simply absent from the feed afterwards. A reconnect flap did it too.
-  //
-  // Overlapping callers now share the in-flight bootstrap instead of starting a rival one. A
-  // concurrent duplicate would have re-fetched the same pages anyway, so nothing is lost by
-  // coalescing, and the pairing of one arm to one settle is restored.
+  // SINGLE FLIGHT. Arming a machine and settling it are two ends of ONE bootstrap. The file ends
+  // with `refresh(); connect();`, and `connect()`'s open handler calls `refresh()` again (as does a
+  // reconnect), so overlapping callers share the in-flight bootstrap instead of starting a rival one:
+  // a second call that re-armed `feedOrder` while the first was still fetching would run its settle
+  // on the new binding and leave the frames held on the first machine unreachable. A concurrent
+  // duplicate would fetch the same pages anyway, so nothing is lost by coalescing.
   if (refreshing) return refreshing;
   let release;
   refreshing = new Promise((r) => (release = r));
@@ -990,28 +983,22 @@ async function refresh() {
   try {
     // ── A FAILED READ KEEPS WHAT IS ON SCREEN ─────────────────────────────────────────────────────
     //
-    // This was a sequential chain of `(await fetch(u)).json()`, and both of its properties were
-    // wrong on a slow link. A 500 body is valid JSON and `fetch` does not reject on one, so the
-    // REFUSAL was assigned into `roster` / `channels` / `dms` as if it were the snapshot; and the
-    // first read that did throw skipped every read after it, so one slow route emptied the feed and
-    // left the rest of the page un-refreshed with nothing saying so. Measured against a broker
-    // behind a 160ms link: `/api/activity` 500 `{"error":"timeout"}` produced
-    // `Uncaught TypeError: activity is not iterable` fifteen times in twenty-five seconds.
-    //
-    // `refreshAll` reads all four concurrently, applies ONLY the ones that succeeded, and returns
-    // what did not land. `apply` is the only writer, so a refusal cannot reach page state at all.
+    // A 500 body is valid JSON and `fetch` does not reject on one, so a bare `(await fetch(u)).json()`
+    // chain would store a refusal into `roster` / `channels` / `dms` as if it were the snapshot, and
+    // the first read that threw would skip every read after it. `refreshAll` reads all four
+    // concurrently through `readJson`, applies ONLY the ones that succeeded, and returns what did not
+    // land. `apply` is the only writer, so a refusal cannot reach page state at all.
     const SNAP = window.COTAL_SNAPSHOT;
     // The all-activity backfill is a source ONLY when the reader is on all-activity. The other three
-    // lenses settle the order machine on an empty batch, which is its specified empty-history arm,
-    // and asking for a page nobody will draw is exactly the per-channel fan-out this change bounded.
+    // lenses settle the order machine on an empty batch, its specified empty-history arm, instead of
+    // asking for a page nobody will draw.
     const onAllActivity = !agentSel && !dmSel && selected === "*";
     const stale = await SNAP.refreshAll([
-      // The space name used to be a one-shot at boot with a bare `fetch().then((r) => r.json())`, so
-      // a refusal arrived as data and the header read `· undefined` for the rest of the session:
-      // the same defect as the rest of this change, on the one read that never came back to correct
-      // itself. It is a source like any other now, so it is gated, named when it is stale, and
-      // replaced by the next poll that lands. `/api/meta` is `{space, pid}` computed in process, so
-      // reading it every poll costs no broker work.
+      // The space name is a polled source like the rest, so it is gated on status, named when it is
+      // stale, and replaced by the next poll that lands; a one-shot boot read with a bare
+      // `fetch().then((r) => r.json())` would accept a refusal as data and leave the header reading
+      // `· undefined` for the rest of the session. `/api/meta` is `{space, pid}` computed in process,
+      // so reading it every poll costs no broker work.
       {
         name: "space",
         read: async () => SNAP.readJson(await fetch("/api/meta"), "space"),
@@ -1053,13 +1040,13 @@ async function refresh() {
         apply: (v) => { dms = v; },
       },
       // Read alongside the other three rather than after them, so a refusal on it is reported in the
-      // same place instead of being swallowed, and so it no longer waits for them on a slow link.
+      // same place instead of being swallowed, and so it does not wait for them on a slow link.
       //
-      // `/api/activity` answers an ENVELOPE now, never a bare array, and the shape change is a guard
-      // rather than a nuisance: a caller that ignores `partial` breaks here instead of rendering a
-      // short page as a complete one. NO TOLERANCE FOR A BARE ARRAY either, and that is not
-      // pedantry: `[].entries` is a real Array METHOD, so a `page.entries ?? page` tolerance quietly
-      // hands a FUNCTION to the merge when the answer is a list. It is read exactly one way.
+      // `/api/activity` answers an ENVELOPE, never a bare array, so a caller that ignores `partial`
+      // breaks here instead of rendering a short page as a complete one. NO TOLERANCE FOR A BARE
+      // ARRAY either, and that is not pedantry: `[].entries` is a real Array METHOD, so a
+      // `page.entries ?? page` tolerance quietly hands a FUNCTION to the merge when the answer is a
+      // list. It is read one way.
       ...(onAllActivity
         ? [{
             name: "activity",
@@ -1086,11 +1073,9 @@ async function refresh() {
     const backfillRefused = stale.find((s) => s.name === "activity" && s.kind !== "partial");
     if (backfillRefused) noteOrder([{ type: "backfill-failed", reason: backfillRefused.reason }]);
     renderSidebarNav();
-    // THE BOUNDARY MUST PASS EVEN WHEN THE FETCH DOES NOT, and this is not a soft failure mode
-    // invented here. `pending` is drained only by the settle, so a rejected request used to mean the
-    // machine never settled and every frame held during it stayed invisible for the life of the page,
-    // with nothing on screen saying so. That is strictly worse than what this code replaced, where a
-    // failed fetch simply left the live arrivals in place.
+    // THE BOUNDARY MUST PASS EVEN WHEN THE FETCH DOES NOT. `pending` is drained only by the settle;
+    // an unsettled machine holds every frame that arrived during the fetch invisible for the life of
+    // the page, with nothing on screen saying so.
     //
     // A failed history read IS an empty history batch: the machine already specifies that case, and
     // specifies that the baseline then comes from the earliest BUFFERED frame. So the boundary is
@@ -1104,25 +1089,20 @@ async function refresh() {
   } finally {
     // ── THE SETTLE, ON EVERY EXIT PATH ────────────────────────────────────────────────────────────
     //
-    // IT USED TO RUN ONLY ON THE ALL-ACTIVITY BRANCH, while the arm ran unconditionally at the top.
-    // So whenever the reader was on a channel, a DM or an agent, every live frame was held by a
-    // machine that this function had armed and would never settle, and none of them reached the feed.
-    // Switching back to all activity showed a feed that had never received them, and the next refresh
-    // replaced the machine and took the buffer with it. A `finally` is the only placement that
-    // survives all four branches plus a throw from anything between the arm and here. The source
-    // reads no longer supply that throw, because a refusal is reported rather than propagated; the
-    // renders below the reads still can, and the cost of missing it is the same.
+    // The arm runs unconditionally at the top, so the settle must run across all four branches as
+    // well: settling only on the all-activity branch would leave every live frame that arrived while
+    // the reader was on a channel, a DM or an agent held in an unsettled machine until the next
+    // refresh replaced it and discarded its buffer. A `finally` is the only placement that survives
+    // all four branches plus a throw from anything between the arm and here; the source reads report
+    // a refusal rather than throwing, while the renders below the reads still can.
     activity = batch;
     // Same trust rule as the live feed: the backfill is tagged with the channel the SERVER
     // requested, so the payload claim is overwritten at ingress rather than downstream.
     for (const e of activity) if (e?.msg) e.msg.channel = e.channel;
-    // MERGED, NOT ASSIGNED OVER. This read `activity = await fetch(...)`, which DISCARDED every live
-    // entry `onMessage` had appended while the fetch was in flight. Retention hid it: the backfill
-    // re-read the same messages from the broker, so the overwritten arrivals came back. Event
-    // channels are no longer in that backfill, by the server's filter, so for a frame there is
-    // nothing to come back and the assignment would be a silent deletion of exactly the traffic this
-    // lane exists to make visible. The two halves of this change are that tightly coupled: the filter
-    // is what turns the pre-existing overwrite into a loss, and this is what makes the filter safe.
+    // MERGED, NOT ASSIGNED OVER. Assigning the fetched page over `activity` would discard every live
+    // entry `onMessage` appended while the fetch was in flight. Event channels are excluded from
+    // `/api/activity` by the server's filter, so a live frame overwritten during the fetch is not in
+    // the backfill and would be lost rather than re-read from the broker.
     const settled = feedOrder.backfill(activity);
     noteOrder(settled.notes);
     // Live frames were HELD by the machine and come back inside `settled.emit` in seq order; live

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { join, relative } from "node:path";
+import ts from "typescript";
 import {
   CREDENTIAL_LIFETIMES, permissionsFor, epServeGrantRows, effectsBindGrants, poolOwnerBindGrants, patternCovers,
   chatStream, dmStream, dlvStream, inboxStream, taskStream,
@@ -58,7 +59,7 @@ export async function profileFixtures(space: string): Promise<ProfileFixture[]> 
     restore: () => one("restore", { restore: { operation: "initiate", stream: `CHAT_${space}` } }),
     delivery: () => one("delivery"), "membership-rw": () => one("membership-rw"),
     probe: () => one("probe"), "channel-writer": () => one("channel-writer"), "channel-purger": () => one("channel-purger"),
-    teardown: () => one("teardown"),
+    teardown: () => one("teardown"), "issued-store-recreate": () => one("issued-store-recreate"),
     "control-caller-privileged": () => one("control-caller-privileged"),
     "control-caller-admin": () => one("control-caller-admin"),
     deployer() { one("deployer"); one("deployer", { controlTier: "privileged" }, "privileged-tier"); },
@@ -252,7 +253,7 @@ export const PEER_HELD_PROFILES: readonly Profile[] = Object.freeze(["agent", "o
  */
 export const TRUSTED_PROFILES: readonly Profile[] = Object.freeze([
   "supervisor", "operator", "provisioner", "deprovisioner", "admin", "purger", "probe", "delivery",
-  "teardown", "channel-writer", "channel-purger", "membership-rw", "deployer", "goal-writer",
+  "teardown", "issued-store-recreate", "channel-writer", "channel-purger", "membership-rw", "deployer", "goal-writer",
   "session-ledger", "session-serving", "run-mediator", "run-operator", "remote-manager",
   "lifecycle-executor", "endpoint-serve-executor", "endpoint-serve", "control-caller-privileged",
   "control-caller-admin", "backup", "restore", "endpoint-evictor", "retirement-requester",
@@ -286,6 +287,32 @@ export function shippedSources(root: string): string[] {
   walk(join(root, "bin"));
   if (found.length === 0) throw new Error("the shipped-source scan found no files; the corpus is wrong");
   return found;
+}
+
+/** Detect literal rail spelling in executable syntax, not comments or JSDoc. Parsed string and
+ *  template text also catches escaped characters without mistaking comment-like string content
+ *  for actual comments. This remains a literal census, not a data-flow proof. */
+export function hasIssuedRailLiteral(source: string): boolean {
+  const file = ts.createSourceFile("rail.ts", source, ts.ScriptTarget.Latest, true);
+  let found = false;
+  const visit = (node: ts.Node): void => {
+    if ((ts.isStringLiteralLike(node) || ts.isTemplateLiteralToken(node) || ts.isRegularExpressionLiteral(node))
+      && /ep\.v1/.test(node.text)) found = true;
+    if (!found) ts.forEachChild(node, visit);
+  };
+  visit(file);
+  return found;
+}
+
+/** The same closed shipped-source inventory used by the full census and its focused gate. */
+export function issuedRailSourceCensus(root: string): { files: string[]; unexpected: string[] } {
+  const builders = new Set(["packages/core/src/endpoint-subjects.ts", "packages/core/src/endpoint-grants.ts",
+    "packages/core/src/endpoint-serve.ts", "packages/core/src/issued-authority.ts"]);
+  const files = shippedSources(root);
+  const unexpected = files.filter((file) => relative(root, file).split("\\").join("/") !== "extensions/connector-core/src/docs-bundle.generated.ts"
+    && hasIssuedRailLiteral(readFileSync(file, "utf8")))
+    .map((file) => relative(root, file).split("\\").join("/")).filter((file) => !builders.has(file)).sort();
+  return { files, unexpected };
 }
 
 /** Whether a permission set lets its holder request `$SYS.REQ.USER.INFO`, the server's own view

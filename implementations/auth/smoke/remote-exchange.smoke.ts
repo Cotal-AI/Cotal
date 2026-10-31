@@ -90,8 +90,8 @@ if (SUBCOMMAND === "auth-service") {
 // ---------- MAIN HARNESS ----------
 type ChildProcess = import("node:child_process").ChildProcess;
 
-const { spawn } = await import("node:child_process");
-const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
+const { execFile, spawn } = await import("node:child_process");
+const { mkdirSync, mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
 const { tmpdir } = await import("node:os");
 const { join } = await import("node:path");
 const { createServer } = await import("node:http");
@@ -125,7 +125,7 @@ const {
   cotalAuthProvider, establishIdpSession, grantActor, grantManagedActor, revokeManagedActor,
   loadAuthServiceInfo, loadCalloutAuth, newActorToken,
 } = await import("@cotal-ai/auth");
-const { createLocalJWKSet, jwtVerify } = await import("jose");
+const { createLocalJWKSet, decodeJwt, jwtVerify } = await import("jose");
 type DeviceLoginPrompt = import("@cotal-ai/auth").DeviceLoginPrompt;
 const { pickFreePort } = await import("./_free-port.js");
 
@@ -141,6 +141,7 @@ const SERVER = `nats://127.0.0.1:${PORT}`;
 const SPACE = `rx-${Math.floor(Math.random() * 1e6)}`;
 const CLIENT_ID = "cotal-cli";
 const SELF = import.meta.filename;
+const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
 const AGENT = "worker";
 const dir = userAuthStateDir(root, SPACE);
 const store = workspaceSecretStore(root);
@@ -163,6 +164,8 @@ async function get(url: string, headers: Record<string, string> = {}): Promise<R
   const res = await fetch(url, { headers });
   return { status: res.status, body: (await res.json().catch(() => ({}))) as Record<string, unknown>, headers: res.headers };
 }
+/** The manager instance a manager-caller bearer binds: its signed `act.managerInstanceId`. */
+const boundInstance = (r: Reply) => (decodeJwt(r.body.token as string).act as { managerInstanceId?: string }).managerInstanceId;
 
 let broker: ChildProcess | undefined;
 let authChild: ChildProcess | undefined;
@@ -308,7 +311,53 @@ try {
     check("device login established", typeof sub === "string" && sub.length > 0);
     return cotalAuthProvider.ownerForLogin({ store, dir, space: SPACE });
   })();
-  grantActor(dir, { owner: OWNER, actor: "cli", scope: ["spawn", "supervise", "role:worker"], allowSubscribe: [">"], allowPublish: [">"], label: "smoke operator" });
+  const cliGrant = grantActor(dir, { owner: OWNER, actor: "cli", scope: ["spawn", "supervise", "role:worker"], allowSubscribe: [">"], allowPublish: [">"], label: "smoke operator" });
+  const clientRoot = mkdtempSync(join(tmpdir(), "cotal-rx-client-"));
+  const clientDir = userAuthStateDir(clientRoot, SPACE);
+  mkdirSync(clientDir, { recursive: true, mode: 0o700 });
+  const clientSentinel = join(clientDir, "sentinel.creds");
+  writeFileSync(clientSentinel, expectedCallout.sentinelCreds, { mode: 0o600 });
+  const { recordMesh, removeMesh } = await import("@cotal-ai/workspace");
+  recordMesh({
+    space: SPACE,
+    server: SERVER,
+    root: clientRoot,
+    mode: "user",
+    origin: "manual",
+    userAuth: { provider: "cotal", idp: { url: base, issuer: origin, audience: origin }, remote: true, endpoints: { url: PUBLIC }, sentinelCredsPath: clientSentinel },
+    ts: new Date().toISOString(),
+  });
+  const remoteWhoami = await new Promise<{ status: number | null; out: string }>((resolve) => {
+    execFile(process.execPath, [BIN, "whoami", "--space", SPACE, "--json"], { cwd: clientRoot, env: childEnv }, (error, stdout, stderr) => {
+      resolve({ status: typeof error?.code === "number" ? error.code : error ? null : 0, out: `${stdout}${stderr}` });
+    });
+  });
+  const remoteWhoamiEnvelope = JSON.parse(remoteWhoami.out) as {
+    completeness?: unknown;
+    result?: { identity?: { grant?: unknown; principal?: unknown }; read?: unknown; post?: unknown; dms?: unknown; capabilities?: unknown };
+    warnings?: Array<{ code?: unknown }>;
+  };
+  check("remote user-auth whoami reports the issuer's current grant",
+    remoteWhoami.status === 0 && remoteWhoamiEnvelope.completeness === "complete" &&
+      remoteWhoamiEnvelope.result?.identity?.grant === "granted" && remoteWhoamiEnvelope.result.identity.principal === `${OWNER}.cli` &&
+      JSON.stringify(remoteWhoamiEnvelope.result.read) === '[">"]' && JSON.stringify(remoteWhoamiEnvelope.result.post) === '[">"]' &&
+      JSON.stringify(remoteWhoamiEnvelope.result.capabilities) === '["spawn","supervise","role:worker"]' &&
+      remoteWhoamiEnvelope.result.dms === true && remoteWhoamiEnvelope.warnings?.length === 0,
+    remoteWhoamiEnvelope);
+  grantActor(dir, { owner: OWNER, actor: "cli", scope: ["role:worker"], allowSubscribe: ["general", "review.>"], allowPublish: ["general"], label: "narrow smoke operator", lifecycleUid: cliGrant.lifecycleUid });
+  const changedWhoami = await new Promise<{ status: number | null; out: string }>((resolve) => {
+    execFile(process.execPath, [BIN, "whoami", "--space", SPACE, "--json"], { cwd: clientRoot, env: childEnv }, (error, stdout, stderr) => {
+      resolve({ status: typeof error?.code === "number" ? error.code : error ? null : 0, out: `${stdout}${stderr}` });
+    });
+  });
+  const changedEnvelope = JSON.parse(changedWhoami.out) as typeof remoteWhoamiEnvelope;
+  check("remote user-auth whoami reads a fresh grant change on its next report",
+    changedWhoami.status === 0 && JSON.stringify(changedEnvelope.result?.read) === '["general","review.>"]' &&
+      JSON.stringify(changedEnvelope.result?.post) === '["general"]' && JSON.stringify(changedEnvelope.result?.capabilities) === '["role:worker"]',
+    changedEnvelope);
+  grantActor(dir, { owner: OWNER, actor: "cli", scope: ["spawn", "supervise", "role:worker"], allowSubscribe: [">"], allowPublish: [">"], label: "smoke operator", lifecycleUid: cliGrant.lifecycleUid });
+  removeMesh(SPACE);
+  rmSync(clientRoot, { recursive: true, force: true });
   const secret = newActorToken();
   const agentLifecycleUid = mintLifecycleUid();
   grantManagedActor(dir, { custody: { kind: "foreground" },
@@ -323,16 +372,18 @@ try {
   createManagerInstanceIdentity(root, SPACE, { instanceId: localManagerInstanceId, serveIdentity: localServe });
   const localManagerCall = await post(`${PUBLIC}/exchange`, { ...agentBody, view: "manager-caller" });
   check("manager-caller re-reads a newly created local identity file and selects its live manager",
-    localManagerCall.status === 200 && localManagerCall.body.managerInstanceId === localManagerInstanceId, localManagerCall);
+    localManagerCall.status === 200 && boundInstance(localManagerCall) === localManagerInstanceId, localManagerCall);
   const explicitLocal = await post(`${PUBLIC}/exchange`, { ...agentBody, view: "manager-caller", managerInstanceId: localManagerInstanceId });
   check("the public face serves an explicit selector naming the live co-located manager",
-    explicitLocal.status === 200 && explicitLocal.body.managerInstanceId === localManagerInstanceId, explicitLocal);
+    explicitLocal.status === 200 && boundInstance(explicitLocal) === localManagerInstanceId, explicitLocal);
+  check("the agent manager-caller exchange answers only token, owner and exp",
+    Object.keys(explicitLocal.body).sort().join() === "exp,owner,token", explicitLocal.body);
 
   const remoteOne = mintLifecycleUid();
   await putManager({ instanceId: remoteOne, principal: `${OWNER}.${remoteManagerActors(remoteOne).serve}`, owner: OWNER });
   const remoteSelected = await post(`${PUBLIC}/exchange`, { ...agentBody, view: "manager-caller" });
   check("one live remote manager takes precedence over the local candidate",
-    remoteSelected.status === 200 && remoteSelected.body.managerInstanceId === remoteOne, remoteSelected);
+    remoteSelected.status === 200 && boundInstance(remoteSelected) === remoteOne, remoteSelected);
   const parentIndependent = await post(`${PUBLIC}/exchange`, { ...agentBody, view: "manager-caller", managerInstanceId: remoteOne });
   check("the managed row's parent plays no part in manager selection", parentIndependent.status === 200, parentIndependent);
   const remoteTwo = mintLifecycleUid();
@@ -342,7 +393,7 @@ try {
     ambiguous.status === 401 && String(ambiguous.body.error).includes("2 live remote manager candidates"), ambiguous);
   const explicitRemote = await post(`${PUBLIC}/exchange`, { ...agentBody, view: "manager-caller", managerInstanceId: remoteTwo });
   check("an explicit selector chooses one live own remote manager",
-    explicitRemote.status === 200 && explicitRemote.body.managerInstanceId === remoteTwo, explicitRemote);
+    explicitRemote.status === 200 && boundInstance(explicitRemote) === remoteTwo, explicitRemote);
   const foreign = mintLifecycleUid();
   await putManager({ instanceId: foreign, principal: `${"u_" + "f".repeat(26)}.${remoteManagerActors(foreign).serve}`, owner: "u_" + "f".repeat(26) });
   const foreignSelector = await post(`${PUBLIC}/exchange`, { ...agentBody, view: "manager-caller", managerInstanceId: foreign });
@@ -363,7 +414,7 @@ try {
   // Cloud #210: naming an instance cannot revive a dead gate, so the remedy is to start a manager.
   // The live local manager above is still not selected.
   check("an owner whose remote manager gates are all dead is refused with the start-a-manager remedy, not routed to the local manager",
-    unavailable.status === 401 && String(unavailable.body.error).includes("none live") && String(unavailable.body.error).includes("`cotal supervise`")
+    unavailable.status === 401 && String(unavailable.body.error).includes("none live") && String(unavailable.body.error).includes("`cotal manager start`")
       && !String(unavailable.body.error).includes("managerInstanceId"), unavailable);
   const wrongLocalOwner = "u_" + "y".repeat(26);
   const wrongLocalActor = "wronglocal";
@@ -457,7 +508,7 @@ try {
   const viewLoopback = await post(`${LOOPBACK}/exchange`, { idpToken: idpJwt, actor: "cli", view: "purger" }, { authorization: `Bearer ${info!.cap}` });
   check("the same view request on LOOPBACK reaches the bridge (not the face refusal)",
     viewLoopback.status !== 403, viewLoopback);
-  grantActor(dir, { owner: OWNER, actor: "cli", scope: ["spawn", "supervise", "admin", "role:worker"], allowSubscribe: [">"], allowPublish: [">"], label: "smoke operator" });
+  grantActor(dir, { owner: OWNER, actor: "cli", scope: ["spawn", "supervise", "admin", "role:worker"], allowSubscribe: [">"], allowPublish: [">"], label: "smoke operator", lifecycleUid: cliGrant.lifecycleUid });
   const writerPublic = await post(`${PUBLIC}/exchange`, { idpToken: idpJwt, actor: "cli", view: "channel-writer" });
   let writerView = "";
   try {
@@ -469,8 +520,10 @@ try {
   check("a channel-writer view mints on the public face when the row has admin",
     writerPublic.status === 200 && writerView === "channel-writer", { status: writerPublic.status, writerView, body: writerPublic.body });
   const humanManagerCall = await post(`${PUBLIC}/exchange`, { idpToken: idpJwt, actor: "cli", view: "manager-caller", managerInstanceId: remoteOne });
-  check("the public human exchange serves manager-caller and returns the selected instance",
-    humanManagerCall.status === 200 && humanManagerCall.body.managerInstanceId === remoteOne, humanManagerCall);
+  check("the public human exchange serves manager-caller bound to the selected instance",
+    humanManagerCall.status === 200 && boundInstance(humanManagerCall) === remoteOne, humanManagerCall);
+  check("the human manager-caller exchange answers with token, owner, exp and the current grant",
+    Object.keys(humanManagerCall.body).sort().join() === "exp,grant,owner,token", humanManagerCall.body);
 
   // ---------- E2. the human's own manager instance list ----------
   console.log("E2) the signed-in human's own manager instances, read-only");
@@ -519,6 +572,35 @@ try {
   check("the public typed manager-authority route accepts supervise scope", mgrPrepare.status === 200 && (mgrPrepare.body.credentials as Record<string, unknown>)?.supervisor !== undefined, mgrPrepare.body);
   const rawProfile = await post(`${PUBLIC}/exchange`, { idpToken: idpJwt, actor: "cli", view: "manager-service" });
   check("the public exchange still refuses raw manager-service view/profile strings", rawProfile.status === 403, rawProfile.body);
+
+  console.log("E3) a remote client refused for an ungranted actor names the account's discovered spaces");
+  {
+    // A machine with no ledger for the space: a registration from elsewhere, plus one space the same
+    // sign-in discovered. The operator's grant command is not a step this user can take.
+    const { recordMesh, removeMesh } = await import("@cotal-ai/workspace");
+    const clientRoot = mkdtempSync(join(tmpdir(), "cotal-rx-client-"));
+    const remoteAuth = (space: string) => {
+      const stateDir = userAuthStateDir(clientRoot, space);
+      mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+      writeFileSync(join(stateDir, "sentinel.creds"), expectedCallout.sentinelCreds, { mode: 0o600 });
+      return { provider: "cotal", idp: { url: base, issuer: origin, audience: origin }, remote: true as const, endpoints: { url: PUBLIC }, sentinelCredsPath: join(stateDir, "sentinel.creds") };
+    };
+    recordMesh({ space: "rx_bootstrap", server: SERVER, root: clientRoot, mode: "user", origin: "manual", userAuth: remoteAuth("rx_bootstrap"), ts: new Date().toISOString() });
+    recordMesh({ space: "rx_team", server: SERVER, root: clientRoot, mode: "user", origin: "catalog", catalogOwner: "rx-owner", userAuth: remoteAuth("rx_team"), ts: new Date().toISOString() });
+    let refusal: (Error & { code?: unknown; remedy?: unknown }) | undefined;
+    try {
+      await cotalAuthProvider.userCredentials({ store: workspaceSecretStore(clientRoot), dir: userAuthStateDir(clientRoot, "rx_bootstrap"), space: "rx_bootstrap", actor: "ungranted_human" });
+    } catch (e) {
+      refusal = e as Error & { code?: unknown; remedy?: unknown };
+    }
+    check("the refusal names the discovered spaces and how to select one, not the operator's grant command",
+      refusal?.code === "refused" && /space "rx_bootstrap" has not granted actor "ungranted_human" to this account/.test(refusal.message) &&
+        !/cotal actor grant/.test(`${refusal.message} ${String(refusal.remedy)}`) && refusal.remedy === "your account's spaces are rx_team; select one with `cotal use <name>`",
+      { message: refusal?.message, remedy: refusal?.remedy });
+    removeMesh("rx_bootstrap");
+    removeMesh("rx_team");
+    rmSync(clientRoot, { recursive: true, force: true });
+  }
 
   console.log("F) Origin / content-type / body bound on the public face");
   const browser = await post(`${PUBLIC}/exchange`, agentBody2, { origin: "https://evil.example" });
@@ -756,17 +838,38 @@ try {
     { status: ambiguousFromFull.status, body: ambiguousFromFull.body },
   );
   const poller = asPeer("203.0.113.61");
-  let ambiguousRefusals = 0;
+  // Selection failures have their own per-principal/class window. A fresh actor starts it empty;
+  // changing only the peer would reuse the five unpinned failures from the earlier cells.
+  const pollerSecret = newActorToken();
+  const pollerActor = "selectionbudget";
+  grantManagedActor(dir, { custody: { kind: "foreground" }, owner: OWNER, actor: pollerActor,
+    scope: ["role:worker"], allowSubscribe: [], allowPublish: [], parent: `${OWNER}.cli`,
+    tokenHash: pollerSecret.tokenHash, lifecycleUid: mintLifecycleUid() });
+  const pollerBody = { owner: OWNER, actor: pollerActor, actorToken: pollerSecret.actorToken };
+  let ambiguousRefusals = 0, selectionThrottles = 0;
   for (let i = 0; i < 40; i++) {
-    const r = await post(`${PUBLIC}/exchange`, { ...agentBody2, view: "manager-caller" }, poller);
-    if (r.status === 401 && /live remote manager candidates/.test(String(r.body.error))) ambiguousRefusals++;
+    const r = await post(`${PUBLIC}/exchange`, { ...pollerBody, view: "manager-caller" }, poller);
+    if (i < 30 && r.status === 401 && /live remote manager candidates/.test(String(r.body.error))) ambiguousRefusals++;
+    if (i >= 30 && r.status === 429 && /too many manager-caller selection refusals/.test(String(r.body.error))) selectionThrottles++;
   }
-  const afterPolls = await post(`${PUBLIC}/exchange`, { ...agentBody2, actorToken: newActorToken().actorToken }, poller);
+  check("a fresh principal gets 30 named unpinned selection refusals", ambiguousRefusals === 30, { ambiguousRefusals });
+  check("the next 10 unpinned selections hit that principal's selection limit", selectionThrottles === 10, { selectionThrottles });
+  const afterPolls = await post(`${PUBLIC}/exchange`, { ...pollerBody, actorToken: newActorToken().actorToken }, poller);
   check(
-    "40 ambiguous selections leave the peer's refused-exchange budget untouched",
-    ambiguousRefusals === 40 && afterPolls.status === 401 && afterPolls.body.error === wrongSecret.body.error,
-    { ambiguousRefusals, status: afterPolls.status, body: afterPolls.body },
+    "selection refusals and throttles leave the peer's probing budget untouched",
+    afterPolls.status === 401 && afterPolls.body.error === wrongSecret.body.error,
+    { status: afterPolls.status },
   );
+  const pinnedAfterPolls = await post(`${PUBLIC}/exchange`, { ...pollerBody, view: "manager-caller", managerInstanceId: remoteOne }, poller);
+  check("a full unpinned window leaves the same principal's pinned selection open",
+    pinnedAfterPolls.status === 200 && boundInstance(pinnedAfterPolls) === remoteOne, { status: pinnedAfterPolls.status });
+  const ordinaryAfterPolls = await post(`${PUBLIC}/exchange`, pollerBody, poller);
+  check("a full selection window leaves the principal's ordinary exchange open", ordinaryAfterPolls.status === 200,
+    { status: ordinaryAfterPolls.status });
+  const siblingAfterPolls = await post(`${PUBLIC}/exchange`, { ...agentBody2, view: "manager-caller" }, poller);
+  check("a full selection window leaves another principal of the same owner and peer below its own limit",
+    siblingAfterPolls.status === 401 && /live remote manager candidates/.test(String(siblingAfterPolls.body.error)),
+    { status: siblingAfterPolls.status });
 
   // ---------- H. refresh across expiry ----------
   console.log("H) agent-bearer-style refresh yields a fresh, later-expiring bearer");
@@ -789,7 +892,7 @@ try {
 }
 
 // Counts, not just "no failures": a cell that stops running stops protecting anything.
-const EXPECTED = 117;
+const EXPECTED = 127;
 console.log(`\nremote-exchange smoke: ${pass} passed, ${fail} failed`);
 if (pass + fail !== EXPECTED) {
   console.log(`  ✗ FAIL: expected ${EXPECTED} cells, ran ${pass + fail} - a cell was added or silently skipped`);

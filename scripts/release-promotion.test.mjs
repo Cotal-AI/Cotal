@@ -22,24 +22,32 @@ test("real install-check entrypoint isolates two synthetic operator environments
     writeFileSync(join(bin, "npm"), `#!${process.execPath}\n` + `
 const fs = require("node:fs"), path = require("node:path");
 const env = process.env;
-fs.writeFileSync(${JSON.stringify(capture)}, JSON.stringify({
-  home: env.HOME, cwd: process.cwd(), token: Boolean(env.GITHUB_TOKEN),
+fs.appendFileSync(${JSON.stringify(capture)}, JSON.stringify({
+  home: env.HOME, cwd: process.cwd(), token: Boolean(env.GITHUB_TOKEN), preferOnline: process.argv.includes("--prefer-online"), specs: process.argv.filter(arg => /@1\.2\.3$/.test(arg)),
   operatorState: (env.COTAL_HOME || "").includes("synthetic-operator"),
   privatePaths: ["USERPROFILE", "APPDATA", "LOCALAPPDATA", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "COTAL_HOME", "CLAUDE_CONFIG_DIR", "TMPDIR", "TMP", "TEMP", "npm_config_userconfig", "npm_config_globalconfig", "npm_config_cache"].every(key => env[key] === env.HOME || env[key]?.startsWith(env.HOME + path.sep)),
   emptyConfigs: [env.npm_config_userconfig, env.npm_config_globalconfig].every(file => fs.readFileSync(file, "utf8") === "")
-}));
+})+"\\n");
 const prefix = process.argv[process.argv.indexOf("--prefix") + 1];
 fs.mkdirSync(path.join(prefix, "bin"), { recursive: true });
 fs.writeFileSync(path.join(prefix, "bin", "cotal"), ${JSON.stringify(`#!${process.execPath}\nprocess.stdout.write("cotal-ai 1.2.3\\n");\n`)}, { mode: 0o755 });
 `, { mode: 0o755 });
-    for (const session of ["first", "second"]) {
-      const output = execFileSync(process.execPath, [join(import.meta.dirname, "verify-release-installable.mjs"), "1.2.3", "--deadline-ms=5000"], {
+    for (const session of ["first", "second", "late"]) {
+      const flags = session === "late" ? [`--requested-at=${new Date(Date.now() - 3_600_000).toISOString()}`] : [];
+      writeFileSync(capture, "");
+      const output = execFileSync(process.execPath, [join(import.meta.dirname, "verify-release-installable.mjs"), "1.2.3", "--deadline-ms=5000", "--closure", ...flags], {
         cwd: workspace, encoding: "utf8", timeout: 10_000,
-        env: { ...coldOsEnvironment(), PATH: `${bin}:${dirname(process.execPath)}:/usr/bin:/bin`, HOME: join(root, session), GITHUB_TOKEN: "synthetic-not-a-credential", COTAL_HOME: join(root, "synthetic-operator", session) },
+        env: { ...coldOsEnvironment(), PATH: `${bin}:${dirname(process.execPath)}:/usr/bin:/bin`, HOME: join(root, session), GITHUB_TOKEN: "synthetic-not-a-credential", COTAL_HOME: join(root, "synthetic-operator", session), ...(session === "late" ? { RELEASE_ATTEMPT_STARTED_AT: new Date().toISOString() } : {}) },
       });
       assert.match(output, /VERDICT: INSTALLABLE/);
-      const captured = JSON.parse(readFileSync(capture, "utf8"));
+      const captures = readFileSync(capture, "utf8").trim().split("\n").map(line => JSON.parse(line));
+      assert.equal(captures.length, 2);
+      const captured = captures.at(-1);
       assert.equal(captured.token, false); assert.equal(captured.operatorState, false);
+      assert.equal(captured.preferOnline, true, "registry install must request packument revalidation");
+      const fixed = JSON.parse(readFileSync(join(workspace, ".changeset/config.json"), "utf8")).fixed.flat().sort();
+      assert.deepEqual(captures[0].specs.sort(), fixed.map(name => `${name}@1.2.3`), "every fixed sibling must resolve through npm");
+      assert.deepEqual(captured.specs, ["cotal-ai@1.2.3"], "global CLI install must retain its supported dependency layout");
       assert.equal(captured.privatePaths, true); assert.equal(captured.emptyConfigs, true);
       assert.equal(captured.cwd, captured.home);
       assert.equal(existsSync(captured.home), false, "successful install probe must clean its private scratch root");
@@ -98,12 +106,14 @@ test("real registry reads bind every version, archive, integrity and dist-tag", 
     assert.equal(receipt.complete, true); assert.equal(receipt.withinPublicationBudget, true);
     assert.equal(receipt.packages.length, 2); assert.equal(reads, 6);
     for (mode of ["missing", "old-tag"]) {
-      await assert.rejects(() => verifyPromotedArchives({ ...options, requestedAt: new Date(Date.now() - 599_800).toISOString() }), /ten-minute availability deadline/);
+      await assert.rejects(() => verifyPromotedArchives({ ...options, requestedAt: new Date(Date.now() - 599_800).toISOString() }), /execution deadline/);
     }
     for (mode of ["wrong-bytes", "wrong-integrity"]) {
       await assert.rejects(() => verifyPromotedArchives({ ...options, requestedAt: new Date().toISOString() }), (error) => error.code === "ERR_RELEASE_ARTIFACT");
     }
     mode = "ready";
+    const late = await verifyPromotedArchives({ ...options, requestedAt: new Date(Date.now() - 601_000).toISOString(), attemptStartedAt: new Date().toISOString() });
+    assert.equal(late.complete, true); assert.equal(late.withinPublicationBudget, false); assert.equal(late.recheck, false);
     const recovery = await verifyPromotedArchives({ ...options, requestedAt: new Date(Date.now() - 601_000).toISOString(), recheck: true });
     assert.equal(recovery.complete, true); assert.equal(recovery.withinPublicationBudget, false); assert.equal(recovery.recheck, true);
     await assert.rejects(() => verifyPromotedArchives({ ...options, requestedAt: new Date().toISOString(), expectedSha256: "f".repeat(64) }), /another candidate/);
@@ -175,5 +185,12 @@ test("recorded outcomes never turn accepted uploads or late recovery into a time
     const late = record("late", 601_000);
     assert.equal(late.available, true); assert.equal(late.withinPublicationBudget, false);
     assert.equal(late.elapsedMs, 601_000);
+    const output = join(root, "late-cli.json");
+    const cli = execFileSync(process.execPath, [join(import.meta.dirname, "record-publication-outcome.mjs"), publicationFile, archivesFile, output], { env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    assert.match(cli, /availability verified=true; within original ten-minute budget=false/);
+    const recorded = JSON.parse(readFileSync(output, "utf8"));
+    assert.equal(recorded.available, true);
+    assert.equal(recorded.withinPublicationBudget, false);
+    assert.equal(recorded.requestedAt, requestedAt);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

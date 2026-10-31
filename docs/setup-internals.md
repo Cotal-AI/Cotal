@@ -20,7 +20,9 @@ Every run takes the same inputs: destination, application, runtimes, project and
 terminal, `askInputs` asks for each one no flag gave and shows the answers before anything is
 written; Change asks again with the answers kept and Cancel saves nothing. Without one, or with
 `--yes`, `--no-input` or `--json`, `scriptedInputs` takes them from the flags and refuses a missing
-one. `--destination cloud` is refused as in development before anything else. `runtimeChoices`
+one, and that refusal (`MissingFlags`) prints the scripted form without the command help.
+`--destination cloud` is refused before anything else with the route a Cloud space takes: `cotal
+login` registers it, then `--destination self-hosted`. `runtimeChoices`
 lists `pty`, the official runtimes with the host tools in `OFFICIAL_RUNTIME_TOOLS`, and each
 installed third-party runtime. A script's runtimes are the `--runtime` names, which `runtimeFlags`
 checks before any write: an unknown name or an official one whose tool is not on PATH is refused.
@@ -31,10 +33,13 @@ connector surface, and the space at its destination. A local space goes through 
 in [`space-registration.ts`](../implementations/cli/src/commands/space-registration.ts), the
 checks `space create` makes, which with setup's `again` reports a space already prepared or started
 at that root instead of refusing it; a local space also needs a `nats-server` to locate. A
-self-hosted space goes through `checkSelfHostedSpace`: a registration whose root is the project, or
-a connection file `addFromBundle` will register.
+self-hosted space goes through `checkSelfHostedSpace`: a hand-added registration whose root is the
+project, a signed-in catalog registration that is already bound there or can bind there without
+moving its catalog credential custody, or a connection file `addFromBundle` will register. Connections
+created before binding can still renew using the catalog credential context.
 
-`prepare` then writes, in order: the prepared space or the registration, the `default` persona in
+`prepare` then writes, in order: the prepared space, registration or signed-in catalog project
+binding, the `default` persona in
 `<project>/.cotal/agents` (plus the demo personas with `--demo`), the space's `harness`
 preference and your own when you have none, the application's `connector` and `mcpServers`
 actions, every present connector's `skills` action, `~/.agents/skills` when it is not current, the
@@ -113,9 +118,9 @@ is the agent/CI contract; keep it working.
 | Thing | Must stay in sync across | Why |
 |---|---|---|
 | Marketplace name **`cotal-mesh`** | `MARKETPLACE` in the claude connector's [`src/setup.ts`](../extensions/connector-claude-code/src/setup.ts) (materialized `marketplace.json`), repo [`.claude-plugin/marketplace.json`](../.claude-plugin/marketplace.json) | Setup installs and verifies the plugin as `cotal@cotal-mesh`. The wake channel does not use this name: `CHANNEL_REF` in [`extension.ts`](../extensions/connector-claude-code/src/extension.ts) is `server:cotal` |
-| Plugin assets | the claude connector's own [`src/setup.ts`](../extensions/connector-claude-code/src/setup.ts) copy list `COTAL_ASSETS` (`dist/mcp.cjs`, `dist/hook.cjs`, `dist/monitor.cjs`, `.claude-plugin/plugin.json`, `.mcp.json`, `hooks/hooks.json`, `hooks/native-wake.js`, `monitors/monitors.json`, plus the `dist/cli.json` that setup writes beside them), its `package.json` `files` field, and the release tree's list in [`scripts/materialize-claude-plugin.mjs`](../scripts/materialize-claude-plugin.mjs) | The connector materializes its own plugin; missing or renamed assets break the install, and the base CLI has no copy of the list. The release script refuses a plugin whose `.mcp.json` or hooks reference a file it did not copy |
+| Plugin assets | the claude connector's own [`src/setup.ts`](../extensions/connector-claude-code/src/setup.ts) copy list `COTAL_ASSETS` (`dist/seat.cjs`, `dist/mcp.cjs`, `dist/hook.cjs`, `dist/monitor.cjs`, `.claude-plugin/plugin.json`, `.mcp.json`, `hooks/hooks.json`, `hooks/native-wake.js`, `monitors/monitors.json`, plus the `dist/cli.json` that setup writes beside them), its `package.json` `files` field, and the release tree's list in [`scripts/materialize-claude-plugin.mjs`](../scripts/materialize-claude-plugin.mjs) | The connector materializes its own plugin; missing or renamed assets break the install, and the base CLI has no copy of the list. The release script refuses a plugin whose `.mcp.json` or hooks reference a file it did not copy |
 | `cotal` plugin copy | `materializeCotal` and `refresh` in the claude connector's `src/setup.ts`; `pluginVersion` stamps the release, `+`, then a digest of every file setup copies, `cli.json` included | A repeat `cotal setup` and `cotal update` replace the materialized payload and update existing registrations with Claude's own plugin command. Refresh preserves disabled settings and verifies the recorded version and resolved files. Status checks the same payload rather than trusting the marketplace alone. Running sessions need a plugin reload or restart |
-| Claude Desktop entry | `desktopConfigPath` and the `cotal` server name in the claude connector's `src/desktop-config.ts`, and `desktopEntry` in its `src/setup.ts` | Desktop reads its config only when it starts. The entry runs the materialized `dist/mcp.cjs` with `--desktop`, so the materialize path and the entry must agree |
+| Claude Desktop entry | `desktopConfigPath`, `desktopRunning` and the `cotal` server name in the claude connector's `src/desktop-config.ts`, and `desktopEntry` in its `src/setup.ts` | Desktop reads its config only when it starts and writes that copy back on ordinary use, so on macOS `writeDesktopEntry` writes nothing while a process whose `ps -A -o comm=` path ends in `/Claude.app/Contents/MacOS/Claude` runs. Windows is unchanged. The entry runs the materialized `dist/seat.cjs` with `--desktop`, so the materialize path and the entry must agree |
 | `Connector.pluginRoot` | [`packages/core/src/connector.ts`](../packages/core/src/connector.ts) (contract) plus set in the claude connector's `extension.ts` | A connector's declaration that it ships installable plugin assets; the picker phrases its hint from it |
 | `BUNDLED_PKG_PREFIX` | [`lib/nats-bin.ts`](../implementations/cli/src/lib/nats-bin.ts) ↔ the `@eplightning/nats-server-*` `optionalDependencies` in [`implementations/cli/package.json`](../implementations/cli/package.json) | The bundled NATS binary is resolved by `${prefix}-${platform}-${arch}`. (Future: swap the prefix to our own `@cotal-ai/nats-server-*`.) |
 | Onboard marker plus `ONBOARD_VERSION` | `~/.cotal/onboarded.json` in [`lib/onboard.ts`](../implementations/cli/src/lib/onboard.ts); version const in `setup.ts` | Setup shows the splash until it is written |
@@ -142,9 +147,12 @@ old-manager preflight → **delivery daemon** (auth mode only) → **manager**, 
 ([`lib/delivery-proc.ts`](../implementations/cli/src/lib/delivery-proc.ts)). The preflight reads
 the manager record once and judges that one process: it stops a live manager whose
 `manager.<key>.delivery-aware` marker does not hold its pid, and leaves one whose marker does or
-that exited while the preflight looked. The stop signals only that pid. A manager that replaced the
-record in the meantime is left running, and the delivery daemon's own check judges it. The detached
-processes, all stopped by `cotal down`:
+that exited while the preflight looked. The stop signals only that pid. If the judged record
+changes or disappears before the stop, cutover refuses to start the daemon and preserves any
+successor's records, including leftover artifacts or an emptied pidfile. Cleaning a husk or
+finding an artifact does not confirm the judged manager stopped. Retry after the manager restart
+completes. A successor's marker does not
+prove the predecessor released Plane 3. The detached processes, all stopped by `cotal down`:
 
 With no explicit `--server`, `cotal up` auto-selects a free local port when the default broker
 address is already held by another root or an unrecorded broker; an explicit `--server` remains
@@ -217,10 +225,12 @@ writes its child marker, so a refusal on those paths leaves none of them behind.
 
 For ergonomics only, an npx run with no global `cotal` offers to `npm i -g cotal-ai`
 (`offerGlobalInstall`, pinned to the running version): gated on `isNpx()` plus a PATH scan
-(`cotalOnPath()`, not an exec probe, since `cotal --version` is not a real command). The
-interactive prompt defaults to yes, the non-interactive path (`--yes` or no TTY) takes the
-default, and a failed install is non-fatal (warn plus manual command). It is offered only in the
-rich presentation, so `--json` and `--plain` keep stdout for the result. The same `self-exec.ts`
+(`cotalOnPath()`). `displayCmd()` runs the same scan for every user-facing hint, so the scan only
+resolves files. The `cotal --version` exec probe stays in `verifiedCotalExecutables()`, which the
+refusal of an older cotal (below) uses to name a newer executable. The interactive prompt defaults
+to yes, the non-interactive path (`--yes` or no TTY) takes the default, and a failed install is
+non-fatal (warn plus manual command). It is offered only in the rich presentation, so `--json` and
+`--plain` keep stdout for the result. The same `self-exec.ts`
 exposes `displayCmd()`, the prefix (`cotal` / `npx cotal-ai` / `pnpm cotal`) used in setup's next
 command so it matches how you ran it.
 
@@ -258,7 +268,12 @@ launcher artifacts are self-contained and do not resolve those mutable links lat
 
 **Reconcile policy** (generation = the `cotal-ai` version): a never-seeded built-in is seeded; a
 still-installed one WE seeded (`source: "seeded"`) is refreshed only when the version bumps (semver
-compare) or under `--force`; an operator-managed official entry (a manual `ext add` at a chosen
+compare) or under `--force`; `cotal update` runs the verify mode instead of `--force`: a seeded entry
+at the running generation is compared byte for byte with the shipped payload and the seed-store copy
+(`seed/verify.ts`), the prefix tree is compared with its lock once (an optional entry whose `os`,
+`cpu` or `libc` list leaves this host out under npm's own `checkPlatform` rule, negations and `any`
+included, is absent by design, not missing), and a built-in is reinstalled only when something
+differs, so a current install pays no reinstall; an operator-managed official entry (a manual `ext add` at a chosen
 version, no seeded marker) is left untouched on upgrade; a deliberately-removed one stays removed. The
 `ever-seeded` **authority** (`seed/authority.json`, mirrored to a monotonic `.bak`) is the sole arbiter
 of removed-vs-never-seeded and is unioned with its backup on read, so a truncated authority never
@@ -285,7 +300,10 @@ released install.
 Before an upgraded generation commits, reconciliation also refreshes already installed harness
 copies through each connector's setup provider. The provider runs even when its native executable
 is unavailable: an installed integration that cannot be updated must fail, not disappear from the
-upgrade checks. A refresh failure leaves the older stamp and recovery cursor intact. The reconcile
+upgrade checks. A refresh failure leaves the older stamp and recovery cursor intact. A Claude
+plugin installation at local or project scope that its update does not reach produces a warning and lets
+the generation commit, so one project's record cannot block every command. A user-scope installation
+that does not update still fails. The reconcile
 lock stays held while the extension writer lock is released for provider loading and native refresh,
 then reacquired. A manifest change during that interval refuses the generation commit. This keeps
 ordinary first use after an npm upgrade on the same harness-refresh path as `cotal update`.
@@ -304,6 +322,10 @@ generated bytes, the native module and the CLI record all contribute to the plug
 **Crash safety.** One shared advisory lock ([`packages/workspace/src/advisory-lock.ts`](../packages/workspace/src/advisory-lock.ts):
 atomic hard-link publish, PID + process-start liveness, bounded wait, dead-owner reclaim) guards the
 whole reconcile and every `cotal ext` mutation; a live reconcile is waited on, not mistaken for a crash.
+On Linux, inspection reads the owner's process state and start token from one `/proc/<pid>/stat`
+snapshot. An unavailable identity leaves a live PID active with a bounded wait; it does not invoke `ps`.
+Each inspection reads the owner record once and keeps its verdict with the observed inode. Reclaim
+checks both again under its sentinel before removing that generation.
 A crash **cursor** is journaled before each connector mutation and cleared only at the final commit, so
 a SIGKILL mid-run is detected on the next boot (fail loud → `ext seed --repair` re-installs the
 interrupted connector before it clears the evidence). Seed children are authenticated (they carry the

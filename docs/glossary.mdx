@@ -73,7 +73,7 @@ History is retained channel content that a reader can request within its read AC
 
 ## Instance (id)
 
-A connected participant, also called an endpoint. Its wire id is its principal, used as the sender and presence key. A principal is reusable after terminal retirement. Per-instance durable state also includes `lifecycleUid` to distinguish successive lifecycles. See [SPEC §2](../SPEC.md#2-identity) and [§13.1](../SPEC.md#131-lifecycle-identity).
+A connected participant identified by its principal, used as sender and presence key. Per-instance durable names also carry the lifecycle UID so a same-name successor inherits no backlog. See [SPEC §2](../SPEC.md#2-identity) and [§8](../SPEC.md#8-nats--jetstream-binding).
 
 ## Join link
 
@@ -129,7 +129,7 @@ The terminal teardown of a lifecycle when an agent is permanently removed, such 
 
 ## Role
 
-A role, also called a service, is a named anycast target shared by a group of consumers. A message addressed to the role reaches one consumer. See [SPEC §1](../SPEC.md#1-scope-and-terminology) and [§4](../SPEC.md#4-delivery-modes).
+A named anycast messaging target shared by consumers. Each message reaches one consumer. This is distinct from a registered endpoint service with a discoverable command contract. See [Control discovery](control-surface.mdx#service-discovery).
 
 ## Runtime
 
@@ -141,7 +141,7 @@ An isolated coordination context and tenant boundary. In the NATS binding, each 
 
 ## Spawn capability
 
-The `spawn` permission declared in an agent file's `capabilities`. It grants specific manager endpoint commands for host launch, persona definition, and lifecycle operations scoped to the caller's owner. The broker enforces the command grants on the `ep` rails. See [Agent files](agent-files.mdx).
+The `spawn` capability requests manager lifecycle commands. Issued endpoint grants and target scope determine which peers the caller may manage. It grants no blanket space authority. See [agent files](agent-files.mdx) and [SPEC Appendix B](../SPEC.md#appendix-b-profile-acls).
 
 ## Trusted reader
 

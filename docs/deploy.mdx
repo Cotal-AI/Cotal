@@ -1,7 +1,7 @@
 ---
 title: "Deploy agent teams"
 description: "Review the container example, its current build limitation, and the credentials it needs."
-kind: "Informative"
+kind: Guide
 audience: "operators"
 ---
 
@@ -32,7 +32,7 @@ Changing the team does not require an image change.
 | File | Purpose |
 | --- | --- |
 | [`Dockerfile`](../deploy/docker/Dockerfile) | Bundles the Cotal, Claude Code, and OpenCode CLIs, attempts connector setup, and prepares Claude onboarding for unattended use. |
-| [`entrypoint.sh`](../deploy/docker/entrypoint.sh) | Waits for the external broker, then runs `cotal <cmd> --server $COTAL_SERVERS`. |
+| [`entrypoint.sh`](../deploy/docker/entrypoint.sh) | Waits for the external broker, then runs `cotal <cmd> --server $COTAL_SERVERS` with the daemon Node flag `--max-semi-space-size=1`. |
 | [`compose.yaml`](../deploy/docker/compose.yaml) | Defines a `team-a` manager with a roster and a `solo` agent. |
 | [`roster.example.yaml`](../deploy/docker/roster.example.yaml) | Provides a team roster to copy and edit. |
 
@@ -111,7 +111,7 @@ That rule does not forward every variable beginning with `CLAUDE_CODE_`.
 | Connector | Model credential |
 | --- | --- |
 | Claude Code | `CLAUDE_CODE_OAUTH_TOKEN`, obtained with `claude setup-token` on the host. |
-| OpenCode | The credential variable for the provider named in each agent's `model:`, such as `OPENCODE_API_KEY`, `OPENAI_API_KEY`, or `ANTHROPIC_API_KEY`. |
+| OpenCode | Forwarded without configuration: `OPENCODE_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, and `NOUS_API_KEY`. Other provider names require a `spawn.env` entry. |
 
 A Claude token uses the host account's Claude Pro or Max subscription.
 Each application reads the provider variables it understands.

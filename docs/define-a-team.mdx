@@ -1,7 +1,7 @@
 ---
 title: "Define a team"
 description: "Describe agents and channels in a manifest, then boot or deploy that team."
-kind: "Informative"
+kind: Guide
 audience: "operators"
 ---
 
@@ -66,7 +66,13 @@ cotal watch --space main
 The check resolves personas and access rules without a broker.
 The boot command starts a fresh stack using the prepared root.
 Inspect `cotal ps` to confirm which requested agents joined; a started manager alone does not prove every agent is ready.
+Native `up -f` returns before those launches settle. If an agent is absent from `ps`, inspect the manager log under `.cotal/` for its launch failure.
 Use [Watch a mesh](watch-a-mesh.mdx) to inspect activity.
+
+Before the first managed Claude launch, run `claude` once as the same user, choose a text style, and log in.
+Managed Claude agents default to Bypass Permissions mode, whose one-time warning only you may accept.
+Run `claude --permission-mode bypassPermissions` yourself, or give each agent `launchOptions: {permission-mode: default}` and answer prompts at its terminal.
+See [Before the manager launches Claude Code](getting-started.mdx#before-the-manager-launches-claude-code).
 
 If `main` already belongs to another root, choose an unused name in both the manifest and `space create` command.
 Preparation does not take over an existing registration.
@@ -110,7 +116,7 @@ Remove previews inspect native manager and card state; membership observations a
 A preview does not authorize an apply.
 
 Static and user-auth boot attempts retain their intent before preparing trust.
-Boot apply supports rich, JSON, and plain receipts.
+Boot apply supports rich, JSON, and plain receipts. `--foreground` holds the stack in this terminal.
 Inspect an uncertain or partial outcome rather than repeating the operation.
 
 ## Remove only owned resources [#manifest-ownership]
@@ -155,7 +161,8 @@ The requested runtime must match the selected manager.
 
 Completed effects remain if a later step fails.
 Unknown effects are not replayed, and an unfinished intent is not permission to retry it.
-Inspect the returned deployment ID with `cotal team show <id>` and follow its reported next action.
+Inspect the returned deployment ID with `cotal team show <id>`.
+`team remove <id>` removes resources the attempt journal records it created; a failed partial deploy names that command as its next action.
 
 </Callout>
 
@@ -202,11 +209,11 @@ The registry resolves its recorded port for messaging, channel commands, console
 Use a manager roster when you want the same personas started each time that manager starts:
 
 ```bash
-cotal service add manager --preset manager --root <dir> --runtime pty --roster <file>
-cotal service start manager --foreground
+cotal manager start --roster <file> --foreground
 ```
 
-Both paths must be absolute.
+`--roster` takes an absolute path. The manager retains it for later `manager start` calls.
+Changing it while the manager runs refuses until `cotal manager stop`.
 Without `--foreground`, the manager runs in the background.
 The deprecated `cotal supervise --roster <file>` loads the same list.
 Each entry starts one agent through the manager. A roster creates no channels; access comes from the persona.

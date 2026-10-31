@@ -9,6 +9,7 @@ import { Callout } from "fumadocs-ui/components/callout";
 
 `linear` exposes account-specific MCP operations and registered endpoints through the installed `@cotal-ai/linear` extension.
 
+
 ## linear [#linear]
 
 ```bash
@@ -24,11 +25,13 @@ cotal linear serve <account> --endpoint <reverse-dns-name> [--space <s>] [--serv
 cotal linear caller <name> --endpoint <reverse-dns-name> --out <path> [--channels <a,b>] [--expires-in <s>] [--json|--plain]
 ```
 
-The extension serves one Linear account as a registered Cotal endpoint that agents call with `cotal_describe` and
-`cotal_invoke`, and gives the operator a direct client for the same server. It only talks to `https://mcp.linear.app/mcp`
+Serves one Linear account as a registered Cotal endpoint that agents call with `cotal_describe` and
+`cotal_invoke`, and gives the operator a direct client for the same server. Until the extension is
+added, `cotal linear` and `cotal help linear` name the `cotal ext add` that adds it. It only talks to `https://mcp.linear.app/mcp`
 (mode `write`) or `https://mcp.linear.app/mcp/readonly` (mode `readonly`); there is no URL or header
 option. Use a separate account per Linear workspace, and prefer a `readonly` account with a
 restricted read key wherever writes are not needed.
+
 
 ### Account credentials
 
@@ -41,6 +44,7 @@ registers a client, prints the authorize URL, and waits on a loopback redirect. 
 refreshes them before a request is sent. OAuth requests only go to `https://mcp.linear.app`.
 Redirects are refused so the credential is never forwarded.
 
+
 ### Native inventory
 
 `inventory` reads the server's capabilities and every page of its tools, plus resources, resource
@@ -49,13 +53,15 @@ sent them. The digest covers the whole inventory; pass it to `--inventory` so a 
 before dispatch if the inventory changed. Capabilities this command does not represent, such as
 resource subscriptions or logging, are listed under `unsupported`.
 
+
 ### Finite output
 
 Bare `linear` and `linear account` show their scoped operations without opening an account or
 contacting the upstream. Account add/show, inventory and the native call/resource/prompt forms
 support shared rich/plain reports and version-1 JSON envelopes. Scoped help and completion use
-the same operation/flag declarations as validation. Extra operands and wrong-mode flags refuse
-before account access. Positional values are bounded to 8192 characters without terminal controls.
+the same operation/flag declarations as validation, and each operation's help shows its own usage
+line. Extra operands and wrong-mode flags refuse before account access; a flag the operation does
+not take is named, with the flags it does take and its usage. Positional values are bounded to 8192 characters without terminal controls.
 Piped tokens are bounded to 1 MiB of strict UTF-8; their contents and argument parse errors are
 not echoed. Account reports describe recorded configuration or a native save acknowledgement,
 not current access to Linear. An account name with no record refuses with `TARGET_NOT_FOUND` and
@@ -68,9 +74,8 @@ work progress. `call`, `resource` and `prompt` retain the complete native reply 
 `result.reply` with `--json`; rich/plain output shows at most 60 whole result lines. The bearer
 is scrubbed by the native client; other upstream content is not claimed to be secret-redacted.
 
-### Native outcomes
 
-<Callout type="warn">
+### Native outcomes
 
 A tool result with `isError: true` remains an MCP result (exit 0), with a visible warning. This does
 not assert that the requested work succeeded. A native refusal with outcome `not-executed` returns
@@ -80,13 +85,14 @@ native outcome and reason remain in the result. Errors carry a status or class, 
 bodies. An interrupted account save or OAuth flow can return unknown because private state or an
 external authorization may already have changed.
 
-</Callout>
 
 ### Other output modes
 
 OAuth login keeps the native human authorization flow, so it offers plain output but not JSON
 and refuses when input is disabled. The existing foreground `serve` route keeps its native authority and human output; it does not
-accept finite-output flags. The existing `caller` route
+accept finite-output flags, and `--json` or `--plain` there refuses as a usage error (exit 1) that
+says so. Its refusals carry their identifiers in the text report instead, such as the proposal to
+approve on a user-auth mesh. The existing `caller` route
 keeps its native static issuer but supports shared JSON/plain private-file receipts. Its output
 must be outside managed state in an existing protected physical parent. An existing destination
 refuses before provisioning. Publication is create-only under the cooperative output lock, and
@@ -100,9 +106,9 @@ account, inventory or reply.
 
 `serve` registers the account as an endpoint named by `--endpoint` and serves it until Ctrl-C. The
 name must be a reverse-DNS name in a namespace you own, such as `com.example.linear`; it is
-authorized for this mesh's local owner only because you configured it. `serve` reads the inventory
-first, so an account that cannot be reached is never registered. It then walks the same path every
-registered endpoint does: it publishes the contract to the contract store, opens the issuance gate,
+authorized for a static-auth mesh's local owner because you configured it. `serve` reads the inventory
+first, so an account that cannot be reached is never registered. On a static-auth mesh, it publishes
+the contract to the contract store, opens the issuance gate,
 registers a fresh instance, writes its ready status, and mints a scoped serve credential through
 the gate. Every step runs on short-lived executor credentials scoped to this one endpoint instance.
 The space signer stays in the `serve` process for renewal at 75% of the credential's life and is
@@ -110,6 +116,7 @@ never written out, printed, or handed to the serving connection. Ctrl-C stops se
 Linear session and removes the instance's service record, each within 10 seconds. A start that
 fails after registration removes the record before it exits and says whether that removal
 completed; a registration that fails part-way rolls its own record back and reports when it could not.
+
 
 ### Endpoint command contract
 
@@ -143,9 +150,34 @@ refuse endpoint capabilities. `auth mint --endpoint` now covers supported untarg
 surfaces through live native resolution. Targeted/journaled/action issuance and caller/launch
 adapters are not supported.
 
-A per-user-auth mesh is refused by both `serve` and `caller`: there, endpoint and caller credentials
-come from the remote auth service, which this package does not support yet. Nothing falls back to a
-local signer. An open mesh is refused too, because it has no credentials to scope.
+On a user-auth mesh, `serve` uses the registered auth provider's service authority. The owner must
+approve the original service proposal and the operator must bind its endpoint name. Until then
+`serve` refuses with `PERMISSION_DENIED` (exit 2), and its Next line names the proposal and the
+command that approves it:
+
+```bash
+cotal service-endpoint approve <proposalId> --caller-ceiling linear.mcp --space <space>
+```
+
+The `linear.mcp` ceiling covers the five Linear commands, so callers can be granted them later; an
+approval without it has an empty ceiling and no caller can be granted. Grant an agent, for example:
+
+```bash
+cotal service-endpoint grant <proposalId> --to <owner.actor> --lifecycle <uid> --commands inventory --space <space>
+```
+
+Repeat the same `serve` command after approval. Its instance, registration body and request identities are retained;
+a changed account, target or embedded contract refuses instead of replacing them. The shared
+renewal source activates and renews the access bearer. The service verifies the signed bearer and
+embedded cluster before serving, and reports ready only after the broker flush and host acknowledgement.
+No local signer or ordinary enrolled agent is substituted.
+
+Stopping a user-auth service closes its serving connection, renewal source and Linear session.
+It retains the approved registration for a later start; stopping does not claim remote revocation.
+Use the space's service approval and exact caller-grant controls to revoke access. Callers need
+explicit instance-scoped grants through that remote authority. An account or visible registration
+does not grant invocation rights. The standalone `caller` credential exporter remains static-auth
+only. Open meshes refuse because they have no credential system to scope.
 
 Not represented yet, and listed under `unsupported` when the server advertises them: resource
 subscriptions, logging, progress notifications and experimental capabilities. The server cannot
@@ -155,7 +187,7 @@ call back for sampling, elicitation or roots. Every call acts as the account's o
 ## Native Linear service [#native-linear-service]
 
 The `linear` service preset uses an existing native `account`, a reverse-DNS `endpoint` in a
-namespace you own, and the selected registered static-auth `root`. An optional `server` only
+namespace you own, and the selected registered static-auth or user-auth `root`. An optional `server` only
 repeats its broker. Account login/token setup remains a separate explicit operation. A start whose
 account has no record refuses with `TARGET_NOT_FOUND` and the `linear account add` route before a
 child is launched. That check reads the Cotal home of the process that runs `service start`. While
@@ -167,11 +199,13 @@ and the reverse-DNS endpoint name are checked when the service starts, and an in
 name refuses that start before a child is launched, leaving a failed instance record. The native
 static issuer, inventory, registration, credential renewal, request handling and deregistration
 stay in the Linear implementation. No generic caller authority, new account or broker dependency
-is supplied by the preset. User-auth and open spaces refuse instead of using another issuer.
+is supplied by the preset. User-auth spaces use their remote service authority and retain the
+original approved registration on restart. Open spaces refuse instead of using another issuer.
+
 
 ### Linear service readiness
 
-An explicit start can allocate another instance through the native registration path. The preset
+On static-auth roots, an explicit start can allocate another instance through the native registration path. The preset
 declares foreground control through the shared terminal-bound lifetime; OS-supervised service
 control is not supported. The child keeps the selected
 root and registered TLS requirement and does not print upstream bodies or credentials into its
@@ -180,9 +214,13 @@ handlers. It does not claim a broker-flushed subscription, a fresh authenticated
 or upstream business-work completion. Reports label it process/adapter initialization, not
 endpoint-serving proof.
 
-### Linear service stop
-
-Stop retains the native serve close and bounded deregistration policy. Original process exit
-still does not establish that deregistration or other cleanup completed. The legacy
+Stop closes the native serving connection and Linear session. Static-auth roots also attempt bounded
+deregistration; user-auth roots retain the original approved registration. Original process exit
+still does not establish that deregistration, revocation or other cleanup completed. The legacy
 `linear serve` foreground entry remains available for installed callers; the independent
 service route does not call that parser or its printed launch output.
+
+
+### Linear service stop [#linear-service-stop]
+
+See the [current command contract](cli-integrations.mdx#native-linear-service) for this behavior.

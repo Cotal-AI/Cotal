@@ -1,5 +1,740 @@
 # @cotal-ai/lang
 
+## 0.132.1
+
+No changes in this release.
+
+## 0.132.0
+
+No changes in this release.
+
+## 0.131.6
+
+No changes in this release.
+
+## 0.131.5
+
+No changes in this release.
+
+## 0.131.4
+
+No changes in this release.
+
+## 0.131.3
+
+No changes in this release.
+
+## 0.131.2
+
+No changes in this release.
+
+## 0.131.1
+
+No changes in this release.
+
+## 0.131.0
+
+No changes in this release.
+
+## 0.130.2
+
+No changes in this release.
+
+## 0.130.1
+
+### Patch Changes
+
+- 029df4f: Keep foreign error names and messages consistent across worker execution, inspection and the host bridge. Shared readers retain only string-valued fields and contain throwing accessors or failed string conversion, so formatting a failure does not strand its answer.
+
+## 0.130.0
+
+No changes in this release.
+
+## 0.129.9
+
+No changes in this release.
+
+## 0.129.8
+
+No changes in this release.
+
+## 0.129.7
+
+No changes in this release.
+
+## 0.129.6
+
+No changes in this release.
+
+## 0.129.5
+
+No changes in this release.
+
+## 0.129.4
+
+No changes in this release.
+
+## 0.129.3
+
+No changes in this release.
+
+## 0.129.2
+
+No changes in this release.
+
+## 0.129.1
+
+No changes in this release.
+
+## 0.129.0
+
+No changes in this release.
+
+## 0.128.7
+
+No changes in this release.
+
+## 0.128.6
+
+No changes in this release.
+
+## 0.128.5
+
+No changes in this release.
+
+## 0.128.4
+
+No changes in this release.
+
+## 0.128.3
+
+No changes in this release.
+
+## 0.128.2
+
+No changes in this release.
+
+## 0.128.1
+
+No changes in this release.
+
+## 0.128.0
+
+No changes in this release.
+
+## 0.127.5
+
+No changes in this release.
+
+## 0.127.4
+
+No changes in this release.
+
+## 0.127.3
+
+No changes in this release.
+
+## 0.127.2
+
+No changes in this release.
+
+## 0.127.1
+
+No changes in this release.
+
+## 0.127.0
+
+### Minor Changes
+
+- 53fbd95: Allow an authorized personal native conversation to bind itself with `participant()` and receive hosted workflow turns through a finite exact-lifecycle lease without gaining manager seat custody.
+
+## 0.126.3
+
+No changes in this release.
+
+## 0.126.2
+
+No changes in this release.
+
+## 0.126.1
+
+No changes in this release.
+
+## 0.126.0
+
+No changes in this release.
+
+## 0.125.0
+
+No changes in this release.
+
+## 0.124.3
+
+No changes in this release.
+
+## 0.124.2
+
+No changes in this release.
+
+## 0.124.1
+
+No changes in this release.
+
+## 0.124.0
+
+No changes in this release.
+
+## 0.123.0
+
+No changes in this release.
+
+## 0.122.0
+
+No changes in this release.
+
+## 0.121.7
+
+No changes in this release.
+
+## 0.121.6
+
+No changes in this release.
+
+## 0.121.5
+
+No changes in this release.
+
+## 0.121.4
+
+No changes in this release.
+
+## 0.121.3
+
+No changes in this release.
+
+## 0.121.2
+
+### Patch Changes
+
+- 60f5412: Derive `Frame.depth` and `EngineFrame.depth` from `keys.path.length` as a getter instead of storing a separate constructor field and incrementing it alongside `keys.branch`.
+
+## 0.121.1
+
+No changes in this release.
+
+## 0.121.0
+
+No changes in this release.
+
+## 0.120.2
+
+No changes in this release.
+
+## 0.120.1
+
+No changes in this release.
+
+## 0.120.0
+
+No changes in this release.
+
+## 0.119.5
+
+No changes in this release.
+
+## 0.119.4
+
+No changes in this release.
+
+## 0.119.3
+
+No changes in this release.
+
+## 0.119.2
+
+No changes in this release.
+
+## 0.119.1
+
+No changes in this release.
+
+## 0.119.0
+
+No changes in this release.
+
+## 0.118.3
+
+No changes in this release.
+
+## 0.118.2
+
+No changes in this release.
+
+## 0.118.1
+
+No changes in this release.
+
+## 0.118.0
+
+No changes in this release.
+
+## 0.117.1
+
+No changes in this release.
+
+## 0.117.0
+
+No changes in this release.
+
+## 0.116.5
+
+No changes in this release.
+
+## 0.116.4
+
+No changes in this release.
+
+## 0.116.3
+
+No changes in this release.
+
+## 0.116.2
+
+No changes in this release.
+
+## 0.116.1
+
+No changes in this release.
+
+## 0.116.0
+
+No changes in this release.
+
+## 0.115.4
+
+No changes in this release.
+
+## 0.115.3
+
+No changes in this release.
+
+## 0.115.2
+
+No changes in this release.
+
+## 0.115.1
+
+No changes in this release.
+
+## 0.115.0
+
+No changes in this release.
+
+## 0.114.1
+
+No changes in this release.
+
+## 0.114.0
+
+No changes in this release.
+
+## 0.113.3
+
+No changes in this release.
+
+## 0.113.2
+
+No changes in this release.
+
+## 0.113.1
+
+No changes in this release.
+
+## 0.113.0
+
+No changes in this release.
+
+## 0.112.0
+
+No changes in this release.
+
+## 0.111.1
+
+No changes in this release.
+
+## 0.111.0
+
+No changes in this release.
+
+## 0.110.0
+
+No changes in this release.
+
+## 0.109.25
+
+No changes in this release.
+
+## 0.109.24
+
+No changes in this release.
+
+## 0.109.23
+
+No changes in this release.
+
+## 0.109.22
+
+No changes in this release.
+
+## 0.109.21
+
+No changes in this release.
+
+## 0.109.20
+
+No changes in this release.
+
+## 0.109.19
+
+No changes in this release.
+
+## 0.109.18
+
+No changes in this release.
+
+## 0.109.17
+
+No changes in this release.
+
+## 0.109.16
+
+No changes in this release.
+
+## 0.109.15
+
+No changes in this release.
+
+## 0.109.14
+
+No changes in this release.
+
+## 0.109.13
+
+No changes in this release.
+
+## 0.109.12
+
+No changes in this release.
+
+## 0.109.11
+
+No changes in this release.
+
+## 0.109.10
+
+No changes in this release.
+
+## 0.109.9
+
+No changes in this release.
+
+## 0.109.8
+
+No changes in this release.
+
+## 0.109.7
+
+No changes in this release.
+
+## 0.109.6
+
+No changes in this release.
+
+## 0.109.5
+
+No changes in this release.
+
+## 0.109.4
+
+No changes in this release.
+
+## 0.109.3
+
+No changes in this release.
+
+## 0.109.2
+
+No changes in this release.
+
+## 0.109.1
+
+No changes in this release.
+
+## 0.109.0
+
+No changes in this release.
+
+## 0.108.1
+
+No changes in this release.
+
+## 0.108.0
+
+No changes in this release.
+
+## 0.107.0
+
+### Minor Changes
+
+- 0ae11a6: One manager can host seats on different terminal runtimes at the same time.
+  
+  `cotal spawn --runtime <name>` with `-d` or `--on`, `cotal_spawn` with `runtime`, and a workflow `spawn(persona, { runtime })`, choose the runtime of that one seat. A seat that names none keeps the runtime the manager was started with. An unknown or unreachable runtime, and `auto`, refuses the launch and starts nothing. Stopping, attaching, and recovery follow the runtime recorded for that seat, so a later seat does not move one that is already running.
+
+## 0.106.1
+
+No changes in this release.
+
+## 0.106.0
+
+No changes in this release.
+
+## 0.105.1
+
+No changes in this release.
+
+## 0.105.0
+
+No changes in this release.
+
+## 0.104.2
+
+No changes in this release.
+
+## 0.104.1
+
+### Patch Changes
+
+- c6021e5: Share dispatch-failure settlement between `waitUntil` observations and ordinary effects, preserving refusal, cancellation, error details and journal rejection handling without a second recorder.
+
+## 0.104.0
+
+### Patch Changes
+
+- e0c4e6e: Correct the documentation page by page against the implementation, including CLI commands, connector delivery and activity sharing, authentication, observer surfaces, hosted composition, telemetry and historical design status. Refresh package guides and generated tool and HTTP references while preserving existing links and normative contracts.
+
+## 0.103.4
+
+No changes in this release.
+
+## 0.103.3
+
+No changes in this release.
+
+## 0.103.2
+
+No changes in this release.
+
+## 0.103.1
+
+No changes in this release.
+
+## 0.103.0
+
+No changes in this release.
+
+## 0.102.0
+
+No changes in this release.
+
+## 0.101.7
+
+No changes in this release.
+
+## 0.101.6
+
+No changes in this release.
+
+## 0.101.5
+
+No changes in this release.
+
+## 0.101.4
+
+No changes in this release.
+
+## 0.101.3
+
+No changes in this release.
+
+## 0.101.2
+
+No changes in this release.
+
+## 0.101.1
+
+No changes in this release.
+
+## 0.101.0
+
+### Patch Changes
+
+- 71e8b88: `cotal run amend` for a run ID that no run is recorded under now says no run is recorded under that
+  ID. With `--local`, an amend that finds no answer to amend is refused `TARGET_NOT_FOUND`, exit 2, as
+  the hosted amend is, where it reported an unknown outcome although nothing was written.
+- b3738e8: `cotal run amend` sent right after an accepted answer, before the run has recorded it, now says the answer was accepted and is not recorded yet, and to amend once the step lists it. Before, it said the step was "still open, so answer it instead", which sent the caller to a pause that had already taken their answer.
+- c22bcff: `cotal run answer` for a run ID that no run is recorded under now says no run is recorded under
+  that ID, where it said no step is recorded under that key. With `--local` it is refused
+  `TARGET_NOT_FOUND`, exit 2, as the hosted answer is, where it reported an unknown outcome although
+  nothing was written.
+- b926504: A checkpoint that expires under `onExpiry: "fail"` now says in its L4007 whether the deadline came
+  from its own `timeout` or from the run's default, and its last option matches: raise the
+  checkpoint's timeout, or give it one or start the run with a longer default. The two used to print
+  the same text.
+- 9e0b1c5: `run validate` and `run start` now refuse a literal that is not a duration where a program reads
+  one, such as `sleep("5")`, `sleep(5000)` or a checkpoint `timeout` of `"PT5M"`, with L2034 and the
+  same text the call gives. Such a program used to validate and start, then fail its run at the call.
+  `run start` and `run resume` refuse a `--timeout` that is not a duration longer than zero with
+  `USAGE_INVALID`, where it used to start a run whose checkpoints then failed.
+- e53c3a3: `run validate` no longer refuses a `fanOut` with L3025 when a property name in an items object
+  literal holds `/`, `#` or `:`. The static rule read those names as branch keys. A `fanOut` mints its
+  branch keys at run time from `key` or each item's `id`, and the run still refuses one that holds a
+  reserved character with L3025. The static rule keeps covering `parallel` and `race` record keys.
+- 2895911: L1008 is now titled "Invalid syntax or newline hazard", since a program that does not parse, such as
+  one holding a NUL byte, is refused under it as well as the two newline hazards. The code is unchanged.
+- 94207f0: `run validate` and a hosted `run start` now refuse an effect other than `ask` inside `once`, in its
+  body or in a function the body calls by name, with L2033. Such a program used to validate and then
+  fail every run with L4028.
+- b2fcd9c: A program that does not parse, such as one holding a NUL byte, is still refused with L1008, and its
+  fix now says only to fix the syntax at the marked position. It used to say the language has no
+  automatic semicolon insertion, which it does.
+- b432707: A step that a race cancelled in a losing branch now says so. `run show` labels its row
+  `cancelled, <branch> won <race>`, and `run answer` at that step is refused with `that step was
+  cancelled because branch <branch> won the race <race>` instead of `that step has already settled`.
+- 761c861: `cotal run simulate` now tells a program that fails under its script apart from a script that does not cover the program. A program failure, such as a checkpoint scripted `expired` under the default `onExpiry: "fail"` (L4007), is a completed simulation, exit 0, whose program outcome is failed: it shows the step and that step's outcome with the language's error, and the JSON result carries `outcome` and `failure` beside the effects that ran. A script with no result for an effect (L6001) still does not complete, exit 5, and now names the step and the entry to add. Before, both printed "the offline simulation did not complete; unscripted effects are not invented" with a null result. `dryRunOutcome` returns a failed program's report with its fault, and `dryRun` takes an optional `journal`, so a caller can read the step a dry run that did not complete stopped at.
+- ce05dbf: When a simulation script's list of results for a step is too short, the L6001 failure now says which
+  result the step needs, counted from 1, as in "step /turn:build#1 needs result 2". It used to say
+  "this is occurrence 1" for the second occurrence.
+- 78a2035: A workflow's `log(...)` lines are no longer discarded. A run the manager hosts writes each line to
+  the manager's log as `run <run-id>: log <text>`, a `--local` drive prints them, and `run simulate`
+  lists them under `Log`, with `result.log` in `--json`. The lines stay out of the journal, as the
+  language defines.
+
+## 0.100.2
+
+No changes in this release.
+
+## 0.100.1
+
+### Patch Changes
+
+- 86b2cd5: A `conclave` reached on a branch that is already cancelled now raises the cancellation before its entry begins, as every other effect does. Before, a race's losing branch that reached a conclave after the race was decided wrote a conclave entry and settled it `cancelled`, and a resume that re-entered a pending conclave on a cancelled branch opened and closed the room and could hand the race to the branch the live run had cancelled. Effects and conclaves now pass one shared set of admission checks (cancellation, the host's stop, the effect ceiling) before they begin.
+
+## 0.100.0
+
+### Minor Changes
+
+- 9f69a20: `ADMITTED_NODES`, `STRUCTURAL_NODES`, `RESERVED_NAMES`, `FORBIDDEN_GLOBALS` and `MUTATING_METHODS` are now exported as frozen arrays instead of `Set`s, and `CATALOG` is frozen. Code that imports the package could call `add` or `delete` on one of those sets, or assign a `CATALOG` title, and change what `validate` accepted or how its errors were titled for the rest of the process. The tables can no longer be changed: a write throws in strict-mode code, such as an ES module, and changes nothing elsewhere. This changes the exported type, so a caller that used `.has` or `.size` on one of these tables uses `.includes` or `.length` instead.
+
+## 0.99.3
+
+No changes in this release.
+
+## 0.99.2
+
+No changes in this release.
+
+## 0.99.1
+
+No changes in this release.
+
+## 0.99.0
+
+No changes in this release.
+
+## 0.98.0
+
+No changes in this release.
+
+## 0.97.1
+
+No changes in this release.
+
+## 0.97.0
+
+No changes in this release.
+
+## 0.96.1
+
+No changes in this release.
+
+## 0.96.0
+
+No changes in this release.
+
+## 0.95.2
+
+No changes in this release.
+
+## 0.95.1
+
+No changes in this release.
+
+## 0.95.0
+
+No changes in this release.
+
+## 0.94.7
+
+No changes in this release.
+
+## 0.94.6
+
+No changes in this release.
+
+## 0.94.5
+
+No changes in this release.
+
+## 0.94.4
+
+No changes in this release.
+
+## 0.94.3
+
+No changes in this release.
+
+## 0.94.2
+
+No changes in this release.
+
+## 0.94.1
+
+No changes in this release.
+
+## 0.94.0
+
+No changes in this release.
+
+## 0.93.0
+
+No changes in this release.
+
+## 0.92.2
+
+No changes in this release.
+
+## 0.92.1
+
+No changes in this release.
+
+## 0.92.0
+
+### Minor Changes
+
+- 1db940e: Add authenticated cooperative workflow cancellation through the manager endpoint. The original caller can cancel under a live issued generation; signerless hosts also verify interactive owner or admin authority through the issuing host. Replies distinguish the durable revocation marker from an observed local drive outcome, preserve unknown write outcomes and retain the first marker. Read-only status inspection remains available after revocation without permitting new drive or checkpoint-answer authority. The run show view displays revocation separately from recorded state and returns a partial result with exit 4 when the marker cannot be read, in human and JSON output.
+
+  Breaking: embedded RunHostDrive implementations must supply cancel(reason) separately from release(reason). Both language engines and the worker bridge propagate cooperative root cancellation. This does not preempt external tools, stop agent processes or prove resource cleanup. No new CLI or MCP convenience command is added.
+
 ## 0.91.0
 
 ## 0.90.1

@@ -1,7 +1,7 @@
-import { registry, type Connector, type ConnectorSetupProvider, type ConnectorStatusRow, type ExtensionRef } from "@cotal-ai/core";
-import { assertRecordIdentity, extensionConnectors, installedExtensionVersion, loadExtensionsManifest, loadSpaceAuth, localProcessPath, parsePid, probeLiveness, readPidfile, readWebSession, resolveOnPath, serviceWebSessionPath, WEB_PIDFILE, WEB_SERVICE_ADAPTER, WEB_SESSION_FILE, type LocalProcessContext } from "@cotal-ai/workspace";
+import { registry, type Connector, type ConnectorSetupProvider, type ConnectorStatusRow, type ExtensionRef, type SignedInSpace } from "@cotal-ai/core";
+import { assertRecordIdentity, extensionConnectors, installedExtensionVersion, loadExtensionsManifest, loadSpaceAuth, localProcessPath, parsePid, probeLiveness, readPidfile, readWebSession, webBoundUrl, resolveOnPath, serviceWebSessionPath, WEB_PIDFILE, WEB_SERVICE_ADAPTER, WEB_SESSION_FILE, type LocalProcessContext } from "@cotal-ai/workspace";
 import { materializeExtension } from "../ext-loader.js";
-import { resolveNatsServer } from "./nats-bin.js";
+import { findNatsServer, natsServerProblem } from "./nats-bin.js";
 import { displayCmd } from "./self-exec.js";
 import { serviceInstanceStore, serviceInstances } from "./service-instances.js";
 import { cliVersion } from "./version.js";
@@ -36,7 +36,7 @@ export function webBoundAddress(path: string): { host: string; port: number; url
   const session = readWebSession(path);
   if (!session) return undefined;
   const { host, port, readiness } = session;
-  return { host, port, url: `http://${host.includes(":") ? `[${host}]` : host}:${port}/`, readiness };
+  return { host, port, url: webBoundUrl(host, port), readiness };
 }
 
 /** The address a mesh's dashboard recorded once it was listening, while the pid it recorded is alive.
@@ -74,6 +74,10 @@ export function webInstalled(): boolean {
 
 export interface MachineStatus {
   nats: "path" | "bundled" | "missing";
+  /** The nats-server a broker start would run and the version it reports, or null when there is none. */
+  natsServer: { path: string; version: string | null; skipped?: { path: string; reason: string } } | null;
+  /** Why a broker start refuses that nats-server, or null. */
+  natsProblem: string | null;
 }
 
 /** One installed connector's harness readiness: the executables it declares (`requires`), the ones
@@ -88,13 +92,12 @@ export interface HarnessStatus {
 
 /** Machine-level readiness: the once-per-machine setup pieces. */
 export async function machineStatus(): Promise<MachineStatus> {
-  let nats: MachineStatus["nats"] = "missing";
   try {
-    nats = (await resolveNatsServer()).source;
+    const server = await findNatsServer();
+    return { nats: server.source, natsServer: { path: server.path, version: server.version, ...(server.skipped ? { skipped: server.skipped } : {}) }, natsProblem: natsServerProblem(server) };
   } catch {
-    nats = "missing";
+    return { nats: "missing", natsServer: null, natsProblem: null };
   }
-  return { nats };
 }
 
 /** Every connector this machine can launch, read off each connector's own `requires` rather than a list
@@ -111,12 +114,12 @@ export function connectorHarnesses(): HarnessStatus[] {
     .map(([name, { requires, setup }]) => ({ name, requires, missing: requires.filter((bin) => !resolveOnPath(bin)), setup }));
 }
 
-/** The rows each connector's setup provider reports about what it installed. Only a connector that
- *  declares a provider is imported; one whose cached metadata predates the setup ref is read from the
- *  connector itself. A declared provider that cannot be resolved renders as one red row naming the
- *  error, so the rest of status still prints. */
-export async function connectorStatusRows(harnesses: readonly HarnessStatus[]): Promise<ConnectorStatusRow[]> {
-  const input = { version: cliVersion(), skillsRemedy: `${displayCmd()} setup --skills` };
+/** The rows each connector's setup provider reports about what it installed, for the selected space
+ *  when `signedIn` names it. Only a connector that declares a provider is imported; one whose cached
+ *  metadata predates the setup ref is read from the connector itself. A declared provider that cannot
+ *  be resolved renders as one red row naming the error, so the rest of status still prints. */
+export async function connectorStatusRows(harnesses: readonly HarnessStatus[], signedIn?: SignedInSpace): Promise<ConnectorStatusRow[]> {
+  const input = { version: cliVersion(), skillsRemedy: `${displayCmd()} setup --skills`, ...(signedIn ? { signedIn } : {}) };
   const rows: ConnectorStatusRow[] = [];
   for (const harness of harnesses) {
     try {

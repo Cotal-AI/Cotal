@@ -7,7 +7,7 @@ import { runPublicationChild } from "./publication-child.mjs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { publicationDeadline, publicationMap, remainingBudget, withinPublicationBudget } from "./publication-budget.mjs";
+import { publicationDeadline, publicationExecutionDeadline, publicationMap, remainingBudget, withinPublicationBudget } from "./publication-budget.mjs";
 import { publishArchive } from "./publish-cold-candidate.mjs";
 
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -20,6 +20,30 @@ test("one deadline is measured from the original request, not worker admission",
   }
   assert.throws(() => remainingBudget(Date.now() - 1), /expired/);
   assert(remainingBudget(Date.now() + 10_000, 123) <= 123);
+});
+
+test("a delayed execution has one bounded attempt without changing the original deadline", () => {
+  const requested = "2026-10-22T00:00:00Z", attempt = "2026-10-22T01:00:00Z";
+  const now = Date.parse(attempt) + 30_000;
+  assert.throws(() => publicationDeadline(requested, now), /ten-minute deadline/);
+  assert.equal(publicationExecutionDeadline(requested, attempt, now) - now, 570_000);
+  assert.equal(publicationExecutionDeadline(requested, attempt, now + 10_000), Date.parse(attempt) + 600_000);
+  assert.throws(() => publicationExecutionDeadline(requested, attempt, now + 600_000), /execution attempt exceeded/);
+  assert.throws(() => publicationExecutionDeadline(requested, "2026-10-21T23:59:59Z", now), /predates/);
+  assert.throws(() => publicationExecutionDeadline(requested, "2026-10-22T02:00:00Z", now), /future/);
+  assert.throws(() => publicationExecutionDeadline(requested, "", now), /timestamp/);
+});
+
+test("the real budget entrypoint admits a delayed attempt but not a reset between stages", () => {
+  const requested = new Date(Date.now() - 3_600_000).toISOString();
+  const attempt = new Date(Date.now() - 30_000).toISOString();
+  const env = { RELEASE_REQUESTED_AT: requested, RELEASE_ATTEMPT_STARTED_AT: attempt };
+  const output = execFileSync(process.execPath, [join(import.meta.dirname, "publication-budget.mjs"), "--seconds-left"], { env, encoding: "utf8" });
+  assert(Number(output) > 560 && Number(output) <= 570);
+  assert.equal(env.RELEASE_REQUESTED_AT, requested);
+  assert.throws(() => execFileSync(process.execPath, [join(import.meta.dirname, "publication-budget.mjs"), "--seconds-left"], {
+    env: { ...env, RELEASE_ATTEMPT_STARTED_AT: requested }, stdio: "pipe",
+  }), (error) => error.status === 1 && /execution attempt exceeded/.test(error.stderr.toString()));
 });
 
 test("bounded parallel work preserves result order", async () => {

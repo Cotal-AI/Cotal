@@ -1,5 +1,1963 @@
 # @cotal-ai/runtime
 
+## 0.132.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.132.1
+  - @cotal-ai/lang@0.132.1
+  - @cotal-ai/workspace@0.132.1
+
+## 0.132.0
+
+### Patch Changes
+
+- Updated dependencies [5b197c0]
+- Updated dependencies [7613605]
+- Updated dependencies [2f0e7c8]
+  - @cotal-ai/workspace@0.132.0
+  - @cotal-ai/core@0.132.0
+  - @cotal-ai/lang@0.132.0
+
+## 0.131.6
+
+### Patch Changes
+
+- @cotal-ai/core@0.131.6
+  - @cotal-ai/lang@0.131.6
+  - @cotal-ai/workspace@0.131.6
+
+## 0.131.5
+
+### Patch Changes
+
+- Updated dependencies [e78de30]
+  - @cotal-ai/core@0.131.5
+  - @cotal-ai/workspace@0.131.5
+  - @cotal-ai/lang@0.131.5
+
+## 0.131.4
+
+### Patch Changes
+
+- @cotal-ai/core@0.131.4
+  - @cotal-ai/lang@0.131.4
+  - @cotal-ai/workspace@0.131.4
+
+## 0.131.3
+
+### Patch Changes
+
+- @cotal-ai/core@0.131.3
+  - @cotal-ai/lang@0.131.3
+  - @cotal-ai/workspace@0.131.3
+
+## 0.131.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.131.2
+  - @cotal-ai/lang@0.131.2
+  - @cotal-ai/workspace@0.131.2
+
+## 0.131.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.131.1
+  - @cotal-ai/lang@0.131.1
+  - @cotal-ai/workspace@0.131.1
+
+## 0.131.0
+
+### Patch Changes
+
+- Updated dependencies [f7c2c28]
+- Updated dependencies [0e65b6f]
+- Updated dependencies [daff420]
+  - @cotal-ai/core@0.131.0
+  - @cotal-ai/workspace@0.131.0
+  - @cotal-ai/lang@0.131.0
+
+## 0.130.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.130.2
+  - @cotal-ai/lang@0.130.2
+  - @cotal-ai/workspace@0.130.2
+
+## 0.130.1
+
+### Patch Changes
+
+- Updated dependencies [029df4f]
+  - @cotal-ai/lang@0.130.1
+  - @cotal-ai/core@0.130.1
+  - @cotal-ai/workspace@0.130.1
+
+## 0.130.0
+
+### Patch Changes
+
+- Updated dependencies [025d175]
+- Updated dependencies [27250e3]
+  - @cotal-ai/core@0.130.0
+  - @cotal-ai/workspace@0.130.0
+  - @cotal-ai/lang@0.130.0
+
+## 0.129.9
+
+### Patch Changes
+
+- Updated dependencies [1a59b0a]
+- Updated dependencies [b94f83a]
+  - @cotal-ai/core@0.129.9
+  - @cotal-ai/workspace@0.129.9
+  - @cotal-ai/lang@0.129.9
+
+## 0.129.8
+
+### Patch Changes
+
+- Updated dependencies [43b7cb9]
+  - @cotal-ai/workspace@0.129.8
+  - @cotal-ai/core@0.129.8
+  - @cotal-ai/lang@0.129.8
+
+## 0.129.7
+
+### Patch Changes
+
+- Updated dependencies [853005f]
+  - @cotal-ai/workspace@0.129.7
+  - @cotal-ai/core@0.129.7
+  - @cotal-ai/lang@0.129.7
+
+## 0.129.6
+
+### Patch Changes
+
+- @cotal-ai/core@0.129.6
+  - @cotal-ai/lang@0.129.6
+  - @cotal-ai/workspace@0.129.6
+
+## 0.129.5
+
+### Patch Changes
+
+- @cotal-ai/core@0.129.5
+  - @cotal-ai/lang@0.129.5
+  - @cotal-ai/workspace@0.129.5
+
+## 0.129.4
+
+### Patch Changes
+
+- @cotal-ai/core@0.129.4
+  - @cotal-ai/lang@0.129.4
+  - @cotal-ai/workspace@0.129.4
+
+## 0.129.3
+
+### Patch Changes
+
+- Updated dependencies [c6ddccc]
+- Updated dependencies [565f465]
+  - @cotal-ai/core@0.129.3
+  - @cotal-ai/workspace@0.129.3
+  - @cotal-ai/lang@0.129.3
+
+## 0.129.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.129.2
+  - @cotal-ai/lang@0.129.2
+  - @cotal-ai/workspace@0.129.2
+
+## 0.129.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.129.1
+  - @cotal-ai/lang@0.129.1
+  - @cotal-ai/workspace@0.129.1
+
+## 0.129.0
+
+### Patch Changes
+
+- Updated dependencies [de421cd]
+  - @cotal-ai/workspace@0.129.0
+  - @cotal-ai/core@0.129.0
+  - @cotal-ai/lang@0.129.0
+
+## 0.128.7
+
+### Patch Changes
+
+- @cotal-ai/core@0.128.7
+  - @cotal-ai/lang@0.128.7
+  - @cotal-ai/workspace@0.128.7
+
+## 0.128.6
+
+### Patch Changes
+
+- @cotal-ai/core@0.128.6
+  - @cotal-ai/lang@0.128.6
+  - @cotal-ai/workspace@0.128.6
+
+## 0.128.5
+
+### Patch Changes
+
+- Updated dependencies [1c86343]
+  - @cotal-ai/core@0.128.5
+  - @cotal-ai/workspace@0.128.5
+  - @cotal-ai/lang@0.128.5
+
+## 0.128.4
+
+### Patch Changes
+
+- Updated dependencies [4bfbede]
+  - @cotal-ai/core@0.128.4
+  - @cotal-ai/workspace@0.128.4
+  - @cotal-ai/lang@0.128.4
+
+## 0.128.3
+
+### Patch Changes
+
+- Updated dependencies [76fcf89]
+  - @cotal-ai/workspace@0.128.3
+  - @cotal-ai/core@0.128.3
+  - @cotal-ai/lang@0.128.3
+
+## 0.128.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.128.2
+  - @cotal-ai/lang@0.128.2
+  - @cotal-ai/workspace@0.128.2
+
+## 0.128.1
+
+### Patch Changes
+
+- Updated dependencies [20a5c96]
+- Updated dependencies [985519f]
+  - @cotal-ai/core@0.128.1
+  - @cotal-ai/workspace@0.128.1
+  - @cotal-ai/lang@0.128.1
+
+## 0.128.0
+
+### Patch Changes
+
+- Updated dependencies [1f8bfe5]
+  - @cotal-ai/workspace@0.128.0
+  - @cotal-ai/core@0.128.0
+  - @cotal-ai/lang@0.128.0
+
+## 0.127.5
+
+### Patch Changes
+
+- @cotal-ai/core@0.127.5
+  - @cotal-ai/lang@0.127.5
+  - @cotal-ai/workspace@0.127.5
+
+## 0.127.4
+
+### Patch Changes
+
+- Updated dependencies [9dc9bc4]
+  - @cotal-ai/workspace@0.127.4
+  - @cotal-ai/core@0.127.4
+  - @cotal-ai/lang@0.127.4
+
+## 0.127.3
+
+### Patch Changes
+
+- Updated dependencies [5ad71cb]
+  - @cotal-ai/core@0.127.3
+  - @cotal-ai/workspace@0.127.3
+  - @cotal-ai/lang@0.127.3
+
+## 0.127.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.127.2
+  - @cotal-ai/lang@0.127.2
+  - @cotal-ai/workspace@0.127.2
+
+## 0.127.1
+
+### Patch Changes
+
+- Updated dependencies [beade82]
+  - @cotal-ai/core@0.127.1
+  - @cotal-ai/workspace@0.127.1
+  - @cotal-ai/lang@0.127.1
+
+## 0.127.0
+
+### Minor Changes
+
+- 53fbd95: Allow an authorized personal native conversation to bind itself with `participant()` and receive hosted workflow turns through a finite exact-lifecycle lease without gaining manager seat custody.
+
+### Patch Changes
+
+- Updated dependencies [53fbd95]
+  - @cotal-ai/core@0.127.0
+  - @cotal-ai/lang@0.127.0
+  - @cotal-ai/workspace@0.127.0
+
+## 0.126.3
+
+### Patch Changes
+
+- @cotal-ai/core@0.126.3
+  - @cotal-ai/lang@0.126.3
+  - @cotal-ai/workspace@0.126.3
+
+## 0.126.2
+
+### Patch Changes
+
+- Updated dependencies [566b08f]
+  - @cotal-ai/workspace@0.126.2
+  - @cotal-ai/core@0.126.2
+  - @cotal-ai/lang@0.126.2
+
+## 0.126.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.126.1
+  - @cotal-ai/lang@0.126.1
+  - @cotal-ai/workspace@0.126.1
+
+## 0.126.0
+
+### Patch Changes
+
+- Updated dependencies [6481f8b]
+  - @cotal-ai/workspace@0.126.0
+  - @cotal-ai/core@0.126.0
+  - @cotal-ai/lang@0.126.0
+
+## 0.125.0
+
+### Patch Changes
+
+- Updated dependencies [b2413e2]
+  - @cotal-ai/core@0.125.0
+  - @cotal-ai/workspace@0.125.0
+  - @cotal-ai/lang@0.125.0
+
+## 0.124.3
+
+### Patch Changes
+
+- @cotal-ai/core@0.124.3
+  - @cotal-ai/lang@0.124.3
+  - @cotal-ai/workspace@0.124.3
+
+## 0.124.2
+
+### Patch Changes
+
+- Updated dependencies [05eba85]
+  - @cotal-ai/workspace@0.124.2
+  - @cotal-ai/core@0.124.2
+  - @cotal-ai/lang@0.124.2
+
+## 0.124.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.124.1
+  - @cotal-ai/lang@0.124.1
+  - @cotal-ai/workspace@0.124.1
+
+## 0.124.0
+
+### Patch Changes
+
+- @cotal-ai/core@0.124.0
+  - @cotal-ai/lang@0.124.0
+  - @cotal-ai/workspace@0.124.0
+
+## 0.123.0
+
+### Patch Changes
+
+- @cotal-ai/core@0.123.0
+  - @cotal-ai/lang@0.123.0
+  - @cotal-ai/workspace@0.123.0
+
+## 0.122.0
+
+### Patch Changes
+
+- Updated dependencies [b318ddd]
+  - @cotal-ai/core@0.122.0
+  - @cotal-ai/workspace@0.122.0
+  - @cotal-ai/lang@0.122.0
+
+## 0.121.7
+
+### Patch Changes
+
+- Updated dependencies [05ecb0d]
+- Updated dependencies [912de5d]
+  - @cotal-ai/core@0.121.7
+  - @cotal-ai/workspace@0.121.7
+  - @cotal-ai/lang@0.121.7
+
+## 0.121.6
+
+### Patch Changes
+
+- @cotal-ai/core@0.121.6
+  - @cotal-ai/lang@0.121.6
+  - @cotal-ai/workspace@0.121.6
+
+## 0.121.5
+
+### Patch Changes
+
+- 9aec92a: Call `timer.unref()` directly on the loop-lag tick timer in `host-starvation.ts` instead of `timer.unref?.()`, removing the misleading DOM/bundler comment and failing loudly if a timer lacks `unref`.
+- @cotal-ai/core@0.121.5
+  - @cotal-ai/lang@0.121.5
+  - @cotal-ai/workspace@0.121.5
+
+## 0.121.4
+
+### Patch Changes
+
+- Updated dependencies [672725a]
+  - @cotal-ai/workspace@0.121.4
+  - @cotal-ai/core@0.121.4
+  - @cotal-ai/lang@0.121.4
+
+## 0.121.3
+
+### Patch Changes
+
+- Updated dependencies [a90d7ba]
+- Updated dependencies [fe38cbd]
+- Updated dependencies [479895c]
+- Updated dependencies [baf9576]
+- Updated dependencies [6990d29]
+- Updated dependencies [a77ac87]
+- Updated dependencies [d189272]
+  - @cotal-ai/workspace@0.121.3
+  - @cotal-ai/core@0.121.3
+  - @cotal-ai/lang@0.121.3
+
+## 0.121.2
+
+### Patch Changes
+
+- Updated dependencies [60f5412]
+- Updated dependencies [af4b631]
+- Updated dependencies [3d07896]
+- Updated dependencies [1446ee9]
+- Updated dependencies [d98674a]
+- Updated dependencies [f450bfe]
+- Updated dependencies [ee93749]
+  - @cotal-ai/lang@0.121.2
+  - @cotal-ai/core@0.121.2
+  - @cotal-ai/workspace@0.121.2
+
+## 0.121.1
+
+### Patch Changes
+
+- Updated dependencies [44ff795]
+  - @cotal-ai/workspace@0.121.1
+  - @cotal-ai/core@0.121.1
+  - @cotal-ai/lang@0.121.1
+
+## 0.121.0
+
+### Patch Changes
+
+- Updated dependencies [5d01ea1]
+  - @cotal-ai/core@0.121.0
+  - @cotal-ai/workspace@0.121.0
+  - @cotal-ai/lang@0.121.0
+
+## 0.120.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.120.2
+  - @cotal-ai/lang@0.120.2
+  - @cotal-ai/workspace@0.120.2
+
+## 0.120.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.120.1
+  - @cotal-ai/lang@0.120.1
+  - @cotal-ai/workspace@0.120.1
+
+## 0.120.0
+
+### Patch Changes
+
+- @cotal-ai/core@0.120.0
+  - @cotal-ai/lang@0.120.0
+  - @cotal-ai/workspace@0.120.0
+
+## 0.119.5
+
+### Patch Changes
+
+- Updated dependencies [8f7d6dd]
+  - @cotal-ai/core@0.119.5
+  - @cotal-ai/workspace@0.119.5
+  - @cotal-ai/lang@0.119.5
+
+## 0.119.4
+
+### Patch Changes
+
+- ed5c23f: Remedies, hints and messages from `run`, `actor` and `auth`, `logout`, `supervise` and `manager`, `deliver`, `docs`, `daemon`, `linear`, the web dashboard, the console, the Claude Code connector, a run's checkpoint prompt and the endpoint issuance gate now name the commands they suggest in backticks, so a terminal keeps each one whole and `--json` carries the same text. They named them bare after other words, as in "list the recorded runs with cotal run", which split inside the command when the line wrapped.
+- Updated dependencies [ed5c23f]
+- Updated dependencies [ed5c23f]
+  - @cotal-ai/workspace@0.119.4
+  - @cotal-ai/core@0.119.4
+  - @cotal-ai/lang@0.119.4
+
+## 0.119.3
+
+### Patch Changes
+
+- 8866e1e: Endpoint calls now resolve only the command contracts they need instead of fetching the endpoint's complete visible surface. Manager operations that used to read 124 contract-store artifacts for a 40-command surface now read six artifacts for one command, while `describe` still resolves every visible command.
+- Updated dependencies [8866e1e]
+  - @cotal-ai/core@0.119.3
+  - @cotal-ai/workspace@0.119.3
+  - @cotal-ai/lang@0.119.3
+
+## 0.119.2
+
+### Patch Changes
+
+- Updated dependencies [4c61283]
+  - @cotal-ai/workspace@0.119.2
+  - @cotal-ai/core@0.119.2
+  - @cotal-ai/lang@0.119.2
+
+## 0.119.1
+
+### Patch Changes
+
+- 7c52767: A stopped space's last operation now names its command in backticks, as in "its last operation, `cotal down`, completed", so `status`, `use`, `space` and `space show` no longer split it after `cotal`. With a 36-character space name, `status` at 80 columns broke inside `cotal down`, and `use` broke the same way at 40 columns. `--json` carries the same text, so `lastOperation` and the selected space's `message` now hold the backticks. The `--on` help of `run` and its `start`, `show`, `answer` and `amend` verbs, and the refusal for a malformed `--on`, now write `` `cotal ps` ``, and the `--launch` help of `supervise` writes `` `cotal up -f` `` and `` `spawn -f` ``.
+- f57bc1f: Redirecting stderr no longer leaves ANSI color in the file. Color under `auto` was decided by stdout alone, so `cotal spawn 2>err.txt` on a terminal wrote `Mesh:` headings and `✗` refusals to `err.txt` with their color codes, and `cotal spawn >out.txt` left the refusal on the terminal uncolored. Each stream is now colored only when it is a terminal, so a pipe or redirect of either stream is plain text. Reports, help, warnings and failure reports take their color from the stream they are written to, as do most error lines. Some other lines a command writes directly, such as progress notes, are colored only when stdout and stderr are both terminals. `always`, `never`, `--no-color`, `NO_COLOR`, `FORCE_COLOR` and `TERM=dumb` keep their meaning for both streams.
+- Updated dependencies [7c52767]
+- Updated dependencies [f57bc1f]
+- Updated dependencies [9f32677]
+- Updated dependencies [3431be6]
+  - @cotal-ai/workspace@0.119.1
+  - @cotal-ai/core@0.119.1
+  - @cotal-ai/lang@0.119.1
+
+## 0.119.0
+
+### Patch Changes
+
+- Updated dependencies [ba731fe]
+  - @cotal-ai/workspace@0.119.0
+  - @cotal-ai/core@0.119.0
+  - @cotal-ai/lang@0.119.0
+
+## 0.118.3
+
+### Patch Changes
+
+- @cotal-ai/core@0.118.3
+  - @cotal-ai/lang@0.118.3
+  - @cotal-ai/workspace@0.118.3
+
+## 0.118.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.118.2
+  - @cotal-ai/lang@0.118.2
+  - @cotal-ai/workspace@0.118.2
+
+## 0.118.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.118.1
+  - @cotal-ai/lang@0.118.1
+  - @cotal-ai/workspace@0.118.1
+
+## 0.118.0
+
+### Patch Changes
+
+- @cotal-ai/core@0.118.0
+  - @cotal-ai/lang@0.118.0
+  - @cotal-ai/workspace@0.118.0
+
+## 0.117.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.117.1
+  - @cotal-ai/lang@0.117.1
+  - @cotal-ai/workspace@0.117.1
+
+## 0.117.0
+
+### Patch Changes
+
+- Updated dependencies [c93dded]
+  - @cotal-ai/core@0.117.0
+  - @cotal-ai/workspace@0.117.0
+  - @cotal-ai/lang@0.117.0
+
+## 0.116.5
+
+### Patch Changes
+
+- Updated dependencies [e9edf03]
+  - @cotal-ai/workspace@0.116.5
+  - @cotal-ai/core@0.116.5
+  - @cotal-ai/lang@0.116.5
+
+## 0.116.4
+
+### Patch Changes
+
+- Updated dependencies [afcfc54]
+  - @cotal-ai/workspace@0.116.4
+  - @cotal-ai/core@0.116.4
+  - @cotal-ai/lang@0.116.4
+
+## 0.116.3
+
+### Patch Changes
+
+- Updated dependencies [ed72118]
+- Updated dependencies [1819877]
+  - @cotal-ai/workspace@0.116.3
+  - @cotal-ai/core@0.116.3
+  - @cotal-ai/lang@0.116.3
+
+## 0.116.2
+
+### Patch Changes
+
+- Updated dependencies [64add96]
+  - @cotal-ai/workspace@0.116.2
+  - @cotal-ai/core@0.116.2
+  - @cotal-ai/lang@0.116.2
+
+## 0.116.1
+
+### Patch Changes
+
+- Updated dependencies [31cb8e5]
+- Updated dependencies [c6be6dd]
+- Updated dependencies [331ea96]
+- Updated dependencies [211c572]
+- Updated dependencies [b695d8a]
+- Updated dependencies [f561850]
+  - @cotal-ai/core@0.116.1
+  - @cotal-ai/workspace@0.116.1
+  - @cotal-ai/lang@0.116.1
+
+## 0.116.0
+
+### Patch Changes
+
+- 2e7cdfd: A workflow conclave's membership write is fenced by each member lifecycle's exact read-ACL row, as the delivery daemon's join is: the row is read just before the commit and again after it, a member the row no longer covers gets no row, and a row written while the row was narrowed is removed by its exact key. Before, a conclave executing while a member was retiring could create that member's row after the retirement's inventory, and the retired lifecycle kept it. The run-mediator profile gains the read of the ACL registry this needs; a mesh without that registry (open mode) is unchanged.
+- Updated dependencies [3c60b76]
+- Updated dependencies [2e7cdfd]
+- Updated dependencies [5b85487]
+- Updated dependencies [ff23d2d]
+- Updated dependencies [c19eaf9]
+- Updated dependencies [c8072d6]
+- Updated dependencies [726cd81]
+- Updated dependencies [352ee27]
+- Updated dependencies [cf3218f]
+- Updated dependencies [81a6062]
+- Updated dependencies [ff12daa]
+- Updated dependencies [fee5f39]
+- Updated dependencies [a8a49b7]
+  - @cotal-ai/core@0.116.0
+  - @cotal-ai/workspace@0.116.0
+  - @cotal-ai/lang@0.116.0
+
+## 0.115.4
+
+### Patch Changes
+
+- Updated dependencies [352d94d]
+  - @cotal-ai/workspace@0.115.4
+  - @cotal-ai/core@0.115.4
+  - @cotal-ai/lang@0.115.4
+
+## 0.115.3
+
+### Patch Changes
+
+- Updated dependencies [4e84742]
+  - @cotal-ai/workspace@0.115.3
+  - @cotal-ai/core@0.115.3
+  - @cotal-ai/lang@0.115.3
+
+## 0.115.2
+
+### Patch Changes
+
+- Updated dependencies [fe37cb4]
+  - @cotal-ai/core@0.115.2
+  - @cotal-ai/workspace@0.115.2
+  - @cotal-ai/lang@0.115.2
+
+## 0.115.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.115.1
+  - @cotal-ai/lang@0.115.1
+  - @cotal-ai/workspace@0.115.1
+
+## 0.115.0
+
+### Patch Changes
+
+- @cotal-ai/core@0.115.0
+  - @cotal-ai/lang@0.115.0
+  - @cotal-ai/workspace@0.115.0
+
+## 0.114.1
+
+### Patch Changes
+
+- Updated dependencies [12f2b47]
+  - @cotal-ai/workspace@0.114.1
+  - @cotal-ai/core@0.114.1
+  - @cotal-ai/lang@0.114.1
+
+## 0.114.0
+
+### Patch Changes
+
+- @cotal-ai/core@0.114.0
+  - @cotal-ai/lang@0.114.0
+  - @cotal-ai/workspace@0.114.0
+
+## 0.113.3
+
+### Patch Changes
+
+- Updated dependencies [d4a9361]
+  - @cotal-ai/core@0.113.3
+  - @cotal-ai/workspace@0.113.3
+  - @cotal-ai/lang@0.113.3
+
+## 0.113.2
+
+### Patch Changes
+
+- Updated dependencies [09f2707]
+  - @cotal-ai/workspace@0.113.2
+  - @cotal-ai/core@0.113.2
+  - @cotal-ai/lang@0.113.2
+
+## 0.113.1
+
+### Patch Changes
+
+- Updated dependencies [14c4333]
+- Updated dependencies [51d8642]
+  - @cotal-ai/core@0.113.1
+  - @cotal-ai/workspace@0.113.1
+  - @cotal-ai/lang@0.113.1
+
+## 0.113.0
+
+### Patch Changes
+
+- 29c67fe: A records-KV value that is not JSON is refused as `internal` and names its key from every reader of that bucket. `decodeRecordJson` is that decoder. The goal, checkpoint, service, lease, answer, notice, migration, lifecycle and issued-authority readers use it, and the private copies are gone, so a caller that classifies `EpEnvelopeError` no longer sees a bare `SyntaxError` for the same corruption.
+  
+  Presence readers share `isPresenceRow`. A row needs a non-empty `card.id` equal to its key, a string `card.name`, a known status, a finite `ts`, string display fields, and a condition that is either absent or an object with a string code. The core observer, the runtime and the CLI inventory call that guard.
+- Updated dependencies [38fc031]
+- Updated dependencies [c1ff7d8]
+- Updated dependencies [29c67fe]
+- Updated dependencies [a9cd2f5]
+- Updated dependencies [41fb2de]
+- Updated dependencies [f3460b3]
+  - @cotal-ai/core@0.113.0
+  - @cotal-ai/workspace@0.113.0
+  - @cotal-ai/lang@0.113.0
+
+## 0.112.0
+
+### Patch Changes
+
+- Updated dependencies [1924ecd]
+  - @cotal-ai/workspace@0.112.0
+  - @cotal-ai/core@0.112.0
+  - @cotal-ai/lang@0.112.0
+
+## 0.111.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.111.1
+  - @cotal-ai/lang@0.111.1
+  - @cotal-ai/workspace@0.111.1
+
+## 0.111.0
+
+### Patch Changes
+
+- Updated dependencies [d367269]
+- Updated dependencies [b5b0960]
+  - @cotal-ai/core@0.111.0
+  - @cotal-ai/workspace@0.111.0
+  - @cotal-ai/lang@0.111.0
+
+## 0.110.0
+
+### Patch Changes
+
+- Updated dependencies [927e512]
+  - @cotal-ai/workspace@0.110.0
+  - @cotal-ai/core@0.110.0
+  - @cotal-ai/lang@0.110.0
+
+## 0.109.25
+
+### Patch Changes
+
+- dbfc90b: Every command's help now shows its most common uses. `cotal <command> --help` puts an Examples section right after Usage and Shorthands, before Commands and Options, and each example is a command that works as written with a short note on what it does, such as `cotal spawn -d` to launch an agent through a manager and return. Every command and subcommand `cotal help` lists has one to three. An example's command is never wrapped; its note sits beside it, or under it on a narrow terminal. A command's `examples` entry is now `{ command, note }`; a bare string is still accepted and shows with no note. `cotal manager <verb> --help` shows the manager's own examples.
+- Updated dependencies [dbfc90b]
+  - @cotal-ai/core@0.109.25
+  - @cotal-ai/workspace@0.109.25
+  - @cotal-ai/lang@0.109.25
+
+## 0.109.24
+
+### Patch Changes
+
+- Updated dependencies [0bffcb0]
+  - @cotal-ai/workspace@0.109.24
+  - @cotal-ai/core@0.109.24
+  - @cotal-ai/lang@0.109.24
+
+## 0.109.23
+
+### Patch Changes
+
+- @cotal-ai/core@0.109.23
+  - @cotal-ai/lang@0.109.23
+  - @cotal-ai/workspace@0.109.23
+
+## 0.109.22
+
+### Patch Changes
+
+- @cotal-ai/core@0.109.22
+  - @cotal-ai/lang@0.109.22
+  - @cotal-ai/workspace@0.109.22
+
+## 0.109.21
+
+### Patch Changes
+
+- @cotal-ai/core@0.109.21
+  - @cotal-ai/lang@0.109.21
+  - @cotal-ai/workspace@0.109.21
+
+## 0.109.20
+
+### Patch Changes
+
+- Updated dependencies [ffeaa32]
+  - @cotal-ai/workspace@0.109.20
+  - @cotal-ai/core@0.109.20
+  - @cotal-ai/lang@0.109.20
+
+## 0.109.19
+
+### Patch Changes
+
+- @cotal-ai/core@0.109.19
+  - @cotal-ai/lang@0.109.19
+  - @cotal-ai/workspace@0.109.19
+
+## 0.109.18
+
+### Patch Changes
+
+- @cotal-ai/core@0.109.18
+  - @cotal-ai/lang@0.109.18
+  - @cotal-ai/workspace@0.109.18
+
+## 0.109.17
+
+### Patch Changes
+
+- Updated dependencies [dc382c0]
+  - @cotal-ai/core@0.109.17
+  - @cotal-ai/workspace@0.109.17
+  - @cotal-ai/lang@0.109.17
+
+## 0.109.16
+
+### Patch Changes
+
+- @cotal-ai/core@0.109.16
+  - @cotal-ai/lang@0.109.16
+  - @cotal-ai/workspace@0.109.16
+
+## 0.109.15
+
+### Patch Changes
+
+- @cotal-ai/core@0.109.15
+  - @cotal-ai/lang@0.109.15
+  - @cotal-ai/workspace@0.109.15
+
+## 0.109.14
+
+### Patch Changes
+
+- Updated dependencies [60e6671]
+  - @cotal-ai/core@0.109.14
+  - @cotal-ai/workspace@0.109.14
+  - @cotal-ai/lang@0.109.14
+
+## 0.109.13
+
+### Patch Changes
+
+- @cotal-ai/core@0.109.13
+  - @cotal-ai/lang@0.109.13
+  - @cotal-ai/workspace@0.109.13
+
+## 0.109.12
+
+### Patch Changes
+
+- @cotal-ai/core@0.109.12
+  - @cotal-ai/lang@0.109.12
+  - @cotal-ai/workspace@0.109.12
+
+## 0.109.11
+
+### Patch Changes
+
+- Updated dependencies [e85774c]
+  - @cotal-ai/workspace@0.109.11
+  - @cotal-ai/core@0.109.11
+  - @cotal-ai/lang@0.109.11
+
+## 0.109.10
+
+### Patch Changes
+
+- Updated dependencies [e9f4793]
+  - @cotal-ai/workspace@0.109.10
+  - @cotal-ai/core@0.109.10
+  - @cotal-ai/lang@0.109.10
+
+## 0.109.9
+
+### Patch Changes
+
+- Updated dependencies [841d980]
+  - @cotal-ai/workspace@0.109.9
+  - @cotal-ai/core@0.109.9
+  - @cotal-ai/lang@0.109.9
+
+## 0.109.8
+
+### Patch Changes
+
+- Updated dependencies [36b0c06]
+- Updated dependencies [c592eb8]
+  - @cotal-ai/workspace@0.109.8
+  - @cotal-ai/core@0.109.8
+  - @cotal-ai/lang@0.109.8
+
+## 0.109.7
+
+### Patch Changes
+
+- @cotal-ai/core@0.109.7
+  - @cotal-ai/lang@0.109.7
+  - @cotal-ai/workspace@0.109.7
+
+## 0.109.6
+
+### Patch Changes
+
+- @cotal-ai/core@0.109.6
+  - @cotal-ai/lang@0.109.6
+  - @cotal-ai/workspace@0.109.6
+
+## 0.109.5
+
+### Patch Changes
+
+- Updated dependencies [a32425e]
+  - @cotal-ai/workspace@0.109.5
+  - @cotal-ai/core@0.109.5
+  - @cotal-ai/lang@0.109.5
+
+## 0.109.4
+
+### Patch Changes
+
+- @cotal-ai/core@0.109.4
+  - @cotal-ai/lang@0.109.4
+  - @cotal-ai/workspace@0.109.4
+
+## 0.109.3
+
+### Patch Changes
+
+- @cotal-ai/core@0.109.3
+  - @cotal-ai/lang@0.109.3
+  - @cotal-ai/workspace@0.109.3
+
+## 0.109.2
+
+### Patch Changes
+
+- Updated dependencies [4f6f406]
+  - @cotal-ai/workspace@0.109.2
+  - @cotal-ai/core@0.109.2
+  - @cotal-ai/lang@0.109.2
+
+## 0.109.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.109.1
+  - @cotal-ai/lang@0.109.1
+  - @cotal-ai/workspace@0.109.1
+
+## 0.109.0
+
+### Patch Changes
+
+- Updated dependencies [82cb60d]
+  - @cotal-ai/core@0.109.0
+  - @cotal-ai/workspace@0.109.0
+  - @cotal-ai/lang@0.109.0
+
+## 0.108.1
+
+### Patch Changes
+
+- Updated dependencies [25e980f]
+  - @cotal-ai/workspace@0.108.1
+  - @cotal-ai/core@0.108.1
+  - @cotal-ai/lang@0.108.1
+
+## 0.108.0
+
+### Patch Changes
+
+- Updated dependencies [7657395]
+  - @cotal-ai/workspace@0.108.0
+  - @cotal-ai/core@0.108.0
+  - @cotal-ai/lang@0.108.0
+
+## 0.107.0
+
+### Minor Changes
+
+- 0ae11a6: One manager can host seats on different terminal runtimes at the same time.
+  
+  `cotal spawn --runtime <name>` with `-d` or `--on`, `cotal_spawn` with `runtime`, and a workflow `spawn(persona, { runtime })`, choose the runtime of that one seat. A seat that names none keeps the runtime the manager was started with. An unknown or unreachable runtime, and `auto`, refuses the launch and starts nothing. Stopping, attaching, and recovery follow the runtime recorded for that seat, so a later seat does not move one that is already running.
+
+### Patch Changes
+
+- Updated dependencies [0ae11a6]
+  - @cotal-ai/lang@0.107.0
+  - @cotal-ai/core@0.107.0
+  - @cotal-ai/workspace@0.107.0
+
+## 0.106.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.106.1
+  - @cotal-ai/lang@0.106.1
+  - @cotal-ai/workspace@0.106.1
+
+## 0.106.0
+
+### Patch Changes
+
+- Updated dependencies [dd1f8d6]
+- Updated dependencies [ba25fb6]
+- Updated dependencies [54a2996]
+  - @cotal-ai/workspace@0.106.0
+  - @cotal-ai/core@0.106.0
+  - @cotal-ai/lang@0.106.0
+
+## 0.105.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.105.1
+  - @cotal-ai/lang@0.105.1
+  - @cotal-ai/workspace@0.105.1
+
+## 0.105.0
+
+### Patch Changes
+
+- Updated dependencies [c49bced]
+- Updated dependencies [6e16f06]
+  - @cotal-ai/workspace@0.105.0
+  - @cotal-ai/core@0.105.0
+  - @cotal-ai/lang@0.105.0
+
+## 0.104.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.104.2
+  - @cotal-ai/lang@0.104.2
+  - @cotal-ai/workspace@0.104.2
+
+## 0.104.1
+
+### Patch Changes
+
+- Updated dependencies [c6021e5]
+  - @cotal-ai/lang@0.104.1
+  - @cotal-ai/core@0.104.1
+  - @cotal-ai/workspace@0.104.1
+
+## 0.104.0
+
+### Patch Changes
+
+- e0c4e6e: Correct the documentation page by page against the implementation, including CLI commands, connector delivery and activity sharing, authentication, observer surfaces, hosted composition, telemetry and historical design status. Refresh package guides and generated tool and HTTP references while preserving existing links and normative contracts.
+- Updated dependencies [e0c4e6e]
+- Updated dependencies [b7d4f22]
+  - @cotal-ai/core@0.104.0
+  - @cotal-ai/lang@0.104.0
+  - @cotal-ai/workspace@0.104.0
+
+## 0.103.4
+
+### Patch Changes
+
+- Updated dependencies [e6af269]
+  - @cotal-ai/workspace@0.103.4
+  - @cotal-ai/core@0.103.4
+  - @cotal-ai/lang@0.103.4
+
+## 0.103.3
+
+### Patch Changes
+
+- 2b59b43: `run-status` and `cotal run show --json` now carry the run's `programHash`, the same value its
+  `run-ps` row carries, read from that run's own program record. Checking one run's program identity
+  no longer needs a full `run-ps` scan of every run. The hash is absent when the run has no recorded
+  program. A program record that cannot be read or parsed gives `programUnreadable` with its reason
+  and no hash, and the rest of the status view is unchanged. The manager contract moves to revision 39.
+- Updated dependencies [2b59b43]
+  - @cotal-ai/core@0.103.3
+  - @cotal-ai/workspace@0.103.3
+  - @cotal-ai/lang@0.103.3
+
+## 0.103.2
+
+### Patch Changes
+
+- Updated dependencies [2f74981]
+  - @cotal-ai/workspace@0.103.2
+  - @cotal-ai/core@0.103.2
+  - @cotal-ai/lang@0.103.2
+
+## 0.103.1
+
+### Patch Changes
+
+- Updated dependencies [68377b0]
+- Updated dependencies [1608ae7]
+  - @cotal-ai/core@0.103.1
+  - @cotal-ai/workspace@0.103.1
+  - @cotal-ai/lang@0.103.1
+
+## 0.103.0
+
+### Patch Changes
+
+- @cotal-ai/core@0.103.0
+  - @cotal-ai/lang@0.103.0
+  - @cotal-ai/workspace@0.103.0
+
+## 0.102.0
+
+### Patch Changes
+
+- Updated dependencies [9a75f1b]
+- Updated dependencies [bf8978b]
+- Updated dependencies [10ad6d3]
+- Updated dependencies [d0d9e66]
+  - @cotal-ai/core@0.102.0
+  - @cotal-ai/workspace@0.102.0
+  - @cotal-ai/lang@0.102.0
+
+## 0.101.7
+
+### Patch Changes
+
+- Updated dependencies [668ef6a]
+- Updated dependencies [ae43b58]
+  - @cotal-ai/core@0.101.7
+  - @cotal-ai/workspace@0.101.7
+  - @cotal-ai/lang@0.101.7
+
+## 0.101.6
+
+### Patch Changes
+
+- Updated dependencies [52832dc]
+- Updated dependencies [49cf781]
+  - @cotal-ai/workspace@0.101.6
+  - @cotal-ai/core@0.101.6
+  - @cotal-ai/lang@0.101.6
+
+## 0.101.5
+
+### Patch Changes
+
+- Updated dependencies [e6f1f4d]
+  - @cotal-ai/core@0.101.5
+  - @cotal-ai/workspace@0.101.5
+  - @cotal-ai/lang@0.101.5
+
+## 0.101.4
+
+### Patch Changes
+
+- Updated dependencies [0642c8f]
+  - @cotal-ai/core@0.101.4
+  - @cotal-ai/workspace@0.101.4
+  - @cotal-ai/lang@0.101.4
+
+## 0.101.3
+
+### Patch Changes
+
+- Updated dependencies [c54a604]
+- Updated dependencies [a677726]
+- Updated dependencies [330127a]
+  - @cotal-ai/workspace@0.101.3
+  - @cotal-ai/core@0.101.3
+  - @cotal-ai/lang@0.101.3
+
+## 0.101.2
+
+### Patch Changes
+
+- Updated dependencies [9acfc57]
+- Updated dependencies [d57e596]
+- Updated dependencies [427f28b]
+  - @cotal-ai/core@0.101.2
+  - @cotal-ai/workspace@0.101.2
+  - @cotal-ai/lang@0.101.2
+
+## 0.101.1
+
+### Patch Changes
+
+- Updated dependencies [091498f]
+- Updated dependencies [446fd91]
+- Updated dependencies [bdafbf9]
+- Updated dependencies [0379e03]
+  - @cotal-ai/workspace@0.101.1
+  - @cotal-ai/core@0.101.1
+  - @cotal-ai/lang@0.101.1
+
+## 0.101.0
+
+### Patch Changes
+
+- 71e8b88: `cotal run amend` for a run ID that no run is recorded under now says no run is recorded under that
+  ID. With `--local`, an amend that finds no answer to amend is refused `TARGET_NOT_FOUND`, exit 2, as
+  the hosted amend is, where it reported an unknown outcome although nothing was written.
+- b3738e8: `cotal run amend` sent right after an accepted answer, before the run has recorded it, now says the answer was accepted and is not recorded yet, and to amend once the step lists it. Before, it said the step was "still open, so answer it instead", which sent the caller to a pause that had already taken their answer.
+- c22bcff: `cotal run answer` for a run ID that no run is recorded under now says no run is recorded under
+  that ID, where it said no step is recorded under that key. With `--local` it is refused
+  `TARGET_NOT_FOUND`, exit 2, as the hosted answer is, where it reported an unknown outcome although
+  nothing was written.
+- 9d6d515: The plain receipt of `cotal run answer` and `cotal run amend` printed the whole `--value` on one line, so a 100 KB value made a 100,015-character line. It now cuts a value longer than 120 characters, as `run show` does, with a line that says so. `--json` and the stored answer still carry the value whole.
+- 6d8d964: `cotal run answer` and `cotal run amend` now refuse a `--value` whose record would differ from what was typed, with `SCHEMA_INVALID` and nothing sent. That covers an object that names a key twice (JSON kept only the last), a number outside the range JSON carries such as `1e999` (recorded as null before), and a value nested more than 1000 levels deep. A value nested a few thousand levels deep failed before with a raw "Maximum call stack size exceeded", exit 1, and no `--json` envelope.
+- 0c9e498: A refusal that repeats an over-long argument, such as an unknown command or subcommand, a space name given to `use` or `--space`, or a run id, now shows its first 128 characters and its length. A 100000-character value used to print a line as long as itself. The command still checks and uses the whole value.
+- c86562e: `cotal run check` of a run ID with no record on the endpoint is now refused `TARGET_NOT_FOUND`, exit
+  2, with `cotal run` as its Next, as `run show` refuses it. It used to print a bare line and exit 1.
+- 0282994: `run start --file`, `run simulate --handler`, `auth mint --out` and `--identity`, and `--creds` on a
+  command with no completer of its own complete from the shell's file names. A flag declares that with
+  the new optional `FlagSpec.completion: "files"`. `spawn` completes the personas of a prepared space
+  that is not started, as `persona show` does.
+- 9e0b1c5: `run validate` and `run start` now refuse a literal that is not a duration where a program reads
+  one, such as `sleep("5")`, `sleep(5000)` or a checkpoint `timeout` of `"PT5M"`, with L2034 and the
+  same text the call gives. Such a program used to validate and start, then fail its run at the call.
+  `run start` and `run resume` refuse a `--timeout` that is not a duration longer than zero with
+  `USAGE_INVALID`, where it used to start a run whose checkpoints then failed.
+- 50e13e5: `ps` and the hosted `run` verbs now say what to do when the space's manager runs but does not
+  answer. `ps` waited out its deadline and refused "no manager reachable" with no Next, although this
+  root's stack manager was running. It now names that manager's pid and gives as Next ending that
+  process, so bare `cotal up` starts the manager again. `run start`, `run ps` and the other hosted
+  verbs exited 1, the usage code, with only the rail paragraph. They now refuse `TARGET_UNAVAILABLE`
+  (exit 2) with the same sentence, and their Next is `cotal status`, which names a stack manager that
+  runs but does not answer, with its pid.
+- 216829d: Local workflow answers and amendments missing `--by <who>` now refuse `USAGE_INVALID` before
+  contacting the broker, with a JSON envelope under `--json` and a direct step naming the required
+  flag. Previously they reached the local handler and printed raw usage with empty JSON output.
+  The explicit local answerer requirement and hosted authenticated-caller attribution are unchanged.
+- 44193ff: `--json` or `--plain` on `cotal run revoke`, `run check`, `run start --local` and
+  `run resume --local` now names a form that takes the flag, or the same command without it where
+  there is none, and prints no help. It used to say to use the hosted form, which revoke and check do
+  not have.
+- e4516c7: `cotal run start --local` and `cotal run resume --local` of a program that fails now report the
+  failure the run's status records: `OPERATION_FAILED`, exit 5, naming the run and its language code
+  with that code's title, or the first line of the recorded message when the code has none, with
+  `cotal run show <runId> --local` as the next step. Before, they
+  reported an unknown outcome, exit 3, with the whole multi-line message flattened onto one line as
+  literal `\u000a` escapes and no next step. Any other error the drive ends on is still unknown.
+- 0c7e317: On a terminal, more Next lines now keep each command whole when they wrap. Four of them name their
+  commands in backticks now: `space delete` of a running space, `run answer` with a step name that
+  matches an open request, `down` and `down --dry-run` beside a running service, and `up` in a moved
+  folder that `space create --adopt` takes over. Before, at 80 columns, the `space delete --dry-run`
+  Verdict of a space with a long name printed `cotal reset store` at the end of one line and the
+  name on the next.
+- b432707: A step that a race cancelled in a losing branch now says so. `run show` labels its row
+  `cancelled, <branch> won <race>`, and `run answer` at that step is refused with `that step was
+  cancelled because branch <branch> won the race <race>` instead of `that step has already settled`.
+- 66af07b: `run show` names the branch a settled `race` took, and marks `not acted on` an answer whose step was in a losing branch, or whose pause was cancelled after accepting it. Such an answer used to be listed as acted on, or not at all. The journal rows carry the race's `winner` and each losing step's `lostRace` in `--json`.
+- 985f634: Refusals that named no next step now carry a remedy, in the JSON envelope's `error.remedy` and under Next in the text report: an unknown or missing `config` key, a `config` value, space name or `--space` it refuses, `persona show` and `persona remove` for a persona that does not exist, `persona create` for one that does, `run validate` of a file that cannot be read, and `service show` or `service remove` of a definition that is not saved. The envelope reference now says that `remedy` is present when a refusal names a step.
+- d92c955: `cotal run show` now explains that a released status records no reason and points to the executing
+  manager's log for hosted runs or the driving process's output for local runs. It does not infer an
+  execution host or log location from a journal read. Status, JSON, journal limits and resume behavior
+  are unchanged; this is evidence guidance, not a recorded cause or a prevention of repeated release.
+- c3f6d9b: `cotal run revoke`, its help and the workflow docs now say that a revoke does not cancel the run:
+  work that touches no channel, such as a `sleep` and `log` loop, keeps running until the host driving
+  it stops. The docs name each way to stop that host and what else it stops.
+- 64e45c8: `cotal run revoke --local` with an empty or blank `--by` or `--reason` now names that flag, says
+  nothing was written and gives the command to run, without printing the whole `run` help.
+- 5961162: `cotal run revoke --local` of a run ID with no admission on the endpoint is now refused
+  `TARGET_NOT_FOUND`, exit 2, before anything is written, with `cotal run` as the next step. It used
+  to write a revocation marker for that ID and then exit 1 with a refusal citing a spec section.
+- e5ddaed: A revoked workflow run no longer takes an answer. `cotal run answer`, hosted or `--local`, refuses an open checkpoint or `ask` of a revoked run with `LIFECYCLE_BLOCKED`, naming who revoked it and why, and files nothing, so the run stays parked instead of completing. A revocation marker that cannot be read refuses the answer the same way. `cotal run show` still lists the open request, says that it takes no answer, and no longer offers the answer command. SPEC §14.8 states the rule.
+- 1d2da78: The refusals a revoked run gets, on `cotal run resume` and on `cotal run answer`, no longer end in
+  a spec section reference.
+- 5a4267c: `run start --local` refuses an `--admit-read` or `--admit-publish` entry that is not a channel or a
+  pattern, such as `a b`, with `USAGE_INVALID` naming it. It used to be admitted as the channel the
+  wire layer rewrote it to, `a_b`.
+- 8722113: `run answer` and `run amend` refuse an empty or blank `--artifact` with `USAGE_INVALID` naming the
+  flag. An empty one used to print the manager's raw schema error, and a blank one was recorded.
+- cc3ec77: `cotal run answer --local` and `cotal run amend --local` now print the same receipt as the hosted path: the step, the value filed or that none was given, any artifact and the answer id, with `result.answer` under `--json`, and a Next of `cotal r show <run> --local`. Before, they printed the raw answer record as unlabelled JSON.
+- 2538025: When `run answer` is given a checkpoint's name instead of its step key, the refusal now names the
+  open step key that matches.
+- 1533e53: The receipt of a hosted `cotal run answer` and `cotal run amend` now names the step, the value it filed and the answer id, and says "no value; --value was not given" when no `--value` was passed. With `--json` the same is in `result.answer`, with `valueGiven`. Before, the receipt said only "Answer accepted", so an answer sent without `--value` settled the step with no value and nothing said so. The CLI reference now says what an answer without a value records.
+- 8554325: Repeating `cotal run answer` right after it was accepted now gets the same `TARGET_NOT_FOUND` refusal as a later repeat, with a next step. Before, until the run recorded the first answer, a few seconds later, it got the checkpoint plane's raw conflict, with an opaque token, an epoch time and a spec section.
+- 720c959: The `run` command's usage line, receipts and next steps, and the run docs, now name the canonical
+  forms: bare `cotal run` to list runs, `run show` and `run check`. `ps` (or `list`), `journal` and
+  `migrate` still work, and the CLI reference lists them as compatibility aliases.
+- acac7de: `run check` and `run migrate` on an edited program that does not validate print each problem's
+  code, position, cause and fix instead of only the problem count. `run show` on a run that failed
+  outside any step says no journal row records why and names the stack manager's log.
+- 5fc1af5: `run show` and the text journal now show beside an open checkpoint's question whom its `to` escalates
+  it to, and once it has escalated, until when that attempt is open.
+- b3426bb: A failed workflow run now records why it failed. The run driver writes the error's language code, when it has one, and its message (bounded to 4000 characters) on the failed run status as `failure`. `cotal run ps` and `cotal run show` print the state as `failed (<code>)`, the run view prints the message under `Failure`, and the JSON status and `ps` rows carry `failure`. Before, a thrown error, an L4010 null access, an L4013 step budget or an L4023 deadline showed only "failed", and the cause was only in the manager's log. SPEC §13.7 adds the optional field.
+- c4fc7f7: `run show` on a run that failed outside any step no longer follows the cause its status recorded
+  with a line saying no journal row records why. That line now shows only when the status recorded
+  no cause either.
+- 80e389f: A hosted `cotal run` verb (`answer`, `show`, `ps` and the others the manager serves) refuses a raw `--creds` file `UNSUPPORTED`, exit 2, with one refusal envelope under `--json`. Its next step is to run the verb again without `--creds`, where the CLI mints the one-shot caller from the project folder or the `--space` registration. Before, it printed an unformatted line and exited 1, and `--json` printed nothing.
+- 0ba68ef: A malformed run ID is now one usage refusal on every `cotal run` verb that takes one. `show`, `journal`, `answer`, `amend`, `resume`, `revoke` and `check` refuse an ID that is not 1 to 64 letters, digits, `_` or `-` with `USAGE_INVALID`, exit 1, naming the format, before anything is contacted. Before, the same local check came back as exit 5 on `show` and `journal`, exit 3 "Outcome unconfirmed" on `answer`, `amend` and `resume`, and an unformatted error on `revoke` and `check`.
+- e2f5e0d: `cotal run show` and `cotal run journal` take `--limit <n>`, from 1 to 1000, for how many of the
+  last journal rows the text view prints. The view printed only the last 20, and the only way to read
+  more was `--json`. `--limit` with `--json` is refused, since the JSON result holds the whole journal.
+- cc023f7: `cotal run show` and `cotal run journal` read a run whose journal is larger than the broker's
+  payload limit. They read the journal from the manager in pages, each one reply, through a new
+  `journal: { offset }` input on `run-status` that answers the rows from that offset that fit, with
+  `journalTotal`. A record or a single row too large for one reply now refuses `UNSUPPORTED` and
+  names `cotal run journal <run-id> --local`, instead of failing with the broker's payload error.
+- fc38933: A `cotal run start` or `resume` past the manager's limit of 8 runs activating at once is now a clean refusal. The manager refuses before it writes the run's admission, marks the refusal `not-executed`, and names the runs still activating, and the CLI reports it as `LIFECYCLE_BLOCKED`, exit 2, with the next step to wait until one has activated and run it again. Before, the manager wrote the admission first, and the CLI reported the refusal as exit 3 "Outcome unconfirmed" with a "retry" hint it then told the caller not to follow. The limit is now in the run docs.
+- 598e00f: A hosted `cotal run` command whose `--on` names none of the space's running managers is now refused
+  `TARGET_NOT_FOUND` at once, naming the pin and the managers that run, with nothing sent. It used to
+  wait out the ten-second describe deadline and then refuse `TARGET_UNAVAILABLE`, saying the registered
+  manager did not answer on the versioned rail.
+- 45e73eb: `cotal run ps` now prints who revoked each revoked run and why under the table, as the workflow
+  docs say it does. The table itself still shows the run as `admission revoked`.
+- cebc2c9: `run ps --endpoint <endpoint>` that matches no run now says that no run record lives under that
+  endpoint and names the endpoints runs are recorded under, with an `ENDPOINT_HAS_NO_RUNS` warning.
+  It used to print an empty list with no hint.
+- d69fea2: A `run resume` refused because the run is already completed or failed now names
+  `cotal run show <runId>` as the next step.
+- 01defbe: A hosted `cotal run revoke` now gets one refusal whether or not it passes `--by`: it names `--local --by <actor> --reason <text>`, which revoke requires. Before, `run revoke <id> --by <who>` was told that `--by` is only for the local path, while `run revoke <id>` was told it requires `--by`.
+- ec3da5d: `cotal run show` no longer prints a long answer value whole in its Answers table. A value longer than 120 characters is cut, and a line says so and points to `--json`, which carries it whole. Before, one 100 KB answer padded every row of the table to its width, and the view printed about 300 KB for three rows.
+- 8d8c6e7: A `run` verb given a workflow source it cannot read now names the path and the cause: it does not
+  exist, it is a link whose target does not exist (`TARGET_NOT_FOUND`), it is a directory
+  (`USAGE_INVALID`), or it is not readable (`PERMISSION_DENIED`). `-` is read as a path, and its
+  refusal says that it does not mean standard input.
+- ba9b70e: `cotal run validate` and a hosted `cotal run start` now refuse an empty program file the same way, `SCHEMA_INVALID` with a next step, and `--json` gets its envelope. Before, validate passed the file, and start printed a raw input-schema line on stderr and exited 1 with no JSON.
+- 571fe68: The `cotal run` verbs that read a program file now refuse one that is not valid UTF-8 with `SCHEMA_INVALID`. Before, its bytes were replaced with U+FFFD, so a Latin-1 checkpoint question was stored and shown corrupted, with no warning.
+- e382f0c: A hosted `cotal run start` interrupted with Ctrl-C or `SIGTERM` after its request went out now says the manager may already have recorded the run, with outcome `unknown` and a pointer to `cotal run ps`, and still exits 130 or 143. Before, it exited silently while the manager went on to record the run, so a retry started a second one.
+- 90ed4a4: A hosted `cotal run start` of a program larger than the broker's message limit is now refused `UNSUPPORTED`, naming the program's size and the limit, with a next step. Before, it was reported as an unconfirmed outcome with exit 3, although nothing was sent and no run was created.
+- efe931a: A hosted `run start` refused for a program that does not validate now prints each problem with its
+  control characters escaped, as `run validate` does, so a step name cannot write terminal escapes.
+- 86bfcdb: `cotal run` refuses a mesh it cannot resolve or connect to under the refusal's own code, before any request, hosted or `--local`. With no mesh running, `cotal run ps` is refused `TARGET_NOT_FOUND`, exit 2, with one refusal envelope under `--json`, as `cotal ps` is. Before, it printed a plain line and exited 1 with no envelope.
+- 9f009b4: Correct the turn API comment: the manager marks a reaped seat's pending turns and carries `agentDownAt` on the deadline terminal. The client's presence watch supplies the early L4002 failure, including while the manager is running.
+- 81f9522: A workflow deadline short enough to pass while its pause was being armed failed the step L4000, "pause … was due … and nothing was minted for it", instead of ending it as that deadline's expiry does. A `wait` with a `1ms` timeout now resolves `null`, an `idle` window of `1ms` returns its event, a `waitUntil` with a `1ms` cadence observes again until its deadline fails it with L4023, and a `1ms` or `2ms` checkpoint expires for its `onExpiry` to act on. A `wait` still opens its channel under the run's read admission first, so a channel the run may not read is refused as before. `sleep` and `ask` already ended this way.
+- 02c327b: A `run simulate` that stops names why: an unscripted effect names its table, step name and step
+  key with the entry to add, and a program fault names its code and cause. The `--handler` file
+  format is documented.
+- 761c861: `cotal run simulate` now tells a program that fails under its script apart from a script that does not cover the program. A program failure, such as a checkpoint scripted `expired` under the default `onExpiry: "fail"` (L4007), is a completed simulation, exit 0, whose program outcome is failed: it shows the step and that step's outcome with the language's error, and the JSON result carries `outcome` and `failure` beside the effects that ran. A script with no result for an effect (L6001) still does not complete, exit 5, and now names the step and the entry to add. Before, both printed "the offline simulation did not complete; unscripted effects are not invented" with a null result. `dryRunOutcome` returns a failed program's report with its fault, and `dryRun` takes an optional `journal`, so a caller can read the step a dry run that did not complete stopped at.
+- 4041d91: `cotal run simulate --handler` now refuses a scripted turn result whose `status` is not `done`,
+  `blocked` or `handoff`, or that scripts `at`, an unknown field or a `note` that is not a string, with
+  `SCHEMA_INVALID`, as it refuses a malformed checkpoint result. It used to hand that result to the
+  program, which then ran on a status no live turn returns.
+- 531b374: When a space's streams are gone from a broker that still runs, `cotal status` says so and names the
+  way back, and `send`, `history` and `run ps` refuse with that cause. On an open space that another
+  machine deleted under a running stack, status showed the space as reachable, `send` exited 3 with
+  "may have been stored", `history` reported an empty conversation and `run ps` printed a raw
+  contract-store error. Status now shows `Space streams: not on the broker` and leads its Next with
+  `cotal down --yes`, then `cotal up`, or with `cotal up` when the stack's other members are stopped.
+  The three commands refuse `TARGET_UNAVAILABLE` with the same remedy.
+- 58b025c: Every subcommand's help now gives its whole usage, from `cotal` through its arguments, such as
+  `cotal channel set <name>` and `cotal persona create <name>`, and lists only the options that
+  subcommand takes. `help history clear` no longer prints a usage without `cotal history`, and the
+  usages of `meshes`, `personas`, `spawn`, `backup`, `describe`, `invoke`, `actor`, `agent-bearer`
+  and `service-endpoint` now start with `cotal`.
+- b12b86b: When a registered manager does not answer, as after a crash, `input` and `stop` refuse
+  `TARGET_UNAVAILABLE` because nothing was sent, instead of reporting an unconfirmed outcome. That
+  refusal, and the one `cotal run`'s hosted verbs give, now leads with "the manager registered for this
+  space did not answer".
+- 8294fdb: `cotal run validate` now names the broker's message limit among what it did not check, and the CLI
+  docs say a valid program over that limit is still refused by a hosted `start`.
+- 22e7127: A refusal of a value that names its own fix no longer prints the command's whole help after it. An
+  `--on` that is empty, a principal id or not an instance id, a `spawn --on` that needs a terminal or
+  `-d`, `attach` with no name and no terminal, and a `run` command given no run id now print the
+  refusal and its next step only. The `run` refusal names `cotal run ps`, or `cotal run turns` for
+  `yield`.
+- 78a2035: A workflow's `log(...)` lines are no longer discarded. A run the manager hosts writes each line to
+  the manager's log as `run <run-id>: log <text>`, a `--local` drive prints them, and `run simulate`
+  lists them under `Log`, with `result.log` in `--json`. The lines stay out of the journal, as the
+  language defines.
+- Updated dependencies [ff99364]
+- Updated dependencies [71e8b88]
+- Updated dependencies [b3738e8]
+- Updated dependencies [c22bcff]
+- Updated dependencies [39e0c7a]
+- Updated dependencies [fc17f8f]
+- Updated dependencies [e7cb03f]
+- Updated dependencies [0d1dfc3]
+- Updated dependencies [d0c3cd7]
+- Updated dependencies [c74a853]
+- Updated dependencies [fff2909]
+- Updated dependencies [b0257f2]
+- Updated dependencies [0c9e498]
+- Updated dependencies [1e75421]
+- Updated dependencies [b58bf37]
+- Updated dependencies [0af0377]
+- Updated dependencies [b926504]
+- Updated dependencies [dedb739]
+- Updated dependencies [ea76a77]
+- Updated dependencies [9736397]
+- Updated dependencies [0282994]
+- Updated dependencies [dbbd7f5]
+- Updated dependencies [7d489d2]
+- Updated dependencies [cfeaddd]
+- Updated dependencies [afec9b6]
+- Updated dependencies [7c8564e]
+- Updated dependencies [66d2f93]
+- Updated dependencies [5cc55a7]
+- Updated dependencies [3a12438]
+- Updated dependencies [c2503db]
+- Updated dependencies [60cb005]
+- Updated dependencies [54f044f]
+- Updated dependencies [f0d97cd]
+- Updated dependencies [b8fa243]
+- Updated dependencies [09d905f]
+- Updated dependencies [286bccd]
+- Updated dependencies [4b2eb30]
+- Updated dependencies [855e595]
+- Updated dependencies [1c978f9]
+- Updated dependencies [f0d3143]
+- Updated dependencies [5703dfb]
+- Updated dependencies [a62d32d]
+- Updated dependencies [5f312f7]
+- Updated dependencies [057e96d]
+- Updated dependencies [41db374]
+- Updated dependencies [700695c]
+- Updated dependencies [30f0900]
+- Updated dependencies [2ed3641]
+- Updated dependencies [89d5637]
+- Updated dependencies [9aa4be8]
+- Updated dependencies [35ec68e]
+- Updated dependencies [9e0b1c5]
+- Updated dependencies [e5ea994]
+- Updated dependencies [e53c3a3]
+- Updated dependencies [0b638b8]
+- Updated dependencies [817f353]
+- Updated dependencies [b7d985d]
+- Updated dependencies [e124c5a]
+- Updated dependencies [957b8d8]
+- Updated dependencies [77c915a]
+- Updated dependencies [2dcc119]
+- Updated dependencies [75476c5]
+- Updated dependencies [71e91d8]
+- Updated dependencies [5521d3f]
+- Updated dependencies [d4afe89]
+- Updated dependencies [b6cfff1]
+- Updated dependencies [332d20e]
+- Updated dependencies [9901303]
+- Updated dependencies [2895911]
+- Updated dependencies [b8304ce]
+- Updated dependencies [e264d3c]
+- Updated dependencies [af0a0bc]
+- Updated dependencies [71eeb1c]
+- Updated dependencies [608f2d0]
+- Updated dependencies [00db0a6]
+- Updated dependencies [0decd7a]
+- Updated dependencies [240dbf4]
+- Updated dependencies [1de8abb]
+- Updated dependencies [2343ae8]
+- Updated dependencies [0c7e317]
+- Updated dependencies [62c4874]
+- Updated dependencies [b3f0edd]
+- Updated dependencies [b8ef19b]
+- Updated dependencies [94207f0]
+- Updated dependencies [788bf15]
+- Updated dependencies [2093a48]
+- Updated dependencies [7b97877]
+- Updated dependencies [b2fcd9c]
+- Updated dependencies [2f7657c]
+- Updated dependencies [9323110]
+- Updated dependencies [101e4f1]
+- Updated dependencies [70e9a65]
+- Updated dependencies [ea1b582]
+- Updated dependencies [998477a]
+- Updated dependencies [062cdfd]
+- Updated dependencies [e3979fe]
+- Updated dependencies [b5017a7]
+- Updated dependencies [b1397f4]
+- Updated dependencies [3a3d489]
+- Updated dependencies [4f1ade7]
+- Updated dependencies [d38a3e0]
+- Updated dependencies [b432707]
+- Updated dependencies [66af07b]
+- Updated dependencies [b77865a]
+- Updated dependencies [8c019ae]
+- Updated dependencies [985f634]
+- Updated dependencies [2f4f747]
+- Updated dependencies [0abbc55]
+- Updated dependencies [5e02acd]
+- Updated dependencies [3fc0d8e]
+- Updated dependencies [4725a7f]
+- Updated dependencies [4dcdc62]
+- Updated dependencies [d5e1e1f]
+- Updated dependencies [e5ddaed]
+- Updated dependencies [b3426bb]
+- Updated dependencies [cc023f7]
+- Updated dependencies [789de43]
+- Updated dependencies [7e56bcd]
+- Updated dependencies [d12f4bc]
+- Updated dependencies [6a9b881]
+- Updated dependencies [4d577e6]
+- Updated dependencies [df1abff]
+- Updated dependencies [eabc54d]
+- Updated dependencies [d7bb55f]
+- Updated dependencies [8704be1]
+- Updated dependencies [440ce81]
+- Updated dependencies [aa3ff60]
+- Updated dependencies [9c86a40]
+- Updated dependencies [761c861]
+- Updated dependencies [ce05dbf]
+- Updated dependencies [f2e0c06]
+- Updated dependencies [73930b2]
+- Updated dependencies [c63f6d8]
+- Updated dependencies [6682bcb]
+- Updated dependencies [d205ad2]
+- Updated dependencies [7aa9d14]
+- Updated dependencies [531b374]
+- Updated dependencies [88c64a0]
+- Updated dependencies [48431ca]
+- Updated dependencies [83c2b1b]
+- Updated dependencies [aef1cf1]
+- Updated dependencies [26f407a]
+- Updated dependencies [ff650ba]
+- Updated dependencies [a8c3461]
+- Updated dependencies [a923eaa]
+- Updated dependencies [b505ad6]
+- Updated dependencies [457d771]
+- Updated dependencies [e16a6a5]
+- Updated dependencies [d6f9f7a]
+- Updated dependencies [03858ae]
+- Updated dependencies [d0d885a]
+- Updated dependencies [73d6301]
+- Updated dependencies [447b7eb]
+- Updated dependencies [bd52202]
+- Updated dependencies [260ff6d]
+- Updated dependencies [8e35b7c]
+- Updated dependencies [5cb1819]
+- Updated dependencies [595aa8e]
+- Updated dependencies [72ed932]
+- Updated dependencies [09dd488]
+- Updated dependencies [d74686f]
+- Updated dependencies [24769e9]
+- Updated dependencies [d407e4b]
+- Updated dependencies [89f14f2]
+- Updated dependencies [914b1f1]
+- Updated dependencies [b6681bc]
+- Updated dependencies [78a2035]
+  - @cotal-ai/workspace@0.101.0
+  - @cotal-ai/lang@0.101.0
+  - @cotal-ai/core@0.101.0
+
+## 0.100.2
+
+### Patch Changes
+
+- Updated dependencies [8d81c12]
+- Updated dependencies [bb4145f]
+  - @cotal-ai/core@0.100.2
+  - @cotal-ai/workspace@0.100.2
+  - @cotal-ai/lang@0.100.2
+
+## 0.100.1
+
+### Patch Changes
+
+- Updated dependencies [8bb8900]
+- Updated dependencies [546b661]
+- Updated dependencies [86b2cd5]
+- Updated dependencies [b1d2cb5]
+  - @cotal-ai/core@0.100.1
+  - @cotal-ai/lang@0.100.1
+  - @cotal-ai/workspace@0.100.1
+
+## 0.100.0
+
+### Patch Changes
+
+- 8360fbf: With the space's manager stopped, `cotal run` and its hosted verbs and `cotal models` refuse at once, as `cotal ps` does: `TARGET_UNAVAILABLE` (exit 2) with the Mesh header, the registry's own answer as the native detail, and bare `cotal up` as the next step. They used to wait about 10 seconds for a manager answer that could not come and then print a refusal about the `ep.v1` rail with no code or next step. An unpinned operator call reads the service registry first and refuses only when it lists no live manager; an unreadable registry, a pinned call and a user's manager view go to the manager as before. Core marks the registry's empty answer with a new `ai.cotal.ep.no-live-instances` detail, so a caller can tell it from an unreadable registry.
+- 72272d6: `cotal run check` no longer tells you to pass `--discard-approvals` when an edit drops an answered checkpoint, an override that `run check` refuses because it decides what a migration commit does. The L5004 reason now says to keep the checkpoint in the edited program, or to discard the decision in a migration commit under the `--discard-approvals` override.
+- 4a8f6b6: A hosted `cotal run` verb the manager refuses now reports the outcome and code as other commands do, with `--json` as one refusal envelope. `run show` of a run the manager holds no record of is `TARGET_NOT_FOUND`, exit 2, and names `cotal run ps`. It used to print `run status: …` on stderr, write nothing on stdout and exit 1.
+- 183fa2a: A workflow program file that cannot be read is now refused with `TARGET_NOT_FOUND`, exit 2, by `cotal run start`, `run start --local`, `run resume --local --file` and `run check`, as `run validate`, `plan` and `simulate` already refused it. `run start` and `resume` reported the raw `ENOENT` as an unknown outcome with exit 3, and `run check` printed it as a bare error with exit 1. The `--json` envelope now names the file as its target.
+- 19f64b8: The `cotal run answer` and `cotal run amend` receipts now name the run in their Next line and their JSON target. They printed `cotal r show <run-id>` although the command had named the run.
+- 2f8b98b: `cotal run show` and `run journal` list a pause under `Needs an answer` only while its last journal row is pending, and offer `answer` as a next step only when one is open. A checkpoint that was answered or expired kept its earlier pending rows in the journal, so completed and failed runs still listed it as needing an answer. A pause settled with an accepted answer now prints that answer's value, answerer, artifact when present, time and answer id, then one `amended` line per later amendment, as the docs describe; before, only `--json` carried them.
+- 6471d27: `cotal run show` and `cotal run journal` now say why a step failed. A failed or refused step's journal row carries its recorded `errorMessage` beside `errorCode` in `--json`, and the text view lists each such step with its outcome and message under `Step errors`, escaping control characters. Before, both views printed only `failed (L4000)`, and the reason, such as a hosted run that is not admitted to read a channel, was only in the manager's log. The manager's `run-status` reply schema admits the new field.
+- c807eeb: `cotal run simulate` refuses a results script whose scripted checkpoint result is not one `checkpoint()` can return, with `SCHEMA_INVALID` (exit 1) naming the checkpoint and the problem. A status other than `resolved` or `expired`, a missing status, a non-object entry, an unknown field or a scripted `at` used to simulate as a resolved answer and report `ok`, and a scripted `at` was dropped without a word.
+- 41e50de: `cotal run validate`, `run plan` and `run simulate` list every problem in a program that does not validate: its code, title, position, cause and fix, as a hosted `run start` refusal lists them. They used to print only `the workflow is not valid cotal-lang` with no problem at all, and `--json` carried only each problem's code and span. The JSON envelope now carries the full problems under `result.problems`, beside the unchanged `SCHEMA_INVALID` refusal.
+- a80904f: `cotal run validate`, `plan` and `simulate` now say what each validator warning is: its code, title, position, cause and fix, on stderr and in the `--json` envelope's `warnings`, and `validate --json` lists each one under `result.warnings` with the same fields. Before, a warning printed only "The language validator reported a warning at this source position.", so a `fanOut` over a literal list with no `key` validated with no visible reason and then failed its run with L3021.
+- e091aa8: A workflow `wait` given a value that is not an event, such as `wait("never-sent")`, now fails its step with a message that names the four event constructors and the value it was given. Before, the hosted and local runtime failed it with the host's own `Cannot read properties of undefined (reading 'split')`.
+- Updated dependencies [7e62dcf]
+- Updated dependencies [0aa2ca7]
+- Updated dependencies [a78af23]
+- Updated dependencies [9eed6bc]
+- Updated dependencies [f5424e1]
+- Updated dependencies [3ec07a5]
+- Updated dependencies [a4e37f4]
+- Updated dependencies [72c4595]
+- Updated dependencies [869d26f]
+- Updated dependencies [2c21df1]
+- Updated dependencies [ba5a685]
+- Updated dependencies [c8550cc]
+- Updated dependencies [ac5a105]
+- Updated dependencies [d235fb0]
+- Updated dependencies [0e729b5]
+- Updated dependencies [28f3ca0]
+- Updated dependencies [73cd25b]
+- Updated dependencies [9f69a20]
+- Updated dependencies [0934f70]
+- Updated dependencies [cdceff6]
+- Updated dependencies [773e6d3]
+- Updated dependencies [42d9ea1]
+- Updated dependencies [8360fbf]
+- Updated dependencies [f0aebea]
+- Updated dependencies [047b289]
+- Updated dependencies [152e236]
+- Updated dependencies [afb587c]
+- Updated dependencies [ca4ce70]
+- Updated dependencies [b9ddce8]
+- Updated dependencies [b24190d]
+- Updated dependencies [6471d27]
+- Updated dependencies [af26abf]
+- Updated dependencies [b079d7d]
+- Updated dependencies [85213b4]
+- Updated dependencies [4f58a3c]
+- Updated dependencies [0caaa99]
+- Updated dependencies [d29311b]
+- Updated dependencies [28a9e11]
+- Updated dependencies [9234229]
+  - @cotal-ai/workspace@0.100.0
+  - @cotal-ai/core@0.100.0
+  - @cotal-ai/lang@0.100.0
+
+## 0.99.3
+
+### Patch Changes
+
+- Updated dependencies [96325dc]
+- Updated dependencies [15effd7]
+  - @cotal-ai/core@0.99.3
+  - @cotal-ai/workspace@0.99.3
+  - @cotal-ai/lang@0.99.3
+
+## 0.99.2
+
+### Patch Changes
+
+- Updated dependencies [74a688d]
+  - @cotal-ai/core@0.99.2
+  - @cotal-ai/workspace@0.99.2
+  - @cotal-ai/lang@0.99.2
+
+## 0.99.1
+
+### Patch Changes
+
+- Updated dependencies [1708ce5]
+- Updated dependencies [50de78d]
+  - @cotal-ai/core@0.99.1
+  - @cotal-ai/workspace@0.99.1
+  - @cotal-ai/lang@0.99.1
+
+## 0.99.0
+
+### Patch Changes
+
+- Updated dependencies [8aac50d]
+- Updated dependencies [6999190]
+  - @cotal-ai/workspace@0.99.0
+  - @cotal-ai/core@0.99.0
+  - @cotal-ai/lang@0.99.0
+
+## 0.98.0
+
+### Patch Changes
+
+- Updated dependencies [b6e3fba]
+- Updated dependencies [c445511]
+  - @cotal-ai/core@0.98.0
+  - @cotal-ai/workspace@0.98.0
+  - @cotal-ai/lang@0.98.0
+
+## 0.97.1
+
+### Patch Changes
+
+- Updated dependencies [aa8d11e]
+  - @cotal-ai/core@0.97.1
+  - @cotal-ai/workspace@0.97.1
+  - @cotal-ai/lang@0.97.1
+
+## 0.97.0
+
+### Patch Changes
+
+- Updated dependencies [624e71f]
+- Updated dependencies [ec7dbfc]
+- Updated dependencies [352bbe7]
+- Updated dependencies [030fba8]
+- Updated dependencies [9c193e5]
+- Updated dependencies [d03c223]
+- Updated dependencies [a5b5731]
+- Updated dependencies [1321eb8]
+  - @cotal-ai/core@0.97.0
+  - @cotal-ai/workspace@0.97.0
+  - @cotal-ai/lang@0.97.0
+
+## 0.96.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.96.1
+  - @cotal-ai/lang@0.96.1
+  - @cotal-ai/workspace@0.96.1
+
+## 0.96.0
+
+### Patch Changes
+
+- Updated dependencies [083205e]
+  - @cotal-ai/core@0.96.0
+  - @cotal-ai/workspace@0.96.0
+  - @cotal-ai/lang@0.96.0
+
+## 0.95.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.95.2
+  - @cotal-ai/lang@0.95.2
+  - @cotal-ai/workspace@0.95.2
+
+## 0.95.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.95.1
+  - @cotal-ai/lang@0.95.1
+  - @cotal-ai/workspace@0.95.1
+
+## 0.95.0
+
+### Patch Changes
+
+- Updated dependencies [b7acdcc]
+  - @cotal-ai/workspace@0.95.0
+  - @cotal-ai/core@0.95.0
+  - @cotal-ai/lang@0.95.0
+
+## 0.94.7
+
+### Patch Changes
+
+- @cotal-ai/core@0.94.7
+  - @cotal-ai/lang@0.94.7
+  - @cotal-ai/workspace@0.94.7
+
+## 0.94.6
+
+### Patch Changes
+
+- Updated dependencies [ba9155a]
+- Updated dependencies [520c66b]
+  - @cotal-ai/workspace@0.94.6
+  - @cotal-ai/core@0.94.6
+  - @cotal-ai/lang@0.94.6
+
+## 0.94.5
+
+### Patch Changes
+
+- Updated dependencies [4b64fe7]
+  - @cotal-ai/workspace@0.94.5
+  - @cotal-ai/core@0.94.5
+  - @cotal-ai/lang@0.94.5
+
+## 0.94.4
+
+### Patch Changes
+
+- Updated dependencies [464413c]
+  - @cotal-ai/workspace@0.94.4
+  - @cotal-ai/core@0.94.4
+  - @cotal-ai/lang@0.94.4
+
+## 0.94.3
+
+### Patch Changes
+
+- @cotal-ai/core@0.94.3
+  - @cotal-ai/lang@0.94.3
+  - @cotal-ai/workspace@0.94.3
+
+## 0.94.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.94.2
+  - @cotal-ai/lang@0.94.2
+  - @cotal-ai/workspace@0.94.2
+
+## 0.94.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.94.1
+  - @cotal-ai/lang@0.94.1
+  - @cotal-ai/workspace@0.94.1
+
+## 0.94.0
+
+### Patch Changes
+
+- Updated dependencies [1caaf63]
+  - @cotal-ai/core@0.94.0
+  - @cotal-ai/workspace@0.94.0
+  - @cotal-ai/lang@0.94.0
+
+## 0.93.0
+
+### Patch Changes
+
+- Updated dependencies [e27c44c]
+- Updated dependencies [69b0538]
+- Updated dependencies [6703917]
+  - @cotal-ai/core@0.93.0
+  - @cotal-ai/workspace@0.93.0
+  - @cotal-ai/lang@0.93.0
+
+## 0.92.2
+
+### Patch Changes
+
+- Updated dependencies [43a5715]
+- Updated dependencies [736207e]
+  - @cotal-ai/core@0.92.2
+  - @cotal-ai/workspace@0.92.2
+  - @cotal-ai/lang@0.92.2
+
+## 0.92.1
+
+### Patch Changes
+
+- Updated dependencies [5a0b741]
+  - @cotal-ai/core@0.92.1
+  - @cotal-ai/workspace@0.92.1
+  - @cotal-ai/lang@0.92.1
+
+## 0.92.0
+
+### Minor Changes
+
+- 1db940e: Add authenticated cooperative workflow cancellation through the manager endpoint. The original caller can cancel under a live issued generation; signerless hosts also verify interactive owner or admin authority through the issuing host. Replies distinguish the durable revocation marker from an observed local drive outcome, preserve unknown write outcomes and retain the first marker. Read-only status inspection remains available after revocation without permitting new drive or checkpoint-answer authority. The run show view displays revocation separately from recorded state and returns a partial result with exit 4 when the marker cannot be read, in human and JSON output.
+
+  Breaking: embedded RunHostDrive implementations must supply cancel(reason) separately from release(reason). Both language engines and the worker bridge propagate cooperative root cancellation. This does not preempt external tools, stop agent processes or prove resource cleanup. No new CLI or MCP convenience command is added.
+
+### Patch Changes
+
+- edf54df: `cotal run start --local`, `run resume --local` and `run revoke` given a single `--creds` file are refused as a usage error again, exit 1, with the command to run instead. Since the command-line redesign the same refusal was reported as "Outcome unconfirmed" with `OPERATION_UNKNOWN` and exit 3, although no run had been admitted and no workflow record written.
+- Updated dependencies [88cc5a1]
+- Updated dependencies [88cc5a1]
+- Updated dependencies [88cc5a1]
+- Updated dependencies [88cc5a1]
+- Updated dependencies [1db940e]
+- Updated dependencies [239d1c7]
+- Updated dependencies [f276a46]
+- Updated dependencies [c935e28]
+- Updated dependencies [588a5a7]
+- Updated dependencies [b3441b1]
+- Updated dependencies [03d9e7b]
+  - @cotal-ai/core@0.92.0
+  - @cotal-ai/workspace@0.92.0
+  - @cotal-ai/lang@0.92.0
+
 ## 0.91.0
 
 ### Minor Changes

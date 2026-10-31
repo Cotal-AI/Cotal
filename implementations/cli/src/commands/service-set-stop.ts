@@ -1,16 +1,19 @@
 import * as prompts from "../lib/prompts.js";
 import type { ParsedArgs } from "@cotal-ai/core";
-import { CommandFailure, recordOperationSpace, isCommandFailure, oneLine, presentationOf, renderReport, terminalWidth, writeResult, type Report, type ServiceAdapterStopPlan } from "@cotal-ai/workspace";
+import { ConfirmationRequired, CommandFailure, recordOperationSpace, isCommandFailure, oneLine, presentationOf, renderReport, writeResult, type Report, type ServiceAdapterStopPlan } from "@cotal-ai/workspace";
 import { personaCatalog } from "../lib/persona-files.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
 import { instanceProjection, observeServiceProcess, serviceInstances, type ServiceInstanceSnapshot } from "../lib/service-instances.js";
 import { preflightProcessServiceStop, prepareNativeServiceStop, selectServiceInstance, stopProcessService } from "../lib/service-process.js";
-import { stackMemberFor } from "../lib/stack-journal.js";
+import { STACK_DEFINITION, stackMemberFor } from "../lib/stack-journal.js";
 import { canPrompt } from "./meshes-wizard.js";
-import { nativeImpactView } from "./service-actions.js";
+import { yesRequired } from "../lib/confirmation-required.js";
+import { nativeImpactView, unsavedServiceStep } from "./service-actions.js";
+import { resolvePresetService, type PresetServiceTarget } from "../lib/service-preset-target.js";
+import { announcePresetTarget, recordedProcessRefusal } from "./service-registry.js";
 
 type Hold = ReturnType<ReturnType<typeof serviceDefinitionStore>["pin"]>;
-interface Member { definition: ServiceDefinitionSnapshot; instance: ServiceInstanceSnapshot; impact?: ServiceAdapterStopPlan }
+interface Member { definition: ServiceDefinitionSnapshot; instance: ServiceInstanceSnapshot; requested: string; impact?: ServiceAdapterStopPlan }
 interface MemberResult {
   name: string;
   instanceId: string;
@@ -27,6 +30,27 @@ function setView(rows: readonly MemberResult[], title: string): Report {
     { kind: "table", columns: [{ key: "name", label: "Service" }, { key: "instance", label: "Full instance" }, { key: "host", label: "Execution host" }, { key: "state", label: "Stop result" }], rows: rows.map((row) => ({ name: row.name, instance: row.instanceId, host: row.instance.executionHost, state: { text: row.state.replaceAll("-", " "), tone: row.state === "original-process-gone" ? "ok" as const : row.state === "refused" || row.state === "failed" ? "failed" as const : "waiting" as const } })) },
     { kind: "lines", lines: ["Only the selected owned incarnations are controlled, in the displayed order. This is not atomic and completed stops are not rolled back. Process exit and a returned native stop do not prove descendant, authority or lease cleanup. Failed and unattempted members retain their labeled pre-stop snapshot; no fresh state is inferred."] },
   ] }] };
+}
+
+const BROKER_NAMES = new Set(["nats", "broker", STACK_DEFINITION.broker]);
+
+/** A set never stops the broker, so each of its names gets one refusal, which names the bare `down`
+ *  that stops it with the whole stack. */
+function brokerMember(space: string, name: string): CommandFailure {
+  return new CommandFailure("refused", "TARGET_NOT_FOUND", `${oneLine(name)} matches no service a set of names can stop in space ${oneLine(space)}; no service was stopped`, {
+    target: { space, name },
+    remedy: "a set of names never stops the broker; a bare `cotal down` stops it with the whole stack",
+  });
+}
+
+/** Why the set refuses a name that reaches no saved definition, with the step a single named `down`
+ *  names. */
+function unmatchedMember(space: string, name: string): CommandFailure {
+  const stackName = stackMemberFor(space, name);
+  return new CommandFailure("refused", "TARGET_NOT_FOUND", `${oneLine(name)} matches no saved definition or preset in space ${oneLine(space)}; no service was stopped`, {
+    target: { space, name },
+    remedy: stackName ? `this space's controller stack names it ${stackName}; name ${stackName} instead, or run bare \`cotal down\` to stop the whole stack` : unsavedServiceStep(name, "stop"),
+  });
 }
 
 function membersStillEligible(members: readonly Member[]): void {
@@ -69,15 +93,22 @@ export async function stopNamedServiceSet(args: ParsedArgs): Promise<void> {
   if (args.positionals.length < 2 || new Set(args.positionals).size !== args.positionals.length) throw new CommandFailure("refused", "USAGE_INVALID", "a service set needs several distinct definition names");
   const allowed = new Set(["space", "yes", "dry-run", "json", "plain"]);
   if (Object.keys(args.values).some((key) => !allowed.has(key))) throw new CommandFailure("refused", "USAGE_INVALID", "a service set accepts no per-member instance selector or unreviewed stop policy");
-  const { space } = personaCatalog(args.values as { space?: string });
+  const { space, root } = personaCatalog(args.values as { space?: string });
   recordOperationSpace(space);
-  const store = serviceDefinitionStore(space), members: Member[] = [];
-  for (const name of args.positionals) {
-    const definition = store.read(name);
-    if (!definition) {
-      const stackName = stackMemberFor(space, name);
-      throw new CommandFailure("refused", "TARGET_NOT_FOUND", "one named service has no saved definition in the selected space; no service was stopped", { target: { space, name }, ...(stackName ? { remedy: `this space's controller stack names it ${stackName}; name ${stackName} instead, or run bare cotal down to stop the whole stack` } : {}) });
-    }
+  const store = serviceDefinitionStore(space), members: Member[] = [], presetTargets: PresetServiceTarget[] = [];
+  // The broker's three names refuse alike, before any member resolves. A saved service of your own
+  // named nats or broker is that service.
+  const broker = args.positionals.find((name) => BROKER_NAMES.has(name) && (name === STACK_DEFINITION.broker || !store.read(name)));
+  if (broker) throw brokerMember(space, broker);
+  for (const requested of args.positionals) {
+    // A preset name reaches the service built on it, as a single named down does.
+    const resolved = resolvePresetService(space, root, requested, "stop", args.values);
+    if (resolved?.recorded) throw recordedProcessRefusal(requested, resolved.recorded, space, "down");
+    const name = resolved?.name ?? requested, definition = store.read(name);
+    if (!definition) throw unmatchedMember(space, name);
+    const same = members.find((member) => member.definition.name === name);
+    if (same) throw new CommandFailure("refused", "USAGE_INVALID", `${oneLine(same.requested)} and ${oneLine(requested)} both name ${oneLine(name)}; name each service once, and no service was stopped`, { target: { space, name } });
+    if (resolved) presetTargets.push(resolved);
     const instances = serviceInstances(space, name);
     let selected: ServiceInstanceSnapshot | undefined;
     if (instances.length > 1 && interactive) {
@@ -85,23 +116,24 @@ export async function stopNamedServiceSet(args: ParsedArgs): Promise<void> {
       if (prompts.isCancel(id)) { writeResult(presentation, { command: "down", target: { space, names: args.positionals }, result: { kind: "service-set-stop-cancelled", stopped: false }, noOp: true }, () => ({ sections: [{ title: "Services kept", blocks: [{ kind: "lines", lines: ["No stop was submitted."] }] }] })); return; }
       selected = selectServiceInstance(instances, id);
     } else selected = selectServiceInstance(instances, undefined);
-    members.push({ definition, instance: selected! });
+    members.push({ definition, instance: selected!, requested });
   }
+  for (const resolved of presetTargets) announcePresetTarget(resolved, space, presentation);
   membersStillEligible(members);
-  const target = { space, members: members.map((member) => ({ name: member.definition.name, instanceId: member.instance.name })) };
+  const target = { space, members: members.map((member) => ({ name: member.definition.name, instanceId: member.instance.name, ...(member.requested !== member.definition.name ? { requested: member.requested } : {}) })) };
   const rows: MemberResult[] = members.map((member) => ({ name: member.definition.name, instanceId: member.instance.name, state: "not-attempted", noOp: false, instance: instanceProjection(member.instance), instanceObservation: "selection-before-stop", impact: null }));
   if (args.values["dry-run"]) {
     const preview = rows.map((row): MemberResult => ({ ...row, state: "preview" }));
     writeResult(presentation, { command: "down", target, result: { kind: "service-set-stop-preview", rows: preview, dryRun: true, reserved: false, nativeImpactChecked: false, stopped: false } }, (result) => ({ sections: [...setView(result.rows, "Named service stop preview").sections, { blocks: [{ kind: "lines", lines: ["Metadata and owned process roles only. No provider code, native impact query, reservation, process signal or instance-record write was requested. This preview does not authorize a stop."] }] }] }));
     return;
   }
-  if (!args.values.yes && !interactive) throw new CommandFailure("refused", "USAGE_INVALID", "stopping a named service set requires --yes outside an interactive terminal", { target });
+  if (!args.values.yes && !interactive) throw new ConfirmationRequired(yesRequired("stopping a named service set", presentation === "json"), { target, remedy: `run \`cotal down ${args.positionals.join(" ")} --yes\` to stop them; \`cotal down ${args.positionals.join(" ")} --dry-run\` shows what it stops` });
   for (const [index, member] of members.entries()) {
     member.impact = await prepareNativeServiceStop(member.definition, member.instance);
     rows[index]!.impact = member.impact ?? null;
   }
   distinctNativeTargets(members);
-  if (presentation !== "json") console.log(renderReport({ space, sections: [...setView(rows, "Named service stop review").sections, ...members.flatMap((member) => member.impact ? nativeImpactView(member.impact).sections : [])] }, presentation, terminalWidth(process.stdout)));
+  if (presentation !== "json") console.log(renderReport({ space, sections: [...setView(rows, "Named service stop review").sections, ...members.flatMap((member) => member.impact ? nativeImpactView(member.impact).sections : [])] }, presentation, process.stdout));
   if (!args.values.yes) {
     const answer = await prompts.confirm({ message: "Stop all displayed owned service incarnations with only the displayed native impact?", initialValue: false });
     if (prompts.isCancel(answer) || !answer) {

@@ -1,7 +1,7 @@
 ---
 title: Build a Cotal client
 description: Implement a client in another language using the wire specification and a NATS client library.
-kind: Informative
+kind: Guide
 audience: integrators
 ---
 
@@ -55,13 +55,15 @@ Use the agent profile for a scoped reader.
 
 To write the credential elsewhere, use `--out <path>`.
 Keep that path private.
-Without a lifetime flag, the credential has no expiry claim.
-Use `--expires-in <seconds>` to bound it.
+Without a lifetime flag, the credential expires after 24 hours.
+Use `--expires-in <seconds>` or `--expires-at <unix-seconds>` to set another expiry.
 A standing-renewal consumer requires an expiry.
 To keep an existing nkey, use `--identity <creds>` when re-minting, while adopting the new lifecycle UID.
 
 The credential binds the client's principal and channel grants.
 See [Identity and auth](identity-and-auth.mdx), [auth mint](cli-auth.mdx#auth-mint), and [SPEC section 2](../SPEC.md#2-identity).
+
+Use `--no-expiry` only when an unbounded credential is intended.
 
 ## Implement in this order [#build-order]
 

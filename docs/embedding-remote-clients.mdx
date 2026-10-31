@@ -5,251 +5,244 @@ kind: Reference
 audience: integrators
 ---
 
-These APIs connect clients to a host-composed service.
-They do not supply the host's authentication, credential issuance, revocation, or durable records.
-
 ## Remote MCP gateway [#remote-mcp-gateway]
 
-`registerCotalGatewayTools(server, host, source?, options?)` from `@cotal-ai/connector-core` serves Cotal tools to hosted MCP clients.
-One bearer and MCP session can carry several conversations, so the request alone does not identify its conversation.
-Each conversation calls `cotal_connect`, then passes the returned `connection_id` on every other tool call.
-A missing, unknown, or other-account handle returns `CONNECTION_REQUIRED` without running the tool.
-There is no fallback to another connection owned by that account.
+`@cotal-ai/connector-core` exports `registerCotalGatewayTools(server, host, source?, options?)` for
+a service that serves Cotal to a hosted MCP client over HTTP. A hosted client can send many
+conversations through one bearer and one MCP session, so a request does not say which conversation
+sent it. Each conversation calls `cotal_connect` and passes the `connection_id` it returns on every
+other tool call. A missing, unknown or other-account handle returns `CONNECTION_REQUIRED` and runs
+nothing. No call falls back to another connection of the account.
+
 
 ### Host contract
 
 The host implements `GatewayHost`:
 
-| Method | Contract |
-|---|---|
-| `account(auth)` | Read the authenticated account from the SDK's `AuthInfo`. Missing authentication throws before any tool runs. |
-| `open(account, name)` | Atomically claim the name and issue a new connection for that account. |
-| `find(account, id)` | Return only a connection owned by the account. |
-| `close(account, id)` | Close only a connection owned by the account. |
+- `account(auth)` returns the account the request authenticated as, read from the SDK's `AuthInfo`.
+  It throws when the request has none, and the tool then runs nothing.
+- `open(account, name, context?, selection?, approvalId?)` starts a connection only after the person
+  approves its permissions. `selection` is a proposal. Throw `ApprovalRequired` with the request ID,
+  approval page, expiry and proposal while they decide. The tool returns a structured pending result
+  and a readable link, with no connection handle. `approvalId` resumes one unchanged request when
+  `options.approvalResume` is enabled. It conveys no authority. Bind it to the authenticated account,
+  space, name and request generation. An issued approval cannot grant a replacement connection.
+  Throw `NameTaken` only for an authoritative name collision. A new request tries `name_2` and later
+  variants up to `GATEWAY_NAME_ATTEMPTS`; a resumed approval never renames. The collision check and
+  issue must be atomic. Other errors reach the caller without renaming and must not carry secrets.
+- `find(account, id)` and `close(account, id)` act only on a connection that account owns.
 
-`open` throws `NameTaken` only when the issuer confirms an existing name.
-The gateway then tries `name_2`, `name_3`, and further variants up to `GATEWAY_NAME_ATTEMPTS`, currently 20 names in total.
-Other errors return immediately without trying another name.
-Collision checks and issuance must be one atomic operation per account.
-Error messages reach the caller and must contain no secrets.
-A name rejected by `assertValidName` is refused before `open` runs.
+`cotal_connect` refuses a name `assertValidName` rejects before it calls `open`. Its reply names
+the channels the new connection reads, may join and may post to, from the configuration its grant
+produced. `GATEWAY_TOOLS` names the mesh tools the gateway offers, `cotal_docs` included. A native
+embedder whose host issues each conversation its own grant may pass `options.tools` from
+`NATIVE_GATEWAY_TOOLS`, which adds spawn, despawn, persona, run and reconnect but not yield.
+Registering a tool offers it to no connection by itself: a connection calls only the tools its
+host lists in `GatewayConnection.tools`, default `GATEWAY_TOOLS`, and only those its credential's
+capabilities allow. With `options.selection`, `cotal_connect` takes channels, a role and capabilities,
+builds a canonical proposal with core's `conversationSelection`, and hands it to `open`. Its
+description tells the agent to ask in that first call for the channels, role and capabilities it
+already knows it needs, so the person approves one request. Only the
+person's decision in the authority's authenticated UI is consent. The approved selection may differ
+from the proposal and must stay within their current authority. The empty approved selection still
+includes direct-message send and receive and own activity publication; disclose these before
+approval. A model flag, API bearer or ordinary tool approval cannot approve the request. Unsupported
+approval paths refuse before issuing a grant. One tool list serves every connection, so no
+advertised text names one connection's channels. Each call runs against that connection's own
+configuration. Authentication, credential issuance and revocation and durable connection records
+stay with the host.
 
-`GATEWAY_TOOLS` defines the available mesh tools.
-Spawn, despawn, persona, run, yield, and reconnect remain local supervised-seat operations and are excluded.
-The common tool list advertises no connection-specific channel names.
-Each call uses its selected connection's configuration.
-
-### Waiting for messages
-
-A remote MCP client provides no general way for the server to start a turn.
-`cotal_wait` therefore returns buffered wake-worthy messages immediately or waits for them to arrive.
-Its reply matches `cotal_inbox`.
-
-Direct messages, role requests, and mentions are wake-worthy under every attention mode.
-Other channel traffic wakes only in `open` attention.
-With no qualifying message, the wait ends after `options.waitSeconds`, whose default is `GATEWAY_WAIT_SECONDS`, currently 50 seconds.
-The response is one JSON body. It sends no bytes until the wait ends.
-The host must keep this wait below every configured client and proxy timeout, including any [Cloudflare connection limits](https://developers.cloudflare.com/fundamentals/reference/connection-limits/) in its deployment.
-
-A cancelled or disconnected client stops its wait.
-If the client is gone when a read would clear messages, that read clears nothing.
-Closing the connection ends waits even while the broker is unreachable, through `MeshAgent`'s `stopping` event.
-
-In `focus` attention, mentions are not buffered as ordinary inbox messages.
-The gateway counts mentions since the last read, so a later wait can return them immediately.
-Other routed tools, except `cotal_inbox`, append a notice when wake-worthy messages remain unread.
+A remote MCP client gives the server no way to start a turn, so the gateway adds `cotal_wait`. It
+returns at once when a message that should wake the agent is buffered, and otherwise as soon as one
+arrives, with the same reply `cotal_inbox` gives. Wake-worthy follows the agent's attention: direct
+messages, role requests and @mentions always, other channel traffic only in `open`. With none, it
+returns after `options.waitSeconds`, which defaults to `GATEWAY_WAIT_SECONDS` (50). Keep it under
+every proxy and client timeout in front of the service. The reply is one JSON body, so nothing is
+sent until the wait ends: Claude Code gives a remote server 60 seconds to the first byte, Cloudflare
+ends an origin response after about 100 seconds and claude.ai ends a tool call after 240. A wait
+whose client closes the request stops listening, and a read whose client is gone by the time it
+would clear messages clears nothing, so neither takes a message it cannot deliver. A wait ends
+when its connection closes, also while the broker is unreachable; it listens for `MeshAgent`'s
+`stopping` event. In `focus` an @mention is not buffered, so the gateway counts the ones
+since the last read, and a wait that starts after one returns it at once. Every other routed tool
+except `cotal_inbox` adds a line to its result when wake-worthy messages are waiting.
 
 ### HTTP adapter
 
-`handleGatewayRequest(host, { req, res, body?, auth?, source?, instructions?, waitSeconds? })` handles one endpoint request with connector-core's MCP server.
-The host does not need its own MCP SDK or zod dependency for this adapter.
-
-The embedding service authenticates each request and returns 401 itself on failure.
-It passes successful authentication as `auth`.
-A framework that has already parsed JSON supplies `body`.
-Each POST creates a fresh stateless server and returns JSON.
-Other HTTP methods return 405.
-`cotal_wait` holds its POST open for the configured wait duration.
-Omitted instructions use `GATEWAY_INSTRUCTIONS`.
+`handleGatewayRequest(host, { req, res, body?, auth?, source?, instructions?, approvalResume?, selection?, waitSeconds? })`
+serves one HTTP request to the endpoint with the package's own MCP server, so the embedding service
+never imports an MCP SDK or a zod version of its own. The service authenticates the request, answers
+401 itself when that fails, and passes the result as `auth`. A framework that already parsed the JSON body passes it
+as `body`. `selection` turns on the permission request described above for a hosted endpoint. The endpoint is stateless: each POST gets a fresh server and a JSON response, and every
+other method answers 405. A `cotal_wait` call holds its POST open for up to `waitSeconds`.
+`GATEWAY_INSTRUCTIONS` is the server instructions text sent when `instructions` is omitted.
 
 ### Stdio adapter
 
-`serveGatewayStdio(host, { input?, output?, source?, instructions?, waitSeconds?, wake? })` exposes the same tools to a local client such as Claude Desktop.
-Stdio requests carry no authentication, so `host.account` receives `undefined` and identifies the local user.
-Cancellation aborts the call's signal and stops a pending wait.
-The default streams are process stdin and stdout. When using them, stdout carries only MCP messages.
+`serveGatewayStdio(host, { input?, output?, source?, instructions?, waitSeconds?, wake? })` serves the same
+surface over stdio, for a local client such as Claude Desktop that launches one process for all of
+its conversations. A stdio request carries no authentication, so `host.account` receives `undefined`
+and names the local user. A client that cancels a call aborts its signal, so a cancelled wait stops
+listening. The streams default to the process's own, and stdout then carries only MCP.
+
 
 ### Client wake integration
 
-A host whose client supports wake notifications supplies `wake` to `serveGatewayStdio` or `registerCotalGatewayTools`.
-The gateway calls `wake.signal(connection, preview)` when a connection receives wake-worthy content without an active wait.
-The preview is a bounded rendering of unread inbox content for the host's display.
-Signalling does not read or acknowledge those messages.
-A successful signal is sent once until `cotal_inbox` or `cotal_wait` reads the connection's messages.
+An embedder whose client can be woken passes `wake`, to `serveGatewayStdio` or in the options of
+`registerCotalGatewayTools`. The gateway calls `wake.signal(connection, preview)` when a connection
+gets something that would end a `cotal_wait` while no wait holds it. A true result means a reader
+heard the signal, not that it received complete message content. The preview never consumes mail.
+`cotal_connect` adds `wake.listening(connection)` to its reply. An embedder delivering full content
+can return false from `wake.inboxNotice(connection)` to omit competing inbox-read advice from other
+tool results. Notification-only clients retain that advice.
 
-`signal` returns false when no client heard the notification.
-When a client starts listening, the host calls the function received by `wake.attach`.
-The gateway can then signal the unread connection again.
-`cotal_connect` includes `wake.listening()` in its reply.
-`GATEWAY_INSTRUCTIONS` combines `GATEWAY_CONNECTING` and `GATEWAY_LISTENING`, allowing a host to customize listening guidance without replacing connection guidance.
+`wake.attach` receives a rearm callback. Call it without arguments when a replacement reader starts
+listening. Call it with one connection after confirmed inline delivery to reoffer that connection's
+remaining work. Pass `false` as its second argument to clear the latch without immediately retrying
+a refused handoff. Ordinary inbox reads and waits also clear the latch. An adapter offering complete
+inline messages can use `prepareInlineDelivery`: hold whole automatic messages, validate the final
+transport size, recheck the batch before admission, then settle it with the native result. A failed
+or unknown admission releases the hold without committing. Never settle successfully on a preview,
+socket write or queued native call. `GATEWAY_INSTRUCTIONS` combines `GATEWAY_CONNECTING` and
+`GATEWAY_LISTENING`, so an embedder can supply its own listening instructions.
 
 ## Private tool results [#private-tool-results]
 
-[SPEC §13.19](../SPEC.md#1319-private-tool-results) defines a private, consent-bound read path for managed-agent tool results.
-That path is not served or enabled.
-Public tool arguments and results remain withheld.
-
-Core exports `ToolResultConsent`, `ToolResultRevocation`, `ToolResultServingMaterial`, their parsers, and the frozen `TOOL_RESULTS_CLUSTER` declaration.
-These contracts check structure and static bindings.
-They do not verify consent signatures, establish human proof, or read current revocation and lifecycle state.
-Serving material contains grant coordinates, not a branded `EpServeGrant`, and confers no authority.
-`parseToolResultAnswer` checks UTF-8 byte length as well as structure. A schema character limit alone does not enforce that byte bound.
+[SPEC §13.19](../SPEC.md#1319-private-tool-results) accepts a private, consent-bound read path for
+managed-agent tool results. It is not served or enabled. Core exports the closed
+`ToolResultConsent`, `ToolResultRevocation` and `ToolResultServingMaterial` contracts, their
+parsers, and the frozen `TOOL_RESULTS_CLUSTER` declaration. These parse structure and static
+bindings only. They do not verify a consent signature, establish human proof or read current
+revocation and lifecycle state. The serving material's grant coordinates are not a branded
+`EpServeGrant` and confer no authority. `parseToolResultAnswer` also checks the UTF-8 byte count;
+a schema's character limit alone is not the byte bound.
 
 ### Human proof
 
-`verifyToolResultHumanProof` from `@cotal-ai/auth` verifies the consent prerequisite.
-It checks an EdDSA IdP JWT against the existing issuer, audience, and key pins.
-It also requires:
+`@cotal-ai/auth` exports `verifyToolResultHumanProof` for the consent prerequisite. It verifies
+an EdDSA IdP JWT against the existing issuer, audience and key pins, then requires integer-second
+`auth_time` no later than the decision and at most 300 seconds old, plus a signed `amr` array
+containing `pwd`. The host compares elapsed milliseconds without rounding its clock to seconds.
+JWT clock tolerance does not widen this window. Ordinary bearer exchange does
+not require these claims or turn them into consent authority.
 
-- Integer-second `auth_time` no later than the consent decision and no more than 300 seconds old.
-- A signed `amr` array containing `pwd`.
-
-The host compares elapsed milliseconds without rounding its clock to seconds.
-JWT clock tolerance does not extend the proof window.
-Ordinary bearer exchange does not require these claims and does not make them consent authority.
-
-The loopback-only `POST /tool-result-human-proof/verify` accepts only `{ idpToken, subject }` with the current host capability and no Origin header.
-The host supplies its authenticated session subject.
-Success returns `{ authorized: true, sub, owner, authTime, exp }`.
-The owner is derived from the verified subject, which must match the session.
-
-This endpoint verifies proof only.
-It signs no consent, issues no credentials, registers no service, and serves no private content.
-Consent admission must still reject platform keys and check current membership and lifecycle.
+The loopback-only `POST /tool-result-human-proof/verify` takes only `{ idpToken, subject }` with
+the host's current capability and no Origin header. The host supplies its authenticated session
+subject. Success returns `{ authorized: true, sub, owner, authTime, exp }`; the owner derives from
+the verified subject, which must match the session. The door verifies proof only. It does not
+sign consent, issue credentials, register a service or serve private content. A host must still
+refuse platform keys and check current membership and lifecycle at consent admission.
 
 ### Consent issuance
 
-A host can opt into issuance with `startAuthService({ ..., toolResultConsents: { keyId, resolveAnchor } })`.
-Its injected private store holds an Ed25519 nkey seed under `toolResultConsentKey(space)` as `{ ver: 1, keyId, seed }`.
-The resolver reads the space's current `consents` anchor with scope `tool-results`.
-Missing, corrupt, revoked, or mismatched signing material refuses issuance.
-The store and resolver remain in the authority process, away from workers and clients.
+A host may opt into consent issuance with `startAuthService({ ..., toolResultConsents: { keyId,
+resolveAnchor } })`. Provision its Ed25519 nkey seed under `toolResultConsentKey(space)` in the
+injected private store as `{ ver: 1, keyId, seed }`. The resolver reads that space's current
+`consents` anchor with scope `tool-results`. Missing, corrupt, revoked or mismatched signing
+material refuses. Neither the private store nor the resolver belongs in a worker or client.
 
-The loopback-only `POST /tool-result-consent/issue` requires the current host capability and no Origin header.
-Its closed input is `{ id, idpToken, subject, accountPublicKey, holder, target, ttlMs }`.
-The host resolves these coordinates from current authenticated membership and account assignment.
-`holder` is `{ actor, lifecycleUid }`.
-`target` is `{ owner, actor, lifecycleUid }`.
+The loopback-only `POST /tool-result-consent/issue` requires the current host capability and no
+Origin header. Its closed input is `{ id, idpToken, subject, accountPublicKey, holder, target,
+ttlMs }`. The host resolves those coordinates from its current authenticated membership and
+account assignment. `holder` carries `{ actor, lifecycleUid }`; `target` carries `{ owner,
+actor, lifecycleUid }`. Auth verifies the signed password proof and derives the owner itself,
+requires a current same-owner interactive holder and managed target, and caps the window at
+24 hours. It returns only `{ consent }`, after a create-only `consent.<id>` auth-store write.
+Duplicate ids refuse. A failed or lost acknowledgement returns no consent and never retries.
+The host must not label an unknown outcome completed or resubmit it automatically.
+Only the auth mint writer holds consent-KV publish authority. The environment admission writer
+and remote manager issuer do not inherit that grant. Create-only enforcement remains in the recorder.
 
-Auth verifies the signed password proof and derives the owner.
-It requires a current same-owner interactive holder and managed target, with a consent lifetime capped at 24 hours.
-It returns `{ consent }` only after a create-only `consent.<id>` auth-store write.
-Duplicate IDs refuse.
-A failed or lost acknowledgement returns no consent and is never retried automatically.
-The host must retain an unknown outcome as unknown and must not resubmit it as though issuance failed.
+This door is absent from the public face. Without the opt-in signer it answers unavailable.
+It installs no serving material, revocation store, caller view, capture or result reader.
 
-Only the auth mint writer has consent-KV publish authority.
-The environment admission writer and remote Manager issuer do not inherit it.
-The recorder enforces create-only behavior.
-
-This endpoint is absent from the public face.
-Without the opt-in signer, it answers unavailable.
-It installs no serving material, revocation store, caller view, capture, or result reader.
-
-Auth issuance, host issuance, Manager material, connector capture, and the browser caller must all follow the [design's owner order](design/private-tool-results.md#9-owner-order) and ship in a qualified stock release before activation.
-Serving must remain unavailable without a complete authoritative revocation snapshot and an established, enforced clock-skew bound.
-See [Private result prerequisites](embedding-service-authority.mdx#private-tool-result-prerequisites-not-serving).
+Public tool arguments and results remain withheld. Auth and host issuance, Manager material,
+connector capture and the browser caller must each be landed and qualified in the
+[design's owner order](design/private-tool-results.md#9-owner-order), then carried by a stock
+release before activation. Without a complete authoritative revocation snapshot and an established,
+enforced clock-skew bound, the serving commands must answer `unavailable`.
 
 ## Browser control [#browser-control]
 
-`@cotal-ai/core/browser-control` describes and invokes endpoints from a page with a strict Content Security Policy.
-It compiles no code in the browser.
-The host supplies validators generated at build time by `generateBrowserContracts` from the Node-only `@cotal-ai/core/browser-validators-build` entry point.
-
-The generator takes cluster documents, recorded digests, and schema roots.
-It recomputes each digest and refuses a mismatch or missing root before writing output.
-Only single-document closures are supported.
-A command whose closure spans several documents is refused.
-The generated module imports `ajv/dist/runtime/*.js`, so the host bundler must resolve Ajv from the output module's location.
+`@cotal-ai/core/browser-control` describes and invokes an endpoint from a strict-CSP page. The page
+compiles no code: the host passes validators it generated at build time with
+`generateBrowserContracts` from `@cotal-ai/core/browser-validators-build` (Node only). The generator
+takes each cluster document with its recorded digest and schema roots, recomputes every digest and
+refuses a mismatch or a missing root before writing anything. It supports single-document closures
+only, so a command whose closure spans several documents refuses. The generated module imports
+Ajv's runtime helpers (`ajv/dist/runtime/*.js`), so the host's bundler must resolve `ajv` from
+where the host writes that module.
 
 ### Selected Manager caller
 
-`openBrowserManagerCaller` opens a caller for one explicitly selected Manager instance.
-There is no implicit selection.
-Its inputs include the broker websocket URL, space, bearer-bound principal and lifecycle, selected instance, and generated Manager contracts.
-`managerBrowserContractSource()` from `@cotal-ai/manager` supplies the contract-generation input.
-
-An `acquire` callback supplies the person's own `manager-caller` bearer and the space's sentinel credential.
-The backend obtains that bearer through the stock exchange using the person's IdP proof.
-Before any connection, the caller checks space, principal, lifecycle, and instance pins.
-The describe request remains pinned to that instance.
-
-The caller view contains only commands granted by the person's ledger scope.
-For example, `spawn` scope includes spawn, despawn, inspect, persona commands, and `goal-result`.
-Operator reads such as `status` and `models` require `admin`.
-The broker refuses commands outside the view.
-The connection does not reconnect automatically.
-`reopen` reacquires authority and checks every pin again.
+`openBrowserManagerCaller` opens a Manager caller for ONE instance the person selected; there is no
+implicit selection. It takes the broker's websocket URL, the space, the principal and lifecycle the
+bearer is bound to, the instance, and the Manager's contracts generated from
+`managerBrowserContractSource()` (`@cotal-ai/manager`). Authority comes from an `acquire` callback
+that returns the person's own `manager-caller` bearer and the space's sentinel credential; an
+embedding's backend obtains the bearer from the stock exchange with the person's IdP proof. The
+bearer's space, principal, lifecycle and instance are checked before anything is dialled, and the
+describe is pinned to that instance. The view carries only the commands the person's ledger scope
+grants. `spawn`, for example, carries `spawn`, `despawn`, `inspect`, the persona commands
+(`define-persona`, `remove-persona`, `list-personas`, `show-persona`) and
+`goal-result`, plus the launch reads `status`, `models` and `resolve-cwd` on that one instance,
+while operator reads such as `ps` and `slots` come only with `admin`; the broker
+refuses a command the view does not carry. The connection never reconnects on its own; `reopen`
+acquires again and re-checks every pin.
 
 ### Goal outcomes
 
-`followGoal` submits a goal once using an envelope ID the host persisted before calling it.
-It follows progress with the stock goal-follow implementation.
-A live terminal observation settles the goal only when the accepting instance and epoch match.
-Other terminal observations prompt a read of the goal record and settle nothing by themselves.
-
-`reconcileGoal` reads the accepted goal through `goal-result`.
-`verifyGoalResultFact` checks the returned fact and outcome digest through Web Crypto.
-None of these operations retries submission.
-
-| Observation | Result |
-|---|---|
-| Error reply | Refusal. |
-| Accepted goal with no observed completion | Outcome `unknown`; read it back without resubmitting. |
-| No answering instance | The stock `unansweredRequest` error. |
+`followGoal` submits a goal command once under an envelope id the host persisted before calling
+it, and follows the goal to its terminal with the stock goal follow. Live progress settles the goal
+only when it comes from the instance and epoch that accepted it; any other terminal settles nothing
+and prompts a read of the goal's own record. `reconcileGoal` reads an
+accepted goal back through the Manager's `goal-result` command, and `verifyGoalResultFact` checks
+the returned fact, including its outcome digest, through Web Crypto. Nothing here retries. Three
+outcomes stay distinct: an error reply is a refusal; a goal accepted but not seen to finish answers
+outcome `unknown` and is read back, never submitted again; a request no instance answered throws
+the stock unanswered error (`unansweredRequest`).
 
 ### Manager instance list
 
-Auth's `POST /manager-instances` lists the signed-in person's own Manager instances.
-The request contains `{ idpToken }` and uses the human exchange's verification.
-The response has `{ v: 1, owner, complete: true, instances: [{ instanceId, placement, state }] }`.
-Placement is `remote` or `local`.
-State is `candidate`, `not open`, `not registered`, `not this owner's`, or `unknown`.
-
-A candidate provides registration evidence.
-A describe request pinned to that instance establishes whether it answers.
-The route refuses browser-origin requests, so a page calls it through its own backend.
-A failed gate read returns 503 rather than an empty list.
+`POST /manager-instances` on the auth service lists the signed-in person's own Manager instances. It
+takes `{ idpToken }`, verifies it as the human exchange does and answers
+`{ v: 1, owner, complete: true, instances: [{ instanceId, placement, state }] }`. `placement` is
+`remote` or `local`; `state` is the verdict the `manager-caller` exchange selects on (`candidate`,
+`not open`, `not registered`, `not this owner's`, `unknown`). A `candidate` is registration
+evidence, not proof that the instance answers; a describe pinned to it is. The route refuses
+browser-origin requests like every exchange route, so a page reaches it through its own backend,
+and a failed gate read answers 503, never an empty list.
 
 ## Remote Manager client composition [#remote-manager-client-composition]
 
-`remoteManagerClient` from `@cotal-ai/manager` contains the stock request builders and response validators.
-`registerRemoteManagerAuthority` registers with a host-issued prepare credential and returns the committed process epoch and registration revision.
-If a later start registers the same instance before this start authorizes its serve grant, this start refuses with `expired`.
+`@cotal-ai/manager` exports the `remoteManagerClient` namespace, containing the stock remote
+request builders and response validators, and `registerRemoteManagerAuthority` for registration
+with a host-issued prepare credential. It returns the process epoch and registration revision its
+own registration committed. When a later start of the same instance registers before this start
+authorizes its serve grant, this start is refused with `expired`.
+`RemoteManagerIdentityState` describes the five private
+manager identities stored under an explicit account-local root. Use these public exports when
+composing `ManagerOptions.remoteAuthority`; do not copy CLI validators or import private modules.
+`managerClusterArtifacts()` returns the canonical document, manifest and their digests used by
+registration. Pass its `[document, manifest]` pair as `contractArtifacts` to both
+`remoteManagerRegistrationProof(owner, state, contractArtifacts)` from `@cotal-ai/core` and
+`remoteManagerClient.remoteManagerAuthorityRequest(state, actor, "activate", { registrationProof, contractArtifacts })`.
+The request builder takes each operation's coordinates as named fields of its last argument.
+The host still validates the artifact closure and current registration before activation.
+`managerBrowserContractSource()` returns the same document with its closure digest and each
+distinct schema root, the input `generateBrowserContracts` from
+`@cotal-ai/core/browser-validators-build` takes at a host's build. Its closure manifests are left
+out because they are not schemas; the generator recomputes every digest and refuses a mismatch.
+The namespace includes closed standing/run renewal, admission, maintenance, enrollment,
+retirement and goal-index scan helpers. `publicIdentities(state)` returns the `identities` record every request
+carries: the five public ids, in the order the host echoes them. `remoteManagerClient.remoteRunHosting` builds six callbacks: `submitRun`, `revokeRun`, `admitRun`, `issueAttempt`, `issueOperator`, and `renewRun`. Submission and revocation refuse when their respective optional request transports are absent. The Manager sends the same requests as the stock composition. The namespace provides no signer or
+new grant. The host still owns authenticated issuance, current registration and activated-run
+observations, and any guarded foreign-holder repair.
+An embedding must preserve those checks and supply a supported runtime; the client exports alone
+do not provide a pooled runtime, an authority service or a complete hosted context.
 
-`RemoteManagerIdentityState` describes five private Manager identities under an explicit account-local root.
-These exports support `ManagerOptions.remoteAuthority` without copying CLI validators or importing private modules.
+## Related contracts
 
-`managerClusterArtifacts()` returns the canonical document, manifest, and digests.
-Its `[document, manifest]` pair is passed as `contractArtifacts` to both:
+### Waiting for messages [#waiting-for-messages]
 
-- `remoteManagerRegistrationProof(owner, state, contractArtifacts)` from `@cotal-ai/core`.
-- `remoteManagerClient.remoteManagerAuthorityRequest(state, actor, "activate", { registrationProof, contractArtifacts })`.
-
-Each operation's coordinates are named fields in the request builder's last argument.
-The host still checks artifact closure and current registration before activation.
-
-`managerBrowserContractSource()` returns the document, closure digest, and distinct schema roots needed by `generateBrowserContracts`.
-It omits closure manifests because they are not schemas.
-The generator still recomputes digests and refuses mismatches.
-
-The namespace includes standing-credential and run renewal, admission, maintenance, enrollment, retirement, and goal-index scan helpers.
-`publicIdentities(state)` returns the five public IDs in the order echoed by the host.
-`remoteRunHosting` builds `submitRun`, `revokeRun`, `admitRun`, `issueAttempt`, `issueOperator`, and `renewRun` from registration and the supplied transports.
-Submission and revocation refuse when the host omits their respective optional request transports.
-The resulting Manager sends the same requests as the stock composition.
-
-These builders provide no signer or additional grant.
-The host retains authenticated issuance, current registration, activated-run observations, and guarded repair of foreign holders.
-It must also supply a supported runtime.
-Client exports alone provide neither a pooled runtime, an authority service, nor a complete hosted context.
+`cotal_wait` reports buffered messages and bounds waiting by its timeout. See [the detailed contract](embedding-remote-clients.mdx#remote-mcp-gateway).

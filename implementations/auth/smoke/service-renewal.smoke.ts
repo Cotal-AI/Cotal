@@ -1,10 +1,13 @@
-import assert from "node:assert/strict";
+import nodeAssert from "node:assert/strict";
 import { createAccount } from "@nats-io/nkeys";
+import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import { decodeJwt, decodeProtectedHeader, SignJWT } from "jose";
 import { contractDigest, serviceEndpointActor, SERVICE_RENEWAL_TTL_SECONDS, type ServiceRegistrationWitness } from "@cotal-ai/core";
 import { createUserTokenIssuer, generateSigningKey } from "../src/issuer.js";
 import { validateUserToken } from "../src/token.js";
 import { SERVICE_RENEWAL_TYP, validateServiceRenewalProof } from "../src/service-renewal.js";
+const counted = countedAssert(nodeAssert);
+const assert: typeof nodeAssert = counted.assert;
 
 const identity = { accountPublicKey: createAccount().getPublicKey(), space: "service-renewal", owner: `u_${"a".repeat(26)}`,
   endpoint: "org.example.orders", instanceId: "i".repeat(32) };
@@ -48,3 +51,4 @@ issuer.retire(key.kid);
 await assert.rejects(validateServiceRenewalProof(proof, options));
 await validateServiceRenewalProof(successorProof, options);
 console.log("service renewal: registration binding, strict expiry, token-class separation and key rotation passed; native authorization remains separate");
+emitSentinel({ passed: counted.cells(), failed: 0 });

@@ -1,5 +1,11 @@
+import { join } from "node:path";
+import { boundedValue, oneLine } from "@cotal-ai/core";
 import { brokerAddressForDisplay } from "./broker-display.js";
+import { userCotalDir } from "./mesh-registry.js";
+import { shellPath } from "./protected-records.js";
+import { codeSpan } from "./text-wrap.js";
 import type { MeshTarget, MeshTargetError } from "./mesh-target.js";
+import { SHOWN_VALUE_MAX } from "./output.js";
 import type { PreflightFailure } from "./preflight.js";
 import { PREFLIGHT_CONFIRM_TIMEOUT_MS } from "./preflight.js";
 
@@ -16,7 +22,7 @@ import { PREFLIGHT_CONFIRM_TIMEOUT_MS } from "./preflight.js";
  */
 export type WorkspaceError =
   | { kind: "target"; error: MeshTargetError }
-  | { kind: "preflight"; failure: PreflightFailure; target: MeshTarget; pruned: boolean }
+  | { kind: "preflight"; failure: PreflightFailure; target: MeshTarget; pruned: boolean; pid?: number; heldBy?: string }
   | { kind: "reachable"; reason: "auth-required" | "stale-auth" | "unreachable" | "timeout"; server: string; hasAuth: boolean };
 
 /** A workspace failure in two parts: what happened, and what to run next when there is something. */
@@ -34,7 +40,7 @@ export function workspaceErrorParts(e: WorkspaceError): WorkspaceErrorParts {
     case "target":
       return targetErrorParts(e.error);
     case "preflight":
-      return preflightFailureParts(e.failure, e.target, e.pruned);
+      return preflightFailureParts(e.failure, e.target, e.pruned, e.pid, e.heldBy);
     case "reachable":
       return reachableParts(e.reason, e.server, e.hasAuth);
   }
@@ -46,6 +52,11 @@ export function renderWorkspaceError(e: WorkspaceError): string {
   return `✗ ${message}${remedy === undefined ? "" : ` - ${remedy}`}`;
 }
 
+/** The step for a root whose stack runs under another Cotal home (`stackRunsUnderOtherHome`). */
+export function stackHomeRemedy(): string {
+  return `run it with COTAL_HOME set to the Cotal home the stack was started under${process.env.COTAL_HOME ? `, or with COTAL_HOME unset if that was the default ${userCotalDir()}` : ""}`;
+}
+
 /** "Which mesh" resolution failures — maps a {@link MeshTargetError}'s `{code, details}` to copy. */
 function targetErrorParts(err: MeshTargetError): WorkspaceErrorParts {
   const d = err.details;
@@ -54,8 +65,8 @@ function targetErrorParts(err: MeshTargetError): WorkspaceErrorParts {
       return parts("no mesh running", "run `cotal up` in a project, or pass `--server`");
     case "unknown-space":
       return d.selected
-        ? parts(`the selected space "${d.requested}" is not registered here`, "select one with `cotal use <name>` (`cotal space` lists them), or name one with `--space`")
-        : parts(`no space named "${d.requested}" is registered here`, "see `cotal space`");
+        ? parts(`the selected space "${boundedValue(String(d.requested), SHOWN_VALUE_MAX)}" is not registered here`, "select one with `cotal use <name>` (`cotal space` lists them), or name one with `--space`")
+        : parts(`no space named "${boundedValue(String(d.requested), SHOWN_VALUE_MAX)}" is registered here`, "see `cotal space`");
     case "ambiguous-target":
       return parts(`multiple meshes running: ${(d.available ?? []).join(", ")}`, "pick one with `--space <name>` or set a default with `cotal use <name>`");
     case "default-occupied":
@@ -67,12 +78,48 @@ function targetErrorParts(err: MeshTargetError): WorkspaceErrorParts {
         ? parts(`registry entry "${d.space}" points at ${d.root}, whose auth is now for "${d.found}"`, `re-register it with \`cotal meshes add ${d.space} --server <url> --root <dir>\` (\`--force\` replaces), or \`cotal meshes rm ${d.space}\``)
         : parts(`registry entry "${d.space}" points at ${d.root}, whose auth is now for "${d.found}"; stale entry removed`, "re-run `cotal up` or check `cotal meshes`");
     case "unreadable-auth":
+      // With no space, the root's trust folder itself could not be read or entered, or holds an
+      // account record that will not load, so it names no space. A folder above it this account
+      // cannot enter is named with no chmod, as it may belong to another account.
+      if (d.space === undefined && d.records !== undefined)
+        return parts(`the trust material under ${d.root} holds ${d.records.length === 1 ? "an account record" : `${d.records.length} account records`} that will not load (${d.records.map(oneLine).join(", ")}), so which spaces it holds is unknown`, `repair or remove ${d.records.length === 1 ? "that record" : "those records"}, or name a space with \`--space <name>\``);
+      if (d.space === undefined)
+        return parts(`the trust material under ${d.root} cannot be read (${err.message}), so which spaces it holds is unknown`, d.folder === undefined
+          ? `make ${join(d.root!, ".cotal", "auth")} a folder this account can read and enter, or name a space with \`--space <name>\``
+          : `this account cannot enter ${d.folder}, which holds the trust material; get access to that folder from its owner, or name a space with \`--space <name>\``);
       return parts(`space "${d.space}"'s trust material under ${d.root} will not load (${err.message})`, "repair or remove the account record, then re-run `cotal up`");
-    case "not-started":
-      // A prepared space names itself. A root whose stack journal recorded a broker names that broker.
-      return d.space === undefined
-        ? parts(`the stack in ${d.root} recorded ${d.server === undefined ? "a broker" : `the broker ${brokerAddressForDisplay(d.server) ?? "at an invalid address"}`}, and no space is registered for it here`, `start it with \`cotal up\` in ${d.root}`)
-        : parts(`"${d.space}" is prepared but not started`, `start it with \`cotal up\` in ${d.root}`);
+    case "not-started": {
+      // A prepared space names itself, and the stack operation its root records with no outcome,
+      // which `up` may refuse to settle while `status` names the step that does. A root whose stack
+      // journal recorded a broker names that broker, and `up` there refuses until `space create`
+      // prepares the journal's space at that root again. A stack running under another Cotal home
+      // names the home in use, because `up` there refuses. A root whose last start configured a
+      // broker names that broker, and `up` there starts it again.
+      // A folder moved from a prepared space's missing root, or holding a journal another folder
+      // recorded, names the next step `up` and `down` name there.
+      if (d.space !== undefined) return d.rootMissing
+        ? d.stackRemedy !== undefined
+          ? parts(`"${d.space}" is prepared in ${d.root}, which no longer exists, and this folder's stack journal was recorded there, so this folder was moved from there`, d.stackRemedy)
+          : parts(`"${d.space}" is prepared in ${d.root}, which no longer exists`, `forget it with \`cotal space forget ${d.space}\`, then prepare it again with \`cotal space create ${d.space} --root <dir>\``)
+        : d.unsettled !== undefined
+          ? parts(`"${d.space}" is prepared, and the last ${d.unsettled} of its stack in ${d.root} has no recorded outcome`, `run \`cotal status\` in ${d.root}, which names the step that finishes or settles it`)
+          : d.stopped !== undefined
+            ? parts(`"${d.space}" is stopped; its last operation, ${d.stopped.operation}, ${d.stopped.outcome}`, `start it again with \`cotal up\` in ${d.root}`)
+          : parts(`"${d.space}" is prepared but not started`, `start it with \`cotal up\` in ${d.root}`);
+      const broker = d.server === undefined ? "a broker" : `the broker ${brokerAddressForDisplay(d.server) ?? "at an invalid address"}`;
+      // A legacy root whose space is registered for another folder, as a copy, a folder the name was
+      // taken over from, or one moved away from its recorded path. It names that folder, because
+      // `cotal up` here refuses the name or takes it over rather than starting what was asked for.
+      // Read before the journal sentence below: a legacy root holds no journal to name.
+      if (d.lastRun && d.recordedRoot !== undefined && d.stackRemedy !== undefined)
+        return parts(`the mesh "${d.stackSpace}" in ${d.root} last ran at ${brokerAddressForDisplay(d.server ?? "") ?? "an invalid address"}, and "${d.stackSpace}" is registered for ${d.recordedRoot}, not for this folder`, d.stackRemedy);
+      if (d.home === undefined && d.recordedRoot !== undefined && d.stackRemedy !== undefined)
+        return parts(`the stack journal in ${d.root} was recorded at ${d.recordedRoot}, so this folder is a copy or was moved from there`, d.stackRemedy);
+      if (d.lastRun) return parts(`the mesh${d.stackSpace === undefined ? "" : ` "${d.stackSpace}"`} in ${d.root} last ran at ${brokerAddressForDisplay(d.server ?? "") ?? "an invalid address"}, and no space is registered for it here`, `start it again with \`cotal up\` in ${d.root}`);
+      return d.home === undefined
+        ? parts(`the stack in ${d.root} recorded ${broker}, and no space is registered for it here`, `prepare it again with ${codeSpan(`cotal space create ${d.stackSpace ?? "<space>"} --root ${shellPath(d.root!)}`)}, then start it with \`cotal up\` there`)
+        : parts(`the stack in ${d.root} recorded ${broker} and runs under another Cotal home; ${d.home} holds no record of its members`, stackHomeRemedy());
+    }
     case "user-auth-unrecorded":
       // U11: without a TRUSTED local record of the space's IdP there is no actionable
       // `cotal login --idp <?>` line to print — the honest recovery is re-registering the mesh
@@ -84,11 +131,25 @@ function targetErrorParts(err: MeshTargetError): WorkspaceErrorParts {
   }
 }
 
+/** The next step for a broker that took the connection and did not answer in time. */
+const NOT_ANSWERING_REMEDY = "retry; if it keeps happening, check that the broker process is not stopped or overloaded and that the link to it is not too slow";
+
 /** "Is it live" failures on a registry-resolved target — the classified preflight sentence. */
-function preflightFailureParts(kind: PreflightFailure, t: MeshTarget, pruned: boolean): WorkspaceErrorParts {
+function preflightFailureParts(kind: PreflightFailure, t: MeshTarget, pruned: boolean, pid?: number, heldBy?: string): WorkspaceErrorParts {
   const server = brokerAddressForDisplay(t.server) ?? "an invalid broker address";
   switch (kind) {
     case "unreachable":
+      // A broker address `--server` supplied that is not the one recorded for this space says nothing
+      // about whether that space's mesh runs: name the address that did not answer, and the recorded
+      // one when there is one. The recorded broker is never tried in its place.
+      if ((t.source === "flag-server" || t.source === "flag-space-override") && t.recordedServer !== t.server)
+        return t.recordedServer === undefined
+          ? parts(`nothing answered at ${server}, the broker address --server named`, "check that address and that a broker runs there")
+          : parts(`nothing answered at ${server}, the broker address --server named`, `check that address, or drop --server to reach "${t.space}" at ${brokerAddressForDisplay(t.recordedServer) ?? "an invalid broker address"}, where it is recorded`);
+      // Nothing records the default space that was assumed for a folder whose records name no
+      // space, so the folder is what to name, with the step that prepares a space in it again.
+      if (t.namesNoSpace)
+        return parts(`no space is registered or prepared here for ${t.root}`, `prepare one there with \`cotal space create <name> --root ${shellPath(t.root)}\`, or select one with \`cotal use <name>\``);
       // An operator-registered mesh usually runs on ANOTHER machine, so `cotal up` is the wrong
       // remedy here — this machine can only wait for it or stop pointing at it.
       if (t.origin === "manual" || t.origin === "catalog")
@@ -123,11 +184,26 @@ function preflightFailureParts(kind: PreflightFailure, t: MeshTarget, pruned: bo
       );
     case "slow-link":
       // No CA guidance here: the confirm probe never reached a conclusive answer, so there is no
-      // trust evidence to diagnose. The broker answered TCP; only the credentialed connect ran out
-      // of its budget.
+      // trust evidence to diagnose. The broker took the connection, so it is not "not running": it
+      // is stopped, overloaded or behind a slow link.
       return parts(
-        `mesh "${t.space}" at ${server} answered TCP but the credentialed connect did not complete within ${PREFLIGHT_CONFIRM_TIMEOUT_MS / 1000}s; the registry entry was kept`,
-        "retry, or raise the connect budget if this link is consistently slow",
+        `mesh "${t.space}" at ${server} accepted the connection but is not answering: the connect did not complete within ${PREFLIGHT_CONFIRM_TIMEOUT_MS / 1000}s; the registry entry was kept`,
+        NOT_ANSWERING_REMEDY,
+      );
+    case "broker-stopped":
+      return parts(
+        `mesh "${t.space}" at ${server} is served by process ${pid}, which is stopped, so it accepts the connection and never answers; the registry entry was kept`,
+        `resume it with kill -CONT ${pid}`,
+      );
+    case "address-held":
+      // Two registrations name one listener, so the broker that answered is the other space's and
+      // this record is sound. Say whose broker holds the address and keep the entry: deleting it
+      // would leave this folder with no record of the space its commands mean.
+      return parts(
+        `a broker at ${server} refused the connection for "${t.space}", and ${heldBy === undefined ? "another registered space names that address" : `"${heldBy}" is registered at that address`}, so the broker there is not this one's; the registry entry was kept`,
+        heldBy === undefined
+          ? `run \`cotal space\` to see which space holds that address, stop it in its own folder and \`cotal space forget\` it, then run \`cotal up\` in ${t.root}`
+          : `stop "${heldBy}" in its own folder and free the address with \`cotal space forget ${heldBy}\`, then run \`cotal up\` in ${t.root}; to keep both, start "${t.space}" at another address with \`cotal up --server nats://127.0.0.1:<port>\` there`,
       );
   }
 }
@@ -144,7 +220,7 @@ function reachableParts(
     return parts(`credential EXPIRED at ${server}; bounded lifetime reached (credential death)`, "run `cotal doctor auth` where the mesh runs, or re-mint the credential");
   if (reason === "unreachable") return parts(`can't reach a broker at ${server}`, "is it running? (`cotal up`)");
   if (reason === "timeout")
-    return parts(`the connect to ${server} did not complete within ${PREFLIGHT_CONFIRM_TIMEOUT_MS / 1000}s; the broker may just be slow to reach`, "retry, or raise the connect budget if this link is consistently slow");
+    return parts(`the broker at ${server} accepted the connection but is not answering: the connect did not complete within ${PREFLIGHT_CONFIRM_TIMEOUT_MS / 1000}s`, NOT_ANSWERING_REMEDY);
   // `auth-required` is two different user situations with two different repairs, and this path used
   // to collapse them. The registry path never did: `classifyPreflightFailure` branches on the same
   // bit into `creds-rejected` vs `open-wants-auth`. Told "credentials rejected" after sending NO

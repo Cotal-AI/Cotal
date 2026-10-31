@@ -27,8 +27,8 @@
     {
       "name": "the log is created before the argv is validated, so a refused start still leaves it behind",
       "file": "implementations/cli/src/lib/manager-proc.ts",
-      "find": "  const [node, ...self] = selfArgv();\n",
-      "replace": "  closeSync(openSync(managerLogPath(space), \"a\", 0o600));\n  const [node, ...self] = selfArgv();\n",
+      "find": "  const [node, ...self] = daemonArgv();\n",
+      "replace": "  closeSync(openSync(managerLogPath(space), \"a\", 0o600));\n  const [node, ...self] = daemonArgv();\n",
       "cell": "CELL: the refused spawn left no manager log behind either",
       "expectRed": "CELL: the refused spawn left no manager log behind either",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
@@ -36,8 +36,8 @@
     {
       "name": "the manager's pre-upgrade pidfile is reclaimed before the argv is validated",
       "file": "implementations/cli/src/lib/manager-proc.ts",
-      "find": "  const [node, ...self] = selfArgv();\n  reclaimDeadPreUpgradeRecord(MANAGER_PIDFILE, ctx(space));\n",
-      "replace": "  reclaimDeadPreUpgradeRecord(MANAGER_PIDFILE, ctx(space));\n  const [node, ...self] = selfArgv();\n",
+      "find": "  const [node, ...self] = daemonArgv();\n  reclaimDeadPreUpgradeRecord(MANAGER_PIDFILE, ctx(space));\n",
+      "replace": "  reclaimDeadPreUpgradeRecord(MANAGER_PIDFILE, ctx(space));\n  const [node, ...self] = daemonArgv();\n",
       "cell": "CELL: the refused manager start left the dead pre-upgrade manager pidfile in place",
       "expectRed": "CELL: the refused manager start left the dead pre-upgrade manager pidfile in place",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
@@ -45,8 +45,8 @@
     {
       "name": "the manager's pre-upgrade delivery-aware marker is reclaimed before the argv is validated",
       "file": "implementations/cli/src/lib/manager-proc.ts",
-      "find": "  const [node, ...self] = selfArgv();\n  reclaimDeadPreUpgradeRecord(MANAGER_PIDFILE, ctx(space));\n  reclaimDeadPreUpgradeRecord(MANAGER_DELIVERY_AWARE_MARKER, ctx(space));\n",
-      "replace": "  reclaimDeadPreUpgradeRecord(MANAGER_DELIVERY_AWARE_MARKER, ctx(space));\n  const [node, ...self] = selfArgv();\n  reclaimDeadPreUpgradeRecord(MANAGER_PIDFILE, ctx(space));\n",
+      "find": "  const [node, ...self] = daemonArgv();\n  reclaimDeadPreUpgradeRecord(MANAGER_PIDFILE, ctx(space));\n  reclaimDeadPreUpgradeRecord(MANAGER_DELIVERY_AWARE_MARKER, ctx(space));\n",
+      "replace": "  reclaimDeadPreUpgradeRecord(MANAGER_DELIVERY_AWARE_MARKER, ctx(space));\n  const [node, ...self] = daemonArgv();\n  reclaimDeadPreUpgradeRecord(MANAGER_PIDFILE, ctx(space));\n",
       "cell": "CELL: and the dead pre-upgrade delivery-aware marker",
       "expectRed": "CELL: and the dead pre-upgrade delivery-aware marker",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
@@ -54,8 +54,8 @@
     {
       "name": "the delivery starter reclaims its pre-upgrade pidfile before the argv is validated, as #1641 shipped it",
       "file": "implementations/cli/src/lib/delivery-proc.ts",
-      "find": "  const [node, ...self] = selfArgv();\n  reclaimDeadPreUpgradeRecord(DELIVERY_PIDFILE, ctx(space));\n",
-      "replace": "  reclaimDeadPreUpgradeRecord(DELIVERY_PIDFILE, ctx(space));\n  const [node, ...self] = selfArgv();\n",
+      "find": "  const [node, ...self] = daemonArgv();\n  reclaimDeadPreUpgradeRecord(DELIVERY_PIDFILE, ctx(space));\n",
+      "replace": "  reclaimDeadPreUpgradeRecord(DELIVERY_PIDFILE, ctx(space));\n  const [node, ...self] = daemonArgv();\n",
       "cell": "CELL: the refused delivery start left the dead pre-upgrade delivery pidfile in place",
       "expectRed": "CELL: the refused delivery start left the dead pre-upgrade delivery pidfile in place",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
@@ -63,8 +63,8 @@
     {
       "name": "the delivery log is opened before the argv is validated",
       "file": "implementations/cli/src/lib/delivery-proc.ts",
-      "find": "  const [node, ...self] = selfArgv();\n  reclaimDeadPreUpgradeRecord(DELIVERY_PIDFILE, ctx(space));\n  const fd = openPrivateAppend(canonicalLocalProcessPath(DELIVERY_LOGFILE, ctx(space)));\n",
-      "replace": "  reclaimDeadPreUpgradeRecord(DELIVERY_PIDFILE, ctx(space));\n  const fd = openPrivateAppend(canonicalLocalProcessPath(DELIVERY_LOGFILE, ctx(space)));\n  const [node, ...self] = selfArgv();\n",
+      "find": "  const [node, ...self] = daemonArgv();\n  reclaimDeadPreUpgradeRecord(DELIVERY_PIDFILE, ctx(space));\n  const fd = openPrivateAppend(canonicalLocalProcessPath(DELIVERY_LOGFILE, ctx(space)));\n",
+      "replace": "  reclaimDeadPreUpgradeRecord(DELIVERY_PIDFILE, ctx(space));\n  const fd = openPrivateAppend(canonicalLocalProcessPath(DELIVERY_LOGFILE, ctx(space)));\n  const [node, ...self] = daemonArgv();\n",
       "cell": "CELL: the refused delivery start left no delivery log behind",
       "expectRed": "CELL: the refused delivery start left no delivery log behind",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"

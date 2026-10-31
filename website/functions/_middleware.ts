@@ -8,6 +8,8 @@ import pages from '../src/generated/routes.json';
 // Link headers (RFC 8288) pointing agents at the machine-readable entry points.
 // Everything else passes straight through.
 
+import { httpReferences } from '../src/http-references.js';
+
 interface Env {
   ASSETS: { fetch: (input: Request | string | URL) => Promise<Response> };
 }
@@ -49,6 +51,13 @@ export const onRequest = async (context: Ctx): Promise<Response> => {
   if (INSTALLER_HOSTS.has(url.hostname) && (slug === '' || slug === 'install.sh')) {
     const sh = await env.ASSETS.fetch(new URL('/install.sh', url.origin));
     if (sh.ok) return installerResponse(await sh.text());
+  }
+
+  // The generated source is retained for agent bundles, with one public HTML reference.
+  const reference = httpReferences.find((reference) => slug === reference.docSlug);
+  if (reference) {
+    url.pathname = `/${reference.base}/`;
+    return Response.redirect(url.href, 301);
   }
 
   // /install.sh on any host: same script, same readable content type.

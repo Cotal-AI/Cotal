@@ -4,7 +4,9 @@
  * its own one-shot credential. Covers the default, `--waiting` and `--all` filters, the rich and
  * plain reports, the managed column with no manager present and with a manager that does not answer
  * (a partial read, exit 4), a credential that may not read the roster, and `whoami` for a signer, an
- * open mesh and each user-auth grant state (the last through a stub provider, in process).
+ * open mesh, an unregistered `--server` (unknown, partial, also from the space's own folder), a
+ * `--creds` file of each fixed profile, and each user-auth grant state (the last through a stub
+ * provider, in process).
  *
  * Isolation: every CLI child gets a sandboxed HOME / XDG_CONFIG_HOME / TMPDIR / COTAL_HOME, and
  * inherited COTAL_* is stripped.
@@ -34,7 +36,7 @@ import {
   setupSpaceStreams,
 } from "@cotal-ai/core";
 import { createSuite, killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal, teardownPathOnSignal } from "@cotal-ai/smoke-kit";
-import { authDir, recordMesh, saveSpaceAuth, setCurrent, userAuthStateDir } from "@cotal-ai/workspace";
+import { authDir, recordMesh, recordPreparedSpace, saveSpaceAuth, setCurrent, userAuthStateDir } from "@cotal-ai/workspace";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
@@ -45,13 +47,13 @@ if (!existsSync(BIN)) {
 const { check, finish } = createSuite();
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-type Row = { name: string; kind: string; status: string; activity: string | null; condition: { code: string } | null; harness: string | null; model: string | null; host: string | null; managed: boolean | null; attention: string | null };
+type Row = { name: string; kind: string; sessionKind?: string | null; status: string; activity: string | null; condition: { code: string } | null; harness: string | null; model: string | null; host: string | null; managed: boolean | null; attention: string | null };
 type Envelope = {
   outcome: string;
   completeness: string;
   command: string;
-  target: { space: string; scope?: string };
-  result: { kind: string; server?: string; view?: string; managers?: string; hidden?: number; items?: Row[]; identity?: { kind: string; principal: string | null; owner?: string | null; actor?: string | null; subject?: string | null; grant: string | null }; read?: unknown; post?: unknown; dms?: boolean | null; capabilities?: unknown } | null;
+  target: { space: string; scope?: string; root?: string };
+  result: { kind: string; server?: string | null; view?: string; managers?: string; hidden?: number; items?: Row[]; identity?: { kind: string; principal: string | null; owner?: string | null; actor?: string | null; subject?: string | null; grant: string | null }; read?: unknown; post?: unknown; dms?: boolean | string | null; capabilities?: unknown; space?: string | null; profile?: string | null; principal?: string | null; lifecycleUid?: string | null; expired?: boolean } | null;
   warnings: { code: string; message: string }[];
   error?: { code: string; message: string; remedy?: string };
 };
@@ -95,6 +97,15 @@ writeFileSync(join(storeDir, "server.conf"), serverConfig(auth, [auth], { transp
 const broker = spawn("nats-server", ["-c", join(storeDir, "server.conf")], { stdio: "ignore" });
 const releaseBroker = teardownOnSignal(broker, storeDir);
 
+// Recovery must reach an auth-required address with no other space registered there.
+// Sharing the roster broker instead exercises the resolver's valid address-conflict refusal.
+const recoveryPort = await pickFreePort();
+const recoveryServers = `nats://127.0.0.1:${recoveryPort}`;
+const recoveryStoreDir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
+writeFileSync(join(recoveryStoreDir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: recoveryPort, storeDir: join(recoveryStoreDir, "js") }));
+const recoveryBroker = spawn("nats-server", ["-c", join(recoveryStoreDir, "server.conf")], { stdio: "ignore" });
+const releaseRecoveryBroker = teardownOnSignal(recoveryBroker, recoveryStoreDir);
+
 const home = mkdtempSync(join(tmpdir(), "cotal-who-home-"));
 const releaseHome = teardownPathOnSignal(home);
 mkdirSync(join(home, ".cotal"), { recursive: true });
@@ -111,9 +122,9 @@ const cleanEnv: NodeJS.ProcessEnv = { ...process.env };
 for (const key of Object.keys(cleanEnv)) if (key.startsWith("COTAL_") || key === "FORCE_COLOR" || key === "NO_COLOR") delete cleanEnv[key];
 const isolatedEnv: NodeJS.ProcessEnv = { ...cleanEnv, HOME: home, USERPROFILE: home, TMPDIR: home, COTAL_HOME: join(home, ".cotal"), XDG_CONFIG_HOME: xdg, COTAL_SKIP_CONNECTOR_SEED: "1" };
 
-const run = (args: string[], extra: NodeJS.ProcessEnv = {}, preload?: string, timeoutMs = 120_000): Promise<{ status: number; stdout: string; stderr: string; envelope?: Envelope }> =>
+const run = (args: string[], extra: NodeJS.ProcessEnv = {}, preload?: string, timeoutMs = 120_000, cwd = shell): Promise<{ status: number; stdout: string; stderr: string; envelope?: Envelope }> =>
   new Promise((resolve) => {
-    execFile(process.execPath, [...(preload ? ["--import", pathToFileURL(preload).href] : []), BIN, ...args], { cwd: shell, env: { ...isolatedEnv, ...extra }, timeout: timeoutMs }, (err, stdout, stderr) => {
+    execFile(process.execPath, [...(preload ? ["--import", pathToFileURL(preload).href] : []), BIN, ...args], { cwd, env: { ...isolatedEnv, ...extra }, timeout: timeoutMs }, (err, stdout, stderr) => {
       const lines = stdout.split("\n").filter(Boolean);
       const envelope = lines.length === 1 && lines[0]!.startsWith("{") ? (JSON.parse(lines[0]!) as Envelope) : undefined;
       resolve({ status: err && typeof err.code === "number" ? err.code : err ? 1 : 0, stdout, stderr, envelope });
@@ -144,18 +155,25 @@ try {
     if (!ready) await wait(100);
   }
   check("control: the owned broker is ready", ready, servers);
+  let recoveryReady = false;
+  for (let i = 0; i < 50 && !recoveryReady; i++) {
+    recoveryReady = await isReachable(recoveryServers);
+    if (!recoveryReady) await wait(100);
+  }
+  check("control: the separate owned auth recovery broker is ready", recoveryReady, recoveryServers);
   const provisionerCreds = await mintCreds(auth, newIdentity(), "provisioner");
   await setupSpaceStreams({ servers, space, creds: provisionerCreds });
   await seedChannelRegistry({ servers, space, creds: provisionerCreds, file: { channels: { general: {} } } });
   saveSpaceAuth(authDir(meshRoot), auth);
+  const openServer = `nats://127.0.0.1:${await pickFreePort()}`;
   const priorHome = process.env.COTAL_HOME;
   process.env.COTAL_HOME = isolatedEnv.COTAL_HOME;
   try {
     recordMesh({ space, server: servers, root: meshRoot, mode: "auth", origin: "manual", ts: new Date().toISOString() });
-    recordMesh({ space: "openmesh", server: `nats://127.0.0.1:${await pickFreePort()}`, root: openRoot, mode: "open", origin: "manual", ts: new Date().toISOString() });
+    recordMesh({ space: "openmesh", server: openServer, root: openRoot, mode: "open", origin: "manual", ts: new Date().toISOString() });
     for (const entry of urlCases)
       recordMesh({ space: entry.space, server: entry.server, root: openRoot, mode: "open", origin: "manual", ts: new Date().toISOString() });
-    recordMesh({ space: "url-auth-recovery", server: `nats://${urlUser}:${urlPassword}@127.0.0.1:${port}`, root: openRoot, mode: "open", origin: "manual", ts: new Date().toISOString() });
+    recordMesh({ space: "url-auth-recovery", server: `nats://${urlUser}:${urlPassword}@127.0.0.1:${recoveryPort}`, root: openRoot, mode: "open", origin: "manual", ts: new Date().toISOString() });
     setCurrent(space);
   } finally {
     if (priorHome === undefined) delete process.env.COTAL_HOME;
@@ -231,6 +249,19 @@ try {
   const all = await run(["who", "--all", "--json"]);
   check("--all adds the infrastructure endpoint, with no managed answer", rowsOf(all).logger?.kind === "endpoint" && rowsOf(all).logger?.managed === null && all.envelope?.result?.hidden === 0, rowsOf(all).logger);
 
+  // `endpoints --json` carries the presence values; the report words them.
+  const live = await run(["endpoints", "--json"]);
+  const liveRows: Record<string, Record<string, unknown>> = Object.fromEntries(((live.envelope?.result?.items ?? []) as unknown as Record<string, unknown>[]).map((row) => [String(row.name), row]));
+  const stamp = (v: unknown) => typeof v === "string" && new Date(Date.parse(v)).toISOString() === v;
+  check("endpoints --json items carry presence values and no rendered text",
+    live.status === 0 && Object.values(liveRows).length > 0 &&
+    Object.values(liveRows).every((row) => Object.keys(row).sort().join() === "activeAt,activity,activitySince,condition,id,kind,name,reportedStatus,role,statusSince" && stamp(row.statusSince)) &&
+    (liveRows.carol?.condition as { code?: string } | null)?.code === "auth" && liveRows.bob?.activity === "reviewing the change" && stamp(liveRows.bob?.activitySince) && liveRows.alice?.activitySince === null,
+    { status: live.status, bob: liveRows.bob, carol: liveRows.carol });
+  const livePlain = await run(["endpoints", "--plain"]);
+  check("the endpoints report words the condition and the ages from those values",
+    livePlain.status === 0 && /carol\s.*idle \(auth for \d+s\) - unchanged for \d+s/.test(livePlain.stdout) && /reviewing the change \(set \d+s ago\)/.test(livePlain.stdout), shown(livePlain));
+
   const plain = await run(["who", "--plain"], { FORCE_COLOR: "1" });
   const rich = await run(["who"], { FORCE_COLOR: "1" });
   check("the plain report is a table with every state word and no ANSI", plain.status === 0 && !/\x1b\[/.test(plain.stdout) && new RegExp(`^Who's here - ${space}\\n {2}Agent\\s+State\\s+Attention`, "m").test(plain.stdout) && /bob\/reviewer\s+waiting/.test(plain.stdout) && /idle \(auth for/.test(plain.stdout), shown(plain));
@@ -251,11 +282,34 @@ try {
   const unreadPlain = await run(["who", "--plain"]);
   check("the report still prints, with managed shown as unknown", unreadPlain.status === 4 && /alice\/builder\s+working.*unknown/.test(unreadPlain.stdout) && /MANAGERS_UNREAD|could not ask the managers/.test(unreadPlain.stderr), shown(unreadPlain));
 
+  // ── a chat session: a person drives it, so it is listed with its kind and is not infrastructure ──
+  // The manager above still does not answer, so each read is partial and hides the logger and the manager.
+  const dana = await join_("dana", { kind: "endpoint", meta: { sessionKind: "chat" } });
+  await dana.setStatus("waiting");
+  await wait(1_000);
+  const chat = await run(["who", "--json"]);
+  check("a chat session is listed with its session kind, and only the infrastructure endpoints are hidden",
+    chat.status === 4 && rowsOf(chat).dana?.kind === "endpoint" && rowsOf(chat).dana?.sessionKind === "chat" && rowsOf(chat).dana?.managed === null && rowsOf(chat).alice?.sessionKind === null && chat.envelope?.result?.hidden === 2, { dana: rowsOf(chat).dana, hidden: chat.envelope?.result?.hidden });
+  const chatWaiting = await run(["who", "--waiting", "--json"]);
+  check("--waiting keeps a waiting chat session", Object.keys(rowsOf(chatWaiting)).sort().join() === "bob,carol,dana", Object.keys(rowsOf(chatWaiting)));
+  const chatPlain = await run(["who", "--plain"]);
+  check("the plain report adds the Kind column, naming the chat session and each agent's kind",
+    /^ {2}Agent\s+Kind\s+State/m.test(chatPlain.stdout) && /dana\s+chat session\s+waiting/.test(chatPlain.stdout) && /alice\/builder\s+agent\s+working/.test(chatPlain.stdout) && /2 infrastructure endpoints are not listed/.test(chatPlain.stdout), shown(chatPlain));
+
   // ── a credential that may not read the roster ───────────────────────────────────────────────────
   const probe = join(home, "probe.creds");
   writeFileSync(probe, await mintCreds(auth, newIdentity(), "probe"), { mode: 0o600 });
   const denied = await run(["who", "--json", "--creds", probe, "--space", space, "--server", servers]);
   check("a credential that may not read presence is a PERMISSION_DENIED refusal, exit 2, not an empty roster", denied.status === 2 && denied.envelope?.outcome === "refused" && denied.envelope.error?.code === "PERMISSION_DENIED" && denied.envelope.result === null, shown(denied));
+
+  // ── a --creds credential that may read the roster, with the manager still on it ──────────────────
+  const reader = join(home, "reader.creds");
+  writeFileSync(reader, await mintCreds(auth, newIdentity(), "agent", { lifecycleUid: mintLifecycleUid() }), { mode: 0o600 });
+  const credsRead = await run(["who", "--json", "--creds", reader, "--space", space, "--server", servers]);
+  check("a --creds credential is a complete read, exit 0, with the managers labelled denied and not left unread",
+    credsRead.status === 0 && credsRead.envelope?.outcome === "ok" && credsRead.envelope.completeness === "complete" && credsRead.envelope.result?.managers === "denied" &&
+    credsRead.envelope.warnings.some((w) => w.code === "MANAGERS_DENIED") && !credsRead.envelope.warnings.some((w) => w.code === "MANAGERS_UNREAD") &&
+    rowsOf(credsRead).alice?.managed === null, shown(credsRead));
 
   // ── whoami ──────────────────────────────────────────────────────────────────────────────────────
   const me = await run(["whoami", "--json"]);
@@ -283,10 +337,19 @@ try {
     check(`who ${format} redacts broker URL secrets from an offline refusal`, read.status === 2 && hidden, { status: detail.status, stdout: redactUrlMarkers(detail.stdout), stderr: redactUrlMarkers(detail.stderr) });
   }
   for (const format of ["--json", "--plain"] as const) {
-    const read = await run(["who", "--space", "not-registered-raw", "--server", urlCases[0]!.server, format]);
+    // Under --json the envelope alone reports a refusal, and stderr stays empty.
+    const reportOf = (r: { stderr: string; envelope?: Envelope }) => format === "--json" ? (r.stderr === "" ? r.envelope?.error?.message ?? "" : "") : r.stderr;
+    const refused = await run(["who", "--space", "not-registered-raw", "--server", urlCases[0]!.server, format]);
+    const unsaid = [urlUser, urlPassword, urlToken].every((marker) => !refused.stdout.includes(marker) && !refused.stderr.includes(marker));
+    const detailRefused = shown(refused);
+    check(`who ${format} refuses a --server with a user and password before the raw read, without printing them`,
+      refused.status === 1 && unsaid && /--server must not embed credentials; the command did not run/.test(reportOf(refused)) && (format !== "--json" || refused.envelope?.error?.code === "USAGE_INVALID"),
+      { status: detailRefused.status, stdout: redactUrlMarkers(detailRefused.stdout), stderr: redactUrlMarkers(detailRefused.stderr) });
+    // A query token passes that check, so this read reaches the raw path and its refusal.
+    const read = await run(["who", "--space", "not-registered-raw", "--server", urlCases.find((entry) => entry.label === "query")!.server, format]);
     const hidden = [urlUser, urlPassword, urlToken].every((marker) => !read.stdout.includes(marker) && !read.stderr.includes(marker));
     const detail = shown(read);
-    check(`who ${format} redacts broker URL secrets from a raw refusal`, read.status === 2 && hidden, { status: detail.status, stdout: redactUrlMarkers(detail.stdout), stderr: redactUrlMarkers(detail.stderr) });
+    check(`who ${format} redacts broker URL secrets from a raw refusal`, read.status === 2 && hidden && reportOf(read).includes("wss://127.0.0.1:1/mesh"), { status: detail.status, stdout: redactUrlMarkers(detail.stdout), stderr: redactUrlMarkers(detail.stderr) });
     const invalid = await run(["whoami", "--space", "openmesh", "--server", urlCases.find((entry) => entry.shown === null)!.server, format]);
     const safe = [urlUser, urlPassword, urlToken].every((marker) => !invalid.stdout.includes(marker) && !invalid.stderr.includes(marker));
     const shownInvalid = shown(invalid);
@@ -308,10 +371,10 @@ try {
         if (result.trace.some((record) => typeof record === "object" && record !== null && "kind" in record && record.kind === "classification" && "reason" in record && ["unreachable", "timeout"].includes(String(record.reason)))) break;
       }
       return {
-        brokerExitCode: broker.exitCode,
-        brokerSignalCode: broker.signalCode,
-        plain: await probeConnect(servers),
-        userinfo: await probeConnect(`nats://${urlUser}:${urlPassword}@127.0.0.1:${port}`),
+        brokerExitCode: recoveryBroker.exitCode,
+        brokerSignalCode: recoveryBroker.signalCode,
+        plain: await probeConnect(recoveryServers),
+        userinfo: await probeConnect(`nats://${urlUser}:${urlPassword}@127.0.0.1:${recoveryPort}`),
         tracedAttempts,
       };
     })();
@@ -331,13 +394,81 @@ try {
   }
   const unknown = await run(["whoami", "--space", "not-registered-whoami", "--server", "nats://127.0.0.1:1", "--json"]);
   check("whoami refuses an unregistered --space even with --server", unknown.status === 2 && unknown.envelope?.error?.code === "TARGET_NOT_FOUND", shown(unknown));
-  const noCreds = await run(["whoami", "--creds", probe, "--json"]);
-  check("whoami takes no --creds: it is a usage error", noCreds.status === 1 && noCreds.envelope?.error?.code === "USAGE_INVALID", shown(noCreds));
+  // An address no registration names, from a folder with no trust for it, is not reported as open:
+  // whoami does not contact the broker, so what the identity may do there is unknown.
+  const unprobed = await run(["whoami", "--server", "nats://127.0.0.1:3", "--json"]);
+  const unprobedResult = unprobed.envelope?.result as { mode?: unknown } & NonNullable<Envelope["result"]> | null | undefined;
+  check("whoami --server at an unregistered address is partial, exit 4, with the identity unknown",
+    unprobed.status === 4 && unprobed.envelope?.completeness === "partial" && unprobedResult?.identity?.kind === "unknown" && unprobedResult.mode === null && unprobedResult.read === null && unprobedResult.post === null && unprobedResult.dms === null && unprobedResult.capabilities === null && unprobed.envelope?.warnings.some((w) => w.code === "BROKER_NOT_PROBED") === true, shown(unprobed));
+  const unprobedPlain = await run(["whoami", "--server", "nats://127.0.0.1:3", "--plain"]);
+  check("its report calls the identity unknown and names no access", unprobedPlain.status === 4 && /identity:\s+unknown: this address is not registered here/.test(unprobedPlain.stdout) && /read:\s+unknown/.test(unprobedPlain.stdout) && !/:\s+all$/m.test(unprobedPlain.stdout), shown(unprobedPlain));
+  // The space's own folder holds its trust, which does not reach an address the space is not
+  // registered at, so that address is unprobed the same way.
+  const trusted = await run(["whoami", "--server", "nats://127.0.0.1:3", "--json"], {}, undefined, 120_000, meshRoot);
+  check("whoami --server at an unregistered address from the space's own folder is partial, exit 4, with the identity unknown",
+    trusted.status === 4 && trusted.envelope?.completeness === "partial" && trusted.envelope.result?.identity?.kind === "unknown" && trusted.envelope.result.read === null &&
+      trusted.envelope.warnings.some((w) => w.code === "BROKER_NOT_PROBED" && w.message.includes(`is not where ${space} is registered here`)) && trusted.envelope.error?.remedy?.includes(`cotal whoami --space ${space}`) === true, shown(trusted));
+  const overridden = await run(["whoami", "--space", space, "--server", "nats://127.0.0.1:3", "--json"]);
+  check("so is --space with a --server that space is not registered at", overridden.status === 4 && overridden.envelope?.warnings.some((w) => w.code === "BROKER_NOT_PROBED") === true, shown(overridden));
+  const atRegistered = await run(["whoami", "--server", servers, "--json"], {}, undefined, 120_000, meshRoot);
+  check("control: --server at the space's registered address from its folder is complete", atRegistered.status === 0 && atRegistered.envelope?.completeness === "complete" && atRegistered.envelope.result?.identity?.kind === "space-signer", shown(atRegistered));
+  const openByServer = await run(["whoami", "--server", openServer, "--json"]);
+  check("whoami --server at the open mesh's registered address still reports it open", openByServer.status === 0 && openByServer.envelope?.result?.identity?.kind === "open" && openByServer.envelope.completeness === "complete", shown(openByServer));
+  // ── whoami --creds: what a credential file's own claims permit, with no broker contacted ─────────
+  const agentId = newIdentity(), agentUid = mintLifecycleUid();
+  const agentFile = join(home, "whoami-agent.creds");
+  writeFileSync(agentFile, await mintCreds(auth, agentId, "agent", { lifecycleUid: agentUid, allowSubscribe: ["general", "team.>"], allowPublish: ["general"] }), { mode: 0o600 });
+  const asAgent = await run(["whoami", "--creds", agentFile, "--json"]);
+  const agentResult = asAgent.envelope?.result;
+  check("whoami --creds reports an agent credential's space, profile, principal, lifecycle and channel grants",
+    asAgent.status === 0 && asAgent.envelope?.completeness === "complete" && agentResult?.kind === "credential" && agentResult.space === space && agentResult.profile === "agent" &&
+      agentResult.principal === `local.${agentId.id}` && agentResult.lifecycleUid === agentUid && JSON.stringify(agentResult.read) === JSON.stringify(["general", "team.>"]) &&
+      JSON.stringify(agentResult.post) === JSON.stringify(["general"]) && agentResult.dms === "own" && agentResult.expired === false, shown(asAgent));
+  for (const [profile, dms] of [["observer", "none"], ["admin", "all"]] as const) {
+    const file = join(home, `whoami-${profile}.creds`);
+    writeFileSync(file, await mintCreds(auth, newIdentity(), profile), { mode: 0o600 });
+    const r = await run(["whoami", "--creds", file, "--json"]);
+    const result = r.envelope?.result;
+    check(`whoami --creds on an ${profile} credential reads every channel, posts to none, has no lifecycle and DM history ${dms}`,
+      r.status === 0 && result?.profile === profile && result.read === "all" && JSON.stringify(result.post) === "[]" && result.lifecycleUid === null && result.dms === dms, shown(r));
+  }
+  const agentPlain = await run(["whoami", "--creds", agentFile, "--plain"]);
+  check("the plain report names the lifecycle and says the claims are not verified", agentPlain.status === 0 && agentPlain.stdout.includes(agentUid) && agentPlain.stdout.includes("its signature is not checked and no broker is contacted"), shown(agentPlain));
+  const withSpace = await run(["whoami", "--creds", agentFile, "--space", space, "--json"]);
+  check("whoami --creds takes no --space: it is a usage error", withSpace.status === 1 && withSpace.envelope?.error?.code === "USAGE_INVALID", shown(withSpace));
+
+  // A prepared space has no broker yet; whoami reports the identity its folder's trust gives it.
+  const prepFresh = join(home, "prep-fresh"), prepSigned = join(home, "prep-signed");
+  mkdirSync(join(prepFresh, ".cotal"), { recursive: true });
+  mkdirSync(join(prepSigned, ".cotal"), { recursive: true });
+  saveSpaceAuth(authDir(prepSigned), await createSpaceAuth("prep-signed"));
+  process.env.COTAL_HOME = isolatedEnv.COTAL_HOME;
+  try {
+    recordPreparedSpace({ space: "prep-fresh", root: prepFresh, ts: new Date().toISOString() });
+    recordPreparedSpace({ space: "prep-signed", root: prepSigned, ts: new Date().toISOString() });
+  } finally {
+    if (priorHome === undefined) delete process.env.COTAL_HOME;
+    else process.env.COTAL_HOME = priorHome;
+  }
+  const fresh = await run(["whoami", "--space", "prep-fresh", "--json"]);
+  const freshResult = fresh.envelope?.result as { mode?: unknown } & NonNullable<Envelope["result"]> | null | undefined;
+  check("whoami on a prepared space before its first up reports no credential, with no server or mode",
+    fresh.status === 0 && fresh.envelope?.outcome === "ok" && fresh.envelope.completeness === "complete" && freshResult?.identity?.kind === "no-credential" && freshResult.server === null && freshResult.mode === null &&
+      fresh.envelope.target.space === "prep-fresh" && fresh.envelope.target.root === prepFresh, shown(fresh));
+  const signed = await run(["whoami", "--space", "prep-signed", "--json"]);
+  check("whoami on a prepared space whose folder holds its signer reports the signer", signed.status === 0 && signed.envelope?.result?.identity?.kind === "space-signer" && signed.envelope.result.read === "all" && signed.envelope.result.server === null, shown(signed));
+  const freshPlain = await run(["whoami", "--space", "prep-fresh", "--plain"]);
+  check("its report says the space is not started and where to start it",
+    freshPlain.status === 0 && /server:\s+not started/.test(freshPlain.stdout) && freshPlain.stdout.includes(`start it with \`cotal up\` in ${prepFresh}`) && !freshPlain.stdout.includes("--creds"), shown(freshPlain));
+  const preparedServer = await run(["whoami", "--space", "prep-fresh", "--server", "nats://127.0.0.1:3", "--json"]);
+  check("control: a prepared space with --server is still refused", preparedServer.status === 2 && preparedServer.envelope?.error?.code === "TARGET_UNAVAILABLE", shown(preparedServer));
   const both = await run(["who", "--json", "--plain"]);
   check("who --json --plain is one USAGE_INVALID envelope", both.status === 1 && both.envelope?.error?.code === "USAGE_INVALID", shown(both));
 } finally {
   for (const ep of endpoints) await ep.stop().catch(() => {});
   await provisioner?.stop().catch(() => {});
+  await killAndAwaitExit(recoveryBroker);
+  releaseRecoveryBroker();
   await killAndAwaitExit(broker);
   releaseBroker();
   releaseHome();
@@ -392,7 +523,7 @@ try {
   check("a granted user reports the ledger's read, post and scope", granted.code === 0 && JSON.stringify(granted.env.result?.read) === '["general"]' && JSON.stringify(granted.env.result?.post) === '["general","ops"]' && JSON.stringify(granted.env.result?.capabilities) === '["spawn"]' && granted.env.result?.dms === false, granted.env.result);
   status = { idpUrl: "https://idp.example", login: { sub: "sub-1", expiresAt: later }, owner: "u_owner" };
   const remote = await call();
-  check("a grant ledger on another machine is a partial read, exit 4", remote.code === 4 && remote.env.outcome === "partial" && remote.env.warnings.some((w) => w.code === "GRANT_NOT_LOCAL") && remote.env.result?.read === null, remote.env);
+  check("a grant with no local row or issuer answer is a partial read, exit 4", remote.code === 4 && remote.env.outcome === "partial" && remote.env.warnings.some((w) => w.code === "GRANT_UNAVAILABLE") && remote.env.result?.read === null && remote.env.result?.dms === null, remote.env);
   release();
 }
 
@@ -405,8 +536,8 @@ try {
   mkdirSync(join(remoteRoot, ".cotal"), { recursive: true });
   const remoteEnv = { ...cleanEnv, HOME: remoteHome, USERPROFILE: remoteHome, TMPDIR: remoteHome, COTAL_HOME: join(remoteHome, ".cotal"), XDG_CONFIG_HOME: join(remoteHome, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1" };
   const remoteSpace = "remote-whoami";
-  let idpRequests = 0;
-  const idp = createServer((_req, res) => { idpRequests++; res.writeHead(503); res.end("offline fixture"); });
+  const idpRequests: string[] = [];
+  const idp = createServer((req, res) => { idpRequests.push(req.url ?? ""); res.writeHead(503); res.end("offline fixture"); });
   await new Promise<void>((resolve) => idp.listen(0, "127.0.0.1", resolve));
   const idpUrl = `http://127.0.0.1:${(idp.address() as AddressInfo).port}/auth`;
   const priorHome = process.env.COTAL_HOME;
@@ -425,11 +556,11 @@ try {
     const fixtureToken = "offline-whoami-fixture-not-a-live-credential";
     saveIdpSession(remoteEnv.COTAL_HOME, idpUrl, { token: fixtureToken, sub: "fixture-user", expiresAt: Math.floor(Date.now() / 1000) + 3600 });
     const signed = await read("--json");
-    check("the native remote provider leaves a logged-in user's grant unknown, not empty", signed.code === 4 && signed.env?.outcome === "partial" && signed.env.completeness === "partial" && signed.env.result?.identity?.grant === "not-local" && signed.env.result.identity.principal === null && signed.env.result.identity.owner === null && signed.env.result.identity.actor === "cli" && signed.env.result.identity.subject === "fixture-user" && signed.env.result.read === null && signed.env.result.post === null && signed.env.result.capabilities === null && signed.env.warnings.some((w) => w.code === "GRANT_NOT_LOCAL"), signed);
+    check("an unavailable remote issuer leaves a logged-in user's grant unknown, not empty", signed.code === 4 && signed.env?.outcome === "partial" && signed.env.completeness === "partial" && signed.env.result?.identity?.grant === "not-local" && signed.env.result.identity.principal === null && signed.env.result.identity.owner === null && signed.env.result.identity.actor === "cli" && signed.env.result.identity.subject === "fixture-user" && signed.env.result.read === null && signed.env.result.post === null && signed.env.result.dms === null && signed.env.result.capabilities === null && signed.env.warnings.some((w) => w.code === "GRANT_UNAVAILABLE"), signed);
     const human = await read("--plain");
     check("a cached remote login with no locally derivable principal is not called signed out", human.code === 4 && /identity:\s+cached user login/.test(human.stdout) && /principal:\s+not known on this machine/.test(human.stdout) && !/not signed in|sign in with `cotal login`/.test(human.stdout), human);
     check("the remote reports never print the cached login token", ![signed.stdout, signed.stderr, human.stdout, human.stderr].some((text) => text.includes(fixtureToken)), {});
-    check("whoami stays offline with a cached login and an uncached catalog", idpRequests === 0, { idpRequests });
+    check("whoami does not refresh the remote space catalog", idpRequests.every((path) => !path.includes("spaces")), { idpRequests });
   } finally {
     if (priorHome === undefined) delete process.env.COTAL_HOME;
     else process.env.COTAL_HOME = priorHome;

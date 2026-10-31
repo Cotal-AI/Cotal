@@ -49,23 +49,15 @@ export function readMaterial(env: NodeJS.ProcessEnv): LaunchMaterial | undefined
 }
 
 /**
- * This session's local control endpoint: the socket PATH from the env (not a secret, and the
- * short-lived hook processes need it too) and the first-frame token out of the launch material,
- * which is where the token now rides instead of `COTAL_CONTROL_TOKEN`.
+ * Resolve this session's local control endpoint. The socket path comes from
+ * `COTAL_CONTROL_SOCKET`. The token comes from the launch material, or from
+ * `COTAL_CONTROL_TOKEN` when no material file is supplied.
  *
- * NOTHING means nothing: neither half present, so this is a session with no control plane, which is
- * a normal launch. HALF A PAIR THROWS HERE, centrally, and that is the change worth explaining.
+ * {@link readMaterial} refuses a material file together with direct material variables,
+ * including `COTAL_CONTROL_TOKEN`.
  *
- * Returning `undefined` for a half pair made every caller's own check the real contract, and the
- * callers do not agree: the in-agent server would refuse to serve, a hook would fall silent, and one
- * caller could simply forget, leaving a session that runs with a control plane it believes it
- * configured and does not have. That is a silent degradation wearing the shape of an optional
- * feature. Half a pair is not an absent control endpoint, it is a BROKEN one, and the difference
- * belongs where the pair is resolved rather than in five copies downstream.
- *
- * Callers that must survive anything still can, and do so visibly: the lifecycle hook relay wraps
- * this call in a try/catch because a hook that throws is a hook that blocked the session, and fail
- * open is that relay's whole documented contract. Every other caller wants exactly this throw.
+ * Returns `undefined` when neither socket path nor token is present. Throws when only one is
+ * present.
  */
 export function controlFromEnv(env: NodeJS.ProcessEnv = process.env): { path: string; token: string } | undefined {
   const path = env.COTAL_CONTROL_SOCKET?.trim();

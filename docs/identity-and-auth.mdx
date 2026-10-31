@@ -34,7 +34,7 @@ Each space is a NATS account. The broker operator signs that account, and the ac
 
 The provisioner holds signing authority. It mints scoped credentials and creates the DM and role-task consumers that agents can bind but cannot create for themselves. The manager can host this work, but a space does not require a manager.
 
-Out-of-band minting is a static-auth operation. Its credentials have no default expiry, and reusing an identity does not reuse its lifecycle. [Provisioning and credential limits](identity-authority.mdx#provisioning) lists the options and refusal conditions.
+Out-of-band minting is a static-auth operation. Its credentials expire after 24 hours by default; `--no-expiry` opts out of that bound. Reusing an identity does not reuse its lifecycle. [Provisioning and credential limits](identity-authority.mdx#provisioning) lists the options and refusal conditions.
 
 ## Profiles [#profiles]
 
@@ -81,6 +81,18 @@ The URL is secret. It is neither persisted nor forwarded to children. The [enrol
 Running a remote manager requires the separate `supervise` ledger scope. Neither `spawn` nor `admin` grants persistent manager registration authority.
 
 The host issues authority for one owner and one manager instance. The remote manager receives no signer or general mint API. If the host service or renewal is unavailable, it refuses new launches and replacement credentials. [Remote manager authority](identity-user-auth.mdx#remote-manager-authority) explains registration, recovery, and version-skew behavior.
+
+### Callout deadlines [#callout-deadlines]
+
+The auth service bounds callout work, queueing, and slow requests. See [callout deadlines](identity-service-auth.mdx#callout-deadlines) and [connect limits](identity-service-auth.mdx#connect-limits) for defaults, tuning, and refusal behavior.
+
+### Connect limits [#connect-limits]
+
+The broker authorization timeout and callout concurrency are separate limits. See [connect limits](identity-service-auth.mdx#connect-limits).
+
+### Held agent names [#held-agent-names]
+
+A refused name can identify a live actor, pending retirement, or a live lifecycle head. No rename or local deletion proves that authority ended. See [held agent names](identity-user-auth.mdx#held-agent-names).
 
 ## The IdP callout contract [#the-idp-callout-contract]
 

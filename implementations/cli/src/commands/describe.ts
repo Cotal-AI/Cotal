@@ -1,22 +1,22 @@
 import { randomUUID } from "node:crypto";
 import {
   BASELINE_LIFECYCLE_ENDPOINT, EpEnvelopeError, assertCommandToken,
-  epCast, invokeCommand, invokeRepairingSplit, parsePrincipalKey, resolveService,
+  epCast, invokeCommand, invokeRepairingSplit, parsePrincipalKey, resolveService, unansweredRequest,
   type CompletionResult, type EpAttributedReply, type EpVerbTarget, type FlagSpec,
   type FlagValues, type ParsedArgs, type ResolvedService,
 } from "@cotal-ai/core";
 import { type NatsConnection } from "@nats-io/transport-node";
 import {
-  CommandFailure, commandFailureReport, exitCode, failureEnvelope, jsonFlag, plainFlag, presentationOf, renderReport, streamRecord, terminalWidth, writeEnvelope, writeResult, writeStreamRecord,
+  CommandFailure, codeSpan, commandFailureReport, exitCode, failureEnvelope, jsonFlag, plainFlag, presentationOf, renderReport, streamRecord, writeEnvelope, writeResult, writeStreamRecord,
   loadMeshes, targetFlags, type Report,
   recordOperationSpace,
 } from "@cotal-ai/workspace";
 import { followEndpointAction, type AcceptedEndpointGoal } from "../lib/endpoint-goal.js";
 import { endpointResolution, resolveEndpointSelection, validateEndpointSelector } from "../lib/endpoint-selection.js";
-import { endpointFailure, NativeReplyError, withPairedCallerRemedy } from "../lib/endpoint-errors.js";
+import { endpointFailure, NativeReplyError, shellWord, withPairedCallerRemedy } from "../lib/endpoint-errors.js";
 import { refuseUnmappedHandle } from "../lib/endpoint-capability-gates.js";
 import { invokeEndpointScatter, writeEndpointScatter } from "../lib/endpoint-scatter.js";
-import { onInstance, onFlag } from "../lib/control.js";
+import { onInstanceId, onFlag } from "../lib/control.js";
 import { openEndpointConnection as epConnection, pairedCallerCommand } from "../lib/endpoint-client.js";
 
 const endpointTargetFlags = targetFlags.map((flag) => flag.name === "creds" ? { ...flag, description: "explicit credential file; native calls require its paired standalone context and registered static root" } : flag);
@@ -28,7 +28,7 @@ export const invokeFlags = [
   { name: "name", type: "string", value: "<agent>", description: "targeted manager commands: resolve this managed name to its current incarnation" },
   { name: "self", type: "boolean", description: "targeted commands: address the authenticated caller itself" },
   { name: "admin", type: "boolean", description: "explicitly use the existing admin instrument for cross-agent reach" },
-  { name: "timeout", type: "string", value: "<ms>", description: "reply deadline in milliseconds (default 10000)" },
+  { name: "timeout", type: "string", value: "<ms>", description: "deadline in milliseconds for the contract read and the reply together (default 10000)" },
   { name: "wait", type: "boolean", description: "follow a declared action through native goal-result observation; --json emits goal NDJSON" },
   { name: "cast", type: "boolean", description: "submit an ephemeral command without a reply; report broker flush, not execution" },
   { name: "all", type: "boolean", description: "scatter an untargeted command once to the frozen live class; report every native result bucket" },
@@ -47,7 +47,7 @@ export function validateEndpointArguments(args: ParsedArgs, operation: "describe
     if (operation === "invoke") assertCommandToken(args.positionals[1]!);
   } catch { throw new CommandFailure("refused", "USAGE_INVALID", "use a valid native endpoint class and command token"); }
   if (args.values.creds !== undefined && (typeof args.values.creds !== "string" || !args.values.creds || args.values.creds.length > 4096 || /[\u0000-\u001f\u007f]/u.test(args.values.creds))) throw new CommandFailure("refused", "USAGE_INVALID", "--creds needs one bounded protected file reference without terminal controls");
-  if (args.values.on !== undefined) onInstance(String(args.values.on), `cotal ${operation}`);
+  if (args.values.on !== undefined) onInstanceId(String(args.values.on), `cotal ${operation}`);
   if (operation === "describe") return;
   const values = args.values as FlagValues<typeof invokeFlags>;
   if (values.all && (values.cast || values.wait || values.on !== undefined || values.self || values.name !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "--all is an untargeted class scatter and cannot combine with --on, --self, --name, --cast or --wait");
@@ -71,7 +71,7 @@ function parsedInput(text: string | undefined): Record<string, unknown> | undefi
 
 export async function describeCmd(args: ParsedArgs, commandName = "describe"): Promise<void> {
   validateEndpointArguments(args, "describe");
-  const requestedInstance = args.values.on === undefined ? undefined : onInstance(String(args.values.on), "cotal endpoint describe");
+  const requestedInstance = args.values.on === undefined ? undefined : onInstanceId(String(args.values.on), "cotal endpoint describe");
   const selection = resolveEndpointSelection(args.positionals[0]!, args.values as { space?: string; server?: string; creds?: string }, requestedInstance);
   const { endpoint, instanceId: on } = selection;
   recordOperationSpace(selection.space);
@@ -109,7 +109,7 @@ export async function invokeCmd(args: ParsedArgs, commandName = "invoke"): Promi
   const values = args.values as FlagValues<typeof invokeFlags>;
   const [selector, command] = args.positionals as [string, string];
   const input = parsedInput(values.args);
-  const requestedInstance = values.on === undefined ? undefined : onInstance(values.on, "cotal endpoint invoke");
+  const requestedInstance = values.on === undefined ? undefined : onInstanceId(values.on, "cotal endpoint invoke");
   const selection = resolveEndpointSelection(selector, values, requestedInstance);
   const { endpoint, instanceId: on } = selection;
   recordOperationSpace(selection.space);
@@ -132,18 +132,40 @@ export async function invokeCmd(args: ParsedArgs, commandName = "invoke"): Promi
     if (on !== undefined && auth.managerInstanceId !== undefined && on !== auth.managerInstanceId) throw new CommandFailure("refused", "CONFLICT", "the explicit pin differs from this credential's instance authority", { target });
     const instanceId = on ?? auth.managerInstanceId;
     if (values.all && instanceId !== undefined) throw new CommandFailure("refused", "CONFLICT", "--all cannot widen a saved or credential-bound instance pin into class authority", { target });
-    const service = await resolveService(nc, space, endpoint, auth.epCaller!, { deadlineMs: 10_000, ...(instanceId === undefined ? {} : { instanceId }) });
+    // `--timeout` is one deadline for the call: the contract read, a `--name` lookup and the reply spend from it.
+    const budgetMs = values.timeout === undefined ? 10_000 : Number(values.timeout);
+    const deadlineAt = performance.now() + budgetMs;
+    const longer = budgetMs < 10_000 ? 10_000 : Math.min(budgetMs * 2, 2_147_483_647);
+    const longerTimeout = `rerun it with a longer --timeout and the same other flags, such as ${codeSpan(`cotal ${commandName === "endpoint" ? "endpoint invoke" : "invoke"} ${shellWord(selector)} ${shellWord(command)} --timeout ${longer}`)}`;
+    const remainingMs = (): number => {
+      const left = Math.floor(deadlineAt - performance.now());
+      if (left <= 0) throw new CommandFailure("failed", "OPERATION_FAILED", `the ${budgetMs}ms --timeout ran out before the command was published`, { target, remedy: longerTimeout });
+      return left;
+    };
+    // A contract read that was answered and then ran out of time spent this deadline. An unanswered
+    // read stays the TARGET_UNAVAILABLE refusal; under a `--timeout` the user set it names the flag,
+    // which may be what ran out. `endpointFailure` adds the target to all three.
+    const service = await resolveService(nc, space, endpoint, auth.epCaller!, { deadlineMs: budgetMs, commands: [command], ...(instanceId === undefined ? {} : { instanceId }) }).catch((error: unknown) => {
+      if (!(error instanceof EpEnvelopeError) || error.code !== "deadline-exceeded" || unansweredRequest(error) && values.timeout === undefined) throw error;
+      if (unansweredRequest(error)) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `no instance of ${endpoint} answered its contract read within the ${budgetMs}ms --timeout, so nothing is serving it, none could be reached, or the deadline was too short`, {
+        native: { code: error.code, outcome: error.outcome }, cause: error,
+        remedy: `start the service that serves ${endpoint}, then run the command again, or rerun it with a longer --timeout such as \`cotal ${commandName === "endpoint" ? "endpoint invoke" : "invoke"} ${shellWord(selector)} ${shellWord(command)} --timeout ${longer}\`; \`cotal service --space ${shellWord(selection.space)}\` lists this space's services`,
+      });
+      throw new CommandFailure("failed", "OPERATION_FAILED", `the ${budgetMs}ms ${values.timeout === undefined ? "deadline" : "--timeout"} ran out during the endpoint contract read; no command was published`, {
+        native: { code: error.code, outcome: error.outcome }, cause: error, remedy: longerTimeout,
+      });
+    });
     const declaration = service.commands.get(command);
     if (!declaration) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "this command is not in the endpoint's authorized described surface", { target });
     if (callerCredential && (!callerCredential.commands.includes(command) || !pairedCallerCommand(declaration))) throw new CommandFailure("refused", "UNSUPPORTED", "this command is outside the file's native synchronous untargeted scope; no command was published and no operator, generation or broader authority was substituted", { target });
     if (values.cast && declaration.class !== "ephemeral") throw new CommandFailure("refused", "USAGE_INVALID", "journaled commands cannot be cast; no command was published", { target });
     if (values.wait && declaration.action !== true) throw new CommandFailure("refused", "USAGE_INVALID", "--wait belongs to a command declared as a native action; no command was submitted", { target });
-    const nativeTarget = await resolveTarget(nc, space, service, values, selection.reference !== undefined);
+    const nativeTarget = await resolveTarget(nc, space, service, values, remainingMs, selection.reference !== undefined);
     if (declaration.targeted !== (nativeTarget !== undefined) || nativeTarget && !declaration.modes.includes(nativeTarget.mode)) throw new CommandFailure("refused", "USAGE_INVALID", "the selected targeting mode does not match the endpoint's declared command", { target });
     const canonicalInput = input === undefined && !declaration.contract.input.validate(null) && declaration.contract.input.validate({}) ? {} : input ?? null;
     if (!declaration.contract.input.validate(canonicalInput)) throw new CommandFailure("refused", "SCHEMA_INVALID", "arguments do not match the fetched native input contract; no command was published", { target, remedy: "read describe --json for the declared schema; the argument body is not echoed" });
     // A static-root operator instrument can request only the manager. A paired caller file makes
-    // this call to another endpoint when the call and the whole surface fit that file's mode.
+    // this call to another endpoint when the selected command fits that file's mode.
     pairedCaller = connection.mode === "auth" && !callerCredential && !selection.reference && on === undefined && nativeTarget === undefined
       && !values.admin && !values.all && !values.cast && !values.wait && [...service.commands.values()].every(pairedCallerCommand);
     selection.check();
@@ -157,7 +179,7 @@ export async function invokeCmd(args: ParsedArgs, commandName = "invoke"): Promi
     };
     if (values.wait) { process.on("SIGINT", onInterrupt); process.on("SIGTERM", onTerminate); }
     const invoke = selection.reference || callerCredential ? invokeCommand : invokeRepairingSplit;
-    const deadlineMs = values.timeout === undefined ? 10_000 : Number(values.timeout);
+    const deadlineMs = remainingMs();
     if (values.all) {
       if (declaration.class !== "ephemeral") throw new CommandFailure("refused", "UNSUPPORTED", "the installed native scatter helper supports ephemeral commands only; no journaled command was published", { target });
       beforeSubmit();
@@ -204,7 +226,7 @@ export async function invokeCmd(args: ParsedArgs, commandName = "invoke"): Promi
     }
     if (interrupted) {
       if (values.json) writeEnvelope(failureEnvelope(commandName, failure));
-      process.stderr.write(`${renderReport(commandFailureReport(failure), values.plain ? "plain" : "rich", terminalWidth(process.stderr))}
+      process.stderr.write(`${renderReport(commandFailureReport(failure), values.plain ? "plain" : "rich", process.stderr)}
 `);
       process.exitCode = interrupted === "SIGINT" ? 130 : 143;
       return;
@@ -236,12 +258,12 @@ export async function invokeCmd(args: ParsedArgs, commandName = "invoke"): Promi
 }
 
 /** Name resolution is a native manager read; the wire target is the current principal triple. */
-async function resolveTarget(nc: NatsConnection, space: string, service: ResolvedService, values: FlagValues<typeof invokeFlags>, pinResolvedInstance = false): Promise<EpVerbTarget | undefined> {
+async function resolveTarget(nc: NatsConnection, space: string, service: ResolvedService, values: FlagValues<typeof invokeFlags>, remainingMs: () => number, pinResolvedInstance = false): Promise<EpVerbTarget | undefined> {
   if (values.self) return { mode: "self" };
   if (values.name === undefined) return undefined;
   if (service.endpoint !== BASELINE_LIFECYCLE_ENDPOINT) throw new CommandFailure("refused", "UNSUPPORTED", "--name uses the manager's native alias resolver; this endpoint does not declare one");
   const invoke = pinResolvedInstance ? invokeCommand : invokeRepairingSplit;
-  const inspected = await invoke(nc, space, service, "inspect", { name: values.name }, { deadlineMs: 10_000 });
+  const inspected = await invoke(nc, space, service, "inspect", { name: values.name }, { deadlineMs: remainingMs() });
   if (!inspected.reply.ok) throw new NativeReplyError(inspected, "target-inspection");
   const row = inspected.reply.data as { id?: unknown; lifecycleUid?: unknown } | undefined;
   if (!row || typeof row.id !== "string" || !row.id || typeof row.lifecycleUid !== "string" || !row.lifecycleUid) throw new CommandFailure("refused", "SCHEMA_INVALID", "the inspected target has no usable native incarnation");

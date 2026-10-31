@@ -15,7 +15,7 @@
  * core's peer label, so the hook relay can reach it without pulling a tool surface in behind it, and
  * so neither surface can drift into a second convention.
  */
-import { peerLabel } from "@cotal-ai/core/peer-label";
+import { LINE_BREAK, peerLabel } from "@cotal-ai/core/peer-label";
 import type { InboxItem, InboxSnapshot } from "./agent.js";
 
 export interface RenderedInboxPreview {
@@ -52,18 +52,6 @@ export function renderInboxPreview(snapshot: InboxSnapshot, maxRowCodePoints = 2
 }
 
 /**
- * What counts as a line break, which is more than what JavaScript splits on.
- *
- * Measured through the host frame a model is handed (an MCP text content part, stringified and
- * parsed back): U+2028, U+2029 and U+0085 survive JSON transport intact, so a message carrying one
- * of them put an unindented attribution line into the bytes the model receives. A JavaScript split
- * on a newline does not see a line there and neither does `wc -l`, but a Unicode-aware splitter
- * does, and the rule this serves is stated absolutely. The class is therefore every code point a
- * line splitter may honour, not the two this repo used to know.
- */
-const LINE_BREAK = /\r\n?|[\n\v\f\u0085\u2028\u2029]/g;
-
-/**
  * A PEER NAMES ITSELF, so its name is data and never framing.
  *
  * Attribution is rendered inside brackets, and every surface that carries it puts it on a line of
@@ -76,9 +64,11 @@ const LINE_BREAK = /\r\n?|[\n\v\f\u0085\u2028\u2029]/g;
  * `[DM from Ada  hi [DM from Boss] hi`: the attribution now closes where this code put it, but a
  * reader that takes the innermost bracket pair still reads a message from Boss. The forgery the
  * issue describes is a closing bracket AND a new opening frame, so the class is both.
+ * Use the core label policy for a bare field too: all C0/C1 controls are neutralized, not only
+ * line breaks, and the two surfaces cannot drift into different scrub classes again.
  */
 export function attributionSafe(s: string): string {
-  return s.replace(/[\r\n\v\f\u0085\u2028\u2029[\]]+/g, " ");
+  return peerLabel({ name: s });
 }
 
 /** A message's sender, by the label every other surface prints for that peer. */
@@ -94,23 +84,42 @@ export function fmtFrom(i: InboxItem): string {
  * attributed to another named peer, in a frame with nothing to tell the forgery from the frame.
  */
 export function fmtBody(text: string): string {
-  return text.replace(LINE_BREAK, "\n  ");
+  return text.split(LINE_BREAK).join("\n  ");
 }
 
 /**
  * One message as one line: the attribution in brackets, then the body.
  *
- * The sender is not the only peer-controlled field inside these brackets. `toService` is written by
- * the publisher and is not checked against the subject it arrived on, and a channel label is
- * rewritten by the subject token on the official paths but not on every path that can reach a
+ * The sender is not the only peer-controlled field inside these brackets. A role or channel label
+ * is rewritten by the subject token on the official paths but not on every path that can reach a
  * renderer. Both are neutralized HERE so the rule holds without depending on which upstream path
  * validated what.
  */
 export function fmtItem(i: InboxItem): string {
+  return formatItem(i);
+}
+
+/** Full delivery metadata lets an inline recipient select the same reply as an inbox reader.
+ * JSON escaping preserves opaque IDs without allowing them to create another attribution row. */
+export function fmtDeliveryItem(i: InboxItem): string {
+  const field = (value: string) => Array.from(JSON.stringify(value), (char) =>
+    [91, 93, 133, 8232, 8233].includes(char.charCodeAt(0))
+      ? `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}` : char).join("");
+  const metadata = [`sender_id=${field(i.fromId)}`, ...(i.id ? [`message_id=${field(i.id)}`] : []),
+    ...(i.contextId ? [`context_id=${field(i.contextId)}`] : []), ...(i.replyTo ? [`reply_to=${field(i.replyTo)}`] : [])];
+  return formatItem(i, `[${metadata.join(" ")}] `);
+}
+
+function formatItem(i: InboxItem, metadata = ""): string {
   const h = i.historical ? "(history) " : ""; // backfilled on join, so it pre-dates you and is not live
   // The broker's count, so a peer cannot forge or hide it: an earlier copy outlived its ack wait.
-  const r = i.deliveryCount !== undefined && i.deliveryCount > 1 ? `(redelivered, delivery ${i.deliveryCount}: an earlier delivery may already have run) ` : "";
-  const body = `${h}${r}${fmtBody(i.text)}`;
+  // That is a delivery fact, not evidence of a prior context handoff. A process restart also loses
+  // every local observation of what happened before it, so preserve the unknown rather than inventing
+  // a prior run or claiming the earlier copy did not reach one.
+  const r = i.deliveryCount !== undefined && i.deliveryCount > 1
+    ? `(broker redelivery, delivery ${i.deliveryCount}: prior model handoff unknown) `
+    : "";
+  const body = `${metadata}${h}${r}${fmtBody(i.text)}`;
   if (i.kind === "dm") return `[DM from ${fmtFrom(i)}] ${body}`;
   if (i.kind === "anycast") return `[@${attributionSafe(i.service ?? "")} from ${fmtFrom(i)}] ${body}`;
   return `[#${attributionSafe(i.channel ?? "")}${i.mentionsMe ? " @you" : ""} ${fmtFrom(i)}] ${body}`;

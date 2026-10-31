@@ -50,6 +50,8 @@ check("the untouched default keeps the branded loopback URL", webUrl(WEB_HOST, 7
 check("a custom loopback port advertises plain loopback", webUrl(WEB_HOST, 8123) === "http://127.0.0.1:8123/");
 check("a remote IPv4 selection is the advertised URL", webUrl("192.0.2.10", 8123) === "http://192.0.2.10:8123/");
 check("a remote IPv6 selection is bracketed in the advertised URL", webUrl("2001:db8::10", 8123) === "http://[2001:db8::10]:8123/");
+check("an IPv6 loopback address is bracketed", webUrl("::1", 8123) === "http://[::1]:8123/");
+check("a hostname keeps the advertised host", webUrl("dashboard.example", 8123) === "http://dashboard.example:8123/");
 
 {
   const gate = makeAuthGate(8123, "192.0.2.10");

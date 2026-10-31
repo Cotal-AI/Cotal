@@ -373,6 +373,7 @@ try {
         parked = false;
         return sim.spawn(r, x);
       },
+      participant: (r, x) => sim.participant(r, x),
       turn: (r, x) => sim.turn(r, x),
       ask: (r, x) => sim.ask(r, x),
       checkpoint: (r, x) => sim.checkpoint(r, x),
@@ -437,6 +438,7 @@ try {
         }
         return sim.spawn(r, x);
       },
+      participant: (r, x) => sim.participant(r, x),
       turn: (r, x) => sim.turn(r, x),
       ask: (r, x) => sim.ask(r, x),
       checkpoint: (r, x) => sim.checkpoint(r, x),

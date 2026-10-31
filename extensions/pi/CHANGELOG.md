@@ -1,5 +1,713 @@
 # @cotal-ai/pi
 
+## 0.132.1
+
+No changes in this release.
+
+## 0.132.0
+
+No changes in this release.
+
+## 0.131.6
+
+No changes in this release.
+
+## 0.131.5
+
+No changes in this release.
+
+## 0.131.4
+
+No changes in this release.
+
+## 0.131.3
+
+No changes in this release.
+
+## 0.131.2
+
+No changes in this release.
+
+## 0.131.1
+
+No changes in this release.
+
+## 0.131.0
+
+No changes in this release.
+
+## 0.130.2
+
+No changes in this release.
+
+## 0.130.1
+
+No changes in this release.
+
+## 0.130.0
+
+No changes in this release.
+
+## 0.129.9
+
+No changes in this release.
+
+## 0.129.8
+
+No changes in this release.
+
+## 0.129.7
+
+No changes in this release.
+
+## 0.129.6
+
+No changes in this release.
+
+## 0.129.5
+
+No changes in this release.
+
+## 0.129.4
+
+No changes in this release.
+
+## 0.129.3
+
+No changes in this release.
+
+## 0.129.2
+
+No changes in this release.
+
+## 0.129.1
+
+No changes in this release.
+
+## 0.129.0
+
+No changes in this release.
+
+## 0.128.7
+
+No changes in this release.
+
+## 0.128.6
+
+No changes in this release.
+
+## 0.128.5
+
+No changes in this release.
+
+## 0.128.4
+
+No changes in this release.
+
+## 0.128.3
+
+No changes in this release.
+
+## 0.128.2
+
+No changes in this release.
+
+## 0.128.1
+
+No changes in this release.
+
+## 0.128.0
+
+No changes in this release.
+
+## 0.127.5
+
+No changes in this release.
+
+## 0.127.4
+
+No changes in this release.
+
+## 0.127.3
+
+No changes in this release.
+
+## 0.127.2
+
+No changes in this release.
+
+## 0.127.1
+
+No changes in this release.
+
+## 0.127.0
+
+No changes in this release.
+
+## 0.126.3
+
+### Patch Changes
+
+- b526607: Fix `cotal sync` failing to seed the pi connector with `Dynamic require of "child_process" is not supported`. The package entry no longer bundles Pi's coding-agent module: the supervised project-trust handler loads Pi's trust store from the Pi host that runs the seat, and the package declares `@earendil-works/pi-coding-agent` as an optional peer.
+
+## 0.126.2
+
+No changes in this release.
+
+## 0.126.1
+
+No changes in this release.
+
+## 0.126.0
+
+No changes in this release.
+
+## 0.125.0
+
+### Patch Changes
+
+- bd39e93: Keep supervised Pi seats out of the project-trust prompt without approving untrusted project resources, preserve saved Pi trust decisions, and report the prompt and directory when startup cannot continue.
+
+## 0.124.3
+
+No changes in this release.
+
+## 0.124.2
+
+No changes in this release.
+
+## 0.124.1
+
+No changes in this release.
+
+## 0.124.0
+
+No changes in this release.
+
+## 0.123.0
+
+No changes in this release.
+
+## 0.122.0
+
+No changes in this release.
+
+## 0.121.7
+
+No changes in this release.
+
+## 0.121.6
+
+No changes in this release.
+
+## 0.121.5
+
+No changes in this release.
+
+## 0.121.4
+
+No changes in this release.
+
+## 0.121.3
+
+No changes in this release.
+
+## 0.121.2
+
+No changes in this release.
+
+## 0.121.1
+
+No changes in this release.
+
+## 0.121.0
+
+No changes in this release.
+
+## 0.120.2
+
+No changes in this release.
+
+## 0.120.1
+
+No changes in this release.
+
+## 0.120.0
+
+No changes in this release.
+
+## 0.119.5
+
+No changes in this release.
+
+## 0.119.4
+
+No changes in this release.
+
+## 0.119.3
+
+No changes in this release.
+
+## 0.119.2
+
+No changes in this release.
+
+## 0.119.1
+
+No changes in this release.
+
+## 0.119.0
+
+No changes in this release.
+
+## 0.118.3
+
+No changes in this release.
+
+## 0.118.2
+
+No changes in this release.
+
+## 0.118.1
+
+No changes in this release.
+
+## 0.118.0
+
+No changes in this release.
+
+## 0.117.1
+
+No changes in this release.
+
+## 0.117.0
+
+No changes in this release.
+
+## 0.116.5
+
+No changes in this release.
+
+## 0.116.4
+
+No changes in this release.
+
+## 0.116.3
+
+No changes in this release.
+
+## 0.116.2
+
+No changes in this release.
+
+## 0.116.1
+
+No changes in this release.
+
+## 0.116.0
+
+### Minor Changes
+
+- 50ee624: Cut what an idle seat costs its host, with stock build and runtime mechanisms.
+  
+  Every connector bundle that loads into a long-running process now ships as one-byte text. V8 holds a
+  string at one byte per character only while every character is Latin-1, and a single character above
+  U+00FF made each 5 MB bundle two-byte for the life of the process. The characters were em dashes and
+  arrows in comments, so the bundles are built with esbuild's `--minify-whitespace`, which drops
+  comments and the parentheses around a single arrow parameter, and keeps every identifier. Anything
+  matching text in a built bundle sees the second part: `(e) => f(e)` now reads `e=>f(e)`. `pnpm smoke:connector-bundle-text` reads the 19 built bundles
+  and fails on any character above U+00FF. Stack-trace frames keep their function names and their line
+  and column numbers move, because the bundle is now fewer, longer lines.
+  
+  The Claude Code connector's seat is launched through a new entry, `dist/seat.cjs`, which enables
+  Node's module compile cache in `~/.cotal/compile-cache` and then loads `dist/mcp.cjs`. Node's cache
+  covers modules compiled after it is enabled, so the entry has to sit in front of the bundle. The
+  directory is created 0700 like the rest of `~/.cotal`, whatever the launching umask was. A cache
+  that cannot be opened prints one line and the seat serves without it,
+  `NODE_DISABLE_COMPILE_CACHE=1` turns it off, and `NODE_COMPILE_CACHE` takes precedence and is left
+  alone. `dist/mcp.cjs` remains the library entry (`@cotal-ai/connector-claude-code/mcp`) and still
+  serves when run directly.
+  
+  The declared Node floor rises from 22 to 22.10, which is where `module.flushCompileCache()` lands,
+  and every package's `engines.node` now says so. The `cotal` binary checks it at its front door and
+  refuses an older runtime with the floor, the running version and the repair for how it was
+  installed; the seat entry refuses before its first cache call, so an old Node gets one sentence
+  rather than a `TypeError`; and the installer compares the minor version, so a host whose own Node is
+  22.9 gets the pinned Node downloaded and verified instead. `node dist/mcp.cjs` still serves on an
+  older runtime. Operators moving a host read
+  [the upgrade note](https://github.com/Cotal-AI/Cotal/blob/main/docs/UPGRADING.md).
+  
+  Measured on one idle seat per arm, Node v22.23.2, paired and read at 160 s and 600 s: 41.9 MiB USS
+  on the stock bundle, 35.2 with one-byte text, 26.3 with the seat entry's compile cache as well.
+
+## 0.115.4
+
+No changes in this release.
+
+## 0.115.3
+
+No changes in this release.
+
+## 0.115.2
+
+No changes in this release.
+
+## 0.115.1
+
+No changes in this release.
+
+## 0.115.0
+
+No changes in this release.
+
+## 0.114.1
+
+No changes in this release.
+
+## 0.114.0
+
+No changes in this release.
+
+## 0.113.3
+
+No changes in this release.
+
+## 0.113.2
+
+No changes in this release.
+
+## 0.113.1
+
+No changes in this release.
+
+## 0.113.0
+
+No changes in this release.
+
+## 0.112.0
+
+No changes in this release.
+
+## 0.111.1
+
+No changes in this release.
+
+## 0.111.0
+
+No changes in this release.
+
+## 0.110.0
+
+No changes in this release.
+
+## 0.109.25
+
+No changes in this release.
+
+## 0.109.24
+
+No changes in this release.
+
+## 0.109.23
+
+No changes in this release.
+
+## 0.109.22
+
+No changes in this release.
+
+## 0.109.21
+
+No changes in this release.
+
+## 0.109.20
+
+No changes in this release.
+
+## 0.109.19
+
+No changes in this release.
+
+## 0.109.18
+
+No changes in this release.
+
+## 0.109.17
+
+No changes in this release.
+
+## 0.109.16
+
+No changes in this release.
+
+## 0.109.15
+
+No changes in this release.
+
+## 0.109.14
+
+No changes in this release.
+
+## 0.109.13
+
+No changes in this release.
+
+## 0.109.12
+
+No changes in this release.
+
+## 0.109.11
+
+No changes in this release.
+
+## 0.109.10
+
+No changes in this release.
+
+## 0.109.9
+
+No changes in this release.
+
+## 0.109.8
+
+No changes in this release.
+
+## 0.109.7
+
+No changes in this release.
+
+## 0.109.6
+
+No changes in this release.
+
+## 0.109.5
+
+No changes in this release.
+
+## 0.109.4
+
+No changes in this release.
+
+## 0.109.3
+
+No changes in this release.
+
+## 0.109.2
+
+No changes in this release.
+
+## 0.109.1
+
+No changes in this release.
+
+## 0.109.0
+
+No changes in this release.
+
+## 0.108.1
+
+No changes in this release.
+
+## 0.108.0
+
+No changes in this release.
+
+## 0.107.0
+
+No changes in this release.
+
+## 0.106.1
+
+No changes in this release.
+
+## 0.106.0
+
+No changes in this release.
+
+## 0.105.1
+
+No changes in this release.
+
+## 0.105.0
+
+No changes in this release.
+
+## 0.104.2
+
+No changes in this release.
+
+## 0.104.1
+
+No changes in this release.
+
+## 0.104.0
+
+No changes in this release.
+
+## 0.103.4
+
+No changes in this release.
+
+## 0.103.3
+
+No changes in this release.
+
+## 0.103.2
+
+No changes in this release.
+
+## 0.103.1
+
+No changes in this release.
+
+## 0.103.0
+
+No changes in this release.
+
+## 0.102.0
+
+No changes in this release.
+
+## 0.101.7
+
+No changes in this release.
+
+## 0.101.6
+
+No changes in this release.
+
+## 0.101.5
+
+No changes in this release.
+
+## 0.101.4
+
+No changes in this release.
+
+## 0.101.3
+
+No changes in this release.
+
+## 0.101.2
+
+No changes in this release.
+
+## 0.101.1
+
+No changes in this release.
+
+## 0.101.0
+
+### Patch Changes
+
+- 6e4ad65: Call the inbox commit in `PiDriver.finalizeEnd` as a plain statement. The method bound the commit counts to a local it never read, which suggested a later use that did not exist. Behavior is unchanged.
+
+## 0.100.2
+
+No changes in this release.
+
+## 0.100.1
+
+No changes in this release.
+
+## 0.100.0
+
+No changes in this release.
+
+## 0.99.3
+
+No changes in this release.
+
+## 0.99.2
+
+No changes in this release.
+
+## 0.99.1
+
+No changes in this release.
+
+## 0.99.0
+
+No changes in this release.
+
+## 0.98.0
+
+No changes in this release.
+
+## 0.97.1
+
+No changes in this release.
+
+## 0.97.0
+
+No changes in this release.
+
+## 0.96.1
+
+No changes in this release.
+
+## 0.96.0
+
+No changes in this release.
+
+## 0.95.2
+
+No changes in this release.
+
+## 0.95.1
+
+No changes in this release.
+
+## 0.95.0
+
+No changes in this release.
+
+## 0.94.7
+
+No changes in this release.
+
+## 0.94.6
+
+No changes in this release.
+
+## 0.94.5
+
+No changes in this release.
+
+## 0.94.4
+
+No changes in this release.
+
+## 0.94.3
+
+No changes in this release.
+
+## 0.94.2
+
+No changes in this release.
+
+## 0.94.1
+
+No changes in this release.
+
+## 0.94.0
+
+No changes in this release.
+
+## 0.93.0
+
+No changes in this release.
+
+## 0.92.2
+
+No changes in this release.
+
+## 0.92.1
+
+No changes in this release.
+
+## 0.92.0
+
 ## 0.91.0
 
 ## 0.90.1

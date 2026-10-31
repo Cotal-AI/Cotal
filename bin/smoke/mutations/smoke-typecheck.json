@@ -176,8 +176,8 @@
     {
       "name": "@cotal-ai/cmux: a planted type error in its smoke tree reddens its typecheck",
       "file": "extensions/cmux/smoke.ts",
-      "find": "import { existsSync, mkdtempSync, rmSync, readFileSync, statSync, writeFileSync } from \"node:fs\";",
-      "replace": "import { existsSync, mkdtempSync, rmSync, readFileSync, statSync, writeFileSync } from \"node:fs\";\nconst issue638Probe: string = 638;",
+      "find": "import { existsSync, mkdtempSync, rmSync, readFileSync, readdirSync, statSync, writeFileSync } from \"node:fs\";",
+      "replace": "import { existsSync, mkdtempSync, rmSync, readFileSync, readdirSync, statSync, writeFileSync } from \"node:fs\";\nconst issue638Probe: string = 638;",
       "command": "pnpm --filter @cotal-ai/cmux typecheck",
       "expectRed": "error TS2322",
       "cell": "error TS2322"

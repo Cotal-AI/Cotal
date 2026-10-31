@@ -7,7 +7,7 @@ import { openPublishDenialWatch } from "./endpoint-publish-denial.js";
 import { EpEnvelopeError, EP_UNBOUND_RESPONDER, EP_UNANSWERED, parseEndpointReply } from "./endpoint-envelope.js";
 import type { CompiledContract } from "./schema-profile.js";
 import { epCall, type EpVerbTarget, type EpAttributedReply } from "./endpoint-call.js";
-import { epRequestSubject, epCallerReplyFilter, epPlaneTokens, parseEpSubject, type EpCaller, type EpRoute } from "./endpoint-subjects.js";
+import { epRequestSubject, epCallerReplyFilter, epPlaneTokens, parseEpSubject, assertLifecycleToken, type EpCaller, type EpRoute } from "./endpoint-subjects.js";
 
 export const dec = new TextDecoder(), enc = new TextEncoder();
 const nonce = (): string => base64url(globalThis.crypto.getRandomValues(new Uint8Array(24)));
@@ -74,16 +74,22 @@ export interface ResolvedService {
  * endpoint + nonce AND the body's echoed request id, not just "first `{ok:true}` on the rail".
  * A reply that fails any of these is IGNORED (not rejected: an attacker racing a wrong-nonce reply
  * must not be able to fail an honest describe), and the wait continues to the deadline. A signal
- * that aborts with a `TimeoutError` ends the wait as that deadline would.
+ * that aborts with a `TimeoutError` ends the wait as that deadline would. Any other abort rejects
+ * with the signal's reason, as an abort before the publish does.
  */
 export async function describeEndpoint(
   nc: NatsConnection,
   space: string,
   endpoint: string,
   caller: EpCaller,
-  opts: { deadlineMs?: number; instanceId?: string; signal?: AbortSignal } = {},
+  opts: { deadlineMs?: number; instanceId?: string; classInstanceId?: string; signal?: AbortSignal } = {},
 ): Promise<{ answer: DescribeAnswer; responder: { instanceId: string; epoch: number } }> {
   opts.signal?.throwIfAborted();
+  if (opts.classInstanceId !== undefined) {
+    assertLifecycleToken(opts.classInstanceId, "classInstanceId");
+    if (opts.instanceId !== undefined)
+      throw new EpEnvelopeError("bad-request", "a describe cannot select both an instance route and a class responder");
+  }
   const deadlineMs = opts.deadlineMs ?? 10_000;
   const n = nonce();
   const requestId = nonce();
@@ -107,11 +113,11 @@ export async function describeEndpoint(
   let denialWatch: { denied: Promise<never>; release(): void } | undefined;
   let onAbort: (() => void) | undefined;
   const startedAt = performance.now();
-  const unanswered = (ms: number) => new EpEnvelopeError("deadline-exceeded", `no describe reply from ${endpoint}${opts.instanceId !== undefined ? ` instance ${opts.instanceId}` : ""} within ${ms}ms on the ${rail} rail`, [{ kind: EP_UNANSWERED, endpoint, command: "describe", rail }]);
+  const unanswered = (ms: number) => new EpEnvelopeError("deadline-exceeded", `no describe reply from ${endpoint}${opts.instanceId !== undefined ? ` instance ${opts.instanceId}` : opts.classInstanceId !== undefined ? ` class responder ${opts.classInstanceId}` : ""} within ${ms}ms on the ${rail} rail`, [{ kind: EP_UNANSWERED, endpoint, command: "describe", rail }]);
   const cancelled = new Promise<never>((_, reject) => {
     onAbort = () => reject(opts.signal?.reason?.name === "TimeoutError"
       ? unanswered(Math.round(performance.now() - startedAt))
-      : new EpEnvelopeError("unavailable", `describe(${endpoint}) observation cancelled`));
+      : opts.signal?.reason);
     opts.signal?.addEventListener("abort", onAbort, { once: true });
   });
   try {
@@ -137,6 +143,10 @@ export async function describeEndpoint(
           try { reply = parseEndpointReply(JSON.parse(dec.decode(msg.data))); }
           catch { return; } // a malformed body on our nonce is not a usable answer; wait for a valid one
           if (reply.id !== requestId) return;
+          // Static managed seats hold class-only rows. A sibling's attributed reply cannot
+          // select a replacement for their launching manager. The existing read-only retry
+          // stays inside the original deadline and never retries a command here.
+          if (opts.classInstanceId !== undefined && parsed.instanceId !== opts.classInstanceId) return;
           resolve({ body: reply as unknown as Record<string, unknown>, responder: { instanceId: parsed.instanceId, epoch: parsed.epoch } });
         },
       });
@@ -190,7 +200,8 @@ export const BIND_SPLIT_REISSUES = 16;
 /**
  * INVOKE one named command on a resolved service: validate nothing here (the compiled input
  * contract in {@link epCall}'s request builder gates args before publish, and the responder's
- * digest-bound boundary re-validates), route on the `one` rail, return the attributed reply. A
+ * digest-bound boundary re-validates), route on the `one` rail (or the resolved instance's `inst` rail
+ * when the broker refuses the class publish), return the attributed reply. A
  * command absent from the resolved surface is `not-found` (the caller cannot see it, or it does
  * not exist); a targeted command needs its `target`.
  *
@@ -263,13 +274,6 @@ export async function invokeCommand(
     }
     return service.responder.epoch;
   };
-  // `--on`: a PINNED service routes to its exact instance's `inst` rail (the same instance the
-  // describe resolved to, at its resolved epoch), never the class `one` queue — so the command reaches
-  // the addressed manager in a multi-manager space. Unpinned ⇒ class anycast `one` (unchanged). The
-  // describeBound currency check still holds: an inst-routed reply carries that instance's id.
-  const route = service.pinnedInstanceId !== undefined
-    ? { mode: "inst" as const, instanceId: service.pinnedInstanceId, epoch: service.responder.epoch }
-    : { mode: "one" as const };
   // The bind travels WITH the request, so the responder can refuse before running the command
   // rather than leaving `describeBound` to report the split afterwards. It is sent exactly when
   // this handle's own resolve is the currency reference — that is the caller saying "this
@@ -279,14 +283,15 @@ export async function invokeCommand(
   const bind = opts.currentEpoch === undefined
     ? { instanceId: service.pinnedInstanceId ?? service.responder.instanceId, epoch: service.responder.epoch }
     : undefined;
-  return epCall(nc, space, route, {
+  const deadline = Date.now() + (opts.deadlineMs ?? 10_000);
+  const call = (route: { mode: "one" } | { mode: "inst"; instanceId: string; epoch: number }) => epCall(nc, space, route, {
     endpoint: service.endpoint, command, contract: resolved.contract, caller,
     ...(sendArgs !== undefined ? { args: sendArgs } : {}),
     ...(opts.target ? { target: opts.target } : {}),
     ...(bind !== undefined ? { bind } : {}),
     ...(opts.id !== undefined ? { id: opts.id } : {}),
   }, {
-    deadlineMs: opts.deadlineMs ?? 10_000,
+    deadlineMs: deadline - Date.now(),
     signal: opts.signal,
     currentEpoch: opts.currentEpoch ?? describeBound,
     // What the currency hook returns decides how a stale-epoch refusal is worded and marked: the
@@ -294,6 +299,23 @@ export async function invokeCommand(
     // the handle is the stale side); a caller-supplied hook is a registry read by epCall's contract.
     currencyReference: opts.currentEpoch ? "registry" : "bind",
   });
+  // `--on`: a PINNED service routes to its exact instance's `inst` rail (the same instance the
+  // describe resolved to, at its resolved epoch), never the class `one` queue — so the command reaches
+  // the addressed manager in a multi-manager space. The describeBound currency check still holds:
+  // an inst-routed reply carries that instance's id.
+  if (service.pinnedInstanceId !== undefined)
+    return call({ mode: "inst", instanceId: service.pinnedInstanceId, epoch: service.responder.epoch });
+  try {
+    return await call({ mode: "one" });
+  } catch (e) {
+    // Unpinned goes to the class `one` queue. When the broker refuses that publish, nothing ran
+    // (`not-executed`). An instance-only grant, which is the only kind a service caller grant mints,
+    // holds just the `inst` rail of the instance it names, and this handle's describe already reached
+    // an instance, attested by the broker. So the same bound request goes once to that instance's
+    // rail; a credential without that row is refused there too, and that refusal stands.
+    if (!(e instanceof EpEnvelopeError) || e.code !== "permission-denied" || e.outcome !== "not-executed" || deadline <= Date.now()) throw e;
+    return call({ mode: "inst", instanceId: service.responder.instanceId, epoch: service.responder.epoch });
+  }
 }
 
 /** The refusal a goal-following call meets on a handle whose endpoint serves no `goal-result`: an

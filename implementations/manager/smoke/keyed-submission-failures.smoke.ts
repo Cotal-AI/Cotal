@@ -49,7 +49,7 @@ try {
   nc = await connect({ servers, reconnect: false });
   const jsm = await jetstreamManager(nc), kvm = new Kvm(nc);
   await ensureAdmissionStore(jsm, kvm, space); const kv = await kvm.open(admissionBucket(space));
-  const caller = { owner: "local", actor: "failure", uid: mintLifecycleUid(), generation: mintGeneration() };
+  const caller = { owner: "local", actor: "failure", uid: mintLifecycleUid(), generation: mintGeneration(Math.floor(Date.now() / 1000) + 172_800) };
   const instanceId = mintLifecycleUid(), processEpoch = 4, fingerprint = contractDigest({ failure: true });
   const make = (): RunAdmission => ({ version: 1, space, endpoint, runId: newSubmissionRunId(), instanceId, caller,
     admittedAt: Date.now(), provenance: { kind: "issued", ref: { space, ...caller }, resolvedRevision: 1 },

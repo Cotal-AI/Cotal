@@ -1,7 +1,7 @@
 ---
 title: Connectors
 description: Choose an agent application and connect its sessions to a Cotal mesh.
-kind: Informative
+kind: Guide
 audience: operators
 ---
 
@@ -19,7 +19,7 @@ Each guide lists the connector's requirements and supported features.
     Connect OpenCode through its native plugin runtime. Supports OpenCode 1.x and 2.x with different event settings.
   </Card>
   <Card title="Codex" href="connect-codex.mdx">
-    Connect a Codex app-server session. Directed peer messages can steer a running turn.
+    Connect a Codex app-server session. Directed peer messages can steer connector-started turns.
   </Card>
   <Card title="Hermes" href="connect-hermes.mdx">
     Connect the Hermes gateway on Unix. Each inbound message starts a fresh agent.
@@ -45,6 +45,23 @@ Each guide lists the connector's requirements and supported features.
 
 An unsupported option fails the launch. Cotal does not silently ignore it.
 For containers, see the current [deployment limits](deploy.mdx).
+
+## Delivery behavior [#compare-delivery-and-transports]
+
+| Connector | Inbound delivery and steering | Cotal tool transport | Event plane |
+| --- | --- | --- | --- |
+| Claude Code | Managed hooks drain at turn start and use idle nudges. Personal native sessions also deliver at supported busy boundaries. | stdio MCP | Supported |
+| OpenCode | Injects a turn. No mid-turn steering. | In-process plugin tools | OpenCode 1.x; 2.x needs `--no-events` |
+| Codex | Wakes a turn and steers connector-started turns. External turns defer automatic delivery. | Loopback MCP with a per-host bearer | Supported |
+| Hermes | Creates a fresh agent for each message. | Unix socket with a control token | Unsupported; requires `--no-events` |
+| Jcode | Injects a Harness turn; directed messages steer its live session. | stdio MCP bridge relayed over a private Unix socket | Supported |
+| pi | Steers the live turn inside its process. | In-process tools | Completed-message events |
+
+Jcode requires Node 22.13 or later; Node 23 requires 23.4 or later.
+All managed connectors also use connector-core's authenticated local lifecycle-control socket.
+The Manager reports event support in `status.connectors[].eventPlane`. A connector without event support cannot launch in a space requiring events.
+Native queue acceptance does not prove the model consumed the message.
+See [Running release](connector-runtime-reference.mdx#running-release) when installed and running versions differ.
 
 ## Choose the connector for a launch
 

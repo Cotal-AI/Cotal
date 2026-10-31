@@ -1,7 +1,7 @@
 ---
 title: "Quickstart"
 description: "Start a local Cotal mesh, launch an agent, and watch it join."
-kind: "Informative"
+kind: Start here
 audience: "first-time users"
 ---
 
@@ -131,6 +131,19 @@ cotal down --with-agents
 - If `cotal` is missing or selects an old installation, follow [Check the installation](installation.mdx#check-the-installation).
 - If your agent cannot launch, check its [connector guide](connectors.mdx) and run setup again after fixing the reported dependency.
 - If setup fails, see [Recover from a setup failure](setup.mdx#recover-from-a-setup-failure).
+
+## Before the manager launches Claude Code
+
+A bare `cotal spawn` runs Claude Code in your terminal, where you answer its first-run screens.
+Before a manager launches Claude, run `claude` once as the same user, choose a text style, log in, then exit.
+
+Managed Claude launches default to Bypass Permissions mode. Cotal never accepts Claude's one-time warning for you.
+Run `claude --permission-mode bypassPermissions` yourself and accept it, or launch with `--opt permission-mode=default`.
+With normal permission prompts, answer them through `cotal attach <name>` for `pty` seats or the runtime's own terminal.
+A managed launch that stops at one of these screens fails after 15 seconds; its manager log names the screen and remedy.
+
+CLI usage telemetry is enabled by default. Use `cotal telemetry off` to disable it.
+See [Telemetry](telemetry.mdx) and [Choose a workflow](using-cotal.mdx) for the next connection path.
 
 ## Next steps
 

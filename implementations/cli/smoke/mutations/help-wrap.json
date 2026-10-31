@@ -23,7 +23,7 @@
     {
       "name": "help leaves its usage to the report renderer's wrap",
       "file": "implementations/cli/src/help.ts",
-      "find": "usageLines(usageTokens(usage), width - 2)",
+      "find": "usage.split(\"\\n\").flatMap((form) => usageLines(usageTokens(form), width - 2))",
       "replace": "[usage]",
       "expectRed": "on 60 columns its usage wraps only between options",
       "cell": "on 60 columns its usage wraps only between options",
@@ -71,12 +71,12 @@
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
     },
     {
-      "name": "help --all writes its title unwrapped",
+      "name": "help writes its title unwrapped",
       "file": "implementations/cli/src/help.ts",
-      "find": "  let out = `${hang(\"\", title(), width).join(\"\\n\")}\\n`;\n",
-      "replace": "  let out = `${title()}\\n`;\n",
-      "expectRed": "on 40 columns cotal help --all wraps its title",
-      "cell": "on 40 columns cotal help --all wraps its title",
+      "find": "  console.log(`${hang(\"\", title(), width).join(\"\\n\")}\\n`);\n",
+      "replace": "  console.log(`${title()}\\n`);\n",
+      "expectRed": "on 40 columns cotal help wraps its title",
+      "cell": "on 40 columns cotal help wraps its title",
       "command": "pnpm --filter @cotal-ai/cli build && pnpm smoke:cli-pty",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
     },

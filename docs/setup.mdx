@@ -1,7 +1,7 @@
 ---
 title: "Configure a space"
 description: "Prepare a project, choose its agent application, and save its space settings."
-kind: "Informative"
+kind: Guide
 audience: "operators"
 ---
 
@@ -22,7 +22,7 @@ cotal setup --configure-only
 
 Set these choices in the guided flow:
 
-1. **Destination.** Local means this machine starts the space. Self-hosted means the space runs elsewhere and is registered here. Register it with `cotal space add` or provide a connection file from its operator. Cloud is in development and cannot be selected.
+1. **Destination.** Local means this machine starts the space. Self-hosted means the space runs elsewhere and is registered here. Register it with `cotal space add` or provide a connection file from its operator. Cloud cannot be selected here. Run `cotal login`, then choose Self-hosted and select the registered Cloud space.
 2. **Agent application.** Choose an installed connector. Setup runs the connector's own setup steps when its application is available. This choice becomes the space's `harness` preference, which a bare `cotal spawn` uses.
 3. **Runtime.** Keep the built-in `pty` runtime for a first run. Other choices include `tmux`, `cmux`, `orca`, and `herdr`. Setup shows installed tools and checks the runtimes you select. Leaving a runtime out does not uninstall it.
 4. **Project folder.** This is the space's root. Agent personas live in its `.cotal/agents` directory. Setup can create a missing folder.
@@ -34,7 +34,7 @@ With `--configure-only`, setup does not start a process.
 Continue with the [Quickstart](getting-started.mdx#2-start-a-local-mesh) after preparation.
 
 Without `--configure-only`, successful interactive setup offers to start the space and open the default agent.
-The initial answer is No.
+Only a typed `y` or `yes` starts it.
 An incomplete or uncertain startup leaves preparation saved and reports the stage that needs attention.
 Inspect that outcome before trying to start again.
 

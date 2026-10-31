@@ -29,11 +29,12 @@ const BACKSTOP = "The 600-second inactive threshold is a backstop, not an erasur
 export async function openRoutingChatSession(target: MeshTarget, options: {
   readonly label: string;
   readonly channels: readonly string[];
+  readonly reopen: (channel: string) => string;
 }): Promise<NativeChatSession> {
   if (target.mode !== "open") throw new CommandFailure("refused", "UNSUPPORTED", "the routing-only chat adapter requires a recorded open target; no authentication fallback was attempted", { target: { space: target.space } });
   if (!options.label || options.label.length > 128 || options.channels.some((channel) => !isConcreteChannel(channel)))
     throw new CommandFailure("refused", "USAGE_INVALID", "chat requires a label of 1 to 128 characters and concrete initial channels");
-  const actor = `local_${randomBytes(16).toString("hex")}`;
+  const actor = randomBytes(16).toString("hex");
   const uid = mintLifecycleUid();
   const owner = "local";
   const stream = dmStream(target.space);
@@ -101,7 +102,7 @@ export async function openRoutingChatSession(target: MeshTarget, options: {
   };
   // Register the real participant listeners before starting the endpoint. No fabricated session or
   // connector runtime is involved; NativeChatSession owns its endpoint listeners through close().
-  const session = new NativeChatSession({ endpoint, identity, retire });
+  const session = new NativeChatSession({ endpoint, identity, retire, reopen: options.reopen });
   try {
     await endpoint.start();
     if (!connection || connection.isClosed()) throw new Error("the opened transport is unavailable");

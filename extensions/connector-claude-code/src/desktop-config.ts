@@ -4,6 +4,7 @@
  * in chat. Setup writes one `cotal` entry there, which runs the materialized plugin's server with
  * `--desktop`, and keeps every other key of the file as it was.
  */
+import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -49,11 +50,25 @@ export function readDesktopEntry(path: string): unknown {
   return readConfig(path).mcpServers?.[DESKTOP_SERVER];
 }
 
-/** Write `entry` as the `cotal` server in the config at `path`. Returns what changed. */
-export function writeDesktopEntry(path: string, entry: DesktopEntry): "added" | "updated" | "current" {
+/** Whether Claude Desktop is running, on macOS. Desktop reads its config once, when it starts, and
+ *  writes the copy it holds back on ordinary use, so an entry added while it runs is lost. `ps -A -o
+ *  comm=` prints each executable's path there; Desktop's main one ends in `/Claude.app/Contents/MacOS/
+ *  Claude`, unlike its updater, its bundled Code (`claude.app/Contents/MacOS/claude`) and the `claude`
+ *  CLI. Elsewhere this is `false`: that loss was not seen on Windows. */
+export function desktopRunning(platform: NodeJS.Platform = process.platform): boolean {
+  if (platform !== "darwin") return false;
+  const ps = spawnSync("ps", ["-A", "-o", "comm="], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024, timeout: 10_000, killSignal: "SIGKILL" });
+  if (ps.status !== 0) throw new Error(`Cotal could not list processes to tell whether Claude Desktop is running: ${ps.error?.message ?? ps.stderr.trim()}`);
+  return ps.stdout.split("\n").some((line) => line.endsWith("/Claude.app/Contents/MacOS/Claude"));
+}
+
+/** Write `entry` as the `cotal` server in the config at `path`. Returns what changed, or that nothing
+ *  was written because Claude Desktop is running. */
+export function writeDesktopEntry(path: string, entry: DesktopEntry, running: () => boolean = desktopRunning): "added" | "updated" | "current" | "not added" | "not updated" {
   const config = readConfig(path);
   const before = config.mcpServers?.[DESKTOP_SERVER];
   if (JSON.stringify(before) === JSON.stringify(entry)) return "current";
+  if (running()) return before === undefined ? "not added" : "not updated";
   config.mcpServers = { ...config.mcpServers, [DESKTOP_SERVER]: entry };
   const tmp = `${path}.cotal-${process.pid}`;
   writeFileSync(tmp, `${JSON.stringify(config, null, 2)}\n`, { mode: existsSync(path) ? statSync(path).mode & 0o777 : 0o600 });

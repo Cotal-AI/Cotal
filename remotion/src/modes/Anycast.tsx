@@ -21,6 +21,7 @@ import {
   MODE_PEERS,
   NODE_R,
   prog,
+  straightWire,
   wirePath,
   Wires,
   type Pt,
@@ -46,7 +47,7 @@ const SEG1: [Pt, Pt] = [
 ];
 const FAN = MODE_PEERS.map((p) => fanWire(JUNCTION, p.at));
 
-const PATH1 = wirePath(SEG1[0], lerp(...SEG1, 0.4), lerp(...SEG1, 0.6), SEG1[1]);
+const PATH1 = straightWire(...SEG1);
 const OUT_PATHS = FAN.map((w) => wirePath(...w));
 
 const T = {

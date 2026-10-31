@@ -47,7 +47,7 @@ const cli = (await Promise.all([
 ].map(async slug => (await readDocument(join(REPO, "docs", `${slug}.mdx`))).markdown))).join("\n\n");
 const config = (await readDocument(join(REPO, "docs/config.mdx"))).markdown;
 const control = (await Promise.all(["control-surface", "control-discovery", "control-lifecycle"].map(guide))).join(" ");
-const deliveryServices = await guide("cli-services");
+const deliveryGuide = await guide("delivery-service-reference");
 const pid = read("packages/workspace/src/pid.ts");
 const provision = read("packages/core/src/provision.ts");
 const up = read("implementations/cli/src/commands/up.ts");
@@ -89,16 +89,17 @@ check(
 
 // ── 2. up starts a manager by default; --no-manager is the explicit broker-only mode ──
 check(
-  "claim 2: operator guide names the split (--no-manager boot, supervise --server) and each stack's manager stop",
+  "claim 2: operator guide names the split (--no-manager boot, manager start on the registered space) and each stack's manager stop",
   remoteGuide.includes("`cotal up --no-manager` starts the broker and, in authenticated mode, delivery, with no local manager") &&
     operationGuideText.includes("cotal up --no-manager") &&
     operationGuideText.includes("`cotal service stop stack-manager --space <s> --yes`") &&
     operationGuideText.includes("A legacy stack has no command that stops only") &&
     ![operationGuideText, control].some((page) => page.includes("cotal down manager")) &&
     !cli.includes("`cotal down manager` first") &&
-    operationGuideText.includes("cotal supervise --space main --server") &&
+    operationGuideText.includes("cotal manager start --space main") &&
+    !operationGuideText.includes("cotal supervise --space main --server") &&
     cli.includes("| `--no-manager` | off | Broker-only boot:") &&
-    control.includes("A space can have more than one manager") &&
+    control.includes("A space can run more than one manager") &&
     control.includes("cotal supervise"),
 );
 check(
@@ -114,24 +115,23 @@ check(
 );
 check(
   "claim 2: wait signal is supervise post-start, not detach stdout",
-  operationGuideText.includes("Wait for `✓ manager up`") &&
+  remoteGuide.includes("wait for that manager's `✓ manager up` line before stopping it") &&
     operationGuideText.includes("manager pidfile is live") &&
     remoteGuide.includes("not a teardown boundary or proof that manager startup has finished") &&
     operationGuideText.includes("`.cotal/manager.<spaceKey>.log`") &&
     !operationGuideText.includes("Wait for `✓ running in the background:` with `manager` listed") &&
     !operationGuideText.includes("`cotal status --components` to report `manager serving`") &&
     cli.includes("wait for `.cotal/manager.<spaceKey>.log` to contain `✓ manager up`") &&
-    cli.includes("A listed manager indicates pidfile liveness") &&
-    cli.includes("does not define teardown scope") &&
+    cli.includes("`manager` listed (pidfile liveness, not a teardown boundary)") &&
     control.includes("after `✓ manager up` in"),
 );
 check(
   "claim 2: detach summary is pidfile-live, ensureManager returns a started manager once it is up; supervise prints manager up after start",
   upReport.includes('if (status.manager) components.push("manager");') &&
     upReport.includes("return `✓ running in the background: ${components.join(\", \")} - ") &&
-    renderDetachedSummary(detachedStatus).endsWith("stop with: cotal down") &&
-    renderDetachedSummary({ ...detachedStatus, machineHome: true }).endsWith("stop with: cotal down --preserve-state") &&
-    renderDetachedSummary({ ...detachedStatus, machineHome: true, manager: false }).endsWith("stop with: cotal up to start its manager, then cotal down --preserve-state") &&
+    renderDetachedSummary(detachedStatus).endsWith("stop with: `cotal down`") &&
+    renderDetachedSummary({ ...detachedStatus, machineHome: true }).endsWith("stop with: `cotal down --preserve-state`") &&
+    renderDetachedSummary({ ...detachedStatus, machineHome: true, manager: false }).endsWith("stop with: `cotal up` to start its manager, then `cotal down --preserve-state`") &&
     /if \(state === "alive"\) return \{\s*running: true,\s*started: false\b[^}]*\}/.test(managerProc) &&
     /const pid = startManagerDetached\(o\);\s*await awaitManagerUp\(space, identityRecord\(pid\)\);\s*return \{\s*running: true,\s*started: true,\s*pid\b[^}]*\}/.test(managerProc) &&
     supervise.includes('await mgr.start();') &&
@@ -152,7 +152,7 @@ check(
   "claim 3: docs name project logs and empty journalctl for a oneshot wrapper",
   recoveryGuide.includes("These logs are under the project's `.cotal/`, not `~/.cotal`") &&
     operationGuideText.includes("`journalctl -u <unit>` can be empty") &&
-    deliveryServices.includes("does not put those lines in that unit's journal"),
+    deliveryGuide.includes("does not put those lines in that unit's journal"),
 );
 
 // ── 4. standalone deliver is not a split-host repair ─────────────────────────

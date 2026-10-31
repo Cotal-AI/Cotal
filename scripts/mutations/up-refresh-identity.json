@@ -52,10 +52,10 @@
     {
       "name": "the crash arm's exit line removed",
       "file": "implementations/cli/src/commands/up.ts",
-      "find": "      if (activationFinished) process.exit(code ?? 1);\n",
+      "find": "      if (activationFinished) process.exit(code === 0 ? 0 : exitCode(\"failed\", \"OPERATION_FAILED\"));\n",
       "replace": "",
-      "expectRed": "a killed broker makes the foreground `up` exit 1, the crash arm's code, not Node's unsettled-await 13",
-      "cell": "a killed broker makes the foreground `up` exit 1, the crash arm's code, not Node's unsettled-await 13",
+      "expectRed": "a killed broker makes the foreground `up` exit 5, a failed run's code, not Node's unsettled-await 13",
+      "cell": "a killed broker makes the foreground `up` exit 5, a failed run's code, not Node's unsettled-await 13",
       "command": "pnpm build >/dev/null && pnpm smoke:up-refresh-identity:live",
       "afterRestore": "pnpm build"
     },

@@ -1,7 +1,7 @@
 ---
 title: "Connect OpenCode"
 description: "Launch OpenCode on a Cotal mesh and choose the model and options for your installed version."
-kind: "Informative"
+kind: Guide
 audience: "operators"
 ---
 
@@ -40,7 +40,7 @@ For OpenCode 2.x, opt out of the unsupported event plane:
 cotal spawn --harness opencode --no-events
 ```
 
-Cotal asks the manager to launch OpenCode, waits for it to join the mesh, and attaches your terminal.
+A bare spawn runs OpenCode in this terminal. `--on <instance>` selects a manager and attaches when its runtime streams a terminal.
 To launch a `researcher` persona without opening its terminal, add `--detach`:
 
 ```bash

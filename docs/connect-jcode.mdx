@@ -1,7 +1,7 @@
 ---
 title: "Connect Jcode (beta)"
 description: "Launch a private Jcode session on a Cotal mesh, choose its model, and fork an existing transcript."
-kind: "Informative"
+kind: Guide
 audience: "operators"
 ---
 
@@ -28,6 +28,9 @@ A protocol-major mismatch refuses the connection as `unsupported_version`.
 Windows is unsupported because the bridge uses Unix sockets.
 Managed seats target Linux, macOS, and BSD systems, subject to the [credential-copy requirements](jcode-connector-reference.mdx#credential-mirroring).
 
+Install Jcode 0.78.1 or later. The connector also requires Node 22.13 or later, or 23.4 or later on Node 23.
+It uses Node's built-in SQLite reader to inherit Cursor authentication without copying unrelated editor state.
+
 Check the installed binary:
 
 ```bash
@@ -40,6 +43,8 @@ If the connector is missing from an older Cotal installation, add it:
 cotal ext add @cotal-ai/connector-jcode
 ```
 
+Use `cotal ext seed` to seed a missing built-in connector. Use `cotal ext seed --repair` only after a failed or interrupted seed.
+
 Update Jcode between seats.
 A running managed seat disables Jcode's background binary updater and keeps the version selected at launch.
 
@@ -49,7 +54,7 @@ A running managed seat disables Jcode's background binary updater and keeps the 
 cotal spawn --harness jcode
 ```
 
-Cotal asks the manager to launch Jcode, waits for readiness, and attaches your terminal.
+A bare spawn runs Jcode in this terminal. `--on <instance>` selects a manager and attaches where supported.
 Jcode must complete a provider-backed tool check before it joins, so its first launch can take several minutes.
 The [readiness diagnostics](jcode-connector-reference.mdx#readiness) explain the outcome lines.
 

@@ -1,6 +1,6 @@
 import { assertCommandToken, type ParsedArgs } from "@cotal-ai/core";
 import { CommandFailure, presentationOf } from "@cotal-ai/workspace";
-import { onInstance } from "./control.js";
+import { onInstanceId } from "./control.js";
 import { validateEndpointSelector } from "./endpoint-selection.js";
 
 export function isEndpointCapabilityMode(mode: string | undefined): boolean {
@@ -15,7 +15,7 @@ export function validateEndpointCapabilityArguments(args: ParsedArgs): void {
   presentationOf(args.values);
   const [mode, ...rest] = args.positionals;
   if (!isEndpointCapabilityMode(mode)) throw usage("use endpoint watch, endpoint session or endpoint work lease/commit");
-  if (args.values.on !== undefined) onInstance(String(args.values.on), `cotal endpoint ${mode}`);
+  if (args.values.on !== undefined) onInstanceId(String(args.values.on), `cotal endpoint ${mode}`);
   const work = mode === "work", action = work ? rest[0] : undefined;
   if (work && action !== "lease" && action !== "commit") throw usage("use endpoint work lease <target> <pool> or endpoint work commit <target> <pool> --lease <private-file> --result <JSON>");
   const operands = work ? rest.slice(1) : rest;
@@ -42,7 +42,7 @@ export function endpointCapabilityGate(args: ParsedArgs): never {
   validateEndpointCapabilityArguments(args);
   throw new CommandFailure("refused", "UNSUPPORTED", "this author CLI has no verified native declaration adapter for the requested endpoint watch, interactive-session or work-pool capability; no subscription, cursor, session, lease or commit was created", {
     target: { capability: args.positionals[0], ...(args.positionals[0] === "work" ? { operation: args.positionals[1] } : {}) },
-    remedy: "read cotal endpoint describe <target> --json for its current command surface; this refusal does not claim that the endpoint itself lacks the capability, and no generic subject or remote-execution fallback was used",
+    remedy: "read `cotal endpoint describe <target> --json` for its current command surface; this refusal does not claim that the endpoint itself lacks the capability, and no generic subject or remote-execution fallback was used",
   });
 }
 

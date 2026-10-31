@@ -17,18 +17,19 @@
  * request and never answers cannot hold the gate open past it.
  *
  * Usage:  node scripts/verify-release-installable.mjs <version>
- *           [--registry=<url>] [--poll-interval-ms=<n>] [--deadline-ms=<n>] [--requested-at=<UTC>]
+ *           [--registry=<url>] [--closure] [--poll-interval-ms=<n>] [--deadline-ms=<n>] [--requested-at=<UTC>]
  * Exit:   0 INSTALLABLE      the install succeeded and the binary reported the version
  *         1 NOT INSTALLABLE  no attempt succeeded before the deadline
  *         64                 usage error
  */
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isMainEntry } from "./main-entry.mjs";
 import { coldOsEnvironment } from "./release-cold-environment.mjs";
-import { publicationDeadline } from "./publication-budget.mjs";
+import { publicationExecutionDeadline } from "./publication-budget.mjs";
 import { runPublicationChild } from "./publication-child.mjs";
+import { closureFromConfig } from "./verify-publish-closure.mjs";
 
 export const DEFAULTS = {
   registry: "https://registry.npmjs.org",
@@ -37,13 +38,15 @@ export const DEFAULTS = {
 };
 
 function parseArgs(argv) {
-  const opts = { ...DEFAULTS, version: "" };
+  const opts = { ...DEFAULTS, version: "", attemptStartedAt: process.env.RELEASE_ATTEMPT_STARTED_AT };
   const numeric = { "--poll-interval-ms": "pollIntervalMs", "--deadline-ms": "deadlineMs" };
   for (const arg of argv) {
     const [flag, raw] = arg.split(/=(.*)/s);
     if (!flag.startsWith("--")) {
       if (opts.version) throw new Error(`unexpected argument ${arg}`);
       opts.version = arg;
+    } else if (flag === "--closure" && raw === undefined) {
+      opts.closure = true;
     } else if (flag === "--registry" && raw) {
       opts.registry = raw.replace(/\/+$/, "");
     } else if (flag === "--requested-at" && raw) {
@@ -59,7 +62,7 @@ function parseArgs(argv) {
 }
 
 /** One scratch-prefix install plus a run of the installed binary. Returns null on success. */
-async function attempt({ version, registry }, deadline) {
+async function attempt({ version, registry, closure }, deadline) {
   const root = mkdtempSync(join(tmpdir(), "cotal-installable-"));
   let settled = true;
   const checkSettlement = (result) => {
@@ -69,7 +72,8 @@ async function attempt({ version, registry }, deadline) {
   };
   try {
     // Keep operator credentials and personal state out of package scripts and the installed CLI.
-    // Empty npm configs and a fresh cache keep mirrors and stale packuments out of the answer.
+    // Empty configs avoid operator mirrors. Fresh cache and prefer-online request revalidation,
+    // but cannot guarantee that the registry's own packument has converged.
     writeFileSync(join(root, "user.npmrc"), "");
     writeFileSync(join(root, "global.npmrc"), "");
     const env = {
@@ -95,9 +99,21 @@ async function attempt({ version, registry }, deadline) {
     };
     const bounded = () => ({ cwd: root, env, capture: true, timeout: Math.max(1, deadline - Date.now()) });
     const prefix = join(root, "prefix");
+    if (closure) {
+      const packages = closureFromConfig(readFileSync(new URL("../.changeset/config.json", import.meta.url), "utf8"));
+      // Resolve every sibling in a project. Installing all siblings globally changes Node's
+      // dependency layout and is not the supported CLI installation workflow.
+      const resolved = await runPublicationChild("npm", ["install", "--prefer-online", "--prefix", join(root, "closure"), "--no-save", `--registry=${registry}/`, ...packages.map((name) => `${name}@${version}`)], bounded());
+      checkSettlement(resolved);
+      if (resolved.error?.code === "ERR_PUBLICATION_INTERRUPTED") throw resolved.error;
+      if (resolved.error || resolved.status !== 0) {
+        const why = `${resolved.stderr}${resolved.stdout}`.split("\n").filter((line) => line.startsWith("npm error")).slice(0, 4).join(" | ");
+        return `fixed closure install could not complete (${resolved.error?.code ?? resolved.status})${why ? `: ${why}` : ""}`;
+      }
+    }
     const install = await runPublicationChild(
       "npm",
-      ["install", "-g", "--prefix", prefix, `--registry=${registry}/`, `cotal-ai@${version}`],
+      ["install", "-g", "--prefer-online", "--prefix", prefix, `--registry=${registry}/`, `cotal-ai@${version}`],
       bounded(),
     );
     checkSettlement(install);
@@ -124,7 +140,7 @@ async function attempt({ version, registry }, deadline) {
 }
 
 export async function verifyInstallable(opts, log = (line) => process.stdout.write(`${line}\n`)) {
-  const deadline = Math.min(Date.now() + opts.deadlineMs, opts.requestedAt ? publicationDeadline(opts.requestedAt) : Infinity);
+  const deadline = Math.min(Date.now() + opts.deadlineMs, opts.requestedAt ? publicationExecutionDeadline(opts.requestedAt, opts.attemptStartedAt) : Infinity);
   for (let n = 1; ; n++) {
     const failure = await attempt(opts, deadline);
     if (failure === null && Date.now() <= deadline) {
@@ -148,7 +164,7 @@ if (isMainEntry(import.meta.url)) {
   try {
     opts = parseArgs(process.argv.slice(2));
   } catch (err) {
-    process.stderr.write(`${err.message}\nusage: verify-release-installable.mjs <version> [--registry=<url>] [--poll-interval-ms=<n>] [--deadline-ms=<n>] [--requested-at=<UTC>]\n`);
+    process.stderr.write(`${err.message}\nusage: verify-release-installable.mjs <version> [--registry=<url>] [--closure] [--poll-interval-ms=<n>] [--deadline-ms=<n>] [--requested-at=<UTC>]\n`);
     process.exit(64);
   }
   verifyInstallable(opts).then((code) => process.exit(code)).catch((error) => { console.error(error.message); process.exitCode = 1; });

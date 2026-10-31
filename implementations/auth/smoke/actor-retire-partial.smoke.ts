@@ -5,8 +5,9 @@
  * the retired lifecycle under `changed`, never unknown. Only a retirement the service reports for
  * this call counts: when it answers `retired: false` (the lifecycle never started) or that the
  * lifecycle was already retired, the same race is a plain conflict (exit 2), and a 200 without a
- * readable result is unknown (exit 3). A stub auth service answers the retirement and changes the
- * ledger while it does. Broker-free.
+ * readable result is unknown (exit 3). A grant receipt names the earlier row as none, unchanged or
+ * replaced, and says whether this call retired its lifecycle. A stub auth service answers the
+ * retirement and changes the ledger while it does. Broker-free.
  *
  * Run: pnpm smoke:actor-retire-partial
  */
@@ -197,6 +198,34 @@ try {
     assert.equal(exitCode(failure.outcome, failure.code), 3, "an unreadable retirement result: exit code");
     assert.equal(findInteractiveActor(dir, owner, ACTOR)?.lifecycleUid, first.lifecycleUid, "the predecessor row is left as it was");
   }
+
+  // 9. The receipt names the earlier row as none, unchanged or replaced, and says whether this call
+  //    retired its lifecycle.
+  {
+    const grant = async (presentation: "json" | "plain"): Promise<string> => {
+      const out: string[] = [];
+      const log = console.log;
+      const write = process.stdout.write.bind(process.stdout);
+      console.log = (...a: unknown[]) => { out.push(`${a.join(" ")}\n`); };
+      process.stdout.write = ((chunk: string | Uint8Array) => (out.push(String(chunk)), true)) as typeof process.stdout.write;
+      try { await actorCommand!.run({ values: { space, owner, full: true, [presentation]: true }, positionals: ["grant", ACTOR], raw: [] }); }
+      finally { console.log = log; process.stdout.write = write; }
+      return out.join("");
+    };
+    const receipt = async () => {
+      const { result } = JSON.parse(await grant("json")) as { result: { previous: string; previousLifecycleRetired: boolean } };
+      return [result.previous, result.previousLifecycleRetired];
+    };
+    revokeActor(dir, owner, ACTOR);
+    assert.deepEqual(await receipt(), ["none", false], "a first grant names no earlier row");
+    assert.deepEqual(await receipt(), ["unchanged", true], "the same grant again is unchanged and retired the earlier lifecycle");
+    const plain = (await grant("plain")).replace(/\s+/g, " ");
+    assert.match(plain, /Actor grant stored unchanged .*Earlier grant: the same fields Earlier lifecycle: retired, so a bearer issued under it no longer works /, `the plain receipt says the row is unchanged: ${plain}`);
+    answer = (uid) => ({ retired: false, lifecycleUid: uid, notStarted: true });
+    assert.deepEqual(await receipt(), ["unchanged", false], "a lifecycle that never started is not reported as retired");
+    grantActor(dir, row());
+    assert.deepEqual(await receipt(), ["replaced", true], "a grant over a row with other fields replaces it");
+  }
 } finally {
   await new Promise<void>((resolve) => server.close(() => resolve()));
   process.chdir(startCwd);
@@ -205,5 +234,5 @@ try {
   rmSync(root, { recursive: true, force: true });
 }
 
-console.log("actor-retire-partial smoke: OK - a re-grant or revoke whose actor row changes or disappears during lifecycle retirement ends partial (exit 4), names the retired lifecycle and writes nothing; when the service retired nothing the same race is a conflict (exit 2), and an unreadable retirement result is unknown (exit 3)");
+console.log("actor-retire-partial smoke: OK - a re-grant or revoke whose actor row changes or disappears during lifecycle retirement ends partial (exit 4), names the retired lifecycle and writes nothing; when the service retired nothing the same race is a conflict (exit 2), an unreadable retirement result is unknown (exit 3), and a receipt names the earlier row");
 emitSentinel({ passed: cells(), failed: 0 });

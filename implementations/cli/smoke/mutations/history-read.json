@@ -95,8 +95,8 @@
     {
       "name": "a space with no registry bucket fails the replay read",
       "file": "packages/core/src/endpoint.ts",
-      "find": "      if (!isJetStreamMissing(e, JetStreamApiCodes.StreamNotFound)) throw e;\n    }\n    return { replay: effectiveReplay(cfg, defaults), window: cfg?.replayWindow ?? defaults?.replayWindow ?? null };",
-      "replace": "      throw e;\n    }\n    return { replay: effectiveReplay(cfg, defaults), window: cfg?.replayWindow ?? defaults?.replayWindow ?? null };",
+      "find": "      if (!isJetStreamMissing(e, JetStreamApiCodes.StreamNotFound)) throw e;\n    }\n    return { replay: effectiveReplay(cfg, defaults), window: cfg?.replayWindow ?? defaults?.replayWindow ?? null, registered: cfg !== undefined };",
+      "replace": "      throw e;\n    }\n    return { replay: effectiveReplay(cfg, defaults), window: cfg?.replayWindow ?? defaults?.replayWindow ?? null, registered: cfg !== undefined };",
       "expectRed": "a space with no channel registry has the built-in replay policy, and the read is complete",
       "cell": "a space with no channel registry has the built-in replay policy, and the read is complete",
       "afterRestore": "pnpm --filter cotal-ai... build"
@@ -122,7 +122,7 @@
     {
       "name": "a followed message is not written as an event record",
       "file": "implementations/cli/src/commands/history.ts",
-      "find": "if (presentation === \"json\") writeStreamRecord(streamRecord(\"history\", \"event\", target, entry.item));",
+      "find": "if (presentation === \"json\") writeStreamRecord(streamRecord(\"history\", \"event\", target, event));",
       "replace": "if (presentation === \"json\") void 0;",
       "expectRed": "a message sent while following is one event record",
       "cell": "a message sent while following is one event record",
@@ -131,7 +131,7 @@
     {
       "name": "an interrupted follow writes no end record",
       "file": "implementations/cli/src/commands/history.ts",
-      "find": "if (presentation === \"json\") writeStreamRecord(streamRecord(\"history\", \"end\", target, { reason: ended ?? \"stopped\" }));",
+      "find": "if (presentation === \"json\") writeStreamRecord(streamRecord(\"history\", \"end\", target, { reason: refusal ? \"refused\" : ended ?? \"stopped\" }));",
       "replace": "if (presentation === \"json\") void 0;",
       "expectRed": "an interrupted follow ends with an end record and exit 0",
       "cell": "an interrupted follow ends with an end record and exit 0",
@@ -149,8 +149,8 @@
     {
       "name": "a followed line prints the ISO time",
       "file": "implementations/cli/src/commands/history.ts",
-      "find": "return `${shownTime(item.ts)}  ${where(item)}",
-      "replace": "return `${item.ts}  ${where(item)}",
+      "find": "  return scriptLine(item.ts, item.from.name || item.from.id, item.channel !== null ? `#${item.channel}` : `DM to ${item.to ?? \"not attributed\"}`, item.text);",
+      "replace": "  return scriptLine(item.ts, item.from.name || item.from.id, item.channel !== null ? `#${item.channel}` : `DM to ${item.to ?? \"not attributed\"}`, item.text).replace(/^\\S+/, item.ts);",
       "expectRed": "a followed line shows the local time, not the ISO time",
       "cell": "a followed line shows the local time, not the ISO time",
       "afterRestore": "pnpm --filter cotal-ai... build"
@@ -158,7 +158,7 @@
     {
       "name": "a followed line ignores the terminal width",
       "file": "implementations/cli/src/commands/history.ts",
-      "find": "presentation === \"rich\" ? \"rich\" : \"plain\", terminalWidth(process.stdout))}",
+      "find": "presentation === \"rich\" ? \"rich\" : \"plain\", process.stdout)}",
       "replace": "presentation === \"rich\" ? \"rich\" : \"plain\")}",
       "expectRed": "a followed line wraps at word boundaries in a 60-column terminal",
       "cell": "a followed line wraps at word boundaries in a 60-column terminal",

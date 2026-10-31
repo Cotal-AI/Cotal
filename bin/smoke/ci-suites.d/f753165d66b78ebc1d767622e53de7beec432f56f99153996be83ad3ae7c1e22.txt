@@ -1,0 +1,3 @@
+# The short service commands: --exec word splitting, preset defaults and the option a default
+# cannot supply, manager dispatch onto its preset, and the help listing.
+smoke:service-commands

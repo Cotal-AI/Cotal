@@ -1,7 +1,7 @@
 import { execFile, type ExecFileException } from "node:child_process";
 import { registry, type Extension } from "./registry.js";
 import type { SecretStore } from "./secret-store.js";
-import type { ServiceAuthorityInfo, ServiceAuthorityProof, ServiceAuthorityRequest, ServiceAuthorityResult } from "./remote-service-authority.js";
+import type { ServiceAuthorityInfo, ServiceAuthorityProof, ServiceAuthorityRequest, ServiceAuthorityResult, ServiceRegistrationWitness } from "./remote-service-authority.js";
 import type {
   RemoteManagerAdminAuthorizationRequest,
   RemoteManagerAdminAuthorizationResult,
@@ -11,6 +11,8 @@ import type {
   RemoteManagerGoalIndexScanResult,
   RemoteManagerMaintenanceRequest,
   RemoteManagerMaintenanceResult,
+  RemoteManagerParticipationAuthorizationRequest,
+  RemoteManagerParticipationAuthorizationResult,
   RemoteManagedAgentEnrollmentRequest,
   RemoteManagedAgentEnrollmentResult,
   RemoteManagedAgentPrepareRetirementRequest,
@@ -24,6 +26,7 @@ import type {
   RemoteRunAttemptRequest,
   RemoteRunAttemptResult,
 } from "./remote-manager-authority.js";
+import type { ConversationSelection } from "./conversation-selection.js";
 import { assertLifecycleToken } from "./subjects.js";
 
 /** Who holds one managed lifecycle, recorded on its managed-agent grant row by the writer that
@@ -63,6 +66,56 @@ export class AgentGrantConflictError extends Error {
     super(`actor "${actor}" already has a grant; no grant was replaced`);
     this.name = "AgentGrantConflictError";
   }
+}
+
+/** A host's typed answer that an agent name is held by one lifecycle: the body of its HTTP 409
+ *  whose `code` is `AGENT_LIFECYCLE_HELD`, on a managed enrollment or on agent provisioning.
+ *  `agentId` is the host's registration id, `presence` is `offline` only when the agent is
+ *  positively absent, and `unavailable` means the host could not tell. */
+export interface AgentLifecycleHeld {
+  agentId: string;
+  lifecycleUid: string;
+  custody: { state: "known" | "absent" | "unavailable"; kind?: "foreground" | "remote-manager"; managerInstanceId?: string };
+  presence: "online" | "offline" | "unavailable";
+}
+
+/** The `details[]` kind that carries a host's {@link AgentLifecycleHeld} answer, verbatim, on the
+ *  `conflict` refusal of a managed spawn or an agent provisioning: `{ kind, code, actor, held }`,
+ *  with the actor the host answered about. */
+export const AGENT_LIFECYCLE_HELD = "ai.cotal.auth.agent-lifecycle-held";
+
+/** The {@link AgentLifecycleHeld} a value carries, or `undefined` when it is not that closed shape.
+ *  Takes a host's 409 body (`{ code: "AGENT_LIFECYCLE_HELD", held }`) or a `details[]` list. */
+export function agentLifecycleHeld(value: unknown): AgentLifecycleHeld | undefined {
+  const entry = Array.isArray(value) ? value.find((d) => (d as { kind?: unknown } | null)?.kind === AGENT_LIFECYCLE_HELD) : value;
+  if ((entry as { code?: unknown } | null)?.code !== "AGENT_LIFECYCLE_HELD") return undefined;
+  const held = (entry as { held?: unknown }).held as Partial<AgentLifecycleHeld> | null | undefined;
+  const custody = held?.custody as Partial<AgentLifecycleHeld["custody"]> | null | undefined;
+  const text = (v: unknown) => typeof v === "string" && v.length > 0;
+  if (!held || !text(held.agentId) || !text(held.lifecycleUid) || !custody) return undefined;
+  if (!["known", "absent", "unavailable"].includes(custody.state as string) || !["online", "offline", "unavailable"].includes(held.presence as string)) return undefined;
+  if ((custody.kind !== undefined && custody.kind !== "foreground" && custody.kind !== "remote-manager") || (custody.managerInstanceId !== undefined && !text(custody.managerInstanceId))) return undefined;
+  return {
+    agentId: held.agentId!,
+    lifecycleUid: held.lifecycleUid!,
+    custody: { state: custody.state!, ...(custody.kind ? { kind: custody.kind } : {}), ...(custody.managerInstanceId ? { managerInstanceId: custody.managerInstanceId } : {}) },
+    presence: held.presence!,
+  };
+}
+
+/** A host's answer to releasing one exact agent lifecycle, as it gave it. `revoked` and
+ *  `already-revoked` say the registration is revoked, not that its retirement has finished, so the
+ *  name may still be retiring. `not-found` is a lifecycle the host lists no registration for, and
+ *  `unknown` a release the host could not confirm. */
+export interface AgentLifecycleRelease {
+  outcome: "revoked" | "already-revoked" | "not-found" | "unknown";
+  /** The host's registration id the release addressed, when it found one. */
+  agentId?: string;
+  /** The actor that registration names, when it found one. */
+  actor?: string;
+  /** The host's HTTP status and reason, when it answered something other than a release. */
+  status?: number;
+  reason?: string;
 }
 
 /**
@@ -127,7 +180,7 @@ export interface AuthProvider extends Extension {
    * deploy connections the operator surfaces (`web`, `console`, `history clear`, `channels`,
    * `spawn -f`) ride. An under-scoped or unknown view MUST fail loud with the exact re-grant.
    */
-  userCredentials(opts: UserCredentialsRequest): Promise<{ bearer: string; sentinelCreds: string }>;
+  userCredentials(opts: UserCredentialsRequest): Promise<UserCredentialsResult>;
   /**
    * Admit ONE distinct chat session for the signed-in human: the provider fetches the IdP
    * proof itself, and the minting authority derives the owner, draws the session actor and its
@@ -200,6 +253,14 @@ export interface AuthProvider extends Extension {
     signal?: AbortSignal;
   }): Promise<{ result: ServiceAuthorityResult; sentinelCreds: string }>;
   /**
+   * A renewal source for one registered service witness: the bearer function a long-lived service
+   * endpoint passes as `EndpointOptions.bearer`. Its first pull activates and later pulls renew, each
+   * replaying one requestId per operation that is persisted in `store` before its first send. The
+   * source holds the material; it owns no timers, and the endpoint's own schedule drives it. Optional,
+   * so a provider without service endpoints refuses at the caller.
+   */
+  serviceEndpointRenewal?(opts: { store: SecretStore; dir: string; witness: ServiceRegistrationWitness }): ServiceEndpointRenewal;
+  /**
    * Request the closed remote manager-service authority material from the host's loopback/operator
    * exchange. This is an explicitly typed lifecycle protocol, not a generic profile mint: the
    * provider must authenticate the signed-in human, fresh-check `supervise`, bind the returned
@@ -227,6 +288,10 @@ export interface AuthProvider extends Extension {
     dir: string;
     request: RemoteRunAttemptRequest;
   }): Promise<RemoteRunAttemptResult>;
+  /** Body-bound observed cancellation, separate from the holder's operator revoke. */
+  requestRemoteRunCancel?(opts: { store: SecretStore; dir: string;
+    request: import("./remote-manager-authority.js").RemoteRunCancelRequest;
+  }): Promise<import("./remote-manager-authority.js").RemoteRunCancelResult>;
   /** Revoke through the issuing host under the authenticated owner's fresh ledger grant. */
   requestRemoteRunRevoke?(opts: {
     store: SecretStore;
@@ -253,6 +318,12 @@ export interface AuthProvider extends Extension {
     dir: string;
     request: RemoteManagerAdminAuthorizationRequest;
   }): Promise<RemoteManagerAdminAuthorizationResult>;
+  /** Fresh host decision for one exact active native personal caller lifecycle. */
+  authorizeRemoteManagerParticipation?(opts: {
+    store: SecretStore;
+    dir: string;
+    request: RemoteManagerParticipationAuthorizationRequest;
+  }): Promise<RemoteManagerParticipationAuthorizationResult>;
   /**
    * Revalidate one retained remote managed agent at the host that owns the current ledger and auth
    * secrets. This is a read-only lifecycle check, never a mint and never a generic provider hook.
@@ -270,7 +341,9 @@ export interface AuthProvider extends Extension {
    * request carries only its digest; the host picks the lifecycle UID, authors the ledger grant,
    * pre-creates the durables, and returns the stable non-secret metadata plus the space sentinel.
    * Optional so a provider with no hosted storage composition fails loud at the caller rather than
-   * letting a local grant masquerade as a host-owned one.
+   * letting a local grant masquerade as a host-owned one. A host that refuses the enrollment rejects
+   * as an `EpEnvelopeError` whose outcome is `not-executed`; any other failure carries no outcome,
+   * because the host may have enrolled the agent before it failed.
    */
   enrollRemoteManagedAgent?(opts: {
     store: SecretStore;
@@ -314,12 +387,39 @@ export interface AuthProvider extends Extension {
    * the session cache. The transport discipline is the provider's too: redirects are refused
    * (a 302 could walk the proof onto another host), and every failure MUST throw one sentence
    * with the exact operator action — not signed in names the `cotal login --idp …` line, an
-   * endpoint refusal surfaces the endpoint's own reason. The caller owns validating the returned
+   * endpoint refusal surfaces the endpoint's own reason. No sign-in throws with `code`
+   * `"signed-out"`, before any request. An HTTP 409 whose body is a typed
+   * {@link AgentLifecycleHeld} answer rejects as a `conflict` envelope, outcome `not-executed`,
+   * with that answer as its {@link AGENT_LIFECYCLE_HELD} detail. Any other failure after the
+   * request carries no code, an endpoint 401 or 403 included: the endpoint is the deployment's,
+   * and nothing pins what its refusal left behind. Such an answer carries the HTTP `status` and
+   * the endpoint's `reason`. The caller owns validating the returned
    * material's shape; this method proves and carries, it does not interpret. Optional: a
    * provider without a remote-provisioning story simply lacks it, and the caller refuses with
    * its own named message.
    */
   postAgentProvisioning?(opts: { url: string; idpUrl: string; actor: string }): Promise<unknown>;
+  /**
+   * CLIENT side of releasing one exact agent lifecycle on a REMOTE mesh's agent-provisioning
+   * endpoint, with this machine's login proof for `idpUrl`: list the registrations at `url`, and
+   * revoke the unrevoked one whose lifecycle is `lifecycleUid` (and whose actor is `actor`, when
+   * given). Returns the host's answer as it gave it; a lifecycle it lists no registration for is
+   * `not-found`. Only that one registration is addressed, never another lifecycle of the same
+   * name. Throws one sentence when the endpoint cannot be read or refuses the caller. Optional, as
+   * {@link postAgentProvisioning} is.
+   */
+  releaseAgentLifecycle?(opts: { url: string; idpUrl: string; lifecycleUid: string; actor?: string }): Promise<AgentLifecycleRelease>;
+  /** Present the signed-in human's proof to a discovered conversation-identity authority. The
+   * caller validates the selected registration and endpoint before this call. The provider keeps
+   * the proof private, refuses non-HTTPS destinations and redirects, and performs one request only.
+   * A transport failure is an unknown outcome; callers retain their original request and secret.
+   * The status is returned with the body because pending retirement is not completed cleanup. */
+  requestConversationIdentity?(opts: {
+    url: string;
+    idpUrl: string;
+    method: "POST" | "DELETE";
+    body?: { v: 1; requestId: string; tokenHash: string; label?: string; selection?: ConversationSelection };
+  }): Promise<{ status: number; body: unknown }>;
   /**
    * CLIENT side of a REMOTE mesh's one-time enrollment redeem: GET the secret-bearing enrollment
    * URL exactly once and return the parsed JSON answer verbatim. The URL itself is the credential,
@@ -343,6 +443,14 @@ export interface AuthProvider extends Extension {
    * nothing to report status about).
    */
   userStatus(opts: { store: SecretStore; dir: string; space: string; actor: string }): Promise<UserAuthStatus>;
+  /**
+   * Ask the space's pinned IdP whether this machine's cached login for it still holds, by fetching
+   * one IdP proof and discarding it. Nothing is minted and no auth service is called. The IdP pins
+   * come from `dir` as for {@link userStatus}. `signed-out` means no login is cached for that IdP,
+   * and `rejected` that the IdP refused the cached one because it expired or was revoked. Any other
+   * failure, such as an IdP that does not answer, throws.
+   */
+  confirmLogin?(opts: { dir: string; space: string }): Promise<"confirmed" | "signed-out" | "rejected">;
   /**
    * SERVER side, agent lifecycle: author an agent grant for `(owner, actor)` in this space's
    * ledger — the spawn path's half of "actors are server-ledger-authorized, never taken from
@@ -430,18 +538,42 @@ export interface AuthProvider extends Extension {
    * bearer to stdout and exits (flags: `--dir <state-dir> --space <space> --owner <o> --actor <a>
    * --token-file <path>`). A long-lived agent endpoint execs it per refresh — the exchange
    * protocol, discovery, and secret handling stay entirely behind the provider; the agent-side
-   * runtime only runs an argv and reads a line. */
+   * runtime only runs an argv and reads a line. When the exchange limits the agent for a while, the
+   * command prints `retry-after <seconds>` on stdout instead and exits non-zero, and the endpoint runs
+   * it again when those seconds have passed, not before. */
   readonly agentBearerCommand: string;
+}
+
+/** The current agent authority the user-auth issuer read before minting one bearer. This is issuer
+ *  output, not a bearer claim decoded by the client. `dmHistory: "own"` is the ordinary agent
+ *  profile's own direct-message inbox and never means every DM in the space. */
+export interface UserAuthGrant {
+  scope: string[];
+  allowSubscribe: string[];
+  allowPublish: string[];
+  dmHistory: "own";
+}
+
+/** Connect material from {@link AuthProvider.userCredentials}. The stock provider returns
+ *  `authority` from the same successful issuer response as the bearer. It stays optional for a
+ *  provider or older issuer that cannot answer authoritatively; callers must report that absence as
+ *  unknown rather than decode the bearer or infer access from a successful connection. */
+export interface UserCredentialsResult {
+  bearer: string;
+  sentinelCreds: string;
+  authority?: { owner: string; grant: UserAuthGrant };
 }
 
 /** The error for a failed run of an {@link AuthProvider.agentBearerCommand} argv. The command prints
  *  an operator sentence on stderr for every failure it handles, and that sentence is the error.
  *  Empty stderr means the child never reached its handler, and Node's `Command failed` message
  *  would repeat the whole argv, with its exchange URL, principal and file paths, while hiding
- *  whether the child timed out, was killed or exited. */
-export function bearerCommandFailure(err: ExecFileException, stderr: string, timeoutMs: number): Error {
+ *  whether the child timed out, was killed or exited. A `retry-after <seconds>` line on stdout rides
+ *  the error as `retryAfterSeconds`. */
+export function bearerCommandFailure(err: ExecFileException, stderr: string, timeoutMs: number, stdout = ""): Error {
   const said = stderr.trim();
-  if (said) return new Error(said);
+  const retryAfter = /^retry-after (\d+)$/.exec(stdout.trim());
+  if (said) return Object.assign(new Error(said), retryAfter ? { retryAfterSeconds: Number(retryAfter[1]) } : {});
   // execFile marks an exit error `killed` only when its own timeout killed the child.
   if (err.killed) return new Error(`the bearer command timed out after ${timeoutMs}ms`);
   if (err.signal) return new Error(`the bearer command was killed by ${err.signal}`);
@@ -463,7 +595,7 @@ export function runAgentBearer(
       argv[0],
       argv.slice(1),
       { timeout: timeoutMs, maxBuffer: 64 * 1024, env: opts.env, signal: opts.signal },
-      (err, stdout, stderr) => err ? reject(bearerCommandFailure(err, stderr, timeoutMs)) : resolve(stdout.trim()),
+      (err, stdout, stderr) => err ? reject(bearerCommandFailure(err, stderr, timeoutMs, stdout)) : resolve(stdout.trim()),
     );
   });
 }
@@ -485,6 +617,9 @@ export interface AuthSpaceCatalogResult {
   snapshot?: unknown;
   fetchedAt?: string;
   error?: string;
+  /** On `failed`: the previous refresh of this account failed too, with no success since, so this
+   *  failure continues an outage an earlier preparation already returned. */
+  ongoing?: boolean;
 }
 
 /** Workstation consumer for provider-owned catalogs. Kept separate so auth never imports a CLI.
@@ -536,6 +671,37 @@ export function resolveAuthProvider(): AuthProvider {
   if (providers.length > 1)
     throw new Error(`multiple auth providers registered (${providers.map((p) => p.name).join(", ")}) - cannot choose between them`);
   return providers[0];
+}
+
+/** Where a {@link ServiceEndpointRenewal} stands. `unavailable` is an outage the next pull retries with
+ *  the same request; `ended` is terminal, and every later pull refuses without sending anything. No
+ *  state carries a token. */
+export type ServiceEndpointRenewalState =
+  | { readonly state: "idle" }
+  | { readonly state: "current"; readonly accessExpiresAt: number; readonly renewalExpiresAt: number }
+  | { readonly state: "unavailable" }
+  | { readonly state: "ended"; readonly reason: string }
+  | { readonly state: "closed" };
+
+/** A validated `credential` result without its renewal material: what a guest's serve grant reads. */
+export type ServiceEndpointCredential = Omit<Extract<ServiceAuthorityResult, { state: "credential" }>, "renewalProof" | "renewalExpiresAt">;
+
+/** A service endpoint's renewal source (see {@link AuthProvider.serviceEndpointRenewal}). */
+export interface ServiceEndpointRenewal {
+  /** The bearer function: a fresh, unexpired service access bearer. Concurrent calls share one request. */
+  bearer(): Promise<string>;
+  /** The same pull as `bearer()`, answering the validated `credential` result a guest hands to
+   *  `authorizeGuestServeGrant`: the witness, the host-authorized snapshot and the access bearer,
+   *  without the renewal proof, which never leaves the source. Each caller gets its own copy.
+   *  Concurrent `bearer()` and `credential()` calls share one request; the persisted request ids
+   *  and the terminal behaviour are the same. */
+  credential(): Promise<ServiceEndpointCredential>;
+  /** The current state, with expiries only. */
+  state(): ServiceEndpointRenewalState;
+  /** The space's deny-all sentinel creds the endpoint presents with the bearer, known after the first success. */
+  readonly sentinelCreds: string | undefined;
+  /** Refuse new pulls, abort the request in flight and wait for it. Idempotent. */
+  close(): Promise<void>;
 }
 
 /** What {@link AuthProvider.userCredentials} takes: `store` and `dir` locate this machine's state,

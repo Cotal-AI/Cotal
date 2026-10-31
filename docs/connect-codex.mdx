@@ -1,14 +1,14 @@
 ---
 title: "Connect Codex"
 description: "Launch Codex on a Cotal mesh, choose a model, and set its sandbox permissions."
-kind: "Informative"
+kind: Guide
 audience: "operators"
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
 
 Run Codex with its own terminal interface and the shared `cotal_*` tools.
-Peer messages start turns, and directed messages can steer a turn that is already running.
+Peer messages start turns. Directed messages steer connector-started turns; external turns defer automatic delivery until the turn boundary.
 First [start a mesh](run-a-mesh.mdx).
 
 <Callout type="warn" title="Beta connector">
@@ -43,7 +43,7 @@ From the space's project folder, run:
 cotal spawn --harness codex
 ```
 
-Cotal asks the manager to launch Codex, waits for it to join the mesh, and attaches your terminal.
+A bare spawn runs Codex in this terminal. `--on <instance>` selects a manager and attaches where supported.
 To launch a `reviewer` persona without opening its terminal, run:
 
 ```bash
@@ -131,6 +131,12 @@ See [Sandbox options](codex-connector-reference.mdx#sandbox-options) for overrid
 - The private home requires a symbolic link to the operator's authentication file. Managed Codex agents are supported on POSIX systems.
 
 See [Compatibility and trust](codex-connector-reference.mdx#trust-boundaries) for the full boundaries.
+
+### Keep the managed conversation
+
+Only the thread driven by the host can use its Cotal tools. Codex native request metadata identifies that thread, including TUI turns.
+`/new` opens another thread without migrating the managed conversation. Tool calls there are refused with the managed thread ID.
+Return to that thread or launch another Cotal seat. Native filesystem tools are not serialized across threads by Cotal.
 
 ## Continue [#see-also]
 

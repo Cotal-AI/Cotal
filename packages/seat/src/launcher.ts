@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { discardSeatArtifacts } from "./artifacts.js";
-import { assertSeatId, capabilityToken, recordPath, seatId, socketPath, writePrivate, type SeatRecord, readRecord } from "./record.js";
+import { assertSeatId, capabilityToken, processStatFields, recordPath, seatId, socketPath, writePrivate, type SeatRecord, readRecord } from "./record.js";
 import { unattendedMs, assertSocketPathFits, unsupportedTransport } from "./protocol.js";
 
 export interface SeatLaunchSpec {
@@ -14,6 +14,7 @@ export interface SeatLaunchSpec {
   confirm?: string;
   confirmBefore?: readonly import("./startup-confirm.js").StartupReply[];
   confirmReady?: readonly string[];
+  confirmBlockers?: readonly import("./startup-confirm.js").StartupBlocker[];
   /** The launch's private temporary directories, recorded on the seat record (see SeatRecord). */
   artifacts?: string[];
 }
@@ -56,13 +57,8 @@ export const RUN_MARKER_FLAG = "--cotal-run";
 
 /** This process's parent, from `/proc/<pid>/stat` field 4. Undefined when the pid is gone. */
 function parentOf(pid: number): number | undefined {
-  try {
-    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-    const ppid = Number(stat.slice(stat.lastIndexOf(") ") + 2).split(" ")[1]);
-    return Number.isInteger(ppid) && ppid > 1 ? ppid : undefined;
-  } catch {
-    return undefined;
-  }
+  const ppid = Number(processStatFields(pid)?.[1]);
+  return Number.isSafeInteger(ppid) && ppid > 1 ? ppid : undefined;
 }
 
 /**
@@ -121,13 +117,8 @@ export function runMarkerOf(pid: number): string | undefined {
 
 function pidLive(pid: number | undefined): boolean {
   if (typeof pid !== "number" || pid <= 0) return false;
-  try {
-    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-    const state = stat.slice(stat.lastIndexOf(") ") + 2).split(" ")[0];
-    return state !== "Z";
-  } catch {
-    return false;
-  }
+  const state = processStatFields(pid)?.[0];
+  return state !== undefined && state !== "Z";
 }
 
 export function launchSeat(opts: LaunchSeatOpts): SeatRecord {
@@ -204,6 +195,7 @@ function startCustodian(opts: LaunchSeatOpts, artifactRoot: string) {
     confirm: opts.spec.confirm,
     confirmBefore: opts.spec.confirmBefore,
     confirmReady: opts.spec.confirmReady,
+    confirmBlockers: opts.spec.confirmBlockers,
     ...(opts.spec.artifacts?.length ? { artifacts: opts.spec.artifacts, artifactRoot } : {}),
     run,
     // Resolved HERE, not in the custodian: the custodian's environment is scrubbed to `PATH` plus the

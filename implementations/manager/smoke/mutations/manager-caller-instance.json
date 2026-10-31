@@ -31,8 +31,8 @@
     {
       "name": "cotal run drops --on before the manager-caller exchange",
       "file": "implementations/runtime/src/run-command.ts",
-      "find": "  const target = seat?.mode === \"auth\" ? seat : await resolveControlTarget(values, \"control-caller-privileged\", on);",
-      "replace": "  const target = seat?.mode === \"auth\" ? seat : await resolveControlTarget(values, \"control-caller-privileged\");",
+      "find": "  const target = seat?.mode === \"auth\" ? seat : await resolveControlTarget(values, \"control-caller-privileged\", on, { onRefusal: \"throw\" });",
+      "replace": "  const target = seat?.mode === \"auth\" ? seat : await resolveControlTarget(values, \"control-caller-privileged\", undefined, { onRefusal: \"throw\" });",
       "expectRed": "#3959 `cotal run ps --on <instance>` succeeds against the named instance",
       "cell": "#3959 `cotal run ps --on <instance>` succeeds against the named instance",
       "afterRestore": "pnpm --filter @cotal-ai/runtime build"
@@ -85,8 +85,8 @@
     {
       "name": "the connector passes the bearer command's remedy through to a tool",
       "file": "extensions/connector-core/src/agent.ts",
-      "find": "        ], signal).catch((e: unknown) => {\n          throw e instanceof Error ? new Error(e.message.replace(\"--manager-instance <instanceId>\", \"the instance argument\")) : e;\n        });",
-      "replace": "        ], signal);",
+      "find": "        const bearer = (signal?: AbortSignal) => this.managerCallBearer(bearerArgv, signal).catch((e: unknown) => {\n          throw e instanceof Error ? new Error(e.message.replace(\"--manager-instance <instanceId>\", \"the instance argument\")) : e;\n        });",
+      "replace": "        const bearer = (signal?: AbortSignal) => this.managerCallBearer(bearerArgv, signal);",
       "expectRed": "#3959 an unbound seat's cotal_run ps refuses, lists both and names the instance argument",
       "cell": "#3959 an unbound seat's cotal_run ps refuses, lists both and names the instance argument",
       "afterRestore": "pnpm --filter @cotal-ai/connector-core build"

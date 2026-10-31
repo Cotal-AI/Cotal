@@ -7,7 +7,7 @@
  * a standard `TARGET_UNAVAILABLE` refusal, exit 2, with a JSON envelope. A registered space whose
  * broker is not running still previews, which shows the dry run connects nowhere.
  *
- * docs/cli.md used to document `history clear --force`, which the CLI refuses. The page and the help
+ * docs/cli.mdx used to document `history clear --force`, which the CLI refuses. The page and the help
  * now both name `--yes` and `--dry-run`.
  *
  * Driven through the built binary in a sandboxed COTAL_HOME. No broker is started.

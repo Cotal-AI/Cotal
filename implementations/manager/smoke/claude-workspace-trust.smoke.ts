@@ -1,4 +1,5 @@
-import assert from "node:assert/strict";
+import nodeAssert from "node:assert/strict";
+import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
@@ -6,12 +7,15 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import Headless from "@xterm/headless";
 // Each package's built output, named by path so its mutation fixture's scoped build is what runs.
-import { StartupConfirmSequence as CoreSequence, confirmWatch, discardLaunchArtifacts, type Runtime, type StartupReply } from "../../../packages/core/dist/index.js";
+import { StartupConfirmSequence as CoreSequence, confirmWatch, discardLaunchArtifacts, type Runtime, type StartupBlocker, type StartupReply } from "../../../packages/core/dist/index.js";
 import { StartupConfirmSequence as SeatSequence, StartupConfirmGate, ConnectorDiagnosticReader } from "../../../packages/seat/dist/index.js";
 import { claudeConnector } from "../../../extensions/connector-claude-code/dist/index.js";
 import { LegacyPtyRuntime } from "../src/runtime/pty.js";
 import { CustodialPtyRuntime } from "../src/runtime/custodial-pty.js";
 import { TmuxRuntime } from "../../../extensions/tmux/src/runtime.js";
+
+const counted = countedAssert(nodeAssert);
+const assert: typeof nodeAssert = counted.assert;
 
 // Keep Cotal values only for restoration, never in an environment object that could reach a child.
 const cotalOriginal = new Map<string, string>();
@@ -71,6 +75,16 @@ const UNKNOWN_DIALOGS: [string, string][] = [
   ["a login prompt", CLEAR + "Select login method:\r\n\r\n ❯ 1. Claude account with subscription\r\n   2. Anthropic Console account\r\n\r\n Enter to confirm · Esc to cancel"],
   ["the bypass permissions acceptance", CLEAR + " WARNING: Claude Code running in Bypass Permissions mode\r\n\r\n ❯ 1. No, exit\r\n   2. Yes, I accept\r\n\r\n Enter to confirm · Esc to cancel"],
 ];
+// Claude 2.1.311 screens a managed seat stopped on in a fresh profile, as tmux showed them: the
+// first-run text style picker, the login choice that follows it, and the Bypass Permissions warning.
+const CLAUDE_THEME = CLEAR + " Let's get started.\r\n\r\n Choose the text style that looks best with your terminal\r\n To change this later, run /theme\r\n\r\n     Auto (match terminal)\r\n ❯ ✔ Dark mode\r\n     Light mode\r\n\r\n  Syntax theme: Monokai Extended (ctrl+t to disable)";
+const CLAUDE_LOGIN = CLEAR + " Claude Code can be used with your Claude subscription or billed based on API usage through your Console account.\r\n\r\n Select login method:\r\n\r\n ❯ 1. Claude account with subscription · Pro, Max, Team, or Enterprise\r\n   2. Anthropic Console account · API usage billing";
+const CLAUDE_BYPASS = CLEAR + "  WARNING: Claude Code running in Bypass Permissions mode\r\n\r\n  In Bypass Permissions mode, Claude Code will not ask for your approval before running potentially dangerous commands.\r\n\r\n  ❯ No, exit\r\n    Yes, I accept\r\n\r\n  Enter to confirm · Esc to cancel";
+const BLOCKER_SCREENS: [string, string, string][] = [
+  ["the first-run text style picker", CLAUDE_THEME, "Choose the text style that looks best with your terminal"],
+  ["the login method choice", CLAUDE_LOGIN, "Select login method:"],
+  ["the Bypass Permissions warning", CLAUDE_BYPASS, "WARNING: Claude Code running in Bypass Permissions mode"],
+];
 
 /** The pty runtime's screen mirror: @xterm/headless at that runtime's default size, read as it reads. */
 class Screen {
@@ -97,7 +111,7 @@ async function cell(name: string, body: () => void | Promise<void>): Promise<voi
 }
 
 /** Startup choices in both sequence copies and both watches, over real and older dialog screens. */
-async function choiceCells(final: string, replies: readonly StartupReply[], ready: readonly string[]): Promise<void> {
+async function choiceCells(final: string, replies: readonly StartupReply[], ready: readonly string[], blockers: readonly StartupBlocker[]): Promise<void> {
   for (const [impl, Sequence] of [["core", CoreSequence], ["seat", SeatSequence]] as const) {
     await cell(`${impl}: real Claude 2.1.232 trust dialog gets one Enter on the selected Yes`, async () => {
       const screen = new Screen();
@@ -194,6 +208,20 @@ async function choiceCells(final: string, replies: readonly StartupReply[], read
         for (let i = 0; i < 6; i++) assert.equal(sequence.observe(screen.read()), undefined);
       });
     }
+    for (const [what, bytes, prompt] of BLOCKER_SCREENS) {
+      await cell(`${impl}: ${what} gets no key, never completes and is named as the blocker`, async () => {
+        const reason = blockers.find((blocker) => blocker.prompt === prompt)?.reason ?? assert.fail(`no blocker declared for ${prompt}`);
+        const screen = new Screen();
+        await screen.write(bytes);
+        const sequence = new Sequence(final, replies, ready, blockers);
+        for (let i = 0; i < 6; i++) assert.equal(sequence.observe(screen.read()), undefined);
+        assert.equal(sequence.blocked, reason);
+        // Someone at the pane answers it; the watch then finishes as usual.
+        await screen.write(CLEAR + CLAUDE_CHANNELS);
+        assert.deepEqual(sequence.observe(screen.read()), { key: "Enter", done: true });
+        assert.equal(sequence.blocked, undefined, "a cleared blocker is no longer named");
+      });
+    }
     await cell(`${impl}: real Claude 2.1.232 trust dialog, then the 2.1.301 ready screen, gets one Enter and completes`, async () => {
       const screen = new Screen();
       // A ready text in the workspace path does not pre-empt the trust dialog.
@@ -222,6 +250,12 @@ async function choiceCells(final: string, replies: readonly StartupReply[], read
       assert.throws(() => new Sequence("final", [{ prompt: "choice", key: "Escape" as "Down" }]));
       assert.throws(() => new Sequence("final", [{ prompt: "choice", key: "Enter", optional: "yes" as unknown as boolean }]));
     });
+    await cell(`${impl}: malformed startup blockers are refused`, () => {
+      assert.throws(() => new Sequence(final, replies, ready, [{ prompt: " \x1b[0m ", reason: "reason" }]));
+      assert.throws(() => new Sequence(final, replies, ready, [{ prompt: "screen", reason: " " }]));
+      assert.throws(() => new Sequence(final, replies, ready, [{ prompt: "screen" } as StartupBlocker]));
+      assert.throws(() => new Sequence(final, replies, ready, Array(9).fill({ prompt: "screen", reason: "reason" })));
+    });
   }
 
   // Both watches poll the screen on their own timers. Each test answers a key as Claude does:
@@ -243,13 +277,13 @@ async function choiceCells(final: string, replies: readonly StartupReply[], read
     return { pressed, polling: reads > settled, reads };
   };
   const seatGate = (failures: string[], choices = replies) => (read: () => string, key: (key: "Down" | "Enter") => void) => {
-    const gate = new StartupConfirmGate(final, choices, ready);
+    const gate = new StartupConfirmGate(final, choices, ready, blockers);
     gate.arm(new ConnectorDiagnosticReader(), { report: (message) => failures.push(message), stop: () => {} }, { read, key });
     return () => gate.disarm();
   };
   const coreWatch = (failures: string[], choices = replies) => (read: () => string, key: (key: "Down" | "Enter") => void) => {
     let open = true;
-    confirmWatch(final, choices, ready)({
+    confirmWatch(final, choices, ready, blockers)({
       read: () => open ? read() : undefined,
       enter: () => key("Enter"), down: () => key("Down"), fail: (message) => failures.push(message),
     });
@@ -279,6 +313,23 @@ async function choiceCells(final: string, replies: readonly StartupReply[], read
       assert.deepEqual(failures, []);
     });
   }
+  await cell("seat gate and core watch: a Bypass Permissions warning left on screen gets no key and fails at the bound naming it", async () => {
+    const reason = blockers.find((blocker) => blocker.prompt === BLOCKER_SCREENS[2][2])?.reason ?? assert.fail("no Bypass Permissions blocker declared");
+    const runs = [seatGate, coreWatch].map(async (arm) => {
+      const failures: string[] = [];
+      const pressed: string[] = [];
+      const screen = new Screen();
+      await screen.write(CLAUDE_BYPASS);
+      const stop = arm(failures)(() => screen.read(), (key) => pressed.push(key));
+      for (let waited = 0; waited < 17_000 && failures.length === 0; waited += 100) await sleep(100);
+      stop();
+      return { failures, pressed };
+    });
+    for (const { failures, pressed } of await Promise.all(runs)) {
+      assert.deepEqual(pressed, [], "the warning is never answered");
+      assert.deepEqual(failures, [`Cotal startup confirmation failed: ${reason}`]);
+    }
+  });
   console.log("CLAUDE WORKSPACE TRUST CELLS COMPLETE");
   assert.equal(cellFailures.length, 0, cellFailures.join("\n"));
 }
@@ -298,7 +349,11 @@ try {
     assert.deepEqual(spec.confirmReady, ["(shift+tab to cycle)", "? for shortcuts"]);
     assert.deepEqual(foreground.confirmReady, spec.confirmReady, "a launch with no workspace also ends its watch on the input screen");
   });
-  await choiceCells(spec.confirm!, spec.confirmBefore!, spec.confirmReady!);
+  await cell("every Claude launch declares the first-run screens Cotal never answers", () => {
+    assert.deepEqual(spec.confirmBlockers?.map((blocker) => blocker.prompt), BLOCKER_SCREENS.map(([, , prompt]) => prompt));
+    assert.deepEqual(foreground.confirmBlockers, spec.confirmBlockers, "a launch with no workspace declares them too");
+  });
+  await choiceCells(spec.confirm!, spec.confirmBefore!, spec.confirmReady!, spec.confirmBlockers!);
 
   if (process.argv.includes("--live")) {
     const binary = cotalOriginal.get("COTAL_TEST_CLAUDE_BINARY");
@@ -342,6 +397,7 @@ try {
     console.log("CLAUDE WORKSPACE TRUST NATIVE COMPLETE");
     assert.equal(failures.length, 0, failures.join("\n"));
   }
+  emitSentinel({ passed: counted.cells(), failed: 0 });
 } finally {
   if (ownsTmuxSession) execFileSync("tmux", ["kill-session", "-t", tmuxSession], { stdio: "ignore" });
   for (const key of Object.keys(process.env)) if (!(key in original)) delete process.env[key];

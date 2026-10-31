@@ -185,8 +185,10 @@
  * run a build carries files a fresh clone does not. `node_modules`, `dist`, `build` and friends are
  * skipped, but a generated bundle landing outside those names is not: the Hermes sidecar at
  * `extensions/connector-hermes/plugin/cotal/_sidecar/` is gitignored build output and IS walked.
- * The bundle adds one outside-smoke call: a clean checkout has 286/214 and a built checkout has
- * 287/214. Its own one-site pin is required whenever that artifact exists. An EXACT count otherwise
+ * The bundle adds one outside-smoke call: a clean checkout has 321/244 and a built checkout has
+ * 322/244. Packing `cotal-ai` (or `pnpm --dir bin seeded-connectors`) copies the same bundle to
+ * `bin/seeded-connectors/hermes/`, which is gitignored too and adds one more. Each copy has its own
+ * one-site pin, required whenever that artifact exists. An EXACT count otherwise
  * turns this divergence into a red that
  * depends on whether someone ran `pnpm bundle`, which is a property of a disk rather than of a
  * revision. Reading it is deliberate rather than an oversight, since that bundle SHIPS in the
@@ -455,11 +457,52 @@ const SEAMS: Seam[] = [
   // `tls`.
   // The audited source population is pinned per file in required-arg-sites.json. The generated
   // Hermes sidecar adds one separately pinned call after build, never a smoke-side call.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 286, untypecheckedSites: 214 },
+  // 286/214 -> 307/233: three landings added calls without updating required-arg-sites.json.
+  // Control-only local management (#4240, a9a78ecf6) adds the provisioner dial of an
+  // `execution: none` manager in implementations/manager/src/manager.ts and seven smoke-side calls:
+  // interactive-manager-selection two, local-no-execution four and local-no-execution-state one.
+  // Caller-bound keyed submission (#4242) adds the run-admitter store connection in
+  // implementations/auth/src/service.ts and ten smoke-side calls: keyed-review-client one,
+  // keyed-submission-client-provider two, keyed-review-window four and keyed-submission-native
+  // three. Host vitals (#4253) adds two in manager-service-invoke.smoke.ts. Every call states `tls`.
+  // Workflow cancellation adds one run-admitter store connection in auth/src/service.ts and
+  // three smoke-side calls: bin/smoke/run-cancel-live two and auth/smoke/run-cancel-live one.
+  // Each states `tls`. The native conversation run suite adds one smoke-side writer connection in
+  // manager/smoke/native-conversation-run, which states `tls`; the source population is now 312/237.
+  // 312/237 -> 320/243: five landings added calls without updating required-arg-sites.json. Reusing
+  // a broker after `space delete` (08a9fe625) adds `recreateDeletedStreams` in cli/src/commands/up.ts
+  // and one teardown connection in cli/smoke/space-teardown-live. Checking a TLS certificate
+  // against a dialed IP (d0d885a3b) adds `refuseUntrustedListener` in up.ts, which dials as the
+  // setup after it does. Both up.ts calls state `tls: false`, as that file's other setup dials do.
+  // Manager-selection refusals (19ba7099f) add three smoke-side connections in
+  // manager/smoke/manager-selection-refusals, a persona owner for a static caller (8d81c1209) adds
+  // one seat connection in manager/smoke/manager-service-ops, and refusing an unadmitted run revoke
+  // (5961162f9) adds one run-admitter read in runtime/smoke/run-command. All six smoke-side calls,
+  // the space-teardown-live one included, dial a loopback broker their suite starts without TLS,
+  // and each states `tls: false`. 320/243 -> 321/244: the manager-call dial deadline (9bc17b222) adds
+  // one smoke-side connection in connector-core/smoke/manager-connect-deadline, which states `tls: false`.
+  // 321/244 -> 328/251: turn notices add three setup connections in connector-core/smoke/idle-seat-connects
+  // and four in connector-core/smoke/turn-notice; each dials a loopback broker its suite starts and
+  // states `tls: false`. 328/251 -> 332/255: the RAM profiles of the load harnesses (0dd04e838) add
+  // one provisioning connection each in delivery/smoke/fanout-load and core/smoke/seat-idle-load,
+  // and the recorded program's hash on run-status (2b59b432f) adds a driver and a reader connection
+  // in bin/smoke/run-status-program-identity. Each dials a plaintext loopback broker its suite
+  // starts and states `tls: false`.
+  // 332/255 -> 353/273: review the 21 additional calls by source context and commit provenance:
+  // four conclave issuance calls, five native-signing controls, one multi-space admission read,
+  // two issued-store recreation calls, one issued-store binder, one backup victim check,
+  // two pending-sender connections, three membership-storage controls, one down lease probe,
+  // and one retirement fence. The 18 smoke calls state explicit booleans (including the native
+  // signer's TLS-true control); down uses resolved.tls and the other two source calls state false.
+  // required-arg-sites.json records the 13 reviewed file counts; the reader's rules are unchanged.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 353, untypecheckedSites: 273 },
 ];
 
 const SITE_COUNTS = JSON.parse(readFileSync(new URL("./required-arg-sites.json", import.meta.url), "utf8")) as Record<string, number>;
-const SIDECAR = "extensions/connector-hermes/plugin/cotal/_sidecar/standalone.cjs";
+const SIDECARS = [
+  "extensions/connector-hermes/plugin/cotal/_sidecar/standalone.cjs",
+  "bin/seeded-connectors/hermes/plugin/cotal/_sidecar/standalone.cjs",
+];
 const countsByFile = (sites: Site[]): Record<string, number> => {
   const counts: Record<string, number> = {};
   for (const site of sites) counts[site.file] = (counts[site.file] ?? 0) + 1;
@@ -2445,11 +2488,14 @@ console.log("A. the reader itself, on fixtures whose verdicts are known");
     one(`const src = { tls: undefined as any };\nconst { tls } = src;\nstandaloneConnectOpts({ creds: c, tls });`) === "missing-key");
   check("...while the same source holding a real boolean is untouched",
     one(`const src = { tls: false };\nconst { tls } = src;\nstandaloneConnectOpts({ creds: c, tls });`) === "has-key");
-  check("a resolved mesh's TLS requirement captured as a primitive is stated without a default",
+  // An identifier bound to a member read is accepted without checking the member's value.
+  // `const options = { tls: undefined as any }; const tls = options.tls;` also passes here,
+  // while the runtime seam rejects it. This fixture covers the accepted syntax only.
+  check("an identifier bound to a resolved mesh's TLS member read is accepted",
     one(`const mesh = resolveMeshTarget(cwd, { space, server });\nconst tls = mesh.tlsRequired;\nstandaloneConnectOpts({ creds: c, tls });`) === "has-key");
-  check("the primitive spelling preserves an explicit false TLS decision",
+  check("a const bound to false states an explicit TLS decision",
     one(`const tls = false;\nstandaloneConnectOpts({ creds: c, tls });`) === "has-key");
-  check("the primitive spelling still refuses an explicitly undefined TLS decision",
+  check("a const bound to undefined still fails the explicit TLS decision check",
     one(`const tls = undefined;\nstandaloneConnectOpts({ creds: c, tls });`) === "missing-key");
   check("...and a PRODUCER written here is refused where it is called, as the inline invocation is",
     one(`const mk = () => ({ tls: undefined as any });\nconst { tls } = mk();\nstandaloneConnectOpts({ creds: c, tls });`) === "unverifiable");
@@ -2613,8 +2659,8 @@ console.log("\nB. the seam, across every source the compiler may or may not read
 }
 check("the literal per-file census accounts for the source and smoke totals",
   Object.values(SITE_COUNTS).every((n) => Number.isSafeInteger(n) && n > 0)
-  && Object.values(SITE_COUNTS).reduce((a, b) => a + b, 0) === 286
-  && Object.entries(SITE_COUNTS).filter(([file]) => file.includes("/smoke/")).reduce((n, [, count]) => n + count, 0) === 214);
+  && Object.values(SITE_COUNTS).reduce((a, b) => a + b, 0) === SEAMS[0].sites
+  && Object.entries(SITE_COUNTS).filter(([file]) => file.includes("/smoke/")).reduce((n, [, count]) => n + count, 0) === SEAMS[0].untypecheckedSites);
 const files = sources(ROOT);
 check("the scan reached a source tree at all (a zero-file walk would pass every cell below)", files.length > 500, files.length);
 
@@ -2644,12 +2690,13 @@ for (const seam of SEAMS) {
   const all = files.flatMap((f) => sitesIn(relative(ROOT, f), readFileSync(f, "utf8"), seam));
   const { sites, aliased, bad, untypechecked } = summarize(all);
   if (process.argv.includes("--census")) console.log(`REQUIRED_ARG_CENSUS ${JSON.stringify({ seam: seam.fn, sites })}`);
-  const sidecarPresent = files.some((file) => relative(ROOT, file).split(sep).join("/") === SIDECAR);
-  const expectedByFile = { ...SITE_COUNTS, ...(sidecarPresent ? { [SIDECAR]: 1 } : {}) };
+  const walked = new Set(files.map((file) => relative(ROOT, file).split(sep).join("/")));
+  const sidecars = SIDECARS.filter((sidecar) => walked.has(sidecar));
+  const expectedByFile = { ...SITE_COUNTS, ...Object.fromEntries(sidecars.map((sidecar) => [sidecar, 1])) };
   const normalized = sites.map((site) => ({ ...site, file: site.file.split(sep).join("/") }));
   const drift = censusDrift(expectedByFile, countsByFile(normalized));
   check(`\`${seam.fn}\`: every file matches its reviewed exact call count`, drift.length === 0, drift);
-  const expectedSites = seam.sites + (sidecarPresent ? 1 : 0);
+  const expectedSites = seam.sites + sidecars.length;
   // Printed on SUCCESS as well as failure: a legitimate removal then shows the number to put back,
   // instead of sending the next author into this file to find out what the floor should become.
   console.log(`  · ${seam.fn}: ${sites.length} call sites (${untypechecked.length} under smoke/, ${sites.length - untypechecked.length} outside smoke/)`);

@@ -1,7 +1,7 @@
 ---
 title: "Connect pi (alpha)"
 description: "Launch pi on a Cotal mesh or load the Cotal extension into your own pi host."
-kind: "Informative"
+kind: Guide
 audience: "operators"
 ---
 
@@ -22,7 +22,7 @@ Model variants, MCP tool sharing, and arbitrary launch options are refused.
 
 ## Choose how to run pi [#surfaces]
 
-For a managed seat, use `cotal spawn --harness pi` after the installation below.
+For a managed seat, use `cotal spawn --harness pi --detach` after the installation below.
 Cotal launches the installed `pi` binary and loads its bundled Cotal extension.
 
 For an existing interactive pi installation, copy the standalone extension into pi's extension directory.
@@ -45,9 +45,9 @@ From a project with a [running mesh](run-a-mesh.mdx), launch pi:
 cotal spawn --harness pi
 ```
 
-Cotal launches through the manager, waits for readiness, and attaches your terminal.
-Add `--detach` to return after readiness without attaching.
-Add `--foreground` to run pi directly in this terminal.
+A bare spawn runs pi in this terminal.
+Add `--detach` to launch through a manager and return after readiness.
+`--on <instance>` selects a manager and attaches when its runtime streams a terminal.
 
 To use a persona file on the execution host, add `--file <persona-file>`.
 `--model <model>` overrides that file's `model:` field.
@@ -63,6 +63,17 @@ cotal spawn --harness pi --prompt "Review the current change."
 
 The prompt must contain text and cannot start with `-` or `@`.
 Pi would parse those prefixes as an option or a file reference, so Cotal refuses them.
+
+### Review project trust
+
+A managed Pi seat reads the saved trust decision for its launch directory.
+Approval keeps project resources enabled; a saved denial keeps them disabled.
+With project resources but no saved choice, the seat selects untrusted for that run and skips `.pi` resources and ancestor `.agents/skills`.
+It never writes Pi's trust store or approves project code.
+
+The `[cotal-pi/trust]` notice names skipped resources and asks you to run `pi` once in that directory to review and save trust.
+A direct foreground spawn keeps Pi's native interactive choice.
+A launch stopped at that prompt names **Trust project folder?** and the directory.
 
 ### Load the extension into your own host
 

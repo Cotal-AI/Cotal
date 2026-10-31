@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, lstatSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { coldResultNames, verifyColdResults } from "./verify-cold-results.mjs";
-import { publicationDeadline, publicationStartedAt, remainingBudget, withinPublicationBudget } from "./publication-budget.mjs";
+import { publicationExecutionDeadline, publicationStartedAt, remainingBudget, withinPublicationBudget } from "./publication-budget.mjs";
 import { isMainEntry } from "./main-entry.mjs";
 
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -140,7 +140,7 @@ export async function verifyPublicationRequest({ env = process.env, deadline, fe
   assert.equal(current.display_title, `publication-v1 ${env.RELEASE_VERSION} ${env.RELEASE_CANDIDATE_SHA256} ${env.RELEASE_SOURCE} ${qualificationRun} ${env.RELEASE_TAG} ${env.RELEASE_REQUESTED_AT}`, "publication inputs differ from their server request record");
   assert.equal(env.RELEASE_REQUESTED_AT, first.requestedAt, "fresh publication dispatch cannot replace the original command timestamp for this version");
   assert(first.candidateSha256 === env.RELEASE_CANDIDATE_SHA256 && first.source === env.RELEASE_SOURCE && first.qualificationRun === qualificationRun && first.tag === env.RELEASE_TAG, "fresh publication dispatch cannot replace the original requested candidate, source, qualification or tag");
-  publicationDeadline(first.requestedAt);
+  publicationStartedAt(first.requestedAt);
   return { v: 1, version: env.RELEASE_VERSION, firstRunId: first.id, requestedAt: first.requestedAt, candidateSha256: first.candidateSha256, source: first.source, qualificationRun, tag: first.tag };
 }
 
@@ -157,8 +157,9 @@ export async function selectQualification({ runId, env = process.env, deadline, 
   // A full fresh run avoids mixing v4 artifacts left by earlier attempts of a partial rerun.
   assert.equal(run.run_attempt, 1, "qualification reruns are not promotable; prepare a fresh run before publish-go");
   assert(sha.test(run.head_sha), "qualification has no exact head");
-  const requested = Date.parse(env.RELEASE_REQUESTED_AT);
-  assert(Number.isFinite(requested) && Number.isFinite(Date.parse(run.updated_at)) && Date.parse(run.updated_at) <= requested, "qualification did not finish before the original publish request");
+  publicationStartedAt(env.RELEASE_REQUESTED_AT);
+  const completed = Date.parse(run.updated_at);
+  assert(Number.isFinite(completed) && completed <= Date.now(), "qualification completion timestamp is invalid or in the future");
   const listing = await githubJson(`actions/runs/${runId}/artifacts?per_page=100`, env, deadline, fetchImpl);
   assert(Number.isSafeInteger(listing.total_count) && listing.total_count <= 100 && listing.total_count === listing.artifacts?.length, "qualification artifact listing is incomplete");
   const artifacts = artifactNames().map((name) => {
@@ -168,7 +169,8 @@ export async function selectQualification({ runId, env = process.env, deadline, 
     assert(artifact.expired === false && /^sha256:[a-f0-9]{64}$/.test(artifact.digest ?? ""), "qualification artifact is expired or lacks its immutable digest");
     assert.equal(artifact.workflow_run?.id, runId, "qualification artifact belongs to another run");
     assert.equal(artifact.workflow_run?.head_sha, run.head_sha, "qualification artifact belongs to another head");
-    assert(Date.parse(artifact.created_at) <= requested, "qualification artifact appeared after publish-go");
+    const created = Date.parse(artifact.created_at);
+    assert(Number.isFinite(created) && created <= completed, "qualification artifact timestamp is invalid or follows run completion");
     return { id: positiveId(artifact.id), name, digest: artifact.digest };
   });
   assert.equal(new Set(artifacts.map(({ id }) => id)).size, artifacts.length, "qualification repeats an artifact ID");
@@ -236,7 +238,7 @@ if (isMainEntry(import.meta.url)) {
   const [operation, first, second, third, fourth] = process.argv.slice(2);
   (async () => {
     if (operation === "record") return recordQualification({ root: CONTROL_ROOT, directory: first, results: second, output: third });
-    const deadline = publicationDeadline(process.env.RELEASE_REQUESTED_AT);
+    const deadline = publicationExecutionDeadline(process.env.RELEASE_REQUESTED_AT, process.env.RELEASE_ATTEMPT_STARTED_AT);
     if (operation === "checkout") return checkoutReleaseSource({ deadline });
     if (operation === "select") {
       await verifyPublicationRequest({ deadline });

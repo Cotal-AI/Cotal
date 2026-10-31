@@ -3,26 +3,25 @@
  *
  *   1. up --user-auth + device login + admin grant (the arm-2 shape that may reach ps)
  *   2. cotal ps exits 0 (the product claim C authorises)
- *   3. manager killed — ps exits non-zero, never a bare empty list
+ *   3. manager killed — ps says no manager answered and lists your agents from presence, exit 0,
+ *      never a bare empty list
  *
- * Spawn-only refusal is asserted in user-spawn.smoke.ts B1e (ungated); not duplicated here.
+ * Spawn-only `status --components` runs under `actor grant --full` after the admin ps
+ * cells, then the admin grant is restored. That cell records the manager-caller exchange
+ * and requires the instance id this machine's live manager persisted. A call with the
+ * manager pidfile hidden stays serving and is not pinned. A live pid whose identity file
+ * is hidden is refused and names the instance that answered. Refusal of other
+ * spawn-only commands stays in user-spawn.smoke.ts B1e.
  * Gated: a RED here is C or the user-mode connect path broken.
  *
- * STEP 3 IS DELIBERATELY STRICTER THAN ITS SIBLING, and the difference is not an oversight.
- * `ps-operator-path.smoke.ts` accepts exit 0 for a dead manager as long as the output says
- * "unreachable"; this suite demands a non-zero exit. Different rails, different observable
- * vocabularies: a class scatter can attribute a specific instance and label it unreachable, while
- * `ep.one` has no such label to print — it either got its one answer or it did not. Asking the
- * user-mode path for the operator path's wording would be asking for a sentence it cannot say.
- *
- * The strictness only ever errs toward RED, and only if user-mode ps deliberately moves to a
- * label-and-exit-0 shape. That is a product decision to be made on its own evidence; a red here
- * demanding a human look at it is then the correct behaviour, not a defect in this file.
+ * STEP 3 follows the product decision that a user-auth `ps` with no manager answering is not an
+ * error: it says so, lists the agents presence shows, read-only, and names how to start the manager.
+ * What it must never be is a bare empty list, which reads as "no agents".
  */
 import { execFileSync, spawn } from "node:child_process";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { betterAuth } from "better-auth";
 import { memoryAdapter } from "better-auth/adapters/memory";
@@ -56,6 +55,11 @@ let establishIdpSession!: typeof import("../src/index.js").establishIdpSession;
 // have launched detached processes, and those are exactly the ones whose pidfiles must survive.
 // Attribution evidence is earned by the attempt, not by the outcome.
 let upAttempted = false;
+// Step 3b replaces the stack's own registry entry with a discovered one and records other entries on
+// the same root and broker. `cotal down` stops a stack only through its one owned registration, and
+// leaves a broker running while another registered space names its address, so teardown puts the
+// original entry back and removes the rest first.
+let restoreStackRegistration: (() => void) | undefined;
 type DeviceLoginPrompt = import("../src/index.js").DeviceLoginPrompt;
 
 let pass = 0, fail = 0;
@@ -97,6 +101,28 @@ type Run = {
   /** Descendants held the inherited pipes past the drain bound: `out` is a PREFIX, not the whole. */
   stdioTimedOut?: boolean;
 };
+/** The manager-instance.json whose instanceId is `instanceId`, under `dir`. */
+function managerIdentityPath(dir: string, instanceId: string): string | undefined {
+  const pending = [dir];
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (current === undefined || !existsSync(current)) continue;
+    for (const entry of readdirSync(current, { withFileTypes: true })) {
+      const path = join(current, entry.name);
+      if (entry.isDirectory()) pending.push(path);
+      else if (entry.isFile() && entry.name === "manager-instance.json") {
+        try {
+          const parsed = JSON.parse(readFileSync(path, "utf8")) as { instanceId?: unknown };
+          if (parsed.instanceId === instanceId) return path;
+        } catch {
+          // A record this cell cannot read is not the one it hides.
+        }
+      }
+    }
+  }
+  return undefined;
+}
+
 function cotal(args: string[], timeoutMs = 120_000): Promise<Run> {
   return new Promise((res) => {
     const options = {
@@ -302,7 +328,7 @@ try {
     onPrompt: (p: DeviceLoginPrompt) => void approve(p.userCode),
   });
   const grant = await cotal(["actor", "grant", "cli", "--sub", sub, "--full", "--scope", "spawn,role:default,admin", "--label", "ps human"]);
-  check("actor grant succeeds", grant.status === 0 && /granted/i.test(grant.out), grant.out.slice(-300));
+  check("actor grant succeeds", grant.status === 0 && /^Actor grant stored$/m.test(grant.out), grant.out.slice(-300));
 
   console.log("3) cotal ps under user-mode admin bearer (C: ep.one)");
   const ps = await cotal(["ps", "--space", SPACE], 20_000);
@@ -325,9 +351,149 @@ try {
   check("that label is not a part left unread: user-mode who exits 0, ok and complete",
     whoJson.status === 0 && whoEnvelope?.outcome === "ok" && whoEnvelope.completeness === "complete", whoJson.out.slice(-600));
 
+  // The admin grant above hides this defect: `--full` alone is the documented owner
+  // grant (scope spawn,role:default, no admin). Later cells need the admin grant back.
+  console.log("3a spawn-only) status --components under the documented owner grant");
+  try {
+    const narrowed = await cotal(["actor", "grant", "cli", "--sub", sub, "--full", "--label", "spawn-only status"], 60_000);
+    mustHaveRun(narrowed, "the spawn-only owner grant");
+    check("the documented --full grant stores the spawn-only owner scope", narrowed.status === 0 && /^Actor grant stored$/m.test(narrowed.out), narrowed.out.slice(-300));
+    const { canonicalLocalProcessPath, loadManagerInstanceIdentity, MANAGER_PIDFILE, userAuthStateDir } = await import("@cotal-ai/workspace");
+    const { loadAuthServiceInfo, saveAuthServiceInfo } = await import("../src/store-file.js");
+    const pidPath = canonicalLocalProcessPath(MANAGER_PIDFILE, { root, space: SPACE });
+    const pid = Number(readFileSync(pidPath, "utf8").trim());
+    const localId = loadManagerInstanceIdentity(root, SPACE)?.instanceId;
+    check("the live manager persists the instance status must pin", typeof localId === "string" && localId.length > 0, { pid, instanceId: localId ?? null });
+    const dir = userAuthStateDir(root, SPACE);
+    const info = loadAuthServiceInfo(dir);
+    if (!info) throw new Error(`fixture auth service info is missing at ${dir}`);
+    const exchanges: { view?: unknown; managerInstanceId?: unknown }[] = [];
+    const proxy = createServer(async (req, res) => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      const raw = Buffer.concat(chunks);
+      if ((req.url ?? "").startsWith("/exchange")) {
+        try {
+          const body = JSON.parse(raw.toString("utf8")) as { view?: unknown; managerInstanceId?: unknown };
+          exchanges.push({ view: body.view, managerInstanceId: body.managerInstanceId });
+        } catch {
+          exchanges.push({});
+        }
+      }
+      try {
+        const upstream = await fetch(new URL(req.url ?? "/", info.url), {
+          method: req.method,
+          headers: {
+            ...(req.headers["content-type"] ? { "content-type": String(req.headers["content-type"]) } : {}),
+            ...(req.headers.authorization ? { authorization: String(req.headers.authorization) } : {}),
+          },
+          body: req.method === "GET" || req.method === "HEAD" ? undefined : raw,
+        });
+        const bytes = Buffer.from(await upstream.arrayBuffer());
+        const type = upstream.headers.get("content-type");
+        res.writeHead(upstream.status, type ? { "content-type": type } : undefined);
+        res.end(bytes);
+      } catch (e) {
+        res.writeHead(502);
+        res.end(e instanceof Error ? e.message : String(e));
+      }
+    });
+    await new Promise<void>((resolve) => proxy.listen(0, "127.0.0.1", () => resolve()));
+    const bound = proxy.address();
+    if (bound === null || typeof bound === "string") throw new Error("the exchange recorder did not bind");
+    saveAuthServiceInfo(dir, { ...info, url: `http://127.0.0.1:${bound.port}` });
+    try {
+      const components = await cotal(["status", "--components", "--space", SPACE], 30_000);
+      mustHaveRun(components, "spawn-only status --components");
+      const plain = components.out.replace(/\x1b\[[0-9;]*m/g, "");
+      const managerLine = plain.split("\n").find((line) => /^  manager /.test(line)) ?? plain.slice(-600);
+      console.log(`   spawn-only status --components (exit=${components.status}):\n` +
+        plain.split("\n").filter((line) => /Component Health|^  (manager|delivery|web|broker) /.test(line)).map((line) => `   | ${line}`).join("\n").slice(0, 1200));
+      check("spawn-only status --components exits 0", components.status === 0, managerLine);
+      check("spawn-only status --components manager row is serving", /^  manager {9,}serving /m.test(plain), managerLine);
+      check("spawn-only status reports this machine's manager instance", typeof localId === "string" && plain.includes(`service instance ${localId}`), managerLine);
+      const pinned = exchanges.filter((body) => body.view === "manager-caller" && typeof body.managerInstanceId === "string" && body.managerInstanceId.length > 0 && body.managerInstanceId === localId);
+      check("spawn-only status pins the manager-caller exchange to this machine's manager", typeof localId === "string" && localId.length > 0 && pinned.length > 0, { localId: localId ?? null, exchanges });
+      const managerLineOf = (out: string): string => {
+        const plain = out.replace(/\x1b\[[0-9;]*m/g, "");
+        return plain.split("\n").find((line) => /^  manager /.test(line)) ?? plain.slice(-600);
+      };
+
+      exchanges.length = 0;
+      const hiddenPid = `${pidPath}.smoke-hidden`;
+      renameSync(pidPath, hiddenPid);
+      try {
+        const unpinned = await cotal(["status", "--components", "--space", SPACE], 30_000);
+        mustHaveRun(unpinned, "status with no local manager record");
+        const unpinnedPlain = unpinned.out.replace(/\x1b\[[0-9;]*m/g, "");
+        const unpinnedLine = managerLineOf(unpinned.out);
+        console.log(`   no local manager record (exit=${unpinned.status}): ${unpinnedLine}`);
+        check("no local manager record: components manager row is still serving", /^  manager {9,}serving /m.test(unpinnedPlain), unpinnedLine);
+        check("no local manager record: the row names the instance that answered", typeof localId === "string" && unpinnedPlain.includes(`service instance ${localId}`), unpinnedLine);
+        const caller = exchanges.filter((body) => body.view === "manager-caller");
+        check("no local manager record: the manager-caller exchange is not pinned", caller.length > 0 && caller.every((body) => body.managerInstanceId === undefined), caller);
+      } finally {
+        if (existsSync(hiddenPid)) renameSync(hiddenPid, pidPath);
+      }
+
+      const identityPath = typeof localId === "string" ? managerIdentityPath(join(root, ".cotal"), localId) : undefined;
+      check("the persisted manager identity file is on this root", typeof identityPath === "string", identityPath ?? null);
+      if (typeof identityPath === "string" && typeof localId === "string") {
+        exchanges.length = 0;
+        const hiddenIdentity = `${identityPath}.smoke-hidden`;
+        renameSync(identityPath, hiddenIdentity);
+        try {
+          const unknown = await cotal(["status", "--components", "--space", SPACE], 30_000);
+          mustHaveRun(unknown, "status with the manager identity hidden");
+          const unknownPlain = unknown.out.replace(/\x1b\[[0-9;]*m/g, "");
+          const unknownLine = managerLineOf(unknown.out);
+          console.log(`   identity hidden (exit=${unknown.status}): ${unknownLine}`);
+          check("a live manager whose instance id is not recorded is refused", /^  manager {9,}refused /m.test(unknownPlain), unknownLine);
+          check("a hidden identity is not reported as this process serving", !unknownPlain.includes(`service instance ${localId}`) && (unknownPlain.includes(`answered by manager instance ${localId}`) || unknownPlain.includes("serve probe refused")), unknownLine);
+          check("that row is not reported as serving", !/^  manager {9,}serving /m.test(unknownPlain), unknownLine);
+        } finally {
+          if (existsSync(hiddenIdentity)) renameSync(hiddenIdentity, identityPath);
+        }
+
+        const original = readFileSync(identityPath, "utf8");
+        const fakeId = localId.endsWith("xxxx") ? `${localId.slice(0, -4)}yyyy` : `${localId.slice(0, -4)}xxxx`;
+        const field = `"instanceId":"${localId}"`;
+        const spaced = `"instanceId": "${localId}"`;
+        const edited = original.includes(field)
+          ? original.replace(field, `"instanceId":"${fakeId}"`)
+          : original.includes(spaced)
+            ? original.replace(spaced, `"instanceId": "${fakeId}"`)
+            : undefined;
+        check("the identity file names this instance in one field", edited !== undefined && edited !== original, identityPath);
+        if (edited !== undefined && edited !== original) {
+          exchanges.length = 0;
+          writeFileSync(identityPath, edited);
+          try {
+            const mismatch = await cotal(["status", "--components", "--space", SPACE], 30_000);
+            mustHaveRun(mismatch, "status pinned to a different instance");
+            const mismatchPlain = mismatch.out.replace(/\x1b\[[0-9;]*m/g, "");
+            const mismatchLine = managerLineOf(mismatch.out);
+            console.log(`   other instance (exit=${mismatch.status}): ${mismatchLine}`);
+            check("a different persisted instance is not reported as this process serving", !/^  manager {9,}serving /m.test(mismatchPlain) && /^  manager {9,}refused /m.test(mismatchPlain), mismatchLine);
+            check("that probe pinned the other instance id", exchanges.some((body) => body.view === "manager-caller" && body.managerInstanceId === fakeId), exchanges);
+          } finally {
+            writeFileSync(identityPath, original);
+          }
+        }
+      }
+    } finally {
+      saveAuthServiceInfo(dir, info);
+      await new Promise<void>((resolve, reject) => proxy.close((err) => err ? reject(err) : resolve()));
+    }
+  } finally {
+    const restore = await cotal(["actor", "grant", "cli", "--sub", sub, "--full", "--scope", "spawn,role:default,admin", "--label", "ps human"], 60_000);
+    mustHaveRun(restore, "restoring the fixture's admin grant after the spawn-only status cell");
+    check("the later checks receive the admin grant again after the spawn-only status cell", restore.status === 0, restore.out.slice(-500));
+  }
+
   console.log("3a history) native user-auth reads through its channel grant");
   const historyText = `native history ${Date.now()}`;
-  const sentHistory = await cotal(["send", "msg", "general", historyText, "--space", SPACE], 20_000);
+  const sentHistory = await cotal(["send", "-c", "general", historyText, "--space", SPACE], 20_000);
   check("the native history fixture sends a channel message through the CLI", sentHistory.status === 0, sentHistory.out.slice(-500));
   const nativeHistory = await cotal(["history", "general", "--json", "--space", SPACE], 20_000);
   const historyEnvelope = (() => { try { return JSON.parse(nativeHistory.out.split("\n").find((line) => line.startsWith('{"schemaVersion"')) ?? "") as { result: { kind: string; items: { channel: string | null; text: string; seq: number | null }[] } | null }; } catch { return undefined; } })();
@@ -393,7 +559,7 @@ try {
       check("a copied predecessor bearer cannot reconnect after the native re-grant",
         /authoriz|authentic|denied|revok|retir/i.test(copiedError), copiedError);
       const nextText = `successor history ${Date.now()}`;
-      const nextSent = await cotal(["send", "msg", "history.next", nextText, "--space", SPACE], 20_000);
+      const nextSent = await cotal(["send", "-c", "history.next", nextText, "--space", SPACE], 20_000);
       const nextHistory = await cotal(["history", "history.next", "--json", "--space", SPACE], 20_000);
       check("the successor reads only its newly granted channel through the real CLI",
         nextSent.status === 0 && nextHistory.status === 0 && nextHistory.out.includes(nextText) && !nextHistory.out.includes(historyText), nextHistory.out.slice(-800));
@@ -436,10 +602,14 @@ try {
 
   console.log("3b) empty registry discovers the user-mode space, then ps/status resolve it");
   const { prepareCatalogTargets, validateCatalogSnapshot } = await import("../../cli/src/commands/sync.js");
-  const { findMesh, removeMesh, targetFromEntry, userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
+  const { findMesh, loadMeshes, removeMesh, removeMeshes, recordMesh, setCurrent, canonicalRoot, targetFromEntry, userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
   const { loadCalloutAuth } = await import("../src/index.js");
   const original = findMesh(SPACE);
   if (!original?.userAuth) throw new Error("fixture has no user-auth registry entry to advertise");
+  restoreStackRegistration = () => {
+    removeMeshes(loadMeshes().filter((m) => m.space !== SPACE && (m.server === original.server || canonicalRoot(m.root ?? "") === canonicalRoot(root))).map((m) => m.space));
+    recordMesh(original);
+  };
   const callout = await loadCalloutAuth(workspaceSecretStore(root), SPACE);
   if (!callout) throw new Error("fixture has no callout sentinel credential");
   let catalogFails = false;
@@ -512,9 +682,10 @@ try {
   check("the display name is not a registry key", findMesh("Shared project") === undefined && findMesh(SPACE)?.catalogName === "Shared project", findMesh(SPACE));
   check("the discovered entry resolves through the ordinary synchronous target path", targetFromEntry(findMesh(SPACE)!, original.server, "registry").mode === "user");
   const discoveredPs = await cotal(["ps", "--space", SPACE], 20_000);
-  const discoveredStatus = await cotal(["status", "--space", SPACE], 20_000);
+  const discoveredStatus = await cotal(["status", "--wide", "--space", SPACE], 20_000);
   check("ps succeeds against the discovered space with no meshes add", discoveredPs.status === 0, discoveredPs.out.slice(-300));
-  check("status resolves the discovered space and names its catalog snapshot", discoveredStatus.status === 0 && discoveredStatus.out.includes("catalog snapshot"), discoveredStatus.out.slice(-600));
+  check("status resolves the discovered space and names it a saved catalog entry in the full report",
+    discoveredStatus.status === 0 && new RegExp(`^ +→ ${SPACE} .*· saved catalog entry$`, "m").test(discoveredStatus.out), discoveredStatus.out.slice(-600));
   // #1832: a discovered user-mode space's user-auth material is the REGISTRY ENTRY (origin
   // "catalog", userAuth.remote + pins + sentinel file), not a local provisioning, so the login
   // `ps` uses must answer status too. The verbatim base behaviour is recorded in the lane notes:
@@ -529,7 +700,7 @@ try {
   // and the snapshot defers. Asserting a roster here would demand status connect on an ungranted
   // bearer, which the renderer deliberately does not do.
   check("discovered space: bare status names the grant as not checkable (no local ledger) rather than demanding a login",
-    discoveredStatus.out.includes("grant not checkable on this machine (no local ledger)") && !discoveredStatus.out.includes("no user-auth material"),
+    /^ +Grant: +○ not checkable on this machine$/m.test(discoveredStatus.out) && !discoveredStatus.out.includes("no user-auth material"),
    discoveredStatus.out.slice(-600));
   const discoveredHistory = await cotal(["history", "general", "--json", "--space", SPACE], 20_000);
   check("the native remote-catalog history path reads the same message without local grant lookup",
@@ -573,8 +744,8 @@ try {
       signedOutStatus.out.split("\n").filter((l) => /login|live snapshot/.test(l.replace(/\x1b\[[0-9;]*m/g, ""))).map((l) => `   | ${l}`).join("\n"));
     check("discovered space, signed out: status says not signed in with the exact login command",
       signedOutStatus.status === 0 &&
-        signedOutStatus.out.includes("not signed in -") &&
-        signedOutStatus.out.includes(`login --idp ${base}`) &&
+        /^ +Account: +● not signed in$/m.test(signedOutStatus.out) &&
+        new RegExp(`^Next\n(?: .*\n)* +cotal login --idp ${base.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} +Sign in to the selected space$`, "m").test(signedOutStatus.out) &&
         !signedOutStatus.out.includes("no user-auth material"),
       signedOutStatus.out.slice(-600));
     const signedOutPs = await cotal(["ps", "--json", "--space", signedOutSpace], 30_000);
@@ -605,7 +776,6 @@ try {
     catalogRequests === beforeSuperviseRefresh + 1 && findMesh("supervise_new")?.origin === "catalog" &&
       discoveredSupervise.out.includes('does not match registered space "supervise_new"') && !discoveredSupervise.out.includes("neither hosting"),
     { status: discoveredSupervise.status, out: discoveredSupervise.out.slice(-400), catalogRequests, beforeSuperviseRefresh });
-  const { recordMesh, setCurrent } = await import("@cotal-ai/workspace");
   recordMesh({ space: "manual-current", server: original.server, root, mode: "open", origin: "manual", ts: new Date().toISOString() });
   setCurrent("manual-current");
   includeListed = true;
@@ -629,7 +799,7 @@ try {
   check("under --json that refusal is one DEPENDENCY_UNAVAILABLE envelope",
     expiredJson.status === 2 && /"code":"DEPENDENCY_UNAVAILABLE"/.test(expiredJson.out) && /"outcome":"refused"/.test(expiredJson.out), expiredJson.out.slice(-400));
 
-  console.log("4) kill manager — ps must fail loud, not empty-success");
+  console.log("4) kill manager — ps says no manager answered, never a bare empty list");
   // The mesh can only root somewhere else if a `.cotal` appeared above the scratch mid-run; witness
   // it here so that shows up as itself and not as the cell below.
   assertScratchHeld(root, "fixture root");
@@ -643,12 +813,9 @@ try {
   console.log(`   dead exit=${psDead.status}\n` + psDead.out.split("\n").map((l) => `   | ${l}`).join("\n").slice(0, 500));
   // Fatal BEFORE grading, not a cell alongside it.
   mustHaveRun(psDead, "the dead-manager `cotal ps`");
-  const emptySuccess =
-    psDead.status === 0 &&
-    !/unreachable/i.test(psDead.out) &&
-    (/\(no managed agents\)/.test(psDead.out) || psDead.out.trim() === "");
-  check("dead manager: non-zero or explicit failure, never bare empty success",
-    psDead.status !== 0 && !emptySuccess, { status: psDead.status, out: psDead.out.slice(-200) });
+  check("dead manager: ps says no manager answered and lists presence, exit 0, never a bare empty list",
+    psDead.status === 0 && /No manager answered/.test(psDead.out) && !/No managed agents/.test(psDead.out), { status: psDead.status, out: psDead.out.slice(-400) });
+  check("dead manager: its Next is the stack's own bare cotal up", /^\s+cotal up\s/m.test(psDead.out), psDead.out.slice(-400));
 
   console.log(`\nPS USER MODE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
 } catch (e) {
@@ -694,6 +861,7 @@ try {
             : `. Nothing was started.`),
       );
     }
+    restoreStackRegistration?.();
     const down = await cotal(["down", "--with-agents"], 60_000);
     // The same standard the graded cells get: `cotal()` resolves for a timeout, a signal death and a
     // launch failure alike, so an unchecked `await` treats every one of those as a successful stop.

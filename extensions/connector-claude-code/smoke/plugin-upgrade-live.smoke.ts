@@ -11,8 +11,7 @@ const binary = process.argv[2] || "claude";
 const baseline = process.argv[3] || "Cotal-AI/Cotal#v0.88.0";
 const root = realpathSync(mkdtempSync(join(tmpdir(), "cotal-plugin-upgrade-")));
 const projects = [join(root, "one"), join(root, "two")];
-for (const key of Object.keys(process.env))
-  if (key.startsWith("COTAL_") || key.startsWith("CLAUDE_") || key === "CLAUDECODE") delete process.env[key];
+for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_") || key.startsWith("CLAUDE_") || key === "CLAUDECODE") delete process.env[key];
 Object.assign(process.env, {
   HOME: root,
   XDG_CONFIG_HOME: join(root, ".config"),
@@ -51,6 +50,7 @@ const installed = (): Install => {
   return entry;
 };
 const version = (): string => (JSON.parse(readFileSync(join(folder, ".claude-plugin", "plugin.json"), "utf8")) as { version: string }).version;
+const resolvedVersion = (entry: Install): string => (JSON.parse(readFileSync(join(entry.readFromFolder ?? entry.installPath, ".claude-plugin", "plugin.json"), "utf8")) as { version: string }).version;
 const health = () => claudeSetupProvider.status!({ version: version().split("+")[0]!, skillsRemedy: "cotal setup --skills" }).find((row) => row.label === "Claude plugin");
 
 try {
@@ -62,11 +62,34 @@ try {
   check("baseline is a real cached Git-marketplace installation", () => assert.ok(installed().installPath.includes(join("cache", "cotal-mesh", "cotal"))));
   claude(["plugin", "disable", "cotal@cotal-mesh", "--scope", "user"]);
   const old = installed().version;
-  await claudeSetupProvider.refresh!.run({ cotal: cli, skills });
+  const recordsPath = join(process.env.CLAUDE_CONFIG_DIR!, "plugins", "installed_plugins.json");
+  type Records = { plugins: Record<string, Record<string, unknown>[]> };
+  const baselineRecords = JSON.parse(readFileSync(recordsPath, "utf8")) as Records;
+  const legacyRecord = { ...baselineRecords.plugins["cotal@cotal-mesh"]![0], scope: "local", projectPath: projects[1] };
+  // Earlier per-project installs, one in a folder nested inside another project. Claude Code can apply
+  // an update run in the nested folder to the enclosing project, leaving the nested install old.
+  const outer = join(root, "outer");
+  const nested = join(outer, "nested");
+  mkdirSync(nested, { recursive: true });
+  spawnSync("git", ["init", "-q", outer]);
+  for (const project of [outer, nested]) claude(["plugin", "install", "cotal@cotal-mesh", "--scope", "local"], project);
+  const upgraded = await claudeSetupProvider.refresh!.run({ cotal: cli, skills });
+  check("a nested project's install the update does not reach warns and the upgrade completes", () => {
+    const local = (project: string) => (JSON.parse(claude(["plugin", "list", "--json"])) as (Install & { projectPath?: string })[])
+      .find((e) => e.id === "cotal@cotal-mesh" && e.projectPath === project);
+    assert.equal(resolvedVersion(local(outer)!), version());
+    const warning = `warning: cotal@cotal-mesh (local scope, ${nested}) did not load the updated plugin ${version()}; ` +
+      "to remove it, run `claude plugin uninstall cotal@cotal-mesh --scope local` in that directory";
+    assert.equal(upgraded.includes(warning), resolvedVersion(local(nested)!) !== version(), upgraded);
+    claude(["plugin", "uninstall", "cotal@cotal-mesh", "--scope", "local"], nested);
+    assert.equal(local(nested), undefined);
+    assert.ok(local(outer));
+  });
+  claude(["plugin", "uninstall", "cotal@cotal-mesh", "--scope", "local"], outer);
   check("upgrade updates the recorded version and resolved payload", () => {
     const entry = installed();
     assert.notEqual(version(), old);
-    assert.equal(entry.version, version());
+    assert.equal(resolvedVersion(entry), version());
     const actual = join(entry.readFromFolder ?? entry.installPath, "hooks", "native-wake.js");
     assert.deepEqual(readFileSync(actual), readFileSync(join(packageRoot, "hooks", "native-wake.js")));
   });
@@ -90,6 +113,16 @@ try {
     }
     assert.equal(health()?.state, "ok");
   });
+  const partial = JSON.parse(readFileSync(recordsPath, "utf8")) as Records;
+  partial.plugins["cotal@cotal-mesh"]!.push(legacyRecord);
+  writeFileSync(recordsPath, JSON.stringify(partial, null, 2));
+  check("a legacy record cannot override the current folder payload", () => {
+    assert.equal(health()?.state, "ok");
+    claudeSetupProvider.refresh!.run({ cotal: cli, skills });
+    assert.equal(health()?.state, "ok");
+    const records = JSON.parse(readFileSync(recordsPath, "utf8")) as Records;
+    assert.equal(records.plugins["cotal@cotal-mesh"]!.find((entry) => entry.scope === "local")?.version, old);
+  });
   const stamp = installed().lastUpdated;
   await claudeSetupProvider.refresh!.run({ cotal: cli, skills });
   check("a repeated refresh does not reinstall an already current plugin", () => assert.equal(installed().lastUpdated, stamp));
@@ -98,7 +131,7 @@ try {
   await claudeSetupProvider.refresh!.run({ cotal: moved, skills });
   check("a changed CLI record updates the plugin within the same release", () => {
     assert.notEqual(version(), prior);
-    assert.equal(installed().version, version());
+    assert.equal(resolvedVersion(installed()), version());
     assert.deepEqual(JSON.parse(readFileSync(join(folder, "dist", "cli.json"), "utf8")), { argv: moved });
   });
   const module = join(folder, "hooks", "native-wake.js");

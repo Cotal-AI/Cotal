@@ -71,7 +71,7 @@ export async function console_(args: ParsedArgs): Promise<void> {
   // stream can't host the picker, so it falls back to the RESOLVED mesh's space (not the cwd's).
   if (values.plain || process.stdout.isTTY !== true) {
     const s = space ?? resolvedSpace;
-    await runLog(makeObserver(s, server, observerAuth, operator), s, creds || user ? chatWildcard(s) : undefined);
+    await runLog(makeObserver(s, server, observerAuth, operator), s, creds || user ? chatWildcard(s) : undefined, values.plain === true, conn);
     return;
   }
 
@@ -93,14 +93,15 @@ export async function console_(args: ParsedArgs): Promise<void> {
   };
   writeSync(process.stdout.fd, "\x1b[?1049h\x1b[?1007h"); // enter alt-screen + alt-scroll before Ink's first frame
   process.once("exit", restore); // synchronous safety net for any exit path
-  // External kill: restore the terminal, then actually exit (a bare handler would just hang).
+  // External kill: restore the terminal, then actually exit (a bare handler would just hang) with
+  // the signal's code.
   process.once("SIGINT", () => {
     restore();
-    process.exit(0);
+    process.exit(130);
   });
   process.once("SIGTERM", () => {
     restore();
-    process.exit(0);
+    process.exit(143);
   });
 
   const { waitUntilExit } = render(createElement(Root, { server, auth: observerAuth, space, canWrite, canControl, controlCtx, name: operator }), {

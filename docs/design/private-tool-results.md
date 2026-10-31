@@ -3,10 +3,18 @@
 **Accepted; partial source implementation; not enabled.** Sections 4 to 8, the anchor role, request kind, record
 families and limits are accepted in [SPEC §13.19](../../SPEC.md#1319-private-tool-results).
 This page retains the rationale and implementation order. Source contracts, fresh human-proof verification and opt-in host-held consent issuance are
-implemented. No component serves private tool results. Acceptance does not enable it: every owner in section 9 must land
+implemented. Since 0.90.0 `@cotal-ai/auth` also exports the host-only revocation custody and snapshot
+prerequisites of section 7, and `requireToolResultClockPrerequisite` always refuses `unavailable`, so
+prerequisite 2 is not met. The `manager-managed-agent-tool-result-serving` request parses in core, but
+stock `dispatchManagerAuthorityRequest` does not serve it; the serving handlers and browser
+caller remain absent. On 26 October 2026, after 0.103.4, main gained a bounded connector-side
+journal, `extensions/connector-core/src/tool-result-journal.ts` (#4838), and `queueFrontier` /
+`eligibleAt` in the emitter (#4839). These supply storage and consent-frontier placement,
+but no capture consumer connects them and no component serves private tool results. Acceptance does not enable it: every owner in section 9 must land
 and qualify their part, and section 11's activation gates remain binding.
+[Embedding](../embedding.mdx#private-tool-results) lists the shipped exports.
 
-Source references are to `c28c9ab16532d72f5b53521b808e8a0a93dddb2e`.
+Source references are to `c28c9ab16532d72f5b53521b808e8a0a93dddb2e`. Line numbers have moved since.
 
 ## 1. Purpose
 
@@ -69,7 +77,8 @@ These exist at the pinned source and are reused without change unless section 4 
 
 ## 4. Required additions
 
-None of these exist. Each needs its owner's review.
+None of these existed at the pinned source. The status note at the top says which have landed since.
+Each needs its owner's review.
 
 - **Contract.** A `tool-results` endpoint with three handle-mode commands: `tool-result`,
   `tool-result-consent` and `tool-result-revoke`. Closed schemas, one per answer state, frozen at

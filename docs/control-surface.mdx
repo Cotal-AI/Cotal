@@ -23,6 +23,8 @@ The current protocol replaces that arrangement with endpoints. [SPEC §13](../SP
   </Card>
 </Cards>
 
+The delivery daemon still serves membership requests on `ctl.delivery.<owner>.<actor>` and administration on `ctl.delivery-admin.<owner>.<actor>`. These are reference implementation residue despite [SPEC §13.11](../SPEC.md#1311-the-hard-cut). See [delivery service contracts](delivery-service-reference.mdx).
+
 ## Request routes [#the-ep-rails]
 
 All commands use the `ep` request kind. A route selects who receives a request, while the envelope names the command.
@@ -74,6 +76,10 @@ Only operator instruments carry the chat-session commands.
 
 Retirement cleans up the session's footprint. A copied static credential can still connect until its expiry because the broker has no credential revocation in this mode.
 See [static chat session contracts](control-lifecycle.mdx#static-chat-sessions).
+
+## Persona write observation [#persona-write-observation]
+
+`define-persona` and `remove-persona` mutate the selected manager's local catalog. An unanswered write may have landed. Read the same manager's catalog before deciding what happened. A missing readback cannot prove the original request will never arrive. See [persona writes](control-lifecycle.mdx#persona-write-observation).
 
 ## Spawn is a goal [#spawn-is-a-goal]
 

@@ -43,12 +43,19 @@ function summaryOf(description) {
   return text.length > 200 ? text.slice(0, 197).trimEnd() + "…" : text;
 }
 
+const categories = ["Start here", "Guide", "Concept", "Reference", "Project"];
+const categoryOf = (kind, path) => {
+  const category = categories.find(value => kind === value || kind.startsWith(value + " (") || kind.startsWith(value + ":"));
+  if (!category) throw new Error(`${path} has no supported documentation category`);
+  return category;
+};
+
 const pages = [];
 for (const path of files) {
   if (!readFileSync(path, "utf8").trim()) throw new Error(`gen:docsbundle: docs/${basename(path)} is empty`);
   const doc = await readDocument(path);
   pages.push({
-    slug: slugOf(path), title: doc.metadata.title, kind: doc.metadata.kind,
+    slug: slugOf(path), title: doc.metadata.title, kind: doc.metadata.kind, category: categoryOf(doc.metadata.kind, path),
     summary: summaryOf(doc.metadata.description), body: doc.markdown,
   });
 }

@@ -1,5 +1,708 @@
 # @cotal-ai/web
 
+## 0.132.1
+
+No changes in this release.
+
+## 0.132.0
+
+### Patch Changes
+
+- 2f0e7c8: Share dashboard bound-address formatting between the web service and CLI status, keeping IPv6 brackets, readiness URLs and the branded default unchanged.
+
+## 0.131.6
+
+No changes in this release.
+
+## 0.131.5
+
+No changes in this release.
+
+## 0.131.4
+
+No changes in this release.
+
+## 0.131.3
+
+No changes in this release.
+
+## 0.131.2
+
+No changes in this release.
+
+## 0.131.1
+
+No changes in this release.
+
+## 0.131.0
+
+No changes in this release.
+
+## 0.130.2
+
+No changes in this release.
+
+## 0.130.1
+
+No changes in this release.
+
+## 0.130.0
+
+No changes in this release.
+
+## 0.129.9
+
+No changes in this release.
+
+## 0.129.8
+
+No changes in this release.
+
+## 0.129.7
+
+No changes in this release.
+
+## 0.129.6
+
+No changes in this release.
+
+## 0.129.5
+
+No changes in this release.
+
+## 0.129.4
+
+No changes in this release.
+
+## 0.129.3
+
+No changes in this release.
+
+## 0.129.2
+
+No changes in this release.
+
+## 0.129.1
+
+No changes in this release.
+
+## 0.129.0
+
+No changes in this release.
+
+## 0.128.7
+
+No changes in this release.
+
+## 0.128.6
+
+No changes in this release.
+
+## 0.128.5
+
+No changes in this release.
+
+## 0.128.4
+
+No changes in this release.
+
+## 0.128.3
+
+No changes in this release.
+
+## 0.128.2
+
+No changes in this release.
+
+## 0.128.1
+
+No changes in this release.
+
+## 0.128.0
+
+No changes in this release.
+
+## 0.127.5
+
+No changes in this release.
+
+## 0.127.4
+
+No changes in this release.
+
+## 0.127.3
+
+No changes in this release.
+
+## 0.127.2
+
+No changes in this release.
+
+## 0.127.1
+
+No changes in this release.
+
+## 0.127.0
+
+No changes in this release.
+
+## 0.126.3
+
+No changes in this release.
+
+## 0.126.2
+
+No changes in this release.
+
+## 0.126.1
+
+No changes in this release.
+
+## 0.126.0
+
+No changes in this release.
+
+## 0.125.0
+
+No changes in this release.
+
+## 0.124.3
+
+No changes in this release.
+
+## 0.124.2
+
+No changes in this release.
+
+## 0.124.1
+
+No changes in this release.
+
+## 0.124.0
+
+No changes in this release.
+
+## 0.123.0
+
+No changes in this release.
+
+## 0.122.0
+
+No changes in this release.
+
+## 0.121.7
+
+No changes in this release.
+
+## 0.121.6
+
+No changes in this release.
+
+## 0.121.5
+
+No changes in this release.
+
+## 0.121.4
+
+No changes in this release.
+
+## 0.121.3
+
+### Patch Changes
+
+- a88645e: The shipped comments in `app.js`, `parts.js` and `web.ts` (`dist/web/app.js`, `dist/web/parts.js`, `dist/web.js` and `dist/web.d.ts`) now state the dashboard's refresh loop, backfill merge, membership feed, write-route ingress and message-part rendering contracts in the present tense. They no longer narrate earlier revisions of the code or of the comments themselves. No runtime change.
+
+## 0.121.2
+
+No changes in this release.
+
+## 0.121.1
+
+No changes in this release.
+
+## 0.121.0
+
+No changes in this release.
+
+## 0.120.2
+
+No changes in this release.
+
+## 0.120.1
+
+No changes in this release.
+
+## 0.120.0
+
+No changes in this release.
+
+## 0.119.5
+
+No changes in this release.
+
+## 0.119.4
+
+### Patch Changes
+
+- ed5c23f: Remedies, hints and messages from `run`, `actor` and `auth`, `logout`, `supervise` and `manager`, `deliver`, `docs`, `daemon`, `linear`, the web dashboard, the console, the Claude Code connector, a run's checkpoint prompt and the endpoint issuance gate now name the commands they suggest in backticks, so a terminal keeps each one whole and `--json` carries the same text. They named them bare after other words, as in "list the recorded runs with cotal run", which split inside the command when the line wrapped.
+
+## 0.119.3
+
+No changes in this release.
+
+## 0.119.2
+
+No changes in this release.
+
+## 0.119.1
+
+No changes in this release.
+
+## 0.119.0
+
+No changes in this release.
+
+## 0.118.3
+
+No changes in this release.
+
+## 0.118.2
+
+No changes in this release.
+
+## 0.118.1
+
+No changes in this release.
+
+## 0.118.0
+
+No changes in this release.
+
+## 0.117.1
+
+No changes in this release.
+
+## 0.117.0
+
+No changes in this release.
+
+## 0.116.5
+
+No changes in this release.
+
+## 0.116.4
+
+No changes in this release.
+
+## 0.116.3
+
+No changes in this release.
+
+## 0.116.2
+
+No changes in this release.
+
+## 0.116.1
+
+### Patch Changes
+
+- a65cad5: The console roster and the web dashboard roster no longer call `progressSignal` with a literal `undefined`. Neither surface has a last-assistant observation, so a working row renders `progress unknown` directly and every other row keeps its heartbeat age.
+
+## 0.116.0
+
+### Patch Changes
+
+- 352ee27: `watchMembership` delivers each membership-feed entry to its callback as a `MembershipChange` (the decoded member record or its deletion, the heartbeat's `asOf`, and one `replayed` marker closing every replay) instead of a bare tick. The web dashboard, `cotal view` and `cotal channel members --follow` copy a heartbeat into their last snapshot's `asOf` and read the feed back only on a member change; before, every heartbeat the delivery daemon wrote cost each observer a full ordered-consumer rescan of the bucket with nothing changed.
+
+## 0.115.4
+
+No changes in this release.
+
+## 0.115.3
+
+### Patch Changes
+
+- bf5f601: A detached dashboard start names a pidfile it cannot read and stops, instead of waiting out the readiness window and reporting a timeout with no probe. A missing pidfile still means the child has not claimed it yet.
+
+## 0.115.2
+
+No changes in this release.
+
+## 0.115.1
+
+No changes in this release.
+
+## 0.115.0
+
+No changes in this release.
+
+## 0.114.1
+
+No changes in this release.
+
+## 0.114.0
+
+No changes in this release.
+
+## 0.113.3
+
+No changes in this release.
+
+## 0.113.2
+
+No changes in this release.
+
+## 0.113.1
+
+No changes in this release.
+
+## 0.113.0
+
+No changes in this release.
+
+## 0.112.0
+
+No changes in this release.
+
+## 0.111.1
+
+No changes in this release.
+
+## 0.111.0
+
+No changes in this release.
+
+## 0.110.0
+
+No changes in this release.
+
+## 0.109.25
+
+No changes in this release.
+
+## 0.109.24
+
+No changes in this release.
+
+## 0.109.23
+
+No changes in this release.
+
+## 0.109.22
+
+No changes in this release.
+
+## 0.109.21
+
+No changes in this release.
+
+## 0.109.20
+
+No changes in this release.
+
+## 0.109.19
+
+No changes in this release.
+
+## 0.109.18
+
+No changes in this release.
+
+## 0.109.17
+
+No changes in this release.
+
+## 0.109.16
+
+No changes in this release.
+
+## 0.109.15
+
+No changes in this release.
+
+## 0.109.14
+
+No changes in this release.
+
+## 0.109.13
+
+No changes in this release.
+
+## 0.109.12
+
+No changes in this release.
+
+## 0.109.11
+
+No changes in this release.
+
+## 0.109.10
+
+No changes in this release.
+
+## 0.109.9
+
+No changes in this release.
+
+## 0.109.8
+
+No changes in this release.
+
+## 0.109.7
+
+No changes in this release.
+
+## 0.109.6
+
+No changes in this release.
+
+## 0.109.5
+
+No changes in this release.
+
+## 0.109.4
+
+No changes in this release.
+
+## 0.109.3
+
+No changes in this release.
+
+## 0.109.2
+
+No changes in this release.
+
+## 0.109.1
+
+No changes in this release.
+
+## 0.109.0
+
+No changes in this release.
+
+## 0.108.1
+
+No changes in this release.
+
+## 0.108.0
+
+### Minor Changes
+
+- 7657395: The manager and the built-in services start without being added first. `cotal manager start` starts the manager for this folder's or the selected space with the pty runtime and its registered broker, and `cotal manager stop`, `status`, `logs` and `restart` act on it; after `cotal up` it reports the manager `up` started and starts no second one. `cotal service` lists every built-in service, started or not, with the command that starts it, and `cotal service start <preset>` starts one from its defaults, refusing with the exact flags when it needs a file that has no default, such as the feedback form's tester keys and broker credential. A service preset can declare those defaults: a literal, the space's registered root or broker, or a private file the space already keeps. `cotal service add <name> --exec "<command>"` adds a program of your own without a definition file, splitting the command into words without a shell and refusing pipes, redirection, variables and globs.
+  
+  `cotal supervise` is deprecated again and is removed in 1.0.0 with the other daemon entries. It keeps its flags and behavior and prints one line on stderr naming `cotal manager start`, or, when it is given `--execution`, `--spawn`, `--seat-cap` or a resume flag that `manager start` does not take yet, saying to keep `supervise` for that run. `cotal manager start` and `restart` install first-party connectors on first run, as `supervise` does. `cotal manager install` refuses before any effect and names a unit of your own running `cotal manager start --foreground`. The `deliver`, `auth-service` and `feedback-intake` warnings now name `cotal service start <preset>`.
+
+## 0.107.0
+
+No changes in this release.
+
+## 0.106.1
+
+No changes in this release.
+
+## 0.106.0
+
+No changes in this release.
+
+## 0.105.1
+
+No changes in this release.
+
+## 0.105.0
+
+No changes in this release.
+
+## 0.104.2
+
+No changes in this release.
+
+## 0.104.1
+
+No changes in this release.
+
+## 0.104.0
+
+No changes in this release.
+
+## 0.103.4
+
+No changes in this release.
+
+## 0.103.3
+
+No changes in this release.
+
+## 0.103.2
+
+No changes in this release.
+
+## 0.103.1
+
+No changes in this release.
+
+## 0.103.0
+
+No changes in this release.
+
+## 0.102.0
+
+No changes in this release.
+
+## 0.101.7
+
+No changes in this release.
+
+## 0.101.6
+
+No changes in this release.
+
+## 0.101.5
+
+No changes in this release.
+
+## 0.101.4
+
+No changes in this release.
+
+## 0.101.3
+
+No changes in this release.
+
+## 0.101.2
+
+No changes in this release.
+
+## 0.101.1
+
+No changes in this release.
+
+## 0.101.0
+
+### Patch Changes
+
+- 9cb1a00: Document the dashboard and public auth HTTP interfaces with OpenAPI descriptions and live response conformance checks. Publish operation pages, Markdown and downloadable specifications in the docs site.
+- 914b1f1: Replace stale source and SPEC line citations in web and auth smoke comments and
+  prototype notes with symbols and named sections. Correct the roster wiring and
+  browser extension rendering descriptions.
+
+## 0.100.2
+
+No changes in this release.
+
+## 0.100.1
+
+No changes in this release.
+
+## 0.100.0
+
+No changes in this release.
+
+## 0.99.3
+
+No changes in this release.
+
+## 0.99.2
+
+No changes in this release.
+
+## 0.99.1
+
+No changes in this release.
+
+## 0.99.0
+
+No changes in this release.
+
+## 0.98.0
+
+No changes in this release.
+
+## 0.97.1
+
+No changes in this release.
+
+## 0.97.0
+
+No changes in this release.
+
+## 0.96.1
+
+No changes in this release.
+
+## 0.96.0
+
+No changes in this release.
+
+## 0.95.2
+
+No changes in this release.
+
+## 0.95.1
+
+No changes in this release.
+
+## 0.95.0
+
+No changes in this release.
+
+## 0.94.7
+
+No changes in this release.
+
+## 0.94.6
+
+No changes in this release.
+
+## 0.94.5
+
+No changes in this release.
+
+## 0.94.4
+
+No changes in this release.
+
+## 0.94.3
+
+No changes in this release.
+
+## 0.94.2
+
+No changes in this release.
+
+## 0.94.1
+
+No changes in this release.
+
+## 0.94.0
+
+No changes in this release.
+
+## 0.93.0
+
+No changes in this release.
+
+## 0.92.2
+
+No changes in this release.
+
+## 0.92.1
+
+No changes in this release.
+
+## 0.92.0
+
+### Minor Changes
+
+- 88cc5a1: A Linear account with no record now refuses with `TARGET_NOT_FOUND` and the `cotal linear account add` route, in `linear account show` and when a `linear` service starts. The service refuses in its launch plan, so no child is started and no failed process exit is reported. A record that exists but cannot be read is still `DEPENDENCY_UNAVAILABLE`. The service checks the account in the Cotal home of the process that starts it, and refuses with `UNSUPPORTED` before a child when `COTAL_HOME` is unset and the definition's `envRefs` set `HOME` (on Windows, `LOCALAPPDATA` or `USERPROFILE`), because the child could read another home. A service adapter's launch hook now receives the definition's `envRefs` names, never their values. The endpoint name is checked when the service starts.
+
+  `cotal update --check` and the version read in `cotal update` run npm with a temporary cache that is removed afterwards, no log files and no npm update notifier, so they leave nothing in npm's cache, log directory or notifier stamp. From a source checkout, the `update --self` hint says it installs a separate global copy.
+
+  `service add --preset` offers no `--no-<option>` flag for a boolean option whose schema admits only true, so the web preset no longer lists `--no-read-only`. An absent `web` preset names `cotal ext add @cotal-ai/web` in its remedy. A background `service start` ends with the `service logs` command for the new instance. Re-adding an existing definition names the remove-and-add route, and an `ext remove` blocked by service instances names each one. A managed dashboard logs an endpoint error or warning by its class, the error's name and code, and never its message.
+
+### Patch Changes
+
+- 35754dd: A `web` dashboard service whose port is already in use now releases its PID slot before it exits. Before, the slot stayed held after the failed start, and every later `service start` in that space refused with `LIFECYCLE_BLOCKED` until `cotal down` cleared it.
+
 ## 0.91.0
 
 ### Minor Changes

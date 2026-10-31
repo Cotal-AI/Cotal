@@ -9,11 +9,11 @@ import {
 } from "@cotal-ai/core";
 import { canonicalRoot } from "@cotal-ai/workspace";
 import { z } from "zod";
-import type { AdditiveAgentReceipt, AdditiveChannelReceipt, AdditiveTeamAttempt, AdditiveTeamReceipt } from "./team-additive-attempt.js";
+import type { AdditiveAgentReceipt, AdditiveChannelReceipt, AdditiveRemovalOriginal, AdditiveStoppedReceipt, AdditiveTeamAttempt } from "./team-additive-attempt.js";
 import { publishRemovalRecord, readRemovalRecord, removalRecordDirectory } from "./team-removal-record.js";
 
 /** A channel-only receipt, or a mixed team receipt whose original agents are fully retired. */
-export type CardReceipt = AdditiveChannelReceipt | (AdditiveAgentReceipt & { kind: "additive-team-receipt" });
+export type CardReceipt = AdditiveChannelReceipt | (AdditiveAgentReceipt & { kind: "additive-team-receipt" }) | AdditiveStoppedReceipt;
 
 const ID = /^[a-f0-9]{16}$/;
 const revision = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
@@ -62,11 +62,13 @@ const STEP_NAME = /^team-channel-remove-step-([a-f0-9]{16})-(0|[1-9][0-9]?)-(sub
 export const CARD_TERMINAL_PHASES = ["deleted", "absent", "conflict", "observed-removed", "observed-superseded"] as const;
 
 /** Mixed card removal is valid only after a complete matched agent-retirement receipt, so a card
- * phase can never precede or replace the retirement phase. Static auth only, like retirement. */
-function originalFor(root: string, id: string, attempts: readonly AdditiveTeamAttempt[], receipts: readonly AdditiveTeamReceipt[], retired: ReadonlySet<string>): { attempt: AdditiveTeamAttempt; receipt: CardReceipt } {
+ * phase can never precede or replace the retirement phase. Static auth only, like retirement. A
+ * stopped attempt that allocated agents follows the same order. */
+function originalFor(root: string, id: string, attempts: readonly AdditiveTeamAttempt[], receipts: readonly AdditiveRemovalOriginal[], retired: ReadonlySet<string>): { attempt: AdditiveTeamAttempt; receipt: CardReceipt } {
   const attempt = attempts.find((row) => row.deploymentId === id), receipt = receipts.find((row) => row.deploymentId === id);
   const shape = receipt?.kind === "additive-channel-receipt" ? !attempt?.requestedAgents.length
-    : receipt?.kind === "additive-team-receipt" && receipt.authMode === "auth" && attempt?.requestedAgents.length === receipt.createdAgents.length && retired.has(id);
+    : receipt?.kind === "additive-team-receipt" ? receipt.authMode === "auth" && attempt?.requestedAgents.length === receipt.createdAgents.length && retired.has(id)
+    : receipt?.kind === "additive-stopped-receipt" && (!receipt.createdAgents.length || receipt.authMode === "auth" && retired.has(id));
   if (!attempt || !receipt || !shape || !receipt.createdChannels.length || receipt.createdChannels.length > 100 || canonicalRoot(attempt.root) !== canonicalRoot(root)) throw new Error("removal has no matching channel-only or retired mixed returned deployment");
   return { attempt, receipt: receipt as CardReceipt };
 }
@@ -80,7 +82,7 @@ function sameChannels(intent: ChannelRemovalAttempt, receipt: CardReceipt): bool
 
 /** A removal record is history, never authority to delete a name. Only a complete sequence bound to
  * the original channel receipt releases the root's known additive blocker; anything else blocks. */
-export function readChannelTeamRemovals(root: string, attempts: readonly AdditiveTeamAttempt[], receipts: readonly AdditiveTeamReceipt[], retired: ReadonlySet<string> = new Set()): ChannelRemovalInventory {
+export function readChannelTeamRemovals(root: string, attempts: readonly AdditiveTeamAttempt[], receipts: readonly AdditiveRemovalOriginal[], retired: ReadonlySet<string> = new Set()): ChannelRemovalInventory {
   const inventory: ChannelRemovalInventory = { attempts: [], steps: [], returned: [], refused: [] };
   const dir = removalRecordDirectory(root), files = readdirSync(dir).filter((name) => name.startsWith(PREFIX)).sort();
   for (const name of files.filter((name) => name.startsWith(`${PREFIX}attempt-`))) {
@@ -108,6 +110,10 @@ export function readChannelTeamRemovals(root: string, attempts: readonly Additiv
       inventory.steps.push(value);
     } catch { inventory.refused.push({ path, why: "the channel removal step or its registry observation is unreadable" }); }
   }
+  // The steps in the order they were written: by channel, each submission before its outcome. Their
+  // file names sort an outcome first, and a tenth channel before the second.
+  inventory.steps.sort((a, b) => a.deploymentId < b.deploymentId ? -1 : a.deploymentId > b.deploymentId ? 1
+    : a.ordinal - b.ordinal || Number(b.phase === "submitted") - Number(a.phase === "submitted"));
   for (const name of files.filter((name) => name.startsWith(`${PREFIX}returned-`))) {
     const path = join(dir, name);
     try {

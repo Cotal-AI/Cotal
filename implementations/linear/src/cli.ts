@@ -1,36 +1,42 @@
 /** Operator frontend over the native Linear client. No request or authority is substituted. */
 import { lstatSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { acquireLock, credsClaims, writeSecretFileCreateOnly, type ParsedArgs, type SpaceAuth } from "@cotal-ai/core";
-import { CommandFailure, recordOperationSpace, assertExternalCredentialExport, getSpaceAuth, hasUserAuthState, inputDisabledByFlag, isCommandFailure, presentationOf, protectedCredentialReference, protectedLocalDirectory, readLocalRecordSource, resolveMeshTarget, resolveNativeServiceTarget, workspaceSecretStore, writeResult, type MeshTarget, type Report } from "@cotal-ai/workspace";
+import { acquireLock, credsClaims, resolveAuthProvider, writeSecretFileCreateOnly, type ParsedArgs, type SpaceAuth } from "@cotal-ai/core";
+import { CommandFailure, recordOperationSpace, assertExternalCredentialExport, getSpaceAuth, hasUserAuthState, inputDisabledByFlag, isCommandFailure, presentationOf, protectedCredentialReference, protectedLocalDirectory, readLocalRecordSource, resolveMeshTarget, resolveNativeServiceTarget, userAuthStateDir, workspaceSecretStore, writeResult, type MeshTarget, type Report } from "@cotal-ai/workspace";
 import { accountMissing, assertAccountName, loadAccount, saveAccount, storedTokenPath } from "./account.js";
 import { loginAccount } from "./oauth.js";
 import { isLinearMode } from "./origin.js";
 import { DEFAULT_LIMITS, LinearUpstream } from "./upstream.js";
 import { emitInventory, emitUpstream } from "./presentation.js";
 import { assertLinearEndpointName, provisionLinearCaller, registerLinearEndpoint, renewalDelayMs, runLinearEndpoint } from "./serve.js";
-
-export const USAGE = `cotal linear account add <name> --mode <write|readonly> (--token-stdin | --token-file <path>)
-cotal linear account login <name> --mode <write|readonly>
-cotal linear account show <name>
-cotal linear inventory <account> [--json]
-cotal linear call <account> <tool> [--args <json>] [--inventory <digest>] [--timeout <ms>]
-cotal linear resource <account> <uri> [--inventory <digest>] [--timeout <ms>]
-cotal linear prompt <account> <name> [--args <json>] [--inventory <digest>] [--timeout <ms>]
-cotal linear serve <account> --endpoint <reverse-dns-name> [--space <s>] [--server <url>]
-cotal linear caller <name> --endpoint <reverse-dns-name> --out <path> [--channels <a,b>] [--expires-in <s>] [--space <s>] [--server <url>] [--json|--plain]`;
+import { serveLinearUserAuth } from "./user-auth-serve.js";
 
 export const linearForms = [
-  { path: ["account", "add"], operands: 1, flags: ["mode", "token-stdin", "token-file", "json", "plain"], outputs: ["json", "plain"], summary: "save an explicit token-file or piped-token account", reads: false },
-  { path: ["account", "login"], operands: 1, flags: ["mode", "plain"], outputs: ["plain"], summary: "run the native interactive Linear OAuth flow", reads: false },
-  { path: ["account", "show"], operands: 1, flags: ["json", "plain"], outputs: ["json", "plain"], summary: "read recorded account metadata without credential contents", reads: true },
-  { path: ["inventory"], operands: 1, flags: ["json", "plain"], outputs: ["json", "plain"], summary: "read the complete bounded native MCP inventory", reads: true },
-  { path: ["call"], operands: 2, flags: ["args", "inventory", "timeout", "json", "plain"], outputs: ["json", "plain"], summary: "send one native tool request without replay", reads: false },
-  { path: ["resource"], operands: 2, flags: ["inventory", "timeout", "json", "plain"], outputs: ["json", "plain"], summary: "read one native MCP resource without replay", reads: true },
-  { path: ["prompt"], operands: 2, flags: ["args", "inventory", "timeout", "json", "plain"], outputs: ["json", "plain"], summary: "request one native MCP prompt without replay", reads: true },
-  { path: ["serve"], operands: 1, flags: ["endpoint", "space", "server"], outputs: [], summary: "legacy native foreground service; independent lifecycle uses the Linear service preset", reads: false },
-  { path: ["caller"], operands: 1, flags: ["endpoint", "out", "channels", "expires-in", "space", "server", "json", "plain"], outputs: ["json", "plain"], summary: "write a private native static caller without changing issuance authority", reads: false },
+  { path: ["account", "add"], operands: 1, flags: ["mode", "token-stdin", "token-file", "json", "plain"], outputs: ["json", "plain"], summary: "save an explicit token-file or piped-token account", reads: false, usage: "cotal linear account add <name> --mode <write|readonly> (--token-stdin | --token-file <path>)" },
+  { path: ["account", "login"], operands: 1, flags: ["mode", "plain"], outputs: ["plain"], summary: "run the native interactive Linear OAuth flow", reads: false, usage: "cotal linear account login <name> --mode <write|readonly>" },
+  { path: ["account", "show"], operands: 1, flags: ["json", "plain"], outputs: ["json", "plain"], summary: "read recorded account metadata without credential contents", reads: true, usage: "cotal linear account show <name>" },
+  { path: ["inventory"], operands: 1, flags: ["json", "plain"], outputs: ["json", "plain"], summary: "read the complete bounded native MCP inventory", reads: true, usage: "cotal linear inventory <account> [--json]" },
+  { path: ["call"], operands: 2, flags: ["args", "inventory", "timeout", "json", "plain"], outputs: ["json", "plain"], summary: "send one native tool request without replay", reads: false, usage: "cotal linear call <account> <tool> [--args <json>] [--inventory <digest>] [--timeout <ms>]" },
+  { path: ["resource"], operands: 2, flags: ["inventory", "timeout", "json", "plain"], outputs: ["json", "plain"], summary: "read one native MCP resource without replay", reads: true, usage: "cotal linear resource <account> <uri> [--inventory <digest>] [--timeout <ms>]" },
+  { path: ["prompt"], operands: 2, flags: ["args", "inventory", "timeout", "json", "plain"], outputs: ["json", "plain"], summary: "request one native MCP prompt without replay", reads: true, usage: "cotal linear prompt <account> <name> [--args <json>] [--inventory <digest>] [--timeout <ms>]" },
+  { path: ["serve"], operands: 1, flags: ["endpoint", "space", "server"], outputs: [], summary: "legacy native foreground service; independent lifecycle uses the Linear service preset", reads: false, usage: "cotal linear serve <account> --endpoint <reverse-dns-name> [--space <s>] [--server <url>]" },
+  { path: ["caller"], operands: 1, flags: ["endpoint", "out", "channels", "expires-in", "space", "server", "json", "plain"], outputs: ["json", "plain"], summary: "write a private native static caller without changing issuance authority", reads: false, usage: "cotal linear caller <name> --endpoint <reverse-dns-name> --out <path> [--channels <a,b>] [--expires-in <s>] [--space <s>] [--server <url>] [--json|--plain]" },
 ] as const;
+
+export const USAGE = linearForms.map((form) => form.usage).join("\n");
+
+/** The refusal of flags an operation does not take, naming them and the flags it does take. A
+ *  format flag also names the output flags the operation has: `serve` has none, it reports as text. */
+function foreignFlags(form: (typeof linearForms)[number], names: readonly string[]): CommandFailure {
+  const operation = `linear ${form.path.join(" ")}`;
+  const flags = (list: readonly string[]) => list.map((name) => `--${name}`).join(", ");
+  const why = !names.some((name) => name === "json" || name === "plain") ? ""
+    : form.outputs.length ? `, whose only output flag is ${flags(form.outputs)}`
+    : ", a foreground service that reports as text and has no --json or --plain output";
+  return new CommandFailure("refused", "USAGE_INVALID", `${flags(names)} does not belong to ${operation}${why}; no account or request was opened`, {
+    remedy: `drop ${flags(names)}; ${operation} takes ${flags(form.flags)}: ${form.usage}`, selfContained: true,
+  });
+}
 
 /** Pure grammar preflight. No account, token, OAuth state, connection or handler is opened. */
 export function validateLinearArguments(args: ParsedArgs): void {
@@ -41,7 +47,8 @@ export function validateLinearArguments(args: ParsedArgs): void {
   }
   const form = linearForms.find((row) => row.path.every((word, index) => args.positionals[index] === word));
   if (!form || args.positionals.length !== form.path.length + form.operands) throw new CommandFailure("refused", "USAGE_INVALID", "choose one complete declared Linear operation and its required operands");
-  if (Object.keys(args.values).some((name) => !(form.flags as readonly string[]).includes(name))) throw new CommandFailure("refused", "USAGE_INVALID", "a supplied flag does not belong to this Linear operation; no account or request was opened");
+  const foreign = Object.keys(args.values).filter((name) => !(form.flags as readonly string[]).includes(name));
+  if (foreign.length) throw foreignFlags(form, foreign);
   for (const operand of args.positionals.slice(form.path.length)) if (!operand || operand.length > 8192 || /[\u0000-\u001f\u007f]/u.test(operand)) throw new CommandFailure("refused", "USAGE_INVALID", "Linear operands must be bounded nonempty text without terminal controls");
   if (form.path[0] !== "caller") {
     try { assertAccountName(args.positionals[form.path.length]!); }
@@ -72,7 +79,7 @@ export function validateLinearArguments(args: ParsedArgs): void {
 export function accountForRead(name: string) {
   try { return loadAccount(name); }
   catch (error) {
-    if (accountMissing(error)) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no Linear account with this name is recorded; nothing was opened or sent", { target: { account: name }, remedy: `record it first with cotal linear account add ${name} --mode <write|readonly> --token-file <path>, or cotal linear account login ${name} --mode <write|readonly>` });
+    if (accountMissing(error)) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no Linear account with this name is recorded; nothing was opened or sent", { target: { account: name }, remedy: `record it first with \`cotal linear account add ${name} --mode <write|readonly> --token-file <path>\`, or \`cotal linear account login ${name} --mode <write|readonly>\`` });
     throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the selected Linear account metadata could not be read; no token or account-file contents were printed", { target: { account: name } });
   }
 }
@@ -142,9 +149,8 @@ async function forward(args: ParsedArgs, account: string, operation: string, run
   emitUpstream(args, account, operation, reply);
 }
 
-/** The static-auth mesh and the operator's own space authority, or a loud refusal. A per-user-auth
- *  mesh issues endpoint credentials through its remote auth service, which this package has no
- *  client for, so it is refused rather than signed locally. */
+/** The static issuer used by the standalone caller exporter and static serving path.
+ *  User-auth serving uses its remote authority and never enters this signer path. */
 async function staticAuthority(v: Record<string, unknown>, root?: string): Promise<{ target: MeshTarget; auth: SpaceAuth }> {
   const target = resolveMeshTarget(root ?? process.cwd(), { space: v.space as string | undefined, server: v.server as string | undefined, readOnly: true });
   recordOperationSpace(target.space);
@@ -166,6 +172,14 @@ export interface LinearServeLifecycle {
 /** Register and serve until SIGINT/SIGTERM, renewing the serve credential at 75% of its life.
  *  The embedding callback observes initialization, not a current endpoint response or cleanup. */
 export async function serveLinearAccount(account: string, endpoint: string, v: Record<string, unknown>, lifecycle?: LinearServeLifecycle): Promise<void> {
+  const selected = resolveMeshTarget(lifecycle?.root ?? process.cwd(), { space: v.space as string | undefined, server: v.server as string | undefined, readOnly: true });
+  recordOperationSpace(selected.space);
+  if (selected.mode === "user" || hasUserAuthState(selected.root, selected.space, { readOnly: true })) {
+    if (lifecycle) resolveNativeServiceTarget(lifecycle.root, selected.space, v.server as string | undefined);
+    return serveLinearUserAuth({ account, endpoint, space: selected.space, servers: selected.server, tls: selected.tlsRequired,
+      provider: resolveAuthProvider(), store: workspaceSecretStore(selected.root), dir: userAuthStateDir(selected.root, selected.space, { readOnly: true }),
+      upstream: new LinearUpstream(accountForRead(account)), ...(lifecycle ? { onInitialized: lifecycle.onInitialized } : {}) });
+  }
   const { target, auth } = await staticAuthority(v, lifecycle?.root);
   const upstream = new LinearUpstream(accountForRead(account));
   // Read the inventory first, so a broken account never becomes a registered endpoint.

@@ -1,7 +1,7 @@
 ---
 title: "Connect Claude"
 description: "Connect Claude Code to a mesh, launch an agent, and choose how it receives messages and tools."
-kind: "Informative"
+kind: Guide
 audience: "operators"
 ---
 
@@ -11,6 +11,58 @@ import { Steps, Step } from 'fumadocs-ui/components/steps';
 Use the Claude Code connector to send messages between a Claude session and other agents on your mesh.
 Complete the [Quickstart](getting-started.mdx) first.
 For another application, see [Connectors](connectors.mdx).
+
+## Choose a connection path
+
+Use one connection path per conversation. The Desktop app's Code tab and its ordinary chat
+are different hosts.
+
+| Where you use Claude | Connection path | How the space is chosen |
+| --- | --- | --- |
+| A Code session started by Cotal | Keep the connection supplied by `cotal spawn` | The spawn's target space |
+| Your own terminal, IDE or Desktop Code session | Native Cotal plugin | The native connection's target; see [personal sessions](#sessions-cotal-did-not-launch) |
+| Claude web or ordinary Desktop chat | Hosted HTTPS connector | The space approved during connector authorization |
+| Your own Code session where you explicitly choose hosted access | Hosted HTTPS connector | The space approved during connector authorization |
+
+The native plugin can deliver incoming messages through supported Claude Code hooks. Hosted access
+cannot start a turn in an idle conversation. A hosted conversation receives messages while it calls
+mesh tools, including `cotal_wait`. Adding the hosted connector does not add native wake support.
+
+### Connect through the hosted service
+
+For Cotal Cloud, the connector URL is `https://cloud.cotal.ai/mcp`. Other deployments advertise their
+own URL. In Claude web or Desktop chat, open Settings > Connectors > Add custom connector and enter
+the URL. If the connector is already listed or required by an installed plugin, connect that entry
+rather than adding a duplicate. Complete authorization in the browser and choose the intended space.
+
+In a Code session you started yourself, you can instead register and authenticate the HTTP server
+with Claude Code's CLI:
+
+```bash
+claude mcp add --transport http --scope user cotal-cloud https://cloud.cotal.ai/mcp
+claude mcp login cotal-cloud
+```
+
+Authenticate the existing entry if it is already registered. This CLI configuration does not
+complete authentication for Claude Desktop's separate Connectors settings. Where the local Cotal
+plugin is also installed, tell the conversation to use the hosted `cotal-cloud` server explicitly.
+A Code session started by Cotal must keep its managed connection.
+
+Authorization gives the client access to the connector. Joining a conversation to the mesh is a
+separate step: ask Claude to call `cotal_connect` with a name, open the returned approval page in
+your signed-in browser, inspect the space and permissions, and approve if they are right. A pending
+request has not joined. In Claude Code with the plugin's native hooks module, the decision reaches
+that conversation on its own: the plugin's server follows the pending request and, once you decide,
+tells the conversation to finish the connection, or that you denied it or let it expire. In Claude
+Desktop chat, which runs no native module, ask Claude to retry the connection. Confirm the resulting
+connection with `cotal_orientation` and check that its space is the one you intended.
+
+If Claude displays a success notification but its connector settings still offer Connect or report
+unfinished setup, do not treat the notification as proof of a working connection. Reopen the
+connector details and check whether its tools are available. If the conflict remains, report it as
+an incomplete connector setup; it is not evidence that the separate conversation approval succeeded.
+Do not move project or ancestor `.cotal` directories, change mesh credentials, or add `COTAL_SPACE`
+to repair hosted authentication. Hosted access does not select a mesh from those directories.
 
 ## Set up [#set-up]
 
@@ -63,6 +115,12 @@ Updates preserve disabled installations.
 If the skills plugin is missing or stale, run `cotal setup --skills`.
 See [Setup internals](setup-internals.md) for installation and update checks.
 
+After an npm upgrade, the first regular command refreshes the plugin copies before accepting the new release.
+Setup, skill installation, and refresh share a machine-local lock through their final checks.
+A shadowing local or project install produces a warning with the uninstall command; failure to update the user-scope install remains an error.
+`cotal status` checks loaded payload contents and manifest versions, rather than trusting older installation metadata alone.
+See [Plugin refresh](claude-connector-reference.mdx#plugin-refresh) for installation details.
+
 ## Enable channels for your organization [#enable-channels-for-your-organization]
 
 For claude.ai Team or Enterprise, ask an organization Owner to enable channels in
@@ -98,7 +156,8 @@ From the space's project folder, launch Claude with an explicit connector choice
 cotal spawn --harness claude
 ```
 
-Cotal asks a manager to launch the default persona, waits for it to join, and attaches your terminal.
+A bare spawn runs the default persona directly in this terminal.
+Use `--on <instance>` for a managed launch with attachment when that runtime streams a terminal.
 To launch a persona from your catalog without attaching, use:
 
 ```bash
@@ -146,7 +205,7 @@ Choose the corresponding connector for another provider's model.
 <Callout type="warn" title="Spawned Claude sessions default to bypassPermissions">
 
 The connector adds `--permission-mode bypassPermissions` unless you provide a native permission option.
-This applies to managed and direct foreground launches.
+This default applies to managed launches. A direct foreground spawn keeps Claude's own permission mode so you can answer its prompts.
 Only launch in a workspace you trust.
 Claude refuses bypass mode as root or when managed policy disables it.
 
@@ -162,6 +221,8 @@ For an unattended agent, arrange a way to answer prompts before using that mode.
 The channel can relay tool-permission requests onto the mesh for approval or denial.
 Native `--opt` values carry host-launch authority. See [Launch agents](launch-agents.mdx#set-launch-options).
 
+Cotal never accepts Claude's first-run style, login, or Bypass Permissions warning.
+Complete the first run yourself before using managed launches.
 Managed launches accept the selected workspace through Claude's native trust dialog.
 Review its hooks and settings before authorizing the launch.
 The direct foreground path leaves that dialog in your terminal.
@@ -205,6 +266,10 @@ An uncertain launch can leave a running agent. Inspect it with `cotal ps`.
 The manager verifies the carried transcript's hash and stops a seat that fails that check.
 See [Carried session custody](claude-connector-reference.mdx#carried-session-custody) for transfer isolation and provenance.
 
+To open Claude's own session picker, use `--opt resume=` with no ID.
+A managed launch is ready once Claude runs, then attaches you to the picker in a terminal, even with `-d`.
+Without a terminal, the receipt prints the attach command. `--opt resume=<id>` names a specific session and waits for its normal join.
+
 Resume through this command is an operator action.
 The MCP `cotal_spawn` tool cannot name host-local transcripts.
 The Claude connector supports forked resume, but rejects exact-session continuation.
@@ -246,26 +311,27 @@ See [Connection guards](claude-connector-reference.mdx#connection-guards) for ho
 
 ## Connect a session you opened [#sessions-cotal-did-not-launch]
 
-After setup, reopen Claude Code and ask it to call `cotal_connect` with a name.
-The installed plugin provides the tool without manual MCP configuration.
-Your session joins only when it calls the tool.
-Ask it to call `cotal_disconnect` when finished.
+A session you open yourself can join only a remote signed-in space whose authority supports conversation approval.
+A local mesh started by `cotal up` uses `cotal spawn` instead.
+After setup, reopen Claude and ask it to call `cotal_connect` with a name.
+Open the returned approval page in your signed-in browser, review the space and permissions, and approve the intended connection.
+A pending request has not joined the mesh.
 
-In a supported local Code host, the plugin's native module can notify a connected conversation about unread messages.
-If the module is unavailable or blocked, ask Claude to keep listening with `cotal_wait`.
-An attached reader does not prove the host allowed a new turn.
+In a supported Code host, the installed native hooks module follows the decision and tells the conversation to finish connecting.
+It can deliver complete short messages at idle or supported busy boundaries. Larger messages retain a preview and the inbox path.
+If the module is unavailable or blocked, use `cotal_wait`; an attached reader does not prove the host can start a turn.
 
-For Claude Desktop chat on macOS or Windows, run setup and quit and reopen Desktop.
-Setup adds a local Cotal server while preserving other server entries.
-Desktop chat receives messages during tool calls and can wait with `cotal_wait`.
-It cannot start an idle turn from a server notification.
-On Linux, setup does not add a Desktop chat server.
-See [Personal sessions](claude-connector-reference.mdx#personal-sessions) for mesh selection and wake limits.
+For ordinary Claude Desktop chat or Claude web, use the hosted HTTPS connector described in [Choose a connection path](#choose-a-connection-path).
+Authorization and conversation approval are separate steps. Desktop chat has no native module, so ask Claude to retry after approval.
+Confirm the final space with `cotal_orientation`. Ask for `cotal_disconnect` when finished.
+See [Personal sessions](claude-connector-reference.mdx#personal-sessions) for authority, delivery, custody, and limits.
 
 ## Check message delivery [#how-messages-reach-the-session]
 
 When a managed agent misses a message, first inspect its connection and Claude's startup notice.
-Channel wake starts an idle turn. Lifecycle hooks deliver the queued messages into that turn.
+For managed sessions, channel wake starts an idle turn and lifecycle hooks deliver queued messages into it.
+For personally opened native Code sessions, complete short messages can arrive inline at idle or supported busy boundaries.
+A pending hosted connection approval is followed only in a supported native host. Hosted access itself never wakes an idle conversation.
 The wake notification itself does not acknowledge a message.
 Without channels, delivery waits for the next hook-driven turn.
 Live-only traffic has no durable retry.
@@ -276,6 +342,7 @@ For acknowledgement, duplicate delivery, and inbox bounds, see [Message delivery
 
 Ask the agent to use `cotal_status({ attention: "open" })` for normal delivery, `dnd` to defer ambient wake, or `focus` to pull channel traffic.
 Use `cotal_channel_mode` to make a channel quiet or muted.
+In focus mode, a mention wakes the session with a sender/channel hint to call `cotal_inbox`; the message body stays on recall.
 Quiet ambient messages wait for `cotal_inbox`. Muted channels drop messages, including mentions.
 DMs and anycast remain separate from channel overrides.
 Attention is advisory and grants no access control.
@@ -313,6 +380,7 @@ An update refreshes existing plugins but preserves disabled ones.
 
 Inspect the launch error and manager log before retrying.
 Managed startup accepts only recognized trust and development-channel dialogs.
+First-run style, login, and bypass warnings need your own foreground confirmation.
 An unmatched screen fails within the startup bound.
 Use `--foreground` to handle a native dialog yourself.
 

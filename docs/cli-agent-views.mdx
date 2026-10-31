@@ -9,6 +9,7 @@ import { Callout } from "fumadocs-ui/components/callout";
 
 These commands report launch previews, current manager observations, and retained team receipts.
 
+
 ## Persona previews [#persona-previews]
 
 `spawn --file/-f <persona-file>` selects a persona, not a team manifest. It cannot be combined
@@ -19,11 +20,23 @@ execution reads its local file. A supported Mesh-manifest shape returns a schema
 the literal `cotal team deploy <file>` remedy, before agent allocation.
 
 `spawn --dry-run` never refreshes the catalog, repairs stale registrations, imports connector code,
-connects to the broker, redeems enrollment, provisions or allocates an agent. The managed preview
-is currently partial: it retains requested selectors but cannot resolve host-local persona and
-cwd facts offline. It does not substitute the caller's files. With `--foreground`, the preview
-resolves the local persona, harness precedence and physical working directory. Binary, login,
-model-policy and live authority checks are labeled not performed.
+signs in to the broker, redeems enrollment, provisions or allocates an agent. Where the launch reads
+whether the recorded brokers answer to choose its space, as in a folder whose registered space may
+be stopped, the preview reads the same without signing in, so it names the space the launch uses. The managed preview
+shows the request and exits 0 with `completeness` `not-checked`, because the manager resolves the
+persona, harness and working directory on its own host at launch. It does not substitute the
+caller's files. A named `--runtime` is checked on this machine only, through the lookup the launch
+uses: `result.requested.runtime` names it, and `result.runtimeCheck` gives the `host` it was checked
+on, whether it is `available` there, and the `error` when it is not. A runtime this machine cannot
+run is a `RUNTIME_UNAVAILABLE` warning, because a manager on another host checks its own.
+`--runtime auto` is refused as the launch refuses it. With `--foreground`, the preview resolves the
+local persona, harness precedence and physical working directory. Binary, login, model-policy and live authority checks are labeled not
+performed. Both previews say where the persona came from: `--file`, the command line, a preference
+or the default. A harness that names no connector this workstation knows is a `HARNESS_UNKNOWN`
+warning, or the `PREFERENCE_INVALID` warning `config` gives when only `COTAL_DEFAULT_AGENT` chose
+it. In a folder whose `.cotal/` names no space, as after `space forget`, the preview keeps `Mesh:
+main`, says under it that the held default was assumed, and its JSON `target` names the folder as
+`root` and the space as `assumed`.
 
 `spawn --foreground --enrollment-file <private-file> --space <name>` uses the existing one-seat
 foreground enrollment path. The file is opened with protected ownership/mode and bounded input
@@ -32,35 +45,70 @@ adapter. It does not supply a managed enrollment authority path. Dry-run does no
 the enrollment file. On Windows the file must be a regular file; its owner, mode and links are not
 checked.
 
+
 ## Managed launch view [#managed-launch-view]
 
-`spawn [<persona>]` now uses the manager and attaches after its native readiness result. The
-attachment is pinned to the attributed accepting manager and the allocated identity/incarnation,
+`spawn [<persona>] --on <instance>` launches through that manager and attaches after its native
+readiness result, when that manager's runtime streams a terminal. The attachment is pinned to the attributed accepting manager and the allocated identity/incarnation,
 not a second display-name guess. `--detach/-d` returns a finite JSON/plain-capable receipt after
-the same readiness result. The terminal receipt shows the full lifecycle, original request, accepted goal where reported,
-role and model request separately from any provider acceptance claim. Its Next section names the actual agent, space and accepting manager
+the same readiness result. While it waits, it prints the launch it asked for, with the space as a
+field, and one line that says the manager answers when it refuses the launch, or when the agent
+joins or exits, within about 30 seconds. The receipt or refusal that follows names the mesh in its
+`Mesh:` heading. A launch the manager reports failed, such as an agent whose process exits at once,
+fails `OPERATION_FAILED`, exit 5, with the manager's reason. The terminal receipt shows the full lifecycle, original request, accepted goal where reported,
+role and model request separately from any provider acceptance claim. When the host granted the
+agent other read or post channels than it asked for, as a host that narrows a request to your grant
+does, the receipt adds a `Granted` line with the channels it got and the ones it asked for, and
+`--json` carries both as `acl.requested` and `acl.effective`. Its Next section names the actual agent, space and accepting manager
 in attach/status commands when their tokens are safe shell words; it otherwise retains
-placeholders beside the full identity fields. Without usable input/output terminals, default attachment refuses
-before allocation and names detached or direct execution. A shell tool's inherited parent PTY
-is not enough.
+placeholders beside the full identity fields.
+
+A manager on a runtime that streams no terminal, which is `tmux`, `cmux`, `orca` and `herdr`,
+answers with that fact and the launch stops there: no attach is asked for, nothing is partial, and
+the command exits 0 with the agent running. Its `Runtime` row reads `<runtime> · no terminal
+stream`, its `View` row reads `not attached; the seat runs in the manager's <runtime> session`, and
+its Next gives `cotal watch` and `cotal send -t <name>` with one line saying `attach` is not
+available there. `--json` carries the same answer as `result.streamsTerminal`, beside the
+`result.runtime` that names the backend. A manager from before 0.104.2 reports neither, so
+`streamsTerminal` is null and the launch asks for an attach. When that manager refuses it because
+the runtime streams no terminal, the launch ends there too, with one line that names the runtime,
+and exits 0. Such a manager does not mark that refusal, so the CLI accepts it only for a runtime
+whose provider, registered or installed with this CLI, declares no terminal. Any other failed
+attach is partial, exit 4, with the manager's reason as `Native detail` and a Next that gives
+`cotal ps` and `cotal attach` with the space and manager instance. Without usable input/output terminals, an attaching
+`--on` launch refuses before allocation and names `-d` or a spawn in this terminal. A shell tool's
+inherited parent PTY is not enough.
+
+A launch whose agent application waits for you before it joins is ready once its process runs.
+Claude with `--opt resume=` and no session id opens its session picker, so the CLI says the agent
+is running on its manager and host and waiting for you at Claude's session picker. In a terminal it
+attaches to the agent at once, `-d` included; otherwise it prints the attach command. When the
+readiness window passes and the manager reports the agent's process still running, the CLI says
+the agent has not joined the mesh yet, attaches when the spawn was not detached, and otherwise
+prints the attach command. Both exit 0, and `--json` reports them as `managed-launch-running` with
+`waitingFor` naming the screen or null. The outcome stays unknown when the manager cannot say
+whether the process runs.
+
+A managed launch prints its `Managed launch` plan on stdout before its receipt, so
+`cotal spawn <persona> -d > out.txt` keeps both, and a refusal prints on stderr. With `--json`,
+stdout holds only the envelope and the plan stays on stderr. The manager that refuses a launch
+writes one line to its own log naming the original request, the persona and the reason, so
+`cotal service logs <definition>` on its host shows why a spawn failed after the terminal is gone.
+An unpinned launch that no manager received has no such line, because no manager answered it.
 
 `--harness/-H`, `--model/-m`, `--name/-n`, `--prompt/-p` and `--cwd/-C` retain their declared
 meanings. The legacy `--agent` spelling remains accepted; using both harness spellings refuses.
-Public persona-file launches use the same managed route. Team manifests use `team boot` or
-`team deploy`. Protected internal launch children retain their direct route.
+A `--file <persona-file>` launch uses this route too unless `--foreground` is given. A manifest is
+deployed with `cotal team deploy <file>`, not `spawn`.
 
 `--foreground` runs the native application directly. It does not support a structured receipt,
 manager pin or manager control credential. Native exit or terminal loss may end that process;
 no detachable-view or reboot-survival claim applies. Protected internal handoff/enrollment
 children keep their existing direct execution and native authorization checks.
 
-<Callout type="warn">
-
 If the agent joins but attachment fails, the result is partial with its original identity and
 manager. No second launch occurs. A view exit sends no stop request. This route does not offer
 no-manager startup choices or imperative planning.
-
-</Callout>
 
 
 ## Named agent status [#named-agent-status]
@@ -69,6 +117,9 @@ no-manager startup choices or imperative planning.
 Execution, Mesh and Last reported activity. JSON has `identity`, `execution`, `mesh`
 and `activity` fields; missing optional observations are null with source annotations.
 `--on <manager-instance>` restricts the read. It takes no `--all` or `--components`.
+`cotal status manager`, or an answering manager's instance id, names the manager itself, which runs no
+row of its own: it refuses `TARGET_NOT_FOUND` like any unknown name, and its Next says the manager is
+answering and points to `cotal status` and `cotal endpoint describe manager`.
 A requested model is not provider-confirmed. Connector-reported provider
 information is labeled exact or name-matched under the same proof. A new manager
 row marks a roster observation exact only when its principal and lifecycle UID
@@ -86,24 +137,23 @@ The command starts, stops and attaches nothing.
 
 ## Recorded team views [#recorded-team-views]
 
-```bash
-cotal team [--json | --plain]
-cotal team show <id> [--json | --plain]
-cotal team check <file> [--graph] [--json | --plain]
-cotal team boot <file> [--dry-run | --foreground]
-cotal team deploy <file> [--runtime <name>] [--dry-run]
-cotal team remove <full-deployment-id> [--dry-run] [--yes]
-```
 
 ### Recorded launch evidence
 
 `team` (`t`) reads fresh launch summaries, additive ownership ledgers and their
-root-local attempt records at the selected local root. When native `up -f` returns from its broker start, it writes a creation-only fresh
+root-local attempt records at the selected local root. A team read or `--dry-run` preview that
+completes exits 0. Its JSON marks `completeness` as `partial`, and its report has a line
+saying what it does not establish. A report names each record's kind, recorded state, next action
+and auth mode in words, such as `boot returned` and `static auth`. The JSON result keeps the
+recorded values, such as `broker-boot-returned` and `auth`. A deployment ID that no record in the
+root names is refused with `TARGET_NOT_FOUND`, which names the ID, by `team show` and by
+`team remove`; `team show` adds that an ID is 16 hex characters when the value has another shape.
+When native `up -f` returns from its broker start, it writes a creation-only fresh
 summary with its full run ID, initial broker PID, declared agent/channel names
 and the initial control-plane, auth-service and delivery-responder results.
 Older summaries without a broker PID, auth-mode pin or responder observation
 remain readable; `team show` labels their absent facts not recorded and
-reports partial. A PID
+says the record proves no current ownership. A PID
 or a responder bound when boot returned is not current process or listener
 ownership proof. A private create-only fresh boot attempt is written and fsynced
 before the launch spec and broker start. A returned summary is also published create-only and
@@ -113,16 +163,20 @@ responder stays unsettled and
 blocks a later fresh boot. `team show <id>` and the team inventory expose the original intent without
 claiming whether its broker started. `team show` displays up to 100 declared names from a
 summary and retains the complete list in JSON; none are claimed to have joined. A missing
-or refused summary after boot is not a reason to boot again.
-The inventory stays partial because older fresh boots may have no summary. The
+or refused summary after boot is not a reason to boot again. A summary records the absolute folder
+`up -f` ran in. After that folder is moved or copied, the summary still reads but names the old
+path. It settles nothing in the new folder and blocks no `up` or `down` there, and `team show <id>`
+refuses it with CONFLICT, naming the folder it was recorded at.
+The inventory's `completeness` stays `partial` because older fresh boots may have no summary. The
 terminal lists up to 100 records; JSON retains all readable records. Its Next column
 says inspect the stack for a fresh record or review the native scoped teardown plan for an
 additive ledger; neither row grants permission to stop anything. A fresh summary is
 not an additive ownership ledger or evidence that an agent joined, and it does not establish
-current process health. `team show <id>` identifies the recorded root and planned whole-stack
-`cotal down --space <recorded-space>` route for a fresh summary. A controller stack uses its
-stack journal and guarded whole-stack stop. The legacy bare stop at a root without that journal
-does not use the whole-set impact controller. This summary grants neither route stop authority.
+current process health. For a fresh summary, `team show <id>` names the recorded root and offers
+`cotal down --space <space> --dry-run`, the preview of the guarded whole-stack stop, with the
+recorded space filled in. `team remove <id>` refuses a fresh boot ID with `CONFLICT` and offers the
+same stop. The summary is not authority to run it.
+
 
 ### Additive deployment records
 
@@ -136,7 +190,11 @@ anything. One guarded `team deploy <file>` route accepts a
 channel-only manifest whose declared cards are all absent and explicitly set
 `deliveryClass: live`. It refuses agents, runtime requests, defaults,
 broker bind changes, access edges, existing cards,
-re-apply, registered broker lists and unresolved prior attempts before an effect.
+a changed re-apply, registered broker lists and unresolved prior attempts before an effect.
+A card that does not set `deliveryClass: live` is refused with `UNSUPPORTED`. The refusal names
+the cards, and its Next says to set `deliveryClass: live` on each card or to create a durable
+channel with `cotal channel set <name> --delivery durable`. `team deploy --dry-run` warns
+`LIVE_DELIVERY_REQUIRED` for the same cards, so the preview says the apply would refuse.
 It selects the exact registered root, single broker address, auth mode and TLS
 requirement, then holds the local maintenance lock. The original user bearer and its deployer and writer
 views must name the same owner and actor. A refused view stops before the
@@ -159,6 +217,7 @@ exact connection target. Invalid or orphan steps stay visible and
 blocking. Guarded channel-only card removal uses the returned create revisions as described below.
 Completion reads those receipts locally; it does not query the broker or guess ownership from an
 edited manifest. Channel apply emits one finite rich, JSON or plain result.
+
 
 ### Agent deployment apply
 
@@ -188,22 +247,29 @@ remain unsettled and are not replayed. The full receipt is saved only when both
 channel and agent sequences match the original intent.
 
 A later failure retains earlier channel creates, allocations and joins without
-rollback. Writer-close uncertainty is reported separately from returned native
+rollback. When it created anything, its Next adds `cotal team remove <id> --dry-run`.
+Writer-close uncertainty is reported separately from returned native
 receipts. The finite JSON/plain/rich report distinguishes those receipts from
 current health and task completion. `team show` exposes both native journals,
 including partial channel creates when a later launch did not complete. Inventory,
 status, down and reset distinguish returned mixed deployments from unsettled
 attempts. Retained verification and guarded removal use the paths below.
 
+
 ### Fresh boot preview
 
 `team boot <file> --dry-run` shows the resolved fresh topology, its target root,
 requested applications, roles, models and channels with declared delivery,
-replay and window settings. Absent channel settings are not inferred from a
-saved registry that this preview does not read. An open manifest with an
+replay and window settings. It shows the manifest's `defaults:` too, and a channel field that
+inherits one is marked `(default)`, because boot seeds them as the space defaults. A setting
+neither declares is not inferred from a saved registry that this preview does not read. An open manifest with an
 explicit durable default or channel declaration is warned as unsupported:
 its native fresh apply refuses before effects because open mode starts no
 delivery daemon. Direct `up -f --dry-run` refuses the same contradiction.
+A space with no prepared or registered root previews the current folder. Its root source says
+whether that folder belongs to other spaces, and a hint names the `cotal space create` the apply
+needs: `--root .` for an unprepared folder, or a folder of its own when this one belongs to
+another space.
 It reads the local control
 directory, recorded spaces, maintenance journal, the selected manager PID record,
 possibly live process records, the root's additive deployment ledgers and
@@ -216,8 +282,14 @@ historical records without inferring current card or broker state. Bare
 `down --dry-run`, `team deploy --dry-run` and both reset previews expose the
 relevant retained additive IDs and unreadable paths. The legacy bare `down`,
 `down --preserve-state`, fresh `team boot` and `reset store` refuse unsettled
-intents and unremoved agent/channel receipts before effects. A complete matched
+intents and unremoved agent/channel receipts before effects. Bare `down` and a later
+`team deploy` name `cotal team remove <id> --dry-run`, then `--yes`, for each deployment that
+blocks them. A complete matched
 static agent-retirement receipt releases only its original deployment's blocker.
+A bare `up` of a stopped controller stack starts it again over a returned channel-only deployment
+made on that stack, and keeps the deployment's records and cards as they are. Any other retained
+deployment, such as an unsettled attempt or an agent deployment, still refuses the start with
+`LIFECYCLE_BLOCKED`, and its Next names `cotal team show <id>` for each one.
 This is a known-blocker guard,
 not complete broker ownership. The service records belong to the workstation's selected-space store,
 not necessarily this boot root; their recorded
@@ -229,9 +301,10 @@ aliases or remote tenants. A host-derived candidate leaves this comparison not
 checked.
 Where the manifest supplies a broker URL or uses the default without a host override,
 it makes a credless reachability probe. A failed probe is not proof of absence on a
-TLS-first listener. The result is partial: port binding, exclusive local ownership,
+TLS-first listener. Its `completeness` is `partial`: port binding, exclusive local ownership,
 installed providers, credentials, grants and startup readiness have not been checked.
 It writes no record and starts nothing.
+
 
 ### Fresh boot apply
 
@@ -240,7 +313,7 @@ controller. A root without a stack journal takes the fresh static-auth or open r
 stopped stack can resume in static-auth, open or user-auth mode. The manifest's channels seed the broker. The stack's own manager
 starts its agents from a launch spec pinned by digest. One rich, JSON or plain receipt includes
 the controller members and requested topology. Agent joins are not checked, so the receipt is
-partial. The fresh attempt and summary are launch records, not stop authority. No additive
+partial. A manifest that requests no agents leaves no join unchecked, so its receipt is `ok`. The fresh attempt and summary are launch records, not stop authority. No additive
 ownership ledger is created; `cotal down` uses the stack journal and each member's native lifecycle.
 
 Before writes it checks the selected root, auth mode, broker address, runtime, connectors and
@@ -253,17 +326,30 @@ or unknown outcome and never repeats effects. A failed summary write also keeps 
 
 `team boot --foreground` holds the stack's lifetime in the terminal. Ctrl-C or SIGTERM invokes the
 same guarded whole-stack stop as bare `cotal down`, without force killing members. Terminal loss
-or an external kill is not a confirmed stop. Foreground apply takes neither JSON nor plain output;
+or an external kill is not a confirmed stop. When a `cotal down` from another terminal completes,
+it prints `Foreground stack released` and exits 0, as a foreground `up` does, although its start
+receipt was partial. Foreground apply takes neither JSON nor plain output;
 a dry-run remains a finite preview. It does not establish native apply readiness or platform support.
 `up -f --foreground` still refuses on its retained launcher path.
 
+
 ### Stopped-stack resume
 
+A `team boot` in a root whose stack is up, with no `cotal down` since, refuses with
+`LIFECYCLE_BLOCKED`, says the space is already up and starts nothing. Its Next offers
+`cotal team deploy <file>`, which adds the manifest's channels and agents to the running stack, or
+`cotal down` before the boot.
 A recorded stack resumes only after its last whole-stack stop completed and its manager was never
-attempted. Its broker inputs must be recorded, every applicable member must have its original
-settled stopped record, and no supervisor, retained custody or earlier team boot may remain. The
-broker requires its kernel-exit receipt. Auth and delivery use their settled process stop and
-released custody; that is not proof of credential, lease or authority retirement. A generic
+attempted. The manifest's `broker.servers`, `broker.host` and `broker.auth` must match that stack.
+A manifest that differs refuses `CONFLICT` (exit 2) and names each setting that differs with its
+recorded and declared values. Its Next names the manifest change that matches the stack, or a new
+space in another folder prepared with `cotal space create <space>`.
+The stack's broker inputs must be recorded, every applicable member must have its original
+settled stopped record, and no supervisor, retained custody or earlier team boot may remain. A
+stack that an earlier team boot started refuses with `LIFECYCLE_BLOCKED`, and its Next names
+`cotal up` in the root, which starts that stack again, and `cotal team show <id>` with each earlier
+boot's ID. The broker requires its kernel-exit receipt. Auth and delivery use their settled process
+stop and released custody; that is not proof of credential, lease or authority retirement. A generic
 process stop now records a `process-exit` receipt on the stopped instance when that stop signalled
 the pinned process and saw it exit. `service stop --json` and `service status --json` expose it as
 `processStop`, including the stop request, original process identity, signal and observation time.
@@ -279,16 +365,20 @@ disappears. These checks do not exclude an unrelated local process changing the 
 configuration stays inside the selected root's `.cotal` directory, even when its store is elsewhere.
 
 For a first user-auth team, prepare with `cotal up --user-auth --idp <url>`, then `cotal login`,
-explicitly grant the invoking user with `cotal auth grant cli --sub <subject>`, and run `cotal down`
-before `cotal team boot <file>`. Do not start the manager between preparation and that stop. A
+explicitly grant the invoking user with `cotal auth grant cli --sub <subject> --full`, and run
+`cotal down` before `cotal team boot <file>`. Do not start the manager between preparation and that
+stop. Before any write, that boot confirms your sign-in with its IdP. Without one, or when the IdP
+rejects it because it expired or was revoked, it refuses `AUTH_REQUIRED` (exit 2), says nothing was
+started or written, and Next names `cotal login --idp <base>`, then the team boot again. Any other
+failure of that check, such as an IdP that does not answer, is left to the boot. A
 static-auth or open preparation uses `cotal up --no-manager` before `cotal down`. No implicit owner
 grant or borrowed caller is substituted. A previously attempted manager is never adopted.
-Windows cannot apply, because the stack's process services need Linux machine and boot identity.
 
 `--space` must agree with the manifest. Hand-registered and discovered spaces are not local boot
 targets. Public broker addresses and fresh-attempt views omit URL user info, queries and fragments;
 the private intent keeps the target. Native warnings and failures remain on stderr. Installed
 extensions may produce their own output outside the finite result.
+
 
 ### Additive deployment verification
 
@@ -330,6 +420,7 @@ labels its ordered reads non-atomic. Unsettled, ambiguous or removed ownership c
 no-op. User-auth agent launch and retained verification remain unsupported.
 Runtime requests must match the original incarnations; no runtime or manager replacement is inferred.
 
+
 ### Agent retirement
 
 `team remove <full-deployment-id> [--dry-run] [--yes]` can retire a returned
@@ -338,7 +429,10 @@ requires the original registered root, broker, TLS mode and exact manager.
 The revision-32 native `slots` query checks each recorded name, principal and
 lifecycle UID. A successor, omitted slot or unconfirmed transition refuses
 before a stop. A dry-run only reads this impact; apply requires a default-cancel
-terminal confirmation or `--yes` in scripts.
+terminal confirmation or `--yes` in scripts. Every `team remove --dry-run` exits 0 with
+`completeness` `partial`: it reads the manager's slots and the card revisions in order, not atomically, and the membership feed
+is display-only, so the preview does not establish what the apply will find. The apply reads the
+slots and revisions again before it acts.
 
 Under the root maintenance lock, apply records one private synced removal intent
 bound to the original creation receipt. Each necessary stop has a synced original
@@ -354,17 +448,23 @@ Only a complete matching retirement sequence yields the create-only full removal
 receipt. Earlier confirmed retirements and stop requests remain in rich/plain/JSON
 output on a partial or unknown result. An unsettled removal intent stays blocking
 and is never resumed by repeating its effects. `team show` keeps its original creation and removal
-journals, and inventory/status/down/reset distinguish historical retired receipts.
+journals, and inventory/status/down/reset distinguish historical retired receipts. It lists a card
+removal's steps in the order they were written: the cards in manifest order, and each card's delete
+submission before its outcome.
 The full receipt releases only this deployment's known additive blocker, not any
 other service, broker, shared-root or process guard. It never authorizes stopping
 current alias holders. No channel, broker, service or remote account is removed.
+
 
 ### Channel-card removal
 
 `team remove <full-deployment-id>` also removes the registry cards of a returned channel-only
 deployment, with `--dry-run` for a read-only preview and `--yes` for scripted apply. It pins the
 original receipt, root, broker, auth mode and TLS requirement, and refuses changed card revisions,
-conflicting retained ownership or unreadable records. The preview discloses delivery and replay
+conflicting retained ownership or unreadable records. A changed card refuses `CONFLICT` naming
+each changed card. With no registration for the space, as after the stack's `cotal down`, the
+refusal names `cotal up` in the deployment's root, which registers the stack again, and then the
+same `team remove`. The preview discloses delivery and replay
 fallback to space defaults and removal of description/instructions. A derived membership feed is
 display-only and never authorizes or blocks this metadata change.
 
@@ -375,6 +475,21 @@ receipt releases only that deployment's retained blocker. History, grants and re
 the channel stays addressable and no reader exclusivity or complete cleanup is claimed. Repeating a
 completed removal returns its historical receipt without deleting a later same-name card. A new
 card intent records the registry stream's name and creation time.
+
+`team remove <full-deployment-id>` also removes what an unsettled deployment attempt created,
+such as one whose agent exited on launch, when the attempt's own journal records every effect. In
+manifest order, each channel and agent reached its accepted step or was never submitted, and no
+member has a step after one that was not submitted. An accepted agent counts by its native
+allocation, whether or not it joined. Removal then takes the route of a returned deployment of the
+same shape, with the same preview, confirmation and receipts. Each allocated incarnation is retired
+through the original manager by its identity and lifecycle UID, and one the manager already retired
+and cleaned needs no stop. Each card is then deleted at its accepted create revision. Agent
+retirement still needs static auth. The removal is bound to a digest of that journal, which is
+derived on each read and never written, so a journal that changes later no longer matches it. A
+channel or agent submitted with no recorded acceptance, an unreadable record of the attempt or a
+journal with no step leaves the effects unknown. `team remove` then refuses with
+`LIFECYCLE_BLOCKED` and names that step.
+
 
 ### Unsettled removal reconciliation
 
@@ -405,6 +520,7 @@ unattempted and keeps the deployment blocking.
 A receipt is written only when every original member settles as removed or retired. The
 receipt then releases that deployment's blocker as an ordinary removal receipt does.
 
+
 ### Legacy removal preview
 
 `team remove <full-deployment-id> --dry-run` can also select a validated legacy ledger. It refuses a
@@ -427,6 +543,7 @@ authorize a stop. Legacy removal still refuses effects, including with `--yes`. 
 remains static-auth only. Channel-only metadata removal uses the existing scoped writer on static
 or user-auth meshes, or the open mesh's bare connection; it grants no new access.
 
+
 ### Mixed deployment removal
 
 A returned static mixed deployment uses one preview, confirmation and maintenance lock. It first
@@ -436,16 +553,33 @@ Both receipts are required to release the deployment's blocker. A partial or unk
 there without replaying its effects. An interrupted transition can continue only after complete
 retirement and before any card-removal intent exists. Open and user-auth mixed removal refuse.
 
+
 ### Manifest file checks
 
 `team check <file>` resolves the native manifest and referenced personas without a broker.
-It lists declared per-channel delivery class, replay and replay window without claiming an
-absent field's live registry value; the native seed may merge over saved metadata.
+It lists the manifest's `defaults:` and each channel's delivery class, replay and replay window.
+A field the channel leaves out shows the manifest default it inherits at boot, marked `(default)`.
+A field neither declares does not claim a live registry value; the native seed may merge over
+saved metadata. The JSON result carries `defaults` beside the channels.
 `--graph` shows effective channel access edges from merged agent policies, marking persona-inherited
 channels that have no manifest card. It also shows each agent's role, capabilities and whether
 capabilities came from the manifest, a persona or neither. Terminal tables show up to 100
 rows of each kind. The JSON result includes all resolved sources, merged policies,
 inherited scopes and, when requested, the channel graph, without persona bodies,
 kickoff prompts or opaque launch-option values.
+A manifest it cannot resolve, such as one whose `space:` is not a name `space create` takes, is
+refused with `SCHEMA_INVALID` (exit 1). The refusal names each
+problem by file, line and column where the parser has them, the key path, and the reason, and
+`--json` lists every problem under `target.issues`. A missing required key, an empty file, a
+value of the wrong shape and one outside a key's fixed values each get a plain reason. An unknown key
+that misspells a required key left out beside it, such as `chanels`, is one problem that names the
+key meant. A problem in a referenced persona
+names that file and the parser's reason without quoting its contents. A persona file that does not
+exist is named at its entry's line along with the manifest's other problems, so fixing those does
+not uncover it later. A manifest file that does not exist is refused with `TARGET_NOT_FOUND`
+(exit 2), naming its path. A folder given as the manifest, such as `team check .`, is refused with
+`USAGE_INVALID` (exit 1), naming the path and that it is a directory, as `topology view` refuses it,
+and `--json` gives the path as `target.file`. `team boot` and
+`team deploy` refuse a manifest they cannot resolve the same way, before they contact a broker.
 This file check does not prove live authorization, installed applications or launch readiness.
 These read views do not apply a boot, an additive deployment or a removal.

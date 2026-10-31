@@ -29,6 +29,7 @@ import {
   type EffectContext,
   type CheckpointRaw,
   type EventDescriptor,
+  type ParticipantRequest,
 } from "./effects.js";
 import type { RunOptions } from "./interpret.js";
 
@@ -202,6 +203,34 @@ function countEffect(host: EffectHost, verdict: LookupVerdict): void {
   }
 }
 
+/**
+ * Admit one live dispatch: the checks it passes after every replay verdict has been served and
+ * before its entry is begun. Every path that dispatches calls this, {@link enterStep} for an effect
+ * and {@link performScope} for a scope that dispatches, so a rule about admitting a dispatch cannot
+ * reach one path and miss another.
+ */
+function admitDispatch(host: EffectHost, frame: EffectFrame, verdict: LookupVerdict): void {
+  // A cancelled branch performs no NEW effects. That is the whole of the cancellation law on
+  // this side: work already in flight is another matter, and the handler owns it.
+  if (frame.signal.cancelled) {
+    throw new Cancelled(frame.signal.reason ?? "cancelled");
+  }
+
+  // THE HOST'S STOP, asked before anything is begun and after every replay has been served. A
+  // driver holds its run under an absolute work horizon and may be asked to hand it back, and
+  // neither is a fact about the program, so the place to stop is here, where no entry has been
+  // written and no handler dispatched. One step later would mean a pending entry for work nobody
+  // performed; inside the handler would mean settling a failure for work that really happened.
+  // Replays are deliberately unaffected: replaying a recorded prefix performs nothing, and a run
+  // that stopped mid-journal has to be able to walk back to where it stopped.
+  const stop = host.options.shouldStop?.();
+  if (stop !== undefined) {
+    throw new RunReleased(stop);
+  }
+
+  countEffect(host, verdict);
+}
+
 /** A live step: its entry is begun (or recovered) and its handler context is ready. */
 type LiveStep = {
   readonly key: StepKey;
@@ -255,25 +284,7 @@ async function enterStep(
       break;
   }
 
-  // A cancelled branch performs no NEW effects. That is the whole of the cancellation law on
-  // this side: work already in flight is another matter, and the handler owns it.
-  if (frame.signal.cancelled) {
-    throw new Cancelled(frame.signal.reason ?? "cancelled");
-  }
-
-  // THE HOST'S STOP, asked before anything is begun and after every replay has been served. A
-  // driver holds its run under an absolute work horizon and may be asked to hand it back, and
-  // neither is a fact about the program, so the place to stop is here, where no entry has been
-  // written and no handler dispatched. One step later would mean a pending entry for work nobody
-  // performed; inside the handler would mean settling a failure for work that really happened.
-  // Replays above are deliberately unaffected: replaying a recorded prefix performs nothing, and
-  // a run that stopped mid-journal has to be able to walk back to where it stopped.
-  const stop = host.options.shouldStop?.();
-  if (stop !== undefined) {
-    throw new RunReleased(stop);
-  }
-
-  countEffect(host, verdict);
+  admitDispatch(host, frame, verdict);
 
   // RECOVERY SUBMITS UNDER THE RECORDED IDENTITY. Re-deriving happens to agree whenever nothing
   // moved, which is exactly why it read as correct: the whole point of writing the id down is
@@ -385,21 +396,7 @@ async function dispatchStep(
     result = await perform(ctx, inputHash);
     assertCrossable(result, `the result of ${stepKeyString(key)}`);
   } catch (e) {
-    const endedAt = host.options.handler.now();
-    // A REFUSAL IS NOT A FAILURE. The handler attempted nothing, so recording `failed` would
-    // replay a failure forever for work the world never saw (measured: the mesh handler's L5016
-    // settled `failed`, and a run started before the durable-action surface landed could never
-    // heal). The entry settles `refused` under the handler's own code, and the run halts with
-    // the uncatchable L5025: a capable host's resume finds the refusal and performs the step.
-    if (e instanceof EffectRefused) {
-      await host.journal.settle(
-        key,
-        { status: "refused", error: { code: e.code, kind: "refused", message: e.message } },
-        endedAt,
-      );
-      throw new RunHeld(stepKeyString(key), e.message);
-    }
-    return await settleThrown(host, key, frame, e, endedAt);
+    return await settleDispatchThrown(host, key, frame, e, host.options.handler.now());
   }
 
   const endedAt = host.options.handler.now();
@@ -408,9 +405,28 @@ async function dispatchStep(
   return result;
 }
 
+/** Settle a failed effect or observation dispatch, including a host's refusal to attempt it. */
+async function settleDispatchThrown(host: EffectHost, key: StepKey, frame: EffectFrame, e: unknown, endedAt: number): Promise<never> {
+  // A REFUSAL IS NOT A FAILURE. The handler attempted nothing, so recording `failed` would
+  // replay a failure forever for work the world never saw (measured: the mesh handler's L5016
+  // settled `failed`, and a run started before the durable-action surface landed could never
+  // heal). The entry settles `refused` under the handler's own code, and the run halts with
+  // the uncatchable L5025: a capable host's resume finds the refusal and performs the step.
+  if (e instanceof EffectRefused) {
+    await host.journal.settle(
+      key,
+      { status: "refused", error: { code: e.code, kind: "refused", message: e.message } },
+      endedAt,
+    );
+    throw new RunHeld(stepKeyString(key), e.message);
+  }
+  return await settleThrown(host, key, frame, e, endedAt);
+}
+
 /**
  * Settle a step whose dispatch threw anything but a refusal, and rethrow what the program sees.
- * {@link performEffect} and {@link performHold} differ only in what a refusal records.
+ * Effects and `waitUntil` share {@link settleDispatchThrown}; {@link performHold} keeps its own
+ * refusal rule so an at-most-once step stays pending.
  */
 async function settleThrown(host: EffectHost, key: StepKey, frame: EffectFrame, e: unknown, endedAt: number): Promise<never> {
   // A journal that just refused an append cannot be asked to record why. It leaves by its own
@@ -595,35 +611,7 @@ async function observeUntil(
     try {
       inTime = await host.options.handler.observe({ name, every, deadlineAt, deadline, attempt }, ctx);
     } catch (e) {
-      const endedAt = host.options.handler.now();
-      if (e instanceof JournalAppendRejected) throw e;
-      // A refusal is not a failure here either: nothing was observed, so the entry settles
-      // `refused` and a capable host picks the wait up exactly where it stands, with the
-      // observations it has already made intact.
-      if (e instanceof EffectRefused) {
-        await host.journal.settle(
-          key,
-          { status: "refused", error: { code: e.code, kind: "refused", message: e.message } },
-          endedAt,
-        );
-        throw new RunHeld(stepKeyString(key), e.message);
-      }
-      if (e instanceof Cancelled) {
-        await host.journal.settle(key, { status: "cancelled" }, endedAt);
-        throw e;
-      }
-      const raised = (e as { code?: unknown } | null | undefined)?.code;
-      const carried = typeof raised === "string" && /^L\d{4}$/.test(raised) ? raised : null;
-      const rec = e instanceof EffectError ? recordableError(e, "handler-fault") : undefined;
-      // The same rule as the effect site above: the probe is other people's code too.
-      const stack = stackOf(e);
-      const error: EntryError = {
-        ...(rec !== undefined ? rec.error : { code: carried ?? "L4000", kind: "handler-fault", message: messageOf(e) }),
-        ...(stack !== undefined ? { stack } : {}),
-      };
-      await host.journal.settle(key, { status: "failed", error }, endedAt);
-      frame.clock.advance(endedAt);
-      throw rec?.faithful === true ? e : new EffectError(error.code, error.kind, error.message);
+      return await settleDispatchThrown(host, key, frame, e, host.options.handler.now());
     }
 
     if (!inTime) {
@@ -756,6 +744,18 @@ export async function dispatchPrimitive(host: EffectHost, name: string, args: un
   if (spec.kind !== null && !HOLDABLE_KINDS.has(spec.kind) && atMostOnce(frame.keys.path)) throw notHoldable(spec.kind, frame.keys.path);
 
   switch (name) {
+    case "participant": {
+      const named = option(bag, "name");
+      const req: ParticipantRequest = named === undefined ? {} : { name: named as string };
+      return await performEffect(
+        host,
+        "participant",
+        req.name ?? "participant",
+        {},
+        async (ctx) => ({ ...await handler.participant(req, ctx), kind: "participant" as const }),
+        frame,
+      );
+    }
     case "spawn": {
       // The first argument is a persona name, or a record carrying the persona WITH its model
       // and variant. Only the persona was ever read, so the object form silently dropped model
@@ -826,6 +826,7 @@ export async function dispatchPrimitive(host: EffectHost, name: string, args: un
           : {}),
         ...(option(bag, "onFork") !== undefined ? { onFork: option(bag, "onFork") as "respawn" | "adopt" } : {}),
         ...(option(bag, "events") !== undefined ? { events: option(bag, "events") as boolean } : {}),
+        ...(option(bag, "runtime") !== undefined ? { runtime: option(bag, "runtime") as string } : {}),
       };
       return await performEffect(host,
         "spawn",
@@ -858,7 +859,7 @@ export async function dispatchPrimitive(host: EffectHost, name: string, args: un
           role: req.role ?? null,
           join: (req.join ?? []).map((c) => c.channel),
         },
-        (ctx) => handler.spawn(req, ctx),
+        async (ctx) => ({ ...await handler.spawn(req, ctx), kind: "spawned" as const }),
         frame,
       );
     }
@@ -1008,6 +1009,7 @@ export async function dispatchPrimitive(host: EffectHost, name: string, args: un
         frame,
         )) as CheckpointRaw,
         onExpiry,
+        cpTimeout,
       );
     }
     case "sleep": {
@@ -1463,13 +1465,8 @@ export async function performScope(
   const resume = verdict.verdict === "pending" ? verdict.entry.external : undefined;
   const recorded = verdict.verdict === "pending" && verdict.entry.requestId !== undefined ? verdict.entry : undefined;
   const reqId = recorded?.requestId ?? requestId(host.options.runId, scopeKey, inputHash);
-  // A conclave's open is real work against the world, so the host's stop and the ceiling apply to
-  // it as they do to an effect (see {@link performEffect}).
-  if (dispatches) {
-    const stop = host.options.shouldStop?.();
-    if (stop !== undefined) throw new RunReleased(stop);
-    countEffect(host, verdict);
-  }
+  // A conclave's open is real work against the world, so it is admitted as an effect is.
+  if (dispatches) admitDispatch(host, frame, verdict);
   if (verdict.verdict === "miss" || verdict.verdict === "refused") {
     await host.journal.begin(scopeKey, inputHash, host.options.handler.now(), dispatches ? reqId : undefined);
     // The same gap as {@link Interpreter.performEffect}'s begin, for the scope that DISPATCHES: a

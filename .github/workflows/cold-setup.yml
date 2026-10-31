@@ -46,6 +46,8 @@ jobs:
 
   workspace-native:
     uses: ./.github/workflows/workspace-native.yml
+    with:
+      darwin: true
 
   candidate:
     needs: [native, workspace-native]
@@ -90,11 +92,21 @@ jobs:
         with:
           name: workspace-native-arm64
           path: ${{ runner.temp }}/workspace-native-arm64
-      - name: Assemble source-matched Windows creation identity bindings
+      - uses: actions/download-artifact@v4
+        with:
+          name: workspace-native-darwin-x64
+          path: ${{ runner.temp }}/workspace-native-darwin-x64
+      - uses: actions/download-artifact@v4
+        with:
+          name: workspace-native-darwin-arm64
+          path: ${{ runner.temp }}/workspace-native-darwin-arm64
+      - name: Assemble source-matched Windows and macOS process identity bindings
         run: node scripts/workspace-assemble-natives.mjs
         env:
           WORKSPACE_NATIVE_X64: ${{ runner.temp }}/workspace-native-x64
           WORKSPACE_NATIVE_ARM64: ${{ runner.temp }}/workspace-native-arm64
+          WORKSPACE_NATIVE_DARWIN_X64: ${{ runner.temp }}/workspace-native-darwin-x64
+          WORKSPACE_NATIVE_DARWIN_ARM64: ${{ runner.temp }}/workspace-native-darwin-arm64
       - name: Probe package shape before publication is requested
         run: node scripts/post-publish-install-probe.mjs
       - name: Pack every public candidate package

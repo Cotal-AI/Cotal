@@ -32,13 +32,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CotalEndpoint, isReachable } from "@cotal-ai/core";
-import { assertSmokeSandboxDown, awaitBrokerReady, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
+import { skipSuite, assertSmokeSandboxDown, awaitBrokerReady, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 
 if (process.platform === "win32") {
   // Managed Codex agents are POSIX-only by design (the isolated CODEX_HOME symlinks the
-  // operator's auth.json — docs/connect-codex.md). Same stated limitation as the other codex smokes.
-  console.log("SKIP codex installed-path smoke — managed Codex agents are POSIX-only (symlinked auth.json)");
-  process.exit(0);
+  // operator's auth.json — docs/connect-codex.mdx). Same stated limitation as the other codex smokes.
+  skipSuite("managed Codex agents are POSIX-only");
 }
 
 const REPO = fileURLToPath(new URL("../../..", import.meta.url));
@@ -255,9 +254,9 @@ try {
   await operator.start();
 
   // The real command, with nothing pointed at this worktree: the connector must come from the
-  // config dir the binary seeded for itself. Foreground, not `-d` — the same resolution path with
+  // config dir the binary seeded for itself. `--foreground`, not `-d` — the same resolution path with
   // one less moving part (no manager relay) between the CLI and the connector.
-  cli = spawn("node", [CLI, "spawn", PEER, "--agent", "codex", "--server", servers, "--space", space], {
+  cli = spawn("node", [CLI, "spawn", PEER, "--foreground", "--agent", "codex", "--server", servers, "--space", space], {
     cwd: ROOT,
     env: cliEnv,
     stdio: ["ignore", "pipe", "pipe"],

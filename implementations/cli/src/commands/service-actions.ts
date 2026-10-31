@@ -1,7 +1,8 @@
 import * as prompts from "../lib/prompts.js";
-import { lstatSync } from "node:fs";
+import { lstatSync, readlinkSync } from "node:fs";
 import type { ParsedArgs } from "@cotal-ai/core";
-import { CommandFailure, commandFailureReport, isCommandFailure, oneLine, presentationOf, protectedLocalDirectory, renderReport, terminalWidth, writeResult, type Report, type ServiceAdapterKernelStopPlan, type ServiceAdapterStopPlan } from "@cotal-ai/workspace";
+import { ConfirmationRequired, CommandFailure, canonicalRoot, commandFailureReport, isCommandFailure, oneLine, presentationOf, processGroupMembers, processGroupOf, protectedLocalDirectory, renderReport, writeResult, type Report, type ServiceAdapterKernelStopPlan, type ServiceAdapterStopPlan } from "@cotal-ai/workspace";
+import { reportOnInterrupt } from "../lib/interrupt-report.js";
 import { observeRecordedSupervisor, systemdUserUnitDirectory } from "../lib/service-systemd.js";
 import { observeSystemdAttempt } from "../lib/service-systemd-attempt-read.js";
 import { inspectSystemdInstall } from "../lib/service-systemd-plan.js";
@@ -17,14 +18,30 @@ import { serviceUnitActionFor } from "../lib/service-unit-action.js";
 import { followServiceJournal, readServiceJournal } from "../lib/service-journal.js";
 import { followServiceLog } from "./service-log-follow.js";
 import { canPrompt } from "./meshes-wizard.js";
-import { resolveServiceAdapter, sameServiceAdapterPin } from "../lib/service-adapters.js";
-import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
-import { stackMemberFor } from "../lib/stack-journal.js";
+import { yesRequired } from "../lib/confirmation-required.js";
+import { fullStoreStopRefusal, jetStreamDisabled, jetStreamDisabledRefusal, recordedStore, storeRefusedWrite } from "../lib/broker-store-health.js";
+import { brokerStopBlocked } from "../lib/broker-service.js";
+import { controlsRecordedAdapter, resolveServiceAdapter } from "../lib/service-adapters.js";
+import { assertDefinitionRoot, serviceDefinitionStore, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
+import { addedDefinitionStep, stackMemberFor } from "../lib/stack-journal.js";
+import { adapterInstallRefusal, type PresetServiceTarget } from "../lib/service-preset-target.js";
+import { definitionListeners, exposedPlaintext, listenerRow } from "../lib/stack-listeners.js";
 import { instanceProjection, observeServiceProcess, serviceInstances, serviceInstanceStore, type ServiceInstanceSnapshot } from "../lib/service-instances.js";
-import { assertNoServiceUnitAttempts, assertRestartAdmitted, prepareKernelServiceStop, prepareNativeServiceStop, prepareProcessService, readServiceLog, retainedStopRequest, selectServiceInstance, startProcessService, stopProcessService } from "../lib/service-process.js";
+import { assertNoServiceUnitAttempts, assertRestartAdmitted, PROCESS_STOP_GRACE_MS, prepareKernelServiceStop, prepareNativeServiceStop, prepareProcessService, readinessAddressSurvivors, readServiceLog, retainedStopRequest, selectServiceInstance, startProcessService, stopProcessService } from "../lib/service-process.js";
 
-function instanceView(row: ReturnType<typeof instanceProjection>, title: string): Report {
-  return { sections: [{ title, blocks: [{ kind: "fields", rows: [["Definition", row.definition], ["Space", row.space], ["Instance", row.instanceId], ["Execution host", row.executionHost], ["Recorded state", row.recordedState], ["Process observation", row.observedProcess], ["PID", row.pid === null ? "not established" : String(row.pid)], ["Readiness observation", row.readinessObservation], ["Readiness as of", row.readinessAsOf], ["Stop policy", row.stopPolicy], ["Serving endpoint", !row.nativeEndpoint ? "not checked" : row.nativeEvidence === "local-process-receipt" ? "child-reported local receipt; not an attributed endpoint response" : "adapter-checked observation; not a fresh status query"], ["Adapter", row.adapter ? `${row.adapter.name} · ${row.adapter.package ?? "composition root"}@${row.adapter.version}` : "generic process"], ...(row.nativeEndpoint ? [["Endpoint class", row.nativeEndpoint.endpoint], ["Native instance", row.nativeEndpoint.instanceId], ["Native principal", `${row.nativeEndpoint.owner}.${row.nativeEndpoint.actor}`], ["Native lifecycle", row.nativeEndpoint.lifecycleUid], ["Native epoch", String(row.nativeEndpoint.epoch)], ["Adapter observed at", row.adapterObservedAt ?? "not recorded"]] as const : []), ...(row.nativeStop ? [["Native stop", "returned for the original request"], ["Native stop request", row.nativeStop.requestId], ["Native cleanup", row.nativeStop.cleanup]] as const : []), ...(row.stopPolicy === "process" ? row.processStop ? [["Process stop evidence", "recorded signal and original process exit"], ["Recorded stop signal", row.processStop.signal], ["Recorded stop request", row.processStop.requestId], ["Exit observed at", row.processStop.observedAt]] as const : [["Process stop evidence", "not recorded"]] as const : []), ...(row.reportedListener ? [["Reported listener", row.reportedListener.nats.join(", ")], ["Listener evidence", "the pinned child's own launch-bound ports file; not JetStream, trust or endpoint readiness"]] as const : []), ...(row.kernelStop ? [["Broker stop", "exact process exit observed"], ["Broker stop request", row.kernelStop.requestId], ["Broker shutdown trace", row.kernelStop.brokerShutdownTrace], ["Broker cleanup", row.kernelStop.cleanup]] as const : []), ["Recorded supervisor", row.supervisor], ["Supervisor discovery", row.supervisorObservation], ["Recorded unit", row.supervisorRecord.unit ?? "none recorded"], ["Unit file", row.supervisorRecord.fileObservation], ["OS unit state", row.supervisorRecord.osState], ["Autostart", row.supervisorRecord.autostart], ...(row.supervisorRecord.seededGeneration ? [["Private store generation", row.supervisorRecord.seededGeneration]] as const : []), ["Request", row.requestId], ["Original launch", row.launchRequestId]] }, { kind: "lines", lines: ["A process proof is not a serving endpoint. HTTP readiness proves reachability, not listener ownership. An adapter observation names only its checked native lifecycle as of the recorded time. Only the creation-pinned direct process is controlled; this is not a process sandbox or a claim that arbitrary descendants are gone. No recorded supervisor means none assigned by this controller, not a verified absence of external OS supervision. Matching recorded unit bytes prove neither active supervision nor enabled autostart; missing or modified files do not authorize direct-process fallback."] }] }] };
+/** The file a running instance's process executes, as the kernel reports it, or null when the
+ *  process is not running here or this platform has no `/proc`. */
+function runningExecutable(row: ReturnType<typeof instanceProjection>): string | null {
+  if (row.observedProcess !== "running" || row.pid === null) return null;
+  try {
+    return readlinkSync(`/proc/${row.pid}/exe`);
+  } catch {
+    return null;
+  }
+}
+
+function instanceView(row: ReturnType<typeof instanceProjection> & { executable?: string | null }, title: string): Report {
+  return { sections: [{ title, blocks: [{ kind: "fields", rows: [["Definition", row.definition], ["Space", row.space], ["Instance", row.instanceId], ["Execution host", row.executionHost], ["Recorded state", row.startInterrupted ? "start interrupted: the command that started it ended before readiness was established" : row.recordedState],["Process observation", row.observedProcess], ["PID", row.pid === null ? "not established" : String(row.pid)], ...(row.executable !== undefined ? [["Executable", row.executable ?? (row.observedProcess === "running" ? "not readable on this host" : "no running process")]] as const : []), ["Readiness observation", row.readinessObservation], ["Readiness as of", row.readinessAsOf], ["Stop policy", row.stopPolicy], ["Serving endpoint", !row.nativeEndpoint ? "not checked" : row.nativeEvidence === "local-process-receipt" ? "child-reported local receipt; not an attributed endpoint response" : "adapter-checked observation; not a fresh status query"], ["Adapter", row.adapter ? `${row.adapter.name} · ${row.adapter.package ?? "composition root"}@${row.adapter.version}` : "generic process"], ...(row.nativeEndpoint ? [["Endpoint class", row.nativeEndpoint.endpoint], ["Native instance", row.nativeEndpoint.instanceId], ["Native principal", `${row.nativeEndpoint.owner}.${row.nativeEndpoint.actor}`], ["Native lifecycle", row.nativeEndpoint.lifecycleUid], ["Native epoch", String(row.nativeEndpoint.epoch)], ["Adapter observed at", row.adapterObservedAt ?? "not recorded"]] as const : []), ...(row.nativeStop ? [["Native stop", "returned for the original request"], ["Native stop request", row.nativeStop.requestId], ["Native cleanup", row.nativeStop.cleanup]] as const : []), ...(row.stopPolicy === "process" ? row.processStop ? [["Process stop evidence", "recorded signal and original process exit"], ["Recorded stop signal", row.processStop.signal], ["Recorded stop request", row.processStop.requestId], ["Exit observed at", row.processStop.observedAt]] as const : [["Process stop evidence", "not recorded"]] as const : []), ...(row.reportedListener ? [["Reported listener", row.reportedListener.nats.join(", ")], ["Listener evidence", "the pinned child's own launch-bound ports file; not JetStream, trust or endpoint readiness"]] as const : []), ...(row.kernelStop ? [["Broker stop", "exact process exit observed"], ["Broker stop request", row.kernelStop.requestId], ["Broker shutdown trace", row.kernelStop.brokerShutdownTrace], ["Broker cleanup", row.kernelStop.cleanup]] as const : []), ["Recorded supervisor", row.supervisor], ["Supervisor discovery", row.supervisorObservation], ["Recorded unit", row.supervisorRecord.unit ?? "none recorded"], ["Unit file", row.supervisorRecord.fileObservation], ["OS unit state", row.supervisorRecord.osState], ["Autostart", row.supervisorRecord.autostart], ...(row.supervisorRecord.seededGeneration ? [["Private store generation", row.supervisorRecord.seededGeneration]] as const : []), ["Request", row.requestId], ["Original launch", row.launchRequestId]] }, { kind: "lines", lines: ["A process proof is not a serving endpoint. HTTP readiness proves reachability, not listener ownership. An adapter observation names only its checked native lifecycle as of the recorded time. Only the creation-pinned direct process is controlled; this is not a process sandbox or a claim that arbitrary descendants are gone. No recorded supervisor means none assigned by this controller, not a verified absence of external OS supervision. Matching recorded unit bytes prove neither active supervision nor enabled autostart; missing or modified files do not authorize direct-process fallback."] }] }] };
 }
 
 export function nativeImpactView(plan: ServiceAdapterStopPlan): Report {
@@ -40,6 +57,14 @@ export function kernelImpactView(plan: ServiceAdapterKernelStopPlan): Report {
     { kind: "fields", rows: [["Scope", "exact pinned broker process; not reserved"], ["Space", plan.binding.space], ["Root", plan.binding.root], ["Broker", plan.binding.server], ["Configuration digest", plan.binding.configSha256], ["Observed at", plan.observedAt], ["Scope fingerprint", plan.scopeSha256]] },
     { kind: "lines", lines: ["Stopping the broker disconnects every client of this space. The stop rechecks this scope and the exact process before one SIGTERM, then waits for that process to exit. An observed exit is not a broker acknowledgement or store, registry or credential cleanup. A process that does not exit is retained as unknown, with no force kill or restart."] },
   ] }] };
+}
+
+/** What a generic stop would signal, as its preview names it. */
+function stopSignalText(signal: { scope: "process-group" | "process"; pid: number; processes: number; graceMs: number }): string {
+  const grace = `${signal.graceMs / 1000}s`;
+  return signal.scope === "process-group"
+    ? `SIGTERM to process group ${signal.pid} (${signal.processes} ${signal.processes === 1 ? "process" : "processes"}), then SIGKILL to any still in it after ${grace}`
+    : `SIGTERM to PID ${signal.pid} alone, then SIGKILL after ${grace} if it still runs`;
 }
 
 function previewNativeInstall(definition: ServiceDefinitionSnapshot, selected: ServiceInstanceSnapshot | undefined, presentation: ReturnType<typeof presentationOf>, commandName: string): void {
@@ -104,15 +129,40 @@ function previewSystemdUninstall(definition: ServiceDefinitionSnapshot, selected
   ] }] }));
 }
 
-export async function serviceAction(args: ParsedArgs, space: string, commandName = "service"): Promise<void> {
+/** What a background start interrupted by SIGINT or SIGTERM left. The signal reaches this process
+ *  and not the detached service, which keeps running with its start unsettled. */
+function interruptedStart(name: string, space: string, selected: string | undefined): CommandFailure {
+  let left: ServiceInstanceSnapshot | undefined;
+  try {
+    const rows = serviceInstances(space, name);
+    left = rows.find((row) => row.record.value.launcher.pid === process.pid) ?? rows.find((row) => row.name === selected);
+  } catch { left = undefined; }
+  const target = { space, name, instanceId: left?.name ?? null };
+  const observed = left && observeServiceProcess(left.record.value);
+  return !left
+    ? new CommandFailure("failed", "OPERATION_FAILED", `the start of ${name} was interrupted before it launched a process, so nothing was started`, { target, remedy: `run \`cotal service start ${name} --space ${space}\` again` })
+    : observed === "running"
+      ? new CommandFailure("unknown", "OPERATION_UNKNOWN", `the start of ${name} was interrupted while it waited for readiness; instance ${left.name} (pid ${left.record.value.process?.pid}) was left running, and this start did not establish its readiness`, { target, remedy: `run \`cotal service start ${name} --space ${space}\` to wait for its readiness again, or stop it with \`cotal service stop ${name} --instance ${left.name} --space ${space} --yes\`` })
+      : new CommandFailure("unknown", "OPERATION_UNKNOWN", `the start of ${name} was interrupted before it confirmed the process of instance ${left.name} (observed: ${observed}); its record is kept`, { target, remedy: `inspect it with \`cotal service status ${name} --instance ${left.name} --space ${space}\`` });
+}
+
+/** The next step for a name that resolves to no saved definition and to no member of the space's
+ *  controller stack. */
+export function unsavedServiceStep(name: string, mode: string): string {
+  return name === "web" ? "the web dashboard is an extension: add it with `cotal ext add @cotal-ai/web`, then start it with `cotal service start web --creds <file>`" : mode === "stop" ? "list this space's saved definitions with `cotal service`" : "add a supported service definition explicitly before starting it";
+}
+
+/** `root` is the selected space's root, where a definition must have been added to launch. */
+export async function serviceAction(args: ParsedArgs, space: string, root: string, commandName = "service", resolved?: PresetServiceTarget): Promise<void> {
   const [mode, name] = args.positionals as [string, string];
   const values = args.values as { instance?: string; "new-instance"?: boolean; foreground?: boolean; "with-agents"?: boolean; "dry-run"?: boolean; yes?: boolean; tail?: string; follow?: boolean; json?: boolean };
   const presentation = presentationOf(args.values);
-  const store = serviceDefinitionStore(space), definition = store.read(name);
+  const store = serviceDefinitionStore(space, addedDefinitionStep), definition = store.read(name);
   if (!definition) {
     const stackName = stackMemberFor(space, name);
-    throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no saved service definition resolves this name in the selected space; no process or extension was ${mode === "stop" ? "stopped" : "started"}`, { target: { space, name }, remedy: stackName ? `this space's controller stack names it ${stackName}: use cotal ${commandName === "down" ? "down" : `${commandName} ${mode}`} ${stackName} --space ${space}${mode === "stop" ? ", or bare cotal down to stop the whole stack" : ""}` : name === "web" ? "save the dashboard explicitly with cotal service add web --preset web and its required registered root, protected credential file and read-only intent; if its provider is absent, use cotal ext add @cotal-ai/web" : mode === "stop" ? "list this space's saved definitions with cotal service" : "add a supported service definition explicitly before starting it" });
+    throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no saved service definition resolves this name in the selected space; no process or extension was ${mode === "stop" ? "stopped" : "started"}`, { target: { space, name }, remedy: stackName ? `this space's controller stack names it ${stackName}: use \`cotal ${commandName === "down" ? "down" : `${commandName} ${mode}`} ${stackName} --space ${space}\`${mode === "stop" ? ", or bare `cotal down` to stop the whole stack" : ""}` : unsavedServiceStep(name, mode) });
   }
+  if (mode === "start" || mode === "restart" || mode === "install") assertDefinitionRoot(definition, space, root, mode);
   const rows = serviceInstances(space, name);
   let id = values.instance;
   if (!id && rows.length > 1 && !values["new-instance"] && canPrompt() && presentation !== "json") {
@@ -121,8 +171,15 @@ export async function serviceAction(args: ParsedArgs, space: string, commandName
     id = selected;
   }
   const selected = values["new-instance"] ? undefined : selectServiceInstance(rows, id, mode === "start" || mode === "install");
-  const target = { space, name, instanceId: selected?.name ?? null };
+  // A preset name resolved to another saved name keeps the name the person typed beside it.
+  const target = { space, name, instanceId: selected?.name ?? null, ...(resolved && resolved.requested !== name ? { requested: resolved.requested } : {}) };
   if (["start", "stop", "restart"].includes(mode)) assertNoServiceUnitAttempts(space, name);
+  // The owned unit entry runs only a direct process, so an adapter definition's install refuses
+  // before anything is allocated.
+  if (mode === "install" && definition.record.value.launch.type === "adapter") {
+    const launch = definition.record.value.launch;
+    throw adapterInstallRefusal(space, name, launch.adapter, launch.options, commandName === "manager" || resolved?.preset === "manager" ? "manager" : undefined, target);
+  }
   if (mode === "install" && values["dry-run"]) return previewNativeInstall(definition, selected, presentation, commandName);
   if (mode === "uninstall" && values["dry-run"]) return previewSystemdUninstall(definition, selected!, presentation, commandName);
   if (mode === "install") {
@@ -151,7 +208,7 @@ export async function serviceAction(args: ParsedArgs, space: string, commandName
   }
   if (mode === "uninstall") {
     if (process.platform !== "linux") throw new CommandFailure("refused", "UNSUPPORTED", "native service removal currently needs the supported Linux user manager; no unit or private store was touched", { target });
-    if (!values.yes && (!canPrompt() || presentation === "json")) throw new CommandFailure("refused", "USAGE_INVALID", "native uninstall requires --yes outside an interactive terminal", { target });
+    if (!values.yes && (!canPrompt() || presentation === "json")) throw new ConfirmationRequired(yesRequired("native uninstall", presentation === "json"), { target, remedy: `confirm with \`cotal svc uninstall ${name} --yes\`, or inspect it with --dry-run` });
     if (!values.yes) {
       const answer = await prompts.confirm({ message: `Disable and remove the exact owned unit for ${oneLine(name)} instance ${selected!.name}? The saved definition remains.`, initialValue: false });
       if (prompts.isCancel(answer) || !answer) return cancelled();
@@ -176,8 +233,12 @@ export async function serviceAction(args: ParsedArgs, space: string, commandName
     const actionObservation = action ? observeSystemdAttempt(action) : null;
     const nativeSupervisor = observeRecordedSupervisor(selected!.record.value, result.supervisorRecord);
     const incomplete = installIntent !== null || uninstallIntent !== null || unitAction !== null || result.supervisorRecord.mechanism !== "none-recorded" && (nativeSupervisor.state !== "observed" || nativeSupervisor.daemonReloadRequired || nativeSupervisor.dropInsReported || nativeSupervisor.mainProcessAttribution === "different-or-unattributed" || nativeSupervisor.mainProcessAttribution === "not-reported" && result.observedProcess === "running");
-    writeResult(presentation, { command: commandName, target, result: { kind: "service-status", ...result, nativeSupervisor, installIntent, uninstallIntent, unitAction, installObservation, uninstallObservation, actionObservation }, ...(incomplete ? { completeness: "partial" as const, partial: { message: installIntent ? "A service installation attempt is retained; its submitted or acknowledged effects are not a completed owned supervisor. Inspect its private store and native unit before any retry." : uninstallIntent ? "A native removal attempt is retained; a disabled or missing unit is not proof its private store and receipt were cleaned. Inspect each named step before reconciliation." : unitAction ? "A native service action is retained; its submission and unit state require reconciliation before a new control request." : "The recorded supervisor could not be established as the unchanged complete loaded configuration with an attributed main process. No direct-process fallback or readiness was inferred." } } : {}) }, (row): Report => ({ sections: [
+    writeResult(presentation, { command: commandName, target, result: { kind: "service-status", ...result, listeners: result.observedProcess === "running" ? definitionListeners(definition) ?? null : [], executable: runningExecutable(result), nativeSupervisor, installIntent, uninstallIntent, unitAction, installObservation, uninstallObservation, actionObservation }, warnings: await readinessAddressSurvivors(space, [name]), ...(incomplete ? { completeness: "partial" as const, partial: { message: installIntent ? "A service installation attempt is retained; its submitted or acknowledged effects are not a completed owned supervisor. Inspect its private store and native unit before any retry." : uninstallIntent ? "A native removal attempt is retained; a disabled or missing unit is not proof its private store and receipt were cleaned. Inspect each named step before reconciliation." : unitAction ? "A native service action is retained; its submission and unit state require reconciliation before a new control request." : "The recorded supervisor could not be established as the unchanged complete loaded configuration with an attributed main process. No direct-process fallback or readiness was inferred." } } : {}) }, (row): Report => ({ sections: [
       ...instanceView(row, "Service instance").sections,
+      ...(row.listeners === null || row.listeners.length ? [{ title: "Listeners", blocks: [
+        row.listeners ? { kind: "fields" as const, rows: row.listeners.map(listenerRow) } : { kind: "lines" as const, lines: ["The broker's configuration could not be read, so its listeners are not listed."] },
+        ...(row.listeners && exposedPlaintext(row.listeners) ? [{ kind: "lines" as const, lines: [{ text: exposedPlaintext(row.listeners)!, tone: "waiting" as const }] }] : []),
+      ] }] : []),
       ...(row.installIntent ? [{ title: "Retained installation attempt", blocks: [{ kind: "fields" as const, rows: [["Attempt", row.installIntent.attemptId], ["Unit", row.installIntent.unit], ["Unit file", row.installIntent.unitPath], ["Private store", row.installIntent.privateHome], ["Environment file", row.installIntent.environmentFile], ["Generation", row.installIntent.generation], ["Step", row.installIntent.step], ["Position", row.installIntent.position], ["Last acknowledged", row.installIntent.lastAcknowledgedStep ?? "none"], ["Updated", row.installIntent.updatedAt]] as const }, { kind: "lines" as const, lines: ["A submitted step may have affected the private store or native user manager. No absent unit, safe retry or complete installation was inferred."] }] }] : []),
       ...(row.installObservation ? [{ title: "Installation unit observation", blocks: [{ kind: "fields" as const, rows: [["Unit source", row.installObservation.file], ["Private directory", row.installObservation.privateStore], ["User manager", row.installObservation.native], ["Load state", row.installObservation.loadState ?? "not checked"], ["Active state", row.installObservation.activeState ?? "not checked"], ["Unit-file state", row.installObservation.unitFileState ?? "not checked"], ["Fragment", row.installObservation.fragment], ["Reload needed", row.installObservation.daemonReloadRequired === null ? "not checked" : row.installObservation.daemonReloadRequired ? "reported yes" : "reported no"], ["Observed", row.installObservation.observedAt]] as const }, { kind: "lines" as const, lines: [row.installObservation.reason ?? "This exact-unit read is not an ownership grant or a reservation for another native action."] }] }] : []),
       ...(row.uninstallIntent ? [{ title: "Retained native removal", blocks: [{ kind: "fields" as const, rows: [["Attempt", row.uninstallIntent.attemptId], ["Unit", row.uninstallIntent.unit], ["Unit file", row.uninstallIntent.unitPath], ["Private store", row.uninstallIntent.privateHome], ["Step", row.uninstallIntent.step], ["Position", row.uninstallIntent.position], ["Last acknowledged", row.uninstallIntent.lastAcknowledgedStep ?? "none"], ["Updated", row.uninstallIntent.updatedAt]] as const }, { kind: "lines" as const, lines: ["A disabled or missing unit cannot clear this removal attempt without verifying the private store and final receipt. No native effect was retried."] }] }] : []),
@@ -185,6 +246,8 @@ export async function serviceAction(args: ParsedArgs, space: string, commandName
       ...(row.unitAction ? [{ title: "Retained native action", blocks: [{ kind: "fields" as const, rows: [["Attempt", row.unitAction.attemptId], ["Unit", row.unitAction.unit], ["Unit file", row.unitAction.unitPath], ["Operation", row.unitAction.operation], ["Position", row.unitAction.position], ["Target generation", row.unitAction.targetGeneration ?? "not applicable"], ["Updated", row.unitAction.updatedAt]] as const }, { kind: "lines" as const, lines: ["A returned native request and settled service process are separate observations. This retained action does not authorize a retry."] }] }] : []),
       ...(row.actionObservation ? [{ title: "Action unit observation", blocks: [{ kind: "fields" as const, rows: [["Unit source", row.actionObservation.file], ["Private directory", row.actionObservation.privateStore], ["User manager", row.actionObservation.native], ["Load state", row.actionObservation.loadState ?? "not checked"], ["Active state", row.actionObservation.activeState ?? "not checked"], ["Unit-file state", row.actionObservation.unitFileState ?? "not checked"], ["Fragment", row.actionObservation.fragment], ["Reload needed", row.actionObservation.daemonReloadRequired === null ? "not checked" : row.actionObservation.daemonReloadRequired ? "reported yes" : "reported no"], ["Observed", row.actionObservation.observedAt]] as const }, { kind: "lines" as const, lines: [row.actionObservation.reason ?? "This read does not establish whether a submitted start, stop or reseed committed its own terminal result."] }] }] : []),
       ...(row.supervisorRecord.mechanism === "none-recorded" ? [] : [{ title: "Native supervisor observation", blocks: [{ kind: "fields" as const, rows: [["Observation", row.nativeSupervisor.state], ["Observed at", row.nativeSupervisor.observedAt], ["Unit", row.nativeSupervisor.unit ?? "not established"], ["Load state", row.nativeSupervisor.loadState ?? "not established"], ["Active state", row.nativeSupervisor.activeState ?? "not established"], ["Substate", row.nativeSupervisor.subState ?? "not established"], ["Unit-file state", row.nativeSupervisor.unitFileState ?? "not established"], ["Main PID", row.nativeSupervisor.mainPid === null ? "not reported or not established" : String(row.nativeSupervisor.mainPid)], ["Main process attribution", row.nativeSupervisor.mainProcessAttribution], ["Invocation", row.nativeSupervisor.invocationId ?? "not reported"], ["Reload required", row.nativeSupervisor.daemonReloadRequired === null ? "not checked" : row.nativeSupervisor.daemonReloadRequired ? "reported yes" : "reported no"], ["Drop-ins", row.nativeSupervisor.dropInsReported === null ? "not checked" : row.nativeSupervisor.dropInsReported ? "reported; contents not verified" : "none reported"]] as const }, { kind: "lines" as const, lines: [row.nativeSupervisor.reason ?? "This is one native user-manager observation, not a process/endpoint readiness response or a reservation. Unit-file state is reported as received; it is not independently proved login/reboot autostart. No reload, unit action or process signal was performed."] }] }]),
+      // A process that ended after readiness has no observed exit code or signal; name its log.
+      ...(row.recordedState === "running" && row.observedProcess === "gone" && row.supervisorRecord.mechanism === "none-recorded" && !row.foreground ? [{ title: "Next", blocks: [{ kind: "commands" as const, items: [{ command: `cotal service logs ${row.definition} --space ${oneLine(row.space)} --instance ${row.instanceId}`, description: "Its process ended with no recorded stop, exit code or signal; read what it logged" }] }] }] : []),
     ] }));
     return;
   }
@@ -203,11 +266,13 @@ export async function serviceAction(args: ParsedArgs, space: string, commandName
     }
     if (definition.record.value.launch.type === "adapter") {
       const launch = definition.record.value.launch, adapter = resolveServiceAdapter(launch.adapter, launch.options);
-      if (!sameServiceAdapterPin(selected!.record.value.adapter, adapter.pin) || !adapter.declaration.capabilities.logs) throw new CommandFailure("refused", "UNSUPPORTED", "the pinned adapter does not declare log access through this controller, or its declaration changed; no different provider was loaded", { target });
+      if (!controlsRecordedAdapter(selected!.record.value, adapter) || !adapter.declaration.capabilities.logs) throw new CommandFailure("refused", "UNSUPPORTED", "the pinned adapter does not declare log access through this controller, or its declaration changed; no different provider was loaded", { target });
     }
-    if (values.follow) return followServiceLog(selected!, presentation, values.tail === undefined ? 100 : Number(values.tail));
-    const row = instanceProjection(selected!), log = readServiceLog(space, selected!.name, values.tail === undefined ? 100 : Number(values.tail));
-    writeResult(presentation, { command: commandName, target, result: { kind: "service-logs", instance: row, ...log, encoding: "utf8-with-replacement", collection: row.foreground ? "foreground output is not captured in this log" : "owned background stdout/stderr" }, ...(log.omittedBytes ? { completeness: "partial", partial: { message: "The bounded log tail does not contain the complete file; earlier or partial leading bytes were omitted." } } : {}) }, (result): Report => ({ sections: [{ title: "Service log tail", blocks: [{ kind: "fields", rows: [["Definition", name], ["Instance", row.instanceId], ["Host", row.executionHost], ["Collection", result.collection], ["Encoding", result.encoding]] }, { kind: "lines", lines: result.lines.length ? result.lines : ["No captured log lines in this bounded read."] }, { kind: "lines", lines: [{ text: "Service-produced output may contain secrets. This is a local authorized read, not a secret-redacted log or an upload.", tone: "hint" }] }] }] }));
+    const tail = values.tail === undefined ? 100 : Number(values.tail);
+    if (values.follow) return followServiceLog(selected!, presentation, tail);
+    // A tail that returned every line asked for is complete, even when earlier bytes were not read.
+    const row = instanceProjection(selected!), log = readServiceLog(space, selected!.name, tail);
+    writeResult(presentation, { command: commandName, target, result: { kind: "service-logs", instance: row, ...log, encoding: "utf8-with-replacement", collection: row.foreground ? "foreground output is not captured in this log" : "owned background stdout/stderr" }, ...(log.omittedBytes && log.lines.length < tail ? { completeness: "partial", partial: { message: "The 16 MiB bounded read holds fewer lines than the requested tail; earlier bytes were omitted." } } : {}) }, (result): Report => ({ sections: [{ title: "Service log tail", blocks: [{ kind: "fields", rows: [["Definition", name], ["Instance", row.instanceId], ["Host", row.executionHost], ["Collection", result.collection], ["Encoding", result.encoding]] }, { kind: "lines", lines: result.lines.length ? result.lines : ["No captured log lines in this bounded read."] }, { kind: "lines", lines: [{ text: "Service-produced output may contain secrets. This is a local authorized read, not a secret-redacted log or an upload.", tone: "hint" }] }] }] }));
     return;
   }
   const supervisor = selected ? instanceProjection(selected).supervisorRecord : null;
@@ -220,7 +285,7 @@ export async function serviceAction(args: ParsedArgs, space: string, commandName
       writeResult(presentation, { command: commandName, target, result: { kind: "service-native-operation-preview", operation: mode, dryRun: true, instance: row, native, changed: false }, completeness: "partial", partial: { message: "This exact-unit status read reserves no native state or process identity. A real action rechecks its receipt, source and native invocation before submission." } }, (): Report => ({ sections: [{ title: "Native service operation preview", blocks: [{ kind: "fields", rows: [["Action", mode], ["Definition", name], ["Instance", selected!.name], ["Unit", row.supervisorRecord.unit ?? "not recorded"], ["Unit state", native.activeState ?? native.state], ["Autostart", native.unitFileState ?? "not checked"], ["Process", row.observedProcess]] }, { kind: "lines", lines: ["No native request, process signal or private-store seed ran. This observation does not authorize a later action without fresh checks."] }] }] }));
       return;
     }
-    if ((mode === "stop" || mode === "restart") && !values.yes && (!canPrompt() || presentation === "json")) throw new CommandFailure("refused", "USAGE_INVALID", `${mode} requires --yes outside an interactive terminal`, { target });
+    if ((mode === "stop" || mode === "restart") && !values.yes && (!canPrompt() || presentation === "json")) throw new ConfirmationRequired(`${mode} requires --yes outside an interactive terminal`, { target, remedy: `confirm with \`cotal svc ${mode} ${name} --yes\`, or preview it with --dry-run` });
     if ((mode === "stop" || mode === "restart") && !values.yes) {
       const answer = await prompts.confirm({ message: `${mode === "stop" ? "Stop" : "Restart"} the exact owned unit ${supervisor.unit} for ${oneLine(name)} instance ${selected!.name}?`, initialValue: false });
       if (prompts.isCancel(answer) || !answer) return cancelled();
@@ -246,25 +311,50 @@ export async function serviceAction(args: ParsedArgs, space: string, commandName
   if (prepared?.adapter) {
     const adapter = prepared.adapter;
     if (values["new-instance"] && !adapter.declaration.capabilities.multiInstance || values.foreground && !adapter.declaration.capabilities.foreground) throw new CommandFailure("refused", "UNSUPPORTED", "the adapter does not declare the requested multi-instance or foreground capability; no provider code was loaded", { target });
-    if (selected && !sameServiceAdapterPin(selected.record.value.adapter, adapter.pin)) throw new CommandFailure("refused", "CONFLICT", "the selected instance pins a different adapter declaration or package version; it was not stopped or adopted", { target });
+    if (selected && !controlsRecordedAdapter(selected.record.value, adapter)) throw new CommandFailure("refused", "CONFLICT", "the selected instance pins a different adapter declaration or package version; it was not stopped or adopted", { target });
   }
   const declaredStop = prepared?.adapter ?? (definition.record.value.launch.type === "adapter" ? resolveServiceAdapter(definition.record.value.launch.adapter, definition.record.value.launch.options) : undefined);
   if (values["with-agents"] && declaredStop?.declaration.stop !== "native") throw new CommandFailure("refused", "UNSUPPORTED", "--with-agents requires this selected adapter's native stop policy; generic descendant signals are not supported", { target });
   if (values["dry-run"]) {
     const row = selected ? instanceProjection(selected) : null;
     if (row && !["running", "gone", "previous-boot", "foreign-pid"].includes(row.observedProcess)) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "the selected instance is unresolved or foreign; a safe process effect cannot be previewed", { target });
-    writeResult(presentation, { command: commandName, target, result: { kind: "service-operation-preview", operation: mode, dryRun: true, instance: row, newInstanceWouldBeAllocated: mode === "start" && !selected, allocated: false, signalled: false, launch: definition.record.value.launch.type, readiness: definition.record.value.readiness.type, osSupervisor: "not-checked", recordedSupervisor: row?.supervisor ?? null, adapter: prepared?.adapter?.pin ?? selected?.record.value.adapter ?? null, providerCodeLoaded: false } }, (result): Report => ({ sections: [{ title: "Service operation preview", blocks: [{ kind: "fields", rows: [["Action", result.operation], ["Definition", name], ["Space", space], ["Instance", row?.instanceId ?? "would be assigned; not allocated"], ["Process observation", row?.observedProcess ?? "no instance selected"], ["Readiness policy", result.readiness], ["Recorded supervisor", result.recordedSupervisor ?? "no instance selected"], ["Supervisor discovery", result.osSupervisor]] }, { kind: "lines", lines: ["No provider code was imported, no process was launched or signalled and no instance record was created. Cached adapter metadata is not a resolved executable launch plan. No native endpoint readiness, manager-impact query or descendant cleanup was inferred. A native stop still requires its live caller-scoped preflight and confirmation."] }] }] }));
+    // A generic stop signals the process group a background start made the process lead, and only the
+    // process otherwise; a native or kernel stop follows its own policy, so it gets no such line.
+    const pid = selected?.record.value.process?.pid, stopPolicy = declaredStop?.declaration.stop;
+    const leads = pid !== undefined && processGroupOf(pid) === pid;
+    const stopSignal = mode !== "start" && stopPolicy !== "native" && stopPolicy !== "kernel-exit" && row?.observedProcess === "running" && pid !== undefined
+      ? { scope: leads ? "process-group" as const : "process" as const, pid, processes: leads ? processGroupMembers(pid).length : 1, graceMs: PROCESS_STOP_GRACE_MS }
+      : null;
+    // A broker's stop refuses while it would cut off another service of the space. The preview reads
+    // the same records and names that refusal as a warning, as bare `down --dry-run` names its own.
+    const launch = definition.record.value.launch;
+    const blocked = mode !== "start" && row?.observedProcess === "running" && launch.type === "adapter" && launch.adapter === "nats-broker" ? brokerStopBlocked(canonicalRoot(String(launch.options.root)), space, selected!.name) : undefined;
+    const warnings = blocked ? [{ code: blocked.code, target: blocked.target, message: `the real ${mode} would refuse: ${blocked.message}; ${blocked.remedy}` }] : [];
+    writeResult(presentation, { command: commandName, target, result: { kind: "service-operation-preview", operation: mode, dryRun: true, instance: row, newInstanceWouldBeAllocated: mode === "start" && !selected, allocated: false, signalled: false, launch: definition.record.value.launch.type, readiness: definition.record.value.readiness.type, osSupervisor: "not-checked", recordedSupervisor: row?.supervisor ?? null, adapter: prepared?.adapter?.pin ?? selected?.record.value.adapter ?? null, providerCodeLoaded: false, stopSignal }, ...(warnings.length ? { warnings } : {}) }, (result): Report => ({ sections: [{ title: "Service operation preview", blocks: [{ kind: "fields", rows: [["Action", result.operation], ["Definition", name], ["Space", space], ["Instance", row?.instanceId ?? "would be assigned; not allocated"], ["Process observation", row?.observedProcess ?? "no instance selected"], ["Readiness policy", result.readiness], ["Recorded supervisor", result.recordedSupervisor ?? "no instance selected"], ["Supervisor discovery", result.osSupervisor], ...(stopSignal ? [["Stop signal", stopSignalText(stopSignal)] as [string, string]] : [])] }, { kind: "lines", lines: [...(stopSignal?.scope === "process-group" ? ["The stop signals the whole process group, so a descendant still in it, such as a server its shell backgrounded, stops too. One that left the group, such as with setsid, is not signalled."] : []), "No provider code was imported, no process was launched or signalled and no instance record was created. Cached adapter metadata is not a resolved executable launch plan. No native endpoint readiness, manager-impact query or descendant cleanup was inferred. A native stop still requires its live caller-scoped preflight and confirmation."] }] }] }));
     return;
   }
   // A restart whose original process is already gone stops nothing, so it asks for nothing.
   const confirmStop = mode === "stop" || mode === "restart" && !["gone", "previous-boot", "foreign-pid"].includes(observeServiceProcess(selected!.record.value));
-  if (confirmStop && !values.yes && (!canPrompt() || presentation === "json")) throw new CommandFailure("refused", "USAGE_INVALID", `${mode} requires --yes outside an interactive terminal`, { target, remedy: `confirm with cotal svc ${mode} ${name} --yes, or preview it with --dry-run` });
+  if (confirmStop && !values.yes && (!canPrompt() || presentation === "json")) throw new ConfirmationRequired(yesRequired(mode, presentation === "json"), { target, remedy: `confirm with \`cotal svc ${mode} ${name} --yes\`, or preview it with --dry-run` });
   if (mode === "restart") assertRestartAdmitted(definition);
-  const nativePlan = mode === "stop" || mode === "restart" ? await prepareNativeServiceStop(definition, selected!, values["with-agents"] === true) : undefined;
+  let nativePlan: Awaited<ReturnType<typeof prepareNativeServiceStop>> | undefined;
+  try { nativePlan = mode === "stop" || mode === "restart" ? await prepareNativeServiceStop(definition, selected!, values["with-agents"] === true) : undefined; }
+  catch (error) {
+    // The stop's credential could not be recorded, so nothing was submitted, as `down` refuses it.
+    if (!storeRefusedWrite(error)) {
+      const disabled = jetStreamDisabled(root, space);
+      if (!disabled || isCommandFailure(error) && error.outcome !== "unknown") throw error;
+      throw jetStreamDisabledRefusal(disabled, root, space, `stopping ${oneLine(name)} needs a credential whose issuance record the broker cannot store`, "nothing was stopped", target, selected!.record.value.process?.pid);
+    }
+    let store: { path: string; cap?: number } | undefined;
+    try { store = recordedStore(root, space); } catch { store = undefined; }
+    const pid = mode === "stop" ? selected!.record.value.process?.pid : undefined;
+    throw fullStoreStopRefusal(oneLine(name), store, "nothing was stopped", target, `make room with \`cotal history clear --space ${space} --yes\`, which purges all of this space's channel history, then run \`cotal svc ${mode} ${oneLine(name)} --space ${space} --yes\`${pid !== undefined ? `; to keep that history, end it on this host with kill -TERM ${pid}, which stops its agents by its default policy` : ""}`);
+  }
   const kernelPlan = mode === "stop" || mode === "restart" ? await prepareKernelServiceStop(definition, selected!) : undefined;
   // The impact is the first report the operation prints, so it carries the space's Mesh line.
   const impact = [...(nativePlan ? nativeImpactView(nativePlan).sections : []), ...(kernelPlan ? kernelImpactView(kernelPlan).sections : [])];
-  if (impact.length && presentation !== "json") console.log(renderReport({ space, sections: impact }, presentation, terminalWidth(process.stdout)));
+  if (impact.length && presentation !== "json") console.log(renderReport({ space, sections: impact }, presentation, process.stdout));
   if (confirmStop && !values.yes) {
     const answer = await prompts.confirm({ message: `${mode === "stop" ? "Stop" : "Restart"} ${oneLine(name)} instance ${selected!.name} on ${oneLine(selected!.record.value.host.name)}? ${nativePlan ? "Apply the displayed native seat policy only if its full scope is unchanged." : kernelPlan ? "Signal only the displayed broker process, only if its scope is unchanged." : "Only its pinned direct process is controlled."}`, initialValue: false });
     if (prompts.isCancel(answer) || !answer) return cancelled();
@@ -272,13 +362,14 @@ export async function serviceAction(args: ParsedArgs, space: string, commandName
   if (mode === "stop") {
     const stopped = await stopProcessService(definition, selected!, undefined, { plan: nativePlan, withAgents: values["with-agents"] === true }, { plan: kernelPlan });
     const result = instanceProjection(stopped.instance);
-    writeResult(presentation, { command: commandName, target, result: { kind: "service-stop", ...result, originalIncarnationGone: true, impact: nativePlan ?? kernelPlan ?? null, cleanup: result.nativeStop?.cleanup ?? result.kernelStop?.cleanup ?? "not-checked" }, noOp: stopped.noOp }, (row) => instanceView(row, stopped.noOp ? "Service was not running; nothing was stopped" : row.kernelStop ? "Original broker process exited" : "Service stopped"));
+    writeResult(presentation, { command: commandName, target, result: { kind: "service-stop", ...result, originalIncarnationGone: true, impact: nativePlan ?? kernelPlan ?? null, cleanup: result.nativeStop?.cleanup ?? result.kernelStop?.cleanup ?? "not-checked" }, warnings: await readinessAddressSurvivors(space, [name]), noOp: stopped.noOp }, (row) => instanceView(row, stopped.noOp ? "Service was not running; nothing was stopped" : row.kernelStop ? "Original broker process exited" : "Service stopped"));
     return;
   }
-  if (values.foreground) console.log(renderReport({ space, sections: [{ title: "Foreground service lifetime", blocks: [
+  // A progress notice, on stderr with the child's own failure line and the refusal, so that stream reads in order.
+  if (values.foreground) console.error(renderReport({ space, sections: [{ title: "Foreground service lifetime", blocks: [
     { kind: "fields", rows: [["Definition", name], ["Space", space], ["Instance", selected?.name ?? "assigned once at launch"], ["Execution", "owned terminal-bound process; not a detachable view"], ["Output", "this terminal; not captured in the background log"]] },
     { kind: "lines", lines: ["Ctrl-C or terminal loss may end this process and its native in-process work. Controlled shutdown uses the selected process identity and declared stop policy. An external kill or interrupted startup is not a confirmed stop or proof of descendant, registration or authority cleanup."] },
-  ] }] }, presentation === "plain" ? "plain" : "rich", terminalWidth(process.stdout)));
+  ] }] }, presentation === "plain" ? "plain" : "rich", process.stderr));
   let started: Awaited<ReturnType<typeof startProcessService>>;
   if (mode === "restart") {
     const hold = store.pin(definition);
@@ -291,14 +382,24 @@ export async function serviceAction(args: ParsedArgs, space: string, commandName
     } catch (error) {
       if (!stopped) throw error;
       const uncertain = !isCommandFailure(error) || error.outcome === "unknown";
-      throw new CommandFailure(uncertain ? "unknown" : "partial", uncertain ? "OPERATION_UNKNOWN" : "OPERATION_PARTIAL", "the original process is gone, but the replacement did not confirm readiness; it was not retried", { target, changed: [instanceProjection(stopped.instance)], ...(isCommandFailure(error) && error.native ? { native: error.native } : {}), remedy: "inspect the retained original instance ID and its latest launch request before another start" });
+      // The replacement's own failure says what it saw, such as the exit code of a process that exited at once.
+      const why = isCommandFailure(error) ? `: ${error.message}` : "";
+      throw new CommandFailure(uncertain ? "unknown" : "partial", uncertain ? "OPERATION_UNKNOWN" : "OPERATION_PARTIAL", `the original process is gone, but the replacement did not confirm readiness${why}; it was not retried`, { target, changed: [instanceProjection(stopped.instance)], ...(isCommandFailure(error) && error.native ? { native: error.native } : {}), remedy: (isCommandFailure(error) ? error.remedy : undefined) ?? "inspect the retained original instance ID and its latest launch request before another start" });
     } finally { hold.release(); }
-  } else started = await startProcessService(definition, { ...(id ? { instance: id } : {}), newInstance: values["new-instance"] === true, foreground: values.foreground === true });
+  } else {
+    const release = values.foreground ? undefined : reportOnInterrupt(presentation, commandName, () => interruptedStart(name, space, selected?.name));
+    try { started = await startProcessService(definition, { ...(id ? { instance: id } : {}), newInstance: values["new-instance"] === true, foreground: values.foreground === true }); }
+    finally { release?.(); }
+  }
   const result = instanceProjection(started.instance);
-  writeResult(presentation, { command: commandName, target: { ...target, instanceId: result.instanceId }, result: { kind: mode === "restart" ? "service-restart" : "service-start", ...result, ...(mode === "restart" ? { originalStopImpact: nativePlan ?? kernelPlan ?? null } : {}) }, noOp: started.noOp }, (row) => {
+  writeResult(presentation, { command: commandName, target: { ...target, instanceId: result.instanceId }, result: { kind: mode === "restart" ? "service-restart" : "service-start", ...result, ...(mode === "restart" ? { originalStopImpact: nativePlan ?? kernelPlan ?? null } : {}), ...(resolved ? { presetDefinition: resolved.saved } : {}) }, noOp: started.noOp }, (row) => {
     const view = instanceView(row, started.noOp ? "Already running; nothing was started" : row.nativeEndpoint ? "Owned process running; native adapter readiness recorded" : row.reportedListener ? "Owned broker process reported its listener" : row.readinessObservation === "http-reachable" ? "Owned process running; HTTP reachable" : "Owned service process running");
     // A background child reports how to reach it, such as the dashboard's bootstrap file, in its own log.
-    return values.foreground ? view : { sections: [...view.sections, { title: "Next", blocks: [{ kind: "commands", items: [{ command: `cotal service logs ${row.definition} --space ${oneLine(row.space)} --instance ${row.instanceId}`, description: "Read the service's own startup output, including how to reach it when it reports that" }] }] }] };
+    if (values.foreground) return view;
+    // One instance of a definition needs no instance or space on the line that reads it.
+    const only = serviceInstances(space, name).length === 1;
+    const logs = commandName === "manager" ? "cotal manager logs" : only && !args.values.space ? `cotal service logs ${row.definition}` : `cotal service logs ${row.definition} --space ${oneLine(row.space)} --instance ${row.instanceId}`;
+    return { sections: [...view.sections, { title: "Next", blocks: [{ kind: "commands", items: [{ command: logs, description: "Read the service's own startup output, including how to reach it when it reports that" }, { command: commandName === "manager" ? "cotal manager stop" : `cotal service stop ${row.definition}`, description: "Stop it" }] }] }] };
   });
   if (values.foreground && started.child && started.exit) {
     let signal: "SIGINT" | "SIGTERM" | undefined;
@@ -316,7 +417,7 @@ export async function serviceAction(args: ParsedArgs, space: string, commandName
           await stopProcessService(definition, current, undefined, { plan: await prepareNativeServiceStop(definition, current), withAgents: false });
         } catch (error) {
           const failure = isCommandFailure(error) ? error : new CommandFailure("unknown", "OPERATION_UNKNOWN", "foreground shutdown did not confirm the owned process exit; its record was retained");
-          process.stderr.write(`${renderReport(commandFailureReport(failure), presentation === "plain" ? "plain" : "rich", terminalWidth(process.stderr))}\n`);
+          process.stderr.write(`${renderReport(commandFailureReport(failure), presentation === "plain" ? "plain" : "rich", process.stderr)}\n`);
         } finally { finishShutdown(); }
       })();
     };
@@ -332,7 +433,7 @@ export async function serviceAction(args: ParsedArgs, space: string, commandName
       if (current && current.record.value.process?.pid === started.instance.record.value.process?.pid && current.record.value.process?.token === started.instance.record.value.process?.token && !retainedStopRequest(current.record.value)) serviceInstanceStore(space).commit(current.name, current, { ...current.record.value, state: "stopped", readiness: "not-checked", exit, updatedAt: new Date().toISOString() });
       process.exitCode = signal === "SIGINT" ? 130 : signal === "SIGTERM" ? 143 : exit.code === 0 ? 0 : 5;
     } catch (error) {
-      if (isCommandFailure(error)) process.stderr.write(`${renderReport(commandFailureReport(error), presentation === "plain" ? "plain" : "rich", terminalWidth(process.stderr))}\n`);
+      if (isCommandFailure(error)) process.stderr.write(`${renderReport(commandFailureReport(error), presentation === "plain" ? "plain" : "rich", process.stderr)}\n`);
       throw error;
     } finally { process.off("SIGINT", interrupt); process.off("SIGTERM", terminate); }
   }

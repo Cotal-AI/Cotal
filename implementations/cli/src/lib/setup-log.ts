@@ -14,7 +14,7 @@ export interface SetupLog {
  *  otherwise start a line that reads as an entry of its own. The log is owner-private and is never
  *  appended through a symlink ({@link openPrivateAppend}). */
 export function openSetupLog(path: string): SetupLog {
-  mkdirSync(dirname(path), { recursive: true });
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const append = (text: string): void => {
     const fd = openPrivateAppend(path);
     try { writeFileSync(fd, text); } finally { closeSync(fd); }

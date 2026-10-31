@@ -6,21 +6,23 @@
 import { randomBytes } from "node:crypto";
 import { hostname, userInfo } from "node:os";
 import {
-  assertValidChannel, isConcreteChannel, oneLine, readChannelRegistry, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs,
+  oneLine, readChannelRegistry, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs,
 } from "@cotal-ai/core";
 import {
-  CommandFailure, connectTargetOrThrow, credsFlag, isConnectRefusal, loadMeshes, plainFlag, preflightOrThrow, resolveTargetOrThrow, serverFlag, spaceFlag,
+  CommandFailure, connectTargetOrThrow, credsFlag, isConnectRefusal, operationWarnings, plainFlag, preflightOrThrow, resolveTargetOrThrow, serverFlag, spaceFlag,
   type MeshTarget,
 } from "@cotal-ai/workspace";
 import { completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { listDeclaredChannels } from "../lib/personas.js";
+import { concreteChannelProblem } from "../lib/concrete-channel.js";
+import { shellWord } from "../lib/endpoint-errors.js";
 import { declaredFrom } from "./send.js";
 import { loadChatFrontEnd, selectFrontEnd, type FrontEnd } from "../chat/frontend.js";
 import { openRoutingChatSession } from "../chat/open-session.js";
 import { openStaticChatSession } from "../chat/static-session.js";
 import { openUserChatSession } from "../chat/user-session.js";
 import { closeSummary, type Recipient } from "../chat/view.js";
-import type { AdmittedChatSession, CloseReport } from "../chat/session.js";
+import type { AdmittedChatSession, CloseReport, RosterView } from "../chat/session.js";
 
 export const chatFlags = [
   spaceFlag, serverFlag, { ...credsFlag, description: "an explicit credential file (not available for chat yet)" }, plainFlag,
@@ -38,8 +40,8 @@ type Values = FlagValues<typeof chatFlags>;
 /** Declared flags no admission supports yet, each with the reason it refuses. */
 const NOT_YET: readonly (readonly [keyof Values & string, string])[] = [
   ["role", "a role puts the session on that role's work queue, the chat view cannot yet answer a task's sender, and the static and user-mode admissions take no role"],
-  ["link", "no admission opens a chat session from a join link; select the space with --space or cotal use"],
-  ["token", "no admission opens a chat session from a join token; select the space with --space or cotal use"],
+  ["link", "no admission opens a chat session from a join link; select the space with --space or `cotal use`"],
+  ["token", "no admission opens a chat session from a join token; select the space with --space or `cotal use`"],
   ["creds", "a chat session gets its own identity from the space, and no admission accepts an explicit credential"],
   ["lifecycle-uid", "it pairs with --creds, which no chat admission accepts"],
 ];
@@ -57,26 +59,21 @@ export interface ChatInput {
 /** Check the grammar and choose the front end, before any target, connector or connection. */
 export function chatArguments(args: ParsedArgs): ChatInput {
   const values = args.values as Values;
-  if (args.positionals.length > 1) throw new CommandFailure("refused", "USAGE_INVALID", "chat takes at most one channel", { remedy: "run cotal chat [<channel>]" });
+  if (args.positionals.length > 1) throw new CommandFailure("refused", "USAGE_INVALID", "chat takes at most one channel", { remedy: "run `cotal chat [<channel>]`" });
   const raw = args.positionals[0];
   const channel = raw?.replace(/^#/, "");
-  if (channel !== undefined) {
-    try {
-      assertValidChannel(channel);
-      if (!isConcreteChannel(channel)) throw new Error("wildcard");
-    } catch {
-      throw new CommandFailure("refused", "USAGE_INVALID", "name one concrete channel, without wildcards");
-    }
-  }
+  // A name the channel rules refuse gets their reason, which names the segment at fault.
+  const problem = channel === undefined ? undefined : concreteChannelProblem(channel);
+  if (problem) throw new CommandFailure("refused", "USAGE_INVALID", problem);
   if (values.name !== undefined && (!values.name.trim() || values.name.length > 128 || /[\u0000-\u001f\u007f]/u.test(values.name)))
     throw new CommandFailure("refused", "USAGE_INVALID", "--name takes a label of 1 to 128 characters without control characters");
   // Every admission presents the session as an endpoint, so `--kind endpoint` changes nothing.
   if (values.kind !== undefined && values.kind !== "endpoint")
     throw new CommandFailure("refused", "USAGE_INVALID",
       values.kind === "agent" ? "--kind agent is refused because a chat session never presents as an agent" : "--kind accepts only endpoint",
-      { remedy: "run cotal chat without --kind" });
+      { remedy: "run `cotal chat` without --kind" });
   for (const [flag, reason] of NOT_YET)
-    if (values[flag] !== undefined) throw new CommandFailure("refused", "UNSUPPORTED", `--${flag} is not available for chat yet: ${reason}`, { remedy: `run cotal chat without --${flag}` });
+    if (values[flag] !== undefined) throw new CommandFailure("refused", "UNSUPPORTED", `--${flag} is not available for chat yet: ${reason}`, { remedy: `run \`cotal chat\` without --${flag}` });
   const picked = selectFrontEnd({ stdio: values.stdio, plain: values.plain });
   if (!picked.ok) throw new CommandFailure("refused", "USAGE_INVALID", picked.message);
   return { ...(channel === undefined ? {} : { channel }), ...(values.name === undefined ? {} : { label: values.name }), frontEnd: picked.frontEnd };
@@ -99,19 +96,28 @@ export function chatAdmission(mode: MeshTarget["mode"], label: string, channel: 
 }
 
 /** Admit through the one adapter the mode names. Each adapter refuses a target of another mode. */
-function admit(target: MeshTarget, admission: ChatAdmission): Promise<AdmittedChatSession> {
+function admit(target: MeshTarget, admission: ChatAdmission, reopen: (channel: string) => string): Promise<AdmittedChatSession> {
   switch (admission.mode) {
-    case "open": return openRoutingChatSession(target, admission);
-    case "auth": return openStaticChatSession(target, admission);
-    case "user": return openUserChatSession(target, admission);
+    case "open": return openRoutingChatSession(target, { ...admission, reopen });
+    case "auth": return openStaticChatSession(target, { ...admission, reopen });
+    case "user": return openUserChatSession(target, { ...admission, reopen });
   }
 }
 
-/** The exit code of a session that ended by leaving, end of input or expiry. Only a confirmed
- *  close is 0. Retirement asked for and not confirmed is 4. An unknown outcome, an unconfirmed
- *  connection close, or no close report is 3. */
+/** The command that opens a session on a channel with the flags this one was started with, such as
+ *  `--stdio` and `--space`, so a refusal that names it keeps the session's front end and mesh. */
+export function reopenCommand(args: Pick<ParsedArgs, "raw" | "positionalIndices">): (channel: string) => string {
+  const flags = args.raw.filter((_, index) => !args.positionalIndices?.includes(index));
+  return (channel) => ["cotal", "chat", channel, ...flags].map(shellWord).join(" ");
+}
+
+/** The exit code of a session that ended by leaving, end of input, expiry or loss. Only a confirmed
+ *  close is 0. A session that ended itself because it could not continue is 5. Retirement asked
+ *  for and not confirmed is 4. An unknown outcome, an unconfirmed connection close, or no close
+ *  report is 3. */
 export function closeExitCode(close: CloseReport | undefined): number {
   if (!close || close.retirement === "unknown" || close.connectionClosed !== "confirmed") return 3;
+  if (close.lost) return 5;
   return close.retirement === "requested" ? 4 : 0;
 }
 
@@ -166,6 +172,29 @@ async function discloseChannel(target: MeshTarget, channel: string): Promise<str
   }
 }
 
+/** How long a new session waits for its roster before it checks whether its name is already in use. */
+const ROSTER_MS = 2_000;
+
+/** A warning when another live participant already carries this session's label, which a direct
+ *  message by that name could then not single out. Read once the roster is current, or after
+ *  {@link ROSTER_MS}. */
+export async function sharedNameWarning(session: AdmittedChatSession): Promise<string | undefined> {
+  const self = session.identity();
+  const deadline = Date.now() + ROSTER_MS;
+  let roster: RosterView | undefined;
+  for (;;) {
+    const read = await session.roster();
+    if (read.outcome !== "ok") return undefined;
+    roster = read.value;
+    if (roster.view === "current" || Date.now() >= deadline) break;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  const others = roster.rows.filter((row) => row.id !== self.principal && row.status !== "offline" && row.name.toLowerCase() === self.label.toLowerCase());
+  if (!others.length) return undefined;
+  const who = others.map((row) => `${row.id} (${row.sessionKind === "chat" ? "chat session" : row.kind})`).join(", ");
+  return `the name "${self.label}" is already in use here by ${who}; a direct message to "${self.label}" refuses as ambiguous while both are present, so pass another --name to be reached by name`;
+}
+
 /** Resolve the recorded mesh `--space`/`--server` select, once. Disclose the named channel, or
  *  check the target reachable when none is named. */
 async function prepareChat(values: Values, channel: string | undefined): Promise<{ target: MeshTarget; notice?: string }> {
@@ -189,6 +218,10 @@ export async function chat(args: ParsedArgs): Promise<void> {
   let session: AdmittedChatSession;
   try {
     ({ target, notice } = await prepareChat(args.values as Values, input.channel));
+    // A session has no `Mesh:` heading, so in a folder whose space is not running it names the
+    // selection it joins and the note the reads give under their heading.
+    const held = operationWarnings().find((w) => w.code === "FOLDER_SPACE_NOT_RUNNING");
+    if (held) notice = [`this session joins the selected space "${target.space}"; ${held.message}`, notice].filter(Boolean).join("; ");
     if (notice) process.stderr.write(`cotal chat: ${notice}\n`);
     const before = signals.caught();
     if (before !== undefined) {
@@ -197,11 +230,14 @@ export async function chat(args: ParsedArgs): Promise<void> {
       process.exitCode = before;
       return;
     }
-    session = await admit(target, chatAdmission(target.mode, input.label ?? defaultLabel(), input.channel));
+    session = await admit(target, chatAdmission(target.mode, input.label ?? defaultLabel(), input.channel), reopenCommand(args));
   } catch (e) {
     signals.release();
     throw e;
   }
+  // Signals are still held, so one that arrives during this read is handled below.
+  const shared = await sharedNameWarning(session);
+  if (shared) process.stderr.write(`cotal chat: ${shared}\n`);
   const during = signals.caught();
   if (during !== undefined) {
     // Interrupted while admitting: close what was admitted before a front end starts.
@@ -215,7 +251,7 @@ export async function chat(args: ParsedArgs): Promise<void> {
   let close: CloseReport | undefined;
   try {
     // The front end installs its signal handling before it first yields, so releasing here leaves no gap.
-    const running = start({ session, initialRecipient, notice });
+    const running = start({ session, initialRecipient, notice: [notice, shared].filter(Boolean).join("; ") || undefined });
     signals.release();
     close = await running;
   } catch (e) {
@@ -235,11 +271,10 @@ export async function chat(args: ParsedArgs): Promise<void> {
   process.exitCode ??= closeExitCode(close);
 }
 
-/** Complete `--space` from the registry and the channel from the target mesh's persona catalog,
- *  offline. Other values have nothing to offer. */
+/** Complete the channel from the target mesh's persona catalog, offline. Other values have nothing
+ *  to offer. */
 export function chatComplete(argv: string[]): CompletionResult {
   const flag = completingFlagValue(argv, chatFlags);
-  if (flag?.name === "space") return { items: loadMeshes().map((mesh) => ({ value: mesh.space })), directive: "nofiles" };
   if (!flag && positionalsForCompletion(argv, chatFlags).length === 1)
     return { items: declaredFrom(argv, listDeclaredChannels).map((value) => ({ value })), directive: "nofiles" };
   return { items: [], directive: "nofiles" };

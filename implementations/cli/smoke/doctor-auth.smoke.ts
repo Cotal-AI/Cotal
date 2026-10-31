@@ -5,17 +5,20 @@
  *     expired / unbounded / unreadable, with an injected clock.
  *  2. The doctor command runs against a STAGED root in the per-space layout (real crypto:
  *     createSpaceAuth + mintCreds) and is read through its JSON envelope. An expired delivery cred,
- *     an unbounded standing membership-rw cred and an unbounded agent cred are findings; a healthy
- *     $SYS observer and a missing connection-evictor are not, and a user-auth sentinel file is not
- *     listed. `--fix` re-signs the two daemon files for their EXISTING nkeys (the identity pin) and,
+ *     an unbounded standing membership-rw cred, an unbounded agent cred and a missing connection-evictor
+ *     (nothing but a system-account rotation mints it again) are findings; a healthy $SYS observer is
+ *     not, and a user-auth sentinel file is not listed. `--fix` re-signs the two daemon files for their EXISTING nkeys (the identity pin) and,
  *     with no registered mesh, records an offline repair rather than the lease. It never re-signs an
  *     agent cred, so that finding stays and the run is partial. With the agent file gone the root has
- *     no findings. `doctor` without `auth`, and an unknown `--space`, refuse.
+ *     no findings. A daemon file the NATS client cannot parse holds no key to re-sign, so an offline
+ *     `--fix` mints it again under a new identity and says so. `doctor` without `auth`, and an unknown
+ *     `--space`, refuse. A `--space` registered at another root refuses too, reading no other root,
+ *     and its next step names that root.
  *
  * Run: pnpm smoke:doctor-auth
  */
 import { strict as nodeAssert } from "node:assert";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -23,12 +26,13 @@ import {
   idFromCreds,
   inspectCredHealth,
   mintCreds,
+  mintConnectionEvictorCreds,
   mintLifecycleUid,
   mintMembershipObserverCreds,
   newIdentity,
 } from "@cotal-ai/core";
 import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
-import { agentCredsDir, authDir, isCommandFailure, readRenewalRecord, saveSpaceAuth, spaceMaterialDir, type CommandFailure } from "@cotal-ai/workspace";
+import { agentCredsDir, authDir, isCommandFailure, readRenewalRecord, recordMesh, saveSpaceAuth, spaceMaterialDir, type CommandFailure } from "@cotal-ai/workspace";
 import { doctor } from "../src/commands/doctor.js";
 
 const counted = countedAssert(nodeAssert);
@@ -39,6 +43,7 @@ const cells = counted.cells;
 const SPACE = "doctor-smoke";
 const auth = await createSpaceAuth(SPACE);
 const sysObserver = await mintMembershipObserverCreds(auth, newIdentity()); // while the $SYS seed is in memory
+const sysEvictor = await mintConnectionEvictorCreds(auth, newIdentity());
 const now = Math.floor(Date.now() / 1000);
 const bounded = await mintCreds(auth, newIdentity(), "probe", { expiresInSeconds: 100 });
 // Probe against the cred's OWN iat/exp, never against `now`. The smoke's clock
@@ -71,7 +76,7 @@ saveSpaceAuth(authDir(root), auth);
 const material = spaceMaterialDir(root, SPACE);
 mkdirSync(material, { recursive: true, mode: 0o700 });
 // delivery: EXPIRED (broker-dead). membership-rw: UNBOUNDED standing cred (pre-renewal mint shape).
-// $SYS observer: healthy (bounded 30d at mint). connection-evictor deliberately MISSING (a note).
+// $SYS observer: healthy (bounded 30d at mint). connection-evictor deliberately MISSING (a finding).
 const dlvId = newIdentity();
 const rwId = newIdentity();
 writeFileSync(join(material, "delivery.creds"), await mintCreds(auth, dlvId, "delivery", { expiresAt: now - 10 }), { mode: 0o600 });
@@ -79,7 +84,7 @@ writeFileSync(join(material, "membership-rw.creds"), await mintCreds(auth, rwId,
 writeFileSync(join(material, "membership-observer.creds"), sysObserver, { mode: 0o600 });
 const agents = agentCredsDir(root, SPACE);
 mkdirSync(agents, { recursive: true, mode: 0o700 });
-// A static agent cred with no expiry, what `auth mint` writes without an expiry flag: a finding.
+// A static agent cred with no expiry and no record beside it that someone asked for one: a finding.
 const alice = join(agents, "alice.creds");
 writeFileSync(alice, unbounded, { mode: 0o600 });
 // User-auth managed-agent sentinel: deny-all callout-account bearer plumbing, NOT a static agent cred.
@@ -92,7 +97,7 @@ interface Envelope {
   result: {
     findings: number;
     items: Item[];
-    repair: { attempted: boolean; authority: string | null; results: { file: string; ok: boolean }[] };
+    repair: { attempted: boolean; authority: string | null; results: { file: string; ok: boolean; reminted: boolean; reason: string | null }[] };
     renewal: { authority: string | null };
   };
 }
@@ -154,12 +159,13 @@ try {
     assert.match(rw?.repair ?? "", /doctor auth --fix/, "its repair names doctor auth --fix");
     assert.equal(item(report, "membership-observer.creds")?.state, "healthy", "the $SYS observer is healthy");
     assert.equal(item(report, "membership-observer.creds")?.problem, null, "and not a finding");
-    assert.equal(item(report, "connection-evictor.creds")?.state, "not-provisioned-here", "the missing connection-evictor is a note");
-    assert.equal(item(report, "connection-evictor.creds")?.problem, null, "and not a finding");
+    assert.equal(item(report, "connection-evictor.creds")?.state, "missing", "the connection-evictor is missing");
+    assert.equal(item(report, "connection-evictor.creds")?.problem, "missing - live connection eviction cannot run without it", "and a finding, since only a rotation mints it again");
+    assert.match(item(report, "connection-evictor.creds")?.repair ?? "", /down` then `.* up --rotate-sys`/, "its repair is the system-account rotation");
     assert.equal(item(report, "alice.creds")?.state, "unbounded", "fixture: alice.creds carries no expiry claim");
     assert.match(item(report, "alice.creds")?.problem ?? "", /^unbounded credential \(no expiry claim\)/, "the unbounded static agent cred is a finding");
     assert.ok(!report.result.items.some((row) => row.label.includes("sentinel")), "the user-auth sentinel is not listed as a static agent cred");
-    assert.equal(report.result.findings, 3, "three findings");
+    assert.equal(report.result.findings, 4, "four findings");
     assert.equal(report.result.repair.attempted, false, "plain diagnosis repairs nothing");
     assert.equal(report.outcome, "failed", "the diagnosis ends failed");
     assert.equal(report.error?.code, "OPERATION_FAILED", "with OPERATION_FAILED");
@@ -167,6 +173,8 @@ try {
   }
 
   // --fix: the daemon files are re-signed offline for their own nkeys; the agent finding stays.
+  // The evictor is staged first, as the rotation the finding names would leave it.
+  writeFileSync(join(material, "connection-evictor.creds"), sysEvictor, { mode: 0o600 });
   {
     const { envelope, code } = await runDoctor({ json: true, fix: true });
     const report = envelope!;
@@ -197,6 +205,54 @@ try {
     assert.match((await runDoctor({})).text, /No local credential findings/, "the text report says so");
   }
 
+  // A file other accounts can open is named by its mode, with the chmod that fixes it, and a file
+  // the NATS client cannot parse is a finding although its claims are legible. A $SYS store file at
+  // 0644 is one row like the others: the run still checks every other file.
+  {
+    const shared = join(agents, "bob.creds");
+    const crlf = join(agents, "dave.creds");
+    const observer = join(material, "membership-observer.creds");
+    writeFileSync(shared, bounded, { mode: 0o600 });
+    chmodSync(shared, 0o644);
+    chmodSync(observer, 0o644);
+    writeFileSync(crlf, bounded.replace(/\n/g, "\r\n"), { mode: 0o600 });
+    const { envelope, code } = await runDoctor({ json: true });
+    if (process.platform !== "win32") {
+      assert.equal(item(envelope!, "bob.creds")?.problem, "the credential file is not private to you (mode 0644)", "a 0644 credential is named by its mode, not as a parse failure");
+      assert.equal(item(envelope!, "bob.creds")?.repair, `chmod 600 ${shared}`, "its repair is the chmod that makes it private");
+      assert.equal(item(envelope!, "membership-observer.creds")?.problem, "the credential file is not private to you (mode 0644)", "a 0644 $SYS store credential is named by its mode, not a refusal of the whole run");
+      assert.equal(item(envelope!, "membership-observer.creds")?.repair, `chmod 600 ${observer}`, "its repair is the chmod that makes it private");
+      assert.equal(item(envelope!, "delivery.creds")?.state, "healthy", "the other files are still checked");
+    }
+    assert.equal(item(envelope!, "dave.creds")?.problem, "the NATS client cannot parse it: it has Windows (CRLF) line endings", "a CRLF credential is a finding, as --creds refuses it");
+    assert.match(item(envelope!, "dave.creds")?.repair ?? "", /^save it with LF line endings/, "its repair says how to fix the line endings");
+    assert.equal(code, 5, "the findings exit 5");
+    rmSync(shared);
+    rmSync(crlf);
+    chmodSync(observer, 0o600);
+  }
+
+  // A daemon file the NATS client cannot parse holds no key to re-sign. With no broker answering,
+  // --fix mints it again under a new identity and names that in its row; a re-signed file has none.
+  {
+    const rwPath = join(material, "membership-rw.creds");
+    writeFileSync(rwPath, readFileSync(rwPath, "utf8").slice(0, 100), { mode: 0o600 });
+    const before = (await runDoctor({ json: true })).envelope!;
+    assert.equal(item(before, "membership-rw.creds")?.problem, "the NATS client cannot parse it: it has no complete NATS user JWT block", "an unparsable daemon file is a finding");
+    assert.match(item(before, "membership-rw.creds")?.repair ?? "", /While its broker does not answer, `.*doctor auth --fix` mints it again under a new identity/, "its guidance names the --fix that mints it again");
+    const { envelope, code } = await runDoctor({ json: true, fix: true });
+    const rows = envelope!.result.repair.results;
+    assert.deepEqual(rows.find((row) => row.file === "membership-rw.creds"), { file: "membership-rw.creds", ok: true, skipped: false, reminted: true, reason: "it held no key to re-sign" }, "the row says it was minted again, and why");
+    assert.equal(rows.find((row) => row.file === "delivery.creds")?.reason, null, "a re-signed file carries no reason");
+    const rwAfter = readFileSync(rwPath, "utf8");
+    assert.notEqual(idFromCreds(rwAfter), rwId.id, "the new file has a new identity");
+    assert.equal(inspectCredHealth(rwAfter).state, "healthy", "and is healthy");
+    assert.equal(envelope!.result.findings, 0, "no finding remains");
+    assert.equal(code, 0, "exit 0");
+    writeFileSync(rwPath, rwAfter.slice(0, 100), { mode: 0o600 });
+    assert.match((await runDoctor({ fix: true })).text, /membership-rw\.creds: minted again under a new identity, because it held no key to re-sign/, "the text report names the new identity");
+  }
+
   // Refusals: no `auth` word, and an unknown space that must never read as healthy or open.
   {
     const usage = await refusal({}, []);
@@ -204,6 +260,15 @@ try {
     assert.match(usage.message, /doctor auth/, "it names doctor auth");
     const unknown = await refusal({ space: "nope" }, ["auth"]);
     assert.equal(unknown.code, "AUTH_REQUIRED", "an unknown --space refuses");
+    assert.equal(unknown.remedy, "run `cotal doctor auth --space nope` in that space's root folder; `cotal space` lists each space's root", "and names a space's root, which cotal space lists");
+    // A space registered at another root keeps its trust there: this root reads none of it, and the
+    // step names the folder where the same command runs.
+    const elsewhere = join(root, "elsewhere");
+    mkdirSync(elsewhere, { recursive: true, mode: 0o700 });
+    recordMesh({ space: "remote", server: "nats://127.0.0.1:9", root: elsewhere, mode: "auth", ts: new Date().toISOString(), origin: "manual" });
+    const remote = await refusal({ space: "remote" }, ["auth"]);
+    assert.equal(remote.code, "AUTH_REQUIRED", "a --space registered at another root refuses here");
+    assert.equal(remote.remedy, `run \`cotal doctor auth --space remote\` in the folder space remote is registered at: ${elsewhere}`, "its step names that root");
   }
 } finally {
   process.chdir(startCwd);
@@ -212,5 +277,5 @@ try {
   rmSync(root, { recursive: true, force: true });
 }
 
-console.log("doctor-auth smoke: OK - credential health is pinned, the diagnosis finds the expired, unbounded standing and unbounded agent creds, --fix re-signs the daemon files offline for their own nkeys and leaves the agent finding, and bad selections refuse");
+console.log("doctor-auth smoke: OK - credential health is pinned, the diagnosis finds the expired, unbounded standing and unbounded agent creds and the missing evictor, --fix re-signs the daemon files offline for their own nkeys, mints an unparsable one again and leaves the agent finding, and bad selections refuse");
 emitSentinel({ passed: cells(), failed: 0 });

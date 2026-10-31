@@ -128,7 +128,8 @@ const item = (id: string): InboxItem => ({
 ];
 
 const server = new McpServer({ name: "connection-status-smoke", version: "0.0.0" });
-registerCotalTools(server, agent, config, "smoke");
+let emptyReceiptCalls = 0;
+registerCotalTools(server, agent, config, "smoke", undefined, () => { emptyReceiptCalls++; return "owned hook delivery receipt"; });
 const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
 const client = new Client({ name: "connection-status-client", version: "0.0.0" });
 await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
@@ -198,11 +199,14 @@ check(
 );
 
 check("a bound session with a live transport reports ready", (await status()).state === "ready", await status());
+check("a ready empty inbox can explain the prior hook handoff", (await text("cotal_inbox")) === "owned hook delivery receipt" && emptyReceiptCalls === 1);
 
 // DEGRADED: bound, transport down. The single boolean this tool used to report was FALSE here, on
 // the one row that actually needs attention, because it was derived from `connected` alone.
 stage._transportConnected = false;
 const degraded = await status();
+const degradedEmpty = await text("cotal_inbox");
+check("a degraded empty inbox warns before any hook receipt", degradedEmpty.includes("Mesh connection is not ready (degraded)") && !degradedEmpty.includes("owned hook delivery receipt") && emptyReceiptCalls === 1, degradedEmpty);
 check(
   "bound with the transport down reports degraded, not connected and not disconnected",
   degraded.state === "degraded" && degraded.connected === true && degraded.transportConnected === false,
@@ -225,6 +229,8 @@ check(
 stage._transportConnected = false;
 stage.lastConnectionError = "socket closed";
 const down = await status();
+const disconnectedEmpty = await text("cotal_inbox");
+check("a disconnected empty inbox cannot substitute a hook receipt", disconnectedEmpty.includes("Mesh connection is not ready (disconnected)") && !disconnectedEmpty.includes("owned hook delivery receipt") && emptyReceiptCalls === 1, disconnectedEmpty);
 check(
   "neither bound nor transported reports disconnected, with the reason as a current issue",
   down.state === "disconnected" && down.connectionIssue === "socket closed" && !("lastConnectionIssue" in down),
@@ -344,7 +350,7 @@ check(
 
 await Promise.all([client.close(), server.close()]);
 
-const EXPECTED_CELLS = 23;
+const EXPECTED_CELLS = 26;
 const ran = pass + fail;
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"}: ${pass} passed, ${fail} failed`);
 console.log(`SUITE COMPLETE: ${ran} cells`);

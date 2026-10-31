@@ -33,6 +33,9 @@ export interface FlagSpec {
   readonly value?: string;
   /** One-line help text. */
   readonly description?: string;
+  /** For a command with no completer of its own: `files` completes this string flag's value from the
+   *  shell's file names. Without it the value offers no candidates. */
+  readonly completion?: "files";
 }
 
 /** What a command's `run` receives: the declared flags parsed strictly (an undeclared flag is
@@ -57,6 +60,12 @@ export type FlagValues<F extends readonly FlagSpec[]> = {
       : string;
 };
 
+/** One example in a command's help: a whole command line that works as written, with `<name>` for a
+ *  value the reader fills in, and a note on what it does, in plain words, at most 60 characters and
+ *  with no closing period. A bare string is a command with no note, the form extensions written
+ *  before notes existed declare. */
+export type CommandExample = string | { readonly command: string; readonly note: string };
+
 /** One mode of a command (`ext add`), named by its first positional. It carries its own help, and
  *  `aliases` are other first words that select it (`rm` for `remove`), scoped to this command. A
  *  command that declares subcommands takes one as its first positional whenever it takes any, so
@@ -73,8 +82,8 @@ export interface Subcommand {
   /** Overrides the generated `cotal <command> <name>` usage line. */
   readonly usage?: string;
   readonly aliases?: readonly string[];
-  /** Full example invocations shown in its help. */
-  readonly examples?: readonly string[];
+  /** Examples shown in its help, the most common use first. */
+  readonly examples?: readonly CommandExample[];
   /** Structured outputs this mode implements. A mode that declares none reports as plain text with
    *  the command's usual exit, whatever its command declares for the bare form. */
   readonly outputs?: readonly OutputMode[];
@@ -105,8 +114,8 @@ export interface Command extends Extension {
   /** Structured outputs this command implements; human text is always available. In a command with
    *  subcommands this covers the bare form, and each subcommand declares its own. */
   readonly outputs?: readonly OutputMode[];
-  /** Full example invocations shown in its help. */
-  readonly examples?: readonly string[];
+  /** Examples shown in its help, the most common use first. */
+  readonly examples?: readonly CommandExample[];
   /** The command only reads: a composition root installs and refreshes nothing before it runs, so a
    *  read never repairs as a hidden prelude. In a command with subcommands this covers the bare form,
    *  and each subcommand declares its own. Absent means the root may prepare what the command uses. */
@@ -143,14 +152,19 @@ export interface Command extends Extension {
   /** Explicitly opt out of composition-root target preparation when `--space` and `--server` are
    *  daemon/configuration inputs rather than the shared mesh-target grammar. */
   readonly prepareMeshTarget?: false;
+  /** The command installs its own interrupt notice. A composition root that reports an interrupt
+   *  before a command begins keeps that report past the command's start, until the command's notice
+   *  takes it over or the command releases it. */
+  readonly keepsStartupNotice?: true;
   run(args: ParsedArgs): Promise<void>;
   /** Optional shell-completion provider, owned by the command exactly as `run` is. Given the
    *  args typed so far (everything after the command name; the last element is the word being
    *  completed, possibly empty), returns the candidates for that position. Runs on every <TAB>
    *  via the hidden `__complete` dispatcher, so it MUST be import-light and side-effect-free —
    *  no network, no spawns. Omit it to offer no argument completion for this command.
-   *  Flag-name candidates are generated from {@link Command.flags} by the dispatcher; this hook
-   *  only supplies positional/value candidates. */
+   *  Flag-name candidates are generated from {@link Command.flags} by the dispatcher, which also
+   *  completes every `--space` and `--creds` value; this hook supplies the other positional and value
+   *  candidates. */
   complete?(argv: string[]): CompletionResult | Promise<CompletionResult>;
 }
 
@@ -168,8 +182,31 @@ export function parseCommandArgs(cmd: Command, argv: string[]): ParsedArgs {
       ...(f.multiple ? { multiple: true } : {}),
     };
   }
+  // A value such as `-1` reads as an option to `parseArgs`, which refuses it as ambiguous. No option
+  // name starts with a digit, so a dash and a digit after a string option is that option's value.
+  // `origin` keeps each word's raw index for `positionalIndices`.
+  const args: string[] = [];
+  const origin: number[] = [];
+  for (let i = 0; i < argv.length; i++) {
+    const word = argv[i]!;
+    if (word === "--") {
+      for (let j = i; j < argv.length; j++) { args.push(argv[j]!); origin.push(j); }
+      break;
+    }
+    const long = /^--([^=]+)$/.exec(word)?.[1];
+    const short = /^-([^-])$/.exec(word)?.[1];
+    const name = long ?? (short === undefined ? undefined : Object.keys(options).find((key) => options[key]!.short === short));
+    const next = argv[i + 1];
+    if (name !== undefined && options[name]?.type === "string" && next !== undefined && /^-\d/.test(next)) {
+      args.push(long !== undefined ? `${word}=${next}` : `${word}${next}`);
+      origin.push(i++);
+      continue;
+    }
+    args.push(word);
+    origin.push(i);
+  }
   const { values, positionals, tokens } = parseArgs({
-    args: [...argv],
+    args,
     options,
     allowPositionals: cmd.positionals !== undefined,
     strict: true,
@@ -188,7 +225,7 @@ export function parseCommandArgs(cmd: Command, argv: string[]): ParsedArgs {
     }
     seen.add(t.name);
   }
-  return { values: values as ParsedArgs["values"], positionals, raw: argv, positionalIndices: tokens.filter((token) => token.kind === "positional").map((token) => token.index) };
+  return { values: values as ParsedArgs["values"], positionals, raw: argv, positionalIndices: tokens.filter((token) => token.kind === "positional").map((token) => origin[token.index]!) };
 }
 
 /** The command `word` names on a surface, by exact name or alias. A prefix never matches. */

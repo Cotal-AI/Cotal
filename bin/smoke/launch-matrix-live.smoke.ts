@@ -131,10 +131,14 @@ try {
   const up = cotal(["up", "--detach", "--space", SPACE, "--server", SERVER]);
   check("up --detach starts the authenticated stack", up.status === 0, out(up));
   if (process.platform !== "win32") {
-    const manager = managerRecordState(undefined, undefined, SPACE, root).command ?? "";
-    check("up starts the manager as the hidden `__daemon-manager --space <s> --server <url>`", manager.includes(` __daemon-manager --space ${SPACE} --server ${SERVER}`), manager);
-    const delivery = readProcessRecord(canonicalLocalProcessPath(DELIVERY_PIDFILE, { root, space: SPACE }), () => true).command ?? "";
-    check("up starts the delivery daemon as the hidden `__daemon-deliver --space <s> --server <url>`", delivery.includes(` __daemon-deliver --space ${SPACE} --server ${SERVER}`), delivery);
+    // Only an alive record can prove the expected daemon; other states fail these cells.
+    // Match command text privately and report only the state if the match fails.
+    const managerRecord = managerRecordState(SPACE, root);
+    const manager = managerRecord.state === "alive" ? managerRecord.command ?? "" : "";
+    check("up starts the manager as the hidden `__daemon-manager --space <s> --server <url>`", manager.includes(` __daemon-manager --space ${SPACE} --server ${SERVER}`), { state: managerRecord.state });
+    const deliveryRecord = readProcessRecord(canonicalLocalProcessPath(DELIVERY_PIDFILE, { root, space: SPACE }), () => true);
+    const delivery = deliveryRecord.state === "alive" ? deliveryRecord.command ?? "" : "";
+    check("up starts the delivery daemon as the hidden `__daemon-deliver --space <s> --server <url>`", delivery.includes(` __daemon-deliver --space ${SPACE} --server ${SERVER}`), { state: deliveryRecord.state });
     // The twins are the deprecated entries without the warning, so up's own daemon logs never carry it.
     const logs = [MANAGER_LOGFILE, DELIVERY_LOGFILE].map((file) => readFileSync(canonicalLocalProcessPath(file, { root, space: SPACE }), "utf8"));
     check("up's own daemons print no deprecation warning", logs.every((log) => !log.includes("is deprecated and will be removed")), logs.map((log) => log.slice(-600)));
@@ -181,7 +185,7 @@ try {
       process.chdir(cwd);
     }
     check("the stack's own manager stops before the unit's command line runs",
-      stopped === true && managerRecordState(undefined, undefined, SPACE, root).state !== "alive", stopped);
+      stopped === true && managerRecordState(SPACE, root).state !== "alive", stopped);
     const mesh = findMesh(SPACE);
     if (!mesh) throw new Error(`no mesh named "${SPACE}" is registered for the unit's snapshot`);
     // The installer's `[...selfArgv(), "supervise"]`, from a CLI started the way cotal() starts one.
@@ -246,7 +250,7 @@ try {
   writeFileSync(persona, "---\nname: delegated\n---\nA delegated seat.\n");
   const handoff = join(root, "handoff.json");
   const delegated = delegatedSeatCommand(
-    { agent: "claude", persona: "", role: "worker", model: "m", launchOptions: { effort: "high" }, events: false },
+    { agent: "claude", persona: "", managerInstanceId: "m".repeat(26), role: "worker", model: "m", launchOptions: { effort: "high" }, events: false },
     { space: SPACE, owner: "u_aaaaaaaaaaaaaaaaaaaaaa", actor: "delegated", lifecycleUid: "l".repeat(26) },
     { handoff, persona },
   );
@@ -258,6 +262,18 @@ try {
   const withHandoff = cotal([...delegated.args], { extraEnv: delegated.env });
   check("with its handoff env the delegated command takes the file and passes the expect-flag gate",
     withHandoff.status !== 0 && !existsSync(handoff) && !out(withHandoff).includes(gate) && !/usage/i.test(out(withHandoff)), out(withHandoff));
+  const missing = join(root, "missing-handoff.json");
+  const noFile = cotal([...delegated.args, "--json"], { extraEnv: { [MANAGED_HANDOFF_FILE_ENV]: missing } });
+  let refusal: { code?: string; message?: string; remedy?: string } | undefined;
+  try { refusal = (JSON.parse(noFile.stdout) as { error?: typeof refusal }).error; } catch {}
+  check("a missing handoff file refuses the delegated command USAGE_INVALID, naming the variable and the path, with unset as Next",
+    noFile.status === 1 && refusal?.code === "USAGE_INVALID" && refusal.message === `the managed handoff file does not exist: ${MANAGED_HANDOFF_FILE_ENV} names ${missing}` && refusal.remedy === `unset ${MANAGED_HANDOFF_FILE_ENV}`, out(noFile));
+  // Only the spawn a managed launch runs owns the file; a variable left in a shell reaches other commands.
+  writeFileSync(handoff, "{}", { mode: 0o600 });
+  const others = [["version"], ["--help"], ["status", "--json"]].map((args) => ({ args, run: cotal(args, { extraEnv: delegated.env }) }));
+  check("every other command leaves the handoff file and does not mention it",
+    existsSync(handoff) && others.every(({ args, run }) => (args[0] === "status" || run.status === 0) && !/handoff/i.test(out(run))), others.map(({ args, run }) => ({ args, status: run.status, out: out(run).slice(0, 300) })));
+  rmSync(handoff, { force: true });
 
   // ---- The bearer command a running seat execs -------------------------------------------------------
   const entry = resolveAuthProvider().agentBearerCommand;
@@ -287,7 +303,8 @@ try {
     const stubFile = join(xdg, "cotal", `completion.${shell}`);
     check(`completion install ${shell} writes a stub that calls \`cotal __complete\``,
       install.status === 0 && existsSync(stubFile) && readFileSync(stubFile, "utf8").includes("$(cotal __complete "), out(install));
-    check(`the ${shell} rc file sources the stub`, readFileSync(join(home, shell === "zsh" ? ".zshrc" : ".bashrc"), "utf8").includes(`source "${stubFile}"`));
+    const rc = readFileSync(join(home, shell === "zsh" ? ".zshrc" : ".bashrc"), "utf8");
+    check(`the ${shell} rc file sources the stub`, rc.includes(`# >>> cotal completion >>>\nsource '${stubFile}'\n# <<< cotal completion <<<\n`), rc);
   }
   const fish = cotal(["completion", "install", "fish"]);
   const fishFile = join(xdg, "fish", "completions", "cotal.fish");

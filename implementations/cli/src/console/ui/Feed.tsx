@@ -81,6 +81,16 @@ function HeadRow({ entry, selected }: { entry: FeedEntry; selected: boolean }) {
   );
 }
 
+/** The feed's viewport and selection. The App holds them, so a Feed that a detail or another
+ *  full-screen view unmounted comes back where it was. */
+export function useFeedView() {
+  const [top, setTop] = useState(0);
+  const [sel, setSel] = useState(0);
+  // The bottom `top` last followed, and the channel and query `sel` was last placed for.
+  const placed = useRef<{ maxTop: number; channel?: string; q?: string }>({ maxTop: 0 });
+  return { top, setTop, sel, setSel, placed };
+}
+
 /**
  * The live message feed — main panel. Coalesced + windowed entries from useMesh, filtered to the
  * active channel (`all` = firehose incl. unicast/anycast) and the `/` query. Ink has no scroll view,
@@ -88,6 +98,7 @@ function HeadRow({ entry, selected }: { entry: FeedEntry; selected: boolean }) {
  * selected message — moved by the `{ } / K J` jumps — is highlighted, and `Enter` opens its detail.
  */
 export function Feed({
+  view,
   entries,
   activeChannel,
   query,
@@ -99,6 +110,7 @@ export function Feed({
   onCompose,
   onReply,
 }: {
+  view: ReturnType<typeof useFeedView>;
   entries: FeedEntry[];
   activeChannel: string;
   query: string;
@@ -128,16 +140,18 @@ export function Feed({
   // scrolling is instant at any position. `sel` is the selected ENTRY (for the highlight + Enter/reply),
   // moved only by the `{ } / K J` message jumps and clamped to whatever is on screen.
   const maxTop = Math.max(0, rows.length - room);
-  const [top, setTop] = useState(0);
-  const [sel, setSel] = useState(0);
-  const prevMaxTop = useRef(0);
+  const { top, setTop, sel, setSel, placed } = view;
   // Tail-follow: if parked at the bottom, ride new rows down; else stay anchored to what you're reading.
+  // The old bottom is read here, since React may run the updater after it has been replaced.
   useEffect(() => {
-    setTop((t) => (t >= prevMaxTop.current ? maxTop : Math.min(t, maxTop)));
-    prevMaxTop.current = maxTop;
+    const followed = placed.current.maxTop;
+    setTop((t) => (t >= followed ? maxTop : Math.min(t, maxTop)));
+    placed.current.maxTop = maxTop;
   }, [maxTop]);
-  // Jump to the newest when the channel filter or query changes.
+  // Jump to the newest when the channel filter or query changes, not when the Feed mounts again.
   useEffect(() => {
+    if (placed.current.channel === activeChannel && placed.current.q === q) return;
+    placed.current = { ...placed.current, channel: activeChannel, q };
     setTop(maxTop);
     setSel(Math.max(0, starts.length - 1));
     // eslint-disable-next-line react-hooks/exhaustive-deps

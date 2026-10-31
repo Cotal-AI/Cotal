@@ -3,6 +3,9 @@ import { dirname, join } from "node:path";
 import { writePrivateRecord } from "@cotal-ai/core";
 import { personaDir } from "@cotal-ai/workspace";
 
+/** The name the seeded default persona's agents launch under, as its template declares. */
+export const DEFAULT_AGENT_NAME = "default_agent";
+
 /** The default persona `cotal spawn` (no name) launches: a generic mesh agent, seeded once and
  *  then the user's to shape. Unlike the demo team it is not generally refreshed; only the
  *  byte-exact legacy template below is migrated, so any edit stands. Deleting it means the next
@@ -62,7 +65,7 @@ export function reconcileDefaultAgent(path: string): "seeded" | "migrated" | "un
     writePrivateRecord(path, replacement);
     return "migrated";
   }
-  mkdirSync(dirname(path), { recursive: true });
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   writePrivateRecord(path, DEFAULT_AGENT);
   return "seeded";
 }

@@ -7,6 +7,7 @@
  * Run: pnpm smoke:present
  */
 process.env.FORCE_COLOR = "1"; // the rich style must have color to withhold; read per call
+process.env.LC_ALL = "C.UTF-8"; // the rich style draws marks under a UTF-8 locale; read per call
 
 const {
   displayWidth,
@@ -15,10 +16,21 @@ const {
   isCommandFailure,
   presentationOf,
   renderReport,
+  codeSpan,
+  commandFailureReport,
+  CommandFailure,
+  heldSpaceNote,
+  MeshTargetError,
+  stackJournalPath,
+  stoppedStack,
+  workspaceErrorParts,
   wrapWords,
   writeResult,
 } = await import("@cotal-ai/workspace");
 import type { Report } from "@cotal-ai/workspace";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 
 let failed = 0;
 function check(name: string, cond: boolean, extra?: unknown): void {
@@ -81,6 +93,14 @@ check("plain has no ANSI even when color is forced", !ansi.test(plain), plain);
 check("rich colors when color is on", ansi.test(rich), rich);
 check("plain draws no marks", !plain.includes("●") && !plain.includes("⨯"), plain);
 check("rich draws the marks", rich.includes("●") && rich.includes("⨯"), rich);
+process.env.LC_ALL = "C";
+const asciiRich = renderReport(report, "rich");
+const saved = { LC_ALL: "C.UTF-8", LC_CTYPE: process.env.LC_CTYPE, LANG: process.env.LANG };
+for (const key of ["LC_ALL", "LC_CTYPE", "LANG"]) delete process.env[key];
+const unsetRich = renderReport(report, "rich");
+for (const [key, value] of Object.entries(saved)) if (value !== undefined) process.env[key] = value;
+check("under a locale that is not UTF-8, rich keeps its color and is otherwise plain", ansi.test(asciiRich) && asciiRich.replace(/\x1b\[[0-9;]*m/g, "") === plain, asciiRich);
+check("with no locale variable set, rich draws the marks", unsetRich === rich, unsetRich);
 for (const word of ["working", "failed", "NAME", "space:", "alpha", "yes", "run cotal ps"])
   check(`plain keeps the word ${word}`, plain.includes(word), plain);
 check("untrusted cell content is escaped in plain", plain.includes("\\u001b[2Jspoof") && !plain.includes("\x1b[2J"), plain);
@@ -130,7 +150,90 @@ check("below 20 columns nothing is wrapped", wrapWords("a b c d e f g h i j k l 
 // Broken at its spaces, "[--server" would still fit on the first line and leave "<url>]" alone.
 const kept = wrapWords(["[--a <x>]", "[--server <url>]"], 20);
 check("given words are kept whole", JSON.stringify(kept) === JSON.stringify(["[--a <x>]", "[--server <url>]"]), kept);
+// A command in backticks wraps as one word, so a copied line never holds part of one. With a long
+// space name, "cotal reset store" used to end one line and the name start the next.
+const longName = `b541_${"x".repeat(56)}_la`;
+const named = wrapWords(`remove its stored streams with \`cotal reset store ${longName} --yes\`, or remove only the local record with \`cotal space forget ${longName}\``, 78);
+check("a command a line names in backticks wraps as one word, to its closing backtick",
+  JSON.stringify(named) === JSON.stringify(["remove its stored streams with", `\`cotal reset store ${longName} --yes\`,`, "or remove only the local record with", `\`cotal space forget ${longName}\``]), named);
+// An argument is whatever word it is: a persona named "with", or a quoted path with "from" in it.
+const proseName = wrapWords("change it with `cotal persona edit with`, or remove it with `cotal persona remove with` first", 78);
+check("a command whose argument is a word of prose stays whole",
+  JSON.stringify(proseName) === JSON.stringify(["change it with `cotal persona edit with`, or remove it with", "`cotal persona remove with` first"]), proseName);
+const spacedPath = wrapWords("add them to the running stack with `cotal team deploy '/srv/proj/data from s3/team.yaml'`, or stop it", 56);
+check("a quoted path inside a command is never split",
+  JSON.stringify(spacedPath) === JSON.stringify(["add them to the running stack with", "`cotal team deploy '/srv/proj/data from s3/team.yaml'`,", "or stop it"]), spacedPath);
+// A step that changes folder first starts with `cd`; it is one word to its closing backtick too. It
+// used to break inside "cotal manager start" at 80 columns.
+const cdStep = wrapWords("start the manager from /tmp/rig-0123456789/proj/rt, the folder that hosts space \"rt\": `cd /tmp/rig-0123456789/proj/rt && cotal manager start`", 78);
+check("a command that starts with cd wraps as one word, to its closing backtick",
+  JSON.stringify(cdStep) === JSON.stringify(["start the manager from /tmp/rig-0123456789/proj/rt, the folder that hosts", "space \"rt\": `cd /tmp/rig-0123456789/proj/rt && cotal manager start`"]), cdStep);
+// A path can hold a backtick. Such a command goes between double backticks, as Markdown writes it, and
+// wraps whole to the matching pair. The path's own backtick used to close it and split the path.
+check("a command names itself between backticks, or between a longer run when it holds one",
+  codeSpan("cotal up") === "`cotal up`" && codeSpan("cotal team deploy '/srv/tick`q/team.yaml'") === "``cotal team deploy '/srv/tick`q/team.yaml'``");
+const tickedPath = wrapWords(`add them to the running stack with ${codeSpan(`cotal team deploy '/srv/tick\`q "dq" $(x)/team.yaml'`)}, or stop it`, 56);
+check("a command between double backticks wraps whole past a backtick in its quoted path",
+  JSON.stringify(tickedPath) === JSON.stringify(["add them to the running stack with", "``cotal team deploy '/srv/tick`q \"dq\" $(x)/team.yaml'``,", "or stop it"]), tickedPath);
+const bare = wrapWords("run cotal down --yes then cotal up", 24);
+check("a command outside backticks wraps at its spaces", JSON.stringify(bare) === JSON.stringify(["run cotal down --yes", "then cotal up"]), bare);
+const ticked = wrapWords("the restore left it stopped; start it with `cotal up --space restored-space` in its folder", 30);
+check("a command in backticks wraps as one word", JSON.stringify(ticked) === JSON.stringify(["the restore left it stopped;", "start it with", "`cotal up --space restored-space`", "in its folder"]), ticked);
+// A span in backticks is one word whatever it starts with, at the start of a line too, and one wider
+// than the line keeps a line of its own. This quote wrapped at its spaces.
+const quoted = wrapWords("it refuses with `this would migrate the machine-wide store` and stops", 30);
+const leading = wrapWords("`systemctl --user show-environment` answers in a logged-in session", 30);
+check("a span in backticks that is no command wraps as one word, at the start of a line too",
+  JSON.stringify(quoted) === JSON.stringify(["it refuses with", "`this would migrate the machine-wide store`", "and stops"]) && JSON.stringify(leading) === JSON.stringify(["`systemctl --user show-environment`", "answers in a logged-in session"]), { quoted, leading });
+const usage = wrapWords("cotal up [--foreground|--detach] [--open] [--space <s>]", 40);
+check("a line that starts with a command, as a usage line does, wraps at its spaces", JSON.stringify(usage) === JSON.stringify(["cotal up [--foreground|--detach]", "[--open] [--space <s>]"]), usage);
+const listed = renderReport({ sections: [{ title: "Verdict", blocks: [{ kind: "commands", items: [{ command: `cotal reset store ${longName} --yes`, description: "Remove only this stopped store" }] }] }] }, "plain", 80).split("\n");
+check("a command in a command list keeps one line, however wide", listed.includes(`  cotal reset store ${longName} --yes`) && listed.includes("    Remove only this stopped store"), listed);
 const fits = (text: string, width: number) => text.split("\n").every((line) => displayWidth(line) <= width);
+// A Next and the stopped-space note name their command in backticks after other words, so at 80
+// columns it keeps one line. Named bare, these split after `cotal`, as the control shows.
+const nextLines = (remedy: string) => renderReport(commandFailureReport(new CommandFailure("refused", "TARGET_UNAVAILABLE", "nothing answered", { remedy })), "plain", 80).split("\n");
+for (const [remedy, command] of [
+  ["rerun it with a longer --timeout and the same other flags, such as `cotal invoke manager ps --timeout 10000`", "`cotal invoke manager ps --timeout 10000`"],
+  ["start the service that serves nosuch, then run the command again; `cotal service --space stoppedspace-1028` lists this space's services", "`cotal service --space stoppedspace-1028`"],
+] as const) {
+  const lines = nextLines(remedy), bareLines = nextLines(remedy.replaceAll("`", ""));
+  check(`a Next keeps ${command} on one line at 80 columns, which it splits named bare`,
+    lines.some((line) => line.includes(command)) && fits(lines.join("\n"), 80) && !bareLines.some((line) => line.includes(command.replaceAll("`", ""))), { lines, bareLines });
+}
+const heldNote = renderReport({ sections: [{ blocks: [{ kind: "lines", lines: [{ text: heldSpaceNote({ space: "stoppedspace-1028", root: "/nonexistent-cotal-root", state: "stopped" }), tone: "hint" }] }] }] }, "plain", 80).split("\n");
+check("the stopped-space note keeps `cotal up` on one line at 80 columns", heldNote.length === 2 && heldNote[1] === "`cotal up`", heldNote);
+// A command wider than the line runs past it on one line. The exec-endpoint `next:` command and the
+// remedy of its refusal broke before `--handler <file>`; a remedy that starts with a command and goes
+// on as prose still wraps at its spaces.
+const wide = "cotal service add <name> --preset exec-endpoint --contract <file> --handler <file>";
+const wideNext = renderReport({ sections: [{ title: "Services", blocks: [{ kind: "table", columns: [{ key: "name", label: "Service" }, { key: "state", label: "State" }, { key: "next", label: "Next" }], rows: [{ name: { text: "exec-endpoint", tone: "command" }, state: "not started", next: { text: wide, tone: "command" } }] }] }] }, "plain", 80).split("\n");
+check(`an ${wide.length}-column next: command keeps one line at 80 columns`, wideNext.some((line) => line.trim() === wide) && wideNext.filter((line) => line.includes("--handler")).length === 1, wideNext);
+const wideRemedy = nextLines(wide);
+const commandRemedy = renderReport(commandFailureReport(new CommandFailure("refused", "USAGE_INVALID", "the exec-endpoint preset needs --contract, --handler", { remedy: wide, remedyIsCommand: true })), "plain", 80).split("\n");
+check(`a refusal whose remedy is one ${wide.length}-column command keeps it on one line under Next at 80 columns; the same text without remedyIsCommand wraps`,
+  commandRemedy.at(-1) === `  ${wide}` && commandRemedy.at(-2) === "Next" && !wideRemedy.some((line) => line.includes(wide)), { commandRemedy, wideRemedy });
+const prose = nextLines("cotal status shows whether this space's manager answers; a stack manager that runs but does not answer is named there with its pid");
+check("a remedy that starts with a command and goes on as prose wraps at its spaces", prose.slice(prose.indexOf("Next") + 1).length > 1 && fits(prose.join("\n"), 80), prose);
+// The daemon install refusal names `systemctl --user show-environment` in its message and its Next.
+// At 80 columns its Next split that span after `--user`.
+const systemctl = "`systemctl --user show-environment`";
+const unanswered = renderReport(commandFailureReport(new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the systemd user manager did not answer ${systemctl}; no unit directory was guessed`, { remedy: `run from a logged-in session whose XDG_RUNTIME_DIR is the user manager's runtime directory (systemd-logind sets it), where ${systemctl} answers` })), "plain", 80).split("\n");
+check(`a refusal at 80 columns keeps ${systemctl} whole in its message and in its Next`, unanswered.filter((line) => line.includes(systemctl)).length === 2 && fits(unanswered.join("\n"), 80), unanswered);
+// A stopped space's line names its last operation's command in backticks after other words, so at 80
+// columns, as `status` prints it, a 36-character space name leaves that command whole. It split after
+// `cotal`.
+const stoppedRoot = mkdtempSync(join(tmpdir(), "cotal-present-"));
+process.on("exit", () => rmSync(stoppedRoot, { recursive: true, force: true }));
+const stoppedName = `lastop-${"q".repeat(29)}`;
+mkdirSync(dirname(stackJournalPath(stoppedRoot)), { recursive: true });
+for (const { kind, phase } of [{ kind: "down", phase: "completed" }, { kind: "up", phase: "failed" }] as const) {
+  writeFileSync(stackJournalPath(stoppedRoot), JSON.stringify({ space: stoppedName, members: [{ instanceId: "member-1" }], operation: { kind, phase } }));
+  const { message } = workspaceErrorParts({ kind: "target", error: new MeshTargetError("not-started", "stopped", { space: stoppedName, root: stoppedRoot, stopped: stoppedStack(stoppedRoot, stoppedName) }) });
+  const lines = renderReport({ sections: [{ title: "Selected space", blocks: [{ kind: "lines", lines: [{ text: message, tone: "hint", mark: "○" }] }] }] }, "rich", 80).replace(/\x1b\[[0-9;]*m/g, "").split("\n");
+  check(`a stopped space with a 36-character name keeps \`cotal ${kind}\` whole in backticks at 80 columns when its last ${kind} ${phase}`,
+    stoppedName.length === 36 && message === `"${stoppedName}" is stopped; its last operation, \`cotal ${kind}\`, ${phase}` && lines.some((line) => line.includes(`\`cotal ${kind}\`, ${phase}`)) && fits(lines.join("\n"), 80), lines);
+}
 const longFields = { sections: [{ blocks: [{ kind: "fields" as const, rows: [["id", "x"], ["server", "nats://broker.example.com:4222 with a note that runs well past the line"]] as [string, string][] }] }] };
 const longField = renderReport(longFields, "plain", 60);
 check("a long field value fits the width", fits(longField, 60), longField);
@@ -140,6 +243,14 @@ check(
   "below 48 columns a label takes its own line and its value continues under it",
   stacked[2] === "server" && stacked.slice(3).every((line) => /^ {2}\S/.test(line)) && stacked.length > 4 && fits(stacked.join("\n"), 40),
   stacked,
+);
+// An identity beside a long label used to run past the line; it starts under its label instead.
+const identity = "local.UAAONG2N3PW6ELUSJILJICOMJTEZ3JQST25C7LF6YBYRAGXU3YQBGDSP";
+const wideWord = renderReport({ sections: [{ blocks: [{ kind: "fields", rows: [["observed membership", "live subscription"], ["identity", identity]] }] }] }, "plain", 80).split("\n");
+check(
+  "a value with a word too wide beside its label starts on the line under it, and a value that fits stays beside its label",
+  wideWord.includes("identity:") && wideWord.includes(`  ${identity}`) && wideWord.includes("observed membership: live subscription") && fits(wideWord.join("\n"), 80),
+  wideWord,
 );
 const longLine = renderReport({ sections: [{ blocks: [{ kind: "lines", lines: [{ text: "working on a task with a description long enough to wrap", tone: "ok", mark: "●" }, { text: "    a note indented by four spaces, long enough to wrap", tone: "hint" }] }] }] }, "rich", 30).replace(/\x1b\[[0-9;]*m/g, "");
 check("a long line fits the width", fits(longLine, 30), longLine);

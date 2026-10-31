@@ -15,7 +15,7 @@ import {
   resolveEventsStateRoot,
   eventPlaneStopped,
 } from "@cotal-ai/connector-core";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, ProjectTrustEventResult } from "@earendil-works/pi-coding-agent";
 import { PiDriver, type CotalBatchDetails, type PiContextLike } from "./driver.js";
 import { registerCotalTools } from "./tools.js";
 import { wrapped } from "./wrap.js";
@@ -82,6 +82,42 @@ export function persistSessionId(sessionId: string, status: "running" | "quit" =
   writeSecretFileAtomic(path, `${JSON.stringify({ version: 1, sessionId, status })}\n`);
 }
 
+export function persistProjectTrustPrompt(cwd: string): void {
+  const path = sessionStatePath();
+  if (!path) return;
+  mkSecretDir(dirname(path));
+  writeSecretFileAtomic(path, `${JSON.stringify({
+    version: 2,
+    connector: "pi",
+    status: "prompt",
+    prompt: "Trust project folder?",
+    cwd,
+  })}\n`);
+}
+
+/** Preserve Pi's own saved decision. With none, a supervised seat chooses untrusted for this run
+ * only, because nobody is present to approve project code at its terminal. Pi's trust store is loaded
+ * here, from the Pi host running this handler: the cotal CLI imports this package to register the
+ * connector without Pi installed, so a top-level value import would fail that load. */
+export async function supervisedProjectTrust(cwd: string): Promise<ProjectTrustEventResult> {
+  const { getAgentDir, ProjectTrustStore } = await import("@earendil-works/pi-coding-agent");
+  const saved = new ProjectTrustStore(getAgentDir()).getEntry(cwd);
+  if (saved?.decision === true) return { trusted: "undecided" };
+  if (saved?.decision === false) {
+    console.error(
+      `[cotal-pi/trust] Project resources in ${cwd} were skipped because Pi's saved trust decision denies this directory. ` +
+      `Run pi once there in a foreground terminal to review or change trust.`,
+    );
+    return { trusted: "undecided" };
+  }
+  persistProjectTrustPrompt(cwd);
+  console.error(
+    `[cotal-pi/trust] Project resources in ${cwd} were skipped because this supervised seat has no saved Pi trust decision. ` +
+    `Run pi once in that directory in a foreground terminal to review and save trust.`,
+  );
+  return { trusted: "no" };
+}
+
 function cleanPersonaFile(runtime: PiRuntime): void {
   if (runtime.personaCleaned) return;
   runtime.personaCleaned = true;
@@ -144,8 +180,10 @@ export default async function cotalMesh(pi: ExtensionAPI): Promise<void> {
   const startupSessionId = process.env.PI_SESSION_ID?.trim() || undefined;
   const expectedSessionId = process.env.COTAL_PI_EXPECTED_SESSION?.trim() || undefined;
   const freshManagedSession = process.env.COTAL_PI_FRESH_SESSION === "1";
+  const supervisedCwd = process.env.COTAL_PI_SUPERVISED_CWD?.trim() || undefined;
   delete process.env.COTAL_PI_FRESH_SESSION;
   delete process.env.COTAL_PI_EXPECTED_SESSION;
+  delete process.env.COTAL_PI_SUPERVISED_CWD;
   // The socket path rides the env; the first-frame token rides the launch material, so a shell this
   // seat runs cannot pick a control-plane bearer out of its own environment. Read BEFORE the scrub
   // below, and read on every load rather than inside createRuntime: a second load reuses the cached
@@ -178,6 +216,10 @@ export default async function cotalMesh(pi: ExtensionAPI): Promise<void> {
   runtime.driver.bind(pi);
   registerCotalTools(pi, runtime.mesh, runtime.config);
   pi.registerMessageRenderer<CotalBatchDetails>(CUSTOM_TYPE, (message) => wrapped(messageText(message.content)));
+
+  if (supervisedCwd) {
+    pi.on("project_trust", (event) => supervisedProjectTrust(event.cwd));
+  }
 
   pi.on("session_start", async (_event, context) => {
     cleanPersonaFile(runtime);

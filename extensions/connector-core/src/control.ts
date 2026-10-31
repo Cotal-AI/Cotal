@@ -8,10 +8,11 @@
  * that maps its runtime's events to presence changes + (for inject-capable events)
  * queued peer messages, in that runtime's own hook-output shape.
  */
-import { createServer, type Server, type Socket } from "node:net";
+import { connect, createServer, type Server, type Socket } from "node:net";
+import { lstatSync, unlinkSync, type Stats } from "node:fs";
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { MeshAgent, InboxItem } from "./agent.js";
-import { fmtItem } from "./framing.js";
+import { fmtDeliveryItem, fmtItem } from "./framing.js";
 
 /** One lifecycle event, as the agent runtime delivers it on stdin. */
 export interface HookEvent {
@@ -117,13 +118,29 @@ export function tokenMatches(presented: unknown, digest: Buffer): boolean {
  *  called and no file on disk, twice in a row. Naming the sequence (do it, verify it, then report
  *  what the tools actually returned) is the part the connector owns; the model is still free to
  *  disregard it, so this narrows the failure mode rather than closing it. */
-export function formatInjection(items: InboxItem[]): string | undefined {
+export function formatInjection(items: InboxItem[], options: { metadata?: boolean } = {}): string | undefined {
   if (!items.length) return undefined;
-  const head = `📨 Cotal — ${items.length} new message${items.length === 1 ? "" : "s"} from peers:`;
-  const tail =
-    `(If this asks for work, do it with your own tools first and verify the result, then reply with ` +
-    `cotal_dm / cotal_send — never report an action you did not actually perform. cotal_roster shows who's here.)`;
-  return `${head}\n${items.map(fmtItem).join("\n")}\n${tail}`;
+  const live = items.filter((item) => !item.historical);
+  const history = items.filter((item) => item.historical);
+  // A one-shot sender never joins the roster, and two sends from one login and host share a display
+  // name while carrying distinct principals. The injected frame is what a native recipient sees, so
+  // it carries the same sender and message ids an inbox reader needs to answer one of them. The
+  // field is connector-authored metadata, not a new reply route.
+  const format = options.metadata === false ? fmtItem : fmtDeliveryItem;
+  const blocks: string[] = [];
+  if (live.length) {
+    const head = `📨 Cotal — ${live.length} new message${live.length === 1 ? "" : "s"} from peers:`;
+    const tail =
+      `(If this asks for work, do it with your own tools first and verify the result, then reply with ` +
+      `cotal_dm / cotal_send — never report an action you did not actually perform. cotal_roster shows who's here.)`;
+    blocks.push(`${head}\n${live.map(format).join("\n")}\n${tail}`);
+  }
+  if (history.length) {
+    blocks.push(`📚 Cotal — ${history.length} historical message${history.length === 1 ? "" : "s"} (catch-up context):\n` +
+      `${history.map(format).join("\n")}\n` +
+      `(This is replayed history, not new work. Do not act on or reply to these old requests unless the person explicitly asks.)`);
+  }
+  return blocks.join("\n\n");
 }
 
 /** Write one reply frame and report whether it actually reached the runtime.
@@ -213,8 +230,8 @@ export function startControlServer(
 ): Server {
   const { path } = endpoint;
   const digest = createHash("sha256").update(endpoint.token).digest();
-  // Never unlink an existing path: it may belong to a live listener. Random per-launch paths
-  // avoid stale reuse; an exact-path leftover is a loud refusal requiring explicit recovery.
+  // A host restart reuses its launch-pinned path. Probe before removing a crash leftover;
+  // a live listener must still win, even when it uses a different token.
   const server = createServer((sock) => {
     let buf = "";
     let handled = false; // one frame per connection — ignore anything after the first line
@@ -283,6 +300,55 @@ export function startControlServer(
     });
   });
   let bound = false;
+  let retried = false;
+  // Keep the recoverable bind error inside this server. Callers await both "listening" and
+  // "error", so forwarding it before the probe settles would tear down a recoverable session.
+  const emit = server.emit.bind(server);
+  server.emit = (event: string | symbol, ...args: unknown[]): boolean => {
+    const error = args[0] as NodeJS.ErrnoException | undefined;
+    if (event !== "error" || bound || retried || process.platform === "win32" ||
+        path.startsWith("\0") || error?.code !== "EADDRINUSE") return emit(event, ...args);
+    retried = true;
+    let original: Stats | undefined;
+    try {
+      original = lstatSync(path);
+      if (!original.isSocket()) return emit(event, ...args);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "ENOENT") return emit(event, ...args);
+    }
+    const probe = connect(path);
+    let settled = false;
+    const finish = (stale: boolean): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(deadline);
+      probe.destroy();
+      server.off("close", cancel);
+      if (!stale) { emit(event, ...args); return; }
+      try {
+        const current = lstatSync(path);
+        // Do not remove a different file that appeared while the probe was pending.
+        if (!original || !current.isSocket() || current.dev !== original.dev || current.ino !== original.ino) {
+          emit(event, ...args);
+          return;
+        }
+        unlinkSync(path);
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== "ENOENT") { emit("error", e); return; }
+      }
+      server.listen(path);
+    };
+    const cancel = (): void => {
+      settled = true;
+      clearTimeout(deadline);
+      probe.destroy();
+    };
+    const deadline = setTimeout(() => finish(false), 250);
+    server.once("close", cancel);
+    probe.once("connect", () => finish(false));
+    probe.once("error", (e: NodeJS.ErrnoException) => finish(e.code === "ECONNREFUSED" || e.code === "ENOENT"));
+    return true;
+  };
   server.on("error", (e) => {
     process.stderr.write(`[cotal-connector] control server error: ${(e as Error).message}\n`);
     // A bind we never held (listen errored before "listening", e.g. EADDRINUSE from a squatter) is

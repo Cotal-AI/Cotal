@@ -28,7 +28,7 @@ import { authDir, loadManagerInstanceIdentity, recordMesh, saveSpaceAuth, worksp
 import { Manager } from "../src/manager.js";
 import { MANAGER_ENDPOINT } from "../src/manager-service-contract.js";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal, killAndAwaitExit } from "@cotal-ai/smoke-kit";
 
 for (const k of Object.keys(process.env)) if (k === "COTAL_HOME" || k.startsWith("COTAL_")) delete process.env[k];
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -203,8 +203,7 @@ try {
 } finally {
   await mgr?.stop({ withAgents: true }).catch(() => {});
   await daemon?.stop().catch(() => {});
-  srv.kill("SIGTERM");
-  await wait(200);
+  await killAndAwaitExit(srv);
   rmSync(dir, { recursive: true, force: true });
   releaseBroker();
   delete process.env.COTAL_HOME;

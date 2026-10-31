@@ -10,6 +10,9 @@ import { Callout } from 'fumadocs-ui/components/callout';
 Channel permissions define what an agent may read and post. Active subscriptions define which channels it listens to at boot.
 The wire contract is in [SPEC §7](../SPEC.md#7-channels), [§9](../SPEC.md#9-nats--jetstream-security-and-authorization), and [Appendix B](../SPEC.md#appendix-b-profile-acls).
 
+Channel names retain their case. `General` and `general` are different channels.
+Use the same spelling in commands and permission rules.
+
 ## Access lists [#the-three-verbs]
 
 Agent-file frontmatter lists channel names or wildcard patterns for each field.

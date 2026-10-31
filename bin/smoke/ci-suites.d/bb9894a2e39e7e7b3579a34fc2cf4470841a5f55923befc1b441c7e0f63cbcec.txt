@@ -1,0 +1,3 @@
+# The shared multi-space host: per-space settings, servable startup, and an acknowledgment that is
+# never written while a removed lane's close has not resolved.
+smoke:space-host

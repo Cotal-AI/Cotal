@@ -1,7 +1,7 @@
 // See docs/mesh-view.mdx.
 
 import { EventEmitter } from "node:events";
-import type { CotalEndpoint, CotalMessage, EndpointRef, MembershipSnapshot, Presence, PresenceStatus } from "@cotal-ai/core";
+import type { CotalEndpoint, CotalMessage, EndpointRef, MembershipChange, MembershipSnapshot, Presence, PresenceStatus } from "@cotal-ai/core";
 import { deliveryOf, chatWildcard, isEventChannel, partsToText } from "@cotal-ai/core";
 
 // ---- the model the surfaces render -----------------------------------------
@@ -206,6 +206,13 @@ export class MeshView extends EventEmitter {
     this.error = e.message;
     this.dirty = true;
   };
+  /** A rebuilt connection clears the fault that dropped the old one, so the view reports itself
+   *  connected again instead of keeping that error for good. */
+  private readonly onConnection = (s: { connected: boolean }) => {
+    this.connected = s.connected;
+    if (s.connected) this.error = undefined;
+    this.dirty = true;
+  };
   private readonly onWarning = (e: Error) => {
     this.warning = e.message;
     this.dirty = true;
@@ -227,6 +234,7 @@ export class MeshView extends EventEmitter {
     // The error listener MUST be attached before start() — async faults surface as events.
     this.ep.on("error", this.onError);
     this.ep.on("warning", this.onWarning);
+    this.ep.on("connection", this.onConnection);
     this.ep.on("roster", this.onRoster);
     this.ep.on("presence", this.onPresence);
     await this.ep.start();
@@ -253,11 +261,15 @@ export class MeshView extends EventEmitter {
     this.pending.clear();
     this.ep.off("error", this.onError);
     this.ep.off("warning", this.onWarning);
+    this.ep.off("connection", this.onConnection);
     this.ep.off("roster", this.onRoster);
     this.ep.off("presence", this.onPresence);
     clearTimeout(this.membershipTimer);
-    await this.membershipWatch?.stop().catch(() => undefined);
+    // The endpoint's stop deletes the watch's consumer over a live connection, and it is what settles
+    // the watch's own stop once the connection is closed for good, so it must not wait behind it.
+    const membership = this.membershipWatch?.stop().catch(() => undefined);
     await this.ep.stop();
+    await membership;
   }
 
   /** Read the broker-authoritative membership feed and follow it. A membership fault is never
@@ -267,7 +279,7 @@ export class MeshView extends EventEmitter {
     await this.loadMembership();
     try {
       this.membershipWatch = await this.ep.watchMembership(
-        () => this.scheduleMembership(),
+        (change) => this.onMembershipChange(change),
         (e) => { this.membership = { ...this.membership, unreadable: `watch: ${e.message}` }; this.dirty = true; },
       );
     } catch (e) {
@@ -276,6 +288,19 @@ export class MeshView extends EventEmitter {
       if (!feedAbsent(e)) this.membership = { ...this.membership, unreadable: `watch: ${(e as Error).message}` };
       this.dirty = true;
     }
+  }
+
+  /** A heartbeat moves only `asOf`, so it is copied into the last snapshot instead of costing a
+   *  bucket re-read (#4904); a member change is read back in full, and a heartbeat that arrives
+   *  while the last read failed is the retry. */
+  private onMembershipChange(change: MembershipChange): void {
+    if (change.type === "replayed") return;
+    if (change.type === "heartbeat" && change.update && this.membership.snapshot && this.membership.unreadable === undefined) {
+      this.membership = { snapshot: { ...this.membership.snapshot, asOf: change.asOf } };
+      this.dirty = true;
+      return;
+    }
+    this.scheduleMembership();
   }
 
   private scheduleMembership(): void {

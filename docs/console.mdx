@@ -1,7 +1,7 @@
 ---
 title: "Use the console"
 description: "Inspect a mesh from the terminal and use authorized operator controls."
-kind: "Informative"
+kind: Guide
 audience: "operators"
 ---
 
@@ -29,6 +29,7 @@ On an open mesh, omit `--space` to open the admin overview.
 It lists spaces found through the server's `CHAT_*` streams and presence buckets, with agent, channel, and message counts.
 Select a space to open its console. Press `b` to return to the overview.
 Use `--space X` to skip the picker. An authenticated connection opens its selected space directly.
+This scopes the view; one broker can host several accounts and spaces.
 
 <Callout type="warn" title="The console includes operator controls">
 
@@ -53,9 +54,13 @@ The console has a roster, live feed, channel tabs, signal tiles, and optional vi
 | `d` | Open direct-message summaries and threads. Chat-only credentials show `DMs hidden`. |
 | `t`, then `v` or `1`–`3` | Open topology as a swimlane, heat matrix, or ring map. |
 | `/` | Search or filter the feed. |
-| `:` | Open the command palette. |
+| `Ctrl-P` | Open the modal command palette. |
 | Arrows, `h`, or `l` | Move focus and select a detail card. |
 | `?`, `b`, or `q` | Open help, return to the overview, or quit. |
+
+The roster and DM list sit beside content on wide terminals and above it below 80 columns.
+Enter opens a selected agent or message detail card. A short terminal clips the bottom; enlarge the terminal or press a key to close it.
+Selections stay within the current rows when lists shrink or empty. The topology swimlane follows traffic at the final row; moving up pauses it.
 
 Topology includes broker-reported channel membership when the delivery daemon serves it.
 Its header marks that feed as `live`, `stale`, `traffic-only`, or `unreadable`.
@@ -76,24 +81,39 @@ Available controls include:
 | Action | Result |
 | --- | --- |
 | `D` on an agent | Confirm with `y` for graceful stop or `f` for force-kill. |
-| `:spawn <persona> [name]` | Launch an agent and wait for it to join, as `cotal spawn --detach` does. |
-| `:status <agent>` | Inspect that agent's manager status. |
-| `:ps` | Inspect managed agents. |
-| `:purge` | Purge the space after you type its name to confirm. |
-| `:delchan <channel>` | Delete one channel after you type its name to confirm. Wildcards are refused. |
+| `spawn <persona> [name]` | Launch an agent and wait for it to join, as `cotal spawn --detach` does. |
+| `status <agent>` | Inspect that agent's manager status. |
+| `ps` | Inspect managed agents. |
+| `purge` | Purge the space after you type its name to confirm. |
+| `delchan <channel>` | Delete one channel after you type its name to confirm. Wildcards are refused. |
 
 Channel deletion uses core's `clearChannel`, which purges matching history and removes the registry entry.
 It acquires a one-use `channel-purger` credential on a static mesh, a `channel-purger` view on a user-auth mesh, or an open connection.
 It does not call a manager.
 
-With several managers, agent stop, `:status`, and attach target the manager that hosts the seat.
-`:ps` combines their rows. A silent manager keeps its last-known rows and is named as silent.
+With several managers, agent stop, `status`, and attach target the manager that hosts the seat.
+On static-auth and open meshes, `ps` combines their rows. A silent manager keeps its last-known rows and is named as silent.
 A manager that returns an error is named, and its old rows are withheld.
-`:spawn` and `:purge` use the class queue, as their CLI commands do without `--on`.
+`:spawn` and `purge` use the class queue, as their CLI commands do without `--on`.
+
+### Launch from the palette
+
+Open Ctrl-P and choose **Spawn agent**. Search for `spawn` or `new agent` to find it.
+Choose an application, persona, model, name, and optional first request, then choose **Launch agent**.
+Empty application, model, and name fields keep native CLI defaults.
+Events are off by default in the form; a space requiring events refuses that explicit opt-out.
+The form uses `spawn --detach` and reports its joined receipt or failure. Inspect an unconfirmed outcome before launching again.
+Use the roster's attach action where supported. Esc returns to the palette.
+
+The modal palette replaces the `:` shortcut. Complete typed commands remain supported.
+`dm` and `call` list agents and endpoints; `attach` and `status` list manager seats, including those missing from presence.
+`msg` and `delchan` list channels, while `ask` lists advertised roles.
+Use arrows and Enter to choose, then enter message text. Tab completes `@agent` and `#channel` tokens.
+Empty results and manager read failures remain visible. A `read-only` or `no control path` action reports its refusal when selected.
 
 ### Attach to an agent
 
-Press `a` on a roster agent, or run `:attach <agent>`.
+Press `a` on a roster agent, or run `attach <agent>`.
 The console pauses its display and runs `cotal attach` in the same terminal.
 The observer continues in the background.
 
@@ -110,7 +130,7 @@ User authentication redeems the session through the identity plane's session-bea
 ### Receive replies to operator messages
 
 On an open mesh, your first send registers the operator in presence.
-This applies to `:dm`, `:call`, `:ask`, `:msg`, or a composed message, and requires `canWrite`.
+This applies to `dm`, `call`, `ask`, `msg`, or a composed message, and requires `canWrite`.
 A watch-only session stays invisible.
 
 The console starts a presence-only endpoint with the observer's id, name, and `operator` role.

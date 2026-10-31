@@ -1,7 +1,7 @@
 ---
 title: Authoring a connector
 description: Add support for an agent application through Cotal's connector interface and extension loader.
-kind: Informative
+kind: Guide
 audience: integrators
 ---
 
@@ -81,6 +81,9 @@ Events default to enabled when this method exists.
 A connector without an event channel requires an explicit `--no-events` or `events: false`.
 A registration that requires events refuses that opt-out.
 See the [connector interface](../packages/core/src/connector.ts) for every optional field.
+
+Implement `waitsForOperator(launchOptions)` when a launch option opens an operator screen before the session can join.
+Return its screen name. The manager then reports readiness once the process runs, so the operator can attach and answer.
 
 ## Keep launch files private [#private-launch-files]
 

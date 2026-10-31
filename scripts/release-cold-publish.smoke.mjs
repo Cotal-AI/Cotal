@@ -186,6 +186,18 @@ try {
   await check("expired publication requests reach neither preflight nor uploads", async () => {
     await assert.rejects(() => publishColdCandidate({ ...options, env: { RELEASE_REQUESTED_AT: new Date(Date.now() - 600_001).toISOString() }, preflight: assert.fail }), /ten-minute deadline/);
   });
+  await check("a delayed bounded attempt publishes while retaining the original request time", async () => {
+    const requestedAt = new Date(Date.now() - 3_600_000).toISOString();
+    const attemptStartedAt = new Date().toISOString();
+    const receiptFile = join(root, "late-publication.json");
+    await publishColdCandidate({ ...options, receiptFile, env: { RELEASE_REQUESTED_AT: requestedAt, RELEASE_ATTEMPT_STARTED_AT: attemptStartedAt } });
+    const receipt = JSON.parse(readFileSync(receiptFile, "utf8"));
+    assert.equal(receipt.complete, true);
+    assert.equal(receipt.requestedAt, requestedAt);
+    assert.equal(receipt.attemptStartedAt, attemptStartedAt);
+    assert.equal(Date.parse(receipt.deadline), Date.parse(attemptStartedAt) + 600_000);
+    calls.length = 0;
+  });
   const qualifiedDirectory = join(root, "cold-qualified"); mkdirSync(qualifiedDirectory);
   const tree = "c".repeat(40), main = "d".repeat(40), head = "e".repeat(40);
   const before = new Date(Date.now() - 2_000).toISOString();
@@ -220,6 +232,18 @@ try {
     assert.equal(result.length, 2);
     assert.deepEqual(uploaded, manifest.packages.map(({ archive }) => join(candidateDirectory, archive)));
     assert.equal(JSON.parse(readFileSync(join(candidateDirectory, "manifest.json"), "utf8")).source, source);
+  });
+  await check("qualification after the request still requires the original immutable candidate", async () => {
+    const requestedAt = new Date(Date.now() - 3_600_000).toISOString();
+    const oldRun = structuredClone(publicationRun);
+    publicationRun.created_at = new Date().toISOString();
+    publicationRun.display_title = `publication-v1 1.0.0 ${promotionEnv.RELEASE_CANDIDATE_SHA256} ${main} 123 latest ${requestedAt}`;
+    try {
+      const qualified = await verifyQualification({ ...promotionOptions, env: { ...promotionEnv, RELEASE_REQUESTED_AT: requestedAt } });
+      assert.equal(qualified.request.requestedAt, requestedAt);
+      assert.equal(qualified.candidateSha256, sha(bytes));
+      assert.equal(qualified.source, source);
+    } finally { Object.assign(publicationRun, oldRun); }
   });
   await check("an unverified build certificate prevents preflight and every publication", async () => {
     await assert.rejects(() => publishColdCandidate({ ...options, ...promotionOptions,
@@ -295,7 +319,7 @@ try {
     ["another workflow", (run) => { run.path = ".github/workflows/other.yml"; }],
     ["an unfinished qualification", (run) => { run.status = "in_progress"; }],
     ["a partial rerun", (run) => { run.run_attempt = 2; }],
-    ["qualification after publish-go", (run) => { run.updated_at = new Date(Date.now() + 60_000).toISOString(); }],
+    ["qualification completion in the future", (run) => { run.updated_at = new Date(Date.now() + 60_000).toISOString(); }],
   ]) await check(`promotion refuses ${name}`, async () => {
     const original = structuredClone(apiRun);
     try { change(apiRun); await assert.rejects(() => verifyQualification(promotionOptions)); }

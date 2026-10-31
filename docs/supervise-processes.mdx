@@ -1,7 +1,7 @@
 ---
 title: "Supervise the stack"
 description: "Choose process ownership under systemd and monitor actual component health."
-kind: "Informative"
+kind: Guide
 audience: "operators"
 ---
 
@@ -48,6 +48,8 @@ ExecStart=/usr/bin/cotal up --foreground --space main --host 0.0.0.0
 Restart=on-failure
 RestartSec=5s
 ```
+`cotal up --foreground` refuses when this folder's stack is already running, for example after a
+manual background `cotal up`. Stop that stack before the unit starts.
 
 Set the working directory and binary path for the installation.
 If the host should run only the broker and delivery daemon, add `--no-manager` to `ExecStart`.
@@ -92,6 +94,7 @@ ExecStart=/usr/bin/cotal status --components --space main
 
 Run the check from a systemd timer or another monitor and alert on a nonzero exit.
 It distinguishes `absent`, `not-serving`, and `refused` components.
+A dashboard extension that is not installed reports `not-installed` without making the check fail.
 A sibling's health does not count as proof for the target component.
 This `Type=oneshot` unit is a health check, not a detached launcher.
 
@@ -107,7 +110,8 @@ A named `cotal down <name>` also stops a saved service definition, such as `stac
 
 Legacy roots keep their existing launcher.
 They have no command that stops one legacy component without stopping the whole stack.
-Bare `cotal down` first stops any service-controller services and then the legacy stack.
+Bare `cotal down` refuses while a saved service in the space still runs.
+Stop each named service with the command in the refusal, then stop the stack.
 
 <Callout type="warn" title="Check agent lifetime before shutdown">
 

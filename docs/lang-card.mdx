@@ -26,7 +26,8 @@ Effects obey the [await rule](#the-await-rule-l2013).
 
 | Effect | Call | Returns |
 | --- | --- | --- |
-| `spawn` | `await spawn(persona, { name?, cwd?, placement?, worktree?, join?, role?, permits?, supervise?, onFork?, events? })` | `{ agent, persona, worktree?, role? }` |
+| `participant` | `await participant({ name? })` | an admitted personal native session handle |
+| `spawn` | `await spawn(persona, { name?, cwd?, placement?, worktree?, join?, role?, permits?, supervise?, onFork?, events?, runtime? })` | `{ agent, persona, worktree?, role? }` |
 | `turn` | `await turn(agent, { name, deadline? })` | `{ status: "done" \| "blocked" \| "handoff", to?, note?, at }` |
 | `ask` | `await ask(agent, { name, schema, deadline?, attempts? })` | the record the agent published |
 | `checkpoint` | `await checkpoint(name, prompt, { schema?, timeout?, onExpiry?, to? })` | a resolved or expired result, as described below |
@@ -38,6 +39,8 @@ Effects obey the [await rule](#the-await-rule-l2013).
 
 ### Call rules
 
+`participant()` binds the exact owner, actor, and lifecycle admitted for an approved personal native conversation. It cannot select another session and grants no stop, attach, or process custody.
+
 Step names are kebab-case tokens of 1 to 64 characters, matching
 `^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$`. Malformed names raise L3014.
 Required names must be string literals, or it is L3013. A missing required `name` option is
@@ -47,6 +50,8 @@ Names and branch keys cannot contain `/`, `#`, or `:`, as reported by L3025.
 
 Durations are a whole number and one unit, `ms`, `s`, `m`, `h`, or `d`.
 Examples are `"250ms"`, `"30s"`, `"10m"`, `"4h"`, and `"2d"`. Other forms do not parse.
+
+A literal with a bare number or another form refuses before start with L2034. There is no default unit.
 
 `sleep` is durable. Resume does not repeat an elapsed sleep. Malformed durations fail at the call.
 
@@ -66,6 +71,8 @@ Unsupported budget or policy keys are refused.
 
 `events: false` starts a seat without an event plane, for a connector that publishes none,
 such as Hermes. If omitted, the host's default applies.
+
+`runtime` selects this seat's terminal runtime. Omission uses the serving manager's runtime.
 
 `onFork` defaults to `"respawn"`. `"adopt"` shares the parent's seat. The current mesh host
 refuses a fork prefix containing a spawn with `"respawn"`, with L5019.
@@ -102,7 +109,7 @@ A checkpoint is a durable pause raced against a durable timer:
 | --- | --- |
 | Resolved | `{ status: "resolved", value?, by?, at, artifact? }` |
 | Expired with `onExpiry: "proceed"` | `{ status: "expired", at }` |
-| Expired with `onExpiry: "fail"`, the default | Throws L4007. |
+| Expired with `onExpiry: "fail"`, the default | Throws L4007, naming whether the deadline came from this checkpoint or the run default. |
 | Expired with `onExpiry: "escalate"` | Opens one further checkpoint addressed to `to`. If that expires too, returns `{ status: "expired", at }`. There is no third hop. |
 
 `to` is legal only with `onExpiry: "escalate"`, or it is L3044. The journal stores the raw
@@ -146,7 +153,7 @@ The scope call itself must also obey the await rule.
 
 `parallel` and `race` take a record of unevaluated thunks. Record keys survive reordering.
 Array indices shift on insertion, with warning L3023. `fanOut` calls `fn(item, index)` per
-item, keyed by `key(item)` or the item's string `id`. Missing keys are L3021. Duplicates are L3024.
+item, keyed by `key(item)` or the item's string `id`. Missing keys refuse at runtime with L3021. Validation warns with L3021 only for a list written directly in the call. A variable can change before the call, so the run decides its keys. Duplicates are L3024.
 
 ```js
 async function review(pr) {
@@ -175,7 +182,7 @@ await parallel({
 ### At-most-once dispatch
 
 `await once(fn, { name })` returns the value from `fn`. Only `ask` effects may run inside
-it. Other effects are refused with L4028 before their entries begin.
+it. Validation refuses another effect in the body or a function it calls by name with L2033. Other effects reached at runtime refuse with L4028 before their entries begin.
 
 Each accepted step dispatches at most once. If a resume finds a step pending, it opens a
 hold for a person to answer instead of dispatching the ask again. The hold's answer becomes
@@ -204,18 +211,19 @@ and journal payloads.
 
 ## Top refusals
 
-| Code | Condition | Accepted form or alternative |
-| --- | --- | --- |
-| L2013 | An effect call that nothing awaits | Await it, return it, or use a branch thunk. |
-| L2032 | A branch writes outside itself | Return the value through the scope's result. |
-| L2031 | A write to a value that crossed an effect | Create a fresh record or array first. |
-| L2012 | A host global by name | The message names a replacement, such as `json.stringify`. |
-| L2011 | `Promise` | The language's scopes express concurrency. |
-| L1025 | `==` or `!=` | `===` or `!==`. |
-| L1001 | `class` | Records and functions. |
-| L4018 | A record, array, or function where a primitive is required, or a non-number under `++` or `--` | Explicit conversion to the required kind. |
-| L3013 | A computed name where a literal is required | A string literal. |
-| L3011 | An unknown option key | The accepted signature in the refusal. |
+| Code | What it refuses | Write instead |
+|---|---|---|
+| L2013 | an effect call nothing awaits | `await` it, `return` it, or pass a thunk branch |
+| L2032 | a branch writing outside itself | return from the branch, read the scope's result |
+| L2031 | writing a value that crossed an effect | copy into a fresh record, then write |
+| L2012 | a host global by name | the replacement in the message, e.g. `json.stringify` |
+| L2011 | `Promise` | the four scopes |
+| L1025 | `==`, `!=` | `===`, `!==` |
+| L1001 | `class` | records and functions |
+| L4018 | a record, array or function where a primitive is needed; a non-number under `++`/`--` | convert explicitly |
+| L3013 | a computed step name where a literal is required | a string literal |
+| L3011 | an unknown option key | the signature in the refusal |
+| L2034 | a literal that is not a duration, such as `sleep(5000)` or `"1.5s"` | a whole number and a unit, `"5s"` |
 
 The [error catalog](../spec/cotal-lang.md#appendix-a-the-error-catalog) lists every code.
 A refusal's heading uses that code's catalog title.

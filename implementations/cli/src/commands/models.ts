@@ -1,7 +1,8 @@
 import { type CompletionResult, type ConnectorModelCatalog, type FlagSpec, type FlagValues, type ModelInfo, type ParsedArgs } from "@cotal-ai/core";
-import { jsonFlag, loadMeshes, plainFlag, presentationOf, targetFlags, writeResult, type Block, type Report, type Section } from "@cotal-ai/workspace";
+import { jsonFlag, plainFlag, presentationOf, targetFlags, writeResult, type Block, type Report, type Section } from "@cotal-ai/workspace";
 import { extensionNames } from "../ext-loader.js";
-import { askManager, onFlag, onInstance, readFailure, resolveControlTarget } from "../lib/control.js";
+import { askManager, onFlag, readFailure, refuseUnregisteredManager, refuseWithoutLiveManager, resolveControlTarget } from "../lib/control.js";
+import { managerPin } from "../lib/manager-choice.js";
 import { completingFlagValue } from "../lib/completion.js";
 
 export const modelsFlags = [
@@ -15,9 +16,7 @@ export const modelsFlags = [
 
 export function modelsComplete(argv: string[]): CompletionResult {
   const flag = completingFlagValue(argv, modelsFlags);
-  if (flag?.name === "space") return { items: loadMeshes().map((m) => ({ value: m.space })), directive: "nofiles" };
   if (flag?.name === "harness") return { items: extensionNames("connector").map((name) => ({ value: name })), directive: "nofiles" };
-  if (flag?.name === "creds") return { items: [], directive: "default" };
   return { items: [], directive: "nofiles" };
 }
 
@@ -30,25 +29,33 @@ export interface ModelsResult {
   readonly requestedManagerInstanceId: string | null;
   readonly answeringManagerInstanceId: string | null;
   readonly answeringManagerEpoch: number | null;
+  /** The live managers an unpinned operator read did not ask, from the registry it read first.
+   *  Null when no registry was read, as for a pinned or user-auth read. */
+  readonly notAskedManagerInstanceIds: readonly string[] | null;
   readonly items: readonly ConnectorModelCatalog[];
 }
 
 export async function models(args: ParsedArgs): Promise<void> {
   const v = args.values as FlagValues<typeof modelsFlags>;
   const presentation = presentationOf(v);
-  const on = onInstance(v.on, "cotal models");
+  const on = await managerPin(v, "cotal models");
   const t = await resolveControlTarget(v, "control-caller-privileged", on, { onRefusal: "throw" });
   const target = { space: t.space, harness: v.harness ?? null, requestedInstanceId: on ?? null };
+  const live = on === undefined && t.auth.bearer === undefined ? await refuseWithoutLiveManager(t.space, t.server, t.auth, target, "list its model catalogs") : undefined;
+  // A pin the registry does not list is refused at once, as spawn refuses it; only a registered manager is waited on.
+  if (on !== undefined && t.auth.bearer === undefined) await refuseUnregisteredManager(t.space, t.server, t.auth, on);
   const reply = await askManager(t.space, t.server, "models", { agent: v.harness, refresh: v.refresh === true }, t.auth, "owner", undefined, on === undefined ? {} : { instanceId: on });
   if (!reply.ok) throw readFailure(reply, { ...target, managerInstanceId: reply.managerInstanceId ?? null });
   const items = Array.isArray(reply.data) ? reply.data as ConnectorModelCatalog[] : [reply.data as ConnectorModelCatalog];
   const failed = items.filter((row) => row.error);
+  // The class queue hands an unpinned read to one manager; every other live one was not asked.
+  const notAsked = live && reply.managerInstanceId ? live.filter((id) => id !== reply.managerInstanceId) : null;
   writeResult(
     presentation,
     {
       command: "models",
       target,
-      result: { space: t.space, requestedManagerInstanceId: on ?? null, answeringManagerInstanceId: reply.managerInstanceId ?? null, answeringManagerEpoch: reply.managerEpoch ?? null, items },
+      result: { space: t.space, requestedManagerInstanceId: on ?? null, answeringManagerInstanceId: reply.managerInstanceId ?? null, answeringManagerEpoch: reply.managerEpoch ?? null, notAskedManagerInstanceIds: notAsked, items },
       completeness: failed.length ? "partial" : "complete",
       warnings: failed.map((row) => ({ code: "MODEL_CATALOG_UNREADABLE", target: { space: t.space, agent: row.agent }, message: `${row.agent}: ${row.error}` })),
       ...(failed.length
@@ -61,13 +68,20 @@ export async function models(args: ParsedArgs): Promise<void> {
 
 function modelsView(result: ModelsResult): Report {
   const instance = result.requestedManagerInstanceId ?? result.answeringManagerInstanceId;
-  const selected = result.space && instance && [result.space, instance].every((value) => /^[A-Za-z0-9_-]+$/.test(value))
+  const token = (value: string) => /^[A-Za-z0-9_-]+$/.test(value);
+  const selected = result.space && instance && [result.space, instance].every(token)
     ? ` --space ${result.space} --on ${instance}`
     : " --space <space> --on <manager-instance>";
+  const notAsked = result.notAskedManagerInstanceIds ?? [];
   return { sections: [
-    { title: "Model catalogs", blocks: [{ kind: "fields", rows: [["Space", result.space], ["Requested manager", result.requestedManagerInstanceId ?? "selected by native authority"], ["Answering manager", result.answeringManagerInstanceId ?? "not reported"], ["Manager epoch", result.answeringManagerEpoch === null ? "not reported" : String(result.answeringManagerEpoch)]] }, { kind: "lines", lines: [{ text: "The manager returned these catalogs. A listed model or variant is not proof the provider accepted a launch.", tone: "hint" }] }] },
-    ...(result.items.length ? result.items.map(catalogSection) : [{ title: "Models", blocks: [{ kind: "lines" as const, lines: ["No model catalogs were returned."] }] }]),
+    { title: "Model catalogs", blocks: [{ kind: "fields", rows: [["Space", result.space], ["Requested manager", result.requestedManagerInstanceId ?? "selected by native authority"], ["Answering manager", result.answeringManagerInstanceId ?? "not reported"], ["Manager epoch", result.answeringManagerEpoch === null ? "not reported" : String(result.answeringManagerEpoch)], ...(notAsked.length ? [["Not asked", notAsked.join(", ")] as [string, string]] : [])] }, { kind: "lines", lines: [
+      { text: "The manager returned these catalogs. A listed model or variant is not proof the provider accepted a launch.", tone: "hint" },
+      ...(notAsked.length ? [{ text: `This space has ${notAsked.length + 1} live managers, and only the answering one was asked.`, tone: "hint" } as const] : []),
+    ] }] },
+    // A manager lists a row for every application its install names, so an empty list means it has none.
+    ...(result.items.length ? result.items.map(catalogSection) : [{ title: "Models", blocks: [{ kind: "lines" as const, lines: ["No model catalogs were returned: the answering manager has no agent application installed."] }] }]),
     { title: "Next", blocks: [{ kind: "commands", items: [
+      ...(result.space && token(result.space) ? notAsked.filter(token).map((id) => ({ command: `cotal models --space ${result.space} --on ${id}`, description: "Ask a manager this read did not ask" })) : []),
       { command: `cotal models -H <application> --refresh${selected}`, description: "Refresh one application's catalog on the selected manager" },
       { command: "cotal cfg", description: "See your launch defaults" },
     ] }] },

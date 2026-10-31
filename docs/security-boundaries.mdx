@@ -16,7 +16,7 @@ Static authentication puts permissions into a signed credential. Reconnecting do
 | One-shot command credential | Expires in minutes. |
 | Standing daemon credential | Expires in 24 hours and is renewed by the manager. `cotal doctor auth` diagnoses and repairs this authority. |
 | Manager-spawned static agent | Expires in 24 hours. Renewal occurs only while the agent is live. Despawn drives lifecycle retirement, revokes ledger rows, and causes manager control operations to refuse the retired incarnation. A copied credential retains inline data-plane grants until expiry. |
-| Out-of-band `cotal auth mint` | Has no default TTL. `--expires-in` or `--expires-at` bounds it. Otherwise it remains valid until signing-key rotation. |
+| Out-of-band `cotal auth mint` | Expires after 24 hours by default. `--expires-in` or `--expires-at` sets an explicit bound. `--no-expiry` keeps it valid until signing-key rotation. |
 | User-auth managed bearer | Lasts five minutes or less. Refresh requires current authority. `cotal actor revoke` denies later exchanges and connects and evicts the principal's live connections through retirement. |
 | Copied account signing seed | Remains signing authority until the signing key is rotated, on either auth mode. |
 
@@ -24,13 +24,15 @@ Signing-key rotation is the revocation mechanism for copied trust material. A st
 
 ### System-account rotation
 
-`membership-observer` and `connection-evictor` use the system-account signer. The reference provisioning path never persists that signing seed. Their credentials expire after 30 days, and running processes cannot re-sign them from a persisted system seed.
+`membership-observer` and `connection-evictor` use the system-account signer. The trust record omits that signing seed. Own-broker CLI provisioning separately retains a host copy for caller issuance. The observer and evictor credentials expire after 30 days; retaining the key does not add a renewal loop to those running clients.
 
 Renewal issues a new system account with `cotal down` followed by `cotal up --rotate-sys`. This preserves the data account, agent credentials, and store. Earlier full backups become invalid because they bind the old operator JWT and system account. A new `cotal backup` is required after rotation.
 
 After these credentials expire, mesh delivery continues but the membership feed and live eviction stop. `cotal doctor auth` and the manager warn once 75% of the lifetime has elapsed.
 
 A host with a registered system signer can instead re-mint the observer into the delivery daemon's secret store. At 75% of its lifetime, the feed rereads the credential, proves it on a temporary connection, and adopts it only if issuer and permission scope match the starting credential. This hosted observer path does not supply in-place renewal for the stock evictor credential.
+
+An out-of-band `cotal auth mint` credential expires after 24 hours by default. `--no-expiry` keeps it valid until signing-key rotation. The CA-file paths `NODE_EXTRA_CA_CERTS` and `SSL_CERT_FILE` cross the launch boundary, while TLS verification overrides and key-log settings do not.
 
 ## Manager authority [#manager-authority]
 

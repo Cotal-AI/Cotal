@@ -1,63 +1,37 @@
 // Rendering message parts as the flat text the dashboard displays, and escaping text for its HTML.
 //
-// WHY THIS FILE EXISTS. `app.js` and `graph.js` each carried their own copy of
-//   (msg.parts || []).map((p) => (p.kind === "text" ? p.text : JSON.stringify(p.data))).join(" ")
-// and that expression DELETES any part it cannot draw. `JSON.stringify(undefined)` returns the
-// VALUE `undefined` — not the string "undefined" — and `Array.prototype.join` coerces that to the
-// empty string. So a part with no `data` field — `ag-ui.frame` among them, but NOT every extension
-// kind, since a data-bearing one rendered its JSON perfectly well — vanished: a stray separator
-// between its neighbours, or an empty string when it was the only part. In every case the KIND went
-// unnamed, so a reader could not tell which renderer was missing. Those two are what this file
-// fixes, and they are the claims to hold it to.
+// WHY THIS FILE EXISTS. A naive `(p.kind === "text" ? p.text : JSON.stringify(p.data)).join(" ")`
+// deletes any part with no `data` field (`ag-ui.frame` among them): `JSON.stringify(undefined)`
+// returns the value `undefined`, not the string `"undefined"`, and `Array.prototype.join` coerces
+// that to the empty string. A part with no `data` field therefore vanishes into a stray separator
+// between its neighbours or an empty string when it is the only part, with its kind unnamed:
+//   - `app.js` renders the body through `bodyBlock`, i.e. `MD.render(text || "")`, where an empty
+//     rendering produces a blank body.
+//   - `graph.js`'s detail row renders `esc(m.text).slice(0, 160) || "—"`, where an empty rendering
+//     becomes a dash inside a row still carrying mode, sender and channel/target.
+// Naming the unrenderable kind in the text keeps both surfaces from dropping the part silently.
 //
-// THE CONSEQUENCE DIFFERS BY SURFACE, AND AN EARLIER VERSION OF THIS COMMENT GOT IT WRONG. It said
-// both surfaces told the operator that nothing arrived. That is true of ONE of them:
-//   - `app.js` renders the body through `bodyBlock`, i.e. `MD.render(text || "")`, so an empty
-//     rendering really does produce a blank body — absence reported as calm.
-//   - `graph.js`'s detail row renders `esc(m.text).slice(0, 160) || "—"`, so an empty rendering
-//     became a VISIBLE DASH inside a row still carrying mode, sender and channel/target. The graph
-//     showed a message with an unreadable body. It never claimed nothing arrived.
-// Overstating a defect is the same class of error as understating one: it describes a property
-// nothing recomputes, and it makes the fix look like it closes more than it does.
+// ONE renderer for both pages, not two copies, for the reason core's own `partsToText` gives: two
+// copies of the expression break the same way when a new part kind appears, and each copy has to
+// be found and fixed separately. `implementations/web/tsconfig.json` sets `"exclude": ["src/web"]`,
+// so every file in this directory is plain JS that `tsc` never reads, and executable smoke cells
+// that run the shipped file are its enforcement. `index.html` and `graph.html` both load this file
+// BEFORE their page script, and `web.ts` serves it from the PAGE allow-list; a file missing from
+// that map is a 404 no matter what the HTML says.
 //
-// A literal "undefined" in a message body would have been reported the day it shipped; a blank one
-// is not, which is part of why this survived. But note the graph placeholder cuts the other way —
-// it was the more visible of the two and still went unfixed, so visibility alone was not enough.
+// PARITY WITH CORE. This mirrors the contract of core's `partsToText`: both carry the unrenderable
+// marker and a per-kind renderer seam. The two are separate implementations because this surface
+// cannot import core at all, and they are held together by `bin/smoke/agui-render-parity.smoke.ts`
+// rather than by anyone's intention. One difference is deliberate: an extension kind carrying `data`
+// renders its JSON here (see below) and goes straight to the marker in core.
 //
-// ONE renderer for both pages, not two copies, for the reason core's own `partsToText` gives: the
-// duplicated form broke identically everywhere when a new part kind appeared, because each copy had
-// to be found and fixed separately.
+// SCOPE: this makes an undrawable part say so, preserves data on extension parts, and consults a
+// per-kind renderer registry so a surface can be taught to draw a kind without this file learning
+// what the kind is. It does not itself know how to render an AG-UI frame; `agui-frame.js` does, and
+// it registers.
 //
-// AND ON THIS SURFACE NOTHING ELSE WOULD HAVE CAUGHT IT. `implementations/web/tsconfig.json` sets
-// `"exclude": ["src/web"]`, so every file in this directory is plain JS that `tsc` never reads. The
-// two copies of the broken expression were the same mistake, in the same words, in two files, and
-// **no compiler in this repo could see either one**. That is not an argument about style; it is why
-// the checks on this directory have to be executable cells that run the shipped file, because they
-// are the only enforcement this surface has. `index.html` and `graph.html` both load this file BEFORE their
-// page script, and `web.ts` serves it from the PAGE allow-list — a file missing from that map is a
-// 404 no matter what the HTML says.
-//
-// IT WAS AHEAD OF CORE, AND CORE HAS SINCE CAUGHT UP. This mirrors the contract of core's
-// `partsToText`. When this file was written, core's copy still had the vanishing
-// `JSON.stringify(p.data)` fallback and printed no marker, so the browser ran ahead on purpose;
-// core now carries the marker and a per-kind renderer seam of its own. The two remain SEPARATE
-// implementations because this surface cannot import core at all, and they are held together by
-// `bin/smoke/agui-render-parity.smoke.ts` rather than by anyone's intention. One difference is
-// deliberate and survives: an extension kind carrying `data` renders its JSON here (see below) and
-// goes straight to the marker in core.
-//
-// SCOPE: this makes an undrawable part SAY SO, preserves everything that was already visible, and
-// CONSULTS a per-kind renderer registry so a surface can be taught to draw a kind without this file
-// learning what the kind is. It does not itself know how to render an AG-UI frame; `agui-frame.js`
-// does, and it registers. An earlier version of this line read "and nothing wider", which was FALSE
-// while the extension branch discarded data: the scope sentence was wider than the code in one
-// direction and narrower in the other. It then read "does not teach either page to RENDER an AG-UI
-// frame", which went false in the other direction the moment the lookup landed, because the page
-// can now draw one via a file this one has never heard of. A scope sentence is only worth having if
-// it is re-read every time the code under it moves.
-//
-// Neither page republishes this text — `graph.js` only issues GETs and `app.js`'s single POST is
-// `/api/channel/delete`, which carries a channel name — so the marker is safe to place in the body
+// Neither page republishes this text: `graph.js` only issues GETs and `app.js`'s single POST is
+// `/api/channel/delete`, which carries a channel name, so the marker is safe to place in the body
 // itself. If either page ever gains a republish path, the marker must move beside the text rather
 // than inside it, or it will be replayed to the mesh as though an agent had typed it.
 window.COTAL_PARTS = (() => {
@@ -112,22 +86,12 @@ window.COTAL_PARTS = (() => {
 
     // No renderer for this kind. Not drawable here, and not silently droppable either.
     //
-    // BUT DATA-BEARING EXTENSIONS MUST KEEP THEIR DATA. The first version of this file sent every
-    // non-core kind straight to the marker, which THREW AWAY content the old expression had been
-    // showing: `{kind:"com.acme.snapshot", data:{x:1}}` rendered `{"x":1}` before and the marker
-    // after. That is a regression wearing a fix's clothes — it removes information while claiming
-    // to add it, and it made this file's own "scope is nothing wider" claim false.
-    //
-    // THIS IS THE DELIBERATE DIFFERENCE FROM CORE ANNOUNCED AT THE TOP OF THIS FILE, NOT AGREEMENT
-    // WITH IT. Core's `partsToText` renders a data-bearing extension kind as the marker alone and
-    // keeps nothing (driven, not read: a part `{kind:"com.acme.snapshot", data:{x:1}}` through core
-    // returns only the unrenderable marker). The difference is justified by the SURFACE, not by
-    // core: this file replaces an expression that was already showing that JSON, and core's
-    // equivalent never did, so keeping it is a regression here and would be an addition there.
-    //
-    // So: name the kind AND keep the data. That is strictly more than either did alone — the old
-    // expression showed the data but never said what it was, and the marker alone said what it was
-    // while discarding it.
+    // DATA-BEARING EXTENSIONS KEEP THEIR DATA. An unregistered extension kind carrying `data` (such
+    // as `{kind:"com.acme.snapshot", data:{x:1}}`) renders its kind and JSON rather than the
+    // unrenderable marker alone. That is the deliberate difference from core announced at the top of
+    // this file: core's `partsToText` returns only the unrenderable marker for a data-bearing
+    // extension kind, while the dashboard names the kind AND keeps the JSON payload so neither fact
+    // is discarded.
     const encoded = JSON.stringify(p.data);
     if (encoded !== undefined) return `[${p.kind}] ${encoded}`;
     // No data to keep. This is the case the file exists for: name the kind, so a reader knows which

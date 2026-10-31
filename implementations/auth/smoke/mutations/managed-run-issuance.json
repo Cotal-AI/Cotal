@@ -49,7 +49,7 @@
     },
     {
       "name": "widen signed ceiling after evidence",
-      "file": "implementations/auth/src/service.ts",
+      "file": "implementations/auth/src/callout-authority.ts",
       "find": "          return perms;\n        }\n        const row = JSON.parse",
       "replace": "          return { ...perms, pub: { allow: [\">\" ] } };\n        }\n        const row = JSON.parse",
       "expectRed": "FAIL: U1 evidence ceiling equals the stock signed mint",
@@ -59,7 +59,7 @@
     },
     {
       "name": "replace child source with parent actor",
-      "file": "implementations/auth/src/service.ts",
+      "file": "implementations/auth/src/callout-authority.ts",
       "find": "sources: [actorLedgerSource(space, owner, actor, uid)]",
       "replace": "sources: [actorLedgerSource(space, owner, \"cli\", uid)]",
       "expectRed": "FAIL: U1 source is the managed actor lifecycle and respawn invalidates it",
@@ -69,7 +69,7 @@
     },
     {
       "name": "renew a changed ceiling",
-      "file": "implementations/auth/src/service.ts",
+      "file": "implementations/auth/src/callout-authority.ts",
       "find": "        await session.store.confirm(ref, importNativeSubjectPermissions(perms));",
       "replace": "        /* mutation: renew without ceiling confirmation */",
       "expectRed": "FAIL: U1 same nonce renews only the identical ceiling",

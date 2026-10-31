@@ -59,7 +59,8 @@
       "propertyNames": {"pattern": "^(?!COTAL_|CLAUDE_CODE_|CLAUDECODE$)[A-Za-z_][A-Za-z0-9_]*$"},
       "additionalProperties": {"type": "string", "pattern": "^(?!COTAL_|CLAUDE_CODE_|CLAUDECODE$)[A-Za-z_][A-Za-z0-9_]*$"}
     },
-    "credentialRef": {"$ref": "#/$defs/credential"}
+    "credentialRef": {"$ref": "#/$defs/credential"},
+    "root": {"type": "string", "minLength": 1, "maxLength": 4096, "$comment": "The space root `service add` saved the definition in. The controller writes it; an imported file may not set it."}
   },
   "allOf": [
     {

@@ -1,7 +1,7 @@
 ---
 title: "Connect Hermes (alpha)"
 description: "Run a Hermes gateway on a Cotal mesh with a managed profile or your own Hermes profile."
-kind: "Informative"
+kind: Guide
 audience: "operators"
 ---
 
@@ -40,9 +40,8 @@ Set a supported provider's API key on the execution host, then choose a model:
 cotal spawn --harness hermes --no-events --model <model>
 ```
 
-Cotal launches through the manager, waits for readiness, and attaches your terminal.
-To return after readiness without attaching, add `--detach`.
-To run the gateway directly in this terminal, add `--foreground`.
+A bare spawn runs the gateway in this terminal.
+Add `--detach` to launch through a manager and return after readiness. `--on <instance>` selects a manager and attaches where supported.
 
 For a persona file on the execution host, use:
 

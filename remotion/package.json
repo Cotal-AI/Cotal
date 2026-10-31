@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "typecheck": "tsc --noEmit -p .",
     "studio": "remotion studio",
     "render:mesh": "remotion render PeerMesh out/peer-mesh.gif --codec=gif --every-nth-frame=3",
     "render:observer": "remotion render Observer out/observer.gif --codec=gif --every-nth-frame=3",
@@ -27,7 +28,8 @@
     "render:demos": "remotion render DemoLoop out/demo-loop.gif --codec=gif --every-nth-frame=3 --scale=0.5 && remotion render DemoCommand out/demo-command.gif --codec=gif --every-nth-frame=3 --scale=0.5 && remotion render DemoHeadline out/demo-headline.gif --codec=gif --every-nth-frame=3 --scale=0.5 && remotion render DemoShort out/demo-short.gif --codec=gif --every-nth-frame=3 --scale=0.5",
     "render:demo-codex": "remotion render DemoMergedCodex out/demo-merged-codex.mp4 && remotion render DemoMergedCodex out/demo-merged-codex.gif --codec=gif --every-nth-frame=3 --scale=0.5",
     "render:mix": "remotion render DemoCodexRotate out/demo-codex-rotate.gif --codec=gif --every-nth-frame=3 --scale=0.5 && remotion render DemoCodexShuffle out/demo-codex-shuffle.gif --codec=gif --every-nth-frame=3 --scale=0.5",
-    "render:readme": "remotion render DemoReadme out/cotal-demo-readme.mp4 --crf=16"
+    "render:readme": "remotion render DemoReadme out/cotal-demo-readme.mp4 --crf=16",
+    "render:readme-hero": "remotion render ReadmeForumHero out/readme-hero --sequence --image-format=png && ffmpeg -v error -y -framerate 25 -i out/readme-hero/element-%03d.png -vf \"scale=960:-1:flags=lanczos,split[a][b];[a]palettegen=max_colors=96:stats_mode=diff[p];[b][p]paletteuse=dither=none:diff_mode=rectangle\" -loop 0 ../assets/cotal-hero.gif"
   },
   "dependencies": {
     "@remotion/cli": "4.0.465",

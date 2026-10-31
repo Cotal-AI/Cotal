@@ -13,6 +13,8 @@ export interface ResolvedServiceAdapter { pin: ServiceAdapterPin; declaration: S
 export interface LoadedServiceAdapter extends ResolvedServiceAdapter {
   prepareStop?: ServiceAdapterHooks["prepareServiceStop"];
   stop?: ServiceAdapterHooks["stopService"];
+  settleStop?: ServiceAdapterHooks["settleServiceStop"];
+  abandonStop?: ServiceAdapterHooks["abandonServiceStop"];
   prepareKernelStop?: ServiceAdapterHooks["prepareKernelStop"];
   observeKernelStop?: ServiceAdapterHooks["observeKernelStop"];
   build: (context: ServiceAdapterContext) => ServiceAdapterLaunch | Promise<ServiceAdapterLaunch>;
@@ -20,24 +22,38 @@ export interface LoadedServiceAdapter extends ResolvedServiceAdapter {
 }
 
 /** Resolve only cached data during add, previews and semantic validation. Executable hooks are
- *  materialized separately, under the ordinary version-locked extension import path. */
-export function resolveServiceAdapter(name: string, options: Readonly<Record<string, unknown>>, checkOptions = true): ResolvedServiceAdapter {
+ *  materialized separately, under the ordinary version-locked extension import path. `label` gives
+ *  how an option reads in a refusal of its value, such as the flag a preset gives it. */
+export function resolveServiceAdapter(name: string, options: Readonly<Record<string, unknown>>, checkOptions = true, label?: (option: string) => string): ResolvedServiceAdapter {
   const registered = registry.all<LocalProcess>("local-process").find((component) => component.name === name);
   const owners = installedExtensionsEnabled() ? loadExtensionsManifest().extensions.filter((extension) => extensionLocalProcesses(extension).some((component) => component.name === name)) : [];
   if (owners.length > 1) throw new CommandFailure("refused", "CONFLICT", "several installed packages claim this service adapter; no provider was chosen");
   const owner = owners[0];
   const cached = owner ? verifiedExtensionServiceProcesses(owner).find((component) => component.name === name) : registered;
   if (!cached?.service) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "no installed local-process provider declares this service adapter; install or update its extension explicitly before adding or starting the definition");
-  if (owner?.pkg.startsWith("@cotal-ai/") && owner.version !== cliVersion()) throw new CommandFailure("refused", "CONFLICT", "the first-party service adapter and this CLI have different versions; run cotal update before use");
+  if (owner?.pkg.startsWith("@cotal-ai/") && owner.version !== cliVersion()) throw new CommandFailure("refused", "CONFLICT", "the first-party service adapter and this CLI have different versions; run `cotal update` before use");
   const declaration = serviceAdapterDeclaration(JSON.parse(JSON.stringify(cached.service)));
-  if (checkOptions) { validateServiceAdapterOptions(declaration, options); validateServiceAdapterPaths(declaration, options); }
+  if (checkOptions) { validateServiceAdapterOptions(declaration, options, label); validateServiceAdapterPaths(declaration, options, label); }
   const pin = { name, package: owner?.pkg ?? null, version: owner?.version ?? cliVersion(), declarationSha256: serviceMetadataDigest(declaration) };
   if (registered && (!registered.service || serviceMetadataDigest(serviceAdapterDeclaration(registered.service)) !== pin.declarationSha256)) throw new CommandFailure("refused", "CONFLICT", "the loaded service provider disagrees with its cached declaration; no changed schema was silently adopted");
   return { pin, declaration };
 }
 
-export function sameServiceAdapterPin(a: ServiceAdapterPin | undefined, b: ServiceAdapterPin | undefined): boolean {
-  return a === undefined ? b === undefined : b !== undefined && a.name === b.name && a.package === b.package && a.version === b.version && a.declarationSha256 === b.declarationSha256;
+/** Whether two resolves name the same provider, version and declaration. */
+const sameServiceAdapterPin = (a: ServiceAdapterPin, b: ServiceAdapterPin) => a.name === b.name && a.package === b.package && a.version === b.version && a.declarationSha256 === b.declarationSha256;
+
+/** Whether `current`, the adapter this CLI resolves now, controls an instance with this recorded pin
+ *  and stop policy. A built-in or `@cotal-ai/*` adapter is version-locked to this CLI, so its recorded
+ *  version and declaration only say which release wrote the record: after an upgrade that changed
+ *  either, even one description, the instance stays controllable while it names the same provider and
+ *  was launched under the stop policy that adapter declares now. Any other package must match its
+ *  recorded version and declaration. */
+export function controlsRecordedAdapter(instance: { adapter?: ServiceAdapterPin; nativeStopRequired?: true; kernelStopRequired?: true }, current: ResolvedServiceAdapter | undefined): boolean {
+  const recorded = instance.adapter;
+  if (recorded === undefined || current === undefined) return recorded === current;
+  if (recorded.package !== null && !recorded.package.startsWith("@cotal-ai/")) return sameServiceAdapterPin(recorded, current.pin);
+  const stop = current.declaration.stop;
+  return recorded.name === current.pin.name && recorded.package === current.pin.package && (instance.nativeStopRequired === true) === (stop === "native") && (instance.kernelStopRequired === true) === (stop === "kernel-exit");
 }
 
 /** Call only after an explicitly authorized operation has reserved its definition and launch. */
@@ -54,6 +70,6 @@ export async function loadServiceAdapter(expected: ResolvedServiceAdapter, optio
     if (!sameServiceAdapterPin(after.pin, expected.pin) || typeof provider.buildServiceLaunch !== "function" || typeof provider.checkServiceReadiness !== "function") throw new CommandFailure("refused", "CONFLICT", "the service adapter's live declaration or hooks do not match its reviewed metadata");
     if (current.declaration.stop === "native" && (typeof provider.prepareServiceStop !== "function" || typeof provider.stopService !== "function")) throw new CommandFailure("refused", "UNSUPPORTED", "the native stop declaration has no matching impact and terminal hooks; generic signals were not substituted");
     if (current.declaration.stop === "kernel-exit" && (typeof provider.prepareKernelStop !== "function" || typeof provider.observeKernelStop !== "function")) throw new CommandFailure("refused", "UNSUPPORTED", "the kernel-exit stop declaration has no matching scope and exit-observation hooks; generic signals were not substituted");
-    return { ...current, build: provider.buildServiceLaunch.bind(provider), readiness: provider.checkServiceReadiness.bind(provider), ...(current.declaration.stop === "native" ? { prepareStop: provider.prepareServiceStop!.bind(provider), stop: provider.stopService!.bind(provider) } : {}), ...(current.declaration.stop === "kernel-exit" ? { prepareKernelStop: provider.prepareKernelStop!.bind(provider), observeKernelStop: provider.observeKernelStop!.bind(provider) } : {}) };
+    return { ...current, build: provider.buildServiceLaunch.bind(provider), readiness: provider.checkServiceReadiness.bind(provider), ...(current.declaration.stop === "native" ? { prepareStop: provider.prepareServiceStop!.bind(provider), stop: provider.stopService!.bind(provider), ...(typeof provider.settleServiceStop === "function" ? { settleStop: provider.settleServiceStop.bind(provider) } : {}), ...(typeof provider.abandonServiceStop === "function" ? { abandonStop: provider.abandonServiceStop.bind(provider) } : {}) } : {}), ...(current.declaration.stop === "kernel-exit" ? { prepareKernelStop: provider.prepareKernelStop!.bind(provider), observeKernelStop: provider.observeKernelStop!.bind(provider) } : {}) };
   } finally { release?.(); }
 }

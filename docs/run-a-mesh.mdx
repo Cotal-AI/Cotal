@@ -1,7 +1,7 @@
 ---
 title: "Run a mesh"
 description: "Start, inspect, and stop the local stack in a prepared project."
-kind: "Informative"
+kind: Guide
 audience: "operators"
 ---
 
@@ -19,6 +19,9 @@ Use [Configure a space](setup.mdx) to prepare another project or change its defa
 - A NATS broker. Its log is `.cotal/nats.log`.
 - A delivery daemon in authenticated mode. It provides [durable delivery](delivery-daemon.mdx).
 - A manager. It handles detached agents and the `cotal_spawn` tool.
+
+The CLI starts manager, delivery, and user-auth daemons with `--max-semi-space-size=1`, which caps V8's young generation at 2 MB.
+Services launched by `service start` or `manager start`, and units written by `service install`, use the same flag.
 
 Authentication is enabled by default.
 The broker authenticates senders and checks each agent's permissions.
@@ -83,6 +86,8 @@ To stop the stack, run:
 ```bash
 cotal down
 ```
+
+While a saved service still runs in the space, whole-stack `down` refuses and names the `cotal service stop` to run first.
 
 A current manager records whether it can leave its seats running before shutdown.
 If that stop is refused, the manager, broker, delivery daemon, and any auth service remain running.

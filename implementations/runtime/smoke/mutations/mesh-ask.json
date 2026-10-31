@@ -211,8 +211,8 @@
     {
       "name": "the escalation is relayed after the pause is armed, so a refused relay leaves a live timer",
       "file": "implementations/runtime/src/mesh-handler.ts",
-      "find": "    if (ctx.attempt > 0 && req.to !== undefined) await this.relayEscalation(req, ctx, ref.token, deadline);\n\n    await this.arm(ref, deadline);",
-      "replace": "    await this.arm(ref, deadline);\n\n    if (ctx.attempt > 0 && req.to !== undefined) await this.relayEscalation(req, ctx, ref.token, deadline);",
+      "find": "    if (ctx.attempt > 0 && req.to !== undefined) await this.relayEscalation(req, ctx, ref.token, deadline);\n\n    if (await this.armUnlessDue(ref, deadline, ctx.signal)) return { outcome: \"expired\", at: this.now() };",
+      "replace": "    if (await this.armUnlessDue(ref, deadline, ctx.signal)) return { outcome: \"expired\", at: this.now() };\n\n    if (ctx.attempt > 0 && req.to !== undefined) await this.relayEscalation(req, ctx, ref.token, deadline);",
       "expectRed": "a relay the endpoint refuses outright fails the step with NOTHING armed behind it",
       "cell": "a relay the endpoint refuses outright fails the step with NOTHING armed behind it",
       "note": "Told BEFORE the pause is armed, the order ask uses. With the relay after the arm, an endpoint refusal (anything but a gone seat, which is tolerated) failed the step and left a waiting pause the discharge never walks (it only walks cancelled losers), so the timer fired into a failed step."

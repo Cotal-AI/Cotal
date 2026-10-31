@@ -166,10 +166,10 @@ try {
     return { status: res.status, body: data as Record<string, unknown> };
   };
 
-  const newRun = () => `run-${Buffer.from(mintGeneration().slice(0, 16)).toString("hex").slice(0, 32)}`;
+  const newRun = () => `run-${Buffer.from(mintGeneration(Math.floor(Date.now() / 1000) + 172_800).slice(8, 24)).toString("hex").slice(0, 32)}`;
   const admit = async (runId: string, inst = instanceId) => createRunAdmission(admissions, {
     version: 1, space: SPACE, endpoint: "manager", runId, instanceId: inst,
-    caller: { owner: httpOwner, actor: "alice", uid: mintLifecycleUid(), generation: mintGeneration() } as never,
+    caller: { owner: httpOwner, actor: "alice", uid: mintLifecycleUid(), generation: mintGeneration(Math.floor(Date.now() / 1000) + 172_800) } as never,
     ceiling: { publish: { allow: { mode: "none" }, deny: [] }, subscribe: { allow: { mode: "none" }, deny: [] } },
     provenance: { kind: "operator", by: "suite", reason: "fixture" }, admittedAt: Date.now(),
   });
@@ -283,8 +283,8 @@ try {
     },
   });
   c("stale or jumped attempt coordinates refuse with conflict message",
-    staleRes.status === 403 && String(staleRes.body.error).includes("next recorded epoch") &&
-    jumpedRes.status === 403 && String(jumpedRes.body.error).includes("next recorded epoch"),
+    staleRes.status === 409 && String(staleRes.body.error).includes("next recorded epoch") &&
+    jumpedRes.status === 409 && String(jumpedRes.body.error).includes("next recorded epoch"),
     { staleRes, jumpedRes });
 
   // 7. Terminal run gets no new attempt
@@ -346,7 +346,7 @@ try {
 
   // 9. Answer operator for waiting checkpoint, serving a caller with a live issuance, returns closed
   // response with JWT, authenticating to broker. The host reads the pause off the run's journal.
-  const cpToken = `cp-${mintGeneration()}`;
+  const cpToken = `cp-${mintGeneration(Math.floor(Date.now() / 1000) + 172_800)}`;
   const journalAt = Date.now();
   await jetstream(nc).publish(wfjSubject(SPACE, first), JSON.stringify({ v: 1, kind: "activation", run: first, n: 0, holder: "h", fencingToken: 1, epoch: 1, replayedTo: 0, at: journalAt }));
   await jetstream(nc).publish(wfjSubject(SPACE, first), JSON.stringify({ v: 1, kind: "step", run: first, n: 1, at: journalAt, entry: {
@@ -362,7 +362,7 @@ try {
   });
   let generation = "";
   await plane.issueUserCaller({
-    t: { owner: httpOwner, act: { actor: "cli", lifecycleUid: cliRow.lifecycleUid } } as never,
+    t: { owner: httpOwner, exp: Math.floor(Date.now() / 1000) + 300, act: { actor: "cli", lifecycleUid: cliRow.lifecycleUid } } as never,
     connId: mintLifecycleUid(),
     mint: (issued) => { generation = issued.generation; return { pub: { allow: [">"] }, sub: { allow: [">"] } }; },
   });
@@ -444,7 +444,7 @@ try {
     attempt: { runId: first, takeoverId: "t".repeat(16), epoch: 2, fencingToken: 2, driverId: newIdentity().id, mediatorId: newIdentity().id },
   });
   c("stale process epoch refuses",
-    staleEpochRes.status === 403 && String(staleEpochRes.body.error).includes("stale"), staleEpochRes);
+    staleEpochRes.status === 409 && String(staleEpochRes.body.error).includes("stale"), staleEpochRes);
 
   // 13. Stale or bad registration proof refuses (403)
   const badProofRes = await postHttp({
@@ -508,7 +508,7 @@ try {
   c("unrecorded run without admission record refuses",
     unadmitRes.status === 403 && String(unadmitRes.body.error).includes("no admission record"), unadmitRes);
 
-  // 18. Revoked admission refuses attempt and read operator (403)
+  // 18. Revocation refuses new attempts but leaves the read-only status operator available.
   const revRun = newRun();
   await admit(revRun);
   await revokeRunAdmission(admissions, "manager", { version: 1, runId: revRun, by: "suite", reason: "revoked", revokedAt: Date.now() });
@@ -524,9 +524,9 @@ try {
     registrationProof: proof,
     operator: { id: newIdentity().id, takeoverId: "o".repeat(16), runId: revRun },
   });
-  c("revoked run refuses attempt and read operator",
+  c("revoked run refuses attempt and permits read-only operator",
     revAttemptRes.status === 403 && String(revAttemptRes.body.error).includes("revoked") &&
-    revOpRes.status === 403 && String(revOpRes.body.error).includes("revoked"), { revAttemptRes, revOpRes });
+    revOpRes.status === 200, { attemptStatus: revAttemptRes.status, operatorStatus: revOpRes.status });
 
   // 19. Run admitted on another manager instance refuses (403)
   const foreignInstRun = newRun();

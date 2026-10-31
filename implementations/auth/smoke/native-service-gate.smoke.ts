@@ -1,4 +1,4 @@
-import assert from "node:assert/strict";
+import nodeAssert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -11,7 +11,7 @@ import {
   contractDigest, createEndpointStreams, endpointToken, epcredRowKey, epgateKey, nativeIssuanceKey, endpointRegistrationBarrier, isReachable, mintLifecycleUid,
   serviceEndpointActor, type ServiceRegistrationWitness,
 } from "@cotal-ai/core";
-import { SMOKE_BROKER_TOKEN, awaitBrokerReady, freePort, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, awaitBrokerReady, countedAssert, emitSentinel, freePort, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { openLifecycleRegistry, reserveLifecycleUid, registryStores } from "../src/lifecycle-registry.js";
 import { bindNativeServiceName, nativeServiceNameAuthority, readNativeServiceName } from "../src/native-service-name.js";
 import { makeNativeIssuanceRecorder, nativeIssuanceRecord, parseNativeIssuanceRecord, pruneNativeIssuance, readNativeIssuance } from "../src/native-issuance.js";
@@ -26,6 +26,8 @@ import {
   markNativeServiceActivated, readNativeServiceGate, readNativeServiceAccess,
 } from "../src/native-service-gate.js";
 
+const counted = countedAssert(nodeAssert);
+const assert: typeof nodeAssert = counted.assert;
 const space = "native-service-gate", port = await freePort(), servers = `nats://127.0.0.1:${port}`;
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const broker = spawn("nats-server", ["-js", "-sd", dir, "-p", String(port), "-a", "127.0.0.1"], { stdio: "ignore" });
@@ -291,6 +293,7 @@ try {
   assert.equal(cancelledGate.row.serviceAuthority.state, "revoked");
   await assert.rejects(createPendingServiceGate(reg, cancelled), /FOREIGN content/);
   console.log("native service gate: synthetic canonical marked custody/root prerequisites, ordinary refusal, name binding, registration stamps and activation checks passed; no production service writer/admission/retirement acceptance");
+  emitSentinel({ passed: counted.cells(), failed: 0 });
 } finally {
   await nc?.close();
   await killAndAwaitExit(broker);

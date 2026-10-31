@@ -1,31 +1,36 @@
 import { randomUUID } from "node:crypto";
-import { readSync } from "node:fs";
+import { existsSync, readSync } from "node:fs";
 import { parse as parseYaml } from "yaml";
 import {
-  BASELINE_LIFECYCLE_ENDPOINT, EpEnvelopeError, assertValidChannel, assertValidName, assertValidRole,
+  BASELINE_LIFECYCLE_ENDPOINT, EpEnvelopeError, agentFilePath, assertValidChannel, assertValidName, assertValidRole,
   invokeCommand, isConcreteChannel, isPublishPermissionDenied, parseLeadingPromptFrontmatter, resolveService,
   type EpAttributedReply, type ParsedArgs,
 } from "@cotal-ai/core";
 import {
-  CommandFailure, canonicalRoot, isCommandFailure, isConnectRefusal, presentationOf,
+  parseCommaList, CommandFailure, canonicalRoot, isCommandFailure, isConnectRefusal, presentationOf,
   readLocalRecordSource, writeResult, type OutputWarning, type Report,
   recordOperationSpace,
 } from "@cotal-ai/workspace";
 import { openEndpointConnection } from "../lib/endpoint-client.js";
 import { nativeEndpointRefusal } from "../lib/endpoint-errors.js";
 import { onInstance } from "../lib/control.js";
+import { managerPin } from "../lib/manager-choice.js";
 import { openTransient } from "../lib/transient.js";
+import { PERSONA_LIMIT, reservedPersonaName } from "../lib/persona-files.js";
 import type { PersonaValues } from "./persona.js";
 
-const INPUT_LIMIT = 1024 * 1024;
 const CONTENT_FLAGS = ["file", "prompt", "from", "role", "model", "subscribe", "harness", "allow-subscribe", "allow-publish", "announce"] as const;
-const csv = (text: string | undefined) => text?.split(",").map((part) => part.trim()).filter(Boolean);
+
+/** The command an `--on` refusal tells the caller to rerun with `--on <instance>` added. */
+function personaVerb(mode: string | undefined, name: string | undefined): string {
+  return mode === undefined || mode === "list" || name === undefined ? "cotal persona" : `cotal persona ${mode} ${name}`;
+}
 
 export function validateRemotePersonaArguments(args: ParsedArgs): void {
   presentationOf(args.values);
   const values = args.values as PersonaValues;
-  onInstance(values.on!, "cotal persona --on");
   const [mode, name, ...extra] = args.positionals;
+  onInstance(values.on!, personaVerb(mode, name));
   if (mode !== undefined && !["list", "show", "create"].includes(mode)) throw new CommandFailure("refused", "UNSUPPORTED", "remote persona operations support list, show and create only; no local edit or removal was substituted");
   if (extra.length || (mode === undefined || mode === "list" ? name !== undefined : !name)) throw new CommandFailure("refused", "USAGE_INVALID", "use persona --on <full-manager-instance>, persona show <name> --on <id>, or persona create <name> --on <id>");
   if (name !== undefined) {
@@ -35,13 +40,15 @@ export function validateRemotePersonaArguments(args: ParsedArgs): void {
   if (values.yes !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "--yes is not a remote persona write override; existing ownership rules remain in force");
   if (mode !== "create" && CONTENT_FLAGS.some((flag) => values[flag] !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "definition and announcement inputs belong to persona create");
   if (mode === "create") {
+    const reserved = reservedPersonaName(name!);
+    if (reserved) throw new CommandFailure("refused", "USAGE_INVALID", reserved, { remedy: "choose another name" });
     if ([values.file, values.prompt, values.from].filter((value) => value !== undefined).length !== 1) throw new CommandFailure("refused", "USAGE_INVALID", "remote persona creation needs one of --file, --prompt or --from");
     if (values.role !== undefined) {
       try { assertValidRole(values.role); } catch { throw new CommandFailure("refused", "USAGE_INVALID", "use a valid role token"); }
     }
     if ([values.model, values.harness].some((value) => value !== undefined && (!value.trim() || /[\u0000-\u001f\u007f]/u.test(value)))) throw new CommandFailure("refused", "USAGE_INVALID", "model and application pins must be nonempty without terminal controls");
     try {
-      for (const channel of [...(csv(values.subscribe) ?? []), ...(csv(values["allow-subscribe"]) ?? []), ...(csv(values["allow-publish"]) ?? [])]) assertValidChannel(channel);
+      for (const channel of [...(parseCommaList(values.subscribe) ?? []), ...(parseCommaList(values["allow-subscribe"]) ?? []), ...(parseCommaList(values["allow-publish"]) ?? [])]) assertValidChannel(channel);
       if (values.announce !== undefined) { assertValidChannel(values.announce); if (!isConcreteChannel(values.announce)) throw new Error(); }
     } catch { throw new CommandFailure("refused", "USAGE_INVALID", "use native channel ACLs and one concrete announcement channel without rewriting its name"); }
   }
@@ -55,21 +62,21 @@ function definitionInput(values: PersonaValues, name: string): string {
     const chunks: Buffer[] = [];
     let total = 0;
     for (;;) {
-      const chunk = Buffer.alloc(Math.min(16 * 1024, INPUT_LIMIT + 1 - total));
+      const chunk = Buffer.alloc(Math.min(16 * 1024, PERSONA_LIMIT + 1 - total));
       const size = readSync(0, chunk, 0, chunk.length, null);
       if (!size) break;
       total += size;
-      if (total > INPUT_LIMIT) throw new CommandFailure("refused", "USAGE_INVALID", "the persona input exceeds the 1 MiB limit");
+      if (total > PERSONA_LIMIT) throw new CommandFailure("refused", "USAGE_INVALID", "the persona input exceeds the 1 MiB limit");
       chunks.push(chunk.subarray(0, size));
     }
     bytes = Buffer.concat(chunks);
   } else {
     const path = values.file ?? values.from!;
-    const source = readLocalRecordSource(path, INPUT_LIMIT, false);
+    const source = readLocalRecordSource(path, PERSONA_LIMIT, false);
     if (!source) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the explicit persona input is absent");
     bytes = source;
   }
-  if (bytes.length > INPUT_LIMIT) throw new CommandFailure("refused", "USAGE_INVALID", "the persona input exceeds the 1 MiB limit");
+  if (bytes.length > PERSONA_LIMIT) throw new CommandFailure("refused", "USAGE_INVALID", "the persona input exceeds the 1 MiB limit");
   let source: string;
   try {
     source = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
@@ -92,11 +99,13 @@ function definitionInput(values: PersonaValues, name: string): string {
   return source;
 }
 
-function failedReply(response: EpAttributedReply, target: unknown, mutation: boolean): CommandFailure {
+/** The failure a persona reply carries. `notFoundRemedy` is the refusal's remedy when the manager
+ *  answers not-found, as it does for a card this caller may not read. */
+function failedReply(response: EpAttributedReply, target: unknown, mutation: boolean, notFoundRemedy?: string): CommandFailure {
   const error = response.reply.error;
   const code = nativeEndpointRefusal(error?.code);
   const native = { code: error?.code, outcome: error?.outcome, detail: { requestId: response.reply.id, responder: response.responder } };
-  if ((!mutation || error?.outcome === "not-executed") && code) return new CommandFailure("refused", code, "the selected manager refused this persona operation; its message and input contents were not copied", { target, native });
+  if ((!mutation || error?.outcome === "not-executed") && code) return new CommandFailure("refused", code, "the selected manager refused this persona operation; its message and input contents were not copied", { target, native, ...(code === "TARGET_NOT_FOUND" && notFoundRemedy ? { remedy: notFoundRemedy } : {}) });
   return new CommandFailure(mutation && error?.outcome !== "executed" ? "unknown" : "failed", mutation && error?.outcome !== "executed" ? "OPERATION_UNKNOWN" : "OPERATION_FAILED", "the native persona operation did not return success; it was not retried", { target, native });
 }
 
@@ -106,7 +115,7 @@ export async function remotePersona(args: ParsedArgs): Promise<void> {
   const values = args.values as PersonaValues;
   const [mode = "list", name] = args.positionals;
   const input = mode === "create" ? definitionInput(values, name!) : undefined;
-  const instanceId = onInstance(values.on!, "cotal persona --on");
+  const instanceId = (await managerPin(values, personaVerb(mode, name)))!;
   const requestId = randomUUID();
   let connection: Awaited<ReturnType<typeof openEndpointConnection>> | undefined;
   let sender: Awaited<ReturnType<typeof openTransient>> | undefined;
@@ -121,25 +130,31 @@ export async function remotePersona(args: ParsedArgs): Promise<void> {
     target = { ...target, space: connection.space, endpoint: BASELINE_LIFECYCLE_ENDPOINT };
     recordOperationSpace(connection.space);
     if (connection.auth.managerInstanceId !== undefined && connection.auth.managerInstanceId !== instanceId) throw new CommandFailure("refused", "CONFLICT", "the supplied manager pin differs from the caller's bound instance; no class fallback was used", { target });
-    const service = await resolveService(connection.nc, connection.space, BASELINE_LIFECYCLE_ENDPOINT, connection.auth.epCaller!, { instanceId, deadlineMs: 10_000 });
+    const command = mode === "create" ? "define-persona" : mode === "show" ? "show-persona" : "list-personas";
+    const service = await resolveService(connection.nc, connection.space, BASELINE_LIFECYCLE_ENDPOINT, connection.auth.epCaller!, { instanceId, deadlineMs: 10_000, commands: [command] });
     if (values.announce !== undefined) {
       sender = await openTransient({ space: connection.space, server: connection.server }, "persona announcement", { throwOnRefusal: true, report: () => { warnings.push({ code: "ANNOUNCEMENT_CONNECTION_WARNING", target, message: "The announcement sender reported a connection warning; only its publish acknowledgement establishes storage." }); } });
       const sameRoot = connection.root !== undefined && sender.connection.root !== undefined && canonicalRoot(sender.connection.root) === canonicalRoot(connection.root);
       if (sender.space !== connection.space || sender.connection.server !== connection.server || !sameRoot || sender.connection.mode !== connection.mode || connection.account !== undefined && sender.connection.auth?.account.pub !== connection.account) throw new CommandFailure("refused", "CONFLICT", "the announcement's resolved space, root or account differs from the selected manager target; no persona was saved", { target });
     }
-    const command = mode === "create" ? "define-persona" : mode === "show" ? "show-persona" : "list-personas";
-    const body = mode === "create" ? { name, persona: input, model: values.model, role: values.role, agent: values.harness, subscribe: csv(values.subscribe), allowSubscribe: csv(values["allow-subscribe"]), allowPublish: csv(values["allow-publish"]) } : mode === "show" ? { name } : undefined;
+    const body = mode === "create" ? { name, persona: input, model: values.model, role: values.role, agent: values.harness, subscribe: parseCommaList(values.subscribe), allowSubscribe: parseCommaList(values["allow-subscribe"]), allowPublish: parseCommaList(values["allow-publish"]) } : mode === "show" ? { name } : undefined;
     if (!service.commands.has(command)) throw new CommandFailure("refused", "UNSUPPORTED", "the selected manager does not declare this native persona operation; no legacy or local path was substituted", { target });
     submitted = mode === "create";
     const response = await invokeCommand(connection.nc, connection.space, service, command, body, { deadlineMs: 10_000, id: requestId });
-    if (!response.reply.ok) throw failedReply(response, target, mode === "create");
+    // A manager in this root writes and reads this root's own catalog file.
+    const localFile = connection.root === undefined || name === undefined ? undefined : agentFilePath(connection.root, name);
+    if (!response.reply.ok) throw failedReply(response, target, mode === "create",
+      mode === "show" && localFile !== undefined && existsSync(localFile) ? `a persona file of that name is in this root's catalog, which the manager does not show this caller: read it here with \`cotal p show ${name}\`` : undefined);
     const raw = response.reply.data as Record<string, unknown>;
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("persona reply shape");
     if (mode === "create" && (raw.name !== name || typeof raw.path !== "string")) throw new Error("persona write reply identity");
     if (mode === "show" && raw.name !== name) throw new Error("persona read reply identity");
     const data = mode === "create" ? { name: raw.name, path: raw.path } : mode === "show" ? Object.fromEntries(["name", "role", "model", "description", "owner", "persona"].filter((key) => typeof raw[key] === "string").map((key) => [key, raw[key]])) : { personas: raw.personas };
     if (mode === "list" && (!Array.isArray(raw.personas) || raw.personas.some((row) => !row || typeof row !== "object" || typeof row.name !== "string"))) throw new Error("persona list reply");
-    result = { kind: "remote-persona", operation: mode, space: connection.space, requestedInstanceId: instanceId, requestId: response.reply.id, responder: response.responder, data, saved: mode === "create", localFilesChanged: false, agentLaunched: false, announcement: null };
+    const localFilesChanged = mode === "create" && localFile !== undefined && raw.path === localFile && existsSync(localFile);
+    // Without a bearer the caller is minted for this call alone, so a later call is another caller.
+    const perCallCaller = connection.auth.bearer === undefined;
+    result = { kind: "remote-persona", operation: mode, space: connection.space, requestedInstanceId: instanceId, requestId: response.reply.id, responder: response.responder, data, saved: mode === "create", localFilesChanged, perCallCaller, localCatalog: connection.root !== undefined, agentLaunched: false, announcement: null };
     if (sender && values.announce !== undefined) {
       try {
         const message = await sender.ep.multicast(`Defined persona ${name}; available in the selected manager's persona catalog.`, { channel: values.announce });
@@ -171,17 +186,21 @@ function remotePersonaView(result: Record<string, unknown>): Report {
   const instructions = typeof data.persona === "string" ? data.persona.split(/\r?\n/) : [];
   const pin = String(result.requestedInstanceId);
   const name = typeof data.name === "string" && /^[A-Za-z0-9_-]+$/.test(data.name) ? data.name : null;
+  const next = name ? [
+    ...(!result.saved || !result.perCallCaller ? [{ command: `cotal p show ${name} --on ${pin}`, description: "Read this manager's authorized definition" }]
+      : result.localFilesChanged ? [{ command: `cotal p show ${name}`, description: "Read the definition in this root's catalog" }] : []),
+    { command: `cotal spawn ${name} --on ${pin}`, description: "Request a launch under the native caller grants" },
+  ] : !result.perCallCaller ? [{ command: `cotal p show <name> --on ${pin}`, description: "Read a named definition from this manager" }]
+    // A caller minted for this call alone owns no card, so the manager answers its show not-found.
+    : result.localCatalog ? [{ command: "cotal p show <name>", description: "Read a definition in this root's catalog" }] : [];
   return { sections: [
     { title: result.saved ? "Persona saved on manager" : "Manager persona catalog", blocks: [
-      { kind: "fields", rows: [["Space", String(result.space)], ["Requested manager", pin], ["Answering manager", responder.instanceId], ["Epoch", String(responder.epoch)], ["Original request", String(result.requestId)], ["Local files", "unchanged"], ["Agent launch", "not requested"]] },
+      { kind: "fields", rows: [["Space", String(result.space)], ["Requested manager", pin], ["Answering manager", responder.instanceId], ["Epoch", String(responder.epoch)], ["Original request", String(result.requestId)], ["Local files", result.localFilesChanged ? `${String(data.path)}, written by the manager in this root's catalog` : "unchanged"], ["Agent launch", "not requested"]] },
       ...(result.operation === "list" ? [{ kind: "table" as const, columns: [{ key: "name", label: "Persona" }, { key: "role", label: "Disclosed role" }, { key: "model", label: "Disclosed model" }, { key: "details", label: "Visibility" }], rows: rows.slice(0, 100).map((row) => ({ name: String(row.name), role: typeof row.role === "string" ? row.role : "not disclosed", model: typeof row.model === "string" ? row.model : "not disclosed", details: row.owner === undefined ? "name may be all this caller can read" : "caller-visible metadata" })) }, ...(rows.length > 100 ? [{ kind: "lines" as const, lines: [`${rows.length - 100} persona rows are not shown; JSON retains the full authorized catalog.`] }] : [])] : [{ kind: "fields" as const, rows: Object.entries(data).filter(([key, value]) => key !== "persona" && typeof value === "string").map(([key, value]) => [key, String(value)] as [string, string]) }]),
-      { kind: "lines", lines: [{ text: "The native manager enforces caller ownership. Listing a name confers no read, write or launch authority. No local catalog, wider manager or legacy control route was substituted.", tone: "hint" }] },
+      { kind: "lines", lines: [{ text: "The native manager enforces caller ownership. Listing a name confers no read, write or launch authority. No local catalog, wider manager or legacy control route was substituted.", tone: "hint" }, ...(result.saved && result.perCallCaller ? [{ text: "Each call here has its own caller, so the manager records no owner for this definition and does not show it over --on; the file is operator-owned, as a local persona create writes it.", tone: "hint" as const }] : [])] },
     ] },
     ...(instructions.length ? [{ title: "Authorized instructions", blocks: [{ kind: "lines" as const, lines: instructions.slice(0, 60) }, ...(instructions.length > 60 ? [{ kind: "lines" as const, lines: [`${instructions.length - 60} body lines are not shown; JSON retains the authorized result.`] }] : [])] }] : []),
     ...(announcement ? [{ title: "Announcement", blocks: [{ kind: "fields" as const, rows: [["Channel", announcement.channel], ["Storage", announcement.outcome], ["Message", announcement.messageId ?? "not confirmed"], ["Delivery and completion", "not confirmed"]] as [string, string][] }] }] : []),
-    { title: "Next", blocks: [{ kind: "commands", items: name ? [
-      { command: `cotal p show ${name} --on ${pin}`, description: "Read this manager's authorized definition" },
-      { command: `cotal spawn ${name} --on ${pin}`, description: "Request a launch under the native caller grants" },
-    ] : [{ command: `cotal p show <name> --on ${pin}`, description: "Read a named definition from this manager" }] }] },
+    ...(next.length ? [{ title: "Next", blocks: [{ kind: "commands" as const, items: next }] }] : []),
   ] };
 }

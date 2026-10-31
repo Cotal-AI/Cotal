@@ -29,7 +29,7 @@ const legal = [
 // [source, destination inside the plugin directory]
 const plugins = {
   cotal: [
-    ...[".claude-plugin/plugin.json", ".mcp.json", "hooks/hooks.json", "hooks/native-wake.js", "monitors/monitors.json", "dist/mcp.cjs", "dist/hook.cjs", "dist/monitor.cjs"].map((asset) => [join(connector, asset), asset]),
+    ...[".claude-plugin/plugin.json", ".mcp.json", "hooks/hooks.json", "hooks/native-wake.js", "monitors/monitors.json", "dist/seat.cjs", "dist/mcp.cjs", "dist/hook.cjs", "dist/monitor.cjs"].map((asset) => [join(connector, asset), asset]),
     [join(connector, "PLUGIN.md"), "README.md"],
     ...legal,
   ],
@@ -57,7 +57,10 @@ function verify(name, dir) {
   if (name === "cotal") {
     // The docs bundle inside mcp.cjs is stamped from bin/package.json at build time, so a bundle
     // built before `changeset version` carries the previous release under the new manifest version.
-    if (!readFileSync(join(dir, "dist", "mcp.cjs"), "utf8").includes(`"version": ${JSON.stringify(version)}`))
+    // The bundle is built with `--minify-whitespace`, which closes the gap after the key, so match
+    // the pair rather than one spelling of it.
+    const stamp = new RegExp(`"version":\\s*${JSON.stringify(version).replace(/\./g, "\\.")}`);
+    if (!stamp.test(readFileSync(join(dir, "dist", "mcp.cjs"), "utf8")))
       throw new Error(`materialize-claude-plugin: dist/mcp.cjs was not built at ${version}; rebuild @cotal-ai/connector-claude-code first`);
   }
   if (name === "cotal-skills") {

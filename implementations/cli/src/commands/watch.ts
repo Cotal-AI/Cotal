@@ -1,7 +1,8 @@
 import { writeSync } from "node:fs";
-import { CotalEndpoint, chatWildcard, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
-import { colorEnabled, CommandFailure, exitCode, inputDisabledByFlag, isCommandFailure, jsonFlag, plainFlag, presentationOf, streamRecord, writeStreamRecord, userViewAuth, targetFlags } from "@cotal-ai/workspace";
-import { connectOrExit, connectOrThrow, userViewAuthOrExit } from "../lib/connect.js";
+import { CotalEndpoint, chatWildcard, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
+import { colorEnabled, CommandFailure, exitCode, inputDisabledByFlag, isCommandFailure, isConnectRefusal, jsonFlag, plainFlag, presentationOf, recordOperationSpace, streamRecord, writeStreamRecord, userViewAuth, targetFlags } from "@cotal-ai/workspace";
+import { completingFlagValue } from "../lib/completion.js";
+import { connectOrThrow, userViewAuthOrExit } from "../lib/connect.js";
 import { watchViews, type WatchFilter } from "../watch-data.js";
 export type { WatchFilter } from "../watch-data.js";
 
@@ -12,6 +13,14 @@ export const watchFlags = [
 ] as const satisfies readonly FlagSpec[];
 
 
+/** The `--view` values as help names them, `feed` for the activity view. */
+export function watchComplete(argv: string[]): CompletionResult {
+  const flag = completingFlagValue(argv, watchFlags);
+  if (flag?.name === "view") return { items: watchViews.map((view) => ({ value: view === "activity" ? "feed" : view })), directive: "nofiles" };
+  if (flag) return { items: [], directive: flag.completion === "files" ? "default" : "nofiles" };
+  return { items: watchFlags.map((flag) => ({ value: `--${flag.name}`, description: flag.description })), directive: "nofiles" };
+}
+
 export function validateWatchArguments(args: ParsedArgs): void {
   presentationOf(args.values);
   const filter = args.values.view === "feed" ? "activity" : args.values.view ?? "activity";
@@ -21,21 +30,35 @@ export function validateWatchArguments(args: ParsedArgs): void {
 /** An invisible observer. Leaving this view never sends a control or stop request. */
 export async function watch(args: ParsedArgs): Promise<void> {
   validateWatchArguments(args);
-  try { await watchSession(args); }
+  const resolved: { space?: string } = {};
+  try { await watchSession(args, resolved); }
   catch (error) {
     if (!args.values.json) throw error;
-    const target = { requestedSpace: args.values.space ?? null };
-    writeStreamRecord(streamRecord("watch", "error", target, { code: isCommandFailure(error) ? error.code : "OPERATION_FAILED", message: "The observer could not establish its authorized view; this is not an empty successful snapshot." }));
+    // A refusal says why in its own words, as the plain form does. A target that is not running or
+    // will not admit this caller is refused as a ConnectRefusal, which carries the same classified
+    // failure a CommandFailure does, so it is read through `failure()` rather than falling into the
+    // generic sentence below under OPERATION_FAILED. Any other failure keeps that sentence, because
+    // its message is not written for an operator.
+    const failure = isCommandFailure(error) ? error : isConnectRefusal(error) ? error.failure() : undefined;
+    const target = { requestedSpace: args.values.space ?? null, ...(resolved.space === undefined ? {} : { space: resolved.space }) };
+    const reason = failure ? { message: failure.message, ...(failure.remedy === undefined ? {} : { remedy: failure.remedy }) } : { message: "The observer could not establish its authorized view; this is not an empty successful snapshot." };
+    writeStreamRecord(streamRecord("watch", "error", target, { code: failure ? failure.code : "OPERATION_FAILED", ...reason }));
     writeStreamRecord(streamRecord("watch", "end", target, { reason: "setup-failed" }));
-    process.exitCode = isCommandFailure(error) ? exitCode(error.outcome, error.code) : 5;
+    process.exitCode = failure ? exitCode(failure.outcome, failure.code) : 5;
   }
 }
 
-async function watchSession(args: ParsedArgs): Promise<void> {
+async function watchSession(args: ParsedArgs, resolved: { space?: string }): Promise<void> {
   const values = args.values as FlagValues<typeof watchFlags>;
   const filter = (values.view === "feed" ? "activity" : values.view ?? "activity") as WatchFilter;
   const interactive = !values.json && !values.plain && !inputDisabledByFlag() && process.stdout.isTTY && process.stdin.isTTY;
-  const connection = values.json ? await connectOrThrow(values, "admin") : await connectOrExit(values, "admin");
+  // connectOrThrow on BOTH paths. `connectOrExit` ends the process on one red line, so `watch` in a
+  // stopped project answered with no mesh heading, no Next and exit 1, while `history`, `channel`
+  // and `chat` in that same folder refused with the full block and exit 2 off the same refusal.
+  // `watch` declares a structured output, so the kernel renders a thrown refusal under its own code.
+  const connection = await connectOrThrow(values, "admin");
+  resolved.space = connection.space;
+  recordOperationSpace(connection.space);
   if (filter === "dms" && (connection.bearer || connection.creds)) throw new CommandFailure("refused", "UNSUPPORTED", "this observer is narrowed to channel traffic in authenticated spaces; no broader credential or private conversation was substituted");
   const user = connection.bearer ? values.json ? await userViewAuth(connection, "admin") : await userViewAuthOrExit(connection, "admin") : undefined;
   const ep = new CotalEndpoint({
@@ -72,15 +95,17 @@ async function watchSession(args: ParsedArgs): Promise<void> {
     try { writeSync(process.stdout.fd, "\x1b[?1049l\x1b[?25h"); } catch { /* terminal closed */ }
   };
   let leave: (() => void) | undefined;
-  const interrupt = () => leave?.();
+  // The handlers stay registered until the observer has stopped. With none of ours left, Ink's exit
+  // hook raises the signal again and the process dies before that cleanup.
+  const interrupt = () => { process.exitCode = 130; leave?.(); };
   const terminate = () => { process.exitCode = 143; leave?.(); };
   try {
     await view.start();
     writeSync(process.stdout.fd, "\x1b[?1049h");
     entered = true;
     process.once("exit", restore);
-    process.once("SIGINT", interrupt);
-    process.once("SIGTERM", terminate);
+    process.on("SIGINT", interrupt);
+    process.on("SIGTERM", terminate);
     const instance = render(createElement(WatchView, { view, initialFilter: filter, onLeave: () => leave?.() }), { exitOnCtrlC: false, maxFps: 30 });
     leave = () => instance.unmount();
     await instance.waitUntilExit();

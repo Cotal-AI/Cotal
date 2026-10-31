@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import { decode, fmtCreds, Types } from "@nats-io/jwt";
+import { credsAuthenticator } from "@nats-io/nats-core";
 import { createUser, fromSeed } from "@nats-io/nkeys";
+import { nativeNkeySigner } from "./nkey-signer.js";
 
 /**
  * A locally-generated agent identity (an nkey user keypair).
@@ -19,9 +21,10 @@ export interface Identity {
 }
 
 /** Generate a fresh user nkey identity locally. The seed is derived here and never
- *  leaves the generating process except as a creds file handed to its own agent. */
+ *  leaves the generating process except as a creds file handed to its own agent. NATS generates
+ *  the seed; the existing native signer derives its public key. */
 export function newIdentity(): Identity {
-  const kp = createUser();
+  const kp = nativeNkeySigner(createUser().getSeed());
   const seed = new TextDecoder().decode(kp.getSeed());
   return { id: kp.getPublicKey(), seed };
 }
@@ -79,6 +82,29 @@ export function idFromCreds(creds: string): string {
  *  callers decide whether that is fatal. */
 export function jwtFromCreds(creds: string): string | undefined {
   return creds.match(/BEGIN NATS USER JWT-----\s*([\s\S]*?)\s*------END NATS USER JWT/)?.[1].trim();
+}
+
+/** What is wrong with a creds text the NATS client cannot present. */
+export interface CredsProblem {
+  code: "empty" | "no-jwt-block" | "no-seed-block" | "crlf" | "invalid-seed";
+  /** The likely cause, which never quotes the text. */
+  message: string;
+}
+
+/** Why the NATS client cannot present this creds text, or undefined when it can. The client's own
+ *  parser decides, so a check made before dialing agrees with the dial. {@link jwtFromCreds} is
+ *  more lenient, so it cannot decide this. */
+export function credsProblem(creds: string): CredsProblem | undefined {
+  if (!creds.trim()) return { code: "empty", message: "it is empty" };
+  try {
+    credsAuthenticator(new TextEncoder().encode(creds))(undefined);
+    return undefined;
+  } catch {
+    if (!jwtFromCreds(creds)) return { code: "no-jwt-block", message: "it has no complete NATS user JWT block" };
+    if (!/BEGIN USER NKEY SEED-----\s*\S[\s\S]*?------END USER NKEY SEED/.test(creds)) return { code: "no-seed-block", message: "it has no complete user nkey seed block" };
+    if (creds.includes("\r")) return { code: "crlf", message: "it has Windows (CRLF) line endings" };
+    return { code: "invalid-seed", message: "its user nkey seed is not valid" };
+  }
 }
 
 /** The ACCOUNT a creds file authenticates as.

@@ -1,6 +1,6 @@
 import {
   assertDerivedOwnerToken, assertLifecycleToken, endpointRegistrationBarrier, endpointToken,
-  environmentBootstrapActor, EpEnvelopeError, isCasLoss, provisionEndpointGateOpen, remoteManagerActors,
+  environmentBootstrapActor, EpEnvelopeError, isCasLoss, provisionEndpointGateOpen, remoteManagerServePrincipal,
   serveIssuanceGateKv, type EnvironmentManagerGrantPin,
 } from "@cotal-ai/core";
 import { activateLifecycleAtUid, registryStores, type LifecycleRegistry } from "./lifecycle-registry.js";
@@ -31,7 +31,7 @@ export async function stageEnvironmentManagerAdmission(
     !Number.isSafeInteger(pin.expiresAt) || pin.expiresAt <= Math.floor(Date.now() / 1000))
     throw new EpEnvelopeError("failed-precondition", "environment manager admission coordinates are invalid or expired");
   const { space, authKv } = registryStores(reg);
-  const principal = `${pin.owner}.${remoteManagerActors(pin.instanceId).serve}`;
+  const principal = remoteManagerServePrincipal(pin.owner, pin.instanceId);
   const gate = serveIssuanceGateKv(authKv, space, { endpoint: "manager", instanceId: pin.instanceId });
   const eligible = async () => {
     const observed = await gate.observe();

@@ -20,7 +20,8 @@ throws for an unsupported transport or missing native helper, and for a socket w
 file descriptor. No PTY or custodian is started by reading the peer identity.
 
 The custodian raises its child's `oom_score_adj` to 500 and writes one line to `custodian.log`
-when the kernel refuses.
+when the kernel refuses. The manager's in-process `pty` runtime applies the same preference
+through the exported `preferSeatForOomKill`.
 
 The Linux `SO_PEERCRED` helper is compiled for the host arch by `pnpm build`. That is a
 developer tree, not a publishable one: it prints a host-dev-build banner and writes
@@ -80,7 +81,7 @@ can be tied to this boot, so every one is refused. A seat whose child still hold
 identity is reported as `live-child` and never signalled. With `drain`, every other seat goes
 through `reapSeat`. One it cannot prove gone is reported as `refused` and left on disk, and
 `reapSeat` may already have sent `SIGKILL` to its custodian.
-`cotal seats [--drain]` is the operator command over it.
+`cotal manager seats [--drain]` (also spelled `cotal seats`) is the operator command over it.
 
 Generation CAS, the crash journal, N/N-1 protocol compatibility, and manager-worker activation
 are later milestones. This package currently speaks a single implicit controller.

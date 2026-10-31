@@ -75,6 +75,10 @@ log("outcome", outcome.index)
 `turn` gives an agent one turn and returns its yield. `race` keeps the branch with the earliest recorded completion clock.
 `notify` carries a bounded decision record for an agent's next turn. It does not send prose into a channel.
 
+### Personal native conversation [#participant]
+
+An approved personal native conversation can join its own run with `participant({ name? })`. The immutable admission pins its exact owner, actor, and lifecycle. `cotal_turn_participate` opts that conversation into a short self-only turn lease, renewed after reconnect or manager restart. The handle grants no stop, attach, or terminal custody. See [personal participants](workflow-effects.mdx#participant).
+
 ## The mental model [#the-mental-model]
 
 Pure code calculates values. Effects interact with agents, time, decisions, and messages.
@@ -92,6 +96,10 @@ The journal records enough information to explain both results and failures in t
 
 A scripted simulator and dry run exercise a program before it reaches agents.
 The [language behavior reference](workflow-runtime.mdx#language-and-simulation) retains the syntax limits, scope error rules, and virtual-clock behavior.
+
+## Reusable helpers [#reusable-helpers]
+
+Helper calls share named-step occurrence counters. Give each helper instance a distinctly named single-branch `parallel` scope to preserve its namespace. See [reusable helpers](workflow-runtime.mdx#reusable-helpers).
 
 ## Continuing a run [#continuing-a-run]
 

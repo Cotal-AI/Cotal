@@ -158,13 +158,19 @@ export async function readNativeIssuance(kv: KV, userNkey: string): Promise<Nati
   return record;
 }
 
+/** A natkey row that is not valid evidence: the store is inconsistent, so a prune pass that meets
+ *  one must not be retried as if the store had only been unreachable. */
+export class CorruptNativeIssuanceEvidence extends Error {}
+
 /**
  * Remove the rows whose minted JWT expired more than the clock tolerance ago (a session-caller's
  * row carries its grant's expiry, so it lives as long as that grant). The walk is the leader-served
  * `STREAM.MSG.GET` `next_by_subj` read over `natkey.` (no consumer: none may be created on the auth
  * bucket), and each removal is a KV purge pinned to the exact sequence read. A row that does not
- * parse throws: corrupt evidence is the caller's fault to surface, never a skipped row. The purge
- * marker carries the bucket's own marker TTL, so it expires too. Expired service evidence is
+ * parse throws {@link CorruptNativeIssuanceEvidence}: corrupt evidence is the caller's fault to
+ * surface, never a skipped row. Any other throw comes from the store reads and purges, and leaves
+ * the rows as they were, because a purge is pinned to the sequence read. The purge marker carries
+ * the bucket's own marker TTL, so it expires too. Expired service evidence is
  * retained: elapsed JWT time alone is not topology-qualified absence or terminal retirement.
  */
 export async function pruneNativeIssuance(registry: LifecycleRegistry, nowSec: number): Promise<{ live: number; pruned: number; retainedService: number }> {
@@ -179,10 +185,15 @@ export async function pruneNativeIssuance(registry: LifecycleRegistry, nowSec: n
     const op = m.header?.get("KV-Operation");
     if (op === "DEL" || op === "PURGE") continue;
     const key = m.subject.slice(prefix.length);
-    if (assertUserNkey(key.slice("natkey.".length)) !== key) throw new Error(`natkey: stored subject ${JSON.stringify(m.subject)} is not a natkey row`);
-    const record = parseNativeIssuanceRecord(m.json());
-    if (record.service && nativeIssuanceKey(record.service.connection.userNkey) !== key)
-      throw new Error("natkey: service receipt key does not match its connection");
+    let record: NativeIssuanceRecord;
+    try {
+      if (assertUserNkey(key.slice("natkey.".length)) !== key) throw new Error(`natkey: stored subject ${JSON.stringify(m.subject)} is not a natkey row`);
+      record = parseNativeIssuanceRecord(m.json());
+      if (record.service && nativeIssuanceKey(record.service.connection.userNkey) !== key)
+        throw new Error("natkey: service receipt key does not match its connection");
+    } catch (e) {
+      throw new CorruptNativeIssuanceEvidence(e instanceof Error ? e.message : String(e), { cause: e });
+    }
     if (record.exp + CLOCK_TOLERANCE_SEC < nowSec && record.service) {
       retainedService++;
     } else if (record.exp + CLOCK_TOLERANCE_SEC < nowSec) {

@@ -39,10 +39,11 @@ function cfg(over: Partial<AgentConfig> = {}): AgentConfig {
   } as AgentConfig;
 }
 
-// A minimal MeshAgent stub — buildOrientation only reads id/status/attention/roster/inboxCount
-// (plus presenceView since #1229: rendering consults the roster's trust state).
+// A minimal MeshAgent stub — buildOrientation only reads id/status/attention/inboxCount and the
+// roster read it is handed; cotal_roster reads it through readRoster (since #1229 a failed read
+// is part of the rendering).
 function agentStub(
-  over: { id?: string; roster?: any[]; unread?: number; presenceWriteFailure?: unknown; presenceView?: any; connected?: boolean } = {},
+  over: { id?: string; roster?: any[]; unread?: number; presenceWriteFailure?: unknown; readFailure?: Error; connected?: boolean } = {},
 ): MeshAgent {
   return {
     id: over.id ?? "ALICEID0000000000000000000000000000000000000",
@@ -51,11 +52,14 @@ function agentStub(
     connected: over.connected ?? true,
     transportConnected: true,
     presenceWriteFailure: over.presenceWriteFailure,
-    roster: () => over.roster ?? [],
+    readRoster: async () => ({ roster: over.roster ?? [], ...(over.readFailure ? { failure: over.readFailure } : {}) }),
     inboxCount: () => over.unread ?? 0,
-    presenceView: () => over.presenceView ?? { state: "current", fresh: true },
   } as unknown as MeshAgent;
 }
+
+/** buildOrientation over the roster read the cotal_orientation tool hands it. */
+const orient = async (agent: MeshAgent, c: AgentConfig, visible: Parameters<typeof buildOrientation>[2], at: number) =>
+  buildOrientation(agent, c, visible, at, await agent.readRoster());
 
 const presence = (id: string, name: string, role?: string, status = "idle") => ({
   card: { id, name, role },
@@ -94,73 +98,54 @@ const presence = (id: string, name: string, role?: string, status = "idle") => (
     stuck: true,
   };
   const agent = agentStub({
-    roster: [presence("BOBID00000000000000000000000000000000000000", "bob", "worker")],
+    roster: [presence("BOBID00000000000000000000000000000000000000", "bob", "worker", "working")],
     presenceWriteFailure: failure,
   });
-  const text = renderOrientation(buildOrientation(agent, cfg({ creds: "CREDS" }), [], 1));
+  const text = renderOrientation(await orient(agent, cfg({ creds: "CREDS" }), [], 1));
   assert.match(text, /presence view: NOT LIVE/,
     "orientation says the peer snapshot is not live once consecutive presence failures cross one TTL");
   const roster = cotalToolSpecs(cfg({ creds: "CREDS" })).find((spec) => spec.name === "cotal_roster")!;
   const result = await roster.run(agent, cfg({ creds: "CREDS" }), {});
   assert.match(result.text, /Presence view is NOT LIVE/,
     "cotal_roster labels its rows as last-known while this endpoint's presence writer is stuck");
+  assert.match(result.text, /bob\b[^\n]* — working[^\n]* · progress unknown/,
+    "cotal_roster names a working peer's progress as unknown");
 }
 
-// 4c — #1229: the roster's trust state is part of the rendering. An `unpopulated` view is a
-// reconnect refill in progress: rows are partial and a missing name is not an absence verdict.
+// 4c — #1229: a failed roster read is part of the rendering. The rows are last-known, a missing
+// name is not an absence verdict, and the read's own error (here the missing grant) is printed.
 {
   const agent = agentStub({
     roster: [presence("BOBID00000000000000000000000000000000000000", "bob", "worker")],
-    presenceView: { state: "unpopulated", fresh: false },
+    readFailure: new Error("presence read refused for alice: this credential may not publish $JS.API.DIRECT.GET.KV_cotal_presence_demo"),
   });
-  const o = buildOrientation(agent, cfg({ creds: "CREDS" }), [], 1);
-  assert.equal(o.presence.live, false, "orientation does not call a not-yet-populated view live");
-  assert.ok(typeof o.presence.detail === "string" && o.presence.detail.length > 0, "the detail names the observer's condition");
+  const o = await orient(agent, cfg({ creds: "CREDS" }), [], 1);
+  assert.equal(o.presence.live, false, "orientation does not call a failed read live");
+  assert.ok((o.presence.detail ?? "").includes("DIRECT.GET.KV_cotal_presence_demo"), "the detail names the read's own error");
   assert.match(renderOrientation(o), /presence view: NOT LIVE/,
-    "orientation says the peer snapshot is not live while the presence watch has not replayed its initial snapshot (#1229)");
+    "orientation says the peer snapshot is not live when the presence read failed (#1229)");
   const roster = cotalToolSpecs(cfg({ creds: "CREDS" })).find((spec) => spec.name === "cotal_roster")!;
   const result = await roster.run(agent, cfg({ creds: "CREDS" }), {});
-  assert.match(result.text, /initial snapshot/i,
-    "cotal_roster says the presence watch has not completed its initial snapshot under an unpopulated view (#1229)");
-  assert.match(result.text, /not.*absence verdict/i,
-    "cotal_roster says a missing name is not an absence verdict while the roster refills (#1229)");
-  assert.match(result.text, /bob/, "the partial row is still shown — rendering never refuses (#1229)");
+  assert.match(result.text, /presence read failed/i, "cotal_roster says the presence read failed (#1229)");
+  assert.match(result.text, /DIRECT\.GET\.KV_cotal_presence_demo/, "cotal_roster names the grant the credential lacks");
+  assert.match(result.text, /not.*absence verdict/i, "cotal_roster says a missing name is not an absence verdict (#1229)");
+  assert.match(result.text, /last-known/i, "cotal_roster labels the rows as last-known (#1229)");
+  assert.match(result.text, /bob/, "the last-known row is still shown — rendering never refuses (#1229)");
 }
 
-// 4d — a `stale` view renders last-known rows and names the instant the view went silent.
-{
-  const staleSince = 1_700_000_000_000;
-  const agent = agentStub({
-    roster: [presence("BOBID00000000000000000000000000000000000000", "bob", "worker")],
-    presenceView: { state: "stale", fresh: false, staleSince },
-  });
-  const o = buildOrientation(agent, cfg({ creds: "CREDS" }), [], 1);
-  assert.equal(o.presence.live, false, "orientation does not call a stale view live");
-  assert.ok((o.presence.detail ?? "").includes(new Date(staleSince).toISOString()),
-    "the stale detail names the silent-since instant as an ISO timestamp (#1229)");
-  assert.match(renderOrientation(o), /presence view: NOT LIVE/, "orientation renders a stale view as not live (#1229)");
-  const roster = cotalToolSpecs(cfg({ creds: "CREDS" })).find((spec) => spec.name === "cotal_roster")!;
-  const result = await roster.run(agent, cfg({ creds: "CREDS" }), {});
-  assert.match(result.text, new RegExp(new Date(staleSince).toISOString().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
-    "cotal_roster names the staleSince instant under a stale view (#1229)");
-  assert.match(result.text, /last-known/i, "cotal_roster labels stale rows as last-known (#1229)");
-  assert.match(result.text, /bob/, "the last-known row is still shown (#1229)");
-}
-
-// 4e — control: a `current` view renders exactly as before, with no view preface.
+// 4e — control: a read that succeeded renders exactly as before, with no preface.
 {
   const agent = agentStub({
     roster: [presence("BOBID00000000000000000000000000000000000000", "bob", "worker")],
-    presenceView: { state: "current", fresh: true },
   });
-  const o = buildOrientation(agent, cfg({ creds: "CREDS" }), [], 1);
-  assert.equal(o.presence.live, true, "a current view is live");
-  assert.equal(o.presence.detail, undefined, "a current view carries no detail");
-  assert.doesNotMatch(renderOrientation(o), /NOT LIVE/, "a current view renders as live (#1229)");
+  const o = await orient(agent, cfg({ creds: "CREDS" }), [], 1);
+  assert.equal(o.presence.live, true, "a read that succeeded is live");
+  assert.equal(o.presence.detail, undefined, "a read that succeeded carries no detail");
+  assert.doesNotMatch(renderOrientation(o), /NOT LIVE/, "a read that succeeded renders as live (#1229)");
   const roster = cotalToolSpecs(cfg({ creds: "CREDS" })).find((spec) => spec.name === "cotal_roster")!;
   const result = await roster.run(agent, cfg({ creds: "CREDS" }), {});
-  assert.doesNotMatch(result.text, /initial snapshot|last-known/i,
-    "a current roster render carries none of the view-preface sentences (#1229)");
+  assert.doesNotMatch(result.text, /read failed|last-known/i,
+    "a current roster render carries none of the preface sentences (#1229)");
   assert.match(result.text, /bob/, "the row is shown");
 }
 
@@ -168,7 +153,7 @@ const presence = (id: string, name: string, role?: string, status = "idle") => (
 {
   const authCfg = cfg({ creds: "CREDS", subscribe: ["general"], allowSubscribe: ["general", "incident"], allowPublish: [] });
   const visible = cotalToolSpecs(authCfg).map((s) => ({ name: s.name, title: s.title }));
-  const o = buildOrientation(agentStub(), authCfg, visible, 1_700_000_000_000);
+  const o = await orient(agentStub(), authCfg, visible, 1_700_000_000_000);
 
   assert.deepEqual(o.identity, {
     state: "bound",
@@ -188,7 +173,7 @@ const presence = (id: string, name: string, role?: string, status = "idle") => (
   assert.deepEqual(o.access.post, []); // default-deny ⇒ read-only
   assert.equal(o.generatedAt, 1_700_000_000_000);
 
-  const openO = buildOrientation(agentStub(), cfg({ creds: undefined }), [], 1);
+  const openO = await orient(agentStub(), cfg({ creds: undefined }), [], 1);
   assert.equal(openO.access.authMode, false);
 
   // read-only renders explicitly; readAcl line appears only when it differs from read.
@@ -198,7 +183,7 @@ const presence = (id: string, name: string, role?: string, status = "idle") => (
   assert.match(text, /Model pin: none recorded/);
   assert.equal(o.identity.model, undefined);
 
-  const pinned = buildOrientation(agentStub(), cfg({ model: "grok-4.6" }), [], 1);
+  const pinned = await orient(agentStub(), cfg({ model: "grok-4.6" }), [], 1);
   assert.equal(pinned.identity.model, "grok-4.6");
   assert.match(renderOrientation(pinned), /Model pin: grok-4\.6/);
 }
@@ -230,8 +215,8 @@ const presence = (id: string, name: string, role?: string, status = "idle") => (
     },
   });
 
-  await cell("structured identity", () => {
-    const orientation = buildOrientation(agentStub({ id: "u_abcdefghijklmnopqrstuvwxyz.actor_name" }), identityCfg, [], 1);
+  await cell("structured identity", async () => {
+    const orientation = await orient(agentStub({ id: "u_abcdefghijklmnopqrstuvwxyz.actor_name" }), identityCfg, [], 1);
     const identity = orientation.identity as unknown as Record<string, unknown>;
     assert.equal(identity.state, "bound", "a connected endpoint reports a bound identity state");
     assert.deepEqual(identity.display, { name: "display-name", role: "worker" }, "display identity is explicitly labelled");
@@ -242,7 +227,7 @@ const presence = (id: string, name: string, role?: string, status = "idle") => (
 
   await cell("structured unbound tool result", async () => {
     const agent = agentStub({ id: "u_abcdefghijklmnopqrstuvwxyz.actor_name", connected: false });
-    const orientation = buildOrientation(agent, identityCfg, [], 1);
+    const orientation = await orient(agent, identityCfg, [], 1);
     const identity = orientation.identity as unknown as Record<string, unknown>;
     assert.equal(identity.state, "unbound", "a not-yet-bound endpoint reports an unbound identity state");
     const spec = cotalToolSpecs(identityCfg).find((candidate) => candidate.name === "cotal_orientation");
@@ -260,7 +245,7 @@ const presence = (id: string, name: string, role?: string, status = "idle") => (
   const c = cfg({ creds: "CREDS", capabilities: ["spawn"] });
   const gated = cotalToolSpecs(c).map((s) => s.name).filter((n) => n !== "cotal_orientation");
   const visible = cotalToolSpecs(c).map((s) => ({ name: s.name, title: s.title }));
-  const o = buildOrientation(agentStub(), c, visible, 1);
+  const o = await orient(agentStub(), c, visible, 1);
 
   const grouped = [...o.tools.core, ...o.tools.more].map((t) => t.name);
   assert.ok(!grouped.includes("cotal_orientation"), "the card omits the orientation tool itself");
@@ -276,7 +261,7 @@ const presence = (id: string, name: string, role?: string, status = "idle") => (
     presence("BOBID00000000000000000000000000000000000000", "bob", "worker", "working"),
     presence("CARID00000000000000000000000000000000000000", "carol"),
   ];
-  const o = buildOrientation(agentStub({ roster, unread: 3 }), cfg({ creds: "CREDS" }), [], 1);
+  const o = await orient(agentStub({ roster, unread: 3 }), cfg({ creds: "CREDS" }), [], 1);
   assert.equal(o.peers.present, 2, "self excluded from peer count");
   assert.match(o.peers.summary, /bob\/worker \(working · progress unknown\)/,
     "a textual working peer must expose that no outside progress observation exists");
@@ -322,7 +307,7 @@ const presence = (id: string, name: string, role?: string, status = "idle") => (
   const names = (c: AgentConfig) => cotalToolSpecs(c).map((s) => s.name);
   const cardTools = (c: AgentConfig) => {
     const visible = cotalToolSpecs(c).map((s) => ({ name: s.name, title: s.title }));
-    const o = buildOrientation(agentStub(), c, visible, 1);
+    const o = buildOrientation(agentStub(), c, visible, 1, { roster: [] });
     return [...o.tools.core, ...o.tools.more].map((t) => t.name);
   };
 
@@ -338,7 +323,7 @@ const presence = (id: string, name: string, role?: string, status = "idle") => (
   assert.ok(!cardTools(noCap).includes("cotal_personas"), "740:the orientation card must not claim cotal_personas for a user-auth agent without the capability");
   // The card's own access line is the same expression: a user-auth mesh IS broker-enforced.
   assert.equal(
-    buildOrientation(agentStub(), noCap, [], 1).access.authMode,
+    (await orient(agentStub(), noCap, [], 1)).access.authMode,
     true,
     "740:a user-auth mesh is auth mode, not open mode, on the orientation card",
   );
@@ -361,7 +346,7 @@ const presence = (id: string, name: string, role?: string, status = "idle") => (
   assert.ok(names(open).includes("cotal_spawn"), "740:open mode must still be advertised cotal_spawn with no capability");
   assert.ok(names(open).includes("cotal_persona"), "740:open mode must still be advertised cotal_persona with no capability");
   assert.ok(names(open).includes("cotal_personas"), "740:open mode must still be advertised cotal_personas with no capability");
-  assert.equal(buildOrientation(agentStub(), open, [], 1).access.authMode, false, "740:open mode is still open mode on the card");
+  assert.equal((await orient(agentStub(), open, [], 1)).access.authMode, false, "740:open mode is still open mode on the card");
 
   const tokenMode = configFromEnv({ COTAL_NAME: "alice", COTAL_SPACE: "demo", COTAL_TOKEN: "shared" });
   assert.ok(names(tokenMode).includes("cotal_spawn"), "740:token mode is not an identity plane and must still be advertised cotal_spawn");

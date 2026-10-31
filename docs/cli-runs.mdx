@@ -7,25 +7,32 @@ audience: operators
 
 Workflow commands operate recorded runs and durable step journals. A run receipt records acceptance; it does not establish live agent progress or task completion.
 
+
 ## run [#run]
 
-`run` operates durable workflow runs written in cotal-lang. `r` is its shorthand.
+Operate durable workflow runs (cotal-lang programs) from the terminal.
 
 ```bash
 cotal run start --file <program> [--timeout <dur>] [--local --admit-read <channels> --admit-publish <channels>] [--on <instance>]
 cotal run resume <runId> [--local --file <program>] [--on <instance>]
-cotal run ps [--endpoint <ep>] [--json] [--on <instance>]
-cotal run ps --page --on <instance> [--limit <n>] [--cursor <cursor>] [--endpoint <ep>]
-cotal run journal <runId> [--endpoint <ep>] [--json] [--on <instance>]
+cotal run [--endpoint <ep>] [--json] [--on <instance>]
+cotal run --page --on <instance> [--limit <n>] [--cursor <cursor>] [--endpoint <ep>]
+cotal run show <runId> [--endpoint <ep>] [--limit <n>] [--json] [--on <instance>]
 cotal run answer <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>] [--on <instance>]
 cotal run amend <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>] [--on <instance>]
 cotal run revoke <runId> --local --by <who> --reason <text> [--endpoint <ep>]
-cotal run migrate <runId> --local --file <program> [--endpoint <ep>]
+cotal run check <runId> <program> [--endpoint <ep>]
 ```
 
-Hosted and local broker commands take `--space <s>`, `--server <url>` and `--creds <path>` to select
-the mesh and credential, subject to the local signing requirements below. Offline commands reject
-mesh and caller selection. Seat commands use the launched seat's own caller context.
+`ps` (or `list`), `journal` and `migrate` still work as compatibility aliases of bare `run`, `show`
+and `check`.
+
+Every verb also takes `--space <s>`, `--server <url>` and `--creds <path>` to pick the mesh and the
+credential. A hosted verb refuses a raw `--creds` file `UNSUPPORTED`, exit 2, because the file
+carries no endpoint-caller triple for the manager call and that route cannot mint one. Its next step
+is to run the verb again without `--creds`, in the mesh's project folder or with `--space`, where
+the CLI mints the one-shot caller itself.
+
 
 ### Manager selection
 
@@ -38,108 +45,181 @@ each live manager.
 pin never falls back to another manager. Rich run reports label an explicit pin
 as the requested manager, and the JSON target carries `requestedManagerInstance`.
 Follow-up commands printed by the CLI retain the same explicit pin and fill
-in a returned run ID only when it matches the native run-token shape. Keep the
-pin on later status, answer and resume calls.
+in the run ID the command named or the manager returned, only when it matches the native
+run-token shape. Keep the pin on later status, answer and resume calls.
 
-### Run activation
+A run ID that is not 1 to 64 letters, digits, `_` or `-` is refused as `USAGE_INVALID`, exit 1,
+on every verb that takes one, before anything is contacted.
+A hosted verb the manager refuses reports the outcome and code as other commands do, and with
+`--json` as one refusal envelope on stdout. A refusal the manager makes before acting is refused: a
+denied credential or a step in the wrong state exits 2, and a program that does not validate is
+`SCHEMA_INVALID`, exit 1, like other invalid input. A run or step it holds no record of is `TARGET_NOT_FOUND`, with `cotal run` or
+`cotal run show <runId>` as the next step. A manager activates at most 8 runs at once, counting
+each `start` or `resume` until its run is recorded. One more is refused `LIFECYCLE_BLOCKED`, exit 2,
+before anything is written; the refusal names the runs still activating, and the next step is to
+wait until one has activated and run it again. Any other refusal of `start`, `resume`, `answer` or
+`amend` may follow a recorded change, so it is unknown, exit 3, and is not retried.
 
-`start` hands the program to the selected manager. The manager validates it, mints the run ID,
-drives the program in its own process, and answers with the ID once the run is recorded. The
-record never takes a caller-supplied run ID. A program that does not validate is refused with
-every problem listed. Source is accepted as a positional file or through `--file`, never both.
+An unpinned hosted verb run by the operator reads the space's service registry first. When it
+lists no live manager, as after `cotal down stack-manager`, the verb refuses `TARGET_UNAVAILABLE`
+(exit 2) at once, as `ps` does, and names bare `cotal up` as the next step, instead of waiting out
+the manager's answer deadline.
 
-`resume` asks the manager to take an existing run back and continue from its journal. Hosted
-resume uses the recorded program and refuses `--file`. Neither hosted verb accepts `--endpoint`;
-the manager records runs under its own endpoint. `--timeout` sets the default checkpoint timeout
-for a drive, with a default of `1h`.
+A mesh a run verb cannot resolve or connect to is refused before any request under the refusal's
+own code, hosted or `--local`, as `ps` refuses it. With no mesh running that is `TARGET_NOT_FOUND`,
+exit 2, and with `--json` one refusal envelope on stdout.
 
-### Recorded state
+`start` hands the program to the mesh's manager, which validates it, mints the run id (the record
+never takes a caller-supplied one), drives it in its own process, and answers with the id once the
+run is recorded; a program that does not validate is refused with every problem listed, each
+control character in it shown as its `\uXXXX` escape. Every verb
+that takes a program file refuses a missing one with `TARGET_NOT_FOUND` and one this account cannot
+read with `PERMISSION_DENIED`, exit 2, and a folder with `USAGE_INVALID`, exit 1.
+A `start` interrupted with Ctrl-C or `SIGTERM` after its request went out reports outcome `unknown`,
+because the manager may already have recorded the run, and exits 130 or 143. List the runs with
+`cotal run` before starting it again.
+`resume` asks the manager to take an existing run back and continue it from its step journal; the
+source is the recorded program, so no `--file` is taken. A run recorded `completed` or `failed` is
+refused `LIFECYCLE_BLOCKED` (exit 2) and gets no new activation, because nothing is left to continue;
+the next step is `cotal run show <runId>`. Neither takes `--endpoint`: the manager records
+its runs under its own endpoint, and naming another is refused. Bare `run` lists the run records and
+`show` renders one run's durable records; both only inspect. `show` reads the
+journal from the manager in pages, each one reply, so a journal larger than the broker's payload
+limit stays readable. A record or a journal row too large for one reply refuses `UNSUPPORTED`,
+exit 2, and names `cotal run show <run-id> --local`, which reads the run's stream from its
+project folder with no reply. A manager from release 0.99.3 or earlier reads no journal page, so
+through it both refuse `UNSUPPORTED` and name the same local read. An open pause prints its question
+under `Needs an answer`, and only then does Next offer `answer`. A checkpoint with a `to` prints
+beside its question whom it escalates to, and once it has escalated, until when that attempt is open. A pause counts as open while its
+last journal row is pending, so a settled or expired one is not listed there.
+A pause settled with an accepted answer prints its value as JSON plus the recorded answerer,
+artifact when present, time, and answer id, then one `amended` line per later amendment, in the
+order the store committed them, so the last is the current position. A value longer than 120
+characters is cut there, with a line that says so; `--json` carries it whole.
+Expired pauses and ordinary steps print no answer line.
+A step whose last journal row recorded an error prints its outcome and the recorded message under
+`Step errors`, a caught failure included, with each control character shown as its `\uXXXX`
+escape. A run that failed records its cause on its status. Its recorded state reads
+`failed (<code>)` in the run list and the run view when the error carries a language code, and the run
+view prints the message under `Failure`. When a step's error is the run's failure, `Failure` names
+that step and the message stays under `Step errors`. A run that failed before its status recorded a
+cause shows only `failed`. A failure raised by program code outside any step is recorded in no
+journal row. When the status recorded no cause either, the view says so under `Failure`. Either way
+it names `cotal service logs stack-manager --space <space>`, because a hosted run's cause is in its
+manager's log.
+The failure records no line or column in the program: a source position belongs to a problem
+`run validate` reports before the program runs.
 
-Bare `run`, `run list`, and `run ps` list authorized run records. `run show` and `run journal`
-read one run's recorded state, open requests, and journal. These are inspection commands.
-The text detail view shows open questions and the last 20 journal rows. Text output is presentation
-and is not a stable parsing target.
+A run recorded `released` has no recorded reason. Its `Released` section points to the executing
+manager's log for a hosted run or the driving process's output for a locally driven run. A journal
+read does not establish that execution host or log location, so the view does not guess one.
+A journal entry larger than the broker's configured `max_payload`, such as a large checkpoint
+question, can release a run with `L5010 Journal append rejected`. Repeating `resume` while the
+cause remains can release it again; this view does not change that state or prevent the retry.
 
-`--json` produces one finite result envelope, both for hosted reads and for `ps` or `journal`
-with `--local`. Lists retain their rows in `result.items`. Detail results retain the full returned
-status and journal in `result.view`, including answer and amendment metadata that the bounded
-text table does not render. `--plain` uses the same report without terminal styling.
-
-A list row carries `runId`, `endpoint`, and, when recorded, `state`, `holder`, `epoch`,
-`journalHigh`, `forkedFrom`, `startedAt`, and `programHash`. A run with no recorded program has
-no `programHash`. `revoked` and `revocationUnreadable` distinguish revocation observations from
-the record's state. An unreadable list marker produces `REVOCATION_NOT_CHECKED` and a partial
-result, exit 4. It does not establish that the run may continue.
-
-A journal row is an `activation` or a `step`. Step rows carry the canonical `step` key, `effect`
-kind, `name`, `state`, `outcome`, `startedAt`, and, once recorded, `status`, `errorCode`, and
-`endedAt`. Times use epoch milliseconds. An open pause adds `asks`, `deadlineAt`, and, when
-present, `addressee`. A checkpoint also retains its armed `onExpiry`. A checkpoint opened before
-that field was recorded has none.
-
-A settled checkpoint or `ask` with an accepted answer retains `answer`, including its value,
-answerer, optional artifact, time, and answer ID. `amendments` follow the store's committed order;
-the last amendment is the latest recorded position. Expired pauses and ordinary steps have no
-answer. The accepted answer remains the one the run acted on.
-
-Hosted start, resume, answer, and amend also support finite JSON and plain receipts. Their
-JSON result has `kind: "run-receipt"`, the `action`, and the native returned `result`.
-The local drive, local mutations, and local checks retain native output and refuse `--json`
-and `--plain` rather than claiming structured receipts.
-
-### Diagnostic pages
-
-`ps --page`, which is not in release 0.88.0 or earlier, asks one manager for a single bounded
+A program's `log(...)` lines are not journalled, so `show` does not print them. A hosted
+run writes each line to its manager's log as `run <run-id>: log <text>`, which
+`cotal service logs stack-manager --space <space>` reads, and a resumed run writes the lines before
+its resume point again. `--local` prints them in the terminal that drives the run.
+`--json` on the run list or `show` writes one envelope on stdout, as other commands do, and nothing on
+stderr, whether the manager answers or `--local` reads. The list puts its rows under `result.items`.
+`show` puts the run under `result.view`: its `runId`, `endpoint`, recorded `spec` and `status`,
+its `programHash` as the list row carries it, and its rows under `result.view.journal`. A program
+record that cannot be read gives `programUnreadable` with its reason, and no `programHash`. A list row carries `runId`, `endpoint`, `state`, `holder`, `epoch`,
+`journalHigh`, `forkedFrom`, `startedAt` and `programHash` (the values the program's `run()`
+reports; `programHash` is absent for a run with no recorded program), `failure` on a failed run
+with its `code` and `message`, and `revoked` or `revocationUnreadable` when the marker says so. A journal row is an `activation` or a `step`. A
+step row carries its `step` key, the `effect` kind and its `name`, `state`, `outcome`, the recorded
+`status` and `errorCode` once settled, the recorded `errorMessage` of a failed or refused step,
+and `startedAt` and `endedAt` in epoch milliseconds. An open
+pause adds its `asks`, its `deadlineAt`, and for a checkpoint the `onExpiry` it was armed with and
+the `addressee` its `to` names. A checkpoint's escalation is armed with `proceed`, so it never
+escalates again. A settled pause adds its `answer` and its `amendments`, as the text view prints
+them. A field the
+journal does not record is absent: a checkpoint opened before `onExpiry` was recorded carries none.
+An unreadable revocation marker makes the result partial, exit 4, with a `REVOCATION_NOT_CHECKED`
+warning naming the run. A `run --endpoint <endpoint>` that matches no run lists nothing and says so,
+naming the endpoints runs are recorded under, with an `ENDPOINT_HAS_NO_RUNS` warning. The text view is presentation and is not a stable parsing target. With
+`--local`, only the list, `show`, `answer` and `amend` take `--json` or `--plain`. Any other local form
+refuses either flag `USAGE_INVALID`, exit 1: `start --local` and `resume --local` name the
+manager's form, which takes it, and `revoke` and `check`, which have no other form, name the same
+command without it.
+`run --page`, which is not in release 0.88.0 or earlier, asks one manager for a single bounded
 diagnostic JSON page instead of the full list:
 `--limit` takes 1 to 16 rows (default 8), and `--cursor` continues a scan from a returned
 `nextCursor`. It requires `--on` and refuses `--local`, and a page proves neither absence nor
 ownership ([Diagnostic inventory](workflows.mdx#diagnostic-inventory)).
-
-### Revocation
-
-`revoke` writes the run's revocation marker from the project folder. It requires `--local`,
-`--by`, and `--reason`. Revocation is separate from task cancellation.
-See [Workflow admission](workflows.mdx).
-
-### Pause answers
-
+`revoke` writes the run's revocation marker from the project folder; `--by` and `--reason` are
+required ([workflows](workflows.mdx)).
 `answer` resolves an open
 checkpoint through the manager, presenting as the holder that armed it; the manager records the
 answerer from your credential, so no `--by` is taken there. A settled step refuses a second
-`answer`. `amend` records a changed position on a settled checkpoint or `ask`: it files a new
-answer beside the accepted one, naming it, and the journal lists it under the step. The pause stays
+`answer` with `TARGET_NOT_FOUND`, also when it is sent before the run records the first, and a
+revoked run refuses every answer with `LIFECYCLE_BLOCKED` and files nothing. A step the run holds no
+open request at is also `TARGET_NOT_FOUND`; when an open checkpoint or `ask` has the name you typed,
+as `frage` names `/checkpoint:frage#0`, the next step gives its full key, and several matches are
+listed for you to pick from. A run ID that no run is recorded under is `TARGET_NOT_FOUND` too, with
+or without `--local`, and the refusal says no run is recorded under that ID. An
+answer without `--value` carries no value: the step settles as answered, and the
+program's checkpoint result has no `value`. `--value` is refused with `SCHEMA_INVALID` before
+anything is sent when the record would not hold what you typed: an object that names a key twice,
+a number outside the range JSON carries (such as `1e999`), or a value nested more than 1000 levels
+deep. An empty or blank `--artifact` is refused with `USAGE_INVALID`. The receipt of `answer` and
+`amend` names the step, the value it filed or that none was given, any artifact and the answer id. A value longer than
+120 characters is cut there too, with a line that says so. With `--json` they are in
+`result.answer`, whole, where `valueGiven` says whether a value was sent. `amend` records a changed
+position on a settled checkpoint or `ask`: it files a new answer beside the accepted one, naming it, and the journal lists it under the step. The pause stays
 settled and the run keeps the answer it acted on. A step that is still open or settled without an
-answer refuses an amend. A spawned seat may amend only an answer recorded under its own name.
-
-### Migration check
-
-`migrate` runs the migrate check of an
-edited program against a run's journal, from this terminal under a read credential (the check grammar selects `--local`; the manager serves no run-migrate command): it prints whether the migration is admissible,
-every orphaned step with its verdict and code, and exits 0 on admissible and non-zero on not. It
-writes nothing: the commit that would file the migration is not reachable yet, and the report
-says so. `migrate` refuses `--adopt`, `--release` and `--discard-approvals`, since they decide what a
-commit does and the check files nothing.
-
-### Local drive
-
-`--local` drives in this process instead, under a run credential minted from the project folder's trust material, with a separate
-mediator credential and connection for the drive, and is the path on a bare broker with no manager or for a run with no recorded program
+answer refuses an amend. So does a run ID that no run is recorded under, and that refusal says no
+run is recorded under that ID. With `--local` these refusals are `TARGET_NOT_FOUND`, exit 2, as the
+hosted ones are, since nothing was written. The run records an accepted answer a moment after `answer` returns, and an
+amend sent in between is refused with a message saying the answer is not recorded yet; amend again
+once `run show` lists it. A spawned seat may amend only an answer recorded under its own name.
+`check` replays a run's journal against an edited program, from this terminal under a read
+credential (`--local` only; the manager serves no run-migrate command). It prints whether the
+migration is admissible, every orphaned step with its verdict and code, and exits 0 on admissible
+and non-zero on not. An edited program that does not validate is refused before the replay, with
+each problem's code, position, cause and fix. It writes nothing: the commit that would file the
+migration is not reachable yet, and the report says so. A run ID with no record on the endpoint is refused
+`TARGET_NOT_FOUND`, exit 2, as `run show` refuses it. `check` refuses `--adopt`, `--release` and `--discard-approvals`, since they decide what a
+commit does and the check files nothing. `--timeout` sets the default
+limit of a checkpoint, `ask` or turn that sets none of its own (default 1h). A checkpoint that
+expires under `onExpiry: "fail"` says in its L4007 whether the deadline came from its own `timeout`
+or from this default. It takes a duration
+longer than zero, such as `30m`, and refuses anything else with `USAGE_INVALID` before the run starts. `--on <instance>` sends a hosted verb to one manager
+instance. It takes the full instance id `ps` prints, not a manager name or host. On a mesh whose managers this terminal can
+list, an `--on` that names none of the running ones is refused `TARGET_NOT_FOUND` at once, naming
+them, and nothing is sent. On a user-auth mesh where you run more than one
+live manager, an unpinned hosted verb is refused and `--on` picks one. `--local` takes no `--on`. `--local` drives in this process instead, over one
+connection per invocation under the run's own credential minted from the project folder's trust
+material, and is the path on a bare broker with no manager or for a run with no recorded program
 (`cotal run resume <runId> --local --file <program>`); `answer --local` and `amend --local` take
-`--by <who>`, and `start --local` requires `--admit-read` and `--admit-publish` (comma-separated
-patterns or `none`), the run's channel ceiling. A lone `--creds` file cannot supply both driver and mediator roles.
-
-On a user-auth mesh the host's own manager refuses the family by name, and `--local` has no credential
+`--by <who>` and print the same receipt as the hosted path, and `start --local` requires
+`--admit-read` and `--admit-publish` (comma-separated
+patterns or `none`), the run's channel ceiling. An entry that is not a channel or a pattern, such as
+`a b`, is refused `USAGE_INVALID` naming it. When the run's status records that its program failed
+under this drive, `start --local` and `resume --local` fail `OPERATION_FAILED`, exit 5, naming the
+run and its language code with that code's title. A failure whose code has no title shows the first
+line of its recorded message instead, with control characters escaped. Their Next is
+`cotal run show <runId> --local`, which prints the whole message. Any other error the drive ends on
+stays `unknown`, exit 3. On a
+user-auth mesh the host's own manager refuses the family by name, and `--local` has no credential
 there. A participant's manager started with `cotal supervise` hosts a logged-in user's runs through
-its issuing host: the auth callout issues the user's manager connection, and hosted broker commands use
+its issuing host: the auth callout issues the user's manager connection, and every `run` verb rides
 the versioned rail under that issuance.
 [User-auth run start](design/user-auth-run-start.md)
 records the path. The guide is [workflows](workflows.mdx).
 
+
 ## Workflow command forms [#workflow-command-forms]
 
 `cotal run` (or `cotal r`) lists the authorized workflow records. `run show <run-id>` reads
-recorded state, open requests and the last 20 journal rows. Its JSON result contains the full
-returned status and journal. Revoked admission and unreadable revocation markers remain distinct
+recorded state, open requests, each step's recorded error and the last 20 journal rows. `--limit <n>`
+prints the last `n` rows instead, from 1 to 1000, and is refused with `--json`. A settled
+`race` row names the branch it took, and a cancelled row in a branch that lost a race names the
+branch that won and the race. An answer whose step was in a branch that lost a race, or
+whose pause was cancelled after accepting it, is listed as `not acted on`. Its JSON result contains
+the full returned status and journal. Revoked admission and unreadable revocation markers remain distinct
 from the record's state. Neither a record nor a receipt is a live agent-progress report.
 
 ```bash
@@ -153,12 +233,23 @@ cotal r check <run-id> ./edited.cotal.js
 cotal r revoke <run-id> --local --by <actor> --reason '<text>'
 ```
 
-Start accepts a positional source file, or the `--file` form above. Resume uses the host's recorded program. Hosted answers
-and amendments are attributed to the authenticated caller, never a supplied name. Check reads
-the recorded journal through the existing local check; it commits no migration. Revocation keeps
-the existing local trust and explicit actor and reason requirements and does not cancel a task.
+Start takes a positional source file. A source file a `run` verb cannot read is refused naming
+its path and the cause: `TARGET_NOT_FOUND` for a missing file or a link whose target does not exist,
+`USAGE_INVALID` for a directory and `PERMISSION_DENIED` for a file it may not read. `-` is a file
+name there, since `run` does not read a program from standard input. A run verb that reads a source
+file refuses an empty one or one that is not valid UTF-8 with `SCHEMA_INVALID`, before it checks or
+sends anything, because a run's source must not be empty and its text is never replaced. A hosted
+start sends the program to the manager in one message, so a program over the broker's message limit
+(`max_payload`) is refused `UNSUPPORTED` with its size and the limit, and nothing is sent. Resume uses the host's recorded program. Hosted answers
+and amendments are attributed to the authenticated caller, never a supplied name. Local answers and
+amendments require `--by <who>`; a missing or empty value refuses `USAGE_INVALID` before contacting
+the broker, with a JSON refusal under `--json`. `check <run-id> <file>`
+replays the run's recorded journal
+against the edited program and prints whether the migration is admissible, and it files no migration. Revocation keeps
+the existing local trust and explicit actor/reason requirements and does not cancel a task.
 Hosted start, resume, answer and amend have JSON and plain receipts. The local drive and local
 check retain their native output rather than claiming an unsupported structured format.
+
 
 ### Offline commands
 
@@ -169,11 +260,58 @@ cotal r simulate ./workflow.cotal.js --handler ./results.json
 ```
 
 These three forms are offline and reject mesh or caller selection. Validation checks the
-language. Plan lists validated static call sites in source order; it does not evaluate branches,
+language and nothing a broker decides, so a valid program over the broker's message limit is still
+refused by a hosted `start`. A program that does not validate is refused by all three with every problem listed: its
+code, position, cause and fix, as a hosted `start` lists them. `--json` carries them under
+`result.problems`. A warning leaves the program valid. All three print it on stderr with its code,
+position, cause and fix, and `validate --json` lists it under `result.warnings`. One is L3021, a `fanOut` over a list written in the call whose items carry no
+`id` and that passes no `key`, which the run refuses when it reaches it. A list held in a variable
+gets no warning, because it can change before the call; the run refuses it the same way. Plan lists validated static call sites in source order; it does not evaluate branches,
 loop counts or an execution schedule. Simulation uses the native simulator with a JSON results
-script. It executes no JavaScript handler and invents no unscripted outcome. A simulation does
-not establish live authority, installed applications or readiness. All three support JSON and
+script. It executes no JavaScript handler and invents no unscripted outcome. A scripted
+checkpoint result needs a `status` of `resolved` or `expired` and may carry `value`, `by` and
+`artifact`; any other shape, a scripted `at` included, is refused `SCHEMA_INVALID`, because the
+simulator stamps `at` from virtual time. A scripted turn result needs a `status` of `done`, `blocked` or
+`handoff` and may carry `to` and `note`; any other shape, a scripted `at` included, is refused the
+same way. When the script has no result for an effect, the
+simulation does not complete: it exits 5 with `OPERATION_FAILED`, the message names the step and the
+entry to add, and `target.step` carries the step. When the program itself fails under the script,
+as a checkpoint scripted `expired` under the default `onExpiry: "fail"` does with L4007, the
+simulation completes and exits 0. Its program outcome is failed, with the step and that step's
+outcome, or the last step the program settled before its own code failed, and the language's error.
+JSON carries this as `result.outcome` and `result.failure`. A simulation does not establish live authority, installed applications or readiness. All three support JSON and
 plain output and contact no broker.
+
+The `--handler` file is one JSON object. Each table maps a step's name to its result: one value
+for every occurrence, or a list used in order. A step with no name is keyed by its effect, such as
+`ask`. `spawn`, `sleep`, `notify`, `monitor`, `observe` and conclaves need no entry, and a sleep
+moves the virtual clock forward.
+
+```json
+{
+  "checkpoints": { "approve-plan": { "status": "resolved", "value": true, "by": "ana" } },
+  "asks": { "plan": { "steps": ["design", "build"] } },
+  "turns": { "build": [{ "status": "blocked", "note": "needs a key" }, { "status": "done" }] },
+  "events": { "await-reply": null }
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `turns` | `turn` results: `{status, to, note}`, where `status` is `done`, `blocked` or `handoff` |
+| `asks` | `ask` replies, each checked against the step's `schema` |
+| `checkpoints` | `checkpoint` results: `{status, value, by, artifact}`, where `status` is `resolved` or `expired` |
+| `events` | `wait` results. `null` is a timeout |
+| `clock` | `{start, turn, ask, checkpoint, wait}`: the start time in milliseconds and how long each effect takes, such as `"5m"`. A turn takes 5 minutes and the others 1 minute unless set |
+| `faults` | `[{at, kind, code, message}]`: the step at `at`, a step key such as `turn:build#1`, fails with that error |
+
+The simulation's `log(...)` lines print under `Log`, and `--json` carries them in `result.log`, each
+with its `scope` and `values`. A step with no entry, or a list shorter than the step's occurrences,
+stops the simulation with L6001 and exit 5. The failure names the table, the step's name and its step key,
+and the remedy names the entry to add. For a list that is too short, it also says which result the step
+needs, counted from 1, while the step key counts occurrences from 0. A failure in the program itself
+names its code and cause.
+
 
 ### Seat turns
 
@@ -183,3 +321,32 @@ Inside a manager-launched static or open seat, `run turns` reads that seat's ass
 These forms verify the seat's own credential and manager, never substitute an operator caller,
 and refuse user-auth self impersonation. They skip operator catalog and installation repair.
 Yielding one turn does not complete the entire workflow.
+
+
+### Run activation [#run-activation]
+
+See the [current command contract](cli-runs.mdx#run) for this behavior.
+
+### Recorded state [#recorded-state]
+
+See the [current command contract](cli-runs.mdx#run) for this behavior.
+
+### Diagnostic pages [#diagnostic-pages]
+
+See the [current command contract](cli-runs.mdx#run) for this behavior.
+
+### Revocation [#revocation]
+
+See the [current command contract](cli-runs.mdx#run) for this behavior.
+
+### Pause answers [#pause-answers]
+
+See the [current command contract](cli-runs.mdx#run) for this behavior.
+
+### Migration check [#migration-check]
+
+See the [current command contract](cli-runs.mdx#run) for this behavior.
+
+### Local drive [#local-drive]
+
+See the [current command contract](cli-runs.mdx#run) for this behavior.

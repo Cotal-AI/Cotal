@@ -1,7 +1,7 @@
 ---
 title: "Back up a mesh"
 description: "Preserve a supported mesh, create an offline backup, and restore it within the original trust boundary."
-kind: "Informative"
+kind: Guide
 audience: "operators"
 ---
 
@@ -56,6 +56,8 @@ cotal up --detach
 
 The preserved cut records each retained seat's chat frontier.
 A resumed seat catches up from that position instead of replaying all its channels.
+
+A full static-auth or open backup also retains workflow runs. Checkpoints and timers return after a full restore within the same trust boundary.
 
 ## Restore the preserved state [#restore-the-preserved-state]
 

@@ -27,10 +27,6 @@
     "sha256": "31a2fc4842df6e0ad1be2aa2b8cab60efe8341cd3489ad049564cb5d7fef1fd9",
     "refusal": "mutation \"M1 the bundle re-hardcodes a provider name, diverging from the one the registry dispatches to\" targets implementations/auth/src/service.ts, which none of [bin/smoke/discovery-bundle-consumable.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in implementations/auth that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
   },
-  "bin/smoke/mutations/endpoint-warning-consumers.json": {
-    "sha256": "ed857ba01fd7426c983459df18105de4b0193d4cb0fc2205b2692457600f294b",
-    "refusal": "mutation \"manager stops subscribing to recoverable endpoint warnings\" targets implementations/manager/src/manager.ts, which none of [bin/smoke/endpoint-warning-consumers.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in implementations/manager that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
-  },
   "bin/smoke/mutations/feed-agent.json": {
     "sha256": "4eff9e64c42045cf1a97171d6dcd798c1b3f8322390e78c185f4a17f9562bf58",
     "refusal": "mutation \"an unparseable RSS date is carried into render again\" is missing \"cell\""
@@ -39,21 +35,9 @@
     "sha256": "92d3d30f88eac0b81d8d379ca67fcefca44dc7151aa4661f67aa7d107b9b6955",
     "refusal": "mutation \"recallChannel stops reporting the replay=off gate, so an ack-dropped channel reads as an empty, complete window\" targets packages/core/src/endpoint.ts, which none of [extensions/connector-core/smoke/attention.smoke.ts, extensions/connector-core/smoke/focus-recall-wildcard.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in packages/core that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
   },
-  "bin/smoke/mutations/foreground-up-spare.json": {
-    "sha256": "f6ab9b72415dc05c898dbe83a9353a73f34a539a791a40f8902d41ba5fb03c58",
-    "refusal": "mutation \"M1 the handler arms the destructive shutdown intent with its own reservation, so the manager reaps every managed seat on Ctrl-C\" targets implementations/cli/src/commands/up.ts, which none of [bin/smoke/up-stack-live.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in implementations/cli that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
-  },
   "bin/smoke/mutations/goal-follow-subscription.json": {
     "sha256": "1ae2bdd3416c91a0117c6764faa0ffed3000916356eba020a21387f9b6ffc766",
     "refusal": "mutation \"the subscription error is discarded again, so a denied caller is handed a timeout\" targets packages/core/src/endpoint-invoke.ts, which none of [bin/smoke/goal-follow.smoke.ts, implementations/auth/smoke/user-spawn.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in packages/core that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
-  },
-  "bin/smoke/mutations/jcode-queue-fallback.json": {
-    "sha256": "6acfa8af6f6877fc7f0437d840f4dcbe11db3a23d706987a7a0e4efddefadc98",
-    "refusal": "mutation \"M3 a bound seat with a live transport is ready whatever its queue is doing\" targets extensions/connector-core/src/agent.ts, which none of [extensions/connector-jcode/smoke/jcode-queue-fallback.smoke.ts, extensions/connector-jcode/smoke/jcode-queue-fallback-policy.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in extensions/connector-core that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
-  },
-  "bin/smoke/mutations/lang-spawn-live.json": {
-    "sha256": "2b574f63e126dfc7d7054b6997be184e19e312fcaf3634d2e5957f7b5ae3bc08",
-    "refusal": "mutation \"every pending turn on a seat is served at once\" targets implementations/manager/src/manager.ts, which none of [bin/smoke/lang-spawn-live.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in implementations/manager that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
   },
   "bin/smoke/mutations/lang-supervise-live.json": {
     "sha256": "e5f0f0dca7b9502b1796392321c1d63871e589159237516459d431b7e252eac0",
@@ -62,10 +46,6 @@
   "bin/smoke/mutations/live-job-conclusion.json": {
     "sha256": "a539d7366aaea2dae98c51306aaba8ec501e0df17e3de09da4b52bb58f310fbc",
     "refusal": "mutation \"a deadline cancellation is treated as an ordinary supersession again\" targets scripts/live-job-conclusion.mjs, which none of [bin/smoke/live-job-conclusion.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in scripts/live-job-conclusion.mjs that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
-  },
-  "bin/smoke/mutations/manager-log-guidance.json": {
-    "sha256": "11132c3b3324bf7c31f3a564dbe95081d03ccf076aded3207e9b9ee67a7b6423",
-    "refusal": "mutation \"the held-lease refusal goes back to the stale root-scoped manager log\" targets implementations/cli/src/commands/spawn-manifest.ts, which none of [bin/smoke/manager-log-guidance.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in implementations/cli that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
   },
   "bin/smoke/mutations/manager-runtime-deps.json": {
     "sha256": "b1348bbbaffb027e5ebde0c97ef3994554bf3ba3fa4d93226b7e4a8f13263b99",
@@ -79,17 +59,9 @@
     "sha256": "b19e49589eef5483fb885df1e421de3aac0a2addc799c97bba538c919f1f4608",
     "refusal": "mutation \"P3 the bounded continuation retry never fires (#726 defect verbatim)\" targets extensions/pi/src/driver.ts, which none of [extensions/pi/smoke/tool-input-closed.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in extensions/pi that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
   },
-  "bin/smoke/mutations/readiness-uncertain-reason.json": {
-    "sha256": "f826a32a61808d7fbf21cc4a92b95675413797ca606e9c2af7c74f1d6c04cd3b",
-    "refusal": "mutation \"the manager drops the readiness detail it just built, so the terminal carries nothing to say\" targets implementations/manager/src/manager.ts, which none of [bin/smoke/readiness-window-live.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in implementations/manager that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
-  },
   "bin/smoke/mutations/reconcile-poisoned-lease.json": {
     "sha256": "26ff6f2bab08f76915c5fbad403e6c5e11f2d1b245021d465c74fcdff675dc91",
     "refusal": "mutation \"restore lease admission before scan-tenancy validation\" targets implementations/delivery/src/delivery.ts, which none of [implementations/manager/smoke/gate-reconcile-cli-e2e.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in implementations/delivery that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
-  },
-  "bin/smoke/mutations/run-host-live.json": {
-    "sha256": "cc31d46a62663ff42756ff599f6b256237d2170bbee12ac27170274eb6f2ce65",
-    "refusal": "mutation \"computed placement is allowed past hosted credential minting\" targets implementations/runtime/src/run-host.ts, which none of [bin/smoke/run-host-live.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in implementations/runtime that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
   },
   "bin/smoke/mutations/sandbox-guard.json": {
     "sha256": "48caa8f9a561bba42e6beb4241ebae81461379b0c7ab4e6e4b24c0d06b0e78ef",
@@ -150,10 +122,6 @@
   "extensions/connector-claude-code/smoke/mutations/compaction-presence.json": {
     "sha256": "d479e26cd8a8e6de79cee36ced003027863236485d0bfc7311fb4c07bcdbad31",
     "refusal": "mutation \"C1 reset presence during an open turn on SessionStart\" is missing \"cell\""
-  },
-  "extensions/connector-claude-code/smoke/mutations/hook-load-emitter-race.json": {
-    "sha256": "1c1183d341aafc6781c343b80b457267acf17c4397d3216f95ab1fe28dae0313",
-    "refusal": "mutation \"E0 VACUITY PROOF — the manifest declares no hooks at all\" targets extensions/connector-claude-code/hooks/hooks.json, which none of [extensions/connector-claude-code/smoke/hook-load-and-emitter-race.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in extensions/connector-claude-code that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
   },
   "extensions/connector-claude-code/smoke/mutations/relay-warn.json": {
     "sha256": "26c38aa474830870520150033ed5569738bb1dc805a594e552b48e854f0be6de",
@@ -238,10 +206,6 @@
   "extensions/connector-core/smoke/mutations/inbox-overflow-directed.json": {
     "sha256": "9b05fdaeedd4c97cd33f5ac158ab998a3b7707998f1aecfe3875e6d6e2a478aa",
     "refusal": "mutation \"M1 the shipped defect: no channel tier, so eviction falls through to the oldest entry\" is missing \"cell\""
-  },
-  "extensions/connector-core/smoke/mutations/injection-framing.json": {
-    "sha256": "ae7b96cbe5a4b152d7979b6860748daf0962db0275666d83146d9517d8c2c5c2",
-    "refusal": "mutation \"M1 the shipped wording: reply-only tail, no mention of doing the work\" is missing \"cell\""
   },
   "extensions/connector-core/smoke/mutations/orientation-identity-plane.json": {
     "sha256": "ec5450f6fd7b0a1911a08e5e4938149dc11a7e824717a756bd1694c88580d111",
@@ -355,21 +319,9 @@
     "sha256": "a4a6c03b27e4a2951b04b5db71f9ac04d9174c2fd86d10bd0b40964941b481d4",
     "refusal": "mutation \"restore defective listMembers complete inventory omission\" targets packages/core/src/endpoint.ts, which none of [implementations/auth/smoke/freeslot-respawn-barrier.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in packages/core that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
   },
-  "implementations/auth/smoke/mutations/events-delegation.json": {
-    "sha256": "9f05bb33f634766ab56d9fa280874d6a69b00ce1dc4e1c0269fba29706f70958",
-    "refusal": "mutation \"D1 exempt the event prefix from the READ containment walk\" targets implementations/auth/src/ledger.ts, which none of [implementations/auth/smoke/user-spawn.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in implementations/auth that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
-  },
-  "implementations/auth/smoke/mutations/expiry-renewal.json": {
-    "sha256": "6a3aaa94ebeef556748173caf03dc78071d58bc56ea5032b80482e91a45f8748",
-    "refusal": "mutation \"N1 the pre-dial expiry guard is gone, so the endpoint dials with the dead bearer again\" targets packages/core/src/endpoint.ts, which none of [implementations/auth/smoke/expiry-renewal.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in packages/core that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
-  },
   "implementations/auth/smoke/mutations/managed-agent-runtime-transport.json": {
     "sha256": "75095ccade11d3c7263c25796be4605ee96c27e506c162667b5e524c8b1d914d",
     "refusal": "mutation \"shipped runtime client never posts to the transport\" targets implementations/auth/src/provider.ts, which none of [implementations/auth/smoke/remote-exchange.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in implementations/auth that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
-  },
-  "implementations/auth/smoke/mutations/manager-goal-index-scanner.json": {
-    "sha256": "d0871cf4969fa9177a129c3987225e8c165d95eb3cd4be8533048d6d3f5aceac",
-    "refusal": "mutation \"M3 reintroduce wildcard records consumer lifecycle on the remote executor\" targets packages/core/src/provision.ts, which none of [implementations/auth/smoke/manager-goal-index-scanner.native.ts, implementations/auth/smoke/remote-manager-executor-authority.probe.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in packages/core that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
   },
   "implementations/auth/smoke/mutations/remote-agent-bearer.json": {
     "sha256": "09cd1d3958337ab792d69aa7ca8e062789c7aacf81b7b40a9bbe5be23f4a49fc",
@@ -455,10 +407,6 @@
     "sha256": "4e0ab2f4db47ef016b18d34d6d2085985c1b53bafcb77d096f80468b6aca88ab",
     "refusal": "mutation \"M1 a stale manager view still renders 'offline'/'not in roster' as if they were verdicts\" is missing \"cell\""
   },
-  "implementations/cli/smoke/mutations/ps-partial-census.json": {
-    "sha256": "0755650f81a9bb88b8d8c7efa630a32583e4d54f361e7f8eb9142f7231cc1609",
-    "refusal": "mutation \"A refused manager instance restores the clean exit code\" is missing \"cell\""
-  },
   "implementations/cli/smoke/mutations/restore-hardened-stores.json": {
     "sha256": "e162a932f9a998cd122e0463a0399cb92bd4db98f47d9dd777dc6f58073cc0cc",
     "refusal": "mutation \"the admission store leaves the hardened list (the restore login is minted without its update row)\" targets packages/core/src/endpoint-binding.ts, which none of [implementations/cli/smoke/isolated-infrastructure-scope.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in packages/core that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
@@ -471,18 +419,6 @@
     "sha256": "ca186de7ace0906d0304913f327a8fe8db161c8371009fa6139dc9e927d8bd8d",
     "refusal": "mutation \"K3 bars drawn from raw counts instead of the series' max\" targets implementations/cli/src/console/ui/Sparkline.tsx, which none of [implementations/cli/smoke/sparkline.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in implementations/cli that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
   },
-  "implementations/cli/smoke/mutations/status-skills-remedy.json": {
-    "sha256": "9f13ad98c649075c5b0bdd18cfd581440aa1edd2672c9d2eaa16455094e710d1",
-    "refusal": "mutation \"S2 restore unscoped .agents skills remedy\" targets implementations/cli/src/commands/status.ts, which none of [implementations/cli/smoke/status-skills-remedy.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in implementations/cli that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
-  },
-  "implementations/cli/smoke/mutations/up-host-url.json": {
-    "sha256": "db4906e14a26a2a13a66f7aeb9c7b0dc7aaf17d8431fb2043bb4fab071cfb471",
-    "refusal": "mutation \"let a URL through --host to the bracketing\" targets implementations/cli/src/commands/up.ts, which none of [implementations/cli/smoke/up-refresh-identity-live.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in implementations/cli that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
-  },
-  "implementations/cli/smoke/mutations/up-no-manager.json": {
-    "sha256": "6da53e950f65eac500f70ef2acbef0e3add50ee7aa30cb63b1d57697ad4669c3",
-    "refusal": "mutation \"drop the flag's effect in ensureControlPlane (ensureManager runs anyway)\" targets implementations/cli/src/lib/delivery-proc.ts, which none of [bin/smoke/up-stack-live.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in implementations/cli that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
-  },
   "implementations/cli/smoke/mutations/up-store-cap.json": {
     "sha256": "eae2cb72264afc384826131973e6823ba72c951b0e15be7399420c6f5be781a5",
     "refusal": "mutation \"detached boot accepts the flag but does not render it\" targets implementations/cli/src/commands/up.ts, which none of [implementations/cli/smoke/up-adopt-resume-lock-live.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in implementations/cli that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
@@ -491,17 +427,9 @@
     "sha256": "9bc32dac7fb8c1e9e261e20a9ccd2f71369550ea7bb12eb4575bf01e4f953168",
     "refusal": "mutation \"the daemon reports start-up complete from the first instant\" targets implementations/delivery/src/delivery.ts, which none of [implementations/delivery/smoke/delivery-startup-adoption.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in implementations/delivery that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
   },
-  "implementations/delivery/smoke/mutations/delivery-timer-writer.json": {
-    "sha256": "947388cdf5a28932de626a8997d9a6f2dcec48f24308658a034e2f1c79cd8c6e",
-    "refusal": "mutation \"the daemon dials a connection but never starts the writer\" targets implementations/delivery/src/delivery.ts, which none of [implementations/delivery/smoke/delivery-timer-writer.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in implementations/delivery that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
-  },
   "implementations/delivery/smoke/mutations/injected-tenancy-admission.json": {
     "sha256": "5c52b7b94ded12fec076fc44b373a7291703c8911c4f99387944f98ee29a7214",
     "refusal": "mutation \"workspaceSecretStore drops the operator workspace identity\" targets packages/workspace/src/secret-store-fs.ts, which none of [implementations/delivery/smoke/injected-tenancy-admission.smoke.ts, implementations/delivery/smoke/reload-store-identity.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in packages/workspace that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
-  },
-  "implementations/delivery/smoke/mutations/ll1-lease-loss-watch.json": {
-    "sha256": "1b168ad864f3148e412ff6a8bfbcee7af9d853528fc0011692c78f41a6fe9704",
-    "refusal": "mutation \"the daemon never reacts to a lease watch event (the loss window reverts to the renew period)\" targets implementations/delivery/src/delivery.ts, which none of [implementations/delivery/smoke/delivery-broker-coupling.smoke.ts, packages/core/smoke/delivery-lease.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in implementations/delivery that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
   },
   "implementations/manager/smoke/fixtures/bind-recovery.mutations.json": {
     "sha256": "b84de90611db9d35be677d156b149a4f2bdcd913de1a3976ab82f1d4fad0802d",
@@ -591,10 +519,6 @@
     "sha256": "33dafe038da4f1f0fefb429a3103772678baa7c56f68d75d94b01f24cf32e24b",
     "refusal": "mutation \"core mints a nonce instead of honoring the pinned envelope id\" targets packages/core/src/endpoint-verbs.ts, which none of [implementations/runtime/smoke/mesh-spawn.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in packages/core that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
   },
-  "implementations/runtime/smoke/mutations/ps-revocation.json": {
-    "sha256": "b754214211d84f1cc02d1550650af6af87775dc81903b901b0dd89e2373ada63",
-    "refusal": "mutation \"the reader looks at the admission key instead of the revocation marker\" targets packages/core/src/run-admission.ts, which none of [implementations/runtime/smoke/run-command.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in packages/core that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
-  },
   "implementations/runtime/smoke/mutations/run-driver-auth.json": {
     "sha256": "ff6df9a0499362eb42f0b6c841eeb1b624907caa5fddf3ca7a1288313e413778",
     "refusal": "mutation \"the timer schedule row loses its epoch pin\" targets packages/core/src/run-driver-grants.ts, which none of [implementations/runtime/smoke/run-driver-auth.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in packages/core that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
@@ -602,10 +526,6 @@
   "implementations/runtime/smoke/mutations/run-host-isolation.json": {
     "sha256": "4e7b572dec3fa50e75b9b4ec5bb09bdb1b88c26b01a6a3daf069ef98af3c5698",
     "refusal": "mutation \"raw driver gains a stream-wide records read\" targets packages/core/src/run-driver-grants.ts, which none of [implementations/runtime/smoke/run-driver-auth.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in packages/core that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
-  },
-  "implementations/runtime/smoke/mutations/run-refusal-rail.json": {
-    "sha256": "1941ffefb75a18d7abc2118fc1cbd57cb45400dff055c137abce0fc29a4a91f0",
-    "refusal": "mutation \"the refusal returns to one rail-blind sentence, with the question and the --local remedy on every rail\" is missing \"cell\""
   },
   "implementations/web/smoke/fixtures/agui-frame-dispatch.mutations.json": {
     "sha256": "a7adfd0ba36dba3f02cd87ebdf744c9cf54cee8ccb923fba29885e3bfc23c28d",

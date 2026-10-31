@@ -59,7 +59,7 @@
     {
       "name": "hosted MCP tools omit the session environment",
       "file": "extensions/connector-claude-code/src/mcp.ts",
-      "find": "  registerCotalTools(server, agent, config, \"claude-code\", env);",
+      "find": "  registerCotalTools(server, agent, config, \"claude-code\", env, claude.inboxDeliveryNote);",
       "replace": "  registerCotalTools(server, agent, config, \"claude-code\");",
       "expectRed": "AssertionError [ERR_ASSERTION]: hosted_env_feedback_a",
       "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... --filter @cotal-ai/auth... build"
@@ -67,7 +67,7 @@
     {
       "name": "tool renderer drops the explicit environment",
       "file": "extensions/connector-core/src/tools.ts",
-      "find": "  for (const spec of cotalToolSpecs(config, source, env)) {",
+      "find": "  for (const spec of cotalToolSpecs(config, source, env, undefined, emptyInboxNote)) {",
       "replace": "  for (const spec of cotalToolSpecs(config, source)) {",
       "expectRed": "AssertionError [ERR_ASSERTION]: hosted_env_feedback_a",
       "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... --filter @cotal-ai/auth... build"
@@ -75,8 +75,8 @@
     {
       "name": "feedback resolves contact in the host environment",
       "file": "extensions/connector-core/src/tool-specs.ts",
-      "find": "          const contact = resolveFeedbackEmail(email as string | undefined, env);",
-      "replace": "          const contact = resolveFeedbackEmail(email as string | undefined, process.env);",
+      "find": "        const contact = config.feedbackKey ? undefined : resolveFeedbackEmail(email as string | undefined, env);",
+      "replace": "        const contact = config.feedbackKey ? undefined : resolveFeedbackEmail(email as string | undefined, process.env);",
       "expectRed": "AssertionError [ERR_ASSERTION]: hosted_env_feedback_a",
       "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... --filter @cotal-ai/auth... build"
     },
@@ -91,10 +91,10 @@
     {
       "name": "manager-caller bearer bypasses the scoped executor",
       "file": "extensions/connector-core/src/agent.ts",
-      "find": "        const bearer = (signal?: AbortSignal) => this.execBearerCmd([\n          ...bearerCmd,\n          \"--manager-call\",\n          ...(managerInstanceId ? [\"--manager-instance\", managerInstanceId] : []),\n        ], signal)",
-      "replace": "        const bearer = (signal?: AbortSignal) => runAgentBearer([\n          ...bearerCmd,\n          \"--manager-call\",\n          ...(managerInstanceId ? [\"--manager-instance\", managerInstanceId] : []),\n        ], { signal })",
+      "find": "        const bearer = (signal?: AbortSignal) => this.managerCallBearer(bearerArgv, signal).catch((e: unknown) => {",
+      "replace": "        const bearer = (signal?: AbortSignal) => runAgentBearer(bearerArgv, { signal }).catch((e: unknown) => {",
       "command": "pnpm smoke:user-manager-transport",
-      "expectRed": "✗ actual MeshAgent.spawn over real wire to real Manager succeeded"
+      "expectRed": "\u2717 actual MeshAgent.spawn over real wire to real Manager succeeded"
     },
     {
       "name": "endpoint ignores explicit presence environment",
@@ -135,7 +135,7 @@
     {
       "name": "public MCP exports the dependency crypto namespace",
       "file": "extensions/connector-claude-code/package.json",
-      "find": " --footer:js=\\\"module.exports = { serveClaudeSession: module.exports.serveClaudeSession };\\\"",
+      "find": " --footer:js=\\\"module.exports = { serveClaudeSession: module.exports.serveClaudeSession, runClaudeSeat: module.exports.runClaudeSeat };\\\"",
       "replace": "",
       "expectRed": "AssertionError [ERR_ASSERTION]: hosted_public_exports_only",
       "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... --filter @cotal-ai/auth... build"

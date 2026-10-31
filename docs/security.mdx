@@ -15,7 +15,7 @@ Cotal v0 limits what an authenticated peer can read and publish through a truste
 
 One space maps to one NATS account. The broker, operator, account signer, and holders of elevated credentials are trusted for the authority they hold. An `admin` credential can read private messaging traffic, but has no application publish grants. Agents are not trusted to report their own identity, channel permissions, or DM access.
 
-Ledger scope `admin` grants operator authority beyond the read-only `admin` credential. It permits elevated views, history and channel purges, registry writes, and cross-owner control. The public exchange serves `channel-writer` and `channel-purger` from these elevated operations. Whole-space observation and space-history purge remain loopback-only.
+Ledger scope `admin` grants operator authority beyond the read-only `admin` credential. It permits elevated views, history and channel purges, registry writes, and cross-owner control. The public exchange serves `channel-writer`, `channel-purger`, and one-object `transfer-writer` from these elevated operations. Whole-space observation and space-history purge remain loopback-only.
 
 <Callout type="warn" title="Broker isolation does not isolate the host">
 The default single-host manager and container compositions do not keep a same-uid agent away from the account signer. A process that reads the signer can mint elevated credentials. A hosted composition must isolate the signer when it needs protection from agents with host filesystem or process access.
@@ -54,6 +54,10 @@ The following guarantees combine broker enforcement with the required receiver c
 Channel content ACLs do not hide all stream metadata. An agent can enumerate retained CHAT subjects and counts, including channel names and sender IDs outside its read ACL. Channel names are also public in the registry. A role-bearing credential has equivalent TASK metadata access. Neither path grants message bodies or DM-stream metadata. [Stream metadata visibility](security-boundaries.mdx#metadata) gives the precise grants and deferred containment work.
 
 A carried Claude seat uses its own Claude home, so another seat's ordinary Claude listing does not expose the transcript. Same-uid filesystem access can still read that home by path. [Host filesystem access](security-boundaries.mdx#filesystem-access) explains the limit.
+
+## Endpoint request origin [#endpoint-request-origin]
+
+The ephemeral endpoint receiver drops requests carrying `Nats-Stream`, `Nats-Subject`, `Nats-Sequence`, or `Nats-Time-Stamp` before parsing, authorization, dispatch, or a derived reply. Header matching ignores case and includes empty values. The check covers both rails and all routes. Tracing and `Nats-Msg-Id` remain supported. This check grants no read authority and proves no origin for other consumers.
 
 ## What v0 does not protect [#what-v0-does-not-protect]
 

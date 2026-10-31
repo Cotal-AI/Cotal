@@ -35,7 +35,11 @@ function shellQuote(s: string): string {
  *  adds `-i` so the pane inherits ONLY the connector-declared env, not the cmux server's (P3 — the
  *  operator's unrelated secrets don't reach a spawned agent); setup panes keep the inherited env. */
 export function paneCommand(pane: Pane, login: boolean, isolate = false): { command: string; dir: string } {
-  const env = Object.entries(pane.env ?? {}).map(([k, v]) => `${k}=${shellQuote(v)}`);
+  const env = Object.entries(pane.env ?? {}).map(([k, v]) => {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(k))
+      throw new Error(`cmux: refusing to render unsafe env var name ${JSON.stringify(k)}`);
+    return `${k}=${shellQuote(v)}`;
+  });
   const cmd = [...env, shellQuote(pane.command), ...(pane.args ?? []).map(shellQuote)].join(" ");
   const cd = pane.cwd ? `cd ${shellQuote(pane.cwd)}\n` : "";
   // The script holds the pane's env inline (the agent's creds + control token, and any provider key).
@@ -77,6 +81,7 @@ function cmuxLayout(label: string, tab: Tab): string {
  */
 export class CmuxRuntime implements Runtime {
   readonly kind = "cmux";
+  readonly streamsTerminal = false;
 
   spawn(name: string, spec: LaunchSpec, cwd: string): AgentHandle {
     // `name` becomes a temp-script key and a `cotal-<name>` tab id — keep it a bare token
@@ -93,8 +98,8 @@ export class CmuxRuntime implements Runtime {
     let launch: { command: string; dir: string };
     let watch: ((pane: ConfirmPane) => void) | undefined;
     try {
-      if ((spec.confirmBefore?.length || spec.confirmReady?.length) && spec.confirm === undefined) throw new Error("startup choices require a final confirmation prompt");
-      watch = spec.confirm === undefined ? undefined : confirmWatch(spec.confirm, spec.confirmBefore, spec.confirmReady);
+      if ((spec.confirmBefore?.length || spec.confirmReady?.length || spec.confirmBlockers?.length) && spec.confirm === undefined) throw new Error("startup choices require a final confirmation prompt");
+      watch = spec.confirm === undefined ? undefined : confirmWatch(spec.confirm, spec.confirmBefore, spec.confirmReady, spec.confirmBlockers);
       launch = paneCommand(
         { command: spec.command, args: spec.args, env: spec.env, cwd },
         false,

@@ -5,9 +5,6 @@ kind: Reference
 audience: integrators
 ---
 
-Provisioning creates the authority a host uses to operate a space.
-The public helpers do not supply an isolated signer or a complete hosted control plane.
-
 ## One-space provisioning [#provisioning-a-space-one-space-reference-shape]
 
 The one-space convenience API combines broker trust and one data account.
@@ -61,107 +58,140 @@ Other values throw.
 
 ### Multiple spaces on a broker
 
-`createBrokerAuth` creates the operator and system account trusted by one broker.
-`createSpaceAccountAuth(broker, space)` signs each space's data account under that operator.
-`serverConfig(broker, spaces, options)` renders all those accounts into one configuration.
+Broker trust and space accounts are separate authorities: `createBrokerAuth` mints the one
+operator + system account a broker trusts, `createSpaceAccountAuth(broker, space)` signs each
+tenant's data account under it, and `serverConfig(broker, spaces, opts)` renders them all into one
+config. A host composition can therefore provision several spaces on one broker today. `cotal up`
+renders that config from every tenant the root's auth directory holds, so booting one space keeps
+the broker trusting its siblings, and it refuses to render at all while any account record is
+unreadable. The rest of the CLI lifecycle is still broker-wide: `down`, `clean` and `backup` refuse
+on a multi-space root rather than scoping to one tenant, and the per-space lifecycle is the
+remaining multi-space operator layer. See
+[Known gaps](embedding.mdx#hosted-composition-gaps).
 
-`cotal up` renders every tenant account held in the root's auth directory.
-Starting one space therefore preserves the broker's trust in sibling spaces.
-An unreadable account record refuses rendering.
+## Issued-authority stores from before 0.111.0
 
-The remaining CLI lifecycle is broker-wide.
-`down`, `clean`, and `backup` refuse on a multi-space root and name its tenants.
-There is no public per-space lifecycle for a shared broker.
+A space whose `KV_cotal_issued_<space>` and `KV_cotal_accepted_<space>` were created before
+0.111.0 is refused by every issuer and resolver that binds them. `cotal up
+--recreate-issued-stores` fixes the spaces `cotal up` starts. For a space your own composition
+provisions, stop its issuers and resolvers (auth service, callout replicas, managers) and run the
+same step yourself:
+
+```ts
+import { connect } from "@nats-io/transport-node";
+import { mintCreds, newIdentity, removeIssuedStoresBeforeRetention, setupSpaceStreams, standaloneConnectOpts } from "@cotal-ai/core";
+const identity = newIdentity();
+const inboxPrefix = `_INBOX_${identity.id}`;           // the one inbox the credential may receive on
+const creds = await mintCreds(auth, identity, "issued-store-recreate"); // one-shot, 30 minutes
+const nc = await connect({ servers: brokerUrl, ...standaloneConnectOpts({ creds, tls: false }), inboxPrefix });
+try {
+  // backupDir must not exist yet; it is created 0700 with a `nats stream backup` layout per stream
+  await removeIssuedStoresBeforeRetention(nc, { space, backupDir, inboxPrefix });
+} finally { await nc.drain(); }
+await setupSpaceStreams({ servers: brokerUrl, space, creds: provisionerCreds }); // creates both again
+```
+
+The credential can read, snapshot and delete those two streams and nothing else. The step backs
+up every store that predates bounded retention, checks each backup against its stream's message
+count and last sequence, and deletes nothing unless every check passes. It throws
+`IssuedStoreRecreateRefusal` before writing anything when neither store predates bounded
+retention. The order, the refusals and what a rollback can do are in
+[Upgrading](UPGRADING.md#issued-authority-stores-after-01110).
 
 ## Provisioning authority [#hazardous-provisioning-primitives]
 
-`mintCreds`, the `Profile` and `CredentialKind` matrix, `createSpaceAuth`, and `stripSpaceAuth` are low-level operator APIs.
-A host treats their input and output as account-authority material.
+`mintCreds`, the full `Profile`/`CredentialKind` matrix, `createSpaceAuth`, and `stripSpaceAuth` are
+low-level operator primitives. Handle them as account-authority material:
 
-A holder of `SpaceAuth` can mint admin, provisioner, destructive, and DM-reading credentials.
-`stripSpaceAuth` retains the data-account signing seed and therefore retains that tenant-account authority.
-The full `createSpaceAuth` result also holds operator, system, and account seeds in memory.
-
-Profile and `MintOpts` values come from server-side policy, not tenant input.
-`MintOpts` can widen bounded lifetime defaults, so the host caps them at its admission boundary.
-`CREDENTIAL_LIFETIMES` records policy and does not enforce authorization.
-
-Signing material stays out of logs and environment variables.
-File permissions do not protect it from an untrusted process under the same OS user.
-A host separates signing access by tenant and from untrusted connectors and runtimes, using another user or a stronger isolation boundary.
-`rotateDataAccountSigningKey` rotates a compromised data-account signing key.
+- A holder of a `SpaceAuth` (or a `stripSpaceAuth` bundle, which **keeps** the data signing seed) is
+  a fully-trusted tenant-account authority: it can mint `admin`, `provisioner`, and destructive
+  profiles, not merely `supervisor`, and mint a DM-reading identity. `createSpaceAuth`'s full result
+  holds operator, system, and account seeds in memory.
+- Choose `profile` and `MintOpts` from **server-side constants**, never from tenant input. `MintOpts`
+  can widen the bounded TTL defaults; cap it at your boundary. `CREDENTIAL_LIFETIMES` is a policy
+  record, not an authorization boundary.
+- Never log signer material or export it into env. Do not co-locate signer access with an untrusted
+  connector/runtime process at the same OS uid (file permissions do not contain a same-uid reader;
+  see the manager's isolation note). Segregate per tenant; rotate on compromise
+  (`rotateDataAccountSigningKey`).
 
 ## Hosted composition gaps [#hosted-composition-gaps]
 
-The public APIs leave the following host responsibilities unresolved.
-They are implementation composition limits rather than wire-protocol requirements.
+Three composition limits remain. A host must supply the missing isolation or integration,
+or leave the affected capability unavailable.
 
-### Membership limitations
+Membership and live eviction already read their credentials through `SecretStore`.
+`startMembership` reads the data-account writer and system-account observer there; eviction
+reads the observer and evictor pair on each operation. Both use per-space keys and check
+that the observer names the daemon's account. The feed derives that account from the
+daemon's credential, without `membership.json`. The host still owns provisioning and
+rotation. An absent observer leaves the feed traffic-only; missing eviction authority
+refuses eviction. The membership reader can adopt a host-renewed observer with the same
+issuer and scope at 75% of its lifetime.
 
-The membership writer credential, `membership-rw.creds`, is a `SecretStore` kind.
-`startMembership` reads it through the injected store, and the Manager re-signs it there.
-The writer's data connection adopts each generation after a broker preflight at 75% of its lifetime.
-
-The static `membership-observer.creds`, `connection-evictor.creds`, and `membership.json` still originate from workspace filesystem paths.
-The first two are scoped system-account credentials created during account provisioning and renewed by `up --rotate-sys`.
-`membership.json` contains non-secret `{ accountId }` configuration.
-Those paths and the private provisioning wrapper prevent a fully hosted membership and immediate live-eviction composition.
-
-A host that writes a reminted observer credential into the injected store under the same system signer and scope has it adopted by the running feed at 75% of its lifetime.
-Missing files restrict membership to traffic observations and make live eviction refuse.
-The supported delivery contract remains the durable message backstop.
-
-### Signer process isolation
-
-`ManagerOptions.secretStore` injects all Manager secret reads and writes, including split `SpaceAuth` trust, daemon renewal, and agent credential kinds.
-In the local signing composition, the Manager still decrypts signing keys in its own process.
-An injected backend alone cannot isolate those keys from equally privileged agent children.
-That requires a different OS user, container or mount namespace, or a separate signing service.
-The signerless `remoteAuthority` composition uses host-issued scoped credentials and refuses local signing trust for that space.
-See [Manager signing authority](embedding-manager.mdx#supervisor-signing-authority).
-
-### Shared-broker lifecycle
-
-The trust layer supports several spaces through broker trust, per-space accounts, and multi-account broker configuration.
-Persisted records use `broker.json` and `account.<key>.json`.
-The CLI renders that complete tenant set but has no per-space provisioning verb or per-space teardown, backup, or restore.
-Its broker-wide lifecycle commands refuse multi-space roots.
-
-### Other identity providers
-
-`createIdpBridge` supports generic EdDSA verification.
-The stock auth provider and login client use Better Auth endpoint shapes, including device-code login.
-`cotalAuthProvider` self-registers on import and can collide with a host-owned provider in `resolveAuthProvider`.
-
-Another production IdP requires a host-built composition of the low-level auth APIs.
-It is not a provider configuration change.
-See the [IdP callout contract](identity-and-auth.mdx#the-idp-callout-contract).
+1. **Supervisor signer isolation.** `ManagerOptions.secretStore` now injects the one `SecretStore` the
+   manager reads/writes every secret through, including the composed `SpaceAuth`
+   signer (the split trust records), its daemon-cred renewal, and its per-agent kinds. What remains is process
+   isolation: the manager still decrypts the signer in-process at its uid, so untrusted agent children
+   must run under a different uid/container/mount namespace or behind a future remote signer.
+2. **Per-space lifecycle on a shared broker.** The trust layer is multi-space
+   (`createBrokerAuth` + `createSpaceAccountAuth` + N-space `serverConfig`, persisted as
+   `broker.json` + `account.<key>.json`) and `cotal up` renders the whole tenant list. The CLI
+   still lacks tenant-account provisioning and per-space teardown/backup/restore on that
+   broker. Its broker-wide lifecycle verbs refuse on a multi-space root, naming the tenants.
+   The existing `cotal space add` registers a connection, and `space delete` removes a
+   space's streams; neither supplies that tenant-account lifecycle.
+3. **A non-Better-Auth production IdP.** The exchange core (`createIdpBridge`) is EdDSA-generic, but
+   the stock provider and login client are Better-Auth-endpoint-shaped, `cotalAuthProvider`
+   self-registers on import (colliding with a host-owned provider under `resolveAuthProvider`), and
+   the login flow speaks Better Auth's device-code endpoints. A different IdP is a host-built auth
+   composition on the low-level primitives, not a configuration change (see
+   [the IdP callout contract](identity-and-auth.mdx#the-idp-callout-contract)).
 
 ## Hosted durability [#hosted-durability]
 
-JetStream holds coordination state written by endpoints and delivery.
-This includes chat, DM, and task history, presence, membership runtime, durable ACLs, and leases.
-Those records require broker durability rather than a host-local state path.
+Space-durable **coordination** state (chat/DM/task history, live presence, membership runtime, the
+durable ACL registry, leases) lives in **JetStream**, written by the delivery daemon and the
+endpoints. It is broker-resident and needs no host-side durable path.
 
-The host separately places and retains trust and authorization state:
+What is **not** in JetStream, and is hosting-critical, is trust and authorization state a host must
+place and keep:
 
-| State | Class | Process-runner location | Hosted input |
+| state | class | where today | hosted injection |
 |---|---|---|---|
-| Composed `SpaceAuth` trust, `auth/broker.json` and `auth/account.<key>.json` | Signing authority | `SecretStore`; a stripped projection can use the legacy `auth/auth.json` mount. | Manager and renewal `SecretStore`. |
-| Callout account, credentials and xkey, private issuer keys, owner secret, data-signer projection | Signing and identity authority | Auth-service secret kinds. | Auth `SecretStore`. |
-| Auth instance ID and private serve seed | Restart identity | Root `.cotal/space.<hex>/auth-instance.json`. | `startAuthService` stores it under `authInstanceKey(space)`. |
-| `delivery.creds` | Standing scoped credential | `SecretStore` or `--creds`. | Delivery `SecretStore`. |
-| Actor ledger and IdP pin | Authorization and trust configuration | `userAuthStateDir(findCotalRoot(), space)`; neither store nor `COTAL_HOME` selects it. | Explicit `stateDir` for `startAuthService`. |
-| `membership-rw.creds` | Standing scoped credential | `SecretStore`. | Delivery and Manager-renewal store. |
-| Membership observer, connection evictor, and `membership.json` | Scoped system credentials and configuration | Workspace filesystem. | Remaining membership limitation described above. |
-| Manager agent credentials, actor tokens, and sentinel credentials | Lifecycle authority | `SecretStore`. | `ManagerOptions.secretStore`. |
-| `~/.cotal/meshes/space.<key>.json` with IdP pins and root pointers | Non-secret, integrity-critical configuration | Machine home. | Process-global `COTAL_HOME` only. |
-| Auth-health and renewal records | Non-secret diagnostics | Workspace filesystem. | `workspaceRoot`. |
+| full `SpaceAuth` trust chain (`auth/broker.json` + `auth/account.<key>.json`, composed; a stripped signer bundle may instead be mounted at the legacy `auth/auth.json` key) | signing authority | `SecretStore` | `SecretStore` (manager + renewal) |
+| auth kinds: callout account/creds/xkey, issuer private keys, owner-derivation secret, data-signer projection | signing/identity authority | four `SecretStore` kinds | `SecretStore` (auth-service) |
+| auth plane instance identity (instance id + serve nkey seed) | restart identity | root `.cotal/space.<hex>/auth-instance.json` | `SecretStore` (`startAuthService`) |
+| `delivery.creds` | standing scoped cred | `SecretStore` or `--creds` | `SecretStore` (delivery) |
+| actor ledger, IdP pin | authorization + trust config | ambient `userAuthStateDir(findCotalRoot(), space)` | none (root-relative; not `store`/`COTAL_HOME`) |
+| `membership-rw.creds` | standing scoped cred | `SecretStore` | `SecretStore` (delivery + manager renewal) |
+| membership-observer / connection-evictor creds | scoped $SYS creds | per-space `SecretStore` keys | injected `SecretStore`; account identity is checked against the daemon credential, not `membership.json` |
+| manager agent creds, actor tokens, sentinel creds | lifecycle authority | `SecretStore` | `SecretStore` (manager `secretStore`) |
+| `~/.cotal/meshes/space.<key>.json` record (holds IdP trust pins/root pointers) | non-secret, integrity-critical | machine home | process-global `COTAL_HOME` only |
+| auth-health, renewal records | non-secret diagnostics | workspace filesystem | `workspaceRoot` |
 
-The `SpaceAuth` chain and auth-service secret kinds are separate identities and projections.
-They are not one document.
-`auth-service.json` contains a sensitive live exchange capability, but is ephemeral discovery state rather than durable authority.
+The `SpaceAuth` trust chain and the auth-service store kinds are **separate** identities/projections,
+never parts of one document. `auth-service.json` (the live exchange capability) is ephemeral runtime
+state, not durable, but is sensitive while the daemon runs. `@cotal-ai/workspace` is machine-local
+operator tooling by design; personas, PID files, and the `current-mesh` pointer are truly local and
+must **not** sit on a hosted durable path. Everything classed above as an authority is what a hosted
+composition must provision and persist: signer-bearing server secrets now have `SecretStore` seams;
+the remaining non-injectable rows are the explicit ambient `workspaceRoot`/cwd paths above.
 
-`@cotal-ai/workspace` contains machine-local operator state.
-Personas, PID files, and `current-mesh` remain local rather than sharing a hosted durable path.
-Signer-bearing secrets have store injection; remaining ambient paths require explicit host planning.
+## Related contracts
+
+### Membership limitations [#membership-limitations]
+
+Membership and live-eviction limitations remain relevant to a hosted composition. See [the detailed contract](embedding-provisioning.mdx#hosted-composition-gaps).
+
+### Signer process isolation [#signer-process-isolation]
+
+A host must isolate the process that holds signing authority. See [the detailed contract](embedding-provisioning.mdx#hosted-composition-gaps).
+
+### Shared broker lifecycle [#shared-broker-lifecycle]
+
+Trust for several spaces and broker-wide lifecycle operations have different boundaries. See [the detailed contract](embedding-provisioning.mdx#multiple-spaces-on-a-broker).
+
+### Other identity providers [#other-identity-providers]
+
+Production identity providers need the bridge and provider wiring described in the compatibility contract. See [the detailed contract](identity-service-auth.mdx#idp-compatibility).

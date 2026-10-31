@@ -10,7 +10,7 @@ import.
 
 ## What it does
 
-- **`Runtime` (`tmux`)** — each agent gets its own window in a shared per-space tmux session
+- `Runtime` (`tmux`): each agent gets its own window in a shared per-space tmux session
   (`cotal-<space>`). Spawned unfocused; switch to `session:name` to watch it. Env is isolated
   (`env -i`) so the tmux server's environment doesn't reach agents. That env is written to an
   owner-only launch script, which keeps it off tmux's command line, and the script removes its
@@ -26,11 +26,20 @@ import.
   that window, whether it still runs or has exited, and a window that has moved out of the session,
   including one that moves while the reap runs.
 
-- **`TerminalLayout` (`tmux`)** — opens/closes tmux windows for host-side orchestration.
+- `TerminalLayout` (`tmux`): opens/closes tmux windows for host-side orchestration.
   Detects the current session from `$TMUX`; must be called from inside a tmux session. Supports
   multi-pane tabs via `split-window`; a tab with more than one pane needs a `split`, and one
   without it is refused before any window opens. Looking up tabs by
   label throws when tmux cannot be queried.
+
+Session-name, pane-capture, session-creation, window-selection and text/key delivery failures
+name the operation, include tmux's error text and retain the failed call as `cause`.
+A failed capture returns no screen only when the pane's exit is confirmed. A failed exit probe
+still throws. Runtime spawn refusals also carry the session-creation reason.
+
+The package tests include native write controls on a fresh private socket when tmux is installed.
+They check failure diagnostics, successful delivery and the server-identity fence without using
+operator sessions.
 
 ## Usage
 
@@ -49,7 +58,10 @@ import "@cotal-ai/tmux"; // self-registers; no other setup needed
 
 cmux opens a per-agent **workspace (tab)** in the cmux app; this package opens a per-agent
 **window** in a tmux session. Both are native-watch (no PTY streaming). No `cli.ts` helper is
-included — tmux is always on PATH and needs no bundled binary path.
+included: the driver runs the `tmux` on `PATH` and needs no bundled binary path.
 
 See [docs/architecture.mdx](../../docs/architecture.mdx) (*Manager supervision*) and the
 [root AGENTS.md](../../AGENTS.md) for the tier rules.
+
+The launcher contract checks in `package.smoke.ts` are POSIX-only. On Windows they use the
+shared `skipSuite` helper to report a skip with zero passing cells.

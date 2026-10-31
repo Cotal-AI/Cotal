@@ -1,7 +1,7 @@
 ---
 title: "Use the web dashboard"
 description: "Configure the read-only dashboard and inspect a space through a protected browser session."
-kind: "Informative"
+kind: Guide
 audience: "operators"
 ---
 
@@ -67,7 +67,7 @@ Each view keeps navigation on the left, content in the center, and the NEEDS-YOU
 
 | View | What it shows |
 | --- | --- |
-| Monitor | Activity with delivery-mode filters and pause, the roster, and working, waiting, idle, offline, and oldest-unattended signal tiles. |
+| Monitor | Activity with delivery-mode filters and pause, the roster, and working, waiting, idle, offline, and stalest-live-heartbeat signal tiles. |
 | Channel | One channel's messages and members. |
 | Direct messages | One summary per peer, expandable into threads. |
 | Agent detail | The peer's name, role, harness, model, capabilities, activity, and blocked state. |
@@ -125,10 +125,11 @@ A refusal preserves the received value. Invisible, direction-changing, and annot
 Ordinary Unicode text remains readable as entered.
 
 Channel names accept dotted segments of letters, digits, `_`, and `-`, with `*` or `>` where a subtree is allowed.
-Invalid names are refused rather than rewritten into a different channel. Deletion never accepts a wildcard.
+Invalid names are refused rather than rewritten into a different channel.
 
-The lower-level channel-delete handler limits request bodies to 8 KiB. Larger bodies receive `413`, and the connection closes without reading the remaining upload.
-Other routes accept no body and reject an announced one in the same way. A session-gate refusal also closes a request with an announced body.
+Read routes accept no body. An announced body receives `413`, and the connection closes before reading it.
+The older embedded web handler has a separate delete route limited to 8 KiB with no wildcard targets.
+That route is not an action in the current service. Use the console or authorized CLI `channel remove` instead. A session-gate refusal also closes a request with an announced body.
 Ordinary bodyless requests keep their connection. The configured read-only service refuses deletion before reaching its mutation handler.
 
 ### Read message content

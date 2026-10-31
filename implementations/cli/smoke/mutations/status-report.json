@@ -13,7 +13,7 @@
     {
       "name": "every registration is checked without --all",
       "file": "implementations/cli/src/commands/status.ts",
-      "find": "check: all || m.space === chosen ? (",
+      "find": "check: checked(m) ? (",
       "replace": "check: true ? (",
       "expectRed": "the other registration is not checked",
       "cell": "the other registration is not checked",
@@ -22,8 +22,8 @@
     {
       "name": "--all is not passed to the mesh check",
       "file": "implementations/cli/src/commands/status.ts",
-      "find": "const meshes = await readMeshes(selected, Boolean(values.all), gaps);",
-      "replace": "const meshes = await readMeshes(selected, false, gaps);",
+      "find": "const meshes = await readMeshes(cwd, selected, Boolean(values.all), gaps, offline);",
+      "replace": "const meshes = await readMeshes(cwd, selected, false, gaps, offline);",
       "expectRed": "--all checks every registration",
       "cell": "--all checks every registration",
       "afterRestore": "pnpm --filter cotal-ai... build"
@@ -76,8 +76,8 @@
     {
       "name": "the NATS row prints the raw source value",
       "file": "implementations/cli/src/commands/status.ts",
-      "find": "cell(m.nats === \"path\" ? \"nats-server on PATH\" : \"bundled nats-server\", \"ok\")",
-      "replace": "cell(m.nats, \"ok\")",
+      "find": "cell(brokerExecutable(m), m.natsProblem ? \"failed\" : \"ok\")]",
+      "replace": "cell(m.nats, m.natsProblem ? \"failed\" : \"ok\")]",
       "expectRed": "the NATS row says where nats-server comes from in words",
       "cell": "the NATS row says where nats-server comes from in words",
       "afterRestore": "pnpm --filter cotal-ai... build"

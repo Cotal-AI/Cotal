@@ -1,7 +1,7 @@
 ---
 title: "Launch agents"
 description: "Launch an agent through a manager, attach to its terminal, and choose its persona and runtime."
-kind: "Informative"
+kind: Guide
 audience: "operators"
 ---
 
@@ -19,8 +19,11 @@ From the space's project folder, run:
 cotal spawn
 ```
 
-Cotal asks a manager to launch the default persona, waits for readiness, and attaches this terminal to the allocated agent.
-The terminal needs usable input and output for that attachment.
+A bare spawn runs the default persona in this terminal. `--foreground` explicitly keeps that path.
+`--detach` launches through a manager and returns after the agent joins.
+`--on <instance>` launches through that manager and attaches this terminal when its runtime streams a terminal.
+The built-in `pty` runtime streams one; tmux, cmux, Orca, and Herdr provide their own terminal surfaces.
+Attachment needs usable input and output terminals and refuses `--json` and `--plain`.
 If your catalog contains a `reviewer` persona, launch it without opening its terminal:
 
 ```bash
@@ -34,8 +37,10 @@ Check `cotal ps` for the agent's identity and the manager that owns it.
 If a launch succeeds but attachment fails, inspect that recorded agent and attach again.
 Do not launch a replacement just because the terminal view failed.
 
-To run the application directly in this terminal instead, use `cotal spawn --foreground`.
-That mode uses the native application rather than a managed terminal view; closing the terminal may end it.
+On a user-auth mesh with several managers, an interactive bare spawn offers **This terminal** and the available managers.
+A managed launch can also ask for its working folder when its host differs from this machine.
+Use `--on` and `-C` to make those choices explicit in scripts.
+Closing a direct foreground terminal may end its agent.
 Use `--dry-run` to preview a launch without allocating an agent, provisioning credentials, or starting the application.
 
 ### Choose the persona
@@ -67,8 +72,8 @@ OpenCode uses `provider/model`.
 For connectors with a catalog, run `cotal models --harness opencode` to inspect model IDs and variants.
 Select one with `--model provider/model --variant high`.
 
-A spawned Claude Code agent receives Cotal's tools and the MCP servers shared by your [configuration](config.mdx).
-Use `--share-tools` to narrow the shared servers for one launch.
+A spawned Claude Code agent loads Cotal's tools, Claude's native MCP sources, and declared sharing overrides.
+Use `--share-tools none` for Cotal alone or `--share-tools a,b` for named declared servers.
 
 <Callout type="warn" title="Launch permission includes native options">
 
@@ -82,7 +87,8 @@ See the [Security model](security.mdx).
 
 Claude renders an option as `--key value`, or bare `--key` for an empty value.
 OpenCode merges options into its agent configuration.
-Hermes exposes no option mechanism and refuses them.
+Codex passes each option as a `-c key=value` configuration override.
+Hermes, Jcode, and pi expose no option mechanism and refuse them.
 
 ## Choose a runtime [#choose-a-runtime]
 
@@ -111,7 +117,7 @@ If the child printed a connector line beginning with `[cotal-<name>]` or `[cotal
 On Linux, a manager can adopt and reap seats that an older manager left under detached per-seat custodians.
 It does not launch new custodians.
 A custodian exits a few seconds after its agent ends.
-Use `cotal seats` to list those custodians and `cotal seats --drain` to retire only ones whose agents have exited.
+Use `cotal manager seats` to list those custodians and `cotal manager seats --drain` to retire only ones whose agents have exited.
 A custodian keeps exit evidence beside the custody record, so a successor manager can report the same outcome.
 If the record cannot be written, the reason appears in `custodian.log`; a later reap reports missing or unreadable evidence.
 
@@ -121,6 +127,8 @@ The `seat reaped:` report then says exit detail is unavailable.
 During launch readiness, checks run every second and once more as the readiness window closes.
 A proven exit is reported as an exited launch without last-output text.
 If the runtime has not proved that exit one second after the window closes, the launch stays uncertain.
+An uncertain launch reports its configured readiness window in milliseconds and keeps the seat available for inspection.
+A stop prints `seat reaped:` only after the runtime proves exit; an unproved exit remains named in the shutdown error.
 See the [seat reference](cli-agents.mdx#seats) for custody inspection.
 
 ## Check connector availability [#check-connector-availability]
@@ -139,6 +147,7 @@ Available rows record the absolute executable paths the manager found.
 
 Launches and preserved-state resumes use those recorded paths.
 `cotal models` reports the same unavailable reason, so installing or removing an application after boot does not silently change the manager's answer.
+Catalog reads run the same recorded absolute binary as a launch. `COTAL_OPENCODE_BIN` and `COTAL_CODEX_BIN` override it.
 Restart the manager to repeat its startup checks, after accounting for its running seats.
 A connector registered after startup has no recorded row, so launch, resume, and model lookup check PATH when called.
 

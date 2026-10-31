@@ -452,7 +452,7 @@ try {
   if (fail) process.exitCode = 1;
 } catch (e) {
   fail++;
-  console.error("  ✗ scenario threw:", (e as Error).stack ?? (e as Error).message);
+  console.error("  ✗ scenario threw:", e);
   process.exitCode = 1;
 } finally {
   for (const nc of [...holderConns, ...execConns, observerNc, evictorNc]) { try { await nc?.close(); } catch { /* */ } }

@@ -54,6 +54,7 @@ const capturing = (inner: EffectHandler): { handler: EffectHandler; seen: Map<st
   };
   const handler = {
     now: () => inner.now(),
+    participant: wrap("participant", inner.participant),
     spawn: wrap("spawn", inner.spawn),
     turn: wrap("turn", inner.turn),
     ask: wrap("ask", inner.ask),
@@ -113,7 +114,7 @@ const NOT_A_HANDLER_FIELD: Readonly<Record<string, string>> = {
       // `PRIMITIVES.spawn.options` and this program was not updated beside it, so the audit reported
       // `spawn.placement` dropped and THIS SUITE WAS RED at a108a8ad8 — the option list and the
       // fixture are the two correct-looking lists the header warns about, one gap further along.
-      src: 'const t = channel("c");\nconst a = await spawn("p", { name: "a", cwd: "/prepared/writer", placement: { endpoint: "manager", instanceId: "i1" }, worktree: "wt-1", join: [t], role: "r", permits: { turns: 3 }, supervise: { restart: "on-fail" }, onFork: "adopt", events: false });\n',
+      src: 'const t = channel("c");\nconst a = await spawn("p", { name: "a", cwd: "/prepared/writer", placement: { endpoint: "manager", instanceId: "i1" }, worktree: "wt-1", runtime: "tmux", join: [t], role: "r", permits: { turns: 3 }, supervise: { restart: "on-fail" }, onFork: "adopt", events: false });\n',
       method: "spawn",
     },
     turn: {

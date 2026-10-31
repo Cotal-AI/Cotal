@@ -33,7 +33,11 @@ if (process.stdin.isTTY) process.stdin.setRawMode(true);
 // presence registers, so anything typed after that must find a reader already attached; wiring the
 // reader afterwards would leave a window in which a delivered byte is legitimately lost and the
 // suite would flake in the direction of a false red.
-process.stdin.on("data", (chunk) => appendFileSync(sink, chunk));
+process.stdin.on("data", (chunk) => {
+  appendFileSync(sink, chunk);
+  if (e.COTAL_INPUT_MENU === "1" && chunk.includes(0x1b))
+    process.stdout.write("\r\n".repeat(40) + "Ordinary input prompt\r\n");
+});
 process.stdin.resume();
 
 // READINESS, and it is load-bearing rather than tidy. The manager puts a seat in its slot map (and
@@ -60,6 +64,9 @@ const ep = new CotalEndpoint({
 ep.on("error", (err) => console.error("STUB_ERR", err?.message ?? err));
 await ep.start();
 console.log("STUB_JOINED", e.COTAL_NAME, e.COTAL_ID);
+// The observed Claude AskUserQuestion layout, without model inference in this regression cell.
+if (e.COTAL_INPUT_MENU === "1")
+  process.stdout.write("\x1b[2J\x1b[HWhich harmless fixture label should be recorded?\r\n❯ 1. Alpha label\r\n  2. Bravo label\r\n  3. Charlie label\r\n  4. Delta label\r\n  5. Type something.\r\nEnter to select · ↑/↓ to navigate · Esc to cancel\r\n");
 const keep = setInterval(() => {}, 1 << 30);
 const bye = () => { clearInterval(keep); ep.stop().finally(() => process.exit(0)); };
 process.on("SIGTERM", bye);

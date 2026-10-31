@@ -16,9 +16,9 @@ import { createSuite } from "@cotal-ai/smoke-kit";
 import { disableInput, exitCode, globalFlagDeclarationProblems, isCommandFailure, outputDeclarationProblems, type CommandFailure } from "@cotal-ai/workspace";
 import "../src/index.js"; // self-register the CLI commands
 import { printCommandHelp } from "../src/help.js";
-import { USER_CHAT_TTL_SEC, channelDisclosure, chatAdmission, chatArguments, chatComplete, closeExitCode, holdSignals, type ChatInput } from "../src/commands/chat.js";
+import { USER_CHAT_TTL_SEC, channelDisclosure, chatAdmission, chatArguments, chatComplete, closeExitCode, holdSignals, reopenCommand, sharedNameWarning, type ChatInput } from "../src/commands/chat.js";
 import { loadChatFrontEnd } from "../src/chat/frontend.js";
-import type { CloseReport } from "../src/chat/session.js";
+import type { AdmittedChatSession, CloseReport, RosterRow } from "../src/chat/session.js";
 
 const { check, finish } = createSuite();
 const cmd = registry.resolve<Command>("command", "chat");
@@ -77,8 +77,10 @@ console.log("2. grammar refuses before any target, connector or connection");
   const parseCode = (json as unknown as { code?: unknown }).code;
   check("--json is not a chat flag", !isCommandFailure(json) && typeof parseCode === "string" && parseCode.startsWith("ERR_PARSE_ARGS"), json);
   check("two channels refuse as usage", refusal(run(["a", "b", "--stdio"]))?.code === "USAGE_INVALID");
-  for (const channel of ["team.*", "team.>"])
-    check(`the wildcard channel ${channel} refuses as usage`, refusal(run([channel, "--stdio"]))?.code === "USAGE_INVALID");
+  for (const channel of ["team.*", "team.>", "gen*"])
+    check(`the wildcard channel ${channel} refuses as usage`, refusal(run([channel, "--stdio"]))?.code === "USAGE_INVALID" && refusal(run([channel, "--stdio"]))?.message === "name one concrete channel, without wildcards");
+  const unsafe = refusal(run(["kanäle", "--stdio"]));
+  check("a channel name that is not NATS-safe refuses as usage, naming the segment", unsafe?.code === "USAGE_INVALID" && unsafe.message.includes('segment "kanäle" must be a NATS-safe token'), unsafe);
   for (const [what, name] of [["an empty", " "], ["a 129-character", "x".repeat(129)], ["a control-character", "a\u0007b"]] as const)
     check(`${what} --name refuses as usage`, refusal(run(["--stdio", "--name", name]))?.code === "USAGE_INVALID");
 }
@@ -134,6 +136,11 @@ console.log("5. the recorded mode alone picks the admission");
   try { chatAdmission("other" as never, "l", undefined); } catch (e) { unknown = e; }
   check("an unknown recorded mode refuses as unsupported with no other mode tried",
     isCommandFailure(unknown) && unknown.code === "UNSUPPORTED" && unknown.message.includes("no other mode was tried"), unknown);
+  // A --stdio session's refusal named the interactive `cotal chat <channel>`, which a program cannot drive.
+  const stdio = reopenCommand({ raw: ["--stdio", "--name", "s x", "--space", "a2"], positionalIndices: [] })("general");
+  check("the reopen command keeps the session's flags, quoted for a shell", stdio === "cotal chat general --stdio --name 's x' --space a2", stdio);
+  const plain = reopenCommand({ raw: ["review", "--plain"], positionalIndices: [0] })("ops");
+  check("...and names the new channel in place of the session's own", plain === "cotal chat ops --plain", plain);
 }
 
 console.log("6. a close report sets the exit code");
@@ -146,6 +153,8 @@ console.log("6. a close report sets the exit code");
   check("an unconfirmed connection close exits 3, whatever the retirement",
     (["retired", "requested", "not-applicable"] as const).every((r) => closeExitCode(report(r, "not-confirmed")) === 3));
   check("no close report exits 3", closeExitCode(undefined) === 3);
+  check("a confirmed close of a session that could not continue exits 5", closeExitCode({ ...report("retired", "confirmed"), lost: "gone" }) === 5);
+  check("...and 3 when its close is not confirmed", closeExitCode({ ...report("retired", "not-confirmed"), lost: "gone" }) === 3);
 }
 
 console.log("7. completion needs no mesh for these words");
@@ -192,6 +201,19 @@ console.log("10. --no-input leaves only the program protocol");
   check("the terminal view refuses under --no-input", refusal(withTty(true, () => run([])))?.code === "USAGE_INVALID");
   const stdio = run(["--stdio"]);
   check("--stdio still opens", !(stdio instanceof Error) && stdio.frontEnd === "stdio", stdio);
+}
+
+console.log("11. a second session under a name in use is warned at join");
+{
+  // A second `--name bob` used to start with no word that the name was taken.
+  const self = { principal: "local.me", label: "bob" };
+  const sessionWith = (rows: RosterRow[]) => ({ identity: () => self, roster: async () => ({ outcome: "ok" as const, value: { rows, view: "current" as const } }) }) as unknown as AdmittedChatSession;
+  const me: RosterRow = { id: "local.me", name: "bob", kind: "endpoint", status: "idle", sessionKind: "chat" };
+  const shared = await sharedNameWarning(sessionWith([me, { id: "local.other", name: "Bob", kind: "endpoint", status: "idle", sessionKind: "chat" }]));
+  check("a live participant already named bob gets a warning naming it, its kind and the --name to pass",
+    shared === `the name "bob" is already in use here by local.other (chat session); a direct message to "bob" refuses as ambiguous while both are present, so pass another --name to be reached by name`, shared);
+  check("an offline record of the name, or only this session, gets none",
+    await sharedNameWarning(sessionWith([me, { id: "local.gone", name: "bob", kind: "agent", status: "offline" }])) === undefined && await sharedNameWarning(sessionWith([me])) === undefined);
 }
 
 finish();

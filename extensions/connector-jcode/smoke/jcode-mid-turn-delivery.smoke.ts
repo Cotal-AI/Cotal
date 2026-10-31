@@ -23,13 +23,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CotalEndpoint, isReachable, mintLifecycleUid, seedChannelRegistry } from "@cotal-ai/core";
+import { connect } from "@nats-io/transport-node";
+import { jetstreamManager } from "@nats-io/jetstream";
 import { freePort, killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal, teardownPathOnSignal } from "@cotal-ai/smoke-kit";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-async function waitFor<T>(name: string, read: () => T | undefined, timeoutMs = 20_000): Promise<T> {
+async function waitFor<T>(name: string, read: () => T | undefined | Promise<T | undefined>, timeoutMs = 20_000): Promise<T> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
-    const value = read();
+    const value = await read();
     if (value !== undefined) return value;
     if (Date.now() > deadline) throw new Error(`timed out waiting for ${name}`);
     await sleep(50);
@@ -55,6 +57,7 @@ const shim = join(shimDir, "jcode");
 const log = join(root, "fake.jsonl");
 const turnDelayMs = 8_000;
 const sessionState = join(root, "fake-session.json");
+const roleRelease = join(root, "release-role-turn");
 const lifecycleUid = mintLifecycleUid();
 const nats = spawn("nats-server", ["-js", "-p", String(port), "-sd", join(root, "js")], { stdio: "ignore" });
 const releaseBroker = teardownOnSignal(nats, root);
@@ -122,9 +125,12 @@ try {
       FAKE_JCODE_LOG: log,
       FAKE_JCODE_TURN_DELAY_MS: String(turnDelayMs),
       FAKE_JCODE_SESSION_STATE: sessionState,
+      FAKE_JCODE_HOLD_TURN_ON_CONTENT: "ROLE_LONG_INITIAL",
+      FAKE_JCODE_HOLD_TURN_RELEASE_FILE: roleRelease,
       JCODE_HOME: inheritedJcodeHome,
       COTAL_SPACE: "jcodemidturn",
       COTAL_NAME: "jcodepeer",
+      COTAL_ROLE: "builder",
       COTAL_ID: "jcodepeer",
       COTAL_LIFECYCLE_UID: lifecycleUid,
       COTAL_SERVERS: servers,
@@ -195,6 +201,48 @@ try {
   );
   const postText = String(post.frame?.content ?? "");
   check("the clean boundary leaves later turns free of the prior batch", !postText.includes(short), { postBytes: Buffer.byteLength(postText) });
+
+  await waitFor("post-boundary turn completes before role ownership probe", () =>
+    entries().find((entry) => entry.ev === "turn_done_emitted" && String(entry.content).includes("POST_BOUNDARY_910")),
+  );
+  const admin = await connect({ servers });
+  try {
+    const jsm = await jetstreamManager(admin);
+    await operator.anycast("builder", "ROLE_LONG_INITIAL");
+    await waitFor("initial role request holds a real Harness turn open", () =>
+      entries().find((entry) => entry.ev === "turn_held_open" && String(entry.content).includes("ROLE_LONG_INITIAL")),
+    );
+    await operator.anycast("builder", "ROLE_LONG_STEERED");
+    await waitFor("steered role request reaches the held turn", () =>
+      steerText().includes("ROLE_LONG_STEERED") ? true : undefined,
+    );
+    // The broker keeps its production 60-second ack wait. Neither a shorter test-only timer nor
+    // a final ack can stand in for renewal of the initial and soft-interrupted role deliveries.
+    await sleep(65_000);
+    const held = await jsm.consumers.info("TASK_jcodemidturn", "svc_builder");
+    check("long initial and steered role requests stay owned beyond the native ack wait",
+      held.config.ack_wait === 60_000_000_000 && held.delivered.consumer_seq === 2 &&
+        held.num_ack_pending === 2 && held.num_redelivered === 0,
+      held,
+    );
+    writeFileSync(roleRelease, "complete");
+    await waitFor("successful long role turn commits both exact deliveries", async () => {
+      const info = await jsm.consumers.info("TASK_jcodemidturn", "svc_builder");
+      return info.num_ack_pending === 0 && info.ack_floor.stream_seq === 2 ? info : undefined;
+    });
+    await waitFor("the native work queue removes acknowledged role requests", async () =>
+      (await jsm.streams.info("TASK_jcodemidturn")).state.messages === 0 ? true : undefined,
+    );
+    const completed = await jsm.consumers.info("TASK_jcodemidturn", "svc_builder");
+    check("the successful long role turn removes the two requests without redelivery",
+      (await jsm.streams.info("TASK_jcodemidturn")).state.messages === 0 &&
+        completed.delivered.consumer_seq === 2,
+      completed,
+    );
+  } finally {
+    writeFileSync(roleRelease, "complete");
+    await admin.close();
+  }
 
   // A host restart reuses the same wire principal and lifecycle durable, and resumes the stored
   // Jcode session. The sender still has the old presence record in memory when the replacement comes

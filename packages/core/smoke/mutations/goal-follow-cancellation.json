@@ -17,7 +17,7 @@
     {
       "name": "direct submit await hangs on unresponded in-flight broker request",
       "file": "packages/core/src/endpoint-goal-follow.ts",
-      "find": "    try { attributed = await bounded(() => submit(work.signal), deadline); }",
+      "find": "    try { attributed = await bounded(() => submission = submit(work.signal), deadline); }",
       "replace": "    try { attributed = await submit(work.signal); }",
       "expectRed": "aborted follower settles with unknown outcome during pending broker submit",
       "cell": "aborted follower settles with unknown outcome during pending broker submit",

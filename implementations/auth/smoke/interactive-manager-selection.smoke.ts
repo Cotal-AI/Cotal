@@ -12,13 +12,14 @@ import { Kvm } from "@nats-io/kv";
 import { createSpaceAuth, epAuthBucket, isReachable, mintCreds, mintLifecycleUid, newIdentity,
   permissionsFor, recordSpecKey, recordStatusKey, recordsBucket, RECORD_KINDS, remoteManagerActors,
   serverConfig, setupSpaceStreams, standaloneConnectOpts } from "@cotal-ai/core";
-import { authDir, assertUserAuthInfo, loadManagerInstanceIdentity, recordMesh, resolveControlTarget, saveSpaceAuth, spaceSegment,
+import { authDir, assertUserAuthInfo, isCommandFailure, isConnectRefusal, loadManagerInstanceIdentity, recordMesh, resolveControlTarget, saveSpaceAuth, spaceSegment,
   userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { cotalAuthProvider, deriveOwnerForIdpSubject, grantActor, grantManagedActor, loadAuthServiceInfo,
   loadOwnerSecret, newActorToken, runAuthService, saveIdpSession } from "@cotal-ai/auth";
 import { Manager } from "@cotal-ai/manager";
 import { formatSentinel, killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { askManager } from "../../cli/src/lib/control.js";
+import { noLiveManager } from "../../cli/src/lib/manager-choice.js";
 import { pickFreePort } from "./_free-port.js";
 
 if (process.argv[2] === "auth-service") {
@@ -104,7 +105,8 @@ try {
   const exchange = async (pin?: string, agent = false, actor = "cli") => {
     const res = await fetch(info.url + "/exchange", { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${info.cap}` },
       body: JSON.stringify({ ...(agent ? { owner, actor: "child", actorToken: secret.actorToken } : { actor, idpToken: token }), view: "manager-caller", ...(pin !== undefined ? { managerInstanceId: pin } : {}) }) });
-    return { status: res.status, body: await res.json() as { token?: string; managerInstanceId?: string; error?: string } };
+    const body = await res.json() as { token?: string; error?: string };
+    return { status: res.status, body, instance: body.token === undefined ? undefined : (decodeJwt(body.token).act as { managerInstanceId?: string }).managerInstanceId };
   };
   const put = async (instance: string, gateOwner: string, state: "open" | "frozen" = "open", registered = true, stale = false) => {
     const nc = await connect({ servers: server, ...standaloneConnectOpts({ creds: await mintCreds(auth, newIdentity(), "endpoint-serve-executor", { endpointServeExecutor: { endpoint: "manager", instanceId: instance } }), tls: false }) });
@@ -124,8 +126,12 @@ try {
   stage = "baseline";
   const legacy = await exchange();
   check("absent option preserves dead-remote refusal", legacy.status === 401 && /none live/.test(legacy.body.error ?? ""));
+  // `ps` reads presence on this refusal, so the CLI must still recognise the exchange's words for it.
+  const noneLive = await resolveControlTarget({ space }, "control-caller-privileged", undefined, { onRefusal: "throw" }).then(() => undefined, (e: unknown) => e);
+  const noneLiveFailure = isConnectRefusal(noneLive) ? noneLive.failure() : isCommandFailure(noneLive) ? noneLive : undefined;
+  check("the CLI reads that refusal as no live manager of yours", noneLiveFailure !== undefined && noLiveManager(noneLiveFailure));
   const pinned = await exchange(local.instanceId);
-  check("explicit genuine local pin still succeeds", pinned.status === 200 && pinned.body.managerInstanceId === local.instanceId);
+  check("explicit genuine local pin still succeeds", pinned.status === 200 && pinned.instance === local.instanceId);
   const nativePs = async (bearer: string) => {
     const claims = decodeJwt(bearer) as { sub: string; act: { actor: string; lifecycleUid: string; managerInstanceId: string } };
     const callout = await import("@cotal-ai/auth").then(m => m.loadCalloutAuth(store, space));
@@ -136,12 +142,12 @@ try {
   check("baseline explicit pin returns real native empty managed ps", oldPs.ok === true && Array.isArray(oldPs.data) && oldPs.data.length === 0);
   await start("primary"); stage = "primary";
   const primary = await exchange();
-  check("opted-in interactive local primary ignores dead remote history", primary.status === 200 && primary.body.managerInstanceId === local.instanceId);
+  check("opted-in interactive local primary ignores dead remote history", primary.status === 200 && primary.instance === local.instanceId);
   if (primary.status !== 200) throw new Error("primary correctness assertion failed");
   const primaryPs = await nativePs(primary.body.token!);
   check("primary selection returns real native empty managed ps", primaryPs.ok === true && Array.isArray(primaryPs.data) && primaryPs.data.length === 0);
   const liveRemote = mintLifecycleUid(); await put(liveRemote, owner);
-  check("interactive policy remains local even with a live owned remote", (await exchange()).body.managerInstanceId === local.instanceId);
+  check("interactive policy remains local even with a live owned remote", (await exchange()).instance === local.instanceId);
   for (const profile of ["control-caller-privileged", "control-caller-admin"] as const) {
     const resolved = await resolveControlTarget({ space }, profile, undefined, { onRefusal: "throw" });
     check(`${profile} interactive control consumers share local-primary routing`, resolved.auth.managerInstanceId === local.instanceId);
@@ -153,10 +159,10 @@ try {
     const explicit = await resolveControlTarget({ space }, "control-caller-admin", local.instanceId, { onRefusal: "throw" });
     check("explicit client pin still wins over launching-manager binding", explicit.auth.managerInstanceId === local.instanceId);
   } finally { delete process.env.COTAL_MANAGER_INSTANCE; delete process.env.COTAL_SPACE; }
-  check("explicit valid owned remote wins over local primary", (await exchange(liveRemote)).body.managerInstanceId === liveRemote);
-  check("managed secret default selection stays remote", (await exchange(undefined, true)).body.managerInstanceId === liveRemote);
+  check("explicit valid owned remote wins over local primary", (await exchange(liveRemote)).instance === liveRemote);
+  check("managed secret default selection stays remote", (await exchange(undefined, true)).instance === liveRemote);
   const bound = await exchange(liveRemote, true);
-  check("managed launch-bound explicit selection stays remote", bound.status === 200 && decodeJwt(bound.body.token!).act !== undefined && bound.body.managerInstanceId === liveRemote);
+  check("managed launch-bound explicit selection stays remote", bound.status === 200 && bound.instance === liveRemote);
   for (const [name, id, gateOwner, state, stale] of [
     ["foreign", mintLifecycleUid(), `u_${"f".repeat(26)}`, "open", false],
     ["closed", mintLifecycleUid(), owner, "frozen", false],
@@ -192,6 +198,37 @@ try {
       check(`${name} local refuses despite live owned remote`, (await exchange()).status === 401);
       await gates.put(key, original.value);
     }
+    // A view issued while the gate was open, then refused by the callout as the command connects:
+    // nothing was published, so the command connects again. A gate that reopens within its attempts
+    // answers the call; one that stays closed is refused at the connect stage.
+    const frozen = JSON.stringify({ ...row, state: "frozen", op: { opId: mintLifecycleUid(), kind: "takeover" } });
+    const reopened = await exchange(local.instanceId);
+    await gates.put(key, frozen);
+    const reopen = pause(1_500).then(() => gates.put(key, original.value));
+    let answered: unknown;
+    try { answered = await nativePs(reopened.body.token!); } catch (error) { answered = error; } finally { await reopen; }
+    check("a view refused at connect is answered once its gate reopens", reopened.status === 200 && (answered as { ok?: unknown }).ok === true);
+    const issued = await exchange(local.instanceId);
+    await gates.put(key, frozen);
+    let refused: unknown;
+    try { await nativePs(issued.body.token!); } catch (error) { refused = error; } finally { await gates.put(key, original.value); }
+    check("a view refused on every attempt is refused at the connect stage as not sent", issued.status === 200 && isConnectRefusal(refused)
+      && refused.code === "PERMISSION_DENIED" && refused.kind === "transient" && refused.message.includes("the broker refused all 4 attempts, so nothing was sent to the manager")
+      && !refused.message.includes("Authorization Violation") && JSON.stringify(refused.native) === JSON.stringify({ code: "connect-refused", detail: { stage: "connect", attempts: 4, reason: "Authorization Violation" } }));
+    // An auth service that does not answer leaves the broker's callout unanswered, and the connect
+    // never opens. One that answers again within the attempts answers the call.
+    const stalled = await exchange(local.instanceId);
+    process.kill(child!.pid!, "SIGSTOP");
+    const resume = pause(3_000).then(() => { process.kill(child!.pid!, "SIGCONT"); });
+    try { answered = await nativePs(stalled.body.token!); } catch (error) { answered = error; } finally { await resume; }
+    check("a connect held by an unanswered callout is answered once the auth service answers", stalled.status === 200 && (answered as { ok?: unknown }).ok === true);
+    const stuck = await exchange(local.instanceId);
+    process.kill(child!.pid!, "SIGSTOP");
+    let timedOut: unknown;
+    try { await nativePs(stuck.body.token!); } catch (error) { timedOut = error; } finally { process.kill(child!.pid!, "SIGCONT"); }
+    check("a connect that never opens is refused at the connect stage as not sent", stuck.status === 200 && isConnectRefusal(timedOut)
+      && timedOut.code === "TARGET_UNAVAILABLE" && timedOut.kind === "transient" && timedOut.message.includes("none of 4 attempts opened within 5 seconds, so nothing was sent to the manager")
+      && !/\btimeout\b/.test(timedOut.message) && (timedOut.native?.detail as { attempts?: unknown } | undefined)?.attempts === 4);
     const spec = await records.get(recordSpecKey(RECORD_KINDS.svc, ["manager", local.instanceId]));
     check("selected local gate is attributed to persisted serve principal", row.principal === `local.${local.serveIdentity.id}`);
     check("selected local gate/status epoch and spec revision agree", !!spec && JSON.parse(new TextDecoder().decode((await records.get(recordStatusKey(RECORD_KINDS.svc, ["manager", local.instanceId])))!.value)).epoch === row.processEpoch && spec.revision === row.registrationRevision);
@@ -205,7 +242,7 @@ try {
   await new Promise<void>(r => idp.close(() => r()));
   check("owned child PID/start/cwd generations exited", children.every(x => { try { const now = identity(x.pid); return now.start !== x.start || now.cwd !== x.cwd; } catch (error) { return ["ENOENT", "ESRCH"].includes((error as NodeJS.ErrnoException).code ?? ""); } }));
   check("owned broker and listener ports closed", (await Promise.all([port, issuerPort, exchangePort].filter(Boolean).map(gone))).every(Boolean));
-  if (checks.every(x => x.ok)) assert.equal(checks.length, 28, "all named selection, scope and cleanup cells ran");
+  if (checks.every(x => x.ok)) assert.equal(checks.length, 33, "all named selection, scope and cleanup cells ran");
   if (managerClosed && checks.slice(-2).every(x => x.ok) && existsSync(root)) rmSync(root, { recursive: true });
   const failed = checks.filter(x => !x.ok).length;
   process.stdout.write(JSON.stringify({ checks: checks.length, passed: checks.length - failed, failed }) + "\n");

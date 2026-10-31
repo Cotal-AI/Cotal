@@ -10,135 +10,177 @@ The Hermes connector runs one gateway per Cotal seat.
 
 ## Gateway ownership
 
-The launcher owns the mesh endpoint for the gateway's lifetime.
-Hermes creates a fresh agent for each inbound message, so the connection does not belong to a per-turn agent.
-The launcher starts `hermes gateway run` as its child.
-A Python plugin provides the Cotal platform adapter, presence hooks, and shared `cotal_*` tools.
+Unlike Claude Code or OpenCode (where the harness *is* the process), Hermes runs as a long-lived
+**gateway daemon** that spins up a fresh agent per inbound message. So the mesh connection can't
+live inside a per-turn process; the connector's command is a small **launcher/supervisor** that
+owns the mesh endpoint for the gateway's whole life and runs `hermes gateway run` as its child.
 
-The plugin and launcher communicate over local AF_UNIX sockets.
-The first bridge frame must carry the launch's control token.
-The bridge socket path is derived from that token, rather than only from the space and seat name.
-The token is stored in private launch material.
-The gateway retains that file's pointer for its plugin to read, so a process running as the same OS user can deliberately read it.
-This arrangement prevents accidental token inheritance and does not isolate hostile same-user processes.
+- The launcher bridges to an in-gateway **Python plugin** (the platform adapter, presence hooks,
+  and the `cotal_*` tools) over local AF_UNIX sockets. The bridge socket is authenticated on
+  connect with the launch's control token (the first frame must carry it), and its path is not
+  predictable: it is derived from the token rather than from the space and agent name alone.
+- It runs the gateway in an isolated `HERMES_HOME` profile (a temp dir), so your own `~/.hermes`
+  is never touched, with approvals off (a supervised agent has no human at the TUI to approve).
+  The temp dir is laid out as a Hermes named profile (`<temp root>/profiles/cotal-<id>`), so Hermes
+  gives the seat's gateway its own systemd unit name, `hermes-gateway-cotal-<id>`. A seat never
+  checks, refreshes or conflicts with your own `hermes-gateway.service`.
+- The managed profile belongs to the seat and goes away with it. Its temp root is
+  `$TMPDIR/cotal-hermes-<id>`, one per seat, and it also holds the gateway's own `TMPDIR` and the
+  state Hermes keeps beside its profiles. When the seat stops, the launcher sends the gateway
+  SIGTERM, kills its process tree if it is still running 1.5 seconds later, waits for it to exit,
+  and then removes that root, so a seat stopped mid-turn leaves nothing behind either. A hard stop
+  that kills the launcher before it can do this leaves the root in place for you to delete. The one
+  profile a stop keeps is a `--resume` seat's, which holds its fork (see [Resume a session](#session-forks)).
+  To put your own Hermes on the mesh instead, see [Use your own Hermes profile](#managed-profiles).
+- The persona is written as Hermes' `SOUL.md` (its system-prompt file), the one place a system
+  prompt can be set.
+- Quiet-channel ambient is skipped by the automatic bridge pump, even when an older quiet item is
+  ahead of a DM. `cotal_inbox` explicitly surfaces and clears quiet ambient without consuming the
+  connector-owned automatic queue; quiet `@mention`s remain automatic.
+- A channel message that replies to another message does not start a turn. The gateway posts
+  every turn's answer, and its own busy notices such as `Interrupting current task`, back to the
+  channel as a reply to the message that started the turn. If a seat took a turn on a peer's reply,
+  two Hermes seats on one channel would answer each other until their gateways stopped. Such a
+  reply waits in `cotal_inbox` like quiet ambient, and a reply that `@mention`s the seat still
+  starts a turn.
 
-### Managed profiles
+The shared tool surface and inbound-message model are documented once, for all connectors: see
+[mcp-tools.md](mcp-tools.mdx) and [connect-claude.md](connect-claude.mdx).
 
-The default `HERMES_HOME` is a named profile under `$TMPDIR/cotal-hermes-<id>`.
-Each seat gets its own `hermes-gateway-cotal-<id>` systemd unit name.
-The seat does not inspect or refresh the operator's `hermes-gateway.service`.
-The profile has command approvals disabled and does not read the operator's `~/.hermes`.
-A persona becomes the profile's `SOUL.md`.
+## Managed profiles
 
-The managed root also contains the gateway's `TMPDIR` and profile-adjacent Hermes state.
-On stop, the launcher sends SIGTERM to the gateway.
-After 1.5 seconds, it kills a gateway tree that has not exited.
-It waits for exit before removing the root.
-A resumed fork keeps its root.
-A hard kill of the launcher can leave a root for later operator cleanup.
+The isolated profile above is the right default for a disposable seat, but it cannot serve the
+other reason to run Hermes: joining the Hermes you already have, with its credentials and
+integrations. Those live in your real profile, so a seat on a temp `HERMES_HOME` cannot reach your
+notification path.
 
-### Adopted profiles
+Set `COTAL_HERMES_ADOPT_HOME` to your profile directory to run the gateway there instead:
 
-`COTAL_HERMES_ADOPT_HOME` selects an existing absolute profile path.
-The connector refreshes its `plugins/cotal` directory and writes `cotal-tools.json`.
-It does not write `SOUL.md` or `config.yaml`.
-A persona that would require replacing `SOUL.md` is refused.
-Plugin and platform enablement must already be present in the config.
+```bash
+export COTAL_HERMES_ADOPT_HOME="$HOME/.hermes"
+cotal spawn --agent hermes --no-events
+```
 
-Hermes retains its normal authority over the adopted profile.
-Session writes, logs, lock files, and config updates remain Hermes operations.
-Approval settings remain unchanged.
-First-use hints recorded under `onboarding.seen` can cause Hermes to serialize the whole config and discard comments.
+The value must be an absolute path. The launcher refuses a relative path, and a `~` your shell did
+not expand, before it writes anything, because either would resolve against the directory the
+launcher runs in.
 
-## Message delivery
+The launcher then installs its own `plugins/cotal` directory, refreshed on each launch, and writes
+the `cotal-tools.json` file the plugin reads. It reads your `config.yaml` and never writes it, and
+it leaves your `SOUL.md` alone. Enabling the plugin stays your decision, so add this to your
+`config.yaml` first:
 
-The automatic pump skips quiet-channel ambient traffic, including when an older quiet item precedes a DM.
-Quiet mentions remain automatic.
-`cotal_inbox` explicitly returns and clears quiet ambient without consuming the connector's automatic queue.
+```yaml
+plugins:
+  enabled: [cotal]
+gateway:
+  platforms:
+    cotal:
+      enabled: true
+```
 
-A channel reply does not start a turn unless it mentions the seat.
-The gateway posts its answer and busy notices as replies to the message that started the turn.
-This rule prevents two gateways from starting turns on each other's replies without a new mention.
-Unmentioned replies remain available through `cotal_inbox`.
-The shared tools are described in [MCP tools](mcp-tools.mdx).
+Without those two settings the launch fails and tells you what to add. Two more consequences
+follow from not writing your config. Your approval settings stay as you left them, so a profile
+that prompts for approvals will still prompt, with no human at the TUI to answer. An agent file
+persona is refused rather than applied, because applying it means overwriting your `SOUL.md`.
+
+The gateway itself is Hermes, and it writes your profile as Hermes does anywhere: its session store,
+logs and lock files, and `config.yaml` when it records a setting. On the profile's first message,
+and the first time some other one-time hints show, Hermes marks the hint as seen under
+`onboarding.seen`. It does that by loading `config.yaml` and writing the whole file back, so your
+comments are dropped and its layout can change, while your settings keep their values. To keep the
+file as you wrote it, mark the hints as seen yourself before the first launch:
+
+```yaml
+onboarding:
+  seen:
+    profile_build_offered: true
+    busy_input_prompt: true
+    tool_progress_prompt: true
+```
 
 ## Presence mapping
 
-| Hermes hook | Presence | Effect on a run turn |
-| --- | --- | --- |
-| `pre_llm_call` | `working` | Marks model work. |
-| `pre_tool_call` | `working` | Names the tool when details are available. |
-| `approval_wait` | `waiting` | Names the approval or pending tool. |
-| `post_llm_call`, `on_session_end` | `idle` | The working-to-idle boundary completes a surfaced run turn. |
-| `gateway_startup`, `on_session_start` | `idle` | Resets presence without completing a run turn. |
-| `gateway_shutdown` | `offline` | Marks gateway shutdown. |
-
-A reconnect or session start can occur during another turn.
-The reset path avoids treating either event as completion.
-Hooks report presence through the token-authenticated local control socket.
+The hooks map Hermes's lifecycle onto presence: `pre_llm_call` and `pre_tool_call` write `working`,
+`approval_wait` writes `waiting`, `post_llm_call` and `on_session_end` write `idle`. That last
+working-to-idle transition is the turn boundary the run relay reads (a surfaced run turn yields
+`done` there), so `gateway_startup` and `on_session_start` write their `idle` through a path that
+moves presence and nothing else: an adapter reconnect or a session start that lands mid-turn is a
+lifecycle event, and treating it as an ending would yield work the model had not finished.
 
 ## Answer routing
 
-The plugin mints a `contextId` for a question sent with `cotal_dm` or `cotal_anycast`.
-An answer routes to the asking session only when the plugin recognizes the ID and the sidecar authenticates the expected sender.
-For anycast, the sender must hold the requested role.
-Other DMs use the session keyed by their sender.
-`cotal_send` carries no such ID because a channel has several readers.
+One gateway runs many sessions on one seat, so a peer's answer cannot be routed by its sender
+alone. When a turn calls `cotal_dm` or `cotal_anycast`, the question carries a `contextId` the
+plugin minted for it. A peer answering with `cotal_dm` copies it
+([architecture](architecture.mdx#connector-runtime)). A DM that carries it runs in the session that
+asked, when its sender is the peer the question went to, or has the role an anycast asked for. For
+a Cotal session the plugin records the chat the session runs in and reads its chat type off the
+chat id, because not every supported Hermes version binds the chat type for a tool call. Any other
+DM runs in the session keyed by its sender, as before. A `cotal_send` carries no such id,
+because everyone on the channel reads it.
 
-The plugin records the Cotal chat for each session and derives its type from the chat ID.
-This works on supported Hermes versions that do not bind a chat type during tool calls.
-In `dm:<peer>`, a DM to that peer answers its message.
-Replies carry `replyTo` and copy the incoming `contextId`.
+In the session `dm:<peer>`, a `cotal_dm` to that peer answers it. A turn's reply names the message
+it answers in `replyTo` and copies its `contextId`.
 
-An asking session on another gateway platform uses Hermes' session-key injection API.
-This requires Hermes 0.20.1 or later and `plugins.entries.cotal.allow_gateway_injection: true`.
-Earlier versions lack that route and receive the answer in the peer's DM session.
-A refused or failed injection is logged and left unacknowledged.
-The bridge offers the answer again every 30 seconds without blocking messages behind it.
-It does not inject the answer into another session to clear the queue.
+A question asked from a session on another gateway platform, such as a Telegram topic, gets its
+answer injected into that session through Hermes. The operator allows this in the Hermes config:
 
-An ID stops routing 24 hours after the question was asked.
-The sidecar also forgets it after the seat asks 1024 newer questions.
-The plugin's own lookup holds at most 4096 questions, so that larger limit does not extend the sidecar's sender-validation window.
+```yaml
+plugins:
+  entries:
+    cotal:
+      allow_gateway_injection: true
+```
+
+Without it, Hermes refuses the injection and the gateway log says so. The answer is not run in any
+other session and is not acknowledged: it stays buffered on the seat and is offered again every 30
+seconds, while the messages behind it keep arriving. An injection that fails with an error is
+logged and handled the same way. A question's id stops routing 24 hours after it was asked, or
+sooner once the seat has asked 1024 newer questions.
 
 ## Session forks
 
-`--resume <id>` reads the source profile's `state.db` and creates a new session in the managed profile before mesh join.
-A missing or empty source session is refused.
-The source connection is read-only, although SQLite can create its WAL and shared-memory files beside the source database.
-The source transcript is never appended to.
-
-The fork keeps the source title.
-A title already used in the seat database gets the next `#N` suffix, shortened to Hermes' 100-character limit.
-Each mesh chat branches from this saved fork on its first use.
-That chat's first turn therefore includes the source context.
-History from an earlier seat of the same name remains in the seat database under its own session.
-
-A relaunch under the same seat name reuses the fork without reading the source again.
-A request for a different source under that name is refused.
-The saved root survives stop because it holds this state.
-A legacy fork under `$TMPDIR/cotal-hermes-<space>-<name>` moves to the current root on launch, replacing only a profile there that holds no fork.
-
-The fork record contains the source session ID, source title, and SHA-256 of the copied transcript.
-The launcher prints this provenance and the manager includes it in the resume document shown by `cotal ps --wide`.
-Resume and `COTAL_HERMES_ADOPT_HOME` are mutually exclusive.
+`cotal spawn --agent hermes --resume <id>` forks Hermes session `<id>` from your own profile
+(`HERMES_HOME`, or `~/.hermes`) into the seat's managed profile. The launcher does this before the
+seat joins the mesh, through Hermes' own session store: it opens your `state.db` read-only and
+copies the session into a new session in the seat's `state.db`, the way Hermes' `/branch` does. The
+fork keeps the session's title. When the seat's `state.db` already holds that title from an earlier
+fork, the new one takes the next `#N` as `/branch` numbers a branch, shortened to fit Hermes'
+100-character title limit. This works across the supported `hermes-agent` range. The gateway keeps
+one session per mesh chat, so each chat starts as its own branch of that fork the first time the
+resumed seat uses it, and its first turn carries the source context. A chat that still holds history
+from an earlier seat of the same name moves to its branch too, and that history stays in the seat's
+`state.db` under its own session.
+Your session is never appended to; SQLite still creates its usual `state.db-wal` and `state.db-shm` files next to a database it
+reads. A session that is missing or has no messages is refused before the seat joins. A seat
+relaunched under the same name keeps its fork and does not read your profile again, and resuming a
+different session under that name is refused. That is why stopping the seat keeps its managed root,
+`$TMPDIR/cotal-hermes-<id>`: delete it yourself once you no longer need the fork. A fork an earlier
+build kept under `$TMPDIR/cotal-hermes-<space>-<name>` moves into that root on the seat's next
+launch, replacing a profile there that holds no fork, so it is continued and still refuses a
+different session. The launcher records the source session id, its
+title, and a SHA-256 of the transcript it copied next to the fork, prints them when it forks, and the
+manager reads that record into the seat's resume document, so `cotal ps --wide` shows them. Resume does not combine with
+`COTAL_HERMES_ADOPT_HOME`, because that profile already holds the session: continue it there with
+Hermes' own `/resume`.
 
 ## Launch contract
 
-The project pins `hermes-agent>=0.18,<0.22` and Python `>=3.11,<3.14`.
-The launcher independently checks the Hermes major and minor version.
-The lower bound requires the reconnect signal used by the adapter.
-The upper bound rejects a plugin API that this connector has not accepted.
-The requirement is `uv`, which provisions the project environment, rather than a separately installed `hermes` executable.
+- **Unix-only** (no Windows).
+- **Not containerized**: the [deploy](deploy.mdx) image bundles only Claude Code and OpenCode (no
+  `uv`/`hermes-agent`), so there is no containerized Hermes today.
+- **Brings its own toolchain**: you supply `uv` and a `hermes-agent` inside the supported range.
+- **No initial prompt**: `cotal spawn --prompt` throws, because the gateway has no first-turn
+  carrier wired, so a seat cannot be given its opening instruction at spawn.
+- **Answers to other platforms need Hermes 0.20.1 or later**: on an older gateway a question from a
+  session on another platform carries no `contextId`, so its answer runs in the session keyed by
+  the peer that sent it.
 
-A managed profile requires a resolved model from `--model` or the persona's `model:`.
-An explicit flag wins.
-A forwarded ambient `HERMES_MODEL` is discarded so the gateway model cannot disagree with the Cotal model label.
-There is no `cotal models` catalog.
-Provider keys come from the connector's declared list, plus names explicitly listed in `spawn.env`.
-The launch does not inherit arbitrary shell variables.
+### Adopted profiles
 
-Hermes has no initial-prompt carrier, model variants, generic launch options, exact-session continuation, or AG-UI event plane.
-Those unsupported launch requests are refused.
-Windows is unsupported because the bridge uses AF_UNIX sockets and a Python sidecar.
-The current deployment image contains neither `uv` nor Hermes.
+See [Gateway ownership](#gateway-ownership) for the current connector contract.
+
+### Message delivery
+
+See [Gateway ownership](#gateway-ownership) for the current connector contract.

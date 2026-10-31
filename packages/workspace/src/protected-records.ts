@@ -1,10 +1,10 @@
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readSync, readdirSync, statSync, unlinkSync, type Stats } from "node:fs";
+import { accessSync, closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readSync, readdirSync, realpathSync, statSync, unlinkSync, type Stats } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { acquireLock, ensureDirNoSymlink, hardenPrivate, mkSecretDir, realDirNoSymlink, writeSecretFileAtomic } from "@cotal-ai/core";
-import { CommandFailure } from "./output.js";
-import { homeCotalDir } from "./mesh-registry.js";
+import { CommandFailure, isCommandFailure } from "./output.js";
+import { homeCotalDir } from "./cotal-home.js";
 import { spaceKey } from "./auth-paths.js";
 
 export const LOCAL_INPUT_LIMIT = 256 * 1024;
@@ -57,9 +57,80 @@ function privateDirectory(path: string, access: LocalRecordAccess): void {
     if (!statSync(path).isDirectory()) throw new CommandFailure("refused", "PERMISSION_DENIED", "the local-record store must use directories", { target: { path } });
     return;
   }
-  const stat = lstatSync(path);
-  if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== process.getuid!() || (stat.mode & 0o077) !== 0)
-    throw new CommandFailure("refused", "PERMISSION_DENIED", "the local-record store must use owned private directories without symlinks", { target: { path } });
+  const gap = privateDirectoryGap(path, lstatSync(path));
+  if (gap) throw new CommandFailure("refused", "PERMISSION_DENIED", `the local-record store must use owned private directories without symlinks: ${path} ${gap.reason}`, { remedy: gap.remedy, target: { path } });
+}
+
+/** Why a POSIX directory is not owned, private and free of a link, and the change that fixes it, or
+ *  undefined when it is: the rule for the Cotal home and the record store under it. */
+function privateDirectoryGap(path: string, stat: Stats): { reason: string; remedy: string } | undefined {
+  if (stat.isSymbolicLink()) return { reason: "is a symbolic link", remedy: "use a physical path owned by you, without symlinks" };
+  if (!stat.isDirectory()) return { reason: "is not a folder", remedy: `move ${shellPath(path)} aside` };
+  if (stat.uid !== process.getuid!()) return { reason: "is owned by another account", remedy: "use a folder you own" };
+  if ((stat.mode & 0o077) !== 0) return { reason: `is not private to you (mode ${(stat.mode & 0o777).toString(8).padStart(4, "0")})`, remedy: `chmod go-rwx ${shellPath(path)}` };
+  return undefined;
+}
+
+/** Make the Cotal home ready for a write. While another local account could replace or write the
+ *  home or a folder above it (the rule of {@link protectedLocalEntry}), the write is refused, naming
+ *  each path with the chmod that fixes it, and nothing is written. Otherwise the home is created, or an
+ *  owned home others can only read is tightened, to the private folder the record store requires.
+ *  Windows keeps its access-list model, so only POSIX checks. */
+export function prepareCotalHomeForWrite(): void {
+  const home = homeCotalDir();
+  if (localRecordAccess() === "posix") {
+    let dir = home;
+    while (!lstatSync(dir, { throwIfNoEntry: false }) && dirname(dir) !== dir) dir = dirname(dir);
+    try {
+      if (dir === home) protectedLocalEntry(home, "the Cotal home");
+      else protectedLocalDirectory(dir, "the Cotal home");
+    } catch (e) {
+      if (!isCommandFailure(e) || e.code !== "PERMISSION_DENIED") throw e;
+      throw new CommandFailure(e.outcome, e.code, `${e.message}; nothing was written`, { remedy: e.remedy, target: e.target });
+    }
+  }
+  mkSecretDir(home);
+}
+
+/** The first folder on the way to `path` that this account may not search, or undefined. Such a
+ *  folder hides every entry below it, whatever their own modes are. */
+export function unsearchableFolder(path: string): string | undefined {
+  const folders: string[] = [];
+  for (let dir = dirname(resolve(path)); ; dir = dirname(dir)) {
+    folders.unshift(dir);
+    if (dirname(dir) === dir) break;
+  }
+  for (const dir of folders) {
+    try { accessSync(dir, constants.X_OK); } catch { return dir; }
+  }
+  return undefined;
+}
+
+/** A permission error reading the record store at `path`, as the refusal that names the folder
+ *  withholding it, the first one above `path` this account may not search or else `path` itself, with
+ *  the chmod that gives it back. Only EACCES and EPERM; any other error is returned as it is. */
+function storeFolderDenied(error: unknown, path: string): unknown {
+  const code = (error as NodeJS.ErrnoException).code;
+  if (code !== "EACCES" && code !== "EPERM") return error;
+  const folder = unsearchableFolder(path) ?? path;
+  return new CommandFailure("refused", "PERMISSION_DENIED", `${folder} cannot be read by this account (${code}), so the saved local records under it were not read`, { target: { path: folder }, remedy: `make it readable by you, for example with chmod u+rwx ${shellPath(folder)}` });
+}
+
+/** The writer lock at `path` in a record store folder. When this account may not write there, as after
+ *  a read refusal's `chmod u+rx` leaves the folder readable only, the refusal names the folder and the
+ *  owner bits the write lacks. Only EACCES and EPERM that a missing bit explains; any other error is
+ *  thrown as it is. */
+function storeLock(path: string, label: string) {
+  try { return acquireLock(path, { label, onTimeout: () => new CommandFailure("refused", "CONFLICT", "another writer holds the selected local record") }); }
+  catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== "EACCES" && code !== "EPERM") throw error;
+    const folder = dirname(path);
+    const lacks = (mode: number) => { try { accessSync(folder, mode); return false; } catch { return true; } };
+    const bits = `${lacks(constants.W_OK) ? "w" : ""}${lacks(constants.X_OK) ? "x" : ""}`;
+    if (!bits) throw error;
+    throw new CommandFailure("refused", "PERMISSION_DENIED", `${folder} cannot be written by this account (${code}), so no saved local record in it was locked or written`, { target: { path: folder }, remedy: `make it writable by you, for example with chmod u+${bits} ${shellPath(folder)}` });
+  }
 }
 
 /** Establish a regular descriptor, then read only bounded bytes. POSIX opens nonblocking and
@@ -70,13 +141,19 @@ export function readLocalRecordSource(path: string, limit = LOCAL_INPUT_LIMIT, p
   let fd: number;
   try { fd = openSync(path, posix ? constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK : constants.O_RDONLY); }
   catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-    throw new CommandFailure("refused", "PERMISSION_DENIED", posix ? "the local record source could not be opened without following links" : "the local record source could not be opened", { target: { path } });
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return undefined;
+    // Permission is named with the folder that withholds it, which is often not the file itself.
+    if (code === "EACCES" || code === "EPERM") {
+      const folder = unsearchableFolder(path);
+      throw new CommandFailure("refused", "PERMISSION_DENIED", folder ? `${folder} cannot be read by this account (${code}), so ${path} was not read` : `${path} cannot be read by this account (${code})`, { target: { path, ...(folder ? { folder } : {}) }, remedy: folder ? `make it readable by you, for example with chmod u+rx ${shellPath(folder)}` : `make it readable by you, for example with chmod u+r ${shellPath(path)}` });
+    }
+    throw new CommandFailure("refused", "PERMISSION_DENIED", posix ? `the local record source ${path} could not be opened without following links` : `the local record source ${path} could not be opened`, { target: { path } });
   }
   try {
     const before = fstatSync(fd);
     if (!before.isFile()) throw new CommandFailure("refused", "SCHEMA_INVALID", "local record input must be a regular file", { target: { path } });
-    if (privateFile && posix && (before.uid !== process.getuid!() || (before.mode & 0o077) !== 0)) throw new CommandFailure("refused", "PERMISSION_DENIED", "the saved local record is not owned and private", { target: { path } });
+    if (privateFile && posix && (before.uid !== process.getuid!() || (before.mode & 0o077) !== 0)) throw new CommandFailure("refused", "PERMISSION_DENIED", `the saved local record ${path} is not owned and private`, { target: { path } });
     if (before.size > limit) throw new CommandFailure("refused", "SCHEMA_INVALID", "local record input exceeds its byte limit", { target: { path } });
     const bytes = Buffer.alloc(limit + 1);
     let length = 0;
@@ -252,61 +329,144 @@ const systemPolicy = (): ProtectedPathPolicy => processPolicy ??= protectedPathP
 
 type EntryStat = Pick<Stats, "uid" | "gid" | "mode" | "isDirectory" | "isSymbolicLink">;
 
-const shellPath = (path: string) => /^[A-Za-z0-9_./+-]+$/.test(path) ? path : `'${path.replace(/'/g, `'\\''`)}'`;
+/** `path` as one POSIX shell word, quoted when a shell would split or expand it, so a remedy that
+ *  names it can be pasted. */
+export const shellPath = (path: string) => /^[A-Za-z0-9_./+-]+$/.test(path) ? path : `'${path.replace(/'/g, `'\\''`)}'`;
 
-/** Refuse an existing entry that another local account could replace or write. Root or the caller
- *  must own it. Group write needs the caller's proven user private group and no extended ACL, whose
- *  named entries the group bits only mask. World write is never accepted. An `ancestor` walk also
- *  accepts a root-owned sticky directory such as /tmp. `what` names the path the caller checks,
- *  for the refusal. These are POSIX owner, mode and link checks, so the Windows model skips them. */
-export function assertProtectedEntry(what: string, path: string, stat: EntryStat, options: { ancestor?: boolean; policy?: ProtectedPathPolicy } = {}): void {
-  if (localRecordAccess() === "windows-acl") return;
-  const refuse = (reason: string, remedy: string): never => { throw new CommandFailure("refused", "PERMISSION_DENIED", `${what} is not protected against other local writers: ${path} ${reason}`, { remedy, target: { path } }); };
-  const physical = "use a physical path owned by you or root, without symlinks";
-  if (stat.isSymbolicLink()) refuse("is a symbolic link", physical);
-  if (stat.uid !== 0 && stat.uid !== (options.policy?.uid ?? process.getuid!())) refuse("is owned by another account", physical);
-  if (options.ancestor && stat.isDirectory() && stat.uid === 0 && (stat.mode & 0o1000) !== 0) return;
-  if ((stat.mode & 0o002) !== 0) refuse("is writable by every local account", `chmod o-w ${shellPath(path)}`);
-  if ((stat.mode & 0o020) === 0) return;
+/** One entry another local account could replace or write, and the kind of change that fixes it. */
+type ProtectionGap = { path: string; reason: string; fix: "physical" | "o-w" | "g-w" | "go-w" | "g-w-or-acl" };
+
+/** Why an existing entry is not protected against other local writers, or nothing when it is. Root
+ *  or the caller must own it. Group write needs the caller's proven user private group and no
+ *  extended ACL, whose named entries the group bits only mask. World write is never accepted. An
+ *  `ancestor` walk also accepts a root-owned sticky directory such as /tmp. */
+function protectionGap(path: string, stat: EntryStat, options: { ancestor?: boolean; policy?: ProtectedPathPolicy }): ProtectionGap | undefined {
+  const gap = (reason: string, fix: ProtectionGap["fix"]): ProtectionGap => ({ path, reason, fix });
+  if (stat.isSymbolicLink()) return gap("is a symbolic link", "physical");
+  if (stat.uid !== 0 && stat.uid !== (options.policy?.uid ?? process.getuid!())) return gap("is owned by another account", "physical");
+  if (options.ancestor && stat.isDirectory() && stat.uid === 0 && (stat.mode & 0o1000) !== 0) return undefined;
+  // An entry its group can write too would be refused again for that after `chmod o-w`, so its one
+  // step removes both.
+  if ((stat.mode & 0o002) !== 0) return gap("is writable by every local account", (stat.mode & 0o020) !== 0 ? "go-w" : "o-w");
+  if ((stat.mode & 0o020) === 0) return undefined;
   const policy = options.policy ?? systemPolicy();
-  const groupWrite = `chmod g-w ${shellPath(path)}`;
-  const gap = stat.uid === policy.uid ? policy.privateGroupGap(stat.gid) : "it is not owned by you";
-  if (gap) refuse(`is group-writable and ${gap}`, groupWrite);
+  const group = stat.uid === policy.uid ? policy.privateGroupGap(stat.gid) : "it is not owned by you";
+  if (group) return gap(`is group-writable and ${group}`, "g-w");
   let acl: string;
   try { acl = policy.extendedAcl(path); }
-  catch (error) { return refuse(`is group-writable and the private-group proof is unavailable: ${(error as Error).message}`, `${groupWrite}, or install acl`); }
-  if (acl !== "") refuse("is group-writable and has an extended ACL", groupWrite);
+  catch (error) { return gap(`is group-writable and the private-group proof is unavailable: ${(error as Error).message}`, "g-w-or-acl"); }
+  return acl === "" ? undefined : gap("is group-writable and has an extended ACL", "g-w");
 }
 
-/** Verify an existing physical directory chain before using a protected private output path.
- *  `what` names the path for the refusal, such as "the project root". */
+/** One refusal naming every gap, so a single change fixes them all. Paths that share a reason are
+ *  listed together, and each kind of fix is one command over its paths. When links are the only
+ *  gaps a physical path fixes, the remedy names the `checked` path with its links resolved. */
+function protectionRefusal(what: string, gaps: readonly ProtectionGap[], checked?: string): CommandFailure {
+  const reasons = [...new Set(gaps.map((gap) => gap.reason))].map((reason) => {
+    const paths = gaps.filter((gap) => gap.reason === reason).map((gap) => gap.path);
+    return paths.length === 1 ? `${paths[0]} ${reason}` : `${paths.slice(0, -1).join(", ")} and ${paths.at(-1)} ${reason.replace(/^is /, "are ")}`;
+  });
+  // Once one entry needs `chmod go-w`, the other group and world gaps join that command, so the
+  // refusal names one chmod.
+  const fixOf = (gap: ProtectionGap): ProtectionGap["fix"] => gaps.some((other) => other.fix === "go-w") && (gap.fix === "o-w" || gap.fix === "g-w") ? "go-w" : gap.fix;
+  const remedies = [...new Set(gaps.map(fixOf))].map((fix) => {
+    const paths = gaps.filter((gap) => fixOf(gap) === fix).map((gap) => shellPath(gap.path)).join(" ");
+    return fix === "physical" ? physicalRemedy(gaps, checked) : fix === "g-w-or-acl" ? `chmod g-w ${paths}, or install acl` : `chmod ${fix} ${paths}`;
+  });
+  const path = gaps[0]!.path;
+  return new CommandFailure("refused", "PERMISSION_DENIED", `${what} is not protected against other local writers: ${reasons.join("; ")}`, { remedy: remedies.join("; "), target: gaps.length === 1 ? { path } : { path, paths: gaps.map((gap) => gap.path) } });
+}
+
+function physicalRemedy(gaps: readonly ProtectionGap[], checked: string | undefined): string {
+  let physical: string | undefined;
+  if (checked !== undefined && gaps.every((gap) => gap.fix !== "physical" || gap.reason === "is a symbolic link")) {
+    try { physical = realpathSync.native(checked); } catch { physical = undefined; }
+  }
+  return physical === undefined ? "use a physical path owned by you or root, without symlinks" : `use the physical path ${shellPath(physical)}`;
+}
+
+/** Refuse an existing entry that another local account could replace or write; see
+ *  {@link protectionGap} for the rule. `what` names the path the caller checks, for the refusal.
+ *  These are POSIX owner, mode and link checks, so the Windows model skips them. */
+export function assertProtectedEntry(what: string, path: string, stat: EntryStat, options: { ancestor?: boolean; policy?: ProtectedPathPolicy } = {}): void {
+  if (localRecordAccess() === "windows-acl") return;
+  const gap = protectionGap(path, stat, options);
+  if (gap) throw protectionRefusal(what, [gap]);
+}
+
+/** Verify an existing physical directory chain before using a protected private output path. The
+ *  whole chain is read, and one refusal names every entry in it that is not protected. `what` names
+ *  the path for the refusal, such as "the project root". */
 export function protectedLocalDirectory(path: string, what = "the path", policy?: ProtectedPathPolicy): void {
-  requireLocalRecordAccess();
+  const gaps = directoryChainGaps(path, what, policy);
+  if (gaps.length) throw protectionRefusal(what, gaps, path);
+}
+
+/** {@link protectedLocalDirectory} for an existing file or directory and every directory above it,
+ *  read together so one refusal names each gap in both. The entry itself is not accepted for being
+ *  a root-owned sticky directory, as an ancestor is. */
+export function protectedLocalEntry(path: string, what = "the path", policy?: ProtectedPathPolicy): void {
+  const entry = lstatSync(path);
+  const gap = requireLocalRecordAccess() === "posix" ? protectionGap(path, entry, { policy }) : undefined;
+  const gaps = [...(gap ? [gap] : []), ...directoryChainGaps(dirname(path), what, policy)];
+  if (gaps.length) throw protectionRefusal(what, gaps, path);
+}
+
+/** {@link protectedLocalEntry} for a directory together with the named entries in it, read together
+ *  so one refusal names each gap in the directory, its entries and the directories above it. */
+export function protectedLocalEntries(directory: string, names: readonly string[], what = "the path", policy?: ProtectedPathPolicy): void {
+  const posix = requireLocalRecordAccess() === "posix";
+  const gaps = posix ? [directory, ...names.map((name) => join(directory, name))].flatMap((path) => protectionGap(path, lstatSync(path), { policy }) ?? []) : [];
+  gaps.push(...directoryChainGaps(dirname(directory), what, policy));
+  if (gaps.length) throw protectionRefusal(what, gaps);
+}
+
+/** Every gap on `path` and the directories above it, deepest first. */
+function directoryChainGaps(path: string, what: string, policy?: ProtectedPathPolicy): ProtectionGap[] {
+  const posix = requireLocalRecordAccess() === "posix";
+  const gaps: ProtectionGap[] = [];
   let parent = path;
   for (;;) {
     const directory = lstatSync(parent);
     if (!directory.isDirectory() && !directory.isSymbolicLink()) throw new CommandFailure("refused", "PERMISSION_DENIED", `${what} is not protected against other local writers: ${parent} is not a directory`, { target: { path: parent } });
-    assertProtectedEntry(what, parent, directory, { ancestor: true, policy });
+    const gap = posix ? protectionGap(parent, directory, { ancestor: true, policy }) : undefined;
+    if (gap) gaps.push(gap);
     const next = dirname(parent);
     if (next === parent) break;
     parent = next;
   }
+  return gaps;
 }
 
 export function protectedCredentialReference(path: string): void {
   const access = requireLocalRecordAccess();
   try {
     if (access === "windows-acl") {
-      if (!statSync(path).isFile()) throw new CommandFailure("refused", "PERMISSION_DENIED", "the referenced credential must be a regular file; its bytes were not read");
+      if (!statSync(path).isFile()) throw new CommandFailure("refused", "PERMISSION_DENIED", `the referenced credential ${path} must be a regular file; its bytes were not read`, { target: { path } });
     } else {
       const stat = lstatSync(path);
-      if (!stat.isFile() || stat.isSymbolicLink() || stat.uid !== process.getuid!() || (stat.mode & 0o077) !== 0) throw new CommandFailure("refused", "PERMISSION_DENIED", "the referenced credential must be an owned private regular file; its bytes were not read");
+      if (!stat.isFile() || stat.isSymbolicLink() || stat.uid !== process.getuid!() || (stat.mode & 0o077) !== 0) {
+        const exposure = stat.isFile() ? credentialFileExposure(path, stat) : undefined;
+        throw new CommandFailure("refused", "PERMISSION_DENIED", `the referenced credential ${path} must be an owned private regular file; its bytes were not read`, { target: { path }, ...(exposure ? { remedy: exposure.remedy } : {}) });
+      }
     }
     protectedLocalDirectory(dirname(path), "the credential reference");
   } catch (error) {
     if (error instanceof CommandFailure) throw error;
-    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the protected credential reference is missing or unreadable; its bytes were not read");
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the referenced credential ${path} does not exist`, { target: { path } });
+    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the referenced credential ${path} could not be checked (${code ?? "unreadable"}); its bytes were not read`, { target: { path } });
   }
+}
+
+/** Why a credential file is not private to this user, and the command that makes it private, or
+ *  undefined when it is. The rule is {@link protectedCredentialReference}'s: an owned file with no
+ *  group or other access. The Windows model has no POSIX owner or mode, so it reports nothing. */
+export function credentialFileExposure(path: string, stat: Pick<Stats, "uid" | "mode">): { reason: string; remedy: string } | undefined {
+  if (localRecordAccess() !== "posix") return undefined;
+  if (stat.uid !== process.getuid!()) return { reason: "is owned by another account", remedy: `copy it to a file you own and run chmod 600 on the copy` };
+  if ((stat.mode & 0o077) !== 0) return { reason: `is not private to you (mode ${(stat.mode & 0o777).toString(8).padStart(4, "0")})`, remedy: `chmod 600 ${shellPath(path)}` };
+  return undefined;
 }
 
 /** Explicit exports stay outside managed state; canonical credentials use their declared store kind. */
@@ -324,18 +484,35 @@ export function decodeLocalJson(bytes: Buffer): unknown {
   catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "local record input is not valid UTF-8 JSON; document contents are not echoed"); }
 }
 
+/** A saved record's bytes as JSON. A record that does not parse, as an interrupted write or a full disk
+ *  can leave it, is never reset. When `step` names a way out, the refusal names the record's path and
+ *  that step: a service instance record's is the move that sets it aside, and a store can pass its own.
+ *  Every other record keeps the plain refusal and no step: an intent, a unit action or a supervisor
+ *  receipt can be what holds a native step back, so nothing here says to move it. */
+function decodeSavedRecord(bytes: Buffer, path: string, step: () => string | undefined): unknown {
+  try { return decodeLocalJson(bytes); }
+  catch (error) {
+    const remedy = step();
+    if (remedy === undefined) throw error;
+    throw new CommandFailure("refused", "SCHEMA_INVALID", `the saved local record ${path} is not valid JSON, as an interrupted write or a full disk can leave it; nothing was inferred from it and it was left as it is`, { target: { path }, remedy });
+  }
+}
+
 /** Workstation records only. Providers are never imported and revisions confer no native authority. */
 export class ProtectedRecordStore<T> {
   constructor(
-    readonly namespace: "endpoints" | "services",
+    readonly namespace: "endpoints" | "services" | "credentials",
     readonly space: string,
     readonly validate: (value: unknown, checkReferences: boolean) => T,
-    readonly family?: "definitions" | "instances" | "supervisors" | "install-intents" | "uninstall-intents" | "unit-actions",
+    readonly family?: "definitions" | "instances" | "supervisors" | "install-intents" | "uninstall-intents" | "unit-actions" | "exports",
+    /** The way out for a record of this store that does not parse, named with its path; undefined keeps the plain refusal. */
+    readonly unreadable?: (name: string, path: string) => string | undefined,
   ) {}
 
   directory(create = false): string | undefined {
     const access = requireLocalRecordAccess();
     const home = homeCotalDir();
+    if (create) prepareCotalHomeForWrite();
     try { privateDirectory(home, access); }
     catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
@@ -346,7 +523,10 @@ export class ProtectedRecordStore<T> {
     const paths = segments.map((_, index) => join(home, ...segments.slice(0, index + 1)));
     // Windows has no create mode, so each store directory made here gets the private access list.
     const created = create && access === "windows-acl" ? paths.filter((path) => !existsSync(path)) : [];
-    const found = create ? ensureDirNoSymlink(home, ...segments) : realDirNoSymlink(home, ...segments);
+    let found: string | null;
+    // A read names a folder it may not enter, where it would otherwise fail with the raw error.
+    try { found = create ? ensureDirNoSymlink(home, ...segments) : realDirNoSymlink(home, ...segments); }
+    catch (error) { throw create ? error : storeFolderDenied(error, paths.at(-1)!); }
     if (!found) return undefined;
     for (const path of created) hardenPrivate(path, "dir");
     for (const path of paths) privateDirectory(path, access);
@@ -360,7 +540,9 @@ export class ProtectedRecordStore<T> {
     const path = join(dir, `${spaceKey(name)}.json`);
     const bytes = readLocalRecordSource(path, RECORD_LIMIT, true);
     if (!bytes) return undefined;
-    const wrapper = localRecordObject(decodeLocalJson(bytes), ["recordVersion", "revision", "value"]);
+    const wrapper = localRecordObject(decodeSavedRecord(bytes, path, () => this.family === "instances"
+      ? `move it aside, as mv ${shellPath(path)} ${shellPath(`${path}.old`)} does; Cotal then no longer tracks the process it recorded, so stop that process yourself if it still runs`
+      : this.unreadable?.(name, path)), ["recordVersion", "revision", "value"]);
     if (wrapper.recordVersion !== 1) throw new CommandFailure("refused", "SCHEMA_INVALID", "saved local record version is unsupported; it was not reset");
     const revision = localRecordText(wrapper.revision, 200);
     const value = this.validate(wrapper.value, false);
@@ -371,7 +553,9 @@ export class ProtectedRecordStore<T> {
     const dir = this.directory();
     if (!dir) return [];
     const result: LocalRecordSnapshot<T>[] = [];
-    for (const file of readdirSync(dir).sort()) {
+    let files: string[];
+    try { files = readdirSync(dir); } catch (error) { throw storeFolderDenied(error, dir); }
+    for (const file of files.sort()) {
       if (file.startsWith(".") || !file.endsWith(".json")) continue;
       const key = file.slice(0, -5);
       const name = Buffer.from(key, "hex").toString("utf8");
@@ -387,7 +571,7 @@ export class ProtectedRecordStore<T> {
   pin(expected: LocalRecordSnapshot<T>): { check(): void; release(): void } {
     const dir = this.directory();
     if (!dir) throw new CommandFailure("refused", "CONFLICT", "the selected local-record store disappeared");
-    const lock = acquireLock(join(dir, `.${spaceKey(expected.name)}.lock`), { label: "pinned local record", onTimeout: () => new CommandFailure("refused", "CONFLICT", "another writer holds the selected local record") });
+    const lock = storeLock(join(dir, `.${spaceKey(expected.name)}.lock`), "pinned local record");
     const check = () => {
       const current = this.read(expected.name);
       if (!current || current.record.revision !== expected.record.revision || current.hash !== expected.hash) throw new CommandFailure("refused", "CONFLICT", "the selected local record changed; no new native request was submitted");
@@ -403,7 +587,7 @@ export class ProtectedRecordStore<T> {
     const dir = this.directory(value !== undefined);
     if (!dir) throw new CommandFailure("refused", "CONFLICT", "the local-record store disappeared before commit");
     const path = join(dir, `${spaceKey(name)}.json`);
-    const lock = acquireLock(join(dir, `.${spaceKey(name)}.lock`), { label: "local record write", onTimeout: () => new CommandFailure("refused", "CONFLICT", "another writer holds the selected local record") });
+    const lock = storeLock(join(dir, `.${spaceKey(name)}.lock`), "local record write");
     try {
       const current = this.read(name);
       if (expected ? !current || expected.record.revision !== current.record.revision || expected.hash !== current.hash : current !== undefined) throw new CommandFailure("refused", "CONFLICT", "the local record changed; nothing was replaced or removed");

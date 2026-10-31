@@ -50,8 +50,7 @@ import { strict as assert } from "node:assert";
 import { spawnSync, spawn as spawnProc } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { DEFAULT_SPACE } from "@cotal-ai/core";
+import { basename, join } from "node:path";
 import { canonicalLocalProcessPath, DELIVERY_PIDFILE } from "@cotal-ai/workspace";
 import net from "node:net";
 import tls from "node:tls";
@@ -82,7 +81,7 @@ function sh(cmd: string, args: string[], cwd?: string): void {
 /** A throwaway CA plus a leaf it signs. The CA is what makes the admission leg a real verification
  *  rather than a disabled one: it is handed to `tls.connect` as `ca`, so `rejectUnauthorized` stays
  *  on and the chain and hostname are genuinely checked. */
-function mintPki(): { ca: string; cert: string; key: string; expiredCert: string; expiredKey: string; otherCert: string; otherKey: string } {
+function mintPki(): { ca: string; cert: string; key: string; ipCert: string; ipKey: string; expiredCert: string; expiredKey: string; otherCert: string; otherKey: string } {
   sh("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", join(pki, "ca.key"),
     "-out", join(pki, "ca.pem"), "-days", "2", "-subj", "/CN=cotal-smoke-ca",
     "-addext", "basicConstraints=critical,CA:TRUE"]);
@@ -95,6 +94,14 @@ function mintPki(): { ca: string; cert: string; key: string; expiredCert: string
   sh("openssl", ["x509", "-req", "-in", join(pki, "good.csr"), "-CA", join(pki, "ca.pem"),
     "-CAkey", join(pki, "ca.key"), "-CAcreateserial", "-out", join(pki, "good.pem"),
     "-days", "2", "-extfile", join(pki, "good.ext")]);
+
+  // A leaf that names only the dialed IP, with no DNS:localhost for a client to fall back on.
+  sh("openssl", ["req", "-newkey", "rsa:2048", "-nodes", "-keyout", join(pki, "ip.key"),
+    "-out", join(pki, "ip.csr"), "-subj", "/CN=127.0.0.1"]);
+  writeFileSync(join(pki, "ip.ext"), "subjectAltName=IP:127.0.0.1\nbasicConstraints=CA:FALSE\n");
+  sh("openssl", ["x509", "-req", "-in", join(pki, "ip.csr"), "-CA", join(pki, "ca.pem"),
+    "-CAkey", join(pki, "ca.key"), "-CAcreateserial", "-out", join(pki, "ip.pem"),
+    "-days", "2", "-extfile", join(pki, "ip.ext")]);
 
   // EXPIRED. OpenSSL 3.4+ accepts absolute `-not_before`/`-not_after`; 3.0.x does not (and 3.6+
   // rejects `-days -1`). Try absolute dates first, fall back to `-days -1` which yields an
@@ -118,6 +125,7 @@ function mintPki(): { ca: string; cert: string; key: string; expiredCert: string
   return {
     ca: join(pki, "ca.pem"),
     cert: join(pki, "good.pem"), key: join(pki, "good.key"),
+    ipCert: join(pki, "ip.pem"), ipKey: join(pki, "ip.key"),
     expiredCert: join(pki, "expired.pem"), expiredKey: join(pki, "expired.key"),
     otherCert: join(pki, "other.pem"), otherKey: join(pki, "other.key"),
   };
@@ -353,7 +361,7 @@ async function main(): Promise<void> {
     const { home, cwd } = sandbox();
     const port = await freePort();
     rememberSandbox(home, port, cwd);
-    const r = cotal(["up", "--detach", "--open", "--server", `nats://127.0.0.1:${port}`,
+    const r = cotal(["up", "--detach", "--open", "--server", `tls://127.0.0.1:${port}`,
       "--tls-cert", pkiFiles.cert, "--tls-key", pkiFiles.key], home, cwd);
 
     const info = await serverInfo(port);
@@ -380,8 +388,17 @@ async function main(): Promise<void> {
     const { home, cwd } = sandbox();
     const port = await freePort();
     rememberSandbox(home, port, cwd);
-    writeFileSync(join(cwd, "cotal.yaml"),
-      `apiVersion: cotal/v1\nkind: Mesh\nspace: tlsmanifest\nbroker:\n  servers: nats://127.0.0.1:${port}\n  auth: false\nchannels:\n  general:\n    subscribe: []\n`);
+    const manifest = (scheme: string) => writeFileSync(join(cwd, "cotal.yaml"),
+      `apiVersion: cotal/v1\nkind: Mesh\nspace: tlsmanifest\nbroker:\n  servers: ${scheme}://127.0.0.1:${port}\n  auth: false\nchannels:\n  general:\n    subscribe: []\n`);
+    // A nats:// address under --tls-cert is refused before anything starts, naming the tls:// form.
+    manifest("nats");
+    const plain = cotal(["up", "-f", "cotal.yaml", "--tls-cert", pkiFiles.cert, "--tls-key", pkiFiles.key], home, cwd);
+    assert.equal(plain.status, 1, `-f with a nats:// broker and --tls-cert must refuse USAGE_INVALID:\n${plain.out}`);
+    assert.match(plain.out, /must be a tls:\/\/ address/, `the refusal must say the address must be tls://:\n${plain.out}`);
+    assert.ok(plain.out.includes(`set broker.servers to tls://127.0.0.1:${port} in cotal.yaml`), `the refusal must name the tls:// form:\n${plain.out}`);
+    assert.equal(await serverInfo(port), undefined, "the refused start must leave no listener");
+    assert.equal(existsSync(join(cwd, ".cotal", "broker-policy.json")), false, "the refused start must write no broker policy");
+    manifest("tls");
     const r = cotal(["up", "-f", "cotal.yaml", "--tls-cert", pkiFiles.cert, "--tls-key", pkiFiles.key], home, cwd);
 
     const info = await serverInfo(port);
@@ -392,7 +409,42 @@ async function main(): Promise<void> {
     const admitted = await admitOverTls(port, pkiFiles.ca, "localhost");
     assert.equal(admitted.ok, true, `ADMISSION FAILED (-f manifest): ${admitted.detail}`);
     assertCleartextRefused(await cleartextReply(port), "-f manifest");
-    console.log("  ✓ -f manifest: tls_required, verifying client ADMITTED, cleartext REFUSED");
+    console.log("  ✓ -f manifest: a nats:// broker REFUSED; tls_required, verifying client ADMITTED, cleartext REFUSED");
+    cotal(["down"], home, cwd);
+  });
+
+  // ── ROUTE B2: a RECORDED TLS policy with a `nats://` --server. The flag path's half of Route B. ─
+  //    `--tls-cert` with a `nats://` address was refused, and so was a manifest naming one, but a
+  //    root whose RECORDED policy serves TLS reached neither check: it started a TLS broker, wrote
+  //    the `nats://` address into the registry that every later client dials, and printed
+  //    `TLS: serving <subject> at nats://…` over it.
+  await route("recorded-tls nats:// address", async () => {
+    const { home, cwd } = sandbox();
+    const port = await freePort();
+    rememberSandbox(home, port, cwd);
+    const first = cotal(["up", "--detach", "--open", "--server", `tls://127.0.0.1:${port}`,
+      "--tls-cert", pkiFiles.cert, "--tls-key", pkiFiles.key], home, cwd);
+    assert.equal(first.status, 0, `the recording start must succeed:\n${first.out}`);
+    assert.equal((await serverInfo(port))?.tls_required, true, "the recording start must require TLS");
+    cotal(["down"], home, cwd);
+
+    const policy = readFileSync(join(cwd, ".cotal", "broker-policy.json"), "utf8");
+    const plain = cotal(["up", "--detach", "--open", "--server", `nats://127.0.0.1:${port}`], home, cwd);
+    assert.notEqual(plain.status, 0, `a nats:// address against a TLS-recorded root must refuse:\n${plain.out}`);
+    assert.match(plain.out, /must be a tls:\/\/ address/, `the refusal must say the address must be tls://:\n${plain.out}`);
+    assert.ok(plain.out.includes(join(cwd, ".cotal", "broker-policy.json")),
+      `the refusal must name the recorded policy that serves TLS:\n${plain.out}`);
+    assert.ok(plain.out.includes(`--server tls://127.0.0.1:${port}`), `the refusal must name the tls:// form:\n${plain.out}`);
+    assert.ok(!/TLS: serving/.test(plain.out), `a refused start must not claim it is serving TLS:\n${plain.out}`);
+    assert.equal(await serverInfo(port), undefined, "the refused start must leave no listener");
+    assert.equal(readFileSync(join(cwd, ".cotal", "broker-policy.json"), "utf8"), policy, "the refused start must leave the recorded policy as it was");
+
+    // CONTROL: the form the refusal names starts the same root again, over TLS.
+    const again = cotal(["up", "--detach", "--open", "--server", `tls://127.0.0.1:${port}`], home, cwd);
+    assert.equal(again.status, 0, `the tls:// form must still restart it:\n${again.out}`);
+    assert.equal((await serverInfo(port))?.tls_required, true, "the restart must require TLS");
+    assertCleartextRefused(await cleartextReply(port), "recorded-tls/nats-address");
+    console.log("  ✓ recorded-tls: a nats:// --server REFUSED before launch naming the policy and the tls:// form; the tls:// form restarts it");
     cotal(["down"], home, cwd);
   });
 
@@ -404,8 +456,8 @@ async function main(): Promise<void> {
     const first = cotal(["up", "--detach", "--open", "--server", `nats://127.0.0.1:${port}`], home, cwd);
     assert.equal(first.status, 0, `plaintext mesh must start for the refresh case:\n${first.out}`);
 
-    const again = cotal(["up", "--server", `nats://127.0.0.1:${port}`,
-      "--tls-cert", pkiFiles.cert, "--tls-key", pkiFiles.key], home, cwd);
+    // With no --server, up takes the running mesh's registered nats:// address as it stands.
+    const again = cotal(["up", "--tls-cert", pkiFiles.cert, "--tls-key", pkiFiles.key], home, cwd);
     assert.notEqual(again.status, 0,
       `GATE FAILED (refresh): \`up --tls-cert\` against an ALREADY RUNNING plaintext mesh exited 0. ` +
       `A running broker cannot change its transport, so this told the operator they had TLS.\n${again.out}`);
@@ -422,7 +474,7 @@ async function main(): Promise<void> {
     const { home, cwd } = sandbox();
     const port = await freePort();
     rememberSandbox(home, port, cwd);
-    const r = cotal(["up", "--detach", "--open", "--server", `nats://127.0.0.1:${port}`,
+    const r = cotal(["up", "--detach", "--open", "--server", `tls://127.0.0.1:${port}`,
       "--tls-cert", pkiFiles.expiredCert, "--tls-key", pkiFiles.expiredKey], home, cwd);
     assert.notEqual(r.status, 0, `an EXPIRED certificate must not yield a started mesh:\n${r.out}`);
     assert.match(r.out, /EXPIRED/, `the refusal must name expiry as the cause:\n${r.out}`);
@@ -435,7 +487,7 @@ async function main(): Promise<void> {
     const { home, cwd } = sandbox();
     const port = await freePort();
     rememberSandbox(home, port, cwd);
-    const r = cotal(["up", "--detach", "--open", "--server", `nats://127.0.0.1:${port}`,
+    const r = cotal(["up", "--detach", "--open", "--server", `tls://127.0.0.1:${port}`,
       "--tls-cert", pkiFiles.otherCert, "--tls-key", pkiFiles.otherKey], home, cwd);
     assert.notEqual(r.status, 0, `a certificate that does not cover the dial host must refuse:\n${r.out}`);
     assert.match(r.out, /does not cover the dial host/, `the refusal must name the host mismatch:\n${r.out}`);
@@ -457,7 +509,7 @@ async function main(): Promise<void> {
     // `setupSpaceStreams` or the JS API. Both of those carry fixture traps that present as a
     // permissions refusal and would be indistinguishable from a real finding. Driving the real
     // entry point avoids them by construction rather than by care.
-    const up = cotal(["up", "--detach", "--server", `nats://127.0.0.1:${port}`,
+    const up = cotal(["up", "--detach", "--server", `tls://127.0.0.1:${port}`,
       "--tls-cert", pkiFiles.cert, "--tls-key", pkiFiles.key], home, cwd);
     assert.equal(up.status, 0, `authed mesh with a valid TLS pair must start: exit ${up.status}\n${up.out}`);
 
@@ -526,7 +578,7 @@ async function main(): Promise<void> {
     const port = await freePort();
     rememberSandbox(home, port, cwd);
 
-    const up = cotal(["up", "--detach", "--open", "--server", `nats://127.0.0.1:${port}`,
+    const up = cotal(["up", "--detach", "--open", "--server", `tls://127.0.0.1:${port}`,
       "--tls-cert", pkiFiles.cert, "--tls-key", pkiFiles.key], home, cwd);
     assert.equal(up.status, 0, `TLS mesh must start for the status cell:\n${up.out}`);
     const tlsInfo = await serverInfo(port);
@@ -603,7 +655,7 @@ async function main(): Promise<void> {
     const { home, cwd } = sandbox();
     const port = await freePort();
     writeFileSync(join(cwd, "cotal.yaml"),
-      `apiVersion: cotal/v1\nkind: Mesh\nspace: tlsdry\nbroker:\n  servers: nats://127.0.0.1:${port}\n  auth: false\nchannels:\n  general:\n    subscribe: []\n`);
+      `apiVersion: cotal/v1\nkind: Mesh\nspace: tlsdry\nbroker:\n  servers: tls://127.0.0.1:${port}\n  auth: false\nchannels:\n  general:\n    subscribe: []\n`);
     const policy = join(cwd, ".cotal", "broker-policy.json");
 
     const dry = cotal(["up", "-f", "cotal.yaml", "--dry-run",
@@ -637,7 +689,7 @@ async function main(): Promise<void> {
     const port = await freePort();
     rememberSandbox(home, port, cwd);
     // NODE_EXTRA_CA_CERTS deliberately BLANK: this is the operator who forgot it.
-    const r = cotal(["up", "--detach", "--open", "--server", `nats://127.0.0.1:${port}`,
+    const r = cotal(["up", "--detach", "--open", "--server", `tls://127.0.0.1:${port}`,
       "--tls-cert", pkiFiles.cert, "--tls-key", pkiFiles.key], home, cwd, { NODE_EXTRA_CA_CERTS: "" });
 
     // CONTROL: the failure must be certificate verification after the listener bound the port —
@@ -655,6 +707,24 @@ async function main(): Promise<void> {
       `GATE FAILED: a broker survived a post-start failure and is holding ${port} with no registry ` +
       `entry — \`cotal down\` cannot reach it, because it works from the registry.`);
     console.log("  ✓ post-start failure: listener torn down, no orphan holding the port");
+  });
+
+  // ── I2: `up -f` UNDER A CERTIFICATE THIS CLIENT DOES NOT TRUST FAILS AS `up` DOES. ──────────────
+  //    The manifest route printed the failure alone and exited 1, with no code and no step.
+  await route("-f untrusted-cert", async () => {
+    const { home, cwd } = sandbox();
+    const port = await freePort();
+    rememberSandbox(home, port, cwd);
+    writeFileSync(join(cwd, "cotal.yaml"),
+      `apiVersion: cotal/v1\nkind: Mesh\nspace: tlsuntrusted\nbroker:\n  servers: tls://127.0.0.1:${port}\n  auth: false\nchannels:\n  general:\n    subscribe: []\n`);
+    // NODE_EXTRA_CA_CERTS deliberately BLANK: this is the operator who forgot it.
+    const r = cotal(["up", "-f", "cotal.yaml", "--tls-cert", pkiFiles.cert, "--tls-key", pkiFiles.key], home, cwd, { NODE_EXTRA_CA_CERTS: "" });
+    assert.equal(r.status, 5, `-f under an untrusted certificate must fail OPERATION_FAILED, exit 5:\n${r.out}`);
+    assert.match(r.out, /refused its TLS certificate in the handshake/, `the failure must name the refused certificate:\n${r.out}`);
+    assert.match(r.out, /OPERATION_FAILED/, `the failure must carry its code:\n${r.out}`);
+    assert.match(r.out, /setting NODE_EXTRA_CA_CERTS to that PEM file/, `the failure must name NODE_EXTRA_CA_CERTS as the step:\n${r.out}`);
+    assert.equal(await serverInfo(port), undefined, "the failed start must leave no listener");
+    console.log("  ✓ -f untrusted-cert: fails OPERATION_FAILED, exit 5, naming NODE_EXTRA_CA_CERTS, and leaves no listener");
   });
 
   // ── J: POLICY ROOT MUST BE THE FINAL MESH ROOT (S4). ───────────────────────────────────────────
@@ -686,7 +756,7 @@ async function main(): Promise<void> {
       ? readFileSync(parentPolicyBefore, "utf8") : null;
 
     const childUp = cotal(["up", "--detach", "--space", "child-space",
-      "--server", `nats://127.0.0.1:${childPort}`,
+      "--server", `tls://127.0.0.1:${childPort}`,
       "--tls-cert", pkiFiles.cert, "--tls-key", pkiFiles.key], home, child);
     assert.equal(childUp.status, 0, `child TLS mesh must start:\n${childUp.out}`);
     assert.match(childUp.out, /making this folder its own root|TLS: serving/,
@@ -712,7 +782,7 @@ async function main(): Promise<void> {
 
     cotal(["down"], home, child);
     const bare = cotal(["up", "--detach", "--space", "child-space",
-      "--server", `nats://127.0.0.1:${childPort}`], home, child);
+      "--server", `tls://127.0.0.1:${childPort}`], home, child);
     assert.equal(bare.status, 0, `bare child re-up must inherit TLS policy:\n${bare.out}`);
     assert.match(bare.out, /inheriting the recorded broker policy|TLS: serving/,
       `bare re-up must name the inherited TLS decision:\n${bare.out}`);
@@ -768,7 +838,7 @@ async function main(): Promise<void> {
       ? readFileSync(parentPolicyBefore, "utf8") : null;
 
     const childUp = cotal(["up", "--detach", "--open", "--space", "child-oa",
-      "--server", `nats://127.0.0.1:${childPort}`,
+      "--server", `tls://127.0.0.1:${childPort}`,
       "--tls-cert", pkiFiles.cert, "--tls-key", pkiFiles.key], home, child);
     assert.equal(childUp.status, 0, `open child TLS mesh must start:\n${childUp.out}`);
 
@@ -797,7 +867,7 @@ async function main(): Promise<void> {
     assert.ok(await serverInfo(parentPort), "parent listener must survive child down");
 
     const bare = cotal(["up", "--detach", "--open", "--space", "child-oa",
-      "--server", `nats://127.0.0.1:${childPort}`], home, child);
+      "--server", `tls://127.0.0.1:${childPort}`], home, child);
     assert.equal(bare.status, 0, `bare open child re-up must inherit TLS:\n${bare.out}`);
     assert.equal((await serverInfo(childPort))?.tls_required, true,
       `GATE FAILED (S4-open): bare re-up served plaintext`);
@@ -823,8 +893,7 @@ async function main(): Promise<void> {
     const policy = join(cwd, ".cotal", "broker-policy.json");
     const before = existsSync(policy) ? readFileSync(policy, "utf8") : null;
 
-    const refuse = cotal(["up", "--open", "--server", `nats://127.0.0.1:${port}`,
-      "--tls-cert", pkiFiles.cert, "--tls-key", pkiFiles.key], home, cwd);
+    const refuse = cotal(["up", "--open", "--tls-cert", pkiFiles.cert, "--tls-key", pkiFiles.key], home, cwd);
     assert.notEqual(refuse.status, 0, `TLS flags against a live mesh must refuse:\n${refuse.out}`);
     assert.match(refuse.out, /can't change its transport|already running/,
       `refusal must name the transport lock:\n${refuse.out}`);
@@ -857,7 +926,7 @@ async function main(): Promise<void> {
     const { home, cwd } = sandbox();
     const port = await freePort();
     writeFileSync(join(cwd, "cotal.yaml"),
-      `apiVersion: cotal/v1\nkind: Mesh\nspace: tlsdryhost\nbroker:\n  servers: nats://127.0.0.1:${port}\n  auth: false\nchannels:\n  general:\n    subscribe: []\n`);
+      `apiVersion: cotal/v1\nkind: Mesh\nspace: tlsdryhost\nbroker:\n  servers: tls://127.0.0.1:${port}\n  auth: false\nchannels:\n  general:\n    subscribe: []\n`);
     const policy = join(cwd, ".cotal", "broker-policy.json");
 
     const bad = cotal(["up", "-f", "cotal.yaml", "--dry-run",
@@ -884,7 +953,7 @@ async function main(): Promise<void> {
     const { home, cwd } = sandbox();
     const port = await freePort();
     rememberSandbox(home, port, cwd);
-    const up = cotal(["up", "--detach", "--server", `nats://127.0.0.1:${port}`,
+    const up = cotal(["up", "--detach", "--server", `tls://127.0.0.1:${port}`,
       "--tls-cert", pkiFiles.cert, "--tls-key", pkiFiles.key], home, cwd);
     assert.equal(up.status, 0, `TLS auth mesh must start:\n${up.out}`);
     assert.match(up.out, /delivery/, `CONTROL: summary should mention delivery:\n${up.out}`);
@@ -915,14 +984,15 @@ async function main(): Promise<void> {
     const { home, cwd } = sandbox();
     const port = await freePort();
     rememberSandbox(home, port, cwd);
-    const up = cotal(["up", "--detach", "--server", `nats://127.0.0.1:${port}`,
+    const up = cotal(["up", "--detach", "--server", `tls://127.0.0.1:${port}`,
       "--tls-cert", pkiFiles.cert, "--tls-key", pkiFiles.key], home, cwd);
     assert.equal(up.status, 0, `TLS auth mesh must start:\n${up.out}`);
 
     // Stop ONLY the delivery daemon, so the refresh below has one to relaunch — and so the argv
     // grepped afterwards is provably the NEW child. Without this control the assertion would be
     // satisfied by the original, correctly-flagged daemon still running.
-    const pidFile = canonicalLocalProcessPath(DELIVERY_PIDFILE, { root: cwd, space: DEFAULT_SPACE });
+    // A bare up names a new project's space after its folder.
+    const pidFile = canonicalLocalProcessPath(DELIVERY_PIDFILE, { root: cwd, space: basename(cwd) });
     assert.ok(existsSync(pidFile), `CONTROL: fresh TLS up must leave a delivery pidfile:\n${up.out}`);
     const oldPid = Number(readFileSync(pidFile, "utf8").trim());
     try { process.kill(oldPid, "SIGTERM"); } catch { /* already gone */ }
@@ -938,7 +1008,7 @@ async function main(): Promise<void> {
     assert.ok(existsSync(policy), "CONTROL: fresh TLS up must have committed a policy file");
     rmSync(policy, { force: true });
 
-    const refresh = cotal(["up", "--server", `nats://127.0.0.1:${port}`], home, cwd);
+    const refresh = cotal(["up"], home, cwd);
     assert.equal(refresh.status, 0, `bare refresh of a live TLS mesh must succeed:\n${refresh.out}`);
     assert.equal((await serverInfo(port))?.tls_required, true, "CONTROL: listener must still be TLS");
 
@@ -964,7 +1034,7 @@ async function main(): Promise<void> {
     const { home, cwd } = sandbox();
     const port = await freePort();
     rememberSandbox(home, port, cwd);
-    const up = cotal(["up", "--detach", "--open", "--server", `nats://127.0.0.1:${port}`,
+    const up = cotal(["up", "--detach", "--open", "--server", `tls://127.0.0.1:${port}`,
       "--tls-cert", pkiFiles.cert, "--tls-key", pkiFiles.key], home, cwd);
     assert.equal(up.status, 0, `TLS mesh must start:\n${up.out}`);
 
@@ -976,13 +1046,13 @@ async function main(): Promise<void> {
       `GATE FAILED (S10): no-CA send pruned the registry:\n${send.out}`);
 
     const meshes = cotal(["meshes"], home, cwd);
-    assert.match(meshes.out, /tls-required|main/,
+    assert.match(meshes.out, new RegExp(`tls-required|${basename(cwd)}`),
       `GATE FAILED (S10): registry entry gone after no-CA connect:\n${meshes.out}`);
 
     // Mirror hazard: replace TLS listener with plaintext on the same port; status must not say tls-trust.
     cotal(["down"], home, cwd);
     // Re-up then kill only nats, leave registry — same shape as the status cell (G).
-    const up2 = cotal(["up", "--detach", "--open", "--server", `nats://127.0.0.1:${port}`,
+    const up2 = cotal(["up", "--detach", "--open", "--server", `tls://127.0.0.1:${port}`,
       "--tls-cert", pkiFiles.cert, "--tls-key", pkiFiles.key], home, cwd);
     assert.equal(up2.status, 0, `re-up for mirror:\n${up2.out}`);
     const pidPath = join(cwd, ".cotal", "nats.pid");
@@ -1009,6 +1079,61 @@ async function main(): Promise<void> {
     console.log("  ✓ S10: no-CA keeps tlsRequired registry; plaintext-on-port is unreachable not tls-trust");
   });
 
+  // ── T: A CERTIFICATE THAT NAMES ONLY THE DIALED IP. ────────────────────────────────────────────
+  //    The TCP transport upgrades with no server name for an IP, so Node checked every certificate
+  //    against "localhost": a valid leaf for 127.0.0.1 alone never started, and the start waited
+  //    out its readiness before a cause-free OPERATION_UNKNOWN.
+  await route("ip-only-certificate", async () => {
+    const { home, cwd } = sandbox();
+    const port = await freePort();
+    rememberSandbox(home, port, cwd);
+    const args = ["up", "--detach", "--server", `tls://127.0.0.1:${port}`, "--tls-cert", pkiFiles.ipCert, "--tls-key", pkiFiles.ipKey];
+    const untrusted = cotal(args, home, cwd, { NODE_EXTRA_CA_CERTS: "" });
+    assert.equal(untrusted.status, 5, `an untrusted certificate must fail the start, exit 5:\n${untrusted.out}`);
+    assert.match(untrusted.out, /refused its TLS certificate in the handshake/, `the failure must name the handshake:\n${untrusted.out}`);
+    assert.match(untrusted.out, /NODE_EXTRA_CA_CERTS/, `the failure must name how to trust the certificate:\n${untrusted.out}`);
+    assert.equal(await serverInfo(port), undefined, "the refused start must not leave its listener");
+
+    const up = cotal(args, home, cwd);
+    assert.equal(up.status, 0, `a trusted certificate for the dialed IP must start the mesh:\n${up.out}`);
+    assert.match(up.out, new RegExp(`TLS: serving .* at tls://127\\.0\\.0\\.1:${port},`), `the receipt must name the tls:// address:\n${up.out}`);
+    const send = cotal(["send", "-c", "general", "probe"], home, cwd);
+    assert.equal(send.status, 0, `a send must reach the mesh over TLS:\n${send.out}`);
+    cotal(["down"], home, cwd);
+
+    const other = sandbox();
+    rememberSandbox(other.home, port, other.cwd);
+    const nats = cotal(["up", "--detach", "--server", `nats://127.0.0.1:${port}`, "--tls-cert", pkiFiles.ipCert, "--tls-key", pkiFiles.ipKey], other.home, other.cwd);
+    assert.equal(nats.status, 1, `a nats:// address with --tls-cert is refused as usage, exit 1:\n${nats.out}`);
+    assert.match(nats.out, new RegExp(`pass --server tls://127\\.0\\.0\\.1:${port}`), `the refusal must name the tls:// address:\n${nats.out}`);
+    assert.equal(await serverInfo(port), undefined, "the refused start must not start a listener");
+    assert.equal(existsSync(join(other.cwd, ".cotal", "broker-policy.json")), false, "the refused start must not record a TLS policy");
+    console.log("  ✓ ip-only certificate: untrusted names the handshake and NODE_EXTRA_CA_CERTS, trusted starts, sends and names tls://, nats:// refuses as usage");
+  });
+
+  // ── U: AN ADDRESS UP CHOOSES FOR A TLS BROKER IS tls://. A stopped folder starts again at the
+  //    address it last ran at, which its broker config records as host and port; with --tls-cert
+  //    that address used to stay nats://, and an IP certificate then failed its own check.
+  await route("implicit-address-is-tls", async () => {
+    const { home, cwd } = sandbox();
+    const port = await freePort();
+    rememberSandbox(home, port, cwd);
+    const plain = cotal(["up", "--detach", "--server", `nats://127.0.0.1:${port}`], home, cwd);
+    assert.equal(plain.status, 0, `a plaintext start must record the folder's address:\n${plain.out}`);
+    cotal(["down"], home, cwd);
+    const up = cotal(["up", "--detach", "--tls-cert", pkiFiles.ipCert, "--tls-key", pkiFiles.ipKey], home, cwd);
+    assert.equal(up.status, 0, `the folder's address must start over TLS:\n${up.out}`);
+    assert.match(up.out, new RegExp(`as it last ran: tls://127\\.0\\.0\\.1:${port}`), `the restart must name the tls:// address:\n${up.out}`);
+    assert.match(up.out, new RegExp(`TLS: serving .* at tls://127\\.0\\.0\\.1:${port},`), `the receipt must name the tls:// address:\n${up.out}`);
+    assert.equal((await serverInfo(port))?.tls_required, true, "the restarted listener must require TLS");
+    const meshes = cotal(["meshes", "--json"], home, cwd);
+    assert.match(meshes.out, new RegExp(`"server":"tls://127\\.0\\.0\\.1:${port}"`), `the registry must record tls://:\n${meshes.out}`);
+    const send = cotal(["send", "-c", "general", "probe"], home, cwd);
+    assert.equal(send.status, 0, `a send must reach the restarted mesh over TLS:\n${send.out}`);
+    cotal(["down"], home, cwd);
+    console.log("  ✓ implicit address: a stopped folder restarts with --tls-cert at tls://, records it, names it and serves it");
+  });
+
   // The per-route table is the artifact a mutation proof reads. Printed always, pass or fail.
   console.log("  ── route outcomes ──");
   for (const o of outcomes) {
@@ -1019,11 +1144,11 @@ async function main(): Promise<void> {
     if (!o.ok) console.log((o.err ?? "").split("\n").map((l) => `        ${l}`).join("\n"));
   }
   const failed = outcomes.filter((o) => !o.ok);
-  if (outcomes.length !== 16)
-    throw new Error(`HARNESS: expected 16 routes, recorded ${outcomes.length} — a route did not run at all`);
+  if (outcomes.length !== 20)
+    throw new Error(`HARNESS: expected 20 routes, recorded ${outcomes.length} — a route did not run at all`);
   if (failed.length > 0)
-    throw new Error(`${failed.length}/16 routes FAILED: ${failed.map((f) => f.route).join(", ")}`);
-  console.log("✓ up-tls-routes: 16/16 routes encrypt or refuse; admission proved on each, one variable apart");
+    throw new Error(`${failed.length}/20 routes FAILED: ${failed.map((f) => f.route).join(", ")}`);
+  console.log("✓ up-tls-routes: 20/20 routes encrypt or refuse; admission proved on each, one variable apart");
 }
 
 try {

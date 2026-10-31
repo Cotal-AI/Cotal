@@ -40,9 +40,11 @@ export interface LocalProcess extends Extension, ServiceAdapterHooks {
   readonly clearsMesh?: boolean;
   /** Hide this process from status unless the selected mesh uses per-user auth. */
   readonly visibleWhen?: "user-auth";
-  /** Whether a live process's command line is this process's. A stop never signals a live pid this
-   *  rejects: the record outlived its process and the pid was reused, so the stale record is cleared.
-   *  A function cannot be cached for an installed extension, so only this CLI's own processes set it. */
+  /** Whether a live process's command line is this process's. A stop consults it once, and only for a
+   *  record with no identity pin: a pin that names another start refuses first and keeps the record,
+   *  for every component. When this rejects a readable command, the stop never signals that pid. The
+   *  record outlived its process and the pid was reused, so the stale record is cleared. A function
+   *  cannot be cached for an installed extension, so only this CLI's own processes set it. */
   readonly isOwnCommand?: (command: string) => boolean;
 }
 
@@ -62,6 +64,11 @@ export const MANAGER_PIDFILE = "manager.{space}.pid";
 
 /** The native user-auth daemon custody slot, per space. */
 export const AUTH_PIDFILE = "auth-service.{space}.pid";
+
+/** `.cotal/nats.pid` — the broker this root started. Root-scoped: one root runs one broker, and the
+ *  name is not a `{space}` template. The CLI writes it from `cotal up` and reads it from `cotal down`,
+ *  `cotal status` and the clean sweep, so the name lives here where a rename reaches every one of them. */
+export const NATS_PIDFILE = "nats.pid";
 
 /** The stop reservation beside a resolved pidfile: whoever holds it is the one process stopping that
  *  record, and a manager reads it to bind a `--with-agents` intent to the exact stop attempt. */

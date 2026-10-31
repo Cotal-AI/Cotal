@@ -147,6 +147,7 @@ const SPAWN_INPUT = {
     name: { type: "string", minLength: 1 }, agent: { type: "string" }, role: { type: "string" },
     model: { type: "string" }, variant: { type: "string" },
     subscribe: { type: "array", items: { type: "string" } },
+    runtime: { type: "string" },
     supervise: {
       type: "object", additionalProperties: false, required: ["restarts", "windowMs"],
       properties: { restarts: { type: "integer", minimum: 1 }, windowMs: { type: "integer", minimum: 1 } },
@@ -653,6 +654,36 @@ if (!placedHostOnly) {
   }
 }
 
+// ── 8b) the same watch: a live successor under the name is superseded, not lapsed ───────────────
+{
+  console.log("• 8b — a successor under the name is superseded before the lapse window");
+  const handler = mk("tn-8b");
+  const a = await spawnSeat(handler, "n8b");
+  if (a !== undefined) {
+    const alloc = allocations.find((x) => `${x.name}#${x.uid}` === a.agent);
+    const T = token("o8b");
+    const p = safe(handler.turn({ agent: a, deadline: "5m" }, stepCtx(T).ctx));
+    await wait(1_200);
+    if (alloc !== undefined) {
+      await presenceKv.delete(`local.${alloc.actor}`);
+      const successor: Presence = {
+        card: { id: `local.${alloc.actor}`, name: alloc.name, kind: "agent" },
+        lifecycleUid: `z${"0".repeat(25)}`,
+        status: "idle",
+        ts: Date.now(),
+      };
+      await presenceKv.put(successor.card.id, JSON.stringify(successor));
+    }
+    const got = await withDeadline(p, 15_000, "the superseded turn");
+    c("a live successor reads as superseded through the turn's own watch",
+      (got as { code?: string })?.code === "L4002" && String((got as { message?: string })?.message).includes("superseded")
+        && !String((got as { message?: string })?.message).includes("lapsed"),
+      JSON.stringify(got));
+    const settle = await readCheckpointSettle(jsm, SPACE, { endpoint: EP, token: T });
+    c("the superseded death claims the armed pause", settle !== undefined, settle?.settle);
+  }
+}
+
 // ── 9) handoff honored: the roster resolves `to`, the link and the owner move ─────────────────
 {
   console.log("• 9 — a handoff yield resolves to the roster handle; the next turn links the chain");
@@ -1134,7 +1165,7 @@ async function readGoalResultData(goalId: string): Promise<Record<string, unknow
 await Promise.allSettled(terminals);
 await serve.stop().catch(() => { /* teardown */ });
 await nc.close();
-const EXPECTED_CELLS = placedHostOnly ? 11 : 60;
+const EXPECTED_CELLS = placedHostOnly ? 11 : 62;
 const ran = ok + fail;
 console.log(`mesh-turn.smoke: ${ok} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {

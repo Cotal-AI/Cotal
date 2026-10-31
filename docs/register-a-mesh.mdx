@@ -1,7 +1,7 @@
 ---
 title: "Register a mesh"
 description: "Choose the mesh a command targets and register remote brokers with verified trust."
-kind: "Informative"
+kind: Guide
 audience: "operators"
 ---
 
@@ -30,7 +30,7 @@ If the selected entry no longer exists, the command refuses with `TARGET_NOT_FOU
 
 With no selection, Cotal first uses the current project's `.cotal/`.
 Outside a project, it uses the only running mesh or refuses an ambiguous choice when several are running.
-The `*` in `cotal meshes` marks the selected entry.
+The `(default)` marker in `cotal meshes` marks the selected entry.
 
 `cotal up` records a local mesh's broker URL, project root, and authentication mode in `~/.cotal/meshes/space.<key>.json`.
 The key is a case-safe hex encoding of the space name.
@@ -39,6 +39,10 @@ The registry stores paths and connection settings. Credentials stay under the pr
 To name a space before starting it, use `cotal space create <name> [--root <dir>]`.
 This prepares `<root>/.cotal/` separately from the running-mesh registry.
 Commands targeting that space refuse until it starts and name the root to use.
+
+A folder's own space captures commands there only while it runs.
+A prepared or stopped folder leaves them to the selected space; the `Mesh:` report names the folder's space and its startup command.
+An interrupted `up` or `down` whose member still runs keeps that folder's scope until the member stops.
 
 ## Register a remote mesh [#meshes-you-did-not-start-here]
 
@@ -55,6 +59,7 @@ It makes the destination machine an authority for the mesh.
 Copy it only to a machine you trust with the entire space.
 There is no per-machine revocation. Removing that authority requires signing-key rotation and new credentials for the space.
 A credential minted by `cotal auth mint` does not replace the signing material required to register a static-auth mesh.
+A machine that must not hold the signer does not register that space. Use an owner-minted credential with `--creds <file> --server <url>` instead.
 
 </Callout>
 
@@ -87,7 +92,7 @@ Scripts use the explicit flags. Nothing prompts without a terminal.
 
 Each root keeps its manager and user-auth service identities in `.cotal/space.<hex>/`.
 They are not part of the trust folder to share.
-Starting `cotal supervise` or `cotal up --user-auth` in another root creates that root's own instance.
+Starting `cotal manager start` or `cotal up --user-auth` in another root creates that root's own instance.
 
 Older roots may still keep `manager-instance.<hex>.json`, `manager-siblings.<hex>.json`, and `space.<hex>/.cotal/auth/auth-instance.<hex>.json` under `.cotal/auth`.
 Remove those instance records from a copied folder before its first start.
@@ -145,7 +150,8 @@ If the entry was removed during the refresh, Cotal refuses instead of recreating
 
 A failed probe does not remove an entry.
 `cotal meshes` reports an unreachable broker as `offline`; name it with `--space` when you intend to restart it.
-The probe retries using the registry's longer preflight budget, so a timeout and a refused port have distinct reports.
+The probe retries using the registry's longer preflight budget. A broker that accepts a connection without finishing reports that it is not answering.
+A refused port reports that the broker is not running.
 
 To forget a registered mesh, run:
 
@@ -159,9 +165,11 @@ Use `cotal down` to stop a mesh running here.
 A hand-registered entry survives `cotal down` and `cotal clean all`, even if its root is the project being stopped.
 Those commands remove entries created by a local `up`.
 If `up` finds an already-running broker at the registered endpoint, it refreshes the entry without changing that provenance.
-If it starts the broker for that same space, endpoint, and root, the entry becomes locally owned and `down` clears it.
+If it starts the broker for that same space, endpoint, and root, the entry becomes locally owned.
+`down` normally removes its registration. A space named after its folder keeps its registration while stopped.
+Controller spaces remain prepared at their root, and an existing selection keeps naming that space.
 
 An `up` targeting a hand-registered mesh refuses to start a different endpoint around it.
-For a remote broker, follow its remedy to run `cotal supervise --space <s> --server <url>` with delivery on the broker host.
+For a remote broker, follow its remedy to run `cotal manager start --space <s>` with delivery on the broker host.
 For a local entry, remove it with `cotal meshes rm` if it needs replacement.
 Re-registering with `--force` can replace an entry, but still applies its address restrictions.

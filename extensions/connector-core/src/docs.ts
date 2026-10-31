@@ -16,12 +16,19 @@ import type { ToolResult } from "./tool-specs.js";
 
 export { DOCS_VERSION } from "./docs-bundle.generated.js";
 
+/** The categories the docs index lists pages under, in its order. */
+export const DOCS_CATEGORIES = ["Start here", "Guide", "Concept", "Reference", "Project"] as const;
+export type DocsCategory = (typeof DOCS_CATEGORIES)[number];
+
 export interface DocsPage {
   /** URL-ish key, e.g. "architecture". Also the argument an agent passes as `page`. */
   slug: string;
   title: string;
-  /** The page's classification line, e.g. "Concept (informative)" or "Reference"; "" if none. */
+  /** The page's classification line, e.g. "Concept (informative)" or "Reference". */
   kind: string;
+  /** The category that line names, which the index lists the page under. The spec and lang are
+   *  `normative`, and the schema is `reference`. */
+  category: DocsCategory | "normative" | "reference";
   /** One-line summary for the index. */
   summary: string;
   /** Full Markdown. */
@@ -54,9 +61,9 @@ const REMOTE_BASE = "https://docs.cotal.ai";
  *  non-page docs; everything else matches a page slug (case-insensitive). */
 function resolvePage(page: string): DocsPage | undefined {
   const key = page.trim().toLowerCase().replace(/\.md$/, "");
-  if (key === "spec") return { slug: "spec", title: bundle().spec.title, kind: "normative", summary: "", body: bundle().spec.body };
-  if (key === "lang" || key === "cotal-lang") return { slug: "lang", title: bundle().lang.title, kind: "normative", summary: "", body: bundle().lang.body };
-  if (key === "schema") return { slug: "schema", title: bundle().schema.title, kind: "reference", summary: "", body: bundle().schema.body };
+  if (key === "spec") return { slug: "spec", title: bundle().spec.title, kind: "normative", category: "normative", summary: "", body: bundle().spec.body };
+  if (key === "lang" || key === "cotal-lang") return { slug: "lang", title: bundle().lang.title, kind: "normative", category: "normative", summary: "", body: bundle().lang.body };
+  if (key === "schema") return { slug: "schema", title: bundle().schema.title, kind: "reference", category: "reference", summary: "", body: bundle().schema.body };
   return bundle().pages.find((p) => p.slug === key);
 }
 
@@ -217,6 +224,7 @@ export interface DocHit {
 /** BM25 search over heading-aware sections. Returns the best-matching sections (at most two per
  *  page, for diversity), each with a pointer to read the full page. Offline; no embeddings. */
 export function searchDocs(query: string, limit = 5): DocHit[] {
+  if (limit <= 0) return [];
   let terms = tokenize(query).filter((t) => !STOP.has(t));
   if (!terms.length) terms = tokenize(query); // all-stopword query → keep the raw terms
   const termSet = new Set(terms);
@@ -313,13 +321,14 @@ export async function readDocsPage(page: string, opts: { refresh?: boolean } = {
   return { version, page: { ...found, body: remote.body }, source: "docs.cotal.ai", refresh: "served" };
 }
 
-/** The bundled docs' version, their normative sources and their pages, for an index. */
+/** The bundled docs' version, their normative sources and their pages, for an index, the pages in
+ *  the order of their categories. */
 export function docsIndex(): { version: string; sources: { slug: string; title: string }[]; pages: Omit<DocsPage, "body">[] } {
   const b = bundle();
   return {
     version: b.version,
     sources: [{ slug: "spec", title: b.spec.title }, { slug: "lang", title: b.lang.title }, { slug: "schema", title: b.schema.title }],
-    pages: b.pages.map(({ slug, title, kind, summary }) => ({ slug, title, kind, summary })),
+    pages: b.pages.map(({ slug, title, kind, category, summary }) => ({ slug, title, kind, category, summary })).sort((x, y) => DOCS_CATEGORIES.indexOf(x.category as DocsCategory) - DOCS_CATEGORIES.indexOf(y.category as DocsCategory)),
   };
 }
 

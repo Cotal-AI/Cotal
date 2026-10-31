@@ -1,0 +1,4 @@
+# The public service endpoint authority route over a hosted context: default off, account info, owner-proved
+# register and own-operation status through the provider and HTTP clients, closure refusals, create-only name binding,
+# approval, refusal and revocation through the host, proof and envelope refusals and the public refusal budget.
+smoke:service-endpoint-authority:auth

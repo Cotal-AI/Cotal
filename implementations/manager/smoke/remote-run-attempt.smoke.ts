@@ -46,10 +46,10 @@ try {
   const gate = { state: "open" as const, principal: `${OWNER}.${remoteManagerActors(instanceId).serve}`, processEpoch: 3, registrationRevision: 7 };
   const base = { v: 1, kind: "manager-run-attempt", space: SPACE, actor: "cli", instanceId, managerLifecycleUid: mintLifecycleUid(), accountPublicKey: ACCOUNT, processEpoch: 3, identities } as const;
   const proof = remoteManagerCurrentRegistrationProof(SECRET, OWNER, base, gate);
-  const newRun = () => `run-${Buffer.from(mintGeneration().slice(0, 16)).toString("hex")}`;
+  const newRun = () => `run-${Buffer.from(mintGeneration(Math.floor(Date.now() / 1000) + 172_800).slice(8, 24)).toString("hex")}`;
   const admit = async (runId: string, inst = instanceId) => createRunAdmission(admissions, {
     version: 1, space: SPACE, endpoint: "manager", runId, instanceId: inst,
-    caller: { owner: "alice_o", actor: "alice", uid: mintLifecycleUid(), generation: mintGeneration() } as never,
+    caller: { owner: "alice_o", actor: "alice", uid: mintLifecycleUid(), generation: mintGeneration(Math.floor(Date.now() / 1000) + 172_800) } as never,
     ceiling: { publish: { allow: { mode: "none" }, deny: [] }, subscribe: { allow: { mode: "none" }, deny: [] } },
     provenance: { kind: "operator", by: "suite", reason: "fixture" }, admittedAt: Date.now(),
   });
@@ -88,8 +88,14 @@ try {
   await admit(revokedRun);
   await revokeRunAdmission(admissions, "manager", { version: 1, runId: revokedRun, by: "suite", reason: "revoked", revokedAt: Date.now() });
   const revoked = await outcome(authorize(attempt(revokedRun)));
+  const revokedAnswer = await outcome(authorize({ operator: { id: newIdentity().id, takeoverId: "o".repeat(16), answers: { runId: revokedRun, stepKey: "/checkpoint:absent#0" } } }));
   const revokedRead = await outcome(authorize({ operator: { id: newIdentity().id, takeoverId: "o".repeat(16), runId: revokedRun } }));
-  c("a revoked run is issued no attempt and no read operator", String(revoked).includes("revoked") && String(revokedRead).includes("revoked"), { revoked, revokedRead });
+  // SPEC 14.8: revocation ends drive and answering authority, and a run-scoped read-only operator
+  // stays issuable so the revoked run's status can still be inspected.
+  c("a revoked run is issued no attempt and no answering operator, and still a read-only operator",
+    String(revoked).includes("revoked") && String(revokedAnswer).includes("revoked") &&
+      typeof revokedRead === "object" && JSON.stringify((revokedRead as { operator: { runOperator: unknown } }).operator.runOperator) === JSON.stringify({ endpoint: "manager", takeoverId: "o".repeat(16), runId: revokedRun }),
+    { revoked, revokedAnswer, revokedRead });
   const foreignRun = newRun();
   await admit(foreignRun, mintLifecycleUid());
   const foreign = await outcome(authorize(attempt(foreignRun)));

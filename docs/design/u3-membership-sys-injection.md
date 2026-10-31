@@ -1,12 +1,25 @@
 # Membership / `$SYS` credential injection
 
-> **Design** (non-normative, not shipped) · Closes [embedding](../embedding.mdx) known gap 1
+> **Design** (non-normative) · Closes [embedding](../embedding.mdx) known gap 1
 > ("Delivery immediate live eviction and a fully-hosted membership feed"). Wire contract unchanged:
 > no new subject, no new stream, no new message type. This is a composition-root seam.
+>
+> **Status.** The reader side shipped in 0.36.0 (`ebefd2c5a`). The delivery daemon reads the `$SYS`
+> pair through the `SecretStore` seam in `implementations/delivery/src/sys-creds.ts` (`loadSysPair`),
+> with the shared tenancy, torn-rotation and store-aware repair checks of section 4. Injected scan
+> tenancy is validated at startup before admission (`959b59612`, 0.37.0), and a zero-match eviction
+> no longer needs the evictor (`ade42d529`, 0.51.0). The live smoke of section 6 is
+> `implementations/delivery/smoke/sys-injection-evict.smoke.ts`. One thing differs from section 2:
+> P7 segmented the pair in the same release, so the store keys landed as per-space builders,
+> `membershipObserverCredsKey(space, composition)` and `connectionEvictorCredsKey(space,
+> composition)` in `packages/workspace/src/space-segmentation.ts`. The workstation path keeps the
+> `membership.json` cross-check as section 4.3 proposed, read from the per-space location.
+> Section 8's residuals still hold. Line references below are to the tree the design was written
+> against.
 
 ## 1. What the gap actually is
 
-`docs/embedding.mdx:262-271` names it: the renewable `membership-rw.creds` migrated to the
+`docs/embedding.md:262-271` names it: the renewable `membership-rw.creds` migrated to the
 `SecretStore` seam, but three artifacts still resolve from **fixed disk paths under the workspace
 root**, so a hosted composition cannot supply them and live eviction refuses.
 
@@ -189,7 +202,7 @@ Three alternatives are rejected because each infers hosting from evidence that d
 - `instanceof FsSecretStore` — a host may legitimately wrap or subclass the FS store (a caching or
   auditing decorator), and delivery must not depend on the concrete class of an injected seam.
 - `existsSync(join(root, ".cotal"))` — the directory exists on a hosted box too (the mesh registry
-  and auth state live there per `embedding.mdx`), so this reports "workstation" for a hosted daemon
+  and auth state live there per `embedding.md`), so this reports "workstation" for a hosted daemon
   and emits exactly the unactionable advice the rule forbids.
 - probing `store.get()` for a workstation-only key — an I/O round trip against a KMS to decide the
   *wording of an error message*, on a path already degraded.

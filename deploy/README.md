@@ -18,15 +18,16 @@ One agent or twenty, claude or opencode: all config, never the image.
 A broker on your machine and one team container talking to it. Run the `pnpm cotal`
 commands from the repo root (`cotal` below is shorthand for `pnpm cotal`).
 
-**1. Start a broker** (terminal A, leave it running). Binds `0.0.0.0:4222`, space `main`:
+**1. Start a broker.** It binds `0.0.0.0:4222` and runs in the background. Name the space `main`,
+because a bare `cotal up` names a new project's space after its folder:
 
 ```bash
-pnpm install            # once
-cotal up --host 0.0.0.0 # network-reachable for containers; add --server nats://127.0.0.1:4252 if 4222 is taken
+pnpm install && pnpm build   # once
+cotal up --host 0.0.0.0 --space main   # add --server nats://127.0.0.1:4252 if 4222 is taken
 ```
 
 > `cotal up` binds **loopback** (`127.0.0.1`) by default. A broker containers dial out to needs
-> `--host 0.0.0.0` — and auth (the default), since an open mesh on `0.0.0.0` is unauthenticated on
+> `--host 0.0.0.0` and auth (the default), since an open mesh on `0.0.0.0` is unauthenticated on
 > the network. Bind-address and auth are independent flags.
 
 **2. Build the image** (once). Bundles the cotal, claude, and opencode CLIs and installs
@@ -114,10 +115,12 @@ For claude, use the subscription token so a containerized agent behaves exactly 
 local Claude Code, including Channels (an idle agent waking the instant a peer messages it).
 
 For opencode, the env var is **per provider**, not fixed: each agent's `model:` is
-`provider/model` (see the roster section), and you set that provider's key. opencode's own
-hosted models (`opencode-go/…`) read `OPENCODE_API_KEY`; OpenAI reads `OPENAI_API_KEY`,
-Anthropic `ANTHROPIC_API_KEY`, OpenRouter `OPENROUTER_API_KEY`, and so on. A mixed team sets
-one var per provider it uses; each opencode process picks up only the keys its model needs.
+`provider/model` (see the roster section), and you set that provider's key. The connector forwards
+`OPENCODE_API_KEY` (opencode's own hosted models, `opencode-go/…`), `OPENAI_API_KEY`,
+`ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY` and `NOUS_API_KEY` without any config. Any other
+provider variable reaches the agent only when the cotal config lists it under
+[`spawn.env`](../docs/config.mdx#environment-variables). A mixed team sets one var per provider it
+uses; each opencode process picks up only the keys its model needs.
 
 ### Using your Claude subscription
 
@@ -190,9 +193,9 @@ Reshape a team by editing `roster.yaml` and the agent files, never the image.
 
 This is how agents authenticate to the **NATS mesh** (separate from the model provider).
 
-- **Now:** mount the stripped `signer.json`. The worst a leaked signer allows is minting
-  users within that one account, which the NATS account boundary already contains. The
-  operator root-of-trust never enters a container.
+- **Now:** mount the stripped `signer.json`. A leaked signer can mint any identity within that
+  one account, including `admin` and destructive profiles, but the NATS account boundary keeps it
+  out of other accounts. The operator root-of-trust never enters a container.
 - **Later (hardening):** a host-side provision step mints each agent's creds outside the
   container, so containers carry only their own `.creds` and no signing key at all.
 
@@ -231,4 +234,4 @@ read-only ones above; the container's own writable fs is ephemeral. **Egress is 
 plus each agent's model API** (api.anthropic.com, or opencode's provider).
 
 Stronger isolation (a fully `read_only` rootfs, or gVisor / Kata via `--runtime`) is a later
-swap with no app change. See `.internal/plans/containerized-deployment.md`.
+swap with no app change.

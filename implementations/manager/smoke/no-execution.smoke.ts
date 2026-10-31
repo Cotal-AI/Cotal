@@ -86,6 +86,7 @@ try {
       prepareAgentRetirement: async (args) => { const request = client.remoteManagedAgentPrepareRetirementRequest(state, "cli", proof, registered.processEpoch, args.target, args.opId); await door(request); },
       validateRetainedAgent: async (args) => { const request = client.remoteRetainedAgentValidationRequest(state, "cli", proof, registered.processEpoch, args, args.actorToken, args.sentinelCreds); return client.retainedAgentAuthority(await door(request), request); },
       scanGoalIndex: async () => { scans++; const request = client.remoteManagerGoalIndexScanRequest(state, "cli", proof, registered.processEpoch); return client.remoteManagerGoalIndexEntries(await door(request), request, prepared.owner); },
+      authorizeParticipation: async (caller) => { const request = client.remoteManagerParticipationAuthorizationRequest(state, "cli", proof, registered.processEpoch, caller); return client.remoteManagerParticipationAuthorized(await door(request), request, prepared.owner); },
       authorizeAdmin: async (caller) => { const request = client.remoteManagerAdminAuthorizationRequest(state, "cli", proof, registered.processEpoch, caller); return client.remoteManagerAdminAuthorized(await door(request), request, prepared.owner); },
       agentBearerExchangeUrl: service!.url,
     };
@@ -116,7 +117,7 @@ try {
     return { owner: prepared.owner, epoch: registered.processEpoch, opts };
   };
   const initial = await start();
-  const id = newIdentity(), uid = mintLifecycleUid(), issued = { generation: mintGeneration(), acceptedToken: mintAcceptedToken() };
+  const id = newIdentity(), uid = mintLifecycleUid(), issued = { generation: mintGeneration(Math.floor(Date.now() / 1000) + 172_800), acceptedToken: mintAcceptedToken() };
   const creds = await withIssuerSession({ servers: fx.servers, space: a.space, auth: a.auth, tls: false }, (s) => mintCreds(a.auth, id, "manager-caller", { lifecycleUid: uid, managerInstanceId: state.instanceId, principal: { owner: initial.owner, actor: "probe" }, capabilities: ["admin", "spawn", "run"], expiresInSeconds: 300, issued, issuance: { mode: "issue", store: s.store, accepted: s.accepted, sources: [] } }));
   callerNc = await connect({ servers: fx.servers, ...standaloneConnectOpts({ creds, tls: false }) });
   const caller = { owner: initial.owner, actor: "probe", uid, generation: issued.generation };

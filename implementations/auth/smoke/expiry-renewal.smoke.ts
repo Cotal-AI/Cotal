@@ -18,13 +18,16 @@
  *   - the reestablish loop retried on a FIXED interval, so a failure that cannot resolve itself
  *     repeats at the same rate for the life of the process.
  *
- * Three arms, because the fix must bound the hopeless case WITHOUT blunting the recoverable one:
- *   A. no renewal source (a bearer handed over as a value): zero denials, and the wait between
- *      attempts grows instead of staying flat.
+ * The arms, because the fix must bound the hopeless case WITHOUT blunting the recoverable one:
+ *   A. no renewal source (a bearer handed over as a value): zero denials, and the refusal is loud,
+ *      names the missing renewal path, and is said once rather than once per rebuild attempt.
+ *   A2. a renewal source that stops answering: zero denials, one notice for the run of failures,
+ *      and the source is retried on a growing wait, not once per rebuild attempt.
  *   B. renewal source present and healthy: the endpoint re-mints through the exchange and publishes
  *      again after its bearer expired. This is the arm that would catch a fix that simply stopped
  *      reconnecting.
- *   C. the refusal is loud and names which of the two situations it is in.
+ *   D. bearers long enough to renew inside their lifetime: the endpoint moves its live connection
+ *      onto each new one, so the broker never closes it for an expired bearer.
  *
  * Run: pnpm smoke:expiry-renewal:auth   (needs nats-server on PATH; operator-mode callout, local-only)
  */
@@ -42,15 +45,17 @@ import { createCalloutAuth, calloutPermissions, deriveOwnerToken, startAuthCallo
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
-/** The endpoint's first reconnect wait. The fix keeps the FIRST retry here and grows from it, so the
- *  growth assertion needs a window several multiples wide. */
+/** The endpoint's first reconnect wait. */
 const RETRY_MS = 3000;
 /** Bearer lifetime. Short enough to expire inside the suite, long enough that the endpoint connects
  *  and settles first. */
 const TTL_SEC = 5;
-/** How long arm A watches after the bearer dies. Pre-fix this window held ~7 denials at 3s apart;
- *  it also spans the 3s/6s/12s growth the fix produces. */
+/** How long arms A and A2 watch after the bearer dies. Pre-fix this window held ~7 denials at 3s
+ *  apart; it also spans the first three retries of a failed renewal (2.5-5s, 5-10s, 10-20s). */
 const ARM_A_WATCH_MS = 22_000;
+/** Arm D's bearer lifetime and watch: long enough that renewal lands inside the lifetime. */
+const LONG_TTL_SEC = 20;
+const ARM_D_WATCH_MS = 50_000;
 
 const smokeUid = mintLifecycleUid();
 const PORT = await pickFreePort();
@@ -79,12 +84,12 @@ const { publicKey, privateKey } = await generateKeyPair("EdDSA");
 const ISS = "https://auth.cotal.test";
 const OWNER = deriveOwnerToken("s".repeat(32), "better-auth|human-1");
 let mintCalls = 0;
-async function bearer(actor: string): Promise<string> {
+async function bearer(actor: string, ttlSec = TTL_SEC): Promise<string> {
   mintCalls++;
   const now = Math.floor(Date.now() / 1000);
   return new SignJWT({ sub: OWNER, ver: USER_TOKEN_VER, act: { owner: OWNER, actor, scope: [], lifecycleUid: smokeUid } })
     .setProtectedHeader({ alg: "EdDSA" }).setIssuer(ISS).setAudience(space).setSubject(OWNER)
-    .setIssuedAt(now - 5).setNotBefore(now - 5).setExpirationTime(now + TTL_SEC)
+    .setIssuedAt(now - 5).setNotBefore(now - 5).setExpirationTime(now + ttlSec)
     .sign(privateKey as CryptoKey);
 }
 
@@ -94,7 +99,7 @@ const denials: Array<{ ms: number; nkey: string; reason: string }> = [];
 const t0 = Date.now();
 
 let calloutNc: NatsConnection | undefined, witnessNc: NatsConnection | undefined;
-let epA: CotalEndpoint | undefined, epB: CotalEndpoint | undefined;
+let epA: CotalEndpoint | undefined, epA2: CotalEndpoint | undefined, epB: CotalEndpoint | undefined, epD: CotalEndpoint | undefined;
 try {
   let up = false;
   for (let i = 0; i < 50; i++) { if (await isReachable(SERVERS)) { up = true; break; } await wait(200); }
@@ -112,7 +117,11 @@ try {
     recordIssuance: async () => {},
     authorizeActor: () => {},
     permissionsFor: calloutPermissions(() => ({ allowSubscribe: ["general"], allowPublish: ["general"], lifecycleUid: smokeUid, scope: [] })),
-    log: (l) => { const m = /denied (\S+): (.*)$/.exec(l); if (m) denials.push({ ms: Date.now() - t0, nkey: m[1], reason: m[2] }); },
+    log: (l) => {
+      // One line per answered request; every outcome but `minted` refused the connect.
+      const m = /outcome=(denied|timeout|shed) space=\S+ req=(\S+).*?(?: reason=(".*"))?$/.exec(l);
+      if (m) denials.push({ ms: Date.now() - t0, nkey: m[2]!, reason: m[3] ? JSON.parse(m[3]) as string : m[1]! });
+    },
   });
 
   // ARM A — a bearer handed over as a VALUE: nothing this endpoint can renew with.
@@ -150,6 +159,9 @@ try {
     refusals.length > 0,
     { warnings: warningsA.map((e) => e.msg), errors: errorsA.map((e) => e.msg) },
   );
+  // And said once. The rebuild loop keeps retrying on its capped backoff, but a line per attempt
+  // is what turned one stuck seat into a log that grows for as long as the process lives.
+  check("the refusal is surfaced once, not once per rebuild attempt", refusals.length === 1, { attemptsAtMs: refusals.map((e) => e.ms) });
 
   // Keep #1119's classification true: this path retries on its own, so surfacing it as `error`
   // would kill a host that never registered a listener. That regression is invisible to the cell
@@ -160,16 +172,52 @@ try {
     errorsA.map((e) => e.msg),
   );
 
-  // The retry wait must GROW. Flat-rate retrying is the defect: a credential that was expired one
-  // second ago is still expired now, so the same attempt at the same interval forever is pure load.
-  const gaps = refusals.slice(1).map((e, i) => e.ms - refusals[i].ms);
-  check(
-    "the wait between reconnect attempts grows past the flat retry interval",
-    refusals.length >= 3 && gaps.length >= 2 && gaps[gaps.length - 1] > RETRY_MS * 1.5,
-    { attemptsAtMs: refusals.map((e) => e.ms), gaps },
-  );
   await epA.stop();
   epA = undefined;
+
+  // ARM A2 — a renewal source that stops answering after the first token. The bearer dies under the
+  // live connection; the endpoint must not present it, must not call the source once per rebuild,
+  // and must say so once.
+  const sourceFailuresAtMs: number[] = [];
+  let exchangeUp = true;
+  const warningsA2: Array<{ ms: number; msg: string }> = [];
+  epA2 = new CotalEndpoint({
+    space, servers: SERVERS,
+    bearer: async () => {
+      if (exchangeUp) return bearer("agentthree");
+      sourceFailuresAtMs.push(Date.now() - t0);
+      throw new Error("the auth exchange is not answering");
+    },
+    sentinelCreds: callout.sentinelCreds,
+    card: { name: "renewal-failing", kind: "agent", owner: OWNER, actor: "agentthree" },
+    channels: ["general"],
+    registerPresence: false, watchPresence: false, watchChannels: false, consume: false,
+  });
+  epA2.on("error", () => { /* the expiry close is expected here */ });
+  epA2.on("warning", (e: Error) => warningsA2.push({ ms: Date.now() - t0, msg: e.message }));
+  await epA2.start();
+  exchangeUp = false;
+  const denialsBeforeA2 = denials.length;
+  await wait(TTL_SEC * 1000 + ARM_A_WATCH_MS);
+  const armA2 = denials.slice(denialsBeforeA2).filter((d) => /exp/i.test(d.reason));
+  check("an endpoint whose renewal is failing presents its expired bearer ZERO times", armA2.length === 0, { denials: armA2.length });
+  check(
+    "the failing renewal is reported once, and the expired-bearer refusal at most once",
+    warningsA2.filter((e) => /bearer refresh failed/.test(e.msg)).length === 1 &&
+      warningsA2.filter((e) => /renewal through the auth exchange is failing/.test(e.msg)).length <= 1,
+    warningsA2.map((e) => e.msg),
+  );
+  // The retry wait must GROW. Flat-rate retrying is the defect: a source that did not answer one
+  // second ago is no likelier to answer now, so the same call at the same interval forever is pure
+  // load. A source call per rebuild attempt would also show here, as a gap far below the backoff.
+  const sourceGaps = sourceFailuresAtMs.slice(1).map((ms, i) => ms - sourceFailuresAtMs[i]!);
+  check(
+    "the failing source is retried on a growing wait",
+    sourceFailuresAtMs.length >= 3 && sourceGaps[0]! >= 2_500 && sourceGaps.every((g, i) => i === 0 || g >= sourceGaps[i - 1]!),
+    { callsAtMs: sourceFailuresAtMs, gaps: sourceGaps },
+  );
+  await epA2.stop();
+  epA2 = undefined;
 
   // ARM B — the same expiry, with the renewal source the product already has. This must still
   // recover: a fix that bounded arm A by giving up on reconnecting would fail here.
@@ -202,16 +250,41 @@ try {
   check("the witness receives the post-expiry message", !!sent && (await until(() => got.some((g) => g.id === sent!.id))), got.map((g) => g.id));
   const armB = denials.slice(denialsBeforeB).filter((d) => /exp/i.test(d.reason));
   check("renewal keeps expired material off the wire entirely", armB.length === 0, { denials: armB.length });
+  await epB.stop();
+  epB = undefined;
+
+  // ARM D — bearers long enough to renew inside their lifetime. Each new bearer moves the live
+  // connection onto itself, so the broker never has to close it at the old one's expiry.
+  const errorsD: string[] = [];
+  const mintsBeforeD = mintCalls;
+  const denialsBeforeD = denials.length;
+  epD = new CotalEndpoint({
+    space, servers: SERVERS,
+    bearer: () => bearer("agentfour", LONG_TTL_SEC), sentinelCreds: callout.sentinelCreds,
+    card: { name: "swapping", kind: "agent", owner: OWNER, actor: "agentfour" },
+    channels: ["general"],
+    registerPresence: false, watchPresence: false, watchChannels: false, consume: false,
+  });
+  epD.on("error", (e: Error) => errorsD.push(e.message));
+  epD.on("warning", (e: Error) => errorsD.push(e.message));
+  await epD.start();
+  await wait(ARM_D_WATCH_MS);
+  let sentD: CotalMessage | undefined;
+  try { sentD = await epD.multicast("after-swaps", { channel: "general" }); } catch { /* reported below */ }
+  check("a renewing endpoint renews several times inside the watch", mintCalls - mintsBeforeD >= 3, { mints: mintCalls - mintsBeforeD });
+  check("the broker never closed it for an expired bearer", !errorsD.some((m) => /Authentication Expired/i.test(m)), errorsD);
+  check("and it still publishes on the swapped connection", !!sentD && (await until(() => got.some((g) => g.id === sentD!.id))));
+  check("the swaps presented no expired bearer", denials.slice(denialsBeforeD).length === 0, denials.slice(denialsBeforeD));
 
   console.log(`\nEXPIRY-RENEWAL SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
   if (fail) process.exitCode = 1;
 } catch (e) {
   fail++;
-  console.error("  ✗ scenario threw:", (e as Error).stack ?? (e as Error).message);
+  console.error("  ✗ scenario threw:", e);
   console.log(`\nEXPIRY-RENEWAL SMOKE FAILED ❌  (${pass} passed, ${fail} failed)`);
   process.exitCode = 1;
 } finally {
-  for (const ep of [epA, epB]) { try { await ep?.stop(); } catch { /* */ } }
+  for (const ep of [epA, epA2, epB, epD]) { try { await ep?.stop(); } catch { /* */ } }
   for (const nc of [witnessNc, calloutNc]) { try { await nc?.close(); } catch { /* */ } }
   srv.kill("SIGKILL");
   await awaitExit(srv);

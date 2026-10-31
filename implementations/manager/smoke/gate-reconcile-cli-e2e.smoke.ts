@@ -138,7 +138,7 @@ const CLI_HOME = join(dir, "cli-home");
 interface Envelope {
   outcome?: string;
   target?: { condition?: string };
-  error?: { code?: string; cause?: { code?: string; detail?: unknown } };
+  error?: { code?: string; message?: string; remedy?: string; cause?: { code?: string; detail?: unknown } };
   result?: { kind?: string; holderPrincipal?: string; holdersVerifiedThisAttempt?: string[]; familyRows?: number; reopenedAtGeneration?: number };
 }
 
@@ -348,6 +348,9 @@ try {
     const r = reconcile();
     check("CLI (re-run): refuses `not-frozen` on the gate it just reopened — no second repair", r.code === 2 && r.envelope?.target?.condition === "not-frozen",
       { code: r.code, out: r.out.slice(-500), err: r.err.slice(-500) });
+    check("CLI (re-run): says the open gate has nothing to repair, and its Next says nothing is to be done",
+      /gate for instance \S+ is open, so there is nothing to repair$/.test(r.envelope?.error?.message ?? "") && r.envelope?.error?.remedy?.startsWith("nothing to do;") === true,
+      r.envelope?.error);
   }
 
   // ---- CELL 5: THE ORACLE MUST BE LOOKING AT THE RIGHT ACCOUNT --------------------------------
@@ -400,7 +403,7 @@ try {
   if (fail) process.exitCode = 1;
 } catch (e) {
   fail++;
-  console.error("  ✗ scenario threw:", (e as Error).stack ?? (e as Error).message);
+  console.error("  ✗ scenario threw:", e);
   process.exitCode = 1;
 } finally {
   for (const nc of [...holderConns, ...execConns]) { try { await nc?.close(); } catch { /* */ } }

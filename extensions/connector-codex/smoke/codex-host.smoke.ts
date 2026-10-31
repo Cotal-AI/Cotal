@@ -33,14 +33,13 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CotalEndpoint, seedChannelRegistry, isReachable, unicastSubject, parsePrincipalKey, type PresenceCondition } from "@cotal-ai/core";
 import { connect as rawConnect } from "@nats-io/transport-node";
-import { SMOKE_BROKER_TOKEN, awaitBrokerReady, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { skipSuite, SMOKE_BROKER_TOKEN, awaitBrokerReady, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 if (process.platform === "win32") {
   // Managed Codex agents are POSIX-only by design (the isolated CODEX_HOME symlinks the
-  // operator's auth.json — see docs/connect-codex.md), so there is no Windows Codex case in the
+  // operator's auth.json — see docs/connect-codex.mdx), so there is no Windows Codex case in the
   // suite at all. This skip records that limitation; it is not covered elsewhere.
-  console.log("SKIP codex host smoke — managed Codex agents are POSIX-only (symlinked auth.json)");
-  process.exit(0);
+  skipSuite("managed Codex agents are POSIX-only");
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -516,7 +515,7 @@ try {
   await waitFor("after-foreign turn", () => turnStarts().find((t) => t.includes("after-foreign")));
 
   // (7c) STANDALONE TUI TURN. Someone types in the TUI while nothing of ours is open, and a DM
-  // lands mid-turn. steerPending declines (we have no turn to steer into) so it buffers — and the
+  // lands mid-turn. steerPending declines (we have no connector-started turn) so it buffers — and the
   // foreign terminal is not our boundary, so nothing else is coming. The host must still pump at
   // that edge, or the message sits in the inbox until unrelated traffic happens to wake the loop.
   await sleep(300);
@@ -527,6 +526,17 @@ try {
     turnStarts().find((t) => t.includes("stranded-during-tui")),
   );
   check("a DM arriving during a standalone TUI turn is driven when that turn ends", pumped !== undefined, pumped);
+  check(
+    "automatic DM delivery does not steer an externally started turn",
+    !logEntries().some(
+      (e) =>
+        e.ev === "recv" &&
+        e.method === "turn/steer" &&
+        ((e.params?.input as { text?: string }[] | undefined) ?? []).some((i) =>
+          (i.text ?? "").includes("stranded-during-tui"),
+        ),
+    ),
+  );
   await sleep(500);
   await dm("after-solo");
   const tSolo = await waitFor("post-solo turn", () => turnStarts().find((t) => t.includes("after-solo")));
@@ -735,7 +745,7 @@ try {
   // private stdio pipe. The listener is what makes the real Codex TUI attachable to this very
   // thread; the capability token is what keeps other OS users and off-box callers from driving
   // the agent through it (the listener has no auth of its own). It is NOT a boundary against a
-  // same-uid sibling — see docs/connect-codex.md#limits.
+  // same-uid sibling — see docs/connect-codex.mdx#limits.
   const argvText = argv.join(" ");
   check("child argv: the app-server listens on a loopback websocket", argvText.includes("--listen ws://127.0.0.1:0"), argv);
   check(

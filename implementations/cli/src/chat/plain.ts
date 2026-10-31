@@ -6,13 +6,16 @@
  *
  * Interaction, one line at a time:
  *   - a line starting with `/` is a slash command (`//text` sends text that begins with `/`);
- *   - `:to` opens the numbered recipient choice;
+ *   - `:to` opens the numbered recipient choice, and `:to <target>` sets the recipient directly (a
+ *     target that does not parse is named and the choice opens);
  *   - any other line becomes the draft and is echoed back for confirmation: `y` sends, anything else
- *     (including empty) keeps it as the draft and sends nothing;
+ *     (including empty) keeps it as the draft and sends nothing; a slash command there runs and the
+ *     question is asked again;
+ *   - a new draft that replaces a kept one says so;
  *   - a multi-line message is entered with `:multi` and ended with a line holding only `.`;
  *   - end of input (Ctrl-D, or Ctrl-C and the other line-mode signals, which close the input) leaves;
- *     an unconfirmed draft is reported (length only) and never sent, because no further answer can
- *     be read after end of input. `/quit` with a draft asks first.
+ *     an unconfirmed draft or an unfinished `:multi` is reported (length only) and never sent,
+ *     because no further answer can be read after end of input. `/quit` with a draft asks first.
  *
  * Paste: a pasted block arrives as several lines. Outside `:multi` each line is a separate draft that
  * needs its own `y`, so a paste can never become several sends without several confirmations.
@@ -20,11 +23,13 @@
 import { createInterface } from "node:readline";
 import type { Readable, Writable } from "node:stream";
 import { oneLine } from "@cotal-ai/core";
+import { plainPunctuation } from "@cotal-ai/workspace";
 import type { AdmittedChatSession, SessionEvent } from "./session.js";
 import {
   addNotice,
   applyEvent,
   applyPublishResult,
+  endingNotice,
   headerRows,
   heardFrom,
   initialState,
@@ -39,7 +44,7 @@ import {
   type Recipient,
 } from "./view.js";
 import { closeSession, publish, runSlash } from "./controller.js";
-import { discloseChoice, listChoices, parseRecipient, type Choice } from "./picker.js";
+import { discloseChoice, listChoices, parseRecipient, refusedDm, type Choice } from "./picker.js";
 
 type Mode =
   | { readonly kind: "compose" }
@@ -70,7 +75,8 @@ export async function runPlain(opts: {
   let shared: ReadonlyMap<string, readonly string[]> = new Map();
   const unacked: string[] = [];
 
-  const print = (line: string): void => { output.write(`${line}\n`); };
+  // The rows are the terminal view's, so their punctuation is written in ASCII, as plain does.
+  const print = (line: string): void => { output.write(`${plainPunctuation(line)}\n`); };
   /** Print transcript entries that appeared since the last flush, then acknowledge shown messages. */
   const flush = (): void => {
     const total = state.dropped + state.transcript.length;
@@ -90,15 +96,18 @@ export async function runPlain(opts: {
   };
   const prompt = (): void => {
     switch (mode.kind) {
-      case "compose": print(`[to ${recipientLabel(state.recipient)}] type a message, /command, :to, :multi`); break;
+      case "compose": print(`[to ${recipientLabel(state.recipient, ":to")}] type a message, /command, :to, :multi`); break;
       case "confirm": print(`send to ${recipientLabel(mode.to)}? y = send, anything else = keep as draft`); break;
       case "multi": print("(multi-line: end with a line containing only .)"); break;
-      case "pick": mode.choices.forEach((c, i) => print(`  ${i + 1}. ${c.label}${c.detail ? ` - ${c.detail}` : ""}`)); print("choose a number, or type #channel / @name / @owner.actor / role:<role>; empty line cancels"); break;
+      case "pick": mode.choices.forEach((c, i) => print(`  ${i + 1}. ${c.label}${c.detail ? ` - ${c.detail}` : ""}`)); print("choose a number, or type #channel / @name / @owner.actor / role:<role>; empty line cancels, /quit leaves"); break;
       case "confirm-leave": print("you have an unsent draft. y = discard and leave, anything else = keep editing"); break;
     }
   };
 
-  for (const r of headerRows(state)) print(r.text);
+  for (const r of headerRows(state, ":to")) print(r.text);
+  // A session with a set end says so a minute before it.
+  const ending = endingNotice(state.identity);
+  const endingTimer = ending ? setTimeout(() => { state = addNotice(state, "waiting", ending.text); flush(); }, Math.max(0, ending.at - Date.now())) : undefined;
 
   const unsubscribe = session.subscribe((event: SessionEvent) => {
     if (event.type === "message") unacked.push(event.message.deliveryKey);
@@ -126,6 +135,13 @@ export async function runPlain(opts: {
   };
 
   const choose = async (r: Recipient): Promise<void> => {
+    // A typed name that reaches no one is refused when it is chosen, with the list to pick from,
+    // rather than after a send is confirmed.
+    const refused = await refusedDm(session, r);
+    if (refused) {
+      state = addNotice(state, "failed", refused);
+      return startPick();
+    }
     const warning = await discloseChoice(session, r);
     state = setRecipient(state, r);
     if (warning) state = addNotice(state, "waiting", warning);
@@ -134,12 +150,13 @@ export async function runPlain(opts: {
 
   const stage = (text: string): void => {
     const recipient = state.recipient;
+    const kept = state.draft && state.draft !== text.slice(0, MAX_DRAFT) ? [...state.draft].length : 0;
+    state = { ...state, draft: text.slice(0, MAX_DRAFT) };
+    if (kept) state = addNotice(state, "hint", `this replaces the kept draft (${kept} characters)`);
     if (!recipient) {
-      state = { ...state, draft: text.slice(0, MAX_DRAFT) };
       state = addNotice(state, "hint", "choose a recipient first (:to); your text is kept as the draft");
       return;
     }
-    state = { ...state, draft: text.slice(0, MAX_DRAFT) };
     mode = { kind: "confirm", to: recipient, text: state.draft };
   };
 
@@ -161,15 +178,28 @@ export async function runPlain(opts: {
   const handle = async (raw: string): Promise<void> => {
     const line = raw.replace(/\r$/, "");
     if (state.endedByEvent && mode.kind !== "confirm-leave") {
-      state = addNotice(state, "failed", "session ended; end input (Ctrl-D) to leave, then open a new session");
+      // An ended session takes only leaving, the way /quit leaves a live one.
+      const parsed = line.startsWith("/") ? parseSlash(line) : undefined;
+      if (parsed?.ok && parsed.command.name === "quit") return state.draft ? void (mode = { kind: "confirm-leave" }) : leave();
+      state = addNotice(state, "failed", "session ended; type /quit or end input (Ctrl-D) to leave, then open a new session");
       return;
     }
     switch (mode.kind) {
-      case "confirm":
-        if (line.trim().toLowerCase() === "y") await send(mode.to, mode.text);
+      case "confirm": {
+        const asked = mode;
+        if (line.startsWith("/") && !line.startsWith("//")) {
+          // A slash command at the question runs, as it does at the composer, and the question is
+          // asked again while the draft and its recipient are unchanged.
+          mode = { kind: "compose" };
+          await handle(line);
+          if ((mode as Mode).kind === "compose" && !state.endedByEvent && state.draft === asked.text && recipientLabel(state.recipient) === recipientLabel(asked.to)) mode = asked;
+          return;
+        }
+        if (line.trim().toLowerCase() === "y") await send(asked.to, asked.text);
         else state = addNotice(state, "hint", "not sent; kept as the draft (type it again or edit, then confirm)");
         mode = { kind: "compose" };
         return;
+      }
       case "multi":
         if (line === ".") {
           const text = mode.lines.join("\n");
@@ -186,6 +216,12 @@ export async function runPlain(opts: {
       case "pick": {
         const t = line.trim();
         if (!t) { mode = { kind: "compose" }; return; }
+        // /quit leaves from the list as it does from the composer.
+        const slash = t.startsWith("/") ? parseSlash(t) : undefined;
+        if (slash?.ok && slash.command.name === "quit") {
+          mode = state.draft ? { kind: "confirm-leave" } : { kind: "compose" };
+          return state.draft ? undefined : leave();
+        }
         const n = Number(t);
         if (Number.isInteger(n) && n >= 1 && n <= mode.choices.length) return choose(mode.choices[n - 1]!.recipient);
         const parsed = parseRecipient(t);
@@ -197,14 +233,22 @@ export async function runPlain(opts: {
         mode = { kind: "compose" };
         return;
       case "compose": {
-        if (line === ":to") return startPick();
+        const to = /^:to(?:\s+(.*))?$/.exec(line);
+        if (to) {
+          const target = to[1]?.trim();
+          if (!target) return startPick();
+          const parsed = parseRecipient(target);
+          if (parsed.ok) return choose(parsed.recipient);
+          state = addNotice(state, "failed", parsed.error);
+          return startPick();
+        }
         if (line === ":multi") { mode = { kind: "multi", lines: [] }; return; }
         if (line.startsWith("/") && !line.startsWith("//")) {
           const parsed = parseSlash(line);
           if (!parsed.ok) { state = addNotice(state, "failed", parsed.error); return; }
           if (parsed.command.name === "quit") return state.draft ? void (mode = { kind: "confirm-leave" }) : leave();
           if (state.connection !== "connected" && !runsOffline(parsed.command)) {
-            state = addNotice(state, "waiting", "not connected: only /reconnect, /connection, /whoami and /reply run now");
+            state = addNotice(state, "waiting", "not connected: only /reconnect, /connection, /whoami, /reply and /help run now");
             return;
           }
           const { state: next, ack } = await runSlash(session, state, parsed.command);
@@ -229,8 +273,12 @@ export async function runPlain(opts: {
     }
     // End of input with an unconfirmed draft: one explicit question would need more input, which
     // has ended; the draft is reported, not sent.
+    // `handle` reassigns the mode, which narrowing here does not see.
+    const last = mode as Mode;
+    if (!leaving && last.kind === "multi" && last.lines.length) print(`unfinished multi-line draft discarded at end of input (${last.lines.length} lines, ${[...last.lines.join("\n")].length} characters; content not repeated)`);
     if (!leaving && state.draft) print(`unsent draft discarded at end of input (${[...state.draft].length} characters; content not repeated)`);
   } finally {
+    clearTimeout(endingTimer);
     input.off("close", endOnClose);
     unsubscribe();
     rl.close();

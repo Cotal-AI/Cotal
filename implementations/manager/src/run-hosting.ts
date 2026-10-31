@@ -62,6 +62,13 @@ import {
   type RunSubmissionView, type RemoteRunSubmissionResult,
   readRunAdmission,
   revokeRunAdmission,
+  commitRunCancellation,
+  readRunCancelInput,
+  readCancellationAdmission,
+  runCancelCoordinates,
+  readRunCancellationStatus,
+  type RunCancelResult,
+  type RunCancelAuthority,
   readRunRevocation,
   type RunRevocation,
   withIssuerSession,
@@ -95,6 +102,7 @@ import {
   type RunStatusView,
   type SpaceAuth,
 } from "@cotal-ai/core";
+import { rejectionText } from "./rejection-text.js";
 
 /** What the host needs from the manager: its coordinates and its trust material. */
 export interface RunHostingContext {
@@ -132,6 +140,7 @@ export interface RunHostingContext {
     served?: string }) => Promise<{ driver: string; mediator: string }>;
   /** Issuing-host revoke under the authenticated holder, never the local by argument. */
   readonly revokeRun?: (args: { runId: string; reason: string }) => Promise<RunRevocation>;
+  readonly cancelRun?: (args: { stage: "inspect" | "commit"; subject: string; cancel: import("@cotal-ai/core").RunCancelInput }) => Promise<import("@cotal-ai/core").RemoteRunCancelResult>;
   /** Signerless host: one served read or answer's `run-operator` creds for a caller-held nkey (the
    *  callback combines the host JWT with the local seed, as `renewRun` does). */
   readonly issueOperator?: (args: { identity: Identity; takeoverId: string; runId?: string; answers?: { runId: string; stepKey: string; amend?: true };
@@ -159,6 +168,8 @@ interface HostedRun {
   nc?: NatsConnection;
   mediatorNc?: NatsConnection;
   drive?: RunHostDrive;
+  activated?: boolean;
+  outcome?: RunHostOutcome;
   /** The current credential, re-minted in place by the renewal loop; the authenticator reads it
    *  on every (re)connect. Undefined on an open mesh. */
   creds?: string;
@@ -170,12 +181,15 @@ interface HostedRun {
 const DEFAULT_CHECKPOINT_TIMEOUT = "1h";
 /** How many launches (start or resume) may be in their activation wait at once. Each holds a
  *  standing connection and a minted credential; past this a caller is refused `resource-exhausted`
- *  rather than letting a burst of starts pin unbounded connections for the wait's length. */
+ *  before anything is written, rather than letting a burst of starts pin unbounded connections for
+ *  the wait's length. */
 const MAX_LAUNCHING = 8;
 
 export class RunHosting {
   private readonly runs = new Map<string, HostedRun>();
-  private launching = 0;
+  private readonly cancellations = new Map<string, { runId: string; reason: string; observed: boolean; mayHaveDispatched: boolean }>();
+  /** The launches in their activation wait, each with its run id once one is known. */
+  private readonly launching = new Map<symbol, string | undefined>();
   private reconciled = false;
   private stopping = false;
 
@@ -231,18 +245,25 @@ export class RunHosting {
     // Minted here, never caller-supplied: the records table binds run-id minting to the driver.
     // 128 bits, the width the spec's other minted identifiers carry.
     const runId = `run-${randomBytes(16).toString("hex")}`;
-    const admission = await this.admit(ctx, runId);
-    await this.launch(host, {
-      mode: "new",
-      runId,
-      source: args.source,
-      ...(args.file !== undefined ? { file: args.file } : {}),
-      epoch: 1,
-      fencingToken: 1,
-      timeout: args.timeout ?? DEFAULT_CHECKPOINT_TIMEOUT,
-      admission,
-      placements,
-    });
+    // The launch slot is taken before the admission is written, so a start refused at the limit
+    // writes nothing.
+    const release = this.reserveLaunch(runId);
+    try {
+      const admission = await this.admit(ctx, runId);
+      await this.launch(host, {
+        mode: "new",
+        runId,
+        source: args.source,
+        ...(args.file !== undefined ? { file: args.file } : {}),
+        epoch: 1,
+        fencingToken: 1,
+        timeout: args.timeout ?? DEFAULT_CHECKPOINT_TIMEOUT,
+        admission,
+        placements,
+      }, undefined, release);
+    } finally {
+      release();
+    }
     return { runId };
   }
 
@@ -460,6 +481,196 @@ export class RunHosting {
     return await this.withOperator({ runId }, (planes) => readRunAdmission(planes.jsm, this.ctx.space, this.ctx.endpoint, runId));
   }
 
+  /** Input precedes serving/reconciliation for cancellation, unlike the keyed commands. */
+  validateCancellation(ctx: EpServeContext, raw: unknown): void {
+    runCancelCoordinates(ctx, this.ctx.instanceId);
+    readRunCancelInput(raw);
+  }
+
+  private cancelPending(runId: string): boolean {
+    return [...this.cancellations.values()].some(entry => entry.runId === runId);
+  }
+
+  private assertNoCancel(runId: string): void {
+    if (this.cancelPending(runId))
+      throw new EpEnvelopeError("failed-precondition", "a local cancellation is pending for this run", [{ kind: "ai.cotal.run.cancel-pending", runId }]);
+  }
+
+  private cancelEligible(slot: HostedRun, status: RunStatusValue | undefined): boolean {
+    return this.runs.get(slot.runId) === slot && (!slot.drive || !slot.activated
+      || (status?.holder === `${this.ctx.holder.id}.${slot.takeoverId}` && status.epoch === slot.epoch && status.fencingToken === slot.fencingToken));
+  }
+
+  private observeCancellation(runId: string): void {
+    for (const entry of this.cancellations.values()) if (entry.runId === runId) entry.observed = true;
+  }
+
+  private clearObservedCancellation(runId: string): void {
+    if (this.runs.has(runId)) return;
+    for (const [key, entry] of this.cancellations) if (entry.runId === runId && entry.observed) this.cancellations.delete(key);
+  }
+
+  /** A served cancellation reports local observations, never cross-host cessation or process cleanup. */
+  async cancel(ctx: EpServeContext, raw: unknown): Promise<RunCancelResult> {
+    const endsAt = runCancelCoordinates(ctx, this.ctx.instanceId);
+    const input = readRunCancelInput(raw);
+    this.assertReconciled();
+    if (this.stopping) throw new EpEnvelopeError("unavailable", "the manager is stopping");
+    const auth = this.ctx.auth;
+    const caller = ctx.subject.caller;
+    if ((!auth && !this.remote) || !isIssuedCaller(caller)) throw new EpEnvelopeError("permission-denied", "run-cancel request is not authorized");
+    if (this.remote && !this.ctx.cancelRun) throw new EpEnvelopeError("unimplemented", "the issuing host run-cancel door is not connected");
+    const budget = (): void => {
+      if (performance.now() >= endsAt) throw new EpEnvelopeError("deadline-exceeded", "run-cancel original request budget expired");
+    };
+    const subject = this.servedSubject(ctx);
+    let authority: RunCancelAuthority = "original";
+    const current = async (): Promise<void> => {
+      budget();
+      if (this.remote) {
+        const inspected = await this.ctx.cancelRun!({ stage: "inspect", subject, cancel: input });
+        if (inspected.stage !== "inspect" || inspected.runId !== input.runId) throw new EpEnvelopeError("unavailable", "invalid run-cancel inspection response");
+        authority = inspected.authority;
+        budget();
+        return;
+      }
+      await withIssuerSession({ servers: this.ctx.servers ?? DEFAULT_SERVER, space: this.ctx.space, auth: auth!, tls: false }, async session => {
+        const resolved = await session.store.resolve({ space: this.ctx.space, owner: caller.owner, actor: caller.actor, uid: caller.uid, generation: caller.generation }, session.sourceIsLive);
+        if (!importedIssuedPermitsSubject(resolved.evidence.permissions.publish, subject))
+          throw new EpEnvelopeError("permission-denied", "run-cancel request is not authorized");
+      });
+      budget();
+    };
+    await current();
+    // Cancellation reads records and admission after revocation, and also before a spec exists.
+    // Use the existing endpoint inventory reader: run-scoped issuance requires an unrevoked
+    // admission. This reader carries no answer writes and cancellation reads no run journal.
+    const read = <T>(fn: (planes: RunHostPlanes) => Promise<T>): Promise<T> => this.withOperator({}, fn);
+    const admission = await read(planes => readCancellationAdmission(planes.jsm, this.ctx.space, this.ctx.endpoint, input.runId));
+    budget();
+    const original = admission.admission.caller;
+    if (!this.remote && (original.owner !== caller.owner || original.actor !== caller.actor || original.uid !== caller.uid))
+      throw new EpEnvelopeError("permission-denied", "run-cancel request is not authorized");
+    const readStatus = async (): Promise<RunStatusValue | undefined> => {
+      budget();
+      try {
+        const status = await read(planes => readRunCancellationStatus(planes.jsm, this.ctx.space, this.ctx.endpoint, input.runId));
+        budget();
+        return status;
+      } catch (error) { budget(); throw error; }
+    };
+    let status = await readStatus();
+    let marker = admission.revoked;
+    let duplicate: boolean | null = marker !== undefined;
+    const reply = (phase: RunCancelResult["observed"]["phase"], driveOutcome?: RunHostOutcome): RunCancelResult => ({
+      runId: input.runId, authority, duplicate,
+      ...(marker ? { revocation: { by: marker.by, reason: marker.reason, revokedAt: marker.revokedAt } } : {}),
+      observed: { processEpoch: ctx.identity.epoch, phase,
+        ...(status ? { recordedState: status.state, holder: status.holder, runEpoch: status.epoch, fencingToken: status.fencingToken } : {}),
+        ...(driveOutcome ? { driveOutcome } : {}) },
+    });
+    if (status?.state === "completed" || status?.state === "failed") {
+      if (marker) {
+        this.observeCancellation(input.runId);
+        this.clearObservedCancellation(input.runId);
+      }
+      return reply("terminal");
+    }
+    const slot = this.runs.get(input.runId);
+    if ((!slot || !this.cancelEligible(slot, status)) && status?.state === "running") {
+      if (!marker) throw new EpEnvelopeError("failed-precondition", "run is not driven by this manager's current attempt");
+      this.observeCancellation(input.runId);
+      this.clearObservedCancellation(input.runId);
+      return reply("not-driven-here");
+    }
+    let intent = this.cancellations.get(subject);
+    if (intent && (intent.runId !== input.runId || intent.reason !== input.reason))
+      throw new EpEnvelopeError("permission-denied", "run-cancel request identity changed");
+    if (intent && !marker)
+      throw new EpEnvelopeError("deadline-exceeded", "run-cancel request remains pending; no second dispatch", undefined, "unknown");
+    if (!intent) {
+      intent = { ...input, observed: false, mayHaveDispatched: false };
+      this.cancellations.set(subject, intent);
+    }
+    if (!marker) {
+      try {
+        if (this.remote) {
+          budget();
+          const olderUnknown = intent.mayHaveDispatched;
+          intent.mayHaveDispatched = true;
+          const committed = await this.ctx.cancelRun!({ stage: "commit", subject, cancel: input });
+          if (committed.stage !== "commit" || committed.runId !== input.runId) throw new EpEnvelopeError("unavailable", "invalid run-cancel commit response");
+          if (committed.result.kind !== "committed") {
+            // A no-dispatch response cannot erase ambiguity from an older call or issuer lifetime.
+            if (committed.result.kind === "refused-before-dispatch" && !olderUnknown) intent.mayHaveDispatched = false;
+            throw new EpEnvelopeError(committed.result.code, "run-cancel issuer did not establish a marker",
+              undefined, committed.result.kind === "outcome-unknown" ? "unknown" : "not-executed");
+          }
+          duplicate = committed.result.outcome === "existed";
+          marker = committed.result.revocation;
+        } else {
+          let created: RunRevocation | undefined;
+          const outcome = await this.withAdmitter(input.runId, async kv => {
+            await current();
+            created = { version: 1, runId: input.runId, by: `${caller.owner}.${caller.actor}`, reason: input.reason, revokedAt: Date.now() };
+            return commitRunCancellation(kv, this.ctx.endpoint, created, () => {
+              budget();
+              intent!.mayHaveDispatched = true;
+            });
+          });
+          duplicate = outcome === "existed";
+          marker = outcome === "created" ? created
+            : await read(planes => readRunRevocation(planes.jsm, this.ctx.space, this.ctx.endpoint, input.runId));
+          if (!marker) throw new EpEnvelopeError("unavailable", "run-cancel marker is not yet observed");
+        }
+      } catch (error) {
+        if (performance.now() < endsAt) {
+          try { marker = await read(planes => readRunRevocation(planes.jsm, this.ctx.space, this.ctx.endpoint, input.runId)); }
+          catch { /* Unknown reads preserve the pending intent. */ }
+        }
+        if (marker) duplicate = null;
+        else {
+          // A prior possible dispatch is sticky, including across another invocation of this key.
+          if (!intent.mayHaveDispatched && performance.now() < endsAt) {
+            try {
+              const absent = await read(planes => readRunRevocation(planes.jsm, this.ctx.space, this.ctx.endpoint, input.runId));
+              if (!absent && this.cancellations.get(subject) === intent) this.cancellations.delete(subject);
+            } catch { /* No absence proof. */ }
+          }
+          if (intent.mayHaveDispatched) throw new EpEnvelopeError("deadline-exceeded", "run-cancel write outcome is unknown", undefined, "unknown");
+          throw error;
+        }
+      }
+    }
+    this.observeCancellation(input.runId);
+    if (slot?.outcome) {
+      this.clearObservedCancellation(input.runId);
+      return reply("stopped", slot.outcome);
+    }
+    if (!slot || this.runs.get(input.runId) !== slot) {
+      this.clearObservedCancellation(input.runId);
+      return reply(slot && !slot.drive ? "launch-abandoned" : "not-driven-here");
+    }
+    // A preactivation slot may have activated while the marker was being written. Re-observe
+    // before selecting its handle; an old holder observation cannot stop a superseded attempt.
+    if (slot.activated) status = await readStatus();
+    if (slot.outcome) {
+      this.clearObservedCancellation(input.runId);
+      return reply("stopped", slot.outcome);
+    }
+    if (!this.cancelEligible(slot, status)) return reply("not-driven-here");
+    if (slot.drive) slot.drive.cancel(input.reason);
+    while (performance.now() < endsAt) {
+      if (slot.outcome) { this.clearObservedCancellation(input.runId); return reply("stopped", slot.outcome); }
+      if (this.runs.get(input.runId) !== slot && !slot.drive) {
+        this.clearObservedCancellation(input.runId);
+        return reply("launch-abandoned");
+      }
+      await new Promise(resolve => setTimeout(resolve, Math.min(25, Math.max(1, endsAt - performance.now()))));
+    }
+    return reply("stop-requested");
+  }
+
   /** Revoke a hosted run (SPEC 14.8): the marker is create-only and independent of the immutable
    *  admission; every later channel effect of the run refuses on reading it, and a drive parked in
    *  a wait ends within one poll. Idempotent. */
@@ -493,11 +704,16 @@ export class RunHosting {
         // re-admits under the resuming caller, and a revoked run is not continued.
         const admission = await readRunAdmission(planes.jsm, this.ctx.space, this.ctx.endpoint, args.runId);
         if (admission.revoked !== undefined)
-          throw new EpEnvelopeError("permission-denied", `run ${args.runId} was revoked by ${admission.revoked.by} (${admission.revoked.reason}); a revoked run is not resumed (SPEC 14.8)`);
+          throw new EpEnvelopeError("permission-denied", `run ${args.runId} was revoked by ${admission.revoked.by} (${admission.revoked.reason}); a revoked run is not resumed`);
         return { status: record.status?.value, program, admission };
       });
       if (found === undefined)
         throw new EpEnvelopeError("not-found", `run ${args.runId}: no record on endpoint ${this.ctx.endpoint}; a run that was never started cannot be resumed`);
+      // A completed or failed run's journal already holds its outcome. Driving it again would only
+      // replay that outcome under a new epoch and holder, as the boot reconcile never does.
+      const state = found.status?.state;
+      if (state === "completed" || state === "failed")
+        throw new EpEnvelopeError("failed-precondition", `run ${args.runId} ${state === "completed" ? "is already completed" : "has already failed"}, so there is nothing to resume; a resume continues a run that is running or released`);
       if (found.program === undefined)
         throw new EpEnvelopeError("failed-precondition", `run ${args.runId}: no program is recorded for it, so a hosted resume has no source to run; drive it from a terminal with \`cotal run resume ${args.runId} --local --file <program>\``);
       const verdict = host.validate(found.program.source, found.program.file);
@@ -548,7 +764,7 @@ export class RunHosting {
       // The resolver's own refusal is a fact about the run, worded for the caller: no open
       // checkpoint at that key is `not-found`; the plane's own envelope errors pass through.
       if (e instanceof EpEnvelopeError) throw e;
-      if ((e as { name?: string }).name === "CheckpointNotOpen") throw new EpEnvelopeError("not-found", (e as Error).message);
+      if (e instanceof Error && e.name === "CheckpointNotOpen") throw new EpEnvelopeError("not-found", e.message);
       throw e;
     }
     await authorize?.(open);
@@ -582,7 +798,7 @@ export class RunHosting {
         host.locateAccepted(planes, { endpoint, runId: args.runId, takeoverId, stepKey: args.stepKey }));
     } catch (e) {
       if (e instanceof EpEnvelopeError) throw e;
-      if ((e as { name?: string }).name === "CheckpointNotAmendable") throw new EpEnvelopeError("not-found", (e as Error).message);
+      if (e instanceof Error && e.name === "CheckpointNotAmendable") throw new EpEnvelopeError("not-found", e.message);
       throw e;
     }
     await authorize?.(accepted);
@@ -597,12 +813,14 @@ export class RunHosting {
       }));
   }
 
-  /** `run-status`: the record plus the journal view. */
-  async status(args: { runId: string; endpoint?: string }): Promise<RunStatusView> {
+  /** `run-status`: the record plus the journal view, or one page of it with `journal`. */
+  async status(args: { runId: string; endpoint?: string; journal?: { offset: number } }, ctx?: EpServeContext): Promise<RunStatusView> {
     const host = this.host();
     const endpoint = args.endpoint ?? this.ctx.endpoint;
+    if (args.journal !== undefined && ctx?.replyFits === undefined) throw new EpEnvelopeError("failed-precondition", "this serving path cannot measure a journal page");
+    const context = ctx?.replyFits === undefined ? undefined : { replyFits: ctx.replyFits };
     const view = await this.withOperator({ endpoint, runId: args.runId }, (planes, _kv, takeoverId) =>
-      host.status(planes, { endpoint, runId: args.runId, takeoverId }));
+      host.status(planes, { endpoint, runId: args.runId, takeoverId, ...(args.journal !== undefined ? { journal: args.journal } : {}) }, context));
     if (view === undefined) throw new EpEnvelopeError("not-found", `run ${args.runId}: no record on endpoint ${endpoint}`);
     return view;
   }
@@ -662,7 +880,7 @@ export class RunHosting {
           try {
             admission = await readRunAdmission(planes.jsm, this.ctx.space, this.ctx.endpoint, runId);
           } catch (e) {
-            this.ctx.log(`! run ${runId} stays parked: ${(e as Error).message}`);
+            this.ctx.log(`! run ${runId} stays parked: ${rejectionText(e)}`);
             continue;
           }
           if (admission.revoked !== undefined) {
@@ -674,7 +892,7 @@ export class RunHosting {
         return out;
       });
     } catch (e) {
-      this.ctx.log(`! workflow-run boot reconcile failed: ${(e as Error).message} - runs a predecessor was driving stay parked until the next restart or a \`cotal run resume <runId>\``);
+      this.ctx.log(`! workflow-run boot reconcile failed: ${rejectionText(e)} - runs a predecessor was driving stay parked until the next restart or a \`cotal run resume <runId>\``);
       return;
     }
     if (inherited.length === 0) return;
@@ -686,7 +904,7 @@ export class RunHosting {
         if ((verdict.placements?.length ?? 0) > 1) throw new Error("its placed spawns name more than one manager instance");
         await this.launch(host, { mode: "existing", runId: r.runId, source: r.source, ...(r.file !== undefined ? { file: r.file } : {}), epoch: r.epoch, fencingToken: r.fencingToken, timeout: DEFAULT_CHECKPOINT_TIMEOUT, admission: r.admission, placements: verdict.placements ?? [] });
       } catch (e) {
-        this.ctx.log(`! run ${r.runId} could not be taken back: ${(e as Error).message}`);
+        this.ctx.log(`! run ${r.runId} could not be taken back: ${rejectionText(e)}`);
       }
     }
     this.ctx.log(`workflow-run boot reconcile: took back ${inherited.length} run(s) recorded running`);
@@ -709,14 +927,14 @@ export class RunHosting {
         try {
           run.creds = await mintCreds(auth, run.identity, "run-driver", { runDriver: pin });
         } catch (e) {
-          this.ctx.log(`! run-driver renewal for ${run.runId}: ${(e as Error).message}`);
+          this.ctx.log(`! run-driver renewal for ${run.runId}: ${rejectionText(e)}`);
         }
       }
       if (run.mediatorCreds !== undefined && inspectCredHealth(run.mediatorCreds).state !== "healthy") {
         try {
           run.mediatorCreds = await mintCreds(auth, run.mediatorIdentity, "run-mediator", { runMediator: pin });
         } catch (e) {
-          this.ctx.log(`! run-mediator renewal for ${run.runId}: ${(e as Error).message}`);
+          this.ctx.log(`! run-mediator renewal for ${run.runId}: ${rejectionText(e)}`);
         }
       }
     }
@@ -756,8 +974,9 @@ export class RunHosting {
           run.mediatorNc?.reconnect().catch(() => {}),
         ]);
       } catch (e) {
-        run.renewalDebt = { at: Date.now(), reason: (e as Error).message };
-        this.ctx.log(`! run-driver/mediator renewal for ${run.runId}: ${(e as Error).message} - last-good kept, nothing minted locally`);
+        const reason = rejectionText(e);
+        run.renewalDebt = { at: Date.now(), reason };
+        this.ctx.log(`! run-driver/mediator renewal for ${run.runId}: ${reason} - last-good kept, nothing minted locally`);
       }
     }
   }
@@ -800,6 +1019,7 @@ export class RunHosting {
    *  between the check and the set. A held slot is a conflict for every later claimant until the
    *  attempt that holds it ends. */
   private claim(runId: string, placements: readonly { endpoint: string; instanceId: string }[] = []): HostedRun {
+    this.assertNoCancel(runId);
     if (this.runs.has(runId)) throw new EpEnvelopeError("conflict", `run ${runId} is being driven by this manager already`);
     const takeoverId = newTakeoverId();
     const slot: HostedRun = { runId, takeoverId, epoch: 0, identity: newIdentity(), mediatorIdentity: newIdentity(), placements };
@@ -811,6 +1031,7 @@ export class RunHosting {
    *  entry and is never removed by an earlier one's end. */
   private free(slot: HostedRun): void {
     if (this.runs.get(slot.runId) === slot) this.runs.delete(slot.runId);
+    this.clearObservedCancellation(slot.runId);
   }
 
   /** Launch one attempt on a slot. The slot is claimed here when the caller has not already
@@ -826,7 +1047,7 @@ export class RunHosting {
     let release = reserved;
     try {
       if (this.stopping) throw new EpEnvelopeError("unavailable", "the manager is stopping and hosts no new drives");
-      release ??= this.reserveLaunch();
+      release ??= this.reserveLaunch(req.runId);
       await this.drive(host, req, slot);
     } catch (e) {
       // A slot whose drive never started is freed here; one whose drive exists is freed by that
@@ -838,14 +1059,20 @@ export class RunHosting {
     }
   }
 
-  /** Take one launching unit, or refuse while stopping or at MAX_LAUNCHING. The release is idempotent. */
-  private reserveLaunch(): () => void {
+  /** Take one launching unit, or refuse while stopping or at MAX_LAUNCHING. The refusal names the
+   *  runs holding the units and is `not-executed`, because it comes before any write. The release
+   *  is idempotent. */
+  private reserveLaunch(runId?: string): () => void {
     if (this.stopping) throw new EpEnvelopeError("unavailable", "the manager is stopping and hosts no new drives");
-    if (this.launching >= MAX_LAUNCHING)
-      throw new EpEnvelopeError("resource-exhausted", `${MAX_LAUNCHING} workflow runs are launching on this manager already; retry once one has activated`);
-    this.launching += 1;
-    let held = true;
-    return () => { if (held) { held = false; this.launching -= 1; } };
+    if (this.launching.size >= MAX_LAUNCHING) {
+      const holding = [...this.launching.values()].filter((id): id is string => id !== undefined);
+      throw new EpEnvelopeError("resource-exhausted",
+        `${MAX_LAUNCHING} workflow runs are activating on this manager already, the most it activates at once${holding.length ? ` (${holding.join(", ")})` : ""}; nothing was written`,
+        undefined, "not-executed");
+    }
+    const unit = Symbol("launch");
+    this.launching.set(unit, runId);
+    return () => { this.launching.delete(unit); };
   }
 
   private async drive(
@@ -900,6 +1127,7 @@ export class RunHosting {
       // Checked AFTER the last await before the drive starts: a stop that landed during the
       // connect has already cleared the live map, and a drive started now would be nobody's.
       if (this.stopping) throw new EpEnvelopeError("unavailable", "the manager is stopping and hosts no new drives");
+      this.assertNoCancel(req.runId);
     } catch (e) {
       await mediatorNc?.close();
       await nc.drain().catch(() => nc.close());
@@ -922,8 +1150,13 @@ export class RunHosting {
         epoch: req.epoch,
         defaultCheckpointTimeout: req.timeout,
         admission: req.admission,
+        cancellationObserved: () => this.runs.get(req.runId) === holder
+          ? [...this.cancellations.values()].find(entry => entry.runId === req.runId && entry.observed)?.reason
+          : undefined,
         // The broker's own max_payload, minus headroom for the record envelope around the entry.
         ...(typeof max === "number" && max > 4096 ? { resultBytes: max - 4096 } : {}),
+        // The program's log lines are not journalled; this process's log is where they are read.
+        onLog: (text) => this.ctx.log(`run ${req.runId}: log ${text}`),
       }, mediator);
     } catch (error) {
       await nc.close();
@@ -933,8 +1166,10 @@ export class RunHosting {
     holder.nc = nc;
     holder.mediatorNc = mediatorNc;
     holder.drive = drive;
-    const activation = this.activated(mediator.kv, req, drive);
+    holder.activated = false;
+    const activation = this.activated(mediator.kv, req, drive).then(() => { holder.activated = true; });
     void drive.done.then(async (out) => {
+      holder.outcome = out;
       this.ctx.log(`run ${req.runId}: ${describeOutcome(out)}`);
       this.free(holder);
       // The activation wait reads the record over this connection; it finishes before the drain.
@@ -949,7 +1184,7 @@ export class RunHosting {
       // nobody's word on it: it is released, and a drive that reaches no boundary within a
       // moment has its connection closed under it, the same way a stop treats a parked drive.
       // Its own end then frees the slot.
-      drive.release(`the hosting manager gave up waiting for its activation: ${(e as Error).message}`);
+      drive.release(`the hosting manager gave up waiting for its activation: ${rejectionText(e)}`);
       const reached = await Promise.race([drive.done.then(() => true), new Promise<false>((r) => setTimeout(() => r(false), 2_000))]);
       if (!reached) {
         await nc.close();
@@ -979,7 +1214,7 @@ export class RunHosting {
         );
       }
       if (Date.now() > deadline)
-        throw new EpEnvelopeError("unavailable", `run ${req.runId}: its drive has not activated after ${RUN_ACTIVATION_WAIT_MS / 1000}s and was released; \`cotal run ps\` shows what it recorded, and a \`cotal run resume ${req.runId}\` tries again`);
+        throw new EpEnvelopeError("unavailable", `run ${req.runId}: its drive has not activated after ${RUN_ACTIVATION_WAIT_MS / 1000}s and was released; \`cotal run\` shows what it recorded, and a \`cotal run resume ${req.runId}\` tries again`);
     }
   }
 

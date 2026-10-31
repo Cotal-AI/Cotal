@@ -1,21 +1,25 @@
 import { findCommand, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
-import { jsonFlag, writeResult } from "@cotal-ai/workspace";
+import { jsonFlag, paintFor, writeResult } from "@cotal-ai/workspace";
 import { commandSurface } from "../ext-loader.js";
 import { printCommandList, printHelpPath } from "../help.js";
+import { unknownCommandMessage } from "../lib/nearest-word.js";
 import { cliVersion, extensionVersions, readExtensionVersions } from "../lib/version.js";
+import { managerServiceCommand } from "./manager-service.js";
 
-export const helpFlags = [{ name: "all", type: "boolean", description: "also list hidden commands" }] as const;
+/** `--all`, the older way to ask for every command, which help now always lists. It is accepted and
+ *  changes nothing, and neither help nor completion offers it. */
+export const helpFlags = [{ name: "all", type: "boolean", description: "accepted for scripts written before help listed every command; it changes nothing" }] as const;
 
-/** `cotal help [command…] [--all]`: the command list, or the help of the command the words name.
- *  The words are literal nesting: a command (or its alias), then one of its subcommands. */
+/** `cotal help [command…]`: every command, or the help of the command the words name. The words
+ *  are literal nesting: a command (or its alias), then one of its subcommands. A manager lifecycle
+ *  verb is read as the dispatcher reads it, so its help is the one `--help` prints. */
 export async function help(args: ParsedArgs): Promise<void> {
-  const values = args.values as FlagValues<typeof helpFlags>;
   const [word, ...path] = args.positionals;
   const commands = commandSurface();
-  if (word === undefined) return printCommandList(commands, values.all === true);
+  if (word === undefined) return paintFor(process.stdout, () => printCommandList(commands));
   const cmd = findCommand(commands, word);
-  if (!cmd || cmd.name.startsWith("__")) throw new Error(`unknown command: ${word} - run \`cotal help\` to list commands`);
-  printHelpPath(cmd, path);
+  if (!cmd || cmd.name.startsWith("__")) throw new Error(unknownCommandMessage(commands, word));
+  paintFor(process.stdout, () => printHelpPath(managerServiceCommand(cmd, path)?.cmd ?? cmd, path));
 }
 
 export const versionFlags = [jsonFlag] as const;

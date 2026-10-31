@@ -40,10 +40,30 @@
     {
       "name": "transient CLI endpoints stop subscribing to recoverable warnings",
       "file": "implementations/cli/src/lib/transient.ts",
-      "find": "  ep.on(\"warning\", (e: Error) => report(\"warning\", e));",
-      "replace": "  void ep;",
+      "find": "      attempt.on(\"warning\", (e: Error) => { if (opened) report(\"warning\", e); else held.push([\"warning\", e]); });",
+      "replace": "      void attempt;",
       "cell": "transient CLI commands surface endpoint warnings",
       "expectRed": "transient CLI commands surface endpoint warnings",
+      "command": "pnpm --filter @cotal-ai/cli --filter @cotal-ai/manager --filter @cotal-ai/web --filter @cotal-ai/delivery build && pnpm exec tsx bin/smoke/endpoint-warning-consumers.smoke.ts",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "transient stream probe loses its explicit warning disposition",
+      "file": "implementations/cli/src/lib/transient.ts",
+      "find": "    probe.on(\"warning\", () => {});",
+      "replace": "    void probe;",
+      "cell": "transient stream probe deliberately ignores recoverable side-channel warnings",
+      "expectRed": "transient stream probe deliberately ignores recoverable side-channel warnings",
+      "command": "pnpm --filter @cotal-ai/cli --filter @cotal-ai/manager --filter @cotal-ai/web --filter @cotal-ai/delivery build && pnpm exec tsx bin/smoke/endpoint-warning-consumers.smoke.ts",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "broker store probe loses its explicit warning disposition",
+      "file": "implementations/cli/src/lib/broker-store-health.ts",
+      "find": "    ep.on(\"warning\", () => {});",
+      "replace": "    void ep;",
+      "cell": "broker store probe deliberately ignores recoverable side-channel warnings",
+      "expectRed": "broker store probe deliberately ignores recoverable side-channel warnings",
       "command": "pnpm --filter @cotal-ai/cli --filter @cotal-ai/manager --filter @cotal-ai/web --filter @cotal-ai/delivery build && pnpm exec tsx bin/smoke/endpoint-warning-consumers.smoke.ts",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
     },
@@ -70,8 +90,8 @@
     {
       "name": "join session stops subscribing to recoverable warnings",
       "file": "implementations/cli/src/commands/join.ts",
-      "find": "  ep.on(\"warning\", (e: Error) => print(c.yellow(`! ${e.message}`)));",
-      "replace": "  void print;",
+      "find": "  ep.on(\"warning\", (e: Error) => {",
+      "replace": "  ep.on(\"unobserved-warning\", (e: Error) => {",
       "cell": "join session surfaces recoverable warnings through prompt-safe output",
       "expectRed": "join session surfaces recoverable warnings through prompt-safe output",
       "command": "pnpm --filter @cotal-ai/cli --filter @cotal-ai/manager --filter @cotal-ai/web --filter @cotal-ai/delivery build && pnpm exec tsx bin/smoke/endpoint-warning-consumers.smoke.ts",
@@ -109,9 +129,9 @@
     },
     {
       "name": "app identity provisioner loses its explicit warning disposition",
-      "file": "implementations/cli/src/commands/app-identity.ts",
-      "find": "  prov.on(\"warning\", ignoreProvisionerWarning);",
-      "replace": "  void ignoreProvisionerWarning;",
+      "file": "implementations/cli/src/lib/app-user-identity.ts",
+      "find": "      provisioner.on(\"warning\", () => {});",
+      "replace": "      void provisioner;",
       "cell": "app identity provisioner deliberately ignores recoverable side-channel warnings",
       "expectRed": "app identity provisioner deliberately ignores recoverable side-channel warnings",
       "command": "pnpm --filter @cotal-ai/cli --filter @cotal-ai/manager --filter @cotal-ai/web --filter @cotal-ai/delivery build && pnpm exec tsx bin/smoke/endpoint-warning-consumers.smoke.ts",
@@ -150,7 +170,7 @@
     {
       "name": "plain console stops subscribing to MeshView warnings",
       "file": "implementations/cli/src/render.ts",
-      "find": "  view.on(\"warning\", (e: Error) => console.error(c.yellow(\"! \" + e.message)));",
+      "find": "  view.on(\"warning\", (e: Error) => report(c.yellow(\"! \" + oneLine(e.message))));",
       "replace": "  void view;",
       "cell": "plain console renders MeshView warnings",
       "expectRed": "plain console renders MeshView warnings",

@@ -99,6 +99,183 @@ if (process.platform !== "win32") {
 
     // Clear the short list cache before changing the stub's response contract.
     orca.closeTerminal("term_rotated");
+
+    const stateFile = join(stubDir, "orca-state.json");
+    const callLogFile = join(stubDir, "orca-calls.log");
+    const fakeWorktree = join(stubDir, "worktree");
+    mkdirSync(fakeWorktree, { recursive: true, mode: 0o700 });
+    writeFileSync(
+      stub,
+      `#!/usr/bin/env node
+const fs = require("node:fs");
+const args = process.argv.slice(2);
+const state = JSON.parse(fs.readFileSync(${JSON.stringify(stateFile)}, "utf8"));
+fs.appendFileSync(${JSON.stringify(callLogFile)}, JSON.stringify(args) + "\\n");
+const sub = args.slice(0, 2).join(" ");
+let env;
+if (args[0] === "status") env = { ok: true, result: { runtime: { reachable: true } } };
+else if (sub === "worktree current") env = { ok: true, result: { worktree: { id: "wt_smoke", path: ${JSON.stringify(fakeWorktree)} } } };
+else if (sub === "terminal create") env = { ok: true, result: state.create };
+else if (sub === "terminal list") env = { ok: true, result: { terminals: state.terminals } };
+else if (sub === "terminal show") env = state.show;
+else if (sub === "terminal wait") env = state.wait;
+else if (sub === "terminal send") env = state.send ?? { ok: true, result: {} };
+else if (sub === "terminal close") env = { ok: true, result: {} };
+else env = { ok: false, error: { code: "unexpected", message: sub } };
+process.stdout.write(JSON.stringify(env));
+process.exit(env.ok === false ? 1 : 0);
+`,
+      { mode: 0o700 },
+    );
+    const drainCalls = (): string[] => {
+      const text = existsSync(callLogFile) ? readFileSync(callLogFile, "utf8") : "";
+      writeFileSync(callLogFile, "");
+      return text
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => {
+          const parsed = JSON.parse(line) as string[];
+          const idx = parsed.indexOf("--terminal");
+          return parsed.slice(0, 2).join(" ") + (idx >= 0 ? ` ${parsed[idx + 1]}` : "");
+        });
+    };
+    const gone = (code: string) => ({ ok: false, error: { code, message: code } });
+    const okTerminal = { ok: true, result: { terminal: { handle: "h1", ptyId: "p1", connected: true } } };
+    const okNoTerminal = { ok: true, result: {} };
+    const waitRunning = { ok: true, result: { wait: { condition: "exit", satisfied: false, status: "running" } } };
+    const agreementCases = [
+      {
+        name: "listed connected terminal with non-exited wait stays running on both paths",
+        create: { terminal: { handle: "h1", ptyId: "p1", connected: true } },
+        terminals: [{ handle: "h1", ptyId: "p1", connected: true }],
+        show: okTerminal,
+        wait: waitRunning,
+        statusBefore: "running",
+        waitResolved: false,
+        waitError: "orca terminal wait returned no authoritative exit for h1",
+        statusCalls: ["terminal list"],
+        waitCalls: ["terminal wait h1"],
+        statusAfter: "running",
+      },
+      {
+        name: "unlisted ptyId with not_found wait resolves exited without calling terminal show",
+        create: { terminal: { handle: "h1", ptyId: "p1", connected: true } },
+        terminals: [],
+        show: gone("terminal_not_found"),
+        wait: gone("terminal_not_found"),
+        statusBefore: "exited",
+        waitResolved: true,
+        waitError: "",
+        statusCalls: ["terminal list"],
+        waitCalls: ["terminal wait h1", "terminal list"],
+        statusAfter: "exited",
+      },
+      {
+        name: "unlisted ptyId ignores stale handle show ok with terminal and agrees on exited",
+        create: { terminal: { handle: "h1", ptyId: "p1", connected: true } },
+        terminals: [],
+        show: okTerminal,
+        wait: gone("terminal_stale"),
+        statusBefore: "exited",
+        waitResolved: true,
+        waitError: "",
+        statusCalls: ["terminal list"],
+        waitCalls: ["terminal wait h1", "terminal list"],
+        statusAfter: "exited",
+      },
+      {
+        name: "unlisted ptyId ignores show ok with no terminal and agrees on exited",
+        create: { terminal: { handle: "h1", ptyId: "p1", connected: true } },
+        terminals: [],
+        show: okNoTerminal,
+        wait: gone("terminal_stale"),
+        statusBefore: "exited",
+        waitResolved: true,
+        waitError: "",
+        statusCalls: ["terminal list"],
+        waitCalls: ["terminal wait h1", "terminal list"],
+        statusAfter: "exited",
+      },
+      {
+        name: "handle-only terminal rejects show ok with no terminal on both lookup paths",
+        create: { handle: "h1" },
+        terminals: [],
+        show: okNoTerminal,
+        wait: gone("terminal_not_found"),
+        statusBefore: "running",
+        waitResolved: false,
+        waitError: "orca terminal show returned no authoritative state for h1",
+        statusCalls: ["terminal list", "terminal show h1"],
+        waitCalls: ["terminal wait h1", "terminal list", "terminal show h1"],
+        statusAfter: "running",
+      },
+    ];
+    for (const c of agreementCases) {
+      writeFileSync(
+        stateFile,
+        JSON.stringify({
+          create: c.create,
+          terminals: c.terminals,
+          show: c.show,
+          wait: c.wait,
+        }),
+      );
+      orca.closeTerminal("h1");
+      const spawned = new OrcaRuntime().spawn("seat_agreement", { command: process.execPath, args: ["-e", ""] }, fakeWorktree);
+      drainCalls();
+      const statusBefore = spawned.status();
+      const statusCalls = drainCalls();
+      let waitResolved = false;
+      let waitError = "";
+      try {
+        await spawned.waitForExit!();
+        waitResolved = true;
+      } catch (err) {
+        waitError = (err as Error).message;
+      }
+      const waitCalls = drainCalls();
+      orca.closeTerminal("h1");
+      drainCalls();
+      const statusAfter = spawned.status();
+      drainCalls();
+      ok(
+        c.name,
+        statusBefore === c.statusBefore &&
+          waitResolved === c.waitResolved &&
+          waitError === c.waitError &&
+          JSON.stringify(statusCalls) === JSON.stringify(c.statusCalls) &&
+          JSON.stringify(waitCalls) === JSON.stringify(c.waitCalls) &&
+          statusAfter === c.statusAfter &&
+          !(waitResolved && statusAfter === "running"),
+        JSON.stringify({ statusBefore, statusCalls, waitResolved, waitError, waitCalls, statusAfter }),
+      );
+    }
+    orca.closeTerminal("h1");
+    await rejects(
+      "currentTerminal rejects show ok with no terminal for a handle-only terminal",
+      async () => orca.currentTerminal({ handle: "h1" }),
+      /orca terminal show returned no authoritative state for h1/,
+    );
+    writeFileSync(
+      stateFile,
+      JSON.stringify({
+        create: { terminal: { handle: "h1", ptyId: "p1", connected: true } },
+        terminals: [{ handle: "h1", ptyId: "p1", connected: true }],
+        show: okTerminal,
+        wait: waitRunning,
+        send: gone("terminal_not_writable"),
+      }),
+    );
+    orca.closeTerminal("h1");
+    const interruptHandle = new OrcaRuntime().spawn("seat_interrupt", { command: process.execPath, args: ["-e", ""] }, fakeWorktree);
+    let notWritableThrew = false;
+    try {
+      interruptHandle.interrupt();
+    } catch {
+      notWritableThrew = true;
+    }
+    ok("interrupt ignores not_writable alongside gone terminal codes", !notWritableThrew);
+
     const waitList = '{ ok: true, result: { terminals: [{ handle: "term_wait", ptyId: "pty_wait", connected: true }] } }';
     writeFileSync(
       stub,
@@ -194,6 +371,146 @@ else { process.stderr.write("Orca runtime unavailable"); process.exit(2); }
       diagnostic = (err as Error).message;
     }
     ok("non-envelope failures preserve stderr diagnostics", diagnostic.includes("useful Orca diagnostic"), diagnostic);
+
+    const payloadFile = join(stubDir, "read-payload.json");
+    const callLog = join(stubDir, "read-calls.log");
+    writeFileSync(
+      stub,
+      `#!/usr/bin/env node
+const fs = require("node:fs");
+const args = process.argv.slice(2);
+fs.appendFileSync(${JSON.stringify(callLog)}, args.join(" ") + "\\n");
+if (args[0] === "status") process.stdout.write(JSON.stringify({ ok: true, result: { runtime: { reachable: true } } }));
+else if (args[0] === "worktree" && args[1] === "current") process.stdout.write(JSON.stringify({ ok: true, result: { worktree: { id: "wt_read", path: ${JSON.stringify(stubDir)} } } }));
+else if (args[0] === "terminal" && args[1] === "create") process.stdout.write(JSON.stringify({ ok: true, result: { terminal: { handle: "term_1", ptyId: "pty_read", connected: true } } }));
+else if (args[0] === "terminal" && args[1] === "list") process.stdout.write(JSON.stringify({ ok: true, result: { terminals: [{ handle: "term_1", ptyId: "pty_read", connected: true }] } }));
+else if (args[0] === "terminal" && args[1] === "read") {
+  const raw = fs.readFileSync(${JSON.stringify(payloadFile)}, "utf8");
+  const parsed = JSON.parse(raw);
+  process.stdout.write(raw);
+  if (parsed && parsed.ok === false) process.exit(1);
+} else process.stdout.write(JSON.stringify({ ok: true, result: {} }));
+`,
+      { mode: 0o700 },
+    );
+
+    writeFileSync(
+      payloadFile,
+      JSON.stringify({ ok: true, result: { terminal: { tail: ["booting", "WARNING: Loading development channels"] } } }),
+    );
+    ok(
+      "readScreen joins a valid terminal tail",
+      orca.readScreen("term_1") === "booting\nWARNING: Loading development channels",
+    );
+
+    writeFileSync(payloadFile, JSON.stringify({ ok: false, error: { code: "read_refused", message: "read refused" } }));
+    let refusedErr: unknown;
+    try {
+      orca.readScreen("term_1");
+    } catch (err) {
+      refusedErr = err;
+    }
+    ok(
+      "readScreen preserves OrcaCliError on ok:false envelopes",
+      refusedErr instanceof orca.OrcaCliError &&
+        refusedErr.code === "read_refused" &&
+        refusedErr.message === "orca terminal read --terminal term_1 --screen --json failed: read refused",
+      refusedErr,
+    );
+
+    const malformedPayloads: [string, unknown][] = [
+      ["null result", { ok: true, result: null }],
+      ["empty result", { ok: true, result: {} }],
+      ["null terminal", { ok: true, result: { terminal: null } }],
+      ["empty terminal", { ok: true, result: { terminal: {} } }],
+      ["null tail", { ok: true, result: { terminal: { tail: null } } }],
+      ["string tail", { ok: true, result: { terminal: { tail: "not an array" } } }],
+      ["non-string tail line", { ok: true, result: { terminal: { tail: ["booting", null] } } }],
+    ];
+    for (const [label, payload] of malformedPayloads) {
+      writeFileSync(payloadFile, JSON.stringify(payload));
+      let readErr: unknown;
+      try {
+        orca.readScreen("term_1");
+      } catch (err) {
+        readErr = err;
+      }
+      ok(
+        `readScreen rejects ${label} with a read diagnostic naming the terminal`,
+        readErr instanceof Error &&
+          !(readErr instanceof TypeError) &&
+          readErr.message === "orca terminal read --terminal term_1 --screen --json returned no terminal tail",
+        readErr,
+      );
+    }
+
+    const stubbedRuntime = registry.resolve<RuntimeProvider>("runtime", "orca").create({ session: "cotal" });
+    const runConfirm = async (
+      seatName: string,
+      payload: unknown,
+      settled: (errors: string[], calls: string[]) => boolean,
+    ): Promise<{ errors: string[]; calls: string[] }> => {
+      writeFileSync(callLog, "");
+      writeFileSync(payloadFile, JSON.stringify(payload));
+      const errors: string[] = [];
+      const originalError = console.error;
+      console.error = (...args: unknown[]) => errors.push(args.map(String).join(" "));
+      const readCalls = () => readFileSync(callLog, "utf8").trim().split("\n").filter(Boolean);
+      try {
+        const handle = stubbedRuntime.spawn(
+          seatName,
+          {
+            command: process.execPath,
+            args: ["-e", ""],
+            env: { PATH: process.env.PATH ?? "" },
+            confirm: "WARNING: Loading development channels",
+          },
+          stubDir,
+        );
+        try {
+          for (let waited = 0; waited < 5_000 && !settled(errors, readCalls()); waited += 50) {
+            await sleep(50);
+          }
+        } finally {
+          handle.stop({ graceful: false });
+        }
+      } finally {
+        console.error = originalError;
+      }
+      return {
+        errors,
+        calls: readCalls(),
+      };
+    };
+    const confirmGood = await runConfirm(
+      "confirm-good",
+      {
+        ok: true,
+        result: { terminal: { tail: ["booting", "WARNING: Loading development channels"] } },
+      },
+      (errors, calls) => errors.length > 0 || calls.includes("terminal send --terminal term_1 --enter --json"),
+    );
+    ok(
+      "startup confirm sends Enter when terminal.tail matches the confirm prompt",
+      confirmGood.errors.length === 0 &&
+        confirmGood.calls.includes("terminal send --terminal term_1 --enter --json"),
+      JSON.stringify(confirmGood),
+    );
+    const confirmNull = await runConfirm(
+      "confirm-null",
+      {
+        ok: true,
+        result: { terminal: { tail: null } },
+      },
+      (errors, calls) => errors.length > 0 && calls.includes("terminal close --terminal term_1 --json"),
+    );
+    ok(
+      "startup confirm reports the terminal read diagnostic and closes the terminal when tail is null",
+      confirmNull.errors.includes(
+        'orca runtime: "confirm-null": Cotal startup confirmation failed: orca terminal read --terminal term_1 --screen --json returned no terminal tail',
+      ) && confirmNull.calls.includes("terminal close --terminal term_1 --json"),
+      JSON.stringify(confirmNull),
+    );
   } finally {
     if (previousBin === undefined) delete process.env.COTAL_ORCA_BIN;
     else process.env.COTAL_ORCA_BIN = previousBin;
@@ -203,6 +520,11 @@ else { process.stderr.write("Orca runtime unavailable"); process.exit(2); }
 
 const resolved = registry.resolve<RuntimeProvider>("runtime", "orca");
 ok("orcaRuntimeProvider registered as 'runtime/orca'", resolved === orcaRuntimeProvider);
+// Declared, not discovered by catching the throw from attach(): a caller reads this to decide
+// whether to ask for an attach at all, so a foreground `cotal spawn` on this runtime launches the
+// seat and stops there instead of failing on an attach that cannot open. Graded above the live
+// gate, because what a backend declares does not depend on whether its CLI is installed here.
+ok("the runtime declares that it streams no terminal", new OrcaRuntime().streamsTerminal === false);
 
 if (!orca.available()) {
   const message = `SKIPPED (${LIVE_CHECK_COUNT} live checks not run) — Orca CLI/runtime is not reachable`;

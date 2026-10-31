@@ -4,8 +4,9 @@
  * one endpoint, one thread:
  *
  *  • inbound mesh messages become real Codex turns — a batch wakes an idle thread
- *    (`turn/start`); a DIRECTED message (DM / anycast / @mention) arriving mid-turn is
- *    steered INTO the live turn (`turn/steer`, race-safe via expectedTurnId) — ambient
+ *    (`turn/start`); a DIRECTED message (DM / anycast / @mention) arriving during a
+ *    connector-started turn is steered into it (`turn/steer`, race-safe via expectedTurnId).
+ *    Externally started turns defer automatic batches until their boundary; ambient
  *    chatter waits for the turn boundary so it can't derail the work in flight;
  *  • the cotal_* tools are served by THIS process over a loopback MCP endpoint (mcp.ts), so the
  *    model replies itself via cotal_send / cotal_dm — and, because the app-server is the MCP
@@ -196,7 +197,7 @@ function prepareCodexHome(space: string, name: string): string {
   // the next launch heals it. Absent auth.json is not fatal HERE: OPENAI_API_KEY is still a valid
   // way in, and codex stays the auth authority — the account probe after thread/start is what
   // refuses an unauthenticated launch. (A keyring-stored credential does NOT survive into the
-  // isolated home; managed agents need the file store or the env key. See docs/connect-codex.md.)
+  // isolated home; managed agents need the file store or the env key. See docs/connect-codex.mdx.)
   const operatorHome = resolve(process.env.CODEX_HOME?.trim() || join(homedir(), ".codex"));
   const operatorAuth = join(operatorHome, "auth.json");
   // ALWAYS clear the managed auth entry first: a codex rename-over can have turned the link
@@ -359,7 +360,7 @@ export async function runCodexHost(): Promise<void> {
   const baseOverrides = configOverrides(model, variant);
   // The cotal_* tools must be LISTENING before the child spawns: the child's config names this
   // URL and codex dials it while starting the thread.
-  const mcp = await startCotalMcp(agent, config, log);
+  const mcp = await startCotalMcp(agent, config, log, () => ready && !driver.stopped ? driver.thread : undefined);
   const driver = new AppServerDriver({
     cwd: process.cwd(),
     codexHome,
@@ -442,35 +443,35 @@ export async function runCodexHost(): Promise<void> {
         const resumeRunId = wal.pending === null ? wal.brackets?.run : wal.pending.brackets.run;
         mapper = createCodexMapper({ threadId, mintRunId: () => randomUUID(), resumeRunId });
         // `startCursor` is the boundary this bind captured before it announced itself. Nothing
-          // above writes it into the log: see `BoundStartSource` for what that buys and what it
-          // costs. The wrapper is held in a variable rather than inlined because the persist below
-          // keys on IT (#705), so removing the boundary substitution removes the persist with it
-          // instead of leaving an outer copy that keeps writing the same value.
-          const source = new BoundStartSource<CodexRecord>(new JsonlFileSource<CodexRecord>(rolloutPath), startCursor);
-          const em = await AguiEmitter.start<CodexRecord>({
-            endpoint: agent.ep,
-            wal,
-            subjectFrontier,
-            source,
-            map: mapper.map,
-            onUnreadable: (gap) => log(`AG-UI source: skipped an unreadable rollout record at offset ${gap.offset} (${gap.bytes} bytes): ${gap.reason}`),
-          });
-          // #705: persist the boundary THE SOURCE SUBSTITUTES into the log right after a successful
-          // start, and only when the log still has no cursor. Keyed on the wrapper itself, never on
-          // the outer `startCursor`, because the invariant that matters is "what the emitter will
-          // read is what the log now says", and only the source object knows the first half.
-          // After start is safe because `AguiEmitter.start` awaits `recover()`, which settles any
-          // pending frame before returning, so `advanceCursorOnly` never races a pending write.
-          // Without this, a host killed between this line and the emitter's first pump leaves a
-          // virgin log, and the next bind takes its boundary at the file's later end, dropping
-          // whatever the thread appended in between.
-          if (source instanceof BoundStartSource && wal.frontier.sourceCursor === undefined)
-            await wal.advanceCursorOnly(source.start);
-          // Test-only: holds the window between the persist above and the first pump open so a
-          // fixture can read the log there. Unset is no wait and no call.
-          if (holderPostStartHoldMs > 0)
-            await new Promise<void>((r) => setTimeout(r, holderPostStartHoldMs));
-          return em;
+        // above writes it into the log: see `BoundStartSource` for what that buys and what it
+        // costs. The wrapper is held in a variable rather than inlined because the persist below
+        // keys on IT (#705), so removing the boundary substitution removes the persist with it
+        // instead of leaving an outer copy that keeps writing the same value.
+        const source = new BoundStartSource<CodexRecord>(new JsonlFileSource<CodexRecord>(rolloutPath), startCursor);
+        const em = await AguiEmitter.start<CodexRecord>({
+          endpoint: agent.ep,
+          wal,
+          subjectFrontier,
+          source,
+          map: mapper.map,
+          onUnreadable: (gap) => log(`AG-UI source: skipped an unreadable rollout record at offset ${gap.offset} (${gap.bytes} bytes): ${gap.reason}`),
+        });
+        // #705: persist the boundary THE SOURCE SUBSTITUTES into the log right after a successful
+        // start, and only when the log still has no cursor. Keyed on the wrapper itself, never on
+        // the outer `startCursor`, because the invariant that matters is "what the emitter will
+        // read is what the log now says", and only the source object knows the first half.
+        // After start is safe because `AguiEmitter.start` awaits `recover()`, which settles any
+        // pending frame before returning, so `advanceCursorOnly` never races a pending write.
+        // Without this, a host killed between this line and the emitter's first pump leaves a
+        // virgin log, and the next bind takes its boundary at the file's later end, dropping
+        // whatever the thread appended in between.
+        if (source instanceof BoundStartSource && wal.frontier.sourceCursor === undefined)
+          await wal.advanceCursorOnly(source.start);
+        // Test-only: holds the window between the persist above and the first pump open so a
+        // fixture can read the log there. Unset is no wait and no call.
+        if (holderPostStartHoldMs > 0)
+          await new Promise<void>((r) => setTimeout(r, holderPostStartHoldMs));
+        return em;
       },
       {
         onError: eventPlaneStopped({ log }),
@@ -487,7 +488,7 @@ export async function runCodexHost(): Promise<void> {
   // turn while the endpoint is still connecting; dropping that "working" would leave the roster
   // showing the default `idle` for the whole first turn. So the latest desired status is latched
   // and replayed once the endpoint is up (last write wins — a stale one is never resurrected).
-  type Presence = { status: "idle" | "working" | "waiting" | "offline"; activity?: string };
+  type Presence = { status: "idle" | "working" | "waiting" | "offline"; activity?: string; presenceOnly?: boolean };
   let desired: Presence | undefined;
   let desiredCondition: PresenceCondition | null | undefined;
   let flushTimer: ReturnType<typeof setInterval> | undefined;
@@ -522,7 +523,10 @@ export async function runCodexHost(): Promise<void> {
       flushTimer = undefined;
       inOrder(async () => {
         if (wantCondition !== undefined) await agent.setCondition(wantCondition);
-        if (want) await agent.setStatus(want.status, want.activity);
+        if (want) {
+          if (want.presenceOnly) await agent.resetStatus(want.status, want.activity);
+          else await agent.setStatus(want.status, want.activity);
+        }
       })
         .catch(() => {
           if (!desired) desired = want;
@@ -532,14 +536,18 @@ export async function runCodexHost(): Promise<void> {
     }, STATUS_FLUSH_MS);
     flushTimer.unref?.();
   }
-  const safeStatus = async (status: Presence["status"], activity?: string): Promise<void> => {
-    desired = { status, activity };
+  const safeStatus = async (status: Presence["status"], activity?: string, presenceOnly = false): Promise<void> => {
+    desired = { status, activity, presenceOnly };
     if (!agent.connected) return armStatusFlush();
     const want = desired;
     desired = undefined;
     await inOrder(async () => {
       try {
-        await agent.setStatus(status, activity);
+        // Requests are answered by the driver, not host-turn boundaries. Keep their waiting
+        // presence from disarming the working-to-idle completion of the same native turn.
+        // A later command or MCP item is not required for a completed turn to yield done.
+        if (presenceOnly) await agent.resetStatus(status, activity);
+        else await agent.setStatus(status, activity);
       } catch {
         if (!desired) desired = want;
         armStatusFlush();
@@ -659,7 +667,8 @@ export async function runCodexHost(): Promise<void> {
     }
   }
 
-  /** Steer DIRECTED (DM / anycast / @mention) automatic items into the live turn. Ambient waits
+  /** Steer DIRECTED (DM / anycast / @mention) automatic items into a connector-started turn.
+   *  Externally started turns leave these items buffered until their boundary. Ambient waits
    *  for the boundary so channel chatter can't derail the work in flight. Exact-id acks mean the
    *  steered set need not be front-contiguous. A declined steer (the turn just ended) leaves the
    *  items buffered — completeTurn's drive picks them up. */
@@ -890,7 +899,7 @@ export async function runCodexHost(): Promise<void> {
   });
   driver.on("waiting", (detail: string, condition?: PresenceCondition) => {
     if (condition) void safeCondition(condition);
-    void safeStatus("waiting", detail);
+    void safeStatus("waiting", detail, detail === "item/tool/requestUserInput");
   });
   driver.on("turnCompleted", ({ status, condition, owned }: { status: string; condition?: PresenceCondition; owned: boolean }) => {
     flushEvents();
@@ -1068,7 +1077,8 @@ export async function runCodexHost(): Promise<void> {
   });
   driver.on("error", (e: Error) => log(`app-server error: ${e.message}`));
 
-  // Inbound mesh traffic. Busy: steer directed items into the live turn, buffer ambient. Idle: a
+  // Inbound mesh traffic. Busy with a connector-started turn: steer directed items, buffer ambient.
+  // Externally started turns buffer automatic batches until their boundary. Idle: a
   // directed message always drives; ambient drives only in `open` (dnd/focus hold it for the next
   // boundary). Receive-time pull-only never reaches "incoming" as automatic; `muted` never at all.
   agent.on("incoming", (item: InboxItem) => {
@@ -1145,6 +1155,8 @@ export async function runCodexHost(): Promise<void> {
     // was told about is a path nobody finds. Codex paints on the alternate screen, so this line is
     // on screen until it starts and back again the moment it exits.
     const logPath = join(codexHome, "host.log");
+    if (!logSink) process.stderr.write(`[cotal-codex] Managed conversation: ${threadId}. ` +
+      `/new does not replace it. Return to this thread to use Cotal tools.\n`);
     if (!logSink) {
       process.stderr.write(`[cotal-codex] handing the terminal to Codex — host log continues in ${logPath}\n`);
       // Owner-private and never appended through a symlink: the stream writes to this descriptor.

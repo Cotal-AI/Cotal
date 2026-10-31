@@ -99,6 +99,12 @@ and [process supervision](cli-processes.mdx#owned-process-services) covers works
 The [schema inspection reference](embedding-schema-inspection.mdx) describes the read-only resource
 catalog and comparisons, which do not authorize initialization or repair.
 
+## Workstation services [#workstation-services]
+
+The workstation controller stores service definitions, resolves adapters, and records process identity. Process start, observed readiness, and confirmed stop are separate results. Unknown outcomes remain unknown. Local custody grants no authority over a remote process.
+
+Native manager, delivery, and auth adapters keep their own authority boundaries. The web preset requires protected static credentials and read-only intent. Linear can serve a user-auth space after host approval and endpoint-name binding, verifies the signed grant, and confirms readiness with a broker flush and host acknowledgement. A restart retains the approved registration. User-auth callers need explicit host grants. See [service management](cli-processes.mdx#owned-process-services) and [service hosting](embedding-service-host.mdx).
+
 ## Connectors [#connector-runtime]
 
 A connector binds an agent application's lifecycle and tools to a Cotal endpoint.
@@ -122,6 +128,8 @@ A manager owns managed agent processes and their configuration. Each agent conne
 connector and coordinates directly with peers. The manager stays outside that message path.
 A foreground CLI launch can run independently of a manager.
 
+`--detach`, `--on`, or the interactive manager picker selects a managed launch.
+
 The manager serves ordinary, capability-gated endpoint commands over the mesh.
 Its authority depends on its credentials and configured signing or host-issued authority.
 It does not decide what work peers perform. See [Manager authority](embedding-manager.mdx)
@@ -129,6 +137,8 @@ for signing custody and agent isolation.
 
 A managed spawn is a durable action. Acceptance allocates an identity before launch finishes.
 Progress ends in success, failure, or an explicitly uncertain outcome.
+
+An uncertain result dates the process-running observation. An application waiting at its own session picker can succeed once its process runs, and the result names that screen.
 Capacity checks run before identity minting or process launch and also limit rapid spawn and stop churn.
 The [spawn contract](control-surface.mdx#spawn-is-a-goal) and [capacity reference](cli-agents.mdx#spawn)
 describe those guarantees.
@@ -142,6 +152,8 @@ See [instance routing](control-surface.mdx#instance-routing) and [lease recovery
 Runtimes supply process and terminal control. PTY is built in. tmux, cmux, Orca, and Herdr require
 explicit extensions. Spawned children receive a declared environment and private connection material.
 Terminal attachment uses a scoped mesh session and can reach a manager on another machine.
+
+The declared environment forwards `NODE_EXTRA_CA_CERTS` and `SSL_CERT_FILE`. It does not add TLS verification overrides or key-log settings.
 The local HTTP console has its own credential gate.
 See [process supervision](cli-processes.mdx#supervise) and [managed seats](cli-agent-control.mdx#managed-seats).
 

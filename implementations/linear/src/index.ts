@@ -20,8 +20,8 @@ const linearCommand: Command = {
   reads: true,
   outputs: ["json", "plain"],
   subcommands: [
-    { name: "account", summary: "record an explicit account or read its metadata", reads: true, prepareMeshTarget: false, outputs: ["json", "plain"], flagNames: ["json", "plain"], subcommands: linearForms.filter((form) => form.path[0] === "account").map((form) => ({ name: form.path[1]!, summary: form.summary, flagNames: [...form.flags], outputs: [...form.outputs], ...(form.reads ? { reads: true as const } : {}), prepareMeshTarget: false as const })) },
-    ...linearForms.filter((form) => form.path.length === 1).map((form) => ({ name: form.path[0], summary: form.summary, flagNames: [...form.flags], outputs: [...form.outputs], ...(form.reads ? { reads: true as const } : {}), prepareMeshTarget: false as const })),
+    { name: "account", summary: "record an explicit account or read its metadata", reads: true, prepareMeshTarget: false, outputs: ["json", "plain"], flagNames: ["json", "plain"], subcommands: linearForms.filter((form) => form.path[0] === "account").map((form) => ({ name: form.path[1]!, summary: form.summary, usage: form.usage, flagNames: [...form.flags], outputs: [...form.outputs], ...(form.reads ? { reads: true as const } : {}), prepareMeshTarget: false as const })) },
+    ...linearForms.filter((form) => form.path.length === 1).map((form) => ({ name: form.path[0], summary: form.summary, usage: form.usage, flagNames: [...form.flags], outputs: [...form.outputs], ...(form.reads ? { reads: true as const } : {}), prepareMeshTarget: false as const })),
   ],
   validate: validateLinearArguments,
   flags: [
@@ -43,6 +43,7 @@ const linearCommand: Command = {
 };
 registry.register(linearCommand);
 
+export { linearUserAuthRegistration, linearUserAuthRequest, serveLinearUserAuth } from "./user-auth-serve.js";
 export { LinearUpstream, DEFAULT_LIMITS, type LinearInventory, type LinearLimits, type UpstreamReply } from "./upstream.js";
 export { LINEAR_MCP_ORIGIN, LINEAR_MCP_PATHS, linearMcpUrl, type LinearMode } from "./origin.js";
 export { loadAccount, type LinearAccount } from "./account.js";

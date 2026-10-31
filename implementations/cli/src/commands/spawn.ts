@@ -2,7 +2,7 @@ import { spawn as spawnProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync, rmSync, statSync } from "node:fs";
 import { hostname } from "node:os";
-import { join, resolve as resolvePath } from "node:path";
+import { resolve as resolvePath } from "node:path";
 import {
   assertValidRole,
   agentFilePath,
@@ -21,6 +21,7 @@ import {
   DEV_OWNER,
   parseShareSelection,
   principalKey,
+  assertLifecycleToken,
   mintLifecycleUid,
   MANAGED_HANDOFF_FILE_ENV,
   parseManagedLifecycleHandoff,
@@ -32,6 +33,9 @@ import {
   resolveReadAcl,
   runAgentBearer,
   CotalEndpoint,
+  GOAL_ENTITY_RUNNING_DETAIL_KIND,
+  EP_UNDECLARED_ARG,
+  seatCapFrom,
   acquireLock,
   inspectLock,
   localConsumerClaimPath,
@@ -47,31 +51,33 @@ import {
   type FlagValues,
   type LaunchOpts,
   type LaunchSpec,
+  type AgentLifecycleRelease,
   type ManagedLifecycleHandoff,
   type ParsedArgs,
+  type RuntimeProvider,
   type SecretStore,
   type SpaceAuth,
 } from "@cotal-ai/core";
 import {
-  CommandFailure, loadLaunchPersonaFile, personaFileReference, PersonaSourceError, inputDisabledByFlag, jsonFlag, plainFlag, presentationOf, renderReport, terminalWidth, writeResult, type OutputWarning, type RefusalCode, type Report,
+  parseCommaList, CommandFailure, loadLaunchPersonaFile, personaFileReference, PersonaSourceError, inputDisabledByFlag, jsonFlag, plainFlag, presentationOf, recordOperationWarning, renderReport, terminalWidth, wrapWords, writeResult, type OutputWarning, type RefusalCode, type Report,
   agentActorTokenKey,
-  agentCredsKey,
+  agentLifecycleSecretFilePaths,
   agentSecretFilePaths,
+  agentSecretKeyForFile,
   agentSentinelCredsKey,
   authDir,
   cachedPreferences,
   credsFlag,
   launchFlags,
-  loadMeshes,
   findMesh,
   getSpaceAuth,
+  loadManagerInstanceIdentity,
   materializeSecretToFile,
   mergeLaunchOptions,
   parseLaunchOptions,
   preflightOrThrow,
   provenance,
   resolveAgentType,
-  resolveMeshTarget,
   resolvePreference,
   resolveTargetOrThrow,
   serverFlag,
@@ -85,33 +91,45 @@ import {
   connectUserControlOrExit,
   userViewAuth,
   oneLine,
+  codeSpan,
   type Check,
   type ConnectFlags,
   type ControlAuth,
   type ControlTarget,
+  DEFAULT_CONNECTOR,
+  hintedConnector,
+  manifestExtensionNames,
+  OFFICIAL_CONNECTORS,
   type MeshTarget,
   type SpaceMaterialComposition,
   recordOperationSpace,
+  resolveMeshTarget,
 } from "@cotal-ai/workspace";
-import { c } from "../ui.js";
+import { c, stderrLine } from "../ui.js";
 import { liveMeshNames } from "../lib/live-names.js";
 import { displayCmd } from "../lib/self-exec.js";
+import { entryScript } from "../seed/paths.js";
 import { completedFlagValue, completingFlagValue, hasCompletedFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { preflightOrExit, resolveTargetOrExit } from "../lib/connect.js";
-import { askManager, failIfNotOk, onInstance, onInstanceOrExit, resolveControlTarget, START_TIMEOUT_MS, withControlConnection, type ManagerRequestIntent, type ManagerRequestReceipt } from "../lib/control.js";
-import { listDeclaredChannels, listDeclaredRoles, listPersonas } from "../lib/personas.js";
-import { callerHarness, spawnPersona } from "../lib/spawn-defaults.js";
-import { defaultPersonaFix } from "../lib/default-persona.js";
+import { runningStackManagerPid, stackManagerAbsent, stackManagerStarting } from "../lib/stack-journal.js";
+import { askManager, describeUnanswered, failIfNotOk, liveManagerIds, managerRailGone, onInstance, refuseUnregisteredManager, refuseWithoutLiveManager, resolveControlTarget, START_TIMEOUT_MS, withControlConnection, type ManagerRequestIntent, type ManagerRequestReceipt } from "../lib/control.js";
+import { askManagerFolder, askSpawnPlace, managerPin, managerSelection, managersWithPersona, rerunOn, rerunWithCwd, type FolderCheck } from "../lib/manager-choice.js";
+import { canPrompt } from "./meshes-wizard.js";
+import { listDeclaredChannels, listDeclaredRoles, listPersonaNames } from "../lib/personas.js";
+import { personaCatalog } from "../lib/persona-files.js";
+import { callerHarness, missingPersona, spawnPersona, spawnUsesManager } from "../lib/spawn-defaults.js";
 import { spawnLaunchPreview } from "./spawn-preview.js";
 import { protectedCredentialReference, readLocalRecordSource } from "../lib/protected-records.js";
 import { attachSeat } from "./agents.js";
-import { extensionNames, materializeExtension } from "../ext-loader.js";
-import { claimManagedHandoff } from "../managed-handoff.js";
+import { AgentAlreadyRunning, heldAnswer, settleHeldName } from "../lib/held-name.js";
+import { shellWord } from "../lib/endpoint-errors.js";
+import { extensionNames, materializeExtension, preflightRuntime } from "../ext-loader.js";
+import { claimManagedHandoff, holdsManagedHandoff, managedHandoffRefusal } from "../managed-handoff.js";
 import {
   checkDialPolicy,
   checkEnforcement,
   checkServer,
-  checkUserBundle,
+  checkBundleDocument,
   persistRemoteUserEntry,
   probeEnforcement,
   tlsIntent,
@@ -160,6 +178,18 @@ export function scrubEnrollmentEnv(env: Record<string, string | undefined> | und
   }
 }
 
+/** Carry the launching manager's validated `COTAL_MANAGER_INSTANCE` onto a managed-handoff
+ *  child's connector launch spec (`spawnProcess` passes `env: spec.env` only, and `launchEnv`
+ *  does not forward `COTAL_MANAGER_INSTANCE` from `process.env`). */
+export function applyHandoffManagerInstance(
+  spec: LaunchSpec,
+  handoffManagerInstanceId: string | undefined,
+): void {
+  if (handoffManagerInstanceId !== undefined) {
+    spec.env = { ...spec.env, COTAL_MANAGER_INSTANCE: handoffManagerInstanceId };
+  }
+}
+
 export interface EnrollmentBundle extends RemoteAgentMaterial {
   space: string;
   brokerAccess: { kind: string; [key: string]: unknown };
@@ -192,14 +222,14 @@ export function checkEnrollmentBundle(raw: unknown, actor: string): { bundle: En
   if (hasStock) {
     if ([o.server, o.tlsRequired, o.userAuth].some((v) => v === undefined))
       throw new Error("the enrollment bundle's stock mesh fields must include server, tlsRequired, and userAuth together");
-    const checked = checkUserBundle(JSON.stringify({
+    const checked = checkBundleDocument({
       space: o.space,
       server: o.server,
       tlsRequired: o.tlsRequired,
       userAuth: o.userAuth,
       policy: (o as { policy?: unknown }).policy,
       sentinelCreds: material.material.sentinelCreds,
-    }));
+    });
     if (!checked.ok) throw new Error(checked.message.replace(/^✗\s*/, ""));
     stock = checked.value;
     if (stock.userAuth.idp.url !== idp.url || stock.userAuth.idp.issuer !== idp.issuer || stock.userAuth.idp.audience !== idp.audience)
@@ -275,8 +305,6 @@ async function registerEnrollmentMesh(stock: UserBundle, root: string, refusals?
  *  personas, not the cwd's. */
 export function spawnComplete(argv: string[]): CompletionResult {
   const flag = completingFlagValue(argv, spawnFlags);
-  if (flag?.name === "space")
-    return { items: loadMeshes().map((m) => ({ value: m.space })), directive: "nofiles" };
   if (flag?.name === "agent" || flag?.name === "harness")
     return { items: registry.all<Connector>("connector").map((c) => ({ value: c.name })), directive: "nofiles" };
   if (flag?.name === "role")
@@ -284,11 +312,7 @@ export function spawnComplete(argv: string[]): CompletionResult {
   if (flag?.name === "config") {
     const current = argv[argv.length - 1] ?? "";
     if (current.includes("/") || current.includes("\\") || current.endsWith(".md")) return { items: [], directive: "default" };
-    try {
-      return { items: personaItems(argv), directive: "nofiles" };
-    } catch {
-      return { items: [], directive: "nofiles" };
-    }
+    return { items: personaItems(argv), directive: "nofiles" };
   }
   if (flag && ["subscribe", "allow-subscribe", "allow-publish"].includes(flag.name))
     return { items: declaredFrom(argv, listDeclaredChannels).map((value) => ({ value, description: "declared channel" })), directive: "nofiles" };
@@ -298,42 +322,38 @@ export function spawnComplete(argv: string[]): CompletionResult {
 
   const positionals = positionalsForCompletion(argv, spawnFlags);
   // Only the first word after `spawn` is the persona positional; once it's typed, defer to the shell.
-  if (positionals.length <= 1 && !hasCompletedFlagValue(argv, spawnFlags, "config") && !hasCompletedFlagValue(argv, spawnFlags, "file")) {
-    try {
-      return { items: personaItems(argv), directive: "nofiles" };
-    } catch {
-      // No single target (no mesh, or several with no `current`) — fail CLOSED: offer no personas
-      // rather than throw. `cotal spawn --space <TAB>` still lists the running meshes.
-      return { items: [], directive: "nofiles" };
-    }
-  }
+  if (positionals.length <= 1 && !hasCompletedFlagValue(argv, spawnFlags, "config") && !hasCompletedFlagValue(argv, spawnFlags, "file"))
+    return { items: personaItems(argv), directive: "nofiles" };
   return { items: [], directive: "nofiles" };
 }
 
+/** The persona catalog root this spawn would read, resolved read-only as `persona show` resolves it,
+ *  so a prepared space that is not started still lists its personas. */
+const catalogRoot = (argv: string[]): string => personaCatalog({
+  space: completedFlagValue(argv, spawnFlags, "space"),
+  server: completedFlagValue(argv, spawnFlags, "server"),
+}).root;
+
+/** The personas this spawn would launch from. With no single target (no mesh, or several with no
+ *  `current`) it fails CLOSED and offers none; `cotal spawn --space <TAB>` still lists the running
+ *  meshes. A catalog folder that cannot be read throws, so the completion fails and names it. */
 function personaItems(argv: string[]) {
-  const target = resolveMeshTarget(process.cwd(), {
-    space: completedFlagValue(argv, spawnFlags, "space"),
-    server: completedFlagValue(argv, spawnFlags, "server"),
-  });
-  return listPersonas(target.root).map((p) => ({ value: p.name }));
+  let root: string;
+  try { root = catalogRoot(argv); }
+  catch { return []; }
+  return listPersonaNames(root).map((value) => ({ value }));
 }
 
 /** Channels/roles declared by the TARGET mesh's personas — the same root {@link personaItems}
  *  uses, so `--role`/`--subscribe` complete from the personas this spawn would actually launch
- *  rather than from whatever project the operator is standing in. Offline (no probe) and FAIL
- *  CLOSED: with no single resolvable target, or a malformed persona file (see `declaredValues`),
- *  offer nothing rather than throw into the operator's shell. */
+ *  rather than from whatever project the operator is standing in. Offline (no probe). With no single
+ *  resolvable target it offers nothing. A resolved catalog that cannot be read, or a malformed persona
+ *  file (see `declaredValues`), throws, so the completion fails and names the reason. */
 function declaredFrom(argv: string[], list: (root: string) => string[]): string[] {
-  try {
-    return list(
-      resolveMeshTarget(process.cwd(), {
-        space: completedFlagValue(argv, spawnFlags, "space"),
-        server: completedFlagValue(argv, spawnFlags, "server"),
-      }).root,
-    );
-  } catch {
-    return [];
-  }
+  let root: string;
+  try { root = catalogRoot(argv); }
+  catch { return []; }
+  return list(root);
 }
 
 export { spawnPersona } from "../lib/spawn-defaults.js";
@@ -355,8 +375,14 @@ async function uniqueMeshName(
 }
 
 
-/** Only an occupied actor is retryable; authorization and provisioning failures stay failures. */
-class ForegroundActorCollision extends Error {}
+/** Only an occupied actor is retryable; authorization and provisioning failures stay failures.
+ *  Thrown only where the collision is found before anything is launched, issued or redeemed, so
+ *  it is a refusal. */
+class ForegroundActorCollision extends CommandFailure {
+  constructor(message: string) {
+    super("refused", "CONFLICT", message);
+  }
+}
 
 async function provisionFreshForeground<T>(
   requested: string,
@@ -369,35 +395,35 @@ async function provisionFreshForeground<T>(
     try {
       return { name, provisioned: await provision(name) };
     } catch (e) {
-      if (!autoName || !(e instanceof ForegroundActorCollision || e instanceof AgentGrantConflictError)) throw e;
+      if (!autoName || !(e instanceof ForegroundActorCollision || e instanceof AgentGrantConflictError || e instanceof AgentAlreadyRunning)) throw e;
       occupied.add(name);
     }
   }
 }
 
 
-/** `cotal spawn`'s grammar: managed launch/attach by default, explicit native foreground,
- *  and one positional persona or explicit persona file. Declared `as const` so the values cast
+/** `cotal spawn`'s grammar: the application in this terminal by default, a manager's launch only
+ *  with `--detach` or `--on`, and one positional persona or explicit persona file. Declared `as const` so the values cast
  *  below is compile-checked against exactly these specs. Foreground and detached parse the SAME
  *  flags — the old `spawn` vs `start` ability drift is structurally gone. */
 export const spawnFlags = [
   spaceFlag,
   serverFlag,
-  { ...credsFlag, description: "control-caller creds for an off-registry manager (--detach only)" },
+  { ...credsFlag, description: "control-caller creds for an off-registry manager (with --detach or --on)" },
   ...launchFlags,
   { name: "harness", short: "H", type: "string", value: "<connector>", description: "application connector; an explicit flag wins over persona and saved defaults" },
-  { name: "foreground", type: "boolean", description: "run the native application directly; terminal exit may end it" },
-  { name: "restarts", type: "string", value: "<n>", description: "maximum manager-supervised restarts in the selected restart window" },
+  { name: "foreground", type: "boolean", description: "run the application in this terminal, as a spawn without --detach or --on does; terminal exit may end it" },
+  { name: "restarts", type: "string", value: "<n>", description: "with --detach or --on: maximum manager-supervised restarts in the selected restart window" },
   { name: "restart-window", type: "string", value: "<ms>", description: "time window for --restarts; both flags are required together" },
   jsonFlag, plainFlag,
-  { name: "detach", type: "boolean", short: "d", description: "launch through the manager, await readiness and return without attaching" },
+  { name: "detach", type: "boolean", short: "d", description: "launch through a manager, await readiness and return without attaching" },
   { name: "live-only", type: "boolean", description: "foreground only: skip the durable backstop (no read-ACL row; messages missed while disconnected are not replayed)" },
   { name: "file", type: "string", short: "f", value: "<persona-file>", description: "persona file on the execution host; never a manifest deploy or implicit upload" },
   { name: "dry-run", type: "boolean", description: "preview the launch without allocation, provisioning or starting an application" },
-  { name: "enrollment-file", type: "string", value: "<private-file>", description: "with --foreground: protected file holding this one seat's enrollment URL; never print or forward it" },
-  { name: "allow-stale", type: "string", value: "<a,b>", description: "with -f: waive named stale agents (apply-only)" },
-  { name: "runtime", type: "string", value: "<name>", description: "with -f: override the manifest's runtime" },
-  { name: "on", type: "string", value: "<instance>", description: "with --detach: launch through one manager instance, by the id `ps` prints, in a space with several managers; by default any one takes it" },
+  { name: "enrollment-file", type: "string", value: "<private-file>", description: "foreground only: protected file holding this one seat's enrollment URL; never print or forward it" },
+  { name: "allow-stale", type: "string", value: "<a,b>", description: "refused: a manifest deployment option; use `cotal team deploy <file>`" },
+  { name: "runtime", type: "string", value: "<name>", description: "terminal runtime for this one managed seat; omitted, the serving manager uses its own" },
+  { name: "on", type: "string", value: "<instance>", description: "launch through this manager instance, by the id `ps` prints, and attach; with --detach, return once it joins" },
   { name: "expect-owner", type: "string", value: "<u_…>", description: `with ${MANAGED_HANDOFF_FILE_ENV}: the owner the managed handoff must carry` },
   { name: "expect-lifecycle-uid", type: "string", value: "<uid>", description: `with ${MANAGED_HANDOFF_FILE_ENV}: the lifecycle UID the managed handoff must carry` },
 ] as const satisfies readonly FlagSpec[];
@@ -405,28 +431,37 @@ export const spawnFlags = [
 /** Check the public mode and spelling before catalog preparation or identity allocation. */
 export function validateSpawnArguments(args: ParsedArgs): void {
   const values = args.values as FlagValues<typeof spawnFlags>;
+  const handoffRefusal = managedHandoffRefusal();
+  if (handoffRefusal) throw handoffRefusal;
   presentationOf(values);
-  const internal = Boolean(process.env[MANAGED_HANDOFF_FILE_ENV] || process.env[ENROLLMENT_URL_ENV] || process.env[ENROLLMENT_FILE_ENV]);
-  const direct = values.foreground === true || internal;
+  // `runCli` has already taken the handoff into custody and deleted its variable.
+  const internal = holdsManagedHandoff() || Boolean(process.env[ENROLLMENT_URL_ENV] || process.env[ENROLLMENT_FILE_ENV]);
+  if (!holdsManagedHandoff() && (values["expect-owner"] !== undefined || values["expect-lifecycle-uid"] !== undefined))
+    throw new CommandFailure("refused", "USAGE_INVALID", `--expect-owner and --expect-lifecycle-uid apply only with ${MANAGED_HANDOFF_FILE_ENV}`);
+  const direct = values.foreground === true || internal || !spawnUsesManager(values);
   if (values.file !== undefined && (args.positionals.length || values.config !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "choose one positional persona or --file/-f, not multiple explicit persona sources");
-  if (!internal && values.config !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "--config is reserved for persisted internal launch callers; use cotal spawn --file <persona-file>");
+  if (!internal && values.config !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "--config is reserved for persisted internal launch callers; use `cotal spawn --file <persona-file>`");
   if (values.file !== undefined) { try { personaFileReference(values.file); } catch (error) { throw new CommandFailure("refused", "SCHEMA_INVALID", (error as Error).message); } }
-  if (values.runtime !== undefined || values["allow-stale"] !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "manifest deployment options belong to cotal team deploy <file>, not spawn");
+  if (values["allow-stale"] !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "manifest deployment options belong to `cotal team deploy <file>`, not spawn");
+  if (values.runtime !== undefined && !values.runtime.trim()) throw new CommandFailure("refused", "USAGE_INVALID", "--runtime cannot be empty");
+  if (values.runtime !== undefined && direct) throw new CommandFailure("refused", "USAGE_INVALID", "--runtime chooses the runtime of one managed seat; a spawn in this terminal has no manager runtime to choose", { remedy: "add -d, or --on <instance>, to launch it through a manager" });
+  // Every manager refuses `auto` for one seat, so it is refused here on any host.
+  if (values.runtime?.trim() === "auto") throw new CommandFailure("refused", "USAGE_INVALID", "--runtime auto chooses a manager's own runtime, not the runtime of one seat", { remedy: "omit --runtime to use the serving manager's runtime" });
   if (values["enrollment-file"] !== undefined && !values.space) throw new CommandFailure("refused", "USAGE_INVALID", "--enrollment-file requires an explicit --space");
-  if (values["enrollment-file"] !== undefined && !values.foreground) throw new CommandFailure("refused", "UNSUPPORTED", "this native enrollment path runs one foreground seat; use --foreground explicitly. It does not substitute for managed enrollment authority");
+  if (values["enrollment-file"] !== undefined && !direct) throw new CommandFailure("refused", "UNSUPPORTED", "this native enrollment path runs one foreground seat. It does not substitute for managed enrollment authority");
   if (values["enrollment-file"] !== undefined && (internal || values.detach || values.creds !== undefined || values.on !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "choose one foreground enrollment source without a manager pin, credential override or internal handoff");
   if (values.harness !== undefined && values.agent !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "choose --harness/-H or the legacy --agent spelling, not both");
   if (values.detach && direct) throw new CommandFailure("refused", "USAGE_INVALID", "--detach and direct foreground execution are different launch modes");
-  if (values.foreground && ((!values["dry-run"] && (values.json || values.plain)) || values.creds !== undefined || values.on !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "direct --foreground execution takes no structured receipt, manager credential or manager pin");
+  if (direct && ((!values["dry-run"] && (values.json || values.plain)) || values.creds !== undefined || values.on !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "a spawn in this terminal takes no structured receipt, manager credential or manager pin", { remedy: "add -d to launch it through a manager, which returns a receipt once the agent joins", selfContained: true });
   if ((values.restarts === undefined) !== (values["restart-window"] === undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "--restarts and --restart-window must be supplied together");
   if (values.restarts !== undefined) {
-    if (direct) throw new CommandFailure("refused", "USAGE_INVALID", "restart supervision belongs to a managed launch, not direct foreground execution");
+    if (direct) throw new CommandFailure("refused", "USAGE_INVALID", "restart supervision belongs to a managed launch, not a spawn in this terminal", { remedy: "add -d, or --on <instance>, to launch it through a manager" });
     for (const field of ["restarts", "restart-window"] as const) if (!/^[1-9][0-9]*$/.test(values[field]!) || !Number.isSafeInteger(Number(values[field])))
       throw new CommandFailure("refused", "USAGE_INVALID", `--${field} must be a positive safe integer`);
   }
   if (values["live-only"] && !direct) throw new CommandFailure("refused", "USAGE_INVALID", "--live-only belongs to direct foreground execution");
   if (!values["dry-run"] && !direct && !values.detach && (values.json || values.plain || inputDisabledByFlag() || !process.stdin.isTTY || !process.stdout.isTTY))
-    throw new CommandFailure("refused", "USAGE_INVALID", "managed attachment needs usable input and output terminals before an identity is allocated", { remedy: "use cotal spawn -d to wait for readiness without attaching, or --foreground for direct execution" });
+    throw new CommandFailure("refused", "USAGE_INVALID", "attaching to a manager's launch needs usable input and output terminals before an identity is allocated", { remedy: "add -d to wait for readiness without attaching, or drop --on to run it in this terminal", selfContained: true });
   for (const field of ["harness", "agent", "model", "variant", "name"] as const) if (values[field] !== undefined && !values[field]!.trim())
     throw new CommandFailure("refused", "USAGE_INVALID", `--${field} cannot be empty`);
   if (values.events && values["no-events"]) throw new CommandFailure("refused", "USAGE_INVALID", "choose --events or --no-events, not both");
@@ -459,9 +494,18 @@ export function spawnRequiredExtensions(_args: ParsedArgs): readonly ExtensionRe
   return [];
 }
 
-/** Comma-list flag → string[] (shared by both spawn modes). Only an absent flag is `undefined` and
- *  defers to the persona; an empty value is the empty list, so `--subscribe ""` clears it. */
-const splitFlag = (v?: string) => (v === undefined ? undefined : v.split(",").map((s) => s.trim()).filter(Boolean));
+/** Whether the installed manifest lists a connector named `name`. An unreadable manifest answers
+ *  true, so the import's own refusal reports it. */
+function connectorListed(name: string): boolean {
+  try { return manifestExtensionNames("connector").includes(name); } catch { return true; }
+}
+
+/** The refusal for a harness with no installed connector, naming the package when it is official. */
+function missingConnector(name: string, target: object): CommandFailure {
+  const pkg = OFFICIAL_CONNECTORS[name];
+  return new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `no connector "${name}" is installed`, { target,
+    remedy: pkg ? `add it with \`cotal ext add ${pkg}\`` : "install its integration with `cotal ext add <npm-package>`, or check the name" });
+}
 
 /** #867: the name a spawn sends must already be a mintable identity, and the check must not wait
  *  for the manager's round trip. `spawnNameError` is the SAME predicate the manager applies at its
@@ -472,9 +516,29 @@ const splitFlag = (v?: string) => (v === undefined ? undefined : v.split(",").ma
 function refuseUnmintableNameOrExit(name: string, userMode: boolean): void {
   const refusal = spawnNameError(name, { userMode });
   if (refusal) {
-    console.error(c.red(`✗ ${refusal}`));
+    stderrLine("✗ ", `${refusal}`, c.red);
     process.exit(1);
   }
+}
+
+/** Whether a managed launch can reach only this root's own manager: the instance it names, or else
+ *  the only one the registry lists, is the one recorded under the target's root. An unread registry
+ *  or an unreadable record proves nothing, and the launch then goes to whichever manager serves it. */
+export function launchServedHere(t: { space: string; root?: string }, serving: string | undefined, live: readonly string[] | undefined): boolean {
+  if (t.root === undefined) return false;
+  let here: string | undefined;
+  try { here = loadManagerInstanceIdentity(t.root, t.space)?.instanceId; } catch { return false; }
+  if (here === undefined) return false;
+  return serving !== undefined ? serving === here : live?.length === 1 && live[0] === here;
+}
+
+/** A runtime this root's own manager cannot launch on is refused before the launch is sent, through
+ *  the installed-extension lookup `up --runtime` uses. A manager on another host reads that host's
+ *  extensions, so a launch that may reach one sends the name and that manager decides. */
+async function refuseRuntimeHere(runtime: string, t: { space: string; root?: string }, serving: string | undefined, live: readonly string[] | undefined): Promise<void> {
+  if (!launchServedHere(t, serving, live)) return;
+  try { await preflightRuntime(runtime); }
+  catch (error) { throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the requested runtime did not pass preflight on this machine, where the selected manager runs; nothing was launched", { target: { space: t.space, managerInstanceId: serving ?? live?.[0] ?? null, runtime }, remedy: error instanceof Error ? error.message : "inspect the selected runtime provider" }); }
 }
 
 export interface ManagedLaunchResult {
@@ -492,26 +556,68 @@ export interface ManagedLaunchResult {
   readiness: "joined";
   requestedModel: string | null;
   detached: boolean;
+  /** Whether this seat's runtime opens a terminal stream, as its manager reports: false means no
+   *  `cotal attach` can open one here and this launch never tried. Null when the manager is too old
+   *  to report it, which is the only case that still finds out by attaching. */
+  streamsTerminal: boolean | null;
+  /** The channels the agent asked to read and post on and the ones its host granted, when the host
+   *  granted other ones. Null when it granted what was asked. */
+  acl: ManagedLaunchAcl | null;
 }
+
+/** A managed agent's read and post channels as asked for and as granted. */
+export interface ManagedLaunchAcl {
+  requested: { allowSubscribe: string[]; allowPublish: string[] };
+  effective: { allowSubscribe: string[]; allowPublish: string[] };
+}
+
+/** The manager's `acl` launch field: null when the manager sent none, undefined when it cannot be read. */
+export function managedLaunchAcl(value: unknown): ManagedLaunchAcl | null | undefined {
+  if (value === undefined) return null;
+  const lists = (raw: unknown) => {
+    const { allowSubscribe, allowPublish } = (raw ?? {}) as { allowSubscribe?: unknown; allowPublish?: unknown };
+    const channels = (list: unknown): list is string[] => Array.isArray(list) && list.every((channel) => typeof channel === "string");
+    return channels(allowSubscribe) && channels(allowPublish) ? { allowSubscribe: [...allowSubscribe], allowPublish: [...allowPublish] } : undefined;
+  };
+  const requested = lists((value as { requested?: unknown } | null)?.requested), effective = lists((value as { effective?: unknown } | null)?.effective);
+  return requested && effective ? { requested, effective } : undefined;
+}
+
+const channelList = (channels: readonly string[]): string => channels.length ? channels.join(", ") : "none";
 
 export interface ManagedLaunchObserver {
   /** A native joined receipt, not task completion. A composite command owns its one envelope. */
   ready(result: ManagedLaunchResult, warnings: readonly OutputWarning[]): void;
 }
 
-function managedLaunchView(r: ManagedLaunchResult): Report {
+export function managedLaunchView(r: ManagedLaunchResult): Report {
   const concrete = [r.name, r.space, r.managerInstanceId].every((value) => /^[A-Za-z0-9_-]+$/.test(value));
   const target = concrete ? `${r.name} --space ${r.space} --on ${r.managerInstanceId}` : "<name> --space <space> --on <manager-instance>";
+  const noStream = r.streamsTerminal === false;
   return { sections: [
     { title: "Agent joined", blocks: [
-      { kind: "fields", rows: [["Agent", r.name], ["Identity", r.id], ["Lifecycle", r.lifecycleUid], ["Space", r.space], ["Manager receipt", r.managerInstanceId], ["Original request", r.intent?.requestId ?? r.request?.requestId ?? "not recorded"], ["Accepted goal", r.request?.goalId ?? "not reported"], ["Application", r.harness], ["Runtime", r.runtime], ["Role", r.role ?? "not recorded"], ["Model request", r.requestedModel ?? "persona/manager precedence; not inspected"], ["View", r.detached ? "not attached" : "attaching to the allocated incarnation"]] },
+      { kind: "fields", rows: [["Agent", r.name], ["Identity", r.id], ["Lifecycle", r.lifecycleUid], ["Space", r.space], ["Manager receipt", r.managerInstanceId], ["Original request", r.intent?.requestId ?? r.request?.requestId ?? "not recorded"], ["Accepted goal", r.request?.goalId ?? "not reported"], ["Application", r.harness], ["Runtime", noStream ? `${r.runtime} · no terminal stream` : r.runtime], ["Role", r.role ?? "not recorded"], ...(r.acl ? [["Granted", `read ${channelList(r.acl.effective.allowSubscribe)} · post ${channelList(r.acl.effective.allowPublish)}; asked for read ${channelList(r.acl.requested.allowSubscribe)} · post ${channelList(r.acl.requested.allowPublish)}`] as [string, string]] : []), ["Model request", r.requestedModel ?? "persona/manager precedence; not inspected"], ["View", noStream ? `not attached; the seat runs in the manager's ${r.runtime} session` : r.detached ? "not attached" : "attaching to the allocated incarnation"]] },
       { kind: "lines", lines: [{ text: "The manager confirmed presence readiness. This is not proof that the kickoff task completed.", tone: "hint" }] },
     ] },
-    ...(r.detached ? [{ title: "Next", blocks: [{ kind: "commands" as const, items: [
+    ...(noStream ? [{ title: "Next", blocks: [
+      { kind: "commands" as const, items: [
+        { command: `${displayCmd()} watch --space ${r.space}`, description: "Follow this mesh, this agent's messages included" },
+        { command: `${displayCmd()} send -t ${r.name} "<message>"`, description: "Give the agent work over the mesh" },
+        { command: `${displayCmd()} status ${target}`, description: "Read the agent's reported state" },
+      ] },
+      { kind: "lines" as const, lines: [{ text: `${displayCmd()} attach is not available here: the ${r.runtime} runtime streams no terminal.`, tone: "hint" as const }] },
+    ] }] : r.detached ? [{ title: "Next", blocks: [{ kind: "commands" as const, items: [
       { command: `${displayCmd()} attach ${target}`, description: concrete ? "Return to this allocated incarnation's manager" : "Use the full identities recorded above" },
       { command: `${displayCmd()} status ${target}`, description: "Read the agent's reported state" },
     ] }] }] : []),
   ] };
+}
+
+/** The auth mode of the mesh `flags` name, or undefined when they name no registered mesh, which
+ *  the launch's own resolve then reports. */
+function meshMode(flags: { space?: string; server?: string }): string | undefined {
+  try { return resolveMeshTarget(process.cwd(), { space: flags.space, server: flags.server }).mode; }
+  catch { return undefined; }
 }
 
 /** Shared managed launch. The manager resolves its persona and returns real readiness before
@@ -527,13 +633,38 @@ export async function launchManagedPersona(
   // `COTAL_DEFAULT_PERSONA` > `default`). Identity is separate:
   // when `--name` is given it OVERRIDES the file's `name:` (foreground's `requested`), threaded
   // as the op's `identity` so it is never silently dropped in detached mode.
-  const on = onInstance(values.on, "cotal spawn <persona>");
+  let on = await managerPin(values, "cotal spawn <persona>");
   // From a managed seat's own shell the launch is the SEAT's, as its `cotal_spawn` tool is: the
   // manager records the seat as the spawner, so the seat can stop the child it asked for (#718).
   // `--on` keeps the pin on that path too.
   const flags = { space: values.space, server: values.server, creds: values.creds };
   const seatIntent = Boolean(process.env.COTAL_NAME || process.env.COTAL_ID || process.env.COTAL_LIFECYCLE_UID || process.env.COTAL_ACCEPTED_TOKEN);
   if (seatIntent && values.creds !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "a managed seat's child launch uses that seat's own caller, not a --creds override");
+  let cwd = values.cwd;
+  // On a terminal, a pinned manager that is not known to run on this host is asked which of its
+  // folders the agent works in, unless -C names one. One resolve, dropped again here, answers
+  // everything that question needs: that the mesh runs and the pin names a manager that is running,
+  // which manager an unpinned launch on a user-auth mesh goes to (the exchange picks your only live
+  // one, and the launch is pinned to it so the question asks about the manager that runs the
+  // agent), and the host that manager reports. So an unknown --on or a stopped mesh is refused
+  // before anything is asked, and the question still holds no manager credential: a typed folder is
+  // checked under a view of that manager acquired after it is answered, and the launch acquires its
+  // own below. A manager that has stopped by the time the launch is sent is refused there and goes
+  // to no other manager.
+  if (cwd === undefined && !seatIntent && canPrompt() && (on !== undefined || (values.creds === undefined && meshMode(flags) === "user"))) {
+    const probe = await resolveControlTarget(flags, "control-caller-privileged", on, { onRefusal: "throw" });
+    const pin = on ?? probe.auth.managerInstanceId;
+    if (pin !== undefined) {
+      if (!probe.auth.bearer) await refuseUnregisteredManager(probe.space, probe.server, probe.auth, pin);
+      on = pin;
+      const selection = await managerSelection(values, pin, probe);
+      if (selection.manager.host !== hostname()) {
+        const folder = await askManagerFolder(selection, process.argv.slice(2), (path) => checkFolder(flags, pin, path));
+        if (folder === null) process.exit(0);
+        cwd = folder;
+      }
+    }
+  }
   let seat: Awaited<ReturnType<typeof resolveSeatControlTarget>>;
   if (seatIntent) {
     try { seat = await resolveSeatControlTarget({ ...flags, space: flags.space ?? process.env.COTAL_SPACE }, on); }
@@ -556,7 +687,10 @@ export async function launchManagedPersona(
   if (eventsRequired && events === false) {
     throw new CommandFailure("refused", "PERMISSION_DENIED", `space "${t.space}" requires the event plane by registration policy; no launch was submitted`);
   }
-  provenance.read("mesh", `${t.space} (${t.server})`);
+  const live = on === undefined && !t.auth.bearer ? await refuseWithoutLiveManager(t.space, t.server, t.auth, { space: t.space, managerInstanceId: null, managerEpoch: null }, "launch an agent") : undefined;
+  // A pin the registry does not list is refused at once; only a registered manager is waited on.
+  if (on !== undefined && !t.auth.bearer) await refuseUnregisteredManager(t.space, t.server, t.auth, on);
+  if (values.runtime !== undefined) await refuseRuntimeHere(values.runtime.trim(), t, on ?? t.auth.managerInstanceId, live);
   const { ref, from: personaFrom } = spawnPersona(values.config, positionals, { space: t.space, preferences: cachedPreferences() });
   const managerConfigRef = values.config ?? (personaFrom !== undefined ? ref : undefined);
   const defaultAgent = callerHarness(t.space);
@@ -568,9 +702,11 @@ export async function launchManagedPersona(
     resumeAgent = values.agent ?? await launchAgentOrExit(t, on, { name: ref, config: managerConfigRef, defaultAgent });
     resumeClaim = await carryTranscriptOrExit(flags, on, values.resume, resumeAgent);
   }
-  console.error(renderReport({ space: t.space, sections: [{ title: "Managed launch", blocks: [{ kind: "fields", rows: [["Space", t.space], ["Manager selector", on ?? t.auth.managerInstanceId ?? "native class selection"], ["Persona", ref], ["File source", managerConfigRef ? `${managerConfigRef} · manager execution host` : "selected manager's persona catalog"], ["File transfer", "none"]] }, { kind: "lines", lines: [{ text: "The accepting manager validates its own visible file before allocation. No local file is uploaded, and a pin never selects a replacement manager.", tone: "hint" }] }] }] }, presentationOf(values) === "plain" ? "plain" : "rich", terminalWidth(process.stderr)));
-  console.error(c.dim("waiting for it to join the mesh (the manager replies on a real outcome - join, exit, or ~30s) …"));
-  const reply = await askManager(t.space, t.server, "start", {
+  // The report that answers names the mesh in its heading, so this block names it once, in a field.
+  const toStdout = !observer && presentationOf(values) !== "json";
+  (toStdout ? console.log : console.error)(renderReport({ sections: [{ title: "Managed launch", blocks: [{ kind: "fields", rows: [["Space", t.space], ["Manager selector", on ?? t.auth.managerInstanceId ?? "native class selection"], ["Persona", ref], ["File source", managerConfigRef ? `${managerConfigRef} · manager execution host` : "selected manager's persona catalog"], ["File transfer", "none"]] }, { kind: "lines", lines: [{ text: "The accepting manager validates its own visible file before allocation. No local file is uploaded, and a pin never selects a replacement manager.", tone: "hint" }] }] }] }, presentationOf(values) === "plain" ? "plain" : "rich", toStdout ? process.stdout : process.stderr));
+  for (const line of wrapWords("waiting for the manager: it answers when it refuses the launch, or when the agent joins or exits (at most about 30s) …", terminalWidth(process.stderr))) console.error(c.dim(line));
+  const start = () => askManager(t.space, t.server, "start", {
     name: ref,
     identity: values.name,
     role: values.role,
@@ -586,35 +722,107 @@ export async function launchManagedPersona(
     variant: values.variant,
     ...(values.restarts !== undefined ? { supervise: { restarts: Number(values.restarts), windowMs: Number(values["restart-window"]) } } : {}),
     launchOptions,
-    cwd: values.cwd,
+    cwd,
     resume: values.resume, // host-local session id; the manager preflights connector resume support
     ...(resumeClaim !== undefined ? { resumeClaim, resumeAgent } : {}),
     prompt: values.prompt,
     shareTools: parseShareSelection(values["share-tools"]),
-    subscribe: splitFlag(values.subscribe),
-    allowSubscribe: splitFlag(values["allow-subscribe"]),
-    allowPublish: splitFlag(values["allow-publish"]),
+    subscribe: parseCommaList(values.subscribe),
+    allowSubscribe: parseCommaList(values["allow-subscribe"]),
+    allowPublish: parseCommaList(values["allow-publish"]),
     // #373: send the bit only when the operator chose it. On an events-required space the
     // policy still forces the plane on (the manager refuses a non-admin caller on such a space
     // anyway, so the operator must hold the admin tier for the spawn to succeed at all).
     events: eventsRequired ? true : events,
+    ...(values.runtime !== undefined ? { runtime: values.runtime.trim() } : {}),
     // #159 B1: the manager replies only on a REAL outcome (presence join / process exit / ~30s
     // readiness backstop) — the start request must outlive that window, not the 5s op default.
     // `--on <instance>` pins the spawn to that exact manager instance (P2 item 3 multi-manager).
   }, t.auth, "owner", START_TIMEOUT_MS, { instanceId: on });
+  // A refusal before execution launched nothing, so the launch is sent again once a name held by a
+  // lifecycle that is not running is released. A name that runs is not launched a second time.
+  let reply: Awaited<ReturnType<typeof start>>;
+  try {
+    let mesh: MeshTarget | undefined;
+    try { mesh = resolveMeshTarget(process.cwd(), { space: flags.space, server: flags.server }); } catch { /* no registered mesh: nothing to release */ }
+    reply = await settleHeldName(flags, start, (o) => "value" in o && !o.value.ok && o.value.nativeOutcome === "not-executed"
+      ? heldAnswer({ code: o.value.code, details: o.value.details, message: o.value.error ?? "" }, values.name) : undefined, meshRelease(mesh));
+  } catch (e) {
+    if (!(e instanceof AgentAlreadyRunning)) throw e;
+    if (observer) throw new CommandFailure("refused", "CONFLICT", `${e.message}; nothing new was launched`, { target: { space: t.space, agent: e.agent, managerInstanceId: e.manager?.instanceId ?? null } });
+    return reportAlreadyRunning(e, values, t.space, t.server);
+  }
   const target = { space: t.space, managerInstanceId: reply.managerInstanceId ?? on ?? null, managerEpoch: reply.managerEpoch ?? null, ...(reply.intent ? { requestId: reply.intent.requestId, requestedGoalId: reply.intent.requestedGoalId ?? null } : {}), ...(reply.request ? { acceptedGoalId: reply.request.goalId ?? null } : {}) };
+  // A launch whose process the manager reports running is starting: one that waits for the operator at
+  // a screen its harness names was ready once it ran, and one that did not join in time may still be
+  // coming up or sitting at a prompt. Either way the operator is sent to its terminal.
+  const started = reply.ok ? reply.data as { name?: unknown; id?: unknown; lifecycleUid?: unknown; waitingFor?: unknown } | undefined : undefined;
+  const running = !reply.ok && reply.code === "uncertain" && reply.details?.some((d) => d.kind === GOAL_ENTITY_RUNNING_DETAIL_KIND) === true;
+  const startedName = typeof started?.name === "string" ? started.name : reply.request?.allocation?.name;
+  if (!observer && reply.managerInstanceId && startedName && (typeof started?.waitingFor === "string" || running)) {
+    const expected = typeof started?.id === "string" && typeof started.lifecycleUid === "string" ? { id: started.id, lifecycleUid: started.lifecycleUid } : undefined;
+    return reportStarting({ name: startedName, managerInstanceId: reply.managerInstanceId, ...(typeof started?.waitingFor === "string" ? { waitingFor: started.waitingFor } : {}), ...(expected ? { expected } : {}) }, values, t.space, t.server, target);
+  }
   if (!reply.ok) {
-    const refusal: Record<string, RefusalCode> = { "permission-denied": "PERMISSION_DENIED", "unauthenticated": "AUTH_REQUIRED", "not-found": "TARGET_NOT_FOUND", "unavailable": "TARGET_UNAVAILABLE", "bad-request": "SCHEMA_INVALID", "failed-precondition": "LIFECYCLE_BLOCKED", "already-exists": "CONFLICT", "unimplemented": "UNSUPPORTED" };
+    const refusal: Record<string, RefusalCode> = { "permission-denied": "PERMISSION_DENIED", "unauthenticated": "AUTH_REQUIRED", "not-found": "TARGET_NOT_FOUND", "unavailable": "TARGET_UNAVAILABLE", "bad-request": "SCHEMA_INVALID", "failed-precondition": "LIFECYCLE_BLOCKED", "already-exists": "CONFLICT", "conflict": "CONFLICT", "unimplemented": "UNSUPPORTED" };
     const code = reply.code === undefined ? undefined : refusal[reply.code];
     const native = { code: reply.code, outcome: reply.nativeOutcome, ...(reply.request || reply.intent ? { detail: { request: reply.request ?? null, intent: reply.intent ?? null, observation: reply.observationCause ?? null } } : {}) };
-    if (reply.nativeOutcome === "not-executed" && code) throw new CommandFailure("refused", code, reply.error ? oneLine(reply.error) : "the manager refused the launch before execution", { target, native, remedy: "nothing was launched; fix what the manager reported, then run the spawn again" });
+    // The broker attested that no manager received an unpinned launch: none takes the class queue.
+    if (on === undefined && !t.auth.bearer && reply.unanswered && reply.nativeOutcome === "not-executed")
+      throw await unservedClassLaunch(seat ? undefined : flags, t, values.agent ?? defaultAgent, { target, native });
+    // A pinned describe that drew no answer means the launch was never sent, as ps and stop --on say.
+    if (on !== undefined && describeUnanswered(reply))
+      throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `manager instance ${on} did not answer, so the launch was not sent and nothing was launched`, { target, native: { code: reply.code, ...(reply.error ? { detail: oneLine(reply.error) } : {}) }, remedy: "cotal ps shows which managers answer; rerun the spawn on one of them with --on <instance>" });
+    // So does an unpinned one: no manager answered, and the launch was never published.
+    if (on === undefined && describeUnanswered(reply)) throw unansweredClassLaunch(t, { target, native: { code: reply.code, ...(reply.error ? { detail: oneLine(reply.error) } : {}) } });
+    // The owner's seat cap. Keyed on the marker, not the code: the numbers are what a script acts
+    // on, and the remedy is the operator's knob, neither of which a code alone can carry. It is a
+    // CONFLICT with the seats this owner already holds, the same shape as a pinned-name collision:
+    // nothing here is unreachable or unauthorized, and freeing one seat admits the launch.
+    const cap = seatCapFrom(reply);
+    if (cap !== undefined)
+      throw new CommandFailure("refused", "CONFLICT", reply.error ? oneLine(reply.error) : "the manager refused the launch: this owner is at its seat cap", {
+        target, native: { code: reply.code, outcome: reply.nativeOutcome, detail: { owner: cap.owner, seats: cap.seats, cap: cap.cap } },
+        remedy: `nothing was launched; stop one of this owner's seats with \`cotal stop --name <name>\`, or ask the operator who runs that manager to restart it with a higher --seat-cap (it admits ${cap.cap} per owner)`,
+      });
+    // A manager without the connector: it is added where that manager runs, not on this machine.
+    const absent = reply.nativeOutcome === "not-executed" && reply.error !== undefined ? hintedConnector(reply.error) : undefined;
+    if (absent !== undefined) {
+      const answered = reply.managerInstanceId ?? on;
+      throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `no connector "${absent}" is installed on ${answered ? await managerNamed(seat ? undefined : flags, t, answered) : "the manager"}; nothing was launched`, { target, native,
+        remedy: `add it where that manager runs, such as ${extAddFor(absent)}, then restart that manager; it reads its agent applications when it starts` });
+    }
+    if (reply.nativeOutcome === "not-executed" && code) {
+      // A manager without the persona: it is created on that manager's host, or the spawn goes to
+      // another live manager whose catalog has it.
+      const missing = managerConfigRef === undefined && reply.error?.startsWith(`no persona "${ref}"`) === true;
+      const elsewhere = missing ? await managersWithPersona(flags, reply.managerInstanceId ?? on, ref).catch((): string[] => []) : [];
+      throw new CommandFailure("refused", code, reply.error ? oneLine(reply.error) : "the manager refused the launch before execution", { target, native, remedy: elsewhere.length
+        ? `nothing was launched; ${elsewhere.length === 1 ? "this manager of yours has" : "these managers of yours have"} ${ref === "default" ? "a default persona" : `persona "${ref}"`}: ${elsewhere.map((selector) => rerunOn(process.argv.slice(2), selector)).join(" or ")}`
+        : missing ? "nothing was launched; create that file on the manager's host, then run the spawn again"
+        // This CLI refused before sending, so the manager reported nothing; the refusal names the side to update.
+        : reply.details?.some((d) => d.kind === EP_UNDECLARED_ARG) ? "nothing was launched; update the side the refusal names, then run the spawn again"
+        : "nothing was launched; fix what the manager reported, then run the spawn again" });
+    }
+    // A committed `failed` terminal is the manager's answer: the launch ran and failed, as an agent
+    // that exits at once does, and the manager says why.
+    if (reply.code === "failed")
+      throw new CommandFailure("failed", "OPERATION_FAILED", reply.error ? oneLine(reply.error) : "the manager reported that the launch failed", { target, native, remedy: "fix what the manager reported, then run the spawn again" });
     const unknown = reply.nativeOutcome !== "executed" || reply.unanswered;
-    throw new CommandFailure(unknown ? "unknown" : "failed", unknown ? "OPERATION_UNKNOWN" : "OPERATION_FAILED", reply.error ? oneLine(reply.error) : "the manager did not confirm launch readiness", { target, native, remedy: "inspect cotal ps and the selected manager before retrying; this launch was not submitted again" });
+    throw new CommandFailure(unknown ? "unknown" : "failed", unknown ? "OPERATION_UNKNOWN" : "OPERATION_FAILED", reply.error ? oneLine(reply.error) : "the manager did not confirm launch readiness", { target, native, remedy: "inspect `cotal ps` and the selected manager before retrying; this launch was not submitted again" });
   }
-  const d = reply.data as { name?: unknown; id?: unknown; lifecycleUid?: unknown; role?: string; agent?: unknown; mode?: unknown; eventsNotice?: string };
+  const d = reply.data as { name?: unknown; id?: unknown; lifecycleUid?: unknown; role?: string; agent?: unknown; mode?: unknown; streamsTerminal?: unknown; eventsNotice?: string; acl?: unknown };
   if (!d || typeof d.name !== "string" || typeof d.id !== "string" || typeof d.lifecycleUid !== "string" || typeof d.agent !== "string" || typeof d.mode !== "string" || !reply.managerInstanceId)
-    throw new CommandFailure("partial", "OPERATION_PARTIAL", "the manager reported a successful launch but did not supply the identity and manager needed for a safe handoff", { target, changed: [{ kind: "managed-launch", readinessReported: true }], remedy: "inspect cotal ps before doing anything else; do not relaunch" });
-  const result: ManagedLaunchResult = { kind: "managed-launch", name: d.name, id: d.id, lifecycleUid: d.lifecycleUid, space: t.space, managerInstanceId: reply.managerInstanceId, harness: d.agent, runtime: d.mode, role: d.role ?? null, request: reply.request ?? null, intent: reply.intent ?? null, readiness: "joined", requestedModel: values.model ?? null, detached: values.detach === true };
+    throw new CommandFailure("partial", "OPERATION_PARTIAL", "the manager reported a successful launch but did not supply the identity and manager needed for a safe handoff", { target, changed: [{ kind: "managed-launch", readinessReported: true }], remedy: "inspect `cotal ps` before doing anything else; do not relaunch" });
+  const acl = managedLaunchAcl(d.acl);
+  if (acl === undefined)
+    throw new CommandFailure("partial", "OPERATION_PARTIAL", "the agent joined, but the manager's report of the channels its host granted could not be read; no replacement was launched", { target, changed: [{ kind: "managed-launch", readinessReported: true }], remedy: "inspect `cotal ps` before doing anything else; do not relaunch" });
+  // The manager's own answer about the runtime it spawned through. A manager too old to report it
+  // leaves null, and that launch finds out by attaching, as every launch used to: the CLI cannot
+  // know better from here, and reading an absent field as "no stream" would leave a pty foreground
+  // spawn unattached against every manager below this version.
+  const streamsTerminal = typeof d.streamsTerminal === "boolean" ? d.streamsTerminal : null;
+  const result: ManagedLaunchResult = { kind: "managed-launch", name: d.name, id: d.id, lifecycleUid: d.lifecycleUid, space: t.space, managerInstanceId: reply.managerInstanceId, harness: d.agent, runtime: d.mode, role: d.role ?? null, request: reply.request ?? null, intent: reply.intent ?? null, readiness: "joined", requestedModel: values.model ?? null, detached: values.detach === true, streamsTerminal, acl };
   const presentation = presentationOf(values);
   const warnings: OutputWarning[] = d.eventsNotice ? [{ code: "EVENT_PLANE_NOTICE", target, message: d.eventsNotice }] : [];
   if (observer) {
@@ -622,16 +830,195 @@ export async function launchManagedPersona(
     catch { throw new CommandFailure("partial", "OPERATION_PARTIAL", "the agent joined, but the composite command could not record its native readiness; no replacement was launched", { target, changed: [result], remedy: "inspect the original agent and manager before another launch" }); }
   } else writeResult(presentation, { command: "spawn", target, result, warnings }, managedLaunchView);
   if (values.detach) return;
+  // A runtime that streams no terminal has none to attach, so this launch does not ask for one: the
+  // seat is up, the receipt above says where it runs and what reaches it, and the command is done.
+  // Asking anyway is the whole of this failure mode - the manager's refusal is correct and cannot
+  // be retried, and turning a launch that did everything the runtime allows into a partial told the
+  // operator to reattach, which that runtime cannot do either.
+  if (streamsTerminal === false) return;
+  // A partial names the step that works on this seat, on the manager that runs it: ps, then attach
+  // where the runtime streams a terminal, or its own session where it streams none.
+  const where = `--space ${shellWord(t.space)} --on ${shellWord(reply.managerInstanceId)}`;
+  const ps = `${displayCmd()} ps ${where}`;
+  const next = async (): Promise<string> => (streamsTerminal ?? await registeredStreamsTerminal(result.runtime, t.space)) === false
+    ? `nothing was relaunched; check the agent with ${codeSpan(ps)} and watch it in the manager's ${result.runtime} session, which has no terminal to attach`
+    : `nothing was relaunched; check the agent with ${codeSpan(ps)}, then attach to it with ${codeSpan(`${displayCmd()} attach ${shellWord(result.name)} ${where}`)}`;
   let verdict: Awaited<ReturnType<typeof attachSeat>>;
   try {
     verdict = await attachSeat({ space: t.space, server: t.server, creds: values.creds, name: d.name, expectedTarget: { id: d.id, lifecycleUid: d.lifecycleUid }, asSeat: seat !== undefined }, { on: reply.managerInstanceId, reconnect: true, onRefusal: "throw" });
-  } catch {
-    throw new CommandFailure("partial", "OPERATION_PARTIAL", "the agent joined, but its terminal could not be attached; it was not relaunched", { target, changed: [result], remedy: "use cotal ps and attach to the recorded agent and manager" });
+  } catch (e) {
+    throw new CommandFailure("partial", "OPERATION_PARTIAL", "the agent joined, but its terminal could not be attached; it was not relaunched", { target, changed: [result], native: { detail: oneLine((e as Error).message) }, remedy: await next() });
   }
-  if (verdict.kind === "failed") throw new CommandFailure("partial", "OPERATION_PARTIAL", "the agent joined, but attachment did not complete; no replacement was launched", { target, changed: [result], native: { detail: { message: verdict.message } }, remedy: "inspect the original agent and reattach; do not relaunch" });
-  if (verdict.kind === "gone" && observer) throw new CommandFailure("partial", "OPERATION_PARTIAL", "the agent joined, but its exact native terminal was unavailable before setup could open the view; no replacement was launched", { target, changed: [result], remedy: "inspect the original lifecycle and manager before another startup" });
-  console.error(renderReport({ sections: [{ title: verdict.kind === "gone" ? "Attach target unavailable" : verdict.reason === "detached" ? "Detached" : "Attach session ended", blocks: [{ kind: "fields", rows: [["Agent", d.name], ["Identity", d.id], ["Manager", reply.managerInstanceId]] }, { kind: "lines", lines: [{ text: "Leaving the view sent no stop request. The original lifecycle was not replaced.", tone: "hint" }] }] }] }, "rich", terminalWidth(process.stderr)));
+  // A manager too old to report the terminal says so by refusing the attach, and that refusal ends
+  // the launch as a reported one does. Since #4845 it carries a marker. Before it, the manager refused
+  // with the runtime's own text and the code an agent that is not running also gets, so that refusal
+  // counts only for a runtime this CLI's own registry declares streams no terminal.
+  if (verdict.kind === "failed" && streamsTerminal === null && (verdict.refusal?.noTerminal || (verdict.refusal?.code === "failed-precondition" && await registeredStreamsTerminal(result.runtime, t.space) === false))) {
+    stderrLine("", `the ${result.runtime} runtime has no terminal to attach, so none was opened; the agent runs in the manager's ${result.runtime} session`, c.dim);
+    return;
+  }
+  if (verdict.kind === "failed") throw new CommandFailure("partial", "OPERATION_PARTIAL", "the agent joined, but attachment did not complete; no replacement was launched", { target, changed: [result], native: { detail: oneLine(verdict.message) }, remedy: await next() });
+  if (verdict.kind === "gone" && observer) throw new CommandFailure("partial", "OPERATION_PARTIAL", "the agent joined, but its exact native terminal was unavailable before setup could open the view; no replacement was launched", { target, changed: [result], remedy: `check the original lifecycle with ${codeSpan(ps)} before another startup` });
+  console.error(renderReport({ sections: [{ title: verdict.kind === "gone" ? "Attach target unavailable" : verdict.reason === "detached" ? "Detached" : "Attach session ended", blocks: [{ kind: "fields", rows: [["Agent", d.name], ["Identity", d.id], ["Manager", reply.managerInstanceId]] }, { kind: "lines", lines: [{ text: "Leaving the view sent no stop request. The original lifecycle was not replaced.", tone: "hint" }] }] }] }, "rich", process.stderr));
 }
+
+/** Whether `runtime` streams a terminal, as a provider registered in this CLI or installed as its
+ *  extension declares it. Null when this CLI has no such provider, or it does not say. */
+async function registeredStreamsTerminal(runtime: string, space: string): Promise<boolean | null> {
+  try {
+    const declared: unknown = (await materializeExtension<RuntimeProvider>({ kind: "runtime", name: runtime })).create({ session: `cotal-${space}` }).streamsTerminal;
+    return typeof declared === "boolean" ? declared : null;
+  } catch { return null; }
+}
+
+/** The mesh's release of one agent lifecycle, when `mesh` is a remote user-auth mesh that advertises
+ *  an agent-provisioning endpoint and the auth provider can call it there. */
+function meshRelease(mesh: MeshTarget | undefined): ((lifecycleUid: string, agent: string) => Promise<AgentLifecycleRelease>) | undefined {
+  const ua = mesh?.mode === "user" && mesh.userAuth?.remote ? mesh.userAuth : undefined;
+  const url = ua?.endpoints?.agentProvisioningUrl;
+  if (!ua || !url) return undefined;
+  const provider = resolveAuthProvider();
+  if (!provider.releaseAgentLifecycle) return undefined;
+  return (lifecycleUid, agent) => provider.releaseAgentLifecycle!({ url, idpUrl: ua.idp.url, lifecycleUid, actor: agent });
+}
+
+/** A managed launch whose process runs but has not joined the mesh: say where it runs and, when its
+ *  harness waits for the operator, at which screen. A terminal attaches to an operator screen at once,
+ *  even with -d, and to a starting agent only when the spawn was not detached; otherwise the attach
+ *  command is printed. */
+async function reportStarting(start: { name: string; managerInstanceId: string; waitingFor?: string; expected?: { id: string; lifecycleUid: string } }, values: FlagValues<typeof spawnFlags>, space: string, server: string, target: Record<string, unknown>): Promise<void> {
+  const selection = await managerSelection(values, start.managerInstanceId).catch(() => undefined);
+  const selector = selection?.selector ?? start.managerInstanceId, host = selection?.manager.host ?? null;
+  const attach = `${displayCmd()} attach ${shellWord(start.name)} --on ${shellWord(selector)}`;
+  const presentation = presentationOf(values);
+  const now = presentation !== "json" && canPrompt() && (start.waitingFor !== undefined || !values.detach);
+  const place = `on ${selector}${host && host !== selector ? ` (${host})` : ""}`;
+  writeResult(presentation, {
+    command: "spawn",
+    target,
+    result: { kind: "managed-launch-running", name: start.name, managerInstanceId: start.managerInstanceId, host, waitingFor: start.waitingFor ?? null, attach },
+  }, (r) => ({ sections: [{ title: r.waitingFor ? "Waiting for you" : "Agent starting", blocks: [{ kind: "lines", lines: [
+    r.waitingFor ? `${r.name} is running ${place} and waiting for you at ${r.waitingFor}.` : `${r.name} is running ${place} and has not joined the mesh yet; it may still be starting or waiting at a prompt.`,
+    { text: now ? "Attaching to it now." : `Attach to it: ${codeSpan(r.attach)}`, tone: "hint" },
+  ] }] }] }));
+  if (!now) return;
+  const verdict = await attachSeat({ space, server, creds: values.creds, name: start.name, ...(start.expected ? { expectedTarget: start.expected } : {}) }, { on: start.managerInstanceId, reconnect: true, onRefusal: "throw" });
+  if (verdict.kind === "failed") stderrLine("! ", `${start.name} could not be attached: ${verdict.message}; attach to it with ${codeSpan(attach)}`, c.yellow);
+}
+
+/** The agent a spawn asked for already runs, so nothing new is launched: say where it runs, then
+ *  attach to it in this terminal unless the spawn was detached or cannot attach, or print the
+ *  command that does. */
+async function reportAlreadyRunning(running: AgentAlreadyRunning, values: { detach?: boolean; creds?: string; json?: boolean; plain?: boolean }, space: string, server: string | undefined): Promise<void> {
+  const where = running.manager;
+  const attach = where ? `${displayCmd()} attach ${shellWord(running.agent)} --on ${shellWord(where.selector)}` : null;
+  const presentation = presentationOf(values);
+  const now = where !== null && !values.detach && presentation !== "json" && canPrompt();
+  const place = where ? `on ${where.selector}${where.host && where.host !== where.selector ? ` (${where.host})` : ""}` : "on the mesh, not on a manager of yours";
+  writeResult(presentation, {
+    command: "spawn",
+    target: { space, agent: running.agent, managerInstanceId: where?.instanceId ?? null },
+    result: { kind: "already-running", name: running.agent, managerInstanceId: where?.instanceId ?? null, host: where?.host ?? null, attach },
+    noOp: true,
+  }, (r) => ({ sections: [{ title: "Already running", blocks: [{ kind: "lines", lines: [
+    `${r.name} is already running ${place}; nothing new was launched.`,
+    { text: now ? "Attaching to it now." : r.attach ? `Attach to it: ${codeSpan(r.attach)}` : "To start a second agent, pick another name with --name <other>.", tone: "hint" },
+  ] }] }] }));
+  if (!now) return;
+  const verdict = await attachSeat({ space, server, creds: values.creds, name: running.agent }, { on: where!.instanceId, reconnect: true, onRefusal: "throw" });
+  if (verdict.kind === "failed") stderrLine("! ", `${running.agent} could not be attached: ${verdict.message}; attach to it with ${codeSpan(attach!)}`, c.yellow);
+}
+
+/** Whether the manager `on` pins can launch an agent in `path`, answered by its `resolve-cwd` over
+ *  a view of that manager acquired for this check alone. A path it cannot use is its refusal, which
+ *  the question shows and asks again. A check it does not answer refuses the launch: the reason
+ *  rides the structured cause rather than the sentence, because a responder's own words there are
+ *  an internal subject and a spec reference, and the way past it is `-C <dir>`, which sends the
+ *  folder with the launch and asks nothing. */
+async function checkFolder(flags: ConnectFlags, on: string, path: string): Promise<FolderCheck> {
+  const t = await resolveControlTarget(flags, "control-caller-privileged", on, { onRefusal: "throw" });
+  const reply = await askManager(t.space, t.server, "resolveCwd", { cwd: path }, t.auth, "owner", undefined, { instanceId: on });
+  const cwd = reply.ok ? (reply.data as { cwd?: unknown } | undefined)?.cwd : undefined;
+  if (typeof cwd === "string") return { cwd };
+  if (!reply.ok && reply.code === "failed-precondition" && reply.error) return { refusal: oneLine(reply.error) };
+  throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `the folder ${JSON.stringify(path)} could not be checked with manager instance ${on}, so nothing was launched`, {
+    target: { space: t.space, managerInstanceId: on },
+    ...(reply.error ? { native: { ...(reply.code ? { code: reply.code } : {}), detail: { reason: oneLine(reply.error) } } } : {}),
+    remedy: `send the folder with the launch instead of answering the question: ${codeSpan(rerunWithCwd(process.argv.slice(2), path, on))}`,
+  });
+}
+
+/** Why no manager received an unpinned launch. A manager whose boot inventory found no agent
+ *  application leaves the class queue, so when every live one that answered reports that on its own
+ *  instance rail the refusal names the application to add. A manager the broker affirms gone is
+ *  skipped and named in a warning, so its registration costs no deadline and hides no reason. A seat
+ *  (`flags` undefined) does not read the census as the operator. `agent` is the harness this caller
+ *  would choose, for the install hint. */
+async function unservedClassLaunch(flags: ConnectFlags | undefined, t: ControlTarget, agent: string | undefined, at: { target: object; native: object }): Promise<CommandFailure> {
+  const census = flags ? await classLaunchCensus(flags, t).catch(() => undefined) : undefined;
+  for (const instanceId of census?.gone ?? [])
+    recordOperationWarning({ code: "MANAGER_SILENT", target: { space: t.space, managerInstanceId: instanceId }, message: `manager ${instanceId} was skipped: its registration is stale (the broker reports nothing subscribed on its rail; its host is gone and never deregistered)` });
+  if (census?.noApplication) {
+    return new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `no manager of yours takes unpinned launches: none ${census.gone.length ? "that answered " : ""}has an agent application installed${census.managers.length ? ` (${census.managers.join(", ")})` : ""}; nothing was launched`, { ...at,
+      remedy: `add one where ${census.managers.length > 1 ? "one of them" : "that manager"} runs, such as ${extAddFor(agent ?? DEFAULT_CONNECTOR)}, then restart that manager; it reads its agent applications when it starts` });
+  }
+  return new CommandFailure("refused", "TARGET_UNAVAILABLE", "no manager of yours received this unpinned launch; nothing was launched", { ...at, remedy: "run the spawn again, or pin one manager with --on <instance> from `cotal ps`" });
+}
+
+/** Why no manager answered an unpinned launch's describe, so the launch was never sent. This root's
+ *  own stack says why when it records one, in the words `ps` uses for the same silence. */
+function unansweredClassLaunch(t: ControlTarget, at: { target: object; native: object }): CommandFailure {
+  const refused = (message: string, remedy: string) => new CommandFailure("refused", "TARGET_UNAVAILABLE", `${message}, so the launch was not sent and nothing was launched`, { ...at, remedy });
+  if (t.root !== undefined && stackManagerStarting(t.root, t.space)) return refused("the stack's manager is starting", "run the spawn again once `cotal up` reports the manager started");
+  if (t.root !== undefined && stackManagerAbsent(t.root, t.space)) return refused("no manager is running for this space", "start the stack's manager with bare `cotal up`; a stack started with --no-manager has none");
+  const pid = t.root === undefined ? undefined : runningStackManagerPid(t.root, t.space);
+  if (pid !== undefined) return refused(`this space's stack manager (pid ${pid}) is running but did not answer`, `if it stays unresponsive, end that process with kill -KILL ${pid}; then bare \`cotal up\` starts the manager again`);
+  return refused("no manager answered", "cotal ps shows which managers answer; run the spawn again once one does");
+}
+
+/** What the registered managers say about unpinned launches. `noApplication` holds when one answered
+ *  and each one that answered says it runs agents but takes no unpinned launch; `gone` lists the
+ *  managers skipped because the broker affirms nothing subscribed on their rail. Status has no
+ *  scatter route, so each is read pinned to its instance, racing the rail probe: whichever settles
+ *  first stops the other, so neither a live manager nor a gone one is waited out. */
+async function classLaunchCensus(flags: ConnectFlags, t: ControlTarget): Promise<{ noApplication: boolean; gone: string[]; managers: string[] }> {
+  const gone: string[] = [];
+  const managers: string[] = [];
+  for (const instanceId of await liveManagerIds(t.space, t.server, t.auth)) {
+    const pinned = await resolveControlTarget(flags, "control-caller-privileged", instanceId, { onRefusal: "throw" });
+    const settled = new AbortController();
+    const status = await Promise.race([
+      managerRailGone(pinned.space, pinned.server, pinned.auth, instanceId, settled.signal).then((isGone) => isGone ? undefined : new Promise<never>(() => {})),
+      askManager(pinned.space, pinned.server, "managerStatus", undefined, pinned.auth, "owner", 5_000, { instanceId, signal: settled.signal }),
+    ]).finally(() => settled.abort());
+    if (status === undefined) {
+      gone.push(instanceId);
+      continue;
+    }
+    const data = status.data as { classSpawn?: unknown; execution?: unknown; host?: unknown } | undefined;
+    if (!status.ok || data?.classSpawn !== false || data.execution === "none") return { noApplication: false, gone, managers };
+    managers.push(managerAt(instanceId, data.host));
+  }
+  return { noApplication: managers.length > 0, gone, managers };
+}
+
+/** A manager as a refusal names it: its instance id, and the host its own status reports. */
+const managerAt = (instanceId: string, host: unknown): string => typeof host === "string" && host ? `manager ${instanceId} on host ${host}` : `manager ${instanceId}`;
+
+/** {@link managerAt} for one manager, read pinned to it. A seat (`flags` undefined) reads with its
+ *  own caller, and a status that cannot be read leaves the host out. */
+async function managerNamed(flags: ConnectFlags | undefined, t: ControlTarget, instanceId: string): Promise<string> {
+  try {
+    const pinned = flags ? await resolveControlTarget(flags, "control-caller-privileged", instanceId, { onRefusal: "throw" }) : t;
+    const status = await askManager(pinned.space, pinned.server, "managerStatus", undefined, pinned.auth, "owner", 5_000, { instanceId });
+    return managerAt(instanceId, status.ok ? (status.data as { host?: unknown } | undefined)?.host : undefined);
+  } catch {
+    return managerAt(instanceId, undefined);
+  }
+}
+
+/** The `cotal ext add` that installs connector `name`, quoted for a refusal. */
+const extAddFor = (name: string): string => OFFICIAL_CONNECTORS[name] ? `\`cotal ext add ${OFFICIAL_CONNECTORS[name]}\`` : `\`cotal ext add <npm-package>\` for "${name}"`;
 
 /** The harness the manager's `spawn` resolves for this persona, read with the same fields `start` sends. */
 async function launchAgentOrExit(t: ControlTarget, on: string | undefined, fields: { name: string; config?: string; defaultAgent?: string }): Promise<string> {
@@ -653,12 +1040,12 @@ async function carryTranscriptOrExit(flags: ConnectFlags, on: string | undefined
     await materializeExtension({ kind: "connector", name: agent });
     found = registry.resolve<Connector>("connector", agent).resumeTranscript?.find(id, process.env);
   } catch (e) {
-    console.error(c.red(`✗ resume: ${(e as Error).message}`));
+    stderrLine("✗ ", `resume: ${(e as Error).message}`, c.red);
     process.exit(1);
   }
   if (found === undefined) return undefined;
   if (on === undefined) {
-    console.error(c.red(`✗ resume: session ${id} is held on this host, and carrying it needs one manager instance; pass --on <instance>`));
+    stderrLine("✗ ", `resume: session ${id} is held on this host, and carrying it needs one manager instance; pass --on <instance>`, c.red);
     process.exit(1);
   }
   const bytes = readFileSync(found.path);
@@ -697,21 +1084,22 @@ async function transferWriterOrExit(flags: ConnectFlags, t: ControlTarget, insta
       const view = await userViewAuth(conn, "transfer-writer", { transferWriter: { instanceId, hex } });
       return { bearer: view.bearer, sentinelCreds: view.sentinelCreds, tls: conn.tls };
     } catch (e) {
-      console.error(c.red(`✗ resume: ${(e as Error).message}`));
+      stderrLine("✗ ", `resume: ${(e as Error).message}`, c.red);
       process.exit(1);
     }
   }
   if (t.mode !== "auth" || !t.spaceAuth) {
-    console.error(c.red("✗ resume: carrying a session mints a transfer writer from this mesh's signing seed, and this host holds none for it (an off-registry connection)"));
+    stderrLine("✗ ", "resume: carrying a session mints a transfer writer from this mesh's signing seed, and this host holds none for it (an off-registry connection)", c.red);
     process.exit(1);
   }
   return { creds: await mintCreds(t.spaceAuth, newIdentity(), "transfer-writer", { transferWriter: { instanceId, hex } }), tls: t.auth.tls };
 }
 
 /**
- * `cotal spawn [<persona>] [--file <persona-file>]` launches through the manager and attaches
- * to its allocated incarnation. `--detach` returns after readiness; `--foreground` explicitly
- * runs the native application in this terminal. File validation belongs to that execution host.
+ * `cotal spawn [<persona>] [--file <persona-file>]` runs the native application in this terminal.
+ * `--detach` launches it through a manager and returns after readiness, and `--on <instance>`
+ * launches it through that manager and attaches to its allocated incarnation. File validation
+ * belongs to the execution host.
  *
  * The launch recipe is the connector's `buildLaunch` (the single source of truth,
  * shared with the manager); only *how the spec runs* differs — foreground exec
@@ -751,10 +1139,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     scrubEnrollmentEnv(process.env);
   }
   let redeemedEnrollment: ReturnType<typeof checkEnrollmentBundle> | undefined;
-  if (handoffText === undefined && (values["expect-owner"] !== undefined || values["expect-lifecycle-uid"] !== undefined)) {
-    console.error(c.red(`✗ --expect-owner and --expect-lifecycle-uid apply only with ${MANAGED_HANDOFF_FILE_ENV}`));
-    process.exit(1);
-  }
+  let handoffManagerInstanceId: string | undefined;
   if (handoffText !== undefined) {
     const refusal =
       enrollmentUrl ? `${MANAGED_HANDOFF_FILE_ENV} cannot be combined with ${ENROLLMENT_URL_ENV}/${ENROLLMENT_FILE_ENV}`
@@ -762,18 +1147,20 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       : !values.space || !values.name || !values["expect-owner"] || !values["expect-lifecycle-uid"]
         ? `${MANAGED_HANDOFF_FILE_ENV} requires --space, --name, --expect-owner and --expect-lifecycle-uid`
       : !values.config ? `${MANAGED_HANDOFF_FILE_ENV} requires --config <persona-file>`
+      : !process.env.COTAL_MANAGER_INSTANCE?.trim() ? `${MANAGED_HANDOFF_FILE_ENV} requires COTAL_MANAGER_INSTANCE`
       : undefined;
     if (refusal) {
-      console.error(c.red(`✗ ${refusal}`));
+      stderrLine("✗ ", `${refusal}`, c.red);
       process.exit(1);
     }
     try {
       loadLaunchPersonaFile(resolvePath(values.config!));
     } catch (e) {
-      console.error(c.red(`✗ cannot load the managed handoff persona: ${(e as Error).message}`));
+      stderrLine("✗ ", `cannot load the managed handoff persona: ${(e as Error).message}`, c.red);
       process.exit(1);
     }
     try {
+      handoffManagerInstanceId = assertLifecycleToken(process.env.COTAL_MANAGER_INSTANCE!.trim(), "COTAL_MANAGER_INSTANCE");
       const handoff = parseManagedLifecycleHandoff(handoffText, {
         space: values.space!, owner: values["expect-owner"]!, actor: values.name!, lifecycleUid: values["expect-lifecycle-uid"]!,
       });
@@ -792,29 +1179,38 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       }
       if (!registered) await registerEnrollmentMesh(stock, resolvePath(values.config!, ".."), HANDOFF_REFUSALS);
     } catch (e) {
-      console.error(c.red(`✗ ${(e as Error).message}`));
+      stderrLine("✗ ", `${(e as Error).message}`, c.red);
       process.exit(1);
     }
   }
   if (enrollmentUrl && values.detach) {
-    console.error(c.red(`✗ ${ENROLLMENT_URL_ENV}/${ENROLLMENT_FILE_ENV} apply only to a foreground persona spawn`));
+    stderrLine("✗ ", `${ENROLLMENT_URL_ENV}/${ENROLLMENT_FILE_ENV} apply only to a foreground persona spawn`, c.red);
     process.exit(1);
   }
   if (enrollmentUrl && !values.space) {
-    console.error(c.red(`✗ ${ENROLLMENT_URL_ENV}/${ENROLLMENT_FILE_ENV} require --space <s>`));
+    stderrLine("✗ ", `${ENROLLMENT_URL_ENV}/${ENROLLMENT_FILE_ENV} require --space <s>`, c.red);
     process.exit(1);
   }
-  const direct = values.foreground === true || handoffText !== undefined || enrollmentUrl !== undefined;
+  // On a terminal, a spawn that names no launch mode, persona file or terminal-only option asks
+  // where it runs when several of your managers are live. This terminal is the default; a manager
+  // launches it and attaches here, as --on does.
+  if (handoffText === undefined && enrollmentUrl === undefined && values.foreground !== true && !spawnUsesManager(values) && values.file === undefined
+    && values.config === undefined && !values["live-only"] && !values.json && !values.plain && canPrompt()) {
+    const place = await askSpawnPlace(values, process.argv.slice(2));
+    if (place === null) process.exit(0);
+    if (place) values.on = place.instanceId;
+  }
+  const direct = values.foreground === true || handoffText !== undefined || enrollmentUrl !== undefined || !spawnUsesManager(values);
   const enrollmentBootstrap = Boolean(enrollmentUrl && values.space && !findMesh(values.space));
   if (enrollmentBootstrap) {
     if (!values.config || (!values.config.includes("/") && !values.config.includes("\\") && !values.config.endsWith(".md"))) {
-      console.error(c.red("✗ enrollment bootstrap needs --config <persona-file>; no remote persona catalog exists on this machine yet"));
+      stderrLine("✗ ", "enrollment bootstrap needs --config <persona-file>; no remote persona catalog exists on this machine yet", c.red);
       process.exit(1);
     }
     try {
       loadLaunchPersonaFile(resolvePath(values.config));
     } catch (e) {
-      console.error(c.red(`✗ cannot load the enrollment bootstrap persona: ${(e as Error).message}`));
+      stderrLine("✗ ", `cannot load the enrollment bootstrap persona: ${(e as Error).message}`, c.red);
       process.exit(1);
     }
   }
@@ -822,7 +1218,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // Explicit files retain the execution host's path semantics. A manager pin is meaningful for
   // either managed persona spelling; direct execution has no manager placement to select.
   if (values.on !== undefined && direct) {
-    console.error(c.red("✗ --on pins a managed imperative launch; direct --foreground does not take that manager selector"));
+    stderrLine("✗ ", "--on pins a managed imperative launch; a spawn in this terminal does not take that manager selector", c.red);
     process.exit(1);
   }
   // `--resume ""` / `--resume=` means the operator asked to resume but named no session — fail loud
@@ -853,7 +1249,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // grants publish on the channel the connector names. Both are required, which is what stops a
   // hand-written grant from turning events on by itself.
   if (values.events && values["no-events"]) {
-    console.error(c.red("✗ --events and --no-events are mutually exclusive"));
+    stderrLine("✗ ", "--events and --no-events are mutually exclusive", c.red);
     process.exit(1);
   }
   // #373: the detached path sends the bit ONLY when the operator chose it. `--events` gives
@@ -862,14 +1258,13 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // with a notice, so an unconditional default-true would be refused for an ordinary actor.
   const events = values.events ? true : values["no-events"] ? false : undefined;
 
-  // Managed by default; the persona remains on the manager's execution host. Direct foreground
-  // execution keeps its separate native custody path below.
+  // A manager runs it only with --detach or --on, and the persona then stays on the manager's
+  // execution host. Every other spawn keeps the native custody path below, in this terminal.
   if (!direct) return launchManagedPersona(values, positionals, events, cliLaunchOptions);
-  console.error(renderReport({ sections: [{ title: "Direct application", blocks: [{ kind: "lines", lines: ["This is native foreground execution, not a detachable Cotal view.", { text: "Native exit, Ctrl-C or terminal loss may end this process. No crash or reboot survival is promised.", tone: "hint" }] }] }] }, "rich", terminalWidth(process.stderr)));
   // `--creds` names a CONTROL-CALLER credential (reach an off-registry manager) — meaningless for
   // a foreground launch, which provisions the agent's own creds. Fail loud, never ignore.
   if (values.creds) {
-    console.error(c.red("✗ --creds is only valid with --detach (it authenticates the manager control call)"));
+    stderrLine("✗ ", "--creds is only valid with --detach (it authenticates the manager control call)", c.red);
     process.exit(1);
   }
 
@@ -892,7 +1287,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
         throw new Error("space is not registered and the enrollment bundle carries no stock { server, tlsRequired, userAuth } mesh material");
       await registerEnrollmentMesh(redeemedEnrollment.stock, resolvePath(values.config!, ".."));
     } catch (e) {
-      console.error(c.red(`✗ ${(e as Error).message}`));
+      stderrLine("✗ ", `${(e as Error).message}`, c.red);
       process.exit(1);
     }
   }
@@ -904,25 +1299,25 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   const target = handoffText === undefined
     ? await resolveTargetOrExit({ server: values.server, space: values.space })
     : await resolveTargetOrThrow({ server: values.server, space: values.space }).catch(() => {
-      console.error(c.red(`✗ ${HANDOFF_REFUSALS.target}`));
+      stderrLine("✗ ", `${HANDOFF_REFUSALS.target}`, c.red);
       process.exit(1);
     });
   if (handoffText !== undefined && !(target.mode === "user" && target.userAuth?.remote)) {
-    console.error(c.red("✗ the managed handoff's space is registered here as a local mesh, so it cannot host a managed handoff"));
+    stderrLine("✗ ", "the managed handoff's space is registered here as a local mesh, so it cannot host a managed handoff", c.red);
     process.exit(1);
   }
   let policy: typeof target.policy;
   try {
     policy = await refreshRegistrationPolicy(target);
   } catch (e) {
-    console.error(c.red(`✗ ${handoffText === undefined ? (e as Error).message : HANDOFF_REFUSALS.policy}`));
+    stderrLine("✗ ", `${handoffText === undefined ? (e as Error).message : HANDOFF_REFUSALS.policy}`, c.red);
     process.exit(1);
   }
   const eventsRequired = policy?.events === "required";
   // A handoff's space is a value from the document, so its policy refusals name the field instead.
   const policySpace = handoffText === undefined ? `space "${target.space}"` : "the managed handoff's space";
   if (eventsRequired && values["no-events"]) {
-    console.error(c.red(`✗ ${policySpace} requires the event plane by registration policy; --no-events is not allowed`));
+    stderrLine("✗ ", `${policySpace} requires the event plane by registration policy; --no-events is not allowed`, c.red);
     process.exit(1);
   }
   // Foreground is the operator's own in-process launch (no typed door, no epAdminReach) and is
@@ -930,45 +1325,27 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // operator passed neither flag), so default it on here the way the old boolean did.
   const launchEvents = eventsRequired || events !== false;
   const { space, server, auth } = target;
-  const composition = { injected: false as const, root: target.root };
 
   // Where the config lives: --config, else the positional <persona>, else the persona preference
   // (.cotal/agents/<name>.md under the TARGET mesh's root). With none, fall back to its `default`
   // persona — `cotal spawn` with no args launches `<root>/.cotal/agents/default.md`.
   const { ref, from: personaFrom } = spawnPersona(values.config, positionals, { space, preferences: cachedPreferences() });
-  const path = redeemedEnrollment && values.config ? resolvePath(values.config) : agentFilePath(target.root, ref);
+  const personaProject = resolvePath(target.personaRoot, "..", "..");
+  const path = redeemedEnrollment && values.config ? resolvePath(values.config) : agentFilePath(personaProject, ref);
   let def: AgentDef;
   try {
     def = loadLaunchPersonaFile(path);
   } catch (e) {
-    if (e instanceof PersonaSourceError) throw new CommandFailure("refused", "SCHEMA_INVALID", e.message, { target: { space, path }, remedy: "use cotal team deploy <file> for a Mesh manifest; use a native persona file for spawn" });
+    if (e instanceof PersonaSourceError) throw new CommandFailure("refused", "SCHEMA_INVALID", e.message, { target: { space, path }, remedy: "use `cotal team deploy <file>` for a Mesh manifest; use a native persona file for spawn" });
     const code = (e as NodeJS.ErrnoException).code;
-    const fromEnv = personaFrom === undefined ? "" : ` from ${personaFrom}`;
     // The not-found text names the mesh's space and server, which for a handoff are its values.
     if (handoffText !== undefined) {
-      console.error(c.red(`✗ cannot load the managed handoff persona: ${(e as Error).message}`));
-    } else if (code === "ENOENT" && path !== join(target.personaRoot, `${ref}.md`)) {
-      // A path reference opened that one file and never read the catalog, so name the file.
-      console.error(c.red(`✗ no persona "${ref}"${fromEnv} - ${path} not found`));
+      stderrLine("✗ ", `cannot load the managed handoff persona: ${(e as Error).message}`, c.red);
     } else if (code === "ENOENT") {
-      // A refusal that names no root is why this bug cost an hour. The old text asserted an absence
-      // ("no default persona yet") and prescribed a remedy (`cotal setup`) without saying WHERE it
-      // had looked — so when setup seeded a cwd-derived root and spawn read the resolved mesh's,
-      // the message survived running the exact command it named and pointed at nothing to check.
-      // Name the absolute directory checked and the mesh that root came from: the two facts that
-      // make the disagreement visible in one read.
-      const where = `${target.personaRoot} (mesh "${target.space}" at ${target.server}${target.source === "current" ? ", your current mesh" : target.source === "registry" ? ", the only mesh running" : ""})`;
-      const fix = defaultPersonaFix(target);
-      const write = fix.cwd ? `run \`${fix.command}\` in ${fix.cwd} to write one` : `create one with \`${fix.command}\``;
-      console.error(
-        c.red(
-          ref === "default" && personaFrom === undefined
-            ? `✗ no default persona in ${where} - ${write}, or name a persona: \`cotal spawn <name>\``
-            : `✗ no persona "${ref}"${fromEnv} in ${where} - pass a catalog name, or use \`--config <path>\` for a file elsewhere`,
-        ),
-      );
+      const missing = missingPersona(target, ref, personaFrom, path);
+      throw new CommandFailure("refused", "TARGET_NOT_FOUND", missing.message, { target: { space, path }, remedy: missing.remedy });
     } else {
-      console.error(c.red(`✗ ${(e as Error).message}`));
+      stderrLine("✗ ", `${(e as Error).message}`, c.red);
     }
     process.exit(1);
   }
@@ -988,7 +1365,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // Opaque connector options: `--opt` flags win per key over the persona's `launchOptions:`.
   const launchOptions = mergeLaunchOptions(def.launchOptions, cliLaunchOptions);
   if (redeemedEnrollment && redeemedEnrollment.bundle.actor !== requested) {
-    console.error(c.red(`✗ the enrollment is for actor "${redeemedEnrollment.bundle.actor}" but this spawn names "${requested}"`));
+    stderrLine("✗ ", `the enrollment is for actor "${redeemedEnrollment.bundle.actor}" but this spawn names "${requested}"`, c.red);
     process.exit(1);
   }
   // #867: same door as the detached path — the effective identity (flag or file) must be mintable
@@ -998,7 +1375,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // effective role, model (flag over file) and launch options before anything is provisioned or launched.
   let cotalConfig: CotalConfig;
   try {
-    cotalConfig = loadCotalConfig(target.root);
+    cotalConfig = loadCotalConfig(personaProject);
     const refusal = modelPolicyRefusal(cotalConfig, {
       persona: `persona "${ref}" (${path})`,
       role, model, variant,
@@ -1007,11 +1384,11 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       launchOptions,
     });
     if (refusal) {
-      console.error(c.red(`✗ ${refusal}`));
+      stderrLine("✗ ", `${refusal}`, c.red);
       process.exit(1);
     }
   } catch (e) {
-    console.error(c.red(`✗ ${(e as Error).message}`));
+    stderrLine("✗ ", `${(e as Error).message}`, c.red);
     process.exit(1);
   }
 
@@ -1020,7 +1397,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   if (handoffText === undefined) await preflightOrExit(target);
   else
     await preflightOrThrow(target).catch(() => {
-      console.error(c.red(`✗ ${HANDOFF_REFUSALS.preflight}`));
+      stderrLine("✗ ", `${HANDOFF_REFUSALS.preflight}`, c.red);
       process.exit(1);
     });
 
@@ -1039,22 +1416,23 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   try {
     await materializeExtension({ kind: "connector", name: agentType });
   } catch (e) {
-    console.error(c.red(`✗ ${(e as Error).message}`));
+    if (!connectorListed(agentType)) throw missingConnector(agentType, { space, path });
+    stderrLine("✗ ", `${(e as Error).message}`, c.red);
     process.exit(1);
   }
   let connector: Connector;
   try {
     connector = registry.resolve<Connector>("connector", agentType);
   } catch (e) {
-    console.error(c.red(`✗ ${(e as Error).message}`));
+    stderrLine("✗ ", `${(e as Error).message}`, c.red);
     process.exit(1);
   }
   if (variant && !connector.supportsModelVariant) {
-    console.error(c.red(`✗ ${agentType} connector does not support model variants (variant)`));
+    stderrLine("✗ ", `${agentType} connector does not support model variants (variant)`, c.red);
     process.exit(1);
   }
   if (values.prompt !== undefined && !connector.supportsPrompt) {
-    console.error(c.red(`✗ ${agentType} connector does not support an initial prompt (prompt)`));
+    stderrLine("✗ ", `${agentType} connector does not support an initial prompt (prompt)`, c.red);
     process.exit(1);
   }
   // Which of the operator's personal MCP servers to share with this agent: declared in the cotal
@@ -1092,15 +1470,15 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // connector (COTAL_SUBSCRIBE / COTAL_ALLOW_*) so the session's runtime read/post set matches its
   // credentials. One source, so a `--subscribe` override can't land in the creds yet be lost at
   // runtime (the connector would otherwise read only the persona file and miss the override).
-  let subscribe = splitFlag(values.subscribe) ?? def.subscribe;
+  let subscribe = parseCommaList(values.subscribe) ?? def.subscribe;
   let allowSubscribe: string[];
   try {
-    allowSubscribe = resolveReadAcl(subscribe ?? [], splitFlag(values["allow-subscribe"]) ?? def.allowSubscribe);
+    allowSubscribe = resolveReadAcl(subscribe ?? [], parseCommaList(values["allow-subscribe"]) ?? def.allowSubscribe);
   } catch (e) {
-    console.error(c.red(`✗ ${(e as Error).message}`));
+    stderrLine("✗ ", `${(e as Error).message}`, c.red);
     process.exit(1);
   }
-  let allowPublish = splitFlag(values["allow-publish"]) ?? def.allowPublish;
+  let allowPublish = parseCommaList(values["allow-publish"]) ?? def.allowPublish;
   // The AG-UI event plane, refused HERE for the same reason the manager refuses it before
   // provisioning: a connector that cannot emit must stop the launch while there is still nothing to
   // roll back. The GRANT cannot be derived yet, because it is keyed on the principal and in user
@@ -1120,10 +1498,12 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     ? target.userAuth.endpoints?.agentProvisioningUrl
     : undefined;
   if (target.mode === "user" && target.userAuth?.remote && !remoteProvisioningUrl && !enrollmentUrl && !redeemedEnrollment) {
-    console.error(c.red(`✗ mesh "${target.space}" runs elsewhere and advertises no agent-provisioning endpoint, so agents cannot be provisioned from this machine`));
-    console.error(c.dim(`  a user-mode agent's credentials are granted where the mesh's signer lives; ask the mesh operator to advertise one (\`cotal up --agent-provisioning-url …\`), or run the agent there`));
+    stderrLine("✗ ", `mesh "${target.space}" runs elsewhere and advertises no agent-provisioning endpoint, so agents cannot be provisioned from this machine`, c.red);
+    console.error(c.dim(`  a user-mode agent's credentials are granted where the mesh's signer lives; ask the mesh operator to advertise one (\`cotal up --agent-provisioning-url …\`), run the agent there, or add -d to launch it through one of your managers`));
     process.exit(1);
   }
+  // Said once every check above has passed, so a refusal is never read as a launch that started.
+  console.error(renderReport({ sections: [{ title: "Direct application", blocks: [{ kind: "lines", lines: ["This is native foreground execution, not a detachable Cotal view.", { text: "Native exit, Ctrl-C or terminal loss may end this process. No crash or reboot survival is promised.", tone: "hint" }] }] }] }, "rich", process.stderr));
   // Auth mode provisions the identity + writes its creds to disk BEFORE the connector validates the
   // launch (e.g. `buildLaunch` throws on a rejected `--opt`) and before the child execs. The SAME
   // retirement serves a failed provisioning or launch (rollback) and the normal foreground
@@ -1142,19 +1522,19 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     // (byte-identical locally). The broker teardown mints its own credential, so a creds file that
     // cannot be removed must not leave the durables and ACL row behind.
     const failed: CleanupFailure[] = [];
-    await attemptCleanup(failed, "creds secret", () => workspaceSecretStore(target.root).delete(agentCredsKey(space, name, composition)));
+    await attemptCleanup(failed, "creds secret", () => workspaceSecretStore(target.root).delete(agentSecretKeyForFile(credsFile, space)));
     await attemptCleanup(failed, "creds file", () => rmSync(credsFile, { force: true }));
     await attemptCleanup(failed, "broker teardown", () =>
       mintCreds(auth, newIdentity(), "deprovisioner", { deprovisionTarget: { principal: targetId, lifecycleUid } })
         .then((dc) => deprovisionAgent({ servers: server, space, targetId, lifecycleUid, creds: dc })));
-    if (failed.length) console.error(c.red(`✗ cleaning up after ${name}: ${describeCleanupFailures(failed)}`));
+    if (failed.length) stderrLine("✗ ", `cleaning up after ${name}: ${describeCleanupFailures(failed)}`, c.red);
     else console.error(`  ↩ retired creds for ${name} (${why})`);
   };
   if (target.mode === "user" && target.userAuth?.remote && (enrollmentUrl || redeemedEnrollment)) {
     if (!redeemedEnrollment) {
       // The record alone decides this refusal, and the redemption below spends the enrollment.
       if (!target.userAuth.endpoints?.url) {
-        console.error(c.red(`✗ ${noExchangeEndpoint(space)}`));
+        stderrLine("✗ ", `${noExchangeEndpoint(space)}`, c.red);
         process.exit(1);
       }
       try {
@@ -1164,21 +1544,21 @@ export async function spawn(args: ParsedArgs): Promise<void> {
         const body = await provider.postAgentEnrollment({ url: enrollmentUrl!, idpUrl: target.userAuth.idp.url });
         redeemedEnrollment = checkEnrollmentBundle(body, name);
       } catch (e) {
-        console.error(c.red(`✗ ${(e as Error).message}`));
+        stderrLine("✗ ", `${(e as Error).message}`, c.red);
         process.exit(1);
       }
     }
     const enrolled = redeemedEnrollment.bundle;
     if (enrolled.space !== space) {
-      console.error(c.red(`✗ the enrollment is for space "${enrolled.space}" but this spawn targets "${space}"`));
+      stderrLine("✗ ", `the enrollment is for space "${enrolled.space}" but this spawn targets "${space}"`, c.red);
       process.exit(1);
     }
     if (enrolled.idp.url !== target.userAuth.idp.url || enrolled.idp.issuer !== target.userAuth.idp.issuer || enrolled.idp.audience !== target.userAuth.idp.audience) {
-      console.error(c.red("✗ the enrollment's IdP pins do not match the registered mesh"));
+      stderrLine("✗ ", "the enrollment's IdP pins do not match the registered mesh", c.red);
       process.exit(1);
     }
     if (target.userAuth.endpoints?.url !== enrolled.authServiceUrl) {
-      console.error(c.red("✗ the enrollment's authServiceUrl does not match the registered mesh exchange"));
+      stderrLine("✗ ", "the enrollment's authServiceUrl does not match the registered mesh exchange", c.red);
       process.exit(1);
     }
     const remote = await provisionRemoteUserForeground(target, name, { body: enrolled, exchangeUrl: enrolled.authServiceUrl },
@@ -1192,7 +1572,9 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     lifecycleUid = remote.material.lifecycleUid;
   } else if (remoteProvisioningUrl) {
     const selected = await provisionFreshForeground(requested, values.name === undefined, (candidate) =>
-      provisionRemoteUserForeground(target, candidate, { provisioningUrl: remoteProvisioningUrl }));
+      provisionRemoteUserForeground(target, candidate, { provisioningUrl: remoteProvisioningUrl }))
+      .catch((e: unknown) => { if (e instanceof AgentAlreadyRunning) return e; throw e; });
+    if (selected instanceof AgentAlreadyRunning) return reportAlreadyRunning(selected, values, target.space, target.server);
     name = selected.name;
     const remote = selected.provisioned;
     userAuth = remote.userAuth;
@@ -1237,7 +1619,10 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     // What the retirement needs is recorded before the first durable exists, so a throw anywhere from
     // provisioning through the creds write can still find and remove the footprint.
     id = identity.id;
-    credsPath = agentSecretFilePaths(target.root, space, name).creds;
+    // LIFECYCLE-KEYED, as the manager keys its own spawns: the file embeds this incarnation's uid, so
+    // the retirement can only remove this incarnation's credential, never a same-name spawn's or the
+    // operator's standing `<name>.creds` (#3857).
+    credsPath = agentLifecycleSecretFilePaths(target.root, space, name, lifecycleUid).creds;
     // THE EVENT GRANT, from the principal this spawn ALLOCATED. Static mode keys on the nkey, never
     // on the display name: a name is not an identity, and the manager derives the same subject from
     // the same connector function, so a foreground and a detached spawn of one persona land on one
@@ -1278,8 +1663,8 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       // Store first (the source of truth), then materialize — the child's launch reads this FILE.
       // The CLI is the local FS composition (byte-identical), same posture as the manager's spawn.
       const secrets = workspaceSecretStore(target.root);
-      await secrets.put(agentCredsKey(space, name, composition), creds);
-      await materializeSecretToFile(secrets, agentCredsKey(space, name, composition), credsPath);
+      await secrets.put(agentSecretKeyForFile(credsPath, space), creds);
+      await materializeSecretToFile(secrets, agentSecretKeyForFile(credsPath, space), credsPath);
     } catch (e) {
       await retireProvision("provisioning failed");
       throw e;
@@ -1334,6 +1719,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       // construction because its write-ahead log had nowhere to live that a later start would look.
       workspaceRoot: target.root,
     });
+    applyHandoffManagerInstance(spec, handoffManagerInstanceId);
     artifacts = spec.artifacts;
     scrubEnrollmentEnv(spec.env);
 
@@ -1369,7 +1755,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     // Launch construction / spawn threw AFTER provisioning — undo BOTH planes (each a no-op in the
     // other's mode): revoke the user-mode actor grant AND roll back the static-auth creds + footprint,
     // before rethrowing, so no standing grant survives a spawn that never started.
-    if (userCleanup) await userCleanup().catch((err) => console.error(c.red(`✗ cleaning up after ${name}: ${(err as Error).message}`)));
+    if (userCleanup) await userCleanup().catch((err) => stderrLine("✗ ", `cleaning up after ${name}: ${(err as Error).message}`, c.red));
     await retireProvision("launch build failed");
     // The launch's private files (core launch-artifacts) go too: no child will read them.
     discardLaunchArtifacts(artifacts);
@@ -1379,7 +1765,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     child.on("error", (e) => {
       // The exec never started, so the just-provisioned static-auth identity is orphaned — roll it
       // back. (User-mode revoke runs unconditionally once this promise settles, below.)
-      console.error(`✗ failed to launch ${spec.command}: ${e.message}`);
+      stderrLine("✗ ", `failed to launch ${spec.command}: ${e.message}`, (line) => line);
       void retireProvision("exec failed").finally(() => {
         process.exitCode = 1;
         resolve();
@@ -1399,7 +1785,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // gone, so its standing mint authority (ledger row + secret files) goes with it. Best-effort
   // (a SIGKILLed CLI can't run this; its retained grant needs operator recovery), loud
   // on failure, never blocking the exit code already set above.
-  if (userCleanup) await userCleanup().catch((e) => console.error(c.red(`✗ cleaning up after ${name}: ${(e as Error).message}`)));
+  if (userCleanup) await userCleanup().catch((e) => stderrLine("✗ ", `cleaning up after ${name}: ${(e as Error).message}`, c.red));
   // The child has exited or never started, so nothing reads the launch's private files any more
   // (core launch-artifacts). A SIGKILLed CLI cannot run this; the child's watcher removes those.
   discardLaunchArtifacts(spec.artifacts);
@@ -1520,7 +1906,7 @@ async function provisionRemoteUserForeground(
   const store = workspaceSecretStore(target.root);
   const composition = { injected: false as const, root: target.root };
   const fail = (msg: string): never => {
-    console.error(c.red(`✗ ${msg}`));
+    stderrLine("✗ ", `${msg}`, c.red);
     process.exit(1);
   };
   // Resolved first, as by every consumer of the space's local state: each resolution migrates a
@@ -1543,9 +1929,12 @@ async function provisionRemoteUserForeground(
   const exchangeUrl = "body" in source ? source.exchangeUrl : target.userAuth?.endpoints?.url;
   if (!exchangeUrl) return fail(noExchangeEndpoint(space));
   let body: unknown;
+  const held = `foreground actor material for "${name}" is already held; preserve its session and choose a distinct actor for a new launch`;
   const materialClaim = acquireLock(`${paths.actorToken}.launch.lock`, {
     waitMs: 0,
-    onTimeout: () => new ForegroundActorCollision(`foreground actor material for "${name}" is already held; preserve its session and choose a distinct actor for a new launch`),
+    // A supplied body comes from an enrollment that was already redeemed, so its collision is not
+    // a refusal: the one-time enrollment is spent.
+    onTimeout: () => "body" in source ? new Error(held) : new ForegroundActorCollision(held),
   });
   if ("body" in source) {
     body = source.body;
@@ -1557,10 +1946,15 @@ async function provisionRemoteUserForeground(
     // no-login gate names the `cotal login --idp …` line, a refusal carries the mesh's own reason.
     if (!provider.postAgentProvisioning)
       return fail(`the registered auth provider "${provider.name}" cannot provision agents on a remote mesh - run the agent where the mesh runs`);
+    // A name held by a lifecycle that is not running is released and asked for again.
     try {
-      body = await provider.postAgentProvisioning({ url: source.provisioningUrl, idpUrl, actor: name });
+      body = await settleHeldName({ space }, () => provider.postAgentProvisioning!({ url: source.provisioningUrl, idpUrl, actor: name }), (o) => "error" in o
+        ? heldAnswer({ code: (o.error as { code?: unknown } | null)?.code, details: (o.error as { details?: unknown } | null)?.details, message: rejectionText(o.error) }, name) : undefined, meshRelease(target));
     } catch (e) {
       materialClaim.release();
+      // No sign-in refuses before any request. Any failure after the request, an endpoint refusal
+      // included, may have provisioned the actor.
+      if ((e as { code?: unknown }).code === "signed-out") throw new CommandFailure("refused", "AUTH_REQUIRED", (e as Error).message);
       throw e;
     }
   }
@@ -1586,11 +1980,13 @@ async function provisionRemoteUserForeground(
     rmSync(healthPath, { force: true });
     provenance.wrote(`remote actor material ${material.owner}.${name} (user mode)`, tokenPath);
     // The bearer preflight — the same one-shot proof the local path runs, pointed at the pinned
-    // exchange instead of a local service. A dead auth chain stops the spawn here.
+    // exchange instead of a local service. A dead auth chain stops the spawn here. The agent runs
+    // this command for every renewal, so it names the resolved entry: an install can replace the
+    // bin link meanwhile (get.cotal.ai writes a shell launcher over `~/.local/bin/cotal`).
     const bearerCmd = [
       process.execPath,
       ...process.execArgv,
-      process.argv[1],
+      entryScript(),
       provider.agentBearerCommand,
       "--exchange-url", exchangeUrl,
       "--space", space,
@@ -1644,7 +2040,7 @@ async function provisionUserForeground(
   const store = workspaceSecretStore(target.root);
   const composition = { injected: false as const, root: target.root };
   const fail = (msg: string): never => {
-    console.error(c.red(`✗ ${msg}`));
+    stderrLine("✗ ", `${msg}`, c.red);
     process.exit(1);
   };
   let provider: ReturnType<typeof resolveAuthProvider>;
@@ -1754,10 +2150,11 @@ async function provisionUserForeground(
     await materializeSecretToFile(store, agentSentinelCredsKey(space, name, composition), sentinelPath);
     rmSync(healthPath, { force: true });
     provenance.wrote(`actor grant ${owner}.${name} (user mode)`, tokenPath);
+    // The resolved entry, for the same reason as the remote arm above.
     const bearerCmd = [
       process.execPath,
       ...process.execArgv,
-      process.argv[1],
+      entryScript(),
       provider.agentBearerCommand,
       "--dir", dir,
       "--space", space,

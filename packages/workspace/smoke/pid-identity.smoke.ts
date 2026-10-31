@@ -30,14 +30,15 @@
 import { strict as assert } from "node:assert";
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  defaultStartToken, formatRecord, identityPinPath, identityStartToken, parsePid, parseRecord,
-  parseWin32CreationToken, verifyIdentityPin, win32ProcessCreationToken, writeIdentityPin, writePidPair, type RecordReplaceIo,
+  assertRecordIdentity, darwinProcessStartToken, defaultStartToken, formatRecord, identityPinPath, identityStartToken, identityUncertaintyRefusal, parsePid, parseRecord,
+  parseWin32CreationToken, removePidPair, startTokenReaderFor, verifyIdentityPin, win32ProcessCreationToken, writeIdentityPin, writePidPair, type PinVerdict, type RecordReplaceIo,
 } from "../src/pid.js";
+import { processStartToken as lstartReader } from "../src/advisory-lock.js";
 import { requestLocalStop } from "../src/local-stop.js";
 
 const prevCwd = process.cwd();
@@ -121,6 +122,57 @@ try {
     check("P4 multiple pin lines are not a single identity record", parseRecord("4321 first\n4322 second").kind === "unattributable");
     check("P5 a newline cannot separate a pid from its token", parseRecord("4321\n28870819").kind === "unattributable");
     check("P6 a carriage return cannot occur inside a token", parseRecord("4321 first\rsecond").kind === "unattributable");
+  }
+
+  // ── N. A PIDFILE WITH NO PID: nothing to verify, which is not a legacy record (#3553) ───────
+  {
+    const husk = join(root, ".cotal", "husk.pid");
+    check("N1 a missing pidfile records no pid", verifyIdentityPin(husk).kind === "no-pid");
+    writeFileSync(husk, "");
+    check("N2 an empty pidfile records no pid", verifyIdentityPin(husk).kind === "no-pid");
+    writeFileSync(husk, "not-a-pid\n");
+    check("N3 a garbled pidfile records no pid", verifyIdentityPin(husk).kind === "no-pid");
+    const unreadable = join(root, ".cotal", "dir.pid");
+    mkdirSync(unreadable);
+    let thrown: unknown;
+    try { verifyIdentityPin(unreadable); } catch (e) { thrown = e; }
+    check("N4 a pidfile that cannot be read throws, naming it", thrown instanceof Error && thrown.message.includes(unreadable), String(thrown));
+  }
+
+  // ── U. A PIN THAT EXISTS BUT CANNOT BE READ proves nothing about a live pid (#3136), and a
+  //      directory at the pin path is refused by name rather than removed (#3750). ───────────────
+  if (process.getuid?.() !== 0) {
+    const pinned = join(root, ".cotal", "unreadable-pin.pid");
+    writeFileSync(pinned, String(process.pid));
+    writeFileSync(identityPinPath(pinned), formatRecord({ pid: process.pid, token: defaultStartToken(process.pid)! }));
+    chmodSync(identityPinPath(pinned), 0o000);
+    const verdict = verifyIdentityPin(pinned);
+    check("U1 an unreadable pin on a live pid is the unreadable-pin verdict, never legacy", verdict.kind === "unreadable-pin" && (verdict as { why?: string }).why === "EACCES", verdict);
+    const refusal = identityUncertaintyRefusal("probe", pinned, verdict as Extract<PinVerdict, { kind: "unreadable-pin" }>);
+    check("U2 …and the shared refusal names the pin, the reason and the record's preservation",
+      refusal.message.includes(identityPinPath(pinned)) && refusal.message.includes("EACCES") && refusal.message.includes("preserved"), refusal.message);
+    chmodSync(identityPinPath(pinned), 0o600);
+    const dead = join(root, ".cotal", "unreadable-pin-dead.pid");
+    writeFileSync(dead, "999999");
+    writeFileSync(identityPinPath(dead), formatRecord({ pid: 999999, token: "t" }));
+    chmodSync(identityPinPath(dead), 0o000);
+    check("U3 an unreadable pin on a dead pid still reads gone, so the stale record clears", verifyIdentityPin(dead).kind === "gone");
+    chmodSync(identityPinPath(dead), 0o600);
+  } else {
+    console.log("  (U1-U3 skipped: root reads a mode-000 file)");
+  }
+  {
+    const dirPin = join(root, ".cotal", "dir-pin.pid");
+    writeFileSync(dirPin, "4321\n");
+    mkdirSync(identityPinPath(dirPin));
+    writeFileSync(join(identityPinPath(dirPin), "keep"), "not ours");
+    let thrown: unknown;
+    try { removePidPair(dirPin, "4321"); } catch (e) { thrown = e; }
+    // Node's own EISDIR also names the path, so the cell demands the module's refusal, not the raw error.
+    check("U4 a directory at the pin path refuses the removal by name, as the module's own refusal",
+      thrown instanceof Error && thrown.message.startsWith("refusing to remove the record at ") && thrown.message.includes(identityPinPath(dirPin)) && thrown.message.includes("is a directory"), String(thrown));
+    check("U5 …and keeps the record, the directory and what it holds",
+      existsSync(dirPin) && existsSync(join(identityPinPath(dirPin), "keep")));
   }
 
   // ── A. THE MISMATCH REFUSAL on the delivery daemon's own stop path (#969 acceptance 1) ─────
@@ -327,6 +379,37 @@ try {
     check("F12 an oversized Windows pid never reaches the native reader", oversized === undefined && calls === 0);
   }
 
+  // ── M. MACOS pins the microsecond start time through its native binding. These controls exercise
+  // the reader boundary on this host; the darwin-only native suite reaches sysctl.
+  {
+    const micro = "1729876543123456";
+    check("M1 macOS identity uses the native start-time reader, not ps",
+      identityStartToken(4242, "darwin", () => "win32", () => "Sat Oct 25 16:47:55 2026", () => micro) === micro);
+    let calls = 0;
+    const binding = (token: unknown) => () => ({ processInfo: (pid: number) => { calls++; return pid === 4242 ? { token: token as string, pgid: 4242, stopped: false } : undefined; } });
+    check("M2 the native reader keeps every microsecond digit", darwinProcessStartToken(4242, binding(micro)) === micro && calls === 1);
+    calls = 0;
+    check("M3 invalid macOS pids never reach the native reader",
+      [0, -1, 1.5, NaN, Infinity, 0x80000000].every((pid) => darwinProcessStartToken(pid, binding(micro)) === undefined) && calls === 0);
+    check("M4 an absent process and malformed native output are not tokens",
+      darwinProcessStartToken(4343, binding(micro)) === undefined && darwinProcessStartToken(4242, binding("Sat Oct 25 16:47:55 2026")) === undefined && darwinProcessStartToken(4242, binding(42)) === undefined);
+    const failing = () => ({ processInfo: (): undefined => { throw new Error("sysctl failed"); } });
+    check("M5 a failed macOS read is unverified, never a token", darwinProcessStartToken(4242, failing) === undefined);
+    const missing = new Error("synthetic missing native binding");
+    let failure: unknown;
+    try { darwinProcessStartToken(4242, () => { throw missing; }); } catch (error) { failure = error; }
+    check("M6 a broken macOS binding throws", failure === missing);
+    // A pin written before the native reader holds `ps -o lstart=` text. The default reader verifies it
+    // with that same reader on macOS; numeric pins, other platforms and passed readers are unchanged.
+    const lstart = "Sat Oct 25 16:47:55 2026", given = () => micro;
+    check("M7 a legacy macOS lstart pin is verified with the lstart reader", startTokenReaderFor(lstart, defaultStartToken, "darwin") === lstartReader);
+    check("M8 a microsecond macOS pin is verified with the native reader", startTokenReaderFor(micro, defaultStartToken, "darwin") === defaultStartToken);
+    check("M9 only macOS reads a non-numeric pin with the lstart reader", startTokenReaderFor(lstart, defaultStartToken, "linux") === defaultStartToken && startTokenReaderFor(lstart, defaultStartToken, "win32") === defaultStartToken);
+    check("M10 a reader the caller passes is used as given", startTokenReaderFor(lstart, given, "darwin") === given);
+    check("M11 an lstart pin compared with a microsecond reader is a mismatch, never a match",
+      assertRecordIdentity({ pid: process.pid, token: lstart }, given).kind === "mismatch");
+  }
+
   // ── G. writePidPair (#1238): the WRITE side has no cell today; a crash mid-publish is planted
   // through `onStep` and each cell reads the two files back, never the helper's return.
   {
@@ -393,7 +476,27 @@ try {
       g5Threw && parsePid(readFileSync(firstPath, "utf8")) === firstTarget.pid && verifyIdentityPin(firstPath).kind === "match");
     reap(firstTarget.child);
 
-    check("G6 no `.publish.` temporary survives ANY of G1 through G5",
+    // A pidfile that exists but cannot be read is not a first start (#3575). A directory stands in
+    // for it, so the cell holds as root, where a mode 000 file still reads.
+    const unreadablePath = join(root, ".cotal", "g-unreadable.pid");
+    mkdirSync(unreadablePath);
+    writeIdentityPin(unreadablePath, process.pid);
+    const pinBefore = readFileSync(identityPinPath(unreadablePath), "utf8");
+    const unreadableTarget = spawnTarget();
+    strays.push(unreadableTarget.child);
+    await wait(150);
+    const g6Steps: string[] = [];
+    let g6Thrown: unknown;
+    try {
+      writePidPair(unreadablePath, unreadableTarget.pid!, { onStep: (step) => { g6Steps.push(step); if (step === "bridge-pin") throw new Error("planted crash after bridge-pin"); } });
+    } catch (e) { g6Thrown = e; }
+    check("G6 a pidfile that cannot be read throws, naming it, before the publish renames anything",
+      g6Thrown instanceof Error && g6Thrown.message.includes(unreadablePath) && g6Steps.length === 0
+        && readFileSync(identityPinPath(unreadablePath), "utf8") === pinBefore,
+      { thrown: String(g6Thrown), steps: g6Steps, pin: readFileSync(identityPinPath(unreadablePath), "utf8") });
+    reap(unreadableTarget.child);
+
+    check("G7 no `.publish.` temporary survives ANY of G1 through G6",
       !readdirSync(join(root, ".cotal")).some((n) => n.includes(".publish.")));
   }
 

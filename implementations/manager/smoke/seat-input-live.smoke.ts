@@ -126,7 +126,7 @@ const sinkDir = join(dir, "sinks");
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 mkdirSync(sinkDir, { recursive: true });
 saveSpaceAuth(authDir(workspaceRoot), auth);
-for (const n of ["typist", "guarded", "opseat", "cliseat", "dropseat", "deadseat"])
+for (const n of ["typist", "guarded", "opseat", "cliseat", "dropseat", "deadseat", "menuseat"])
   writeFileSync(join(workspaceRoot, ".cotal", "agents", `${n}.md`), `---\nname: ${n}\nrole: worker\n---\n`);
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
@@ -174,10 +174,12 @@ const envFor = (o: LaunchOpts): Record<string, string> => ({
   COTAL_SPACE: o.space, COTAL_SERVERS: String(o.servers ?? SERVERS), COTAL_CREDS: String(o.creds),
   COTAL_ID: String(o.id), COTAL_NAME: o.name, PATH: process.env.PATH ?? "",
   COTAL_INPUT_SINK: sinkFor(o.name), COTAL_INPUT_READY: readyFor(o.name),
+  ...(o.name === "menuseat" ? { COTAL_INPUT_MENU: "1" } : {}),
   ...(o.lifecycleUid ? { COTAL_LIFECYCLE_UID: o.lifecycleUid } : {}),
 });
 const echoCon: Connector = { kind: "connector", name: "input-echo", requires: ["node"], buildLaunch: (o): LaunchSpec => ({ command: "node", args: [STUB], env: envFor(o) }) };
 registry.register(echoCon);
+registry.register({ ...echoCon, name: "claude" });
 
 const mgr = new Manager({ space, servers: SERVERS, runtime: "pty", workspaceRoot });
 type PrivHandle = { status: () => "running" | "exited"; kind: string; write?: (data: string) => Promise<number> };
@@ -494,7 +496,7 @@ try {
 
     // `--no-enter` through the same real binary, carrying the HARDEST payload: text that is itself
     // a flag spelling. `--text=<value>` is the form node's `parseArgs` requires for a dash-leading
-    // value, and it is what docs/cli.md tells the operator to use.
+    // value, and it is what docs/cli.mdx tells the operator to use.
     const before = sinkBytes(cliseat.name).length;
     const run2 = await cotal(["input", "--name", cliseat.name, `--text=--not-a-flag`, "--no-enter", "--space", space]);
     mustHaveRun(run2, "`cotal input --no-enter`");
@@ -646,6 +648,40 @@ try {
     }
   }
 
+  console.log("\n11. Claude selection menus refuse text before it can confirm the highlighted answer");
+  {
+    const menu = await spawnLive(A.call, { name: "menuseat", agent: "claude", cwd: workspaceRoot, events: false });
+    const managed = M.agents.get(menu.name);
+    if (!managed?.handle.write) throw new Error("menu fixture has no writable handle");
+    const handle = managed.handle as PrivHandle & { attach(): { backlog(): Promise<Buffer>; write(data: string): void } };
+    const session = handle.attach();
+    for (let i = 0; i < 100; i++) {
+      if ((await session.backlog()).includes(Buffer.from("Enter to select"))) break;
+      await wait(100);
+    }
+    const writes: string[] = [];
+    const realWrite = handle.write!.bind(handle);
+    handle.write = async (data) => { writes.push(data); return realWrite(data); };
+    const outcomes: Run[] = [];
+    try {
+      for (const text of ["2", "3", "plain fixture answer"])
+        outcomes.push(await cotal(["input", "--name", menu.name, "--text", text, "--space", space]));
+      outcomes.push(await cotal(["input", "--name", menu.name, "--text", "2", "--no-enter", "--space", space]));
+      const refused = outcomes.every((r) => r.status === 2 && !r.timedOut && !r.signal
+        && strip(r.out).includes("input text cannot safely select an option") && !written(strip(r.out)));
+      const untouched = writes.length === 0 && sinkBytes(menu.name).length === 0;
+      // A real attach cancels the menu. Leave its footer in scrollback: history must not block chat.
+      session.write("\x1b");
+      await sinkReaches(menu.name, 1);
+      await wait(250);
+      const control = await cotal(["input", "--name", menu.name, "--text", "ordinary control", "--space", space]);
+      const want = Buffer.from(`\x1b${PASTE_START}ordinary control${PASTE_END}\r`);
+      const got = await sinkReaches(menu.name, want.length);
+      check("Claude menu input refuses 2, 3, plain text and no-enter without writing, but accepts chat after the menu leaves the viewport",
+        refused && untouched && control.status === 0 && got.equals(want), { outcomes, writes, control, hex: got.toString("hex") });
+    } finally { handle.write = realWrite; }
+  }
+
   await A.nc.drain().catch(() => A.nc.close());
   await B.nc.drain().catch(() => B.nc.close());
   // WITH agents, and nothing less (#1712). `stop()` without the flag is the DETACHED mode: it
@@ -675,7 +711,7 @@ try {
 // evidence without removing the green. Bumping this number is the deliberate edit that makes such
 // a drop impossible to miss. The count is read BEFORE this cell is tallied, so it is the number of
 // preceding cells (37), not 38.
-const EXPECTED_CELLS = 38;
+const EXPECTED_CELLS = 39;
 check(`every cell ran (a silently skipped cell must not read as green): expected ${EXPECTED_CELLS}`,
   pass + fail === EXPECTED_CELLS, { ran: pass + fail, expected: EXPECTED_CELLS });
 

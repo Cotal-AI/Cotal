@@ -156,31 +156,6 @@ export function addedSectionsBetween(basePage, headPage) {
   return coveringSections(headPage).filter((s) => !before.has(s));
 }
 
-/**
- * The verdict for one range.
- *
- * `breaking` are the commits that declared themselves breaking. `addedSections` are the non-empty
- * release sections THIS RANGE ADDED to the page, base compared against head.
- *
- * THE PREDICATE IS "ADDED A SECTION", NOT "TOUCHED THE FILE", AND THE DIFFERENCE IS THE WHOLE
- * GATE. Measured on the first version of this tool, which asked only whether the diff touched the
- * path: a breaking commit shipped beside a ONE-LINE TYPO FIX on this page passed, "covered by 8
- * section(s)", every one of them written for an earlier release. That is worse than it looks,
- * because it decays: every section the page ever accumulates becomes permanent pre-coverage for
- * every future break, so the gate gets weaker precisely as the page gets longer. It is also the
- * reporter's own failure reintroduced one level up, since it greens a breaking release that did no
- * upgrade work at all.
- *
- * The comparison is deliberately by section TITLE rather than by content. A range that edits an
- * existing section does not read as coverage, which is correct: amending the 0.48.2 section is not
- * documenting a 0.50.0 break. It also means the gate cannot be satisfied by rewording, only by
- * writing something that was not there.
- *
- * What it still does NOT do is match a breaking commit to a SPECIFIC section, because a release's
- * section is written once for several breaking commits and any such rule would be guesswork
- * wearing a rule's clothes. What it asserts is that a range which broke something also WROTE
- * something new here.
- */
 /** Which OTHER job names a document still claims runs the gate.
  *
  *  PURE, EXPORTED, AND TESTED AGAINST BUILT INPUTS, because the live repository is the one input
@@ -211,6 +186,31 @@ export function staleJobClaims(text, hostJob, candidates) {
     && new RegExp(`(runs?|grades?|grading path is|step (?:in|of)|in) the .${j}. job`).test(text));
 }
 
+/**
+ * The verdict for one range.
+ *
+ * `breaking` are the commits that declared themselves breaking. `addedSections` are the non-empty
+ * release sections THIS RANGE ADDED to the page, base compared against head.
+ *
+ * THE PREDICATE IS "ADDED A SECTION", NOT "TOUCHED THE FILE", AND THE DIFFERENCE IS THE WHOLE
+ * GATE. Measured on the first version of this tool, which asked only whether the diff touched the
+ * path: a breaking commit shipped beside a ONE-LINE TYPO FIX on this page passed, "covered by 8
+ * section(s)", every one of them written for an earlier release. That is worse than it looks,
+ * because it decays: every section the page ever accumulates becomes permanent pre-coverage for
+ * every future break, so the gate gets weaker precisely as the page gets longer. It is also the
+ * reporter's own failure reintroduced one level up, since it greens a breaking release that did no
+ * upgrade work at all.
+ *
+ * The comparison is deliberately by section TITLE rather than by content. A range that edits an
+ * existing section does not read as coverage, which is correct: amending the 0.48.2 section is not
+ * documenting a 0.50.0 break. It also means the gate cannot be satisfied by rewording, only by
+ * writing something that was not there.
+ *
+ * What it still does NOT do is match a breaking commit to a SPECIFIC section, because a release's
+ * section is written once for several breaking commits and any such rule would be guesswork
+ * wearing a rule's clothes. What it asserts is that a range which broke something also WROTE
+ * something new here.
+ */
 export function verdict({ breaking, addedSections }) {
   // "no breaking commits DETECTED", never "no breaking commits". The gate reads markers, and the
   // design note is explicit that no marker-keyed detector can see an unmarked break, so a pass
@@ -751,9 +751,16 @@ if (process.argv.includes("--self-test")) {
     }
     return names;
   })();
+  // A trigger and a job may share a name: release is both in this checkout. Compare against
+  // the YAML jobs mapping so a real job is required and a trigger-only key is still refused.
+  const parsedJobNames = new Set(readdirSync(workflowDir).filter((n) => n.endsWith(".yml"))
+    .flatMap((f) => Object.keys(parseYaml(readFileSync(join(workflowDir, f), "utf8")).jobs ?? {})));
   cell("workflow candidates are job keys, not top-level trigger or configuration keys",
-    allJobNames.has("attribution") && allJobNames.has("live")
-      && !["pull_request", "push", "release", "schedule", "workflow_dispatch"].some((n) => allJobNames.has(n)),
+    allJobNames.has("ci-ok") && allJobNames.has("live")
+      && allJobNames.size === parsedJobNames.size
+      && [...parsedJobNames].every((n) => allJobNames.has(n))
+      && !["pull_request", "push", "release", "schedule", "workflow_dispatch"]
+        .some((n) => !parsedJobNames.has(n) && allJobNames.has(n)),
     { count: allJobNames.size, names: [...allJobNames].sort() });
 
   const hostJob = (() => {
@@ -774,42 +781,33 @@ if (process.argv.includes("--self-test")) {
     return null;
   })();
 
-  const attributionWorkflow = existsSync(join(workflowDir, "attribution.yml"))
-    ? readFileSync(join(workflowDir, "attribution.yml"), "utf8") : "";
-  cell("the required attribution job installs the gate's declared YAML dependency before grading",
-    attributionWorkflow.includes("pnpm/action-setup@v6.0.8")
-      && attributionWorkflow.includes("pnpm install --frozen-lockfile --ignore-scripts")
-      && attributionWorkflow.indexOf("pnpm install --frozen-lockfile --ignore-scripts")
-        < attributionWorkflow.indexOf("node scripts/upgrade-section-gate.mjs"));
-
-  cell("the workflow hosting this gate is discoverable from the repository itself",
-    hostJob !== null && typeof hostJob.job === "string" && hostJob.job.length > 0, hostJob);
-
-  if (hostJob) {
-    // A reader who cannot find the job name in the file learns nothing from a green cell, so the
-    // ACCEPT leg is asserted first: the name really is present and really is what we think.
+  // NO WORKFLOW HOSTS THE GATE TODAY. The Attribution workflow ran it until it was removed on
+  // 22 October 2026, and the docs now describe a manual check. The pages are graded either way: a
+  // host, when one exists, must be named, and no page may claim a job that does not run the gate.
+  const host = hostJob?.job ?? null;
+  {
     const docPaths = [join(repoRootForDocs(), "docs", "UPGRADING.md"),
       join(repoRootForDocs(), "docs", "design", "upgrade-section-gate.md")];
     for (const dp of docPaths) {
       if (!existsSync(dp)) { cell(`documentation present: ${dp}`, false, dp); continue; }
       const doc = readFileSync(dp, "utf8");
-      const namesHost = doc.includes(`\`${hostJob.job}\``);
-      cell(`${dp.split("/").slice(-1)[0]} names the job that actually runs the gate (\`${hostJob.job}\`)`,
-        namesHost, { job: hostJob.job, from: hostJob.file });
-      // REFUSE LEG. Naming the right job is not enough if the page ALSO names a job that no longer
-      // runs it. This is the exact shape that shipped: the correct job appeared in one paragraph
+      // A reader who cannot find the job name in the file learns nothing from a green cell, so the
+      // ACCEPT leg is asserted first: the name really is present and really is what we think.
+      if (hostJob) cell(`${dp.split("/").slice(-1)[0]} names the job that actually runs the gate (\`${hostJob.job}\`)`,
+        doc.includes(`\`${hostJob.job}\``), { job: hostJob.job, from: hostJob.file });
+      // REFUSE LEG. Naming the right job is not enough if the page ALSO names a job that does not
+      // run it. This is the exact shape that shipped: the correct job appeared in one paragraph
       // while a stale one still appeared in another, and a reader met whichever they reached first.
-      const stale = staleJobClaims(doc, hostJob.job, [...allJobNames]);
-      cell(`…and does not ALSO claim a different job runs it`, stale.length === 0, { stale });
+      const stale = staleJobClaims(doc, host, [...allJobNames]);
+      cell(`${dp.split("/").slice(-1)[0]} does not claim a job that does not run the gate`, stale.length === 0, { stale });
     }
     // THE SHIPPED COPY IS THE ONE THAT REACHES USERS. A correction that stops at the source leaves
     // the product serving the old promise, which is what happened here.
     //
-    // THE BUNDLE IS A BUILD ARTIFACT AND THIS JOB DOES NOT BUILD. It is generated by the
-    // connector's own build from docs/ and spec/, and `attribution` (the workflow that runs this
-    // gate) installs with `--ignore-scripts` and never builds, so there is nothing on disk to
-    // read. It is therefore REGENERATED here, into a temporary path, which is also the more
-    // honest subject: it is the text a release would ship from these sources right now.
+    // THE BUNDLE IS A BUILD ARTIFACT AND THIS CHECK DOES NOT BUILD. It is generated by the
+    // connector's own build from docs/ and spec/, and nothing on disk is guaranteed to be current
+    // when this runs. It is therefore REGENERATED here, into a temporary path, which is also the
+    // more honest subject: it is the text a release would ship from these sources right now.
     //
     // FAIL LOUD, NOT OPEN. This read used to be wrapped in `existsSync`, so an absent bundle
     // simply dropped the cell instead of reddening it — the shipped-copy check silently stopped
@@ -829,8 +827,8 @@ if (process.argv.includes("--self-test")) {
           { error: String(error?.message ?? error) });
       }
       if (generated !== null) {
-        const staleB = staleJobClaims(generated, hostJob.job, [...allJobNames]);
-        cell("the SHIPPED docs bundle does not claim a job that no longer runs the gate", staleB.length === 0, { stale: staleB });
+        const staleB = staleJobClaims(generated, host, [...allJobNames]);
+        cell("the SHIPPED docs bundle does not claim a job that does not run the gate", staleB.length === 0, { stale: staleB });
       }
     } finally {
       rmSync(bundleDir, { recursive: true, force: true });
@@ -885,7 +883,8 @@ if (process.argv.includes("--self-test")) {
     staleJobClaims('"body": "CI runs it as a step of the `attribution` job, grading each\\nPR."',
       "attribution", ["unit", "ci-ok"]).length === 0);
 
-  const EXPECTED = 94;
+  // 90 with no workflow hosting the gate; a host adds the two pages' "names the job" cells.
+  const EXPECTED = hostJob ? 92 : 90;
   // A SKIP MUST BE JUSTIFIED BY THE REPOSITORY THE SUITE IS ACTUALLY IN, and this cell is the
   // only thing that checks it. Found by mutation: forcing the probe true on a healthy clone made
   // the suite skip two real cells and still print OK, because every other shallow cell reasons

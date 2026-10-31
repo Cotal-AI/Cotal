@@ -8,6 +8,14 @@ audience: integrators
 This page describes the shared connector runtime. Each connector has a separate
 reference for its integration with the agent application.
 
+## Running release
+
+An MCP server's `serverInfo.version` names the Cotal release loaded by that process.
+It is separate from the MCP protocol version and from a newer CLI installed on disk.
+`cotal_orientation` reports the release loaded by the tool host even when a client hides server metadata.
+Jcode's stdio bridge and tool host are separate processes and can temporarily report different releases after an upgrade.
+Updating files does not replace the code a running process loaded.
+
 ## Connection state
 
 `MeshAgent.transportConnected` reports whether the current NATS transport is live.
@@ -91,23 +99,22 @@ Changing status does not make an old activity recent.
 The shared timestamp rules are in the [CotalEndpoint reference](embedding-endpoints.mdx#presence-metadata).
 Each printed condition code or activity stays on one line, escapes control characters and line separators as `\uXXXX`, and is limited to 200 characters.
 
-`cotal_orientation` and `cotal_roster` report the presence view's trust state with the same wording.
-An `unpopulated` view means the initial snapshot is incomplete, so the roster may be partial and a missing name cannot establish absence.
-A `stale` view names the instant when the watch became silent and calls the roster last-known.
-A stuck presence writer takes precedence while transport is connected. Both tools report a nonlive view and a last-known roster until publishing recovers.
-The [endpoint diagnosis reference](embedding-endpoints.mdx#presence-view-and-write-diagnosis) defines these conditions.
-The dashboard displays stale presence on the header mark used for a refused poll.
+`cotal_orientation` and `cotal_roster` read presence on demand.
+If that read fails, both say `presence read failed` with its reason and label the retained roster last-known.
+A missing name in that result does not prove absence. These seat tools do not depend on an always-on presence watcher.
+Actual presence watchers retain their own current, unpopulated, and stale states.
+The [endpoint diagnosis reference](embedding-endpoints.mdx#presence-view-and-write-diagnosis) defines those watcher conditions.
+The dashboard marks stale presence when its own poll fails.
 
 `cotal ps` uses `mesh unknown (manager's presence view is stale)` or
 `mesh unknown (manager's presence view not yet populated)` instead of a peer liveness verdict when the manager's view is unsafe.
 The [CLI reference](cli.mdx) describes the command.
 
-The shared connector checks a DM target or mentioned name against its observed roster.
-When the view is `unpopulated`, an unresolved name gets one bounded snapshot wait followed by another lookup.
-A still-unverifiable name under an unsafe view refuses the DM or whole channel send and names the observer's condition.
-It does not claim that the peer is absent.
-Already observed names remain usable, and an authenticated sender retained by the connector can still receive a reply without a roster row.
-An unresolved name under a `current` view produces the ordinary unknown-peer refusal.
+The shared connector checks DM targets and mentioned names against a fresh presence read.
+An unknown name after a failed read refuses the DM or the whole channel send, naming the read failure.
+It does not call the peer absent. A name known from a previous successful read remains usable.
+An authenticated sender retained by the connector can still receive a reply without a roster row.
+An unknown name after a successful read receives the ordinary unknown-peer refusal.
 
 ## Send receipts [#send-receipts]
 
@@ -174,3 +181,9 @@ and hash when it creates the fork.
 
 The [connector authoring guide](authoring-a-connector.mdx) describes the extension
 interface. The [MCP tool catalog](mcp-tools.mdx) lists the tools shared by connector sessions.
+
+## Runtime failure evidence
+
+The tmux runtime names failed session-name and pane-capture operations, includes tmux's error text, and retains the original cause.
+An exit watcher checks that its handle still names the current seat, including after an asynchronous exit proof completes.
+An obsolete watcher cannot reap a replacement seat. PTY stream subscriptions are released once exit is observed.

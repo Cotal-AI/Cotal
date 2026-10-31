@@ -18,7 +18,14 @@ way; a number derived from another port was never checked by the OS.
 
 Use `SMOKE_BROKER_TOKEN` as the prefix for a broker's temporary directory and register the child
 with `teardownOnSignal`. The token records its owning process. Normal-path cleanup still belongs
-to the suite.
+to the suite. Use `await killAndAwaitExit(child)` before removing the broker store, then release
+its ownership registration. A fixed delay after SIGTERM does not establish that the broker exited.
+`pnpm smoke:broker-stop-order` observes this order through the real manager smoke helper on Linux,
+including a native broker briefly paused before shutdown.
+
+`pnpm smoke:broker-migration` checks broker adoption in test-shaped paths and in direct Node/tsx
+entrypoints declared by root `smoke` and `smoke:*` scripts. A declared smoke stays in scope even
+when its filename is unconventional. A source path passed as an argument is not an entrypoint.
 
 Suites spawn the bare `nats-server` name, so the server under test is whichever one the spawn's
 PATH reaches first. `teardownOnSignal` names it: it reads each running child's binary from
@@ -51,6 +58,11 @@ with every flag the CLI's `down` declares, such as `--yes`, `--json`, `--plain` 
 dropping the kernel's `--no-color` and `--no-input` as the CLI does. It then requires the spawn's
 working directory, `COTAL_HOME` and `XDG_CONFIG_HOME` to be the recorded sandbox. A flag `down` does
 not declare refuses the call.
+
+`assertSmokeSandboxLinkedDown` checks a `cotal down` run in a folder whose `.cotal` is a link, which
+the CLI refuses before any effect. The folder must sit below the recorded root, whose `.cotal` is still
+the recorded one, and the link must lead nowhere or below that root. `COTAL_HOME` and
+`XDG_CONFIG_HOME` must be the recorded ones.
 
 The CI shard runner also assigns each suite a `SMOKE_BROKER_SCOPE`. This non-secret test marker
 is separate from `COTAL_*` connection settings, so their normal scrub leaves it intact. The token

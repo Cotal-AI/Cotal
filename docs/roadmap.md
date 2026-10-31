@@ -13,18 +13,25 @@ The core is running today: all three delivery modes over JetStream, presence and
 discovery, channel replay and durable delivery classes, JWT identity and per-agent ACLs on
 by default, a supervising manager with pluggable runtimes, connectors for Claude Code,
 OpenCode, Codex, Hermes, Jcode, and pi, the mesh manifest (`cotal.yaml`), and the console + web
-observers. The [Quickstart](getting-started.mdx) is the fastest proof.
+observers. It also includes durable Cotal Lang runs, discoverable service contracts,
+CLI structured output, an interactive console launch form and approval-based connections
+for personal Claude Code sessions on supported user-auth deployments.
+[Choose a workflow](using-cotal.mdx) links the supported paths and their limits.
+
+The stock Linear adapter supports static-auth serving and approved user-auth serving.
+A hosted installation still has to configure its authority, registration and caller grants.
+Source support does not establish that an integration is deployed in a particular space.
 
 ## Deferred work
 
-These have a reserved shape in the spec or the architecture, and are intentionally not
-built yet.
+The table separates implemented parts from remaining work. A reserved shape in the spec
+or a design proposal does not establish runtime support.
 
 | Area | Direction |
 |---|---|
 | **Signed envelopes + DID identity** | Non-repudiation: authenticity that survives an untrusted relay or federation hop, not just a single trusted broker. Instance ids are shaped to become `did:key`. ([SPEC §11](../SPEC.md#11-versioning-and-extensibility)) |
 | **Auth-callout onboarding** | Shipped for per-user-auth spaces: the auth service mints scoped creds *at connect* from the data-account signing key, which a running manager also holds ([identity & auth](identity-and-auth.mdx)). Remaining: the join-link bootstrap-token variant for static meshes. |
-| **Credential revocation / TTL** | User-auth spaces have it (short bearers, ledger revocation, live-connection eviction); command and daemon creds are bounded and renewed everywhere, and manager-spawned static agent creds are now bounded too (24h TTL, manager renewal, despawn revokes the ledger rows and the control surface refuses the retired incarnation). Remaining: static reconnect-time revocation inside the TTL window (structural: no auth callout) and TTL on out-of-band `cotal auth mint` creds. ([Security model](security.mdx)) |
+| **Credential revocation / TTL** | User-auth spaces have it (short bearers, ledger revocation, live-connection eviction); command and daemon creds are bounded and renewed everywhere, and manager-spawned static agent creds are now bounded too (24h TTL, manager renewal, despawn revokes the ledger rows and the control surface refuses the retired incarnation). Out-of-band `cotal auth mint` credentials also expire after 24 hours by default; `--no-expiry` explicitly opts out. Remaining: static reconnect-time revocation inside the TTL window (static meshes have no auth callout). ([Security model](security.mdx)) |
 | **Sessions + moderator** | Managed group membership (admit/remove). Channels today carry no presence roster of their own. A `durable` channel's membership list decides backstop delivery only, and any agent its read ACL admits can join it ([channels & permissions](channels-and-permissions.mdx#membership-changes)). |
 | **Artifact delivery** | Large payloads move to a per-space JetStream Object Store; the message carries a reference part. The `artifact` part is defined and setup creates the store, but nothing stores or fetches artifact bytes yet. ([SPEC §5](../SPEC.md#5-envelopes)) |
 | **Instant offline (`$SYS`)** | Manager-observed disconnect events for immediate `offline`, instead of waiting out the presence heartbeat window. The heartbeat sweep stays the floor. |
@@ -61,8 +68,9 @@ The rule: **never merge trust roots.** The staged path, from
   a decision journal, competitive work pools, and leases/obligations
   ([SPEC §13](../SPEC.md#13-endpoint-control-surface-v04)); whether a lighter *advisory* intent
   record also belongs on the chat plane is still open.
-- **Collaboration patterns**: agents are declared today ([agent files](agent-files.mdx));
-  how a user declares the patterns *between* them (who delegates to whom) is open.
+- **Collaboration patterns**: [manifests](manifest.mdx) declare agents and channel access;
+  [Cotal Lang](workflows.mdx) expresses delegation, concurrency and human checkpoints.
+  A separate declarative notation for arbitrary social relationships between agents remains open.
 
 Watch the [changelog](../SPEC.md#11-versioning-and-extensibility) and releases for what
 lands; propose changes against the spec first ([change process](../SPEC.md#11-versioning-and-extensibility)).

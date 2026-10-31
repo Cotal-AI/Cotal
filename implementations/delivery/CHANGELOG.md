@@ -1,5 +1,1635 @@
 # @cotal-ai/delivery
 
+## 0.132.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.132.1
+  - @cotal-ai/workspace@0.132.1
+
+## 0.132.0
+
+### Patch Changes
+
+- Updated dependencies [5b197c0]
+- Updated dependencies [7613605]
+- Updated dependencies [2f0e7c8]
+  - @cotal-ai/workspace@0.132.0
+  - @cotal-ai/core@0.132.0
+
+## 0.131.6
+
+### Patch Changes
+
+- @cotal-ai/core@0.131.6
+  - @cotal-ai/workspace@0.131.6
+
+## 0.131.5
+
+### Patch Changes
+
+- Updated dependencies [e78de30]
+  - @cotal-ai/core@0.131.5
+  - @cotal-ai/workspace@0.131.5
+
+## 0.131.4
+
+### Patch Changes
+
+- @cotal-ai/core@0.131.4
+  - @cotal-ai/workspace@0.131.4
+
+## 0.131.3
+
+### Patch Changes
+
+- @cotal-ai/core@0.131.3
+  - @cotal-ai/workspace@0.131.3
+
+## 0.131.2
+
+### Patch Changes
+
+- 48f1646: Name each `cotal pending` candidate's `from` by the sender principal in its stored message subject, which the broker binds to the sender's credential, in both JSON and plain output. The sender ID written inside the message no longer appears there. A candidate whose subject cannot be parsed is withheld as unreadable.
+- @cotal-ai/core@0.131.2
+  - @cotal-ai/workspace@0.131.2
+
+## 0.131.1
+
+### Patch Changes
+
+- ec53685: Name the sender principal from the stored subject in plain-text `deliver pending` candidate lines, and print the sender's own name and role after it as a sanitized label. The legacy JSON output is unchanged.
+- @cotal-ai/core@0.131.1
+  - @cotal-ai/workspace@0.131.1
+
+## 0.131.0
+
+### Patch Changes
+
+- Updated dependencies [f7c2c28]
+- Updated dependencies [0e65b6f]
+- Updated dependencies [daff420]
+  - @cotal-ai/core@0.131.0
+  - @cotal-ai/workspace@0.131.0
+
+## 0.130.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.130.2
+  - @cotal-ai/workspace@0.130.2
+
+## 0.130.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.130.1
+  - @cotal-ai/workspace@0.130.1
+
+## 0.130.0
+
+### Patch Changes
+
+- Updated dependencies [025d175]
+- Updated dependencies [27250e3]
+  - @cotal-ai/core@0.130.0
+  - @cotal-ai/workspace@0.130.0
+
+## 0.129.9
+
+### Patch Changes
+
+- Updated dependencies [1a59b0a]
+- Updated dependencies [b94f83a]
+  - @cotal-ai/core@0.129.9
+  - @cotal-ai/workspace@0.129.9
+
+## 0.129.8
+
+### Patch Changes
+
+- Updated dependencies [43b7cb9]
+  - @cotal-ai/workspace@0.129.8
+  - @cotal-ai/core@0.129.8
+
+## 0.129.7
+
+### Patch Changes
+
+- Updated dependencies [853005f]
+  - @cotal-ai/workspace@0.129.7
+  - @cotal-ai/core@0.129.7
+
+## 0.129.6
+
+### Patch Changes
+
+- @cotal-ai/core@0.129.6
+  - @cotal-ai/workspace@0.129.6
+
+## 0.129.5
+
+### Patch Changes
+
+- @cotal-ai/core@0.129.5
+  - @cotal-ai/workspace@0.129.5
+
+## 0.129.4
+
+### Patch Changes
+
+- @cotal-ai/core@0.129.4
+  - @cotal-ai/workspace@0.129.4
+
+## 0.129.3
+
+### Patch Changes
+
+- Updated dependencies [c6ddccc]
+- Updated dependencies [565f465]
+  - @cotal-ai/core@0.129.3
+  - @cotal-ai/workspace@0.129.3
+
+## 0.129.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.129.2
+  - @cotal-ai/workspace@0.129.2
+
+## 0.129.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.129.1
+  - @cotal-ai/workspace@0.129.1
+
+## 0.129.0
+
+### Patch Changes
+
+- Updated dependencies [de421cd]
+  - @cotal-ai/workspace@0.129.0
+  - @cotal-ai/core@0.129.0
+
+## 0.128.7
+
+### Patch Changes
+
+- @cotal-ai/core@0.128.7
+  - @cotal-ai/workspace@0.128.7
+
+## 0.128.6
+
+### Patch Changes
+
+- @cotal-ai/core@0.128.6
+  - @cotal-ai/workspace@0.128.6
+
+## 0.128.5
+
+### Patch Changes
+
+- Updated dependencies [1c86343]
+  - @cotal-ai/core@0.128.5
+  - @cotal-ai/workspace@0.128.5
+
+## 0.128.4
+
+### Patch Changes
+
+- Updated dependencies [4bfbede]
+  - @cotal-ai/core@0.128.4
+  - @cotal-ai/workspace@0.128.4
+
+## 0.128.3
+
+### Patch Changes
+
+- 76fcf89: Bound concurrent multi-space lane startup to four opens, preserving connection budgets and reading the current manifest before each batch. Report queued lanes separately from retries and overdue opens.
+- Updated dependencies [76fcf89]
+  - @cotal-ai/workspace@0.128.3
+  - @cotal-ai/core@0.128.3
+
+## 0.128.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.128.2
+  - @cotal-ai/workspace@0.128.2
+
+## 0.128.1
+
+### Patch Changes
+
+- Updated dependencies [20a5c96]
+- Updated dependencies [985519f]
+  - @cotal-ai/core@0.128.1
+  - @cotal-ai/workspace@0.128.1
+
+## 0.128.0
+
+### Patch Changes
+
+- Updated dependencies [1f8bfe5]
+  - @cotal-ai/workspace@0.128.0
+  - @cotal-ai/core@0.128.0
+
+## 0.127.5
+
+### Patch Changes
+
+- @cotal-ai/core@0.127.5
+  - @cotal-ai/workspace@0.127.5
+
+## 0.127.4
+
+### Patch Changes
+
+- Updated dependencies [9dc9bc4]
+  - @cotal-ai/workspace@0.127.4
+  - @cotal-ai/core@0.127.4
+
+## 0.127.3
+
+### Patch Changes
+
+- 5ad71cb: Remove the 64 MiB reservation from each space's membership store, bound values per agent, reconcile legacy stores, and drop the CLI file-store floor.
+- Updated dependencies [5ad71cb]
+  - @cotal-ai/core@0.127.3
+  - @cotal-ai/workspace@0.127.3
+
+## 0.127.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.127.2
+  - @cotal-ai/workspace@0.127.2
+
+## 0.127.1
+
+### Patch Changes
+
+- Updated dependencies [beade82]
+  - @cotal-ai/core@0.127.1
+  - @cotal-ai/workspace@0.127.1
+
+## 0.127.0
+
+### Patch Changes
+
+- Updated dependencies [53fbd95]
+  - @cotal-ai/core@0.127.0
+  - @cotal-ai/workspace@0.127.0
+
+## 0.126.3
+
+### Patch Changes
+
+- @cotal-ai/core@0.126.3
+  - @cotal-ai/workspace@0.126.3
+
+## 0.126.2
+
+### Patch Changes
+
+- Updated dependencies [566b08f]
+  - @cotal-ai/workspace@0.126.2
+  - @cotal-ai/core@0.126.2
+
+## 0.126.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.126.1
+  - @cotal-ai/workspace@0.126.1
+
+## 0.126.0
+
+### Patch Changes
+
+- Updated dependencies [6481f8b]
+  - @cotal-ai/workspace@0.126.0
+  - @cotal-ai/core@0.126.0
+
+## 0.125.0
+
+### Patch Changes
+
+- Updated dependencies [b2413e2]
+  - @cotal-ai/core@0.125.0
+  - @cotal-ai/workspace@0.125.0
+
+## 0.124.3
+
+### Patch Changes
+
+- @cotal-ai/core@0.124.3
+  - @cotal-ai/workspace@0.124.3
+
+## 0.124.2
+
+### Patch Changes
+
+- Updated dependencies [05eba85]
+  - @cotal-ai/workspace@0.124.2
+  - @cotal-ai/core@0.124.2
+
+## 0.124.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.124.1
+  - @cotal-ai/workspace@0.124.1
+
+## 0.124.0
+
+### Patch Changes
+
+- @cotal-ai/core@0.124.0
+  - @cotal-ai/workspace@0.124.0
+
+## 0.123.0
+
+### Patch Changes
+
+- @cotal-ai/core@0.123.0
+  - @cotal-ai/workspace@0.123.0
+
+## 0.122.0
+
+### Patch Changes
+
+- Updated dependencies [b318ddd]
+  - @cotal-ai/core@0.122.0
+  - @cotal-ai/workspace@0.122.0
+
+## 0.121.7
+
+### Patch Changes
+
+- b06f3c8: A delivery daemon stopped while its connection redials, as it does moments after `cotal up -d` starts the manager and the daemon moves onto a renewed credential, now waits for the redial and gives its lease back. It used to exit with the row still on the broker, so `cotal down` refused and the next `up` waited out the 30s lease. `up -d` now reports a delivery daemon that was ready and then exited before the boot finished as a degraded control plane and exits 1, where it used to leave the daemon out of its line and exit 0. `cotal down` no longer reads a pidless lease row as a live daemon from one read: it waits until the row is written again, which refuses as before, or expires, as a row left by a daemon whose broker stalled past its broker-gone window does, and then goes on.
+- Updated dependencies [05ecb0d]
+- Updated dependencies [912de5d]
+  - @cotal-ai/core@0.121.7
+  - @cotal-ai/workspace@0.121.7
+
+## 0.121.6
+
+### Patch Changes
+
+- @cotal-ai/core@0.121.6
+  - @cotal-ai/workspace@0.121.6
+
+## 0.121.5
+
+### Patch Changes
+
+- 459e998: The `deliver --spaces` ready line lists the spaces it serves in manifest order again. Since lanes began opening together, it listed them in the order their opens finished, which changed from run to run.
+- @cotal-ai/core@0.121.5
+  - @cotal-ai/workspace@0.121.5
+
+## 0.121.4
+
+### Patch Changes
+
+- 429586a: A delivery daemon stopped with SIGTERM or SIGINT while its lease claim was still in flight now gives the lease back before it exits. The broker writes the lease row before the daemon reads the answer, and a signal in that moment ended the process with no handler, so the row claimed the shard for the 30-second lease TTL and the next daemon was refused with "a live lease already exists". The daemon now holds such a signal until the claim answers, then stops and releases the row as it does for a signal later in start-up.
+- Updated dependencies [672725a]
+  - @cotal-ai/workspace@0.121.4
+  - @cotal-ai/core@0.121.4
+
+## 0.121.3
+
+### Patch Changes
+
+- Updated dependencies [a90d7ba]
+- Updated dependencies [fe38cbd]
+- Updated dependencies [479895c]
+- Updated dependencies [baf9576]
+- Updated dependencies [6990d29]
+- Updated dependencies [a77ac87]
+- Updated dependencies [d189272]
+  - @cotal-ai/workspace@0.121.3
+  - @cotal-ai/core@0.121.3
+
+## 0.121.2
+
+### Patch Changes
+
+- Updated dependencies [af4b631]
+- Updated dependencies [3d07896]
+- Updated dependencies [1446ee9]
+- Updated dependencies [d98674a]
+- Updated dependencies [f450bfe]
+- Updated dependencies [ee93749]
+  - @cotal-ai/core@0.121.2
+  - @cotal-ai/workspace@0.121.2
+
+## 0.121.1
+
+### Patch Changes
+
+- Updated dependencies [44ff795]
+  - @cotal-ai/workspace@0.121.1
+  - @cotal-ai/core@0.121.1
+
+## 0.121.0
+
+### Patch Changes
+
+- Updated dependencies [5d01ea1]
+  - @cotal-ai/core@0.121.0
+  - @cotal-ai/workspace@0.121.0
+
+## 0.120.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.120.2
+  - @cotal-ai/workspace@0.120.2
+
+## 0.120.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.120.1
+  - @cotal-ai/workspace@0.120.1
+
+## 0.120.0
+
+### Patch Changes
+
+- @cotal-ai/core@0.120.0
+  - @cotal-ai/workspace@0.120.0
+
+## 0.119.5
+
+### Patch Changes
+
+- Updated dependencies [8f7d6dd]
+  - @cotal-ai/core@0.119.5
+  - @cotal-ai/workspace@0.119.5
+
+## 0.119.4
+
+### Patch Changes
+
+- ed5c23f: Remedies, hints and messages from `run`, `actor` and `auth`, `logout`, `supervise` and `manager`, `deliver`, `docs`, `daemon`, `linear`, the web dashboard, the console, the Claude Code connector, a run's checkpoint prompt and the endpoint issuance gate now name the commands they suggest in backticks, so a terminal keeps each one whole and `--json` carries the same text. They named them bare after other words, as in "list the recorded runs with cotal run", which split inside the command when the line wrapped.
+- Updated dependencies [ed5c23f]
+- Updated dependencies [ed5c23f]
+  - @cotal-ai/workspace@0.119.4
+  - @cotal-ai/core@0.119.4
+
+## 0.119.3
+
+### Patch Changes
+
+- Updated dependencies [8866e1e]
+  - @cotal-ai/core@0.119.3
+  - @cotal-ai/workspace@0.119.3
+
+## 0.119.2
+
+### Patch Changes
+
+- c7f80a1: Show the sender name and ID in plain-text `deliver pending` candidate lines while preserving the legacy JSON output.
+- Updated dependencies [4c61283]
+  - @cotal-ai/workspace@0.119.2
+  - @cotal-ai/core@0.119.2
+
+## 0.119.1
+
+### Patch Changes
+
+- Updated dependencies [7c52767]
+- Updated dependencies [f57bc1f]
+- Updated dependencies [9f32677]
+- Updated dependencies [3431be6]
+  - @cotal-ai/workspace@0.119.1
+  - @cotal-ai/core@0.119.1
+
+## 0.119.0
+
+### Patch Changes
+
+- Updated dependencies [ba731fe]
+  - @cotal-ai/workspace@0.119.0
+  - @cotal-ai/core@0.119.0
+
+## 0.118.3
+
+### Patch Changes
+
+- @cotal-ai/core@0.118.3
+  - @cotal-ai/workspace@0.118.3
+
+## 0.118.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.118.2
+  - @cotal-ai/workspace@0.118.2
+
+## 0.118.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.118.1
+  - @cotal-ai/workspace@0.118.1
+
+## 0.118.0
+
+### Patch Changes
+
+- @cotal-ai/core@0.118.0
+  - @cotal-ai/workspace@0.118.0
+
+## 0.117.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.117.1
+  - @cotal-ai/workspace@0.117.1
+
+## 0.117.0
+
+### Patch Changes
+
+- Updated dependencies [c93dded]
+  - @cotal-ai/core@0.117.0
+  - @cotal-ai/workspace@0.117.0
+
+## 0.116.5
+
+### Patch Changes
+
+- Updated dependencies [e9edf03]
+  - @cotal-ai/workspace@0.116.5
+  - @cotal-ai/core@0.116.5
+
+## 0.116.4
+
+### Patch Changes
+
+- Updated dependencies [afcfc54]
+  - @cotal-ai/workspace@0.116.4
+  - @cotal-ai/core@0.116.4
+
+## 0.116.3
+
+### Patch Changes
+
+- Updated dependencies [ed72118]
+- Updated dependencies [1819877]
+  - @cotal-ai/workspace@0.116.3
+  - @cotal-ai/core@0.116.3
+
+## 0.116.2
+
+### Patch Changes
+
+- Updated dependencies [64add96]
+  - @cotal-ai/workspace@0.116.2
+  - @cotal-ai/core@0.116.2
+
+## 0.116.1
+
+### Patch Changes
+
+- b175702: The delivery daemon's `close()` wakes the timer writer's retry backoff instead of waiting it out. A close that landed while the writer was sleeping between attempts used to wait for the rest of that backoff, up to five minutes, before the daemon finished stopping.
+- Updated dependencies [31cb8e5]
+- Updated dependencies [c6be6dd]
+- Updated dependencies [331ea96]
+- Updated dependencies [211c572]
+- Updated dependencies [b695d8a]
+- Updated dependencies [f561850]
+  - @cotal-ai/core@0.116.1
+  - @cotal-ai/workspace@0.116.1
+
+## 0.116.0
+
+### Patch Changes
+
+- Updated dependencies [3c60b76]
+- Updated dependencies [2e7cdfd]
+- Updated dependencies [5b85487]
+- Updated dependencies [ff23d2d]
+- Updated dependencies [c19eaf9]
+- Updated dependencies [c8072d6]
+- Updated dependencies [726cd81]
+- Updated dependencies [352ee27]
+- Updated dependencies [cf3218f]
+- Updated dependencies [81a6062]
+- Updated dependencies [ff12daa]
+- Updated dependencies [fee5f39]
+- Updated dependencies [a8a49b7]
+  - @cotal-ai/core@0.116.0
+  - @cotal-ai/workspace@0.116.0
+
+## 0.115.4
+
+### Patch Changes
+
+- 352d94d: A multi-space host (`auth-service --spaces`, `auth-service --callout-only --spaces`, `deliver --spaces`) opens its spaces' lanes together, and waits at most 30 s for any one of them: an open that hangs no longer holds back every later space in the manifest, the ready line, or the acknowledgment of a removal. The hung open keeps running and is not started again; its lane is taken when it settles, or closed if the space left the manifest or the host refused meanwhile. The ready line names such spaces as "still opening", apart from the ones being retried. The default startup refuses such a space at the deadline, as it refuses one that fails to open.
+- Updated dependencies [352d94d]
+  - @cotal-ai/workspace@0.115.4
+  - @cotal-ai/core@0.115.4
+
+## 0.115.3
+
+### Patch Changes
+
+- Updated dependencies [4e84742]
+  - @cotal-ai/workspace@0.115.3
+  - @cotal-ai/core@0.115.3
+
+## 0.115.2
+
+### Patch Changes
+
+- Updated dependencies [fe37cb4]
+  - @cotal-ai/core@0.115.2
+  - @cotal-ai/workspace@0.115.2
+
+## 0.115.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.115.1
+  - @cotal-ai/workspace@0.115.1
+
+## 0.115.0
+
+### Patch Changes
+
+- @cotal-ai/core@0.115.0
+  - @cotal-ai/workspace@0.115.0
+
+## 0.114.1
+
+### Patch Changes
+
+- Updated dependencies [12f2b47]
+  - @cotal-ai/workspace@0.114.1
+  - @cotal-ai/core@0.114.1
+
+## 0.114.0
+
+### Patch Changes
+
+- @cotal-ai/core@0.114.0
+  - @cotal-ai/workspace@0.114.0
+
+## 0.113.3
+
+### Patch Changes
+
+- Updated dependencies [d4a9361]
+  - @cotal-ai/core@0.113.3
+  - @cotal-ai/workspace@0.113.3
+
+## 0.113.2
+
+### Patch Changes
+
+- Updated dependencies [09f2707]
+  - @cotal-ai/workspace@0.113.2
+  - @cotal-ai/core@0.113.2
+
+## 0.113.1
+
+### Patch Changes
+
+- Updated dependencies [14c4333]
+- Updated dependencies [51d8642]
+  - @cotal-ai/core@0.113.1
+  - @cotal-ai/workspace@0.113.1
+
+## 0.113.0
+
+### Patch Changes
+
+- a9cd2f5: `cotal up --recreate-issued-stores <backup-dir>` lets a mesh that ran 0.110.x or earlier start on 0.111.0 and later. Those releases refuse a space's `KV_cotal_issued_<space>` and `KV_cotal_accepted_<space>` created before bounded retention, and the remedy they named, `nats stream backup` and `nats stream rm`, needed authority no stock credential holds. On the broker that start launches, before any issuer of the space runs, the flag backs up each store created before bounded retention into a new private directory in the layout `nats stream backup` writes (0700 directories, 0600 files, readable by `nats stream restore`). It checks every backup against its stream's message count and last sequence, deletes those stores only after every check passes, and the start then creates both again in the current shape. It touches no other stream. It refuses `USAGE_INVALID` for a backup directory that exists or has no parent and with `-f` or `--restore`, `LIFECYCLE_BLOCKED` while the stack runs, and `CONFLICT` when neither store predates bounded retention. It works on static-auth, user-auth and open spaces, legacy and controller-owned stacks alike.
+  
+  The step is core's `removeIssuedStoresBeforeRetention(nc, { space, backupDir, inboxPrefix })`, on a connection that holds the new one-shot `issued-store-recreate` profile (`mintCreds`, 30 minutes): `STREAM.INFO`, `STREAM.SNAPSHOT` and `STREAM.DELETE` on those two streams, its own inbox, and a one-use response permission per snapshot chunk. An embedder whose spaces `cotal up` does not start runs it per space with the space's issuers stopped. `cotal auth mint` still exposes only agent, observer and admin, and `teardown` keeps its scope.
+  
+  `cotal up` on such a store now refuses `CONFLICT` (exit 2) instead of reporting `OPERATION_UNKNOWN` (exit 3); the broker it started is stopped again either way. The store check throws `IssuedStoreBeforeRetentionError`, and its remedy, shared by every binder, names the flag. `docs/UPGRADING.md` gains the operator sections for 0.111.0 (with what a rollback can and cannot do) and for the two 0.112.0 changes to multi-space hosts.
+  
+  The `deliver --spaces` ready line no longer prints an empty list as `0 space(s): ;`; it reads `0 space(s); retrying <s>`.
+- Updated dependencies [38fc031]
+- Updated dependencies [c1ff7d8]
+- Updated dependencies [29c67fe]
+- Updated dependencies [a9cd2f5]
+- Updated dependencies [41fb2de]
+- Updated dependencies [f3460b3]
+  - @cotal-ai/core@0.113.0
+  - @cotal-ai/workspace@0.113.0
+
+## 0.112.0
+
+### Minor Changes
+
+- e2dc37a: `cotal deliver --spaces` now starts with the spaces it can serve instead of refusing unless every space opens. It names each space it cannot serve with the reason, retries those every 5 seconds, and its ready line names the spaces it retries. One space's fault at a restart no longer keeps every other space's delivery down, nor the plane-claim liveness oracle each lane answers, which an auth service restarting after a crash needs. A space whose lease a single-space daemon still holds opens once that daemon stops. A manifest that does not read or parse whole still refuses startup.
+  
+  **Breaking:** a supervisor or script that relied on `deliver --spaces` exiting nonzero when one space could not open now sees the host start; read its ready line or its per-space lines for the spaces it retries.
+
+### Patch Changes
+
+- Updated dependencies [1924ecd]
+  - @cotal-ai/workspace@0.112.0
+  - @cotal-ai/core@0.112.0
+
+## 0.111.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.111.1
+  - @cotal-ai/workspace@0.111.1
+
+## 0.111.0
+
+### Patch Changes
+
+- Updated dependencies [d367269]
+- Updated dependencies [b5b0960]
+  - @cotal-ai/core@0.111.0
+  - @cotal-ai/workspace@0.111.0
+
+## 0.110.0
+
+### Minor Changes
+
+- 927e512: Serve several spaces from one delivery process. `cotal deliver --spaces <manifest> --server <url>` holds one delivery lane per space the manifest names, so a host runs one delivery process instead of one per space. A lane is the daemon `deliver --space` runs, held by the host: it reads its own space's credential from the root, dials on its own connections into that space's account, and holds its own lease, broker watchdog, timer writer and membership feed. One space losing the broker, its credential or its lease closes that lane alone, and the host reopens it every 5 seconds while it fails. A lane writes no pidfile, and its lines carry a `[<space>]` prefix.
+  
+  The host serves every space in the manifest or none, and names the space it could not serve. It rereads the manifest when it changes on disk, on `SIGHUP`, and on a backstop interval, opening or closing the difference; a manifest that does not read or parse whole is reported and the open lanes are kept. `--space` and `--spaces` are alternatives, `--spaces` requires `--server`, and `--creds`, `--dev-mint`, `--shard`, `--shards` and `deliver pending` refuse with it. `deliver --space` is unchanged. The `deliver` deprecation warning now says to keep `cotal deliver` for `--spaces`, which the `delivery` service preset has no form for.
+  
+  The manifest grammar and the reconcile loop move to `@cotal-ai/workspace` as `parseSpaceManifest` and `runSpaceHost`, and the auth callout host runs on them. Its behavior and lines are unchanged, except that a signalled callout host now closes its lanes at once rather than one after another, and closes the lanes it opened before refusing on a manifest directory it cannot watch.
+
+### Patch Changes
+
+- Updated dependencies [927e512]
+  - @cotal-ai/workspace@0.110.0
+  - @cotal-ai/core@0.110.0
+
+## 0.109.25
+
+### Patch Changes
+
+- dbfc90b: Every command's help now shows its most common uses. `cotal <command> --help` puts an Examples section right after Usage and Shorthands, before Commands and Options, and each example is a command that works as written with a short note on what it does, such as `cotal spawn -d` to launch an agent through a manager and return. Every command and subcommand `cotal help` lists has one to three. An example's command is never wrapped; its note sits beside it, or under it on a narrow terminal. A command's `examples` entry is now `{ command, note }`; a bare string is still accepted and shows with no note. `cotal manager <verb> --help` shows the manager's own examples.
+- Updated dependencies [dbfc90b]
+  - @cotal-ai/core@0.109.25
+  - @cotal-ai/workspace@0.109.25
+
+## 0.109.24
+
+### Patch Changes
+
+- Updated dependencies [0bffcb0]
+  - @cotal-ai/workspace@0.109.24
+  - @cotal-ai/core@0.109.24
+
+## 0.109.23
+
+### Patch Changes
+
+- @cotal-ai/core@0.109.23
+  - @cotal-ai/workspace@0.109.23
+
+## 0.109.22
+
+### Patch Changes
+
+- @cotal-ai/core@0.109.22
+  - @cotal-ai/workspace@0.109.22
+
+## 0.109.21
+
+### Patch Changes
+
+- @cotal-ai/core@0.109.21
+  - @cotal-ai/workspace@0.109.21
+
+## 0.109.20
+
+### Patch Changes
+
+- Updated dependencies [ffeaa32]
+  - @cotal-ai/workspace@0.109.20
+  - @cotal-ai/core@0.109.20
+
+## 0.109.19
+
+### Patch Changes
+
+- @cotal-ai/core@0.109.19
+  - @cotal-ai/workspace@0.109.19
+
+## 0.109.18
+
+### Patch Changes
+
+- @cotal-ai/core@0.109.18
+  - @cotal-ai/workspace@0.109.18
+
+## 0.109.17
+
+### Patch Changes
+
+- Updated dependencies [dc382c0]
+  - @cotal-ai/core@0.109.17
+  - @cotal-ai/workspace@0.109.17
+
+## 0.109.16
+
+### Patch Changes
+
+- @cotal-ai/core@0.109.16
+  - @cotal-ai/workspace@0.109.16
+
+## 0.109.15
+
+### Patch Changes
+
+- @cotal-ai/core@0.109.15
+  - @cotal-ai/workspace@0.109.15
+
+## 0.109.14
+
+### Patch Changes
+
+- Updated dependencies [60e6671]
+  - @cotal-ai/core@0.109.14
+  - @cotal-ai/workspace@0.109.14
+
+## 0.109.13
+
+### Patch Changes
+
+- @cotal-ai/core@0.109.13
+  - @cotal-ai/workspace@0.109.13
+
+## 0.109.12
+
+### Patch Changes
+
+- @cotal-ai/core@0.109.12
+  - @cotal-ai/workspace@0.109.12
+
+## 0.109.11
+
+### Patch Changes
+
+- Updated dependencies [e85774c]
+  - @cotal-ai/workspace@0.109.11
+  - @cotal-ai/core@0.109.11
+
+## 0.109.10
+
+### Patch Changes
+
+- Updated dependencies [e9f4793]
+  - @cotal-ai/workspace@0.109.10
+  - @cotal-ai/core@0.109.10
+
+## 0.109.9
+
+### Patch Changes
+
+- Updated dependencies [841d980]
+  - @cotal-ai/workspace@0.109.9
+  - @cotal-ai/core@0.109.9
+
+## 0.109.8
+
+### Patch Changes
+
+- Updated dependencies [36b0c06]
+- Updated dependencies [c592eb8]
+  - @cotal-ai/workspace@0.109.8
+  - @cotal-ai/core@0.109.8
+
+## 0.109.7
+
+### Patch Changes
+
+- @cotal-ai/core@0.109.7
+  - @cotal-ai/workspace@0.109.7
+
+## 0.109.6
+
+### Patch Changes
+
+- @cotal-ai/core@0.109.6
+  - @cotal-ai/workspace@0.109.6
+
+## 0.109.5
+
+### Patch Changes
+
+- Updated dependencies [a32425e]
+  - @cotal-ai/workspace@0.109.5
+  - @cotal-ai/core@0.109.5
+
+## 0.109.4
+
+### Patch Changes
+
+- @cotal-ai/core@0.109.4
+  - @cotal-ai/workspace@0.109.4
+
+## 0.109.3
+
+### Patch Changes
+
+- @cotal-ai/core@0.109.3
+  - @cotal-ai/workspace@0.109.3
+
+## 0.109.2
+
+### Patch Changes
+
+- Updated dependencies [4f6f406]
+  - @cotal-ai/workspace@0.109.2
+  - @cotal-ai/core@0.109.2
+
+## 0.109.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.109.1
+  - @cotal-ai/workspace@0.109.1
+
+## 0.109.0
+
+### Patch Changes
+
+- Updated dependencies [82cb60d]
+  - @cotal-ai/core@0.109.0
+  - @cotal-ai/workspace@0.109.0
+
+## 0.108.1
+
+### Patch Changes
+
+- Updated dependencies [25e980f]
+  - @cotal-ai/workspace@0.108.1
+  - @cotal-ai/core@0.108.1
+
+## 0.108.0
+
+### Minor Changes
+
+- 7657395: The manager and the built-in services start without being added first. `cotal manager start` starts the manager for this folder's or the selected space with the pty runtime and its registered broker, and `cotal manager stop`, `status`, `logs` and `restart` act on it; after `cotal up` it reports the manager `up` started and starts no second one. `cotal service` lists every built-in service, started or not, with the command that starts it, and `cotal service start <preset>` starts one from its defaults, refusing with the exact flags when it needs a file that has no default, such as the feedback form's tester keys and broker credential. A service preset can declare those defaults: a literal, the space's registered root or broker, or a private file the space already keeps. `cotal service add <name> --exec "<command>"` adds a program of your own without a definition file, splitting the command into words without a shell and refusing pipes, redirection, variables and globs.
+  
+  `cotal supervise` is deprecated again and is removed in 1.0.0 with the other daemon entries. It keeps its flags and behavior and prints one line on stderr naming `cotal manager start`, or, when it is given `--execution`, `--spawn`, `--seat-cap` or a resume flag that `manager start` does not take yet, saying to keep `supervise` for that run. `cotal manager start` and `restart` install first-party connectors on first run, as `supervise` does. `cotal manager install` refuses before any effect and names a unit of your own running `cotal manager start --foreground`. The `deliver`, `auth-service` and `feedback-intake` warnings now name `cotal service start <preset>`.
+
+### Patch Changes
+
+- Updated dependencies [7657395]
+  - @cotal-ai/workspace@0.108.0
+  - @cotal-ai/core@0.108.0
+
+## 0.107.0
+
+### Patch Changes
+
+- @cotal-ai/core@0.107.0
+  - @cotal-ai/workspace@0.107.0
+
+## 0.106.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.106.1
+  - @cotal-ai/workspace@0.106.1
+
+## 0.106.0
+
+### Patch Changes
+
+- Updated dependencies [dd1f8d6]
+- Updated dependencies [ba25fb6]
+- Updated dependencies [54a2996]
+  - @cotal-ai/workspace@0.106.0
+  - @cotal-ai/core@0.106.0
+
+## 0.105.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.105.1
+  - @cotal-ai/workspace@0.105.1
+
+## 0.105.0
+
+### Patch Changes
+
+- Updated dependencies [c49bced]
+- Updated dependencies [6e16f06]
+  - @cotal-ai/workspace@0.105.0
+  - @cotal-ai/core@0.105.0
+
+## 0.104.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.104.2
+  - @cotal-ai/workspace@0.104.2
+
+## 0.104.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.104.1
+  - @cotal-ai/workspace@0.104.1
+
+## 0.104.0
+
+### Patch Changes
+
+- e0c4e6e: Correct the documentation page by page against the implementation, including CLI commands, connector delivery and activity sharing, authentication, observer surfaces, hosted composition, telemetry and historical design status. Refresh package guides and generated tool and HTTP references while preserving existing links and normative contracts.
+- Updated dependencies [e0c4e6e]
+- Updated dependencies [b7d4f22]
+  - @cotal-ai/core@0.104.0
+  - @cotal-ai/workspace@0.104.0
+
+## 0.103.4
+
+### Patch Changes
+
+- Updated dependencies [e6af269]
+  - @cotal-ai/workspace@0.103.4
+  - @cotal-ai/core@0.103.4
+
+## 0.103.3
+
+### Patch Changes
+
+- Updated dependencies [2b59b43]
+  - @cotal-ai/core@0.103.3
+  - @cotal-ai/workspace@0.103.3
+
+## 0.103.2
+
+### Patch Changes
+
+- Updated dependencies [2f74981]
+  - @cotal-ai/workspace@0.103.2
+  - @cotal-ai/core@0.103.2
+
+## 0.103.1
+
+### Patch Changes
+
+- Updated dependencies [68377b0]
+- Updated dependencies [1608ae7]
+  - @cotal-ai/core@0.103.1
+  - @cotal-ai/workspace@0.103.1
+
+## 0.103.0
+
+### Patch Changes
+
+- @cotal-ai/core@0.103.0
+  - @cotal-ai/workspace@0.103.0
+
+## 0.102.0
+
+### Patch Changes
+
+- 10ad6d3: The delivery daemon's timer writer now presents the credential the daemon holds on every connect and
+  reconnects onto each renewed credential the daemon adopts. The broker no longer closes the writer's
+  connection when the credential it dialed with expires, and a re-dial never presents an expired
+  credential, so the writer no longer goes down for a few seconds at each expiry. `standaloneConnectOpts`
+  accepts a creds getter that is read on every attempt, and `CotalEndpoint.wireCreds()` returns the
+  endpoint's checked credential.
+- Updated dependencies [9a75f1b]
+- Updated dependencies [bf8978b]
+- Updated dependencies [10ad6d3]
+- Updated dependencies [d0d9e66]
+  - @cotal-ai/core@0.102.0
+  - @cotal-ai/workspace@0.102.0
+
+## 0.101.7
+
+### Patch Changes
+
+- Updated dependencies [668ef6a]
+- Updated dependencies [ae43b58]
+  - @cotal-ai/core@0.101.7
+  - @cotal-ai/workspace@0.101.7
+
+## 0.101.6
+
+### Patch Changes
+
+- Updated dependencies [52832dc]
+- Updated dependencies [49cf781]
+  - @cotal-ai/workspace@0.101.6
+  - @cotal-ai/core@0.101.6
+
+## 0.101.5
+
+### Patch Changes
+
+- Updated dependencies [e6f1f4d]
+  - @cotal-ai/core@0.101.5
+  - @cotal-ai/workspace@0.101.5
+
+## 0.101.4
+
+### Patch Changes
+
+- Updated dependencies [0642c8f]
+  - @cotal-ai/core@0.101.4
+  - @cotal-ai/workspace@0.101.4
+
+## 0.101.3
+
+### Patch Changes
+
+- Updated dependencies [c54a604]
+- Updated dependencies [a677726]
+- Updated dependencies [330127a]
+  - @cotal-ai/workspace@0.101.3
+  - @cotal-ai/core@0.101.3
+
+## 0.101.2
+
+### Patch Changes
+
+- Updated dependencies [9acfc57]
+- Updated dependencies [d57e596]
+- Updated dependencies [427f28b]
+  - @cotal-ai/core@0.101.2
+  - @cotal-ai/workspace@0.101.2
+
+## 0.101.1
+
+### Patch Changes
+
+- Updated dependencies [091498f]
+- Updated dependencies [446fd91]
+- Updated dependencies [bdafbf9]
+- Updated dependencies [0379e03]
+  - @cotal-ai/workspace@0.101.1
+  - @cotal-ai/core@0.101.1
+
+## 0.101.0
+
+### Patch Changes
+
+- 04112e9: `cotal service start` of a `delivery` preset beside a running `stack-delivery` no longer calls the
+  stack's own delivery a legacy record with a Next that names nothing. Its refusal names the stack
+  member that runs the record, with its pid and instance, and its Next is that member's stop with
+  `cotal down`. After such a service takes over the delivery, `cotal status` no longer offers
+  `cotal up --root` first, which refused while the service ran. It first names that service's
+  `svc stop` with its instance, as `up`'s refusal does, then `up --root`. `status --json` carries the
+  services under `folder.heldServices`.
+- 2ed3641: `help --all` and the help of `supervise`, `deliver`, `auth-service` and `feedback-intake` now mark
+  each deprecated entry, with its removal release and the service preset that replaces it. They listed
+  the entries with no label, so only a run's warning said they were deprecated.
+- cf4ed0f: A delivery daemon whose lease lapsed on a store over its `--max-file-store` cap no longer says another daemon took its shard. It quotes the broker's refusal of the new lease and exits, as a daemon without its lease does. `cotal up` then names the full store and the line the daemon logged, with `history clear` or a larger cap as the way out, and `status` says the full store refuses the lease. An owned service that exits before readiness now has its error quote the last line it logged during that launch.
+- b8304ce: `CotalEndpoint.releaseDeliveryLease` and `releaseManagerLease` now reject when their delete does not commit. A release at a revision the row has moved past rejects with the broker's refusal, and a broker failure rejects with its own error. Both used to resolve as if the lease were released, so a caller could not tell a release from a refused or failed one. `releaseDeliveryLease` with an `undefined` revision still releases nothing, and `releaseManagerLease` without a revision still deletes the key unconditionally. The delivery daemon and the manager still finish their shutdown when a release fails. A hosted delivery `close()` whose release is refused now rejects with the broker's reason.
+- Updated dependencies [ff99364]
+- Updated dependencies [39e0c7a]
+- Updated dependencies [fc17f8f]
+- Updated dependencies [e7cb03f]
+- Updated dependencies [0d1dfc3]
+- Updated dependencies [d0c3cd7]
+- Updated dependencies [c74a853]
+- Updated dependencies [fff2909]
+- Updated dependencies [b0257f2]
+- Updated dependencies [0c9e498]
+- Updated dependencies [1e75421]
+- Updated dependencies [b58bf37]
+- Updated dependencies [0af0377]
+- Updated dependencies [dedb739]
+- Updated dependencies [ea76a77]
+- Updated dependencies [9736397]
+- Updated dependencies [0282994]
+- Updated dependencies [dbbd7f5]
+- Updated dependencies [7d489d2]
+- Updated dependencies [cfeaddd]
+- Updated dependencies [afec9b6]
+- Updated dependencies [7c8564e]
+- Updated dependencies [66d2f93]
+- Updated dependencies [5cc55a7]
+- Updated dependencies [3a12438]
+- Updated dependencies [c2503db]
+- Updated dependencies [60cb005]
+- Updated dependencies [54f044f]
+- Updated dependencies [f0d97cd]
+- Updated dependencies [b8fa243]
+- Updated dependencies [09d905f]
+- Updated dependencies [286bccd]
+- Updated dependencies [4b2eb30]
+- Updated dependencies [855e595]
+- Updated dependencies [1c978f9]
+- Updated dependencies [f0d3143]
+- Updated dependencies [5703dfb]
+- Updated dependencies [a62d32d]
+- Updated dependencies [5f312f7]
+- Updated dependencies [057e96d]
+- Updated dependencies [41db374]
+- Updated dependencies [700695c]
+- Updated dependencies [30f0900]
+- Updated dependencies [2ed3641]
+- Updated dependencies [89d5637]
+- Updated dependencies [9aa4be8]
+- Updated dependencies [35ec68e]
+- Updated dependencies [e5ea994]
+- Updated dependencies [0b638b8]
+- Updated dependencies [817f353]
+- Updated dependencies [b7d985d]
+- Updated dependencies [e124c5a]
+- Updated dependencies [957b8d8]
+- Updated dependencies [77c915a]
+- Updated dependencies [2dcc119]
+- Updated dependencies [75476c5]
+- Updated dependencies [71e91d8]
+- Updated dependencies [5521d3f]
+- Updated dependencies [d4afe89]
+- Updated dependencies [b6cfff1]
+- Updated dependencies [332d20e]
+- Updated dependencies [9901303]
+- Updated dependencies [b8304ce]
+- Updated dependencies [e264d3c]
+- Updated dependencies [af0a0bc]
+- Updated dependencies [71eeb1c]
+- Updated dependencies [608f2d0]
+- Updated dependencies [00db0a6]
+- Updated dependencies [0decd7a]
+- Updated dependencies [240dbf4]
+- Updated dependencies [1de8abb]
+- Updated dependencies [2343ae8]
+- Updated dependencies [0c7e317]
+- Updated dependencies [62c4874]
+- Updated dependencies [b3f0edd]
+- Updated dependencies [b8ef19b]
+- Updated dependencies [788bf15]
+- Updated dependencies [2093a48]
+- Updated dependencies [7b97877]
+- Updated dependencies [2f7657c]
+- Updated dependencies [9323110]
+- Updated dependencies [101e4f1]
+- Updated dependencies [70e9a65]
+- Updated dependencies [ea1b582]
+- Updated dependencies [998477a]
+- Updated dependencies [062cdfd]
+- Updated dependencies [e3979fe]
+- Updated dependencies [b5017a7]
+- Updated dependencies [b1397f4]
+- Updated dependencies [3a3d489]
+- Updated dependencies [4f1ade7]
+- Updated dependencies [d38a3e0]
+- Updated dependencies [66af07b]
+- Updated dependencies [b77865a]
+- Updated dependencies [8c019ae]
+- Updated dependencies [985f634]
+- Updated dependencies [2f4f747]
+- Updated dependencies [0abbc55]
+- Updated dependencies [5e02acd]
+- Updated dependencies [3fc0d8e]
+- Updated dependencies [4725a7f]
+- Updated dependencies [4dcdc62]
+- Updated dependencies [d5e1e1f]
+- Updated dependencies [e5ddaed]
+- Updated dependencies [b3426bb]
+- Updated dependencies [cc023f7]
+- Updated dependencies [789de43]
+- Updated dependencies [7e56bcd]
+- Updated dependencies [d12f4bc]
+- Updated dependencies [6a9b881]
+- Updated dependencies [4d577e6]
+- Updated dependencies [df1abff]
+- Updated dependencies [eabc54d]
+- Updated dependencies [d7bb55f]
+- Updated dependencies [8704be1]
+- Updated dependencies [440ce81]
+- Updated dependencies [aa3ff60]
+- Updated dependencies [9c86a40]
+- Updated dependencies [f2e0c06]
+- Updated dependencies [73930b2]
+- Updated dependencies [c63f6d8]
+- Updated dependencies [6682bcb]
+- Updated dependencies [d205ad2]
+- Updated dependencies [7aa9d14]
+- Updated dependencies [531b374]
+- Updated dependencies [88c64a0]
+- Updated dependencies [48431ca]
+- Updated dependencies [83c2b1b]
+- Updated dependencies [aef1cf1]
+- Updated dependencies [26f407a]
+- Updated dependencies [ff650ba]
+- Updated dependencies [a8c3461]
+- Updated dependencies [a923eaa]
+- Updated dependencies [b505ad6]
+- Updated dependencies [457d771]
+- Updated dependencies [e16a6a5]
+- Updated dependencies [d6f9f7a]
+- Updated dependencies [03858ae]
+- Updated dependencies [d0d885a]
+- Updated dependencies [73d6301]
+- Updated dependencies [447b7eb]
+- Updated dependencies [bd52202]
+- Updated dependencies [260ff6d]
+- Updated dependencies [8e35b7c]
+- Updated dependencies [5cb1819]
+- Updated dependencies [595aa8e]
+- Updated dependencies [72ed932]
+- Updated dependencies [09dd488]
+- Updated dependencies [d74686f]
+- Updated dependencies [24769e9]
+- Updated dependencies [d407e4b]
+- Updated dependencies [89f14f2]
+- Updated dependencies [914b1f1]
+- Updated dependencies [b6681bc]
+- Updated dependencies [78a2035]
+  - @cotal-ai/workspace@0.101.0
+  - @cotal-ai/core@0.101.0
+
+## 0.100.2
+
+### Patch Changes
+
+- Updated dependencies [8d81c12]
+- Updated dependencies [bb4145f]
+  - @cotal-ai/core@0.100.2
+  - @cotal-ai/workspace@0.100.2
+
+## 0.100.1
+
+### Patch Changes
+
+- 624396e: `cotal feedback-intake` now reads `--max-bytes` and `--rate-limit` with the shared positive-integer flag parser instead of its own copy. A value past the safe integer range, such as `1e300` or `9007199254740993`, used to be accepted, so the body cap or the per-tester rate limit could never trip. It is now refused before the intake dials the broker, and every refusal of these two flags names the rejected value.
+- Updated dependencies [8bb8900]
+- Updated dependencies [546b661]
+- Updated dependencies [b1d2cb5]
+  - @cotal-ai/core@0.100.1
+  - @cotal-ai/workspace@0.100.1
+
+## 0.100.0
+
+### Patch Changes
+
+- cd60efb: `status` no longer suggests the deprecated `cotal deliver` when the delivery responder is not bound;
+  it names `cotal up`. The delivery daemon's missing-credential error named `cotal go`, which does not
+  exist, and now says that `cotal up` mints and writes the credential.
+- 3f4c6ae: `join --creds` or `--token` and `feedback-intake --creds` with no `--server` now dial the broker the
+  space is registered at, keeping its TLS requirement, and refuse an unregistered space before any
+  dial. Before, they sent the credential to the default address.
+- Updated dependencies [7e62dcf]
+- Updated dependencies [0aa2ca7]
+- Updated dependencies [a78af23]
+- Updated dependencies [9eed6bc]
+- Updated dependencies [f5424e1]
+- Updated dependencies [3ec07a5]
+- Updated dependencies [a4e37f4]
+- Updated dependencies [72c4595]
+- Updated dependencies [869d26f]
+- Updated dependencies [2c21df1]
+- Updated dependencies [ba5a685]
+- Updated dependencies [c8550cc]
+- Updated dependencies [ac5a105]
+- Updated dependencies [d235fb0]
+- Updated dependencies [0e729b5]
+- Updated dependencies [28f3ca0]
+- Updated dependencies [73cd25b]
+- Updated dependencies [0934f70]
+- Updated dependencies [cdceff6]
+- Updated dependencies [773e6d3]
+- Updated dependencies [42d9ea1]
+- Updated dependencies [8360fbf]
+- Updated dependencies [f0aebea]
+- Updated dependencies [047b289]
+- Updated dependencies [152e236]
+- Updated dependencies [afb587c]
+- Updated dependencies [ca4ce70]
+- Updated dependencies [b9ddce8]
+- Updated dependencies [b24190d]
+- Updated dependencies [6471d27]
+- Updated dependencies [af26abf]
+- Updated dependencies [b079d7d]
+- Updated dependencies [85213b4]
+- Updated dependencies [4f58a3c]
+- Updated dependencies [0caaa99]
+- Updated dependencies [d29311b]
+- Updated dependencies [28a9e11]
+- Updated dependencies [9234229]
+  - @cotal-ai/workspace@0.100.0
+  - @cotal-ai/core@0.100.0
+
+## 0.99.3
+
+### Patch Changes
+
+- Updated dependencies [96325dc]
+- Updated dependencies [15effd7]
+  - @cotal-ai/core@0.99.3
+  - @cotal-ai/workspace@0.99.3
+
+## 0.99.2
+
+### Patch Changes
+
+- Updated dependencies [74a688d]
+  - @cotal-ai/core@0.99.2
+  - @cotal-ai/workspace@0.99.2
+
+## 0.99.1
+
+### Patch Changes
+
+- Updated dependencies [1708ce5]
+- Updated dependencies [50de78d]
+  - @cotal-ai/core@0.99.1
+  - @cotal-ai/workspace@0.99.1
+
+## 0.99.0
+
+### Patch Changes
+
+- Updated dependencies [8aac50d]
+- Updated dependencies [6999190]
+  - @cotal-ai/workspace@0.99.0
+  - @cotal-ai/core@0.99.0
+
+## 0.98.0
+
+### Patch Changes
+
+- Updated dependencies [b6e3fba]
+- Updated dependencies [c445511]
+  - @cotal-ai/core@0.98.0
+  - @cotal-ai/workspace@0.98.0
+
+## 0.97.1
+
+### Patch Changes
+
+- Updated dependencies [aa8d11e]
+  - @cotal-ai/core@0.97.1
+  - @cotal-ai/workspace@0.97.1
+
+## 0.97.0
+
+### Patch Changes
+
+- Updated dependencies [624e71f]
+- Updated dependencies [ec7dbfc]
+- Updated dependencies [352bbe7]
+- Updated dependencies [030fba8]
+- Updated dependencies [9c193e5]
+- Updated dependencies [d03c223]
+- Updated dependencies [a5b5731]
+- Updated dependencies [1321eb8]
+  - @cotal-ai/core@0.97.0
+  - @cotal-ai/workspace@0.97.0
+
+## 0.96.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.96.1
+  - @cotal-ai/workspace@0.96.1
+
+## 0.96.0
+
+### Patch Changes
+
+- Updated dependencies [083205e]
+  - @cotal-ai/core@0.96.0
+  - @cotal-ai/workspace@0.96.0
+
+## 0.95.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.95.2
+  - @cotal-ai/workspace@0.95.2
+
+## 0.95.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.95.1
+  - @cotal-ai/workspace@0.95.1
+
+## 0.95.0
+
+### Patch Changes
+
+- Updated dependencies [b7acdcc]
+  - @cotal-ai/workspace@0.95.0
+  - @cotal-ai/core@0.95.0
+
+## 0.94.7
+
+### Patch Changes
+
+- @cotal-ai/core@0.94.7
+  - @cotal-ai/workspace@0.94.7
+
+## 0.94.6
+
+### Patch Changes
+
+- Updated dependencies [ba9155a]
+- Updated dependencies [520c66b]
+  - @cotal-ai/workspace@0.94.6
+  - @cotal-ai/core@0.94.6
+
+## 0.94.5
+
+### Patch Changes
+
+- Updated dependencies [4b64fe7]
+  - @cotal-ai/workspace@0.94.5
+  - @cotal-ai/core@0.94.5
+
+## 0.94.4
+
+### Patch Changes
+
+- Updated dependencies [464413c]
+  - @cotal-ai/workspace@0.94.4
+  - @cotal-ai/core@0.94.4
+
+## 0.94.3
+
+### Patch Changes
+
+- @cotal-ai/core@0.94.3
+  - @cotal-ai/workspace@0.94.3
+
+## 0.94.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.94.2
+  - @cotal-ai/workspace@0.94.2
+
+## 0.94.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.94.1
+  - @cotal-ai/workspace@0.94.1
+
+## 0.94.0
+
+### Patch Changes
+
+- Updated dependencies [1caaf63]
+  - @cotal-ai/core@0.94.0
+  - @cotal-ai/workspace@0.94.0
+
+## 0.93.0
+
+### Patch Changes
+
+- Updated dependencies [e27c44c]
+- Updated dependencies [69b0538]
+- Updated dependencies [6703917]
+  - @cotal-ai/core@0.93.0
+  - @cotal-ai/workspace@0.93.0
+
+## 0.92.2
+
+### Patch Changes
+
+- Updated dependencies [43a5715]
+- Updated dependencies [736207e]
+  - @cotal-ai/core@0.92.2
+  - @cotal-ai/workspace@0.92.2
+
+## 0.92.1
+
+### Patch Changes
+
+- Updated dependencies [5a0b741]
+  - @cotal-ai/core@0.92.1
+  - @cotal-ai/workspace@0.92.1
+
+## 0.92.0
+
+### Patch Changes
+
+- Updated dependencies [88cc5a1]
+- Updated dependencies [88cc5a1]
+- Updated dependencies [88cc5a1]
+- Updated dependencies [88cc5a1]
+- Updated dependencies [1db940e]
+- Updated dependencies [239d1c7]
+- Updated dependencies [f276a46]
+- Updated dependencies [c935e28]
+- Updated dependencies [588a5a7]
+- Updated dependencies [b3441b1]
+- Updated dependencies [03d9e7b]
+  - @cotal-ai/core@0.92.0
+  - @cotal-ai/workspace@0.92.0
+
 ## 0.91.0
 
 ### Minor Changes

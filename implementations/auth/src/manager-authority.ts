@@ -8,7 +8,7 @@ import {
   assertValidOwnerToken,
   managedRetirementOpId,
   parseRemoteManagerEnvelope,
-  remoteManagerActors,
+  remoteManagerActors, remoteManagerServePrincipal,
   type RemoteManagerAuthorityMaterial,
   type RemoteManagerAuthorityRequest,
   type RemoteRunAdmissionRequest,
@@ -16,6 +16,13 @@ import {
   type RemoteRunSubmissionResult,
   type RemoteRunAttemptRequest,
   type RemoteRunRevokeRequest,
+  type RemoteRunCancelRequest,
+  type RemoteRunCancelResult,
+  type RunCancelAuthority,
+  type RunCancelCommitCode,
+  type IssuedCaller,
+  readRunCancelInput,
+  commitRunCancellation,
   type RemoteRunRevokeResult,
   type RunRevocation,
   type RunAdmissionView,
@@ -51,6 +58,7 @@ import { timingSafeEqual } from "node:crypto";
 import { remoteManagerCurrentRegistrationProof } from "./retained-manager-validation.js";
 import { requireManagerAuthorityHolder, type ManagerAuthorityHolder } from "./platform-control.js";
 import type { ObserveManagerGate } from "./managed-agent-enrollment.js";
+import { RunCancelObservations, type RunCancelObservation, type RunCancelClaim } from "./run-cancel-observation.js";
 
 /** The run attempt the host observes for itself. A null answer is a run with no record or status. */
 export type ObserveManagerRun = (runId: string) => Promise<HostedRunAttempt | null>;
@@ -67,14 +75,14 @@ export async function authorizeRemoteManagerRenewal(args: {
   observeRun: ObserveManagerRun;
 }): Promise<void> {
   const r = parseRemoteManagerAuthorityRequest(args.request);
-  if (r.operation !== "renewStandingBundle" && r.operation !== "renewRunDriver")
+  if (!isRenewal(r.operation))
     requestError("requires a renewal operation");
   if (r.space !== args.space || r.accountPublicKey !== args.accountPublicKey)
     throw new EpEnvelopeError("permission-denied", "manager-service renewal is bound to the host-assigned space and account");
   const gate = await args.observeManagerGate(r.instanceId);
   if (!gate || gate.state !== "open")
     throw new EpEnvelopeError("failed-precondition", "manager-service renewal has no open registration gate");
-  if (gate.principal !== `${args.owner}.${remoteManagerActors(r.instanceId).serve}`)
+  if (gate.principal !== remoteManagerServePrincipal(args.owner, r.instanceId))
     throw new EpEnvelopeError("permission-denied", "manager-service renewal gate belongs to another owner");
   if (gate.processEpoch !== r.processEpoch)
     throw new EpEnvelopeError("conflict", "manager-service renewal processEpoch is stale");
@@ -113,6 +121,11 @@ function requestError(what: string): never {
   throw new EpEnvelopeError("bad-request", `manager-service authority request ${what}`);
 }
 
+/** True when the operation's credential row has a closed set. */
+export function isRenewal(operation: unknown): operation is (typeof RENEWAL_OPERATIONS)[number] {
+  return (RENEWAL_OPERATIONS as readonly unknown[]).includes(operation);
+}
+
 /** Closed request parser: unknown fields and profile-like extensions are refused, never ignored.
  * `allowPlatform` admits a platform `p_…` retirement target owner, for the platform control holder
  * only (SPEC 13.1); the retirement check still requires the target owner to equal the holder's. */
@@ -128,7 +141,7 @@ export function parseRemoteManagerAuthorityRequest(raw: unknown, opts: { allowPl
     requestError("activate requires 1-64 canonical manager contractArtifacts");
   if (o.operation !== "activate" && o.contractArtifacts !== undefined)
     requestError(`${o.operation} must not carry contractArtifacts`);
-  const renewal = o.operation === "renewStandingBundle" || o.operation === "renewRunDriver";
+  const renewal = isRenewal(o.operation);
   if (renewal) {
     if (!isAccountNkey(o.accountPublicKey))
       requestError(`${o.operation} requires an accountPublicKey`);
@@ -141,15 +154,22 @@ export function parseRemoteManagerAuthorityRequest(raw: unknown, opts: { allowPl
     const r = o.run as Record<string, unknown> | undefined;
     if (!r || Object.keys(r).sort().join(",") !== "driverId,epoch,fencingToken,holder,mediatorId,runId,takeoverId")
       requestError("renewRunDriver requires exactly runId, holder, takeoverId, epoch, fencingToken, driverId, mediatorId");
-    if (typeof r.runId !== "string" || !/^run-[0-9a-f]{32}$/.test(r.runId) ||
-        typeof r.holder !== "string" || !/^[A-Za-z0-9_.-]{1,256}$/.test(r.holder) ||
-        typeof r.takeoverId !== "string" || !/^[0-9a-f]{16}$/.test(r.takeoverId) ||
-        typeof r.epoch !== "number" || !Number.isSafeInteger(r.epoch) || r.epoch < 1 ||
-        typeof r.fencingToken !== "number" || !Number.isSafeInteger(r.fencingToken) || r.fencingToken < 1 ||
-        !isUserNkey(r.driverId) || !isUserNkey(r.mediatorId) || r.driverId === r.mediatorId ||
-        !r.holder.endsWith(`.${r.takeoverId}`))
+    const runId = r.runId;
+    const holder = r.holder;
+    const takeoverId = r.takeoverId;
+    const epoch = r.epoch;
+    const fencingToken = r.fencingToken;
+    const driverId = r.driverId;
+    const mediatorId = r.mediatorId;
+    if (typeof runId !== "string" || !/^run-[0-9a-f]{32}$/.test(runId) ||
+        typeof holder !== "string" || !/^[A-Za-z0-9_.-]{1,256}$/.test(holder) ||
+        typeof takeoverId !== "string" || !/^[0-9a-f]{16}$/.test(takeoverId) ||
+        typeof epoch !== "number" || !Number.isSafeInteger(epoch) || epoch < 1 ||
+        typeof fencingToken !== "number" || !Number.isSafeInteger(fencingToken) || fencingToken < 1 ||
+        !isUserNkey(driverId) || !isUserNkey(mediatorId) || driverId === mediatorId ||
+        !holder.endsWith(`.${takeoverId}`))
       requestError("renewRunDriver requires valid runId, holder, takeoverId, epoch, fencingToken, and distinct driverId/mediatorId");
-    run = r as unknown as NonNullable<RemoteManagerAuthorityRequest["run"]>;
+    run = { runId, holder, takeoverId, epoch, fencingToken, driverId, mediatorId };
   } else if (o.run !== undefined) requestError(`${o.operation} must not carry run`);
   let session: RemoteManagerAuthorityRequest["session"];
   if (o.operation === "session") {
@@ -205,6 +225,21 @@ export function parseRemoteManagerAuthorityRequest(raw: unknown, opts: { allowPl
   };
 }
 
+const CREDENTIALS: Record<(typeof REMOTE_MANAGER_AUTHORITY_OPERATIONS)[number], { readonly required: readonly string[]; readonly closed?: true }> = Object.freeze({
+  prepare: Object.freeze({ required: Object.freeze(["supervisor", "executor"]) }),
+  activate: Object.freeze({ required: Object.freeze(["serve", "goalWriter", "sessionLedger"]) }),
+  renew: Object.freeze({ required: Object.freeze(["supervisor", "executor"]) }),
+  session: Object.freeze({ required: Object.freeze(["sessionServing"]) }),
+  retire: Object.freeze({ required: Object.freeze(["retirementRequester"]) }),
+  renewStandingBundle: Object.freeze({ required: REMOTE_MANAGER_IDENTITY_NAMES, closed: true as const }),
+  renewRunDriver: Object.freeze({ required: Object.freeze(["runDriver", "runMediator"]), closed: true as const }),
+  transferReader: Object.freeze({ required: Object.freeze(["transferReader"]) }),
+});
+
+/** Renewal operations are the credential rows with a closed set. Authorization, account
+ * and epoch binding, and that set all read this, so adding or removing a renewal is one row. */
+const RENEWAL_OPERATIONS = (Object.keys(CREDENTIALS) as (keyof typeof CREDENTIALS)[]).filter((operation) => CREDENTIALS[operation].closed);
+
 /** Issue one lifecycle phase after the IdP proof and interactive row were fresh-read. */
 export async function issueRemoteManagerAuthority(args: IssueRemoteManagerAuthorityArgs): Promise<RemoteManagerAuthorityMaterial> {
   const r = parseRemoteManagerAuthorityRequest(args.request, { allowPlatform: args.holder === "platform" });
@@ -216,34 +251,18 @@ export async function issueRemoteManagerAuthority(args: IssueRemoteManagerAuthor
   if (r.run) ids.push(r.run.driverId, r.run.mediatorId);
   if (new Set(ids).size !== ids.length)
     throw new EpEnvelopeError("bad-request", "manager-service identities must be distinct; one nkey cannot collapse separate authority lifetimes");
-  if (r.operation === "renewStandingBundle" || r.operation === "renewRunDriver") {
+  if (isRenewal(r.operation)) {
     if (!args.authorizeRenewal)
       throw new EpEnvelopeError("unavailable", `manager-service ${r.operation} needs a host-owned current-account and duty-fence authorization`);
     await args.authorizeRenewal({ owner: args.owner, request: r });
   }
   const issued = await args.issue({ owner: args.owner, actors, request: r });
   const credentials = issued.credentials;
-  const required = r.operation === "renewStandingBundle"
-    ? REMOTE_MANAGER_IDENTITY_NAMES
-    : r.operation === "renewRunDriver"
-      ? ["runDriver", "runMediator"]
-      : r.operation === "prepare"
-    ? ["supervisor", "executor"]
-    : r.operation === "activate"
-      ? ["serve", "goalWriter", "sessionLedger"]
-      : r.operation === "renew"
-        ? ["supervisor", "executor"]
-      : r.operation === "session"
-        ? ["sessionServing"]
-        : r.operation === "retire"
-          ? ["retirementRequester"]
-        : r.operation === "transferReader"
-          ? ["transferReader"]
-        : REMOTE_MANAGER_IDENTITY_NAMES;
+  const required = CREDENTIALS[r.operation].required;
   for (const name of required)
     if (!(name in credentials))
       throw new EpEnvelopeError("internal", `manager-service ${r.operation} did not issue required credential ${name}`);
-  if ((r.operation === "renewStandingBundle" || r.operation === "renewRunDriver") &&
+  if (isRenewal(r.operation) &&
       Object.keys(credentials).sort().join(",") !== [...required].sort().join(","))
     throw new EpEnvelopeError("internal", `manager-service ${r.operation} returned credentials outside its closed profile set`);
   const issuedAt = (args.now ?? Date.now)();
@@ -378,7 +397,7 @@ async function authenticateRegisteredManager(
   const gate = await args.observeManagerGate(r.instanceId);
   if (!gate || gate.state !== "open")
     throw new EpEnvelopeError("failed-precondition", `manager-service ${what} has no open registration gate`);
-  if (gate.principal !== `${args.owner}.${remoteManagerActors(r.instanceId).serve}`)
+  if (gate.principal !== remoteManagerServePrincipal(args.owner, r.instanceId))
     throw new EpEnvelopeError("permission-denied", `manager-service ${what} gate belongs to another owner`);
   if (gate.processEpoch !== r.processEpoch)
     throw new EpEnvelopeError("conflict", `manager-service ${what} processEpoch is stale`);
@@ -455,6 +474,112 @@ export async function admitRemoteRun(args: {
 }
 
 const ID_TOKEN = /^[A-Za-z0-9_-]{1,64}$/;
+
+/** The cancellation door accepts only a stage and the exact observed body and subject. */
+export function parseRemoteRunCancelRequest(raw: unknown): RemoteRunCancelRequest {
+  const registered = parseRegisteredRunRequest(raw, "manager-run-cancel", "manager run cancel", ["stage", "subject", "cancel"]);
+  const input = raw as Record<string, unknown>;
+  if ((input.stage !== "inspect" && input.stage !== "commit") || typeof input.subject !== "string")
+    runRequestError("manager run cancel", "requires inspect or commit and an observed subject");
+  return { v: 1, kind: "manager-run-cancel", ...registered, stage: input.stage as "inspect" | "commit",
+    subject: input.subject as string, cancel: readRunCancelInput(input.cancel) };
+}
+
+/** Inspect never grants a later commit. A commit owns its immutable observation before caller
+ *  authorization and store preparation, and checks it again at the native dispatch boundary. */
+export async function handleRemoteRunCancel(args: {
+  request: unknown; owner: string; space: string; endpoint: string; accountPublicKey: string;
+  proofSecret: string | Uint8Array; observeManagerGate: ObserveManagerGate;
+  observations: RunCancelObservations; flush: () => Promise<void>;
+  issued: IssuedStore; sourceIsLive: (source: IssuedSourceRef) => Promise<boolean>;
+  interactiveScope: (caller: IssuedCaller, sources: readonly IssuedSourceRef[]) => Promise<readonly string[] | undefined>;
+  registeredCommand: (instanceId: string, revision: number, command: string) => Promise<Pick<EpCommandAuthority, "class" | "inputDigest" | "outputDigest">>;
+  readAdmission: (runId: string) => Promise<RunAdmissionView>;
+  readRevocation: (runId: string) => Promise<RunRevocation | undefined>;
+  withStore: <T>(runId: string, work: (kv: KV) => Promise<T>) => Promise<T>;
+  assertServing: () => void;
+}): Promise<RemoteRunCancelResult> {
+  const request = parseRemoteRunCancelRequest(args.request);
+  const common = { v: 1 as const, kind: "manager-run-cancel" as const, requestId: request.requestId, runId: request.cancel.runId };
+  // Authenticate the manager before its forward can consume another caller's observation.
+  await authenticateRegisteredManager(request, args, "run cancel");
+  const parsed = parseEpSubject(request.subject);
+  if (!request.subject.startsWith(`cotal.${args.space}.`) || !parsed || parsed.plane !== "request" || parsed.rail !== "v1"
+    || parsed.route !== "inst" || parsed.instanceId !== request.instanceId || parsed.endpoint !== args.endpoint
+    || parsed.command !== "run-cancel" || parsed.target !== null || !isIssuedCaller(parsed.caller))
+    throw new EpEnvelopeError("permission-denied", "run-cancel forward does not name this registered manager's issued request");
+  const caller = parsed.caller;
+  const authorize = async (observation: RunCancelObservation): Promise<{ authority: RunCancelAuthority; view: RunAdmissionView }> => {
+    args.assertServing();
+    if (observation.runId !== request.cancel.runId || observation.reason !== request.cancel.reason
+      || observation.instanceId !== request.instanceId || observation.processEpoch !== request.processEpoch)
+      throw new EpEnvelopeError("permission-denied", "run-cancel forward differs from the observed request");
+    if (performance.now() >= observation.requestEndsAt)
+      throw new EpEnvelopeError("deadline-exceeded", "run-cancel original observed deadline expired");
+    const gate = await authenticateRegisteredManager(request, args, "run cancel recheck");
+    const registered = await args.registeredCommand(request.instanceId, gate.registrationRevision, "run-cancel");
+    if (registered.class !== "ephemeral" || registered.class !== observation.class
+      || registered.inputDigest !== observation.inputDigest || registered.outputDigest !== observation.outputDigest)
+      throw new EpEnvelopeError("permission-denied", "run-cancel observation does not pin the registered contract");
+    const resolved = await args.issued.resolve({ space: args.space, owner: caller.owner, actor: caller.actor, uid: caller.uid, generation: caller.generation }, args.sourceIsLive);
+    if (!issuedPermitsSubject(resolved.evidence.permissions.publish, request.subject))
+      throw new EpEnvelopeError("permission-denied", "run-cancel issued authority does not permit its subject");
+    const view = await args.readAdmission(request.cancel.runId);
+    if (view.admission.space !== args.space || view.admission.endpoint !== args.endpoint || view.admission.runId !== request.cancel.runId)
+      throw new EpEnvelopeError("unavailable", "run-cancel admission names other coordinates");
+    const original = view.admission.caller;
+    let authority: RunCancelAuthority;
+    if (caller.owner === original.owner && caller.actor === original.actor && caller.uid === original.uid) authority = "original";
+    else {
+      const scope = await args.interactiveScope(caller, resolved.evidence.sources);
+      if (scope?.includes("admin")) authority = "admin";
+      else if (caller.owner === original.owner && scope?.includes("run")) authority = "owner-interactive";
+      else throw new EpEnvelopeError("permission-denied", "run-cancel request is not authorized");
+    }
+    args.assertServing();
+    if (performance.now() >= observation.requestEndsAt)
+      throw new EpEnvelopeError("deadline-exceeded", "run-cancel original observed deadline expired");
+    return { authority, view };
+  };
+  if (request.stage === "inspect") {
+    await args.flush();
+    const observation = args.observations.inspect(request.subject);
+    const { authority } = await authorize(observation);
+    // A redelivery may have conflicted during the reads. Inspection still grants nothing.
+    if (args.observations.inspect(request.subject) !== observation)
+      throw new EpEnvelopeError("permission-denied", "run-cancel observation changed");
+    return { ...common, stage: "inspect", authority };
+  }
+  let claim: RunCancelClaim | undefined;
+  try {
+    await args.flush();
+    claim = args.observations.claim(request.subject);
+    const first = await authorize(claim.observation);
+    claim.assertCurrent();
+    if (first.view.revoked) return { ...common, stage: "commit", result: { kind: "committed", outcome: "existed", revocation: first.view.revoked } };
+    const result = await args.withStore(request.cancel.runId, async kv => {
+      const fresh = await authorize(claim!.observation);
+      claim!.assertCurrent();
+      if (fresh.view.revoked) return { kind: "committed" as const, outcome: "existed" as const, revocation: fresh.view.revoked };
+      const revocation: RunRevocation = { version: 1, runId: request.cancel.runId, by: `${caller.owner}.${caller.actor}`, reason: request.cancel.reason, revokedAt: Date.now() };
+      const outcome = await commitRunCancellation(kv, args.endpoint, revocation, () => {
+        args.assertServing();
+        claim!.dispatch();
+      });
+      if (outcome === "created") return { kind: "committed" as const, outcome, revocation };
+      const stored = await args.readRevocation(request.cancel.runId);
+      if (!stored) throw new EpEnvelopeError("unavailable", "run-cancel marker could not be read after an existing write");
+      return { kind: "committed" as const, outcome, revocation: stored };
+    });
+    return { ...common, stage: "commit", result };
+  } catch (error) {
+    claim?.finish();
+    const refusal = args.observations.refusal(request.subject);
+    const allowed = new Set<RunCancelCommitCode>(["permission-denied", "failed-precondition", "deadline-exceeded", "resource-exhausted", "unavailable"]);
+    const code = error instanceof EpEnvelopeError && allowed.has(error.code as RunCancelCommitCode) ? error.code as RunCancelCommitCode : "unavailable";
+    return { ...common, stage: "commit", result: { kind: refusal.kind, code } };
+  } finally { claim?.finish(); }
+}
 
 /** Closed parser for the issuing-host revoke. It carries no asserted owner or attribution. */
 export function parseRemoteRunRevokeRequest(raw: unknown): RemoteRunRevokeRequest {
@@ -677,7 +802,8 @@ export type RemoteRunAttemptGrant =
 
 /**
  * Host-only authorization for {@link RemoteRunAttemptRequest}. Every coordinate the returned grant
- * pins is derived from host stores: the admission must exist unrevoked on this instance, the
+ * pins is derived from host stores: the admission must exist on this instance and be unrevoked
+ * for an attempt or answer. A read-only operator can inspect a revoked run. The
  * attempt must be exactly the next epoch/fencing token the run record implies (1/1 for a first
  * attempt with no record, as stock `start` launches), and an answer pins the pause the named run's
  * journal records at the named step, which must be waiting. Refuses before the host signs anything.
@@ -710,8 +836,8 @@ export async function authorizeRemoteRunAttempt(args: {
   const gate = await authenticateRegisteredManager(r, args, "run attempt");
   const admitted = async (runId: string) => {
     const view = await args.readAdmission(runId);
-    if (view.revoked !== undefined)
-      throw new EpEnvelopeError("permission-denied", `run ${runId} was revoked; a revoked run is issued nothing (SPEC 14.8)`);
+    if (view.revoked !== undefined && (r.attempt !== undefined || r.operator?.answers !== undefined))
+      throw new EpEnvelopeError("permission-denied", `run ${runId} was revoked; no attempt or answering authority is issued (SPEC 14.8)`);
     if (view.admission.instanceId !== r.instanceId || view.admission.endpoint !== args.endpoint || view.admission.space !== r.space)
       throw new EpEnvelopeError("permission-denied", `run ${runId} was admitted on another manager instance or endpoint`);
     return view.admission;

@@ -358,6 +358,7 @@ const FIXTURE: Record<string, { publish: string[]; subscribe: string[] }> = {
     "cotal.d32m.ep.v1.one.manager.run-submission-status.>",
     "cotal.d32m.ep.inst.manager.*.run-answer.>",
     "cotal.d32m.ep.one.manager.run-answer.>",
+    "cotal.d32m.ep.v1.inst.manager.*.run-cancel.>",
   ] },
   "auth-barrier": { publish: [
     "$JS.API.INFO",
@@ -975,6 +976,7 @@ console.log("6b. the trusted run-mediator profile: operations stay on the host")
         `$JS.API.STREAM.MSG.GET.KV_cotal_channels_${S}`,
         `$KV.cotal_members_${S}.>`,
         `$JS.API.STREAM.MSG.GET.KV_cotal_members_${S}`,
+        `$JS.API.STREAM.MSG.GET.KV_cotal_acl_${S}`,
         `cotal.${S}.ep.one.*.describe.${cO}.${cA}.${cU}.*`,
         `cotal.${S}.ep.one.${EP}.spawn.${cO}.${cA}.${cU}.*`,
         `cotal.${S}.ep.one.${EP}.inspect.${cO}.${cA}.${cU}.*`,

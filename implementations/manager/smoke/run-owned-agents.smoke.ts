@@ -126,10 +126,19 @@ if (subcommand === "tool-seat") {
         name: "pinned_definition", prompt: "A persona on the selected manager.", instance: other,
         subscribe: [], allowSubscribe: [], allowPublish: [],
       }) });
+      // A peer the other manager runs: unpinned, the exchange cannot pick a manager.
+      const despawn = cotalToolSpecs(config).find((s) => s.name === "cotal_despawn")!;
+      trace({ kind: "unbound-despawn", ...await call(despawn, { name: "despawnee" }) });
       config.managerInstanceId = spawner;
       trace({ kind: "bound-persona-other", ...await call(persona, {
         name: "wrong_manager_definition", prompt: "Must not be written.", instance: other,
       }) });
+      trace({ kind: "bound-despawn-other", ...await call(despawn, { name: "despawnee", instance: other }) });
+      trace({ kind: "despawn-instance-no-name", ...await call(despawn, { instance: other }) });
+      // Each refusal above left the peer running, so naming its manager stops it.
+      config.managerInstanceId = undefined;
+      trace({ kind: "unbound-despawn-on", ...await call(despawn, { name: "despawnee", instance: other }) });
+      config.managerInstanceId = spawner;
       trace({ kind: "pin-done" });
     } else if (config.name === "toolpage") {
       trace({ kind: "tool-page", ...await tool.run(mesh, config, parseToolArgs(tool, { verb: "ps", page: { limit: 1 } })) });
@@ -451,16 +460,26 @@ try {
     if (!condition) console.error(`    ${JSON.stringify(detail).replace(/\beyJ[\w-]+\.[\w-]+\.[\w-]+\b/g, "[redacted]").slice(0, 1500)}`);
   };
   const namesBoth = (text: unknown, remedy: string) => typeof text === "string" && text.includes(state.instanceId) && text.includes(stateB.instanceId) && text.includes(remedy);
+  // The CLI lists both managers, and its Next gives the command again with `--on` for each. The two
+  // share a host and a runtime, so each is picked by its instance id.
+  const rerunsBoth = (text: unknown) => typeof text === "string" && [state.instanceId, stateB.instanceId].every((id) => text.includes(`--on ${id}`));
   const unpinnedModels = await cli(["models", "--space", space, "--harness", "u4-seat"]);
-  cell("#3959 unpinned `cotal models` refuses two live managers, lists both and names --on", unpinnedModels.code === 2 && /^Request refused$/m.test(unpinnedModels.stderr) && namesBoth(unpinnedModels.stderr, "--on <instanceId>"), unpinnedModels);
+  cell("#3959 unpinned `cotal models` refuses two live managers, lists both and names --on", unpinnedModels.code === 2 && /^Request refused$/m.test(unpinnedModels.stderr) && rerunsBoth(unpinnedModels.stderr), unpinnedModels);
   const unpinnedRuns = await cli(["run", "ps", "--space", space]);
-  cell("#3959 unpinned `cotal run ps` refuses two live managers, lists both and names --on", unpinnedRuns.code === 2 && /^Request refused$/m.test(unpinnedRuns.stderr) && namesBoth(unpinnedRuns.stderr, "--on <instanceId>"), unpinnedRuns);
+  cell("#3959 unpinned `cotal run ps` refuses two live managers, lists both and names --on", unpinnedRuns.code === 2 && /^Request refused$/m.test(unpinnedRuns.stderr) && rerunsBoth(unpinnedRuns.stderr), unpinnedRuns);
   let before = { a: { ...onA }, b: { ...onB } };
   const pinnedModels = await cli(["models", "--space", space, "--harness", "u4-seat", "--on", stateB.instanceId]);
   cell("#3959 `cotal models --on <instance>` succeeds against the named instance", pinnedModels.code === 0 && onB.models === before.b.models + 1 && onA.models === before.a.models, { pinnedModels, before, onA, onB });
   before = { a: { ...onA }, b: { ...onB } };
   const pinnedRuns = await cli(["run", "ps", "--space", space, "--on", state.instanceId]);
   cell("#3959 `cotal run ps --on <instance>` succeeds against the named instance", pinnedRuns.code === 0 && onA.runs > before.a.runs && onB.runs === before.b.runs, { pinnedRuns, before, onA, onB });
+  // A seat the second manager runs, for the seat below to stop by naming that manager.
+  mkdirSync(join(rootB, ".cotal", "agents"), { recursive: true });
+  writeFileSync(join(rootB, ".cotal", "agents", "despawnee.md"), "---\nname: despawnee\nagent: u4-seat\nsubscribe: []\nallowSubscribe: []\nallowPublish: []\n---\nSeat the second manager runs.\n");
+  assert.equal((await managerB.startAgent({ name: "despawnee" }, `${owner}.cli`)).ok, true);
+  // Its persona leaves the catalog, which a cell below reads as empty; the running seat stays.
+  rmSync(join(rootB, ".cotal", "agents", "despawnee.md"));
+  const runsOnB = (name: string) => (managerB as unknown as { agents: Map<string, unknown> }).agents.has(name);
   // A seat the first manager spawns, beside both managers.
   writeFileSync(join(root, ".cotal", "agents", "toolpin.md"), "---\nname: toolpin\nagent: u4-seat\ncapabilities: [spawn, run]\nsubscribe: []\nallowSubscribe: []\nallowPublish: []\n---\nManaged seat beside two live managers.\n");
   assert.equal((await manager.startAgent({ name: "toolpin" }, `${owner}.cli`)).ok, true);
@@ -482,13 +501,22 @@ try {
     String(seat("bound-persona-other").text).includes("differs from this credential's instance authority") &&
     !existsSync(join(rootB, ".cotal", "agents", "wrong_manager_definition.md")) &&
     !existsSync(join(root, ".cotal", "agents", "wrong_manager_definition.md")), seat("bound-persona-other"));
+  cell("an unbound seat's cotal_despawn refuses, lists both managers and names the instance argument", seat("unbound-despawn").isError === true && namesBoth(seat("unbound-despawn").text, "instance argument"), seat("unbound-despawn"));
+  cell("cotal_despawn keeps a bound seat on its own manager", seat("bound-despawn-other").isError === true &&
+    String(seat("bound-despawn-other").text).includes("differs from this credential's instance authority"), seat("bound-despawn-other"));
+  cell("cotal_despawn with instance and no name is refused, and the seat is not stopped", seat("despawn-instance-no-name").isError === true &&
+    String(seat("despawn-instance-no-name").text).includes("instance selects the manager of a named peer") && seat("pin-done").missing !== true, seat("despawn-instance-no-name"));
+  const despawnedOnB = await (async () => { for (const end = Date.now() + 30_000; Date.now() < end; await new Promise((r) => setTimeout(r, 200))) if (!runsOnB("despawnee")) return true; return false; })();
+  cell("MCP cotal_despawn with instance stops the peer on the named manager", answered("unbound-despawn-on") &&
+    String(seat("unbound-despawn-on").text).startsWith("Stopping despawnee") && despawnedOnB, { call: seat("unbound-despawn-on"), despawnedOnB });
   cell("#3959 each seat call reached the manager it named (runs: spawner 2, other 1)", onA.runs === before.a.runs + 2 && onB.runs === before.b.runs + 1, { before, onA, onB });
   // The cells above leave one manager live and an empty trace, as the cells below expect.
   await managerB.stop({ withAgents: true });
   managerB = undefined;
   writeFileSync(tracePath, "");
   writeFileSync(join(root, ".cotal", "agents", "toolowned.md"), "---\nname: toolowned\nagent: u4-seat\ncapabilities: [run]\nsubscribe: []\nallowSubscribe: []\nallowPublish: []\n---\nNative connector workflow caller.\n");
-  const toolParent = await start('await spawn("toolowned"); await checkpoint("tool-parent", "Keep managed tool child alive", { timeout: "1m" });');
+  // The hold stays open through MC-1 to MC-6, which take over a minute on a loaded host.
+  const toolParent = await start('await spawn("toolowned"); await checkpoint("tool-parent", "Keep managed tool child alive", { timeout: "5m" });');
   await until(() => trace().some((e) => e.actor === "toolowned" && (e.kind === "tool-status" || e.kind === "tool-failure")), "native tool child checkpoint status");
   const firstToolStatus = trace().find((e) => e.kind === "tool-status");
   if (firstToolStatus) {
@@ -512,6 +540,8 @@ try {
   writeFileSync(controlPath, "parent-denied");
   await until(() => trace().some((e) => e.kind === "tool-parent-denied"), "native direct parent run denial");
   check("MC-4 current direct parent without run refuses child tool start", trace().find((e) => e.kind === "tool-parent-denied")?.isError === true && drives.size === beforeParentDenial && await runCount() === recordsBeforeParentDenial);
+  // The denied call memoized a legacy view for this credential. The next connection must adopt
+  // its own accepted row when the restored parent makes it eligible for issued run authority.
   grantActor(hostDir, { ...row, owner, actor: "cli", scope: ["spawn", "run", "supervise", "admin"], lifecycleUid: row.lifecycleUid });
   for (const scenario of ["parent-restored", "stale-uid", "wrong-instance"]) {
     const before = drives.size;
@@ -756,20 +786,23 @@ try {
   // attach` mints that view again on every re-establishment, after the base bearer exchange, and
   // neither an exchange that did not answer nor one the auth service refused (its refusals include a
   // pinned manager that is not live, as during a manager restart) means asking again cannot help.
+  // Neither does a base bearer exchange that did not answer, as on a loaded host.
   // The CLI's broker link runs through a TCP proxy this cell severs and heals, and its exchanges
-  // through an HTTP proxy that, for the manager-caller view only, drops the request or forwards it
-  // pinned to an absent instance, which the real auth service refuses with 401.
+  // through an HTTP proxy that drops the CLI's first base exchange after the link dies and, for the
+  // manager-caller view, drops the request or forwards it pinned to an absent instance, which the
+  // real auth service refuses with 401.
   {
     const serviceInfo = loadAuthServiceInfo(hostDir)!;
     const absentInstance = `${"z".repeat(4)}${state.instanceId.slice(4)}`;
     let managerCaller: "forward" | "drop" | "refuse" = "forward";
-    let dropped = 0, refused = 0;
+    let dropped = 0, refused = 0, baseDrops = 0, baseDropped = 0;
     const exchangeProxy = createServer((req, res) => {
       let body = "";
       req.on("data", (chunk: Buffer) => { body += chunk.toString("utf8"); });
       req.on("end", () => {
         let parsed: Record<string, unknown> | undefined;
         try { parsed = JSON.parse(body) as Record<string, unknown>; } catch { /* not an exchange body */ }
+        if (parsed?.actor === "cli" && parsed.view === undefined && baseDrops > 0) { baseDrops--; baseDropped++; req.socket.destroy(); return; }
         const isManagerCaller = parsed?.view === "manager-caller";
         if (isManagerCaller && managerCaller === "drop") { dropped++; req.socket.destroy(); return; }
         const sent = isManagerCaller && managerCaller === "refuse" ? JSON.stringify({ ...parsed, managerInstanceId: absentInstance }) : body;
@@ -825,11 +858,13 @@ try {
       await settle(() => /attached to attachseat/.test(out), 60_000);
       cell("attach over the healable link opens a session", /attached to attachseat/.test(out) && running(), out.slice(-800));
       managerCaller = "drop";
+      baseDrops = 1;
       await severLink();
       await settle(() => /connection lost, reconnecting/.test(out), 60_000);
       cell("...and says it is reconnecting when its link dies", /connection lost, reconnecting/.test(out) && running(), out.slice(-800));
       await healLink();
       await settle(() => dropped >= 2, 60_000);
+      cell("a reconnect whose base bearer exchange does not answer keeps the attach running and tries again", baseDropped === 1 && dropped >= 1 && running(), { baseDropped, dropped, exit: attach.exitCode, out: out.slice(-800) });
       cell("a reconnect whose manager-caller exchange does not answer keeps the attach running and tries again", dropped >= 2 && running(), { dropped, exit: attach.exitCode, out: out.slice(-800) });
       managerCaller = "refuse";
       await settle(() => refused >= 2, 90_000);

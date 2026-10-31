@@ -1,6 +1,13 @@
 import type { FlagSpec } from "@cotal-ai/core";
 import { CommandFailure } from "./output.js";
 
+/** Split a comma-list flag without treating an explicit empty list as an absent override. */
+export function parseCommaList(value: string): string[];
+export function parseCommaList(value: string | undefined): string[] | undefined;
+export function parseCommaList(value: string | undefined): string[] | undefined {
+  return value === undefined ? undefined : value.split(",").map(item => item.trim()).filter(Boolean);
+}
+
 /**
  * The shared flag vocabulary of the workstation layer. Commands spread these specs instead of
  * declaring their own copies, so the vocabulary cannot drift between commands; a command that
@@ -10,7 +17,7 @@ import { CommandFailure } from "./output.js";
  */
 export const spaceFlag = { name: "space", short: "s", type: "string", value: "<s>", description: "target space (default: the resolved mesh)" } as const satisfies FlagSpec;
 export const serverFlag = { name: "server", type: "string", value: "<url>", description: "broker URL (overrides the mesh registry entry)" } as const satisfies FlagSpec;
-export const credsFlag = { name: "creds", type: "string", value: "<path>", description: "creds file for an off-registry connection" } as const satisfies FlagSpec;
+export const credsFlag = { name: "creds", type: "string", value: "<path>", description: "creds file for an off-registry connection", completion: "files" } as const satisfies FlagSpec;
 
 /** The mesh-target bundle: which space, which broker, and (off-registry) which credential.
  *  Resolution order is `resolveMeshTarget`'s: explicit flags > the selected `current` mesh > the

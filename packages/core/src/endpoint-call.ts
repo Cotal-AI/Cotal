@@ -92,9 +92,10 @@ export function buildRequest(
   } catch (e) {
     if (!(e instanceof EpEnvelopeError)) throw e;
     // Nothing was published, so the refusal is `not-executed` (§13.3). A key the contract does not
-    // declare is marked, so a surface that knows both builds can name the version skew.
+    // declare is marked, with the instance the request binds, so a surface that knows both builds can
+    // name the version skew and ask that instance which release it runs.
     const property = op.contract.input.validate.errors?.[0]?.params?.additionalProperty;
-    throw new EpEnvelopeError(e.code, e.message, typeof property === "string" ? [{ kind: EP_UNDECLARED_ARG, property }] : undefined, "not-executed");
+    throw new EpEnvelopeError(e.code, e.message, typeof property === "string" ? [{ kind: EP_UNDECLARED_ARG, property, ...(op.bind !== undefined ? { instanceId: op.bind.instanceId } : {}) }] : undefined, "not-executed");
   }
   // The responder refuses these too (§13.3), but a caller that would emit an unservable request
   // should not have to learn it from a round trip: `describe` is what produces a bind, and a
@@ -411,8 +412,9 @@ export async function epCall(
   let timer: ReturnType<typeof setTimeout> | undefined;
   let denialWatch: { denied: Promise<never>; release(): void } | undefined;
   let onAbort: (() => void) | undefined;
+  let published = false;
   const cancelled = new Promise<never>((_, reject) => {
-    onAbort = () => reject(new EpEnvelopeError("unavailable", `${op.endpoint}.${op.command} observation cancelled; the request may have executed`, undefined, "unknown"));
+    onAbort = () => reject(new EpEnvelopeError("unavailable", `${op.endpoint}.${op.command} observation cancelled; the request may have executed`, published ? [{ ...unansweredDetail(op), requestId: req.requestId }] : undefined, "unknown"));
     opts.signal?.addEventListener("abort", onAbort, { once: true });
   });
   try {
@@ -432,7 +434,9 @@ export async function epCall(
           // impersonate transport absence — so it takes the ordinary attributed-reply path below, never
           // the broker-control path.
           if (msg.subject === noRespReplyTo) {
-            if (isNoRespondersMsg(msg)) { reject(new EpEnvelopeError("unavailable", `no responder for ${op.endpoint}.${op.command} (SPEC 13.5)`, [unansweredDetail(op)])); return; }
+            // On that sentinel the answer is the broker's attestation that no subscriber received the
+            // request, so nothing ran: `not-executed`, never `unknown` (§13.3).
+            if (isNoRespondersMsg(msg)) { reject(new EpEnvelopeError("unavailable", `no responder for ${op.endpoint}.${op.command} (SPEC 13.5)`, [unansweredDetail(op)], "not-executed")); return; }
             reject(new EpEnvelopeError("internal", `a non-503 message reached the reserved no-responders sentinel for ${op.endpoint}.${op.command}; nothing but the broker control frame is addressable there`)); return;
           }
           resolve({ subject: msg.subject, data: msg.data });
@@ -440,8 +444,9 @@ export async function epCall(
       });
       opts.signal?.throwIfAborted();
       nc.publish(req.subject, req.body, { reply: noRespReplyTo });
+      published = true;
     });
-    const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new EpEnvelopeError("deadline-exceeded", `no reply to ${op.endpoint}.${op.command} within the ${deadlineMs}ms budget (SPEC 13.5)`, [unansweredDetail(op)])), deadlineMs); });
+    const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new EpEnvelopeError("deadline-exceeded", `no reply to ${op.endpoint}.${op.command} within the ${deadlineMs}ms budget (SPEC 13.5)`, [{ ...unansweredDetail(op), requestId: req.requestId }], "unknown")), deadlineMs); });
     const msg = await Promise.race([outcome, timeout, denialWatch.denied, cancelled]);
     const attributed = parseAttributedReply(space, msg.subject, msg.data, req.requestId, op, expect);
     // Taken BEFORE the currency check below, because a responder that fenced on the bind settled

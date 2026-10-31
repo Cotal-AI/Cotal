@@ -31,8 +31,8 @@
     {
       "name": "a stale write is not refused",
       "file": "packages/workspace/src/preferences.ts",
-      "find": "    if (current.revision !== expectedRevision)\n",
-      "replace": "    if (false)\n",
+      "find": "    if (current.revision !== expectedRevision)\n      throw new CommandFailure(\"refused\", \"CONFLICT\", `the preferences changed while this command ran (revision ${expectedRevision} became ${current.revision})`, {\n        remedy: \"run the command again\",\n      });\n    const defaults = { ...current.defaults };\n",
+      "replace": "    if (false)\n      throw new CommandFailure(\"refused\", \"CONFLICT\", `the preferences changed while this command ran (revision ${expectedRevision} became ${current.revision})`, {\n        remedy: \"run the command again\",\n      });\n    const defaults = { ...current.defaults };\n",
       "expectRed": "a write from a stale revision is refused with CONFLICT and changes nothing",
       "cell": "a write from a stale revision is refused with CONFLICT and changes nothing",
       "afterRestore": "pnpm --filter cotal-ai... build"
@@ -49,7 +49,7 @@
     {
       "name": "a per-space write of a user-only key is accepted",
       "file": "packages/workspace/src/preferences.ts",
-      "find": "    if (!spec.perSpace) throw new CommandFailure(\"refused\", \"USAGE_INVALID\", `${key} has no per-space value; set it for the user`);\n",
+      "find": "    if (!spec.perSpace) throw new CommandFailure(\"refused\", \"USAGE_INVALID\", `${key} has no per-space value; set it for the user`, { remedy: \"run it again without --space\" });\n",
       "replace": "",
       "expectRed": "refused: color saved for one space",
       "cell": "refused: color saved for one space",
@@ -77,8 +77,8 @@
     {
       "name": "color ignores the saved preference",
       "file": "packages/workspace/src/colors.ts",
-      "find": "  return mode === \"always\" || (mode === \"auto\" && Boolean(process.stdout.isTTY));",
-      "replace": "  return mode !== \"never\" && Boolean(process.stdout.isTTY);",
+      "find": "  return mode === \"always\" || (mode === \"auto\" && Boolean(stream.isTTY) && process.env.TERM !== \"dumb\");",
+      "replace": "  return mode !== \"never\" && Boolean(stream.isTTY) && process.env.TERM !== \"dumb\";",
       "expectRed": "a saved color=always colors piped output",
       "cell": "a saved color=always colors piped output",
       "afterRestore": "pnpm --filter cotal-ai... build"

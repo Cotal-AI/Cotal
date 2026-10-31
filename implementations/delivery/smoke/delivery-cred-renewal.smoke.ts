@@ -12,7 +12,9 @@
  *      and an explicit reload in that stale state replies ok:false naming the exact condition —
  *      "file written" can never masquerade as "daemon adopted".
  *   4. CLEAN SWAP: a final explicit reload before the old JWT's exp — the run never logs
- *      "User Authentication Expired" and ends with a READY delivery lease.
+ *      "User Authentication Expired" and ends with a READY delivery lease. An eviction sent right
+ *      behind that reload, which the daemon is still sweeping when its resident swap reconnects, is
+ *      answered once the connection is back rather than at the 15s request bound.
  *
  * Phase 5 grades verified-gone-by-complete-scan as the rail's success signal (never the raw kick
  * count, which a victim's own pre-scan disconnect can legitimately zero) — see #1115.
@@ -155,7 +157,16 @@ try {
   writeFileSync(credsPath, credB, { mode: 0o600 });
   const credBSignedAt = Date.now();
   writeFileSync(rwPath, await mintCreds(auth, rwId, "membership-rw"), { mode: 0o600 }); // matrix default TTL
-  const adopted = await adminReq(sup, "reloadCreds");
+  // The daemon prints "delivery daemon up" and "membership feed up" before its start-up is done (its
+  // lease watch binds after them), and until then it refuses `reloadCreds` and adopts nothing. That
+  // refusal is the only start-up signal it gives, so ask again while the reply is that refusal, for
+  // at most 5s. Any other reply is graded as it is.
+  const startupBy = Date.now() + 5_000;
+  let adopted = await adminReq(sup, "reloadCreds");
+  while (!adopted.ok && (adopted.error ?? "").includes("has not finished starting") && Date.now() < startupBy) {
+    await wait(200);
+    adopted = await adminReq(sup, "reloadCreds");
+  }
   check("explicit reloadCreds replies ok (auditable adoption)", adopted.ok === true, JSON.stringify(adopted));
   const data = (adopted.ok ? adopted.data : {}) as {
     delivery?: { brokerAccepted?: { identity?: string; exp?: number } };
@@ -195,6 +206,15 @@ try {
   writeFileSync(credsPath, await mintCreds(auth, identityFromCreds(credA), "delivery"), { mode: 0o600 });
   const recovered = await adminReq(sup, "reloadCreds");
   check("explicit reload after re-sign recovers from the stale state", recovered.ok === true, JSON.stringify(recovered));
+  // The resident swap reconnects 250ms after that reply. An eviction read 100ms after it is still
+  // sweeping then, so its reply waits for the reconnect: one sent while the connection was down was
+  // dropped, and the caller waited out its whole bound. One attempt, no retry.
+  await wait(100);
+  const behindAt = Date.now();
+  const behind = await sup.requestDeliveryAdmin("evictPrincipal", { principal: principalKey(DEV_OWNER, newIdentity().id).key }, 15_000)
+    .catch((e: unknown) => ({ ok: false, error: diagnosticError(e) }));
+  const behindMs = Date.now() - behindAt;
+  check("a request read just before a reload's resident swap is answered once it reconnects, not at the request bound", behind.ok === true && behindMs < 5_000, { behind, behindMs });
 
   // Phase 5 — the LIVE-EVICTION EXECUTOR on the same rail (D5 slice 6): a victim connection is
   // force-dropped by principal via the daemon's per-call $SYS observer+evictor, structured result.

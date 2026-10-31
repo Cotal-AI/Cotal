@@ -21,6 +21,7 @@ const GRACE_MS = 3_000;
  */
 export class LegacyPtyRuntime implements Runtime {
   readonly kind = "pty" as const;
+  readonly streamsTerminal = true;
 
   spawn(name: string, spec: LaunchSpec, cwd: string): AgentHandle {
     // POSIX: passthrough (node-pty's exec resolves the bare name). win32: resolve the EXACT file and
@@ -33,8 +34,8 @@ export class LegacyPtyRuntime implements Runtime {
     // Built before the child exists, so a prompt that cannot match is a refusal.
     let confirmGate: StartupConfirmGate | undefined;
     try {
-      if ((spec.confirmBefore?.length || spec.confirmReady?.length) && spec.confirm === undefined) throw new Error("startup choices require a final confirmation prompt");
-      confirmGate = spec.confirm === undefined ? undefined : new StartupConfirmGate(spec.confirm, spec.confirmBefore, spec.confirmReady);
+      if ((spec.confirmBefore?.length || spec.confirmReady?.length || spec.confirmBlockers?.length) && spec.confirm === undefined) throw new Error("startup choices require a final confirmation prompt");
+      confirmGate = spec.confirm === undefined ? undefined : new StartupConfirmGate(spec.confirm, spec.confirmBefore, spec.confirmReady, spec.confirmBlockers);
     } catch (err) {
       throw new SpawnRefused((err as Error).message);
     }
@@ -100,7 +101,11 @@ export class LegacyPtyRuntime implements Runtime {
     const handle: AgentHandle = {
       name,
       kind: "pty",
-      pid: proc.pid,
+      // Read when asked: node-pty's ConPTY backend creates the child after `spawn` returns and
+      // reports pid 0 until then, so a copy taken here named no process. Absent until it exists.
+      get pid() {
+        return proc.pid > 0 ? proc.pid : undefined;
+      },
       status: () => (alive ? "running" : "exited"),
       exitInfo: () => exit,
       stop: (opts) => {

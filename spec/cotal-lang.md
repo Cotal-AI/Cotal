@@ -47,7 +47,7 @@ the content hash of exactly this text, so there is no second file. Its **program
 
 Automatic semicolon insertion is allowed. The two constructs where a newline changes what a program
 means are refused (L1008): a value on the line after a bare `return`, and a line opening with `(`
-or `[` that continues the statement above it.
+or `[` that continues the statement above it. Source that does not parse is refused with L1008 too.
 
 ### 2.2 The syntax table
 
@@ -277,7 +277,10 @@ as Orc's `otherwise`.
 
 A duration is a string of a whole number and one unit: `ms`, `s`, `m`, `h`, `d` (`"30s"`, `"10m"`,
 `"4h"`, `"2d"`). Nothing else parses; there is no bare number and no default unit. `duration(text)`
-converts one to milliseconds.
+converts one to milliseconds. A validator MUST refuse a literal that is not a duration, with L2034,
+where the language reads one: the argument of `sleep` and `duration`, the second argument of `idle`,
+the `deadline` of `turn` and `ask`, the `timeout` of `checkpoint` and `wait`, and the `every` and
+`deadline` of `waitUntil`. A value computed at run time is refused where it is used.
 
 ## 5. The library
 
@@ -394,7 +397,8 @@ journal recorded. `channel()` and `run()` are pure primitives: they build a valu
 
 | Primitive | Signature | Journal kind | Name |
 | --- | --- | --- | --- |
-| `spawn` | `spawn(persona, { name?, cwd?, placement?, worktree?, join?, role?, permits?, supervise?, onFork?, events? }) -> AgentHandle` | `spawn` | `name`, else the persona |
+| `participant` | `participant({ name? }) -> AgentHandle` | `participant` | optional |
+| `spawn` | `spawn(persona, { name?, cwd?, placement?, worktree?, join?, role?, permits?, supervise?, onFork?, events?, runtime? }) -> AgentHandle` | `spawn` | `name`, else the persona |
 | `turn` | `turn(agent, { name, deadline? }) -> { status, to?, note?, at }` | `turn` | required |
 | `ask` | `ask(agent, { name, schema, deadline?, attempts? }) -> record` | `ask` | required |
 | `checkpoint` | `checkpoint(name, prompt, { schema?, timeout?, onExpiry?, to? }) -> { status, value?, by?, at, artifact? }` | `checkpoint` | required, positional |
@@ -440,6 +444,7 @@ implementation's option suite edits each one on a resumed run and requires exact
 
 | Effect | Projection |
 | --- | --- |
+| `participant` | `{}` |
 | `spawn` | `{ persona, model, variant, worktree, role, join: [channel names] }`, plus `cwd` when the option bag carries it and `placement: { endpoint, instanceId }` when the option bag carries it |
 | `turn` | `{ agent, deadline }` |
 | `ask` | `{ agent, schema, deadline, attempts }` |
@@ -458,7 +463,8 @@ Two rules in that table are deliberate. `deadline`, `timeout` and `attempts` **s
 asks a different question. And `onExpiry` is hashed **only** at `escalate`, because `fail` and
 `proceed` choose how to read a recorded expiry (a reapply that MUST replay clean) while `escalate`
 mints a second effect (a different question that MUST diverge). `permits`, `supervise`, `onFork`
-and `events` on `spawn` are policy over a result and are never hashed.
+and `events` on `spawn` are policy over a result and are never hashed. `runtime` is the same kind of
+policy: it names the terminal runtime of this one seat, and omitted leaves the serving manager's own.
 
 `cwd` and `placement` were added after runs were recorded without them, so a spawn that omits both
 hashes the six-key object it hashed before. Adding or removing `cwd` or `placement`, or changing the
@@ -467,11 +473,20 @@ keys in a placement record are not projected, and key order never matters (§4.4
 
 ### 6.5 Semantics of each primitive
 
+- **`participant`** resolves the personal native session whose exact issued caller admitted the
+  hosted run and returns a handle with `kind: "participant"`. Program text cannot choose its owner,
+  actor, lifecycle or display name. The host reads those from the immutable run admission, requires
+  one exact live presence row, and journals the owner, actor, lifecycle, name and manager instance.
+  Resume rebuilds the run roster from that entry and never selects a successor lifecycle. It creates
+  no seat, worktree, permits or process custody. A host without an issued personal admission refuses
+  it as L4000; an absent exact live presence is L4002.
 - **`spawn`** brings an agent into the run and returns its handle. `permits` are budgets whose
   violation the handler reports as a catchable failure (L4001); `supervise` is a declarative
   restart policy; `onFork` is `"respawn"` (default) or `"adopt"` (§11.3); `events: false` starts the
   agent without an event plane, for a connector that publishes none, and omitted leaves the host's
-  default. Two agents MUST NOT share a worktree concurrently (L3022, L4008).
+  default; `runtime` names the terminal runtime of this one seat, and omitted leaves the serving
+  manager's own. A runtime the serving manager cannot resolve refuses the spawn and starts nothing.
+  Two agents MUST NOT share a worktree concurrently (L3022, L4008).
 - **`turn`** wakes an agent for one turn; it reads its own channels and speaks for itself. The
   result is its yield status: `done`, `blocked`, or `handoff` (with `to`), and `at`. The handler
   reports a handoff to an agent outside the run as L4005, one across worktrees as L4004, an elapsed
@@ -707,7 +722,9 @@ request id that does not end in a refusal. A refused call performed nothing, so 
 dispatches again as a fresh attempt; retries a handler performs inside one call are not
 dispatches, and neither are the hold's own calls, which run under the hold id. Under a `once`
 frame only `ask` may run, and every other effect MUST be refused before its entry begins, with
-L4028. A `checkpoint`, a `waitUntil` and a `conclave` call a handler method more than once at one
+L4028. A validator MUST refuse such an effect called in the body of `once`, or in a function the
+body calls by name, with L2033, so a program that writes one does not start; L4028 refuses one the
+run reaches that the validator could not see. A `checkpoint`, a `waitUntil` and a `conclave` call a handler method more than once at one
 key (a hold is itself a checkpoint, one observation per look, an open and a close that a resume
 calls again). A `spawn`, a `turn`, a `monitor` and a `notify` build run state inside that method
 (a seat, a handoff, a watched agent, a filed notice), which a settled answer cannot build. A
@@ -990,6 +1007,35 @@ effect never race for a counter. Both counters are allocated synchronously at th
 await, which is the whole determinism argument: the allocating code is either sequential or already
 inside a deterministic namespace.
 
+#### Reusable helpers
+
+A plain function call does not open a journal scope. Calls to a helper whose turn is named `review`
+use the enclosing occurrence sequence: `/turn:review#0`, `/turn:review#1`, and so on. Inserting
+another call before them shifts their occurrences; naming the turn alone does not give each
+helper instance a stable key.
+
+Instantiate a reusable helper inside a named, single-branch `parallel`. Give each instance a
+distinct scope name and use a record branch key, even though no concurrency is needed:
+
+```js
+const reviewer = await spawn("reviewer")
+async function review(agent) {
+  return await turn(agent, { name: "review" })
+}
+const first = await parallel({ call: () => review(reviewer) }, { name: "panel-one" })
+const second = await parallel({ call: () => review(reviewer) }, { name: "panel-two" })
+log(first.call.status, second.call.status)
+```
+
+The turns now key as `/parallel:panel-one#0/b:call/turn:review#0` and
+`/parallel:panel-two#0/b:call/turn:review#0`. An earlier instance with a different scope name does
+not renumber either. Each wrapper adds one scope entry, and its result is under `.call`.
+Reusing the same scope name still advances that scope's occurrence counter.
+
+Keep required step names literal inside the helper; L3013 is unchanged. This convention gives
+instances separate namespaces, not an exemption from input-hash checks or the migration rules
+(§11.2). `once` is not a general-purpose replacement: it has the effect restrictions in §7.8.
+
 ### 10.3 The digest
 
 `digest(value)` is `"sha256:" + hex(SHA-256(canonical(value)))` where `canonical` is RFC 8785. The
@@ -1161,7 +1207,7 @@ time, L5xxx durability, L6xxx simulation.
 | L1005 | Forbidden syntax: generator |
 | L1006 | Forbidden syntax: `eval` or `Function` |
 | L1007 | Forbidden syntax: regular expression literal |
-| L1008 | Newline hazard |
+| L1008 | Invalid syntax or newline hazard |
 | L1009 | Unbraced branch |
 | L1010 | `switch` case does not terminate |
 | L1011 | Computed property name |
@@ -1193,6 +1239,8 @@ time, L5xxx durability, L6xxx simulation.
 | L2013 | An async call is not awaited |
 | L2031 | Mutation of a frozen value |
 | L2032 | Write from a concurrent branch to something declared outside it |
+| L2033 | Effect not admitted inside `once` |
+| L2034 | Literal is not a duration |
 | L3011 | Unknown option key |
 | L3012 | Missing required step name |
 | L3013 | Step name is not a literal |
@@ -1310,3 +1358,5 @@ answer; simulation is a tool, not part of this language, and this document does 
 | 2026-10-07 | A value the program throws out of a concurrency scope reaches `catch` as itself on resume, as it does live (§9.1, §10.6): the scope's `L4000` `scope-fault` record carries it as `error.thrown` (§10.1), the live run, a replay and a migration's dry walk (§11.2) all deliver that recorded copy, deep-frozen like a scope's result (§4.3). The copy is the value as JSON reads it back, so a record held at two places in it arrives as two on the live run as on a resume from a durable store, and a resume refuses a loaded `error.thrown` that is not `{ value }` or `{}` (L5024). Measured before it: a `conclave` body that threw `"failure"` was caught as `"failure"` live and as `{ code: "L4000", kind: "scope-fault", message: "failure" }` on resume, on both engines, and a `notify` branching on the caught value diverged (L5001) on the resume of unchanged source. A thrown value with no canonical form is delivered as the record live as well. |
 | 2026-10-18 | A `waitUntil` probe and its `terminal` may not write outside themselves (L2032, §7.7): both engines already call them one level deeper and refuse the write at run time, and the validator now walks them as it walks a `once` body. Measured before it: a probe that assigned an outer `let` or pushed onto an outer array, and a `terminal` that assigned an outer `let`, passed `validate` and then failed with L2032 after the first observation of every run. |
 | 2026-10-20 | Clarification with no change in meaning: §6.1 lists `spawn`'s `cwd` and `placement`, and §6.4 states that each is hashed only when the option bag carries it, `placement` as `{ endpoint, instanceId }`. A spawn that omits both keeps its six-key hash. The reference has hashed this way since lang 0.50.0. |
+| 2026-10-24 | An effect `once` does not admit, called in its body or in a function the body calls by name, is refused by the validator with L2033 (§7.8), and L4028 stays the run's refusal of one the validator could not see. Measured before it: `once(async () => { await sleep("1s") })`, directly and through a named helper, passed `validate` and a hosted start and then failed every run with L4028. |
+| 2026-10-24 | A literal that is not a duration, written where the language reads one, is refused by the validator with L2034 (§4.6). Measured before it: `sleep("5")`, `sleep(5000)`, `sleep("1.5s")`, `sleep("")`, a `checkpoint` `timeout` of `"PT5M"`, a `waitUntil` `every` of `"1.5s"` and `duration("5")` passed `validate` and a hosted start, and each run then failed when it reached the call. |

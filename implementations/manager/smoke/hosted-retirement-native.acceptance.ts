@@ -321,6 +321,7 @@ class ChildHandle implements AgentHandle {
 
 const childRuntime: Runtime = {
   kind: "native-acceptance",
+  streamsTerminal: false,
   spawn(name: string, spec: LaunchSpec, cwd: string): AgentHandle {
     const env = ownedChildEnv(spec.env);
     // This acceptance owns a private CA and gives its public certificate to the child explicitly.

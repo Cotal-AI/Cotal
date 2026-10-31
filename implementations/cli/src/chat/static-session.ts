@@ -16,16 +16,22 @@
  * `cotal use` or registry change cannot move the retirement to another mesh.
  */
 import {
-  CotalEndpoint, DEV_OWNER, SealRecipient, assertLifecycleToken, assertValidChannel, idFromCreds, isCurvePublicKey, principalKey, resolveReadAcl,
+  CotalEndpoint, DEV_OWNER, EP_UNANSWERED, SealRecipient, assertLifecycleToken, assertValidChannel, idFromCreds, isCurvePublicKey, principalKey, resolveReadAcl,
   type SpaceAuth,
 } from "@cotal-ai/core";
 import { CommandFailure, isConnectRefusal, mintControlInstrument, preflightOrThrow, type MeshTarget } from "@cotal-ai/workspace";
-import { askManager, managerFailure, type ManagerReply } from "../lib/control.js";
+import { askManager, managerFailure, refuseWithoutLiveManager, type ManagerReply } from "../lib/control.js";
 import { NativeChatSession } from "./native-session.js";
 import type { CloseReport, SessionIdentity } from "./session.js";
 
 /** The leaf's whole life. The manager caps `ttl` here and never renews it. */
 export const STATIC_CHAT_TTL_SEC = 900;
+
+/** How long `chat-session-retire` may take to answer. The manager answers once its static terminal
+ *  settles, and that terminal waits up to 15 seconds for the delivery daemon's verified eviction so
+ *  a daemon that is reconnecting can still finish it. The window outlives that wait and the
+ *  footprint cleanup after a late eviction; a reply that still does not come is reported unknown. */
+const STATIC_CHAT_RETIRE_TIMEOUT_MS = 30_000;
 
 /** What `chat-session-open` returned, checked. `actor` is the session's wire authority and
  *  `alias` its routing-only slot name. */
@@ -105,12 +111,17 @@ export function retireReport(reply: ManagerReply, managerInstanceId: string, val
 
 /** Ask the pinned mesh's manager `op` under a fresh one-shot instrument minted from the pinned
  *  trust material. When the mint or the dial throws, nothing reached the manager, and a read-only
- *  preflight of the same target classifies the cause as `connectOrThrow` does; it prunes nothing. */
-async function askPinned(mesh: PinnedMesh, op: string, args: Record<string, unknown>, instanceId: string | undefined): Promise<ManagerReply> {
+ *  preflight of the same target classifies the cause as `connectOrThrow` does; it prunes nothing.
+ *  With `purpose`, an unpinned call on a space whose registry lists no live manager is refused
+ *  before `op` is sent, as the run verbs refuse it, rather than after it has waited out its deadline.
+ *  `timeoutMs` is the reply window for `op` itself; absent, it is `askManager`'s default. */
+async function askPinned(mesh: PinnedMesh, op: string, args: Record<string, unknown>, instanceId: string | undefined, purpose?: string, timeoutMs?: number): Promise<ManagerReply> {
   try {
-    const instrument = await mintControlInstrument(mesh, "privileged", instanceId);
-    return await askManager(mesh.space, mesh.server, op, args, { ...instrument, tls: mesh.tlsRequired }, "owner", undefined, instanceId !== undefined ? { instanceId } : undefined);
+    const auth = { ...await mintControlInstrument(mesh, "privileged", instanceId), tls: mesh.tlsRequired };
+    if (purpose !== undefined && instanceId === undefined) await refuseWithoutLiveManager(mesh.space, mesh.server, auth, { space: mesh.space }, purpose);
+    return await askManager(mesh.space, mesh.server, op, args, auth, "owner", timeoutMs, instanceId !== undefined ? { instanceId } : undefined);
   } catch (e) {
+    if (e instanceof CommandFailure) throw e;
     await preflightOrThrow(mesh, undefined, true);
     throw e;
   }
@@ -127,6 +138,7 @@ export async function openStaticChatSession(target: MeshTarget, options: {
   readonly allowSubscribe?: readonly string[];
   readonly allowPublish?: readonly string[];
   readonly instanceId?: string;
+  readonly reopen: (channel: string) => string;
 }): Promise<NativeChatSession> {
   if (target.mode !== "auth" || !target.auth)
     throw new CommandFailure("refused", "UNSUPPORTED", "the static chat adapter requires a recorded static-auth target with its trust material; no other admission was attempted", { target: { space: target.space } });
@@ -148,14 +160,23 @@ export async function openStaticChatSession(target: MeshTarget, options: {
   try {
     reply = await askPinned(mesh, "chatSessionOpen", {
       subscribe, allowSubscribe: [...(options.allowSubscribe ?? [])], allowPublish, label: options.label, ttl: STATIC_CHAT_TTL_SEC, sealTo: recipient.publicKey,
-    }, options.instanceId);
+    }, options.instanceId, "admit a chat session");
   } catch (e) {
     recipient.clear();
+    if (e instanceof CommandFailure) throw e;
     if (isConnectRefusal(e)) throw e.failure();
     throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the control instrument could not be minted or connected, so chat-session-open was not sent: ${(e as Error).message}`, { target: { space: mesh.space } });
   }
   if (!reply.ok) {
     recipient.clear();
+    // A describe that drew no answer means chat-session-open was never sent, so this is a refusal,
+    // as the run verbs give it, and not an unknown outcome.
+    if (reply.details?.some((detail) => detail.kind === EP_UNANSWERED && detail.command === "describe"))
+      throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `chat-session-open was not sent: ${reply.error}`, {
+        target: { space: mesh.space },
+        native: { code: reply.code },
+        remedy: "cotal status shows whether this space's manager answers; a stack manager that runs but does not answer is named there with its pid and the way to end it",
+      });
     throw managerFailure(reply, "chat-session-open", { space: mesh.space });
   }
   const managerInstanceId = reply.managerInstanceId;
@@ -165,7 +186,7 @@ export async function openStaticChatSession(target: MeshTarget, options: {
     throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the manager answered chat-session-open with a reply this CLI could not open or verify; the session was not used and could not be retired from here", {
       target: { space: mesh.space },
       native: { outcome: "unknown", detail: { managerInstanceId: managerInstanceId ?? null } },
-      remedy: "list the manager's slots with cotal ps --slots; the admitting manager retires an unretired chat_ slot at its expiry, at its stop, or at its next start",
+      remedy: "list the manager's slots with `cotal ps --slots`; the admitting manager retires an unretired chat_ slot at its expiry, at its stop, or at its next start",
     });
   }
   // The retire path never sees the credential bytes.
@@ -177,7 +198,7 @@ export async function openStaticChatSession(target: MeshTarget, options: {
   const retire = async (): Promise<CloseReport> => {
     let answer: ManagerReply;
     try {
-      answer = await askPinned(mesh, "chatSessionRetire", { alias: slot.alias, actor: slot.actor, lifecycleUid: slot.lifecycleUid }, managerInstanceId);
+      answer = await askPinned(mesh, "chatSessionRetire", { alias: slot.alias, actor: slot.actor, lifecycleUid: slot.lifecycleUid }, managerInstanceId, undefined, STATIC_CHAT_RETIRE_TIMEOUT_MS);
     } catch (e) {
       const cause = isConnectRefusal(e) ? e.failure().message : (e as Error).message;
       return { retirement: "unknown", connectionClosed: "confirmed", credentialValidUntil: slot.expiresAt, message: `The retire request was not sent to manager ${managerInstanceId}: ${cause}. That manager retires the session at its expiry or its stop if it is still running.` };
@@ -191,10 +212,11 @@ export async function openStaticChatSession(target: MeshTarget, options: {
     creds,
     card: { owner: DEV_OWNER, actor: slot.actor, name: options.label, kind: "endpoint", meta: { sessionKind: "chat" } },
     lifecycleUid: slot.lifecycleUid,
-    channels: subscribe,
+    // A copy: the endpoint edits its list on /leave and /join, and the read grant may be this array.
+    channels: [...subscribe],
   });
   // The participant listeners are installed here, before the endpoint starts.
-  const session = new NativeChatSession({ endpoint, identity, retire });
+  const session = new NativeChatSession({ endpoint, identity, retire, reopen: options.reopen });
   if (slot.expiresAt <= Date.now()) {
     const close = await session.close();
     throw new CommandFailure("failed", "OPERATION_FAILED", "the admitted session had already expired when its reply arrived, so it was closed without connecting", {

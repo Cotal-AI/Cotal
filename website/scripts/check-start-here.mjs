@@ -101,6 +101,7 @@ assert.equal(
 );
 const reference = new Set([
   'overview',
+  'api-reference',
   ...Object.values(JSON.parse(readFileSync(new URL('./fixtures/cli-fragments.json', import.meta.url), 'utf8'))),
   'cli',
   'mcp-tools',
@@ -115,7 +116,7 @@ const reference = new Set([
 for (const page of pages)
   assert.equal(
     page.url,
-    `/${reference.has(page.slug) ? 'api-reference' : 'docs'}/${page.slug}/`,
+    page.section === 'api' ? `/${page.slug}/` : `/${reference.has(page.slug) ? 'api-reference' : 'docs'}/${page.slug}/`,
     `stable public route: ${page.slug}`,
   );
 console.log(
