@@ -58,6 +58,13 @@ It covers build-time validators and the authority a host supplies to control a
 selected manager. For a hosted agent integration, read the
 [remote MCP gateway](embedding.md#remote-mcp-gateway) contract.
 
+### Control replies
+
+`controlReplyFrom` keeps a native reply's `error.outcome` in `ControlReply.outcome`.
+`controlReplyFromThrown` keeps the same field from an envelope error. If it is absent,
+read the effect outcome as unknown. A locally raised envelope error remains a local
+refusal; carrying its outcome does not prove that a responder answered.
+
 ### Endpoint request diagnostics
 
 `CotalEndpoint` enables the native NATS `noAsyncTraces` option to avoid capturing

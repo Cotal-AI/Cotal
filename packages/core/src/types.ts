@@ -6,6 +6,8 @@
  * "wire contract" — treat changes here as protocol changes.
  */
 
+import type { EpEffectOutcome } from "./endpoint-error.js";
+
 export type EndpointKind = "agent" | "endpoint";
 
 export interface AgentSkill {
@@ -509,6 +511,8 @@ export interface ControlReply {
   /** The endpoint's error code when the reply carried one. A caller that decides on a refusal keys
    *  on it, because the message is rendered prose and the code is the only stable half. */
   code?: string;
+  /** Effect outcome carried by the endpoint reply or envelope error. Absent means unknown. */
+  outcome?: EpEffectOutcome;
   /** Structured §13.3 details when the manager named a cause the string cannot carry
    *  (lifecycle-blocked spawn refusals, #873). Optional so every existing `{ok,error}`
    *  producer stays valid. */
