@@ -2535,7 +2535,9 @@ or `.cotal/maintenance`, such as `.` in this folder, refuses `USAGE_INVALID` (ex
 that store or folder. The restore checks the path again once it holds the maintenance lock, because a
 link in it may name another folder by then, and refuses the same way. A restore that fails after it
 began names its attempt in the text and in the JSON target, which also carries `journalState`, and
-its remedy gives the next step for that state. `up --restore`
+its remedy gives the next step for that state. The listener endpoint must be a bare `nats://` or
+`tls://` URL without credentials, a query, a fragment or a path. Its refusal does not repeat the
+endpoint value, including when it came from a preserved launch. `up --restore`
 remains as the equivalent startup form. After its startup lines it names the restore attempt and
 gives the cleanup step that retires it, with `--discard-history` for a restore that left history or
 workflow runs out. Unlike the other
