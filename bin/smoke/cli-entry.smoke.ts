@@ -13,7 +13,8 @@
  * manager, without repeating it. `--no-color` and
  * `--no-input` are accepted by every command in any position before `--`, once each. A command an
  * official extension adds, run or asked for help before that extension is added, names the package
- * to add. FORCE_COLOR with NO_COLOR prints no Node warning about the pair. A failing command prints
+ * to add. FORCE_COLOR with NO_COLOR prints no Node warning about the pair. The entry turns Maglev off
+ * before the CLI loads, so a refused command starts almost no Maglev compile. A failing command prints
  * its stack under COTAL_DEBUG, and an empty value, `0`, `false` or `off`, in any case, leaves it off.
  * A folder given to `topology view -f`, `up -f`, `down -f`, `team check`, `team boot --dry-run` or
  * `team deploy --dry-run` is refused by its path as a directory, and `team check --json` names it as
@@ -239,6 +240,37 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   const both = cotal(["help"], undefined, { ...noSeed, FORCE_COLOR: "1", NO_COLOR: "1", NODE_OPTIONS: `--import=${join(probeDir, "probe.mjs")}` });
   check("FORCE_COLOR with NO_COLOR prints no Node color warning, and another warning still prints",
     both.status === 0 && !both.stderr.includes("'NO_COLOR' env is ignored") && both.stderr.includes("Warning: probe-warning"), shown(both));
+}
+
+// ── Maglev off from the entry (#5498) ─────────────────────────────────────────────────────────────
+{
+  // A Maglev compile parked waiting for a garbage collection can hang process.exit() forever on
+  // Node 24 (nodejs/node#64274), so the entry turns Maglev off before the CLI loads. `--trace-opt`
+  // names each compile's tier. On Node 24.22 this refusal started 208 Maglev compiles without the
+  // entry's flag and 2 with it, both in Node's own path helpers. Node 22 never tiers up to Maglev, so
+  // there the rig finds none.
+  const probeDir = mkdtempSync(join(tmpdir(), "cotal-entry-maglev-"));
+  cleanup.push(probeDir);
+  const hot = join(probeDir, "hot.mjs");
+  writeFileSync(hot, "function f(n) { let s = 0; for (let i = 0; i < n; i++) s += i * 2; return s; }\nlet t = 0;\nfor (let k = 0; k < 20000; k++) t += f(1000);\nconsole.log(t > 0);\n");
+  const traced = (args: string[]) => {
+    const r = spawnSync("node", ["--trace-opt", ...args], {
+      cwd: probeDir,
+      env: { ...HOST_ENV, ...noSeed, COTAL_HOME: join(probeDir, "home"), XDG_CONFIG_HOME: join(probeDir, "cfg"), NO_COLOR: "1" },
+      encoding: "utf8",
+      timeout: 300_000,
+    });
+    return { status: r.status, maglev: (r.stdout.match(/^\[compiling method .*\(target MAGLEV\)/gm) ?? []).length };
+  };
+  const control = traced([hot]);
+  const nodeMajor = Number.parseInt(process.versions.node, 10);
+  if (control.maglev > 0) {
+    const refusal = traced([BIN, "backup", "restore", join(probeDir, "no-such-artifact"), "--json"]);
+    check(`a refused command starts at most 10 Maglev compiles (rig: a hot loop started ${control.maglev})`,
+      control.status === 0 && refusal.status === 2 && refusal.maglev <= 10, { control, refusal });
+  } else {
+    check(`rig: only a Node before 24 runs a hot loop with no Maglev compile (Node ${process.versions.node})`, control.status === 0 && nodeMajor < 24, control);
+  }
 }
 
 // ── COTAL_DEBUG: a failing command's stack, off for empty, 0, false and off in any case ────────────
