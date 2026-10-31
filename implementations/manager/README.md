@@ -38,8 +38,11 @@ the observer connection remains open during it. RSS includes shared pages and mu
 to PSS or USS.
 
 `--ram` retains the separate heap-profiling mode and cannot be combined with `--process-memory`.
-The ordinary table's stub-connected count belongs to the shared stub host, even with real seats;
-it is not the real connectors' readiness count. Broker CPU uses the helper's owned broker PID.
+Real-seat mode does not start the shared stub-seat host. Its connected count, CPU and memory
+columns are `n/a`, not zero measurements; JSON records include `stubHostStarted: false`.
+Stub mode still starts and measures that host. Real connector readiness comes from the
+authenticated observations, not a stub-connected count. The fixture parent still runs real
+Plane-3 delivery and lifecycle handling. Broker CPU uses the helper's owned broker PID.
 
 ## Remote authority clients
 
