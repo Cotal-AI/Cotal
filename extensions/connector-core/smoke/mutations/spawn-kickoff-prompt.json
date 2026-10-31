@@ -20,15 +20,15 @@
     {
       "name": "A1 drop the kickoff prompt at the manager command boundary",
       "file": "extensions/connector-core/src/agent.ts",
-      "find": "    const args = { name, role, agent: opts?.agent, model: requested || undefined, variant: opts?.variant, launchOptions: opts?.launchOptions, cwd: opts?.cwd, prompt: opts?.prompt, events: opts?.events, runtime: opts?.runtime };",
-      "replace": "    const args = { name, role, agent: opts?.agent, model: requested || undefined, variant: opts?.variant, launchOptions: opts?.launchOptions, cwd: opts?.cwd, events: opts?.events, runtime: opts?.runtime };",
+      "find": "    const args = { name, role, agent: opts?.agent, model: requested || undefined, variant: opts?.variant, launchOptions: opts?.launchOptions, cwd: opts?.cwd, prompt: opts?.prompt, events: opts?.events, runtime: opts?.runtime, once: opts?.once };",
+      "replace": "    const args = { name, role, agent: opts?.agent, model: requested || undefined, variant: opts?.variant, launchOptions: opts?.launchOptions, cwd: opts?.cwd, events: opts?.events, runtime: opts?.runtime, once: opts?.once };",
       "expectRed": "kickoff prompt forwarded"
     },
     {
       "name": "A2 the MCP tool accepts prompt but silently omits it from MeshAgent.spawn",
       "file": "extensions/connector-core/src/tool-specs.ts",
-      "find": "          const reply = await agent.spawn(name, role, { agent: agentType, model, variant, launchOptions, cwd, prompt, events, runtime, instance });",
-      "replace": "          const reply = await agent.spawn(name, role, { agent: agentType, model, variant, launchOptions, cwd, events, runtime, instance });",
+      "find": "          const reply = await agent.spawn(name, role, { agent: agentType, model, variant, launchOptions, cwd, prompt, events, runtime, instance, ...(onceArg !== undefined ? { once: onceArg } : {}) });",
+      "replace": "          const reply = await agent.spawn(name, role, { agent: agentType, model, variant, launchOptions, cwd, events, runtime, instance, ...(onceArg !== undefined ? { once: onceArg } : {}) });",
       "expectRed": "cotal_spawn tool forwards the kickoff prompt"
     },
     {

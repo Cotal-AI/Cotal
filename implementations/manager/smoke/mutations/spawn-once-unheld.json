@@ -1,0 +1,68 @@
+{
+  "suite": [
+    "implementations/manager/smoke/spawn-once-unheld.smoke.ts"
+  ],
+  "guard": "a once seat its manager does not hold after a restart is never served its task, the task's outcome says the manager does not hold it, and every pull from it is answered stop while its debt stays, across a lost answer and another restart",
+  "command": "pnpm smoke:spawn-once-unheld",
+  "completionMarker": "SPAWN ONCE UNHELD SMOKE",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/mutations/spawn-once-unheld.json",
+  "why": [
+    "CELLS NAMED BEFORE THE RUN.",
+    "",
+    "U1 forgets the stop after the first pull, so a lost answer strands the seat. U2 records no stop at",
+    "all. U3 never repeats the notice, so an idle seat never pulls, and U4 keeps repeating it after a",
+    "pull carried the stop. U5 and U6 drop the outcome's statement that the manager does not hold the",
+    "seat. U7 does not rebuild the stop from the debt after another restart."
+  ],
+  "mutations": [
+    {
+      "name": "U1 the stop is forgotten after the first pull",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      stop.told = true;\n      return { turns: [], notices: true, stop: true };\n",
+      "replace": "      this.onceStops.delete(c.uid);\n      return { turns: [], notices: true, stop: true };\n",
+      "expectRed": "its pull is answered `stop` with no turn, and a pull repeated after a lost answer is answered `stop` again"
+    },
+    {
+      "name": "U2 an unheld seat with a settled task is never told to stop",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    this.onceStops.set(d.seat.uid, { ...d.seat });\n",
+      "replace": "",
+      "expectRed": "its pull is answered `stop` with no turn, and a pull repeated after a lost answer is answered `stop` again"
+    },
+    {
+      "name": "U3 the stop's notice is never repeated",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    for (const stop of this.onceStops.values()) if (!stop.told) this.noticeSeatTurns(stop);\n",
+      "replace": "",
+      "expectRed": "the seat's notice repeats while no pull has carried the stop"
+    },
+    {
+      "name": "U4 the stop's notice repeats after a pull carried it",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    for (const stop of this.onceStops.values()) if (!stop.told) this.noticeSeatTurns(stop);\n",
+      "replace": "    for (const stop of this.onceStops.values()) this.noticeSeatTurns(stop);\n",
+      "expectRed": "the notice stops repeating once a pull has carried the stop"
+    },
+    {
+      "name": "U5 the deadline outcome does not say the manager does not hold the seat",
+      "file": "implementations/manager/src/manager.ts",
+      "find": ", ...(this.onceSeatUnheld(p) ? { seat: UNHELD_SEAT } : {})",
+      "replace": "",
+      "expectRed": "the task with a deadline fails `turn-deadline` at it, saying the manager does not hold the seat, and its seat is told to stop"
+    },
+    {
+      "name": "U6 the uncertain outcome does not say the manager does not hold the seat",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "reason: `the manager restarted and could not reach the seat; ${UNHELD_SEAT}, and the task may have run in part or in full` });\n        this.keepUnprovedOnceDebt(d);",
+      "replace": "reason: \"the manager restarted and could not reach the seat; the task may have run in part or in full\" });\n        this.keepUnprovedOnceDebt(d);",
+      "expectRed": "the task with no deadline is settled `uncertain` after one readiness window, saying the manager does not hold the seat"
+    },
+    {
+      "name": "U7 a restarted manager does not rebuild the stop from the debt",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      if ((await readGoalResult(gw.ctx, d.ref)) !== undefined) {\n        this.onceInherited.delete(uid);\n        this.keepUnprovedOnceDebt(d);\n",
+      "replace": "      if ((await readGoalResult(gw.ctx, d.ref)) !== undefined) {\n        this.onceInherited.delete(uid);\n",
+      "expectRed": "a manager restarted again rebuilds the stop from the debt: its notice repeats and the seat's pull is answered `stop`"
+    }
+  ]
+}

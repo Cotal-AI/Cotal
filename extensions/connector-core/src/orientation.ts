@@ -29,7 +29,8 @@ export const MESH_FIRST_STEER =
   "Keep multi-agent work on the mesh. Before reaching for your harness's own subagents, Task tool, or " +
   "any built-in parallel-agent feature, do it through Cotal instead: spawn or delegate to a real peer " +
   "(cotal_spawn if you have it, otherwise cotal_dm or cotal_anycast to reach one) so the work stays " +
-  "visible to the user and addressable by peers rather than hidden inside a private subagent.";
+  "visible to the user and addressable by peers rather than hidden inside a private subagent. For a " +
+  "single task, cotal_spawn with once: true starts a helper that is stopped when the task ends.";
 
 /** Workflow-run steer, folded in beside {@link MESH_FIRST_STEER} for every connector. Points agents
  *  at durable cotal-lang runs for coordination that must outlive their own session, so the reflex is

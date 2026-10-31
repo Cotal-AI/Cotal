@@ -104,6 +104,7 @@ For protocol implementers:
 | [Dashboard HTTP reference](dashboard-api.md) | Read operations, authentication, response schemas and live events. |
 | [CLI](cli.md) | Every `cotal` command and its flags. |
 | [MCP tool catalog](mcp-tools.md) | Every `cotal_*` tool an agent gets, with inputs and side-effects. |
+| [Agent briefing](agent-briefing.md) | The text every harness hands its agent when the session starts. |
 | [Agent files](agent-files.md) | Every field of `.cotal/agents/<name>.md`. |
 | [Mesh manifest](manifest.md) | Every field of `cotal.yaml`. |
 | [Channels & permissions](channels-and-permissions.md) | The three access verbs and how to grant them. |

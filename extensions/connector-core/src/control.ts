@@ -76,8 +76,9 @@ export interface ControlServerOpts {
    *  a small payload can sit in a kernel buffer that nobody ever drains. For any other client it
    *  means only "written to a socket that was still open" — exact for the case that matters, a client
    *  that had already gone away when we answered, but blind to one that dies with the reply
-   *  unflushed downstream. Both are why this errs toward at-least-once. */
-  onReply?: (ev: HookEvent, delivered: boolean) => void;
+   *  unflushed downstream. Both are why this errs toward at-least-once. `handoff` says which of the
+   *  two `delivered` is: true when the client asked for the confirmed handoff. */
+  onReply?: (ev: HookEvent, delivered: boolean, handoff: boolean) => void;
 }
 
 /** Hard cap on the first (only) frame: a control request is a token + one small lifecycle event —
@@ -293,7 +294,7 @@ export function startControlServer(
       // written at all for the callers that do not observe delivery (opencode, hermes, pi, codex).
       // Answering the client is the server's job; `onReply` only watches it.
       const delivered = await writeReply(sock, reply, awaitHandoff);
-      opts.onReply?.(ev, delivered);
+      opts.onReply?.(ev, delivered, awaitHandoff);
     });
     sock.on("error", () => {
       /* ignore client errors */

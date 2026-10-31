@@ -1,0 +1,147 @@
+{
+  "suite": [
+    "extensions/connector-opencode/smoke/once-handoff.smoke.ts"
+  ],
+  "guard": "both OpenCode plugins hand a once task over at most once: the drive claims it right before the submission, releases it when the submission fails or a turn ended before its answer, and the 1.x plugin's teardown is the exit a once seat takes on its own, and in a process of its own each plugin's teardown ends a seat whose report cannot land",
+  "command": "pnpm smoke:opencode-once",
+  "completionMarker": "COTAL_SMOKE_SENTINEL",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-opencode/smoke/mutations/opencode-once.json",
+  "why": [
+    "CELLS NAMED BEFORE THE RUN.",
+    "",
+    "M1 and M3 drop the release from a failed submission. The task stays claimed, so it is neither",
+    "sealed nor reported, and the manager learns nothing until the handoff timer fires.",
+    "",
+    "M2 drops the 1.x claim. The release then seals nothing, the task stays offerable, and the error",
+    "retry sends it a second time: the duplicate run this feature exists to prevent.",
+    "",
+    "M4 drops the 2.x claim. A release then seals nothing, so a submission that fails leaves the task",
+    "offerable and the next drive sends it again. A native prompt during the submission no longer peeks",
+    "it, because the shared batch carries nothing while one is open.",
+    "",
+    "M5 drops the 1.x exit registration, so a once seat whose report cannot land has no teardown to run.",
+    "",
+    "M6 and M12 confirm a task whose turn ended before the submission's answer, so the next turn's",
+    "end yields it as done. M7 notes the 1.x idle only after its position read, which an answer can",
+    "overtake. M8 and M9 miss the end an idle status or an error reports. M10 counts the ends from",
+    "before the send, so a stale end seals a task that was delivered. M11 drops the 2.x exit",
+    "registration, as M5 does for 1.x. M13 confirms a 1.x task whose session was replaced while its",
+    "answer was held, and M14 lets a 2.x end with no log position pass unnoticed. M15 and M16",
+    "register an exit that does nothing, so a seat in its own process whose report cannot land waits for",
+    "connector-core's forced exit."
+  ],
+  "mutations": [
+    {
+      "name": "M1 a failed 1.x submission no longer releases the task it carried",
+      "file": "extensions/connector-opencode/src/plugin.ts",
+      "find": "      agent.releaseTurns(turnIds);\n      busy = false;",
+      "replace": "      busy = false;",
+      "expectRed": "1.x: a failed submission seals the task it carried"
+    },
+    {
+      "name": "M2 the 1.x drive sends the task without claiming it",
+      "file": "extensions/connector-opencode/src/plugin.ts",
+      "find": "      if (turnPeek && agent.claimTurns(turnPeek.goalIds)) {\n        turnIds = turnPeek.goalIds;\n        parts.push({ type: \"text\", text: turnPeek.text });",
+      "replace": "      if (turnPeek) {\n        turnIds = turnPeek.goalIds;\n        parts.push({ type: \"text\", text: turnPeek.text });",
+      "expectRed": "1.x: the retry after the failure does not submit the sealed task again"
+    },
+    {
+      "name": "M3 a failed 2.x submission no longer releases the task it carried",
+      "file": "extensions/connector-opencode/src/plugin2.ts",
+      "find": "        agent.releaseTurns(turnIds);\n",
+      "replace": "",
+      "expectRed": "2.x: a failed submission seals the task it carried"
+    },
+    {
+      "name": "M4 the 2.x drive sends the task without claiming it",
+      "file": "extensions/connector-opencode/src/plugin2.ts",
+      "find": "    if (turnPeek && agent.claimTurns(turnPeek.goalIds)) {\n      turnIds = turnPeek.goalIds;\n      parts.push(turnPeek.text);",
+      "replace": "    if (turnPeek) {\n      turnIds = turnPeek.goalIds;\n      parts.push(turnPeek.text);",
+      "expectRed": "2.x: a failed submission seals the task it carried"
+    },
+    {
+      "name": "M5 the 1.x plugin registers no once exit",
+      "file": "extensions/connector-opencode/src/plugin.ts",
+      "find": "  registerOnceExit(() => void shutdown(1));\n",
+      "replace": "",
+      "expectRed": "1.x: the registered once exit runs the plugin's teardown and exits 1"
+    },
+    {
+      "name": "M6 a 1.x answer after a turn end confirms the task",
+      "file": "extensions/connector-opencode/src/plugin.ts",
+      "find": "      if (turnIds.length && (turnEndsSeen !== endsAtSend || sessionID !== id)) agent.releaseTurns(turnIds);\n",
+      "replace": "      if (turnIds.length && sessionID !== id) agent.releaseTurns(turnIds);\n",
+      "expectRed": "1.x: a turn that ends before the submission's answer arrives seals the task"
+    },
+    {
+      "name": "M7 the 1.x idle notes its end after the position read",
+      "file": "extensions/connector-opencode/src/plugin.ts",
+      "find": "          if (!ours(idleSession)) return;\n          noteTurnEnd();\n",
+      "replace": "          if (!ours(idleSession)) return;\n          queueMicrotask(() => void turnEnds.get(idleSession!)?.finally(noteTurnEnd));\n",
+      "expectRed": "1.x: an answer that arrives while the turn end's position is read still seals the task, and no turn yields it"
+    },
+    {
+      "name": "M8 an idle status is not a 1.x turn end",
+      "file": "extensions/connector-opencode/src/plugin.ts",
+      "find": "          } else if (s.type === \"idle\") {\n            noteTurnEnd();\n",
+      "replace": "          } else if (s.type === \"idle\") {\n",
+      "expectRed": "1.x: an idle status alone, before the answer, seals the task and no turn yields it"
+    },
+    {
+      "name": "M9 a 1.x error is not a turn end",
+      "file": "extensions/connector-opencode/src/plugin.ts",
+      "find": "          noteTurnEnd();\n          if (!busy && !batch.open) return;",
+      "replace": "          if (!busy && !batch.open) return;",
+      "expectRed": "1.x: a turn error before the answer seals the task and no turn yields it"
+    },
+    {
+      "name": "M10 a 1.x submission counts the ends from before its send",
+      "file": "extensions/connector-opencode/src/plugin.ts",
+      "find": "      const endsAtSend = turnEndsSeen;\n",
+      "replace": "      const endsAtSend = 0;\n",
+      "expectRed": "1.x: an end before the send, or another session's end, does not seal the task"
+    },
+    {
+      "name": "M11 the 2.x plugin registers no once exit",
+      "file": "extensions/connector-opencode/src/plugin2.ts",
+      "find": "  registerOnceExit(() => void teardown().finally(() => process.exit(1)));\n",
+      "replace": "",
+      "expectRed": "2.x: the registered once exit runs the plugin's teardown and exits 1"
+    },
+    {
+      "name": "M12 a 2.x answer after a turn end confirms the task",
+      "file": "extensions/connector-opencode/src/plugin2.ts",
+      "find": "        if (turnIds.length && (ended !== endAtSend || unorderedEnds !== unorderedAtSend)) agent.releaseTurns(turnIds);\n",
+      "replace": "        if (turnIds.length && unorderedEnds !== unorderedAtSend) agent.releaseTurns(turnIds);\n",
+      "expectRed": "2.x: a turn that ends succeeded before the submission's answer arrives seals the task, and no turn yields it"
+    },
+    {
+      "name": "M13 a 1.x answer after its session was replaced confirms the task",
+      "file": "extensions/connector-opencode/src/plugin.ts",
+      "find": "      if (turnIds.length && (turnEndsSeen !== endsAtSend || sessionID !== id)) agent.releaseTurns(turnIds);\n",
+      "replace": "      if (turnIds.length && turnEndsSeen !== endsAtSend) agent.releaseTurns(turnIds);\n",
+      "expectRed": "1.x: a session replaced while the answer is held seals the task"
+    },
+    {
+      "name": "M14 a 2.x end with no log position does not count",
+      "file": "extensions/connector-opencode/src/plugin2.ts",
+      "find": "        if (turnIds.length && (ended !== endAtSend || unorderedEnds !== unorderedAtSend)) agent.releaseTurns(turnIds);\n",
+      "replace": "        if (turnIds.length && ended !== endAtSend) agent.releaseTurns(turnIds);\n",
+      "expectRed": "2.x: an end with no log position, before the answer, seals the task, and no turn yields it"
+    },
+    {
+      "name": "M15 the 1.x plugin's once exit does nothing",
+      "file": "extensions/connector-opencode/src/plugin.ts",
+      "find": "  registerOnceExit(() => void shutdown(1));\n",
+      "replace": "  registerOnceExit(() => {});\n",
+      "expectRed": "1.x: a seat whose report cannot land is ended by the plugin's own teardown, before the forced exit, with code 1"
+    },
+    {
+      "name": "M16 the 2.x plugin's once exit does nothing",
+      "file": "extensions/connector-opencode/src/plugin2.ts",
+      "find": "  registerOnceExit(() => void teardown().finally(() => process.exit(1)));\n",
+      "replace": "  registerOnceExit(() => {});\n",
+      "expectRed": "2.x: a seat whose report cannot land is ended by the plugin's own teardown, before the forced exit, with code 1"
+    }
+  ]
+}

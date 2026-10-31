@@ -1,0 +1,135 @@
+{
+  "suite": [
+    "extensions/connector-core/smoke/once-handoff.smoke.ts"
+  ],
+  "guard": "a once task is handed to the harness at most once per seat process: the claim is a permit, a seal is final, a claimed or sealed task is offered to no one, a settled task takes no permit, the handoff timer measures the dispatch only, and a report that cannot land ends the seat",
+  "command": "pnpm smoke:once-handoff",
+  "completionMarker": "ONCE HANDOFF SMOKE",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/once-handoff.json",
+  "why": [
+    "CELLS NAMED BEFORE THE RUN.",
+    "",
+    "M1 lets a second caller holding the same stale peek take the permit: two sends of one task.",
+    "M2 lets a late acceptance confirm a sealed task, so an automatic yield follows for a task the",
+    "manager already failed. M3 offers a claimed task again, so a held task is sent twice. M4 and M5",
+    "let a send queued behind a gate claim a task its manager settled meanwhile. M6 keeps the timer",
+    "running after the dispatch left, so a slow response seals a task the harness has. M7 leaves a",
+    "seat whose report cannot land running, with the task open and nothing to end it.",
+    "M8 drops the forced exit, so a seat whose graceful shutdown stalls keeps its process, with its task",
+    "open and nothing left to end it."
+  ],
+  "mutations": [
+    {
+      "name": "M1 the claim takes a task that is no longer pending",
+      "file": "extensions/connector-core/src/once.ts",
+      "find": "  if (goalIds.some((id) => onceHandoffState(uid, id) !== \"pending\")) return false;\n",
+      "replace": "",
+      "expectRed": "the first claim succeeds and the second, from the same stale peek, takes nothing"
+    },
+    {
+      "name": "M2 an acceptance confirms a sealed task",
+      "file": "extensions/connector-core/src/once.ts",
+      "find": "  if (h?.state === \"sealed\") return false;\n",
+      "replace": "",
+      "expectRed": "a late acceptance after the seal surfaces nothing, so no automatic yield follows"
+    },
+    {
+      "name": "M3 a claimed task is offered again",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    return t.once === undefined || onceHandoffState(this.onceUid(), t.goalId) === \"pending\";",
+      "replace": "    return t.once === undefined || onceHandoffState(this.onceUid(), t.goalId) !== \"sealed\";",
+      "expectRed": "a claimed task is offered by no peek and wakes nothing, so a held task drives no blank retry"
+    },
+    {
+      "name": "M4 a settle seals only a claimed task",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    if (t.once !== undefined) endOnceHandoff(this.onceUid(), t.goalId);",
+      "replace": "    if (t.once !== undefined) sealOnceHandoff(this.onceUid(), t.goalId);",
+      "expectRed": "the settle ends the handoff, and a dispatch queued behind a gate is refused its permit"
+    },
+    {
+      "name": "M5 the claim treats a settled once task as a run turn",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "(this.activeTurns.get(id) ?? this.settledTurns.get(id))?.once !== undefined",
+      "replace": "this.activeTurns.get(id)?.once !== undefined",
+      "expectRed": "the settle ends the handoff, and a dispatch queued behind a gate is refused its permit"
+    },
+    {
+      "name": "M6 noting the dispatch leaves the handoff timer running",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    for (const id of goalIds) if (this.activeTurns.get(id)?.once !== undefined) stopOnceHandoffTimer(this.onceUid(), id);\n",
+      "replace": "",
+      "expectRed": "noting the dispatch stops the timer, so a slow first response is never ended by it"
+    },
+    {
+      "name": "M7 a report that never lands leaves the seat running",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "        if (await exitOnceSeat()) return;\n",
+      "replace": "",
+      "expectRed": "a report that cannot land within the bound starts the seat's graceful shutdown and then exits its process"
+    },
+    {
+      "name": "M8 a seat whose shutdown stalls is never forced out",
+      "file": "extensions/connector-core/src/once.ts",
+      "find": "    setTimeout(() => process.exit(1), ONCE_EXIT_GRACE_MS);\n",
+      "replace": "",
+      "expectRed": "its shutdown starts, and the process exits one grace period later with its teardown still holding the event loop"
+    },
+    {
+      "name": "M9 a declined exit arms the forced exit anyway",
+      "file": "extensions/connector-core/src/once.ts",
+      "find": "    if (!ending) { p.exiting = undefined; return false; }\n",
+      "replace": "",
+      "expectRed": "an exit that answers false declines: no forced exit is armed, and the next end asks the exit again"
+    },
+    {
+      "name": "M10 an exit whose promise rejects counts as ending",
+      "file": "extensions/connector-core/src/once.ts",
+      "find": "  if (ending instanceof Promise) ending = await ending.catch(() => false);\n",
+      "replace": "  if (ending instanceof Promise) ending = await ending.catch(() => undefined);\n",
+      "expectRed": "a promise that answers false or rejects declines; a throw, true, or no answer ends the seat with its forced exit armed"
+    },
+    {
+      "name": "M11 a declined exit ends the report",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "        if (await exitOnceSeat()) return;\n",
+      "replace": "        await exitOnceSeat();\n        return;\n",
+      "expectRed": "past the bound the exit is asked once, declines, and the report goes on, waits growing to a minute and no longer"
+    },
+    {
+      "name": "M12 the report after a declined exit keeps the ten-second cap",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "      delay = Math.min(delay * 2, exitTried ? 60_000 : 10_000);\n",
+      "replace": "      delay = Math.min(delay * 2, 10_000);\n",
+      "expectRed": "past the bound the exit is asked once, declines, and the report goes on, waits growing to a minute and no longer"
+    },
+    {
+      "name": "M13 the report outlives its stopped agent",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "      if (this._stopping) return;\n      await new Promise((resolve) => setTimeout(resolve, delay));\n",
+      "replace": "      await new Promise((resolve) => setTimeout(resolve, delay));\n",
+      "expectRed": "...and an agent that stops ends the loop with it"
+    },
+    {
+      "name": "M14 a pull answered stop is ignored",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "        void exitOnceSeat();\n",
+      "replace": "",
+      "expectRed": "a pull answered `stop` asks the seat's exit; a declined one leaves the seat running, and the next `stop` asks again"
+    },
+    {
+      "name": "M15 a seat that cannot confirm its wake arms no claim bound",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "        if (once !== undefined && !surfaced && this.options.onceClaimBound) this.boundOnceClaim(t.goalId);\n",
+      "replace": "",
+      "expectRed": "the pull arms the bound"
+    },
+    {
+      "name": "M16 an end that overlaps an exit in flight is told the seat is ending",
+      "file": "extensions/connector-core/src/once.ts",
+      "find": "  if (p.exiting) return p.exiting;\n",
+      "replace": "  if (p.exiting) return Promise.resolve(true);\n",
+      "expectRed": "two ends that overlap share one exit: it is asked once, and its decline reaches both callers"
+    }
+  ]
+}

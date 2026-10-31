@@ -1,0 +1,2 @@
+# How a Claude once seat ends its parent: recorded only when it runs the launched file, SIGTERM then SIGKILL, and a decline with no signal for anything unproved.
+smoke:claude-once-exit

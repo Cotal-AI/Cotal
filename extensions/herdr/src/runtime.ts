@@ -13,6 +13,7 @@ import {
   type LaunchSpec,
   type Runtime,
   type RuntimeProvider,
+  type StartupOutcome,
 } from "@cotal-ai/core";
 import * as herdr from "./driver.js";
 
@@ -81,6 +82,7 @@ function cleanupLauncher(launcher: PrivateLauncher): void {
 export class HerdrRuntime implements Runtime {
   readonly kind = "herdr" as const;
   readonly streamsTerminal = false;
+  readonly reportsStartupOutcome = true;
 
   constructor(private readonly session: string) {}
 
@@ -107,7 +109,7 @@ export class HerdrRuntime implements Runtime {
     let launcher: PrivateLauncher;
     try {
       if ((spec.confirmBefore?.length || spec.confirmReady?.length || spec.confirmBlockers?.length) && spec.confirm === undefined) throw new Error("startup choices require a final confirmation prompt");
-      watch = spec.confirm === undefined ? undefined : confirmWatch(spec.confirm, spec.confirmBefore, spec.confirmReady, spec.confirmBlockers);
+      watch = spec.confirm === undefined ? undefined : confirmWatch(spec.confirm, spec.confirmBefore, spec.confirmReady, spec.confirmBlockers, spec.confirmNotice);
       herdr.ensureServer(this.session);
       // `split` shares a tab, so the tab set has to be sampled BEFORE this agent adds its own.
       tabsBefore = layout === "split" ? herdr.tabIds(this.session) : [];
@@ -154,7 +156,9 @@ export class HerdrRuntime implements Runtime {
       return info.paneId;
     };
 
+    let startup: StartupOutcome = "pending";
     watch?.({
+      settled: (outcome) => { startup = outcome; },
       read: () => {
         const info = herdr.agentInfo(session, terminalId, CONFIRM_CALL);
         return info && herdr.readPane(session, info.paneId, CONFIRM_CALL);
@@ -177,6 +181,7 @@ export class HerdrRuntime implements Runtime {
     return {
       name,
       kind: "herdr",
+      startupOutcome: () => startup,
       // terminalState throws on any failed inventory (fail closed); for the status probe that
       // uncertainty must read as "running" — preserving, like tmux — never as a false exit.
       status: () => {

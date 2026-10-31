@@ -20,10 +20,8 @@ import {
   MeshAgent,
   formatInjection,
   scrubLaunchMaterial,
-  ORIENTATION_BOOTSTRAP,
-  MESH_FIRST_STEER,
-  WORKFLOW_STEER,
-  CHANNEL_GUIDANCE,
+  briefing,
+  registerOnceExit,
 } from "@cotal-ai/connector-core";
 import { modelRefusalSentence, SurfacedBatch, settleWithin } from "./plugin.js";
 import type { OpenCode2Context, OpenCode2Event } from "./opencode2-types.js";
@@ -161,6 +159,7 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
   const batch = new SurfacedBatch(agent); // the batch the current turn carries, acked on completion
   let ended: OpenCode2Event["durable"]; // log position of the event that ended the last turn
   let started: OpenCode2Event["durable"]; // log position of the running execution's start
+  let unorderedEnds = 0; // ends of this session with no log position, which no submission can order itself against
   let submitting: Promise<void> | undefined; // the prompt POST in flight; what it carries settles when it answers
 
   /** Create the session this agent owns and announce its id to the serve shim, exactly as
@@ -230,18 +229,24 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
         if (inj) parts.push(inj);
       }
     }
-    if (turnPeek) {
+    const brief = briefed ? undefined : agent.channelBriefing();
+    if (brief) parts.unshift(brief);
+    if (parts.length === 0 && !turnPeek) return;
+    const system = !primed && persona ? `${persona}\n\n${briefing(config, "opencode")}` : undefined;
+    if (!batch.surface(ids)) return; // at the in-flight ceiling: the batch stays queued for a later turn
+    // The turns' permit, after the last gate and right before the send with no await between: a
+    // once task another dispatch already took is left out, and a submission left with nothing to
+    // say is not sent.
+    if (turnPeek && agent.claimTurns(turnPeek.goalIds)) {
       turnIds = turnPeek.goalIds;
       parts.push(turnPeek.text);
     }
-    const brief = briefed ? undefined : agent.channelBriefing();
-    if (brief) parts.unshift(brief);
-    if (parts.length === 0) return;
+    if (boot === undefined && override === undefined && ids.length === 0 && turnIds.length === 0) { batch.abandon(); return; }
     const text = parts.join("\n\n");
-    const system = !primed && persona ? `${persona}\n\n${ORIENTATION_BOOTSTRAP}\n\n${CHANNEL_GUIDANCE}\n\n${MESH_FIRST_STEER}\n\n${WORKFLOW_STEER}` : undefined;
-    if (!batch.surface(ids)) return; // at the in-flight ceiling: the batch stays queued for a later turn
     execution = "submitted";
     briefed = true;
+    const endAtSend = ended;
+    const unorderedAtSend = unorderedEnds;
     // The turn can end before this POST answers: the event stream is a separate transport. The boot
     // text, run turns and persona it carries settle only on the answer, so until then no second
     // submission starts and `completeTurn` waits before it drives; either would send them again.
@@ -252,10 +257,18 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
           { method: "POST", body: JSON.stringify({ text, ...(system ? { system } : {}) }) },
           10_000,
         );
+        // An end recorded since the send is newer than the last turn's, because `ended` moves only
+        // forward, and an end with no log position cannot be ordered at all. That turn may be the
+        // once task's own, already over, or one the host ran meanwhile, and nothing here tells which.
+        // The task is sealed and reported rather than confirmed, so a later turn's end cannot yield it.
+        if (turnIds.length && (ended !== endAtSend || unorderedEnds !== unorderedAtSend)) agent.releaseTurns(turnIds);
         if (turnIds.length) agent.commitSurfacedTurns(turnIds);
         if (system) primed = true;
         if (boot !== undefined) bootPrompt = undefined;
       } catch (e) {
+        // A once task in a submission that failed after it may have reached the server is sealed and
+        // reported, never sent again.
+        agent.releaseTurns(turnIds);
         // An execution that started meanwhile still holds the session: only our submission is released.
         if (execution === "submitted") execution = undefined;
         batch.abandon();
@@ -272,11 +285,18 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
    *  or whose aggregate is not a non-empty string or whose sequence is not a finite number, cannot be
    *  ordered, so it is refused the same way a missing position is. */
   function replayed(ev: OpenCode2Event, mark = ended): boolean {
+    if (!positioned(ev)) {
+      log(`${ev.type} carries no durable log position; ignored`);
+      return true;
+    }
+    return ev.durable.aggregateID === mark?.aggregateID && ev.durable.seq <= mark.seq;
+  }
+
+  /** Whether an execution event carries its durable log position: a non-empty aggregate and a finite
+   *  sequence. */
+  function positioned(ev: OpenCode2Event): ev is OpenCode2Event & { durable: { aggregateID: string; seq: number } } {
     const at = ev.durable;
-    const seq = at?.seq;
-    const ordered = typeof at?.aggregateID === "string" && at.aggregateID.length > 0 && typeof seq === "number" && Number.isFinite(seq);
-    if (!ordered) log(`${ev.type} carries no durable log position; ignored`);
-    return !ordered || (at.aggregateID === mark?.aggregateID && seq <= mark.seq);
+    return typeof at?.aggregateID === "string" && at.aggregateID.length > 0 && typeof at.seq === "number" && Number.isFinite(at.seq);
   }
 
   /** A turn ended: release `execution`, settle the batch it carried, then drive whatever waited
@@ -289,6 +309,9 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
    *  it closes nothing either once an execution is running. An end at or before the running
    *  execution's start belongs to an earlier one, so it is not recorded and closes nothing. */
   async function completeTurn(ev: OpenCode2Event, settle: () => void): Promise<void> {
+    // An end with no log position closes nothing, but a submission in flight cannot order itself
+    // against it, so it counts as a turn end for that submission's once task.
+    if (!positioned(ev)) unorderedEnds += 1;
     if (replayed(ev) || (execution === "running" && replayed(ev, started))) return;
     ended = ev.durable;
     if (execution !== "running") return;
@@ -428,9 +451,13 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
     await drive();
   })();
 
-  return async () => {
+  const teardown = async (): Promise<void> => {
     controller.abort();
     await settleWithin(eventLoop, EVENT_QUIESCE_MS, "opencode 2.x event loop at teardown");
     await agent.stop();
   };
+  // A once seat that must end itself, because its task's handoff could not be reported, runs the
+  // teardown and then exits; the host is not asked.
+  registerOnceExit(() => void teardown().finally(() => process.exit(1)));
+  return teardown;
 }

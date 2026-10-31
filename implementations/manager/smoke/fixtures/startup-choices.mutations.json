@@ -1,5 +1,7 @@
 {
-  "suite": ["implementations/manager/smoke/startup-choices.smoke.ts"],
+  "suite": [
+    "implementations/manager/smoke/startup-choices.smoke.ts"
+  ],
   "guard": "screen-based startup choices finish once and disarm their startup deadlines",
   "command": "pnpm --filter @cotal-ai/core --filter @cotal-ai/seat --filter @cotal-ai/manager build && pnpm exec tsx implementations/manager/smoke/startup-choices.smoke.ts",
   "completionMarker": "STARTUP CHOICES COMPLETE",
@@ -7,7 +9,7 @@
     {
       "name": "leave the seat timeout armed after final confirmation",
       "file": "packages/seat/src/startup-confirm.ts",
-      "find": "if (action?.done) { this.disarm(); return; }",
+      "find": "if (action?.done) { this.end(this.sequence!.outcome!); return; }",
       "replace": "if (action?.done) { return; }",
       "expectRed": "pty-normal: final confirmation disarms the deadline",
       "cell": "pty-normal: final confirmation disarms the deadline",
@@ -16,8 +18,8 @@
     {
       "name": "keep pane polling after final confirmation",
       "file": "packages/core/src/startup-confirm.ts",
-      "find": "if (action?.done) return;",
-      "replace": "if (false && action?.done) return;",
+      "find": "if (action?.done) { pane.settled?.(sequence.outcome!); return; }",
+      "replace": "if (false && action?.done) { pane.settled?.(sequence.outcome!); return; }",
       "expectRed": "tmux-normal: final confirmation disarms the deadline",
       "cell": "tmux-normal: final confirmation disarms the deadline",
       "afterRestore": "pnpm --filter @cotal-ai/core build"
@@ -31,6 +33,42 @@
       "expectRed": "startup fixture log stays within 64KiB (no terminal reply loop)",
       "cell": "startup fixture log stays within 64KiB (no terminal reply loop)",
       "note": "Real tmux replies must not feed a raw capture back into itself. The unchanged bounded reader fails before parsing a runaway log, without a model request or global OOM."
+    },
+    {
+      "name": "the seat gate ends its watch at the prompt's Enter, before the notice",
+      "file": "packages/seat/src/startup-confirm.ts",
+      "find": "      if (final && this.#notice !== undefined) { this.#awaitingNotice = true; return { key: \"Enter\", done: false }; }\n",
+      "replace": "",
+      "expectRed": "pty-silent: an answered prompt without its notice fails bounded",
+      "cell": "pty-silent: an answered prompt without its notice fails bounded",
+      "afterRestore": "pnpm --filter @cotal-ai/seat build"
+    },
+    {
+      "name": "the core watch ends its watch at the prompt's Enter, before the notice",
+      "file": "packages/core/src/startup-confirm.ts",
+      "find": "      if (final && this.#notice !== undefined) { this.#awaitingNotice = true; return { key: \"Enter\", done: false }; }\n",
+      "replace": "",
+      "expectRed": "tmux-silent: an answered prompt without its notice fails bounded",
+      "cell": "tmux-silent: an answered prompt without its notice fails bounded",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "the pty handle reports no outcome",
+      "file": "implementations/manager/src/runtime/pty.ts",
+      "find": "startupOutcome: () => confirmGate?.outcome ?? \"pending\"",
+      "replace": "startupOutcome: () => \"pending\" as const",
+      "expectRed": "pty-normal: the startup outcome",
+      "cell": "pty-normal: the startup outcome",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build"
+    },
+    {
+      "name": "the tmux handle reports the confirmed outcome for a watch that ended ready",
+      "file": "packages/core/src/startup-confirm.ts",
+      "find": "      this.#outcome = \"ready\";\n",
+      "replace": "      this.#outcome = \"confirmed\";\n",
+      "expectRed": "tmux-ready: the startup outcome",
+      "cell": "tmux-ready: the startup outcome",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
     }
   ]
 }

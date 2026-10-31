@@ -512,6 +512,15 @@ const SPAWN_INPUT_SCHEMA = {
         windowMs: { type: "integer", minimum: 1 },
       },
     },
+    // The seat takes its prompt as one relayed turn and is stopped when that turn ends. Omitted,
+    // `deadlineMs` is the manager's default; -1 means no deadline.
+    once: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        deadlineMs: { anyOf: [{ const: -1 }, { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER }] },
+      },
+    },
   },
 } as const;
 
@@ -653,16 +662,22 @@ const TURN_PENDING_OUTPUT_SCHEMA = {
   type: "object", additionalProperties: false, required: ["turns"],
   properties: {
     notices: { const: true },
+    // Only for a once seat this manager does not hold whose task has ended: the seat ends itself.
+    // It comes with an empty `turns`, and an empty `turns` alone never means stop.
+    stop: { const: true },
     turns: {
       type: "array",
       items: {
         type: "object", additionalProperties: false,
-        required: ["goalId", "payload", "acceptedAt", "deadlineAt"],
+        // `once` marks a once seat's task, which the seat hands to its harness at most once. Only
+        // that task may omit `deadlineAt`, and its absence means no expiry.
+        required: ["goalId", "payload", "acceptedAt"],
         properties: {
           goalId: { type: "string" },
           payload: { type: "string" },
           acceptedAt: { type: "integer", minimum: 0 },
           deadlineAt: { type: "integer", minimum: 1 },
+          once: { const: true },
         },
       },
     },
@@ -689,6 +704,14 @@ const TURN_YIELD_OUTPUT_SCHEMA = {
     goalId: { type: "string" },
     state: { enum: ["succeeded", "failed", "cancelled", "expired", "uncertain"] },
   },
+} as const;
+/** `turn-unconfirmed`: a `once` seat reports that the handoff of its task to its harness was not
+ *  confirmed, so the task may or may not have reached the session. Nothing hands it over again: the
+ *  manager fails the task `delivery-unconfirmed` and stops the seat. Only for the once task pending
+ *  against the calling seat; the output is the terminal state committed, as `turn-yield` answers. */
+const TURN_UNCONFIRMED_INPUT_SCHEMA = {
+  type: "object", additionalProperties: false, required: ["goalId"],
+  properties: { goalId: { type: "string", minLength: 1 } },
 } as const;
 /** `cancel` (SPEC 13.6 item 4): the reserved goal cancel, served for a turn this manager relays.
  *  Untargeted, because it names a goal rather than a seat: the goal ref derives from the
@@ -1221,6 +1244,7 @@ const ROWS: CommandRow[] = [
   { name: "turn-participate", capability: "manager.self", input: VOID_SCHEMA, output: TURN_PARTICIPATE_OUTPUT_SCHEMA, targeted: true, modes: ["self"], handler: "turnParticipate" },
   { name: "turn-pending", capability: "manager.self", input: VOID_SCHEMA, output: TURN_PENDING_OUTPUT_SCHEMA, targeted: true, modes: ["self"], handler: "turnPending" },
   { name: "turn-yield", capability: "manager.self", input: TURN_YIELD_INPUT_SCHEMA, output: TURN_YIELD_OUTPUT_SCHEMA, targeted: true, modes: ["self"], handler: "turnYield" },
+  { name: "turn-unconfirmed", capability: "manager.self", input: TURN_UNCONFIRMED_INPUT_SCHEMA, output: TURN_YIELD_OUTPUT_SCHEMA, targeted: true, modes: ["self"], handler: "turnUnconfirmed" },
   { name: "cancel", capability: "manager.lifecycle", input: CANCEL_INPUT_SCHEMA, output: TURN_YIELD_OUTPUT_SCHEMA, targeted: false, handler: "cancel" },
   { name: "stop", capability: "manager.self", input: GRACEFUL_INPUT_SCHEMA, output: STOP_OUTPUT_SCHEMA, targeted: true, modes: ["self"], handler: "stopSelf" },
   // The workflow-run family (SPEC 14.3): untargeted, a run is not an agent. The writes ride the
@@ -1415,9 +1439,14 @@ export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: Compile
  *  declared extension inventory before its connector package is imported.
  *
  *  43 = `turn-participate` authorizes an exact personal native lifecycle for a finite self-only
- *  workflow turn lease without creating a managed seat or granting terminal custody. */
+ *  workflow turn lease without creating a managed seat or granting terminal custody.
+ *
+ *  44 = `once` on `spawn`: the spawn input grows `once` (`deadlineMs`), a `turn-pending` row gains
+ *  `once` and its `deadlineAt` becomes optional (a once task with no deadline never expires), the
+ *  `turn-pending` reply gains `stop` for a once seat the manager does not hold whose task ended, and
+ *  the new `turn-unconfirmed` command lets a once seat report an unconfirmed handoff of its task. */
 export function managerClusterDocument(): ClusterDocument {
-  return buildClusterDocument(MANAGER_CLUSTER_URN, 43, ROWS);
+  return buildClusterDocument(MANAGER_CLUSTER_URN, 44, ROWS);
 }
 
 /** Revision, count, and names from the shipped cluster document. Reached smokes derive surface pins from this. */
@@ -1485,6 +1514,7 @@ export interface ManagerServiceHandlers {
   turnParticipate(ctx: EpServeContext): unknown | Promise<unknown>;
   turnPending(ctx: EpServeContext): unknown | Promise<unknown>;
   turnYield(ctx: EpServeContext): unknown | Promise<unknown>;
+  turnUnconfirmed(ctx: EpServeContext): unknown | Promise<unknown>;
   cancel(ctx: EpServeContext): unknown | Promise<unknown>;
   stopSelf(ctx: EpServeContext): unknown | Promise<unknown>;
   runStart(ctx: EpServeContext): unknown | Promise<unknown>;

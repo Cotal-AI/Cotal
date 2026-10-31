@@ -19,8 +19,8 @@
     {
       "name": "hosted agent omits its explicit bearer environment",
       "file": "extensions/connector-claude-code/src/mcp.ts",
-      "find": "  const agent = new MeshAgent(config, env, { withholdProcessCwd: true });",
-      "replace": "  const agent = new MeshAgent(config, undefined, { withholdProcessCwd: true });",
+      "find": "  const agent = new MeshAgent(config, env, { withholdProcessCwd: true, onceClaimBound: true });",
+      "replace": "  const agent = new MeshAgent(config, undefined, { withholdProcessCwd: true, onceClaimBound: true });",
       "expectRed": "AssertionError [ERR_ASSERTION]: hosted_env_bearer_a",
       "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... --filter @cotal-ai/auth... build"
     },

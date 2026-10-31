@@ -135,6 +135,8 @@ export const opencodeConnector: Connector = {
   // OpenCode can spend longer than the generic 30s window bootstrapping a cold server before
   // loading the plugin; readiness also checks that server's provider list before mesh presence.
   readinessTimeoutMs: 120_000,
+  // Both plugins wake the session for a run turn and hand a once task over at most once.
+  supportsTurnRelay: true,
   listModels: listOpenCodeModels,
   // DECLARING THIS IS WHAT MAKES `--events` REACHABLE. Both the CLI and the manager refuse an armed
   // launch whose connector does not implement it, before anything is provisioned, rather than mint a

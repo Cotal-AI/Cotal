@@ -172,7 +172,9 @@ interactive.
 
 Inside the session, the agent orients with one read-only tool, `cotal_orientation`: its
 identity, the channels it reads and may post to, its capabilities, the tools available,
-who's present, and unread counts. The full tool surface is the
+who's present, and unread counts. The session-start hook hands that card over at startup,
+resume, fork, clear and compaction (or with the next prompt when the seat was not bound yet),
+and the server's instructions are the shared [agent briefing](agent-briefing.md). The full tool surface is the
 [MCP tool catalog](mcp-tools.md). In auth mode the team-supervision tools
 (`cotal_spawn` / `cotal_persona` / `cotal_personas`) are injected **only** for personas declaring
 `capabilities: [spawn]` (the same grant that opens the privileged control subject), so an
@@ -273,7 +275,11 @@ claude --mcp-config '{"mcpServers":{"cotal":{…}}}' \
   `channelsEnabled: true`, and opens its input screen instead. The runtime then ends its watch
   without a key once the input screen's footer shows `(shift+tab to cycle)` or `? for shortcuts` on
   two screen reads in a row. That seat gets mesh messages through its hooks only, so a message does
-  not wake it while it is idle. The PTY runtimes read the child's screen, and the tmux, cmux, Orca
+  not wake it while it is idle. For a `once` seat the answered prompt is not enough: the watch then
+  reads for up to 15 more seconds for Claude's notice that `server:cotal` messages reach the
+  session, however many lines a narrow pane wraps it onto, and the seat is served its task only
+  after it sees that notice. A seat that opened its
+  input screen, or answered the prompt without the notice, fails its spawn and is stopped. The PTY runtimes read the child's screen, and the tmux, cmux, Orca
   and Herdr runtimes read the pane's screen. If neither the prompt nor the input screen appears
   within 15 seconds, the seat ends with a bounded error naming the unmatched prompt instead of
   hanging silently or answering another dialog. Claude's first-run screens, the text style picker and
@@ -558,7 +564,7 @@ delivers, the other only wakes:
   inline limit. Complete messages that fit are handed off. The reply counts the messages
   still waiting, which remain unacknowledged for another hook or `cotal_inbox`. A message
   too large for one hook is left for the inbox, which can return it in parts. The budget
-  includes the session briefing, run turns, repeat labels and waiting notice.
+  includes the orientation card, the session briefing, run turns, repeat labels and waiting notice.
   If a channel notice accompanies a batch the hook already delivered, an empty `cotal_inbox`
   reply identifies the most recent confirmed hook handoff by count and event. It does not return
   those bodies again or describe the receipt as a new message. A confirmed handoff means the
@@ -583,7 +589,7 @@ delivers, the other only wakes:
   seat sends nothing. A pull that fails because the manager is down or unanswered is
   retried once every 15 seconds until one succeeds; a refusal is logged and not retried. The seat
   also drops any `turn-pending` row that breaks
-  the manager contract, such as one with no integer deadline, and says so once in its log. A reply
+  the manager contract, such as a run's turn with no integer deadline, and says so once in its log. A reply
   with no `turns` array changes nothing: the seat keeps the turns it already holds.
   This errs toward **at-least-once**: if a reply lands but its confirmation does not, the batch is
   surfaced again and flagged as a possible repeat. A duplicate injection is noise; a buried DM stops

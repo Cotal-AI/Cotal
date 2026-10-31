@@ -1,0 +1,2 @@
+# A once Jcode seat's launched tree is proved gone only by the evidence its host recorded under the seat's uid.
+smoke:jcode-once-retire

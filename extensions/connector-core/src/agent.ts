@@ -41,9 +41,11 @@ import {
   type CotalMessage,
   type GoalResultFact,
   turnNoticeFilter,
+  renderOnceTask,
 } from "@cotal-ai/core";
 import type { AgentConfig } from "./config.js";
 import { TURN_PULL_RETRY_MS } from "./turn-poll.js";
+import { ONCE_HANDOFF_MS, claimOnceHandoff, confirmOnceHandoff, endOnceHandoff, exitOnceSeat, onOnceHandoffTimeout, onceHandoffState, sealOnceHandoff, stopOnceHandoffTimer } from "./once.js";
 import { attributionSafe } from "./framing.js";
 import { invokeUserManager } from "./manager-call.js";
 
@@ -105,6 +107,10 @@ export interface MeshAgentOptions {
   /** The connector process directory is not this session's (one process hosts several sessions),
    *  so `meta.cwd` stays unknown until the harness reports it through {@link MeshAgent.setCwd}. */
   withholdProcessCwd?: boolean;
+  /** A once task this seat pulled and did not claim within {@link ONCE_HANDOFF_MS} is sealed and
+   *  reported. For a connector whose wake for the task is a push it cannot confirm, so a dead push
+   *  cannot hold a served task. */
+  onceClaimBound?: boolean;
 }
 
 /** Host-authorized participation for one native personal connection. The connector validates the
@@ -282,8 +288,9 @@ const MAX_SETTLED_TURNS = 32;
 
 /** The refusal for a yield on a turn the run settled first, so a seat that was shown the turn
  *  learns why the run will not take its result instead of being told no turn exists. */
-function settledTurnError(goalId: string, deadlineAt: number): string {
-  return `turn "${goalId}" was already settled by the run (deadline ${new Date(deadlineAt).toISOString()}), so this yield was not recorded`;
+function settledTurnError(goalId: string, t: { deadlineAt?: number; once?: unknown }): string {
+  const deadline = t.deadlineAt !== undefined ? ` (deadline ${new Date(t.deadlineAt).toISOString()})` : "";
+  return `turn "${goalId}" was already settled ${t.once !== undefined ? "by its manager" : "by the run"}${deadline}, so this yield was not recorded`;
 }
 
 /** One relayed run turn this seat has pulled and not yet yielded. `surfaced` flips when the
@@ -293,19 +300,34 @@ interface ActiveTurn {
   goalId: string;
   payload: string;
   acceptedAt: number;
-  deadlineAt: number;
+  /** Absent only on a `once` task with no deadline, which never expires. */
+  deadlineAt?: number;
+  /** Set on this seat's `once` task, which the manager marks on its row: it is handed to the
+   *  harness at most once (see once.ts), and `spawner` is who it came from. */
+  once?: { spawner?: string };
   surfaced: boolean;
 }
 
 /** Largest epoch-ms a `Date` can hold; past it `toISOString()` throws. */
 const MAX_DATE_MS = 8.64e15;
 
-/** A `turn-pending` row as the manager contract declares it, with a deadline a `Date` can format. */
-function isPendingTurn(t: unknown): t is Omit<ActiveTurn, "surfaced"> {
-  const r = t as Partial<ActiveTurn> | null;
-  return typeof r === "object" && r !== null && typeof r.goalId === "string" && typeof r.payload === "string" &&
-    Number.isSafeInteger(r.acceptedAt) && r.acceptedAt! >= 0 &&
-    Number.isSafeInteger(r.deadlineAt) && r.deadlineAt! >= 1 && r.deadlineAt! <= MAX_DATE_MS;
+/** A `turn-pending` row as the manager contract declares it, with a deadline a `Date` can format.
+ *  Only a once task's row may omit its deadline. */
+function isPendingTurn(t: unknown): t is { goalId: string; payload: string; acceptedAt: number; deadlineAt?: number; once?: true } {
+  const r = t as { goalId?: unknown; payload?: unknown; acceptedAt?: unknown; deadlineAt?: unknown; once?: unknown } | null;
+  if (typeof r !== "object" || r === null || typeof r.goalId !== "string" || typeof r.payload !== "string") return false;
+  if (!Number.isSafeInteger(r.acceptedAt) || (r.acceptedAt as number) < 0) return false;
+  if (r.once !== undefined && r.once !== true) return false;
+  if (r.deadlineAt === undefined) return r.once === true;
+  return Number.isSafeInteger(r.deadlineAt) && (r.deadlineAt as number) >= 1 && (r.deadlineAt as number) <= MAX_DATE_MS;
+}
+
+/** Who a once task came from, as the manager wrote it beside the prompt. */
+function onceSpawner(payload: string): string | undefined {
+  try {
+    const spawner = (JSON.parse(payload) as { once?: { spawner?: unknown } }).once?.spawner;
+    return typeof spawner === "string" && spawner.length > 0 ? spawner : undefined;
+  } catch { return undefined; }
 }
 
 export type InboxScope = "all" | "automatic" | "pull-only";
@@ -442,6 +464,7 @@ export class MeshAgent extends EventEmitter {
   readonly ep: CotalEndpoint;
   readonly config: AgentConfig;
   private readonly launchEnv?: NodeJS.ProcessEnv;
+  private readonly options: MeshAgentOptions;
 
   private inbox: Pending[] = [];
   /** Ids already SURFACED to the model (handled) — bounded, commit-aware dedup ACROSS a drain. The
@@ -516,7 +539,7 @@ export class MeshAgent extends EventEmitter {
   private activeTurns = new Map<string, ActiveTurn>();
   /** Deadlines of turns the run settled before this seat yielded them, by goal id, so a late yield
    *  is refused with {@link settledTurnError}. Bounded by {@link MAX_SETTLED_TURNS}. */
-  private settledTurns = new Map<string, number>();
+  private settledTurns = new Map<string, { deadlineAt?: number; once?: true }>();
   /** Goals whose yield the manager answered since the current pull began. That pull may have
    *  snapshotted a goal before its answer; taking it back would surface the settled turn again, and
    *  the next pull would record it as the run's settlement. */
@@ -599,6 +622,7 @@ export class MeshAgent extends EventEmitter {
   constructor(config: AgentConfig, env?: NodeJS.ProcessEnv, options: MeshAgentOptions = {}) {
     super();
     this.config = config;
+    this.options = options;
     this.launchEnv = env === undefined ? undefined : { ...env };
     // Seed per-channel attention from the operator's file default (one-way: the runtime never writes
     // back — the persona file is a shared template). muted/quiet are validated disjoint at file load.
@@ -1803,7 +1827,7 @@ export class MeshAgent extends EventEmitter {
   pendingWake(skip?: (item: InboxItem) => boolean): number {
     // An unsurfaced run turn is directed-strength: it wakes regardless of attention, exactly like
     // a DM — a run is waiting on this seat, and holding it costs the run its deadline.
-    const turns = [...this.activeTurns.values()].filter((t) => !t.surfaced).length;
+    const turns = [...this.activeTurns.values()].filter((t) => !t.surfaced && this.offerable(t)).length;
     return turns + this.inboxWake(skip);
   }
 
@@ -2224,12 +2248,12 @@ export class MeshAgent extends EventEmitter {
    *  runtime; from here it just joins the mesh as a lateral peer. `opts.agent` picks
    *  the harness (absent it, the persona's `agent:` pin, else the manager's default), `opts.model` /
    *  `opts.variant` override the persona file's model selectors, `opts.prompt` submits the new
-   *  peer's first turn, `opts.runtime` chooses the terminal runtime of this one seat, and `opts.cwd` roots it at a different folder/repo
+   *  peer's first turn (or, with `opts.once`, is its one task, after which the manager stops it), `opts.runtime` chooses the terminal runtime of this one seat, and `opts.cwd` roots it at a different folder/repo
    *  than the manager's workspace — the same knobs the operator's `cotal spawn --detach` carries, so
    *  the agent and operator spawn doors share one control-op contract. (Session `resume` is
    *  intentionally NOT forwarded here: forking a host-local `~/.claude` transcript is an
    *  operator-local intent, kept off the peer-facing spawn door — see #159.) */
-  async spawn(name: string, role?: string, opts?: { agent?: string; model?: string; variant?: string; launchOptions?: Record<string, unknown>; cwd?: string; prompt?: string; events?: boolean; runtime?: string; instance?: string }): Promise<ControlReply & { instanceId?: string }> {
+  async spawn(name: string, role?: string, opts?: { agent?: string; model?: string; variant?: string; launchOptions?: Record<string, unknown>; cwd?: string; prompt?: string; events?: boolean; runtime?: string; instance?: string; once?: { deadlineMs?: number } }): Promise<ControlReply & { instanceId?: string }> {
     await this.requireConnected();
     const raw = opts?.model;
     if (raw !== undefined && !raw.trim())
@@ -2244,7 +2268,7 @@ export class MeshAgent extends EventEmitter {
     }
     if (this.config.userAuth && instance !== undefined && this.config.managerInstanceId !== undefined && instance !== this.config.managerInstanceId)
       return { ok: false, error: "the requested manager instance differs from this credential's instance authority" };
-    const args = { name, role, agent: opts?.agent, model: requested || undefined, variant: opts?.variant, launchOptions: opts?.launchOptions, cwd: opts?.cwd, prompt: opts?.prompt, events: opts?.events, runtime: opts?.runtime };
+    const args = { name, role, agent: opts?.agent, model: requested || undefined, variant: opts?.variant, launchOptions: opts?.launchOptions, cwd: opts?.cwd, prompt: opts?.prompt, events: opts?.events, runtime: opts?.runtime, once: opts?.once };
     // P2 item 2 (2b): spawn is an ACTION — follow the acceptance to the terminal so cotal_spawn
     // stays synchronous (the MCP reply carries the live outcome, not the pre-launch acceptance).
     const reply = await this.managerInvoke("spawn", args, { deadlineMs: SPAWN_TIMEOUT_MS, follow: true, ...(instance !== undefined ? { instanceId: instance } : {}) });
@@ -2623,6 +2647,11 @@ export class MeshAgent extends EventEmitter {
    *  intake; the subscription exists before the first pull, so a turn accepted in between is not missed. */
   private armTurnRelay(): void {
     if (!this.hasTurnRelay()) return;
+    // A once task whose dispatch outlived its bound is sealed and reported by this seat's newest
+    // MeshAgent, which is the one connected.
+    onOnceHandoffTimeout((uid, goalId) => {
+      if (uid === this.onceUid() && sealOnceHandoff(uid, goalId)) void this.reportUnconfirmed(goalId);
+    });
     if (!this.turnNoticeArmed) {
       let caller: EpCaller;
       try { caller = this.ep.serviceRailCaller(); }
@@ -2669,10 +2698,20 @@ export class MeshAgent extends EventEmitter {
       let fresh = 0;
       for (const t of turns) {
         if (this.activeTurns.has(t.goalId) || this.yieldedSincePull.has(t.goalId)) continue;
-        this.activeTurns.set(t.goalId, { goalId: t.goalId, payload: t.payload, acceptedAt: t.acceptedAt, deadlineAt: t.deadlineAt, surfaced: false });
-        fresh += 1;
+        // A once task this process already handed over stays handed over: a rebuilt MeshAgent
+        // finds its state in the process registry and neither offers it again nor loses its yield.
+        const once = t.once ? { spawner: onceSpawner(t.payload) } : undefined;
+        const surfaced = once !== undefined && onceHandoffState(this.onceUid(), t.goalId) === "confirmed";
+        this.activeTurns.set(t.goalId, { goalId: t.goalId, payload: t.payload, acceptedAt: t.acceptedAt, ...(t.deadlineAt !== undefined ? { deadlineAt: t.deadlineAt } : {}), ...(once ? { once } : {}), surfaced });
+        if (!surfaced) fresh += 1;
+        if (once !== undefined && !surfaced && this.options.onceClaimBound) this.boundOnceClaim(t.goalId);
       }
       if (fresh > 0) this.requestWake();
+      // A manager that does not hold this once seat, and has settled its task, tells it to end itself.
+      if ((r.data as { stop?: unknown }).stop === true) {
+        this.log("the manager does not hold this once seat and its task has ended; ending this seat");
+        void exitOnceSeat();
+      }
     } finally {
       this.turnPollBusy = false;
       if (this.turnPullAgain) this.requestTurnPull();
@@ -2730,13 +2769,16 @@ export class MeshAgent extends EventEmitter {
    *  injection verifiably reached the host. The payload is opaque relay bytes; when it parses as
    *  JSON with a string `context`, that rendered context is what the model reads, else the raw
    *  payload is shown. */
-  peekPendingTurns(): { text: string; goalIds: string[] } | undefined {
+  peekPendingTurns(): { text: string; goalIds: string[]; once?: true } | undefined {
     if (this.config.turnRelay === false && !this.nativeTurnLeaseValid()) return undefined;
     // A turn past its deadline is already settled at the manager, which refuses its yield, though
     // this cache holds it until the next pull settles it here.
     const now = Date.now();
-    const waiting = [...this.activeTurns.values()].filter((t) => !t.surfaced && t.deadlineAt > now).sort((a, b) => a.acceptedAt - b.acceptedAt);
+    const waiting = [...this.activeTurns.values()].filter((t) => !t.surfaced && (t.deadlineAt === undefined || t.deadlineAt > now) && this.offerable(t)).sort((a, b) => a.acceptedAt - b.acceptedAt);
     if (!waiting.length) return undefined;
+    // A once seat holds its task and nothing else (the manager refuses it any other turn).
+    const once = waiting.find((t) => t.once !== undefined);
+    if (once !== undefined) return { text: renderOnceTask({ goalId: once.goalId, payload: once.payload, spawner: once.once?.spawner, deadlineAt: once.deadlineAt }), goalIds: [once.goalId], once: true };
     const blocks = waiting.map((t) => {
       let context = t.payload;
       let ask = "";
@@ -2745,7 +2787,7 @@ export class MeshAgent extends EventEmitter {
         if (typeof p.context === "string" && p.context.length > 0) context = p.context;
         ask = renderAskRequest(p);
       } catch { /* opaque payload — surface it as it came */ }
-      return `— turn ${t.goalId} (deadline ${new Date(t.deadlineAt).toISOString()}):\n${context}${ask}`;
+      return `— turn ${t.goalId}${t.deadlineAt !== undefined ? ` (deadline ${new Date(t.deadlineAt).toISOString()})` : ""}:\n${context}${ask}`;
     });
     const text =
       `🎯 Cotal — a run handed you ${waiting.length === 1 ? "its turn" : `${waiting.length} turns`}:\n` +
@@ -2762,7 +2804,85 @@ export class MeshAgent extends EventEmitter {
     if (this.config.turnRelay === false && !this.nativeTurnLeaseValid()) return;
     for (const id of goalIds) {
       const t = this.activeTurns.get(id);
+      // A sealed once task is not surfaced: its handoff ended unconfirmed and has been reported.
+      if (t?.once !== undefined && !confirmOnceHandoff(this.onceUid(), id)) continue;
       if (t) t.surfaced = true;
+    }
+  }
+
+  /** Take the permit to hand these turns to the harness, at the dispatch site, after every gate
+   *  that can return without sending and right before the native send, with no await between. All
+   *  or nothing for the once task among them: false means another caller holds it or its handoff
+   *  already ended, and the caller sends no once task. Run turns need no permit and are offered
+   *  again as before. */
+  claimTurns(goalIds: readonly string[]): boolean {
+    // A once task settled since the caller's peek is still a once task: its handoff has ended, and
+    // it takes no permit.
+    return claimOnceHandoff(this.onceUid(), goalIds.filter((id) => (this.activeTurns.get(id) ?? this.settledTurns.get(id))?.once !== undefined));
+  }
+
+  /** The adapter gave up on a dispatch that carried these turns. A claimed once task is sealed and
+   *  reported to the manager; it is never offered again, because the harness may have it. */
+  releaseTurns(goalIds: readonly string[]): void {
+    for (const id of goalIds) {
+      if (this.activeTurns.get(id)?.once === undefined) continue;
+      if (sealOnceHandoff(this.onceUid(), id)) void this.reportUnconfirmed(id);
+    }
+  }
+
+  /** The dispatch carrying these turns left the seat, and its acceptance arrives with the model's
+   *  response: stop the once task's handoff timer, which measures the dispatch only. */
+  noteTurnsDispatched(goalIds: readonly string[]): void {
+    for (const id of goalIds) if (this.activeTurns.get(id)?.once !== undefined) stopOnceHandoffTimer(this.onceUid(), id);
+  }
+
+  /** Seal and report a once task still unclaimed {@link ONCE_HANDOFF_MS} after this seat pulled it. */
+  private boundOnceClaim(goalId: string): void {
+    const timer = setTimeout(() => {
+      if (!this.activeTurns.has(goalId) || onceHandoffState(this.onceUid(), goalId) !== "pending") return;
+      this.log(`once task ${goalId}: pulled ${ONCE_HANDOFF_MS}ms ago and never handed to the session; reporting it unconfirmed`);
+      if (this.claimTurns([goalId])) this.releaseTurns([goalId]);
+    }, ONCE_HANDOFF_MS);
+    (timer as { unref?: () => void }).unref?.();
+  }
+
+  /** A turn the harness may be handed: any run turn, and a once task whose handoff has not begun. */
+  private offerable(t: ActiveTurn): boolean {
+    return t.once === undefined || onceHandoffState(this.onceUid(), t.goalId) === "pending";
+  }
+
+  /** The key a once task's handoff state is kept under in this process. */
+  private onceUid(): string {
+    return this.config.lifecycleUid ?? this.config.name;
+  }
+
+  /** Tell the manager a once task's handoff was not confirmed (`turn-unconfirmed`), so it fails the
+   *  task and stops this seat. Retried with backoff for one handoff bound while the manager cannot
+   *  be reached; any answer that is not transient ends the retry. A report that has not landed by
+   *  then ends this seat instead, and the manager's proof of that exit settles the task. A seat that
+   *  cannot end itself keeps reporting, at most a minute apart, until a manager answers or this
+   *  process ends. */
+  private async reportUnconfirmed(goalId: string): Promise<void> {
+    const until = Date.now() + ONCE_HANDOFF_MS;
+    let delay = 1_000;
+    let exitTried = false;
+    for (;;) {
+      const r = await this.managerInvoke("turn-unconfirmed", { goalId }, { target: { mode: "self" } })
+        .catch((e: unknown) => ({ ok: false as const, error: (e as Error).message, code: undefined }));
+      const transient = !r.ok && (r.code === undefined || r.code === "unavailable" || r.code === "deadline-exceeded");
+      if (!transient) {
+        this.log(`once task ${goalId}: its handoff was not confirmed; reported to the manager (${r.ok ? "the task failed" : r.error ?? "refused"})`);
+        return;
+      }
+      if (!exitTried && Date.now() + delay > until) {
+        exitTried = true;
+        this.log(`once task ${goalId}: its handoff was not confirmed and the manager could not be told; ending this seat so its exit settles the task`);
+        if (await exitOnceSeat()) return;
+        this.log(`once task ${goalId}: this seat cannot end itself; reporting until a manager answers`);
+      }
+      if (this._stopping) return;
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      delay = Math.min(delay * 2, exitTried ? 60_000 : 10_000);
     }
   }
 
@@ -2784,8 +2904,8 @@ export class MeshAgent extends EventEmitter {
       : [...this.activeTurns.values()].filter((x) => x.surfaced).sort((a, b) => a.acceptedAt - b.acceptedAt)[0];
     if (!t) {
       const id = opts.turn ?? [...this.settledTurns.keys()].at(-1);
-      const deadlineAt = id === undefined ? undefined : this.settledTurns.get(id);
-      if (id !== undefined && deadlineAt !== undefined) return { ok: false, error: settledTurnError(id, deadlineAt) };
+      const settled = id === undefined ? undefined : this.settledTurns.get(id);
+      if (id !== undefined && settled !== undefined) return { ok: false, error: settledTurnError(id, settled) };
       return { ok: false, error: opts.turn !== undefined ? `no active turn "${opts.turn}" on this seat` : "no turn is active — nothing to yield" };
     }
     // The surfaced gate holds for an explicit id too: a yield for a payload the session has not
@@ -2800,7 +2920,7 @@ export class MeshAgent extends EventEmitter {
     // only `succeeded` is a yield that landed.
     if ((r.data as { state?: unknown } | undefined)?.state !== "succeeded") {
       this.settleTurn(t);
-      return { ok: false, error: settledTurnError(t.goalId, t.deadlineAt) };
+      return { ok: false, error: settledTurnError(t.goalId, t) };
     }
     this.activeTurns.delete(t.goalId);
     // A poll that ran while this yield was in flight saw the turn gone and took it for the run's
@@ -2811,8 +2931,10 @@ export class MeshAgent extends EventEmitter {
 
   /** Drop an active turn the run settled without this seat's yield, remembering its deadline. */
   private settleTurn(t: ActiveTurn): void {
+    // A once task settled without this seat (its deadline, or a stop) ends its handoff too.
+    if (t.once !== undefined) endOnceHandoff(this.onceUid(), t.goalId);
     this.activeTurns.delete(t.goalId);
-    this.settledTurns.set(t.goalId, t.deadlineAt);
+    this.settledTurns.set(t.goalId, { ...(t.deadlineAt !== undefined ? { deadlineAt: t.deadlineAt } : {}), ...(t.once !== undefined ? { once: true as const } : {}) });
     if (this.settledTurns.size > MAX_SETTLED_TURNS) this.settledTurns.delete(this.settledTurns.keys().next().value!);
   }
 

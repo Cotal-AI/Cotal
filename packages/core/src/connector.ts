@@ -76,6 +76,10 @@ export interface LaunchOpts {
    *  {@link Connector.supportsPrompt}, so a prompt on a connector that cannot deliver one is
    *  refused before any provisioning. */
   prompt?: string;
+  /** This seat is started for one `once` task, which the manager relays to it as a turn. A
+   *  connector that launches processes outside the seat's own process records them from launch on,
+   *  so {@link Connector.retireAfterExit} can prove them gone. */
+  once?: boolean;
   /** An OPAQUE prior-session handle to FORK FROM when launching — never reused, never resolved by
    *  core. Like `creds` / `configPath`, this is a HOST-LOCAL pointer (into e.g. `~/.claude`), NOT a
    *  portable value like `model`: it only means something on the machine that produced it. A
@@ -145,6 +149,16 @@ export interface LaunchOpts {
   cwd?: string;
 }
 
+/** The `once` seat a {@link Connector.retireAfterExit} call is about: the launch inputs that
+ *  locate what the connector recorded for it. */
+export interface OnceSeat {
+  space: string;
+  name: string;
+  lifecycleUid: string;
+  /** The manager's workspace root, as {@link LaunchOpts.workspaceRoot} carried it at launch. */
+  workspaceRoot: string;
+}
+
 /** A recipe for starting an agent as a mesh node — command, args, and extra env. */
 export interface LaunchSpec {
   command: string;
@@ -170,6 +184,13 @@ export interface LaunchSpec {
    * is on screen no key is sent, and when the startup bound ends with one on screen the failure names
    * its reason. Requires confirm. */
   confirmBlockers?: readonly StartupBlocker[];
+  /** A line the startup watch must see on a screen read after the Enter that answered
+   *  {@link confirm}, before it records `confirmed`. It is read across consecutive lines however a
+   *  narrow pane wraps it, ignoring whitespace and the box or bar marks at each line's edges. It has
+   *  a bound of its own, as long as the prompt's. Use it when answering the prompt does not by itself
+   *  show the state a launch needs, as Claude's registration notice shows its channel server was
+   *  admitted. */
+  confirmNotice?: string;
   /** This agent's local control endpoint — the OS path its lifecycle hooks connect to (passed in
    *  the child env as `COTAL_CONTROL_SOCKET`/`COTAL_CONTROL_TOKEN`), plus the first-frame `token`
    *  that authenticates it. The connector mints it in `buildLaunch`; the manager keeps it IN MEMORY
@@ -320,6 +341,32 @@ export interface Connector extends Extension {
    *  Default-deny, so a prompt on a connector that does not declare it fails before any
    *  provisioning rather than being accepted and never submitted. */
   readonly supportsPrompt?: boolean;
+  /** Whether a seat on this connector takes a relayed turn on an idle fresh session, hands it to
+   *  the harness at most once, and yields when the turn ends. A `once` spawn needs it. Declare it
+   *  only after a live check shows the harness doing all three; serving `turn-pending` is not
+   *  enough. Default-deny. */
+  readonly supportsTurnRelay?: boolean;
+  /** Why this connector cannot take a relayed turn, in a clause the manager appends to its
+   *  refusal of a `once` spawn. Only meaningful without {@link supportsTurnRelay}. */
+  readonly turnRelayRefusal?: string;
+  /** A `once` seat on this connector is served its task only when its startup watch ended
+   *  `confirmed` (the runtime's {@link AgentHandle.startupOutcome}). The value is the clause the
+   *  manager's failure gives for a `ready` outcome. A runtime that does not report the outcome
+   *  refuses such a spawn. */
+  readonly onceNeedsConfirmed?: string;
+  /** The most once task text one turn frame of this connector carries, in UTF-16 code units, as
+   *  {@link renderOnceTask} renders it. A `once` spawn whose rendered task is longer is refused at
+   *  admission. Absent means the connector's frames carry any length. */
+  readonly turnFrameLimit?: number;
+  /** For a `once` seat whose process has exited: prove that nothing the connector can tie to the
+   *  seat's launches is still running outside that process, stopping what it ties. Resolves only with
+   *  that proof, and again with the same proof when asked after it was given; throws whenever it
+   *  cannot prove it, and the manager keeps the task's debt and asks again. The manager calls
+   *  `discard` once the debt is cleared. The proof covers only what the connector can tie to a
+   *  launch, so its implementation states what that is and what falls outside, such as a process
+   *  that hides its environment and detaches from its parent and group. A connector whose seat
+   *  launches nothing outside its own process does not implement it. */
+  retireAfterExit?(seat: OnceSeat): Promise<{ discard(): Promise<void> }>;
   /**
    * Connector-specific upper bound for reaching mesh presence after its process is launched.
    *

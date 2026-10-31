@@ -1,0 +1,2 @@
+# A once task on Jcode end to end: one handoff, the unacknowledged send fails it, and a killed host's tree is proved gone before the task ends.
+smoke:jcode-once

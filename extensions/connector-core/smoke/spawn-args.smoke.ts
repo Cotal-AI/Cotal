@@ -119,6 +119,7 @@ check("name-only: model key absent", !("model" in (recPlain?.args ?? {})));
 check("name-only: variant key absent", !("variant" in (recPlain?.args ?? {})));
 check("name-only: role key absent", !("role" in (recPlain?.args ?? {})));
 check("name-only: prompt key absent", !("prompt" in (recPlain?.args ?? {})));
+check("name-only: once key absent", !("once" in (recPlain?.args ?? {})));
 check("name-only: invokeService stays unpinned", recPlain?.opts?.instanceId === undefined, recPlain?.opts);
 check("name-only: inspect is not required when no model was requested", !callsPlain.some((c) => c.command === "inspect"));
 
@@ -134,6 +135,34 @@ const toolAgent = new MeshAgent(cfg);
 const callsTool = record(toolAgent);
 await spawnTool?.run(toolAgent, cfg, { name: "tool-rev", prompt: "Start the review now." });
 check("cotal_spawn tool forwards the kickoff prompt", spawnCall(callsTool)?.args?.prompt === "Start the review now.", spawnCall(callsTool)?.args?.prompt);
+
+// `once` and its `deadline`: the tool folds the duration into the op's `once.deadlineMs`, leaves the
+// default to the manager, and refuses a malformed or orphaned deadline before anything is sent.
+const onceSpawn = async (args: Record<string, unknown>) => {
+  const agent = new MeshAgent(cfg);
+  const calls = record(agent);
+  const reply = await spawnTool!.run(agent, cfg, { name: "helper", prompt: "Do one thing.", ...args });
+  return { reply, sent: spawnCall(calls)?.args };
+};
+const onceDefault = await onceSpawn({ once: true });
+check("once with no deadline sends an empty once, so the manager applies its default", JSON.stringify(onceDefault.sent?.once) === "{}", onceDefault.sent);
+const onceTimed = await onceSpawn({ once: true, deadline: "30m" });
+check("a deadline duration reaches the manager as milliseconds", (onceTimed.sent?.once as { deadlineMs?: number } | undefined)?.deadlineMs === 1_800_000, onceTimed.sent);
+const onceOpen = await onceSpawn({ once: true, deadline: "-1" });
+check("-1 reaches the manager as no deadline", (onceOpen.sent?.once as { deadlineMs?: number } | undefined)?.deadlineMs === -1, onceOpen.sent);
+const orphan = await onceSpawn({ deadline: "30m" });
+check("a deadline without once is refused and nothing is sent", orphan.reply.isError === true && /only to a once spawn/.test(orphan.reply.text) && orphan.sent === undefined, orphan);
+const malformed = await Promise.all(["0s", "abc", "-2", "99999999999999999999d"].map((deadline) => onceSpawn({ once: true, deadline })));
+check("a deadline that is not a positive duration or -1 is refused and nothing is sent", malformed.every((m) => m.reply.isError === true && m.sent === undefined), malformed.map((m) => m.reply.text));
+const taskAgent = new MeshAgent(cfg);
+(taskAgent as unknown as InvokeEp).ep = {
+  invokeService: (endpoint) => Promise.resolve({ reply: { ok: true, data: { name: "helper", mode: "pty", once: { goalId: "task-goal", deadlineAt: Date.UTC(2030, 0, 1) } } }, responder: { endpoint, instanceId: "i", epoch: 0 } }),
+  principal: { owner: "local", actor: "caller" },
+};
+(taskAgent as unknown as { _connected: boolean })._connected = true;
+const taskReply = await spawnTool!.run(taskAgent, cfg, { name: "helper", prompt: "Do one thing.", once: true });
+check("a once spawn's result names its task goal, its deadline and how to read the outcome",
+  /Its task is goal "task-goal", with a deadline of 2030-01-01T00:00:00.000Z/.test(taskReply.text) && /command="goal-result", args=\{"goalId":"task-goal"\}/.test(taskReply.text), taskReply.text);
 
 const pinToolAgent = new MeshAgent(cfg);
 const callsPinTool = record(pinToolAgent);
@@ -326,7 +355,7 @@ check(
 );
 await client.close();
 
-const EXPECTED_CHECKS = 47;
+const EXPECTED_CHECKS = 54;
 if (checks !== EXPECTED_CHECKS) {
   failures++;
   console.log(`SUITE INCOMPLETE: ${checks} of ${EXPECTED_CHECKS} checks`);
