@@ -135,6 +135,7 @@ import {
   AUTH_PROVIDER_NAME,
   claimAuthInstanceIdentity,
   clearAuthServiceInfo,
+  clearAuthServiceRefusal,
   dataAccountAuth,
   loadCalloutAuth,
   loadIssuer,
@@ -142,6 +143,7 @@ import {
   loadPinnedIdp,
   loadServiceKeys,
   saveAuthServiceInfo,
+  saveAuthServiceRefusal,
   spaceIssuer,
 } from "./store.js";
 
@@ -2297,6 +2299,7 @@ export async function runAuthService(args: ParsedArgs, store?: SecretStore, opti
   // Scrub any stale discovery file FIRST — a dead prior daemon's entry must never satisfy a
   // readiness poll for THIS start (the provider's ready() also pid-checks; belt and braces).
   clearAuthServiceInfo(dir);
+  clearAuthServiceRefusal(dir);
   // SMOKE-ONLY startup hold: holds THIS daemon's startup between the discovery scrub and the
   // authority-plane open (before any broker or listener footprint), for the pid-bound readiness
   // cells. A live `up` never sets it; when set, it delays this many ms and a plain integer is
@@ -2331,6 +2334,11 @@ export async function runAuthService(args: ParsedArgs, store?: SecretStore, opti
     ...(interactiveManagerSelection !== undefined ? { interactiveManagerSelection } : {}),
     ...(options.runCancelLimits !== undefined ? { runCancelLimits: options.runCancelLimits } : {}),
     ...(limits !== undefined ? { calloutLimits: limits } : {}),
+  }).catch((e: unknown) => {
+    // The launching `up` sees only this process exit. Leave a typed refusal (a plane-claim
+    // refusal's code and reason, SPEC 13.13) where its readiness wait reads it (#3947).
+    if (e instanceof EpEnvelopeError) saveAuthServiceRefusal(dir, { pid: process.pid, code: e.code, message: e.message, ...(e.details !== undefined ? { details: e.details } : {}) });
+    throw e;
   });
 
   // All planes bound — NOW write the discovery file (its existence is the readiness signal).

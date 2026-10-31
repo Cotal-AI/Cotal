@@ -1,5 +1,6 @@
-/** Actual installed CLI startup/refresh and crash repair. Takes an npm prefix and a new evidence
- *  directory: pnpm smoke:auth-oracle-order:live <prefix> <evidence>. No seed bypass or broker mock.
+/** Actual installed CLI startup/refresh and crash repair, then a crashed auth behind a frozen
+ *  delivery oracle, whose typed plane-claim refusal must reach the caller. Takes an npm prefix and
+ *  a new evidence directory: pnpm smoke:auth-oracle-order:live <prefix> <evidence>. No seed bypass or broker mock.
  *  The JWKS-only fixture has no user session, so cleanup stops only its attributed OS processes;
  *  it does not bypass authenticated logical teardown. The private fixture stays in the evidence directory. */
 import assert from "node:assert/strict";
@@ -117,6 +118,20 @@ try {
   check("follow-up refresh succeeds", await call("followup") === 0);
   const final = snapshot();
   check("follow-up preserves repaired live processes", roles.every(role => !repaired[role] || (final[role]?.pid === repaired[role]?.pid && final[role]?.start === repaired[role]?.start)));
+  // An unresponsive oracle: freeze the live delivery daemon and crash only auth. Unknown liveness
+  // stays refused, and the caller reads the claim's typed reason rather than a bare exit.
+  const frozen = final.delivery!;
+  assert.equal(identity(frozen.pid).start, frozen.start, "the frozen process is the fixture's delivery daemon");
+  process.kill(frozen.pid, "SIGSTOP");
+  try {
+    await stopOwned(final.auth!, "SIGKILL");
+    const code = await call("unresponsive");
+    check("an unresponsive oracle keeps the crashed claim refused", code === 1 && snapshot().auth === undefined);
+    check("the caller names the plane claim's typed reason", readFileSync(join(evidence, "unresponsive.stderr"), "utf8").includes("[unavailable; ai.cotal.auth.plane-claim-refused: unknown]"));
+  } finally {
+    process.kill(frozen.pid, "SIGCONT");
+  }
+  check("a repair once the oracle answers succeeds", await call("answering") === 0 && roles.every(role => snapshot()[role] !== undefined));
 } catch (error) {
   failed++;
   observations.error = error instanceof Error ? { name: error.name, message: error.message } : String(error);
