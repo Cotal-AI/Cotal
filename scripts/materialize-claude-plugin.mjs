@@ -12,6 +12,7 @@
 // bundles carry the version they are stamped with. Each plugin directory is rebuilt from scratch
 // and swapped in whole, and the run FAILS LOUD when a referenced file is missing or the bundle was
 // built at another version, so a release cannot commit a plugin that does not run.
+import { createHash } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -30,7 +31,7 @@ const legal = [
 // [source, destination inside the plugin directory]
 const plugins = {
   cotal: [
-    ...[".claude-plugin/plugin.json", ".mcp.json", "hooks/hooks.json", "hooks/native-wake.js", "monitors/monitors.json", "dist/seat.cjs", "dist/mcp.cjs", "dist/hook.cjs", "dist/monitor.cjs"].map((asset) => [join(connector, asset), asset]),
+    ...[".claude-plugin/plugin.json", ".mcp.json", "hooks/hooks.json", "hooks/native-wake.js", "monitors/monitors.json", "dist/seat.cjs", "dist/mcp.cjs", "dist/docs-index.bin", "dist/hook.cjs", "dist/monitor.cjs"].map((asset) => [join(connector, asset), asset]),
     [join(connector, "PLUGIN.md"), "README.md"],
     ...legal,
   ],
@@ -57,7 +58,11 @@ function verify(name, dir) {
     if (!existsSync(join(dir, ref))) throw new Error(`materialize-claude-plugin: ${name} references ${ref}, which is not in the plugin directory`);
   if (name === "cotal") {
     // The standalone constant also stamps the MCP server. The payload itself may be compressed.
-    checkMcpDocsStamp(readFileSync(join(dir, "dist", "mcp.cjs"), "utf8"), version);
+    const mcp = readFileSync(join(dir, "dist", "mcp.cjs"), "utf8");
+    checkMcpDocsStamp(mcp, version);
+    // The search index file must be the one this mcp.cjs was built with: its digest is in the loader.
+    const digest = createHash("sha256").update(readFileSync(join(dir, "dist", "docs-index.bin"))).digest("hex");
+    if (!mcp.includes(`"${digest}"`)) throw new Error("materialize-claude-plugin: dist/docs-index.bin is not the search index dist/mcp.cjs was built with; rebuild @cotal-ai/connector-claude-code first");
   }
   if (name === "cotal-skills") {
     const skills = readdirSync(join(dir, "skills"), { withFileTypes: true }).filter((e) => e.isDirectory() && existsSync(join(dir, "skills", e.name, "SKILL.md")));
