@@ -7400,6 +7400,17 @@ without color. The other `ext` subcommands refuse `--json` and `--plain` with `U
 An installed package whose directory is gone is reported as not installed. One whose `package.json`
 is not JSON or has no `version` is reported as corrupt, naming the package and its `package.json`.
 
+`add`, `remove` and each built-in seed relink the shared peers of every installed package after npm
+changes the prefix. A package recorded in the manifest whose directory is gone does not fail that
+step. One example is a package npm pruned as extraneous because no dependency list names it. A
+warning names the package and its path, the command that reinstalls it (`cotal ext add <spec>`, or
+`cotal ext seed --repair` for a built-in) and `cotal ext remove <package>`, which drops its entry.
+The entry stays in the manifest until you run one of them. A seed or repair that succeeds past it
+neither installs the package nor removes its entry, so `cotal ext list` still lists it and a command
+that reads that entry can still report it as a problem. A package directory that is present without
+a readable `package.json` still fails the step. After a seed that failed this way in an earlier
+release, `cotal ext seed --repair` finishes it, and `cotal ext remove` then drops the entry.
+
 Removing an extension that owns a running local process is refused with the mesh root and its
 `cotal down <component>` command; stop it first so uninstalling the package never strands a process
 whose lifecycle provider is gone. While it uninstalls, `remove` reserves each process record the package
