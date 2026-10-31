@@ -277,14 +277,14 @@ async function choiceCells(final: string, replies: readonly StartupReply[], read
     stop();
     return { pressed, polling: reads > settled, reads };
   };
-  const seatGate = (failures: string[], choices = replies) => (read: () => string, key: (key: "Down" | "Enter") => void) => {
-    const gate = new StartupConfirmGate(final, choices, ready, blockers);
+  const seatGate = (failures: string[], choices = replies, stops = blockers) => (read: () => string, key: (key: "Down" | "Enter") => void) => {
+    const gate = new StartupConfirmGate(final, choices, ready, stops);
     gate.arm(new ConnectorDiagnosticReader(), { report: (message) => failures.push(message), stop: () => {} }, { read, key });
     return () => gate.disarm();
   };
-  const coreWatch = (failures: string[], choices = replies) => (read: () => string, key: (key: "Down" | "Enter") => void) => {
+  const coreWatch = (failures: string[], choices = replies, stops = blockers) => (read: () => string, key: (key: "Down" | "Enter") => void) => {
     let open = true;
-    confirmWatch(final, choices, ready, blockers)({
+    confirmWatch(final, choices, ready, stops)({
       read: () => open ? read() : undefined,
       enter: () => key("Enter"), down: () => key("Down"), fail: (message) => failures.push(message),
     });
@@ -305,9 +305,10 @@ async function choiceCells(final: string, replies: readonly StartupReply[], read
       assert.equal(polling, false, "the watch stops on the ready screen");
       assert.deepEqual(failures, []);
     });
+    // No blockers either: a launch that declares ready texts alone still reads the screen.
     await cell(`${name}: a launch with no startup choices reads the screen and stops on the ready screen`, async () => {
       const failures: string[] = [];
-      const { pressed, polling, reads } = await watch(CLAUDE_READY, 0, arm(failures, []), CLAUDE_READY);
+      const { pressed, polling, reads } = await watch(CLAUDE_READY, 0, arm(failures, [], []), CLAUDE_READY);
       assert.deepEqual(pressed, []);
       assert.ok(reads >= 2, "ready texts are read from the screen, which needs two snapshots");
       assert.equal(polling, false, "the watch stops on the ready screen");
