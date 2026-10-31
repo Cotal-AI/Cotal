@@ -1,5 +1,9 @@
 # @cotal-ai/connector-jcode
 
+## 0.132.3
+
+No changes in this release.
+
 ## 0.132.2
 
 No changes in this release.
