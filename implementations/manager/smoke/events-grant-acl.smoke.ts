@@ -713,7 +713,7 @@ try {
   // summary below, so a run that had already reddened the right cell printed no verdict at all and
   // graded INCONCLUSIVE rather than as the failure it was.
   failures++;
-  console.log(`✗ the scenario threw before it finished — ${(e as Error).stack ?? (e as Error).message}`);
+  console.log("✗ the scenario threw before it finished —", e);
 } finally {
   await stopBroker();
   rmSync(workspaceRoot, { recursive: true, force: true });

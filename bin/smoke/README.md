@@ -108,6 +108,13 @@ and print why.
 
 ## Failure reports
 
+Pass caught values directly as a separate console argument, such as `console.error(prefix, e)`.
+Reading `.stack` or `.message` assumes an Error and can replace a null or undefined failure with
+a logging exception. Node prints an Error with its stack and preserves other thrown values.
+`pnpm smoke:scenario-diagnostics` executes the 35 reported catch logging statements in isolated
+Node children with Error, string, null and undefined inputs. It checks diagnostic behavior only;
+it does not run those scenarios or establish their teardown and exit-status behavior.
+
 A shard stops at its first failing suite. It names that suite, lists the planned suites that
 never started, and prints how many of its planned suites started. Under GitHub Actions it also
 emits an error annotation with the failing suite and that count. The platform jobs run the

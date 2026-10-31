@@ -1965,7 +1965,7 @@ try {
   if (fail) process.exitCode = 1;
 } catch (e) {
   fail++;
-  console.error("  ✗ scenario threw:", (e as Error).stack ?? (e as Error).message);
+  console.error("  ✗ scenario threw:", e);
   // THE SUMMARY BELONGS ON BOTH PATHS. A cell here can red and the cascade behind it throw: the
   // refusal text that the next lines parse is missing, so the flags they extract are empty and the
   // real ledger writer refuses them. Printing the verdict only on the success path meant such a run

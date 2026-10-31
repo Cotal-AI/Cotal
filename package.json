@@ -971,6 +971,7 @@
     "smoke:shard-stability": "tsx bin/smoke/shard-stability.smoke.ts && node --test --test-reporter=tap --test-concurrency=1 bin/smoke/shard-stability-workflow.test.mjs",
     "smoke:shard-never-ran": "tsx bin/smoke/shard-never-ran.smoke.ts",
     "smoke:shard-sentinel": "tsx bin/smoke/shard-sentinel.smoke.ts",
+    "smoke:scenario-diagnostics": "tsx bin/smoke/scenario-diagnostics.smoke.ts",
     "smoke:shard-launcher:live": "node bin/smoke/shard-launcher.smoke.mjs",
     "smoke:workflow-concurrency": "tsx bin/smoke/workflow-concurrency.smoke.ts",
     "smoke:live-job-conclusion": "tsx bin/smoke/live-job-conclusion.smoke.ts",
