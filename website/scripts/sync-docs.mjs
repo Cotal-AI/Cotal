@@ -52,7 +52,7 @@ const navigation = [
       group('Connect agents', ['connectors', 'connect-claude', 'connect-opencode', 'connect-codex', 'connect-hermes', 'connect-jcode', 'connect-pi'].map(name => page(`docs/${name}.mdx`))),
       group('Build integrations', [
         ...['authoring-a-connector', 'build-a-client', 'embedding'].map(name => page(`docs/${name}.mdx`)),
-        group('Embedding reference', ['exports', 'remote-clients', 'daemons', 'provisioning', 'schema-inspection', 'service-authority', 'manager', 'delegated-seats'].map(name => page(`docs/embedding-${name}.mdx`))),
+        group('Embedding reference', ['exports', 'endpoints', 'remote-clients', 'daemons', 'provisioning', 'schema-inspection', 'service-authority', 'manager', 'delegated-seats'].map(name => page(`docs/embedding-${name}.mdx`))),
         group('Connector reference', [
           page('docs/connector-runtime-reference.mdx'),
           ...['claude', 'opencode', 'codex', 'hermes', 'jcode', 'pi'].map(name => page(`docs/${name}-connector-reference.mdx`)),
@@ -61,7 +61,7 @@ const navigation = [
     ]),
     group('Concepts', [
       group('Fundamentals', ['architecture', 'spaces', 'transport'].map(name => page(`docs/${name}.mdx`))),
-      group('Messaging', ['presence-and-delivery', 'delivery-daemon'].map(name => page(`docs/${name}.md`))),
+      group('Messaging', ['presence-and-delivery', 'delivery-daemon'].map(name => page(`docs/${name}.mdx`))),
       group('Security', ['identity-and-auth', 'security'].map(name => page(`docs/${name}.md`))),
       group('Agent coordination', ['control-surface', 'workflows'].map(name => page(`docs/${name}.md`))),
     ]),

@@ -161,6 +161,115 @@ If the old generation remains, the daemon reports the missed remint and retries 
 The current credential remains usable until expiry.
 Each retry reads the store once.
 
+### Delivery reader cleanup
+
+The trusted reader transfers each authorized mixed-store entry to the member's DELIVER store.
+It acknowledges the source entry after that transfer commits. The member acknowledges the
+DELIVER copy after surfacing or handling it. A failed transfer remains pending for retry.
+At delivery count 10, including the first attempt, a failed transfer terminates retry and
+reports an error. The source entry remains stored.
+
+Retirement leaves a tombstone on the lifecycle's read-ACL row. A retired lifecycle never returns.
+When the reader encounters an entry for that lifecycle, it deletes the entry before acknowledging
+it. A sequence already absent from the stream counts as removed. A successful delete prevents
+later readers with fresh cursors from encountering the same entry again.
+
+A failed delete leaves the entry pending. At delivery count 10, the reader terminates retry and
+reports the failure. If the daemon stops serving while the delete is in flight, it neither
+acknowledges nor terminates the entry. The next serving daemon retries it.
+
+An absent ACL row without a retirement tombstone does not prove retirement. The reader retries
+that entry until delivery count 10, then terminates retry and leaves the entry stored.
+The counter includes the first delivery attempt.
+
+### Delivery administration
+
+The manager's credential-store challenge, frozen registration-gate repair at boot, and verified
+eviction on restart use `ctl.delivery-admin`. Manager startup waits up to 60 seconds for an
+unanswered rail, including while delivery binds or rechecks lease ownership. Only timeouts and
+no-responder errors retry. The retry delay shrinks with the time remaining, so a late responder
+can still answer. The deadline also bounds an attempt still connecting, and an attempt sends
+nothing after the deadline. A refusal, unreadable reply, authentication error, or local failure
+ends the wait immediately. A rail that remains silent fails startup, and the manager log names it.
+
+A reply on `ctl.delivery` or `ctl.delivery-admin` that exceeds the broker's `max_payload` cannot
+be published. The daemon attempts a smaller refusal that reports the original reply's size in
+bytes. A caller that receives that refusal fails immediately instead of waiting for its timeout.
+If the refusal also cannot be published, the daemon logs that failure.
+
+On restart, the manager verifies eviction of every holder in its credential family.
+The ledger retains a row for every issued credential. The manager reuses its serve, goal-writer,
+and session-ledger identities across restarts, so restarting adds no holders.
+Each attach session adds a serving holder.
+
+The manager sends at most 256 distinct holders per `evictPrincipals` request. Delivery performs
+one shared broker sweep per request. The manager records each batch's verified holders before
+sending the next batch. An executor interrupted by its time limit resumes after that recorded
+progress. A daemon without `evictPrincipals` refuses the operation, and the registration gate
+remains frozen. An unreachable or unusable reply also leaves the gate frozen.
+
+### Delivery readiness [#delivery-readiness-and-transport]
+
+Before endpoint construction and lease acquisition, delivery reads the account-scoped `$SYS`
+observer from the same workstation or injected store used for scans. Startup refuses a missing
+observer, an observer for another account, or a present observer and evictor signed by different
+system accounts. An absent evictor permits the pre-eviction posture: removal denies new access,
+but live eviction refuses until an evictor is provisioned.
+
+Every launch inherits the mesh's transport requirement, including a bare `cotal up` that
+relaunches missing delivery. A TLS-required mesh demands TLS at connection time and refuses a
+plaintext listener. See [Transport](transport.mdx).
+
+An agent binds its provisioned per-member delivery durable even if its connection reaches a plane
+with no ready delivery lease. The durable can receive copies when delivery starts on that plane.
+The warning names the durable and space and reports that the plane has no ready delivery lease.
+It directs the agent to reconnect to another plane if that plane serves the space.
+Reconnection binds the durable on that plane.
+
+### Broker connection health
+
+After its initial reachability check, delivery observes broker health through its resident
+connection's events. It opens no additional probe connection. A disconnect starts the outage
+clock and a reconnect clears it, except during credential expiry.
+
+`COTAL_DELIVERY_BROKER_GONE_MS` sets the outage window, with a default of 15 seconds.
+Time during which the daemon's own event loop was stalled does not count toward that window.
+When the window expires, the process logs and exits:
+
+```text
+✗ delivery: broker connection unavailable (broker unreachable), exiting (coupled to the broker)
+```
+
+`COTAL_DELIVERY_BROKER_GONE_BACKSTOP_MS` sets a wall-clock limit that includes those stalls.
+Its default is four times the outage window, and it cannot be less than that window.
+When this limit expires, the process logs and exits:
+
+```text
+✗ delivery: broker connection unavailable past backstop (broker unreachable), exiting (coupled to the broker)
+```
+
+A broker that stops answering without closing its socket counts as disconnected only after
+unanswered client pings. The outage clock therefore starts after ping failure detection.
+
+An authentication-expiry error logs immediately:
+
+```text
+! delivery: credential expired, awaiting proved renewal
+```
+
+A reconnect alone does not clear credential expiry. Only a renewal proved against the broker
+clears it. If no proved renewal arrives by the wall-clock limit, the process logs
+`✗ delivery: credential expired without renewal` and exits.
+
+### Checkpoint timer writer
+
+Delivery also hosts the space's checkpoint timer writer, which turns workflow `.schedule`
+requests into armed broker schedules under [SPEC §13.9](../SPEC.md#139-authority-boundary).
+The writer has its own connection under the same delivery credential.
+Without a running writer, workflow pauses on the space do not expire.
+
+The writer logs faults and restarts with backoff. A writer fault does not stop message delivery.
+
 ## Hosted delivery context
 
 `startDeliveryService(inputs)` uses the same explicit `HostedContextInputs` shape as hosted auth.
@@ -222,6 +331,11 @@ A continuous local re-sign requires no network.
 The Manager schedules remint against its own `secretStore`.
 Sharing that store with delivery completes the renewal cycle from signing to adoption.
 The daemon's adoption still performs a broker preflight at its 75% renewal point.
+
+The explicit `reloadCreds` operation refuses adoption until delivery has finished startup,
+after its lease watch binds. The lease can be ready before that point, so an early renewal request
+can reach a responder that refuses with `this daemon has not finished starting` and adopts nothing.
+The next renewal pass or the daemon's own 75% re-read can adopt the re-signed credential.
 
 ### Store identity
 

@@ -49,7 +49,7 @@ A channel's delivery guarantee. `live` is at-most-once delivery to current subsc
 
 ## Delivery daemon (Plane-3)
 
-The server-side component that writes fan-out copies, authorizes durable reads, and records durable channel membership. It provides the channel backstop separately from the manager. See [Delivery daemon](delivery-daemon.md).
+The server-side component that writes fan-out copies, authorizes durable reads, and records durable channel membership. It provides the channel backstop separately from the manager. See [Delivery daemon](delivery-daemon.mdx).
 
 ## Delivery modes
 
@@ -61,7 +61,7 @@ A direct message, or unicast message, addresses one instance's inbox by principa
 
 ## Durable backstop
 
-A per-member store for `durable` channel posts and authorized `live` channel mention copies. Copies remain pending until acknowledged, within retention. Reads check the recipient's current lifecycle and read ACL, plus membership for durable-channel copies. See [SPEC §4](../SPEC.md#4-delivery-modes) and [Delivery daemon](delivery-daemon.md).
+A per-member store for `durable` channel posts and authorized `live` channel mention copies. Copies remain pending until acknowledged, within retention. Reads check the recipient's current lifecycle and read ACL, plus membership for durable-channel copies. See [SPEC §4](../SPEC.md#4-delivery-modes) and [Delivery daemon](delivery-daemon.mdx).
 
 ## Endpoint
 
@@ -145,4 +145,4 @@ The `spawn` permission declared in an agent file's `capabilities`. It grants spe
 
 ## Trusted reader
 
-The delivery daemon component that reads the mixed durable backstop on an agent's behalf. It checks each entry against current lifecycle identity and read ACL, plus membership for durable-channel copies, before handing it to the agent. Live-channel mention copies require the read ACL, not membership. See [Delivery daemon](delivery-daemon.md) and [SPEC §8](../SPEC.md#8-nats--jetstream-binding).
+The delivery daemon component that reads the mixed durable backstop on an agent's behalf. It checks each entry against current lifecycle identity and read ACL, plus membership for durable-channel copies, before handing it to the agent. Live-channel mention copies require the read ACL, not membership. See [Delivery daemon](delivery-daemon.mdx) and [SPEC §8](../SPEC.md#8-nats--jetstream-binding).

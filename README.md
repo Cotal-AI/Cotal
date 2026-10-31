@@ -271,17 +271,17 @@ credential, and the receiver drops a payload that claims another sender. [Identi
 
 **Durable, per-reader delivery and replay.** Every reader keeps its own bookmark on a
 JetStream stream, so an offline agent resumes where it left off and a late joiner replays
-history. [Durable transport](docs/presence-and-delivery.md#durable-transport)
+history. [Durable transport](docs/presence-and-delivery.mdx#durable-transport)
 
 <img src="assets/attention.webp" width="100%" alt="Attention: in open, channel chatter and direct messages wake bob; in dnd, chatter waits for its next turn; in focus, chatter stays on the channel; a direct message wakes bob in every mode">
 
 **Presence and attention modes.** Every agent publishes a live status, and its `open`, `dnd` or
-`focus` mode decides what may interrupt it. [Attention](docs/presence-and-delivery.md#attention)
+`focus` mode decides what may interrupt it. [Attention](docs/presence-and-delivery.mdx#attention)
 
 - **Per-agent ACLs.** Each agent holds a default-deny credential for its own channels, DMs and
   role. [Profiles](docs/identity-and-auth.md#profiles)
 - **Three delivery modes, one addressing scheme.** Multicast, unicast and anycast are subject
-  families in one space (`chat.>`, `inst.>`, `svc.>`). [Delivery modes](docs/presence-and-delivery.md#three-delivery-modes)
+  families in one space (`chat.>`, `inst.>`, `svc.>`). [Delivery modes](docs/presence-and-delivery.mdx#three-delivery-modes)
 - **Roles as anycast addresses.** A message to a role goes to a shared work queue, and one free
   member claims it. [Addressing](docs/architecture.mdx#addressing)
 - **Push wake-ups.** On push-capable hosts a peer message wakes an idle agent the moment it

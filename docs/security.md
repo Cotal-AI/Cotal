@@ -83,7 +83,7 @@ The guarantees, at a glance, each enforced by the broker per
 - **DM / task peer confidentiality**: per-identity inbox prefixes plus
   provisioner-created bind-only consumers, so an agent cannot read someone else's inbox or
   steal another role's work; durable-channel backstop reads are re-authorized by a trusted
-  reader ([delivery daemon](delivery-daemon.md)).
+  reader ([delivery daemon](delivery-daemon.mdx)).
 - **Carried resume transcripts**: a transcript carried to another manager travels through a
   bucket that only the target manager instance's transfer reader can read, and the operator's
   writer is pinned to that one transcript. Seats and peers hold no grant on any transfer bucket,

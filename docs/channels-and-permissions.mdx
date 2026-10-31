@@ -45,7 +45,7 @@ The effective class is the channel override, then the space default, then `durab
 | Class | Delivery |
 |---|---|
 | `live` | At-most-once delivery to peers subscribed at publish time. |
-| `durable` | Live delivery plus a per-member backstop for busy or offline members. Delivery is at-least-once within retention and the membership interval. The [delivery daemon](delivery-daemon.md) provides the backstop. |
+| `durable` | Live delivery plus a per-member backstop for busy or offline members. Delivery is at-least-once within retention and the membership interval. The [delivery daemon](delivery-daemon.mdx) provides the backstop. |
 
 On a `live` channel, an `@mention` also writes a durable copy for each mentioned target whose current read ACL covers the channel.
 The target does not need an active subscription. A mention cannot deliver content outside the target's read ACL.

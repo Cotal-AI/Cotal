@@ -111,7 +111,7 @@ An earlier or replayed execution-end event cannot acknowledge it.
 Queued messages behind a turn are not renewed.
 Inbox overflow evicts queued messages rather than the batch currently carried by a turn.
 Renewal stops when the connector can no longer establish that it owns a delivery, such as after a connection outage longer than the acknowledgement wait.
-Delivery remains [at least once](presence-and-delivery.md#durable-transport).
+Delivery remains [at least once](presence-and-delivery.mdx#durable-transport).
 
 Quiet-channel ambient messages remain available only through `cotal_inbox`.
 They are not prepended to human prompts or directed-message turns.

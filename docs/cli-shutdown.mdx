@@ -177,7 +177,26 @@ refuses `LIFECYCLE_BLOCKED`, exit 2. The remedy names that service and the comma
 stack still running, and completed stops are not rolled back. `--with-agents` refuses when a
 service would be stopped, because the legacy reap does not reach a service's agents.
 
+### Delivery shutdown
 
+Foreground `up` teardown and bare legacy `cotal down` share the delivery stop operation.
+The stop holds delivery's `.stopping` reservation until cleanup finishes.
+A concurrent stop of that daemon refuses while the reservation is held.
+
+On POSIX, the stop sends SIGTERM, waits up to 15 seconds for confirmed death, then sends SIGKILL
+if needed. It waits up to three more seconds after SIGKILL. Unconfirmed death preserves the
+process record and fails the stop. Windows uses a cooperative request with a 20-second grace
+period before escalation, subject to the [process identity rules](#process-identity).
+
+A readable command line proving that the PID belongs to another program causes the stale
+delivery record to be cleared without a signal. An unreadable command line does not prove
+that the record is stale. Pinned identity mismatches and unreadable pins refuse as described
+under [Process identity](#process-identity).
+
+Delivery credentials are removed only after the required process stops are confirmed.
+Bare legacy `cotal down` defers that removal until the broker and the other required components
+have also stopped. Foreground `cotal up` teardown removes delivery credentials after delivery
+stops, before stopping auth and the broker. A daemon that exits cleanly removes its own PID record.
 
 ### Agent policy
 

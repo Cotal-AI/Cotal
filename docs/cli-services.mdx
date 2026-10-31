@@ -310,10 +310,35 @@ workspace root is refused outright); with no record for the space it falls back 
 The daemon serves the workspace root that `--root <dir>` names, which must hold `.cotal/`, or else
 the nearest `.cotal/` above its working directory. With neither, it refuses at start and names the
 directory it searched from, before it reads a credential or dials a broker.
-See the [delivery daemon](delivery-daemon.md). `feedback-intake` runs a self-hosted feedback server
+An injected-store daemon takes its credentials from that store and does not consult the mesh
+registry or require `.cotal/`.
+See the [delivery daemon](delivery-daemon.mdx). `feedback-intake` runs a self-hosted feedback server
 (requires `--keys` and a scoped `--creds`), announcing submissions into a space channel; flags
 include `--host`/`--port`, `--store`, `--space`/`--channel`, `--max-bytes`, and `--rate-limit`.
 `--port` takes a decimal port from 1 to 65535 and is checked before the intake dials the broker.
+
+### Delivery process records
+
+The delivery process records itself in `.cotal/delivery.<key>.pid` after it acquires the
+single-flight lease. This applies to workstation daemons launched by `up`, a container entrypoint,
+a systemd unit, or the compatibility `deliver` command. A daemon that fails to acquire the lease
+does not replace the holder's record. On clean exit, the daemon removes only its own record.
+An injected-store composition without `.cotal/` writes no workstation pidfile.
+
+Readers check that the recorded PID is alive and that its command line identifies a delivery
+daemon. A readable command line for another program makes the record stale.
+If the command line cannot be read, that check preserves the prior liveness result.
+The [shutdown identity checks](cli-shutdown.mdx#process-identity) apply before signalling.
+
+The project-local log is `.cotal/delivery.<key>.log`, as listed under
+[project files](config.mdx#project-files). Detached `up` redirects delivery's stdout and stderr
+into this file. Wrapping that launcher in a systemd unit does not put those lines in that unit's journal.
+The file contains delivery's own startup and lease-failure reasons.
+
+On SIGTERM or SIGINT, delivery logs `received <signal>, exiting` as part of its shutdown line
+before releasing its lease. These are the signals used by POSIX `cotal down`, service stop,
+and Ctrl-C. SIGKILL, including a kernel OOM kill, ends the process without that line.
+On Windows, delivery uses the [cooperative stop path](cli-shutdown.mdx#process-identity).
 
 
 ## deliver [#deliver]
@@ -324,7 +349,7 @@ cotal deliver pending <name> [--limit <n>] [--durable <name>] [--json]
 ```
 
 With no positional, `cotal deliver` runs the delivery daemon (see
-[the delivery daemon](delivery-daemon.md)). `deliver pending <name>` never starts the daemon: it
+[the delivery daemon](delivery-daemon.mdx)). `deliver pending <name>` never starts the daemon: it
 is an operator-only read over one recipient's DM durable, for the moment after a send when the
 question is "what does the broker actually hold for them." It resolves `<name>` against a short
 presence watch (an `offline` card still counts, since the recipient may be dead, that is what

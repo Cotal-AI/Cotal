@@ -7,6 +7,7 @@ audience: integrators
 
 The symbols below are public exports used by host applications.
 [Embedding Cotal](embedding.mdx) gives the composition reading path.
+[Endpoint presence and delivery](embedding-endpoints.mdx) describes presence records, liveness observations, and DM-only readers.
 
 ## Package entry points [#the-export-surface]
 
@@ -231,7 +232,7 @@ Claude sessions report it from their `SessionStart` hook.
 as positive safe integers. Omission keeps the NATS defaults. Native PING/PONG uses the
 resident socket without another authenticated probe connection. A stale connection
 emits a transport disconnect before reconnect attempts. The
-[delivery daemon's connection handling](delivery-daemon.md#where-it-runs) explains how
+[delivery daemon's connection handling](delivery-daemon.mdx#where-it-runs) explains how
 that event affects the service. The option validation and NATS mapping are in
 [`endpoint.ts`](../packages/core/src/endpoint.ts).
 

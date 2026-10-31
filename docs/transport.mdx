@@ -53,7 +53,7 @@ must supply the missing behavior above it.
 Routing a live message does not provide durable delivery or a presence registry.
 An offline member needs retained messages and a pending cursor. An observer needs
 stored presence records and rules for deciding when a record no longer means online.
-[Presence and delivery](presence-and-delivery.md) explains those guarantees.
+[Presence and delivery](presence-and-delivery.mdx) explains those guarantees.
 
 ## The NATS binding [#nats-reference-binding]
 
@@ -86,7 +86,7 @@ position, and [Spaces](spaces.mdx) explains the channel boundary.
 JetStream captures messaging publishes in `CHAT_<space>`, `DM_<space>`, and
 `TASK_<space>`. A live channel subscriber receives the same publish through a native
 core-NATS subscription bounded by `sub.allow`. That live copy has no acknowledgement.
-For a durable channel, the [delivery daemon](delivery-daemon.md) writes per-member
+For a durable channel, the [delivery daemon](delivery-daemon.mdx) writes per-member
 backstop copies and rechecks the current read ACL, membership interval, and lifecycle
 before handing content to a member through `dlv_<owner>-<actor>-<uid>`.
 

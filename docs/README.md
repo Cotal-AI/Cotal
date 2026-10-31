@@ -94,6 +94,7 @@ Task dispatch:
 | Doc | Answers |
 |---|---|
 | [Package exports](embedding-exports.mdx) | Which published APIs can a host import? |
+| [CotalEndpoint reference](embedding-endpoints.mdx) | Which endpoint fields, liveness states, and DM-only reader contracts are available? |
 | [Remote service clients](embedding-remote-clients.mdx) | How do MCP, browser, and Manager clients carry caller authority? |
 | [Embedded daemons](embedding-daemons.mdx) | How does a host compose auth and delivery services? |
 | [Space provisioning](embedding-provisioning.mdx) | Which trust records, storage, and lifecycle operations does a host own? |
@@ -128,8 +129,8 @@ Task dispatch:
 
 | Doc | Answers |
 |---|---|
-| [Message flow](presence-and-delivery.md) | How do peers find each other and receive messages? |
-| [Delivery daemon](delivery-daemon.md) | How does the durable delivery backstop work? |
+| [Message flow](presence-and-delivery.mdx) | How do peers find each other and receive messages? |
+| [Delivery daemon](delivery-daemon.mdx) | How does the durable delivery backstop work? |
 
 ### Security
 

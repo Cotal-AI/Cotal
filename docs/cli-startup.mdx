@@ -96,6 +96,21 @@ A listed manager indicates pidfile liveness and does not define teardown scope. 
 home, the next command is `cotal down --preserve-state`, because bare down refuses that root.
 With `--no-manager`, the next command is `cotal up` first, because preservation needs a manager.
 
+### Delivery readiness
+
+In authenticated mode, `up` waits for delivery's lease to become ready after its responder binds.
+A process that exits before becoming ready fails startup with a non-zero exit.
+Another holder, or an unexpired lease left by a crashed holder, can prevent lease acquisition.
+The lease TTL is 30 seconds. A refused lease write is reported as a permission denial naming
+the operation and subject, rather than as a competing holder.
+The daemon's reason is in [its project-local log](cli-services.mdx#delivery-process-records).
+
+A still-running process whose responder has not bound is a separate state. `up` reports
+`delivery daemon started but its responder is NOT BOUND yet` and names the unavailable operations.
+Process liveness does not establish responder readiness. Boot durable joins retry with backoff
+until the responder binds, and agents rejoin without being respawned.
+`cotal status --components` reports the delivery component's state.
+
 ### Foreground lifetime
 
 On POSIX, the foreground broker has its own session and process group. Terminal Ctrl-C reaches
@@ -103,6 +118,29 @@ the CLI owner. The owner uses the same manager stop and agent-reporting rules as
 [`down`](cli-shutdown.mdx#down), then stops the remaining stack. A refused manager stop prints its refusal and
 reap route and leaves the manager, broker, delivery, and auth service running. A second interrupt
 during teardown does not start another stop. Windows retains its console signal behavior.
+
+Foreground `up` restarts delivery if a daemon it started dies abnormally while the broker it
+started remains running. It logs:
+
+```text
+delivery daemon exited (<cause>) while nats-server is running - restarting it
+```
+
+Once the replacement's responder binds, it logs `delivery daemon running again`.
+A replacement that remains alive without a bound responder gets the startup warning instead.
+A failed restart is logged and retried after the 30-second lease TTL.
+Delivery can exit on broker connection loss even when a starved host still has a running broker.
+Until delivery returns, operations such as retirement that need its responder cannot complete.
+
+A clean exit, SIGTERM, or SIGINT leaves delivery stopped. An intentional `cotal down` stop also
+stays stopped if `down` escalates to SIGKILL, stops a replacement still starting, or lands between
+restart attempts. Legacy stacks have no command to stop only delivery.
+Detached `up` exits after launch and supervises no restart. A later bare `cotal up` relaunches
+missing delivery and preserves the mesh's transport requirements.
+
+Ctrl-C or broker exit under foreground `up` uses the same
+[delivery stop](cli-shutdown.mdx#delivery-shutdown) as bare `cotal down`.
+If the broker exits during that stop, `up` waits for the stop to finish before exiting.
 
 ### Default persona
 
@@ -395,7 +433,7 @@ creds power the membership graph and live eviction, both of which degrade fail-s
 worth taking down over them. Re-running the rotation heals it, at the cost of one generation.
 
 While those creds are expired the mesh keeps delivering messages, but the
-[membership feed](delivery-daemon.md) and live connection eviction stay down; `cotal doctor auth`
+[membership feed](delivery-daemon.mdx) and live connection eviction stay down; `cotal doctor auth`
 and the manager's log both name the credential and this repair.
 
 

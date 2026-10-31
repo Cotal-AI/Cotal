@@ -47,7 +47,7 @@ const cli = (await Promise.all([
 ].map(async slug => (await readDocument(join(REPO, "docs", `${slug}.mdx`))).markdown))).join("\n\n");
 const config = (await readDocument(join(REPO, "docs/config.mdx"))).markdown;
 const control = read("docs/control-surface.md");
-const delivery = read("docs/delivery-daemon.md");
+const deliveryServices = await guide("cli-services");
 const pid = read("packages/workspace/src/pid.ts");
 const provision = read("packages/core/src/provision.ts");
 const up = read("implementations/cli/src/commands/up.ts");
@@ -152,7 +152,7 @@ check(
   "claim 3: docs name project logs and empty journalctl for a oneshot wrapper",
   recoveryGuide.includes("These logs are under the project's `.cotal/`, not `~/.cotal`") &&
     operationGuideText.includes("`journalctl -u <unit>` can be empty") &&
-    delivery.includes("does not put those lines in that unit's journal"),
+    deliveryServices.includes("does not put those lines in that unit's journal"),
 );
 
 // ── 4. standalone deliver is not a split-host repair ─────────────────────────
