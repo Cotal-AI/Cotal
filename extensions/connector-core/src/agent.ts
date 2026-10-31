@@ -240,8 +240,8 @@ export function afterRecallMark(a: RecallMark, b: RecallMark): boolean {
 }
 
 /** How many pending messages one session buffers before the overflow valve in
- *  {@link MeshAgent.buffer} evicts. */
-const MAX_INBOX = 200;
+ *  {@link MeshAgent.buffer} evicts. Exported so the overflow smokes read the bound they exercise. */
+export const MAX_INBOX = 200;
 /** How many receive keys {@link MeshAgent.holdInFlight} protects at once. The overflow valve never
  *  evicts a held entry, so this ceiling also bounds the inbox while holds are open, which is why it
  *  is derived from {@link MAX_INBOX}. It sits above the inbox because a frame keeps its holds until
