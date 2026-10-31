@@ -712,6 +712,10 @@ try {
   agent = new MeshAgent(scenario1Config);
   await agent.start();
   check("MeshAgent started on user-auth standing connection", true);
+  // The first dial on the manager-call credential is a manager-view listing, so the legacy-rail
+  // verdict the later calls rely on is the one that listing records (checked in 7D).
+  const endpointsTool = cotalToolSpecs(scenario1Config, "smoke").find((t: { name: string }) => t.name === "cotal_endpoints");
+  const firstManagerView = await endpointsTool.run(agent, scenario1Config, { view: "manager" });
 
   // 1A. listPersonas over real wire
   const personas = await agent.listPersonas();
@@ -738,7 +742,6 @@ try {
   check("inspected model matches recorded pin", (recorded as { model?: string }).model === "sonnet");
 
   // 1E. cotal_endpoints over the session's own credential, and over its manager-call credential.
-  const endpointsTool = cotalToolSpecs(scenario1Config, "smoke").find((t: { name: string }) => t.name === "cotal_endpoints");
   const pageOf = (r: { text: string; isError?: boolean }) => {
     const json = r.text.split("\n").slice(2).join("\n");
     return r.isError ? undefined : JSON.parse(json) as { rows: Array<{ endpoint: string; commands: Array<{ name: string; forms: Array<{ route?: string; literals: { instanceId?: string[] } }> }> }> };
@@ -752,7 +755,7 @@ try {
   // The manager-call view pins every manager request to the one instance its bearer selected.
   const managerForms = pageOf(managerView)?.rows.find((r) => r.endpoint === "manager")?.commands.flatMap((c) => c.forms) ?? [];
   check("cotal_endpoints view=manager asks over the manager-call credential and lists its manager commands, labelled as its view",
-    managerView.isError !== true && managerView.text.includes("endpoints the manager-call credential can call")
+    firstManagerView.isError !== true && managerView.isError !== true && managerView.text.includes("endpoints the manager-call credential can call")
       && commandsIn(pageOf(managerView), "manager").includes("list-personas") && managerForms.length > 0
       && managerForms.every((f) => f.route === "inst" && f.literals.instanceId?.includes(ownerARemoteInstanceId) === true),
     managerView.text.slice(0, 3000));
@@ -1030,13 +1033,13 @@ try {
   check("actual child stop over wire succeeded for worker 1", despawn1.ok === true, despawn1);
 
   const despawn2 = await realAgent.despawn("producer_worker_2", { graceful: false });
-  // #5040: one legacy-rail credential, dialed by the manager-view listing in 1E and by four manager
-  // calls (two spawns, two despawns). The broker refused the accepted-row read once; the seat
-  // remembered the verdict for the credential and did not ask again on the other dials.
+  // #5040: the scenario 1 and scenario 7 manager calls and both manager-view listings dial one
+  // legacy-rail credential. The first dial, a listing, was refused the accepted-row read and
+  // recorded the verdict; no later dial on that credential asked again.
   {
     const refusedReads = readFileSync(brokerLog, "utf8").split("\n")
       .filter((l) => l.includes("Publish Violation") && l.includes("KV_cotal_accepted") && l.includes(`-${AGENT_ACTOR}"`)).length;
-    check("a legacy-rail seat asks the broker for its accepted row once per credential, not once per manager call (a listing and 4 calls, 1 refused read)",
+    check("a legacy-rail seat asks the broker for its accepted row once per credential, not once per manager call or listing (1 refused read)",
       refusedReads === 1, `refused accepted-row reads for ${AGENT_ACTOR}: ${refusedReads}`);
   }
   check("actual child stop over wire succeeded for worker 2", despawn2.ok === true, despawn2);
