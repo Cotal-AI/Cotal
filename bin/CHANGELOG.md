@@ -1,5 +1,21 @@
 # cotal-ai
 
+## 0.132.7
+
+### Patch Changes
+
+- 5a0ac4d: On Node 24, a `cotal` command could print its result and then never exit. This came from a Node bug (nodejs/node#64274): `process.exit()` waits for V8's background compiler threads, and a Maglev or background Sparkplug compile waiting for a garbage collection never finishes. The CLI entry now turns Maglev and background Sparkplug off before anything else loads, as Node 22 does by default. This covers every command and every daemon the binary starts.
+- Updated dependencies [ad4a37e]
+  - @cotal-ai/core@0.132.7
+  - @cotal-ai/connector-core@0.132.7
+  - @cotal-ai/auth@0.132.7
+  - @cotal-ai/cli@0.132.7
+  - @cotal-ai/delivery@0.132.7
+  - @cotal-ai/manager@0.132.7
+  - @cotal-ai/runtime@0.132.7
+  - @cotal-ai/workspace@0.132.7
+  - @cotal-ai/seat@0.132.7
+
 ## 0.132.6
 
 ### Patch Changes
