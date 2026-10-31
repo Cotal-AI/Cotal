@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Kvm } from "@nats-io/kv";
 import {
-  CotalEndpoint, DEV_OWNER, EpEnvelopeError, RECORD_KINDS, createSpaceAuth, dialerFor, isReachable, mintCreds, mintLifecycleUid, newIdentity, recordSpecKey,
+  CotalEndpoint, DEV_OWNER, EpEnvelopeError, RECORD_KINDS, createSpaceAuth, dialerFor, isReachable, mintAcceptedToken, mintCreds, mintGeneration, mintLifecycleUid, newIdentity, recordSpecKey,
   recordsBucket, serverConfig, setupSpaceStreams, standaloneConnectOpts,
   withIssuerSession, type EpCapability, type RegistryEndpointsOutput,
 } from "@cotal-ai/core";
@@ -44,15 +44,24 @@ try {
   registry = await runRegistryFixture(mesh);
 
   const exp = Math.floor(Date.now() / 1000) + 3600;
-  const agent = async (opts: { listing: boolean; expiresAt?: number; extra?: EpCapability[] }) => {
+  // `issued`: an agent on its own issued generation, with or without the `endpoints` row.
+  const agent = async (opts: { listing: boolean; issued?: { listing: boolean }; expiresAt?: number; extra?: EpCapability[] }) => {
     const identity = newIdentity();
     const lifecycleUid = mintLifecycleUid();
     const mintOpts = { lifecycleUid, endpointCapabilities: [{ endpoint: "alpha.example", command: "read" }, ...(opts.extra ?? [])], ...(opts.expiresAt !== undefined ? { expiresAt: opts.expiresAt } : {}) };
-    const creds = opts.listing
-      ? await withIssuerSession({ servers, space, auth, tls: false }, (session) => mintCreds(auth, identity, "agent", { ...mintOpts, listingSeam: session }))
-      : await mintCreds(auth, identity, "agent", mintOpts);
+    const issued = opts.issued
+      ? { generation: mintGeneration(opts.expiresAt!), acceptedToken: mintAcceptedToken(), ...(opts.issued.listing ? { listing: true as const } : {}) }
+      : undefined;
+    const creds = issued
+      ? await withIssuerSession({ servers, space, auth, tls: false }, (session) => mintCreds(auth, identity, "agent", {
+        ...mintOpts, issued, issuance: { mode: "issue", store: session.store, accepted: session.accepted, sources: [] },
+      }))
+      : opts.listing
+        ? await withIssuerSession({ servers, space, auth, tls: false }, (session) => mintCreds(auth, identity, "agent", { ...mintOpts, listingSeam: session }))
+        : await mintCreds(auth, identity, "agent", mintOpts);
     const ep = new CotalEndpoint({
-      space, servers, creds, lifecycleUid, card: { id: identity.id, name: `lister-${randomBytes(3).toString("hex")}`, kind: "agent" },
+      space, servers, creds, lifecycleUid, ...(issued ? { acceptedToken: issued.acceptedToken } : {}),
+      card: { id: identity.id, name: `lister-${randomBytes(3).toString("hex")}`, kind: "agent" },
       channels: [], consume: false, registerPresence: false, watchPresence: false,
     });
     endpoints.push(ep);
@@ -77,6 +86,15 @@ try {
   const isUnbound = (r: unknown) => typeof r === "object" && r !== null && "unbound" in r && r.unbound === true;
   const unbound = await before.listEndpoints({}).catch((e: unknown) => e);
   suite.check("a credential minted without a listing generation is told it has no listing binding", isUnbound(unbound), unbound instanceof Error ? unbound.message : unbound);
+  const issuedListed = await (await agent({ listing: false, issued: { listing: true }, expiresAt: exp })).listEndpoints({}).catch((e: unknown) => e as Error);
+  const issuedPage = issuedListed instanceof Error || issuedListed.unbound ? undefined : issuedListed.page;
+  suite.check("an issued credential carrying the endpoints row lists on its own generation",
+    issuedPage?.rows.map((r) => r.endpoint).join() === "alpha.example,registry", issuedListed instanceof Error ? issuedListed.message : JSON.stringify(issuedListed));
+  // Minted as an issued credential was before listing issuance: no `endpoints` row.
+  const issuedBefore = await agent({ listing: false, issued: { listing: false }, expiresAt: exp });
+  const issuedUnbound = await issuedBefore.listEndpoints({}).catch((e: unknown) => e);
+  suite.check("an issued credential whose generation predates listing issuance is told it has no listing binding",
+    isUnbound(issuedUnbound), issuedUnbound instanceof Error ? issuedUnbound.message : issuedUnbound);
   const forever = await agent({ listing: true });
   const noExpiry = await forever.listEndpoints({}).catch((e: unknown) => e);
   suite.check("a credential with no expiry has no listing binding", isUnbound(noExpiry), noExpiry instanceof Error ? noExpiry.message : noExpiry);

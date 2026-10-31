@@ -37,14 +37,16 @@ export async function registryListingCaller(
 /** One page of the `endpoints` answer. `describe` resolves the registry; `ask` is the connection the
  *  question rides, under `caller` on a mesh with a permission system. The registry must serve the
  *  contract this client implements. A call the answering instance refused before running (a
- *  class-queue split) is resolved and asked again, up to {@link BIND_SPLIT_REISSUES} times. */
+ *  class-queue split) is resolved and asked again, up to {@link BIND_SPLIT_REISSUES} times.
+ *  `unbound`: the broker refused the question, so the caller's credential holds no listing row, as
+ *  an issued credential minted before listing issuance does not. */
 export async function listRegistryEndpoints(
   space: string,
   describe: (deadlineMs: number, signal?: AbortSignal) => Promise<ResolvedService>,
   ask: { nc: NatsConnection; caller?: IssuedCaller },
   input: RegistryEndpointsInput,
   opts: { deadlineMs?: number; signal?: AbortSignal } = {},
-): Promise<{ reply: EpAttributedReply; page?: RegistryEndpointsOutput }> {
+): Promise<{ unbound: true } | { unbound?: false; reply: EpAttributedReply; page?: RegistryEndpointsOutput }> {
   const deadline = Date.now() + (opts.deadlineMs ?? 10_000);
   const ours = REGISTRY_CONTRACTS[REGISTRY_ENDPOINTS_COMMAND]!;
   let reply: EpAttributedReply | undefined;
@@ -53,9 +55,14 @@ export async function listRegistryEndpoints(
     const theirs = service.commands.get(REGISTRY_ENDPOINTS_COMMAND)!.contract;
     if (theirs.input.closureDigest !== ours.input.closureDigest || theirs.output.closureDigest !== ours.output.closureDigest)
       throw new EpEnvelopeError("contract-mismatch", `the registry serves a version of "${REGISTRY_ENDPOINTS_COMMAND}" this client does not implement; upgrade the client (SPEC 13.20)`);
-    reply = await invokeCommand(ask.nc, space, service, REGISTRY_ENDPOINTS_COMMAND, { ...input }, {
-      deadlineMs: deadline - Date.now(), signal: opts.signal, ...(ask.caller ? { caller: ask.caller } : {}),
-    });
+    try {
+      reply = await invokeCommand(ask.nc, space, service, REGISTRY_ENDPOINTS_COMMAND, { ...input }, {
+        deadlineMs: deadline - Date.now(), signal: opts.signal, ...(ask.caller ? { caller: ask.caller } : {}),
+      });
+    } catch (e) {
+      if (ask.caller !== undefined && e instanceof EpEnvelopeError && e.code === "permission-denied" && e.outcome === "not-executed") return { unbound: true };
+      throw e;
+    }
     if (reply.reply.ok !== false || !replyRefusedBeforeEffect(reply.reply.error)) break;
   }
   if (reply === undefined) throw new EpEnvelopeError("deadline-exceeded", "the registry was not reached before the deadline");

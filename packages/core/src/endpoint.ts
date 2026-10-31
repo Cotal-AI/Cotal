@@ -2931,18 +2931,20 @@ export class CotalEndpoint extends EventEmitter {
   /** Ask the registry over `nc` under `listing`: this connection, or another of this caller triple
    *  such as a manager-call connection. The describe rides this connection, whose view holds the
    *  registry's describe. Every endpoint the page lists has its cached describe dropped, so the next
-   *  describe of it reads the surface afresh. */
+   *  describe of it reads the surface afresh. `unbound`: the broker refused the question under
+   *  `listing`, whose credential holds no listing row. */
   async listEndpointsOver(
     nc: NatsConnection,
     listing: IssuedCaller | undefined,
     input: RegistryEndpointsInput,
     opts: { deadlineMs?: number; signal?: AbortSignal } = {},
-  ): Promise<{ reply: EpAttributedReply; page?: RegistryEndpointsOutput }> {
+  ): Promise<{ unbound: true } | { unbound?: false; reply: EpAttributedReply; page?: RegistryEndpointsOutput }> {
     if (!this.nc) throw new Error(this.notLiveMsg());
     const own = this.nc;
     const result = await listRegistryEndpoints(this.space, (deadlineMs, signal) => resolveService(own, this.space, REGISTRY_ENDPOINT, this.serviceCaller(), {
       deadlineMs, signal, commands: [REGISTRY_ENDPOINTS_COMMAND],
     }), { nc, ...(listing ? { caller: listing } : {}) }, input, opts);
+    if (result.unbound) return result;
     for (const row of result.page?.rows ?? []) this.clearResolvedService(row.endpoint);
     return result;
   }
