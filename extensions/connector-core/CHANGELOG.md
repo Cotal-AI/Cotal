@@ -1,5 +1,11 @@
 # @cotal-ai/connector-core
 
+## 0.132.6
+
+### Patch Changes
+
+- 85fdb96: Keep weighted term frequencies instead of repeated token strings in the lazy documentation search index. Search results and BM25 scores are unchanged. This reduces retained memory after documentation searches in the tested stock connector workload, with extra first-search work to build the frequency maps.
+
 ## 0.132.5
 
 No changes in this release.
