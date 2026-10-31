@@ -1,4 +1,7 @@
-import { DateTime, Option, Schema, SchemaGetter } from "effect"
+import * as DateTime from "effect/DateTime"
+import * as Option from "effect/Option"
+import * as Schema from "effect/Schema"
+import * as SchemaGetter from "effect/SchemaGetter"
 
 export const PositiveInt = Schema.Int.check(Schema.isGreaterThan(0))
 export const NonNegativeInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))

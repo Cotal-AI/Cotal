@@ -3,7 +3,7 @@ export * as TuiKeybind from "./keybind"
 import type { KeyEvent, Renderable } from "@opentui/core"
 import type { Binding } from "@opentui/keymap"
 import type { BindingConfig, BindingDefaults } from "@opentui/keymap/extras"
-import { Schema } from "effect"
+import * as Schema from "effect/Schema"
 
 const KeyStroke = Schema.Struct({
   name: Schema.String,

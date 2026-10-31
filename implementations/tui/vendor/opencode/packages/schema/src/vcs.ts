@@ -1,6 +1,6 @@
 export * as Vcs from "./vcs.js"
 
-import { Schema } from "effect"
+import * as Schema from "effect/Schema"
 import { NonNegativeInt, optional } from "./schema.js"
 
 export const Branch = Schema.Struct({

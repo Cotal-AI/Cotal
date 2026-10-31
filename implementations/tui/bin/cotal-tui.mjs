@@ -2,7 +2,7 @@
 // OpenTUI loads its renderer through node:ffi, which needs Node >= 26.4 and --experimental-ffi. A
 // shebang cannot portably carry the flag, so this entry re-execs Node with it.
 import { spawnSync } from "node:child_process"
-import { registerHooks } from "node:module"
+import { enableCompileCache, registerHooks } from "node:module"
 import { fileURLToPath } from "node:url"
 
 const [major, minor] = process.versions.node.split(".").map(Number)
@@ -17,6 +17,10 @@ if (process.execArgv.includes("--experimental-ffi")) {
   // this two Solid instances run and the keymap provider never mounts its children.
   const solid = { "solid-js": "solid-js/dist/solid.js", "solid-js/store": "solid-js/store/dist/store.js" }
   registerHooks({ resolve: (specifier, context, next) => next(solid[specifier] ?? specifier, context) })
+  // Compiling OpenTUI, effect and the app is most of the time to the first frame. Node keeps the
+  // compiled code in its cache directory (NODE_COMPILE_CACHE, else a directory under the OS temp
+  // directory) and reuses it on the next launch.
+  enableCompileCache()
   await import("../dist/src/main.js")
 } else {
   const child = spawnSync(

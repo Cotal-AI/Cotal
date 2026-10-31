@@ -22,7 +22,8 @@
     "build": "node scripts/check-vendor.mjs && node scripts/build.mjs",
     "typecheck": "node scripts/check-vendor.mjs && tsc -p tsconfig.json && tsc -p tsconfig.smoke.json",
     "test": "node scripts/check-vendor.mjs",
-    "smoke": "pnpm run build && tsx smoke/shell.smoke.ts"
+    "smoke": "pnpm run build && tsx smoke/shell.smoke.ts",
+    "measure:startup": "node scripts/measure-startup.mjs"
   },
   "dependencies": {
     "@cotal-ai/workspace": "workspace:*",

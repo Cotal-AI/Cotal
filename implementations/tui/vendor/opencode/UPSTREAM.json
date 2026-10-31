@@ -2,7 +2,8 @@
   "repo": "https://github.com/anomalyco/opencode.git",
   "commit": "9425a65eb358e06221e4982d5620c50fbd86a1dd",
   "patches": [
-    "0001-fuzzysort-default-import.patch"
+    "0001-fuzzysort-default-import.patch",
+    "0002-effect-subpath-imports.patch"
   ],
   "files": [
     {
@@ -11,11 +12,13 @@
     },
     {
       "file": "packages/schema/src/schema.ts",
-      "sha256": "fc76a9937980e518343e1ae49661316fbbfbd8a34bd44701874bedaa2319b8f2"
+      "sha256": "9b1859cd313d6f6fec969b10427a44641d693dd3263b94d9878dd593e1d800dc",
+      "upstreamSha256": "fc76a9937980e518343e1ae49661316fbbfbd8a34bd44701874bedaa2319b8f2"
     },
     {
       "file": "packages/schema/src/vcs.ts",
-      "sha256": "382ddf61a7e4aa7c8612b950d54cdc45e58c135a693dbab6d77db67961c7c949"
+      "sha256": "f61c88503b45a7691493f2ace6edc6bb5c0595ba7ff7cc789584d09948016cd9",
+      "upstreamSha256": "382ddf61a7e4aa7c8612b950d54cdc45e58c135a693dbab6d77db67961c7c949"
     },
     {
       "file": "packages/theme/src/tui/color.ts",
@@ -31,11 +34,13 @@
     },
     {
       "file": "packages/theme/src/tui/resolve.ts",
-      "sha256": "d6c04f7d2627aae40d6eb6ea9d7f19670243f7ae2de69fc2794949d1388c25f0"
+      "sha256": "7be65192b6919c6b69b52ebd3ccf734c5e0d41766680b269242bdf7e63f4bac5",
+      "upstreamSha256": "d6c04f7d2627aae40d6eb6ea9d7f19670243f7ae2de69fc2794949d1388c25f0"
     },
     {
       "file": "packages/theme/src/tui/schema.ts",
-      "sha256": "f93826c60ab9b3cff561231df69d24c1451fd6575d770d0ef2324ce4a79fba37"
+      "sha256": "8aa6cb2975672687fa4a4e034e77a55947461ab542e32f93d980b3c6bd1f1bf3",
+      "upstreamSha256": "f93826c60ab9b3cff561231df69d24c1451fd6575d770d0ef2324ce4a79fba37"
     },
     {
       "file": "packages/theme/src/tui/select.ts",
@@ -63,11 +68,13 @@
     },
     {
       "file": "packages/tui/src/config/index.tsx",
-      "sha256": "c59ef304fb455e3bd657b6cefee4737a9b58b062fc39ac596a788560ff88936f"
+      "sha256": "149c168e2a0280a82b95a1bc5f860693058708fc1f0d575856c2179d3734553b",
+      "upstreamSha256": "c59ef304fb455e3bd657b6cefee4737a9b58b062fc39ac596a788560ff88936f"
     },
     {
       "file": "packages/tui/src/config/keybind.ts",
-      "sha256": "49c8a69149811fee3bf57e1f9104f885d20910c594cae8ba3e99f14c8f454fd8"
+      "sha256": "6ff24fc05f70c0c6c0737756ffe50b831194a1f7efed2dd26369d3351500b3d2",
+      "upstreamSha256": "49c8a69149811fee3bf57e1f9104f885d20910c594cae8ba3e99f14c8f454fd8"
     },
     {
       "file": "packages/tui/src/context/clipboard.tsx",
