@@ -221,7 +221,7 @@ export async function addExtension(spec: string, expectedPkg?: string, borrowMut
     } else if (stageRoot) {
       rmSync(stageRoot, { recursive: true, force: true });
     } else {
-      await npm(["remove", "--no-audit", "--no-fund", pkg], dir);
+      await npm(["remove", "--no-audit", "--no-fund", "--install-links", pkg], dir);
       linkExtensionPeers(manifest.extensions.map((entry) => entry.pkg), pkg);
     }
   };
@@ -453,7 +453,7 @@ async function removeUnlocked(pkg: string): Promise<void> {
       reservations.push(pidPath);
     }
     assertExtensionServiceInstancesStopped(pkg);
-    const r = await npm(["remove", "--no-audit", "--no-fund", pkg], extensionsDir());
+    const r = await npm(["remove", "--no-audit", "--no-fund", "--install-links", pkg], extensionsDir());
     if (r.status !== 0) throw new Error(`npm remove failed:\n${r.output.split("\n").slice(-6).join("\n")}`);
     const remaining = manifest.extensions.filter((e) => e.pkg !== pkg);
     linkExtensionPeers(remaining.map((entry) => entry.pkg), pkg);
