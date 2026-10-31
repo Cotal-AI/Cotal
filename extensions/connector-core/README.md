@@ -16,3 +16,8 @@ Attribution fields use core's `peerLabel` sanitizer, the same policy as roster l
 C0/C1 controls, Unicode line/paragraph separators and brackets become spaces. Ordinary
 Unicode and surrounding spacing are preserved; channel/kind renderers keep their own
 existing trim and empty-value labels. Message-body formatting remains separate.
+
+Bundled docs use an inline gzip/base64 payload generated from the versioned sources.
+`loadDocsBundle()` decodes it synchronously on demand; reading `DOCS_VERSION` does not decode it.
+The existing docs and search caches retain their first-use behavior. The payload stays inside
+each ESM or CJS bundle, so package and plugin asset layouts do not change.
