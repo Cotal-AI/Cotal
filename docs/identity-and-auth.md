@@ -174,8 +174,8 @@ callout an `agent` connection and an unissued `manager-caller` view get one, wit
 expiry as its horizon. The evidence records the credential's complete ceiling. The accepted row's
 token is derived from the connection's inbox nonce and that expiry, so the client finds the row
 without being handed a token. If a row already exists under that token, the callout reuses its
-generation only for the same caller and an identical ceiling; otherwise it connects the credential
-without the listing rows. An issued credential asks on its own generation instead: an agent a
+generation only for the same caller, a generation that is still live and an identical ceiling;
+otherwise it connects the credential without the listing rows. An issued credential asks on its own generation instead: an agent a
 manager spawns on a static mesh, and an interactive `manager-caller` view, carry the `endpoints`
 row from their first issuance. A credential issued before this release has no listing rows, and
 `cotal_endpoints` reports that it has no listing binding until the agent connects again or is

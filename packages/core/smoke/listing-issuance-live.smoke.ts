@@ -10,7 +10,7 @@ import { connect, type NatsConnection } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import {
-  acceptedBucket, acceptedKey, createSpaceAuth, credsClaims, ensureIssuedStores, importNativeSubjectPermissions, issuedBucket,
+  acceptedBucket, acceptedKey, createSpaceAuth, credsClaims, EpEnvelopeError, ensureIssuedStores, importNativeSubjectPermissions, issuedBucket,
   listingAcceptedToken, mintCreds, mintGeneration, mintLifecycleUid, newIdentity, openIssuedStore, isReachable,
   type Identity, type IssuedAuthorityRef, type ListingSeam, type MintOpts,
 } from "../src/index.js";
@@ -77,6 +77,20 @@ try {
   await check("a same-key mint for another triple carries no listing rows", async () => {
     const creds = await mint(identity, mintLifecycleUid());
     assert.equal(v1Row(creds).length, 0);
+  });
+
+  await check("a same-key re-mint whose generation was retired carries no listing rows, confirms nothing and replaces nothing", async () => {
+    const retiredIdentity = newIdentity();
+    const retiredUid = mintLifecycleUid();
+    const generation = generationOf(await mint(retiredIdentity, retiredUid));
+    assert.ok(generation);
+    const ref: IssuedAuthorityRef = { space, owner: "local", actor: retiredIdentity.id, uid: retiredUid, generation };
+    assert.equal(await store.retire(ref), "revoked");
+    const creds = await mint(retiredIdentity, retiredUid);
+    assert.equal(v1Row(creds).length, 0);
+    assert.ok(!(credsClaims(creds).nats?.pub?.allow ?? []).some((r) => r.includes(`KV_${acceptedBucket(space)}`)));
+    assert.equal(await acceptedGeneration(retiredIdentity.id, exp), generation);
+    await assert.rejects(store.observe(ref), (e: unknown) => e instanceof EpEnvelopeError && e.code === "permission-denied" && e.message.includes("revoked"));
   });
 
   await check("a mint with no expiry gets no listing generation", async () => {

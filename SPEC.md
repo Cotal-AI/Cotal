@@ -5295,8 +5295,9 @@ at a user-auth callout. The horizon is the credential's expiry on a static mint 
 expiry at the callout, so a credential without an expiry carries no listing generation. The issuer
 writes the evidence, attempt row and accepted row as for any issuance, and the evidence records the
 credential's complete ceiling, its legacy rows included. When the accepted row already exists, the
-issuer reuses its generation only if the row names the same triple and the ceiling being minted is
-byte-identical to the recorded evidence. Otherwise it mints the credential without the listing rows.
+issuer reuses its generation only if the row names the same triple, the generation is still active
+and before its horizon, and the ceiling being minted is byte-identical to the recorded evidence.
+Otherwise it mints the credential without the listing rows.
 It never replaces a row, and it never refuses a credential for this reason. A client finds its
 listing generation by deriving the token from the credential its connection presented and reading
 the row; a credential that holds no grant for that read has no listing generation. An issued

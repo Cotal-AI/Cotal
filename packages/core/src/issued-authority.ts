@@ -740,9 +740,10 @@ export interface PreparedListing {
 /**
  * Decide one credential's listing generation (SPEC 13.15, "Listing issuance"). With no accepted row
  * under the token, a fresh generation binds and `commit` persists it. A row naming this space and
- * triple is reused only when the recorded ceiling equals the complete permission set being minted;
- * any other row leaves the credential without the listing rows. That is the one refusal a listing
- * issuance absorbs: no row is ever replaced, and the connection is not refused for it.
+ * triple is reused only when its generation is still live and the recorded ceiling equals the
+ * complete permission set being minted; any other row leaves the credential without the listing
+ * rows. That is the one refusal a listing issuance absorbs: no row is ever replaced, and the
+ * connection is not refused for it. A failed read still throws.
  */
 export async function prepareListing(
   seam: ListingSeam,
@@ -781,7 +782,8 @@ export async function prepareListing(
   try {
     await seam.store.confirm(ref, importNativeSubjectPermissions(permissions));
   } catch (e) {
-    if (e instanceof EpEnvelopeError && e.code === "failed-precondition") return unbound();
+    // A different ceiling, or a generation that no longer authorizes: retired, past its horizon, or its rows gone.
+    if (e instanceof EpEnvelopeError && (e.code === "failed-precondition" || e.code === "permission-denied")) return unbound();
     throw e;
   }
   return { permissions, commit: async () => {} };
