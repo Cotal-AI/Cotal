@@ -6085,7 +6085,7 @@ characters**, which is an id token by construction. The reference implementation
   the pause settled under, with `supersedes` naming the `answerId` the settle accepted. It is filed
   through the same door and credential pinning as an answer, and nothing is presented, so the pause
   stays settled, the one-use settle is untouched, and the run never reads the record. Its
-  `answerId` is minted fresh for each filing (32 random bytes, base64url, the first 43 characters)
+  `answerId` is minted fresh for each filing (32 random bytes, base64url: 43 characters)
   and is never derived from its content: a participant who returns to an earlier position files
   what an earlier filing said, and a content id would make the create-only write take it for a
   retry of that filing and record nothing. A step that is still open, or that settled
