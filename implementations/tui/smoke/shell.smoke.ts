@@ -1,8 +1,9 @@
 /**
  * Drives the real launcher in tmux on a private server at 209x52, 97x49 and 80x24, against an
  * isolated HOME seeded with healthy, prepared and malformed registrations, and asserts the frame
- * text. The healthy space points at a TCP listener this suite owns, so a connection attempt at
- * startup fails the run. Captures are kept under the printed directory.
+ * text. The malformed records make every resolution refuse, and the healthy space points at a TCP
+ * listener this suite owns, so a connection attempt fails the run. live.smoke.ts covers a reachable
+ * space. Captures are kept under the printed directory.
  *
  * Needs Node >= 26.4 and tmux, so it is not part of smoke:ci, which runs Node 22.
  * Run: pnpm --filter @cotal-ai/tui smoke
@@ -110,40 +111,38 @@ try {
     console.log(size)
     launch(home, width, height, join(work, `${size}.err`))
 
-    const first = await waitFor((f) => f.includes("not connected") && f.includes("broken.json"), "the catalog rows")
+    const first = await waitFor((f) => f.includes("✗ not connected") && f.includes("broken.json"), "the catalog rows and the refused resolution")
     save(dir, "01-catalog")
     for (const row of ["team-alpha", "research-lab", "staging", "prepared", "broken.json", "space.68616c66"]) check(`${size}: the tree lists ${row}`, first.includes(row), first)
-    check(`${size}: the current space opens selected, with an honest not-open state`, title(first).includes("team-alpha") && first.includes("Not open. Opening a space is not in"), first)
-    check(`${size}: the connection indicator says not connected`, first.includes("○ not connected"), first)
-    if (width >= 97) {
-      check(`${size}: the inspector column lists 2 items that need you`, first.includes("NEEDS YOU · 2"), first)
-      check(`${size}: the inspector names the malformed record`, first.includes("1 ✗ broken.json") && first.includes("does not parse as a mesh"), first)
-    } else {
-      check(`${size}: the inspector shrinks to a one-line summary`, !first.includes("NEEDS YOU") && first.includes("2 need you · w opens the next"), first)
-    }
+    check(`${size}: with no space resolvable the middle says why and how to open one`, title(first).includes("No space open") && first.includes("does not parse as a") && first.includes("Pick a space on the left"), first)
+    if (width >= 97) check(`${size}: the inspector has nothing that needs you before a space is open`, first.includes("NEEDS YOU · 0") && first.includes("Waiting agents show here"), first)
+    else check(`${size}: the inspector shrinks to a one-line summary`, !first.includes("NEEDS YOU") && first.includes("nothing needs you"), first)
     check(`${size}: the renderer started no process`, rendererChildren().length === 0, rendererChildren().join(", "))
 
-    keys("k")
-    const prepared = await waitFor((f) => title(f).includes("staging"), "k to select the prepared space")
+    keys("j", "Enter")
+    const prepared = await waitFor((f) => title(f).includes("staging"), "enter on the prepared space")
     check(`${size}: a prepared space says it is not started and where to start it`, prepared.includes('"staging" is prepared but not started.') && prepared.includes("cotal up"), prepared)
 
+    keys("j", "j", "Enter")
+    const opened = await waitFor((f) => title(f).includes("broken.json"), "enter on the malformed record")
+    save(dir, "02-malformed-record")
+    check(`${size}: a malformed record says why it cannot be used`, opened.includes("This registration cannot be used.") && opened.includes("does not parse as a"), opened)
+
+    keys("k", "Enter")
+    const refused = await waitFor((f) => f.includes("✗ not connected") && title(f).includes("team-alpha") && !f.includes("connecting"), "enter on a space this machine cannot open")
+    save(dir, "03-open-refused")
+    check(`${size}: opening a space it cannot reach shows the refusal, with no fake data`, !refused.includes("CHANNELS") && !refused.includes("AGENTS"), refused)
+
     keys("w")
-    const opened = await waitFor((f) => title(f).includes("broken.json"), "w to open the malformed record")
-    save(dir, "02-w-next-need")
-    check(`${size}: w opens the first item that needs you in the middle`, opened.includes("This registration cannot be used.") && opened.includes("does not parse as a mesh"), opened)
-    keys("w")
-    await waitFor((f) => title(f).includes("space.68616c66.json"), "w to open the second malformed record")
-    check(`${size}: w again opens the second item`, true)
-    keys("1")
-    await waitFor((f) => title(f).includes("broken.json"), "1 to open the first item")
-    check(`${size}: 1 opens the first item that needs you`, true)
+    await waitFor(has("Nothing needs you"), "w with nothing waiting")
+    check(`${size}: w says when nothing needs you`, true)
 
     keys("?")
-    const help = await waitFor(has("Open the next item that needs you"), "the help dialog")
+    const help = await waitFor(has("Open the next waiting agent"), "the help dialog")
     save(dir, "03-help")
     check(`${size}: ? opens the keys dialog`, help.includes("Keys") && help.includes("ctrl+p"), help)
     keys("Escape")
-    await waitFor((f) => !f.includes("Open the next item that needs you"), "the help dialog to close")
+    await waitFor((f) => !f.includes("Open the next waiting agent"), "the help dialog to close")
 
     keys("C-p")
     await waitFor(has("Reread spaces"), "the palette")
@@ -163,9 +162,9 @@ try {
   const empty = join(work, "empty-home")
   mkdirSync(empty)
   launch(empty, 80, 24, join(work, "empty.err"))
-  const none = await waitFor(has("No spaces are registered"), "the empty catalog state")
+  const none = await waitFor(has("cotal space create <name>"), "the empty catalog state")
   save(join(captures, "80x24"), "06-empty-home")
-  check("empty home: the shell explains how to get a space", none.includes("cotal space create <name>") && none.includes("nothing needs you"), none)
+  check("empty home: the shell explains how to get a space", none.includes("cotal space create <name>") && none.includes("nothing needs you") && none.includes("✗ not connected"), none)
   check("empty home: the shell wrote nothing under HOME", readdirSync(empty).length === 0, readdirSync(empty).join(", "))
   keys("C-c")
   await waitFor(has("EXIT=0"), "ctrl+c to quit")

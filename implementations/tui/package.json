@@ -26,6 +26,7 @@
     "measure:startup": "node scripts/measure-startup.mjs"
   },
   "dependencies": {
+    "@cotal-ai/core": "workspace:*",
     "@cotal-ai/workspace": "workspace:*",
     "@opentui/core": "0.8.0",
     "@opentui/keymap": "0.8.0",

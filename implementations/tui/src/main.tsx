@@ -40,6 +40,12 @@ const readCatalog = async () => {
   return catalog
 }
 
+const openSpace = async (space?: string) => {
+  await renderer.idle()
+  const { openSpace } = await import("./live.js")
+  return openSpace(space)
+}
+
 await render(
   () => (
     <ClipboardProvider value={clipboard}>
@@ -48,7 +54,7 @@ await render(
           <ToastProvider>
             <ThemeProvider mode={mode} source={{ discover: async () => ({}) }}>
               <DialogProvider>
-                <Shell quit={() => renderer.destroy()} readCatalog={readCatalog} />
+                <Shell quit={() => renderer.destroy()} readCatalog={readCatalog} openSpace={openSpace} />
               </DialogProvider>
               <Toast />
             </ThemeProvider>
