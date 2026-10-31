@@ -40,7 +40,8 @@
  *
  * `--seat real` launches the REAL Claude Code connector process for every seat (the plugin's MCP
  * server through `dist/seat.cjs`, with the node flags its `.mcp.json` passes), in place of the stub and its
- * shared seat host. Per-seat RSS, PSS and USS need `--ram` or `--process-memory`. That process is what one seat
+ * shared seat host. The shared host is not started in real-seat mode; its metrics are n/a.
+ * Per-seat RSS, PSS and USS need `--ram` or `--process-memory`. That process is what one seat
  * costs its host besides the model harness itself; it joins the mesh at start, before any MCP
  * traffic, so no Claude process is needed to drive it. `--real-entry direct` keeps the legacy
  * `mcp.cjs` entry as an explicit comparison arm. Each run owns a fresh HOME; its stock compile
@@ -347,8 +348,8 @@ try {
   delivery = await bootDeliveryDaemon({ space, servers: broker.servers, auth, reloadStoreIdentity: workspaceSecretStore(workspaceRoot).identity });
 
   const childEnv = { ...cleanEnv, HOME: home, DO_NOT_TRACK: "1", COTAL_TELEMETRY: "off", COTAL_HOME: home, COTAL_SEAT_ROOT: seatRoot };
-  const seatHost = startChild({ kind: "seats", seatDir }, childEnv);
-  await ask(seatHost, undefined, "ready");
+  const seatHost = REAL_SEATS ? undefined : startChild({ kind: "seats", seatDir }, childEnv);
+  if (seatHost) await ask(seatHost, undefined, "ready");
   const manager = startChild({ kind: "manager", space, servers: broker.servers, workspaceRoot, seatDir, stubToken, dist: SHAPE === "dist", ...(realSeat ? { realSeat } : {}), observeSeats: PROCESS_MEMORY }, childEnv);
   const managerReady = await ask(manager, undefined, "ready");
   const instanceId = managerReady.instanceId, epoch = managerReady.epoch;
@@ -412,32 +413,33 @@ try {
     }
     await wait(SETTLE_S * 1000);
     const before = PROCESS_MEMORY ? await observe() : undefined;
-    const m0 = procCpuMs(manager.pid!), h0 = procCpuMs(seatHost.pid!), b0 = brokerPid ? procCpuMs(brokerPid) : NaN;
+    const m0 = procCpuMs(manager.pid!), h0 = seatHost ? procCpuMs(seatHost.pid!) : undefined, b0 = brokerPid ? procCpuMs(brokerPid) : NaN;
     const t0 = performance.now();
     if (before) console.log(`MSL_WINDOW ${JSON.stringify({ seats: seatsNow, managerPid: manager.pid, seatPids: before.seats.map((s) => s.pid) })}`);
     await wait(SECONDS * 1000);
     const s = (performance.now() - t0) / 1000;
-    const m1 = procCpuMs(manager.pid!), h1 = procCpuMs(seatHost.pid!), b1 = procCpuMs(brokerPid);
+    const m1 = procCpuMs(manager.pid!), h1 = seatHost ? procCpuMs(seatHost.pid!) : undefined, b1 = procCpuMs(brokerPid);
     const mgrCores = (m1 - m0) / 1000 / s;
     const after = PROCESS_MEMORY ? await observe() : undefined;
     if (before && after) {
       verify(before.seats.every((seat, i) => seat.pid === after.seats[i]?.pid), "a connector process changed during the idle window");
       console.log(`MSL_RESULT ${JSON.stringify({ source: SHA, sourceDirty: SOURCE_DIRTY, requested: seatsNow, windowSeconds: s, shape: SHAPE,
-        seatMode: "real", seatEntry: REAL_ENTRY, heapSnapshots: false, observationErrors, checks: measurementChecks,
+        seatMode: "real", seatEntry: REAL_ENTRY, stubHostStarted: Boolean(seatHost), heapSnapshots: false, observationErrors, checks: measurementChecks,
         brokerCpuCores: (b1 - b0) / 1000 / s, managerCpuCores: mgrCores, before, after })}`);
     }
-    const host = (await ask(seatHost, { cmd: "sample" }, "sample")).sample as { seats: number; connected: number; failed: number; firstErrors: string[]; rssMb: number };
+    const host = seatHost ? (await ask(seatHost, { cmd: "sample" }, "sample")).sample as { seats: number; connected: number; failed: number; firstErrors: string[]; rssMb: number } : undefined;
+    if (seatHost && !host) throw new Error("manager-seat-load: stub host omitted its sample");
     const spawnMs = spawn?.spawnMs.slice().sort((a, b) => a - b) ?? [];
     table.push([
       String(seatsNow),
-      `${host.connected} / ${childCount(manager.pid!)}`,
+      `${host ? host.connected : "n/a"} / ${childCount(manager.pid!)}`,
       (mgrCores * 1000).toFixed(2),
       procRssMb(manager.pid!).toFixed(1),
       spawn ? `${spawn.ok} / ${spawn.failed}` : "",
       spawn && spawn.ok ? (spawn.cpuMs / spawn.ok).toFixed(0) : "",
       spawnMs.length ? `${spawnMs[Math.floor(spawnMs.length / 2)].toFixed(0)} / ${spawnMs[spawnMs.length - 1].toFixed(0)}` : "",
-      (((h1 - h0) / 1000 / s) * 1000).toFixed(2),
-      host.rssMb.toFixed(0),
+      h0 !== undefined && h1 !== undefined ? (((h1 - h0) / 1000 / s) * 1000).toFixed(2) : "n/a",
+      host ? host.rssMb.toFixed(0) : "n/a",
       brokerPid ? (((b1 - b0) / 1000 / s) * 1000).toFixed(2) : "n/a",
     ]);
     if (RAM) {
@@ -453,7 +455,7 @@ try {
         mem.heapUsedMb.toFixed(1), mem.heapTotalMb.toFixed(1), mem.externalMb.toFixed(1), mem.codeMb.toFixed(1),
         realSeat ? `${seatMem.length} real` : "stub, shared host",
         realSeat && seatMem.length ? `${(sum("rssMb") / seatMem.length).toFixed(1)} / ${(sum("pssMb") / seatMem.length).toFixed(1)} / ${(sum("ussMb") / seatMem.length).toFixed(1)}` : "",
-        (() => { const h = procMem(seatHost.pid!); return `${h.rssMb.toFixed(1)} / ${h.pssMb.toFixed(1)} / ${h.ussMb.toFixed(1)}`; })(),
+        seatHost ? (() => { const h = procMem(seatHost.pid!); return `${h.rssMb.toFixed(1)} / ${h.pssMb.toFixed(1)} / ${h.ussMb.toFixed(1)}`; })() : "n/a",
       ]);
       if (realSeat && kids.length && seatsNow === STEPS[STEPS.length - 1]) {
         // One real seat's heap: the signal makes node write Heap.*.heapsnapshot into its cwd.
@@ -484,9 +486,9 @@ try {
           + `; script source ${(top.sources.bytes / MB).toFixed(1)} MB in ${top.sources.scripts} scripts, largest by package: ` + top.sources.byPackage.map((t) => `${t.name} ${(t.bytes / MB).toFixed(1)} MB (${t.count})`).join(", "));
       }
     }
-    console.error(`  … step ${seatsNow}: manager ${(mgrCores * 1000).toFixed(2)} millicores, RSS ${procRssMb(manager.pid!).toFixed(1)} MB, ${host.connected} stub-host seats connected`);
+    console.error(`  … step ${seatsNow}: manager ${(mgrCores * 1000).toFixed(2)} millicores, RSS ${procRssMb(manager.pid!).toFixed(1)} MB, ${host ? `${host.connected} stub-host seats connected` : "stub host not started (real-seat mode)"}`);
     if (spawn?.refusals.length) for (const r of spawn.refusals) console.error(`    refusal: ${r}`);
-    if (host.firstErrors.length) for (const e of host.firstErrors) console.error(`    seat error: ${e}`);
+    if (host && host.firstErrors.length) for (const e of host.firstErrors) console.error(`    seat error: ${e}`);
   };
 
   await measure(0);
@@ -505,7 +507,7 @@ try {
   for (const r of table) console.log(`| ${r.join(" | ")} |`);
   console.log("");
   if (RAM) {
-    // Under `--seat real` the seats' own connections are their processes', so the seat host is idle.
+    // Real seats own their connections; their shared stub-host columns are n/a.
     const ramHead = ["seats", "manager RSS MB", "manager PSS MB", "manager USS MB", "JS heap used MB", "JS heap total MB", "external MB", "compiled code MB", "seat processes", "per seat process RSS / PSS / USS MB", "shared seat host RSS / PSS / USS MB"];
     console.log(`| ${ramHead.join(" | ")} |`);
     console.log(`|${ramHead.map(() => "---").join("|")}|`);
@@ -519,7 +521,7 @@ try {
   await memoryObserver?.stop();
   memoryObserver = undefined;
   await ask(manager, { cmd: "stop" }, "stopped").catch(() => undefined);
-  await ask(seatHost, { cmd: "stop" }, "stopped").catch(() => undefined);
+  if (seatHost) await ask(seatHost, { cmd: "stop" }, "stopped").catch(() => undefined);
 } catch (e) {
   console.error("  ✗ manager-seat-load threw:", (e as Error).stack ?? (e as Error).message);
   process.exitCode = 1;
