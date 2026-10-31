@@ -1,6 +1,7 @@
 import { writeSync } from "node:fs";
-import { CotalEndpoint, chatWildcard, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
+import { chatWildcard, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
 import { colorEnabled, CommandFailure, exitCode, inputDisabledByFlag, isCommandFailure, isConnectRefusal, jsonFlag, plainFlag, presentationOf, recordOperationSpace, streamRecord, writeStreamRecord, userViewAuth, targetFlags } from "@cotal-ai/workspace";
+import { MeshView, openObserver } from "@cotal-ai/workspace/view";
 import { completingFlagValue } from "../lib/completion.js";
 import { connectOrThrow, userViewAuthOrExit } from "../lib/connect.js";
 import { watchViews, type WatchFilter } from "../watch-data.js";
@@ -61,20 +62,7 @@ async function watchSession(args: ParsedArgs, resolved: { space?: string }): Pro
   recordOperationSpace(connection.space);
   if (filter === "dms" && (connection.bearer || connection.creds)) throw new CommandFailure("refused", "UNSUPPORTED", "this observer is narrowed to channel traffic in authenticated spaces; no broader credential or private conversation was substituted");
   const user = connection.bearer ? values.json ? await userViewAuth(connection, "admin") : await userViewAuthOrExit(connection, "admin") : undefined;
-  const ep = new CotalEndpoint({
-    space: connection.space,
-    servers: connection.server,
-    ...(user ? {
-      bearer: user.source,
-      sentinelCreds: user.sentinelCreds,
-      card: { owner: user.owner, actor: user.actor, name: "watch", kind: "endpoint" as const },
-    } : { creds: connection.creds, card: { name: "watch", kind: "endpoint" as const } }),
-    channels: [],
-    consume: false,
-    registerPresence: false,
-    watchPresence: true,
-  });
-  ep.on("error", () => {});
+  const ep = openObserver({ space: connection.space, server: connection.server, name: "watch", auth: user ? { user } : { creds: connection.creds } });
   const tapSubject = connection.creds || user ? chatWildcard(connection.space) : undefined;
   if (values.json || !interactive) {
     const { runWatchStream } = await import("../watch-json.js");
@@ -82,11 +70,11 @@ async function watchSession(args: ParsedArgs, resolved: { space?: string }): Pro
   }
   const forced = process.env.FORCE_COLOR;
   if (!colorEnabled()) process.env.FORCE_COLOR = "0";
-  const ui = await Promise.all([import("ink"), import("react"), import("../watch-view.js"), import("@cotal-ai/workspace/view")]).finally(() => {
+  const ui = await Promise.all([import("ink"), import("react"), import("../watch-view.js")]).finally(() => {
     if (forced === undefined) delete process.env.FORCE_COLOR;
     else process.env.FORCE_COLOR = forced;
   });
-  const [{ render }, { createElement }, { WatchView }, { MeshView }] = ui;
+  const [{ render }, { createElement }, { WatchView }] = ui;
   const view = new MeshView(ep, { tapSubject, window: 300 });
   let entered = false;
   const restore = () => {

@@ -61,8 +61,8 @@
     {
       "name": "G6 the TUI loads Ink when the command module loads",
       "file": "implementations/cli/src/commands/console.ts",
-      "find": "import type { ObserverAuth } from \"../console/root.js\";\n",
-      "replace": "import \"ink\";\nimport type { ObserverAuth } from \"../console/root.js\";\n",
+      "find": "import { openObserver, type ObserverAuth } from \"@cotal-ai/workspace/view\";\n",
+      "replace": "import \"ink\";\nimport { openObserver, type ObserverAuth } from \"@cotal-ai/workspace/view\";\n",
       "expectRed": "--no-color paints the console with no ANSI color, even under FORCE_COLOR",
       "cell": "--no-color paints the console with no ANSI color, even under FORCE_COLOR",
       "afterRestore": "pnpm --filter @cotal-ai/cli build",
