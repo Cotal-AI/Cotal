@@ -59,6 +59,7 @@ import {
   validateChannelConfig,
   validateChannelDefaults,
   LEASE_TTL_MS,
+  EpEnvelopeError,
   mkSecretDir,
   openPrivateAppend,
   realDirNoSymlink,
@@ -3338,7 +3339,12 @@ async function startUserAuthService(
     if (!quietBoot) console.log(c.green("✓ user-auth service up") + c.dim(` - sign in with: \`cotal login --idp ${info.idp.url}\``));
     return { userAuth: info, ok: true };
   } catch (e) {
-    stderrLine("✗ ", `user-auth service did not come up (${(e as Error).message}) - user connects to "${space}" will fail until a re-\`cotal up\` succeeds`, c.red);
+    // A typed refusal leads with its code and each detail's reason, e.g. a plane claim's
+    // `unknown` liveness against its `live-peer` contention, so no caller parses the copy.
+    const typed = e instanceof EpEnvelopeError
+      ? ` [${[e.code, ...(e.details ?? []).map((d) => typeof d.reason === "string" ? `${d.kind}: ${d.reason}` : d.kind)].join("; ")}]`
+      : "";
+    stderrLine("✗ ", `user-auth service did not come up${typed} (${(e as Error).message}) - user connects to "${space}" will fail until a re-\`cotal up\` succeeds`, c.red);
     return { userAuth: assertUserAuthInfo(setup.prepared.publicAuth), ok: false };
   }
 }

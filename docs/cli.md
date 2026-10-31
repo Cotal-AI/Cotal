@@ -723,7 +723,8 @@ native stack in this terminal.
 
 Ordinary startup and refresh start delivery before user-auth, then start the manager. Auth uses
 delivery to check whether a crashed predecessor has disconnected. Live or unknown holders remain
-refused.
+refused, and the refusal names its code and reason, such as
+`[unavailable; ai.cotal.auth.plane-claim-refused: unknown]`.
 
 A contradictory mode pair refuses before setup or seed work. `up` seeds the [built-in connectors](#built-in-connectors-are-seeded-extensions) only when it first starts
 a process, or when `up -f` checks the connectors its manifest's agents use, so a refusal before then

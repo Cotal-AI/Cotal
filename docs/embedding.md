@@ -743,7 +743,9 @@ also writes an ephemeral `auth-service.json` discovery file there that carries t
 capability. That file appears only after every plane is bound, so waiting on it is the readiness
 signal: a host that also passes the daemon's pid to the provider's `ready()` gets a process-bound
 wait. The wait extends past the base timeout while that pid is alive, up to a fixed bound, and it
-ends at once when the pid exits.
+ends at once when the pid exits. A daemon that refused its start leaves that refusal in
+`auth-service-refusal.json`, bound to its pid, and `ready()` throws it as an `EpEnvelopeError`.
+A plane-claim refusal keeps its code and `details[].reason`.
 
 ```ts
 import { runAuthService } from "@cotal-ai/auth";
