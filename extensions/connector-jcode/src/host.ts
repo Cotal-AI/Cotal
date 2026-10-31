@@ -887,7 +887,7 @@ export async function runJcodeHost(): Promise<void> {
     tui.once("exit", (code) => void shutdown(code ?? 0));
   };
 
-  const shutdown = async (code = 0, signal?: "SIGINT" | "SIGTERM"): Promise<void> => {
+  const shutdown = async (code = 0, signal?: "SIGINT" | "SIGTERM" | "SIGHUP"): Promise<void> => {
     if (stopping) return;
     stopping = true;
     agent.releaseInFlight(surfacedIds);
@@ -1935,6 +1935,7 @@ export async function runJcodeHost(): Promise<void> {
 
   process.on("SIGINT", () => void shutdown(0, "SIGINT"));
   process.on("SIGTERM", () => void shutdown(0, "SIGTERM"));
+  process.on("SIGHUP", () => void shutdown(0, "SIGHUP"));
 
   try {
     client = await launchPrivateJcode();

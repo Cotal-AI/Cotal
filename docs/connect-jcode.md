@@ -72,7 +72,8 @@ actually gone rather than trusting the SDK's registry-keyed stop (which is a sil
 `servers.json` socket path does not match verbatim): it reads the PIDs the private home itself
 records, sends a bounded SIGTERM, escalates survivors to an exact-PID SIGKILL, and reports a
 failed stop instead of a clean one if any recorded process survives. It never signals by name, so
-teardown can only ever reach the seat's own tree.
+teardown can only ever reach the seat's own tree. SIGINT, SIGTERM and terminal SIGHUP all use
+this shutdown path, including a tmux window closed during self-despawn.
 
 A seat that dies without that teardown, from a manager restart or a kill past the grace window,
 leaves its Jcode server running. The server has a process group of its own and carries no
