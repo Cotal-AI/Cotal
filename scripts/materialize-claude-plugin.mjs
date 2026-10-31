@@ -31,7 +31,7 @@ const legal = [
 // [source, destination inside the plugin directory]
 const plugins = {
   cotal: [
-    ...[".claude-plugin/plugin.json", ".mcp.json", "hooks/hooks.json", "hooks/native-wake.js", "monitors/monitors.json", "dist/seat.cjs", "dist/mcp.cjs", "dist/docs-index.bin", "dist/hook.cjs", "dist/monitor.cjs"].map((asset) => [join(connector, asset), asset]),
+    ...[".claude-plugin/plugin.json", ".mcp.json", "hooks/hooks.json", "hooks/native-wake.js", "monitors/monitors.json", "dist/seat.cjs", "dist/mcp.cjs", "dist/docs-bundle.bin", "dist/docs-index.bin", "dist/hook.cjs", "dist/monitor.cjs"].map((asset) => [join(connector, asset), asset]),
     [join(connector, "PLUGIN.md"), "README.md"],
     ...legal,
   ],
@@ -60,9 +60,11 @@ function verify(name, dir) {
     // The standalone constant also stamps the MCP server. The payload itself may be compressed.
     const mcp = readFileSync(join(dir, "dist", "mcp.cjs"), "utf8");
     checkMcpDocsStamp(mcp, version);
-    // The search index file must be the one this mcp.cjs was built with: its digest is in the loader.
-    const digest = createHash("sha256").update(readFileSync(join(dir, "dist", "docs-index.bin"))).digest("hex");
-    if (!mcp.includes(`"${digest}"`)) throw new Error("materialize-claude-plugin: dist/docs-index.bin is not the search index dist/mcp.cjs was built with; rebuild @cotal-ai/connector-claude-code first");
+    // Each data file must be the one this mcp.cjs was built with: its digest is in the loader.
+    for (const file of ["docs-bundle.bin", "docs-index.bin"]) {
+      const digest = createHash("sha256").update(readFileSync(join(dir, "dist", file))).digest("hex");
+      if (!mcp.includes(`"${digest}"`)) throw new Error(`materialize-claude-plugin: dist/${file} is not the one dist/mcp.cjs was built with; rebuild @cotal-ai/connector-claude-code first`);
+    }
   }
   if (name === "cotal-skills") {
     const skills = readdirSync(join(dir, "skills"), { withFileTypes: true }).filter((e) => e.isDirectory() && existsSync(join(dir, "skills", e.name, "SKILL.md")));

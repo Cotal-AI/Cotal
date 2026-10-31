@@ -36,6 +36,7 @@ fix-report.json
 # once, and every pair of branches regenerating the same region of it conflicted in a file no
 # human wrote while the source pages merged cleanly.
 extensions/connector-core/src/docs-bundle.generated.ts
+extensions/connector-core/src/docs-bundle.bin
 extensions/connector-core/src/docs-index.bin
 
 # Historical callout arm the connect-load harness writes next to src so relative imports resolve.
