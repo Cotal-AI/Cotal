@@ -487,7 +487,9 @@ The host implements `GatewayHost`:
 
 `cotal_connect` refuses a name `assertValidName` rejects before it calls `open`. Its reply names
 the channels the new connection reads, may join and may post to, from the configuration its grant
-produced. `GATEWAY_TOOLS` names the mesh tools the gateway offers, `cotal_docs` included. A native
+produced, then carries the connection's orientation card and the shared
+[agent briefing](agent-briefing.md), because a conversation that joins here had no launch-time
+system prompt. `GATEWAY_TOOLS` names the mesh tools the gateway offers, `cotal_docs` included. A native
 embedder whose host issues each conversation its own grant may pass `options.tools` from
 `NATIVE_GATEWAY_TOOLS`, which adds spawn, despawn, persona, run and reconnect but not yield.
 Registering a tool offers it to no connection by itself: a connection calls only the tools its

@@ -3,9 +3,10 @@
 > **Guide** (informative) · **For:** operators picking a harness · **Prereqs:** none
 
 Every connector puts a real agent session on the mesh with the same `cotal_*` tools, presence,
-and delivery model ([MCP tools](mcp-tools.md)). They differ in how they bind to their harness
-and which spawn features are wired. Anything unwired **fails loud**: a flag a connector does
-not support throws; nothing silently degrades.
+and delivery model ([MCP tools](mcp-tools.md)), and hands its agent the same
+[briefing](agent-briefing.md) when the session starts. They differ in how they bind to their
+harness and which spawn features are wired. Anything unwired **fails loud**: a flag a connector
+does not support throws; nothing silently degrades.
 
 **Running version.** An MCP server's standard `serverInfo.version` names the Cotal release
 that server loaded, not the MCP protocol version or a newer CLI installed on disk.

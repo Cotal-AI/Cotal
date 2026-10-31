@@ -172,7 +172,9 @@ interactive.
 
 Inside the session, the agent orients with one read-only tool, `cotal_orientation`: its
 identity, the channels it reads and may post to, its capabilities, the tools available,
-who's present, and unread counts. The full tool surface is the
+who's present, and unread counts. The session-start hook hands that card over at startup,
+resume, fork, clear and compaction (or with the next prompt when the seat was not bound yet),
+and the server's instructions are the shared [agent briefing](agent-briefing.md). The full tool surface is the
 [MCP tool catalog](mcp-tools.md). In auth mode the team-supervision tools
 (`cotal_spawn` / `cotal_persona` / `cotal_personas`) are injected **only** for personas declaring
 `capabilities: [spawn]` (the same grant that opens the privileged control subject), so an
@@ -558,7 +560,7 @@ delivers, the other only wakes:
   inline limit. Complete messages that fit are handed off. The reply counts the messages
   still waiting, which remain unacknowledged for another hook or `cotal_inbox`. A message
   too large for one hook is left for the inbox, which can return it in parts. The budget
-  includes the session briefing, run turns, repeat labels and waiting notice.
+  includes the orientation card, the session briefing, run turns, repeat labels and waiting notice.
   If a channel notice accompanies a batch the hook already delivered, an empty `cotal_inbox`
   reply identifies the most recent confirmed hook handoff by count and event. It does not return
   those bodies again or describe the receipt as a new message. A confirmed handoff means the
