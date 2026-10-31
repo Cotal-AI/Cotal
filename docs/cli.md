@@ -4492,7 +4492,8 @@ pins `describe` to one manager instance's rail (the whole id, as `ps` prints it 
 unpinned, the class queue answers and the attribution line names whichever instance did. `invoke`
 calls one command by name. When the broker refuses an unpinned call on the class queue, nothing ran, and the call is sent
 once more to the instance that answered its describe; a caller whose grants name only that instance, such as a service
-caller grant, therefore needs no `--on`. It fetches only that command's cluster and schema closures. `--args` is a JSON object validated against the fetched input schema
+caller grant, therefore needs no `--on`. It fetches only that command's cluster and schema closures, plus those of
+`inspect` when `--name` names a manager target. `--args` is a JSON object validated against the fetched input schema
 *before*
 publish, and `--timeout` sets one deadline in milliseconds for the whole call (default 10000): the contract read, a
 `--name` lookup and the reply all spend from it, so an endpoint nothing serves is refused when it runs out. When the
