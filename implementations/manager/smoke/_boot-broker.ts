@@ -12,7 +12,7 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { serverConfig, isReachable, type SpaceAuth } from "@cotal-ai/core";
+import { serverConfig, isReachable, type SpaceAuth, type BrokerAuth, type SpaceAccountAuth } from "@cotal-ai/core";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal, killAndAwaitExit } from "@cotal-ai/smoke-kit";
 import { pickFreePort } from "./_free-port.js";
 
@@ -33,11 +33,16 @@ export interface Broker {
  *  `monitor: true` also opens the loopback HTTP monitoring endpoint (`/connz` etc.), for smokes
  *  that assert broker-side truth about connections rather than trusting the client's own account. */
 export async function bootBroker(auth: SpaceAuth, opts?: { monitor?: boolean }): Promise<Broker> {
+  return bootBrokerAccounts(auth, [auth], opts);
+}
+
+/** Boot one owned broker with all of its independently signed space accounts. */
+export async function bootBrokerAccounts(auth: BrokerAuth, accounts: readonly SpaceAccountAuth[], opts?: { monitor?: boolean }): Promise<Broker> {
   const port = await pickFreePort();
   const servers = `nats://127.0.0.1:${port}`;
   const monitorPort = opts?.monitor ? await pickFreePort() : undefined;
   const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
-  const conf = serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port, storeDir: join(dir, "js") })
+  const conf = serverConfig(auth, accounts, { transport: { kind: "plaintext" }, port, storeDir: join(dir, "js") })
     + (monitorPort !== undefined ? `http: 127.0.0.1:${monitorPort}\n` : "");
   writeFileSync(join(dir, "server.conf"), conf);
   const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
