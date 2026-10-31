@@ -184,10 +184,12 @@ export interface LaunchSpec {
    * is on screen no key is sent, and when the startup bound ends with one on screen the failure names
    * its reason. Requires confirm. */
   confirmBlockers?: readonly StartupBlocker[];
-  /** A line the startup watch must see, within one visible line of a screen read after the Enter
-   *  that answered {@link confirm}, before it records `confirmed`. It has a bound of its own, as
-   *  long as the prompt's. Use it when answering the prompt does not by itself show the state a
-   *  launch needs, as Claude's registration notice shows its channel server was admitted. */
+  /** A line the startup watch must see on a screen read after the Enter that answered
+   *  {@link confirm}, before it records `confirmed`. It is read across consecutive lines however a
+   *  narrow pane wraps it, ignoring whitespace and the box or bar marks at each line's edges. It has
+   *  a bound of its own, as long as the prompt's. Use it when answering the prompt does not by itself
+   *  show the state a launch needs, as Claude's registration notice shows its channel server was
+   *  admitted. */
   confirmNotice?: string;
   /** This agent's local control endpoint — the OS path its lifecycle hooks connect to (passed in
    *  the child env as `COTAL_CONTROL_SOCKET`/`COTAL_CONTROL_TOKEN`), plus the first-frame `token`
