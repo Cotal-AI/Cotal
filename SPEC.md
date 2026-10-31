@@ -4784,7 +4784,12 @@ hazard (on the `allow_direct=false` buckets a leader-consistent get is precisely
 `STREAM.MSG.GET`). Every OTHER subject-scoped read is NON-fencing and uses the
 last-by-subject `DIRECT.GET.<stream>.<subject>` form, which the broker confines by subject
 tokens. (The pre-v0.4 messaging-surface CHKV/DLVKV reads in Appendix B are the v0.3 binding,
-outside this matrix; their confused-deputy exposure is the §9 in-scope-for-v0.4 remediation.)
+outside this matrix; their confused-deputy exposure is the §9 in-scope-for-v0.4 remediation.
+The delivery profile's `STREAM.MSG.GET` on `TASK_<space>` for anycast request status (§8.1) is
+also a messaging-surface read outside this matrix. It is a FENCING read held by that trusted
+single-purpose profile and granted to no other: the request it returns at a seq, or its absence,
+gates the take's CAS on `KV_cotal_anycast_<space>`. It reaches every request body in the space,
+as Appendix B states.)
 
 **Read service (fencing reads are leader-served).** A read is FENCING when its result, a
 value, a revision, OR an authoritative ABSENCE, gates a subsequent CAS or authorizes an
