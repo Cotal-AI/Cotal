@@ -40,7 +40,24 @@ await hermesHookHandle(agent, { hook_event_name: "post_llm_call" });
 check("and a real ending still goes through setStatus, so the boundary is not disarmed",
   calls.filter((c) => c === "set:idle").length >= 1, calls);
 
-const EXPECTED_CELLS = 4;
+await hermesHookHandle(agent, { hook_event_name: "pre_tool_call", tool_name: "terminal", tool_input: {} });
+check("a tool with no arguments still has useful activity", calls.at(-1) === "set:working:terminal", calls.at(-1));
+
+for (const field of ["command", "file_path", "path", "url", "query", "description"]) {
+  await hermesHookHandle(agent, {
+    hook_event_name: "pre_tool_call",
+    tool_name: "terminal",
+    tool_input: { [field]: "private-tool-input-canary" },
+  });
+  check(`${field} stays out of tool activity`, calls.at(-1) === "set:working:terminal", calls.at(-1));
+  await hermesHookHandle(agent, { hook_event_name: "pre_llm_call" });
+  check(`the next model call retains only the tool name after ${field}`, calls.at(-1) === "set:working:terminal", calls.at(-1));
+}
+
+await hermesHookHandle(agent, { hook_event_name: "pre_tool_call", tool_name: "", tool_input: { command: "private-tool-input-canary" } });
+check("a missing tool name does not expose its arguments", calls.at(-1) === "set:working", calls.at(-1));
+
+const EXPECTED_CELLS = 18;
 console.log(`hermes-lifecycle-idle.smoke: ${pass} passed, ${fail} failed`);
 if (pass + fail !== EXPECTED_CELLS) { console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells`); process.exit(1); }
 process.exit(fail === 0 ? 0 : 1);
