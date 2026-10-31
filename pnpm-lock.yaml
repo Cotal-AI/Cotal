@@ -817,6 +817,9 @@ importers:
       '@babel/preset-typescript':
         specifier: 7.27.1
         version: 7.27.1(@babel/core@7.29.7)
+      '@cotal-ai/smoke-kit':
+        specifier: workspace:*
+        version: link:../../packages/smoke-kit
       babel-preset-solid:
         specifier: 1.9.16
         version: 1.9.16(@babel/core@7.29.7)(solid-js@1.9.17)
