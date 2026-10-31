@@ -495,7 +495,10 @@ const SEAMS: Seam[] = [
   // and one retirement fence. The 18 smoke calls state explicit booleans (including the native
   // signer's TLS-true control); down uses resolved.tls and the other two source calls state false.
   // required-arg-sites.json records the 13 reviewed file counts; the reader's rules are unchanged.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 353, untypecheckedSites: 273 },
+  // 353/273 -> 354/274: shared-broker account cohorts (112ef8d5a) add one membership-observer
+  // connection in manager/smoke/manager-seat-load that reads each cohort account's connz. It dials
+  // the plaintext loopback broker its suite starts and states `tls: false`.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 354, untypecheckedSites: 274 },
 ];
 
 const SITE_COUNTS = JSON.parse(readFileSync(new URL("./required-arg-sites.json", import.meta.url), "utf8")) as Record<string, number>;
