@@ -11,6 +11,14 @@ core; core depends on nothing else in the repo, and neither do `@cotal-ai/lang` 
 See the [root AGENTS.md](../../AGENTS.md) for the tier rules, [SPEC.md](../../SPEC.md) for the
 normative wire contract, and [docs/](../../docs/) for the protocol.
 
+## Local persona catalog
+
+`readPersonaCatalog(root)` is the filesystem reader shared by core and the CLI. It returns an
+empty catalog only for an absent directory; unreadable or unsearchable directories throw. Entries
+retain parse errors, UTF-16 diagnostics, non-regular-file markers and symbolic-link targets.
+`listPersonaCatalog(root)` keeps its existing empty-list policy for unreadable catalogs and uses
+the same reader. The manager still filters ownership and omits local file details from peer replies.
+
 ## Idle-load broker comparisons
 
 `pnpm -C packages/core smoke:seat-idle-load` expects NATS Server 2.15.1 by default.

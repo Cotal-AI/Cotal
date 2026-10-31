@@ -336,7 +336,7 @@ try {
   if (fail) process.exitCode = 1;
 } catch (e) {
   fail++;
-  console.error("  ✗ scenario threw:", (e as Error).stack ?? (e as Error).message);
+  console.error("  ✗ scenario threw:", e);
   console.log(`\nBOOT SELF-HEAL GATE FAILED ❌  (${pass} passed, ${fail} failed)`);
   process.exitCode = 1;
 } finally {

@@ -9,7 +9,7 @@ import type { KV } from "@nats-io/kv";
 import {
   acceptedReadGrant, actorLedgerSource, assertDerivedOwnerToken, assertLifecycleToken, canonicalJson, connectionAcceptedToken, EpEnvelopeError,
   importNativeSubjectPermissions, mintGeneration, parseServiceSpec, prepareListing, parseServiceStatus, readSvcRecordLeader, recordSpecKey, recordStatusKey,
-  RECORD_KINDS, remoteManagerActors, serveIssuanceGateKv, SERVICE_ACCESS_TTL_SECONDS, writeAcceptedRow,
+  RECORD_KINDS, remoteManagerServePrincipal, serveIssuanceGateKv, SERVICE_ACCESS_TTL_SECONDS, writeAcceptedRow,
   type EpGateState, type HeldIssuerSession, type IssuedAuthorityRef,
 } from "@cotal-ai/core";
 import type { ManagerInstanceIdentity } from "@cotal-ai/workspace";
@@ -60,7 +60,7 @@ export function managerGateReads(deps: {
     const gate = await observeLegacyManagerGate(instanceId);
     if (!gate) return "unknown";
     if (gate.state !== "open") return "not open";
-    const remotePrincipal = `${owner}.${remoteManagerActors(instanceId).serve}`;
+    const remotePrincipal = remoteManagerServePrincipal(owner, instanceId);
     const local = localManager?.instanceId === instanceId && gate.principal === `local.${localManager.serveIdentity.id}`;
     const remote = gate.principal === remotePrincipal;
     if (!local && !remote) return "not this owner's";

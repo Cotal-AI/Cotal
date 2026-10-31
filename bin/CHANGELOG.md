@@ -1,5 +1,88 @@
 # cotal-ai
 
+## 0.132.5
+
+### Patch Changes
+
+- Updated dependencies [75e5b4f]
+- Updated dependencies [3b7d3d2]
+- Updated dependencies [5153a53]
+- Updated dependencies [f719f72]
+  - @cotal-ai/auth@0.132.5
+  - @cotal-ai/cli@0.132.5
+  - @cotal-ai/manager@0.132.5
+  - @cotal-ai/connector-core@0.132.5
+  - @cotal-ai/delivery@0.132.5
+  - @cotal-ai/runtime@0.132.5
+  - @cotal-ai/core@0.132.5
+  - @cotal-ai/seat@0.132.5
+  - @cotal-ai/workspace@0.132.5
+
+## 0.132.4
+
+### Patch Changes
+
+- Updated dependencies [c0e9b6f]
+- Updated dependencies [e6f80e9]
+  - @cotal-ai/workspace@0.132.4
+  - @cotal-ai/cli@0.132.4
+  - @cotal-ai/auth@0.132.4
+  - @cotal-ai/delivery@0.132.4
+  - @cotal-ai/manager@0.132.4
+  - @cotal-ai/runtime@0.132.4
+  - @cotal-ai/connector-core@0.132.4
+  - @cotal-ai/core@0.132.4
+  - @cotal-ai/seat@0.132.4
+
+## 0.132.3
+
+### Patch Changes
+
+- Updated dependencies [9ef07e1]
+- Updated dependencies [5992e23]
+- Updated dependencies [35eb67a]
+  - @cotal-ai/connector-core@0.132.3
+  - @cotal-ai/cli@0.132.3
+  - @cotal-ai/core@0.132.3
+  - @cotal-ai/manager@0.132.3
+  - @cotal-ai/auth@0.132.3
+  - @cotal-ai/delivery@0.132.3
+  - @cotal-ai/runtime@0.132.3
+  - @cotal-ai/workspace@0.132.3
+  - @cotal-ai/seat@0.132.3
+
+## 0.132.2
+
+### Patch Changes
+
+- Updated dependencies [c595436]
+- Updated dependencies [ebabb1e]
+- Updated dependencies [6e0f8d1]
+  - @cotal-ai/connector-core@0.132.2
+  - @cotal-ai/core@0.132.2
+  - @cotal-ai/auth@0.132.2
+  - @cotal-ai/manager@0.132.2
+  - @cotal-ai/workspace@0.132.2
+  - @cotal-ai/cli@0.132.2
+  - @cotal-ai/delivery@0.132.2
+  - @cotal-ai/runtime@0.132.2
+  - @cotal-ai/seat@0.132.2
+
+## 0.132.1
+
+### Patch Changes
+
+- Updated dependencies [4f50669]
+  - @cotal-ai/cli@0.132.1
+  - @cotal-ai/connector-core@0.132.1
+  - @cotal-ai/auth@0.132.1
+  - @cotal-ai/delivery@0.132.1
+  - @cotal-ai/manager@0.132.1
+  - @cotal-ai/runtime@0.132.1
+  - @cotal-ai/core@0.132.1
+  - @cotal-ai/seat@0.132.1
+  - @cotal-ai/workspace@0.132.1
+
 ## 0.132.0
 
 ### Patch Changes

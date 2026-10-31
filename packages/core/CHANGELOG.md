@@ -1,5 +1,29 @@
 # @cotal-ai/core
 
+## 0.132.5
+
+No changes in this release.
+
+## 0.132.4
+
+No changes in this release.
+
+## 0.132.3
+
+### Patch Changes
+
+- 35eb67a: Use one persona catalog reader for core and the CLI. Preserve strict CLI directory errors and share its encoding, non-regular-file and symbolic-link metadata. Core's existing forgiving listing remains empty for unreadable catalogs, including directories that cannot be searched; manager replies retain their ownership filtering.
+
+## 0.132.2
+
+### Patch Changes
+
+- ebabb1e: Share remote-manager serve-principal serialization through the existing owner/actor token validator. Auth checks derive principals with the new remoteManagerServePrincipal helper; registration and retirement APIs preserve their supplied serve actor and serialize it with principalKey.
+
+## 0.132.1
+
+No changes in this release.
+
 ## 0.132.0
 
 No changes in this release.

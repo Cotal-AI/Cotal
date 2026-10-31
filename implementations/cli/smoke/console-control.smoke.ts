@@ -282,7 +282,7 @@ try {
   check("console quits cleanly", await s.quit(), s.exited);
 } catch (e) {
   fail++;
-  console.error("  ✗ scenario threw:", (e as Error).stack ?? (e as Error).message);
+  console.error("  ✗ scenario threw:", e);
 } finally {
   try { await session?.close(); } catch { /* down */ }
   try { await m1.stop({ withAgents: true }); } catch { /* down */ }

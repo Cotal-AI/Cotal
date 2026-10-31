@@ -116,6 +116,16 @@ leaves the entry pending and exits without recording a handler failure.
 
 Full rules, with every code: [`spec/cotal-lang.md`](../spec/cotal-lang.md).
 
+## Reusable helpers
+
+A function call does not create a journal namespace. Repeated calls to a helper share the
+occurrence counters of its named steps, so inserting an earlier call renumbers the later ones.
+Wrap each instance in a distinctly named, single-branch `parallel`, with a record branch such as
+`{ call: () => helper() }`. Keep the helper's required step names literal, and read the returned
+value from `.call`. Each wrapper adds one journal entry; repeating its name still increments its
+own occurrence. The [worked example](../spec/cotal-lang.md#reusable-helpers) shows the resulting
+keys and the migration limits. No new primitive or computed required name is needed.
+
 ## Continuing a run
 
 **Resume** is re-execution: the driver replays the journal, the program runs from the top, recorded

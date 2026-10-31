@@ -192,7 +192,10 @@ optional manager runtimes ship this way. A `@cotal-ai/*` package named without a
 this cotal's version, as `setup` and `update` do; a version or tag you name is installed as given.
 A new third-party extension is installed and validated in a temporary prefix before it is added
 to the live installation. A refused new add leaves installed package links and the three prefix
-manifests unchanged, and removes its temporary prefix.
+manifests unchanged, and removes its temporary prefix. An add over an installed extension that
+fails or is interrupted puts the previous installation back. An interrupted add exits 130 and never
+reports the version it rolled back. Once an add has committed, failing to remove its copy of the
+previous installation is a warning that names the copy, not a failed add.
 
 ## Structured output
 
@@ -719,8 +722,14 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 `cotal up` boots a local nats-server with JetStream and, in auth mode (the default), JWT auth and
 per-agent ACLs. It runs in the background by default and records the mesh so `cotal spawn` from
 any directory can find it; `--detach` explicitly names the same mode. `--foreground` keeps the
-native stack in this terminal. A contradictory mode pair refuses before setup or seed work. `up`
-seeds the [built-in connectors](#built-in-connectors-are-seeded-extensions) only when it first starts
+native stack in this terminal.
+
+Ordinary startup and refresh start delivery before user-auth, then start the manager. Auth uses
+delivery to check whether a crashed predecessor has disconnected. Live or unknown holders remain
+refused, and the refusal names its code and reason, such as
+`[unavailable; ai.cotal.auth.plane-claim-refused: unknown]`.
+
+A contradictory mode pair refuses before setup or seed work. `up` seeds the [built-in connectors](#built-in-connectors-are-seeded-extensions) only when it first starts
 a process, or when `up -f` checks the connectors its manifest's agents use, so a refusal before then
 leaves the operator-global seed store as it was. When a start fails after that seed moved the store to this version, the failure
 says so and names the store. In a
@@ -2535,7 +2544,9 @@ or `.cotal/maintenance`, such as `.` in this folder, refuses `USAGE_INVALID` (ex
 that store or folder. The restore checks the path again once it holds the maintenance lock, because a
 link in it may name another folder by then, and refuses the same way. A restore that fails after it
 began names its attempt in the text and in the JSON target, which also carries `journalState`, and
-its remedy gives the next step for that state. `up --restore`
+its remedy gives the next step for that state. The listener endpoint must be a bare `nats://` or
+`tls://` URL without credentials, a query, a fragment or a path. Its refusal does not repeat the
+endpoint value, including when it came from a preserved launch. `up --restore`
 remains as the equivalent startup form. After its startup lines it names the restore attempt and
 gives the cleanup step that retires it, with `--discard-history` for a restore that left history or
 workflow runs out. Unlike the other
@@ -2792,7 +2803,9 @@ dead, recovery retires that exact proof under the maintenance lock and binds a f
 same attempt, endpoint, and target with a new nonce and server name. A live foreign/mismatched listener
 or ambiguous owner is preserved and refused, never adopted by reachability alone. Before the
 daemons start, re-entry recreates the memory-only buckets on an adopted restore or resume listener,
-because the interrupted `up` may have stopped before it made them. A reconstructed
+because the interrupted `up` may have stopped before it made them. The mesh record it then writes
+keeps the recorded attach host and session ceiling and the store cap the adopted broker started with;
+a restore journals its `--max-file-store` for this. A reconstructed
 commit/degraded attempt without either the exact bound proof or a durable dead-listener replacement
 record fails closed even when the recorded port is free. A later ordinary startup may pass an `active`
 restore only when its details prove manager commit and its exact recorded listener is dead.
@@ -4484,8 +4497,13 @@ caller grant, therefore needs no `--on`. It fetches only that command's cluster 
 publish, and `--timeout` sets one deadline in milliseconds for the whole call (default 10000): the contract read, a
 `--name` lookup and the reply all spend from it, so an endpoint nothing serves is refused when it runs out. When the
 endpoint answers but the deadline runs out before the command is published, during the contract read or after it, the
-call fails with `OPERATION_FAILED`, names the deadline, and its Next suggests a longer `--timeout`. `--server` overrides the
-registry's broker URL and `--creds` names a creds file for an off-registry connection. A targeted command takes `--name <agent>` (resolved to the agent's current principal through
+call fails with `OPERATION_FAILED`, names the deadline, and its Next suggests a longer `--timeout`.
+If the invocation may have been sent and its outcome cannot be confirmed before the deadline,
+including with a short `--timeout`, it reports `OPERATION_UNKNOWN` and exits 3. This does not prove
+that the command did not run. Inspect the original endpoint and request before another invocation;
+do not blindly retry with a longer timeout.
+
+`--server` overrides the registry's broker URL and `--creds` names a creds file for an off-registry connection. A targeted command takes `--name <agent>` (resolved to the agent's current principal through
 `inspect`) or `--self`. `--admin` uses the admin instrument credential, whose cross-agent reach rides
 the operator-only `any` authorization mode. Neither command has compile-time knowledge of any
 endpoint's schemas - this is the same trust chain every built-in control command now uses. Needs an
@@ -7369,6 +7387,8 @@ as they are. `remove` and `list` manage them. The `@cotal-ai/web` dashboard is t
 canonical service preset and local-process example. Installed packages and their location are described in
 [config](config.md). When a package needs an export its linked `@cotal-ai/*` peer does not have,
 `add` rolls back and names which install is behind, as a later load of an installed one does.
+Removing an extension or cleaning up a failed add keeps unrelated file-based extensions as
+installed copies, rather than turning them into links to their source or the built-in seed store.
 
 Bare `cotal ext` lists the inventory, headed by the install prefix. That prefix is a cotal-owned npm
 root kept **separate** from npm's own global tree. These packages never show up in `npm list -g`,
@@ -7390,6 +7410,19 @@ without color. The other `ext` subcommands refuse `--json` and `--plain` with `U
 
 An installed package whose directory is gone is reported as not installed. One whose `package.json`
 is not JSON or has no `version` is reported as corrupt, naming the package and its `package.json`.
+
+`add`, `remove` and each built-in seed relink the shared peers of every installed package after npm
+changes the prefix. A package recorded in the manifest whose directory is gone does not fail that
+step. One example is a package npm pruned as extraneous because no dependency list names it. A
+warning names the package and its path, the command that reinstalls it and
+`cotal ext remove <package>`, which drops its entry. For a built-in the reinstall command is
+`cotal ext seed --repair`. For any other package the warning prints `cotal ext add <original-spec>`
+with that placeholder, since a recorded spec can be a URL that carries a credential. Replace it with
+the spec you first passed to `ext add`. The entry stays in the manifest until you run one of them. A seed or repair that succeeds past it
+neither installs the package nor removes its entry, so `cotal ext list` still lists it and a command
+that reads that entry can still report it as a problem. A package directory that is present without
+a readable `package.json` still fails the step. After a seed that failed this way in an earlier
+release, `cotal ext seed --repair` finishes it, and `cotal ext remove` then drops the entry.
 
 Removing an extension that owns a running local process is refused with the mesh root and its
 `cotal down <component>` command; stop it first so uninstalling the package never strands a process

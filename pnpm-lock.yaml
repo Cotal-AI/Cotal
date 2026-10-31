@@ -452,6 +452,9 @@ importers:
       '@cotal-ai/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@cotal-ai/smoke-kit':
+        specifier: workspace:*
+        version: link:../../packages/smoke-kit
       tsx:
         specifier: ^4.22.4
         version: 4.23.0
@@ -491,6 +494,9 @@ importers:
       '@cotal-ai/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@cotal-ai/smoke-kit':
+        specifier: workspace:*
+        version: link:../../packages/smoke-kit
 
   implementations/auth:
     dependencies:

@@ -1,5 +1,27 @@
 # @cotal-ai/connector-codex
 
+## 0.132.5
+
+No changes in this release.
+
+## 0.132.4
+
+### Patch Changes
+
+- d2126e8: Remove redundant exception handlers around native child cleanup in model discovery and stop escalation. Preserve signal delivery, exit waiting, and the existing cleanup deadlines.
+
+## 0.132.3
+
+No changes in this release.
+
+## 0.132.2
+
+No changes in this release.
+
+## 0.132.1
+
+No changes in this release.
+
 ## 0.132.0
 
 No changes in this release.

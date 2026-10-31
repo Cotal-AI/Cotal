@@ -1,6 +1,6 @@
 import {
   assertLifecycleToken, contractDigest, environmentBootstrapActor, EpEnvelopeError, epgateKey,
-  isCasLoss, isUserNkey, mintPublicUserJwt, parseEndpointGate, remoteManagerActors,
+  isCasLoss, isUserNkey, mintPublicUserJwt, parseEndpointGate, remoteManagerServePrincipal,
 } from "@cotal-ai/core";
 import type { EnvironmentManagerAdmissionCoordinates } from "./environment-manager-admission.js";
 import { finalizeAgentMint, markLedgerRowRevoked, stageAgentMint } from "./credential-ledger.js";
@@ -54,7 +54,7 @@ export async function mintEnvironmentManagerBootstrap(
   try { initial = birth.json(); }
   catch { throw new EpEnvelopeError("failed-precondition", "environment bootstrap initial-gate stamp is not JSON"); }
   if (!initial || typeof initial !== "object" || Object.keys(initial).length !== 3 || initial.instanceId !== pin.instanceId ||
-    initial.principal !== `${pin.owner}.${remoteManagerActors(pin.instanceId).serve}` ||
+    initial.principal !== remoteManagerServePrincipal(pin.owner, pin.instanceId) ||
     !Number.isSafeInteger(initial.openRevision) || Number(initial.openRevision) < 1)
     throw new EpEnvelopeError("permission-denied", "environment bootstrap initial-gate stamp has foreign coordinates");
   const key = epgateKey("manager", pin.instanceId);
@@ -63,7 +63,7 @@ export async function mintEnvironmentManagerBootstrap(
     throw new EpEnvelopeError("permission-denied", "environment bootstrap has no native registration gate");
   const gate = parseEndpointGate(entry.value, key);
   if (gate.authorityFamily !== "environment-manager" ||
-    gate.principal !== `${pin.owner}.${remoteManagerActors(pin.instanceId).serve}` ||
+    gate.principal !== remoteManagerServePrincipal(pin.owner, pin.instanceId) ||
     gate.state !== "frozen" || gate.op.kind !== "registration" || gate.op.opId !== pin.operationId ||
     gate.registrationRevision !== 0)
     throw new EpEnvelopeError("permission-denied", "environment bootstrap requires its original frozen registration");

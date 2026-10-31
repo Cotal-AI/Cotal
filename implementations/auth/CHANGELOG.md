@@ -1,5 +1,52 @@
 # @cotal-ai/auth
 
+## 0.132.5
+
+### Patch Changes
+
+- 75e5b4f: Report the auth daemon's typed startup refusal to `cotal up` instead of a bare exit. A daemon that refuses its start records the refusal beside its discovery file, bound to its pid. The provider's readiness wait throws it as an `EpEnvelopeError`, and `up` names the code and reason, such as `[unavailable; ai.cotal.auth.plane-claim-refused: unknown]`.
+- @cotal-ai/core@0.132.5
+  - @cotal-ai/lang@0.132.5
+  - @cotal-ai/workspace@0.132.5
+
+## 0.132.4
+
+### Patch Changes
+
+- Updated dependencies [c0e9b6f]
+  - @cotal-ai/workspace@0.132.4
+  - @cotal-ai/core@0.132.4
+  - @cotal-ai/lang@0.132.4
+
+## 0.132.3
+
+### Patch Changes
+
+- Updated dependencies [35eb67a]
+  - @cotal-ai/core@0.132.3
+  - @cotal-ai/workspace@0.132.3
+  - @cotal-ai/lang@0.132.3
+
+## 0.132.2
+
+### Patch Changes
+
+- ebabb1e: Share remote-manager serve-principal serialization through the existing owner/actor token validator. Auth checks derive principals with the new remoteManagerServePrincipal helper; registration and retirement APIs preserve their supplied serve actor and serialize it with principalKey.
+- 6e0f8d1: Share the IdP URL policy between manifest preflight and auth login while preserving their diagnostics and normalization.
+- Updated dependencies [ebabb1e]
+- Updated dependencies [6e0f8d1]
+  - @cotal-ai/core@0.132.2
+  - @cotal-ai/workspace@0.132.2
+  - @cotal-ai/lang@0.132.2
+
+## 0.132.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.132.1
+  - @cotal-ai/lang@0.132.1
+  - @cotal-ai/workspace@0.132.1
+
 ## 0.132.0
 
 ### Patch Changes
