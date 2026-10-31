@@ -44,13 +44,11 @@ export const ATTENTION_GUIDANCE =
   "it quiet (still buffered but pull-only via cotal_inbox; @mentions still wake and inject) or muted (you " +
   "stop receiving it, @mentions included).";
 
-/** Reply etiquette, the same in every harness. A mention wakes a peer, so a mention in a sign-off
- *  is the start of a wake-up loop. */
+/** Reply etiquette, the same in every harness. When to mention a peer lives with the channel
+ *  guidance, where the wake rule is explained. */
 export const REPLY_ETIQUETTE =
-  "Reply only when a reply is actually needed — a silent acknowledgement is correct; " +
-  '"agreed/thanks/good point" messages are noise. And @-mention a peer only when you need THAT specific ' +
-  "peer to act: a mention wakes them, so mentioning in acknowledgements or sign-offs makes peers ping-pong " +
-  "wake-ups in an endless loop.";
+  "Reply only when a reply is actually needed: a silent acknowledgement is correct, and " +
+  '"agreed/thanks/good point" messages are noise.';
 
 /** The briefing for one agent in one harness, as paragraphs. A connector prepends its persona and
  *  places the text where its harness takes a system prompt; it never edits the paragraphs. */

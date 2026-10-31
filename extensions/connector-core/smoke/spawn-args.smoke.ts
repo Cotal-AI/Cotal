@@ -326,7 +326,40 @@ check(
 );
 await client.close();
 
-const EXPECTED_CHECKS = 47;
+// Channels on the peer door. `join` rides to the manager and is bounded HERE by the caller's read
+// ACL, before anything is sent; the caller's own ACL rides as `callerAcl`, which the manager uses
+// only for a persona that names no channel. A helper spawned from a seat on #general used to start
+// on no channel with no way to say otherwise, and its first cotal_send was refused.
+const reader: AgentConfig = { ...cfg, subscribe: ["general"], allowSubscribe: ["general", "review"], allowPublish: ["general"] };
+check("cotal_spawn schema exposes join", spawnTool !== undefined && "join" in spawnTool.schema.shape);
+const joinAgent = new MeshAgent(reader);
+const callsJoin = record(joinAgent);
+await spawnTool?.run(joinAgent, reader, { name: "helper", join: ["review"] });
+check("cotal_spawn tool forwards join", JSON.stringify(spawnCall(callsJoin)?.args?.join) === JSON.stringify(["review"]), spawnCall(callsJoin)?.args);
+check(
+  "the spawn carries the caller's own ACL as callerAcl",
+  JSON.stringify(spawnCall(callsJoin)?.args?.callerAcl) === JSON.stringify({ allowSubscribe: ["general", "review"], allowPublish: ["general"] }),
+  spawnCall(callsJoin)?.args?.callerAcl,
+);
+const direct = new MeshAgent(reader);
+const callsDirect = record(direct);
+await direct.spawn("helper", undefined, { join: ["general"] });
+check("MeshAgent.spawn forwards join", JSON.stringify(spawnCall(callsDirect)?.args?.join) === JSON.stringify(["general"]), spawnCall(callsDirect)?.args);
+check("name-only join stays absent", spawnCall(callsA)?.args?.join === undefined, spawnCall(callsA)?.args);
+const outside = new MeshAgent(reader);
+const callsOutside = record(outside);
+const outsideReply = await outside.spawn("helper", undefined, { join: ["ops"] });
+check(
+  "a join outside the caller's read ACL is refused before invoke",
+  outsideReply.ok === false && /join: "ops" is not within your read ACL/.test(outsideReply.error ?? "") && callsOutside.length === 0,
+  outsideReply,
+);
+const wild = new MeshAgent(reader);
+const callsWild = record(wild);
+const wildReply = await wild.spawn("helper", undefined, { join: ["team.>"] });
+check("a wildcard join is refused before invoke", wildReply.ok === false && /concrete channel/.test(wildReply.error ?? "") && callsWild.length === 0, wildReply);
+
+const EXPECTED_CHECKS = 54;
 if (checks !== EXPECTED_CHECKS) {
   failures++;
   console.log(`SUITE INCOMPLETE: ${checks} of ${EXPECTED_CHECKS} checks`);

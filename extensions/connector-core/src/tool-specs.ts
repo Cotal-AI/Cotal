@@ -683,8 +683,27 @@ export function defaultSendChannel(config: Pick<AgentConfig, "allowPublish" | "c
   return isAuthed(config) ? concrete.find((c) => channelInAllow(config.allowPublish, c)) : concrete[0];
 }
 
-const NO_POSTABLE_DEFAULT =
-  "you may post to none of the channels you read, so there is no default and an omitted channel is refused - name one your post ACL allows (cotal_orientation lists them)";
+/**
+ * Why a send with no channel has nowhere to go, and the exact next call. Built from the channels
+ * the agent reads now and the channels its ACL lets it post to, so the refusal names a channel the
+ * agent can use rather than pointing at another tool. Two shapes: on no channel at all, or on
+ * channels it may post to none of. `postable` is empty where the ACL grants no concrete post
+ * channel the agent could name (an operator widens that; nothing here can).
+ */
+export function sendNoDefaultRemedy(config: Pick<AgentConfig, "allowSubscribe" | "allowPublish" | "creds" | "userAuth">, reading: readonly string[]): string {
+  const concrete = reading.filter(isConcreteChannel);
+  const authed = isAuthed(config);
+  const named = [...new Set([...config.allowPublish, ...config.allowSubscribe, ...reading].filter(isConcreteChannel))];
+  const postable = authed ? named.filter((c) => channelInAllow(config.allowPublish, c)) : named;
+  const where = concrete.length
+    ? `you may post to none of the channels you read (${concrete.map((c) => `#${c}`).join(", ")})`
+    : "you are on no channel";
+  if (!postable.length)
+    return `${where}, so there is no default and an omitted channel is refused; your post ACL names no channel you could use, so ask an operator to widen it, and reach peers with cotal_dm or cotal_anycast meanwhile`;
+  const first = postable[0]!;
+  const list = postable.map((c) => `#${c}`).join(", ");
+  return `${where}, so there is no default and an omitted channel is refused. You may post to ${list}: call cotal_send with channel: "${first}", or cotal_join ${first} first to make it your default`;
+}
 
 /** The orientation card as the model reads it, over the SAME gated tool list the connector exposes
  *  (cotalToolSpecs already filters spawn/persona by capability), so the card can't claim a tool the
@@ -1123,7 +1142,7 @@ export function cotalToolSpecs(
           .string()
           .optional()
           .describe(
-            `Channel to send on (${defaultChannel ? `default: ${defaultChannel}` : config.subscribe.some(isConcreteChannel) ? `REQUIRED: ${NO_POSTABLE_DEFAULT}` : "REQUIRED: you are on no channel, so there is no default and an omitted channel is refused - join one first"}). Concrete only, not a wildcard like team.>; reply on the channel you received a message on.`,
+            `Channel to send on (${defaultChannel ? `default: ${defaultChannel}` : `REQUIRED: ${sendNoDefaultRemedy(config, config.subscribe)}`}). Concrete only, not a wildcard like team.>; reply on the channel you received a message on.`,
           ),
         mentions: z
           .array(z.string())
@@ -1136,8 +1155,8 @@ export function cotalToolSpecs(
         try {
           const joined = agent.joinedChannels();
           const target = channel ?? defaultSendChannel(config, joined);
-          if (target === undefined && joined.some(isConcreteChannel)) return err(`Couldn't send: ${NO_POSTABLE_DEFAULT}.`);
-          const receipt = target !== undefined ? await agent.describeSendChannel(target) : undefined;
+          if (target === undefined) return err(`Couldn't send: ${sendNoDefaultRemedy(config, joined)}.`);
+          const receipt = await agent.describeSendChannel(target);
           const m = await agent.send(msg, target, mentions);
           const dest = `Sent to #${m.channel}${m.mentions?.length ? ` (mentioned @${m.mentions.join(", @")})` : ""}`;
           return ok(receipt ? `${dest} (${receipt}).` : `${dest}.`);
@@ -1425,9 +1444,13 @@ export function cotalToolSpecs(
       name: "cotal_spawn",
       title: "Cotal: spawn a new teammate",
       description:
-        "Ask the manager to start a new peer endpoint in your space. It joins the mesh as a lateral peer and, under the cmux runtime, appears in its own tab. A Cotal peer is a real, addressable process the user can watch; you can reach it by DM, find it on the roster, and coordinate with it later. Use it for teammate work that should stay visible on the mesh. Pass `prompt` when it should begin immediately; the connector auto-submits that prompt as its first turn. When you first bring a team online, if the live web dashboard is down, suggest `cotal watch` for a live terminal view. The dashboard service is configured and started separately; do not install or launch it implicitly. A partial result means the seat started but its requested model pin could not be read back: it names the seat and the `cotal ps --on <manager>` command that shows the pin, and spawning again would start a second agent.",
+        "Ask the manager to start a new peer endpoint in your space. It joins the mesh as a lateral peer and, under the cmux runtime, appears in its own tab. A Cotal peer is a real, addressable process the user can watch; you can reach it by DM, find it on the roster, and coordinate with it later. Use it for teammate work that should stay visible on the mesh. Pass `prompt` when it should begin immediately; the connector auto-submits that prompt as its first turn. When you first bring a team online, if the live web dashboard is down, suggest `cotal watch` for a live terminal view. The dashboard service is configured and started separately; do not install or launch it implicitly. A partial result means the seat started but its requested model pin could not be read back: it names the seat and the `cotal ps --on <manager>` command that shows the pin, and spawning again would start a second agent. Channels: the new peer may read and post what its persona file allows; a persona that names no channel at all is scoped to your own allowances. It starts on NO channel unless you pass `join`, so pass the channel you are working on when it should see that traffic and post there (e.g. `join: [\"general\"]`).",
       schema: {
         name: z.string().describe("Which persona to spawn: the persona FILENAME in .cotal/agents (e.g. `review-critic`), without the .md. The new peer joins under the persona's own `name:` (auto-numbered with an underscore, e.g. socrates_2, if that's taken). Fails if no such persona file exists; spawn an existing persona, don't invent a name."),
+        join: z
+          .array(z.string())
+          .optional()
+          .describe("Channels the new peer joins at start, on top of what its persona file lists (e.g. ['general']). Concrete names only, each within YOUR read ACL (a spawn hands on only what you may read yourself; anything else is refused before launch). Omitted, a persona that lists no channel starts on none and its cotal_send with no channel is refused."),
         instance: z
           .string()
           .refine((value) => {
@@ -1488,9 +1511,9 @@ export function cotalToolSpecs(
         // boundary. Resume lives only on the operator CLI (`cotal spawn --resume`, foreground or
         // --detach); a peer-facing, capability-gated resume is deferred (see #159).
       },
-      async run(agent, _config, { name, instance, role, agent: agentType, model, variant, launchOptions, cwd, prompt, events, runtime }: { name: string; instance?: string; role?: string; agent?: string; model?: string; variant?: string; launchOptions?: Record<string, unknown>; cwd?: string; prompt?: string; events?: boolean; runtime?: string }) {
+      async run(agent, _config, { name, instance, role, agent: agentType, model, variant, launchOptions, cwd, prompt, events, runtime, join }: { name: string; instance?: string; role?: string; agent?: string; model?: string; variant?: string; launchOptions?: Record<string, unknown>; cwd?: string; prompt?: string; events?: boolean; runtime?: string; join?: string[] }) {
         try {
-          const reply = await agent.spawn(name, role, { agent: agentType, model, variant, launchOptions, cwd, prompt, events, runtime, instance });
+          const reply = await agent.spawn(name, role, { agent: agentType, model, variant, launchOptions, cwd, prompt, events, runtime, instance, join });
           // An uncertain launch is still managed and may yet join. Reported as an error it reads as a
           // failed launch, and the caller's retry starts a second agent on the same work.
           const pending = reply.code === "uncertain";

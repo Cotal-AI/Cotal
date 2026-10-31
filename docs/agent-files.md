@@ -107,9 +107,12 @@ should point at the source (the repo's docs, a URL), not assert them.
 ## Defining one at runtime
 
 `cotal_persona(name, prompt, model?, role?, agent?, subscribe?, allowSubscribe?, allowPublish?, announce?)` sends a persona to the manager, which
-writes the same file; a later `cotal_spawn(name, role?, agent?, model?, variant?)` brings
+writes the same file; a later `cotal_spawn(name, role?, agent?, model?, variant?, join?)` brings
 it online, so a peer can mint a teammate with no hand-written file
-([tool catalog](mcp-tools.md)). The write path takes **content** (`model` /
+([tool catalog](mcp-tools.md)). A persona that names no channel field at all is scoped to
+the spawner's own read and post grants, never wider; it still starts on no channel unless
+the spawn passes `join`, and each channel in `join` must be one the spawner may read. The
+write path takes **content** (`model` /
 `persona`, plus optional role, agent, and channel grants). A prompt that is already a
 complete agent file (its own `---` frontmatter) is **merged** into one block: grants,
 role, and agent from that block survive, and explicit tool arguments such as `model` win.
