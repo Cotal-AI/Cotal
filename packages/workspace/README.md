@@ -14,6 +14,10 @@ input is split on commas, trimmed and stripped of empty tokens. An explicit empt
 The web-session module exports `webBoundUrl` for the dashboard and CLI status to format the same
 bound host and port. It preserves IPv6 brackets and the trailing slash; branding stays with the dashboard.
 
+The shared `checkIdpUrl` function parses an IdP base URL and checks its scheme, loopback host,
+userinfo, query and fragment. Manifest preflight and auth login use this pure policy; each caller
+keeps its own diagnostics, and auth login keeps its trailing-slash normalization.
+
 **Tier:** `packages/`. Depends on core; not part of the wire standard.
 
 See the [root AGENTS.md](../../AGENTS.md) for the tier rules.
