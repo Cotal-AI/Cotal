@@ -1,0 +1,7 @@
+{
+  // Typecheck-only companion to tsconfig.json for the smoke tree, which runs under tsx and is
+  // otherwise typechecked by nothing.
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "module": "NodeNext", "moduleResolution": "NodeNext" },
+  "include": ["smoke/**/*.ts"]
+}
