@@ -451,7 +451,8 @@ try {
     webStart.status === 0 && web !== undefined && instance?.pid === web, `${webStart.stdout}${webStart.stderr}`);
   const anonymousMeta = await fetch(`http://127.0.0.1:${webPort}/api/meta`);
   check("the dashboard refuses an anonymous /api/meta", anonymousMeta.status === 401, anonymousMeta.status);
-  const webServing = cliIn(webRoot, ["status", "--components", "--space", WEB_SPACE]);
+  // `--wide` prints the Dashboard row, which the compact report shows only when its record cannot be read.
+  const webServing = cliIn(webRoot, ["status", "--components", "--wide", "--space", WEB_SPACE]);
   const webServingText = `${webServing.stdout}${webServing.stderr}`;
   check("the live dashboard at its recorded address grades web serving",
     /web\s+serving/.test(webServingText) && webServingText.includes(`pid ${web}`) && webServingText.includes(`port ${webPort}`) && webServingText.includes("http reachable"), webServingText);
