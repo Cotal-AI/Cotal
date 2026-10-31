@@ -90,18 +90,28 @@ try {
     check("absent extension recovery: a later --reset exits 0 with no absent-package warning", reset.status === 0 && !reset.stderr.includes(PKG) && seededAll(cfg), reset.stderr);
   }
 
-  // ── a seeded built-in whose directory is gone is skipped by the others' adds, then reinstalled ───
+  // ── a seeded built-in whose directory is gone is reinstalled and verified, never just skipped ────
   {
     const cfg = track(freshCfg());
     const first = cotal(cfg, ["ext", "seed", "--reset"]);
-    const hermes = join(cfg, "cotal", "extensions", "node_modules", "@cotal-ai", "connector-hermes");
+    const prefix = join(cfg, "cotal", "extensions");
+    const hermes = join(prefix, "node_modules", "@cotal-ai", "connector-hermes");
+    // Still a prefix dependency: npm restores it during the first add, before any relink reads it.
     rmSync(hermes, { recursive: true, force: true });
-    const reset = cotal(cfg, ["ext", "seed", "--reset"]);
-    check("absent built-in: --reset names the repair remedy, then reinstalls and verifies it",
-      first.status === 0 && reset.status === 0 &&
-        reset.stderr.includes(`! @cotal-ai/connector-hermes is in the extensions manifest but not installed at ${hermes}`) &&
-        reset.stderr.includes("`cotal ext seed --repair` reinstalls it") &&
-        existsSync(join(hermes, "dist", "index.js")) && seededAll(cfg), reset.stderr);
+    const listed = cotal(cfg, ["ext", "seed", "--reset"]);
+    check("absent built-in the prefix lists: --reset restores and verifies it",
+      first.status === 0 && listed.status === 0 && existsSync(join(hermes, "dist", "index.js")) && seededAll(cfg), listed.stderr);
+    // No longer a prefix dependency: the other adds name the repair, then its own add reinstalls it.
+    rmSync(hermes, { recursive: true, force: true });
+    const manifest = readJson(join(prefix, "package.json"));
+    delete manifest.dependencies["@cotal-ai/connector-hermes"];
+    writeJson(join(prefix, "package.json"), manifest);
+    const unlisted = cotal(cfg, ["ext", "seed", "--reset"]);
+    check("absent built-in the prefix does not list: --reset names the repair, then reinstalls and verifies it",
+      unlisted.status === 0 &&
+        unlisted.stderr.includes(`! @cotal-ai/connector-hermes is in the extensions manifest but not installed at ${hermes}`) &&
+        unlisted.stderr.includes("`cotal ext seed --repair` reinstalls it") &&
+        existsSync(join(hermes, "dist", "index.js")) && seededAll(cfg), unlisted.stderr);
   }
 
   // ── the binder skips only a directory that does not exist, and only when asked ───────────────────
