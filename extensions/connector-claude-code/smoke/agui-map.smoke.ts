@@ -468,8 +468,6 @@ const asSpecifiedUnits = entries.map((e) => asSpecified.map(e)).filter((u) => u 
 const originKinds = [...new Set(entries.map((e) => (e.origin === undefined ? "<absent>" : `kind=${String(e.origin.kind)}`)))].sort();
 const promptSources = [...new Set(entries.map((e) => e.promptSource ?? "<absent>"))].sort();
 
-// Whether this session contains anything the enumeration opens a run on. Computed once, here,
-// because both the population cells below and PART 3 are unassertable without it.
 /**
  * A `user` entry that carries a PROMPT rather than a tool result, which is the shape question the
  * attribution question sits behind. AN ARRAY IS TWO DIFFERENT RECORDS WEARING ONE SHAPE: the
@@ -511,6 +509,8 @@ const attributableTurn = (e: ClaudeEntry): boolean => {
   return k === "human" || k === "channel" || k === "auto-continuation";
 };
 const opensARun = attributableTurn;
+// Whether this session contains anything the enumeration opens a run on. Computed once, here,
+// because both the population cells below and PART 3 are unassertable without it.
 const OPENERS = entries.filter(opensARun).length;
 
 /**
