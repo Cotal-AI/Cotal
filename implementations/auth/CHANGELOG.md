@@ -1,5 +1,14 @@
 # @cotal-ai/auth
 
+## 0.132.5
+
+### Patch Changes
+
+- 75e5b4f: Report the auth daemon's typed startup refusal to `cotal up` instead of a bare exit. A daemon that refuses its start records the refusal beside its discovery file, bound to its pid. The provider's readiness wait throws it as an `EpEnvelopeError`, and `up` names the code and reason, such as `[unavailable; ai.cotal.auth.plane-claim-refused: unknown]`.
+- @cotal-ai/core@0.132.5
+  - @cotal-ai/lang@0.132.5
+  - @cotal-ai/workspace@0.132.5
+
 ## 0.132.4
 
 ### Patch Changes

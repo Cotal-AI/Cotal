@@ -1,5 +1,14 @@
 # @cotal-ai/manager
 
+## 0.132.5
+
+### Patch Changes
+
+- 5153a53: Export `ManagerInstanceLeaseHeld`, the typed error `Manager.start()` throws when this instance's lease is held by another live process on this root or by a holder on another root. It carries the held lease row and `sameRoot`, so an embedder no longer parses the message, which is unchanged.
+- @cotal-ai/core@0.132.5
+  - @cotal-ai/seat@0.132.5
+  - @cotal-ai/workspace@0.132.5
+
 ## 0.132.4
 
 ### Patch Changes
