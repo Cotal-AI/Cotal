@@ -1,0 +1,33 @@
+name: Remotion typecheck
+
+on:
+  pull_request:
+    paths:
+      - 'remotion/**'
+      - 'package.json'
+      - '.github/workflows/remotion.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'remotion/**'
+      - 'package.json'
+      - '.github/workflows/remotion.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  typecheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: remotion
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6.0.8
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - run: pnpm install --frozen-lockfile --store-dir "$RUNNER_TEMP/remotion-pnpm-store"
+      - run: pnpm typecheck
