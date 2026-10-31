@@ -1,5 +1,5 @@
 import { RGBA } from "@opentui/core"
-import { Schema } from "effect"
+import * as Schema from "effect/Schema"
 import { expandTheme, mergeTheme } from "./expand.js"
 import {
   ActionState,

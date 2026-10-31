@@ -1,3 +1,4 @@
+import { flushCompileCache } from "node:module"
 import { createCliRenderer } from "@opentui/core"
 import { render } from "@opentui/solid"
 import { Config, ConfigProvider } from "../vendor/opencode/packages/tui/src/config"
@@ -33,7 +34,10 @@ const config = Config.resolve({}, { terminalSuspend: false })
 const readCatalog = async () => {
   await renderer.idle()
   const { readCatalog } = await import("./catalog.js")
-  return readCatalog()
+  const catalog = readCatalog()
+  // Node writes its compile cache at a clean exit, and a closed terminal ends the app with a signal.
+  flushCompileCache()
+  return catalog
 }
 
 await render(

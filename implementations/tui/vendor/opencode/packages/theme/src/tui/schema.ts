@@ -1,4 +1,4 @@
-import { Schema } from "effect"
+import * as Schema from "effect/Schema"
 
 export const HueStep = Schema.Literals([100, 200, 300, 400, 500, 600, 700, 800, 900])
 export type HueStep = Schema.Schema.Type<typeof HueStep>
