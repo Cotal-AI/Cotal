@@ -1,5 +1,11 @@
 # @cotal-ai/connector-core
 
+## 0.132.3
+
+### Patch Changes
+
+- 9ef07e1: Serve text and structured documentation indexes from generated metadata without decoding the full corpus. Preserve index output, caller-owned structured results, and page and search behavior.
+
 ## 0.132.2
 
 ### Patch Changes
