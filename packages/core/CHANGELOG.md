@@ -1,5 +1,12 @@
 # @cotal-ai/core
 
+## 0.133.1
+
+### Patch Changes
+
+- ee1b7d4: `newAmendmentId` no longer slices its id to 43 characters. 32 random bytes always encode to exactly 43 base64url characters, so the slice never removed anything, and it read as a truncation the id depended on. The doc comment and SPEC now say the length outright. Ids are unchanged.
+- a8f140c: `spaceBackupInventory` now checks that its backed-up and excluded lists classify exactly `spaceDeletionStreams`, the set `deleteSpace` removes and the teardown grant names, and throws when they differ. The backup inventory and the deletion set were two hand-kept lists, and nothing compared them. They agree today, so no inventory changes.
+
 ## 0.133.0
 
 No changes in this release.

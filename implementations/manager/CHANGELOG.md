@@ -1,5 +1,17 @@
 # @cotal-ai/manager
 
+## 0.133.1
+
+### Patch Changes
+
+- 1804a8a: A manager stop during a broker outage no longer waits out the outage while retiring its goal-writer and session-ledger connections. These two connections, like the serve connection, now track their transport, and one `retireConnection` helper drains each while it is connected and closes it while the client is reconnecting it. Before, the goal-writer drain waited for the reconnect. The session-ledger stop left the connection's close unawaited after its drain failed.
+- Updated dependencies [ee1b7d4]
+- Updated dependencies [a8f140c]
+- Updated dependencies [b786ccd]
+  - @cotal-ai/core@0.133.1
+  - @cotal-ai/workspace@0.133.1
+  - @cotal-ai/seat@0.133.1
+
 ## 0.133.0
 
 ### Patch Changes

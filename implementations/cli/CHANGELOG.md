@@ -1,5 +1,17 @@
 # @cotal-ai/cli
 
+## 0.133.1
+
+### Patch Changes
+
+- 58d76e2: The ANSI presence lines in `cotal console --plain` and `cotal join` (its presence updates and `/who`) now take their activity suffix from one `activityDetail` helper in `ui.ts`, next to `presenceDetail`. Before, each line built the dimmed ` - <activity> (set <age> ago)` inline. The output is unchanged.
+- 852ebed: `cotal invoke manager <command> --name <agent>` resolves its target again. Since invoke fetched only the invoked command's contract, the `inspect` lookup behind `--name` was refused locally with `TARGET_NOT_FOUND` before anything was published. Invoke now fetches `inspect`'s contract with the command's when `--name` names a manager target.
+- Updated dependencies [ee1b7d4]
+- Updated dependencies [a8f140c]
+- Updated dependencies [b786ccd]
+  - @cotal-ai/core@0.133.1
+  - @cotal-ai/workspace@0.133.1
+
 ## 0.133.0
 
 ### Patch Changes
