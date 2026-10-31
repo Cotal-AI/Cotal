@@ -274,29 +274,37 @@ await cell("the closed public mint issues only the typed retirement-requester pr
   assert.equal(rows.some((row) => row === ">" || row.includes("$KV") || row.includes("STREAM.")), false);
   assert.equal(issued.exp > Math.floor(Date.now() / 1000), true);
 });
+const retirementRegistration = { space: request.space, actor: request.actor, instanceId, managerLifecycleUid: lifecycleUid, identities };
 const serveActor = remoteManagerActors(instanceId).serve;
-const currentGate = { state: "open" as const, principal: `${retirementTarget.owner}.${serveActor}`, processEpoch: retirement.serveEpoch };
-await cell("current server-derived manager gate authorizes retirement requester issuance", () => {
-  authorizeRemoteManagerRetirement({ owner: retirementTarget.owner, serveActor, instanceId, targetOwner: retirementTarget.owner, serveEpoch: retirement.serveEpoch, gate: currentGate });
+const currentGate = { state: "open" as const, principal: `${retirementTarget.owner}.${serveActor}`, processEpoch: retirement.serveEpoch, registrationRevision: 4 };
+const retirementProof = remoteManagerCurrentRegistrationProof("test-only-proof", retirementTarget.owner, retirementRegistration, currentGate);
+const retire = (gate: typeof currentGate | null, overrides: { targetOwner?: string; serveEpoch?: number; registrationProof?: string } = {}) => authorizeRemoteManagerRetirement({
+  owner: retirementTarget.owner, instanceId, targetOwner: overrides.targetOwner ?? retirementTarget.owner,
+  serveEpoch: overrides.serveEpoch ?? retirement.serveEpoch, registration: retirementRegistration,
+  registrationProof: overrides.registrationProof === undefined ? retirementProof : overrides.registrationProof,
+  proofSecret: "test-only-proof", observeManagerGate: async () => gate,
 });
-await rejects("a foreign target owner is refused", () => authorizeRemoteManagerRetirement({
-  owner: retirementTarget.owner, serveActor, instanceId, targetOwner: "u_bbbbbbbbbbbbbbbbbbbbbbbbbb", serveEpoch: retirement.serveEpoch, gate: currentGate,
-}), /authenticated owner/);
-await rejects("an absent manager gate is refused", () => authorizeRemoteManagerRetirement({
-  owner: retirementTarget.owner, serveActor, instanceId, targetOwner: retirementTarget.owner, serveEpoch: retirement.serveEpoch, gate: null,
-}), /no current open manager gate/);
-await rejects("a retired manager gate is refused", () => authorizeRemoteManagerRetirement({
-  owner: retirementTarget.owner, serveActor, instanceId, targetOwner: retirementTarget.owner, serveEpoch: retirement.serveEpoch, gate: { ...currentGate, state: "retired" },
-}), /no current open manager gate/);
-await rejects("a frozen manager gate is refused", () => authorizeRemoteManagerRetirement({
-  owner: retirementTarget.owner, serveActor, instanceId, targetOwner: retirementTarget.owner, serveEpoch: retirement.serveEpoch, gate: { ...currentGate, state: "frozen" },
-}), /no current open manager gate/);
-await rejects("a foreign-principal manager gate is refused", () => authorizeRemoteManagerRetirement({
-  owner: retirementTarget.owner, serveActor, instanceId, targetOwner: retirementTarget.owner, serveEpoch: retirement.serveEpoch, gate: { ...currentGate, principal: `${retirementTarget.owner}.manager_serve_foreign` },
-}), /server-derived serve principal/);
-await rejects("a stale manager serve epoch is refused", () => authorizeRemoteManagerRetirement({
-  owner: retirementTarget.owner, serveActor, instanceId, targetOwner: retirementTarget.owner, serveEpoch: retirement.serveEpoch - 1, gate: currentGate,
-}), /serve epoch .* is stale/);
+await cell("current server-derived manager gate authorizes retirement requester issuance", () => retire(currentGate));
+await cell("a foreign target owner is refused before the gate is read", async () => {
+  let calls = 0;
+  let error: unknown;
+  try {
+    await authorizeRemoteManagerRetirement({
+      owner: retirementTarget.owner, instanceId, targetOwner: "u_bbbbbbbbbbbbbbbbbbbbbbbbbb",
+      serveEpoch: retirement.serveEpoch, registration: retirementRegistration, registrationProof: retirementProof,
+      proofSecret: "test-only-proof", observeManagerGate: async () => { calls += 1; return null; },
+    });
+  } catch (e) { error = e; }
+  assert.ok(error instanceof Error, "expected a refusal");
+  assert.match(error.message, /authenticated owner/);
+  assert.equal(calls, 0);
+});
+await rejects("an absent manager gate is refused", () => retire(null), /no current open manager gate/);
+await rejects("a retired manager gate is refused", () => retire({ ...currentGate, state: "retired" }), /no current open manager gate/);
+await rejects("a frozen manager gate is refused", () => retire({ ...currentGate, state: "frozen" }), /no current open manager gate/);
+await rejects("a foreign-principal manager gate is refused", () => retire({ ...currentGate, principal: `${retirementTarget.owner}.manager_serve_foreign` }), /server-derived serve principal/);
+await rejects("a stale manager serve epoch is refused", () => retire(currentGate, { serveEpoch: retirement.serveEpoch - 1 }), /serve epoch .* is stale/);
+await rejects("another registration revision is refused", () => retire({ ...currentGate, registrationRevision: 9 }), /current host registration/);
 await cell("supervise authority carries no admin messaging god-view", () => {
   const perms = permissionsFor("remote-manager", "demo", {
     owner: "u_aaaaaaaaaaaaaaaaaaaaaaaaaa", actor: `manager_${instanceId}`, connId: newIdentity().id, lifecycleUid,

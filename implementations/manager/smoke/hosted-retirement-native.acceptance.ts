@@ -788,10 +788,6 @@ try {
   check("manager authority prepare and activate traverse the registry-pinned HTTPS origin",
     httpsManagerAuthorityRequests === 2, httpsManagerAuthorityRequests);
   const retainedRegistrationProof = currentRegistrationProof(activate);
-  const terminalProof = rawDigest(JSON.stringify({
-    v: 1, space, owner, instanceId: state.instanceId, lifecycleUid: state.lifecycleUid, actors,
-    identities: prepareRequest.identities, artifactDigests: [],
-  }));
 
   const releaseDir = join(participantRoot, ".cotal", "native-retirement");
   mkdirSync(releaseDir, { recursive: true, mode: 0o700 });
@@ -822,7 +818,7 @@ try {
       const response = await cotalAuthProvider.managerServiceAuthority!({
         store: participantStore, dir: participantDir,
         request: remoteManagerAuthorityRequest(state, "cli", "retire", {
-          registrationProof: terminalProof,
+          registrationProof: retainedRegistrationProof,
           retirement: { id: identity.id, target, opId, serveEpoch },
         }),
       });

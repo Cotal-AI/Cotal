@@ -400,7 +400,7 @@ try {
         remote.materialCredential(
           await callAuth(
             remote.remoteManagerAuthorityRequest(state, "cli", "retire", {
-              registrationProof: remoteManagerRegistrationProof(mgrOwner, state),
+              registrationProof: proof,
               retirement: { id: identity.id, target, opId, serveEpoch },
             }),
           ),

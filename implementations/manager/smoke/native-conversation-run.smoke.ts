@@ -166,7 +166,7 @@ async function main(): Promise<void> {
         const request = remote.remoteManagedAgentPrepareRetirementRequest(state, "cli", proof, registered.processEpoch, target, opId);
         remote.remoteManagedAgentRetirementPrepared(await cotalAuthProvider.prepareRemoteManagedAgentRetirement!({ ...callArgs, request }), request);
       },
-      mintRetirementRequester: async ({ identity, target, opId, serveEpoch }) => remote.materialCredential(await callAuthority(remote.remoteManagerAuthorityRequest(state, "cli", "retire", { registrationProof: remoteManagerRegistrationProof(owner, state), retirement: { id: identity.id, target, opId, serveEpoch } })), "retirementRequester", identity),
+      mintRetirementRequester: async ({ identity, target, opId, serveEpoch }) => remote.materialCredential(await callAuthority(remote.remoteManagerAuthorityRequest(state, "cli", "retire", { registrationProof: proof, retirement: { id: identity.id, target, opId, serveEpoch } })), "retirementRequester", identity),
       mintSessionServing: async (session) => remote.materialCredential(await callAuthority(remote.remoteManagerAuthorityRequest(state, "cli", "session", {
         registrationProof: remoteManagerRegistrationProof(owner, state),
         session: { id: session.identity.id, endpoint: session.endpoint, sessionId: session.sessionId, epoch: session.epoch, exp: session.exp },

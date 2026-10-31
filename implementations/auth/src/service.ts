@@ -60,7 +60,7 @@ import { createToolResultConsentSigner, makeToolResultConsentRecorder, type Tool
  * subscription is FLUSHED to the broker and the HTTP listener is bound — its existence (plus a
  * /health probe) IS the readiness signal the provider's `ready()` polls.
  */
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { resolve } from "node:path";
 import { credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
@@ -394,27 +394,38 @@ export interface AuthAuthorityPlane extends CalloutAuthority {
   close(): Promise<void>;
 }
 
-type RemoteRetirementGate = Pick<EpGateState, "state" | "principal" | "processEpoch">;
+type RemoteRetirementGate = Pick<EpGateState, "state" | "principal" | "processEpoch" | "registrationRevision">;
 
 /** Package-internal policy step for the hosted retirement requester. The HTTP production door calls
- * this after deriving the owner and manager actors; broker-free smokes exercise the same decision. */
-export function authorizeRemoteManagerRetirement(args: {
+ * this after deriving the owner and manager actors and checking that the request carries a proof;
+ * broker-free smokes exercise the same decision. The gate, principal, epoch and current-registration
+ * proof are the shared serve-time decision, so a registration revision the lifecycle digest does not
+ * name is refused here too. The gate is read only after the target owner is the authenticated owner. */
+export async function authorizeRemoteManagerRetirement(args: {
   owner: string;
-  serveActor: string;
   instanceId: string;
   targetOwner: string;
   serveEpoch: number;
-  gate: RemoteRetirementGate | null;
-}): void {
+  registration: Pick<RemoteManagerAuthorityRequest, "space" | "actor" | "instanceId" | "managerLifecycleUid" | "identities">;
+  registrationProof: string | undefined;
+  proofSecret: string | Uint8Array;
+  observeManagerGate: (instanceId: string) => Promise<RemoteRetirementGate | null>;
+}): Promise<void> {
   if (args.targetOwner !== args.owner)
     throw new EpEnvelopeError("permission-denied", `manager-service retirement may target only its authenticated owner ${args.owner}, not ${args.targetOwner}`);
-  if (!args.gate || args.gate.state !== "open")
+  if (args.registrationProof === undefined)
+    throw new EpEnvelopeError("permission-denied", "manager-service retirement requires the current host registration proof");
+  const gate = await args.observeManagerGate(args.instanceId);
+  if (!gate || gate.state !== "open")
     throw new EpEnvelopeError("failed-precondition", `manager-service retirement found no current open manager gate for instance ${args.instanceId}`);
-  const servePrincipal = principalKey(args.owner, args.serveActor).key;
-  if (args.gate.principal !== servePrincipal)
-    throw new EpEnvelopeError("permission-denied", `manager-service retirement gate belongs to ${args.gate.principal}, not the server-derived serve principal ${servePrincipal}`);
-  if (args.gate.processEpoch !== args.serveEpoch)
-    throw new EpEnvelopeError("conflict", `manager-service retirement serve epoch ${args.serveEpoch} is stale; current is ${args.gate.processEpoch}`);
+  const servePrincipal = remoteManagerServePrincipal(args.owner, args.instanceId);
+  if (gate.principal !== servePrincipal)
+    throw new EpEnvelopeError("permission-denied", `manager-service retirement gate belongs to ${gate.principal}, not the server-derived serve principal ${servePrincipal}`);
+  if (gate.processEpoch !== args.serveEpoch)
+    throw new EpEnvelopeError("conflict", `manager-service retirement serve epoch ${args.serveEpoch} is stale; current is ${gate.processEpoch}`);
+  const expectedProof = remoteManagerCurrentRegistrationProof(args.proofSecret, args.owner, args.registration, gate);
+  if (!timingSafeEqual(Buffer.from(args.registrationProof), Buffer.from(expectedProof)))
+    throw new EpEnvelopeError("permission-denied", "manager-service retirement proof does not match the current host registration");
 }
 
 /** The §13.9 name authority in static mode: the plane holds the space signing seed, so it
@@ -1367,15 +1378,16 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
             return { credentials };
           }
           if (r.operation === "retire") {
-            const expectedProof = remoteManagerRegistrationProof(owner, registration);
-            if (r.registrationProof !== expectedProof)
-              throw new EpEnvelopeError("permission-denied", "manager-service retirement proof does not match this owner/lifecycle");
             const retirement = r.retirement!;
-            const gate = managerIssuanceGate(r.instanceId);
-            const observed = await gate.observe();
-            authorizeRemoteManagerRetirement({
-              owner, serveActor: actors.serve, instanceId: r.instanceId,
-              targetOwner: retirement.target.owner, serveEpoch: retirement.serveEpoch, gate: observed,
+            await authorizeRemoteManagerRetirement({
+              owner, instanceId: r.instanceId,
+              targetOwner: retirement.target.owner, serveEpoch: retirement.serveEpoch,
+              registration: {
+                space: r.space, actor: r.actor, instanceId: r.instanceId,
+                managerLifecycleUid: r.managerLifecycleUid, identities: r.identities,
+              },
+              registrationProof: r.registrationProof, proofSecret: dataAccount.signingSeed,
+              observeManagerGate: async (id) => managerIssuanceGate(id).observe(),
             });
             credentials.retirementRequester = await mintPublicUserJwt(
               issuerAuth(),

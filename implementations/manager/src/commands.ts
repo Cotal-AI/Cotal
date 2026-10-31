@@ -483,7 +483,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
           const retirementMaterial = await provider.managerServiceAuthority!({
             ...providerCall,
             request: remoteManagerAuthorityRequest(state, "cli", "retire", {
-              registrationProof: remoteManagerRegistrationProof(material.owner, state),
+              registrationProof: retainedRegistrationProof,
               retirement: {
                 id: identity.id,
                 target: retirementTarget,
