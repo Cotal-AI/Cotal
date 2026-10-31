@@ -574,6 +574,7 @@
     "smoke:agui-frame-dispatch": "tsx implementations/web/smoke/agui-frame-dispatch.smoke.ts",
     "smoke:view-events-filter": "tsx packages/workspace/smoke/view-events-filter.smoke.ts",
     "smoke:view-transport": "tsx packages/workspace/smoke/view-transport.smoke.ts",
+    "smoke:view-thread-fields": "tsx packages/workspace/smoke/view-thread-fields.smoke.ts",
     "smoke:event-order": "tsx implementations/web/smoke/event-order.smoke.ts",
     "smoke:web-events-filter": "tsx implementations/web/smoke/web-events-filter.smoke.ts",
     "smoke:event-channel": "tsx extensions/connector-core/smoke/event-channel.smoke.ts",
