@@ -134,6 +134,7 @@ import {
 } from "@cotal-ai/auth";
 
 import { persistRemoteUserEntry } from "../../cli/src/commands/meshes-add.js";
+import { approveDevice } from "../../auth/smoke/_device-approval.js";
 import { SMOKE_BROKER_TOKEN, emitSentinel, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { loadOrCreateRemoteManagerIdentity } from "../src/remote-authority.js";
 import { MANAGER_ENDPOINT } from "../src/manager-service-contract.js";
@@ -466,14 +467,8 @@ try {
     returnHeaders: true,
   });
   const cookieA = signupA.headers.get("set-cookie")!.split(";")[0]!;
-  const approveA = async (userCode: string) => {
-    await fetch(`${idpUrl}/device?user_code=${encodeURIComponent(userCode)}`, { headers: { cookie: cookieA, origin } });
-    await fetch(`${idpUrl}/device/approve`, {
-      method: "POST", headers: { "content-type": "application/json", cookie: cookieA, origin },
-      body: JSON.stringify({ userCode }),
-    });
-  };
-  await establishIdpSession({ dir: homeA, idpUrl, clientId: "cli-a", onPrompt: (p) => void approveA(p.userCode) });
+  const approveA = (userCode: string) => approveDevice({ base: idpUrl, cookie: cookieA, origin }, userCode);
+  await establishIdpSession({ dir: homeA, idpUrl, clientId: "cli-a", onPrompt: (p) => approveA(p.userCode) });
   const ownerA = await cotalAuthProvider.ownerForLogin({ store: hostStore, dir: hostDir, space });
 
   // Owner B in homeB
@@ -483,14 +478,8 @@ try {
     returnHeaders: true,
   });
   const cookieB = signupB.headers.get("set-cookie")!.split(";")[0]!;
-  const approveB = async (userCode: string) => {
-    await fetch(`${idpUrl}/device?user_code=${encodeURIComponent(userCode)}`, { headers: { cookie: cookieB, origin } });
-    await fetch(`${idpUrl}/device/approve`, {
-      method: "POST", headers: { "content-type": "application/json", cookie: cookieB, origin },
-      body: JSON.stringify({ userCode }),
-    });
-  };
-  await establishIdpSession({ dir: homeB, idpUrl, clientId: "cli-b", onPrompt: (p) => void approveB(p.userCode) });
+  const approveB = (userCode: string) => approveDevice({ base: idpUrl, cookie: cookieB, origin }, userCode);
+  await establishIdpSession({ dir: homeB, idpUrl, clientId: "cli-b", onPrompt: (p) => approveB(p.userCode) });
   const ownerB = await cotalAuthProvider.ownerForLogin({ store: hostStore, dir: hostDir, space });
 
   check("two distinct owners established via IdP (ownerA !== ownerB)", typeof ownerA === "string" && typeof ownerB === "string" && ownerA !== ownerB, { ownerA, ownerB });
