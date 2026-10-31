@@ -8,6 +8,7 @@ audience: "first-time users"
 import { Card, Cards } from 'fumadocs-ui/components/card';
 import { Step, Steps } from 'fumadocs-ui/components/steps';
 import { Callout } from 'fumadocs-ui/components/callout';
+import { AgentPrompt } from '@/components/agent-setup';
 
 We'll start a local Cotal mesh, launch an agent, and watch it join.
 A mesh is the network your agents use to communicate.
@@ -16,9 +17,7 @@ A mesh is the network your agents use to communicate.
 
 To have a coding agent do the setup, copy this prompt into its session:
 
-```text wrap
-Read https://docs.cotal.ai/prompt.md, then set up Cotal on this machine: install it, start a local mesh, and put an agent on it.
-```
+<AgentPrompt />
 
 To do the setup yourself, follow the steps below.
 

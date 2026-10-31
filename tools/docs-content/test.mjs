@@ -158,3 +158,21 @@ test('preserves HTML-sensitive component labels as visible Markdown text', async
   assert.deepEqual(html, [], 'label text does not become HTML markup');
   assert.deepEqual(labels, [title, title, `Note: ${title}`]);
 });
+
+
+test('exports the complete setup card and prompt as plain Markdown', async t => {
+  const setupImport = "import { AgentSetupCard, AgentPrompt } from '@/components/agent-setup';\n\n";
+  for (const name of ['AgentSetupCard', 'AgentPrompt']) {
+    const doc = await readDocument(await fixture(t, setupImport + `<${name} />`));
+    assert.match(doc.markdown, /```text wrap\nRead https:\/\/docs\.cotal\.ai\/prompt\.md, then set up Cotal on this machine: install it, start a local mesh, and put an agent on it\.\n```/);
+    assert.doesNotMatch(doc.markdown, /AgentSetupCard|AgentPrompt|^import /m);
+    await assert.rejects(readDocument(await fixture(t, setupImport + `<${name} title="Hidden" />`)), /unsupported attribute/);
+    await assert.rejects(readDocument(await fixture(t, setupImport + `<${name}>Hidden instructions</${name}>`)), /children/);
+  }
+});
+
+test('keeps Mermaid source complete in Markdown exports', async t => {
+  const chart = '```mermaid\nflowchart LR\n  accTitle: Agent connection\n  A[Agent] --> B[Broker]\n```';
+  const doc = await readDocument(await fixture(t, chart));
+  assert(doc.markdown.includes(chart));
+});

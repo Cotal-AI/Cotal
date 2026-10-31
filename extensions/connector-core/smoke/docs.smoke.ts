@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runDocs, searchDocs, renderDocsIndex, DOCS_VERSION } from "@cotal-ai/connector-core";
 
@@ -200,6 +200,43 @@ console.log("✓ 5 — BM25 section search");
   assert.equal(DOCS_VERSION, shipped, "the built module is stamped with the shipped version");
 }
 console.log("✓ 6 — the built docs module serves every page in docs/ at the shipped version");
+
+{
+  const sources = new Map(readdirSync(join(repoRoot, "docs"))
+    .filter(name => /\.mdx?$/.test(name) && name !== "README.md")
+    .map(name => [join(repoRoot, "docs", name), name.replace(/\.mdx?$/, "").toLowerCase()]));
+  sources.set(join(repoRoot, "SPEC.md"), "spec");
+  sources.set(join(repoRoot, "spec", "cotal-lang.md"), "lang");
+  sources.set(join(repoRoot, "spec", "cotal.schema.json"), "schema");
+  const followed = new Set<string>();
+  const outsideBundle = new Set<string>();
+  for (const [source, slug] of sources) {
+    const page = await runDocs({ page: slug });
+    let fenced = false;
+    const prose = page.text.split("\n").filter(line => {
+      if (/^\s*(```|~~~)/.test(line)) { fenced = !fenced; return false; }
+      return !fenced;
+    }).join("\n");
+    for (const [, href] of prose.matchAll(/(?<!!)\[[^\]\n]*\]\(([^()\s]+)(?:\s+"[^"]*")?\)/g)) {
+      if (/^(?:[a-z][a-z0-9+.-]*:|#|\/)/i.test(href)) continue;
+      const path = resolve(dirname(source), decodeURIComponent(href.split(/[?#]/)[0]));
+      const destination = sources.get(path);
+      if (!destination) { outsideBundle.add(href); continue; }
+      const linked = await runDocs({ page: href });
+      assert.equal(linked.isError, undefined, `exported documentation link resolves: ${slug} -> ${href}`);
+      const canonical = await runDocs({ page: destination });
+      assert.equal(linked.text, canonical.text, `exported documentation link reads its intended page: ${href}`);
+      followed.add(href);
+    }
+  }
+  assert.ok(followed.has("identity-and-auth.mdx"), "the link census follows an authored MDX reference");
+  assert.ok(followed.has("../SPEC.md#7-channels"), "the link census follows a relative spec heading");
+  assert.ok(outsideBundle.size > 0, "repository source links remain outside the documentation bundle");
+  for (const page of ["https://elsewhere.test/architecture.mdx", "../examples/architecture.mdx", "../packages/architecture.md"]) {
+    assert.equal((await runDocs({ page })).isError, true, `unrelated paths are refused: ${page}`);
+  }
+  console.log(`✓ exported documentation links resolve through cotal_docs (${followed.size} destinations; ${outsideBundle.size} repository links outside the bundle)`);
+}
 
 // 7 — FAIL LOUD ON A HOLLOW SOURCE, which is the property the generator documents and the only
 // thing standing between an empty page and a release that ships docs answering nothing. This

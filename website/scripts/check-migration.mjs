@@ -11,6 +11,12 @@ for (const page of pages) {
   assert.equal(readFileSync(new URL(`../dist${page.url.slice(0,-1)}.md`, import.meta.url), 'utf8'), page.markdown, `Markdown: ${page.url}`);
   if (page.section !== 'api' && page.slug !== 'api-reference')
     assert(redirects.includes(`/${page.slug}/ ${page.url} 301`), `legacy redirect: ${page.slug}`);
+  const document = parse(readFileSync(htmlFile, 'utf8'));
+  const elements = [];
+  const collect = node => { elements.push(node); for (const child of node.childNodes ?? []) collect(child); };
+  collect(document);
+  assert(elements.some(node => node.nodeName === 'button' && node.attrs?.some(attr => attr.name === 'aria-label' && attr.value === 'Copy page')), `Copy page: ${page.url}`);
+  assert(elements.some(node => node.nodeName === 'link' && node.attrs?.some(attr => attr.name === 'rel' && attr.value === 'icon') && node.attrs?.some(attr => attr.name === 'href' && attr.value === '/favicon.svg')), `favicon: ${page.url}`);
   const visit = node => {
     for (const attr of node.attrs ?? []) {
       if (!['href','src'].includes(attr.name)) continue;
@@ -21,7 +27,7 @@ for (const page of pages) {
     }
     for (const child of node.childNodes ?? []) visit(child);
   };
-  visit(parse(readFileSync(htmlFile, 'utf8')));
+  visit(document);
 }
 assert.equal(pages.find(p => p.slug === 'cli').url, '/api-reference/cli/');
 assert.equal(pages.find(p => p.slug === 'spec').url, '/docs/spec/');

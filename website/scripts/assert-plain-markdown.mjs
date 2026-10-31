@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { lexer, walkTokens } from 'marked';
 
 const esm = /^\s*(?:import\s+(?:['"]|[^;]*?\bfrom\s*['"])|export\s+(?:default\b|(?:async\s+)?(?:function|class|const|let|var|type|interface)\b|[{*]))/;
-const component = /<\/?(?:Cards?|Steps?|Tabs?|Callout|AgentPrompt)(?:\s|>|\/)/;
+const component = /<\/?(?:Cards?|Steps?|Tabs?|Callout|AgentPrompt|AgentSetupCard|Mermaid)(?:\s|>|\/)/;
 
 export function assertPlainMarkdown(markdown, label) {
   assert(!markdown.includes('\0'), `Markdown has no NUL: ${label}`);

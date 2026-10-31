@@ -465,7 +465,27 @@ for (const page of pages) {
   writeFileSync(file, page.markdown);
 }
 const origin = 'https://docs.cotal.ai';
-writeFileSync(join(pubDir, 'llms.txt'), '# Cotal\n\nA standard wire interface for agents over NATS + JetStream. The normative wire specification wins where other pages disagree. Roadmap content is not shipped behavior.\n\n- [All documentation](https://docs.cotal.ai/llms-full.txt)\n- [Compact documentation](https://docs.cotal.ai/llms-small.txt)\n- [Agent setup prompt](https://docs.cotal.ai/prompt.md)\n- [Message schema](https://docs.cotal.ai/cotal.schema.json)\n\n' + httpReferences.map(reference => `- [${reference.label} OpenAPI](${origin}/${reference.specFile})`).join('\n') + '\n' + pages.map(p => `- [${p.title}](${origin}${p.url.slice(0, -1)}.md)`).join('\n') + '\n');
+const taskRoutes = [
+  ['getting-started', 'Install Cotal, start a local mesh, and launch your first agent.'],
+  ['using-cotal', 'Choose between personal sessions, hosted spaces, teams, and service integrations.'],
+  ['mcp-tools', 'Message peers, inspect the mesh, and manage teammates from an agent session.'],
+  ['define-a-team', 'Declare agents and channels in a team manifest.'],
+  ['channels-and-permissions', 'Grant or audit channel subscriptions and publishing permissions.'],
+  ['agent-files', 'Define a persona and its launch configuration.'],
+  ['watch-a-mesh', 'Observe activity through the console, event stream, or browser dashboard.'],
+  ['identity-and-auth', 'Understand credentials, authentication, and issued authority.'],
+  ['workflows', 'Coordinate durable work, human checkpoints, and recovery.'],
+  ['build-a-client', 'Implement a client for the wire contract.'],
+  ['spec', 'Check the normative protocol requirements.'],
+].map(([slug, description]) => {
+  const page = pages.find(page => page.slug === slug);
+  if (!page) throw new Error(`task route names an unpublished page: ${slug}`);
+  return `- [${page.title}](${origin}${page.url.slice(0, -1)}.md): ${description}`;
+});
+const taskRouting = '## Route by task\n\n' +
+  '- [Agent setup prompt](https://docs.cotal.ai/prompt.md): Run the setup instructions with your coding agent.\n' +
+  taskRoutes.join('\n') + '\n\n## All pages\n\n';
+writeFileSync(join(pubDir, 'llms.txt'), '# Cotal\n\nA standard wire interface for agents over NATS + JetStream. The normative wire specification wins where other pages disagree. Roadmap content is not shipped behavior.\n\n- [All documentation](https://docs.cotal.ai/llms-full.txt)\n- [Compact documentation](https://docs.cotal.ai/llms-small.txt)\n- [Agent setup prompt](https://docs.cotal.ai/prompt.md)\n- [Message schema](https://docs.cotal.ai/cotal.schema.json)\n\n' + httpReferences.map(reference => `- [${reference.label} OpenAPI](${origin}/${reference.specFile})`).join('\n') + '\n\n' + taskRouting + pages.map(p => `- [${p.title}](${origin}${p.url.slice(0, -1)}.md)`).join('\n') + '\n');
 for (const [name, subset] of [['full', pages], ['small', pages.filter(p => !['release', 'setup-internals', 'roadmap'].includes(p.slug))]]) {
   writeFileSync(join(pubDir, `llms-${name}.txt`), subset.map(p => `Source: ${origin}${p.url}\n\n${p.markdown}`).join('\n\n'));
 }

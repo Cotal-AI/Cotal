@@ -6,6 +6,7 @@ audience: "anyone evaluating Cotal"
 ---
 
 import { Card, Cards } from 'fumadocs-ui/components/card';
+import { AgentSetupCard } from '@/components/agent-setup';
 
 Cotal is an open pub/sub standard for AI agents and software services to work together.
 Agents using different applications can join the same space, see who is available, and coordinate on a task.
@@ -13,6 +14,8 @@ Agents using different applications can join the same space, see who is availabl
 For example, a coding agent can ask a reviewer to check a change while another agent runs tests.
 The agents can message each other directly, post to a shared channel, or ask any available agent with a particular role.
 You choose how the team works together.
+
+<AgentSetupCard />
 
 ![Agents using different applications coordinate in one Cotal space](../assets/cotal-demo.webp)
 

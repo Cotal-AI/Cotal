@@ -7,6 +7,7 @@ import remarkGfm from 'remark-gfm';
 import { frontmatter } from 'fumadocs-core/content/md/frontmatter';
 import { remarkLLMs } from 'fumadocs-core/mdx-plugins/remark-llms';
 import { replaceSource } from 'fumadocs-core/mdx-plugins/stringifier';
+import { AGENT_PROMPT } from './agent-prompt.mjs';
 
 /** @typedef {import('./index.d.ts').Document} Document */
 /** @typedef {import('mdast').Nodes} Node */
@@ -15,6 +16,8 @@ import { replaceSource } from 'fumadocs-core/mdx-plugins/stringifier';
 
 /** @type {Record<string, { module: string; attributes: string[] }>} */
 const components = {
+  AgentSetupCard: { module: '@/components/agent-setup', attributes: [] },
+  AgentPrompt: { module: '@/components/agent-setup', attributes: [] },
   Card: { module: 'fumadocs-ui/components/card', attributes: ['title', 'href'] },
   Cards: { module: 'fumadocs-ui/components/card', attributes: [] },
   Step: { module: 'fumadocs-ui/components/steps', attributes: [] },
@@ -103,7 +106,11 @@ function semanticComponents(path) {
           if (!node.name || !Object.hasOwn(components, node.name)) fail(path, node, `unsupported component ${node.name ?? 'fragment'}`);
           if (!imported.has(node.name)) fail(path, node, `component ${node.name} needs its native import`);
           const attrs = attributes(node, path);
-          if (node.name === 'Card') {
+          if (node.name === 'AgentSetupCard' || node.name === 'AgentPrompt') {
+            if (node.children.length) fail(path, node, `${node.name} does not accept children`);
+            const heading = node.name === 'AgentSetupCard' ? '## Set up with your agent\n\n' : '';
+            replaceSource(file, node, () => `${heading}\`\`\`text wrap\n${AGENT_PROMPT}\n\`\`\`\n\n`);
+          } else if (node.name === 'Card') {
             const title = requiredText(attrs, 'title', node, path);
             const href = attrs.href === undefined ? undefined : requiredText(attrs, 'href', node, path);
             const label = href ? `[${escapeLabel(title)}](${linkTarget(href)})` : `**${escapeLabel(title)}**`;

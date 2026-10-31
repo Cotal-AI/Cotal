@@ -12,17 +12,18 @@ The [wire contract](../SPEC.md) defines Cotal's subjects, message schemas, prese
 delivery guarantees, and authorization. The TypeScript packages implement that contract.
 Connectors and other adapters connect existing applications and services to it.
 
-```text
-Agent application                       Agent application
-       |                                       |
-   Connector                               Connector
-       |                                       |
-       +----------- NATS + JetStream ----------+
-                     |         |
-                 Delivery   Observers
-                  service
-
-Manager -- starts, stops, and attaches to agent processes
+```mermaid
+flowchart TB
+  accTitle: Cotal components and message transport
+  accDescr: Agent applications connect through connectors to NATS and JetStream. The delivery service and observers connect to the broker. The manager supervises agent processes separately.
+  appA[Agent application] --- connectorA[Connector]
+  appB[Agent application] --- connectorB[Connector]
+  connectorA --- broker[NATS + JetStream]
+  connectorB --- broker
+  broker --- delivery[Delivery service]
+  broker --- observers[Observers]
+  manager[Manager] -. starts, stops, attaches .-> appA
+  manager -. starts, stops, attaches .-> appB
 ```
 
 The broker routes messages and enforces permissions. JetStream retains messages and coordination state.
@@ -69,8 +70,14 @@ but Cotal does not yet upload or fetch artifact bytes. See the [roadmap](roadmap
 
 Dependencies flow toward the protocol package:
 
-```text
-examples -> implementations -> workspace -> core <- extensions (peer dependency)
+```mermaid
+flowchart TD
+  accTitle: Package dependency direction
+  accDescr: Examples depend on implementations, implementations on workspace, and workspace on core. Extensions peer-depend on core.
+  examples[Examples] --> implementations[Implementations]
+  implementations --> workspace[Workspace]
+  workspace --> core[Core]
+  extensions[Extensions] -->|peer dependency| core
 ```
 
 `@cotal-ai/core` contains the wire types, subjects, endpoint client, extension contracts, and shared registry.

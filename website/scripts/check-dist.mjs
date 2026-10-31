@@ -9,7 +9,7 @@ import { createHash } from 'node:crypto';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse } from 'parse5';
-import { AGENT_PROMPT } from '../src/prompt.js';
+import { AGENT_PROMPT } from '@cotal-ai/docs-content/agent-prompt';
 
 const dist = join(dirname(fileURLToPath(import.meta.url)), '..', 'dist');
 const fail = (msg) => {
@@ -18,6 +18,8 @@ const fail = (msg) => {
 };
 
 const llms = readFileSync(join(dist, 'llms.txt'), 'utf8');
+if (!llms.includes('## Route by task') || llms.indexOf('## Route by task') > llms.indexOf('## All pages'))
+  fail('llms.txt lost task routing above its complete page list');
 for (const needle of ['/prompt.md', '/getting-started.md', '/mcp-tools.md', '/spec.md', '/cotal.schema.json']) {
   if (!llms.includes(needle)) fail(`llms.txt lost its task link to ${needle}`);
 }
@@ -30,6 +32,7 @@ for (const cmd of ['npx cotal-ai setup --destination local --harness claude --pr
 }
 
 const quickstartHtml = readFileSync(join(dist, 'docs', 'getting-started', 'index.html'), 'utf8');
+const landingHtml = readFileSync(join(dist, 'docs', 'what-is-cotal', 'index.html'), 'utf8');
 const textOf = node => node.nodeName === '#text' ? node.value : (node.childNodes ?? []).map(textOf).join('');
 function find(node, predicate) {
   if (predicate(node)) return node;
@@ -42,6 +45,11 @@ const promptFigure = find(parse(quickstartHtml), node => node.nodeName === 'figu
   find(node, child => child.nodeName === 'pre' && textOf(child).trim() === AGENT_PROMPT));
 if (!promptFigure || !find(promptFigure, node => node.nodeName === 'button' && textOf(node) === 'Copy Text'))
   fail('quickstart lost its native copyable setup prompt');
+if (!landingHtml.includes('Set up with your agent. Copy setup prompt') || !landingHtml.includes(AGENT_PROMPT))
+  fail('landing page lost its complete copyable setup card');
+const landingTwin = readFileSync(join(dist, 'docs/what-is-cotal.md'), 'utf8');
+if (!landingTwin.includes('```text wrap\n' + AGENT_PROMPT + '\n```'))
+  fail('landing Markdown lost its complete setup prompt');
 const quickstartTwin = readFileSync(join(dist, 'docs/getting-started.md'), 'utf8');
 if (!quickstartTwin.includes('```text wrap\n' + AGENT_PROMPT + '\n```'))
   fail('quickstart Markdown does not contain the complete setup prompt fence');

@@ -43,7 +43,11 @@ not change its URL.
 Start here uses direct MDX with explicit Fumadocs Cards, Steps, and Callout
 components. Titles, descriptions, classification, and audience live in frontmatter.
 Tutorial headings declare their existing IDs so incoming fragment links still work.
-Fumadocs code blocks provide the setup prompt's copy button.
+What is Cotal includes a setup card that copies the prompt when activated.
+Quickstart keeps the native Fumadocs code-block copy control. Both use the same
+plain-text prompt as the Markdown exports. Every documentation page also offers
+a native Copy page button that copies its complete Markdown download. Its adjacent
+Open menu links to Markdown and AI applications using the public page URL.
 
 Reviewed pages use direct MDX. Project pages await their writing pass.
 The normative specification remains Markdown, and the MCP catalog is generated MDX.

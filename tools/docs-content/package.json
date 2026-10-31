@@ -5,6 +5,10 @@
   "type": "module",
   "description": "Build-only documentation metadata and semantic Markdown exports.",
   "exports": {
+    "./agent-prompt": {
+      "types": "./agent-prompt.d.ts",
+      "import": "./agent-prompt.mjs"
+    },
     "./generate": {
       "types": "./generate.d.ts",
       "import": "./generate.mjs"
@@ -15,14 +19,16 @@
     }
   },
   "files": [
+    "agent-prompt.mjs",
+    "agent-prompt.d.ts",
     "index.mjs",
     "index.d.ts",
     "generate.mjs",
     "generate.d.ts"
   ],
   "scripts": {
-    "build": "node --check index.mjs && node --check generate.mjs",
-    "typecheck": "tsc --noEmit --allowJs --checkJs --module NodeNext --moduleResolution NodeNext --target ES2022 --skipLibCheck index.mjs generate.mjs",
+    "build": "node --check index.mjs && node --check generate.mjs && node --check agent-prompt.mjs",
+    "typecheck": "tsc --noEmit --allowJs --checkJs --module NodeNext --moduleResolution NodeNext --target ES2022 --skipLibCheck index.mjs generate.mjs agent-prompt.mjs",
     "test": "node --test test.mjs"
   },
   "dependencies": {

@@ -31,11 +31,15 @@ Import supported components by their original names from Fumadocs UI:
 | `fumadocs-ui/components/steps` | `Steps`, `Step` | All authored headings, instructions, and code. |
 | `fumadocs-ui/components/tabs` | `Tabs`, `Tab` | Every tab label and body, including inactive tabs. |
 | `fumadocs-ui/components/callout` | `Callout` | Warning type, optional title, and complete body in a blockquote. |
+| `@/components/agent-setup` | `AgentSetupCard`, `AgentPrompt` | The shared setup prompt as a complete text fence, with a heading for the card. |
 
 Use string props for card `title`, optional `href`, tab `value`, and callout `type` and `title`.
 Tabs also support a static string array in `items`, an integer `defaultIndex`, a string `groupId`, and a boolean `persist`.
 Each `items` entry must match its `Tab` value in order.
 Code fences use Fumadocs' native code-block copy control and export unchanged.
+The setup components accept no props or children. They read the dependency-free
+`@cotal-ai/docs-content/agent-prompt` value, which the website also uses for copying.
+Mermaid fences render as diagrams on the website and remain Mermaid source in exports.
 
 The exporter rejects unknown components, unsupported attributes, import aliases, executable exports, spreads, and dynamic expressions.
 Add an explicit semantic conversion and its content-preservation test before introducing another component.
