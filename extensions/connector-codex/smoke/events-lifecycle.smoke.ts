@@ -38,6 +38,9 @@
  *      previous thread is still bound, and the plane must move to the live thread rather than
  *      pumping the dead one forever.
  *
+ * The late-file control uses a slow turn; the restart control includes another seat's frames.
+ * Completion and thread witnesses must belong to the seat each case is grading.
+ *
  * Run: pnpm smoke:codex-events-lifecycle
  */
 import { spawn } from "node:child_process";
@@ -47,13 +50,12 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CotalEndpoint, eventChannel, isAguiFramePart, seedChannelRegistry, isReachable } from "@cotal-ai/core";
 import { eventWalLocation, JsonlFileSource, type WalDoc } from "@cotal-ai/connector-core";
-import { freePort, killAndAwaitExit, SMOKE_BROKER_TOKEN, awaitBrokerReady, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { skipSuite, freePort, killAndAwaitExit, SMOKE_BROKER_TOKEN, awaitBrokerReady, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 if (process.platform === "win32") {
   // Managed Codex agents are POSIX-only by design (the isolated CODEX_HOME symlinks the operator's
   // auth.json), so there is no Windows case for this seam at all.
-  console.log("SKIP codex events lifecycle: managed Codex agents are POSIX-only");
-  process.exit(0);
+  skipSuite("managed Codex agents are POSIX-only");
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -478,13 +480,14 @@ try {
   check("and the seat SAID it was starting from there rather than losing them quietly", errB.includes("not republished"), {
     tail: errB.slice(-200),
   });
-  await dm(B, "turn three, after the bind");
-  // NAMED, because a silent expiry here is exactly what the two cells below would report as an
-  // empty stream. Given `{ added: 0 }` alone a reader cannot tell a plane that published nothing
-  // from a wait that simply ran out, and those are different defects with different fixes.
-  const lateArrived = await settle("B:frames after the bind", () => frames.length > before);
+  const bThread = publishedThreads(errB)[0];
+  // SLOW writes RUN_STARTED before its terminal. Wait for the completed turn, not its first frame.
+  await dm(B, "SLOW turn three, after the bind");
+  const lateArrived = await settle("B:frames after the bind", () =>
+    frames.slice(before).some((f) => f.threadId === bThread && f.events.some((e) => e.type === "RUN_FINISHED")),
+  );
   check("late-file:the wait for the post-bind frames did not expire", lateArrived, margin("B:frames after the bind"));
-  const lateFrames = frames.slice(before);
+  const lateFrames = frames.slice(before).filter((f) => f.threadId === bThread);
   check("and from the bind onward the seat publishes normally", lateFrames.some((f) => f.events.some((e) => e.type === "RUN_FINISHED")), {
     added: lateFrames.length,
   });
@@ -517,16 +520,26 @@ try {
   const C = "restartlatepeer";
   const homeC = join(dir, "c");
   const cFrom = frames.length;
+  // Another live seat publishes inside C's window. A global first frame cannot identify C.
+  await dm(B, "background turn before C starts");
+  const otherPublished = await settle("C:another seat publishes in the shared window", () =>
+    frames.slice(cFrom).some((f) => publishedThreads(errB).includes(f.threadId) && f.events.some((e) => e.type === "RUN_FINISHED")),
+  );
+  check("restart-late:another seat's frames precede C in the shared window", otherPublished, margin("C:another seat publishes in the shared window"));
+  const framesOfC = (): AguiFramePart[] => {
+    const threads = publishedThreads(errC);
+    return frames.slice(cFrom).filter((f) => threads.includes(f.threadId));
+  };
   hostC = startHost(C, homeC, "restart-late", join(dir, "c.log.jsonl"), (chunk) => (errC += chunk));
   check("setup:seat C came online", await settle("online:C", () => online.has(C)), margin("online:C"));
   await joinEventsOf(C);
   await dm(C, "first turn on the thread that is about to die");
-  const cPublished = await settle("C:publishes before the crash", () => frames.length > cFrom);
+  const cPublished = await settle("C:publishes before the crash", () => framesOfC().some((f) => f.events.some((e) => e.type === "RUN_FINISHED")));
   check("restart-late:the first thread publishes before the crash", cPublished, {
     ...margin("C:publishes before the crash"),
-    added: frames.length - cFrom,
+    added: framesOfC().length,
   });
-  const deadThread = frames.slice(cFrom)[0]?.threadId;
+  const deadThread = publishedThreads(errC)[0];
   await dm(C, "DIE now");
   // The successor's file is withheld until its SECOND turn, so the launch bind for the new thread
   // spends its whole budget and gives up. Synchronized on the host saying so, not on a clock.
@@ -553,9 +566,9 @@ try {
   // forever for an end that cannot come. So the close belongs HERE, at the give-up, and not only on
   // the happy path where a successor eventually binds. A successor that never appears is exactly
   // the case where "the next bind will drain it" never happens.
-  const deadClosed = await settle("C:the predecessor run closes", () => openRunsIn(frames.slice(cFrom)).length === 0, 20_000);
+  const deadClosed = await settle("C:the predecessor run closes", () => openRunsIn(framesOfC()).length === 0, 20_000);
   check("restart-late:the dead thread's run was CLOSED when the plane gave up on its successor", deadClosed, {
-    open: openRunsIn(frames.slice(cFrom)),
+    open: openRunsIn(framesOfC()),
     ...margin("C:the predecessor run closes"),
   });
   // THE CONTROL, from the dead thread's own file: the crash lands mid-turn, so the file itself
@@ -611,9 +624,9 @@ try {
     added: frames.slice(afterGiveUp).map((f) => f.threadId),
   });
   await dm(C, "successor turn two, which creates its file");
-  const moved = await settle("C:the successor publishes", () => frames.slice(cFrom).some((f) => f.threadId !== deadThread), 60_000);
+  const moved = await settle("C:the successor publishes", () => framesOfC().some((f) => f.threadId !== deadThread), 60_000);
   check("restart-late:the successor thread PUBLISHES once its file appears", moved, {
-    threads: [...new Set(frames.slice(cFrom).map((f) => f.threadId))],
+    threads: [...new Set(framesOfC().map((f) => f.threadId))],
     tail: errC.slice(-300),
     ...margin("C:the successor publishes"),
   });
@@ -621,9 +634,9 @@ try {
   // NAMED, because the three cells below all read `cFrames`, and a silent expiry leaves them
   // reading a shorter list than the case intends: "no run left open" is trivially true of frames
   // that never arrived.
-  const cSecond = await settle("C:a second successor frame", () => frames.slice(cFrom).filter((f) => f.threadId !== deadThread).length > 1);
+  const cSecond = await settle("C:a second successor frame", () => framesOfC().filter((f) => f.threadId !== deadThread).length > 1);
   check("restart-late:the successor's second frame arrived, so the cells below read a full list", cSecond, margin("C:a second successor frame"));
-  const cFrames = frames.slice(cFrom);
+  const cFrames = framesOfC();
   const cDead = cFrames.filter((f) => f.threadId === deadThread);
   check("restart-late:and the plane is no longer pumping the dead thread", cFrames[cFrames.length - 1]?.threadId !== deadThread, {
     last: cFrames[cFrames.length - 1]?.threadId,

@@ -71,8 +71,9 @@ export interface AgentConfig {
    *  **Default-deny** (empty): publishing must be declared. Informational only here; the broker
    *  enforces it under auth. */
   allowPublish: string[];
-  /** A conversation gateway's connection is not a managed seat: no manager addresses a run turn to
-   *  it and none holds a self it could stop. Its manager calls carry only its own grant. */
+  /** A conversation gateway's connection is not a managed seat. Native personal participation may
+   *  temporarily arm its turn relay through an exact, expiring host-authorized lease, but this flag
+   *  still denies managed-seat custody such as self stop. */
   turnRelay?: false;
   /** The trusted registration requires this session's event plane. */
   eventsRequired?: boolean;

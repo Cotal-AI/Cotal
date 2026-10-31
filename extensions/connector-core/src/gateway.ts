@@ -26,7 +26,7 @@ import { assertValidName, conversationSelection, SELECTION_MAX_ITEMS, type Conve
 import { DOCS_VERSION } from "./docs.js";
 import { cotalToolSpecs, orientationCard, parseToolArgs, type CotalToolSpec, type ToolResult } from "./tool-specs.js";
 import { briefing } from "./briefing.js";
-import type { MeshAgent } from "./agent.js";
+import type { MeshAgent, NativeTurnParticipationLease } from "./agent.js";
 import type { AgentConfig } from "./config.js";
 import { renderInboxPreview, type RenderedInboxPreview } from "./framing.js";
 
@@ -85,6 +85,10 @@ export interface GatewayHost {
   find(account: string, id: string): Promise<GatewayConnection | undefined>;
   /** Stop and release one connection `account` owns. False when it owns no such connection. */
   close(account: string, id: string): Promise<boolean>;
+  /** Authorize or renew finite workflow-turn participation for this exact personal connection.
+   * Omit to offer no participation tool. The host must obtain this lease from manager/auth
+   * authority, not construct authority from caller input. */
+  participate?(account: string, connection: GatewayConnection): Promise<NativeTurnParticipationLease>;
 }
 
 /** The mesh tools a remote conversation may call. Process and seat authority (spawn, despawn,
@@ -119,6 +123,8 @@ export const NATIVE_GATEWAY_TOOLS: ReadonlySet<string> = new Set([
   "cotal_personas",
   "cotal_despawn",
   "cotal_run",
+  "cotal_turn_participate",
+  "cotal_yield",
   "cotal_reconnect",
 ]);
 
@@ -151,6 +157,8 @@ const GATEWAY_ANNOTATIONS: Readonly<Record<string, ToolAnnotations>> = {
   cotal_personas: READ_ONLY,
   cotal_despawn: UPDATING,
   cotal_run: UPDATING,
+  cotal_turn_participate: UPDATING,
+  cotal_yield: UPDATING,
   cotal_reconnect: ADDITIVE,
 };
 
@@ -546,6 +554,31 @@ export function registerCotalGatewayTools(
       return (await host.close(account, connection_id))
         ? toContent({ text: `Disconnected ${connection_id}.` })
         : refuse(CONNECTION_REQUIRED);
+    },
+  );
+
+  if (options.tools?.has("cotal_turn_participate") && host.participate) server.registerTool(
+    "cotal_turn_participate",
+    {
+      title: "Cotal: participate in workflow turns",
+      annotations: gatewayAnnotations("cotal_turn_participate"),
+      description: "Opt this user-owned native personal connection into workflow turn participation, or renew its finite lease. The lease is self-only and grants no process stop or attach custody.",
+      inputSchema: z.strictObject({ connection_id: CONNECTION_ID }),
+    },
+    async ({ connection_id }, extra) => {
+      let account: string;
+      try { account = host.account(extra.authInfo); }
+      catch (e) { return refuse(`not authenticated: ${errorText(e)}`); }
+      const connection = await host.find(account, connection_id);
+      if (!connection) return refuse(CONNECTION_REQUIRED);
+      if (!connection.tools?.has("cotal_turn_participate")) return refuse("cotal_turn_participate is not available on this connection.");
+      try {
+        const lease = await host.participate!(account, connection);
+        connection.agent.authorizeNativeTurnParticipation(lease);
+        return toContent({ text: `Workflow turn participation is active until ${new Date(lease.expiresAt).toISOString()} on manager ${lease.managerInstanceId}. Renew before expiry to keep receiving turns.` });
+      } catch (e) {
+        return refuse(`Couldn't authorize workflow turn participation: ${errorText(e)}`);
+      }
     },
   );
 

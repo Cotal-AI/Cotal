@@ -49,7 +49,6 @@ import {
   requireBrokerFloor,
   parseServerVersion,
   presenceBucket,
-  MEMBERSHIP_MAX_BYTES,
   spaceDeletionStreams,
   isJetStreamMissing,
   seedChannelRegistry,
@@ -60,6 +59,7 @@ import {
   validateChannelConfig,
   validateChannelDefaults,
   LEASE_TTL_MS,
+  EpEnvelopeError,
   mkSecretDir,
   openPrivateAppend,
   realDirNoSymlink,
@@ -197,17 +197,17 @@ import {
   restoreLeftOut,
   SPACE_NAME_MAX,
   spaceNameTooLong,
-  MIN_FILE_STORE,
   NATS_PIDFILE,
   UNTRUSTED_CERTIFICATE,
   exitCode,
   canonicalLocalProcessPath,
   DELIVERY_LOGFILE,
+  terminalWidth,
 } from "@cotal-ai/workspace";
 import { FlagValueRefusal } from "../lib/flag-value-refusal.js";
 import { ensureAuthService, resolveAuthProvider, stopAuthService } from "../lib/auth-proc.js";
 import { resolveSpace } from "../lib/status.js";
-import { c, stderrLine } from "../ui.js";
+import { c, hang, stderrLine } from "../ui.js";
 import { admitAndRestoreSeatCheckpoints, type StaleCheckpointConsent } from "../lib/seat-resume.js";
 import { natsServerLabel, resolveNatsServer, type NatsServer } from "../lib/nats-bin.js";
 import { cotalPath, cotalRoot, homeHoldsStack, linkedCotalRefusal } from "../lib/paths.js";
@@ -287,6 +287,7 @@ import {
   preservedSourceState,
   recordPreparedRestoreManagerCommit,
   rehydratePreparedRestore,
+  journaledMaxFileStore,
   journaledRestoredStreams,
   leftOutNotes,
   replacePreparedDeadRestoreListener,
@@ -583,6 +584,21 @@ function serverExample(server: string): string {
   return `--server ${/^tls:/i.test(server) ? "tls" : "nats"}://127.0.0.1:${valid ? Number(port) : "<port>"}`;
 }
 
+/** The refusal of a manifest start whose effective `--server` or `broker.servers` lists more than
+ *  one URL, or undefined when it names one. The start binds one new local broker to one address, so
+ *  it does not pick an entry. The manifest still validates with a list, which `topology view` shows.
+ *  The message counts the entries and never repeats them, as one may carry a credential. */
+function bindListRefusal(command: string, file: string, space: string, server: string | undefined, servers: string | undefined): CommandFailure | undefined {
+  const count = (server ?? servers)?.split(",").filter((entry) => entry.trim()).length ?? 0;
+  if (count < 2) return undefined;
+  const source = server !== undefined ? "--server" : "broker.servers";
+  return new CommandFailure("refused", "USAGE_INVALID", `${source} lists ${count} broker URLs, and ${command} binds a single broker address; nothing was started or written`, {
+    target: { space, path: resolve(file), source, entries: count },
+    remedy: server !== undefined ? "pass one --server URL for the new broker to listen on" : `set broker.servers in ${file} to the one URL the new broker listens on`,
+    selfContained: true,
+  });
+}
+
 /** The local stack's own clients cannot reach a broker on an IPv6 address, so neither flag may name one. */
 const IPV6_UNSERVED = (flag: string): string => `${flag} names an IPv6 address, and the local stack's own clients cannot reach a broker there`;
 
@@ -755,6 +771,10 @@ export async function holdForegroundStack(root: string, start?: () => Promise<vo
 }
 
 async function holdStack(root: string, start?: () => Promise<void>): Promise<void> {
+  // The start's listeners go only once the hold's own are installed. Node runs a listener for a
+  // signal when the loop next polls, and drops the signal if its last listener was removed first,
+  // so a signal that lands in the start's last synchronous step would be lost in between.
+  let releaseStart = (): void => {};
   if (start) {
     let requested: "SIGINT" | "SIGTERM" | undefined;
     const request = (signal: "SIGINT" | "SIGTERM") => {
@@ -767,7 +787,8 @@ async function holdStack(root: string, start?: () => Promise<void>): Promise<voi
     handOverStartupNotice();
     let failure: { error: unknown } | undefined;
     try { await start(); } catch (error) { failure = { error }; }
-    finally { process.off("SIGINT", interrupt); process.off("SIGTERM", terminate); }
+    releaseStart = () => { process.off("SIGINT", interrupt); process.off("SIGTERM", terminate); };
+    if (requested || failure) releaseStart();
     if (requested) await stopForegroundStack(root, requested);
     if (failure) throw failure.error;
     if (requested) return;
@@ -800,6 +821,7 @@ async function holdStack(root: string, start?: () => Promise<void>): Promise<voi
     const interrupt = () => stop("SIGINT");
     const terminate = () => stop("SIGTERM");
     process.on("SIGINT", interrupt); process.on("SIGTERM", terminate);
+    releaseStart();
     handOverStartupNotice();
   });
 }
@@ -885,7 +907,7 @@ export async function up(args: ParsedArgs, inheritedLock?: MaintenanceLock, fres
     const fresh = args.values.root === undefined ? freshFolderRoot(args.values) : undefined;
     if (fresh) {
       mkdirSync(join(fresh, ".cotal"), { mode: 0o700 });
-      console.error(c.dim(`made ${join(fresh, ".cotal")} for this folder's records; the machine's home .cotal was not used`));
+      for (const line of hang("", `made ${join(fresh, ".cotal")} for this folder's records; the machine's home .cotal was not used`, terminalWidth(process.stderr), c.dim)) console.error(line);
     }
     const root = args.values.root === undefined ? undefined : preparedUpRoot(String(args.values.root));
     const previousCwd = process.cwd();
@@ -1682,10 +1704,12 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     const retained = implicit ? recorded : undefined;
     // An address up chooses for a TLS broker names TLS, as an explicit one must.
     const serving = (url: string) => transport.kind === "tls-required" ? tlsAddress(url) : url;
+    // Printed below, once this up is known to start the stack: a refresh of the running one says nothing.
+    let stoppedStart: string | undefined;
     if (retained) {
-      console.log(c.dim(`starting this folder's stopped stack as it last ran: ${serving(retained.server)}${values.open ? ", open" : ""}`));
+      stoppedStart = `starting this folder's stopped stack as it last ran: ${serving(retained.server)}${values.open ? ", open" : ""}`;
     } else if (recorded?.open) {
-      console.log(c.dim("starting this folder's stopped stack in the mode it last ran: open"));
+      stoppedStart = "starting this folder's stopped stack in the mode it last ran: open";
     } else if (implicit) {
       const cleaned = cleanedManifestStart(cotalRoot(), recordedSpace, values.open === true);
       if (cleaned) throw new CommandFailure("refused", "CONFLICT", `this folder was deployed from a manifest as "${cleaned.space}" at ${cleaned.server} in ${cleaned.mode === "open" ? "open" : "static auth"} mode, and its identity and broker configuration were removed, so a bare up would not start it as it was deployed; nothing was started`, { target: { root: cotalRoot(), space: cleaned.space, server: cleaned.server }, remedy: `deploy it again with ${codeSpan(cleaned.command)}` });
@@ -1730,7 +1754,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
             }
           } else if (heldForRepair.storeDir !== undefined) {
             values["store-dir"] = heldForRepair.storeDir;
-            console.log(c.dim(`reopening the recorded store ${heldForRepair.storeDir}`));
+            for (const line of hang("", `reopening the recorded store ${heldForRepair.storeDir}`, terminalWidth(process.stdout), c.dim)) console.log(line);
           } else {
             const defaultStore = cotalPath("nats");
             let hasEntries = false;
@@ -1755,7 +1779,8 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         throw new Error(`restore attempt ${resumeAttempt} re-entry has no bound listener proof; preserving recovery state`);
       const ownerStatus = localProcessOwnerStatus(restoredAttempt.listenerProof.processOwner);
       if (ownerStatus === "alive") {
-        await resumeProvenRestoreListener(restoredAttempt, startupLock);
+        await provePreparedRestoreListener(restoredAttempt);
+        await adoptProvenListener(restoredAttempt, restoredAttempt.targetPath, "proven restore listener", startupLock);
         return;
       }
       if (ownerStatus === "unknown")
@@ -1770,7 +1795,8 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     if (ordinaryAttempt?.adoptProof) {
       // The recovered attempt's exact bound listener is alive: prove it over the wire and adopt it
       // instead of spawning a competitor over the same store.
-      await resumeProvenOrdinaryListener(ordinaryAttempt, startupLock);
+      await proveOrdinaryResumeListener(ordinaryAttempt);
+      await adoptProvenListener(ordinaryAttempt, ordinaryAttempt.storeDir, "adopted resume listener", startupLock);
       return;
     }
     if (ordinaryAttempt?.journalState === "resume-committed")
@@ -2003,6 +2029,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       // never just reprint "already running" over a dead callout. No broker config is (re)written
       // here, so healing on a bare `cotal up` is safe: the mode can't drift, only the daemon heals.
       let userAuth: UserAuthInfo | undefined;
+      let startAuth: (() => Promise<void>) | undefined;
       if (held.mode === "user") {
         const auth = await getSpaceAuth(workspaceSecretStore(root), held.space);
         if (!auth) {
@@ -2024,10 +2051,12 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
           stderrLine("✗ ", `${(e as Error).message}`, c.red);
           process.exit(1);
         }
-        const svc = await startUserAuthService(held.space, server, { prepared, stateDir }, [...publicExchange, ...authTimeoutArgs(runningTimeout)]);
-        userAuth = svc.userAuth;
-        // The refresh IS the recovery command — a heal that didn't heal must not exit 0.
-        if (!svc.ok) process.exitCode = 1;
+        startAuth = async () => {
+          const svc = await startUserAuthService(held.space, server, { prepared, stateDir }, [...publicExchange, ...authTimeoutArgs(runningTimeout)]);
+          userAuth = svc.userAuth;
+          // The refresh IS the recovery command — a heal that didn't heal must not exit 0.
+          if (!svc.ok) process.exitCode = 1;
+        };
       }
       // Re-ensure the control plane on a refresh, in every mode, under the decision the first boot
       // follows: the mesh owes a manager unless `--no-manager` was asked for, and a delivery daemon
@@ -2061,7 +2090,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         attachHost: attachHostFor(held.space, values.host),
         maxSessions: maxSessionsFor(held.space, maxSessions),
         noManager,
-      });
+      }, startAuth);
       if (!controlPlane) process.exitCode = 1;
       // #883: a refresh that HEALED a missing manager must say so — the summary line otherwise reads
       // identically to a refresh that found everything already up, and the operator cannot tell which
@@ -2077,7 +2106,8 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       seedPersonaAfterUp(root);
       // The same Next a launch ends with: this mesh runs, so the steps are the ones that use and
       // stop it. A manager the refresh found or healed is what makes `spawn` one of them.
-      console.log(`\n${renderReport({ sections: [{ title: "Next", blocks: [{ kind: "commands", items: detachedNext({ manager: managerRecordState(held.space).state === "alive", controlPlane: controlPlane !== undefined, machineHome: canonicalRoot(root) === canonicalRoot(homedir()), ...(values.root ? { root } : {}) }, held.space) }] }] }, "rich", process.stdout)}`);
+      const managerRecord = managerRecordState(held.space);
+      console.log(`\n${renderReport({ sections: [{ title: "Next", blocks: detachedNext({ manager: managerRecord.state === "alive", controlPlane: controlPlane !== undefined, machineHome: canonicalRoot(root) === canonicalRoot(homedir()), ...(values.root ? { root } : {}), ...(managerRecord.state === "unattributable" ? { unattributableManager: managerRecord.path, noManager } : {}) }, held.space) }] }, "rich", process.stdout)}`);
       return;
     }
     const who = held ? `mesh "${held.space}" (${held.root})` : "a broker not started here";
@@ -2108,6 +2138,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       process.exit(1);
     }
   }
+  if (stoppedStart) console.log(c.dim(stoppedStart));
 
   if (!resumeAttempt) refuseRegisteredAddress(server, values.space ?? folderSpace(), `start this one at another address with \`cotal up --server nats://${host}:<port>\``);
   await assertBrokerAddressFree(server, "cotal up");
@@ -2175,10 +2206,12 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     const controlPlane = planeReturned && deliveryLost === undefined;
     const detached = { pid, delivery, authService: wantUser && authService, manager, machineHome: canonicalRoot(cotalRoot()) === canonicalRoot(homedir()), ...(values.root ? { root: cotalRoot() } : {}) };
     if (!quietRestore) {
-      console.log(c.dim(`Started ${executable}.`));
-      console.log(c.green(renderDetachedSummary(detached)));
+      for (const line of hang("", `Started ${executable}.`, terminalWidth(process.stdout), c.dim)) console.log(line);
+      // The summary's continuation lines start under its text, past the `✓`.
+      const [mark, ...summary] = renderDetachedSummary(detached).split(" ");
+      for (const line of hang(`${mark} `, summary.join(" "), terminalWidth(process.stdout))) console.log(c.green(line));
       if (unnamed) console.log(c.dim(`  This folder names no space, so up started the default space "${receiptSpace}"; pass --space <name> to start another`));
-      if (values.__folderNamed) console.log(c.dim(`  This new project's space is named after its folder, "${receiptSpace}"; pass --space <name> to start another`));
+      if (values.__folderNamed) for (const line of hang("  ", `This new project's space is named after its folder, "${receiptSpace}"; pass --space <name> to start another`, terminalWidth(process.stdout))) console.log(c.dim(line));
     }
     if (restored && process.env.COTAL_SMOKE_FAIL_AFTER_RESTORE_LISTENER_READY === "1")
       throw new Error("smoke-injected failure after restore listener readiness");
@@ -2204,7 +2237,10 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       if (journal && "restore" in journal && journal.restore.attemptId === restored.attemptId)
         console.log(c.dim(`next: ${restoreNextStep(journal.state, restored.attemptId, restoreLeftOut(journal))}`));
     }
-    if (!quietRestore) console.log(`\n${renderReport({ sections: [{ title: "Next", blocks: [{ kind: "commands", items: detachedNext({ ...detached, controlPlane }, receiptSpace) }] }] }, "rich", process.stdout)}`);
+    if (!quietRestore) {
+      const managerRecord = managerRecordState(receiptSpace);
+      console.log(`\n${renderReport({ sections: [{ title: "Next", blocks: detachedNext({ ...detached, controlPlane, ...(managerRecord.state === "unattributable" ? { unattributableManager: managerRecord.path, noManager } : {}) }, receiptSpace) }] }, "rich", process.stdout)}`);
+    }
     if (restored) restoreSinks.get(restored.attemptId)?.({
       attemptId: restored.attemptId, space: restored.space, root: restored.root, server: restored.server, mode: restored.mode,
       selection: restored.selection, restoredStreams: restored.restoredStreams, targetPath: restored.targetPath, runtime: restored.runtime, brokerPid: pid,
@@ -2251,11 +2287,8 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   const bin = natsServer.path;
   await seedBeforeLaunch();
 
-  console.log(
-    c.dim(
-      `Starting ${natsServerLabel(natsServer)} (JetStream, ${useAuth ? "JWT auth" : "OPEN/no-auth"}) - store: ${storeDir}, bind: ${host}`,
-    ),
-  );
+  const starting = `Starting ${natsServerLabel(natsServer)} (JetStream, ${useAuth ? "JWT auth" : "OPEN/no-auth"}) - store: ${storeDir}, bind: ${host}`;
+  for (const line of hang("", starting, terminalWidth(process.stdout), c.dim)) console.log(line);
   console.log(c.dim("Press Ctrl-C to stop.\n"));
   const listenerStartedAt = new Date().toISOString();
   // A terminal sends Ctrl-C to the whole foreground process group. Keep the broker outside it
@@ -2346,21 +2379,21 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       // racing a second broker into existence. Foreground stdio is inherited (its own log lines
       // are already on this terminal, above), so there is no `.cotal/nats.log` to name here.
       const detail = signal ? `signal ${signal}` : `code ${code}`;
+      const repair = `log: see the terminal output above; repair: \`cotal up --server ${server} --space ${space}\``;
       // Retention is read from the registry, not assumed: a broker that exits before it first
-      // answers was never recorded. A registry that cannot be read is not claimed either way, and
-      // the read cannot throw past this handler, which still has to exit.
-      let retention: string;
+      // answers was never recorded, and running the same `up` again only repeats that exit, so its
+      // step is the one a detached start gives. A registry that cannot be read is not claimed
+      // either way, and the read cannot throw past this handler, which still has to exit.
+      let outcome: string;
       try {
         const mine = findMesh(space);
-        retention = mine && mine.server === server && mine.root === cotalRoot() ? `the mesh "${space}" stays recorded (\`cotal meshes\` lists it offline)` : `the mesh "${space}" was not recorded`;
+        outcome = mine && mine.server === server && mine.root === cotalRoot()
+          ? `; the mesh "${space}" stays recorded (\`cotal meshes\` lists it offline); ${repair}`
+          : ` before the mesh "${space}" was recorded; next: ${listenerExitRemedy(natsServer, "the terminal output above")}`;
       } catch {
-        retention = `whether the mesh "${space}" stays recorded could not be read`;
+        outcome = `; whether the mesh "${space}" stays recorded could not be read; ${repair}`;
       }
-      console.error(
-        c.red(
-          `✗ nats-server exited unexpectedly (${detail}); ${retention}; log: see the terminal output above; repair: \`cotal up --server ${server} --space ${space}\``,
-        ),
-      );
+      stderrLine("✗ ", `nats-server exited unexpectedly (${detail})${outcome}`, c.red);
       // A foreground broker under `Restart=on-failure` must exit non-zero on a crash so the unit
       // restarts it; exiting 0 here (as an unconditional `code ?? 0` used to) looked like a clean
       // stop and left the unit sitting dead. A broker that exited 0, as after an external `down`,
@@ -2940,41 +2973,49 @@ async function verifySpawnedOrdinaryListener(pending: PendingOrdinaryResume): Pr
     throw new Error(`resume attempt ${pending.attemptId} spawned listener reports a foreign NATS server name`);
 }
 
-async function resumeProvenOrdinaryListener(pending: PendingOrdinaryResume, heldLock?: MaintenanceLock): Promise<void> {
-  await proveOrdinaryResumeListener(pending);
-  await recreateAdoptedMemoryBuckets(pending.root, pending.space, pending.server, pending.mode);
-  const svc = await ensureRecoveredUserAuth(pending);
+/** Adopts a listener its resume or restore attempt has proved over the wire: records the mesh,
+ *  starts delivery and completes the attempt. `storeDir` is the store that listener runs on, and
+ *  `listener` names it in a degraded reason. */
+async function adoptProvenListener(
+  attempt: PendingOrdinaryResume | PreparedRestore,
+  storeDir: string,
+  listener: string,
+  heldLock?: MaintenanceLock,
+): Promise<void> {
+  await recreateAdoptedMemoryBuckets(attempt.root, attempt.space, attempt.server, attempt.mode);
+  const svc = await ensureRecoveredUserAuth(attempt);
   // Read the recorded exposure BEFORE re-recording: `recordOurMesh` writes the entry whole, so a
   // record built without this field would erase the operator's decision, and the adopted manager
   // below would then be launched loopback-only from an entry that no longer remembers otherwise.
-  const adoptAttachHost = attachHostFor(pending.space);
-  const adoptMaxSessions = maxSessionsFor(pending.space);
+  const attachHost = attachHostFor(attempt.space);
+  const maxSessions = maxSessionsFor(attempt.space);
+  // Adopted from the recorded policy: an adopted listener was started from it, never from a default.
+  const tlsRequired = adoptedTlsRequired(attempt.root);
   recordOurMesh({
-    space: pending.space,
-    server: pending.server,
-    root: pending.root,
-    mode: pending.mode,
-    // Adopted from the recorded policy: this path proves and re-adopts a listener it did not start.
-    tlsRequired: adoptedTlsRequired(pending.root),
+    space: attempt.space,
+    server: attempt.server,
+    root: attempt.root,
+    mode: attempt.mode,
+    tlsRequired,
     ...(svc.userAuth ? { userAuth: svc.userAuth } : {}),
-    ...(adoptAttachHost ? { attachHost: adoptAttachHost } : {}),
-    ...(adoptMaxSessions !== undefined ? { maxSessions: adoptMaxSessions } : {}),
-    ...(pending.maxFileStore !== undefined ? { maxFileStore: pending.maxFileStore } : {}),
-    storeDir: resolve(pending.storeDir),
+    ...(attachHost ? { attachHost } : {}),
+    ...(maxSessions !== undefined ? { maxSessions } : {}),
+    ...(attempt.maxFileStore !== undefined ? { maxFileStore: attempt.maxFileStore } : {}),
+    storeDir: resolve(storeDir),
     ts: new Date().toISOString(),
   }, "started");
-  const controlPlane = await startDeliveryWithBroker(pending.space, pending.server, adoptedTlsRequired(pending.root), {
-    runtime: pending.runtime,
-    attachHost: adoptAttachHost,
-    maxSessions: adoptMaxSessions,
-    resumeAttempt: pending.attemptId,
-    resumeCommit: commitTokenHandoff(pending.root, pending.managerCommit !== undefined, heldLock),
+  const controlPlane = await startDeliveryWithBroker(attempt.space, attempt.server, tlsRequired, {
+    runtime: attempt.runtime,
+    attachHost,
+    maxSessions,
+    resumeAttempt: attempt.attemptId,
+    resumeCommit: commitTokenHandoff(attempt.root, attempt.managerCommit !== undefined, heldLock),
   });
   await completeResumeActivation(
-    pending.attemptId,
+    attempt.attemptId,
     controlPlane !== undefined && svc.ok,
-    !svc.ok ? "adopted resume listener has no user-auth service" : "adopted resume listener has a degraded control plane",
-    pending.server,
+    !svc.ok ? `${listener} has no user-auth service` : `${listener} has a degraded control plane`,
+    attempt.server,
     heldLock,
   );
 }
@@ -2994,44 +3035,6 @@ async function ensureRecoveredUserAuth(
     dir: stateDir,
   });
   return startUserAuthService(prepared.space, prepared.server, { prepared: provider, stateDir });
-}
-
-async function resumeProvenRestoreListener(prepared: PreparedRestore, heldLock?: MaintenanceLock): Promise<void> {
-  await provePreparedRestoreListener(prepared);
-  await recreateAdoptedMemoryBuckets(prepared.root, prepared.space, prepared.server, prepared.mode);
-  const svc = await ensureRecoveredUserAuth(prepared);
-  // Same ordering constraint as the pending-adopt path above: capture the recorded exposure before
-  // `recordOurMesh` rewrites the entry, or a restore silently demotes the mesh to loopback attach.
-  const restoreAttachHost = attachHostFor(prepared.space);
-  const restoreMaxSessions = maxSessionsFor(prepared.space);
-  recordOurMesh({
-    space: prepared.space,
-    server: prepared.server,
-    root: prepared.root,
-    mode: prepared.mode,
-    // Same as the ordinary-resume path: a restore adopts an existing listener, so the requirement
-    // comes from the policy that listener was started from, never from a default.
-    tlsRequired: adoptedTlsRequired(prepared.root),
-    ...(svc.userAuth ? { userAuth: svc.userAuth } : {}),
-    ...(restoreAttachHost ? { attachHost: restoreAttachHost } : {}),
-    ...(restoreMaxSessions !== undefined ? { maxSessions: restoreMaxSessions } : {}),
-    storeDir: resolve(prepared.targetPath),
-    ts: new Date().toISOString(),
-  }, "started");
-  const controlPlane = await startDeliveryWithBroker(prepared.space, prepared.server, adoptedTlsRequired(prepared.root), {
-    runtime: prepared.runtime,
-    attachHost: restoreAttachHost,
-    maxSessions: restoreMaxSessions,
-    resumeAttempt: prepared.attemptId,
-    resumeCommit: commitTokenHandoff(prepared.root, prepared.managerCommit !== undefined, heldLock),
-  });
-  await completeResumeActivation(
-    prepared.attemptId,
-    controlPlane !== undefined && svc.ok,
-    !svc.ok ? "proven restore listener has no user-auth service" : "proven restore listener has a degraded control plane",
-    prepared.server,
-    heldLock,
-  );
 }
 
 async function completeResumeActivation(
@@ -3309,7 +3312,12 @@ async function startUserAuthService(
     if (!quietBoot) console.log(c.green("✓ user-auth service up") + c.dim(` - sign in with: \`cotal login --idp ${info.idp.url}\``));
     return { userAuth: info, ok: true };
   } catch (e) {
-    stderrLine("✗ ", `user-auth service did not come up (${(e as Error).message}) - user connects to "${space}" will fail until a re-\`cotal up\` succeeds`, c.red);
+    // A typed refusal leads with its code and each detail's reason, e.g. a plane claim's
+    // `unknown` liveness against its `live-peer` contention, so no caller parses the copy.
+    const typed = e instanceof EpEnvelopeError
+      ? ` [${[e.code, ...(e.details ?? []).map((d) => typeof d.reason === "string" ? `${d.kind}: ${d.reason}` : d.kind)].join("; ")}]`
+      : "";
+    stderrLine("✗ ", `user-auth service did not come up${typed} (${(e as Error).message}) - user connects to "${space}" will fail until a re-\`cotal up\` succeeds`, c.red);
     return { userAuth: assertUserAuthInfo(setup.prepared.publicAuth), ok: false };
   }
 }
@@ -3352,6 +3360,8 @@ export async function prepareFreshTeamBoot(file: string, opts: { space: string; 
   if (idpProblem) throw new CommandFailure("refused", "SCHEMA_INVALID", idpProblem, { target: { space: opts.space } });
   const serverProblems = opts.server === undefined ? [] : serverUrlProblems(opts.server, "--server");
   if (serverProblems.length) throw new CommandFailure("refused", "SCHEMA_INVALID", serverProblems.join("; "), { target: { space: opts.space } });
+  const list = bindListRefusal("team boot", file, opts.space, opts.server, prepared.manifest.broker?.servers);
+  if (list) throw list;
   const { prepared: eff, hostSource, serverSource } = applyUpOverrides(prepared, flags);
   const m = eff.manifest;
   const host = m.broker?.host ?? "127.0.0.1";
@@ -3508,6 +3518,9 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
     for (const problem of serverProblems) stderrLine("✗ ", `${problem}`, c.red);
     process.exit(1);
   }
+  // Each entry of a list is checked above; the start still needs one address, before any parse of it.
+  const list = bindListRefusal(opts.freshTeamBoot ? "team boot" : "up -f", file, prepared.manifest.space, opts.server, prepared.manifest.broker?.servers);
+  if (list) throw list;
   // Apply CLI overrides to one effective manifest (flag > manifest > default) so render + seed +
   // broker + launch all agree on the same values.
   const { prepared: eff, hostSource, serverSource } = applyUpOverrides(prepared, opts);
@@ -3861,9 +3874,10 @@ async function startDeliveryWithBroker(
     /** #2469: the foreground owner's restart hook for a daemon this launch starts. */
     onDeliveryExit?: (code: number | null, signal: NodeJS.Signals | null) => void;
   },
+  afterDelivery?: () => Promise<void>,
 ): Promise<Awaited<ReturnType<typeof ensureControlPlane>> | undefined> {
   try {
-    const plane = await ensureControlPlane({ space, server, tls: tlsRequired, ...(mgr ?? {}) });
+    const plane = await ensureControlPlane({ space, server, tls: tlsRequired, ...(mgr ?? {}) }, afterDelivery);
     // #1576: `up` either BINDS the responder or SAYS SO HERE. The delivery daemon is a hard
     // dependency of spawn, retirement and the durable backstop, and this function used to return `true` for a boot
     // that started a daemon whose responder never bound — so `cotal up` printed its success banner
@@ -3885,8 +3899,12 @@ async function startDeliveryWithBroker(
   }
 }
 
+/** The degraded control plane on stderr: each line of `why`, then its consequence, wrapped to the
+ *  terminal as every other warning is. */
 function reportDegradedControlPlane(why: string): void {
-  console.error(c.dim(`! control plane degraded: ${why} - durable delivery/manager may be down; spawn and retirement require a functioning control plane`));
+  const [first, ...rest] = why.split("\n");
+  stderrLine("! ", `control plane degraded: ${first}`, c.dim);
+  for (const line of [...rest, "Spawn and retirement require a functioning control plane."]) stderrLine("  ", line, c.dim);
 }
 
 /**
@@ -3963,11 +3981,16 @@ function exitedBeforeReady(l: { child: ChildProcess; executable: NatsServer; ser
   const { exitCode, signalCode } = l.child;
   if (exitCode === null && signalCode === null) return undefined;
   const exit = exitCode !== null ? `exited with code ${exitCode}` : `was stopped by ${signalCode}`;
-  const { path, source } = l.executable;
   return new CommandFailure("failed", "OPERATION_FAILED", `${natsServerLabel(l.executable)} ${exit} before it answered at ${l.server}; see ${l.log}`, {
-    target: { executable: path, ...(exitCode !== null ? { exitCode } : { signal: signalCode }), server: l.server, log: l.log },
-    remedy: source === "path" ? `read ${l.log}, then fix ${path} or take it off PATH so cotal uses its bundled nats-server, and run \`cotal up\` again` : `read ${l.log}, then run \`cotal up\` again`,
+    target: { executable: l.executable.path, ...(exitCode !== null ? { exitCode } : { signal: signalCode }), server: l.server, log: l.log },
+    remedy: listenerExitRemedy(l.executable, l.log),
   });
+}
+
+/** The next step for a listener that exited before it answered: read its output, then fix a
+ *  nats-server found on PATH or take it off PATH, and start again. */
+function listenerExitRemedy(executable: NatsServer, log: string): string {
+  return executable.source === "path" ? `read ${log}, then fix ${executable.path} or take it off PATH so cotal uses its bundled nats-server, and run \`cotal up\` again` : `read ${log}, then run \`cotal up\` again`;
 }
 
 /**
@@ -4013,10 +4036,12 @@ async function serveReadyListener(l: {
       throw e;
     }
   }
-  // USER MODE: the auth service comes up FIRST among the daemons — until its callout answers,
-  // every user-mode connect to this broker is denied, so `up` must not report a usable user mesh
-  // (nor let agents race it) on a half-started auth plane.
-  const svc = await startUserAuthService(space, server, setup, [...(l.publicExchange ?? []), ...authTimeoutArgs(setup?.authTimeout)], l.quietBoot);
+  // Register the prepared trust before delivery starts. Auth follows delivery's liveness oracle,
+  // then the manager: a crashed auth claim cannot be reclaimed while that oracle is absent.
+  let svc: { ok: boolean; userAuth?: UserAuthInfo } = {
+    ok: setup?.prepared === undefined,
+    ...(setup?.prepared ? { userAuth: assertUserAuthInfo(setup.prepared.publicAuth) } : {}),
+  };
   // Record BEFORE the control plane comes up: the manager's fail-closed mode detection requires
   // an authoritative registry entry (marker-without-registry is a refused start, not a guess),
   // so the record must exist by the time it boots. A manager/delivery failure after this leaves
@@ -4066,6 +4091,9 @@ async function serveReadyListener(l: {
     resumeAttempt: l.resumeAttempt,
     resumeCommit: l.resumeCommit,
     wsPort: setup?.wsPort, // P2 item 6: the console session client's broker ws port
+  }, async () => {
+    svc = await startUserAuthService(space, server, setup, [...(l.publicExchange ?? []), ...authTimeoutArgs(setup?.authTimeout)], l.quietBoot);
+    if (svc.userAuth) recordOurMesh({ space, server, root: cotalRoot(), mode: "user", userAuth: svc.userAuth, ts: new Date().toISOString() }, "refresh", true);
   });
   seedPersonaAfterUp(cotalRoot(), l.quietBoot);
   return { authService: svc.ok, controlPlane };
@@ -4535,15 +4563,6 @@ export function maxSessionsFor(space: string, explicit?: number): number | undef
   return explicit ?? findMesh(space)?.maxSessions;
 }
 
-/** The store cap a preserved launch recorded: absent, or a positive integer byte count. Anything
- *  else is a damaged journal, refused rather than rendered as the dynamic default. */
-function journaledMaxFileStore(value: unknown): number | undefined {
-  if (value === undefined) return undefined;
-  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1)
-    throw new Error(`the preserved launch records an invalid maxFileStore (${JSON.stringify(value)}); refusing to guess the broker's store cap`);
-  return value;
-}
-
 /**
  * Did THIS launch bring the broker up, or is it re-recording one that was already there?
  *
@@ -4583,11 +4602,11 @@ function recordOurMesh(m: MeshEntry, provenance: Provenance, quietBoot = false):
   removePreparedSpace(m.space); // started: the registration is its record now
   if (!usableCurrent) {
     setCurrent(m.space);
-    if (!quietBoot) console.log(c.dim(selectedOnUp(m.space)));
+    if (!quietBoot) for (const line of hang("", selectedOnUp(m.space), terminalWidth(process.stdout), c.dim)) console.log(line);
     return;
   }
   if (usableCurrent !== m.space && !quietBoot)
-    console.log(c.dim(keptOnUp(m.space, usableCurrent)));
+    for (const line of hang("", keptOnUp(m.space, usableCurrent), terminalWidth(process.stdout), c.dim)) console.log(line);
 }
 
 /** Write the default persona into the root this `up` started or refreshed when it has none, and
@@ -4600,7 +4619,7 @@ function seedPersonaAfterUp(root: string, quiet = false): void {
     console.error(c.yellow(`! the default persona was not written in ${root}: ${(e as Error).message}`));
     return;
   }
-  if (written && !quiet) console.log(c.dim(`  wrote ${written.what}: ${written.path}`));
+  if (written && !quiet) for (const line of hang("  ", `wrote ${written.what}: ${written.path}`, terminalWidth(process.stdout))) console.log(c.dim(line));
 }
 
 async function waitReady(server: string, creds?: string, tls = false, log?: string): Promise<boolean> {
@@ -5016,13 +5035,8 @@ async function recreateDeletedStreams(opts: { root: string; space: string; serve
   return true;
 }
 
-/** `--max-file-store`, refused below {@link MIN_FILE_STORE}: a smaller cap cannot create the
- *  space's streams. */
 function parseMaxFileStore(raw: string | undefined): number | undefined {
-  const cap = parsePositiveIntegerFlag("--max-file-store", raw);
-  if (cap !== undefined && cap < MIN_FILE_STORE)
-    throw new CommandFailure("refused", "USAGE_INVALID", `--max-file-store ${cap} is below ${MIN_FILE_STORE} bytes, the least the space's streams start on: its membership bucket reserves ${MEMBERSHIP_MAX_BYTES} bytes (64 MiB) of the broker's file store, and nats-server needs one more byte free to create the others; nothing was started`, { remedy: `pass --max-file-store ${MIN_FILE_STORE} or more, leaving room for messages, or omit it` });
-  return cap;
+  return parsePositiveIntegerFlag("--max-file-store", raw);
 }
 
 /** `--auth-timeout`, whole seconds from 1 to 60. nats-server warns above 60 that the value is

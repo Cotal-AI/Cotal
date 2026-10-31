@@ -119,6 +119,7 @@ import {
   type MonitorRequest,
   type NotifyRequest,
   type ObserveRequest,
+  type ParticipantRequest,
   type SleepRequest,
   type SpawnRequest,
   type TurnRequest,
@@ -549,6 +550,16 @@ export class MeshHandler {
    */
   private seedRunMemos(entries: readonly JournalEntry[]): void {
     for (const e of entries) {
+      if (e.kind === "participant" && e.state === "settled" && e.status === "ok" && e.result !== undefined) {
+        const handle = e.result as AgentHandleValue;
+        if (handle.kind !== "participant" || typeof handle.agent !== "string") continue;
+        const { name, uid } = parseAgentHandle(handle.agent);
+        const ext = e.external as { owner?: unknown; actor?: unknown; uid?: unknown; name?: unknown; host?: unknown } | undefined;
+        if (ext?.uid !== uid || ext?.name !== name || typeof ext.owner !== "string" || typeof ext.actor !== "string") continue;
+        this.roster.set(name, { handle, owner: ext.owner, actor: ext.actor, uid,
+          ...(typeof ext.host === "string" ? { host: ext.host } : {}) });
+        continue;
+      }
       if (e.kind === "spawn" && e.state === "pending") {
         const x = e.external as { goalId?: unknown; worktree?: unknown } | undefined;
         if (typeof x?.goalId === "string" && typeof x?.worktree === "string")
@@ -1578,6 +1589,33 @@ export class MeshHandler {
       if (fact !== undefined) return fact;
       await delay(GOAL_POLL_MS);
     }
+  }
+
+  /** Resolve the native personal session whose exact issued caller admitted this run. Its identity
+   * comes only from the immutable admission, never from program text. The manager separately requires
+   * a current finite participation lease when a turn is dispatched. */
+  async participant(_req: ParticipantRequest, ctx: EffectContext): Promise<AgentHandleValue> {
+    if (!this.services)
+      throw new EffectError("L4000", "participant", "participant() requires a hosted run with an admission reader");
+    const view = await this.services.admission();
+    if (view.revoked)
+      throw new EffectError("L4000", "participant", `participant() refused because run ${this.binding.runId} is revoked`);
+    const admitted = view.admission;
+    const caller = admitted.caller;
+    if (admitted.provenance.kind !== "issued" || !/^pa_[a-z2-7]{26}$/.test(caller.actor))
+      throw new EffectError("L4000", "participant", "participant() binds only an issued personal conversation that admitted this run");
+    const principal = `${caller.owner}.${caller.actor}`;
+    const rows = (await this.presenceRows()).filter((p) =>
+      p.card.id === principal && p.lifecycleUid === caller.uid && p.status !== "offline");
+    if (rows.length !== 1)
+      throw new EffectError("L4002", "participant", rows.length === 0
+        ? `participant() found no live exact presence for ${principal}#${caller.uid}`
+        : `participant() found multiple exact presence rows for ${principal}#${caller.uid}; no row was selected`);
+    const name = rows[0]!.card.name;
+    const handle: AgentHandleValue = { kind: "participant", agent: `${name}#${caller.uid}`, persona: "participant" };
+    await ctx.bind({ owner: caller.owner, actor: caller.actor, uid: caller.uid, name, host: admitted.instanceId });
+    this.roster.set(name, { handle, owner: caller.owner, actor: caller.actor, uid: caller.uid, host: admitted.instanceId });
+    return handle;
   }
 
   /**

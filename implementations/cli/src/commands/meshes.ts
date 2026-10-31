@@ -68,7 +68,7 @@ export const meshesFlags = [
   { name: "mode", type: "string", value: "<auth|open|user>", description: "add: how the broker authenticates (default: inferred from --root; user needs --user-auth-file or --from)" },
   { name: "user-auth-file", type: "string", value: "<bundle.json>", description: "add --mode user: the pinned-trust bundle exported where the mesh runs" },
   { name: "from", type: "string", value: "<https url>", description: "add --mode user: fetch the mesh's /.well-known/cotal-mesh discovery document (pins are shown and confirmed)" },
-  { name: "force", type: "boolean", description: "add: record without verifying, replacing a record added by hand · rm: drop a record when its folder cannot be checked for a running mesh" },
+  { name: "force", type: "boolean", description: "add: record without verifying the broker, replacing a record added by hand; the address rules still apply · rm: drop a record when its folder cannot be checked for a running mesh" },
   { name: "tls", type: "boolean", description: "add: require TLS on every connection resolved through this record (a tls:// --server implies it)" },
   { name: "allow-unencrypted-overlay", type: "boolean", description: "add: accept that an overlay address is protected only while its tunnel is up (recorded on the entry)" },
 ] as const satisfies readonly FlagSpec[];
@@ -188,7 +188,7 @@ async function addMesh(positionals: string[], v: Values): Promise<void> {
   if ((!space || !v.server) && canPrompt()) {
     const done = await addWizard(
       { ...(space ? { space } : {}), ...(v.server ? { server: v.server } : {}), ...(v.root ? { root: v.root } : {}),
-        ...(v.mode ? { mode: v.mode } : {}), ...(v.force ? { force: true } : {}),
+        ...(v.mode ? { mode: v.mode } : {}), ...(v.force ? { force: true } : {}), ...(v.tls ? { tls: true } : {}),
         ...(v["allow-unencrypted-overlay"] ? { allowUnencryptedOverlay: true } : {}) },
       process.cwd(),
     );

@@ -21,6 +21,8 @@ import type { StepKey } from "./keys.js";
  * and a host-local pointer in journalled state is exactly how that stops being true.
  */
 export interface AgentHandleValue {
+  /** `undefined` is a legacy journalled spawn handle. New handles always name their origin. */
+  readonly kind?: "spawned" | "participant";
   readonly agent: string;
   readonly persona: string;
   readonly worktree?: string;
@@ -124,6 +126,11 @@ export interface SpawnRequest {
   readonly events?: boolean;
   /** The terminal runtime this one seat launches on. Omitted, the serving manager uses its own. */
   readonly runtime?: string;
+}
+
+/** Resolve a participant already supplied by the host. This never spawns or adopts a seat. */
+export interface ParticipantRequest {
+  readonly name?: string;
 }
 
 export interface TurnRequest {
@@ -507,6 +514,7 @@ export interface EffectHandler {
   now(): number;
 
   spawn(req: SpawnRequest, ctx: EffectContext): Promise<AgentHandleValue>;
+  participant(req: ParticipantRequest, ctx: EffectContext): Promise<AgentHandleValue>;
   turn(req: TurnRequest, ctx: EffectContext): Promise<TurnResultValue>;
   ask(req: AskRequest, ctx: EffectContext): Promise<unknown>;
   checkpoint(req: CheckpointRequest, ctx: EffectContext): Promise<CheckpointRaw>;

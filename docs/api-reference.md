@@ -58,6 +58,23 @@ It covers build-time validators and the authority a host supplies to control a
 selected manager. For a hosted agent integration, read the
 [remote MCP gateway](embedding.md#remote-mcp-gateway) contract.
 
+### Endpoint request diagnostics
+
+`CotalEndpoint` enables the native NATS `noAsyncTraces` option to avoid capturing
+extra request-origin error stacks on successful operations. Failed requests still
+reject with native error classes and causes. Their stacks describe the failure
+site but may omit the caller that began an asynchronous request. Authentication,
+authorization and timeout deadlines are unchanged. Direct native dials and
+standalone helpers retain their existing diagnostic defaults.
+
+### Temporary KV scans
+
+`liveKvEntries` uses native memory-backed state for its temporary ordered consumer. The backing
+KV stream keeps its configured storage. Each call still reads fresh broker data and must prove
+completion before returning; interrupted reads throw rather than return a partial view. Consumer
+cleanup, inactivity expiry and recreated-consumer checks remain in place. The temporary cursor
+is not persistent across server loss.
+
 ## Agent tools
 
 The [MCP tool catalog](mcp-tools.md) lists tool arguments and side effects. A
@@ -96,3 +113,24 @@ The [cotal.ai API reference](https://cotal.ai/api) documents the website's HTTP
 endpoints, including search, feedback and waitlist intake. Its
 [OpenAPI specification](https://cotal.ai/openapi.json) describes those website
 operations. Mesh command contracts are published through endpoint discovery.
+
+### Trusted request observation
+
+`epRequestObservationFilter(space, { route, endpoint, command, issued })` builds a trusted
+host's read filter for one command on the `one` or any-instance `inst` route. `issued` must
+explicitly select the issued or legacy rail. It shares the request head with
+`epRequestSubject`; actual requests still require a concrete instance id. The filter spans
+target/caller suffixes, grants no authority, and does not prove the origin of an observed
+frame. Observers must still parse and authorize it.
+
+### Presence writer validation
+
+`CotalEndpoint.setActivity`, `setStatus`, `setCondition` and `setAttention` reject values
+that the roster reader cannot accept, before changing endpoint state or publishing. The
+`TypeError` names the field without printing the rejected value. `setCondition(null)`
+still clears the condition. The publisher also checks the final wire row.
+
+`assertPresenceRow(value, key)` uses the same shape rule as `isPresenceRow(value, key)`,
+but throws instead of returning false. It does not coerce values or impose a new enum on
+forward-compatible attention/condition strings. This is wire-shape validation, not an
+authorization or lifecycle check.

@@ -432,6 +432,17 @@ export async function verifyTarget(target: MeshTarget): Promise<Check<void>> {
   return (r.kind === "unreachable" && (await unreachableAt(target.server))) || bad(verifyFailureMessage(r.kind, target.space, target.server, target.root), preflightCode(r.kind));
 }
 
+/** The {@link verifyTarget} sentence for a TLS broker at `server` whose certificate this machine
+ *  cannot verify, or `undefined` when that is not why it gave no answer. The guided form asks this
+ *  before it knows the space or root, so the check carries no credentials and names neither. The
+ *  greeting is read first, so an address where no TLS broker greets costs one short read rather
+ *  than the confirm budget. */
+export async function tlsTrustFailure(server: string): Promise<string | undefined> {
+  if ((await readNatsInfoGreeting(server))?.tls_required !== true) return undefined;
+  const r = await preflightTarget(candidateTarget("", server, "", "open", undefined, true));
+  return !r.ok && r.kind === "tls-trust" ? verifyFailureMessage(r.kind, "", server, "") : undefined;
+}
+
 /** Budget for each probe of an address that answered no broker under the scheme it was given. */
 const SCHEME_PROBE_TIMEOUT_MS = 2_000;
 const DEFAULT_PORTS: Readonly<Record<string, number>> = { nats: 4222, tls: 4222, ws: 80, wss: 443 };

@@ -3,6 +3,29 @@
 `pnpm smoke:ci` builds the workspace and runs the full gate. CI builds first and calls
 `shard.mjs` for its assigned partition.
 
+Both serial and pooled suites invoke pnpm with `--silent`. Dependency verification still runs,
+but pnpm's own progress banners stay out of the output graded as test cells. Suite output and
+nonzero exit status remain part of the result. The legacy per-row sentinel format is unchanged.
+`pnpm smoke:shard-launcher:live` checks this with a locked registry fixture and real pnpm pre-run
+installation. It needs registry access and runs on Linux. Run shard tests on an isolated CI host
+or in a PID namespace: the shard's initial orphan-process sweep is not limited to its own suite.
+
+## Live broker suites
+
+The Linux live job runs `smoke:no-manager-credential-warning:live` with its usual NATS 2.12.12
+binary. `smoke:broker-logging:live` requires NATS 2.15.1 and receives a separately downloaded,
+checksum-verified binary through `COTAL_BROKER_LOG_NATS`. This does not replace the broker on
+PATH for other suites. To run the logging suite locally, set that variable to the absolute path
+of a NATS 2.15.1 binary after building the workspace.
+
+## Inventory command resolution
+
+The inventory uses one reader for direct `pnpm [run] smoke:*` commands and package-filtered
+commands using `-F` or `--filter`, including quoted selectors and `--filter=<package>`. A filtered
+smoke target must exist in its package; it does not make a same-named root script reachable.
+Build-only filtered commands do not name smoke targets. `pnpm smoke:gate-invocations` checks these
+cases against isolated manifests without executing the audited scripts.
+
 ## Shard assignment
 
 `ci-suite-costs.json` records each suite's measured CI duration and pins it to a shard. A suite
@@ -56,6 +79,14 @@ suite stops its detached daemon groups on exit and on those signals, including p
 Broker and custodian leaks remain failures. Existing suite watchdogs and the CI job timeout
 remain in force.
 
+## Native dashboard journey
+
+`pnpm smoke:dogfood:live` installs the real web extension and starts its service on an owned
+static-auth mesh. It reads the private bootstrap file and checks the bound host and port directly,
+without extracting the retired legacy writer into a VM. The journey also verifies that a running
+saved service blocks `down`, leaves the service and broker alive, and names the explicit service
+stop required before stack shutdown. It does not test a browser's cookie enforcement.
+
 ## Platform skips
 
 A suite that cannot run on the current platform ends through `skipSuite(reason)` from
@@ -64,7 +95,9 @@ shard adds no cell for it, counts it as skipped in the completion line, and list
 suite with its reason under that line. A skip that printed a cell count would be reported as a
 covered pass.
 `skipSuite` throws when the reason would not read back as that one skip line, such as a reason
-with a line break, because the shard grades the last sentinel line a suite prints.
+with a line break. Structured count and skip records take precedence over legacy tallies,
+regardless of their position. The last structured record wins; without one, the last legacy
+tally wins. Per-row counting is used only when neither is present.
 
 ## Shared hosts
 
@@ -74,6 +107,13 @@ can join it. On a host other stacks share, set `COTAL_SMOKE_SHARED_HOST=1`: thos
 and print why.
 
 ## Failure reports
+
+Pass caught values directly as a separate console argument, such as `console.error(prefix, e)`.
+Reading `.stack` or `.message` assumes an Error and can replace a null or undefined failure with
+a logging exception. Node prints an Error with its stack and preserves other thrown values.
+`pnpm smoke:scenario-diagnostics` executes the 35 reported catch logging statements in isolated
+Node children with Error, string, null and undefined inputs. It checks diagnostic behavior only;
+it does not run those scenarios or establish their teardown and exit-status behavior.
 
 A shard stops at its first failing suite. It names that suite, lists the planned suites that
 never started, and prints how many of its planned suites started. Under GitHub Actions it also
@@ -85,6 +125,11 @@ separate `platform-suites.txt` inventory through the same runner. Those steps do
 not the full gate or a replacement name for a smaller testing tier.
 
 ## Workspace commands
+
+`pnpm smoke:presence-render-census` puts each synthetic probe in a fresh private temporary
+directory under the scanned source roots and removes only that directory. Selected-probe mode
+uses the same ownership rule. Probe inputs are test scratch, not CLI source to commit or publish;
+the full suite checks that an existing file at the old fixed probe name survives both modes.
 
 `pnpm smoke:required-arg-seam --census` prints the actual classified call sites. Review each
 added or removed site before updating `required-arg-sites.json` and the total/smoke pins.

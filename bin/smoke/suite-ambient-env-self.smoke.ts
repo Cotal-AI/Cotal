@@ -204,8 +204,8 @@ function evaluate(source: string, fileName = "suite.ts"): Verdict {
  * choose, and why the variables it inherits cannot change what it resolves. A suite whose read
  * changes shape has to be re-measured, which is why the reason and not just the path is recorded.
  *
- * Every other member of the class scrubs. The one entry is a suite whose read happens in a child it
- * launches itself, where a scrub would delete the identity the child was launched with. The
+ * Every other member of the class scrubs. These entries read in children the suites launch
+ * themselves, where a scrub would delete the identity the child was launched with. The
  * alternative to an exemption with a written reason is an exemption nobody wrote down, and a file
  * that genuinely cannot scrub is a real possibility this census should not force into a lie. The
  * fixtures below grade the mechanism, so it is not an untested door.
@@ -215,6 +215,10 @@ const REVIEWED: Record<string, string> = {
   // (agent file, servers, space, name, owner, actor) as without one.
   "implementations/manager/smoke/run-owned-agents.smoke.ts":
     "configFromEnv runs only in its tool-seat child, which the suite's own u4-seat connector launches with an allowlisted environment plus the COTAL_ identity it minted for that seat, so the runner's COTAL_ keys never reach the read. A module-scope scrub would delete that seat's own launch identity.",
+  // Measured by manager-multi-live: all 14 checks pass with seven hostile identity keys planted
+  // before Manager construction, including the child's allocated space, name, id, UID and manager.
+  "implementations/manager/smoke/multi-tool-seat.mjs":
+    "manager-multi-live launches this child through its own multi-tool-seat connector's allowlisted environment and the manager's allocated identity. The suite keeps hostile ambient agent-file, servers, space, name, id, owner and actor values in the launcher and verifies the child resolves its allocated identity and routes all tools to its launching manager. Scrubbing in this child would delete the identity it was launched to consume.",
 };
 
 let pass = 0;

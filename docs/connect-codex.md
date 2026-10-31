@@ -92,6 +92,11 @@ pipe, which is what lets Codex's own TUI attach to the very thread the mesh is d
   execute against the host's single mesh endpoint: no sidecar process, no second identity. The
   app-server is the MCP client, so the tools work the same on a turn a peer message started and
   on one **you** typed into the TUI.
+- **One managed conversation.** Only the thread the host drives can use its Cotal tools. Codex's
+  native MCP request metadata identifies that thread, including turns typed in the attached TUI.
+  Cotal tool calls from a second root thread are refused, rather than speaking with the managed
+  conversation's identity. Native filesystem tools are not serialized across threads by Cotal.
+  An app-server restart binds the replacement thread without creating a second mesh lifecycle.
 - **Ready means on the mesh.** The host announces `ready` and hands the terminal to Codex only
   after the app-server, MCP surface, and mesh endpoint are all live (including the initial
   presence publish). If the broker cannot be reached, startup fails within 15 seconds with the
@@ -145,7 +150,11 @@ pipe, which is what lets Codex's own TUI attach to the very thread the mesh is d
   path, and `ls -t .cotal/codex/*/host.log` finds it after the fact). Attached, a failure is also
   reported on the terminal; detached, that report goes to the pty, so the file is the durable copy.
 - **Presence from events.** working/idle/waiting are derived from the app-server event stream;
-  approval requests relay an `approval` condition. A failed turn maps its native
+  a user-input request's temporary waiting presence does not end the host turn. A completed
+  native turn still yields `done` for its surfaced workflow turn after the host answers a
+  user-input request, even if no later command or MCP item runs. Explicit `blocked` and
+  `handoff` yields remain unchanged.
+  Approval requests relay an `approval` condition. A failed turn maps its native
   `codexErrorInfo` into the closed condition vocabulary and preserves that value in
   `condition.source`. Presence writes leave the host in the order the events arrived, so a
   turn that fails or asks for approval in the tick it started keeps its condition until the
@@ -304,6 +313,10 @@ tightening the workspace over removing the sandbox.
   attaching Codex's UI to an agent on another machine needs your own SSH port-forward; there is
   no built-in remote attach. `cotal attach` (which streams the manager's pty) is the supported
   way to reach a detached agent.
+- **`/new` does not replace the managed conversation.** The attached TUI can open a different
+  thread, but the host keeps driving its original thread. Cotal tool calls from the other thread
+  fail with an explanation naming the managed thread. Return to that thread in Codex, or spawn
+  a separate Cotal seat for another conversation. There is no thread migration or hook recovery.
 - **No session resume.** `cotal spawn --resume <id>` throws: a resumed codex thread comes up
   without its configured MCP servers, so the agent would be mute on the mesh.
 - **No tool-sharing.** `connectors.codex.mcpServers` is not implemented and throws if set.

@@ -197,8 +197,16 @@ async function registered(f: Fixture, e: ServiceHostOperations, instanceId = rid
     parsesClosed("B9 proposal-read live", q3);
     c.check("B9 a live proposal view carries its name binding and a null decision", q3.state === "present" && (q3.record.value as { decision: unknown }).decision === null
       && (q3.record.value as { nameBinding: { owner: string } | null }).nameBinding?.owner === f.owner, q3);
-    const u = await e.handle({ v: 1, kind: "service-endpoint-host", requestId: rid(), operation: "instance-read", input: { endpoint: f.endpoint, instanceId: p.instanceId }, granter: ownerOf(f) });
-    c.check("B10 operations outside this slice are unsupported", u.state === "denied" && u.reason === "unsupported", u);
+    const readBefore = await lastSeqs(f);
+    const u = await read(ownerOf(f), { endpoint: f.endpoint, instanceId: p.instanceId }, "instance-read");
+    const foreign = await read({ kind: "owner", owner: other }, { endpoint: f.endpoint, instanceId: p.instanceId }, "instance-read");
+    parsesClosed("B10 owner instance-read", u);
+    parsesClosed("B10 foreign instance-read", foreign);
+    const view = u.state === "present" ? u.record.value as { endpoint?: string; instanceId?: string; assignmentDigest?: string } : undefined;
+    c.check("B10 owner instance-read returns the selected assignment and another owner sees absent",
+      u.state === "present" && view?.endpoint === f.endpoint && view?.instanceId === p.instanceId
+      && view?.assignmentDigest === approval?.assignment.assignmentDigest && foreign.state === "absent", { u, foreign });
+    c.check("B10 instance reads make no writes", JSON.stringify(await lastSeqs(f)) === JSON.stringify(readBefore));
   } finally { await f.close(); }
 }
 

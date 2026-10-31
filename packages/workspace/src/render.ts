@@ -1,9 +1,10 @@
-import { boundedValue } from "@cotal-ai/core";
+import { join } from "node:path";
+import { boundedValue, oneLine } from "@cotal-ai/core";
 import { brokerAddressForDisplay } from "./broker-display.js";
 import { userCotalDir } from "./mesh-registry.js";
 import { shellPath } from "./protected-records.js";
 import { codeSpan } from "./text-wrap.js";
-import { capBelowFloor, MIN_FILE_STORE, type MeshTarget, type MeshTargetError } from "./mesh-target.js";
+import type { MeshTarget, MeshTargetError } from "./mesh-target.js";
 import { SHOWN_VALUE_MAX } from "./output.js";
 import type { PreflightFailure } from "./preflight.js";
 import { PREFLIGHT_CONFIRM_TIMEOUT_MS } from "./preflight.js";
@@ -77,6 +78,15 @@ function targetErrorParts(err: MeshTargetError): WorkspaceErrorParts {
         ? parts(`registry entry "${d.space}" points at ${d.root}, whose auth is now for "${d.found}"`, `re-register it with \`cotal meshes add ${d.space} --server <url> --root <dir>\` (\`--force\` replaces), or \`cotal meshes rm ${d.space}\``)
         : parts(`registry entry "${d.space}" points at ${d.root}, whose auth is now for "${d.found}"; stale entry removed`, "re-run `cotal up` or check `cotal meshes`");
     case "unreadable-auth":
+      // With no space, the root's trust folder itself could not be read or entered, or holds an
+      // account record that will not load, so it names no space. A folder above it this account
+      // cannot enter is named with no chmod, as it may belong to another account.
+      if (d.space === undefined && d.records !== undefined)
+        return parts(`the trust material under ${d.root} holds ${d.records.length === 1 ? "an account record" : `${d.records.length} account records`} that will not load (${d.records.map(oneLine).join(", ")}), so which spaces it holds is unknown`, `repair or remove ${d.records.length === 1 ? "that record" : "those records"}, or name a space with \`--space <name>\``);
+      if (d.space === undefined)
+        return parts(`the trust material under ${d.root} cannot be read (${err.message}), so which spaces it holds is unknown`, d.folder === undefined
+          ? `make ${join(d.root!, ".cotal", "auth")} a folder this account can read and enter, or name a space with \`--space <name>\``
+          : `this account cannot enter ${d.folder}, which holds the trust material; get access to that folder from its owner, or name a space with \`--space <name>\``);
       return parts(`space "${d.space}"'s trust material under ${d.root} will not load (${err.message})`, "repair or remove the account record, then re-run `cotal up`");
     case "not-started": {
       // A prepared space names itself, and the stack operation its root records with no outcome,
@@ -94,9 +104,7 @@ function targetErrorParts(err: MeshTargetError): WorkspaceErrorParts {
         : d.unsettled !== undefined
           ? parts(`"${d.space}" is prepared, and the last ${d.unsettled} of its stack in ${d.root} has no recorded outcome`, `run \`cotal status\` in ${d.root}, which names the step that finishes or settles it`)
           : d.stopped !== undefined
-            ? parts(`"${d.space}" is stopped; its last operation, ${d.stopped.operation}, ${d.stopped.outcome}`, capBelowFloor(d.stopped.storeCap)
-              ? `start it with \`cotal up --max-file-store ${MIN_FILE_STORE}\` or more in ${d.root}: its recorded store cap of ${d.stopped.storeCap} bytes is below the least the space's streams start on`
-              : `start it again with \`cotal up\` in ${d.root}`)
+            ? parts(`"${d.space}" is stopped; its last operation, ${d.stopped.operation}, ${d.stopped.outcome}`, `start it again with \`cotal up\` in ${d.root}`)
           : parts(`"${d.space}" is prepared but not started`, `start it with \`cotal up\` in ${d.root}`);
       const broker = d.server === undefined ? "a broker" : `the broker ${brokerAddressForDisplay(d.server) ?? "at an invalid address"}`;
       // A legacy root whose space is registered for another folder, as a copy, a folder the name was

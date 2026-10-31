@@ -57,7 +57,7 @@ const spec = cotalToolSpecs(config, "codex").find((s) => s.name === TOOL);
 if (!spec?.schema) throw new Error(`${TOOL} is no longer a schema-bearing tool — repoint this suite`);
 
 const IDENTITY_EXTRA = { owner: "u_attacker", actor: "someone-else" };
-const endpoint = await startCotalMcp(agent, config, () => { /* quiet */ });
+const endpoint = await startCotalMcp(agent, config, () => { /* quiet */ }, () => "bound-thread");
 const client = new Client({ name: "codex-tool-closed", version: "0.0.0" });
 
 try {
@@ -111,7 +111,7 @@ try {
 
   // POSITIVE CONTROL. `reached` is the witness for all three assertions above, and a witness that
   // cannot fire is indistinguishable from a refusal that works.
-  await client.callTool({ name: TOOL, arguments: {} }).catch(() => { /* the stub agent is inert */ });
+  await client.callTool({ name: TOOL, arguments: {}, _meta: { threadId: "bound-thread" } }).catch(() => { /* the stub agent is inert */ });
   check("CONTROL: a well-formed call DOES reach the agent — the witness can fire",
     reached.length > 0, { reached });
 } finally {

@@ -14,6 +14,7 @@ resume on another with the recorded steps returning instantly.
 
 | Primitive | Call | Returns |
 |---|---|---|
+| `participant` | `await participant({ name? })` | admitted personal native session handle |
 | `spawn` | `await spawn(persona, { name?, cwd?, placement?, worktree?, join?, role?, permits?, supervise?, onFork?, events? })` | agent handle |
 | `turn` | `await turn(agent, { name, deadline? })` | `{ status: "done" \| "blocked" \| "handoff", to?, note?, at }` |
 | `ask` | `await ask(agent, { name, schema, deadline?, attempts? })` | the record the agent published |
@@ -23,6 +24,10 @@ resume on another with the recorded steps returning instantly.
 | `waitUntil` | `await waitUntil(probe, { name, every, deadline, terminal? })` | the terminal observation |
 | `notify` | `await notify(agents, fact, { name? })` | `null` |
 | `monitor` | `await monitor(agent, { name? })` | `null` |
+
+`participant()` is available only to a hosted run admitted for an approved personal native
+conversation. It binds that exact owner, actor and lifecycle from the run admission. The program
+cannot select another session, and the handle grants no stop, attach or process custody.
 
 `parallel`, `race`, `fanOut` and `conclave` are the four concurrency scopes (below).
 `waitUntil` calls `probe` every `every` until `terminal(observation)` holds (by default, until the

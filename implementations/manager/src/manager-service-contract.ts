@@ -642,6 +642,22 @@ const INPUT_OUTPUT_SCHEMA = {
   properties: { name: { type: "string" }, bytes: { type: "integer", minimum: 0 } },
 } as const;
 
+/** `turn-participate`: a native personal connection opts into the existing self turn relay.
+ * The caller triple is the requested lifecycle. The manager and its issuing host derive every
+ * authority fact and return a finite exact lease. This creates no managed seat and no custody. */
+const TURN_PARTICIPATE_OUTPUT_SCHEMA = {
+  type: "object", additionalProperties: false,
+  required: ["owner", "actor", "lifecycleUid", "name", "managerInstanceId", "expiresAt"],
+  properties: {
+    owner: { type: "string", minLength: 1 },
+    actor: { type: "string", minLength: 1 },
+    lifecycleUid: { type: "string", minLength: 1 },
+    name: { type: "string", minLength: 1 },
+    managerInstanceId: { type: "string", minLength: 1 },
+    expiresAt: { type: "integer", minimum: 1 },
+  },
+} as const;
+
 /** `turn-pending`: the SEAT's own pull of the turns accepted against it and not yet terminal,
  *  oldest first. Self-targeted, so the caller triple IS the query; there is no other input.
  *  `notices` says this manager publishes a turn notice whenever the answer changes (SPEC 14.3),
@@ -1215,6 +1231,7 @@ const ROWS: CommandRow[] = [
   // attach holder can already do), and a seat pulling or yielding ITS OWN turns is `manager.self`
   // at mode self exactly as `stop` is — so no cred anywhere gains a capability it did not have.
   { name: "turn", capability: "manager.lifecycle", input: TURN_INPUT_SCHEMA, output: TURN_OUTPUT_SCHEMA, targeted: true, modes: ["owner", "any"], handler: "turn" },
+  { name: "turn-participate", capability: "manager.self", input: VOID_SCHEMA, output: TURN_PARTICIPATE_OUTPUT_SCHEMA, targeted: true, modes: ["self"], handler: "turnParticipate" },
   { name: "turn-pending", capability: "manager.self", input: VOID_SCHEMA, output: TURN_PENDING_OUTPUT_SCHEMA, targeted: true, modes: ["self"], handler: "turnPending" },
   { name: "turn-yield", capability: "manager.self", input: TURN_YIELD_INPUT_SCHEMA, output: TURN_YIELD_OUTPUT_SCHEMA, targeted: true, modes: ["self"], handler: "turnYield" },
   { name: "cancel", capability: "manager.lifecycle", input: CANCEL_INPUT_SCHEMA, output: TURN_YIELD_OUTPUT_SCHEMA, targeted: false, handler: "cancel" },
@@ -1408,9 +1425,12 @@ export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: Compile
  *  filename whose stem is no longer a valid spawn name. A new served command cannot fold into 40.
  *
  *  42 = every `status.connectors` row requires `eventPlane`, including rows projected from the
- *  declared extension inventory before its connector package is imported. */
+ *  declared extension inventory before its connector package is imported.
+ *
+ *  43 = `turn-participate` authorizes an exact personal native lifecycle for a finite self-only
+ *  workflow turn lease without creating a managed seat or granting terminal custody. */
 export function managerClusterDocument(): ClusterDocument {
-  return buildClusterDocument(MANAGER_CLUSTER_URN, 42, ROWS);
+  return buildClusterDocument(MANAGER_CLUSTER_URN, 43, ROWS);
 }
 
 /** Revision, count, and names from the shipped cluster document. Reached smokes derive surface pins from this. */
@@ -1475,6 +1495,7 @@ export interface ManagerServiceHandlers {
   attach(ctx: EpServeContext): unknown | Promise<unknown>;
   input(ctx: EpServeContext): unknown | Promise<unknown>;
   turn(ctx: EpServeContext): unknown | Promise<unknown>;
+  turnParticipate(ctx: EpServeContext): unknown | Promise<unknown>;
   turnPending(ctx: EpServeContext): unknown | Promise<unknown>;
   turnYield(ctx: EpServeContext): unknown | Promise<unknown>;
   cancel(ctx: EpServeContext): unknown | Promise<unknown>;

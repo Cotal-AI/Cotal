@@ -1,4 +1,4 @@
-/** Live full/registry backup, restore, isolation, checkpoint, and ordinary-resume lifecycle, the runs a restore of an older backup rolled back, the `up -f` refusal while a restore is active, and the refusal of any `up` while its broker runs. */
+/** Live full/registry backup, restore, isolation, checkpoint, and ordinary-resume lifecycle, the runs a restore of an older backup rolled back, the other account a restore leaves in the store it set aside, the `up -f` refusal while a restore is active, and the refusal of any `up` while its broker runs. */
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess, type SpawnSyncReturns } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -705,8 +705,11 @@ async function boundForeignListenerScenario(): Promise<void> {
     const degraded = JSON.parse(readFileSync(journalPath, "utf8")) as {
       listenerProof: { serverNonce: string; processOwner: { pid: number; id: string } };
     };
-    process.kill(degraded.listenerProof.processOwner.pid, "SIGTERM");
-    await waitUntil(async () => !(await probeConnect(server, { timeoutMs: 200 })).ok, "bound listener shutdown");
+    const listenerPid = degraded.listenerProof.processOwner.pid;
+    process.kill(listenerPid, "SIGTERM");
+    // nats-server 2.15 refuses connections before it releases its port, so the port is free for the
+    // foreign listener only once that process has exited.
+    await waitUntil(() => { try { process.kill(listenerPid, 0); return false; } catch { return true; } }, "bound listener exit");
     foreign = await occupy(port);
     const refused = run("up", "--detach", "--server", server, "--space", space);
     assert.notEqual(refused.status, 0);
@@ -1042,6 +1045,56 @@ async function rolledBackRunsScenario(): Promise<void> {
   }
 }
 
+/** A store that holds an open mesh's account beside the static space's, after both ran in one root. A
+ *  static backup holds one account, so its restore says the open account's streams stay only in the
+ *  store it set aside, `status` and the cleanup preview name them, and the cleanup refuses without
+ *  --discard-history and keeps them. */
+async function otherAccountScenario(): Promise<void> {
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-backup-other-account-root-")));
+  const home = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-backup-other-account-home-")));
+  const server = `nats://127.0.0.1:${await freePort()}`;
+  const space = "backup_other_account";
+  const { run } = sandboxRun(root, home);
+  const must = (label: string, result: ReturnType<typeof run>) => {
+    assert.equal(result.status, 0, `other account ${label}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
+    return result;
+  };
+  try {
+    must("static up", run("up", "--detach", "--server", server, "--space", space));
+    must("static down", run("down"));
+    must("open up", run("up", "--detach", "--open", "--server", server, "--space", space));
+    must("open send", run("send", "-c", "general", "open-account-marker", "--space", space));
+    must("open down", run("down"));
+    must("static up again", run("up", "--detach", "--server", server, "--space", space));
+    must("preserve cut", run("down", "--preserve-state"));
+    const artifact = join(root, "static-backup");
+    must("backup", run("backup", "create", artifact));
+    const restored = must("restore", run("backup", "restore", artifact, "--json"));
+    const journal = JSON.parse(readFileSync(join(root, ".cotal", "maintenance", "v1", "journal.json"), "utf8")) as { restore: { attemptId: string; previousSource: { identity: { path: string } } }; launch: { otherAccounts?: unknown } };
+    const attemptId = journal.restore.attemptId, previous = journal.restore.previousSource.identity.path;
+    const messages = join(previous, "jetstream", "$G", "streams", `CHAT_${space}`, "msgs");
+    const kept = () => existsSync(messages) && readdirSync(messages).some((name) => readFileSync(join(messages, name)).includes("open-account-marker"));
+    assert.ok(kept(), "the open account's message is in the store the restore set aside");
+    assert.equal(existsSync(join(root, ".cotal", "nats", "jetstream", "$G")), false, "the restored store holds only the static account");
+    assert.deepEqual(journal.launch.otherAccounts, ["$G"], "the restore journals the other account in the store it set aside");
+    const receipt = JSON.parse(restored.stdout) as { result: { previousStore: string | null }; warnings: { code: string; target: unknown }[] };
+    assert.equal(receipt.result.previousStore, previous, `the receipt names the store that holds the open account\n${restored.stdout}`);
+    assert.deepEqual(receipt.warnings.find((warning) => warning.code === "OTHER_ACCOUNTS_NOT_RESTORED")?.target, { space, previousStore: previous, otherAccounts: ["$G"] }, `the receipt says the open account is not restored\n${restored.stdout}`);
+    const status = must("status", run("status", "--space", space));
+    assert.ok(status.stdout.includes(`\`cotal backup cleanup-fallback ${attemptId} --yes --discard-history\``) && status.stdout.includes("the only copy of the streams of account $G"), `status names the consent the cleanup needs\n${status.stdout}`);
+    const preview = JSON.parse(must("cleanup preview", run("backup", "cleanup-fallback", attemptId, "--dry-run", "--json")).stdout) as { warnings: { code: string; target: { otherAccounts?: string[] } }[] };
+    assert.deepEqual(preview.warnings.find((warning) => warning.code === "HISTORY_ONLY_IN_PREVIOUS_STORE")?.target.otherAccounts, ["$G"], "the cleanup preview names the open account");
+    const refused = run("backup", "cleanup-fallback", attemptId, "--yes", "--json");
+    assert.ok(refused.status === 1 && (JSON.parse(refused.stdout) as { error?: { code?: string } }).error?.code === "USAGE_INVALID", `cleanup without --discard-history refuses\n${refused.stdout}${refused.stderr}`);
+    assert.ok(kept(), "the refused cleanup keeps the open account's message");
+    must("down", run("down"));
+  } finally {
+    run("down");
+    rmSync(root, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
+  }
+}
+
 /** A store moved behind a link, `.cotal/nats` -> another disk, and an artifact written through a
  *  linked folder. The cut records the store by its real path, so a default restore is a same-path
  *  restore there, not an alternate target equal to the source, and verify reads the linked artifact
@@ -1094,6 +1147,7 @@ await preservationStopCrashRecoveryScenario();
 await restoreClaimRaceScenario();
 await backupRestoreCycleScenario();
 await rolledBackRunsScenario();
+await otherAccountScenario();
 await scenario("open");
 await scenario("auth");
 await occupiedRestoreScenario();

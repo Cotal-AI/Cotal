@@ -21,6 +21,14 @@
  * manager's own ceiling is `MAX_AGENTS` (50) per manager; a step above it is refused by design and
  * the refusal is reported, not hidden.
  *
+ * `--process-memory --seat real` reads process RSS/PSS/USS without heap snapshots. It checks
+ * authenticated manager `ps` before and after each idle window against the successful spawn
+ * identities and their lifecycle UIDs, and requires current mesh presence and running, unchanged
+ * PIDs. Missing samples or failed spawns fail the run. This is sampled mesh readiness, not
+ * continuous application health. The mode is Linux-only and cannot be combined with `--ram`.
+ * Its `MSL_RESULT` rows include the measured counts and memory; `MSL_DONE` counts the checks.
+ * Observer calls and smaps reads sit outside the CPU window, but the observer connection remains.
+ *
  * `--ram` adds the manager's memory at every step: RSS, PSS and USS from outside, V8's heap from
  * inside, and a heap snapshot at the first and last step summarised by class.
  *
@@ -31,26 +39,38 @@
  * transpiling at run time, not of the manager.
  *
  * `--seat real` launches the REAL Claude Code connector process for every seat (the plugin's MCP
- * server, `dist/mcp.cjs`, with the node flags its `.mcp.json` passes), in place of the stub and its
- * shared seat host, and reads each seat process's RSS, PSS and USS. That process is what one seat
+ * server through `dist/seat.cjs`, with the node flags its `.mcp.json` passes), in place of the stub and its
+ * shared seat host. The shared host is not started in real-seat mode; its metrics are n/a.
+ * Per-seat RSS, PSS and USS need `--ram` or `--process-memory`. That process is what one seat
  * costs its host besides the model harness itself; it joins the mesh at start, before any MCP
- * traffic, so no Claude process is needed to drive it.
+ * traffic, so no Claude process is needed to drive it. `--real-entry direct` keeps the legacy
+ * `mcp.cjs` entry as an explicit comparison arm. Each run owns a fresh HOME; its stock compile
+ * cache starts empty, then is shared by subsequent seats in that run. Cache environment
+ * overrides refuse rather than measuring an unrelated cache. Results name the entry used.
+ *
+ * `--spaces N` adds a shared-broker control with N distinct accounts and Managers. It requires
+ * dist, real, stock and process-memory; steps are seats per Manager. Each space has a private
+ * HOME/cache. Account-scoped native connection observations prove placement on the same server.
+ * The parent owns the SYS signer and all Plane-3 contexts; this is a static trusted same-UID
+ * fixture, not hostile-tenant, model or Cloud acceptance. The shared broker is counted once.
  *
  * Run (needs nats-server on PATH):
  *   pnpm -C implementations/manager smoke:manager-seat-load --steps 10,25,50 --seconds 60 [--ram] [--shape dist] [--seat real]
+ *   pnpm -C implementations/manager smoke:manager-seat-load --shape dist --seat real --process-memory --steps 10,25,50
  */
 import { spawn, execFileSync, type ChildProcess } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, readlinkSync, rmSync, renameSync, statSync } from "node:fs";
 import { availableParallelism, tmpdir, totalmem } from "node:os";
 import { join } from "node:path";
-import { randomUUID } from "node:crypto";
+import { fileURLToPath } from "node:url";
+import { randomUUID, createHash } from "node:crypto";
 import { getHeapSpaceStatistics, writeHeapSnapshot } from "node:v8";
 import {
-  createSpaceAuth, mintCreds, newIdentity, registry, setupSpaceStreams,
-  type Connector, type LaunchOpts, type LaunchSpec,
+  CotalEndpoint, decodeNatsJwt, composeSpaceAuth, createBrokerAuth, createSpaceAccountAuth, connzRequestSubject, MEMBERSHIP_INBOX_PREFIX, mintMembershipObserverCreds, standaloneConnectOpts, createSpaceAuth, mintCreds, mintLifecycleUid, instanceOnlyManagerCapabilities, newIdentity, registry, setupSpaceStreams,
+  type Connector, type LaunchOpts, type LaunchSpec, type SpaceAuth,
 } from "@cotal-ai/core";
 import { MeshAgent, configFromEnv } from "@cotal-ai/connector-core";
-import { authDir, saveSpaceAuth, workspaceSecretStore } from "@cotal-ai/workspace";
+import { authDir, saveSpaceAuth, saveBrokerAuth, saveSpaceAccountAuth, identityRecord, assertRecordIdentity, type ProcessIdentityRecord, workspaceSecretStore } from "@cotal-ai/workspace";
 // Every relative and test-only import is dynamic and in the orchestrator, so that `--shape dist`
 // can run this file's manager child under plain `node`, which resolves only built packages.
 
@@ -66,7 +86,8 @@ const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const ipcSend = (m: unknown): Promise<void> => new Promise((r) => { process.send!(m, () => r()); });
 const nextCmd = <T>(): Promise<T> => new Promise((r) => process.once("message", (m) => r(m as T)));
 
-interface ManagerJob { kind: "manager"; space: string; servers: string; workspaceRoot: string; seatDir: string; stubToken: string; dist: boolean; realSeat?: string }
+interface ManagerJob { kind: "manager"; space: string; servers: string; workspaceRoot: string; seatDir: string; stubToken: string; dist: boolean; realSeat?: string; observeSeats?: boolean; storeRoot?: string; strictStop?: boolean }
+interface SeatReceipt { name: string; id: string; lifecycleUid: string }
 interface SeatsJob { kind: "seats"; seatDir: string }
 type Job = ManagerJob | SeatsJob;
 
@@ -114,9 +135,11 @@ async function runManager(job: ManagerJob): Promise<void> {
     }),
   };
   registry.register(stub);
-  const mgr = new Manager({ space: job.space, servers: job.servers, runtime: "pty", workspaceRoot: job.workspaceRoot });
+  const mgr = new Manager({ space: job.space, servers: job.servers, runtime: "pty", workspaceRoot: job.workspaceRoot, ...(job.storeRoot ? { secretStore: workspaceSecretStore(job.storeRoot) } : {}) });
   await mgr.start();
-  await ipcSend({ ready: true });
+  const observation = job.observeSeats ? mgr.localServiceObservation() : undefined;
+  if (job.observeSeats && !observation) throw new Error("manager-seat-load: manager service observation is unavailable");
+  await ipcSend({ ready: true, ...(observation ? { instanceId: observation.registration.instanceId, epoch: observation.registration.epoch, ...(job.storeRoot ? { principal: observation.registration.principal } : {}) } : {}) });
   for (;;) {
     const cmd = await nextCmd<{ cmd: "spawn"; from: number; to: number } | { cmd: "sample" } | { cmd: "snapshot"; path: string } | { cmd: "stop" }>();
     if (cmd.cmd === "snapshot") {
@@ -125,7 +148,8 @@ async function runManager(job: ManagerJob): Promise<void> {
       continue;
     }
     if (cmd.cmd === "stop") {
-      await Promise.race([mgr.stop().catch(() => {}), wait(30_000)]);
+      if (job.strictStop) await mgr.stop({ withAgents: true });
+      else await Promise.race([mgr.stop({ withAgents: true }).catch(() => {}), wait(30_000)]);
       await ipcSend({ stopped: true });
       return;
     }
@@ -136,17 +160,30 @@ async function runManager(job: ManagerJob): Promise<void> {
     }
     let ok = 0;
     const refusals: string[] = [];
+    const refusalFacts: Array<{ code: string | null; detailKinds: string[] }> = [];
     const spawnMs: number[] = [];
+    const receipts: SeatReceipt[] = [];
     const cpu0 = process.cpuUsage();
     for (let i = cmd.from; i < cmd.to; i++) {
       const t0 = performance.now();
       const r = await mgr.startAgent({ name: `seat${i}`, agent: CONNECTOR, cwd: job.workspaceRoot, events: false });
       spawnMs.push(performance.now() - t0);
-      if (r.ok) ok++;
-      else if (refusals.length < 5) refusals.push(String(r.error).slice(0, 200));
+      if (r.ok) {
+        ok++;
+        if (job.observeSeats) {
+          const data = r.data as { name?: unknown; id?: unknown; lifecycleUid?: unknown };
+          if (typeof data?.name !== "string" || typeof data.id !== "string" || typeof data.lifecycleUid !== "string")
+            throw new Error("manager-seat-load: successful spawn omitted its identity receipt");
+          receipts.push({ name: data.name, id: data.id, lifecycleUid: data.lifecycleUid });
+        }
+      }
+      else if (refusals.length < 5) {
+        refusals.push(String(r.error).slice(0, 200));
+        refusalFacts.push({ code: r.code ?? null, detailKinds: r.details?.map((detail) => detail.kind) ?? [] });
+      }
     }
     const cpu = process.cpuUsage(cpu0);
-    await ipcSend({ spawned: { ok, failed: cmd.to - cmd.from - ok, refusals, spawnMs, cpuMs: (cpu.user + cpu.system) / 1000 } });
+    await ipcSend({ spawned: { ok, failed: cmd.to - cmd.from - ok, refusals, ...(job.storeRoot ? { refusalFacts } : {}), spawnMs, cpuMs: (cpu.user + cpu.system) / 1000, receipts } });
   }
 }
 
@@ -201,6 +238,37 @@ if (process.argv[2] === "child") {
   process.exit(0);
 }
 
+async function observeManagerMemory(
+  memoryObserver: CotalEndpoint | undefined, instanceId: unknown, epoch: unknown,
+  receipts: Map<string, SeatReceipt>, managerPid: number, observationErrors: () => number,
+  processMemory: (pid: number) => { pid: number; rssMiB: number; pssMiB: number; ussMiB: number },
+  verify: (condition: boolean, detail: string) => void,
+) {
+  if (!memoryObserver || typeof instanceId !== "string") throw new Error("manager-seat-load: memory observer not started");
+  const reply = await memoryObserver.invokeService("manager", "ps", undefined, { instanceId, deadlineMs: 10_000 });
+  verify(reply.responder.endpoint === "manager" && reply.responder.instanceId === instanceId
+    && reply.responder.epoch === epoch && reply.reply.ok === true, "ps did not answer from this manager incarnation");
+  const rows = reply.reply.data;
+  verify(Array.isArray(rows) && rows.length === receipts.size, "ps row count differs from successful spawn receipts");
+  const records = rows as Array<Record<string, unknown>>;
+  const seats = [...receipts.values()].map((receipt) => {
+    const matches = records.filter((r) => r.name === receipt.name && r.id === receipt.id && r.lifecycleUid === receipt.lifecycleUid);
+    verify(matches.length === 1, "ps did not return one matching spawn identity");
+    const row = matches[0]!;
+    verify(row.meshView === "current" && row.presenceIdentityVerified === true
+      && row.mesh === "idle" && row.instanceId === instanceId
+      && typeof row.presenceObservedAt === "number" && Number.isSafeInteger(row.presenceObservedAt) && row.presenceObservedAt >= 0
+      && row.status === "running", "seat does not have current verified mesh presence and a running process");
+    verify(typeof row.pid === "number" && Number.isSafeInteger(row.pid) && row.pid > 0, "seat process PID unavailable");
+    return processMemory(row.pid as number);
+  });
+  verify(new Set(seats.map((s) => s.pid)).size === seats.length, "seat PIDs are not distinct");
+  verify(observationErrors() === 0, "memory observer reported endpoint errors or warnings");
+  return { observedAt: new Date().toISOString(), expected: receipts.size, joined: seats.length,
+    manager: processMemory(managerPid), seats };
+}
+
+
 // ---------------------------------------------------------------------------------------------
 // orchestrator
 // ---------------------------------------------------------------------------------------------
@@ -212,19 +280,50 @@ const flag = (name: string, dflt?: string): string => {
   if (dflt === undefined) throw new Error(`manager-seat-load: --${name} is required`);
   return dflt;
 };
-const STEPS = flag("steps", "10,25,50").split(",").map(Number).filter((n) => Number.isInteger(n) && n > 0).sort((a, b) => a - b);
+const requestedSteps = flag("steps", "10,25,50").split(",").map(Number);
+const STEPS = requestedSteps.filter((n) => Number.isInteger(n) && n > 0).sort((a, b) => a - b);
 const SECONDS = Number(flag("seconds", "60"));
 const SETTLE_S = Number(flag("settle", "20"));
 const RAM = argv.includes("--ram");
+const PROCESS_MEMORY = argv.includes("--process-memory");
 const SHAPE = flag("shape", "src");
 /** Extra node flags for the manager child under `--shape dist`, comma-separated and without their
  *  dashes (a flag's value may not start with "--"), e.g. the seat's own
  *  "optimize-for-size,max-semi-space-size=1", to measure what they save. */
 const MANAGER_NODE_FLAGS = flag("manager-node-flags", "").split(",").map((f) => f.trim().replace(/^-*/, "")).filter(Boolean).map((f) => `--${f}`);
 const REAL_SEATS = flag("seat", "stub") === "real";
+const realEntryIndex = argv.indexOf("--real-entry");
+if (realEntryIndex !== -1 && (!argv[realEntryIndex + 1] || argv[realEntryIndex + 1]!.startsWith("--")))
+  throw new Error("manager-seat-load: real-entry needs an explicit value");
+const REAL_ENTRY = flag("real-entry", "stock");
+if (REAL_ENTRY !== "stock" && REAL_ENTRY !== "direct") throw new Error("manager-seat-load: real-entry is stock or direct");
+if (!REAL_SEATS && argv.includes("--real-entry")) throw new Error("manager-seat-load: real-entry requires --seat real");
+if (REAL_SEATS && (cleanEnv.NODE_COMPILE_CACHE || cleanEnv.NODE_DISABLE_COMPILE_CACHE))
+  throw new Error("manager-seat-load: unset NODE_COMPILE_CACHE and NODE_DISABLE_COMPILE_CACHE; this fixture owns its cache");
 if (SHAPE !== "src" && SHAPE !== "dist") throw new Error("manager-seat-load: --shape is src or dist");
+if (PROCESS_MEMORY) {
+  if (RAM || !REAL_SEATS || process.platform !== "linux")
+    throw new Error("manager-seat-load: --process-memory requires Linux, --seat real and no --ram");
+  if (requestedSteps.length !== STEPS.length || !STEPS.length || new Set(STEPS).size !== STEPS.length
+    || !STEPS.every(Number.isSafeInteger) || !Number.isFinite(SECONDS) || SECONDS <= 0
+    || !Number.isFinite(SETTLE_S) || SETTLE_S < 0)
+    throw new Error("manager-seat-load: process-memory steps must be distinct positive safe integers, seconds positive and settle nonnegative");
+}
+if (argv.some((arg) => arg.startsWith("--spaces=")))
+  throw new Error("manager-seat-load: use --spaces followed by one positive integer");
+const spacesIndex = argv.indexOf("--spaces");
+if (spacesIndex !== -1 && (!argv[spacesIndex + 1] || argv[spacesIndex + 1]!.startsWith("--") || argv.lastIndexOf("--spaces") !== spacesIndex))
+  throw new Error("manager-seat-load: --spaces needs one explicit positive integer");
+const SPACES = Number(flag("spaces", "1"));
+if (!Number.isSafeInteger(SPACES) || SPACES < 1 || !/^[1-9][0-9]*$/.test(flag("spaces", "1")))
+  throw new Error("manager-seat-load: --spaces needs one explicit positive integer");
+if (SPACES > 1 && (!PROCESS_MEMORY || !REAL_SEATS || REAL_ENTRY !== "stock" || SHAPE !== "dist" || RAM))
+  throw new Error("manager-seat-load: shared spaces require dist, real, stock and process-memory without ram");
+if (!Number.isSafeInteger(SPACES * STEPS[STEPS.length - 1]!))
+  throw new Error("manager-seat-load: total requested seats exceeds a safe integer");
 const REPO = execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8", cwd: import.meta.dirname }).trim();
 const SHA = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8", cwd: REPO }).trim();
+const SOURCE_DIRTY = PROCESS_MEMORY && execFileSync("git", ["status", "--porcelain"], { encoding: "utf8", cwd: REPO }).trim() !== "";
 
 const CLK_TCK = 100; // Linux x86_64; this harness is Linux-only, like the rest of the load path.
 const procCpuMs = (pid: number): number => {
@@ -242,6 +341,13 @@ const childCount = (pid: number): number => {
   catch { return NaN; }
 };
 
+if (SPACES > 1) {
+  if (Buffer.byteLength(join(tmpdir(), "sXXXXXX", `${"U".repeat(56)}.sock`)) >= 108)
+    throw new Error("manager-seat-load: shared spaces need a shorter private TMPDIR for control sockets");
+  await runSharedSpaces();
+  process.exit(process.exitCode ?? 0);
+}
+
 const tag = randomUUID().slice(0, 8);
 const stubToken = String(Date.now() % 1_000_000).padStart(6, "0");
 const space = `mgrload-${tag}`;
@@ -258,14 +364,12 @@ for (let i = 0; i < maxSeats; i++)
 const { bootBroker } = await import("./_boot-broker.js");
 const { bootDeliveryDaemon } = await import("./_boot-delivery.js");
 const { procMem, heapSnapshotTop } = await import("@cotal-ai/smoke-kit");
-/** The plugin's MCP server, built: `--seat real` launches it per seat. */
-const realSeat = REAL_SEATS ? new URL(import.meta.resolve("@cotal-ai/connector-claude-code/mcp")).pathname : undefined;
+/** The stock wrapper is beside the exported MCP bundle in the installed package. */
+const realSeat = REAL_SEATS ? fileURLToPath(new URL(REAL_ENTRY === "stock" ? "seat.cjs" : "mcp.cjs", import.meta.resolve("@cotal-ai/connector-claude-code/mcp"))) : undefined;
 const auth = await createSpaceAuth(space);
 saveSpaceAuth(authDir(workspaceRoot), auth); // the FS composition the manager's start() reads
 const broker = await bootBroker(auth, { monitor: true });
-// `bootBroker` does not expose its pid; the newest nats-server right after it returns is this one
-// (the field runs no other broker while a harness runs).
-const brokerPid = Number(execFileSync("sh", ["-c", "pgrep -n -x nats-server || true"], { encoding: "utf8" }).trim()) || undefined;
+const brokerPid = broker.pid;
 
 const children: ChildProcess[] = [];
 let stopping = false;
@@ -293,36 +397,91 @@ const table: string[][] = [];
 const ramTable: string[][] = [];
 const snapshots: string[] = [];
 let delivery: Awaited<ReturnType<typeof bootDeliveryDaemon>> | undefined;
+let memoryObserver: CotalEndpoint | undefined;
+let observationErrors = 0, measurementChecks = 0;
+const receipts = new Map<string, SeatReceipt>();
+const verify = (condition: boolean, detail: string): void => {
+  if (!condition) throw new Error(`manager-seat-load: ${detail}`);
+  measurementChecks++;
+};
 try {
   await setupSpaceStreams({ servers: broker.servers, space, creds: await mintCreds(auth, newIdentity(), "provisioner") });
   delivery = await bootDeliveryDaemon({ space, servers: broker.servers, auth, reloadStoreIdentity: workspaceSecretStore(workspaceRoot).identity });
 
-  const childEnv = { ...cleanEnv, DO_NOT_TRACK: "1", COTAL_TELEMETRY: "off", COTAL_HOME: home, COTAL_SEAT_ROOT: seatRoot };
-  const seatHost = startChild({ kind: "seats", seatDir }, childEnv);
-  await ask(seatHost, undefined, "ready");
-  const manager = startChild({ kind: "manager", space, servers: broker.servers, workspaceRoot, seatDir, stubToken, dist: SHAPE === "dist", ...(realSeat ? { realSeat } : {}) }, childEnv);
-  await ask(manager, undefined, "ready");
+  const childEnv = { ...cleanEnv, HOME: home, DO_NOT_TRACK: "1", COTAL_TELEMETRY: "off", COTAL_HOME: home, COTAL_SEAT_ROOT: seatRoot };
+  const seatHost = REAL_SEATS ? undefined : startChild({ kind: "seats", seatDir }, childEnv);
+  if (seatHost) await ask(seatHost, undefined, "ready");
+  const manager = startChild({ kind: "manager", space, servers: broker.servers, workspaceRoot, seatDir, stubToken, dist: SHAPE === "dist", ...(realSeat ? { realSeat } : {}), observeSeats: PROCESS_MEMORY }, childEnv);
+  const managerReady = await ask(manager, undefined, "ready");
+  const instanceId = managerReady.instanceId, epoch = managerReady.epoch;
+  if (PROCESS_MEMORY) {
+    verify(typeof instanceId === "string" && instanceId.length > 0, "manager instance identity missing");
+    verify(typeof epoch === "number" && Number.isSafeInteger(epoch) && epoch >= 0, "manager epoch missing");
+    const expiresInSeconds = Math.ceil((SECONDS + SETTLE_S) * (STEPS.length + 1) + maxSeats * 30 + 120);
+    verify(Number.isSafeInteger(expiresInSeconds), "observation lifetime exceeds a safe integer");
+    const identity = newIdentity(), lifecycleUid = mintLifecycleUid();
+    // This private fixture caller gets only describe/ps beyond the agent baseline, pinned to
+    // the manager that just started. No spawn/admin grant, private manager access or raw rail.
+    memoryObserver = new CotalEndpoint({
+      space, servers: broker.servers, lifecycleUid,
+      creds: await mintCreds(auth, identity, "agent", { lifecycleUid, expiresInSeconds, allowSubscribe: [], allowPublish: [], capabilities: [], endpointCapabilities:
+        instanceOnlyManagerCapabilities(["describe", "ps"].map((command) => ({ endpoint: "manager", command })), instanceId as string) }),
+      card: { id: identity.id, name: "memory-observer", role: "observer", kind: "endpoint" },
+      channels: [], consume: false, registerPresence: false, watchPresence: false, watchChannels: false,
+    });
+    memoryObserver.on("error", () => { observationErrors++; });
+    memoryObserver.on("warning", () => { observationErrors++; });
+    await memoryObserver.start();
+  }
+  const processMemory = (pid: number) => {
+    const mem = procMem(pid);
+    verify(Object.values(mem).every((n) => Number.isFinite(n) && n >= 0) && mem.rssMb > 0, "process memory sample missing or invalid");
+    return { pid, rssMiB: mem.rssMb, pssMiB: mem.pssMb, ussMiB: mem.ussMb };
+  };
+  const observe = async () => ({
+    ...await observeManagerMemory(memoryObserver, instanceId, epoch, receipts, manager.pid!, () => observationErrors, processMemory, verify),
+    broker: processMemory(brokerPid),
+  });
 
-  const measure = async (seatsNow: number, spawn?: { ok: number; failed: number; refusals: string[]; spawnMs: number[]; cpuMs: number }) => {
+  const measure = async (seatsNow: number, spawn?: { ok: number; failed: number; refusals: string[]; spawnMs: number[]; cpuMs: number; receipts: SeatReceipt[] }) => {
+    if (PROCESS_MEMORY && spawn) {
+      verify(spawn.failed === 0 && spawn.receipts.length === spawn.ok, "not every requested connector started with an identity receipt");
+      for (const receipt of spawn.receipts) {
+        verify(!receipts.has(receipt.name), "duplicate spawn receipt");
+        receipts.set(receipt.name, receipt);
+      }
+      verify(receipts.size === seatsNow, "successful connector count differs from requested cohort");
+    }
     await wait(SETTLE_S * 1000);
-    const m0 = procCpuMs(manager.pid!), h0 = procCpuMs(seatHost.pid!), b0 = brokerPid ? procCpuMs(brokerPid) : NaN;
+    const before = PROCESS_MEMORY ? await observe() : undefined;
+    const m0 = procCpuMs(manager.pid!), h0 = seatHost ? procCpuMs(seatHost.pid!) : undefined, b0 = brokerPid ? procCpuMs(brokerPid) : NaN;
     const t0 = performance.now();
+    if (before) console.log(`MSL_WINDOW ${JSON.stringify({ seats: seatsNow, managerPid: manager.pid, seatPids: before.seats.map((s) => s.pid) })}`);
     await wait(SECONDS * 1000);
     const s = (performance.now() - t0) / 1000;
-    const mgrCores = (procCpuMs(manager.pid!) - m0) / 1000 / s;
-    const host = (await ask(seatHost, { cmd: "sample" }, "sample")).sample as { seats: number; connected: number; failed: number; firstErrors: string[]; rssMb: number };
+    const m1 = procCpuMs(manager.pid!), h1 = seatHost ? procCpuMs(seatHost.pid!) : undefined, b1 = procCpuMs(brokerPid);
+    const mgrCores = (m1 - m0) / 1000 / s;
+    const after = PROCESS_MEMORY ? await observe() : undefined;
+    if (before && after) {
+      verify(before.seats.every((seat, i) => seat.pid === after.seats[i]?.pid), "a connector process changed during the idle window");
+      console.log(`MSL_RESULT ${JSON.stringify({ source: SHA, sourceDirty: SOURCE_DIRTY, requested: seatsNow, windowSeconds: s, shape: SHAPE,
+        seatMode: "real", seatEntry: REAL_ENTRY, stubHostStarted: Boolean(seatHost), heapSnapshots: false, observationErrors, checks: measurementChecks,
+        brokerCpuCores: (b1 - b0) / 1000 / s, managerCpuCores: mgrCores, before, after })}`);
+    }
+    const host = seatHost ? (await ask(seatHost, { cmd: "sample" }, "sample")).sample as { seats: number; connected: number; failed: number; firstErrors: string[]; rssMb: number } : undefined;
+    if (seatHost && !host) throw new Error("manager-seat-load: stub host omitted its sample");
     const spawnMs = spawn?.spawnMs.slice().sort((a, b) => a - b) ?? [];
     table.push([
       String(seatsNow),
-      `${host.connected} / ${childCount(manager.pid!)}`,
+      `${host ? host.connected : "n/a"} / ${childCount(manager.pid!)}`,
       (mgrCores * 1000).toFixed(2),
       procRssMb(manager.pid!).toFixed(1),
       spawn ? `${spawn.ok} / ${spawn.failed}` : "",
       spawn && spawn.ok ? (spawn.cpuMs / spawn.ok).toFixed(0) : "",
       spawnMs.length ? `${spawnMs[Math.floor(spawnMs.length / 2)].toFixed(0)} / ${spawnMs[spawnMs.length - 1].toFixed(0)}` : "",
-      (((procCpuMs(seatHost.pid!) - h0) / 1000 / s) * 1000).toFixed(2),
-      host.rssMb.toFixed(0),
-      brokerPid ? (((procCpuMs(brokerPid) - b0) / 1000 / s) * 1000).toFixed(2) : "n/a",
+      h0 !== undefined && h1 !== undefined ? (((h1 - h0) / 1000 / s) * 1000).toFixed(2) : "n/a",
+      host ? host.rssMb.toFixed(0) : "n/a",
+      brokerPid ? (((b1 - b0) / 1000 / s) * 1000).toFixed(2) : "n/a",
     ]);
     if (RAM) {
       const mgr = procMem(manager.pid!);
@@ -337,7 +496,7 @@ try {
         mem.heapUsedMb.toFixed(1), mem.heapTotalMb.toFixed(1), mem.externalMb.toFixed(1), mem.codeMb.toFixed(1),
         realSeat ? `${seatMem.length} real` : "stub, shared host",
         realSeat && seatMem.length ? `${(sum("rssMb") / seatMem.length).toFixed(1)} / ${(sum("pssMb") / seatMem.length).toFixed(1)} / ${(sum("ussMb") / seatMem.length).toFixed(1)}` : "",
-        (() => { const h = procMem(seatHost.pid!); return `${h.rssMb.toFixed(1)} / ${h.pssMb.toFixed(1)} / ${h.ussMb.toFixed(1)}`; })(),
+        seatHost ? (() => { const h = procMem(seatHost.pid!); return `${h.rssMb.toFixed(1)} / ${h.pssMb.toFixed(1)} / ${h.ussMb.toFixed(1)}`; })() : "n/a",
       ]);
       if (realSeat && kids.length && seatsNow === STEPS[STEPS.length - 1]) {
         // One real seat's heap: the signal makes node write Heap.*.heapsnapshot into its cwd.
@@ -368,27 +527,28 @@ try {
           + `; script source ${(top.sources.bytes / MB).toFixed(1)} MB in ${top.sources.scripts} scripts, largest by package: ` + top.sources.byPackage.map((t) => `${t.name} ${(t.bytes / MB).toFixed(1)} MB (${t.count})`).join(", "));
       }
     }
-    console.error(`  … step ${seatsNow}: manager ${(mgrCores * 1000).toFixed(2)} millicores, RSS ${procRssMb(manager.pid!).toFixed(1)} MB, ${host.connected} seats connected`);
+    console.error(`  … step ${seatsNow}: manager ${(mgrCores * 1000).toFixed(2)} millicores, RSS ${procRssMb(manager.pid!).toFixed(1)} MB, ${host ? `${host.connected} stub-host seats connected` : "stub host not started (real-seat mode)"}`);
     if (spawn?.refusals.length) for (const r of spawn.refusals) console.error(`    refusal: ${r}`);
-    if (host.firstErrors.length) for (const e of host.firstErrors) console.error(`    seat error: ${e}`);
+    if (host && host.firstErrors.length) for (const e of host.firstErrors) console.error(`    seat error: ${e}`);
   };
 
   await measure(0);
   let have = 0;
   for (const step of STEPS) {
-    const r = (await ask(manager, { cmd: "spawn", from: have, to: step }, "spawned")).spawned as { ok: number; failed: number; refusals: string[]; spawnMs: number[]; cpuMs: number };
+    const r = (await ask(manager, { cmd: "spawn", from: have, to: step }, "spawned")).spawned as { ok: number; failed: number; refusals: string[]; spawnMs: number[]; cpuMs: number; receipts: SeatReceipt[] };
     have = step;
     await measure(step, r);
   }
 
-  const head = ["seats requested", "seats connected / manager children", "manager millicores", "manager RSS MB", "spawned ok / refused", "manager CPU ms per spawn", "spawn wall p50 / max ms", "seat host millicores", "seat host RSS MB", "broker millicores"];
-  console.log(`\nmanager-seat-load  git ${SHA}  host ${availableParallelism()} cores, ${(totalmem() / 1073741824).toFixed(1)} GB  idle window ${SECONDS}s after ${SETTLE_S}s settle  manager shape ${SHAPE === "dist" ? `dist (plain node${MANAGER_NODE_FLAGS.length ? ` ${MANAGER_NODE_FLAGS.join(" ")}` : ""}, built package)` : "src (tsx over source)"}  seats ${realSeat ? "REAL connector processes" : "stub"}\n`);
+  if (PROCESS_MEMORY) console.log(`MSL_DONE checks=${measurementChecks} steps=${STEPS.length + 1}`);
+  const head = ["seats requested", "stub connected / manager children", "manager millicores", "manager RSS MB", "spawned ok / refused", "manager CPU ms per spawn", "spawn wall p50 / max ms", "seat host millicores", "seat host RSS MB", "broker millicores"];
+  console.log(`\nmanager-seat-load  git ${SHA}  host ${availableParallelism()} cores, ${(totalmem() / 1073741824).toFixed(1)} GB  idle window ${SECONDS}s after ${SETTLE_S}s settle  manager shape ${SHAPE === "dist" ? `dist (plain node${MANAGER_NODE_FLAGS.length ? ` ${MANAGER_NODE_FLAGS.join(" ")}` : ""}, built package)` : "src (tsx over source)"}  seats ${realSeat ? `REAL connector processes (${REAL_ENTRY} entry)` : "stub"}\n`);
   console.log(`| ${head.join(" | ")} |`);
   console.log(`|${head.map(() => "---").join("|")}|`);
   for (const r of table) console.log(`| ${r.join(" | ")} |`);
   console.log("");
   if (RAM) {
-    // Under `--seat real` the seats' own connections are their processes', so the seat host is idle.
+    // Real seats own their connections; their shared stub-host columns are n/a.
     const ramHead = ["seats", "manager RSS MB", "manager PSS MB", "manager USS MB", "JS heap used MB", "JS heap total MB", "external MB", "compiled code MB", "seat processes", "per seat process RSS / PSS / USS MB", "shared seat host RSS / PSS / USS MB"];
     console.log(`| ${ramHead.join(" | ")} |`);
     console.log(`|${ramHead.map(() => "---").join("|")}|`);
@@ -399,13 +559,16 @@ try {
   }
 
   stopping = true;
+  await memoryObserver?.stop();
+  memoryObserver = undefined;
   await ask(manager, { cmd: "stop" }, "stopped").catch(() => undefined);
-  await ask(seatHost, { cmd: "stop" }, "stopped").catch(() => undefined);
+  if (seatHost) await ask(seatHost, { cmd: "stop" }, "stopped").catch(() => undefined);
 } catch (e) {
   console.error("  ✗ manager-seat-load threw:", (e as Error).stack ?? (e as Error).message);
   process.exitCode = 1;
 } finally {
   stopping = true;
+  await memoryObserver?.stop().catch(() => {});
   for (const c of children) { try { c.kill("SIGKILL"); } catch { /* already gone */ } }
   // The pty children outlive a killed manager; this run's carry its token and nothing else does.
   try { execFileSync("pkill", ["-f", `sleep 99999.${stubToken}`]); } catch { /* none left */ }
@@ -416,4 +579,235 @@ try {
   rmSync(seatRoot, { recursive: true, force: true });
   await new Promise<void>((r) => { process.stdout.write("", () => r()); });
   process.exit(process.exitCode ?? 0);
+}
+
+/** Shared-account variant of this fixture; the ordinary single-space controls above stay intact. */
+async function runSharedSpaces(): Promise<void> {
+  const { bootBrokerAccounts } = await import("./_boot-broker.js");
+  const { bootDeliveryDaemon } = await import("./_boot-delivery.js");
+  const { procMem, killAndAwaitExit } = await import("@cotal-ai/smoke-kit");
+  const { connect } = await import("@nats-io/transport-node");
+  const root = mkdtempSync(join(tmpdir(), "mgr-shared-load-"));
+  const storeRoot = join(root, "store");
+  const tag = randomUUID().slice(0, 8);
+  const brokerAuth = await createBrokerAuth(`shared-${tag}`);
+  const accounts = await Promise.all(Array.from({ length: SPACES }, (_, i) => createSpaceAccountAuth(brokerAuth, `mgrload-${tag}-${i}`)));
+  const auths = accounts.map((account) => composeSpaceAuth(brokerAuth, account));
+  const operator = decodeNatsJwt<{ sub: string }>(brokerAuth.operator.jwt).sub;
+  saveBrokerAuth(authDir(storeRoot), brokerAuth);
+  for (const account of accounts) saveSpaceAccountAuth(authDir(storeRoot), account);
+  const storeIdentity = workspaceSecretStore(storeRoot).identity;
+  const realSeat = fileURLToPath(new URL("seat.cjs", import.meta.resolve("@cotal-ai/connector-claude-code/mcp")));
+  const hash = (path: string) => createHash("sha256").update(readFileSync(path)).digest("hex");
+  const runtimeHashes = {
+    fixture: hash(import.meta.filename), brokerHelper: hash(fileURLToPath(new URL("./_boot-broker.ts", import.meta.url))),
+    deliveryHelper: hash(fileURLToPath(new URL("./_boot-delivery.ts", import.meta.url))),
+    manager: hash(fileURLToPath(new URL("manager.js", import.meta.resolve("@cotal-ai/manager")))),
+    seat: hash(realSeat), mcp: hash(fileURLToPath(import.meta.resolve("@cotal-ai/connector-claude-code/mcp"))),
+    node: hash(process.execPath),
+  };
+  let checks = 0, observationErrors = 0;
+  const verify = (ok: boolean, detail: string) => {
+    if (!ok) throw new Error(`manager-seat-load shared: ${detail}`);
+    checks++;
+  };
+  const pins = new Map<number, ProcessIdentityRecord>();
+  const pin = (pid: number) => {
+    const existing = pins.get(pid);
+    if (existing) { verify(assertRecordIdentity(existing).kind === "match", "a measured process changed identity"); return; }
+    const record = identityRecord(pid);
+    verify("token" in record, "process start identity is unavailable");
+    pins.set(pid, record as ProcessIdentityRecord);
+  };
+  const processMemory = (pid: number) => {
+    if (pid !== process.pid) pin(pid);
+    const mem = procMem(pid);
+    verify(Object.values(mem).every((n) => Number.isFinite(n) && n >= 0) && mem.rssMb > 0, "process memory sample missing or invalid");
+    return { pid, rssMiB: mem.rssMb, pssMiB: mem.pssMb, ussMiB: mem.ussMb };
+  };
+  type Group = {
+    auth: SpaceAuth; manager: ChildProcess; workspaceRoot: string; seatRoot: string;
+    instanceId: string; epoch: number; managerUser: string; observer?: CotalEndpoint;
+    receipts: Map<string, SeatReceipt>; delivery?: Awaited<ReturnType<typeof bootDeliveryDaemon>>;
+  };
+  const groups: Group[] = [];
+  const children: ChildProcess[] = [];
+  const deliveries: Array<Awaited<ReturnType<typeof bootDeliveryDaemon>>> = [];
+  const seatRoots: string[] = [];
+  let broker: Awaited<ReturnType<typeof bootBrokerAccounts>> | undefined;
+  let serverId: string | undefined;
+  let stopping = false;
+  let abort!: (error: Error) => void;
+  const aborted = new Promise<never>((_, reject) => { abort = reject; });
+  aborted.catch(() => {});
+  const guard = <T>(promise: Promise<T>): Promise<T> => Promise.race([promise, aborted]);
+  const request = (child: ChildProcess, command: Cmd | undefined, key: string) => new Promise<Record<string, unknown>>((resolve, reject) => {
+    if (child.exitCode !== null || child.signalCode !== null) { reject(new Error("owned manager already exited")); return; }
+    const timer = command?.cmd === "stop" ? setTimeout(() => finish(new Error("owned manager stop did not finish in 30s")), 30_000) : undefined;
+    const onExit = () => finish(new Error("owned manager exited before its reply"));
+    const onMessage = (message: Record<string, unknown>) => { if (key in message) finish(undefined, message); };
+    function finish(error?: Error, message?: Record<string, unknown>) {
+      clearTimeout(timer); child.off("message", onMessage); child.off("exit", onExit);
+      if (error) reject(error); else resolve(message!);
+    }
+    child.on("message", onMessage); child.once("exit", onExit);
+    if (command) child.send(command, (error: Error | null) => { if (error) finish(error); });
+  });
+  const placement = async (group: Group) => {
+    const nc = await connect({ servers: broker!.servers, ...standaloneConnectOpts({
+      creds: await mintMembershipObserverCreds(group.auth, newIdentity()), tls: false,
+    }), inboxPrefix: MEMBERSHIP_INBOX_PREFIX });
+    try {
+      const connectedServer = nc.info?.server_id;
+      verify(typeof connectedServer === "string" && connectedServer.length > 0, "native server identity missing");
+      if (serverId === undefined) serverId = connectedServer;
+      verify(connectedServer === serverId, "accounts reached different broker servers");
+      const reply = await nc.request(connzRequestSubject(group.auth.account.pub), JSON.stringify({ auth: true, limit: 1024 }), { timeout: 5000 });
+      const body = reply.json<{ server?: { id?: string }; data?: { total?: number; connections?: Array<{ cid?: number; authorized_user?: string }> } }>();
+      verify(body.server?.id === connectedServer, "account observation came from another server");
+      const connections = body.data?.connections;
+      verify(Array.isArray(connections) && connections.length < 1024
+        && (body.data?.total === undefined || body.data.total === connections.length), "native account connection inventory missing or truncated");
+      const users = connections!.map((row) => row.authorized_user);
+      verify(users.every((user) => typeof user === "string"), "native account connection identities missing");
+      const expected = [group.managerUser, ...[...group.receipts.values()].map((receipt) => receipt.id)];
+      for (const user of expected) verify(users.includes(user), "manager or connector not observed in its assigned account");
+      for (const sibling of groups.filter((g) => g !== group))
+        for (const user of [sibling.managerUser, ...[...sibling.receipts.values()].map((receipt) => receipt.id)])
+          verify(!users.includes(user), "a sibling manager or connector was attributed to this account");
+      return { account: group.auth.account.pub, operator, serverId: connectedServer, expectedUsers: expected, connections: connections!.length };
+    } finally { await nc.close(); }
+  };
+  try {
+    verify(new Set(accounts.map((a) => a.account.pub)).size === SPACES, "data accounts are not distinct");
+    verify(typeof operator === "string" && operator.startsWith("O"), "broker operator identity missing");
+    for (const account of accounts)
+      verify(decodeNatsJwt<{ iss: string }>(account.account.jwt).iss === operator, "account is not signed by this broker operator");
+    broker = await bootBrokerAccounts(brokerAuth, accounts, { monitor: true });
+    pin(broker.pid);
+    for (let i = 0; i < SPACES; i++) {
+      const auth = auths[i]!;
+      const workspaceRoot = join(root, `space-${i}`, "ws"), home = join(root, `space-${i}`, "home");
+      const seatRoot = mkdtempSync(join(tmpdir(), "s")); seatRoots.push(seatRoot);
+      const seatDir = seatRoot; // Nkey-named control sockets must stay below the Unix path limit.
+      for (const path of [join(workspaceRoot, ".cotal", "agents"), home, seatDir]) mkdirSync(path, { recursive: true, mode: 0o700 });
+      for (let j = 0; j < STEPS[STEPS.length - 1]!; j++)
+        writeFileSync(join(workspaceRoot, ".cotal", "agents", `seat${j}.md`), `---\nname: seat${j}\nrole: ${ROLE}\nsubscribe: [${CHANNEL}]\nallowSubscribe: [${CHANNEL}]\nallowPublish: [${CHANNEL}]\n---\n`, { mode: 0o600 });
+      await setupSpaceStreams({ servers: broker.servers, space: auth.space, creds: await mintCreds(auth, newIdentity(), "provisioner") });
+      const delivery = await bootDeliveryDaemon({ space: auth.space, servers: broker.servers, auth, reloadStoreIdentity: storeIdentity });
+      deliveries.push(delivery);
+      const env = { ...cleanEnv, HOME: home, XDG_CONFIG_HOME: join(home, ".config"), XDG_CACHE_HOME: join(home, ".cache"),
+        XDG_DATA_HOME: join(home, ".local", "share"), XDG_STATE_HOME: join(home, ".local", "state"),
+        DO_NOT_TRACK: "1", COTAL_TELEMETRY: "off", COTAL_HOME: home, COTAL_SEAT_ROOT: seatRoot };
+      const manager = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", ...MANAGER_NODE_FLAGS, import.meta.filename, "child"], {
+        stdio: ["ignore", "inherit", "inherit", "ipc"], env,
+      });
+      children.push(manager); pin(manager.pid!);
+      manager.on("exit", () => { if (!stopping) abort(new Error("owned shared-fixture manager exited mid-run")); });
+      const ready = request(manager, undefined, "ready");
+      manager.send({ kind: "manager", space: auth.space, servers: broker.servers, workspaceRoot, seatDir,
+        stubToken: tag, dist: true, realSeat, observeSeats: true, storeRoot, strictStop: true } satisfies ManagerJob);
+      const observed = await guard(ready);
+      verify(typeof observed.instanceId === "string" && observed.instanceId.length > 0, "manager instance identity missing");
+      verify(typeof observed.epoch === "number" && Number.isSafeInteger(observed.epoch) && observed.epoch >= 0, "manager epoch missing");
+      const principal = observed.principal as { actor?: unknown; uid?: unknown } | undefined;
+      verify(typeof principal?.actor === "string" && principal.actor.startsWith("U") && typeof principal.uid === "string", "static manager identity missing");
+      const group: Group = { auth, manager, workspaceRoot, seatRoot, instanceId: observed.instanceId as string,
+        epoch: observed.epoch as number, managerUser: principal!.actor as string, receipts: new Map(), delivery };
+      groups.push(group);
+      const expiresInSeconds = Math.ceil((SECONDS + SETTLE_S) * (STEPS.length + 1) + STEPS[STEPS.length - 1]! * SPACES * 30 + 120);
+      verify(Number.isSafeInteger(expiresInSeconds), "observation lifetime exceeds a safe integer");
+      const identity = newIdentity(), lifecycleUid = mintLifecycleUid();
+      group.observer = new CotalEndpoint({ space: auth.space, servers: broker.servers, lifecycleUid,
+        creds: await mintCreds(auth, identity, "agent", { lifecycleUid, expiresInSeconds, allowSubscribe: [], allowPublish: [], capabilities: [], endpointCapabilities:
+          instanceOnlyManagerCapabilities(["describe", "ps"].map((command) => ({ endpoint: "manager", command })), group.instanceId) }),
+        card: { id: identity.id, name: "memory-observer", role: "observer", kind: "endpoint" },
+        channels: [], consume: false, registerPresence: false, watchPresence: false, watchChannels: false,
+      });
+      group.observer.on("error", () => { observationErrors++; }); group.observer.on("warning", () => { observationErrors++; });
+      await group.observer.start();
+    }
+    verify(new Set(groups.map((g) => g.instanceId)).size === SPACES, "manager instance identities are not distinct");
+    const observe = async () => {
+      const spaces = [];
+      for (const group of groups) spaces.push({ space: group.auth.space, instanceId: group.instanceId, epoch: group.epoch,
+        ...await observeManagerMemory(group.observer, group.instanceId, group.epoch, group.receipts, group.manager.pid!, () => observationErrors, processMemory, verify),
+        placement: await placement(group) });
+      const processes = spaces.flatMap((space) => [space.manager, ...space.seats]);
+      verify(new Set(processes.map((p) => p.pid)).size === processes.length, "a process belongs to more than one cohort");
+      const brokerMemory = processMemory(broker!.pid);
+      verify(!processes.some((p) => p.pid === brokerMemory.pid), "broker was counted as a cohort process");
+      const parent = processMemory(process.pid);
+      const unique = [parent, brokerMemory, ...processes];
+      return { observedAt: new Date().toISOString(), parent, broker: brokerMemory, spaces,
+        totals: { processes: unique.length, rssMiB: unique.reduce((n, p) => n + p.rssMiB, 0),
+          pssMiB: unique.reduce((n, p) => n + p.pssMiB, 0), ussMiB: unique.reduce((n, p) => n + p.ussMiB, 0) } };
+    };
+    let have = 0;
+    for (const step of [0, ...STEPS]) {
+      if (step > 0) for (const group of groups) {
+        const answer = await guard(request(group.manager, { cmd: "spawn", from: have, to: step }, "spawned"));
+        const spawned = answer.spawned as { ok: number; failed: number; receipts: SeatReceipt[]; refusalFacts: Array<{ code: string | null; detailKinds: string[] }> };
+        verify(spawned.failed === 0 && spawned.ok === step - have && spawned.receipts.length === spawned.ok,
+          `not every requested connector started with a receipt: ${JSON.stringify({ ok: spawned.ok, failed: spawned.failed, refusals: spawned.refusalFacts })}`);
+        for (const receipt of spawned.receipts) { verify(!group.receipts.has(receipt.name), "duplicate spawn receipt"); group.receipts.set(receipt.name, receipt); }
+        verify(group.receipts.size === step, "successful cohort differs from requested seats");
+      }
+      have = step;
+      await guard(wait(SETTLE_S * 1000));
+      const before = await guard(observe());
+      const cpu = [broker.pid, ...groups.map((g) => g.manager.pid!), process.pid].map(procCpuMs);
+      console.log(`MSL_WINDOW ${JSON.stringify({ topology: "shared-broker", requestedPerSpace: step, requestedTotal: step * SPACES,
+        brokerPid: broker.pid, managers: groups.map((g) => g.manager.pid), seatPids: before.spaces.flatMap((g) => g.seats.map((s) => s.pid)) })}`);
+      const started = performance.now(); await guard(wait(SECONDS * 1000)); const seconds = (performance.now() - started) / 1000;
+      const afterCpu = [broker.pid, ...groups.map((g) => g.manager.pid!), process.pid].map(procCpuMs);
+      const after = await guard(observe());
+      verify(before.spaces.every((group, i) => group.seats.every((seat, j) => seat.pid === after.spaces[i]?.seats[j]?.pid)), "connector process changed during the common window");
+      console.log(`MSL_RESULT ${JSON.stringify({ source: SHA, sourceDirty: SOURCE_DIRTY, runtime: process.version, runtimeHashes,
+        topology: "shared-broker", spaceCount: SPACES, requested: step * SPACES, requestedPerSpace: step, requestedTotal: step * SPACES,
+        shape: SHAPE, seatMode: "real", seatEntry: "stock", cacheScope: "private-home-per-space", stubHostStarted: false,
+        heapSnapshots: false, fixtureLayout: "static trusted same-UID managers; parent holds all Plane-3 contexts", operator, serverId,
+        windowSeconds: seconds, observationErrors, checks, brokerCpuCores: (afterCpu[0]! - cpu[0]!) / 1000 / seconds,
+        parentCpuCores: (afterCpu[groups.length + 1]! - cpu[groups.length + 1]!) / 1000 / seconds,
+        managerCpuCores: groups.map((group, i) => ({ instanceId: group.instanceId, cores: (afterCpu[i + 1]! - cpu[i + 1]!) / 1000 / seconds })), before, after })}`);
+    }
+  } catch (error) {
+    process.exitCode = 1;
+    console.error(`manager-seat-load shared failed: ${error instanceof Error ? error.message : "unreadable failure"}`);
+  } finally {
+    stopping = true;
+    // Pin direct pty children before stopping a Manager, including a partially completed spawn.
+    for (const child of children) {
+      if (child.exitCode !== null || child.signalCode !== null) continue;
+      const record = pins.get(child.pid!);
+      verify(record !== undefined && assertRecordIdentity(record).kind === "match", "manager identity unavailable during cleanup");
+      for (const pid of readFileSync(`/proc/${child.pid}/task/${child.pid}/children`, "utf8").trim().split(/\s+/).filter(Boolean).map(Number)) pin(pid);
+    }
+    for (const group of groups) await group.observer?.stop();
+    for (const child of children) {
+      if (child.exitCode !== null || child.signalCode !== null) continue;
+      try { await request(child, { cmd: "stop" }, "stopped"); }
+      catch { process.exitCode = 1; console.error("manager-seat-load shared: graceful Manager stop failed; terminating only pinned fixture processes"); }
+    }
+    // No argv scan or process-name sweep: signal only processes whose recorded start still matches.
+    for (const [pid, record] of pins) {
+      if (pid === broker?.pid) continue;
+      const state = assertRecordIdentity(record).kind;
+      verify(state === "gone" || state === "match", "owned process custody is uncertain; preserving fixture");
+      if (state === "match") process.kill(pid, "SIGKILL");
+    }
+    for (const child of children) await killAndAwaitExit(child);
+    for (let attempt = 0; attempt < 50; attempt++) {
+      if ([...pins].filter(([pid]) => pid !== broker?.pid).every(([, record]) => assertRecordIdentity(record).kind === "gone")) break;
+      await wait(100);
+    }
+    verify([...pins].filter(([pid]) => pid !== broker?.pid).every(([, record]) => assertRecordIdentity(record).kind === "gone"), "fixture processes remain; broker and directories retained");
+    for (const delivery of deliveries) await delivery.stop();
+    await broker?.stop();
+    if (broker) verify(assertRecordIdentity(pins.get(broker.pid)!).kind === "gone", "owned broker remains after stop");
+    for (const seatRoot of seatRoots) rmSync(seatRoot, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
+    console.log(`MSL_TEARDOWN ${JSON.stringify({ brokerPid: broker?.pid, managers: children.length, pinnedProcessesGone: pins.size, directoriesRemoved: true })}`);
+  }
+  if (!process.exitCode) console.log(`MSL_DONE checks=${checks} steps=${STEPS.length + 1} spaces=${SPACES}`);
 }

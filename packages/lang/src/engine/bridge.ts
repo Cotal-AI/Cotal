@@ -41,13 +41,15 @@ import { Cancelled, EffectError, EffectRefused } from "../effects.js";
 import type { EntryState, JournalEntry, JournalStore } from "../journal.js";
 import { EffectResultTooLarge, JournalAppendRejected } from "../journal.js";
 import type { StepKey } from "../keys.js";
+import { messageOf, nameOf } from "../errors.js";
 
 /** One 16-byte SharedArrayBuffer: an Int32 answer flag at 0, the Float64 clock value at 8. */
 export const CLOCK_BYTES = 16;
 
-/** The eleven async members of {@link EffectHandler}, the only methods the bridge will forward. */
+/** The async members of {@link EffectHandler}, the only methods the bridge will forward. */
 const METHODS = [
   "spawn",
+  "participant",
   "turn",
   "ask",
   "checkpoint",
@@ -141,11 +143,11 @@ function flatten(e: unknown): WireError {
       ...(e.indeterminate ? { indeterminate: true } : {}),
     };
   }
-  const err = e as { name?: unknown; message?: unknown; code?: unknown; indeterminate?: unknown };
+  const err = e as { code?: unknown; indeterminate?: unknown };
   return {
     class: "error",
-    name: typeof err?.name === "string" ? err.name : "Error",
-    message: typeof err?.message === "string" ? err.message : String(e),
+    name: nameOf(e),
+    message: messageOf(e),
     ...(typeof err?.code === "string" ? { code: err.code } : {}),
     ...(err?.indeterminate === true ? { indeterminate: true } : {}),
   };

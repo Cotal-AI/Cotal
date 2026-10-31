@@ -11,3 +11,14 @@ See [docs/connectors.md](../../docs/connectors.md) for how the adapters compare,
 [docs/mcp-tools.md](../../docs/mcp-tools.md) for the tool catalog generated from these specs,
 [docs/connect-claude.md](../../docs/connect-claude.md) for how a session joins, and the
 [root AGENTS.md](../../AGENTS.md) for the tier rules.
+
+Attribution fields use core's `peerLabel` sanitizer, the same policy as roster labels:
+C0/C1 controls, Unicode line/paragraph separators and brackets become spaces. Ordinary
+Unicode and surrounding spacing are preserved; channel/kind renderers keep their own
+existing trim and empty-value labels. Message-body formatting remains separate.
+
+Bundled docs use an inline gzip/base64 payload generated from the versioned sources.
+Text and structured indexes read separately generated metadata without decoding the corpus.
+`loadDocsBundle()` decodes bodies synchronously on the first page or search; reading
+`DOCS_VERSION` does not decode them. Structured index results remain independently mutable.
+The payload stays inside each ESM or CJS bundle, so package and plugin asset layouts do not change.

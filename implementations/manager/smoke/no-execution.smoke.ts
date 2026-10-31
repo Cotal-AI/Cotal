@@ -86,6 +86,7 @@ try {
       prepareAgentRetirement: async (args) => { const request = client.remoteManagedAgentPrepareRetirementRequest(state, "cli", proof, registered.processEpoch, args.target, args.opId); await door(request); },
       validateRetainedAgent: async (args) => { const request = client.remoteRetainedAgentValidationRequest(state, "cli", proof, registered.processEpoch, args, args.actorToken, args.sentinelCreds); return client.retainedAgentAuthority(await door(request), request); },
       scanGoalIndex: async () => { scans++; const request = client.remoteManagerGoalIndexScanRequest(state, "cli", proof, registered.processEpoch); return client.remoteManagerGoalIndexEntries(await door(request), request, prepared.owner); },
+      authorizeParticipation: async (caller) => { const request = client.remoteManagerParticipationAuthorizationRequest(state, "cli", proof, registered.processEpoch, caller); return client.remoteManagerParticipationAuthorized(await door(request), request, prepared.owner); },
       authorizeAdmin: async (caller) => { const request = client.remoteManagerAdminAuthorizationRequest(state, "cli", proof, registered.processEpoch, caller); return client.remoteManagerAdminAuthorized(await door(request), request, prepared.owner); },
       agentBearerExchangeUrl: service!.url,
     };

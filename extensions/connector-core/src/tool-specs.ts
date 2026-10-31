@@ -13,7 +13,7 @@ import { isConcreteChannel, channelInAllow, AmbiguousPeerError, peerLabel, asser
 import { afterRecallMark, type MeshAgent, type InboxItem } from "./agent.js";
 // The neutralization and the per-item rendering live in `framing.ts`, one convention shared with
 // the auto-injected block, and are used here rather than restated. See that file for the rule.
-import { attributionSafe, fmtItem, fmtFrom } from "./framing.js";
+import { attributionSafe, fmtDeliveryItem, fmtItem, fmtFrom } from "./framing.js";
 import { isAuthed, type AgentConfig } from "./config.js";
 import { submitFeedback, type FeedbackInput } from "./feedback.js";
 import { buildOrientation, presenceLiveness, renderOrientation, type OrientationTool } from "./orientation.js";
@@ -292,7 +292,7 @@ export function renderInbox(opts: {
 
   // WHY THIS AGREES WITH THE ASSEMBLED REPLY, and what would break the agreement. Deliverability is
   // decided here and delivery is decided by `assemble`, and the two can only agree because both
-  // measure the item through the SAME `fmtItem`. That is what makes the agreement invariant to how an
+  // measure the item through the SAME `fmtDeliveryItem`. That is what makes the agreement invariant to how an
   // item renders: the continuation indent that keeps a peer from forging a line raised both sides by
   // the same characters, so nothing here had to change for it. Fork the rendering, and this
   // classification starts calling a message deliverable that the reply cannot carry.
@@ -311,7 +311,7 @@ export function renderInbox(opts: {
   const assemble = (shown: InboxItem[], held: InboxItem[], tier: NoteTier): string => {
     const note = heldNote(held, peek, stuck, tier);
     const parts: string[] = [];
-    if (shown.length) parts.push(`${opts.head(shown)}\n${shown.map(fmtItem).join("\n")}${note}`);
+    if (shown.length) parts.push(`${opts.head(shown)}\n${shown.map(fmtDeliveryItem).join("\n")}${note}`);
     else if (held.length) parts.push(`Nothing could be delivered in this response.${note}`);
     if (warning) parts.push(warning);
     return parts.join("\n\n");
@@ -384,7 +384,7 @@ const NOTE_TIERS: readonly NoteTier[] = ["full", "compact", "none"];
 
 /** What one rendered item costs a response: its own text plus the newline that joins it. */
 function itemCost(i: InboxItem): number {
-  return fmtItem(i).length + 1;
+  return fmtDeliveryItem(i).length + 1;
 }
 
 /**
@@ -502,7 +502,7 @@ function renderPart(opts: {
   budget?: number;
 }): { text: string; end: number; done: boolean } {
   const budget = opts.budget ?? INBOX_WINDOW_CHARS;
-  const full = fmtItem(opts.item);
+  const full = fmtDeliveryItem(opts.item);
   const total = full.length;
   const fmt = (n: number): string => n.toLocaleString("en-US");
   const assemble = (end: number, tier: NoteTier): string => {

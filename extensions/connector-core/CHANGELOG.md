@@ -1,5 +1,219 @@
 # @cotal-ai/connector-core
 
+## 0.132.5
+
+No changes in this release.
+
+## 0.132.4
+
+No changes in this release.
+
+## 0.132.3
+
+### Patch Changes
+
+- 9ef07e1: Serve text and structured documentation indexes from generated metadata without decoding the full corpus. Preserve index output, caller-owned structured results, and page and search behavior.
+
+## 0.132.2
+
+### Patch Changes
+
+- c595436: Load bundled documentation from an inline gzip payload on first use to reduce idle connector memory. Keep the synchronous docs API and existing plugin assets unchanged; decoding adds temporary memory and work to the first docs call.
+
+## 0.132.1
+
+No changes in this release.
+
+## 0.132.0
+
+No changes in this release.
+
+## 0.131.6
+
+No changes in this release.
+
+## 0.131.5
+
+No changes in this release.
+
+## 0.131.4
+
+No changes in this release.
+
+## 0.131.3
+
+No changes in this release.
+
+## 0.131.2
+
+No changes in this release.
+
+## 0.131.1
+
+No changes in this release.
+
+## 0.131.0
+
+No changes in this release.
+
+## 0.130.2
+
+No changes in this release.
+
+## 0.130.1
+
+### Patch Changes
+
+- 3e057b0: Use core's existing peer-label sanitizer for attribution fields. Channel and kind framing now neutralize all C0/C1 controls consistently with roster labels, while preserving ordinary Unicode, spacing and the existing bracket/line-break handling.
+
+## 0.130.0
+
+No changes in this release.
+
+## 0.129.9
+
+No changes in this release.
+
+## 0.129.8
+
+No changes in this release.
+
+## 0.129.7
+
+No changes in this release.
+
+## 0.129.6
+
+No changes in this release.
+
+## 0.129.5
+
+No changes in this release.
+
+## 0.129.4
+
+No changes in this release.
+
+## 0.129.3
+
+No changes in this release.
+
+## 0.129.2
+
+No changes in this release.
+
+## 0.129.1
+
+No changes in this release.
+
+## 0.129.0
+
+No changes in this release.
+
+## 0.128.7
+
+No changes in this release.
+
+## 0.128.6
+
+No changes in this release.
+
+## 0.128.5
+
+### Patch Changes
+
+- 1c86343: Preserve the pre-submission compatibility refusal when a followed action's service does not advertise goal-result. Narrowed discovery keeps the action required and lets the existing follow preflight report the upgrade notice and not-executed outcome without publishing a mutation.
+
+## 0.128.4
+
+No changes in this release.
+
+## 0.128.3
+
+No changes in this release.
+
+## 0.128.2
+
+### Patch Changes
+
+- 653c0cd: Recheck a managed agent's issued caller view after its parent's workflow permission is restored. Repair failed discovery before submitting the command, while preserving legacy-call caching and manager instance pinning.
+
+## 0.128.1
+
+No changes in this release.
+
+## 0.128.0
+
+### Patch Changes
+
+- 6f945a2: Show sender and message IDs in Codex injected messages and cotal_inbox replies, using the existing metadata block separate from peer labels, so recipients can select one of two same-name senders without guessing.
+
+## 0.127.5
+
+### Patch Changes
+
+- 580afa4: `cotal up` over a manager pidfile that holds no pid no longer tells you to remove the file once
+  `cotal ps` finds no manager running. A manager that does not answer on the mesh, such as a stopped
+  one, still runs and owns the folder while `cotal ps` finds none, and following that step started a
+  second manager beside it. The degraded report and its Next now ask you to confirm yourself that no
+  manager runs for the folder before they name `rm <pidfile>`, in the words `cotal down` uses for the
+  same record. `up` still refuses to start over the file, keeps the broker running, and never removes
+  the file itself.
+
+## 0.127.4
+
+### Patch Changes
+
+- dd13059: `cotal down` over a pidfile that holds content that is not a pid now says the record names no
+  process, so cotal cannot tell whether that component still runs. It used to tell you to stop "that
+  process" when the file named none. It still refuses, keeps the file, does not stop the broker, and
+  keeps the artifacts and the registration. A Next now follows: it asks you to confirm that no such
+  component still runs for the folder, because a manager that does not answer on the mesh may still be
+  running, then names `rm <pidfile>` and the same `cotal down`.
+- 9d69969: The guided `cotal meshes add` on a terminal now reports a TLS broker whose certificate this machine
+  does not trust as the flag form does: the handshake failed, and `NODE_EXTRA_CA_CERTS` names the
+  issuing CA. It used to say the broker did not answer and offer another address first. Cancel is now
+  the first choice there, and registering the address anyway is still an explicit choice. A host name
+  the guided form refuses for lacking TLS now gets the flag form's next step, the `tls://` form of the
+  address, and the question that asks again shows no plaintext example. The guided form's refusals
+  and warnings now wrap to the terminal.
+
+## 0.127.3
+
+No changes in this release.
+
+## 0.127.2
+
+### Patch Changes
+
+- f97b910: An open mesh's manager no longer mints credentials from a static stack's accounts left in the same folder. After a static `cotal up`, the first `cotal up --open` there ran its manager on those accounts and recorded the credentials it minted. The next open boot had to prove them gone through a delivery daemon, which an open mesh does not run, so it exited 1 after about a minute with `! control plane degraded:` and no manager. The manager now follows the mesh's recorded mode, so static and open boots can alternate in one folder.
+  
+  This prevents new affected stores. An older build may already have staged credential families in the open account; upgrading does not remove them or unfreeze their registration gates. Open startup in such a folder can still refuse, and the existing reconcile command cannot establish liveness without the required delivery authority. Keep the store intact; this change does not provide an in-place recovery for that state.
+
+## 0.127.1
+
+### Patch Changes
+
+- 388ba4d: The guided `cotal meshes add` on a terminal now takes `--tls` as the flag form does. A host name
+  whose broker requires TLS passes the address rule, the probe requires the handshake, and the record
+  carries the TLS requirement. The guided form used to read TLS intent only from a `tls://` scheme, so
+  `--server nats://<host> --tls` was refused as a host name, and a loopback registration with `--tls`
+  was recorded without the requirement. The `--force` help now says that the address rules still apply.
+
+## 0.127.0
+
+### Minor Changes
+
+- 53fbd95: Allow an authorized personal native conversation to bind itself with `participant()` and receive hosted workflow turns through a finite exact-lifecycle lease without gaining manager seat custody.
+
+### Patch Changes
+
+- e72bd0d: A foreground `cotal up` whose broker exits before the mesh is recorded now says the broker exited
+  before the mesh was recorded. Its next step is the one a detached start gives: read the output
+  above, fix a `nats-server` found on PATH or take it off PATH, and run `cotal up` again. It no longer
+  offers the same `up` as a repair, which only repeated the exit. A broker that exits after its mesh
+  was recorded keeps the line that says the mesh stays recorded and names the repair `up`.
+
 ## 0.126.3
 
 No changes in this release.

@@ -17,13 +17,13 @@ import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { skipSuite } from "@cotal-ai/smoke-kit";
 
 if (process.platform === "win32") {
   // Managed Codex agents are POSIX-only by design: the isolated CODEX_HOME symlinks the
   // operator's auth.json, which needs Developer Mode on Windows (docs/connect-codex.md). There
   // is no Windows Codex case anywhere in the suite — this is a stated limitation, not coverage.
-  console.log("SKIP codex dist smoke — managed Codex agents are POSIX-only (symlinked auth.json)");
-  process.exit(0);
+  skipSuite("managed Codex agents are POSIX-only");
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));

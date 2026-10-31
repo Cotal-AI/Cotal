@@ -488,7 +488,14 @@ const SEAMS: Seam[] = [
   // and the recorded program's hash on run-status (2b59b432f) adds a driver and a reader connection
   // in bin/smoke/run-status-program-identity. Each dials a plaintext loopback broker its suite
   // starts and states `tls: false`.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 332, untypecheckedSites: 255 },
+  // 332/255 -> 353/273: review the 21 additional calls by source context and commit provenance:
+  // four conclave issuance calls, five native-signing controls, one multi-space admission read,
+  // two issued-store recreation calls, one issued-store binder, one backup victim check,
+  // two pending-sender connections, three membership-storage controls, one down lease probe,
+  // and one retirement fence. The 18 smoke calls state explicit booleans (including the native
+  // signer's TLS-true control); down uses resolved.tls and the other two source calls state false.
+  // required-arg-sites.json records the 13 reviewed file counts; the reader's rules are unchanged.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 353, untypecheckedSites: 273 },
 ];
 
 const SITE_COUNTS = JSON.parse(readFileSync(new URL("./required-arg-sites.json", import.meta.url), "utf8")) as Record<string, number>;

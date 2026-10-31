@@ -2,8 +2,7 @@
  * `cotal up` refuses an invalid flag value or combination as usage, exit 1, before anything runs.
  * `--max-sessions 0`, `--max-sessions abc` and an unknown `--restore-only` value used to exit 3,
  * "Outcome unconfirmed", which tells a script the run may have had an effect. `--dry-run` without
- * `-f` used to start a real stack. A `--max-file-store` below 67108865, one byte more than the 64 MiB
- * the space's membership bucket reserves, is refused the same way, as is a `--max-payload` that is
+ * `-f` used to start a real stack. A non-positive `--max-file-store` is refused the same way, as is a `--max-payload` that is
  * not a byte count nats-server starts on, one below the caller floor beside `--service-endpoints`,
  * and one passed to the open broker configuration, which renders no payload limit.
  *
@@ -24,7 +23,9 @@
  * there, and `down` and `down --dry-run` there find no stack. A fresh folder under the home makes its
  * own `.cotal` on a bare `up`, and removes it when a later check refuses, under a home that holds a
  * stack as well, leaving that home's records as they were, while `up -f` there refuses CONFLICT and
- * writes nothing. A bare `up` in a new project
+ * writes nothing. On an 80-column terminal the stderr note that names that `.cotal` wraps at spaces
+ * to stderr's width, each line dimmed on its own, and with stderr in a file it is one line there even
+ * when stdout is a terminal. A bare `up` in a new project
  * names its space after the folder: two sibling folders get their own names, `--space` and a project
  * above the folder keep theirs, and a folder name that is no valid space name, a name another folder
  * holds, or a selection whose folder was moved refuses before anything is written. A bare `up` whose
@@ -38,7 +39,10 @@
  * start a broker there. On Linux, two cells hold one by a client connection's local end instead,
  * open and then in TIME-WAIT, with nothing listening, and need the refusal to say which.
  * A refusal that names the whole fix, such as a nats:// address where the root's recorded policy or
- * --tls-cert serves TLS, prints no help after it. Those cells need `openssl` on PATH.
+ * --tls-cert serves TLS, prints no help after it. Those cells need `openssl` on PATH. `up -f` binds a
+ * single broker address, so a `broker.servers` or `--server` that lists two URLs refuses USAGE_INVALID
+ * with its fix and names neither address, where it used to fail with a bare `Invalid URL`. A listed
+ * entry with credentials keeps its own refusal, and `topology view` still reads the list.
  *
  * Run: pnpm smoke:up-usage-refusal
  */
@@ -50,6 +54,7 @@ import { accessSync, chmodSync, constants, existsSync, lstatSync, mkdirSync, mkd
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
+import { clean, ptySpawn } from "./_console-pty.js";
 
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
 if (!existsSync(BIN)) {
@@ -86,9 +91,6 @@ const cases: { args: string[]; message: RegExp }[] = [
   { args: ["--max-sessions", "0"], message: /--max-sessions must be a positive integer/ },
   { args: ["--max-sessions", "abc"], message: /--max-sessions must be a positive integer/ },
   { args: ["--max-file-store", "0"], message: /--max-file-store must be a positive integer/ },
-  { args: ["--max-file-store", "1"], message: /--max-file-store 1 is below 67108865 bytes, the least the space's streams start on: its membership bucket reserves 67108864 bytes/ },
-  { args: ["--max-file-store", "50000000"], message: /--max-file-store 50000000 is below 67108865 bytes/ },
-  { args: ["--max-file-store", "67108864"], message: /--max-file-store 67108864 is below 67108865 bytes/ },
   { args: ["--max-payload", "0"], message: /--max-payload must be a positive integer/ },
   { args: ["--max-payload", "67108865"], message: /--max-payload 67108865 is over 67108864 bytes \(64 MiB\), which nats-server refuses to start on/ },
   { args: ["--max-payload", "1048576", "--user-auth", "--service-endpoints"], message: /--max-payload 1048576 is below 2098176 bytes, the least a space with --service-endpoints starts on/ },
@@ -241,7 +243,34 @@ if (process.platform !== "win32") {
   const prepare = "prepare this folder with `cotal space create <space> --root .`, then run `cotal up` again from this folder";
   const manifestUp = run(["up", "-f", "cotal.yaml", "--json"], nested);
   check("up -f there still refuses CONFLICT, exit 2, naming space create and up from the folder, and writes nothing", manifestUp.status === 2 && manifestUp.envelope?.error?.code === "CONFLICT" && manifestUp.envelope.error.message === inherited && manifestUp.envelope.error.remedy === prepare && !existsSync(nestedRecords), shown(manifestUp));
-  const { findMesh, recordMesh, removeMesh } = await import("@cotal-ai/workspace");
+  const { displayWidth, findMesh, recordMesh, removeMesh } = await import("@cotal-ai/workspace");
+  // On an 80-column terminal the note wraps at spaces to stderr's width, each line dimmed on its own.
+  // `redirect` sends one stream to a file, so stdout and stderr can be told apart.
+  const made = `made ${nestedRecords} for this folder's records; the machine's home .cotal was not used`;
+  const streamFile = join(folder, "redirected.txt");
+  const onTerminal = async (redirect: string, extra: NodeJS.ProcessEnv) => {
+    rmSync(streamFile, { force: true });
+    let raw = "";
+    const pty = ptySpawn("/bin/sh", ["-c", `exec "$0" "$@" ${redirect}`, process.execPath, BIN, "up", "--runtime", "nosuch", "--server", "nats://127.0.0.1:1"], { name: "xterm-256color", cols: 80, rows: 200, cwd: nested, env: { ...extra, REDIRECTED: streamFile } as Record<string, string> });
+    pty.onData((data) => { raw += data; });
+    const exit = await new Promise<number>((done) => pty.onExit((e) => done(e.exitCode)));
+    return { exit, raw: raw.split(/\r?\n/), lines: clean(raw).split(/\r?\n/), file: existsSync(streamFile) ? readFileSync(streamFile, "utf8") : "" };
+  };
+  /** The note's lines, from the first one, until they read as the note again. */
+  const noteLines = (lines: string[]): string[] => {
+    const block: string[] = [];
+    if (lines[0]?.startsWith("made")) for (const line of lines) { block.push(line); if (block.join(" ").length >= made.length) break; }
+    return block;
+  };
+  const wraps = (block: string[]) => block.length > 1 && block.join(" ") === made && block.every((l) => displayWidth(l) <= 80 || !l.includes(" "));
+  const colored = await onTerminal("", Object.fromEntries(Object.entries(env).filter(([k]) => k !== "NO_COLOR")));
+  const coloredNote = noteLines(colored.lines);
+  check("on an 80-column terminal the note comes first and wraps at spaces within 80 columns, the rest of the run unchanged", colored.exit === 2 && wraps(coloredNote) && colored.lines.some((l) => /Code:\s+DEPENDENCY_UNAVAILABLE/.test(l)) && !existsSync(nestedRecords), colored.lines);
+  check("...each of its lines dimmed on its own", coloredNote.every((l, i) => colored.raw[i] === `\x1b[2m${l}\x1b[0m`), colored.raw.slice(0, coloredNote.length));
+  const stdoutFiled = await onTerminal(`>"$REDIRECTED"`, env);
+  check("with stdout in a file and stderr on the terminal, the note still wraps there within 80 columns", stdoutFiled.exit === 2 && wraps(noteLines(stdoutFiled.lines)) && !stdoutFiled.file.includes("made"), stdoutFiled.lines);
+  const stderrFiled = await onTerminal(`2>"$REDIRECTED"`, env);
+  check("with stderr in a file and stdout on the terminal, the note is one exact line there", stderrFiled.exit === 2 && stderrFiled.file.split("\n")[0] === made && !stderrFiled.lines.some((l) => l.includes("made")), { lines: stderrFiled.lines, file: stderrFiled.file.slice(0, 900) });
   process.env.COTAL_HOME = join(home, ".cotal");
   recordMesh({ space: "homestack", server: "nats://127.0.0.1:1", root: home, mode: "auth", ts: new Date().toISOString() });
   const homeEntry = JSON.stringify(findMesh("homestack"));
@@ -343,6 +372,51 @@ try {
       check(`up refuses ${label} with its fix and no help, exit 1`, r.status === 1 && r.stdout === "" && r.stderr.includes(message) && r.stderr.includes(remedy) && !/Usage|Options/.test(r.stderr), shown(r));
     }
     check("the refusals leave the recorded policy as it was and start no broker", readFileSync(policyFile, "utf8") === policy && !started(root) && !started(plainRoot), readdirSync(join(root, ".cotal")));
+  }
+
+  // `up -f` binds a single broker address, so a list in broker.servers or --server refuses before
+  // anything parses it as one URL, where it used to fail with a bare `Invalid URL` and an unknown
+  // outcome. Each entry is still checked first, and topology view still reads the list. A second
+  // listener holds the other address, so a regression that took either entry cannot start a broker.
+  {
+    const other = createServer((socket) => socket.on("error", () => {}));
+    const second = await new Promise<number>((resolve) => other.listen(0, "127.0.0.1", () => resolve((other.address() as AddressInfo).port)));
+    const project = realpathSync(mkdtempSync(join(tmpdir(), "cotal-up-usage-list-")));
+    roots.push(project);
+    const [one, list] = [`nats://127.0.0.1:${held}`, `nats://127.0.0.1:${held},nats://127.0.0.1:${second}`];
+    const secret = `nats://listuser:listsecret@127.0.0.1:${second}`;
+    const manifest = (servers: string) => `apiVersion: cotal/v1\nkind: Mesh\nspace: upusagelist\nbroker:\n  servers: "${servers}"\nchannels: {}\n`;
+    writeFileSync(join(project, "single.yaml"), manifest(one));
+    writeFileSync(join(project, "list.yaml"), manifest(list));
+    writeFileSync(join(project, "secret.yaml"), manifest(`${one},${secret}`));
+    const files = "list.yaml,secret.yaml,single.yaml";
+    const fromFile = { message: "broker.servers lists 2 broker URLs, and up -f binds a single broker address; nothing was started or written", remedy: "set broker.servers in list.yaml to the one URL the new broker listens on" };
+    const fromFlag = { message: "--server lists 2 broker URLs, and up -f binds a single broker address; nothing was started or written", remedy: "pass one --server URL for the new broker to listen on" };
+    for (const { label, args, expected } of [
+      { label: "a manifest whose broker.servers lists two URLs", args: ["-f", "list.yaml", "--dry-run"], expected: fromFile },
+      { label: "a manifest whose broker.servers lists two URLs, applied", args: ["-f", "list.yaml"], expected: fromFile },
+      { label: "a --server that lists two URLs", args: ["-f", "single.yaml", "--server", list, "--dry-run"], expected: fromFlag },
+    ]) {
+      const r = run(["up", ...args], project);
+      check(`up ${args.join(" ")}: ${label} refuses USAGE_INVALID with its fix and no help, exit 1, naming no address`,
+        r.status === 1 && r.stdout === "" && r.stderr.includes(expected.message) && r.stderr.includes(expected.remedy) && !/Invalid URL|Usage|Options/.test(r.stderr) && !r.stderr.includes(String(second)), shown(r));
+    }
+    for (const { label, args, message } of [
+      { label: "broker.servers", args: ["-f", "secret.yaml", "--dry-run"], message: "broker.servers entry 2 must not embed credentials" },
+      { label: "--server", args: ["-f", "single.yaml", "--server", `${one},${secret}`, "--dry-run"], message: "--server must not embed credentials" },
+    ]) {
+      const r = run(["up", ...args], project);
+      check(`a list in ${label} whose second entry embeds credentials keeps that entry's refusal, exit 1, without the secret`,
+        r.status === 1 && r.stderr.includes(message) && !/lists 2 broker URLs/.test(r.stderr) && !`${r.stdout}${r.stderr}`.includes("listsecret"), shown(r));
+    }
+    const single = run(["up", "-f", "single.yaml", "--dry-run"], project);
+    check("up -f --dry-run of a manifest naming one URL still prints its plan, exit 0", single.status === 0 && single.stdout.includes(`at ${one} `) && /Dry run - nothing was changed/.test(single.stdout), shown(single));
+    const override = run(["up", "-f", "list.yaml", "--server", one, "--dry-run"], project);
+    check("one --server over a listed broker.servers is the address the plan binds, exit 0", override.status === 0 && override.stdout.includes(`at ${one} `), shown(override));
+    const topology = run(["topology", "view", "-f", "list.yaml"], project);
+    check("topology view -f still reads the listed broker.servers, exit 0", topology.status === 0 && topology.stdout.includes(`broker: ${list} `), shown(topology));
+    check("the refusals wrote nothing in the project and started no broker", readdirSync(project).sort().join(",") === files && !started(project), readdirSync(project));
+    other.close();
   }
   if (process.platform !== "win32" && process.getuid?.() !== 0) {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "cotal-up-usage-read-")));

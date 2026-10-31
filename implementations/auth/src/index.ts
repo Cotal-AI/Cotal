@@ -157,6 +157,7 @@ export {
   type AuthorizeRemoteRetainedAgentValidationArgs,
 } from "./retained-manager-validation.js";
 export { parseRemoteManagerAdminAuthorizationRequest, authorizeRemoteManagerAdmin } from "./manager-admin-authorization.js";
+export { parseRemoteManagerParticipationAuthorizationRequest, authorizeRemoteManagerParticipation } from "./manager-participation-authorization.js";
 export {
   authorizeRemoteManagedAgentEnrollment,
   authorizeRemoteManagedAgentPrepareRetirement,

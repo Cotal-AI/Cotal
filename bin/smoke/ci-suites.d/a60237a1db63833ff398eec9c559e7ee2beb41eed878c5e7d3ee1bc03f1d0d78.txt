@@ -1,0 +1,2 @@
+# Exit watchers suppress stale notifications from streams and delayed proof.
+smoke:exit-watch

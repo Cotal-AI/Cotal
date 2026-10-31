@@ -9,3 +9,7 @@ import.
 
 See [docs/connect-codex.md](../../docs/connect-codex.md) for the integration guide, and the
 [root AGENTS.md](../../AGENTS.md) for the tier rules.
+
+The host, dist, installed-path and events-lifecycle smokes are POSIX-only. On Windows they emit
+`skipSuite`'s canonical skip sentinel, so the shard records a skip with no passing cells and
+continues to its next suite; this is not Windows connector coverage.

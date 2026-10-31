@@ -26,7 +26,8 @@
  * manager survives a real blackout, is `smoke:lease-renew` (a real broker behind a relay that can stall
  * and drop). This suite is the in-process half: the decision, with every plane stubbed.
  */
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentHandle, AttachSession, ManagerLeaseInfo } from "@cotal-ai/core";
@@ -86,6 +87,13 @@ interface ManagedLike {
   id: string;
   name: string;
   lifecycleUid: string;
+  agent: string;
+  spawner: string;
+  startedAt: number;
+  launch: {
+    source: { kind: "persona"; ref: string; configPath: string; configSha256: string };
+    cwd: string; allowSubscribe: string[]; events: boolean;
+  };
   handle: FakeHandle;
   suppressCleanup: boolean;
   terminalizing: boolean;
@@ -140,6 +148,16 @@ function managerWith(handles: FakeHandle[], wire: LeaseWire, opts: { resumeAttem
       id: `local.${h.name}`,
       name: h.name,
       lifecycleUid: `uid-${h.name}`,
+      agent: "test",
+      spawner: "local.manager",
+      startedAt: Date.now(),
+      launch: {
+        source: {
+          kind: "persona", ref: "worker", configPath: join(root, ".cotal", "agents", "worker.md"),
+          configSha256: createHash("sha256").update(readFileSync(join(root, ".cotal", "agents", "worker.md"))).digest("hex"),
+        },
+        cwd: root, allowSubscribe: [], events: false,
+      },
       handle: h,
       suppressCleanup: false,
       terminalizing: false,

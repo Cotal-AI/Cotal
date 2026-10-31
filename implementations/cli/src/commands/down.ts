@@ -102,7 +102,7 @@ import { askManager, resolveControlTarget } from "../lib/control.js";
 import { connectOrExit, userViewAuthOrExit } from "../lib/connect.js";
 import { waitForEndpointUnreachable } from "../lib/endpoint-cut.js";
 import { captureSeatCheckpoint } from "../lib/seat-capture.js";
-import { processRecorded, stopInFlight, stopLocalProcess } from "../lib/local-process-stop.js";
+import { processRecorded, stopInFlight, stopLocalProcess, UnattributableRecord, unattributableRecordSteps } from "../lib/local-process-stop.js";
 import { stopManager } from "../lib/manager-proc.js";
 import { ensureDelivery, removeDeliveryCredentials, stopDelivery } from "../lib/delivery-proc.js";
 import { controllerStackRecorded, deliveryLeaseAfterStop, nothingRunning, sameDown, stackDown, stackRootElsewhere, validateStackDownArguments } from "./stack-down.js";
@@ -558,6 +558,7 @@ async function downCommand(args: ParsedArgs): Promise<void> {
 
   let any = false;
   let allStopped = true;
+  const unattributable: UnattributableRecord[] = [];
   let deliveryLease: Awaited<ReturnType<typeof deliveryLeaseAfterStop>> | undefined;
   // A missing manager or delivery pidfile is not proof those daemons stopped. They renew leases
   // while they run, so a live lease with no pidfile refuses before the broker is stopped.
@@ -584,11 +585,21 @@ async function downCommand(args: ParsedArgs): Promise<void> {
       if (recorded) stopped.push(component.label);
     } catch (e) {
       allStopped = false;
+      if (e instanceof UnattributableRecord) unattributable.push(e);
       stderrLine("✗ ", `${(e as Error).message}`, c.red);
     }
   }
   if (!allStopped) {
     stderrLine("✗ ", "not cleanly stopped - keeping artifacts and the registry entry", c.red);
+    // A record that names no process is removed only by the operator, once they know no process of
+    // that component still runs here. Nothing cotal reads can show that, so the step says so first.
+    if (unattributable.length) {
+      const steps = unattributable.map((record) => unattributableRecordSteps(record.label, record.path));
+      console.log(`\n${renderReport({ sections: [{ title: "Next", blocks: [
+        { kind: "lines", lines: steps.map((step) => step.check) },
+        { kind: "commands", items: [...steps.map((step) => step.removal), { command: sameDown(args.values), description: "Then stop the stack" }] },
+      ] }] }, "rich", process.stdout)}`);
+    }
     await interrupt.between();
     interrupt.release();
     process.exitCode = 1;

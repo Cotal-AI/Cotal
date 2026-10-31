@@ -39,7 +39,8 @@ export async function runCalloutHost(args: { manifest: string; server: string; r
   // their opens settled.
   const serving = host.named.filter((space) => host.lanes.has(space));
   const opening = host.named.filter((space) => host.opening.has(space));
-  const waiting = host.named.filter((space) => !host.lanes.has(space) && !host.opening.has(space));
-  console.log(`✓ auth callout host up (${serving.length} of ${host.named.length} space(s) answering${serving.length ? `: ${serving.join(", ")}` : ""}${opening.length ? `; still opening ${opening.join(", ")}` : ""}${waiting.length ? `; retrying ${waiting.join(", ")}` : ""}) - answering the callout on ${server}${args.limits?.authTimeoutMs !== undefined ? ` with a ${args.limits.authTimeoutMs / 1000}s authorization timeout` : ""}; no HTTP listener, no auth-service.json`);
+  const queued = host.named.filter((space) => host.queued.has(space));
+  const waiting = host.named.filter((space) => !host.lanes.has(space) && !host.opening.has(space) && !host.queued.has(space));
+  console.log(`✓ auth callout host up (${serving.length} of ${host.named.length} space(s) answering${serving.length ? `: ${serving.join(", ")}` : ""}${opening.length ? `; still opening ${opening.join(", ")}` : ""}${queued.length ? `; queued ${queued.join(", ")}` : ""}${waiting.length ? `; retrying ${waiting.join(", ")}` : ""}) - answering the callout on ${server}${args.limits?.authTimeoutMs !== undefined ? ` with a ${args.limits.authTimeoutMs / 1000}s authorization timeout` : ""}; no HTTP listener, no auth-service.json`);
   process.exit(await host.ended);
 }

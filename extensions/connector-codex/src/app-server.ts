@@ -628,11 +628,7 @@ export class AppServerDriver extends EventEmitter {
           res();
         };
         const escalate = setTimeout(() => {
-          try {
-            child.kill("SIGKILL"); // a child that ignores SIGTERM must not outlive us
-          } catch {
-            /* already gone */
-          }
+          child.kill("SIGKILL"); // a child that ignores SIGTERM must not outlive us
         }, STOP_GRACE_MS);
         // SIGKILL is not instantaneous either, so keep waiting for the actual `exit` after it —
         // with an outer deadline, because an unreapable child must not hang our own shutdown.

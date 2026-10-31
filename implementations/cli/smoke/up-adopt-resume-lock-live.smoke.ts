@@ -28,8 +28,8 @@
  * The same resume carries the broker's JetStream store cap (`--max-file-store`, #1888): the fresh
  * boot renders it and nats-server applies it, the cut journals it, a resume asking for a different
  * cap is refused CONFLICT before anything starts, naming both caps and the way to change it, the bare
- * resume re-renders it, and the adopted mesh record keeps it. A resume asking for another `--server`
- * is refused the same way.
+ * resume re-renders it, and the adopted mesh record keeps it, with the attach host and the session
+ * ceiling. A resume asking for another `--server` is refused the same way.
  *
  * Sandboxes COTAL_HOME under a scratch base with proven-clean `.cotal` ancestry; kills only its own
  * children. Needs `nats-server` on PATH.
@@ -54,22 +54,22 @@ const TSX = join(WT, "node_modules", ".bin", "tsx");
 const journalPath = join(root, ".cotal", "maintenance", "v1", "journal.json");
 const resumeDocPath = join(root, ".cotal", "maintenance", "v1", "resume.json");
 const openConfPath = join(root, ".cotal", "server-open.conf");
-// Comfortably above the space's own reservations (the artifact Object Store reserves nothing, so what
-// remains is a 64 MiB membership bucket), so the cap is honored without refusing provisioning. What is
-// under test is that the cap is RENDERED and RESUMED, not where it sits.
+// Roomy enough for the fixture's real writes. What is under test is that the cap is rendered and
+// resumed, not where it sits.
 const CAP = 17179869184;
 // The broker runs from the root, so a store inside it is named relative to it.
 const cappedBlock = `jetstream { store_dir: ${JSON.stringify(join(".cotal", "nats"))}, max_file_store: ${CAP} }`;
 const openConfJetStream = (): string =>
   existsSync(openConfPath) ? readFileSync(openConfPath, "utf8").split("\n").filter((l) => l.startsWith("jetstream")).join("\n") : "";
-const recordedCap = (space: string): unknown => {
+const recorded = (space: string): { attachHost?: unknown; maxSessions?: unknown; maxFileStore?: unknown } | undefined => {
   const dir = join(home, "meshes");
   for (const f of existsSync(dir) ? readdirSync(dir).filter((n) => n.endsWith(".json")) : []) {
-    const entry = JSON.parse(readFileSync(join(dir, f), "utf8")) as { space?: string; maxFileStore?: unknown };
-    if (entry.space === space) return entry.maxFileStore;
+    const entry = JSON.parse(readFileSync(join(dir, f), "utf8")) as { space?: string; attachHost?: unknown; maxSessions?: unknown; maxFileStore?: unknown };
+    if (entry.space === space) return entry;
   }
   return undefined;
 };
+const recordedCap = (space: string): unknown => recorded(space)?.maxFileStore;
 
 let pass = 0;
 const ok = (name: string, cond: boolean, extra?: unknown) => {
@@ -129,7 +129,7 @@ try {
   const space = "adopt_alpha";
 
   console.log("1) CONTROL: an interrupted resume leaves a committed journal and a LIVE listener");
-  const first = runSync(["up", "--detach", "--open", "--server", server, "--space", space, "--max-file-store", String(CAP)]);
+  const first = runSync(["up", "--detach", "--open", "--server", server, "--space", space, "--host", "127.0.0.1", "--max-sessions", "7", "--max-file-store", String(CAP)]);
   ok("the ordinary boot exited 0", first.status === 0, `${first.stdout ?? ""}${first.stderr ?? ""}`.slice(-1200));
   ok("the fresh boot renders --max-file-store into the jetstream block", openConfJetStream() === cappedBlock, openConfJetStream());
   const natsLog = readFileSync(join(root, ".cotal", "nats.log"), "utf8");
@@ -202,6 +202,7 @@ try {
   ok("the adopting resume exited 0", recovered.status === 0, { status: recovered.status, log: log.slice(-2000) });
   ok("…and the finalized resume consumed its maintenance journal", !existsSync(journalPath), journal());
   ok("the adopted mesh record keeps the store cap", recordedCap(space) === CAP, recordedCap(space));
+  ok("…and the attach host and the session ceiling", recorded(space)?.attachHost === "127.0.0.1" && recorded(space)?.maxSessions === 7, recorded(space));
 
   runSync(["down"]);
   console.log(`\nUP ADOPT RESUME LOCK SMOKE OK ✅  (${pass} passed)`);

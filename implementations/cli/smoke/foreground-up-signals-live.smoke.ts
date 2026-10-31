@@ -4,9 +4,9 @@
  * Ready static stacks are probed through public status/ps. A bounded startup-refusal cell suspends
  * only its pinned manager before natural capability publication and always resumes it for cleanup.
  * A controller-route cell interrupts a prepared root's foreground `up` while it is still starting,
- * and another cuts a ready one's stop as a closed terminal does. A third shows that a second
- * foreground `up` refuses while one holds the stack, and that one over a stack whose holder was
- * killed says it takes the running stack over before a signal stops it.
+ * and again as it writes its start receipt, and another cuts a ready one's stop as a closed terminal
+ * does. A third shows that a second foreground `up` refuses while one holds the stack, and that one
+ * over a stack whose holder was killed says it takes the running stack over before a signal stops it.
  * Run: pnpm smoke:foreground-up-signals:live */
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -216,9 +216,10 @@ async function cell(name: string, options: { auth?: boolean; ready?: boolean; re
 }
 /** A prepared root takes the controller route. Ctrl-C while its foreground `up` waits for the
  *  manager's readiness lets the start settle, then runs the guarded whole-stack stop: exit 130, the
- *  stop completed for every member, and the broker listener closed. */
-async function controllerStartupCell(): Promise<void> {
-  const name = "controller-startup";
+ *  stop completed for every member, and the broker listener closed. With `receipt`, the CLI sends
+ *  itself SIGTERM while it writes its start receipt, and the same stop runs with exit 143. */
+async function controllerStartupCell(receipt = false): Promise<void> {
+  const name = receipt ? "controller-receipt" : "controller-startup";
   const root = join(base, name), home = join(root, "home"), mesh = join(root, "mesh");
   for (const p of [root, home, mesh, join(home, "xdg"), join(home, "machine")]) mkdirSync(p, { recursive: true, mode: 0o700 });
   recordSmokeSandbox({ root: mesh, cotalHome: join(home, "machine"), xdgConfigHome: join(home, "xdg") });
@@ -227,22 +228,25 @@ async function controllerStartupCell(): Promise<void> {
   const env = { ...cleanEnv, HOME: home, COTAL_HOME: join(home, "machine"), XDG_CONFIG_HOME: join(home, "xdg"), XDG_DATA_HOME: join(home, "data"), XDG_CACHE_HOME: join(home, "cache"), XDG_STATE_HOME: join(home, "state"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
   const created = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["space", "create", space, "--root", mesh]);
   assert.equal(created.code, 0, `space create prepares the controller root: ${created.err}`); passed++;
-  const child: ChildProcess = spawn(process.execPath, ["--import", tsx, cliEntry, "up", "--foreground", "--server", `nats://127.0.0.1:${port}`], { cwd: mesh, env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+  const preload = receipt ? ["--import", join(import.meta.dirname, "_foreground-receipt-signal.ts")] : [];
+  const child: ChildProcess = spawn(process.execPath, ["--import", tsx, ...preload, cliEntry, "up", "--foreground", "--server", `nats://127.0.0.1:${port}`], { cwd: mesh, env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
   let out = "", err = "";
   child.stdout?.on("data", (b: Buffer) => { out += b.toString(); });
   child.stderr?.on("data", (b: Buffer) => { err += b.toString(); });
   const state = observeOwnedChild(child);
   try {
-    await until(() => {
-      if (state.error) throw state.error;
-      if (state.exited) throw new Error(`CLI exited before the manager start: ${err}`);
-      return /Starting stack-manager; waiting/.test(err);
-    }, 90_000, () => err.slice(-3000));
-    assert.ok(child.pid); process.kill(-child.pid, "SIGINT");
+    if (!receipt) {
+      await until(() => {
+        if (state.error) throw state.error;
+        if (state.exited) throw new Error(`CLI exited before the manager start: ${err}`);
+        return /Starting stack-manager; waiting/.test(err);
+      }, 90_000, () => err.slice(-3000));
+      assert.ok(child.pid); process.kill(-child.pid, "SIGINT");
+    }
     await until(() => { if (state.error) throw state.error; return state.exited; }, 120_000, () => err.slice(-3000));
     await waitForOwnedChild(() => state.closed, 3_000, `${root}: startup-interrupt owner streams drained`);
-    assert.equal(state.code, 130, `an interrupt during startup exits 130 after the stop: ${err}`); passed++;
-    assert.match(err, /Stop requested; the whole-stack stop runs once the start settles/, "the interrupt is acknowledged while the start runs"); passed++;
+    assert.equal(state.code, receipt ? 143 : 130, `a signal during startup exits ${receipt ? 143 : 130} after the stop: ${err}`); passed++;
+    if (!receipt) { assert.match(err, /Stop requested; the whole-stack stop runs once the start settles/, "the interrupt is acknowledged while the start runs"); passed++; }
     assert.ok(out.includes("Controller stack started") && out.indexOf("Controller stack started") < out.indexOf("Controller stack stopped"), `the start settles before the guarded stop: ${out.slice(-2000)}`); passed++;
     // A member the mode has no role for, such as a static stack's auth service, has no instance.
     const journal = JSON.parse(readFileSync(join(mesh, ".cotal", "stack-controller.json"), "utf8")) as { operation: { kind: string; phase: string }; members: { instanceId: string | null; state: string }[] };
@@ -413,6 +417,7 @@ for (let attempt = 1; attempt <= 3 && !refusalObserved; attempt++) {
 assert.ok(refusalObserved, "native unavailable-capability refusal must be observed within three owned attempts, never manufactured");
 await cell("crash", { crash: true });
 await controllerStartupCell();
+await controllerStartupCell(true);
 await controllerHangupCell();
 await controllerHoldCell();
 console.log(`foreground-up-signals: ${passed} passed, 0 failed`);

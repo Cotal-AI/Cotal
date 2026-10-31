@@ -20,11 +20,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
 import {
-  EpEnvelopeError, EP_UNANSWERED, EP_UNBOUND_RESPONDER, EP_REGISTRY_READ_FAILED,
+  EpEnvelopeError, EP_UNANSWERED, EP_UNBOUND_RESPONDER, EP_REGISTRY_READ_FAILED, EP_UNDECLARED_ARG,
   describeEndpoint, isReachable, parseEpSubject, epReplySubject, spacePrefix, unansweredRequest,
 } from "@cotal-ai/core";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { askManager, epRailFailure } from "../src/lib/control.js";
+import { cliVersion } from "../src/lib/version.js";
 import { SMOKE_BROKER_TOKEN, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 let pass = 0, fail = 0;
@@ -132,6 +133,25 @@ console.log("epRailFailure polarity (hand-built errors, one per producer shape):
   c("a non-EpEnvelopeError carries no provenance: message alone, unanswered=false, NO verdict", n.unanswered === false && n.error === "connection closed", n);
   const np = epRailFailure(new Error("connection closed"), { instanceId: IID });
   c("a non-EpEnvelopeError pinned: still no 'did not answer'", np.unanswered === false && np.error === "connection closed", np);
+}
+{
+  // endpoint-call.ts buildRequest: a key the manager's contract does not declare, refused before
+  // publish. The version the manager reports says which side is older and so which one to update.
+  const cli = cliVersion();
+  const undeclared = () => new EpEnvelopeError("bad-request", 'args do not validate against the input schema: / must NOT have additional properties: "runtime"', [{ kind: EP_UNDECLARED_ARG, property: "runtime", instanceId: IID }], "not-executed");
+  const head = `bad-request: args do not validate against the input schema: / must NOT have additional properties: "runtime". That is version skew: this CLI runs Cotal ${cli} and sends "runtime", which the manager's contract does not declare.`;
+  const older = epRailFailure(undeclared(), { instanceId: IID }, "0.1.0");
+  c("undeclared key, older manager: names its version, calls it the older side, and names its update and restart",
+    older.unanswered === false && older.error === `${head} The manager runs Cotal 0.1.0, so it is the older side: on its host run \`cotal update --self\`, then \`cotal manager restart\`, or use a CLI at Cotal 0.1.0`, older);
+  const newer = epRailFailure(undeclared(), { instanceId: IID }, "999.0.0");
+  c("undeclared key, newer manager: this CLI is the older side and is updated with `cotal update --self`",
+    newer.error === `${head} The manager runs Cotal 999.0.0, so this CLI is the older side: update it with \`cotal update --self\``, newer);
+  const same = epRailFailure(undeclared(), { instanceId: IID }, cli);
+  c("undeclared key, same version: another build of that version, never an older or newer side",
+    same.error === `${head} The manager also reports Cotal ${cli}, so one side is another build of that version, such as a source checkout: rebuild or reinstall that side`, same);
+  const unknown = epRailFailure(undeclared(), { instanceId: IID });
+  c("undeclared key, no reported version: no side is named, and the manager is asked to run at this CLI's version",
+    unknown.error === `${head} The manager did not report its version. Run the manager at Cotal ${cli}, or use a CLI at the manager's version`, unknown);
 }
 
 // ── Part 2: the public askManager path against a real broker (open mesh) ──

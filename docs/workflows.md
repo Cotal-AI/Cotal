@@ -4,7 +4,7 @@
 
 A **workflow run** is a program that coordinates agents over hours or days and survives the
 process that started it. The program is written in **Cotal Lang**, a small subset of JavaScript in
-which every interaction with the world is one of a dozen **effects** (`spawn`, `turn`, `ask`,
+which every interaction with the world is one of a dozen **effects** (`participant`, `spawn`, `turn`, `ask`,
 `checkpoint`, `sleep`, `wait`, `notify`, `monitor`, and the four concurrency scopes) and everything
 else is ordinary, pure JavaScript. Every effect is written into the run's **step journal** before
 it is performed and settled after, keyed by where in the program it happened rather than by when,
@@ -45,6 +45,20 @@ wakes an agent for one turn and returns how it yielded; `race` runs two branches
 whose recorded clock is earliest. Agents talk to each other in channels as they always do; the
 program never speaks in a channel, and the one thing it can put in front of an agent (`notify`) is a
 bounded decision record, not prose.
+
+A run started by an approved personal native conversation may bind that same session as a durable
+turn target:
+
+```js
+const session = await participant({ name: "native-session" })
+await turn(session, { name: "review", deadline: "30m" })
+```
+
+The program cannot name an actor or lifecycle. `participant()` reads the immutable run admission,
+pins the exact personal lifecycle in the journal, and refuses if that lifecycle is not live. Before
+starting the program, the conversation opts in with `cotal_turn_participate`. The manager issues a
+short lease for its self-only turn relay. The lease grants no stop, attach or terminal custody, and
+must be renewed after a reconnect or manager restart.
 
 ## The mental model
 
@@ -101,6 +115,16 @@ message, recordable detail and stack when available. A journal append rejection 
 leaves the entry pending and exits without recording a handler failure.
 
 Full rules, with every code: [`spec/cotal-lang.md`](../spec/cotal-lang.md).
+
+## Reusable helpers
+
+A function call does not create a journal namespace. Repeated calls to a helper share the
+occurrence counters of its named steps, so inserting an earlier call renumbers the later ones.
+Wrap each instance in a distinctly named, single-branch `parallel`, with a record branch such as
+`{ call: () => helper() }`. Keep the helper's required step names literal, and read the returned
+value from `.call`. Each wrapper adds one journal entry; repeating its name still increments its
+own occurrence. The [worked example](../spec/cotal-lang.md#reusable-helpers) shows the resulting
+keys and the migration limits. No new primitive or computed required name is needed.
 
 ## Continuing a run
 
@@ -212,7 +236,9 @@ authority. Static authentication issues it to its credentials. On a user-auth me
 participant manager hosts authorized runs. A managed agent invokes `cotal_run` through its own
 launcher-provided bearer command and immutable manager instance selection. Its current managed
 grant and its direct parent's current grant must both carry `run`. A removed grant, stale lifecycle
-or wrong manager selection refuses rather than borrowing a signed-in user's authority.
+or wrong manager selection refuses rather than borrowing a signed-in user's authority. After a
+parent's `run` grant is restored, the next call checks its new connection's issued authority before
+submitting the workflow.
 
 Open meshes may expose the tool but refuse hosted runs. A local user-mode host without remote
 run authority and an `execution: "none"` control manager also refuse the family. A legacy
@@ -833,3 +859,14 @@ direction; the repair is to resume on the recorded version, or to fork.
 implementation limit and not a language error: it carries no `L` code, so there is nothing to look
 up in the catalog. It is a floor rather than a warning because the engine's frame plumbing rests on
 `AsyncLocalStorage`, and 22 is the lowest node it has been measured on. The walker has no such floor.
+
+### Foreign error text
+
+Worker execution, read-only inspection and the host effect bridge use the same name and
+message projection for plain failures. A string `name` or `message` is retained, including
+an empty string; this also applies to writable fields on native `Error` objects. Other names
+become `Error`. A value without a readable string message uses its normal string conversion.
+If that conversion also throws, the message is `<unprintable thrown value>`, not a successful
+result or a replacement exception that strands the answer. Native typed failure classes
+keep their existing classification. This contains exceptions during name/message formatting;
+it is not a time limit for arbitrary accessor or conversion code.

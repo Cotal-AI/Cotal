@@ -1,0 +1,42 @@
+{
+  "suite": [
+    "packages/core/smoke/membership-store-no-reserve.smoke.ts"
+  ],
+  "guard": "The derived membership KV reserves no file-store capacity, remains bounded by one value per agent and a native value-size limit, reconciles only the legacy 64 MiB cap, and refuses any other positive max_bytes as drift.",
+  "command": "pnpm smoke:membership-store-no-reserve",
+  "completionMarker": "9 passed, 0 failed",
+  "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/mutations/membership-store-no-reserve.json",
+  "why": [
+    "The suite imports setupSpaceStreams from src and measures a live broker's /jsz reserved_storage after every space, so config inspection cannot substitute for the reservation behavior.",
+    "The density cell fails on the former 64 MiB create cap, the legacy cell fails when the stock cap is not reconciled, and the drift cell fails if setup widens any positive cap."
+  ],
+  "mutations": [
+    {
+      "name": "the 64 MiB membership create cap is restored",
+      "file": "packages/core/src/streams.ts",
+      "find": "    createOptions: { history: 1, max_bytes: -1, maxValueSize: MEMBERSHIP_MAX_VALUE_SIZE },",
+      "replace": "    createOptions: { history: 1, max_bytes: LEGACY_MEMBERSHIP_MAX_BYTES, maxValueSize: MEMBERSHIP_MAX_VALUE_SIZE },",
+      "expectRed": "8 spaces provision under a 256 MiB file store",
+      "cell": "8 spaces provision under a 256 MiB file store",
+      "note": "This reinstates the shipped defect: only three complete spaces fit and the fourth setup attempt ends with JetStream 10047."
+    },
+    {
+      "name": "the legacy membership reconcile is disabled",
+      "file": "packages/core/src/streams.ts",
+      "find": "  if (config.max_bytes === LEGACY_MEMBERSHIP_MAX_BYTES || config.max_msg_size === -1) {",
+      "replace": "  if (config.max_msg_size === -1 && config.max_bytes !== LEGACY_MEMBERSHIP_MAX_BYTES) {",
+      "expectRed": "setup reconciles exactly the legacy 64 MiB membership cap to -1",
+      "cell": "setup reconciles exactly the legacy 64 MiB membership cap to -1",
+      "note": "Fresh spaces remain correct while existing meshes keep their reservation and fail the named migration cell."
+    },
+    {
+      "name": "any positive membership cap is silently widened",
+      "file": "packages/core/src/streams.ts",
+      "find": "  if (config.max_bytes !== -1 && config.max_bytes !== LEGACY_MEMBERSHIP_MAX_BYTES)",
+      "replace": "  if (false as boolean)",
+      "expectRed": "any other positive membership max_bytes is named as drift",
+      "cell": "any other positive membership max_bytes is named as drift",
+      "note": "The dangerous mutant removes an operator's deliberate bound while every fresh-space cell still passes."
+    }
+  ]
+}

@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "typecheck": "tsc --noEmit -p .",
     "studio": "remotion studio",
     "render:mesh": "remotion render PeerMesh out/peer-mesh.gif --codec=gif --every-nth-frame=3",
     "render:observer": "remotion render Observer out/observer.gif --codec=gif --every-nth-frame=3",

@@ -10,7 +10,7 @@ import {
   type StreamConfig,
 } from "@nats-io/jetstream";
 import { randomUUID } from "node:crypto";
-import { credsAuthenticator, tokenAuthenticator, nanos, type NatsConnection } from "@nats-io/transport-node";
+import { tokenAuthenticator, nanos, type NatsConnection } from "@nats-io/transport-node";
 import { dialerFor } from "./endpoint.js";
 import { Kvm } from "@nats-io/kv";
 import { Objm } from "@nats-io/obj";
@@ -49,6 +49,7 @@ import {
 } from "./subjects.js";
 import type { KV } from "@nats-io/kv";
 import { idFromCreds } from "./identity.js";
+import { nativeCredsAuthenticator } from "./creds-authenticator.js";
 import { requireBrokerFloor } from "./broker-floor.js";
 import { isConsumerNotFound } from "./jetstream-missing.js";
 import { isCasLoss } from "./endpoint-records.js";
@@ -130,11 +131,14 @@ export const MANAGER_LEASE_TTL_MS = 10_000;
 export const MANAGER_LEASE_RENEW_MS = MANAGER_LEASE_TTL_MS / 4;
 export const MANAGER_LEASE_ATTEMPT_MS = 2_000;
 
-/** Bucket-level `max_bytes` cap on the derived membership feed (`cotal_membership_<space>`). The
- *  per-agent keying keeps each value tiny (a handful of channel patterns), so 64 MiB bounds the footprint
- *  far above any realistic readership while keeping the bucket from growing unbounded. A deliberate cap,
- *  not a guess at scale — the design is cap-safe by construction (per-agent, store-patterns-not-expanded). */
-export const MEMBERSHIP_MAX_BYTES = 64 * 1024 * 1024;
+/** The `max_bytes` the membership KV carried before its reservation was removed. Kept only so
+ *  {@link ensureMembershipStore} can recognize the stock value and release that reservation. */
+export const LEGACY_MEMBERSHIP_MAX_BYTES = 64 * 1024 * 1024;
+
+/** Maximum serialized value in the derived membership KV. One key holds one agent's normalized
+ *  subscription patterns, history is one, and the feed is display-only, so an agent that exceeds
+ *  this native per-message bound loses its derived view rather than reserving storage for every space. */
+export const MEMBERSHIP_MAX_VALUE_SIZE = 256 * 1024;
 
 /** The `max_bytes` a per-space artifact Object Store carried before the reservation was removed:
  *  4 GiB, the stock value every store created by that code holds. Kept for ONE purpose —
@@ -212,16 +216,14 @@ export function standaloneConnectOpts(auth: StandaloneAuth): Record<string, unkn
     return {
       name: nonce,
       inboxPrefix: `_INBOX_${nonce}`,
-      authenticator: [credsAuthenticator(new TextEncoder().encode(auth.sentinelCreds)), tokenAuthenticator(auth.bearer)],
+      authenticator: [nativeCredsAuthenticator(auth.sentinelCreds), tokenAuthenticator(auth.bearer)],
       ...tlsOpt,
     };
   }
   const creds = auth.creds;
   if (!creds) return { ...tlsOpt };
   return {
-    authenticator: typeof creds === "function"
-      ? (nonce?: string) => credsAuthenticator(new TextEncoder().encode(creds()))(nonce)
-      : credsAuthenticator(new TextEncoder().encode(creds)),
+    authenticator: nativeCredsAuthenticator(creds),
     inboxPrefix: `_INBOX_${idFromCreds(typeof creds === "function" ? creds() : creds)}`,
     ...tlsOpt,
   };
@@ -241,7 +243,51 @@ export function spaceRegistryStreamConfigs(space: string) {
 
 /** Native derived-membership creation inputs, not evidence of observed membership. */
 export function membershipStoreDefinition(space: string) {
-  return { bucket: membershipBucket(space), createOptions: { history: 1, max_bytes: MEMBERSHIP_MAX_BYTES } };
+  return {
+    bucket: membershipBucket(space),
+    createOptions: { history: 1, max_bytes: -1, maxValueSize: MEMBERSHIP_MAX_VALUE_SIZE },
+  };
+}
+
+/** Create or verify the derived membership KV, releasing only this code's legacy reservation.
+ *
+ * A positive `max_bytes` reserves that whole number against the broker's `max_file_store` before
+ * the bucket stores one byte. The old 64 MiB setting therefore capped spaces by disk capacity rather
+ * than membership use. This bucket now reserves nothing. Its footprint is bounded by construction:
+ * one key per agent, native history 1 (`max_msgs_per_subject`), and a native per-value ceiling
+ * (`max_msg_size`). Reaching the broker's real file-store cap or the value ceiling refuses a write.
+ *
+ * Exactly the former 64 MiB cap is reconciled to `-1`. Any other positive `max_bytes` is deliberate
+ * drift and is left untouched. Likewise, an existing positive value ceiling other than ours is not
+ * widened or narrowed silently. The pre-bound `-1` value ceiling is upgraded to the native bound. */
+export async function ensureMembershipStore(
+  jsm: JetStreamManager,
+  kvm: Kvm,
+  space: string,
+): Promise<void> {
+  const definition = membershipStoreDefinition(space);
+  const stream = `KV_${definition.bucket}`;
+  await kvm.create(definition.bucket, definition.createOptions);
+  let { config } = await jsm.streams.info(stream);
+  const drift: string[] = [];
+  if (config.max_bytes !== -1 && config.max_bytes !== LEGACY_MEMBERSHIP_MAX_BYTES)
+    drift.push(`max_bytes is ${config.max_bytes}, expected -1 (a deliberate cap is not widened by setup)`);
+  if (config.max_msgs_per_subject !== 1)
+    drift.push(`max_msgs_per_subject is ${config.max_msgs_per_subject}, expected 1`);
+  if (config.max_msg_size !== -1 && config.max_msg_size !== MEMBERSHIP_MAX_VALUE_SIZE)
+    drift.push(`max_msg_size is ${config.max_msg_size}, expected ${MEMBERSHIP_MAX_VALUE_SIZE} (a deliberate value cap is not changed by setup)`);
+  if (drift.length)
+    throw new Error(`membership store ${stream} has drifted: ${drift.join("; ")}`);
+
+  if (config.max_bytes === LEGACY_MEMBERSHIP_MAX_BYTES || config.max_msg_size === -1) {
+    await jsm.streams.update(stream, { ...config, max_bytes: -1, max_msg_size: MEMBERSHIP_MAX_VALUE_SIZE });
+    ({ config } = await jsm.streams.info(stream));
+  }
+  if (config.max_bytes !== -1 || config.max_msgs_per_subject !== 1 || config.max_msg_size !== MEMBERSHIP_MAX_VALUE_SIZE)
+    throw new Error(
+      `membership store ${stream} reconcile did not take: max_bytes=${config.max_bytes}, ` +
+      `max_msgs_per_subject=${config.max_msgs_per_subject}, max_msg_size=${config.max_msg_size}`,
+    );
 }
 
 /**
@@ -699,11 +745,10 @@ export async function setupSpaceStreams(opts: {
     // config without TTL. Agents cannot create them; delivery re-auths against the read-ACL rows.
     for (const definition of spaceRegistryStreamConfigs(opts.space)) await jsm.streams.add(definition);
     // Derived channel-membership feed (broker CONNZ ∪ members registry): privileged-write (the
-    // `membership-rw` cred), admin/observer-read, no TTL (the daemon prunes departed agents). `history:1`
-    // (only the latest record per agent matters) + a `max_bytes` cap (footprint bound). Pre-created so the
-    // scoped writer holds no STREAM.CREATE. Idempotent.
-    const membership = membershipStoreDefinition(opts.space);
-    await kvm.create(membership.bucket, membership.createOptions);
+    // `membership-rw` cred), admin/observer-read, no TTL (the daemon prunes departed agents). Its
+    // one-key-per-agent history and native value-size ceiling bound it without a storage reservation.
+    // Pre-created so the scoped writer holds no STREAM.CREATE; legacy stock reservations reconcile.
+    await ensureMembershipStore(jsm, kvm, opts.space);
     // The two §13.12 AUTHORITY stores (records + auth): every auth-mode mesh now carries a
     // lifecycle registry — user mode's service re-ensures at its own boot, the STATIC manager's
     // start reconcile re-ensures for pre-existing spaces — and the up-time seed creates

@@ -338,6 +338,7 @@ const watching = (inner: SimHandler, slowSleep = false) => {
   const calls: string[] = [];
   const handler: EffectHandler = {
     now: () => inner.now(),
+    participant: (r, c) => inner.participant(r, c),
     spawn: (r, c) => inner.spawn(r, c),
     turn: (r, c) => inner.turn(r, c),
     ask: (r, c) => inner.ask(r, c),
@@ -545,6 +546,7 @@ await conclave([a], async (ch) => { await turn(a, { name: "t" }); return 1; }, {
   let closes = 0;
   const handler: EffectHandler = {
     now: () => sim.now(),
+    participant: (r, c) => sim.participant(r, c),
     spawn: (r, c) => sim.spawn(r, c),
     turn: (r, c) => sim.turn(r, c),
     ask: (r, c) => sim.ask(r, c),
