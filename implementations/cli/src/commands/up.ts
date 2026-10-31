@@ -2025,6 +2025,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       // never just reprint "already running" over a dead callout. No broker config is (re)written
       // here, so healing on a bare `cotal up` is safe: the mode can't drift, only the daemon heals.
       let userAuth: UserAuthInfo | undefined;
+      let startAuth: (() => Promise<void>) | undefined;
       if (held.mode === "user") {
         const auth = await getSpaceAuth(workspaceSecretStore(root), held.space);
         if (!auth) {
@@ -2046,10 +2047,12 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
           stderrLine("✗ ", `${(e as Error).message}`, c.red);
           process.exit(1);
         }
-        const svc = await startUserAuthService(held.space, server, { prepared, stateDir }, [...publicExchange, ...authTimeoutArgs(runningTimeout)]);
-        userAuth = svc.userAuth;
-        // The refresh IS the recovery command — a heal that didn't heal must not exit 0.
-        if (!svc.ok) process.exitCode = 1;
+        startAuth = async () => {
+          const svc = await startUserAuthService(held.space, server, { prepared, stateDir }, [...publicExchange, ...authTimeoutArgs(runningTimeout)]);
+          userAuth = svc.userAuth;
+          // The refresh IS the recovery command — a heal that didn't heal must not exit 0.
+          if (!svc.ok) process.exitCode = 1;
+        };
       }
       // Re-ensure the control plane on a refresh, in every mode, under the decision the first boot
       // follows: the mesh owes a manager unless `--no-manager` was asked for, and a delivery daemon
@@ -2083,7 +2086,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         attachHost: attachHostFor(held.space, values.host),
         maxSessions: maxSessionsFor(held.space, maxSessions),
         noManager,
-      });
+      }, startAuth);
       if (!controlPlane) process.exitCode = 1;
       // #883: a refresh that HEALED a missing manager must say so — the summary line otherwise reads
       // identically to a refresh that found everything already up, and the operator cannot tell which
@@ -3892,9 +3895,10 @@ async function startDeliveryWithBroker(
     /** #2469: the foreground owner's restart hook for a daemon this launch starts. */
     onDeliveryExit?: (code: number | null, signal: NodeJS.Signals | null) => void;
   },
+  afterDelivery?: () => Promise<void>,
 ): Promise<Awaited<ReturnType<typeof ensureControlPlane>> | undefined> {
   try {
-    const plane = await ensureControlPlane({ space, server, tls: tlsRequired, ...(mgr ?? {}) });
+    const plane = await ensureControlPlane({ space, server, tls: tlsRequired, ...(mgr ?? {}) }, afterDelivery);
     // #1576: `up` either BINDS the responder or SAYS SO HERE. The delivery daemon is a hard
     // dependency of spawn, retirement and the durable backstop, and this function used to return `true` for a boot
     // that started a daemon whose responder never bound — so `cotal up` printed its success banner
@@ -4053,10 +4057,12 @@ async function serveReadyListener(l: {
       throw e;
     }
   }
-  // USER MODE: the auth service comes up FIRST among the daemons — until its callout answers,
-  // every user-mode connect to this broker is denied, so `up` must not report a usable user mesh
-  // (nor let agents race it) on a half-started auth plane.
-  const svc = await startUserAuthService(space, server, setup, [...(l.publicExchange ?? []), ...authTimeoutArgs(setup?.authTimeout)], l.quietBoot);
+  // Register the prepared trust before delivery starts. Auth follows delivery's liveness oracle,
+  // then the manager: a crashed auth claim cannot be reclaimed while that oracle is absent.
+  let svc: { ok: boolean; userAuth?: UserAuthInfo } = {
+    ok: setup?.prepared === undefined,
+    ...(setup?.prepared ? { userAuth: assertUserAuthInfo(setup.prepared.publicAuth) } : {}),
+  };
   // Record BEFORE the control plane comes up: the manager's fail-closed mode detection requires
   // an authoritative registry entry (marker-without-registry is a refused start, not a guess),
   // so the record must exist by the time it boots. A manager/delivery failure after this leaves
@@ -4106,6 +4112,9 @@ async function serveReadyListener(l: {
     resumeAttempt: l.resumeAttempt,
     resumeCommit: l.resumeCommit,
     wsPort: setup?.wsPort, // P2 item 6: the console session client's broker ws port
+  }, async () => {
+    svc = await startUserAuthService(space, server, setup, [...(l.publicExchange ?? []), ...authTimeoutArgs(setup?.authTimeout)], l.quietBoot);
+    if (svc.userAuth) recordOurMesh({ space, server, root: cotalRoot(), mode: "user", userAuth: svc.userAuth, ts: new Date().toISOString() }, "refresh", true);
   });
   seedPersonaAfterUp(cotalRoot(), l.quietBoot);
   return { authService: svc.ok, controlPlane };
