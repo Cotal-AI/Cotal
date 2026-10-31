@@ -82,6 +82,9 @@ interface MeshSnapshot {
 
 **What the model does:**
 
+- **Connection.** `status.connected` holds while the endpoint is bound (its `connection` event)
+  and its NATS socket is up (its `transport` event). When the broker stops, the client reconnects
+  on its own and only the socket edge moves, so the view reads disconnected until it is back.
 - **Classification.** `deliveryOf(subject)` returns chat / unicast / anycast (chat renders as
   multicast); control, presence, and trace frames return `null` and drop out of the feed.
 - **Coalescing.** A same-sender/same-text unicast burst within 400 ms collapses to one entry, with

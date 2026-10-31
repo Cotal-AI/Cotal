@@ -7,7 +7,7 @@
 // See docs/mesh-view.md.
 
 import { EventEmitter } from "node:events";
-import type { CotalEndpoint, CotalMessage, EndpointRef, MembershipChange, MembershipSnapshot, Presence, PresenceStatus } from "@cotal-ai/core";
+import type { CotalEndpoint, CotalMessage, EndpointRef, MembershipChange, MembershipSnapshot, Presence, PresenceStatus, TransportState } from "@cotal-ai/core";
 import { deliveryOf, chatWildcard, isEventChannel, partsToText } from "@cotal-ai/core";
 
 // ---- the model the surfaces render -----------------------------------------
@@ -193,7 +193,11 @@ export class MeshView extends EventEmitter {
   private msgsPerSec = 0;
   private bucketCounts: number[] = new Array(BUCKET_COUNT).fill(0); // 60s volume series, oldest→newest
   private bucketEpoch = 0; // floor(now/BUCKET_MS) of the newest (last) bucket; 0 = uninitialized
-  private connected = false;
+  /** The endpoint's full Cotal bind (`connection`) and its raw NATS socket edge (`transport`). A
+   *  broker outage that nats.js rides out by reconnecting moves only the second, so the view is
+   *  connected only while both hold. */
+  private bound = false;
+  private transport = false;
   private error?: string;
   private warning?: string;
   private dirty = true;
@@ -215,8 +219,12 @@ export class MeshView extends EventEmitter {
   /** A rebuilt connection clears the fault that dropped the old one, so the view reports itself
    *  connected again instead of keeping that error for good. */
   private readonly onConnection = (s: { connected: boolean }) => {
-    this.connected = s.connected;
+    this.bound = s.connected;
     if (s.connected) this.error = undefined;
+    this.dirty = true;
+  };
+  private readonly onTransport = (s: TransportState) => {
+    this.transport = s.connected;
     this.dirty = true;
   };
   private readonly onWarning = (e: Error) => {
@@ -241,10 +249,11 @@ export class MeshView extends EventEmitter {
     this.ep.on("error", this.onError);
     this.ep.on("warning", this.onWarning);
     this.ep.on("connection", this.onConnection);
+    this.ep.on("transport", this.onTransport);
     this.ep.on("roster", this.onRoster);
     this.ep.on("presence", this.onPresence);
     await this.ep.start();
-    this.connected = true;
+    this.bound = true;
     this.setRoster(this.ep.getRoster());
     this.ep.tap(
       (subject, msg) => {
@@ -268,6 +277,7 @@ export class MeshView extends EventEmitter {
     this.ep.off("error", this.onError);
     this.ep.off("warning", this.onWarning);
     this.ep.off("connection", this.onConnection);
+    this.ep.off("transport", this.onTransport);
     this.ep.off("roster", this.onRoster);
     this.ep.off("presence", this.onPresence);
     clearTimeout(this.membershipTimer);
@@ -341,7 +351,7 @@ export class MeshView extends EventEmitter {
       membership: { ...this.membership },
       rates: { msgsPerSec: this.msgsPerSec, activity: this.bucketCounts.slice() },
       status: {
-        connected: this.connected,
+        connected: this.bound && this.transport,
         space: this.ep.space,
         dmVisible: !this.chatOnly,
         error: this.error,
