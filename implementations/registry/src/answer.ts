@@ -77,6 +77,8 @@ async function declarations(reads: RegistryReads, endpoint: string, instanceId: 
     if (e instanceof ContractInvalidError) return { commands: [], artifacts: "invalid" };
     throw e;
   }
+  // A name declared in two of its clusters is an ambiguous surface, which never authorizes (SPEC 13.7).
+  if (new Set(commands.map((c) => c.name)).size !== commands.length) return { commands: [], artifacts: "invalid" };
   return { commands, artifacts: "verified" };
 }
 
@@ -123,8 +125,10 @@ async function endpointRow(
     }
   }
   if (instances.length === 0) return undefined;
-  if (ceiling !== undefined && commands.length === 0 && unprojected.size === 0) return undefined;
-  return { endpoint, instances, commands, ...(unprojected.size ? { unprojected: [...unprojected].sort() } : {}) };
+  // An unprojected command's forms are not listed, whichever of its declarations went past the limit.
+  const listed = commands.filter((c) => !unprojected.has(c.name));
+  if (ceiling !== undefined && listed.length === 0 && unprojected.size === 0) return undefined;
+  return { endpoint, instances, commands: listed, ...(unprojected.size ? { unprojected: [...unprojected].sort() } : {}) };
 }
 
 const detail = (e: unknown): string => (e instanceof Error ? e.message : String(e));

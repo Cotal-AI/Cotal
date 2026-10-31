@@ -5856,7 +5856,9 @@ least one command on, and for each the request forms its recorded ceiling covers
   row on `cotal_records_<space>`) with the `state` its status row records, or `null`, and
   `artifacts`. `artifacts` is `verified` when the instance's cluster closures and root documents
   were read from the contract store and verified by digest (§13.7), `missing` when one is absent,
-  and `invalid` when one does not verify. An instance whose spec row is deleted is not listed.
+  and `invalid` when one does not verify or when two of its clusters declare one command name, an
+  ambiguous surface (§13.7). A `missing` or `invalid` instance declares no command. An instance
+  whose spec row is deleted is not listed.
 - `commands` holds each declared command whose request forms the ceiling covers, as
   `{ name, class, forms, instances? }`. Instances that declare one name with a different class,
   targeting or mode set give one entry per declaration, each projected over the instances that
@@ -5869,7 +5871,8 @@ least one command on, and for each the request forms its recorded ceiling covers
   `covered` lists the combinations the ceiling permits: at each position a literal, `null` for any
   value those patterns do not name, or `"*"` for every value.
 - `unprojected` names the commands that have a form with more than 4096 combinations and that the
-  ceiling permits at least one request subject of. Their forms are not listed.
+  ceiling permits at least one request subject of. Their forms are not listed, and `commands` holds
+  no entry for them, even for a declaration of the same name that is under the limit.
 
 The registry decides each combination by matching one representative subject against the ceiling
 with the native subject rules, allow and then deny. For a form past the limit it builds one subject

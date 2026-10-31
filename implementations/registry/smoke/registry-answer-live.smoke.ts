@@ -50,9 +50,10 @@ try {
     if (publish) for (const value of [document, manifest]) await publishContractArtifact(contracts, contractArtifactCanonicalBytes(value));
     return closureDigest;
   };
-  const register = async (endpoint: string, instanceId: string, clusterDigest: string) => {
+  const register = async (endpoint: string, instanceId: string, clusterDigest: string | string[]) => {
     const token = endpoint.split(".").join("_");
-    await records.put(`svc.${token}.${instanceId}.spec`, JSON.stringify({ endpoint, owner: DEV_OWNER, clusterDigests: [clusterDigest], protocol: { v: 1 } }));
+    const clusterDigests = typeof clusterDigest === "string" ? [clusterDigest] : clusterDigest;
+    await records.put(`svc.${token}.${instanceId}.spec`, JSON.stringify({ endpoint, owner: DEV_OWNER, clusterDigests, protocol: { v: 1 } }));
     await records.put(`svc.${token}.${instanceId}.status`, JSON.stringify({ epoch: 1, state: "ready", observedSpecRevision: 1 }));
   };
 
@@ -179,6 +180,44 @@ try {
         && held.eta.commands[0]!.forms.every((f) => f.literals.targetActor?.join() === "act0"), held.eta);
     const many = await etaFor((c) => exactRows("eta.example", "set", c, 16));
     suite.check("a held command past the projection limit is named unprojected", many.eta?.unprojected?.join() === "set" && many.eta.commands.length === 0, many.eta);
+  }
+
+  {
+    // Records written past registration, which refuses both shapes: removed again after, so the
+    // open-mesh listing below is unchanged.
+    const issue = async (rows: (c: EpCaller) => string[]) => {
+      const c = { ...caller, actor: newIdentity().id, uid: mintLifecycleUid() };
+      const g = mintGeneration(exp);
+      const ci = { ...c, generation: g } as EpCaller;
+      await store.release(await store.stage({ version: 1, ref: { space, ...c, generation: g }, sources: [], permissions: importNativeSubjectPermissions({ pub: { allow: rows(ci) } }), expiresAt: exp }), async () => {});
+      return ci;
+    };
+    // One dup instance names `read` in two of its clusters; the other two declare only `write`.
+    const [U1, U2, U3] = [mintLifecycleUid(), mintLifecycleUid(), mintLifecycleUid()].sort();
+    await register("dup.example", U1, [await cluster("ai.example.dup", ["read"]), await cluster("ai.example.dup.more", ["read"])]);
+    const writeOnly = await cluster("ai.example.dup.w", ["write"]);
+    await register("dup.example", U2, writeOnly);
+    await register("dup.example", U3, writeOnly);
+    const dupCaller = await issue((c) => ["read", "write"].flatMap((command) => epRequestGrantRows(space, { endpoint: "dup.example", command }, c)));
+    const dup = (await answerEndpoints(authed, ctxFor(dupCaller), {})).rows.find((r) => r.endpoint === "dup.example");
+    suite.check("an instance whose clusters declare one command twice is listed invalid and declares nothing",
+      dup?.instances.find((i) => i.instanceId === U1)?.artifacts === "invalid" && dup.commands.map((c) => c.name).join() === "write"
+        && dup.commands[0]!.instances?.join() === [U2, U3].join(), dup);
+    // Mix declares `set` untargeted on M1 and in exact mode on M2; 16 exact rows put M2's form past the limit.
+    const [M1, M2] = [mintLifecycleUid(), mintLifecycleUid()].sort();
+    await register("mix.example", M1, await cluster("ai.example.mix", ["set"]));
+    await register("mix.example", M2, await cluster("ai.example.mix.exact", ["set"], true, true));
+    const mixCaller = await issue((c) => [
+      ...epRequestGrantRows(space, { endpoint: "mix.example", command: "set" }, c),
+      ...Array.from({ length: 16 }, (_, i) => epRequestGrantRows(space, {
+        endpoint: "mix.example", command: "set", target: { mode: "exact", tOwner: `own${i}`, tActor: `act${i}`, tUid: mintLifecycleUid() },
+      }, c)).flat(),
+    ]);
+    const mix = (await answerEndpoints(authed, ctxFor(mixCaller), {})).rows.find((r) => r.endpoint === "mix.example");
+    suite.check("a command one of whose declarations is past the projection limit is named only unprojected, with no forms",
+      mix?.unprojected?.join() === "set" && mix.commands.length === 0, mix);
+    for (const [token, ids] of [["dup_example", [U1, U2, U3]], ["mix_example", [M1, M2]]] as const)
+      for (const id of ids) await records.delete(`svc.${token}.${id}.spec`);
   }
 
   const legacy = await refusal(() => answerEndpoints(authed, ctxFor(caller), {}));
