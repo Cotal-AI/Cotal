@@ -310,7 +310,7 @@ function canonicalServerEndpoint(value: string): string {
   if (!(["nats:", "tls:"] as string[]).includes(endpoint.protocol) || !endpoint.hostname ||
       endpoint.username || endpoint.password || endpoint.search || endpoint.hash ||
       (endpoint.pathname && endpoint.pathname !== "/"))
-    throw new Error(`restore listener endpoint is not canonicalizable: ${value}`);
+    throw new Error("restore listener endpoint is not canonicalizable - use a bare nats:// or tls:// URL without credentials, a query, a fragment or a path");
   return `${endpoint.protocol}//${endpoint.hostname.toLowerCase()}:${endpoint.port || "4222"}`;
 }
 
