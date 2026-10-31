@@ -27,7 +27,8 @@
     "@cotal-ai/core": "*"
   },
   "devDependencies": {
-    "@cotal-ai/core": "workspace:*"
+    "@cotal-ai/core": "workspace:*",
+    "@cotal-ai/smoke-kit": "workspace:*"
   },
   "files": [
     "dist"
