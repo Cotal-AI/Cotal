@@ -126,7 +126,7 @@ function oldHostingManagerVerdict(
   if (record.state !== "alive") return "proceed"; // dead or absent: nothing is hosting Plane 3
   // Alive: the marker decides, for the pid this record attributed. A delivery-aware manager removes its
   // marker just before it exits, so a missing marker on a pid that has died since was that exit.
-  const pid = record.pid!;
+  const pid = record.pid;
   return managerHasDeliveryMarker(pid, space, root) || probe(pid) === "dead" ? "proceed" : "stop-it";
 }
 
@@ -159,15 +159,20 @@ export async function stopOldHostingManagerIfPresent(
     );
   }
   if (verdict === "stop-it") {
+    // The verdict is `stop-it` only for an alive record. The state names that record's pid; a record
+    // that is not alive is not the process the preflight decided to stop.
+    if (record.state !== "alive")
+      throw new Error("the delivery cutover preflight judged a manager record whose state is not alive; refusing to stop it or start the daemon");
+    const pid = record.pid;
     console.error("• stopping an old Plane-3-hosting manager before starting the delivery daemon (cutover preflight)");
     // stopManager THROWS rather than reporting a stop it did not achieve (a refused stop, or a process
     // whose death it could not confirm). Letting that throw propagate is the point: the daemon must not
     // start beside a manager still bound to Plane 3. A false result means the judged record changed
     // or disappeared, not that this manager stopped. Refuse rather than treating a successor's marker
     // as proof that the predecessor released Plane 3, and leave the successor's artifacts untouched.
-    if (!await stopManager(space, { pid: record.pid, root }))
+    if (!await stopManager(space, { pid, root }))
       throw new Error(
-        `the manager record changed or disappeared during the delivery cutover preflight (judged pid ${record.pid}); refusing to start the daemon. Retry once the manager restart has completed.`,
+        `the manager record changed or disappeared during the delivery cutover preflight (judged pid ${pid}); refusing to start the daemon. Retry once the manager restart has completed.`,
       );
     clearManagerArtifacts(space, root);
   }
@@ -297,7 +302,7 @@ export async function ensureDelivery(
     // A row written again during the wait has a live holder, and that is refused.
     const previous = await credsStore().get(credsKey);
     if (previous !== undefined) {
-      const recorded = delivery.state !== "absent" && delivery.pid !== undefined ? ` (pid ${delivery.pid})` : "";
+      const recorded = delivery.state === "dead" || delivery.state === "foreign" ? ` (pid ${delivery.pid})` : "";
       const waited = await awaitDeadDeliveryLease({
         servers: server,
         space,
@@ -409,6 +414,7 @@ export async function stopDelivery(space: string = folderSpace(), options: { pre
  *  host that wants no manager of its own. */
 export async function ensureControlPlane(
   o: Opts = {},
+  afterDelivery?: () => Promise<void>,
 ): Promise<{
   running: boolean;
   started?: boolean;
@@ -426,6 +432,9 @@ export async function ensureControlPlane(
   // dependency every spawn/retirement/join needs had not come up — the boot line inside
   // `ensureDelivery` was the only trace, and it read as a progress note.
   const delivery = await ensureDelivery({ ...o, space });
+  // User-auth startup needs delivery's claim-liveness oracle, before a manager can connect.
+  // This phase also runs in broker-only mode; it is not a manager-start callback.
+  if (afterDelivery) await afterDelivery();
   const deliveryStarted = { started: delivery.started ?? false, ...(delivery.pid !== undefined ? { pid: delivery.pid } : {}) };
   if (o.noManager) return { running: false, delivery: deliveryStarted, responderBound: delivery.responderBound };
   // `started`/`pid` distinguish a manager `ensureManager` just launched from one it found already

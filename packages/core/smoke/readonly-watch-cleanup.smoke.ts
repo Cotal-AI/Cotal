@@ -3,7 +3,7 @@
  *  Run: pnpm smoke:readonly-watch-cleanup:auth
  */
 import { spawn } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal, killAndAwaitExit } from "@cotal-ai/smoke-kit";
@@ -125,6 +125,8 @@ try {
   await feed?.stop();
   for (const ep of endpoints.reverse()) await ep.stop();
   await killAndAwaitExit(broker);
+  if (broker.exitCode === null && broker.signalCode === null) throw new Error("owned broker has not exited before fixture cleanup");
+  rmSync(dir, { recursive: true, force: true });
   releaseBroker();
 }
 console.log(`readonly-watch-cleanup smoke: ${passed}/${passed} checks passed`);

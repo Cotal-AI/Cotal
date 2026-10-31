@@ -116,6 +116,16 @@ leaves the entry pending and exits without recording a handler failure.
 
 Full rules, with every code: [`spec/cotal-lang.md`](../spec/cotal-lang.md).
 
+## Reusable helpers
+
+A function call does not create a journal namespace. Repeated calls to a helper share the
+occurrence counters of its named steps, so inserting an earlier call renumbers the later ones.
+Wrap each instance in a distinctly named, single-branch `parallel`, with a record branch such as
+`{ call: () => helper() }`. Keep the helper's required step names literal, and read the returned
+value from `.call`. Each wrapper adds one journal entry; repeating its name still increments its
+own occurrence. The [worked example](../spec/cotal-lang.md#reusable-helpers) shows the resulting
+keys and the migration limits. No new primitive or computed required name is needed.
+
 ## Continuing a run
 
 **Resume** is re-execution: the driver replays the journal, the program runs from the top, recorded
@@ -890,3 +900,14 @@ direction; the repair is to resume on the recorded version, or to fork.
 implementation limit and not a language error: it carries no `L` code, so there is nothing to look
 up in the catalog. It is a floor rather than a warning because the engine's frame plumbing rests on
 `AsyncLocalStorage`, and 22 is the lowest node it has been measured on. The walker has no such floor.
+
+### Foreign error text
+
+Worker execution, read-only inspection and the host effect bridge use the same name and
+message projection for plain failures. A string `name` or `message` is retained, including
+an empty string; this also applies to writable fields on native `Error` objects. Other names
+become `Error`. A value without a readable string message uses its normal string conversion.
+If that conversion also throws, the message is `<unprintable thrown value>`, not a successful
+result or a replacement exception that strands the answer. Native typed failure classes
+keep their existing classification. This contains exceptions during name/message formatting;
+it is not a time limit for arbitrary accessor or conversion code.

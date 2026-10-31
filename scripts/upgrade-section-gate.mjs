@@ -43,6 +43,7 @@ import { join, dirname } from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
+import { readGeneratedDocsBundle } from "./read-generated-docs-bundle.mjs";
 
 export const UPGRADING_PATH = join("docs", "UPGRADING.md");
 
@@ -156,31 +157,6 @@ export function addedSectionsBetween(basePage, headPage) {
   return coveringSections(headPage).filter((s) => !before.has(s));
 }
 
-/**
- * The verdict for one range.
- *
- * `breaking` are the commits that declared themselves breaking. `addedSections` are the non-empty
- * release sections THIS RANGE ADDED to the page, base compared against head.
- *
- * THE PREDICATE IS "ADDED A SECTION", NOT "TOUCHED THE FILE", AND THE DIFFERENCE IS THE WHOLE
- * GATE. Measured on the first version of this tool, which asked only whether the diff touched the
- * path: a breaking commit shipped beside a ONE-LINE TYPO FIX on this page passed, "covered by 8
- * section(s)", every one of them written for an earlier release. That is worse than it looks,
- * because it decays: every section the page ever accumulates becomes permanent pre-coverage for
- * every future break, so the gate gets weaker precisely as the page gets longer. It is also the
- * reporter's own failure reintroduced one level up, since it greens a breaking release that did no
- * upgrade work at all.
- *
- * The comparison is deliberately by section TITLE rather than by content. A range that edits an
- * existing section does not read as coverage, which is correct: amending the 0.48.2 section is not
- * documenting a 0.50.0 break. It also means the gate cannot be satisfied by rewording, only by
- * writing something that was not there.
- *
- * What it still does NOT do is match a breaking commit to a SPECIFIC section, because a release's
- * section is written once for several breaking commits and any such rule would be guesswork
- * wearing a rule's clothes. What it asserts is that a range which broke something also WROTE
- * something new here.
- */
 /** Which OTHER job names a document still claims runs the gate.
  *
  *  PURE, EXPORTED, AND TESTED AGAINST BUILT INPUTS, because the live repository is the one input
@@ -211,6 +187,31 @@ export function staleJobClaims(text, hostJob, candidates) {
     && new RegExp(`(runs?|grades?|grading path is|step (?:in|of)|in) the .${j}. job`).test(text));
 }
 
+/**
+ * The verdict for one range.
+ *
+ * `breaking` are the commits that declared themselves breaking. `addedSections` are the non-empty
+ * release sections THIS RANGE ADDED to the page, base compared against head.
+ *
+ * THE PREDICATE IS "ADDED A SECTION", NOT "TOUCHED THE FILE", AND THE DIFFERENCE IS THE WHOLE
+ * GATE. Measured on the first version of this tool, which asked only whether the diff touched the
+ * path: a breaking commit shipped beside a ONE-LINE TYPO FIX on this page passed, "covered by 8
+ * section(s)", every one of them written for an earlier release. That is worse than it looks,
+ * because it decays: every section the page ever accumulates becomes permanent pre-coverage for
+ * every future break, so the gate gets weaker precisely as the page gets longer. It is also the
+ * reporter's own failure reintroduced one level up, since it greens a breaking release that did no
+ * upgrade work at all.
+ *
+ * The comparison is deliberately by section TITLE rather than by content. A range that edits an
+ * existing section does not read as coverage, which is correct: amending the 0.48.2 section is not
+ * documenting a 0.50.0 break. It also means the gate cannot be satisfied by rewording, only by
+ * writing something that was not there.
+ *
+ * What it still does NOT do is match a breaking commit to a SPECIFIC section, because a release's
+ * section is written once for several breaking commits and any such rule would be guesswork
+ * wearing a rule's clothes. What it asserts is that a range which broke something also WROTE
+ * something new here.
+ */
 export function verdict({ breaking, addedSections }) {
   // "no breaking commits DETECTED", never "no breaking commits". The gate reads markers, and the
   // design note is explicit that no marker-keyed detector can see an unmarked break, so a pass
@@ -814,13 +815,13 @@ if (process.argv.includes("--self-test")) {
     // checking the shipped copy, which is the same class of quiet false promise the cell exists
     // to catch. A generator that cannot run is now a failed cell.
     const bundleDir = mkdtempSync(join(tmpdir(), "upgrade-gate-docsbundle-"));
-    const bundle = join(bundleDir, "docs-bundle.generated.ts");
+    const bundle = join(bundleDir, "docs-bundle.generated.mts");
     try {
       let generated = null;
       try {
         execFileSync("node", [join(repoRootForDocs(), "scripts", "generate-docs-bundle.mjs"), "--out", bundle],
           { cwd: repoRootForDocs(), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
-        generated = readFileSync(bundle, "utf8");
+        generated = JSON.stringify(readGeneratedDocsBundle(bundle));
       } catch (error) {
         generated = null;
         cell("the docs bundle the release would ship can be generated from the sources", false,
@@ -872,8 +873,8 @@ if (process.argv.includes("--self-test")) {
     (() => { try { staleJobClaims("the gate runs in the `unit` job", "attribution", []); return false; }
              catch { return true; } })());
 
-  // THE SHIPPED COPY IS A SEPARATE ARTEFACT AND NEEDS ITS OWN PROOF. The bundle stores each page
-  // as one escaped JSON string, so backticks survive but newlines become literal `\n`. A reader
+  // THE DECODED PAYLOAD NEEDS ITS OWN PROOF. The reader serializes each page body
+  // as an escaped JSON string, so backticks survive but newlines become literal `\n`. A reader
   // written for the markdown can therefore pass on the source and miss the generated copy, which
   // is the half that reaches users. This cell drives the detector with a bundle-shaped line.
   cell("ACCEPT CONTROL: a stale claim inside a BUNDLE-shaped escaped string is NAMED",

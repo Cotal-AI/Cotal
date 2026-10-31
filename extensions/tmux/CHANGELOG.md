@@ -1,5 +1,87 @@
 # @cotal-ai/tmux
 
+## 0.132.3
+
+No changes in this release.
+
+## 0.132.2
+
+No changes in this release.
+
+## 0.132.1
+
+No changes in this release.
+
+## 0.132.0
+
+No changes in this release.
+
+## 0.131.6
+
+No changes in this release.
+
+## 0.131.5
+
+No changes in this release.
+
+## 0.131.4
+
+No changes in this release.
+
+## 0.131.3
+
+No changes in this release.
+
+## 0.131.2
+
+No changes in this release.
+
+## 0.131.1
+
+No changes in this release.
+
+## 0.131.0
+
+No changes in this release.
+
+## 0.130.2
+
+No changes in this release.
+
+## 0.130.1
+
+No changes in this release.
+
+## 0.130.0
+
+No changes in this release.
+
+## 0.129.9
+
+No changes in this release.
+
+## 0.129.8
+
+No changes in this release.
+
+## 0.129.7
+
+No changes in this release.
+
+## 0.129.6
+
+### Patch Changes
+
+- 52542f7: Preserve tmux's failure reason when creating a session, selecting a window or sending text and keys. Driver errors name the operation and retain the failed call as their cause; session-creation refusals also reach runtime spawn callers.
+
+## 0.129.5
+
+No changes in this release.
+
+## 0.129.4
+
+No changes in this release.
+
 ## 0.129.3
 
 No changes in this release.

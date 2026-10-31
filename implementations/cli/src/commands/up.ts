@@ -582,6 +582,21 @@ function serverExample(server: string): string {
   return `--server ${/^tls:/i.test(server) ? "tls" : "nats"}://127.0.0.1:${valid ? Number(port) : "<port>"}`;
 }
 
+/** The refusal of a manifest start whose effective `--server` or `broker.servers` lists more than
+ *  one URL, or undefined when it names one. The start binds one new local broker to one address, so
+ *  it does not pick an entry. The manifest still validates with a list, which `topology view` shows.
+ *  The message counts the entries and never repeats them, as one may carry a credential. */
+function bindListRefusal(command: string, file: string, space: string, server: string | undefined, servers: string | undefined): CommandFailure | undefined {
+  const count = (server ?? servers)?.split(",").filter((entry) => entry.trim()).length ?? 0;
+  if (count < 2) return undefined;
+  const source = server !== undefined ? "--server" : "broker.servers";
+  return new CommandFailure("refused", "USAGE_INVALID", `${source} lists ${count} broker URLs, and ${command} binds a single broker address; nothing was started or written`, {
+    target: { space, path: resolve(file), source, entries: count },
+    remedy: server !== undefined ? "pass one --server URL for the new broker to listen on" : `set broker.servers in ${file} to the one URL the new broker listens on`,
+    selfContained: true,
+  });
+}
+
 /** The local stack's own clients cannot reach a broker on an IPv6 address, so neither flag may name one. */
 const IPV6_UNSERVED = (flag: string): string => `${flag} names an IPv6 address, and the local stack's own clients cannot reach a broker there`;
 
@@ -2010,6 +2025,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       // never just reprint "already running" over a dead callout. No broker config is (re)written
       // here, so healing on a bare `cotal up` is safe: the mode can't drift, only the daemon heals.
       let userAuth: UserAuthInfo | undefined;
+      let startAuth: (() => Promise<void>) | undefined;
       if (held.mode === "user") {
         const auth = await getSpaceAuth(workspaceSecretStore(root), held.space);
         if (!auth) {
@@ -2031,10 +2047,12 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
           stderrLine("✗ ", `${(e as Error).message}`, c.red);
           process.exit(1);
         }
-        const svc = await startUserAuthService(held.space, server, { prepared, stateDir }, [...publicExchange, ...authTimeoutArgs(runningTimeout)]);
-        userAuth = svc.userAuth;
-        // The refresh IS the recovery command — a heal that didn't heal must not exit 0.
-        if (!svc.ok) process.exitCode = 1;
+        startAuth = async () => {
+          const svc = await startUserAuthService(held.space, server, { prepared, stateDir }, [...publicExchange, ...authTimeoutArgs(runningTimeout)]);
+          userAuth = svc.userAuth;
+          // The refresh IS the recovery command — a heal that didn't heal must not exit 0.
+          if (!svc.ok) process.exitCode = 1;
+        };
       }
       // Re-ensure the control plane on a refresh, in every mode, under the decision the first boot
       // follows: the mesh owes a manager unless `--no-manager` was asked for, and a delivery daemon
@@ -2068,7 +2086,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         attachHost: attachHostFor(held.space, values.host),
         maxSessions: maxSessionsFor(held.space, maxSessions),
         noManager,
-      });
+      }, startAuth);
       if (!controlPlane) process.exitCode = 1;
       // #883: a refresh that HEALED a missing manager must say so — the summary line otherwise reads
       // identically to a refresh that found everything already up, and the operator cannot tell which
@@ -3363,6 +3381,8 @@ export async function prepareFreshTeamBoot(file: string, opts: { space: string; 
   if (idpProblem) throw new CommandFailure("refused", "SCHEMA_INVALID", idpProblem, { target: { space: opts.space } });
   const serverProblems = opts.server === undefined ? [] : serverUrlProblems(opts.server, "--server");
   if (serverProblems.length) throw new CommandFailure("refused", "SCHEMA_INVALID", serverProblems.join("; "), { target: { space: opts.space } });
+  const list = bindListRefusal("team boot", file, opts.space, opts.server, prepared.manifest.broker?.servers);
+  if (list) throw list;
   const { prepared: eff, hostSource, serverSource } = applyUpOverrides(prepared, flags);
   const m = eff.manifest;
   const host = m.broker?.host ?? "127.0.0.1";
@@ -3519,6 +3539,9 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
     for (const problem of serverProblems) stderrLine("✗ ", `${problem}`, c.red);
     process.exit(1);
   }
+  // Each entry of a list is checked above; the start still needs one address, before any parse of it.
+  const list = bindListRefusal(opts.freshTeamBoot ? "team boot" : "up -f", file, prepared.manifest.space, opts.server, prepared.manifest.broker?.servers);
+  if (list) throw list;
   // Apply CLI overrides to one effective manifest (flag > manifest > default) so render + seed +
   // broker + launch all agree on the same values.
   const { prepared: eff, hostSource, serverSource } = applyUpOverrides(prepared, opts);
@@ -3872,9 +3895,10 @@ async function startDeliveryWithBroker(
     /** #2469: the foreground owner's restart hook for a daemon this launch starts. */
     onDeliveryExit?: (code: number | null, signal: NodeJS.Signals | null) => void;
   },
+  afterDelivery?: () => Promise<void>,
 ): Promise<Awaited<ReturnType<typeof ensureControlPlane>> | undefined> {
   try {
-    const plane = await ensureControlPlane({ space, server, tls: tlsRequired, ...(mgr ?? {}) });
+    const plane = await ensureControlPlane({ space, server, tls: tlsRequired, ...(mgr ?? {}) }, afterDelivery);
     // #1576: `up` either BINDS the responder or SAYS SO HERE. The delivery daemon is a hard
     // dependency of spawn, retirement and the durable backstop, and this function used to return `true` for a boot
     // that started a daemon whose responder never bound — so `cotal up` printed its success banner
@@ -4033,10 +4057,12 @@ async function serveReadyListener(l: {
       throw e;
     }
   }
-  // USER MODE: the auth service comes up FIRST among the daemons — until its callout answers,
-  // every user-mode connect to this broker is denied, so `up` must not report a usable user mesh
-  // (nor let agents race it) on a half-started auth plane.
-  const svc = await startUserAuthService(space, server, setup, [...(l.publicExchange ?? []), ...authTimeoutArgs(setup?.authTimeout)], l.quietBoot);
+  // Register the prepared trust before delivery starts. Auth follows delivery's liveness oracle,
+  // then the manager: a crashed auth claim cannot be reclaimed while that oracle is absent.
+  let svc: { ok: boolean; userAuth?: UserAuthInfo } = {
+    ok: setup?.prepared === undefined,
+    ...(setup?.prepared ? { userAuth: assertUserAuthInfo(setup.prepared.publicAuth) } : {}),
+  };
   // Record BEFORE the control plane comes up: the manager's fail-closed mode detection requires
   // an authoritative registry entry (marker-without-registry is a refused start, not a guess),
   // so the record must exist by the time it boots. A manager/delivery failure after this leaves
@@ -4086,6 +4112,9 @@ async function serveReadyListener(l: {
     resumeAttempt: l.resumeAttempt,
     resumeCommit: l.resumeCommit,
     wsPort: setup?.wsPort, // P2 item 6: the console session client's broker ws port
+  }, async () => {
+    svc = await startUserAuthService(space, server, setup, [...(l.publicExchange ?? []), ...authTimeoutArgs(setup?.authTimeout)], l.quietBoot);
+    if (svc.userAuth) recordOurMesh({ space, server, root: cotalRoot(), mode: "user", userAuth: svc.userAuth, ts: new Date().toISOString() }, "refresh", true);
   });
   seedPersonaAfterUp(cotalRoot(), l.quietBoot);
   return { authService: svc.ok, controlPlane };

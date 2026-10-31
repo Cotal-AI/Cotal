@@ -1,0 +1,84 @@
+/** Exercise all-refusal reporting through the read-only metadata entrypoint. */
+import { execFileSync, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { createSuite } from "../bin/smoke/sentinel.mjs";
+
+const { check, finish } = createSuite();
+const tool = fileURLToPath(new URL("mutation-coverage.mjs", import.meta.url));
+const root = mkdtempSync(join(tmpdir(), "metadata-refusals-"));
+const path = "packages/demo/smoke/mutations/case.json";
+const write = (name, value) => {
+  const destination = join(root, name);
+  mkdirSync(dirname(destination), { recursive: true });
+  writeFileSync(destination, value);
+};
+const git = (...args) => execFileSync("git", args, { cwd: root, encoding: "utf8" });
+const mutation = { name: "target", file: "packages/demo/src/index.ts", find: "value = 1", replace: "value = 2", cell: "target", expectRed: "target" };
+const config = { suite: ["packages/demo/smoke/test.smoke.ts"], command: "node forbidden.mjs", mutations: [mutation] };
+const missing = (name) => ({ ...mutation, name, cell: undefined });
+const unreachable = { ...mutation, name: "unreachable", file: "packages/other/src/index.ts" };
+let commandsStayedIdle = true;
+let sourcesStayedUnchanged = true;
+const run = (name, cfg, reasons, { discovered = false, recorded = false, raw, stale = 0 } = {}) => {
+  write(path, raw ?? JSON.stringify(cfg));
+  const result = spawnSync(process.execPath, [tool, "--gradable-only", ...(discovered ? [] : [path])], { cwd: root, encoding: "utf8", timeout: 30_000 });
+  const output = result.stdout + result.stderr;
+  const lines = result.stderr.split("\n").filter((line) => line.startsWith(`${recorded ? "RECORDED" : "REFUSED"} ${path}: `));
+  const expectedStatus = (reasons.length && !recorded) || stale ? 1 : 0;
+  check(`${name}: verdict and config count`, result.status === expectedStatus && output.includes(`graded=${reasons.length ? 0 : 1} refused-with-reason=${reasons.length && !recorded ? 1 : 0}`) && output.includes(`stale-records=${stale}`), output);
+  check(`${name}: every independent refusal is reported`, lines.length === reasons.length && reasons.every((reason) => lines.some((line) => line.includes(reason))), output);
+  commandsStayedIdle &&= !existsSync(join(root, "command-ran")) && output.includes("0 mutations run");
+  sourcesStayedUnchanged &&= readFileSync(join(root, mutation.file), "utf8") === "export const value = 1;\n";
+};
+try {
+  write("package.json", '{"name":"fixture","type":"module"}');
+  write(mutation.file, "export const value = 1;\n");
+  write(unreachable.file, "export const value = 1;\n");
+  write("packages/demo/smoke/test.smoke.ts", 'import { value } from "../src/index.ts";\nfunction check(name, ok) { if (!ok) throw new Error(name); }\ncheck("target", value === 1);\ncheck("local", true);\n');
+  write("forbidden.mjs", 'import { writeFileSync } from "node:fs"; writeFileSync("command-ran", "unexpected");\n');
+  write(path, JSON.stringify(config));
+  git("init", "-q");
+  git("add", ".");
+  git("-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "fixture");
+  run("valid", config, []);
+  run("empty replacement remains valid", { ...config, mutations: [{ ...mutation, replace: "" }] }, []);
+  run("empty mutation array remains valid", { ...config, mutations: [] }, []);
+  run("tool config needs no cell", { ...config, grades: "tool", mutations: [missing("tool")] }, []);
+  run("tool fields still validated", { ...config, grades: "tool", mutations: [{ ...mutation, find: undefined }, { ...mutation, name: "second", replace: undefined }] }, ['mutation "target" is missing "find"', 'mutation "second" is missing "replace"']);
+  run("one missing cell", { ...config, mutations: [missing("A1")] }, ['mutation "A1" is missing "cell"']);
+  run("one unreachable target", { ...config, mutations: [unreachable] }, ['mutation "unreachable" targets packages/other/src/index.ts']);
+  run("four defects", { ...config, mutations: [mutation, missing("A1"), missing("A2"), missing("A3"), unreachable] }, ['mutation "A1" is missing "cell"', 'mutation "A2" is missing "cell"', 'mutation "A3" is missing "cell"', 'mutation "unreachable" targets']);
+  run("reordered defects", { ...config, mutations: [unreachable, missing("A1")] }, ['mutation "unreachable" targets', 'mutation "A1" is missing "cell"']);
+  run("config and mutation", { ...config, minTicks: 0, mutations: [missing("A1")] }, ['"minTicks" must be a positive integer', 'mutation "A1" is missing "cell"']);
+  run("all missing fields", { ...config, mutations: [{ name: "empty" }] }, ['is missing "file"', 'is missing "find"', 'is missing "expectRed"', 'is missing "cell"', 'is missing "replace"']);
+  run("independent witness checks", { ...config, mutations: [{ ...unreachable, cell: "local" }] }, ['mutation "unreachable" targets', 'its named cell "local" reaches no launch']);
+  run("invalid config fields", { ...config, command: "", completionMarker: "", progressPattern: "[", minTicks: 0, assembles: 7, executes: 7, mutations: [missing("A1")] }, ['is missing "command"', '"completionMarker" must', '"progressPattern" is invalid', '"minTicks" must', '"assembles" must', '"executes" must', 'mutation "A1" is missing "cell"']);
+  run("invalid pattern type", { ...config, progressPattern: 4, mutations: [missing("A1")] }, ['"progressPattern" must', 'mutation "A1" is missing "cell"']);
+  run("missing mutations is terminal", { ...config, mutations: undefined }, ['is missing a "mutations" array']);
+  run("unresolved suite is terminal", { ...config, suite: ["absent.ts"], minTicks: 0 }, ["absent.ts"]);
+  run("invalid JSON is terminal", config, ["JSON"], { raw: "{" });
+  run("malformed mutation does not hide next", { ...config, mutations: [null, missing("A1")] }, ["must be an object", 'mutation "A1" is missing "cell"']);
+  const pinned = { ...config, mutations: [missing("A1"), missing("A2")] };
+  write(path, JSON.stringify(pinned));
+  write("scripts/mutation-coverage.recorded.json", JSON.stringify({ [path]: { sha256: createHash("sha256").update(JSON.stringify(pinned)).digest("hex"), refusal: 'mutation "A1" is missing "cell"' } }));
+  git("add", ".");
+  git("-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "record existing refusal");
+  git("-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-qm", "unchanged record parent");
+  run("legacy recorded first reason", pinned, ['mutation "A1" is missing "cell"', 'mutation "A2" is missing "cell"'], { discovered: true, recorded: true });
+  run("named run ignores recorded pin", pinned, ['mutation "A1" is missing "cell"', 'mutation "A2" is missing "cell"']);
+  run("changed recorded config is refused", { ...pinned, minTicks: 0 }, ['"minTicks" must', 'mutation "A1" is missing "cell"', 'mutation "A2" is missing "cell"'], { discovered: true, stale: 1 });
+  run("accepted recorded config is stale", config, [], { discovered: true, stale: 1 });
+  write(path, JSON.stringify({ ...config, minTicks: 0, mutations: [missing("A1")] }));
+  write("valid.json", JSON.stringify(config));
+  const pair = spawnSync(process.execPath, [tool, "--gradable-only", path, "valid.json"], { cwd: root, encoding: "utf8", timeout: 30_000 });
+  check("refused config does not hide next config", pair.status === 1 && pair.stdout.includes("ACCEPTED valid.json") && pair.stdout.includes("enumerated=2 examined=2 graded=1 refused-with-reason=1"), pair.stdout + pair.stderr);
+  check("no metadata command executed", commandsStayedIdle && !existsSync(join(root, "command-ran")));
+  check("all target source bytes unchanged", sourcesStayedUnchanged);
+} finally {
+  rmSync(root, { recursive: true, force: true });
+}
+finish();

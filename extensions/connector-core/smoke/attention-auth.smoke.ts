@@ -60,7 +60,7 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 try {
   await awaitBrokerReady(() => isReachable(servers), { servers, attempts: 50, delayMs: 200 });
 
-  // Privileged setup: manager creds create streams + presence KV, seed the channel registry, and
+  // Privileged setup: provisioner creds create streams + presence KV, seed the channel registry, and
   // provision the two peers' bind-only durables + scoped creds.
   const mgrCreds = await mintCreds(auth, newIdentity(), "provisioner");
   await setupSpaceStreams({ servers, space, creds: mgrCreds });

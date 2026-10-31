@@ -2682,6 +2682,13 @@ unchanged. `<pool>` is a single token `[a-z0-9-]{1,32}` (command-token grammar).
 Requests, replies, submissions, events, facts, and progress payloads are UTF-8 JSON. The
 envelope is versioned and typed; `ControlRequest`/`ControlReply` are deleted.
 
+Ephemeral endpoint serving MUST discard frames carrying native stored-message provenance
+headers (`Nats-Stream`, `Nats-Subject`, `Nats-Sequence` or `Nats-Time-Stamp`) before envelope
+parsing, authorization, dispatch or a derived reply. Header names are case-insensitive; an
+empty value still carries the marker. This rule covers both endpoint rails and all three
+routes. Other request headers remain permitted. Absence of these markers does not replace
+any of the subject, envelope, grant or application-admission checks below.
+
 `EndpointRequest`:
 
 | Field | Type | Req | Notes |

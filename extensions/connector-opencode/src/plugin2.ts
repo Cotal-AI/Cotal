@@ -7,9 +7,9 @@
  * The smallest port that joins, checks the model, creates ONE session, drives turns into it over
  * the authenticated HTTP API (`/api/session/:id/prompt` — 2.x has no `prompt_async`), registers the
  * cotal_* tools and maps the event stream to presence. Reuses `plugin.ts`'s exported seams
- * (env config, `MeshAgent` construction, `modelRefusalSentence`, `computeInjection`,
- * `settleWithin`) rather than duplicating them; the model check and session/turn routes are 2.x's
- * own (`/api/model`, `/api/session`, `/api/session/:id/prompt`) because the 2.x response shapes
+ * (env config, `MeshAgent` construction, `modelRefusalSentence`, `SurfacedBatch`, `settleWithin`)
+ * rather than duplicating them; the model check and session/turn routes are 2.x's own
+ * (`/api/model`, `/api/session`, `/api/session/:id/prompt`) because the 2.x response shapes
  * differ from 1.x's (`{data:...}` wrapping, no `prompt_async`).
  */
 import { loadAgentFile, type PresenceStatus } from "@cotal-ai/core";
@@ -23,7 +23,7 @@ import {
   briefing,
   registerOnceExit,
 } from "@cotal-ai/connector-core";
-import { modelRefusalSentence, computeInjection, settleWithin } from "./plugin.js";
+import { modelRefusalSentence, SurfacedBatch, settleWithin } from "./plugin.js";
 import type { OpenCode2Context, OpenCode2Event } from "./opencode2-types.js";
 import { buildCotalTools2 } from "./tools.js";
 
@@ -152,11 +152,11 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
   let sessionID: string | undefined;
   // What holds the session, so nothing else is submitted into it (2.x coalesces natively submitted
   // turns): our prompt waiting for its execution to start, or a started execution. Only the end of a
-  // started execution settles `surfaced`; an end seen before it started belongs to an earlier one.
+  // started execution settles the batch; an end seen before it started belongs to an earlier one.
   let execution: "submitted" | "running" | undefined;
   let primed = false; // persona goes out as `system` on the first connector-submitted turn, once
   let briefed = false; // channel briefing goes out once, same rule as 1.x
-  let surfaced: string[] = []; // receive keys surfaced into the current turn, acked on completion
+  const batch = new SurfacedBatch(agent); // the batch the current turn carries, acked on completion
   let ended: OpenCode2Event["durable"]; // log position of the event that ended the last turn
   let started: OpenCode2Event["durable"]; // log position of the running execution's start
   let unorderedEnds = 0; // ends of this session with no log position, which no submission can order itself against
@@ -188,28 +188,6 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
 
   async function ensureSession(): Promise<string | undefined> {
     return sessionID ?? (await sessionReady);
-  }
-
-  /** Make `ids` the surfaced batch, held in flight so the agent keeps the deliveries owned until the
-   *  turn ends (mirrors `plugin.ts`'s `surface`). */
-  function surface(ids: string[]): boolean {
-    if (!agent.holdInFlight(ids)) return false;
-    agent.releaseInFlight(surfaced);
-    surfaced = ids;
-    return true;
-  }
-
-  /** Ack exactly the surfaced deliveries by their receive keys (mirrors `plugin.ts`'s
-   *  `ackSurfaced`). */
-  function ackSurfaced(): void {
-    if (surfaced.length === 0) return;
-    agent.drainInboxDeliveries(surfaced);
-    abandonSurfaced();
-  }
-
-  function abandonSurfaced(): void {
-    agent.releaseInFlight(surfaced);
-    surfaced = [];
   }
 
   const safeStatus = async (status: PresenceStatus, activity?: string): Promise<void> => {
@@ -255,7 +233,7 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
     if (brief) parts.unshift(brief);
     if (parts.length === 0 && !turnPeek) return;
     const system = !primed && persona ? `${persona}\n\n${briefing(config, "opencode")}` : undefined;
-    if (!surface(ids)) return; // at the in-flight ceiling: the batch stays queued for a later turn
+    if (!batch.surface(ids)) return; // at the in-flight ceiling: the batch stays queued for a later turn
     // The turns' permit, after the last gate and right before the send with no await between: a
     // once task another dispatch already took is left out, and a submission left with nothing to
     // say is not sent.
@@ -263,7 +241,7 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
       turnIds = turnPeek.goalIds;
       parts.push(turnPeek.text);
     }
-    if (boot === undefined && override === undefined && ids.length === 0 && turnIds.length === 0) { abandonSurfaced(); return; }
+    if (boot === undefined && override === undefined && ids.length === 0 && turnIds.length === 0) { batch.abandon(); return; }
     const text = parts.join("\n\n");
     execution = "submitted";
     briefed = true;
@@ -293,7 +271,7 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
         agent.releaseTurns(turnIds);
         // An execution that started meanwhile still holds the session: only our submission is released.
         if (execution === "submitted") execution = undefined;
-        abandonSurfaced();
+        batch.abandon();
         log(`drive failed: ${(e as Error).message}`);
       } finally {
         submitting = undefined;
@@ -338,7 +316,7 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
     ended = ev.durable;
     if (execution !== "running") return;
     execution = undefined;
-    const carried = new Set(surfaced);
+    const carried = new Set(batch.keys);
     settle();
     await safeStatus("idle");
     // Not awaited: the event loop must keep consuming while the POST is unanswered, so a turn that
@@ -366,14 +344,12 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
     if (!execution) void drive();
   });
 
-  // `e.prompt` is `DeepMutable` (measured) — mutate the text part directly, same composition as
-  // 1.x's `injectIntoPrompt`, via the shared `computeInjection` seam so the two callers can't drift.
+  // `e.prompt` is `DeepMutable` (measured) — mutate the text part directly, as 1.x's
+  // `injectIntoPrompt` does, through the shared batch so the two callers can't drift.
   await ctx.session.hook("prompt", (e) => {
     if (sessionID && e.sessionID !== sessionID) return;
-    const computed = computeInjection(agent);
-    if (!computed || !surface(computed.surfacedIds)) return;
-    e.prompt.text = `${computed.prefix}\n\n${e.prompt.text}`;
-    if (computed.turnIds.length) agent.commitSurfacedTurns(computed.turnIds);
+    const prefix = batch.inject();
+    if (prefix !== undefined) e.prompt.text = `${prefix}\n\n${e.prompt.text}`;
   });
 
   // Measured: `model.request` fires `{model:{id,providerID}, kind:"primary"|"title", agent}` with
@@ -428,17 +404,17 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
           }
           case "session.execution.succeeded": {
             if (sessionID && data.sessionID !== sessionID) break;
-            await completeTurn(ev, ackSurfaced); // our driven turn ended cleanly: ack the surfaced batch (the sole ack site)
+            await completeTurn(ev, () => batch.ack()); // our driven turn ended cleanly: ack the surfaced batch (the sole ack site)
             break;
           }
           case "session.execution.failed": {
             if (sessionID && data.sessionID !== sessionID) break;
-            await completeTurn(ev, abandonSurfaced); // leave the inbox unacked so the batch can retry on a later safe turn
+            await completeTurn(ev, () => batch.abandon()); // leave the inbox unacked so the batch can retry on a later safe turn
             break;
           }
           case "session.execution.interrupted": {
             if (sessionID && data.sessionID !== sessionID) break;
-            await completeTurn(ev, ackSurfaced); // explicit user Stop: treat the surfaced batch as dismissed, not failed
+            await completeTurn(ev, () => batch.ack()); // explicit user Stop: treat the surfaced batch as dismissed, not failed
             break;
           }
           case "permission.asked": {

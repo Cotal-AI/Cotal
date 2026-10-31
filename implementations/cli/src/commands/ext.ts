@@ -4,6 +4,7 @@ import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { registry, type Command, type Connector, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
 import { CommandFailure, RESERVED_CONNECTOR_NAMES, beginExtensionNpmMutation, bindExtensionPeers, cacheExtensionServiceMetadata, cacheServicePreset, cacheCommand, cacheConnector, cacheExtension, cacheLocalProcess, cmdSpawnSpec, extensionLocalProcesses, extensionPackageDir, extensionProvides, extensionsDir, extensionsManifestPath, importExtensionEntry, installedExtensionVersion, loadExtensionsManifest, loadMeshes, localProcessPath, parsePid, probeLiveness, providedWords, jsonFlag, plainFlag, presentationOf, provenance, saveExtensionsManifest, seededCommandsMismatch, writeResult, type InstalledExtension, type LocalProcess, type LocalProcessContext, type Presentation, type Report, type ServicePreset } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
+import { shellWord } from "../lib/endpoint-errors.js";
 import { assertExtensionServiceInstancesStopped } from "../lib/service-instances.js";
 import { cotalRoot } from "../lib/paths.js";
 import { resolveSpace } from "../lib/status.js";
@@ -134,10 +135,23 @@ async function npm(args: string[], cwd: string): Promise<{ status: number | null
   }
 }
 
-/** Rebuild each installed package's private links after npm mutates the shared prefix. Keeping the
- * links inside the owning package prevents a later sibling add/remove from pruning its peers. */
-function linkExtensionPeers(packages: string[], operationPkg: string): void {
-  for (const link of bindExtensionPeers(packages, operationPkg, { force: true }))
+/** Rebuild each installed package's private links after npm mutates the shared prefix: every
+ * `recorded` package's and, with `candidate`, the operation's own. Keeping the links inside the
+ * owning package prevents a later sibling add/remove from pruning its peers. A recorded package whose
+ * directory is gone has no links to keep. `note` reports it with the command that reinstalls it and
+ * the one that drops its entry, and the entry stays in the manifest. The reinstall command names a
+ * third-party package's spec as a placeholder, because a recorded spec can be a URL that carries a
+ * credential. */
+function linkExtensionPeers(recorded: readonly InstalledExtension[], operationPkg: string, note: (line: string) => void, candidate = false): void {
+  const onAbsent = (owner: string): void => {
+    // Only a recorded package is skipped: the binder never skips the operation's own.
+    const entry = recorded.find((e) => e.pkg === owner)!;
+    const reinstall = entry.source === "seeded" ? "cotal ext seed --repair" : "cotal ext add <original-spec>";
+    note(c.yellow(`! ${owner} is in the extensions manifest but not installed at ${extensionPackageDir(owner)}, so its shared peers were not linked`) +
+      c.dim(` - \`${reinstall}\` reinstalls it, or \`cotal ext remove ${shellWord(owner)}\` drops the entry`));
+  };
+  const owners = [...recorded.map((entry) => entry.pkg), ...(candidate ? [operationPkg] : [])];
+  for (const link of bindExtensionPeers(owners, operationPkg, { force: true, onAbsent }))
     provenance.wrote(`${link.peer} link (${link.owner} → this CLI's copy)`, link.destination);
 }
 
@@ -221,8 +235,8 @@ export async function addExtension(spec: string, expectedPkg?: string, borrowMut
     } else if (stageRoot) {
       rmSync(stageRoot, { recursive: true, force: true });
     } else {
-      await npm(["remove", "--no-audit", "--no-fund", pkg], dir);
-      linkExtensionPeers(manifest.extensions.map((entry) => entry.pkg), pkg);
+      await npm(["remove", "--no-audit", "--no-fund", "--install-links", pkg], dir);
+      linkExtensionPeers(manifest.extensions, pkg, announce);
     }
   };
   let wasInterrupted = false;
@@ -324,7 +338,7 @@ export async function addExtension(spec: string, expectedPkg?: string, borrowMut
   // npm mutates the shared prefix, so restore every package's private shared-peer links, not only
   // the candidate's. All extensions resolve the exact same host package instances.
   try {
-    linkExtensionPeers(stageDir ? [pkg] : [...manifest.extensions.filter((entry) => entry.pkg !== pkg).map((entry) => entry.pkg), pkg], pkg);
+    linkExtensionPeers(stageDir ? [] : manifest.extensions.filter((entry) => entry.pkg !== pkg), pkg, announce, true);
   } catch (e) {
     fail(pkg, (e as Error).message);
   }
@@ -453,10 +467,10 @@ async function removeUnlocked(pkg: string): Promise<void> {
       reservations.push(pidPath);
     }
     assertExtensionServiceInstancesStopped(pkg);
-    const r = await npm(["remove", "--no-audit", "--no-fund", pkg], extensionsDir());
+    const r = await npm(["remove", "--no-audit", "--no-fund", "--install-links", pkg], extensionsDir());
     if (r.status !== 0) throw new Error(`npm remove failed:\n${r.output.split("\n").slice(-6).join("\n")}`);
     const remaining = manifest.extensions.filter((e) => e.pkg !== pkg);
-    linkExtensionPeers(remaining.map((entry) => entry.pkg), pkg);
+    linkExtensionPeers(remaining, pkg, console.error);
     saveExtensionsManifest({ extensions: remaining });
     provenance.wrote(`extensions manifest (−${pkg})`, extensionsManifestPath());
     console.log(c.green(`✓ removed ${pkg}`) + c.dim(` - removed: ${extensionProvides(entry).map((ref) => `${ref.kind}:${ref.name}`).join(", ")}`));

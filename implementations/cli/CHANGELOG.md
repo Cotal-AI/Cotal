@@ -1,5 +1,196 @@
 # @cotal-ai/cli
 
+## 0.132.3
+
+### Patch Changes
+
+- 5992e23: Do not echo a refused restore listener URL, including credentials or query values recorded in a preserved launch. Explain the accepted endpoint shape without repeating the input.
+- 35eb67a: Use one persona catalog reader for core and the CLI. Preserve strict CLI directory errors and share its encoding, non-regular-file and symbolic-link metadata. Core's existing forgiving listing remains empty for unreadable catalogs, including directories that cannot be searched; manager replies retain their ownership filtering.
+- Updated dependencies [35eb67a]
+  - @cotal-ai/core@0.132.3
+  - @cotal-ai/workspace@0.132.3
+
+## 0.132.2
+
+### Patch Changes
+
+- 6e0f8d1: Share the IdP URL policy between manifest preflight and auth login while preserving their diagnostics and normalization.
+- Updated dependencies [ebabb1e]
+- Updated dependencies [6e0f8d1]
+  - @cotal-ai/core@0.132.2
+  - @cotal-ai/workspace@0.132.2
+
+## 0.132.1
+
+### Patch Changes
+
+- 4f50669: Keep file-based extensions as installed copies when removing another extension or cleaning up a failed pinned-name add. npm removal now uses the same `--install-links` policy as installation, preserving unrelated built-ins instead of replacing them with links to their source or seed store.
+- @cotal-ai/core@0.132.1
+  - @cotal-ai/workspace@0.132.1
+
+## 0.132.0
+
+### Patch Changes
+
+- 7613605: Share comma-list parsing across spawn, mint and persona commands. Preserve absent flags, explicit empty overrides and each command's validation rules.
+- 2f0e7c8: Share dashboard bound-address formatting between the web service and CLI status, keeping IPv6 brackets, readiness URLs and the branded default unchanged.
+- Updated dependencies [5b197c0]
+- Updated dependencies [7613605]
+- Updated dependencies [2f0e7c8]
+  - @cotal-ai/workspace@0.132.0
+  - @cotal-ai/core@0.132.0
+
+## 0.131.6
+
+### Patch Changes
+
+- 672f4a8: Closing a console detail sent the roster back to its first seat at the top, so `j`, Enter, Escape could never reach past the second seat. The roster now keeps its selected seat and window across a detail, help and the DM lens. A seat that moved while its detail was open stays selected, and one that left gives its row to the next seat.
+- 9de91fb: Show how many console roster seats the window leaves out. The roster drew whole seats around the selected one and said nothing about the rest: at 80 columns four seats showed two with no sign of the others, and the title was cut before its seat count. The title now starts with the whole seats left out above and below the window, as in `roster ↑2 ↓1 more`, so the 80-column cut keeps them. A selected seat taller than the window used to push the title out, and the title's tail then showed beside a short name row. The title now keeps its row while the box has another, and the seat shows its first rows under it. A box with one row inside gives that row to the seat's name.
+- @cotal-ai/core@0.131.6
+  - @cotal-ai/workspace@0.131.6
+
+## 0.131.5
+
+### Patch Changes
+
+- Updated dependencies [e78de30]
+  - @cotal-ai/core@0.131.5
+  - @cotal-ai/workspace@0.131.5
+
+## 0.131.4
+
+### Patch Changes
+
+- 7420d83: Mark every cut preview in the console's agent detail. A recent-traffic preview cut to its width cap that then fit the row showed no ellipsis, so at 80 columns a run of emoji ended after 25 with nothing to say the rest was left out, and at 47 columns a CJK preview did the same. A preview that leaves any text out now ends with `…` within the same width, and a preview that fits whole is unchanged.
+- 7ec2cd7: Keep a console roster seat's name, activity and ages readable at every width. The seat's head was one row cut at the pane, so at a 120-column terminal a 30-character name hid its role, harness tag, activity and ages, and even a short seat lost its activity's age and `progress unknown`. The head now wraps at its piece boundaries as the status rows do: each piece starts a new row when it does not fit, so no width cuts the name or an age. The roster window counts those rows, so it draws whole seats around the selected one. A seat taller than the pane still shows only its first rows.
+- @cotal-ai/core@0.131.4
+  - @cotal-ai/workspace@0.131.4
+
+## 0.131.3
+
+### Patch Changes
+
+- d5fbd2f: Fix two console detail problems. The agent detail's recent traffic cut each preview at a count of UTF-16 units, so a cut inside an emoji showed a replacement character. Previews now cut by terminal columns between whole characters, and a row that would overflow the card ends with `…`, so ASCII previews read as before. Closing a detail also sent the feed back to its newest message at the bottom, so you could not step back through older messages one detail at a time. The feed now keeps its selected message and scroll position across a detail, help and the DM lens. A channel or filter change still jumps to the newest.
+- 087f45c: Keep a `cotal console` roster seat's head row inside its box when a wide character such as a CJK ideograph meets the cut. The row ended with that character and its `…` one cell past the content, over the right padding, so at 80 columns a seat whose activity starts with CJK painted 21 cells in a 20-cell box. The row now ends at the last whole character that leaves room for the `…`, as an ASCII row already did.
+- @cotal-ai/core@0.131.3
+  - @cotal-ai/workspace@0.131.3
+
+## 0.131.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.131.2
+  - @cotal-ai/workspace@0.131.2
+
+## 0.131.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.131.1
+  - @cotal-ai/workspace@0.131.1
+
+## 0.131.0
+
+### Patch Changes
+
+- 0e65b6f: `ProcessRecord` carries only the fields its state has. A missing or empty record is `absent` and carries nothing. A record that is not a pid is `unattributable` and carries that content. `dead` and `unknown` carry the pid. `alive` and `foreign` carry the pid and, when the command line was read, the command. A caller that reads `pid` on an absent or unattributable record, or `content` on any other state, fails to compile. `readProcessRecord` already returned these shapes, and its results are unchanged. The manager and delivery refusals name the same pid they named before.
+- daff420: Inspect user-auth state-directory and provider-pin entries without following symlinks at those entries. Regular pins still count. The directory/pin entry checks treat ENOENT as absence and propagate other inspection errors; this does not change ancestor-path or auth-directory enumeration behavior.
+- Updated dependencies [f7c2c28]
+- Updated dependencies [0e65b6f]
+- Updated dependencies [daff420]
+  - @cotal-ai/core@0.131.0
+  - @cotal-ai/workspace@0.131.0
+
+## 0.130.2
+
+### Patch Changes
+
+- 75721a2: Wrap console text by terminal columns. The feed, DM thread, detail body and roster status facts counted UTF-16 units, so CJK text made rows twice the pane width and lost the cut-off half, and an odd width split an emoji into two replacement characters. Rows now use the display width the CLI already measures elsewhere and break between grapheme clusters. ASCII wrapping is unchanged.
+- @cotal-ai/core@0.130.2
+  - @cotal-ai/workspace@0.130.2
+
+## 0.130.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.130.1
+  - @cotal-ai/workspace@0.130.1
+
+## 0.130.0
+
+### Patch Changes
+
+- Updated dependencies [025d175]
+- Updated dependencies [27250e3]
+  - @cotal-ai/core@0.130.0
+  - @cotal-ai/workspace@0.130.0
+
+## 0.129.9
+
+### Patch Changes
+
+- Updated dependencies [1a59b0a]
+- Updated dependencies [b94f83a]
+  - @cotal-ai/core@0.129.9
+  - @cotal-ai/workspace@0.129.9
+
+## 0.129.8
+
+### Patch Changes
+
+- Updated dependencies [43b7cb9]
+  - @cotal-ai/workspace@0.129.8
+  - @cotal-ai/core@0.129.8
+
+## 0.129.7
+
+### Patch Changes
+
+- af7b921: Refuse a persona catalog folder that lists its file names but cannot be searched, such as one set to
+  mode 0600. `persona` used to report each valid persona there as `SCHEMA_INVALID` (exit 4), the legacy
+  `personas list` marked each one unparseable (exit 0), and name completion offered personas that
+  could not be opened. Both commands now refuse it with `PERMISSION_DENIED` (exit 2) and the same next
+  step as an unreadable catalog, whether the folder is empty or not, and completion fails and names the
+  catalog. A malformed persona file in a readable catalog is still reported as before.
+- Updated dependencies [853005f]
+  - @cotal-ai/workspace@0.129.7
+  - @cotal-ai/core@0.129.7
+
+## 0.129.6
+
+### Patch Changes
+
+- e517d72: Give an unreadable persona catalog a next step. `persona` and the legacy `personas list` suggest
+  `chmod u+rx <folder>` only for a catalog folder you own whose mode denies you read or search. A
+  folder above the catalog that you cannot enter is named instead, and a folder another account owns
+  says to ask its owner. Any other read error keeps the refusal with no next step, and nothing changes
+  a mode. The legacy `personas list` now names the space in that refusal, as `persona` does. Exit codes
+  and the `PERMISSION_DENIED` code are unchanged.
+- @cotal-ai/core@0.129.6
+  - @cotal-ai/workspace@0.129.6
+
+## 0.129.5
+
+### Patch Changes
+
+- 33bb63f: Fail a channel or role completion when the target space's persona catalog folder cannot be read or a
+  persona file in it does not parse, as persona name completion already did, instead of offering
+  nothing as a success. `COTAL_COMPLETE_DEBUG=1` names the folder or file. The legacy `personas list`
+  refuses an unreadable catalog folder with `PERMISSION_DENIED`, as `persona` does, instead of
+  reporting no personas. A space that does not resolve, or a catalog folder that does not exist, still
+  offers or lists nothing.
+- 1f8b7e8: Remove the accidentally tracked negative presence-render probe from the CLI source tree.
+- @cotal-ai/core@0.129.5
+  - @cotal-ai/workspace@0.129.5
+
+## 0.129.4
+
+### Patch Changes
+
+- e48dc5c: `cotal up -f` now refuses a `broker.servers` or `--server` that lists more than one URL, naming which of the two lists them and saying that `up -f` binds a single broker address, and `cotal team boot` refuses such a `broker.servers` the same way. Each entry still passes the usual URL and credential checks first. Such a manifest used to fail with a bare `Invalid URL` and an unknown outcome. The manifest still validates with a list, and `topology view` still shows it.
+- @cotal-ai/core@0.129.4
+  - @cotal-ai/workspace@0.129.4
+
 ## 0.129.3
 
 ### Patch Changes

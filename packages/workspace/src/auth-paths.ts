@@ -1,5 +1,5 @@
 import { CommandFailure } from "./output.js";
-import { existsSync, linkSync, lstatSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, type Stats } from "node:fs";
+import { existsSync, linkSync, lstatSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, type Dirent, type Stats } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { join, dirname, resolve, sep } from "node:path";
 import { homeCotalDir, homeRecordEntries, userCotalDir } from "./cotal-home.js";
@@ -164,8 +164,8 @@ export function spaceFromSegment(name: string): string | undefined {
 
 /** The SPACE-SCOPED user-auth state dir (`<root>/.cotal/auth/space.<hex>`) — the one layout fact
  *  the workstation layer owns about user auth: the auth provider persists its material under this
- *  dir (opaque to us), and its EXISTENCE marks the space as user-auth-enabled on disk. Keyed by
- *  {@link spaceSegment} so two case-differing tenants can never share one state dir and no space
+ *  dir (opaque to us). A regular provider pin inside the real directory marks user-auth state.
+ *  Keyed by {@link spaceSegment} so two case-differing tenants can never share one state dir and no space
  *  name can alias a reserved sibling of the auth dir. Fails loud on a degenerate space — BEFORE
  *  any caller can mutate at an aliased path.
  *
@@ -247,7 +247,7 @@ const USER_AUTH_MARKER_FILES = ["idp.json", "callout.json"] as const;
 function pathHasUserAuthMarker(dir: string): boolean {
   let st;
   try {
-    st = statSync(dir);
+    st = lstatSync(dir);
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === "ENOENT") return false;
     throw e;
@@ -260,7 +260,7 @@ function pathHasUserAuthMarker(dir: string): boolean {
   // about a trust marker, and uncertainty fails CLOSED (loud), never open.
   return USER_AUTH_MARKER_FILES.some((f) => {
     try {
-      return statSync(join(dir, f)).isFile();
+      return lstatSync(join(dir, f)).isFile();
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code === "ENOENT") return false;
       throw e;
@@ -1191,33 +1191,40 @@ export function assertSingleSpaceBroker(dir: string, operation: string): void {
 export function accountInventory(dir: string): { spaces: string[]; corrupt: string[] } {
   const spaces: string[] = [];
   const corrupt: string[] = [];
-  if (existsSync(dir)) {
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      if (!entry.name.startsWith(SPACE_ACCOUNT_PREFIX) || !entry.name.endsWith(SPACE_ACCOUNT_SUFFIX)) continue;
-      // From here the entry CLAIMS the account namespace; anything wrong is corruption, never a skip.
-      const fromName = spaceFromAccountFile(entry.name);
-      if (fromName === undefined || !entry.isFile()) {
-        corrupt.push(entry.name);
-        continue;
-      }
-      let doc: { space?: unknown; account?: unknown };
-      try {
-        doc = JSON.parse(readFileSync(join(dir, entry.name), "utf8")) as { space?: unknown; account?: unknown };
-      } catch {
-        corrupt.push(entry.name);
-        continue;
-      }
-      // The name must round-trip AND the record must carry the account material it claims to.
-      // "Validated inventory" has to mean the shape a reader will compose, or a semantically-empty
-      // record (`{"space":"alpha"}`, no `account`) counts as a tenant here and then crashes the very
-      // `status`/compose path this inventory exists to keep fail-closed. Match the SpaceAccountAuth
-      // fields those readers dereference; a missing/blank one is corruption, not a tenant.
-      if (typeof doc.space !== "string" || doc.space !== fromName || !isAccountShape(doc.account)) {
-        corrupt.push(entry.name);
-        continue;
-      }
-      spaces.push(doc.space);
+  // Only absence is absent: `existsSync` would read a folder this account cannot enter as missing,
+  // and count no tenants under a `.cotal` it cannot read. That failure propagates like any other.
+  let entries: Dirent[];
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+    entries = [];
+  }
+  for (const entry of entries) {
+    if (!entry.name.startsWith(SPACE_ACCOUNT_PREFIX) || !entry.name.endsWith(SPACE_ACCOUNT_SUFFIX)) continue;
+    // From here the entry CLAIMS the account namespace; anything wrong is corruption, never a skip.
+    const fromName = spaceFromAccountFile(entry.name);
+    if (fromName === undefined || !entry.isFile()) {
+      corrupt.push(entry.name);
+      continue;
     }
+    let doc: { space?: unknown; account?: unknown };
+    try {
+      doc = JSON.parse(readFileSync(join(dir, entry.name), "utf8")) as { space?: unknown; account?: unknown };
+    } catch {
+      corrupt.push(entry.name);
+      continue;
+    }
+    // The name must round-trip AND the record must carry the account material it claims to.
+    // "Validated inventory" has to mean the shape a reader will compose, or a semantically-empty
+    // record (`{"space":"alpha"}`, no `account`) counts as a tenant here and then crashes the very
+    // `status`/compose path this inventory exists to keep fail-closed. Match the SpaceAccountAuth
+    // fields those readers dereference; a missing/blank one is corruption, not a tenant.
+    if (typeof doc.space !== "string" || doc.space !== fromName || !isAccountShape(doc.account)) {
+      corrupt.push(entry.name);
+      continue;
+    }
+    spaces.push(doc.space);
   }
   // The pre-W4 monolith counts as a tenant too; one that will not read counts as CORRUPT, not as
   // absent - a reader like `status` must see the uncertainty, not crash or under-count on it.

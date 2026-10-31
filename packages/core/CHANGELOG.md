@@ -1,5 +1,98 @@
 # @cotal-ai/core
 
+## 0.132.3
+
+### Patch Changes
+
+- 35eb67a: Use one persona catalog reader for core and the CLI. Preserve strict CLI directory errors and share its encoding, non-regular-file and symbolic-link metadata. Core's existing forgiving listing remains empty for unreadable catalogs, including directories that cannot be searched; manager replies retain their ownership filtering.
+
+## 0.132.2
+
+### Patch Changes
+
+- ebabb1e: Share remote-manager serve-principal serialization through the existing owner/actor token validator. Auth checks derive principals with the new remoteManagerServePrincipal helper; registration and retirement APIs preserve their supplied serve actor and serialize it with principalKey.
+
+## 0.132.1
+
+No changes in this release.
+
+## 0.132.0
+
+No changes in this release.
+
+## 0.131.6
+
+No changes in this release.
+
+## 0.131.5
+
+### Patch Changes
+
+- e78de30: Use native memory-backed state for temporary KV scan consumers while preserving backing record storage, fresh reads and completeness checks.
+
+## 0.131.4
+
+No changes in this release.
+
+## 0.131.3
+
+No changes in this release.
+
+## 0.131.2
+
+No changes in this release.
+
+## 0.131.1
+
+No changes in this release.
+
+## 0.131.0
+
+### Patch Changes
+
+- f7c2c28: Use native Ed25519 nonce signing for Node endpoint and standalone connections. Read rotating credentials on every authentication attempt and clear the temporary signer after use.
+
+## 0.130.2
+
+No changes in this release.
+
+## 0.130.1
+
+No changes in this release.
+
+## 0.130.0
+
+### Minor Changes
+
+- 025d175: Build trusted auth request-observation filters through the same core request head as actual endpoint requests. Existing observed commands, routes and rails are unchanged. The focused source census ignores comment prose while still rejecting literal rail construction outside core.
+- 27250e3: Validate presence updates before changing endpoint state or publishing reader-invalid fields. Export `assertPresenceRow` alongside the existing reader predicate, using one shared shape check and field-named TypeErrors without coercion.
+
+## 0.129.9
+
+### Patch Changes
+
+- 1a59b0a: Discard native stored-message provenance at ephemeral endpoint ingress before parsing, authorization, dispatch or replies. Direct requests retain their existing headers and admission checks; read grants are unchanged.
+
+## 0.129.8
+
+No changes in this release.
+
+## 0.129.7
+
+No changes in this release.
+
+## 0.129.6
+
+No changes in this release.
+
+## 0.129.5
+
+No changes in this release.
+
+## 0.129.4
+
+No changes in this release.
+
 ## 0.129.3
 
 ### Patch Changes

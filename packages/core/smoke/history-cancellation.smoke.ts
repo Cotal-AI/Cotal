@@ -17,7 +17,7 @@ import { connect } from "@nats-io/transport-node";
 import { DeliverPolicy, jetstreamManager } from "@nats-io/jetstream";
 import { CotalEndpoint, chatStream, isReachable, setupSpaceStreams } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal, killAndAwaitExit } from "@cotal-ai/smoke-kit";
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 let pass = 0;
@@ -152,8 +152,7 @@ try {
   await reader?.stop().catch(() => {});
   await poster?.stop().catch(() => {});
   await proxy?.close().catch(() => {});
-  if (broker.exitCode === null) broker.kill("SIGTERM");
-  await wait(200);
+  await killAndAwaitExit(broker);
   rmSync(dir, { recursive: true, force: true });
   releaseBroker();
 }

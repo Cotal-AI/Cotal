@@ -52,6 +52,7 @@ import { join, dirname, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync, spawnSync } from "node:child_process";
 import { parseSuiteSources } from "../../scripts/mutation-suite-metadata.mjs";
+import { workspaceBuildSelection } from "../../scripts/workspace-build-filters.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const SKIP = new Set(["node_modules", "dist", ".git", ".changeset", "coverage", "build"]);
@@ -169,33 +170,7 @@ function readWorkspacePackages(): void {
 }
 readWorkspacePackages();
 
-function closureOf(name: string): Set<string> {
-  const out = new Set<string>();
-  const visit = (n: string): void => {
-    if (out.has(n)) return;
-    out.add(n);
-    const pkg = workspacePackages.get(n);
-    if (!pkg) return;
-    for (const dep of pkg.dependsOn) visit(dep);
-  };
-  visit(name);
-  return out;
-}
-
-function dependentsOf(name: string): Set<string> {
-  const out = new Set([name]);
-  for (let grew = true; grew;) {
-    grew = false;
-    for (const pkg of workspacePackages.values()) {
-      if (out.has(pkg.name)) continue;
-      if ([...pkg.dependsOn].some((d) => out.has(d))) {
-        out.add(pkg.name);
-        grew = true;
-      }
-    }
-  }
-  return out;
-}
+const buildDependencies = new Map([...workspacePackages].map(([name, pkg]) => [name, pkg.dependsOn]));
 
 /** Every workspace package a command's `pnpm ... build` segments build, `"ALL"` for no filter. */
 function commandBuilds(command: unknown): Set<string> | "ALL" | null {
@@ -204,19 +179,9 @@ function commandBuilds(command: unknown): Set<string> | "ALL" | null {
   let unfiltered = false;
   for (const segment of command.split(/&&|\|\||;/)) {
     if (!segment.includes("pnpm") || !/\bbuild\b/.test(segment)) continue;
-    // `mutation-proof` runs the command through a shell, which strips the quotes a fixture may put
-    // around a filter before pnpm reads it. The census reads the same bare name, or a quoted filter
-    // would name no package on both sides: the build it hides and the restore it fails to credit.
-    const filters = [...segment.matchAll(/--filter[= ](\S+)/g)].map((m) => m[1].replace(/^(["'])(.*)\1$/, "$2"));
-    if (!filters.length) { unfiltered = true; continue; }
-    for (const filter of filters) {
-      const closure = filter.endsWith("...");
-      const dependents = filter.startsWith("...");
-      const name = filter.replace(/^\.\.\./, "").replace(/\.\.\.$/, "");
-      if (closure) for (const n of closureOf(name)) built.add(n);
-      else if (dependents) for (const n of dependentsOf(name)) built.add(n);
-      else built.add(name);
-    }
+    const selection = workspaceBuildSelection(segment.trim().split(/\s+/), buildDependencies);
+    if (selection.packages === null) { unfiltered = true; continue; }
+    for (const name of selection.packages) built.add(name);
   }
   if (unfiltered) return "ALL";
   return built.size ? built : null;

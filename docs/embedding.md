@@ -73,6 +73,13 @@ keeps its remote-only composition. Supplying this programmatic option does not e
 `up`, restart or recovery paths; a host must compose those paths separately after adopting the
 published API. `ps` still lists only the selected Manager's managed seats, not HTTP-hosted sessions.
 
+## Node connection signing
+
+Node endpoints and `standaloneConnectOpts` sign NATS authentication challenges with the existing
+native Ed25519 signer. Credentials are read on every connection attempt, including reconnects,
+and the temporary signer is cleared after each callback. JWT, public-key and signature fields
+use the NATS authenticator contract. Browser connections keep the NATS JavaScript implementation.
+
 ## User credential authority
 
 `AuthProvider.userCredentials` returns the bearer and sentinel credential. A provider may also
@@ -276,6 +283,11 @@ absent. The reported path is kept byte for byte, whitespace included; an empty s
 | `ManagerOptions.execution` | `@cotal-ai/manager` | omitted or `"runtime"` keeps runtime execution. Explicit `"none"` accepts a genuine hosting user-auth root, or pooled complete signerless authority, with no `runtime` option. It constructs no Runtime and performs no connector inspection, seat launch or workflow hosting. |
 | `createRuntime`, `Runtime` *(type)* | `@cotal-ai/manager` | resolve the spawn backend (pty built in). |
 | `liveKvEntries(kv, filterOrOptions?, options?)`, `LiveKvEntriesOptions` *(type)* | `@cotal-ai/core` | read live KV entries in one finite scan. Pass `{ signal }` as the second argument or after a key filter to cancel. An interrupted scan throws `IncompleteKvScan`; cancellation throws the signal reason, including during an empty-bucket bind. The scan deletes only its owned consumers, including each one nats.js rebuilt from it, after the broker has answered every create those rebuilds sent. A not-found delete counts as gone, a refused one leaves the consumers to broker inactivity expiry (which also covers a crash), and any other delete failure is thrown, as is a not-found delete of a consumer whose create got no reply from the broker before a timeout or a closed connection. A cleanup failure is thrown only when the scan would otherwise return; the scan's own error, its cancellation reason and `IncompleteKvScan` take precedence. |
+
+`remoteManagerServePrincipal(owner, instanceId)` from `@cotal-ai/core` derives the manager's
+serve actor and serializes it through `principalKey`, validating both tokens. Use it when a
+host derives the serve principal from an instance id. APIs that already receive a serve actor
+serialize that supplied actor with `principalKey(owner, serveActor).key`.
 
 The remote manager authority parser accepts `renewStandingBundle` and `renewRunDriver` only with
 an assigned account nkey, the current manager process epoch, and a host-authenticated registration

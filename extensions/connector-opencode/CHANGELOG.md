@@ -1,5 +1,87 @@
 # @cotal-ai/connector-opencode
 
+## 0.132.3
+
+No changes in this release.
+
+## 0.132.2
+
+### Patch Changes
+
+- d776fcf: Share the OpenCode adapters' surfaced batch so a native prompt cannot replace the messages carried by an active turn. Queued messages remain pending for a later eligible turn. Update the Claude Code connector's comment naming that acknowledgment boundary.
+
+## 0.132.1
+
+No changes in this release.
+
+## 0.132.0
+
+No changes in this release.
+
+## 0.131.6
+
+No changes in this release.
+
+## 0.131.5
+
+No changes in this release.
+
+## 0.131.4
+
+No changes in this release.
+
+## 0.131.3
+
+No changes in this release.
+
+## 0.131.2
+
+No changes in this release.
+
+## 0.131.1
+
+No changes in this release.
+
+## 0.131.0
+
+No changes in this release.
+
+## 0.130.2
+
+No changes in this release.
+
+## 0.130.1
+
+No changes in this release.
+
+## 0.130.0
+
+No changes in this release.
+
+## 0.129.9
+
+No changes in this release.
+
+## 0.129.8
+
+No changes in this release.
+
+## 0.129.7
+
+No changes in this release.
+
+## 0.129.6
+
+No changes in this release.
+
+## 0.129.5
+
+No changes in this release.
+
+## 0.129.4
+
+No changes in this release.
+
 ## 0.129.3
 
 No changes in this release.

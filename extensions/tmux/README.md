@@ -32,9 +32,14 @@ import.
   without it is refused before any window opens. Looking up tabs by
   label throws when tmux cannot be queried.
 
-Session-name and pane-capture failures name the read operation, include tmux's error text and
-retain the failed call as `cause`. A failed capture returns no screen only when the pane's exit
-is confirmed. A failed exit probe still throws.
+Session-name, pane-capture, session-creation, window-selection and text/key delivery failures
+name the operation, include tmux's error text and retain the failed call as `cause`.
+A failed capture returns no screen only when the pane's exit is confirmed. A failed exit probe
+still throws. Runtime spawn refusals also carry the session-creation reason.
+
+The package tests include native write controls on a fresh private socket when tmux is installed.
+They check failure diagnostics, successful delivery and the server-identity fence without using
+operator sessions.
 
 ## Usage
 
@@ -57,3 +62,6 @@ included: the driver runs the `tmux` on `PATH` and needs no bundled binary path.
 
 See [docs/architecture.md](../../docs/architecture.md) (*Manager supervision*) and the
 [root AGENTS.md](../../AGENTS.md) for the tier rules.
+
+The launcher contract checks in `package.smoke.ts` are POSIX-only. On Windows they use the
+shared `skipSuite` helper to report a skip with zero passing cells.

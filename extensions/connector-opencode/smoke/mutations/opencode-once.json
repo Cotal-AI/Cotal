@@ -89,8 +89,8 @@
     {
       "name": "M9 a 1.x error is not a turn end",
       "file": "extensions/connector-opencode/src/plugin.ts",
-      "find": "          noteTurnEnd();\n          if (!busy && !awaitingTurnEnd) return;",
-      "replace": "          if (!busy && !awaitingTurnEnd) return;",
+      "find": "          noteTurnEnd();\n          if (!busy && !batch.open) return;",
+      "replace": "          if (!busy && !batch.open) return;",
       "expectRed": "1.x: a turn error before the answer seals the task and no turn yields it"
     },
     {

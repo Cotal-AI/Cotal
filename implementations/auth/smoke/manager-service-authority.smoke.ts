@@ -1,10 +1,10 @@
 /** Closed remote manager-service authority policy cells (broker-free). */
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { EpEnvelopeError, REMOTE_MANAGER_AUTHORITY_OPERATIONS, REMOTE_MANAGER_IDENTITY_NAMES, createSpaceAuth, managedRetirementOpId, mintLifecycleUid, mintPublicUserJwt, newIdentity, permissionsFor, remoteManagerActors, type RemoteManagerAuthorityMaterial, type RemoteManagerAuthorityRequest } from "@cotal-ai/core";
+import { EpEnvelopeError, REMOTE_MANAGER_AUTHORITY_OPERATIONS, REMOTE_MANAGER_IDENTITY_NAMES, createSpaceAuth, managedRetirementOpId, mintLifecycleUid, mintPublicUserJwt, newIdentity, permissionsFor, principalKey, remoteManagerActors, remoteManagerServePrincipal, type RemoteManagerAuthorityMaterial, type RemoteManagerAuthorityRequest } from "@cotal-ai/core";
 import { remoteManagerIssuerGrants } from "@cotal-ai/auth";
 import { authorizeRemoteManagerMaintenance, issueRemoteManagerAuthority, parseRemoteManagerAuthorityRequest, USER_TOKEN_VIEWS } from "@cotal-ai/auth";
-import { authorizeRemoteManagerRenewal } from "../src/manager-authority.js";
+import { authorizeRemoteManagerRenewal } from "@cotal-ai/auth";
 import { remoteManagerCurrentRegistrationProof } from "../src/retained-manager-validation.js";
 import { authorizeRemoteManagerRetirement } from "../src/service.js";
 import { authorizeRetirementOperation } from "../src/auth-admin.js";
@@ -26,6 +26,16 @@ async function rejects(name: string, fn: () => unknown | Promise<unknown>, re: R
 
 const instanceId = mintLifecycleUid();
 const lifecycleUid = mintLifecycleUid();
+await cell("serve principal preserves human, platform and local owner serialization", () => {
+  for (const owner of ["u_aaaaaaaaaaaaaaaaaaaaaaaaaa", "p_bbbbbbbbbbbbbbbbbbbbbbbbbb", "local"])
+    assert.equal(remoteManagerServePrincipal(owner, instanceId), principalKey(owner, remoteManagerActors(instanceId).serve).key);
+});
+await cell("serve principal rejects malformed owner tokens", () => {
+  assert.throws(() => remoteManagerServePrincipal("u_bad-owner", instanceId), /invalid owner\/actor token/);
+});
+await cell("serve principal rejects malformed derived actor tokens", () => {
+  assert.throws(() => remoteManagerServePrincipal("local", "bad.instance"), /invalid owner\/actor token/);
+});
 const identities = {
   supervisor: { id: newIdentity().id },
   executor: { id: newIdentity().id },
@@ -85,6 +95,8 @@ await cell("current registration allows the five-identity renewal request", () =
 await rejects("foreign account refuses before signing", () => verifyRenewal(renewWithProof, { accountPublicKey: `A${"B".repeat(55)}` }), /account/);
 await rejects("stale process epoch refuses before signing", () => verifyRenewal(renewWithProof, { gate: { ...gate, processEpoch: 4 } }), /processEpoch/);
 await rejects("foreign owner refuses before signing", () => verifyRenewal(renewWithProof, { owner: "u_bbbbbbbbbbbbbbbbbbbbbbbbbb" }), /owner/);
+await rejects("malformed renewal owner uses the principal token validator", () =>
+  verifyRenewal(renewWithProof, { owner: "u_bad-owner" }), /invalid owner\/actor token/);
 await rejects("missing gate refuses before signing", () => verifyRenewal(renewWithProof, { gate: null }), /open registration gate/);
 await cell("activated run allows same takeover and write fence", () => verifyRenewal(runWithProof));
 await rejects("superseded run holder refuses before signing", () => verifyRenewal(runWithProof, { run: { ...observedRun, holder: "successor" } }), /activated run/);
