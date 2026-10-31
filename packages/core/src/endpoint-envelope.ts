@@ -154,6 +154,7 @@ export function controlReplyFrom(reply: EndpointReply): ControlReply {
     code: error.code,
     ...(reply.data !== undefined ? { data: reply.data } : {}),
     ...(error.details ? { details: error.details } : {}),
+    ...(error.outcome !== undefined ? { outcome: error.outcome } : {}),
   };
 }
 
@@ -166,6 +167,7 @@ export function controlReplyFromThrown(e: EpEnvelopeError, message: string): Con
     error: renderLifecycleBlocked(message, e),
     code: e.code,
     ...(e.details ? { details: e.details } : {}),
+    ...(e.outcome !== undefined ? { outcome: e.outcome } : {}),
   };
 }
 

@@ -10,7 +10,7 @@
 import { createHash } from "node:crypto";
 import {
   EP_ERROR_CODES, isEpErrorCode, EpEnvelopeError,
-  parseEndpointRequest, parseEndpointReply, parseEndpointEvent,
+  parseEndpointRequest, parseEndpointReply, parseEndpointEvent, controlReplyFrom, controlReplyFromThrown,
   checkRequestSubjectAgreement, assertClassMatches, assertArgsValid, assertOutputValid, authDigest,
   epRequestSubject, parseEpSubject, type ParsedEpRequest,
   compileContractSchema, VOID_SCHEMA, VOID_SCHEMA_DIGEST, SCHEMA_PROFILE,
@@ -198,6 +198,25 @@ c("toEpError() carries the outcome the fence sets",
   new EpEnvelopeError("failed-precondition", "x", undefined, "not-executed").toEpError().outcome === "not-executed");
 c("...and omits it entirely on a caller-raised refusal, which is not a reply",
   !("outcome" in new EpEnvelopeError("internal", "x").toEpError()));
+
+for (const outcome of ["executed", "not-executed", "unknown"] as const) {
+  const reply = parseEndpointReply({ v: 1, id: "req-control", ok: false,
+    error: { code: "failed-precondition", message: "the operation failed", outcome } });
+  const converted = controlReplyFrom(reply);
+  c(`ControlReply preserves the reply's ${outcome} outcome`,
+    converted.outcome === outcome && converted.code === "failed-precondition", converted);
+  const thrown = controlReplyFromThrown(new EpEnvelopeError("bad-request", "schema refusal", undefined, outcome), "caller context");
+  c(`ControlReply preserves the envelope error's ${outcome} outcome`,
+    thrown.outcome === outcome && thrown.code === "bad-request" && thrown.error === "caller context", thrown);
+}
+const withoutOutcome = controlReplyFrom(errReply);
+c("ControlReply keeps an absent reply outcome absent and preserves details",
+  !("outcome" in withoutOutcome) && withoutOutcome.details === errReply.error?.details, withoutOutcome);
+const thrownWithoutOutcome = controlReplyFromThrown(new EpEnvelopeError("internal", "x"), "caller context");
+c("ControlReply keeps an absent envelope error outcome absent", !("outcome" in thrownWithoutOutcome), thrownWithoutOutcome);
+const successfulControl = controlReplyFrom(okReply);
+c("successful ControlReply keeps its data without inventing an outcome",
+  successfulControl.ok && successfulControl.data === okReply.data && !("outcome" in successfulControl), successfulControl);
 
 const ev = parseEndpointEvent({ v: 1, topic: "ev.ai_cotal_lifecycle.started", ts: 1720500000000, data: null });
 c("event parses (a null data field IS data)", ev.topic.startsWith("ev.") && ev.data === null);
