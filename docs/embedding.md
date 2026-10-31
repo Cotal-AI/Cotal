@@ -836,6 +836,12 @@ await mgr.start();          // then wire your own SIGINT/SIGTERM -> mgr.stop()
 `stop()` runs once. A later call joins the stop in progress and settles with it, and a call that
 asks for a different `withAgents` than the running stop is refused.
 
+`start()` refuses with the exported `ManagerInstanceLeaseHeld` when this instance's lease is held
+by another live process on this root, or by a holder on another root. Its `held` field is the lease
+row (runtime, pid, root, holder, since) and `sameRoot` says whether that root is this one. A restart
+whose predecessor on this root is dead, including this process's own earlier start, waits for the
+old key to expire instead. A lease that could not be read or written is a plain `Error`.
+
 Unlike delivery, the manager is **not** a pre-minted-scoped-cred daemon (auth-service is also a
 signer: it holds fewer artifacts than the full trust bundle, but its data-account signing seed still
 grants complete data-account mint authority on compromise, so this is not least-privilege). On `start()`
