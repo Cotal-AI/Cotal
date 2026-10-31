@@ -924,6 +924,7 @@
     "smoke:seed-checkout-store": "tsx implementations/cli/smoke/seed-checkout-store.smoke.ts",
     "smoke:seed-verify-platform": "tsx implementations/cli/smoke/seed-verify-platform.smoke.ts",
     "smoke:ext-install-copies": "tsx implementations/cli/smoke/ext-install-copies.smoke.ts",
+    "smoke:ext-add-interrupt": "tsx implementations/cli/smoke/ext-add-interrupt.smoke.ts",
     "smoke:seed-migration-provenance": "pnpm --filter cotal-ai... build && pnpm --dir bin seeded-connectors && tsx implementations/cli/smoke/seed-migration-provenance.smoke.ts",
     "smoke:seed-tarball:live": "pnpm --filter cotal-ai... build && tsx bin/smoke/seed-tarball-live.smoke.ts",
     "smoke:down-manifest-usermode:live": "tsx implementations/auth/smoke/down-manifest-usermode.smoke.ts",
