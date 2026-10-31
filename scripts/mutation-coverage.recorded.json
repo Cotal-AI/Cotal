@@ -367,10 +367,6 @@
     "sha256": "59ff5f26dddbbace896f09206b2a5e7dfa7d85c3fbe9a684e66662c32e35a423",
     "refusal": "mutation \"the manager recognizes an interrupted generation upgrade but skips the verified repair\" targets implementations/cli/src/seed/reconcile.ts, which none of [implementations/cli/smoke/seed-upgrade-resume.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in implementations/cli that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
   },
-  "implementations/cli/smoke/fixtures/view-events-filter.mutations.json": {
-    "sha256": "adf20cbd6d4249785209fdfbec43af924187b931e392cc8c3be1751b63083c40",
-    "refusal": "mutation \"V1 the filter moves after the history fetch, so every event channel is enumerated and read and then thrown away: unbounded work to display nothing, and invisible to any assertion about the final snapshot\" is missing \"cell\""
-  },
   "implementations/cli/smoke/fixtures/web-seed-live.mutations.json": {
     "sha256": "d7b91115b7a62b71451f447310d8032f0ee28cec202b45598b907212cc7fdb3c",
     "refusal": "mutation \"W1 seed history with a provisioner credential that cannot publish chat\" is missing \"cell\""
@@ -414,10 +410,6 @@
   "implementations/cli/smoke/mutations/send-entry.json": {
     "sha256": "bab4a9c2a1839f77c423c0e2500bcccfccb38324c8bcfc0726dc99de21d13905",
     "refusal": "mutation \"restore the obsolete managed-seat environment gate\" targets implementations/cli/src/commands/send.ts, which none of [implementations/cli/smoke/send.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in implementations/cli that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
-  },
-  "implementations/cli/smoke/mutations/sparkline.json": {
-    "sha256": "ca186de7ace0906d0304913f327a8fe8db161c8371009fa6139dc9e927d8bd8d",
-    "refusal": "mutation \"K3 bars drawn from raw counts instead of the series' max\" targets implementations/cli/src/console/ui/Sparkline.tsx, which none of [implementations/cli/smoke/sparkline.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in implementations/cli that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
   },
   "implementations/cli/smoke/mutations/up-store-cap.json": {
     "sha256": "eae2cb72264afc384826131973e6823ba72c951b0e15be7399420c6f5be781a5",

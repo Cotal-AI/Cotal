@@ -20,7 +20,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CotalEndpoint, isReachable, setupSpaceStreams, type CotalMessage, type Presence } from "@cotal-ai/core";
 import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
-import { MeshView } from "../src/view/mesh-view.js";
+import { MeshView } from "@cotal-ai/workspace/view";
 import { makeObserver, makeParticipant } from "../src/console/root.js";
 import { ConsoleSession, clean } from "./_console-pty.js";
 

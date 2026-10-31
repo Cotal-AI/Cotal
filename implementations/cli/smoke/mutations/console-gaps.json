@@ -29,13 +29,14 @@
     },
     {
       "name": "G3 merge the channel list instead of rebuilding it",
-      "file": "implementations/cli/src/view/mesh-view.ts",
+      "file": "packages/workspace/src/view/mesh-view.ts",
       "find": "    const next = new Map<string, number>();\n    for (const { channel, messages } of chans)\n      if (!isEventChannel(channel)) next.set(channel, messages);\n    this.channelCounts = next;",
       "replace": "    const next = new Map<string, number>(this.channelCounts);\n    for (const { channel, messages } of chans)\n      if (!isEventChannel(channel)) next.set(channel, messages);\n    this.channelCounts = next;",
       "expectRed": "delchan: the deleted channel's tab is gone on the next poll",
       "cell": "delchan: the deleted channel's tab is gone on the next poll",
-      "afterRestore": "pnpm --filter @cotal-ai/cli build",
-      "note": "A deleted channel keeps its last count in the strip forever; seen live on the e2e mesh as `#scratch 2 +2` after :delchan."
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build",
+      "note": "A deleted channel keeps its last count in the strip forever; seen live on the e2e mesh as `#scratch 2 +2` after :delchan.",
+      "command": "pnpm --filter @cotal-ai/workspace --filter @cotal-ai/cli build && pnpm --filter @cotal-ai/cli smoke:console-gaps"
     },
     {
       "name": "G4 badge from retained depth instead of arrivals",

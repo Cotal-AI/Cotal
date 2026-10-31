@@ -2,10 +2,10 @@
 
 > **Reference**: TypeScript observer surfaces (`MeshView`) · **For:** integrators building a watch surface · **Wire contract:** [SPEC](../SPEC.md)
 
-`MeshView` is the CLI's shared model for the terminal [console](watch-a-mesh.md) and its
-plain stream. It derives display data from a Cotal endpoint. The web dashboard uses the
-same core endpoint APIs through its own HTTP and SSE implementation; it does not consume
-this class.
+`MeshView` is the shared model behind the terminal [console](watch-a-mesh.md), its plain
+stream and `cotal watch`. It derives display data from a Cotal endpoint and ships in
+`@cotal-ai/workspace/view`. The web dashboard uses the same core endpoint APIs through its
+own HTTP and SSE implementation; it does not consume this class.
 
 **Reference-implementation boundary.** MeshView is an observer API. The wire remains the source of
 truth; every field below is a *rendering* derived from it. A different client is free to derive its own model
@@ -31,7 +31,7 @@ pure-watch session remains invisible.
 
 ## MeshView data
 
-One class (`implementations/cli/src/view/mesh-view.ts`) consumes that observer and emits a
+One class (`packages/workspace/src/view/mesh-view.ts`) consumes that observer and emits a
 normalized, render-agnostic model: no ANSI, no React, no HTML, no colour, pure data. It owns the
 endpoint lifecycle (`start → tap → stop`) and batches every source (roster events, the tap, burst
 flushes, channel polls, the rate/age heartbeat) into one snapshot per ~75 ms tick.

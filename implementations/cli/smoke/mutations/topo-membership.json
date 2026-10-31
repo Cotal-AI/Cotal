@@ -7,7 +7,7 @@
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/topo-membership.json",
   "why": [
     "A fold that draws a snapshot the viewer could not re-read shows a stale skeleton as live truth; an absent bucket reported as unreadable makes every daemon-less mesh look broken; a pill that checks the snapshot before the failure hides a failed read behind traffic-only; display-name keys collapse distinct principals and union their subscriptions.",
-    "Each mutation is compile-clean and unique in the named file, and the suite imports src directly, so no build is involved."
+    "Each mutation is compile-clean and unique in the named file. The suite imports the CLI source directly and `MeshView` from the built @cotal-ai/workspace, so a MeshView mutation builds workspace first and rebuilds it after the restore."
   ],
   "mutations": [
     {
@@ -20,11 +20,13 @@
     },
     {
       "name": "M2 report an absent bucket as a failed read",
-      "file": "implementations/cli/src/view/mesh-view.ts",
+      "file": "packages/workspace/src/view/mesh-view.ts",
       "find": "? { snapshot: { asOf: undefined, members: [] } }",
       "replace": "? { ...this.membership, unreadable: (e as Error).message }",
       "expectRed": "an absent bucket (no daemon) is traffic-only, not unreadable",
-      "cell": "an absent bucket (no daemon) is traffic-only, not unreadable"
+      "cell": "an absent bucket (no daemon) is traffic-only, not unreadable",
+      "command": "pnpm --filter @cotal-ai/workspace build && pnpm exec tsx implementations/cli/smoke/topo-membership.smoke.ts",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build"
     },
     {
       "name": "M3 check the snapshot before the failure",
@@ -44,11 +46,13 @@
     },
     {
       "name": "M5 a watch that closes after setup lands nowhere",
-      "file": "implementations/cli/src/view/mesh-view.ts",
+      "file": "packages/workspace/src/view/mesh-view.ts",
       "find": "(e) => { this.membership = { ...this.membership, unreadable: `watch: ${e.message}` }; this.dirty = true; },",
       "replace": "(e: Error) => {},",
       "expectRed": "a watch that closes after setup is named as the watch's failure, never as a connection error",
-      "cell": "a watch that closes after setup is named as the watch's failure, never as a connection error"
+      "cell": "a watch that closes after setup is named as the watch's failure, never as a connection error",
+      "command": "pnpm --filter @cotal-ai/workspace build && pnpm exec tsx implementations/cli/smoke/topo-membership.smoke.ts",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build"
     }
   ]
 }

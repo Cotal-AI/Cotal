@@ -35,6 +35,7 @@ const renderRoots = [
   join(root, "packages/core/src/resolve.ts"),
   join(root, "extensions/connector-core/src"),
   join(root, "implementations/cli/src"),
+  join(root, "packages/workspace/src/view"),
   join(root, "implementations/web/src"),
 ];
 const skipDirs = new Set(["dist", "smoke", "test", "tests", "fixtures", "node_modules"]);

@@ -25,7 +25,7 @@ import { Detail, type DetailTarget } from "../src/console/ui/Detail.js";
 import { Topo, type TopoVariant } from "../src/console/ui/topo/Topo.js";
 import { MEMBERSHIP_STALE_MS } from "../src/console/ui/topo/model.js";
 import { clipText, fmtTime, sidePaneSize, wrapFacts, wrapText } from "../src/console/ui/theme.js";
-import type { FeedEntry, MembershipView } from "../src/view/mesh-view.js";
+import type { FeedEntry, MembershipView } from "@cotal-ai/workspace/view";
 
 let pass = 0, fail = 0;
 function check(label: string, cond: boolean, extra?: unknown): void {

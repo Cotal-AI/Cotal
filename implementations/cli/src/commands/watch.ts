@@ -82,7 +82,7 @@ async function watchSession(args: ParsedArgs, resolved: { space?: string }): Pro
   }
   const forced = process.env.FORCE_COLOR;
   if (!colorEnabled()) process.env.FORCE_COLOR = "0";
-  const ui = await Promise.all([import("ink"), import("react"), import("../watch-view.js"), import("../view/mesh-view.js")]).finally(() => {
+  const ui = await Promise.all([import("ink"), import("react"), import("../watch-view.js"), import("@cotal-ai/workspace/view")]).finally(() => {
     if (forced === undefined) delete process.env.FORCE_COLOR;
     else process.env.FORCE_COLOR = forced;
   });
