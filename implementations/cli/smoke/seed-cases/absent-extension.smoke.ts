@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { bindExtensionPeers } from "@cotal-ai/workspace";
 import { boot, existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync, tmpdir, join, check, cotal, freshCfg, seedDir, manifestPath, readJson, writeJson, track, finishScenario } from "./harness.js";
 
@@ -15,21 +16,21 @@ const BUILTINS = [
   "@cotal-ai/web",
 ];
 const META = { name: PKG, version: "1.0.0", type: "module", main: "index.js", peerDependencies: { "@cotal-ai/core": "*" } };
+// A recorded spec can be a URL that carries a credential, so no warning may print it. The prefix's
+// package.json lists no dependency, so npm never resolves this one.
+const TOKEN = randomBytes(16).toString("hex");
+const SPEC = `https://fixture.invalid/cotal-absent-ext-1.0.0.tgz?token=${TOKEN}`;
 
 /** A config whose manifest records PKG while the prefix's package.json lists no dependency. With
  *  `onDisk` the package directory is also present in the prefix, so npm finds it extraneous. */
 function fixture(onDisk: boolean): { cfg: string; dir: string } {
   const cfg = track(freshCfg());
-  const source = join(cfg, "fixture-source");
-  mkdirSync(source);
-  writeJson(join(source, "package.json"), META);
-  writeFileSync(join(source, "index.js"), "export {};\n");
   const prefix = join(cfg, "cotal", "extensions");
   mkdirSync(prefix, { recursive: true });
   writeJson(join(prefix, "package.json"), { name: "cotal-extensions", private: true, dependencies: {} });
   writeJson(manifestPath(cfg), {
     extensions: [{
-      pkg: PKG, version: "1.0.0", spec: source, commands: [],
+      pkg: PKG, version: "1.0.0", spec: SPEC, commands: [],
       provides: [{ kind: "connector", name: "fixture-absent" }],
       connectors: [{ name: "fixture-absent", requires: [], eventPlane: false, setup: null }],
     }],
@@ -44,9 +45,11 @@ function fixture(onDisk: boolean): { cfg: string; dir: string } {
 }
 const recorded = (cfg: string): string[] => (readJson(manifestPath(cfg)) as { extensions: { pkg: string }[] }).extensions.map((e) => e.pkg);
 const cursorPath = (cfg: string): string => join(seedDir(cfg), "reconcile.cursor.json");
-const warned = (text: string, dir: string): boolean =>
-  text.includes(`! ${PKG} is in the extensions manifest but not installed at ${dir}, so its shared peers were not linked`) &&
-  text.includes(`\`cotal ext remove '${PKG}'\` drops the entry`);
+const warned = (run: { stdout: string; stderr: string }, dir: string): boolean =>
+  run.stderr.includes(`! ${PKG} is in the extensions manifest but not installed at ${dir}, so its shared peers were not linked`) &&
+  run.stderr.includes("`cotal ext add <original-spec>` reinstalls it") &&
+  run.stderr.includes(`\`cotal ext remove '${PKG}'\` drops the entry`) &&
+  !`${run.stdout}${run.stderr}`.includes(TOKEN);
 const seededAll = (cfg: string): boolean => BUILTINS.every((pkg) => recorded(cfg).includes(pkg)) && !existsSync(cursorPath(cfg));
 
 try {
@@ -55,7 +58,7 @@ try {
     const { cfg, dir } = fixture(false);
     const reset = cotal(cfg, ["ext", "seed", "--reset"]);
     check("absent extension: --reset exits 0", reset.status === 0, reset.stderr);
-    check("absent extension: --reset names the package, its path and both remedies", warned(reset.stderr, dir), reset.stderr);
+    check("absent extension: --reset names the package, its path and both remedies, never its spec", warned(reset, dir), reset.stderr);
     check("absent extension: --reset seeds all seven built-ins and clears its cursor", seededAll(cfg), recorded(cfg));
     check("absent extension: its manifest entry is kept", recorded(cfg).includes(PKG));
   }
@@ -66,7 +69,7 @@ try {
     const reset = cotal(cfg, ["ext", "seed", "--reset"]);
     check("extraneous extension: --reset exits 0", reset.status === 0, reset.stderr);
     check("extraneous extension: npm pruned the package the prefix does not list", !existsSync(dir));
-    check("extraneous extension: --reset names the package, its path and both remedies", warned(reset.stderr, dir), reset.stderr);
+    check("extraneous extension: --reset names the package, its path and both remedies, never its spec", warned(reset, dir), reset.stderr);
     check("extraneous extension: --reset seeds all seven built-ins and keeps its entry", seededAll(cfg) && recorded(cfg).includes(PKG), recorded(cfg));
   }
 
@@ -82,7 +85,7 @@ try {
     check("absent extension recovery: remove is refused until the failed seed is repaired",
       refused.status !== 0 && /a previous connector seed failed \(package "claude", phase add\)/.test(refused.stderr) && /cotal ext seed --repair/.test(refused.stderr), refused.stderr);
     const repair = cotal(cfg, ["ext", "seed", "--repair"]);
-    check("absent extension recovery: --repair exits 0 and names the absent package", repair.status === 0 && warned(repair.stderr, dir), repair.stderr);
+    check("absent extension recovery: --repair exits 0 and names the absent package, never its spec", repair.status === 0 && warned(repair, dir), repair.stderr);
     check("absent extension recovery: --repair seeds all seven built-ins and clears the cursor", seededAll(cfg), recorded(cfg));
     const remove = cotal(cfg, ["ext", "remove", PKG]);
     check("absent extension recovery: remove then drops the entry", remove.status === 0 && !recorded(cfg).includes(PKG), remove.stderr);
