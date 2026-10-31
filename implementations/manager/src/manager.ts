@@ -658,6 +658,24 @@ export interface ManagerStopOptions {
   withAgents?: boolean;
 }
 
+/** `start()`'s refusal when this manager instance's lease is held (#3915): by another live process
+ *  on this workspace root, or by a holder on another root. A restart whose predecessor on this root
+ *  is dead, this process's own earlier start included, waits the key out instead (#4092). The
+ *  message is the operator copy; `held` and `sameRoot` are the data, so no caller parses it. A
+ *  lease that could not be read or written is a plain `Error`. */
+export class ManagerInstanceLeaseHeld extends Error {
+  override readonly name = "ManagerInstanceLeaseHeld";
+  constructor(
+    message: string,
+    readonly instanceId: string,
+    readonly space: string,
+    readonly held: ManagerLeaseInfo,
+    readonly sameRoot: boolean,
+  ) {
+    super(message);
+  }
+}
+
 /** Public identity selected by this manager before constructing its endpoint. Not a grant. */
 export interface ManagerServiceIdentity {
   endpoint: string;
@@ -3391,12 +3409,17 @@ export class Manager {
    *  over the row: a live holder renews it inside the TTL, and the wait then refuses on that write.
    *  Any other conflict refuses at once, as before. */
   private async acquireInstanceLease(info: Omit<ManagerLeaseInfo, "since">): Promise<number> {
-    const refuse = (held: ManagerLeaseInfo | undefined, e: unknown): Error =>
-      new Error(
-        held
-          ? `manager instance ${this.managerInstanceId} already serves space "${this.space}" from ${held.root === info.root ? "this" : "another"} workspace root (${held.runtime}, pid ${held.pid}, root ${held.root}) - stop it first before restarting the same instance`
-          : `could not acquire the manager lease for space "${this.space}": ${rejectionText(e)}`,
+    const refuse = (held: ManagerLeaseInfo | undefined, e: unknown): Error => {
+      if (!held) return new Error(`could not acquire the manager lease for space "${this.space}": ${rejectionText(e)}`);
+      const sameRoot = held.root === info.root;
+      return new ManagerInstanceLeaseHeld(
+        `manager instance ${this.managerInstanceId} already serves space "${this.space}" from ${sameRoot ? "this" : "another"} workspace root (${held.runtime}, pid ${held.pid}, root ${held.root}) - stop it first before restarting the same instance`,
+        this.managerInstanceId,
+        this.space,
+        held,
+        sameRoot,
       );
+    };
     try {
       return await this.ep.acquireManagerLease(info);
     } catch (e) {
