@@ -13,11 +13,14 @@
   "engines": {
     "node": ">=26.4.0"
   },
+  "bin": {
+    "cotal-tui": "./bin/cotal-tui.mjs"
+  },
   "scripts": {
     "vendor": "node scripts/vendor.mjs",
     "check:vendor": "node scripts/check-vendor.mjs",
-    "build": "node scripts/check-vendor.mjs",
-    "typecheck": "node scripts/check-vendor.mjs",
+    "build": "node scripts/check-vendor.mjs && node scripts/build.mjs",
+    "typecheck": "node scripts/check-vendor.mjs && tsc -p tsconfig.json",
     "test": "node scripts/check-vendor.mjs"
   },
   "dependencies": {
