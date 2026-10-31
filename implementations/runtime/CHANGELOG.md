@@ -1,5 +1,13 @@
 # @cotal-ai/runtime
 
+## 0.132.5
+
+### Patch Changes
+
+- @cotal-ai/core@0.132.5
+  - @cotal-ai/lang@0.132.5
+  - @cotal-ai/workspace@0.132.5
+
 ## 0.132.4
 
 ### Patch Changes

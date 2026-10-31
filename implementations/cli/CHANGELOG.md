@@ -1,5 +1,15 @@
 # @cotal-ai/cli
 
+## 0.132.5
+
+### Patch Changes
+
+- 75e5b4f: Report the auth daemon's typed startup refusal to `cotal up` instead of a bare exit. A daemon that refuses its start records the refusal beside its discovery file, bound to its pid. The provider's readiness wait throws it as an `EpEnvelopeError`, and `up` names the code and reason, such as `[unavailable; ai.cotal.auth.plane-claim-refused: unknown]`.
+- 3b7d3d2: `cotal ext add` over an installed extension announces `✓ added` only once the add has committed, so an add interrupted by Ctrl-C or SIGTERM no longer reports the version it rolled back; it still exits 130. A committed add whose copy of the previous installation cannot be removed now succeeds with a warning that names the copy, instead of exiting 1 after reporting the add.
+- f719f72: A bare `cotal up` that adopts the broker of an interrupted `cotal up --restore ... --max-file-store <bytes>` now keeps that store cap in the mesh record instead of dropping it, so a full-store refusal can name the cap the broker runs with. The restore and ordinary-resume adopt paths now share one implementation.
+- @cotal-ai/core@0.132.5
+  - @cotal-ai/workspace@0.132.5
+
 ## 0.132.4
 
 ### Patch Changes
