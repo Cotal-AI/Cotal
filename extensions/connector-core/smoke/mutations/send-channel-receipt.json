@@ -40,9 +40,15 @@
     "",
     "N16 states a limit other than core's MAX_CHANNEL_LENGTH in the no-channel-name refusal.",
     "",
-    "N17 and N18 move the cut one character either way.",
+    "N17 and N18 move the cut threshold one character either way.",
     "",
     "N19 cuts in the wrong place: the first 63 characters and then the last one.",
+    "",
+    "N20 cuts in the wrong place by putting ten earlier characters where the last ten belong.",
+    "",
+    "N21 echoes a name over the limit whole after the refusal.",
+    "",
+    "N22 refuses a valid name of exactly the limit.",
     "",
     "NO BUILD STEP: the suite imports ../src."
   ],
@@ -192,7 +198,7 @@
       "note": "A refusal that names its own number drifts from the limit core enforces."
     },
     {
-      "name": "N17 the cut starts one character later, so a 65-character name is shown whole",
+      "name": "N17 the cut threshold rises to 65, so a 65-character name is shown whole",
       "file": "extensions/connector-core/src/tool-specs.ts",
       "find": "channel.length > 64 ?",
       "replace": "channel.length > 65 ?",
@@ -201,7 +207,7 @@
       "note": "A name just past 64 characters would be echoed whole. A name far past the cut cannot show where it starts."
     },
     {
-      "name": "N18 the cut starts one character earlier, so a 64-character name gets an ellipsis",
+      "name": "N18 the cut threshold drops to 63, so a 64-character name gets an ellipsis",
       "file": "extensions/connector-core/src/tool-specs.ts",
       "find": "> 64 ? `${channel.slice",
       "replace": "> 63 ? `${channel.slice",
@@ -210,13 +216,40 @@
       "note": "A name of 64 characters fits and is shown as typed."
     },
     {
-      "name": "N19 the cut keeps the first 63 characters and the last one, losing the 64th",
+      "name": "N19 the cut keeps the first 63 characters and then the last one",
       "file": "extensions/connector-core/src/tool-specs.ts",
       "find": "${channel.slice(0, 64)}…",
       "replace": "${channel.slice(0, 63)}${channel.slice(-1)}…",
       "expectRed": "a 65-character name that is no channel name is shown cut to its first 64 characters",
       "cell": "a 65-character name that is no channel name is shown cut to its first 64 characters",
-      "note": "A name that repeats one character hides a cut in the wrong place, so the long names count their own positions."
+      "note": "A name that repeats characters hides a cut in the wrong place, so the long names use 64 different characters in turn."
+    },
+    {
+      "name": "N20 the cut puts characters 44 to 53 where 54 to 63 belong",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "`${channel.slice(0, 64)}…` : channel",
+      "replace": "`${channel.slice(0, 54)}${channel.slice(44, 54)}…` : channel",
+      "expectRed": "a 65-character name that is no channel name is shown cut to its first 64 characters",
+      "cell": "a 65-character name that is no channel name is shown cut to its first 64 characters",
+      "note": "Characters that repeat every ten positions would hide this cut."
+    },
+    {
+      "name": "N21 a name over the limit is echoed whole after the refusal",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "characters. Nothing was sent.`;",
+      "replace": "characters. Nothing was sent.${channel.length > MAX_CHANNEL_LENGTH ? ` (${channel})` : \"\"}`;",
+      "expectRed": "a name one character over the 4096-character limit is refused as no channel name",
+      "cell": "a name one character over the 4096-character limit is refused as no channel name",
+      "note": "A name of any length would land whole in the refusal."
+    },
+    {
+      "name": "N22 a valid name of exactly the limit is refused",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "if (legal && isConcreteChannel(channel))",
+      "replace": "if (legal && channel.length < MAX_CHANNEL_LENGTH && isConcreteChannel(channel))",
+      "expectRed": "a name of 4096 characters is sent",
+      "cell": "a name of 4096 characters is sent",
+      "note": "The refusal says at most 4096 characters, so a name of 4096 must still send."
     }
   ]
 }

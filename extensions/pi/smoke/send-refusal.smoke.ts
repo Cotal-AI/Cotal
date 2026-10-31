@@ -22,9 +22,10 @@ process.env.COTAL_NAME = "pi-1";
 // No connection is opened: every call below is refused before the tool touches the mesh agent.
 process.env.COTAL_SERVERS = "nats://127.0.0.1:4222";
 
+let passed = 0;
 let failures = 0;
 const check = (label: string, ok: boolean, extra?: unknown): void => {
-  if (ok) { console.log(`  ✓ ${label}`); return; }
+  if (ok) { passed++; console.log(`  ✓ ${label}`); return; }
   failures++;
   console.log(`  FAIL  ${label}${extra !== undefined ? ` — ${JSON.stringify(extra)}` : ""}`);
 };
@@ -69,7 +70,15 @@ for (const channel of ["team.>.x", "team.**"]) {
   const text = await run("#team.**");
   check('pi drops a leading # before the shared check, so #team.** is refused as "team.**"', text.includes('"team.**" is not a channel name.'), text);
 }
+{
+  const text = await run("##team.**");
+  check('pi drops every leading #, so ##team.** is refused as "team.**"', text.includes('"team.**" is not a channel name.'), text);
+}
+{
+  const text = await run("team.>");
+  check("pi marks a refusal with ⚠", text.startsWith("⚠ Couldn't send: "), text);
+}
 check("no refusal touched the mesh agent", touched.length === 0, touched);
 
-console.log(`\n${failures === 0 ? "PI-SEND-REFUSAL SMOKE OK ✅" : "PI-SEND-REFUSAL SMOKE FAILED"}  (${failures} failed)`);
+console.log(`\n${failures === 0 ? "PI-SEND-REFUSAL SMOKE OK ✅" : "PI-SEND-REFUSAL SMOKE FAILED"}  (${passed} passed, ${failures} failed)`);
 process.exit(failures === 0 ? 0 : 1);

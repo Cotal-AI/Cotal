@@ -440,9 +440,11 @@ const proto = MeshAgent.prototype as unknown as {
       refused.text,
     );
   }
-  // Digits that are the last digit of their own index, so a cut in the wrong place shows.
-  const counted = (start: number, length: number): string => Array.from({ length }, (_, i) => (start + i) % 10).join("");
-  // `team.**.` and then counted digits: a name that is no channel name, of the given length.
+  // 64 different characters, taken in turn by index, so a cut in the wrong place shows.
+  const symbols = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_-";
+  const counted = (start: number, length: number): string =>
+    Array.from({ length }, (_, i) => symbols[(start + i) % symbols.length]).join("");
+  // `team.**.` and then counted characters: a name that is no channel name, of the given length (over 8).
   const badName = (length: number): string => `team.**.${counted(8, length - 8)}`;
   {
     const whole = badName(64);
@@ -468,12 +470,18 @@ const proto = MeshAgent.prototype as unknown as {
     const refused = await send.run(agent, cfg, { text: "hi", channel: over });
     check(
       `a name one character over the ${MAX_CHANNEL_LENGTH}-character limit is refused as no channel name`,
-      refused.isError === true && calls.length === 0 && refused.text.includes(`${JSON.stringify(`${over.slice(0, 64)}…`)} is not a channel name.`),
+      refused.isError === true && calls.length === 0 &&
+        refused.text.includes(`${JSON.stringify(`${over.slice(0, 64)}…`)} is not a channel name.`) && !refused.text.includes(over),
       refused.text,
     );
   }
   const sent = await send.run(agent, cfg, { text: "hi", channel: "team.announce" });
   check("a channel the pattern matches still sends", !sent.isError && calls.includes("send team.announce"), { sent, calls });
+  {
+    const max = `team.${counted(5, MAX_CHANNEL_LENGTH - 5)}`;
+    const at = await send.run(agent, cfg, { text: "hi", channel: max });
+    check(`a name of ${MAX_CHANNEL_LENGTH} characters is sent`, !at.isError && calls.includes(`send ${max}`), at.text.slice(0, 200));
+  }
   const described = (send.schema.shape.channel as { description?: string } | undefined)?.description ?? "";
   check(
     "the advertised channel text names both ways to reach a family",

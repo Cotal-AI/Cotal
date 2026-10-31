@@ -15,6 +15,10 @@
     "",
     "PS2 stops dropping a leading #, so #team.> reaches the shared check as a name that is no channel.",
     "",
+    "PS3 drops only one leading #.",
+    "",
+    "PS4 drops the ⚠ that marks a refusal.",
+    "",
     "NO BUILD STEP: the suite imports ../src/tools.js."
   ],
   "mutations": [
@@ -35,6 +39,24 @@
       "expectRed": "pi drops a leading # before the shared check, so #team.** is refused as \"team.**\"",
       "cell": "pi drops a leading # before the shared check, so #team.** is refused as \"team.**\"",
       "note": "A model that echoes the display # back would be told its channel is no channel name."
+    },
+    {
+      "name": "PS3 pi drops only one leading #",
+      "file": "extensions/pi/src/tools.ts",
+      "find": "args.channel.replace(/^#+/, \"\")",
+      "replace": "args.channel.replace(/^#/, \"\")",
+      "expectRed": "pi drops every leading #, so ##team.** is refused as \"team.**\"",
+      "cell": "pi drops every leading #, so ##team.** is refused as \"team.**\"",
+      "note": "sendCallLine drops every leading #, so the call line and the send would disagree."
+    },
+    {
+      "name": "PS4 pi stops marking a refusal with ⚠",
+      "file": "extensions/pi/src/tools.ts",
+      "find": "text: r.isError ? `⚠ ${r.text}` : r.text",
+      "replace": "text: r.text",
+      "expectRed": "pi marks a refusal with ⚠",
+      "cell": "pi marks a refusal with ⚠",
+      "note": "pi's tool result has no error flag, so the ⚠ is the only mark that the send failed."
     }
   ]
 }
