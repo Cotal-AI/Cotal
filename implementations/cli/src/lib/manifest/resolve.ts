@@ -10,7 +10,8 @@
 import { isAbsolute, resolve as resolvePath, dirname } from "node:path";
 import { parseDocument, LineCounter, isMap, isScalar } from "yaml";
 import type { z } from "zod";
-import { assertValidChannel, assertValidName, isConcreteChannel, isLoopbackLiteral, utf16Problem, token } from "@cotal-ai/core";
+import { assertValidChannel, assertValidName, isConcreteChannel, utf16Problem, token } from "@cotal-ai/core";
+import { checkIdpUrl } from "@cotal-ai/workspace";
 import { MeshManifestSchema, type RawManifest } from "./schema.js";
 import type { AgentPolicy, PersonaPermissions, ResolvedAgent, ResolvedChannel, ResolvedManifest } from "./model.js";
 import { ManifestError, type ManifestIssue } from "./errors.js";
@@ -335,16 +336,14 @@ export function serverUrlProblems(servers: string, what: string): string[] {
  *  would refuse. `what` names its source, because `up -f --idp` overrides `broker.idp` and must pass
  *  the same check. The message never repeats the value, which may carry a credential. */
 export function idpUrlProblem(idp: string, what: string): string | undefined {
-  let u: URL;
-  try {
-    u = new URL(idp);
-  } catch {
-    return `${what} is not a valid URL (Better Auth: <origin>/api/auth)`;
+  const checked = checkIdpUrl(idp);
+  if (checked.ok) return undefined;
+  switch (checked.reason) {
+    case "invalid-url": return `${what} is not a valid URL (Better Auth: <origin>/api/auth)`;
+    case "scheme": return `${what} must be https (or http on a loopback IP literal such as 127.0.0.1 for local dev)`;
+    case "query-or-fragment": return `${what} must not carry a query or fragment`;
+    case "credentials": return `${what} must not embed credentials - give the IdP base URL only`;
   }
-  if (u.protocol !== "https:" && !(u.protocol === "http:" && isLoopbackLiteral(u.hostname)))
-    return `${what} must be https (or http on a loopback IP literal such as 127.0.0.1 for local dev)`;
-  if (u.search || u.hash) return `${what} must not carry a query or fragment`;
-  return u.username || u.password ? `${what} must not embed credentials - give the IdP base URL only` : undefined;
 }
 
 function dedupe<T>(xs: T[]): T[] {
