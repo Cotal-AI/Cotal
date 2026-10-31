@@ -81,6 +81,7 @@ try {
     // discriminator for the manifest check that keeps `build:` from being a magic prefix.
     scripts: { build: "tsc -p tsconfig.json", "build:emit": "tsc -p tsconfig.json --noCheck", "build:docs": "typedoc --out docs" },
   }));
+  write("packages/seat/tsconfig.json", JSON.stringify({ compilerOptions: { rootDir: "./src", outDir: "./dist" }, include: ["src"] }));
   write("packages/seat/src/index.ts", "export const x = 1;\n");
   write("packages/seat/src/impl.ts", "export const impl = 1;\n");
   write("packages/seat/smoke/local.smoke.ts", 'import { x } from "@cotal-ai/seat";\n');

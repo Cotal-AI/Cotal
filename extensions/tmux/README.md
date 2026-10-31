@@ -62,3 +62,6 @@ included: the driver runs the `tmux` on `PATH` and needs no bundled binary path.
 
 See [docs/architecture.md](../../docs/architecture.md) (*Manager supervision*) and the
 [root AGENTS.md](../../AGENTS.md) for the tier rules.
+
+The launcher contract checks in `package.smoke.ts` are POSIX-only. On Windows they use the
+shared `skipSuite` helper to report a skip with zero passing cells.

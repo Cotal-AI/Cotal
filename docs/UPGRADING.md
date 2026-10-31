@@ -15,6 +15,21 @@ A Jcode launch that cannot read Cursor's `User/globalStorage/state.vscdb` used t
 launch now stops: one where a value under an auth key Jcode reads is not text or is larger than
 16 KB. The previous reader copied that value as is.
 
+## Identity-pin cleanup API after 0.131.6
+
+`@cotal-ai/workspace` no longer exports the deprecated `removeIdentityPin`. It removed a pin
+without locking the record or checking whether another publisher had replaced it.
+
+Before upgrading an application that imports this function, replace its cleanup with
+`removePidPair(pidfilePath, recorded)`. Capture the trimmed pidfile text when you adjudicate the
+record, and remove the pair only after proving that record's process is gone. Pass that captured
+text, not a fresh read made at deletion time: if the pidfile has changed, the replacement keeps it
+and its pin. There is no supported operation for deleting the pin alone.
+
+The stock CLI already uses `removePidPair`, so CLI users need no extra migration. This change does
+not alter the record format, credentials, broker state or manager lifecycle, and requires no
+state reset or manual pin deletion.
+
 ## Bounded multi-space startup
 
 Multi-space auth, callout and delivery hosts now admit four lane opens at a time. A ready line may

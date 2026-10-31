@@ -66,7 +66,7 @@ import { resolve } from "node:path";
 import { credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { Kvm, type KV } from "@nats-io/kv";
-import { VOID_SCHEMA, CotalEndpoint, dialerFor, deprovisionAgent, singleDocumentClosure, dlvDurable, dlvStream, dmDurable, dmStream, isConcreteChannel, provisionAgentDurables, contractDigest, contractRefToHex, contractStoreContext, endpointToken, fetchContractArtifact, verifyClusterManifest, verifyClusterRoot, admissionBucket, admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, authorizeTrustedServeSnapshot, commitSiblingIssuance, credsClaims, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, isReachable, jwtFromCreds, managedRetirementOpId, mintCreds, mintPublicUserJwt, newIdentity, newTakeoverId, observeHostedRunAttempt, openRecordsBucket, parseEndpointGate, parseServiceSpec, credentialIdOf, parseSecretStoreIdentity, readCheckpointStatus, readRunAdmission, readRunRevocation, readRunRecord, readSvcRecordLeader, reconcileEndpointGate, replayRunJournal, sameSecretStoreIdentity, recordSpecKey, RECORD_KINDS, recordsBucket, remoteManagerActors, retirementFrontierStreams, runDriverCaller, serveIssuanceGateKv, standaloneConnectOpts, STANDING_RENEWABLE_TTL_SEC, withIssuerSession, holdIssuerSession, acceptedReadGrant, connectionAcceptedToken, importNativeSubjectPermissions, mintGeneration, parseActorLedgerSource, writeAcceptedRow, type IssuedAuthorityRef, type IssuedSourceRef, type IssuerSession, invokeCommand, resolveService, contractArtifactCanonicalBytes, DEV_OWNER, endpointRegistrationBarrier, mintLifecycleUid, principalKey, provisionEndpointGateOpen, publishContractArtifact, registerServiceInstance, registerServingInstance, type EpAttributedReply, type EpCaller, type EpErrorCode, type EpGateState, type ParsedArgs, type PlatformControlAssignment, type PlatformControlAuthorityRequest, type PlatformControlAuthorityResult, type PlatformControlInnerRequest, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult, type RemoteManagedAgentPrepareRetirementRequest, type RemoteManagedAgentPrepareRetirementResult, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAuthorityRequest, type RemoteManagerMaintenanceRequest, type RemoteRetainedAgentValidationRequest, type SecretStore, type SpaceAuth, type EpServeGrant, type ServiceNameAuthority, parseServiceAuthorityEnvelope, SERVICE_AUTHORITY_MAX_BYTES, epgateKey, isCasLoss, sameManagedGrantCustody, parseServiceRegistrationWitness, serviceWitnessDigest, type ServiceAuthorityRequest, type ServiceRegistrationWitness } from "@cotal-ai/core";
+import { VOID_SCHEMA, CotalEndpoint, dialerFor, deprovisionAgent, singleDocumentClosure, dlvDurable, dlvStream, dmDurable, dmStream, isConcreteChannel, provisionAgentDurables, contractDigest, contractRefToHex, contractStoreContext, endpointToken, fetchContractArtifact, verifyClusterManifest, verifyClusterRoot, admissionBucket, admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, authorizeTrustedServeSnapshot, commitSiblingIssuance, credsClaims, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, isReachable, jwtFromCreds, managedRetirementOpId, mintCreds, mintPublicUserJwt, newIdentity, newTakeoverId, observeHostedRunAttempt, openRecordsBucket, parseEndpointGate, parseServiceSpec, credentialIdOf, parseSecretStoreIdentity, readCheckpointStatus, readRunAdmission, readRunRevocation, readRunRecord, readSvcRecordLeader, reconcileEndpointGate, replayRunJournal, sameSecretStoreIdentity, recordSpecKey, RECORD_KINDS, recordsBucket, remoteManagerActors, remoteManagerServePrincipal, retirementFrontierStreams, runDriverCaller, serveIssuanceGateKv, standaloneConnectOpts, STANDING_RENEWABLE_TTL_SEC, withIssuerSession, holdIssuerSession, acceptedReadGrant, connectionAcceptedToken, importNativeSubjectPermissions, mintGeneration, parseActorLedgerSource, writeAcceptedRow, type IssuedAuthorityRef, type IssuedSourceRef, type IssuerSession, invokeCommand, resolveService, contractArtifactCanonicalBytes, DEV_OWNER, endpointRegistrationBarrier, mintLifecycleUid, principalKey, provisionEndpointGateOpen, publishContractArtifact, registerServiceInstance, registerServingInstance, type EpAttributedReply, type EpCaller, type EpErrorCode, type EpGateState, type ParsedArgs, type PlatformControlAssignment, type PlatformControlAuthorityRequest, type PlatformControlAuthorityResult, type PlatformControlInnerRequest, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult, type RemoteManagedAgentPrepareRetirementRequest, type RemoteManagedAgentPrepareRetirementResult, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAuthorityRequest, type RemoteManagerMaintenanceRequest, type RemoteRetainedAgentValidationRequest, type SecretStore, type SpaceAuth, type EpServeGrant, type ServiceNameAuthority, parseServiceAuthorityEnvelope, SERVICE_AUTHORITY_MAX_BYTES, epgateKey, isCasLoss, sameManagedGrantCustody, parseServiceRegistrationWitness, serviceWitnessDigest, type ServiceAuthorityRequest, type ServiceRegistrationWitness } from "@cotal-ai/core";
 import { findCotalRoot, loadManagerInstanceIdentity, parseSpaceManifest, runSpaceHost, userAuthStateDir, workspaceSecretStore, createAuthInstanceIdentity, type SpaceLane, type SpaceSettings, type SpaceSettingsManifest, loadAuthInstanceIdentity, type HostedContextInputs, type HostedContextKey, type HostedServiceHandle, type HostedServiceState, type ManagerInstanceIdentity } from "@cotal-ai/workspace";
 import type { JournalEntry } from "@cotal-ai/lang";
 import { decodeJwt } from "jose";
@@ -410,7 +410,7 @@ export function authorizeRemoteManagerRetirement(args: {
     throw new EpEnvelopeError("permission-denied", `manager-service retirement may target only its authenticated owner ${args.owner}, not ${args.targetOwner}`);
   if (!args.gate || args.gate.state !== "open")
     throw new EpEnvelopeError("failed-precondition", `manager-service retirement found no current open manager gate for instance ${args.instanceId}`);
-  const servePrincipal = `${args.owner}.${args.serveActor}`;
+  const servePrincipal = principalKey(args.owner, args.serveActor).key;
   if (args.gate.principal !== servePrincipal)
     throw new EpEnvelopeError("permission-denied", `manager-service retirement gate belongs to ${args.gate.principal}, not the server-derived serve principal ${servePrincipal}`);
   if (args.gate.processEpoch !== args.serveEpoch)
@@ -974,7 +974,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
       const instanceId = assertLifecycleToken(parts[2], "managerInstanceId");
       const row = parseEndpointGate(raw.data, raw.key);
       if (row.authorityFamily === "environment-manager") continue;
-      if (row.principal === `${owner}.${remoteManagerActors(instanceId).serve}`)
+      if (row.principal === remoteManagerServePrincipal(owner, instanceId))
         instances.push({ instanceId, placement: "remote", state: await managerGate(owner, instanceId) });
       else if (localManager?.instanceId === instanceId && row.principal === `local.${localManager.serveIdentity.id}`)
         instances.push({ instanceId, placement: "local", state: await managerGate(owner, instanceId) });
@@ -1268,7 +1268,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
           const existing = await observeLegacyManagerGate(r.instanceId);
           if (r.operation === "prepare" && existing === null) {
             await provisionEndpointGateOpen(authKv, {
-              endpoint: "manager", instanceId: r.instanceId, principal: `${owner}.${actors.serve}`,
+              endpoint: "manager", instanceId: r.instanceId, principal: remoteManagerServePrincipal(owner, r.instanceId),
             });
           }
           const bounded = (opts: Parameters<typeof mintPublicUserJwt>[3]) => {
@@ -1315,7 +1315,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
             const observed = await gate.observe();
             if (!observed || observed.state !== "open")
               throw new EpEnvelopeError("failed-precondition", "manager-service renewal found no current open manager gate");
-            if (observed.principal !== `${owner}.${actors.serve}`)
+            if (observed.principal !== remoteManagerServePrincipal(owner, r.instanceId))
               throw new EpEnvelopeError("permission-denied", "manager-service renewal gate does not belong to this authenticated owner and instance");
             const expectedProof = remoteManagerCurrentRegistrationProof(dataAccount.signingSeed, owner, r, observed);
             if (r.registrationProof !== expectedProof)
@@ -1538,7 +1538,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
         const entry = await authKv.get(key);
         if (entry === null) {
           // No gate yet: create it retired, so a later registration finds the terminal row.
-          const row = { state: "retired", generation: 0, processEpoch: 0, registrationRevision: 0, nameAuthorityRevision: 0, principal: `${owner}.${remoteManagerActors(instanceId).serve}`, op: { opId, kind: "retirement" } };
+          const row = { state: "retired", generation: 0, processEpoch: 0, registrationRevision: 0, nameAuthorityRevision: 0, principal: remoteManagerServePrincipal(owner, instanceId), op: { opId, kind: "retirement" } };
           parseEndpointGate(new TextEncoder().encode(JSON.stringify(row)), key);
           try { await authKv.create(key, new TextEncoder().encode(JSON.stringify(row))); return; }
           catch (error) { if (isCasLoss(error)) continue; throw error; }
@@ -1548,7 +1548,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
         const row = parseEndpointGate(entry.value, key);
         if (row.authorityFamily === "environment-manager")
           throw new EpEnvelopeError("permission-denied", `manager instance ${instanceId} belongs to the environment-manager authority family`);
-        if (row.principal !== `${owner}.${remoteManagerActors(instanceId).serve}`)
+        if (row.principal !== remoteManagerServePrincipal(owner, instanceId))
           throw new EpEnvelopeError("permission-denied", `the manager gate ${key} belongs to ${row.principal}, not owner ${owner}`);
         if (row.state === "retired") return;
         const { op: _op, ...rest } = row;

@@ -2535,7 +2535,9 @@ or `.cotal/maintenance`, such as `.` in this folder, refuses `USAGE_INVALID` (ex
 that store or folder. The restore checks the path again once it holds the maintenance lock, because a
 link in it may name another folder by then, and refuses the same way. A restore that fails after it
 began names its attempt in the text and in the JSON target, which also carries `journalState`, and
-its remedy gives the next step for that state. `up --restore`
+its remedy gives the next step for that state. The listener endpoint must be a bare `nats://` or
+`tls://` URL without credentials, a query, a fragment or a path. Its refusal does not repeat the
+endpoint value, including when it came from a preserved launch. `up --restore`
 remains as the equivalent startup form. After its startup lines it names the restore attempt and
 gives the cleanup step that retires it, with `--discard-history` for a restore that left history or
 workflow runs out. Unlike the other
@@ -4484,8 +4486,13 @@ caller grant, therefore needs no `--on`. It fetches only that command's cluster 
 publish, and `--timeout` sets one deadline in milliseconds for the whole call (default 10000): the contract read, a
 `--name` lookup and the reply all spend from it, so an endpoint nothing serves is refused when it runs out. When the
 endpoint answers but the deadline runs out before the command is published, during the contract read or after it, the
-call fails with `OPERATION_FAILED`, names the deadline, and its Next suggests a longer `--timeout`. `--server` overrides the
-registry's broker URL and `--creds` names a creds file for an off-registry connection. A targeted command takes `--name <agent>` (resolved to the agent's current principal through
+call fails with `OPERATION_FAILED`, names the deadline, and its Next suggests a longer `--timeout`.
+If the invocation may have been sent and its outcome cannot be confirmed before the deadline,
+including with a short `--timeout`, it reports `OPERATION_UNKNOWN` and exits 3. This does not prove
+that the command did not run. Inspect the original endpoint and request before another invocation;
+do not blindly retry with a longer timeout.
+
+`--server` overrides the registry's broker URL and `--creds` names a creds file for an off-registry connection. A targeted command takes `--name <agent>` (resolved to the agent's current principal through
 `inspect`) or `--self`. `--admin` uses the admin instrument credential, whose cross-agent reach rides
 the operator-only `any` authorization mode. Neither command has compile-time knowledge of any
 endpoint's schemas - this is the same trust chain every built-in control command now uses. Needs an
@@ -6580,9 +6587,19 @@ same per-action instrument path as `cotal stop` and `cotal ps`, never the observ
 Message bodies, names and other text from peers are untrusted. Both views show a control character
 in them as its `\uXXXX` escape, so a message cannot clear the screen, retitle the terminal or plant
 a hyperlink. The TUI keeps a body's line breaks, and `--plain` prints each message on one line.
-The TUI wraps a body, and a roster seat's status facts, by terminal columns: a wide character such
-as a CJK ideograph or an emoji takes two, and a word wider than the pane breaks between characters,
-never inside one.
+The TUI wraps a body, and a roster seat's rows, by terminal columns: a wide character such as a CJK
+ideograph or an emoji takes two, and a word wider than the pane breaks between characters, never
+inside one. On a seat's head, the name, harness tag, activity, the activity's age and the progress
+or heartbeat age each start a new row when they do not fit on the current one, so a long name never
+hides them. The roster draws whole seats around the selected one. When some do not fit, its title
+starts with how many whole seats are left out above and below the window, as in `roster ↑2 ↓1 more`,
+and `j` and `k` reach them. A seat taller than the pane shows only its first rows under the title,
+which a long activity can cause below 80 columns, where the roster has at most five rows for seats.
+The count leaves out those cut rows, since it counts whole seats.
+The agent detail's recent traffic cuts each preview by columns too, never inside a character, and a
+preview that leaves any of its text out ends with `…`. Closing a detail returns the feed to the
+message and scroll position it showed, and the roster to the seat it had selected, or to that row if
+the seat has left.
 
 <a id="web"></a>
 
@@ -6798,8 +6815,11 @@ not prune a locally saved mesh registration.
 Candidates are read without acknowledging DMs. The transient read consumer is
 deleted after the bounded pass; an unconfirmed cleanup or candidate read is
 reported as partial. Candidate IDs are not evidence of delivery, a missing
-message or complete history. Recipient contents are not printed. The retained
-`deliver pending` spelling keeps its earlier output shape.
+message or complete history. Each candidate's `from` is the sender principal
+parsed from its stored message subject, which the broker binds to the sender's
+credential. The sender's own card is not printed, and a candidate that cannot
+be decoded is withheld and reported as partial. Recipient contents are not
+printed. The retained `deliver pending` spelling keeps its earlier output shape.
 
 ## deliver
 
@@ -7356,6 +7376,8 @@ as they are. `remove` and `list` manage them. The `@cotal-ai/web` dashboard is t
 canonical service preset and local-process example. Installed packages and their location are described in
 [config](config.md). When a package needs an export its linked `@cotal-ai/*` peer does not have,
 `add` rolls back and names which install is behind, as a later load of an installed one does.
+Removing an extension or cleaning up a failed add keeps unrelated file-based extensions as
+installed copies, rather than turning them into links to their source or the built-in seed store.
 
 Bare `cotal ext` lists the inventory, headed by the install prefix. That prefix is a cotal-owned npm
 root kept **separate** from npm's own global tree. These packages never show up in `npm list -g`,

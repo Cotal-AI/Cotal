@@ -32,6 +32,7 @@ import {
   parsePid,
   probeLiveness,
   probeWebReadiness,
+  webBoundUrl as boundUrl,
   readPidfile,
   readWebSession,
   removePidPair,
@@ -1538,13 +1539,6 @@ function parseWebPort(input: string | undefined): number {
 export function webUrl(host: string, port: number): string {
   if (host === WEB_HOST && port === WEB_PORT) return WEB_URL;
   return boundUrl(host, port);
-}
-
-/** The address the server binds, for a client that does not resolve `cotal.localhost` itself: that
- *  name is a browser convention, and a system resolver such as WSL2's has no answer for it. */
-function boundUrl(host: string, port: number): string {
-  const literal = host.includes(":") ? `[${host}]` : host;
-  return `http://${literal}:${port}/`;
 }
 
 /** On the branded default the link is printed a second time at the bound address, so an operator
