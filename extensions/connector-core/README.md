@@ -18,6 +18,7 @@ Unicode and surrounding spacing are preserved; channel/kind renderers keep their
 existing trim and empty-value labels. Message-body formatting remains separate.
 
 Bundled docs use an inline gzip/base64 payload generated from the versioned sources.
-`loadDocsBundle()` decodes it synchronously on demand; reading `DOCS_VERSION` does not decode it.
-The existing docs and search caches retain their first-use behavior. The payload stays inside
-each ESM or CJS bundle, so package and plugin asset layouts do not change.
+Text and structured indexes read separately generated metadata without decoding the corpus.
+`loadDocsBundle()` decodes bodies synchronously on the first page or search; reading
+`DOCS_VERSION` does not decode them. Structured index results remain independently mutable.
+The payload stays inside each ESM or CJS bundle, so package and plugin asset layouts do not change.

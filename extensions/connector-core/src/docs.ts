@@ -11,7 +11,7 @@
  * installed release. When that path is absent (version-pinned docs are not published yet) or
  * unreachable, the tool falls back to the bundled copy and reports which source answered.
  */
-import { loadDocsBundle } from "./docs-bundle.generated.js";
+import { loadDocsBundle, loadDocsMetadata } from "./docs-bundle.generated.js";
 import type { ToolResult } from "./tool-specs.js";
 
 export { DOCS_VERSION } from "./docs-bundle.generated.js";
@@ -48,8 +48,22 @@ export interface DocsBundle {
   schema: { title: string; body: string };
 }
 
-// Built on the first `cotal_docs` call, not at import: every connector process loads this module,
-// each hook event included, and most never read the docs.
+/** Index fields generated from the same sources, without the page bodies. */
+export interface DocsMetadata {
+  version: string;
+  pages: Omit<DocsPage, "body">[];
+  spec: { title: string };
+  lang: { title: string };
+  schema: { title: string };
+}
+
+let indexed: DocsMetadata | undefined;
+function metadata(): DocsMetadata {
+  return (indexed ??= loadDocsMetadata());
+}
+
+// Built on the first page or search, not an index call or import: every connector process
+// loads this module, each hook event included, and most never read the docs.
 let bundled: DocsBundle | undefined;
 function bundle(): DocsBundle {
   return (bundled ??= loadDocsBundle());
@@ -79,12 +93,13 @@ function remoteUrl(slug: string): string {
 /** The index: version banner + every page (slug · kind · summary) + spec/schema + how to
  *  go deeper. Cheap orientation an agent reads before answering anything about Cotal. */
 export function renderDocsIndex(): string {
-  const rows = bundle().pages.map((p) => {
+  const b = metadata();
+  const rows = b.pages.map((p) => {
     const kind = p.kind ? `: ${p.kind}` : "";
     return `- \`${p.slug}\`${kind}\n  ${p.summary}`;
   });
   return [
-    `# Cotal v${bundle().version} documentation`,
+    `# Cotal v${b.version} documentation`,
     "",
     "The authoritative docs bundled with this installed version. This index lists what",
     "exists; it holds no answers itself. Your next call:",
@@ -95,9 +110,9 @@ export function renderDocsIndex(): string {
     "published to docs.cotal.ai for this same version.",
     "",
     "## The normative sources",
-    `- \`spec\`: ${bundle().spec.title} (the wire contract; where a page disagrees, the spec wins)`,
-    `- \`lang\`: ${bundle().lang.title} (the workflow language a durable run executes; spec §14)`,
-    `- \`schema\`: ${bundle().schema.title} (authoritative for message shapes)`,
+    `- \`spec\`: ${b.spec.title} (the wire contract; where a page disagrees, the spec wins)`,
+    `- \`lang\`: ${b.lang.title} (the workflow language a durable run executes; spec §14)`,
+    `- \`schema\`: ${b.schema.title} (authoritative for message shapes)`,
     "",
     "## Pages",
     ...rows,
@@ -324,7 +339,7 @@ export async function readDocsPage(page: string, opts: { refresh?: boolean } = {
 /** The bundled docs' version, their normative sources and their pages, for an index, the pages in
  *  the order of their categories. */
 export function docsIndex(): { version: string; sources: { slug: string; title: string }[]; pages: Omit<DocsPage, "body">[] } {
-  const b = bundle();
+  const b = metadata();
   return {
     version: b.version,
     sources: [{ slug: "spec", title: b.spec.title }, { slug: "lang", title: b.lang.title }, { slug: "schema", title: b.schema.title }],
