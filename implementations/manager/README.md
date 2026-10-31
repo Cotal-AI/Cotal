@@ -44,6 +44,26 @@ Stub mode still starts and measures that host. Real connector readiness comes fr
 authenticated observations, not a stub-connected count. The fixture parent still runs real
 Plane-3 delivery and lifecycle handling. Broker CPU uses the helper's owned broker PID.
 
+### Shared broker control
+
+Add `--spaces 2` to the dist, real, stock-entry process-memory invocation to start one Manager
+and one data account per space on a single owned broker. `--steps` is the seat count per Manager;
+JSON names both `requestedPerSpace` and `requestedTotal`. Other shared-mode combinations refuse.
+The default single-space path is unchanged.
+
+Every space has a private HOME and compile cache. Managers read their named account from one
+host-owned secret store; the broker's system signer stays in the trusted fixture parent's memory.
+Account-scoped native connection observations verify the Manager and connector user identities
+on the same server, excluding sibling cohorts. The existing authenticated `ps`, lifecycle,
+presence and PID checks still apply. Missing or truncated account observations fail the run.
+
+Shared `MSL_RESULT` rows report each space plus one broker sample and one parent sample. Totals
+count each distinct process once; the parent holds all Plane-3 contexts. Source/runtime hashes
+identify the measured files. `MSL_TEARDOWN` reports verified process exit and directory removal;
+`MSL_DONE` follows successful teardown. Cleanup uses recorded process identities, not process-name
+sweeps. This is a synthetic static-auth, trusted same-UID fixture, not hostile-tenant isolation,
+Cloud or model-session coverage. A small control does not establish a density limit.
+
 ## Remote authority clients
 
 The package root exports `remoteManagerClient`, the stock request builders and response validators
