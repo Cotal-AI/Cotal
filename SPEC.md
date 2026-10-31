@@ -5303,9 +5303,8 @@ listing generation by deriving the token from the credential its connection pres
 the row; a credential that holds no grant for that read has no listing generation. An issued
 credential MAY instead carry the `endpoints` request row on its own generation. Whether it does is
 fixed at its first issuance, so a renewal of a credential issued without it stays byte-identical.
-An issued credential without that row has no listing generation either: the broker refuses its
-request publish, and a client that sees that refusal reports the credential as having no listing
-binding.
+An issued credential without that row has no listing generation either. A client reports any
+credential whose `endpoints` request publish the broker refuses as having no listing binding.
 
 **Platform-owned user supervisor.** A trusted host composition MAY issue the closed manager-service
 registration material for one ordinary derived owner without that owner's IdP proof. This is an
