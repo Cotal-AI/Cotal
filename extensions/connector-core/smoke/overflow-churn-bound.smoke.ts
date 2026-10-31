@@ -40,7 +40,7 @@ interface H {
 }
 
 function harness(): H {
-  const agent = new MeshAgent({ name: "victim", space: "main", connector: "test" } as never);
+  const agent = new MeshAgent({ name: "victim", space: "main", connector: "test", kind: "agent" } as never);
   const acked = new Set<string>();
   const errors: string[] = [];
   // The old valve announced its give-up on stderr. Capture the stream so a returning drop shows here.
