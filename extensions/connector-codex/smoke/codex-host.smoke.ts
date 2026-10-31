@@ -33,14 +33,13 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CotalEndpoint, seedChannelRegistry, isReachable, unicastSubject, parsePrincipalKey, type PresenceCondition } from "@cotal-ai/core";
 import { connect as rawConnect } from "@nats-io/transport-node";
-import { SMOKE_BROKER_TOKEN, awaitBrokerReady, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { skipSuite, SMOKE_BROKER_TOKEN, awaitBrokerReady, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 if (process.platform === "win32") {
   // Managed Codex agents are POSIX-only by design (the isolated CODEX_HOME symlinks the
   // operator's auth.json — see docs/connect-codex.md), so there is no Windows Codex case in the
   // suite at all. This skip records that limitation; it is not covered elsewhere.
-  console.log("SKIP codex host smoke — managed Codex agents are POSIX-only (symlinked auth.json)");
-  process.exit(0);
+  skipSuite("managed Codex agents are POSIX-only");
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
