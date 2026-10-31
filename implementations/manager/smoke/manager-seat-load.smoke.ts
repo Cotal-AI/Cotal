@@ -1136,7 +1136,9 @@ async function runSharedSpaces(): Promise<void> {
       const cpu = [broker!.pid, ...groups.map((g) => g.manager.pid!), process.pid].map(procCpuMs);
       console.log(`MSL_WINDOW ${JSON.stringify({ topology: "shared-broker", ...(phase ? { phase } : {}), requestedPerSpace: step, requestedTotal: step * SPACES,
         brokerPid: broker!.pid, managers: groups.map((g) => g.manager.pid), seatPids: before.spaces.flatMap((g) => g.seats.map((s) => s.pid)) })}`);
-      const started = performance.now(); await guard(wait(SECONDS * 1000)); const seconds = (performance.now() - started) / 1000;
+      const started = performance.now(), deadline = started + SECONDS * 1000;
+      do { await guard(wait(Math.max(1, deadline - performance.now()))); } while (performance.now() < deadline);
+      const seconds = (performance.now() - started) / 1000;
       const afterCpu = [broker!.pid, ...groups.map((g) => g.manager.pid!), process.pid].map(procCpuMs);
       const after = await guard(observe());
       lastObserved = after;
