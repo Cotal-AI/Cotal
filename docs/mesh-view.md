@@ -64,6 +64,9 @@ interface FeedEntry {           // one feed row
   toNames?: string[];           // unicast: targets resolved off the roster
   count?: number;               // unicast: burst multiplicity for a coalesced entry
   events?: boolean;             // arrived on an agent's event channel, not a chat channel
+  replyTo?: string;             // the wire's replyTo: id of the message this one answers
+  mentions?: string[];          // the wire's mentions: lowercased peer names the sender called out
+  contextId?: string;           // the wire's contextId: the sender's thread or conversation id
   text: string;                 // parts joined, plain; the surface colours it
 }
 
@@ -87,9 +90,14 @@ interface MeshSnapshot {
   on its own and only the socket edge moves, so the view reads disconnected until it is back.
 - **Classification.** `deliveryOf(subject)` returns chat / unicast / anycast (chat renders as
   multicast); control, presence, and trace frames return `null` and drop out of the feed.
-- **Coalescing.** A same-sender/same-text unicast burst within 400 ms collapses to one entry, with
-  a deterministic `id` (the first message's), `ts` (the earliest), `count` (the multiplicity), and
-  parallel `toIds`/`toNames` arrays so renderers keep identity separate from labels.
+- **Thread fields.** `replyTo`, `mentions` and `contextId` are copied from the message on every
+  delivery mode, from history and from the live tap. Each is present only when the sender set it.
+  The wire has no DM conversation id: a DM thread is its two principals, `from.id` and `toIds`,
+  and `contextId` is only what the sender chose to set.
+- **Coalescing.** A unicast burst within 400 ms that shares a sender, text and thread fields
+  collapses to one entry, with a deterministic `id` (the first message's), `ts` (the earliest),
+  `count` (the multiplicity), and parallel `toIds`/`toNames` arrays so renderers keep identity
+  separate from labels.
 - **Roster.** A status-sorted snapshot plus an id→name map; agents split from other endpoints.
 - **Topology identity.** Agent nodes use endpoint ids as keys and the roster's `name/role` label only
   for display, so two principals with the same display name keep separate traffic and membership links.

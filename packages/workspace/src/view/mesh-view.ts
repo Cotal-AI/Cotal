@@ -34,8 +34,16 @@ export interface FeedEntry {
    *  re-spell the convention locally, and three copies of a classifier is three chances to disagree
    *  about one channel. Absent on unicast and anycast rows, which carry no channel at all. */
   events?: boolean;
+  /** Id of the message this one answers, as the wire's `replyTo` carries it. */
+  replyTo?: string;
+  /** Lowercased peer names the sender called out, as the wire's `mentions` carries them. */
+  mentions?: string[];
+  /** The sender's thread or conversation correlation id, as the wire's `contextId` carries it. */
+  contextId?: string;
   text: string;
 }
+
+type ThreadFields = Pick<FeedEntry, "replyTo" | "mentions" | "contextId">;
 
 export interface StatusCounts {
   working: number;
@@ -73,8 +81,9 @@ export interface DmPeer {
 /** Derived operator signals — golden-signal counts, who needs attention, the DM roll-up. */
 export interface MeshSignals {
   counts: StatusCounts;
-  /** Agents blocked / needing input, name-ordered. NOT age-ordered: presence carries no
-   *  status-transition time, so how long a peer has been blocked is not knowable from the wire. */
+  /** Agents blocked / needing input, name-ordered. NOT age-ordered: `statusSince` dates the latest
+   *  status or activity report, not the block, so how long a peer has been blocked is not knowable
+   *  from the wire. */
   waiting: Presence[];
   /** Oldest heartbeat among LIVE agents — a liveness signal ("is anyone going quiet?"), NOT a
    *  blocked-duration. {@link Presence.ts} is republished every heartbeat, so it can never say how
@@ -138,6 +147,15 @@ function bodyText(msg: CotalMessage): string {
   return partsToText(msg.parts);
 }
 
+/** The wire's reply link, mentions and context id, each present only when the message carries it. */
+function threadFields(msg: CotalMessage): ThreadFields {
+  return {
+    ...(msg.replyTo !== undefined ? { replyTo: msg.replyTo } : {}),
+    ...(msg.mentions?.length ? { mentions: [...msg.mentions] } : {}),
+    ...(msg.contextId !== undefined ? { contextId: msg.contextId } : {}),
+  };
+}
+
 /** Does this error say the membership feed's bucket does not exist (no delivery daemon ever
  *  provisioned it)? The JetStream "stream not found" answer, by API code and by message; anything
  *  else (a permission refusal, a timeout, a closed connection) is a failed read, not an absent feed. */
@@ -160,6 +178,7 @@ function sortRoster(r: Presence[]): Presence[] {
 interface Burst {
   from: EndpointRef;
   body: string;
+  thread: ThreadFields;
   id: string;
   ts: number;
   ids: string[];
@@ -398,21 +417,24 @@ export class MeshView extends EventEmitter {
       // silently, which is the failure mode this whole lane exists to remove. A surface that wants
       // a chat-only feed can filter on this flag and say so in its own UI.
       events: kind === "anycast" ? undefined : isEventChannel(msg.channel) || undefined,
+      ...threadFields(msg),
       text: bodyText(msg),
     });
   }
 
-  /** Group a same-sender/same-text unicast burst into one feed entry over BURST_MS, and retain
-   *  each raw message for the DM roll-up. */
+  /** Group a unicast burst with one sender, text and thread fields into one feed entry over
+   *  BURST_MS, and retain each raw message for the DM roll-up. */
   private coalesce(msg: CotalMessage): void {
     const body = bodyText(msg);
+    const thread = threadFields(msg);
     if (msg.to) this.recordDm({ ts: msg.ts, from: msg.from, toId: msg.to, text: body });
-    const key = msg.from.id + " " + body;
+    const key = JSON.stringify([msg.from.id, body, thread]);
     let b = this.pending.get(key);
     if (!b) {
       b = {
         from: msg.from,
         body,
+        thread,
         id: msg.id,
         ts: msg.ts,
         ids: [],
@@ -436,6 +458,7 @@ export class MeshView extends EventEmitter {
       toIds: [...b.ids],
       toNames: b.ids.map((id) => this.nameOf(id)),
       count: b.ids.length,
+      ...b.thread,
       text: b.body,
     });
   }
@@ -504,6 +527,7 @@ export class MeshView extends EventEmitter {
           from: msg.from,
           delivery: "multicast",
           channel: msg.channel,
+          ...threadFields(msg),
           text: bodyText(msg),
         });
       }
