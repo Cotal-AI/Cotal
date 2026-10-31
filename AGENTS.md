@@ -87,9 +87,9 @@ layer plus the extension contracts (`Connector`, `Command`, `Runtime`) and the `
 they self-register into. The wire standard — depends on nothing else in the repo.
 - `**@cotal-ai/workspace**` (`packages/workspace`): the machine-local operator and client-surface
 layer over `~/.cotal` — the mesh registry, target resolution, preflight, the `.cotal/` auth-path
-helpers, the command-copy renderer, the live space model (`MeshView`, `openObserver`) that
-terminal surfaces share, and the manager control calls they make (`@cotal-ai/workspace/control`).
-Depends on core; not part of the wire standard.
+helpers, the command-copy renderer, and what terminal surfaces share: the live space model
+(`MeshView`, `openObserver`), the manager control calls (`@cotal-ai/workspace/control`), and the
+managed-launch request (`requestManagedLaunch`). Depends on core; not part of the wire standard.
 - `**@cotal-ai/smoke-kit**` (`packages/smoke-kit`): private test-only helpers shared by the smoke
 suites — the broker ownership that kills a spawned `nats-server` when a suite is
 *signalled* rather than only when it returns, and the spawn-site census behind

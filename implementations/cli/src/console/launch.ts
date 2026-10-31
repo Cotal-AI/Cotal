@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { oneLine, type Envelope } from "@cotal-ai/workspace";
 import { selfArgv } from "../lib/self-exec.js";
-import type { ManagedLaunchResult } from "../commands/spawn.js";
+import type { ManagedLaunchResult } from "@cotal-ai/workspace/launch";
 import type { ControlCtx } from "@cotal-ai/workspace/control";
 
 export interface AgentLaunchInput {

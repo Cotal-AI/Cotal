@@ -74,9 +74,9 @@ examples ──→ implementations ──→ workspace ──→ core ←(peer)�
   extension contracts (`Connector`, `Command`, `Runtime`) with the `Registry` they
   self-register into. Depends on nothing else in the repo.
 - **`@cotal-ai/workspace`**, the machine-local operator and client-surface layer over
-  `~/.cotal`: mesh registry, target resolution, auth-path helpers, the live space model
-  that terminal surfaces share, and the manager control calls they make
-  (`@cotal-ai/workspace/control`). Not part of the wire standard, so a
+  `~/.cotal`: mesh registry, target resolution, auth-path helpers, and what terminal surfaces
+  share: the live space model, the manager control calls (`@cotal-ai/workspace/control`), and
+  the managed-launch request. Not part of the wire standard, so a
   third party can embed core without inheriting workstation plumbing.
 - **`@cotal-ai/lang`**, the workflow language: validator, interpreter, journal. Depends on
   nothing else in the repo.
