@@ -42,6 +42,8 @@
     "",
     "N17 and N18 move the cut one character either way.",
     "",
+    "N19 cuts in the wrong place: the first 63 characters and then the last one.",
+    "",
     "NO BUILD STEP: the suite imports ../src."
   ],
   "mutations": [
@@ -199,13 +201,22 @@
       "note": "A name just past 64 characters would be echoed whole. A name far past the cut cannot show where it starts."
     },
     {
-      "name": "N18 the cut starts one character earlier, so a 64-character name is cut",
+      "name": "N18 the cut starts one character earlier, so a 64-character name gets an ellipsis",
       "file": "extensions/connector-core/src/tool-specs.ts",
       "find": "> 64 ? `${channel.slice",
       "replace": "> 63 ? `${channel.slice",
       "expectRed": "a 64-character name that is no channel name is shown whole",
       "cell": "a 64-character name that is no channel name is shown whole",
       "note": "A name of 64 characters fits and is shown as typed."
+    },
+    {
+      "name": "N19 the cut keeps the first 63 characters and the last one, losing the 64th",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "${channel.slice(0, 64)}…",
+      "replace": "${channel.slice(0, 63)}${channel.slice(-1)}…",
+      "expectRed": "a 65-character name that is no channel name is shown cut to its first 64 characters",
+      "cell": "a 65-character name that is no channel name is shown cut to its first 64 characters",
+      "note": "A name that repeats one character hides a cut in the wrong place, so the long names count their own positions."
     }
   ]
 }

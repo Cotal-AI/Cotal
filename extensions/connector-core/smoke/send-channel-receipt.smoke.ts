@@ -440,8 +440,10 @@ const proto = MeshAgent.prototype as unknown as {
       refused.text,
     );
   }
-  // `team.` and `.**` around enough x's to make a name that is no channel name of the given length.
-  const badName = (length: number): string => `team.${"x".repeat(length - 8)}.**`;
+  // Digits that are the last digit of their own index, so a cut in the wrong place shows.
+  const counted = (start: number, length: number): string => Array.from({ length }, (_, i) => (start + i) % 10).join("");
+  // `team.**.` and then counted digits: a name that is no channel name, of the given length.
+  const badName = (length: number): string => `team.**.${counted(8, length - 8)}`;
   {
     const whole = badName(64);
     const refused = await send.run(agent, cfg, { text: "hi", channel: whole });
@@ -462,7 +464,7 @@ const proto = MeshAgent.prototype as unknown as {
     );
   }
   {
-    const over = "a".repeat(MAX_CHANNEL_LENGTH + 1);
+    const over = counted(0, MAX_CHANNEL_LENGTH + 1);
     const refused = await send.run(agent, cfg, { text: "hi", channel: over });
     check(
       `a name one character over the ${MAX_CHANNEL_LENGTH}-character limit is refused as no channel name`,

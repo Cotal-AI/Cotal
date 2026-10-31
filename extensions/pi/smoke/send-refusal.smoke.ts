@@ -24,7 +24,7 @@ process.env.COTAL_SERVERS = "nats://127.0.0.1:4222";
 
 let failures = 0;
 const check = (label: string, ok: boolean, extra?: unknown): void => {
-  if (ok) { console.log(`  ok    ${label}`); return; }
+  if (ok) { console.log(`  ✓ ${label}`); return; }
   failures++;
   console.log(`  FAIL  ${label}${extra !== undefined ? ` — ${JSON.stringify(extra)}` : ""}`);
 };
