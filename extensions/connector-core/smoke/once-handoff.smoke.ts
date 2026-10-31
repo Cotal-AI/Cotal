@@ -376,6 +376,8 @@ console.log("\n7b. a seat that cannot end itself declines its exit, keeps report
   let stopClock = realNow();
   Date.now = () => stopClock;
   let waits = 0;
+  const stopExits: number[] = [];
+  (process as { exit: (code?: number) => never }).exit = ((code?: number) => { stopExits.push(code ?? 0); }) as (code?: number) => never;
   globalThis.setTimeout = ((fn: () => void, ms?: number) => {
     if (ms !== undefined && ms >= 1_000) {
       waits++;
@@ -393,8 +395,10 @@ console.log("\n7b. a seat that cannot end itself declines its exit, keeps report
   } finally {
     Date.now = realNow;
     globalThis.setTimeout = realSetTimeout;
+    (process as { exit: typeof realExit }).exit = realExit;
   }
-  check("...and an agent that stops ends the loop with it", waits === 12 && stopping.state.reports.length === 13, { waits, reports: stopping.state.reports.length });
+  check("...and an agent that stops ends the loop with it", waits === 12 && stopping.state.reports.length === 13 && stopExits.length === 0,
+    { waits, reports: stopping.state.reports.length, exits: stopExits });
 
   const told = rig();
   told.state.stop = true;
@@ -433,12 +437,17 @@ console.log("\n7b. a seat that cannot end itself declines its exit, keeps report
   (idle.a as unknown as { armTurnRelay(): void }).armTurnRelay();
   await tick();
   idle.state.stop = true;
-  registry.exiting = undefined;
   let idleAsks = 0;
-  registerOnceExit(() => { idleAsks++; return false; });
-  notice?.();
-  await tick();
-  check("a seat holding no turn pulls on the manager's notice, and the `stop` it gets asks its exit", notice !== undefined && idle.a.activeTurnCount() === 0 && idleAsks === 1, { armed: notice !== undefined, idleAsks });
+  const idleForced = await withGraceCaptured(async () => {
+    registry.exiting = undefined;
+    graceTimers.length = 0;
+    registerOnceExit(() => { idleAsks++; return false; });
+    notice?.();
+    await tick();
+    return graceTimers.length;
+  });
+  check("a seat holding no turn pulls on the manager's notice, and the `stop` it gets asks its exit",
+    notice !== undefined && idle.a.activeTurnCount() === 0 && idleAsks === 1 && idleForced === 0, { armed: notice !== undefined, idleAsks, idleForced });
   registry.exiting = undefined;
 }
 

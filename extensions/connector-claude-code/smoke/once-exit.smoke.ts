@@ -74,6 +74,9 @@ try {
   const killed = await endHost(recordHost({ [HOST_EXE_ENV]: node }, stubborn.pid));
   const lapse = Date.now() - t1;
   check("a host that ignores SIGTERM is killed five seconds later", killed === true && await stubborn.exit === "SIGKILL" && lapse >= 4_900 && lapse < 8_000, { killed, lapse });
+} catch (e) {
+  fail++;
+  console.log("  ✗ FAIL: the suite threw before its last cell", e instanceof Error ? e.message : e);
 } finally {
   for (const c of children) if (running(c)) { try { process.kill(c.pid!, "SIGKILL"); } catch { /* already gone */ } }
   rmSync(dir, { recursive: true, force: true });
