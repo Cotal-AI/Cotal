@@ -1,5 +1,13 @@
 # @cotal-ai/workspace
 
+## 0.132.2
+
+### Patch Changes
+
+- 6e0f8d1: Share the IdP URL policy between manifest preflight and auth login while preserving their diagnostics and normalization.
+- Updated dependencies [ebabb1e]
+  - @cotal-ai/core@0.132.2
+
 ## 0.132.1
 
 ### Patch Changes
