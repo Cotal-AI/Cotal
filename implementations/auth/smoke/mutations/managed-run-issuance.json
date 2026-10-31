@@ -5,7 +5,7 @@
   "guard": "Managed run issuance requires independent current child scope and fresh direct-parent run grant, uses exact native signed ceiling and own lifecycle source, preserves interactive issuance and owner-confined manager workflows.",
   "command": "pnpm smoke:managed-run-issuance",
   "proveWith": "pnpm mutation-proof --config implementations/auth/smoke/mutations/managed-run-issuance.json",
-  "completionMarker": "COTAL_SMOKE_SENTINEL cells=12",
+  "completionMarker": "COTAL_SMOKE_SENTINEL cells=13",
   "mutations": [
     {
       "name": "remove child run predicate",
@@ -14,7 +14,7 @@
       "replace": "",
       "expectRed": "FAIL: U1 persona without run receives no issuance",
       "cell": "U1 persona without run receives no issuance",
-      "completionMarker": "COTAL_SMOKE_SENTINEL cells=12",
+      "completionMarker": "COTAL_SMOKE_SENTINEL cells=13",
       "afterRestore": "pnpm smoke:managed-run-issuance"
     },
     {
@@ -24,7 +24,7 @@
       "replace": "",
       "expectRed": "FAIL: U1 admin parent without run receives no issuance and stock refusal",
       "cell": "U1 admin parent without run receives no issuance and stock refusal",
-      "completionMarker": "COTAL_SMOKE_SENTINEL cells=12",
+      "completionMarker": "COTAL_SMOKE_SENTINEL cells=13",
       "afterRestore": "pnpm smoke:managed-run-issuance"
     },
     {
@@ -34,7 +34,7 @@
       "replace": "",
       "expectRed": "FAIL: U1 interactive user still starts answers and resumes",
       "cell": "U1 interactive user still starts answers and resumes",
-      "completionMarker": "COTAL_SMOKE_SENTINEL cells=12",
+      "completionMarker": "COTAL_SMOKE_SENTINEL cells=13",
       "afterRestore": "pnpm smoke:managed-run-issuance"
     },
     {
@@ -44,7 +44,7 @@
       "replace": "false && current.has(\"run\")",
       "expectRed": "FAIL: U1 eligible managed seat receives issued authority and accepted-row read",
       "cell": "U1 eligible managed seat receives issued authority and accepted-row read",
-      "completionMarker": "COTAL_SMOKE_SENTINEL cells=12",
+      "completionMarker": "COTAL_SMOKE_SENTINEL cells=13",
       "afterRestore": "pnpm smoke:managed-run-issuance"
     },
     {
@@ -54,17 +54,17 @@
       "replace": "          return { ...perms, pub: { allow: [\">\" ] } };\n        }\n        const row = JSON.parse",
       "expectRed": "FAIL: U1 evidence ceiling equals the stock signed mint",
       "cell": "U1 evidence ceiling equals the stock signed mint",
-      "completionMarker": "COTAL_SMOKE_SENTINEL cells=12",
+      "completionMarker": "COTAL_SMOKE_SENTINEL cells=13",
       "afterRestore": "pnpm smoke:managed-run-issuance"
     },
     {
       "name": "replace child source with parent actor",
       "file": "implementations/auth/src/callout-authority.ts",
-      "find": "sources: [actorLedgerSource(space, owner, actor, uid)]",
-      "replace": "sources: [actorLedgerSource(space, owner, \"cli\", uid)]",
+      "find": "version: 1, ref, sources: [actorLedgerSource(space, owner, actor, uid)]",
+      "replace": "version: 1, ref, sources: [actorLedgerSource(space, owner, \"cli\", uid)]",
       "expectRed": "FAIL: U1 source is the managed actor lifecycle and respawn invalidates it",
       "cell": "U1 source is the managed actor lifecycle and respawn invalidates it",
-      "completionMarker": "COTAL_SMOKE_SENTINEL cells=12",
+      "completionMarker": "COTAL_SMOKE_SENTINEL cells=13",
       "afterRestore": "pnpm smoke:managed-run-issuance"
     },
     {
@@ -74,7 +74,7 @@
       "replace": "        /* mutation: renew without ceiling confirmation */",
       "expectRed": "FAIL: U1 same nonce renews only the identical ceiling",
       "cell": "U1 same nonce renews only the identical ceiling",
-      "completionMarker": "COTAL_SMOKE_SENTINEL cells=12",
+      "completionMarker": "COTAL_SMOKE_SENTINEL cells=13",
       "afterRestore": "pnpm smoke:managed-run-issuance"
     },
     {
@@ -84,7 +84,7 @@
       "replace": "return findActorUnified(dir, parsed.owner, parsed.actor) !== undefined;",
       "expectRed": "FAIL: U1 source is the managed actor lifecycle and respawn invalidates it",
       "cell": "U1 source is the managed actor lifecycle and respawn invalidates it",
-      "completionMarker": "COTAL_SMOKE_SENTINEL cells=12",
+      "completionMarker": "COTAL_SMOKE_SENTINEL cells=13",
       "afterRestore": "pnpm smoke:managed-run-issuance"
     },
     {
@@ -94,7 +94,7 @@
       "replace": "    if (agent === undefined) return;\n    const pending =",
       "expectRed": "FAIL: U1 managed persona run grant can answer and baseline seat cannot answer outside relay",
       "cell": "U1 managed persona run grant can answer and baseline seat cannot answer outside relay",
-      "completionMarker": "COTAL_SMOKE_SENTINEL cells=12",
+      "completionMarker": "COTAL_SMOKE_SENTINEL cells=13",
       "afterRestore": "pnpm smoke:managed-run-issuance"
     },
     {
@@ -104,7 +104,7 @@
       "replace": "    if (true) return;\n    const pending =",
       "expectRed": "FAIL: U1 managed persona run grant can answer and baseline seat cannot answer outside relay",
       "cell": "U1 managed persona run grant can answer and baseline seat cannot answer outside relay",
-      "completionMarker": "COTAL_SMOKE_SENTINEL cells=12",
+      "completionMarker": "COTAL_SMOKE_SENTINEL cells=13",
       "afterRestore": "pnpm smoke:managed-run-issuance"
     },
     {
@@ -114,7 +114,7 @@
       "replace": "    ...epRequestGrantRows(space, { endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: \"spawn\" }, caller),\n    ...epRequestGrantRows(space, { endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: \"launch\" }, caller),",
       "expectRed": "FAIL: U1 seat-started run spawns only its owner and cross-owner launch is broker refused",
       "cell": "U1 seat-started run spawns only its owner and cross-owner launch is broker refused",
-      "completionMarker": "COTAL_SMOKE_SENTINEL cells=12",
+      "completionMarker": "COTAL_SMOKE_SENTINEL cells=13",
       "afterRestore": "pnpm --filter @cotal-ai/core build && pnpm smoke:managed-run-issuance",
       "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:managed-run-issuance"
     }

@@ -70,6 +70,24 @@ same trust chain, so there is nothing the built-ins can reach that a described c
 `retire-lifecycle` and its exact-mode target shape.
 See [SPEC §13.7](../SPEC.md#137-contracts-and-discovery) and [cli.md](cli.md).
 
+### Listing what a space offers
+
+An agent asks the space's registry what it can call with the `cotal_endpoints` tool. The registry
+is a registered endpoint named `registry`. Its `endpoints` command lists each registered endpoint
+where the caller holds at least one command, with the commands and request forms the caller's
+recorded ceiling covers, and leaves the other endpoints out. It reads the ceiling the issuer
+recorded for the caller's credential and does not check that the ceiling's sources are still live,
+so the broker or the endpoint can still refuse a listed command. The answer says this with
+`source: "recorded-ceiling"`. On an open mesh every registered endpoint is listed and `source` is
+`no-permission-system`. Each endpoint row also lists its registered instances, the state each one
+recorded, and whether its command declarations verified. A page holds up to 100 endpoints. When
+the registry does not answer, the tool says so and lists nothing; it does not build a list from
+`describe` or presence. A listing drops the session's cached `describe` of every endpoint it lists.
+On a user-auth mesh manager commands ride a separate manager-call credential, so
+`cotal_endpoints` with `view: "manager"` opens that credential as a manager call does and lists what
+it can call. A session whose bearer comes from its host has no manager-call credential, and the tool
+says so. See [SPEC §13.20](../SPEC.md#1320-registry).
+
 The manager's `vitals` command reports one invocation-time sample of host CPU count and load,
 available and total memory, and bounded local filesystem capacity. It is untargeted but resolves to
 one exact Manager instance. The separate `manager.vitals` capability is issued only when the actor

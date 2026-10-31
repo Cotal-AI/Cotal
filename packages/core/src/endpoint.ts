@@ -48,6 +48,8 @@ import { isRepeatSafeCommand } from "./endpoint-grants.js";
 import type { EpCaller, IssuedCaller } from "./endpoint-subjects.js";
 import { assertIdToken, assertGeneration } from "./endpoint-subjects.js";
 import { importNativeSubjectPermissions, issuedPermitsSubject, readAcceptedRow, type IssuedSubjectPermission } from "./issued-authority.js";
+import { REGISTRY_ENDPOINT, REGISTRY_ENDPOINTS_COMMAND, type RegistryEndpointsInput, type RegistryEndpointsOutput } from "./registry-contract.js";
+import { listRegistryEndpoints, registryListingCaller } from "./registry-client.js";
 import type { EpVerbTarget, EpAttributedReply } from "./endpoint-verbs.js";
 import { lastKvEntries, liveKvEntries } from "./kv-scan.js";
 import { isConsumerAlreadyExists, isConsumerNotFound, isJetStreamMissing } from "./jetstream-missing.js";
@@ -600,6 +602,10 @@ export class CotalEndpoint extends EventEmitter {
   private readonly bearerSource?: () => Promise<string>;
   /** The freshest bearer — what every (re)connect attempt presents. */
   private currentBearer?: string;
+  /** The expiry, in seconds, of the credential the latest connect attempt presented. The issuer
+   *  keys a listing generation on it (SPEC 13.15), so a listing reads the row bound to the
+   *  credential the broker admitted, never one adopted since. */
+  private presentedExp?: number;
   /** Cancels the armed bearer renewal or retry. */
   private cancelBearerRenewal?: () => void;
   /** Consecutive failed bearer renewals: the retry's step, and whether this run of failures has
@@ -1292,6 +1298,20 @@ export class CotalEndpoint extends EventEmitter {
     return creds;
   }
 
+  /** The connect attempt's credential getters: what {@link credsForWire} and {@link bearerForWire}
+   *  return, with its expiry recorded as {@link presentedExp}. */
+  private presentCreds(): string {
+    const creds = this.credsForWire();
+    this.presentedExp = credsClaims(creds).exp;
+    return creds;
+  }
+
+  private presentBearer(): string {
+    const bearer = this.bearerForWire();
+    this.presentedExp = bearerExpiryMs(bearer) / 1000;
+    return bearer;
+  }
+
   /** The cached credential, checked. Handed to nats.js as the authenticator's source on EVERY auth
    *  mode (renewed or static), so each (re)connect attempt — ours or the library's — re-reads a
    *  CHECKED value. A refusal throws out of the authenticator, which nats-core turns into a closed
@@ -1703,7 +1723,7 @@ export class CotalEndpoint extends EventEmitter {
       // and dialed ANONYMOUSLY, so the broker answered `Authorization Violation` and the real fault
       // (an empty credential) was never named. Routing it into the checked getter fails it loud
       // instead. Anonymous access stays reachable the only way it should be: by passing no creds.
-      ...authOpts({ token: this.token, user: this.user, pass: this.pass, creds: this.currentCreds !== undefined || this.credsSource ? () => this.credsForWire() : undefined, bearer: this.userMode ? () => this.bearerForWire() : undefined, sentinelCreds: this.sentinelCreds, tls: this.tls,
+      ...authOpts({ token: this.token, user: this.user, pass: this.pass, creds: this.currentCreds !== undefined || this.credsSource ? () => this.presentCreds() : undefined, bearer: this.userMode ? () => this.presentBearer() : undefined, sentinelCreds: this.sentinelCreds, tls: this.tls,
         onCreds: (creds) => {
           watchDeletePermission = undefined;
           try {
@@ -2882,6 +2902,51 @@ export class CotalEndpoint extends EventEmitter {
     const svc = await resolveService(this.nc, this.space, endpoint, this.serviceCaller(), { deadlineMs: opts.deadlineMs ?? 10_000, signal: opts.signal, ...(opts.instanceId !== undefined ? { instanceId: opts.instanceId } : {}) });
     if (opts.instanceId === undefined) this.resolvedServices.set(endpoint, svc);
     return svc;
+  }
+
+  /** The caller a registry listing rides (SPEC 13.15). An issued connection lists as itself. Any
+   *  other connection reads the listing generation the issuer bound to the credential it presented,
+   *  under the token its connection id and that credential's expiry derive. `undefined`: that
+   *  credential carries no listing binding, because it predates listing issuance or has no expiry. */
+  async listingCaller(): Promise<IssuedCaller | undefined> {
+    if (!this.nc) throw new Error(this.notLiveMsg());
+    return registryListingCaller(this.nc, this.space, this.serviceCaller(), { connId: this.connId, ...(this.presentedExp !== undefined ? { exp: this.presentedExp } : {}) });
+  }
+
+  /** One page of the registry's `endpoints` answer (SPEC 13.20) over this connection
+   *  ({@link listRegistryEndpoints}). The describe rides this connection's own caller; the question
+   *  rides the listing caller on an authed mesh. `unbound`: this credential carries no listing
+   *  binding. */
+  async listEndpoints(input: RegistryEndpointsInput, opts: { deadlineMs?: number; signal?: AbortSignal } = {}): Promise<
+    | { unbound: true }
+    | { unbound?: false; reply: EpAttributedReply; page?: RegistryEndpointsOutput }
+  > {
+    if (!this.nc) throw new Error(this.notLiveMsg());
+    const nc = this.nc;
+    const listing = this.authed ? await this.listingCaller() : undefined;
+    if (this.authed && listing === undefined) return { unbound: true };
+    return this.listEndpointsOver(nc, listing, input, opts);
+  }
+
+  /** Ask the registry over `nc` under `listing`: this connection, or another of this caller triple
+   *  such as a manager-call connection. The describe rides this connection, whose view holds the
+   *  registry's describe. Every endpoint the page lists has its cached describe dropped, so the next
+   *  describe of it reads the surface afresh. `unbound`: the broker refused the question under
+   *  `listing`, whose credential holds no listing row. */
+  async listEndpointsOver(
+    nc: NatsConnection,
+    listing: IssuedCaller | undefined,
+    input: RegistryEndpointsInput,
+    opts: { deadlineMs?: number; signal?: AbortSignal } = {},
+  ): Promise<{ unbound: true } | { unbound?: false; reply: EpAttributedReply; page?: RegistryEndpointsOutput }> {
+    if (!this.nc) throw new Error(this.notLiveMsg());
+    const own = this.nc;
+    const result = await listRegistryEndpoints(this.space, (deadlineMs, signal) => resolveService(own, this.space, REGISTRY_ENDPOINT, this.serviceCaller(), {
+      deadlineMs, signal, commands: [REGISTRY_ENDPOINTS_COMMAND],
+    }), { nc, ...(listing ? { caller: listing } : {}) }, input, opts);
+    if (result.unbound) return result;
+    for (const row of result.page?.rows ?? []) this.clearResolvedService(row.endpoint);
+    return result;
   }
 
   /** GENERIC v0.4 service invoke over this endpoint's own connection: resolve
