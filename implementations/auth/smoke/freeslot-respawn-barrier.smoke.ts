@@ -157,6 +157,7 @@ const {
   cotalAuthProvider, establishIdpSession, grantActor, loadAuthServiceInfo,
   managedActorLedgerDir, ledgerRowFilename,
 } = await import("@cotal-ai/auth");
+const { approveDevice } = await import("./_device-approval.js");
 const { bootDeliveryDaemon } = await import("../../manager/smoke/_boot-delivery.js");
 // @cotal-ai/manager is not a dep of @cotal-ai/auth — drive the REAL Manager from its built dist by
 // relative path (shares the one @cotal-ai/core dist registry with the in-process connector).
@@ -319,16 +320,7 @@ try {
     returnHeaders: true,
   });
   const cookie = signup.headers.get("set-cookie")!.split(";")[0];
-  const approve = async (userCode: string): Promise<void> => {
-    const claim = await fetch(`${base}/device?user_code=${encodeURIComponent(userCode)}`, { headers: { cookie, origin } });
-    if (!claim.ok) throw new Error(`device claim failed: HTTP ${claim.status}`);
-    const res = await fetch(`${base}/device/approve`, {
-      method: "POST",
-      headers: { "content-type": "application/json", cookie, origin },
-      body: JSON.stringify({ userCode }),
-    });
-    if (!res.ok) throw new Error(`device/approve failed: HTTP ${res.status}`);
-  };
+  const approve = (userCode: string) => approveDevice({ base, cookie, origin }, userCode);
 
   const prepared = await cotalAuthProvider.prepareServer({
     store,
@@ -380,7 +372,7 @@ try {
   await waitAuthReady();
   await establishIdpSession({
     dir: home, idpUrl: base, clientId: CLIENT_ID,
-    onPrompt: (p: DeviceLoginPrompt) => void approve(p.userCode),
+    onPrompt: (p: DeviceLoginPrompt) => approve(p.userCode),
   });
   const OWNER = await cotalAuthProvider.ownerForLogin({ store, dir, space: SPACE });
   grantActor(dir, { owner: OWNER, actor: "cli", scope: ["spawn", "role:worker"], allowSubscribe: ["general"], allowPublish: ["general"], label: "smoke operator" });
