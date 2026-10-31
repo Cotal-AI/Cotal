@@ -6,7 +6,7 @@ import {
   epcredFamilyPrefix,
   parseLedgerRow,
   parseRemoteManagerEnvelope,
-  remoteManagerActors,
+  remoteManagerServePrincipal,
   type RemoteManagerMaintenanceRequest,
   type RemoteManagerMaintenanceResult,
 } from "@cotal-ai/core";
@@ -72,10 +72,10 @@ export async function authorizeRemoteManagerMaintenance(args: ManagerAuthorityHo
   const gate = await args.observeManagerGate(r.targetInstanceId);
   if (!gate || gate.state === "retired")
     throw new EpEnvelopeError("failed-precondition", `manager maintenance found no live registration gate for instance ${r.targetInstanceId}`);
-  if (args.holder === "platform" && gate.principal !== `${args.owner}.${remoteManagerActors(r.targetInstanceId).serve}`)
+  if (args.holder === "platform" && gate.principal !== remoteManagerServePrincipal(args.owner, r.targetInstanceId))
     throw new EpEnvelopeError("permission-denied", `platform control maintenance gate belongs to ${gate.principal}, not the platform serve principal`);
   if (r.operation === "evict-family-principal") {
-    const servePrincipal = `${args.owner}.${remoteManagerActors(r.instanceId).serve}`;
+    const servePrincipal = remoteManagerServePrincipal(args.owner, r.instanceId);
     if (gate.principal !== servePrincipal)
       throw new EpEnvelopeError("permission-denied", `manager maintenance gate belongs to ${gate.principal}, not the caller's server-derived serve principal ${servePrincipal}`);
   }

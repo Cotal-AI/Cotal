@@ -1,13 +1,14 @@
 /**
- * `cotal deliver pending` candidate attribution, live through the real CLI on an owned authenticated
- * broker. Each synthetic sender publishes a held DM on its own subject, which the broker binds to
- * its credential, while the card inside the message is whatever the sender wrote.
+ * `cotal deliver pending` and `cotal pending` candidate attribution, live through the real CLI on an
+ * owned authenticated broker. Each synthetic sender publishes a held DM on its own subject, which the
+ * broker binds to its credential, while the card inside the message is whatever the sender wrote.
  *
  * A plain candidate line names the subject's sender principal as `from=` and prints the card only as
  * a trailing `label=`, sanitized: a healthy card, a card naming another principal, and a card that
  * carries control bytes and a line break. `--json` keeps its legacy candidate lines byte for byte.
- * No read changes the durable's pending or ack state, and the plain read opens no more consumers
- * than a `--json` read does.
+ * `cotal pending` names the same subject principal as each candidate's `from` in `--json` and
+ * `--plain`, within `--limit`, and keeps its partial cleanup warning. No read changes the durable's
+ * pending or ack state, and every read opens as many consumers as the first `--json` read does.
  *
  * Run: pnpm smoke:deliver-pending-sender
  */
@@ -39,7 +40,7 @@ import {
 import { freePort, killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal, teardownPathOnSignal } from "@cotal-ai/smoke-kit";
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const EXPECTED = 13;
+const EXPECTED = 17;
 let pass = 0;
 let fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -150,6 +151,13 @@ try {
   const s2 = await state();
   const jsonAfter = await run([...args, "--json"]);
   const s3 = await state();
+  const modern = args.slice(1);
+  const modernJson = await run([...modern, "--json"]);
+  const s4 = await state();
+  const modernPlain = await run([...modern, "--plain"]);
+  const s5 = await state();
+  const modernLimited = await run([...modern, "--limit", "2", "--json"]);
+  const s6 = await state();
   await nc.drain();
   check("the plain read exits 0", plain.code === 0, plain.stderr);
 
@@ -185,15 +193,43 @@ try {
   ].join("\n");
   check("--json prints the legacy candidate lines unchanged", jsonBefore.stdout === legacy, jsonBefore.stdout);
   check("--json output is identical before and after the plain read", jsonAfter.stdout === jsonBefore.stdout);
+  const doc = (r: { stdout: string }) => JSON.parse(r.stdout) as { completeness?: string; warnings: Array<{ code: string }>; result: { candidates: unknown[]; candidateRead: string; candidateLimit: number } };
+  const [full, limited] = [doc(modernJson), doc(modernLimited)];
   check(
-    "no read changes the durable's pending or ack state",
-    [s0, s1, s2, s3].every((s) => JSON.stringify(s.held) === JSON.stringify({ pending: 3, ackPending: 0, delivered: 0, ackFloor: 0 })),
-    [s0, s1, s2, s3],
+    "pending reads keep their partial cleanup warning and add no candidate warning",
+    [modernJson, modernPlain, modernLimited].every((r) => r.code === 4) &&
+      [full, limited].every((d) => d.completeness === "partial" && d.result.candidateRead === "bounded-from-ack-floor" && JSON.stringify(d.warnings.map((w) => w.code)) === '["EPHEMERAL_CLEANUP_UNCONFIRMED"]') &&
+      !modernPlain.stderr.includes("could not be decoded"),
+    [modernJson.code, modernPlain.code, modernLimited.code, full.warnings, modernPlain.stderr],
+  );
+  const subjectRows = [[ok, healthy], [claimed, forger], [escaped, forger]] as const;
+  check(
+    "pending --json names each candidate by its subject principal, never the claimed one",
+    JSON.stringify(full.result.candidates) === JSON.stringify(subjectRows.map(([m, s]) => ({ id: m.id, from: s.principal, ts: m.ts }))),
+    full.result.candidates,
   );
   check(
-    "the plain read opens no more consumers than a --json read",
-    s2.consumers - s1.consumers === s1.consumers - s0.consumers && s3.consumers - s2.consumers === s1.consumers - s0.consumers,
-    [s0.consumers, s1.consumers, s2.consumers, s3.consumers],
+    "pending --plain names each candidate by its subject principal, never the claimed one",
+    subjectRows.every(([m, s]) => modernPlain.stdout.split("\n").includes(`  ${m.id}  from=${s.principal}  ts=${m.ts}`)) &&
+      !/[\p{Cc}\p{Zl}\p{Zp}]/u.test(modernPlain.stdout.replaceAll("\n", "")),
+    modernPlain.stdout,
+  );
+  check(
+    "pending --limit 2 reads the first two candidates by subject principal",
+    limited.result.candidateLimit === 2 &&
+      JSON.stringify(limited.result.candidates) === JSON.stringify(subjectRows.slice(0, 2).map(([m, s]) => ({ id: m.id, from: s.principal, ts: m.ts }))),
+    limited.result,
+  );
+  const states = [s0, s1, s2, s3, s4, s5, s6];
+  check(
+    "no read changes the durable's pending or ack state",
+    states.every((s) => JSON.stringify(s.held) === JSON.stringify({ pending: 3, ackPending: 0, delivered: 0, ackFloor: 0 })),
+    states,
+  );
+  check(
+    "every read opens as many consumers as the first --json read",
+    states.slice(1).every((s, i) => s.consumers - states[i].consumers === s1.consumers - s0.consumers),
+    states.map((s) => s.consumers),
   );
 } finally {
   await provisioner?.stop().catch(() => {});

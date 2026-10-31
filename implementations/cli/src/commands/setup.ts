@@ -54,7 +54,7 @@ import { resolveNatsServer } from "../lib/nats-bin.js";
 import { isOnboarded, markOnboarded } from "../lib/onboard.js";
 import { seedDefaultPersona } from "../lib/default-persona.js";
 import { cotalOnPath, displayCmd, isNpx, selfArgv } from "../lib/self-exec.js";
-import { addExtension } from "./ext.js";
+import { addExtension, ExtensionAddInterrupted, exitOnInterruptedAdd } from "./ext.js";
 import { canPrompt } from "./meshes-wizard.js";
 import type { ManagedLaunchResult } from "./spawn.js";
 import type { SetupStackStartResult } from "./setup-start.js";
@@ -257,7 +257,7 @@ export async function setup(args: ParsedArgs): Promise<void> {
   if (inputs === undefined) return cancelled(presentation, values.space);
   if (values.on !== undefined && inputs.destination !== "self-hosted") throw usage("--on selects a self-hosted manager; local startup pins the manager this root starts");
   const plan = await planSetup(inputs, runtimes);
-  await prepare(plan, { demo: Boolean(values.demo) || Boolean(values.full), interactive, presentation, start: values.start === true, detach: values.detach === true, configureOnly: values["configure-only"] === true, managerInstanceId: values.on });
+  await prepare(plan, { demo: Boolean(values.demo) || Boolean(values.full), interactive, presentation, start: values.start === true, detach: values.detach === true, configureOnly: values["configure-only"] === true, managerInstanceId: values.on }).catch(exitOnInterruptedAdd);
 }
 
 /** Skills-only write for the status card: let installed connectors reconcile their own harness,
@@ -739,6 +739,7 @@ async function setUpRuntimes(
         // With --json or --plain, stdout carries the result alone.
         await addExtension(`${r.package}@${cliVersion()}`, r.package, false, narrate ? console.log : (line) => console.error(line));
       } catch (e) {
+        if (e instanceof ExtensionAddInterrupted) throw e;
         const error = (e as Error).message;
         rows.push({ ...row, selected: true, state: "left-out", reachable: null, error });
         problems.push({ message: `the ${r.name} runtime did not install (${error.split("\n")[0]})`, remedy: "fix it, then run the same setup again" });

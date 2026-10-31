@@ -1,5 +1,59 @@
 # @cotal-ai/connector-core
 
+## 0.132.6
+
+### Patch Changes
+
+- 85fdb96: Keep weighted term frequencies instead of repeated token strings in the lazy documentation search index. Search results and BM25 scores are unchanged. This reduces retained memory after documentation searches in the tested stock connector workload, with extra first-search work to build the frequency maps.
+
+## 0.132.5
+
+No changes in this release.
+
+## 0.132.4
+
+No changes in this release.
+
+## 0.132.3
+
+### Patch Changes
+
+- 9ef07e1: Serve text and structured documentation indexes from generated metadata without decoding the full corpus. Preserve index output, caller-owned structured results, and page and search behavior.
+
+## 0.132.2
+
+### Patch Changes
+
+- c595436: Load bundled documentation from an inline gzip payload on first use to reduce idle connector memory. Keep the synchronous docs API and existing plugin assets unchanged; decoding adds temporary memory and work to the first docs call.
+
+## 0.132.1
+
+No changes in this release.
+
+## 0.132.0
+
+No changes in this release.
+
+## 0.131.6
+
+No changes in this release.
+
+## 0.131.5
+
+No changes in this release.
+
+## 0.131.4
+
+No changes in this release.
+
+## 0.131.3
+
+No changes in this release.
+
+## 0.131.2
+
+No changes in this release.
+
 ## 0.131.1
 
 No changes in this release.

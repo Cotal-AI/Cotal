@@ -11,7 +11,7 @@
  * installed release. When that path is absent (version-pinned docs are not published yet) or
  * unreachable, the tool falls back to the bundled copy and reports which source answered.
  */
-import { loadDocsBundle } from "./docs-bundle.generated.js";
+import { loadDocsBundle, loadDocsMetadata } from "./docs-bundle.generated.js";
 import type { ToolResult } from "./tool-specs.js";
 
 export { DOCS_VERSION } from "./docs-bundle.generated.js";
@@ -48,8 +48,22 @@ export interface DocsBundle {
   schema: { title: string; body: string };
 }
 
-// Built on the first `cotal_docs` call, not at import: every connector process loads this module,
-// each hook event included, and most never read the docs.
+/** Index fields generated from the same sources, without the page bodies. */
+export interface DocsMetadata {
+  version: string;
+  pages: Omit<DocsPage, "body">[];
+  spec: { title: string };
+  lang: { title: string };
+  schema: { title: string };
+}
+
+let indexed: DocsMetadata | undefined;
+function metadata(): DocsMetadata {
+  return (indexed ??= loadDocsMetadata());
+}
+
+// Built on the first page or search, not an index call or import: every connector process
+// loads this module, each hook event included, and most never read the docs.
 let bundled: DocsBundle | undefined;
 function bundle(): DocsBundle {
   return (bundled ??= loadDocsBundle());
@@ -79,12 +93,13 @@ function remoteUrl(slug: string): string {
 /** The index: version banner + every page (slug · kind · summary) + spec/schema + how to
  *  go deeper. Cheap orientation an agent reads before answering anything about Cotal. */
 export function renderDocsIndex(): string {
-  const rows = bundle().pages.map((p) => {
+  const b = metadata();
+  const rows = b.pages.map((p) => {
     const kind = p.kind ? `: ${p.kind}` : "";
     return `- \`${p.slug}\`${kind}\n  ${p.summary}`;
   });
   return [
-    `# Cotal v${bundle().version} documentation`,
+    `# Cotal v${b.version} documentation`,
     "",
     "The authoritative docs bundled with this installed version. This index lists what",
     "exists; it holds no answers itself. Your next call:",
@@ -95,9 +110,9 @@ export function renderDocsIndex(): string {
     "published to docs.cotal.ai for this same version.",
     "",
     "## The normative sources",
-    `- \`spec\`: ${bundle().spec.title} (the wire contract; where a page disagrees, the spec wins)`,
-    `- \`lang\`: ${bundle().lang.title} (the workflow language a durable run executes; spec §14)`,
-    `- \`schema\`: ${bundle().schema.title} (authoritative for message shapes)`,
+    `- \`spec\`: ${b.spec.title} (the wire contract; where a page disagrees, the spec wins)`,
+    `- \`lang\`: ${b.lang.title} (the workflow language a durable run executes; spec §14)`,
+    `- \`schema\`: ${b.schema.title} (authoritative for message shapes)`,
     "",
     "## Pages",
     ...rows,
@@ -126,8 +141,9 @@ interface Section {
   heading: string;
   /** The section's raw Markdown (its heading line included). */
   text: string;
-  /** Field-boosted tokens (page title / heading repeated) used for scoring. */
-  tokens: string[];
+  /** Field-boosted term frequencies (page title / heading repeated) used for scoring. */
+  tf: Map<string, number>;
+  /** The boosted token count, the BM25 document length. */
   len: number;
 }
 
@@ -157,6 +173,17 @@ const STOP = new Set(
   "a an and are as at be by do for from has how in is it of on or that the this to use using was what when where which who with you your".split(" "),
 );
 
+/** Term frequencies of boosted token groups, each group counted `weight` times. */
+function termFrequencies(groups: [tokens: string[], weight: number][]): { tf: Map<string, number>; len: number } {
+  const tf = new Map<string, number>();
+  let len = 0;
+  for (const [tokens, weight] of groups) {
+    for (const t of tokens) tf.set(t, (tf.get(t) ?? 0) + weight);
+    len += tokens.length * weight;
+  }
+  return { tf, len };
+}
+
 function sectionsOf(slug: string, pageTitle: string, body: string): Section[] {
   const out: Section[] = [];
   let heading = pageTitle;
@@ -164,12 +191,12 @@ function sectionsOf(slug: string, pageTitle: string, body: string): Section[] {
   const flush = () => {
     const text = buf.join("\n").trim();
     if (text) {
-      const tokens = [
-        ...tokenize(pageTitle), ...tokenize(pageTitle), ...tokenize(pageTitle), // title ×3
-        ...tokenize(heading), ...tokenize(heading), // heading ×2
-        ...tokenize(text),
-      ];
-      out.push({ slug, pageTitle, heading, text, tokens, len: tokens.length });
+      const { tf, len } = termFrequencies([
+        [tokenize(pageTitle), 3], // title ×3
+        [tokenize(heading), 2], // heading ×2
+        [tokenize(text), 1],
+      ]);
+      out.push({ slug, pageTitle, heading, text, tf, len });
     }
     buf = [];
   };
@@ -196,14 +223,14 @@ function buildIndex(): { sections: Section[]; df: Map<string, number>; avgdl: nu
   sections.push(...sectionsOf("spec", bundle().spec.title, bundle().spec.body));
   sections.push(...sectionsOf("lang", bundle().lang.title, bundle().lang.body));
   // The schema is JSON (no Markdown headings) — index it as a single section.
-  const sTok = [...tokenize(bundle().schema.title), ...tokenize(bundle().schema.title), ...tokenize(bundle().schema.body)];
-  sections.push({ slug: "schema", pageTitle: bundle().schema.title, heading: bundle().schema.title, text: bundle().schema.body, tokens: sTok, len: sTok.length });
+  const { tf, len } = termFrequencies([[tokenize(bundle().schema.title), 2], [tokenize(bundle().schema.body), 1]]);
+  sections.push({ slug: "schema", pageTitle: bundle().schema.title, heading: bundle().schema.title, text: bundle().schema.body, tf, len });
 
   const df = new Map<string, number>();
   let total = 0;
   for (const s of sections) {
     total += s.len;
-    for (const t of new Set(s.tokens)) df.set(t, (df.get(t) ?? 0) + 1);
+    for (const t of s.tf.keys()) df.set(t, (df.get(t) ?? 0) + 1);
   }
   return { sections, df, avgdl: total / Math.max(1, sections.length) };
 }
@@ -234,11 +261,9 @@ export function searchDocs(query: string, limit = 5): DocHit[] {
   const N = sections.length;
   const scored: { s: Section; score: number }[] = [];
   for (const s of sections) {
-    const tf = new Map<string, number>();
-    for (const t of s.tokens) if (termSet.has(t)) tf.set(t, (tf.get(t) ?? 0) + 1);
     let score = 0;
     for (const t of termSet) {
-      const f = tf.get(t) ?? 0;
+      const f = s.tf.get(t) ?? 0;
       if (!f) continue;
       const n = df.get(t) ?? 0;
       const idf = Math.log(1 + (N - n + 0.5) / (n + 0.5));
@@ -324,7 +349,7 @@ export async function readDocsPage(page: string, opts: { refresh?: boolean } = {
 /** The bundled docs' version, their normative sources and their pages, for an index, the pages in
  *  the order of their categories. */
 export function docsIndex(): { version: string; sources: { slug: string; title: string }[]; pages: Omit<DocsPage, "body">[] } {
-  const b = bundle();
+  const b = metadata();
   return {
     version: b.version,
     sources: [{ slug: "spec", title: b.spec.title }, { slug: "lang", title: b.lang.title }, { slug: "schema", title: b.schema.title }],

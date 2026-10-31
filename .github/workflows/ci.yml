@@ -283,6 +283,19 @@ jobs:
       # of join-external:live passed 19 checks at 2850a5a2e.
       - name: Join an external broker
         run: pnpm smoke:join-external:live
+      - name: Broker-only credential renewal warning
+        run: pnpm smoke:no-manager-credential-warning:live
+      - name: Stock broker logging and rotation
+        # This suite pins 2.15.1 separately; the other smoke suites keep their 2.12.12 broker.
+        shell: bash
+        run: |
+          set -euo pipefail
+          broker_dir="$(mktemp -d "$RUNNER_TEMP/broker-logging.XXXXXX")"
+          curl -fsSL "https://github.com/nats-io/nats-server/releases/download/v2.15.1/nats-server-v2.15.1-linux-amd64.tar.gz" -o "$broker_dir/nats-server.tar.gz"
+          echo "bf5edc7b1ce98e885c368cb43a886eb148dc5d0551d99f3cf6141fb5e1954c70  $broker_dir/nats-server.tar.gz" | sha256sum -c -
+          mkdir "$broker_dir/extracted"
+          tar -xzf "$broker_dir/nats-server.tar.gz" -C "$broker_dir/extracted"
+          COTAL_BROKER_LOG_NATS="$broker_dir/extracted/nats-server-v2.15.1-linux-amd64/nats-server" pnpm smoke:broker-logging:live
       - name: Manager lifecycle e2e (real broker + real agents)
         run: pnpm smoke:lifecycle-e2e
       - name: Runtime smoke tests (tmux, orca, herdr)

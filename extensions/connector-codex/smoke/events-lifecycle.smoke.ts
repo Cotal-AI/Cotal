@@ -50,13 +50,12 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CotalEndpoint, eventChannel, isAguiFramePart, seedChannelRegistry, isReachable } from "@cotal-ai/core";
 import { eventWalLocation, JsonlFileSource, type WalDoc } from "@cotal-ai/connector-core";
-import { freePort, killAndAwaitExit, SMOKE_BROKER_TOKEN, awaitBrokerReady, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { skipSuite, freePort, killAndAwaitExit, SMOKE_BROKER_TOKEN, awaitBrokerReady, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 if (process.platform === "win32") {
   // Managed Codex agents are POSIX-only by design (the isolated CODEX_HOME symlinks the operator's
   // auth.json), so there is no Windows case for this seam at all.
-  console.log("SKIP codex events lifecycle: managed Codex agents are POSIX-only");
-  process.exit(0);
+  skipSuite("managed Codex agents are POSIX-only");
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));

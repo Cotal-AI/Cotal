@@ -1,5 +1,115 @@
 # @cotal-ai/cli
 
+## 0.132.6
+
+### Patch Changes
+
+- ade39ed: `cotal backup restore` and `cotal up --restore` no longer refuse a space with an empty stream when the broker is nats-server 2.15. That server restores a never-written stream as exhausted (`first_seq` 1) rather than initial (`first_seq` 0). The restore check now compares an empty stream by its last sequence alone, which both forms share.
+- @cotal-ai/core@0.132.6
+  - @cotal-ai/workspace@0.132.6
+
+## 0.132.5
+
+### Patch Changes
+
+- 75e5b4f: Report the auth daemon's typed startup refusal to `cotal up` instead of a bare exit. A daemon that refuses its start records the refusal beside its discovery file, bound to its pid. The provider's readiness wait throws it as an `EpEnvelopeError`, and `up` names the code and reason, such as `[unavailable; ai.cotal.auth.plane-claim-refused: unknown]`.
+- 3b7d3d2: `cotal ext add` over an installed extension announces `✓ added` only once the add has committed, so an add interrupted by Ctrl-C or SIGTERM no longer reports the version it rolled back; it still exits 130. A committed add whose copy of the previous installation cannot be removed now succeeds with a warning that names the copy, instead of exiting 1 after reporting the add.
+- f719f72: A bare `cotal up` that adopts the broker of an interrupted `cotal up --restore ... --max-file-store <bytes>` now keeps that store cap in the mesh record instead of dropping it, so a full-store refusal can name the cap the broker runs with. The restore and ordinary-resume adopt paths now share one implementation.
+- @cotal-ai/core@0.132.5
+  - @cotal-ai/workspace@0.132.5
+
+## 0.132.4
+
+### Patch Changes
+
+- c0e9b6f: Let `cotal ext seed --reset` and `--repair` finish when the extensions manifest records a package whose directory is gone, such as one npm pruned as extraneous. `ext add`, `ext remove` and each seed now warn with the package, its path, the command that reinstalls it and `cotal ext remove <package>`, and keep its manifest entry. For a third-party package that command is `cotal ext add <original-spec>` with the placeholder left in, so the warning does not print a recorded spec that may be a URL carrying a credential. They no longer fail on it. A package directory without a readable `package.json`, a dangling package link and a corrupt `package.json` still fail. A seed that failed this way in an earlier release is finished by `cotal ext seed --repair`, after which `cotal ext remove` drops the entry.
+- e6f80e9: Start delivery's liveness oracle before the user-auth startup step on ordinary mesh startup and refresh, with manager startup afterward. A crashed auth predecessor can then be checked in the first repair invocation without weakening its claim guard or changing lease waits.
+- Updated dependencies [c0e9b6f]
+  - @cotal-ai/workspace@0.132.4
+  - @cotal-ai/core@0.132.4
+
+## 0.132.3
+
+### Patch Changes
+
+- 5992e23: Do not echo a refused restore listener URL, including credentials or query values recorded in a preserved launch. Explain the accepted endpoint shape without repeating the input.
+- 35eb67a: Use one persona catalog reader for core and the CLI. Preserve strict CLI directory errors and share its encoding, non-regular-file and symbolic-link metadata. Core's existing forgiving listing remains empty for unreadable catalogs, including directories that cannot be searched; manager replies retain their ownership filtering.
+- Updated dependencies [35eb67a]
+  - @cotal-ai/core@0.132.3
+  - @cotal-ai/workspace@0.132.3
+
+## 0.132.2
+
+### Patch Changes
+
+- 6e0f8d1: Share the IdP URL policy between manifest preflight and auth login while preserving their diagnostics and normalization.
+- Updated dependencies [ebabb1e]
+- Updated dependencies [6e0f8d1]
+  - @cotal-ai/core@0.132.2
+  - @cotal-ai/workspace@0.132.2
+
+## 0.132.1
+
+### Patch Changes
+
+- 4f50669: Keep file-based extensions as installed copies when removing another extension or cleaning up a failed pinned-name add. npm removal now uses the same `--install-links` policy as installation, preserving unrelated built-ins instead of replacing them with links to their source or seed store.
+- @cotal-ai/core@0.132.1
+  - @cotal-ai/workspace@0.132.1
+
+## 0.132.0
+
+### Patch Changes
+
+- 7613605: Share comma-list parsing across spawn, mint and persona commands. Preserve absent flags, explicit empty overrides and each command's validation rules.
+- 2f0e7c8: Share dashboard bound-address formatting between the web service and CLI status, keeping IPv6 brackets, readiness URLs and the branded default unchanged.
+- Updated dependencies [5b197c0]
+- Updated dependencies [7613605]
+- Updated dependencies [2f0e7c8]
+  - @cotal-ai/workspace@0.132.0
+  - @cotal-ai/core@0.132.0
+
+## 0.131.6
+
+### Patch Changes
+
+- 672f4a8: Closing a console detail sent the roster back to its first seat at the top, so `j`, Enter, Escape could never reach past the second seat. The roster now keeps its selected seat and window across a detail, help and the DM lens. A seat that moved while its detail was open stays selected, and one that left gives its row to the next seat.
+- 9de91fb: Show how many console roster seats the window leaves out. The roster drew whole seats around the selected one and said nothing about the rest: at 80 columns four seats showed two with no sign of the others, and the title was cut before its seat count. The title now starts with the whole seats left out above and below the window, as in `roster ↑2 ↓1 more`, so the 80-column cut keeps them. A selected seat taller than the window used to push the title out, and the title's tail then showed beside a short name row. The title now keeps its row while the box has another, and the seat shows its first rows under it. A box with one row inside gives that row to the seat's name.
+- @cotal-ai/core@0.131.6
+  - @cotal-ai/workspace@0.131.6
+
+## 0.131.5
+
+### Patch Changes
+
+- Updated dependencies [e78de30]
+  - @cotal-ai/core@0.131.5
+  - @cotal-ai/workspace@0.131.5
+
+## 0.131.4
+
+### Patch Changes
+
+- 7420d83: Mark every cut preview in the console's agent detail. A recent-traffic preview cut to its width cap that then fit the row showed no ellipsis, so at 80 columns a run of emoji ended after 25 with nothing to say the rest was left out, and at 47 columns a CJK preview did the same. A preview that leaves any text out now ends with `…` within the same width, and a preview that fits whole is unchanged.
+- 7ec2cd7: Keep a console roster seat's name, activity and ages readable at every width. The seat's head was one row cut at the pane, so at a 120-column terminal a 30-character name hid its role, harness tag, activity and ages, and even a short seat lost its activity's age and `progress unknown`. The head now wraps at its piece boundaries as the status rows do: each piece starts a new row when it does not fit, so no width cuts the name or an age. The roster window counts those rows, so it draws whole seats around the selected one. A seat taller than the pane still shows only its first rows.
+- @cotal-ai/core@0.131.4
+  - @cotal-ai/workspace@0.131.4
+
+## 0.131.3
+
+### Patch Changes
+
+- d5fbd2f: Fix two console detail problems. The agent detail's recent traffic cut each preview at a count of UTF-16 units, so a cut inside an emoji showed a replacement character. Previews now cut by terminal columns between whole characters, and a row that would overflow the card ends with `…`, so ASCII previews read as before. Closing a detail also sent the feed back to its newest message at the bottom, so you could not step back through older messages one detail at a time. The feed now keeps its selected message and scroll position across a detail, help and the DM lens. A channel or filter change still jumps to the newest.
+- 087f45c: Keep a `cotal console` roster seat's head row inside its box when a wide character such as a CJK ideograph meets the cut. The row ended with that character and its `…` one cell past the content, over the right padding, so at 80 columns a seat whose activity starts with CJK painted 21 cells in a 20-cell box. The row now ends at the last whole character that leaves room for the `…`, as an ASCII row already did.
+- @cotal-ai/core@0.131.3
+  - @cotal-ai/workspace@0.131.3
+
+## 0.131.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.131.2
+  - @cotal-ai/workspace@0.131.2
+
 ## 0.131.1
 
 ### Patch Changes

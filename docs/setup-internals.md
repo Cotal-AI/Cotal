@@ -260,7 +260,8 @@ source checkout and `<cotal-ai>/seeded-connectors/<name>` in a published install
 that payload into the durable store `seed/store/<version>/<name>`. The version is validated as one safe
 path segment, and the destination is checked to stay inside the store before anything is written. `ext add --install-links` reifies
 the `file:` dep from THAT stable path (a volatile source would fail to re-reify); `ext add` then
-junction-links each `@cotal-ai/*` peer to the binary's own copy. Before the first lazy import in each
+junction-links each `@cotal-ai/*` peer to the binary's own copy and relinks every other installed
+package's peers. It skips, with a warning, a recorded package whose directory is gone. Before the first lazy import in each
 process, materialization rechecks those links by realpath and rebinds stale links under the extension
 lock. This lets the registry-facing imports of a global install, npx, and source worktrees share the
 machine prefix while each process still gets its host's single `@cotal-ai/core` registry instance;
