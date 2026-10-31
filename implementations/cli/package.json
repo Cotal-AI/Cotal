@@ -28,7 +28,7 @@
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.smoke.json",
-    "test": "tsx smoke/console-cursor.smoke.tsx && tsx smoke/console-palette.smoke.tsx && tsx smoke/console-launch.smoke.tsx && tsx smoke/manifest.smoke.ts && tsx smoke/idp-url-policy.smoke.ts && tsx smoke/persona-catalog-shared.smoke.ts && tsx smoke/backup.smoke.ts && tsx smoke/sparkline.smoke.ts && tsx smoke/topo-membership.smoke.ts && tsx smoke/console-status-row.smoke.ts && tsx smoke/console-managed-rows.smoke.ts && tsx smoke/console-render.smoke.tsx && tsx smoke/cli-pty.smoke.ts && tsx smoke/chat-pure.smoke.ts && tsx smoke/chat-user-session.smoke.ts && tsx smoke/console-roster-head.smoke.tsx",
+    "test": "tsx smoke/console-cursor.smoke.tsx && tsx smoke/console-palette.smoke.tsx && tsx smoke/console-launch.smoke.tsx && tsx smoke/manifest.smoke.ts && tsx smoke/idp-url-policy.smoke.ts && tsx smoke/persona-catalog-shared.smoke.ts && tsx smoke/backup.smoke.ts && tsx smoke/sparkline.smoke.ts && tsx smoke/topo-membership.smoke.ts && tsx smoke/console-status-row.smoke.ts && tsx smoke/console-render.smoke.tsx && tsx smoke/cli-pty.smoke.ts && tsx smoke/chat-pure.smoke.ts && tsx smoke/chat-user-session.smoke.ts && tsx smoke/console-roster-head.smoke.tsx",
     "smoke:chat-pure": "tsx smoke/chat-pure.smoke.ts",
     "smoke:chat-user-session": "tsx smoke/chat-user-session.smoke.ts",
     "smoke:cli-pty": "tsx smoke/cli-pty.smoke.ts",
@@ -40,7 +40,6 @@
     "prepublishOnly": "pnpm run build",
     "smoke:console-render": "tsx smoke/console-render.smoke.tsx",
     "smoke:console-roster-head": "tsx smoke/console-roster-head.smoke.tsx",
-    "smoke:console-managed-rows": "tsx smoke/console-managed-rows.smoke.ts",
     "smoke:console-status-row": "tsx smoke/console-status-row.smoke.ts"
   },
   "dependencies": {

@@ -2,8 +2,8 @@ import { useMemo, useState } from "react";
 import { CotalEndpoint, chatWildcard } from "@cotal-ai/core";
 import { openObserver, type ObserverAuth } from "@cotal-ai/workspace/view";
 import { App } from "./app.js";
-import type { ControlCtx } from "./control.js";
 import { SpacePicker } from "./ui/SpacePicker.js";
+import type { ControlCtx } from "@cotal-ai/workspace/control";
 
 /** The operator's presence peer: a second endpoint carrying the observer's own card (the same id,
  *  name, and role, so it IS the `from` of everything the observer sends) that does nothing but

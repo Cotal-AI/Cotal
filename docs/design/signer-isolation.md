@@ -144,7 +144,7 @@ offline caller.
 `spawn` (operator, provisioner, deprovisioner); `join` (provisioner); `status` (observer, deployer);
 `agents` (session-caller); `down-manifest` (`teardown`); `backup` / restore; `delivery-proc`
 (`delivery`); `team-deploy-apply` and `team-agent-apply` (`channel-writer`); attach scatter probe
-(`implementations/cli/src/lib/control.ts`, `control-caller-privileged`). They run as a uid on the
+(`packages/workspace/src/control/manager.ts`, `control-caller-privileged`). They run as a uid on the
 signer allowlist after §6, never as `cotal-agent`.
 
 `connect.ts` (`packages/workspace/src/connect.ts`) mints `control-caller-privileged`,

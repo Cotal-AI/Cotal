@@ -74,8 +74,9 @@ examples ──→ implementations ──→ workspace ──→ core ←(peer)�
   extension contracts (`Connector`, `Command`, `Runtime`) with the `Registry` they
   self-register into. Depends on nothing else in the repo.
 - **`@cotal-ai/workspace`**, the machine-local operator and client-surface layer over
-  `~/.cotal`: mesh registry, target resolution, auth-path helpers, and the live space model
-  that terminal surfaces share. Not part of the wire standard, so a
+  `~/.cotal`: mesh registry, target resolution, auth-path helpers, the live space model
+  that terminal surfaces share, and the manager control calls they make
+  (`@cotal-ai/workspace/control`). Not part of the wire standard, so a
   third party can embed core without inheriting workstation plumbing.
 - **`@cotal-ai/lang`**, the workflow language: validator, interpreter, journal. Depends on
   nothing else in the repo.
@@ -304,7 +305,8 @@ durable and reads through the endpoint's tap, history and presence APIs. The ter
 console, its plain stream and `cotal watch` share the [MeshView](mesh-view.md) model from
 `@cotal-ai/workspace/view`. The web dashboard owns a separate endpoint and exposes HTTP
 snapshots and SSE events; it does not import that model. The console's authorized operator
-actions use separate control calls. See [Watch a mesh](watch-a-mesh.md).
+actions use separate control calls from `@cotal-ai/workspace/control`, the same requests the CLI's
+`status`, `ps`, `stop` and `down` send. See [Watch a mesh](watch-a-mesh.md).
 
 ## Addressing
 

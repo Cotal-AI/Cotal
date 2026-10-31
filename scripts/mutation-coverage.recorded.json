@@ -15,10 +15,6 @@
     "sha256": "4a6a533ab28241921d9023662a9bf5c7f2cba6762edfa2e85b8a051a9e80c6ac",
     "refusal": "mutation \"one file's disclosure is deleted, which is the regression this guard exists for\" targets extensions/pi/smoke/tool-input-closed.smoke.ts, which none of [bin/smoke/broker-disclosure.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in extensions/pi that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
   },
-  "bin/smoke/mutations/control-transport-dial.json": {
-    "sha256": "87c0e9bd209dd1e896df4b50771c11e76b534760523e8e5d042d9b4dd0660f8d",
-    "refusal": "mutation \"askManagerEp uses raw TCP connect for a websocket URL\" targets implementations/cli/src/lib/control.ts, which none of [bin/smoke/control-transport-dial.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in implementations/cli that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
-  },
   "bin/smoke/mutations/delivery-launch.mutations.json": {
     "sha256": "2ae0c6e91175dff24e436c33bfa846cdf87a0f0082945fb15adeb7c00d3d8791",
     "refusal": "mutation \"M1 the delivery launcher re-derives the transport from the broker policy instead of taking the caller's decision (#836)\" is missing \"cell\""
@@ -355,10 +351,6 @@
     "sha256": "5b35acbf46a198129984073c112c81884f7fd8d24bf2dc823684ba61616f184c",
     "refusal": "mutation \"the production invoke path stops sending the bind (the fence is never reached)\" is missing \"cell\""
   },
-  "implementations/cli/smoke/fixtures/scatter-pinned-probe.mutations.json": {
-    "sha256": "36c58c9b6c254d07ca1409f15a5e58c587c54fca63a08edace775adf93bca3ec",
-    "refusal": "mutation \"PREDICTED KILLED (1 red) - the pinned-set gate goes, so the closure publishes a probe for an id its credential holds no rail for: the request the broker must refuse, sent anyway\" is missing \"cell\""
-  },
   "implementations/cli/smoke/fixtures/seed-migration-provenance.mutations.json": {
     "sha256": "cbf17c73fb657d25de610d965ebf1eeb75886da4fb5f360db4b7f60d3f794fe2",
     "refusal": "mutation \"the generation advances silently because the migration announcement is deleted\" targets implementations/cli/src/seed/reconcile.ts, which none of [implementations/cli/smoke/seed-migration-provenance.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in implementations/cli that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
@@ -375,10 +367,6 @@
     "sha256": "6e5beccfd444e2d71f73213a9f104036e2b5ed28e486cbd45636fddf4bd04470",
     "refusal": "mutation \"A1 compare the detach key on the raw stream\" targets implementations/cli/src/lib/attach-client.ts, which none of [implementations/cli/smoke/console-attach.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in implementations/cli that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
   },
-  "implementations/cli/smoke/mutations/console-control.json": {
-    "sha256": "2d1da88d9db745b0df02f5df1e174da43f84b839aac09d8e9c5b82a9733a1bc1",
-    "refusal": "mutation \"C1 :ps from one manager's answer instead of the scatter merge\" targets implementations/cli/src/console/control.ts, which none of [implementations/cli/smoke/console-control.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in implementations/cli that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
-  },
   "implementations/cli/smoke/mutations/console-gaps.json": {
     "sha256": "087ec5c20b17d140dc799641874ee9801a0112deb64ae79ef528af55a91ce199",
     "refusal": "mutation \"G1 viewing a channel does not pin its watermark\" targets implementations/cli/src/console/app.tsx, which none of [implementations/cli/smoke/console-gaps.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in implementations/cli that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
@@ -394,10 +382,6 @@
   "implementations/cli/smoke/mutations/dry-run-no-seed.json": {
     "sha256": "db00ea88fef2601976c198a9c376193fa3cee35ef85375c9ee57e78227f2a4dd",
     "refusal": "mutation \"let a dry run fall through to the boot-gate seed reconcile\" targets implementations/cli/src/command.ts, which none of [implementations/cli/smoke/dry-run-no-seed.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in implementations/cli that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
-  },
-  "implementations/cli/smoke/mutations/ep-rail-scoped-verdict.json": {
-    "sha256": "cae59c007432bbc4080d38bd24bb8f80377f6e1287ec219cbd20dba38ed8bc2d",
-    "refusal": "mutation \"the renderer stops reading the rail and returns to the unscoped verdict\" is missing \"cell\""
   },
   "implementations/cli/smoke/mutations/ps-mesh-column.json": {
     "sha256": "4e0ab2f4db47ef016b18d34d6d2085985c1b53bafcb77d096f80468b6aca88ab",

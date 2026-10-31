@@ -105,6 +105,7 @@ import {
   movedProject,
   spaceStreamsAbsent,
   spaceStreamsExpected,
+  resolveControlTarget,
 } from "@cotal-ai/workspace";
 import { localProcessSurface } from "../ext-loader.js";
 import { cliVersion, cliProvenance, readExtensionVersions, type CliProvenance } from "../lib/version.js";
@@ -125,7 +126,7 @@ import { c } from "../ui.js";
 import { preparedCatalogDiagnostics } from "./sync.js";
 import { agentStatus } from "./agents.js";
 import { invalidEnvironmentValues } from "./config.js";
-import { askManager, onInstance, resolveControlTarget } from "../lib/control.js";
+import { cliControl, onInstance } from "../lib/control.js";
 import { serviceDefinitionProjection, serviceDefinitionStore } from "../lib/service-definitions.js";
 import { instanceProjection, serviceInstances } from "../lib/service-instances.js";
 import { readinessAddressSurvivors } from "../lib/service-process.js";
@@ -149,6 +150,7 @@ import {
 import { cotalLinkHere, homeHoldsStack, linkedCotalRemedy } from "../lib/paths.js";
 import { storeWriteProblem } from "../lib/store-dir.js";
 import { natsServerLabel } from "../lib/nats-bin.js";
+import { askManager } from "@cotal-ai/workspace/control";
 
 /** `--components` is the fail-loud health pass with a machine-readable EXIT DISPOSITION. Bare
  * `status` is a broad, recovery-oriented report: it exits 0, or 4 when it could not read part of what
@@ -1062,6 +1064,7 @@ async function userManagerStatus(target: MeshTarget, instanceId?: string): Promi
     { onRefusal: "throw" },
   );
   const reply = await askManager(
+    cliControl,
     control.space,
     control.server,
     "managerStatus",

@@ -9,9 +9,10 @@
 // form is used throughout (`onRefusal: "throw"`): the CLI commands' default prints a sentence and
 // exits the process, which inside a TUI would blank the screen mid-session.
 import { assertValidChannel, clearChannel, isConcreteChannel } from "@cotal-ai/core";
-import { askManager, resolveControlTarget, scatterManager, START_TIMEOUT_MS, type ManagerReply } from "../lib/control.js";
-import { connectOrThrow, userViewAuth, type ConnectFlags } from "../lib/connect.js";
-import { locateSeat, seatMissRefusal, seatNotFoundMessage } from "../commands/agents.js";
+import { connectOrThrow, userViewAuth, type ConnectFlags } from "../connect.js";
+import { resolveControlTarget } from "../control-target.js";
+import { askManager, scatterManager, START_TIMEOUT_MS, type ControlClient, type ManagerReply } from "./manager.js";
+import { locateSeat, seatMissRefusal, seatNotFoundMessage } from "./seat.js";
 
 /** The console's control coordinates: the same `ConnectFlags` triple the CLI's control commands
  *  resolve from. `space` is the one the console is currently watching. */
@@ -71,14 +72,14 @@ export interface ManagedRow {
  *  incarnation triple inside `askManager` (the manager's `inspect` read), so the wire never carries
  *  a name as a target. Reach is `owner` on a user mesh (the bearer's one path; the manager decides
  *  by ledger scope) and `any` on a static or open mesh (the admin instrument's cross-agent row). */
-export async function control(ctx: ControlCtx, op: ControlOp, args?: Record<string, unknown>): Promise<ManagerReply> {
+export async function control(client: ControlClient, ctx: ControlCtx, op: ControlOp, args?: Record<string, unknown>): Promise<ManagerReply> {
   const spec = OPS[op];
   try {
     let on: string | undefined;
     if (spec.targeted) {
       const name = String(args?.name ?? "").trim();
       if (!name) return { ok: false, error: `${op} requires a name` };
-      const loc = await locateSeat(ctx, name, { onRefusal: "throw" });
+      const loc = await locateSeat(client, ctx, name, { onRefusal: "throw" });
       if (loc.kind === "absent") return { ok: false, error: seatNotFoundMessage(loc, name) };
       if (loc.kind === "several") return { ok: false, error: seatMissRefusal(name, `cotal ${op}`, loc) };
       if (loc.kind === "pin") on = loc.instanceId;
@@ -88,7 +89,7 @@ export async function control(ctx: ControlCtx, op: ControlOp, args?: Record<stri
     const timeoutMs = "timeoutMs" in spec ? spec.timeoutMs : undefined;
     // `args` goes through as given: a void-input command is refused by the manager's schema when it
     // is handed `{}` instead of nothing, so no default is filled in here.
-    return await askManager(t.space, t.server, op, args, t.auth, reach, timeoutMs, spec.targeted ? { instanceId: on } : undefined);
+    return await askManager(client, t.space, t.server, op, args, t.auth, reach, timeoutMs, spec.targeted ? { instanceId: on } : undefined);
   } catch (e) {
     return { ok: false, error: (e as Error).message };
   }
@@ -194,16 +195,16 @@ export function createManagedPoller(
     },
   };
 }
-export async function controlPs(ctx: ControlCtx): Promise<PsReply> {
+export async function controlPs(client: ControlClient, ctx: ControlCtx): Promise<PsReply> {
   try {
     const t = await resolveControlTarget(ctx, "control-caller-privileged", undefined, { onRefusal: "throw" });
     if (t.auth.bearer) {
-      const r = await askManager(t.space, t.server, "ps", undefined, t.auth, "owner", undefined, {});
+      const r = await askManager(client, t.space, t.server, "ps", undefined, t.auth, "owner", undefined, {});
       if (!r.ok) return { ok: false, error: r.error ?? "error" };
       const rows = (r.data as ManagedRow[]) ?? [];
       return { ok: true, rows, silent: [], failed: [], answered: [{ instanceId: BEARER_INSTANCE, rows }] };
     }
-    const s = await scatterManager(t.space, t.server, "ps", t.auth, t.spaceAuth);
+    const s = await scatterManager(client, t.space, t.server, "ps", t.auth, t.spaceAuth);
     if (!s.ok) return s;
     const answered = s.instances
       .filter((i) => i.reachable && !i.error)

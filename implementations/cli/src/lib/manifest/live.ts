@@ -7,7 +7,7 @@
  * which connects itself.
  */
 import { CotalEndpoint, EpEnvelopeError, controlReplyFrom, controlReplyFromThrown, type ControlReply, type MeshLaunchSpec } from "@cotal-ai/core";
-import { START_TIMEOUT_MS } from "../control.js";
+import { START_TIMEOUT_MS } from "@cotal-ai/workspace/control";
 
 export interface MeshConn {
   space: string;

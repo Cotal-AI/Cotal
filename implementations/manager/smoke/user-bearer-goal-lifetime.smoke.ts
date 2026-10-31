@@ -405,7 +405,8 @@ async function main() {
 
     // The built CLI control API opens its own signed-bearer connection and reads that
     // connection's actual accepted row. This is an API probe, not a CLI binary journey.
-    const { askManager } = await import("../../cli/dist/lib/control.js");
+    const { askManager } = await import("@cotal-ai/workspace/control");
+    const { cliControl } = await import("../../cli/dist/lib/control.js");
     cliManagerPin = mgrIid;
     const cliUid = mintLifecycleUid();
     const cliBearer = await issuer.issue({ owner, space: SPACE, actor: "caller_cli", lifecycleUid: cliUid,
@@ -423,7 +424,7 @@ async function main() {
       return nativePublish.call(this, subject, data, options);
     };
     const issuedBefore = cliIssuedConnections.length;
-    const cliReply = await askManager(SPACE, SERVERS, "start", { name: "cli-legacy", agent: "delayed-join" },
+    const cliReply = await askManager(cliControl, SPACE, SERVERS, "start", { name: "cli-legacy", agent: "delayed-join" },
       { bearer: cliBearer, sentinelCreds: callout.sentinelCreds, epCaller: cliIdentity, managerInstanceId: mgrIid, tls: false },
       "owner", 10_000, { instanceId: mgrIid }).finally(() => { ncPrototype.publish = nativePublish; });
     check("CLI-API: real signed-bearer legacy preflight keeps failed-precondition", cliReply.ok === false && cliReply.code === "failed-precondition", cliReply);

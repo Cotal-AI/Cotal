@@ -6,10 +6,9 @@
 // `canControl`; the observer endpoint never carries control.
 import { resolvePeer, AmbiguousPeerError, peerLabel, type CotalEndpoint, type Presence } from "@cotal-ai/core";
 import type { MeshSnapshot } from "@cotal-ai/workspace/view";
-import type { ManagerReply } from "../lib/control.js";
-import type { ControlOp, ManagedRow, PsReply } from "./control.js";
 import { mentionsIn } from "../lib/mentions.js";
 import { offlineRecipientNotice } from "../lib/offline-recipient.js";
+import type { ManagerReply, ControlOp, ManagedRow, PsReply } from "@cotal-ai/workspace/control";
 
 export interface CommandCtx {
   ep: CotalEndpoint;

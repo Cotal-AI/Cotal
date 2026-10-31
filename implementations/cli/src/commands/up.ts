@@ -203,6 +203,7 @@ import {
   canonicalLocalProcessPath,
   DELIVERY_LOGFILE,
   terminalWidth,
+  type ControlAuth,
 } from "@cotal-ai/workspace";
 import { FlagValueRefusal } from "../lib/flag-value-refusal.js";
 import { ensureAuthService, resolveAuthProvider, stopAuthService } from "../lib/auth-proc.js";
@@ -272,7 +273,6 @@ import { assertStoreDirArgument, configuredStoreDir, lastServedStore, missingSto
 import { extensionNames, preflightRuntime } from "../ext-loader.js";
 import { completingFlagValue } from "../lib/completion.js";
 import { metadataPositionals } from "../lib/command-path.js";
-import { askManager, type ControlAuth } from "../lib/control.js";
 import {
   bindPreparedRestoreListener,
   isManagerCommitResult,
@@ -300,6 +300,8 @@ import {
 import { attemptProcessesGone } from "../lib/isolated-broker.js";
 import { assertEndpointUnreachable } from "../lib/endpoint-cut.js";
 import { addressHolder, brokerListenAddress, listenerBindError } from "../lib/broker-service.js";
+import { askManager } from "@cotal-ai/workspace/control";
+import { cliControl } from "../lib/control.js";
 
 const pendingRestores = new Map<string, PreparedRestore>();
 
@@ -3090,7 +3092,7 @@ async function completeResumeActivation(
   const auth = await resumeControlAuth(pending.root, pending.mode);
   const readinessDeadline = Date.now() + 20_000;
   for (;;) {
-    const ready = await askManager(pending.space, server, "ps", undefined, auth, "any", 2_000);
+    const ready = await askManager(cliControl, pending.space, server, "ps", undefined, auth, "any", 2_000);
     // Wait only while nothing ANSWERS (the manager is still coming up). Any answer, including a
     // refusal, ends the wait: a refusal will not heal by waiting, and the resume call right after
     // this fails loud on it with its own message.
@@ -3116,6 +3118,7 @@ async function completeResumeActivation(
     }
   };
   const resumed = await askManager(
+    cliControl,
     pending.space,
     server,
     "resumePreserved",
@@ -3155,6 +3158,7 @@ async function completeResumeActivation(
   }
   if (!managerCommit) {
     const committed = await askManager(
+      cliControl,
       pending.space,
       server,
       "commitResume",
@@ -3189,6 +3193,7 @@ async function completeResumeActivation(
     if (process.env.COTAL_SMOKE_EXIT_AFTER_RESUME_COMMIT === "1") process.exit(89);
   } else {
     const recommitted = await askManager(
+      cliControl,
       pending.space,
       server,
       "commitResume",
@@ -3210,6 +3215,7 @@ async function completeResumeActivation(
   }
 
   const finalized = await askManager(
+    cliControl,
     pending.space,
     server,
     "finalizeResume",

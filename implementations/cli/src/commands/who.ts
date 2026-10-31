@@ -1,10 +1,10 @@
 import { peerLabel, type FlagSpec, type FlagValues, type ParsedArgs, type Presence, type PresenceCondition } from "@cotal-ai/core";
 import { CommandFailure, recordOperationSpace, isCommandFailure, isConnectRefusal, isMeshRegistryError, jsonFlag, plainFlag, presentationOf, targetFlags, writeResult, type Cell, type Column, type OutputWarning, type Report, type Styled } from "@cotal-ai/workspace";
-import { managerLabel } from "../lib/manager-choice.js";
 import { openTransient } from "../lib/transient.js";
 import { registryFailure } from "../lib/registry-errors.js";
 import { activityAge, c, presenceFacts } from "../ui.js";
 import { readSeats, type SeatCensus } from "./agents.js";
+import { managerLabel } from "@cotal-ai/workspace/control";
 
 const waitingFlag = { name: "waiting", type: "boolean", description: "only rows that are waiting or report a condition" } as const;
 const allFlag = { name: "all", type: "boolean", description: "also list infrastructure endpoints such as the manager" } as const;

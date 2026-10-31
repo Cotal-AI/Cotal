@@ -3276,7 +3276,7 @@
     {
       "path": "implementations/cli/src/chat/static-session.ts",
       "kind": "derived-output",
-      "anchor": "askManager(mesh.space, mesh.server, op, args, auth, \"owner\", timeoutMs, instanceId !== undefined ? { instanceId } : undefined)",
+      "anchor": "askManager(cliControl, mesh.space, mesh.server, op, args, auth, \"owner\", timeoutMs, instanceId !== undefined ? { instanceId } : undefined)",
       "class": "non-render/control",
       "rationale": "Static chat control path: asks the pinned space's manager; no presence is rendered."
     },
@@ -5165,9 +5165,9 @@
       "rationale": "Manager choice: tests whether a live peer holds the name; the status is a filter predicate, not rendered."
     },
     {
-      "path": "implementations/cli/src/lib/manager-choice.ts",
+      "path": "packages/workspace/src/control/seat.ts",
       "kind": "status-token",
-      "anchor": "visor}` && p.status !== \"offline\")));\n  return { managers",
+      "anchor": "\"offline\"",
       "class": "non-render/control",
       "rationale": "Manager choice: skips an offline supervisor presence when reading a manager's host; the status is a filter predicate, not rendered."
     },

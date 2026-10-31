@@ -48,7 +48,6 @@
   "implementations/cli/src/commands/status.ts": 1,
   "implementations/cli/src/commands/up.ts": 6,
   "implementations/cli/src/exec-endpoint/registration.ts": 1,
-  "implementations/cli/src/lib/control.ts": 2,
   "implementations/cli/src/lib/controller-preserve.ts": 1,
   "implementations/cli/src/lib/endpoint-client.ts": 2,
   "implementations/cli/src/lib/space-schema-inspection.ts": 1,
@@ -149,5 +148,6 @@
   "packages/core/src/issuer-session.ts": 1,
   "packages/core/src/lease.ts": 1,
   "packages/core/src/streams.ts": 6,
-  "packages/workspace/src/control-target.ts": 1
+  "packages/workspace/src/control-target.ts": 1,
+  "packages/workspace/src/control/manager.ts": 2
 }

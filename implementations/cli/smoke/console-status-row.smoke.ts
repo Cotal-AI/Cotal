@@ -8,7 +8,7 @@
  * the qualifier is dropped, if either fact stops reaching the reader, or if the two are folded.
  */
 import { formatManagedRow } from "../src/console/commands.js";
-import type { ManagedRow } from "../src/console/control.js";
+import type { ManagedRow } from "@cotal-ai/workspace/control";
 
 let pass = 0, fail = 0;
 function check(label: string, cond: boolean, extra?: unknown): void {
