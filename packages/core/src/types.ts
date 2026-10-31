@@ -1,3 +1,5 @@
+import type { EpEffectOutcome } from "./endpoint-error.js";
+
 /**
  * Cotal wire types (v0.2).
  *
@@ -5,8 +7,6 @@
  * (AgentCard / Message / Part) but transport-agnostic. This file IS part of the
  * "wire contract" — treat changes here as protocol changes.
  */
-
-import type { EpEffectOutcome } from "./endpoint-error.js";
 
 export type EndpointKind = "agent" | "endpoint";
 
