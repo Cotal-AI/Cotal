@@ -73,7 +73,7 @@
  * grading them on `[A]` alone would have been the "green list you choose" mistake in miniature.
  *
  *   M1  [A] pass `signature` into `reasoningMessageContent`  -> **SURVIVED**, and that is recorded
- *       rather than deleted: the constructor returns an explicit field literal (`agui.ts:882`), so
+ *       rather than deleted: the constructor returns an explicit field literal (in `agui.ts`), so
  *       an unknown ARGUMENT key cannot reach the output at all. The outcome cell was riding a
  *       barrier it did not assert. It is why `mechanism:*` exists, and M1 stays in the ledger
  *       because a survivor that produced a fix is the most useful line in it.
@@ -1043,7 +1043,7 @@ c("control:and-does-NOT-fire-on-the-word-in-a-value",
 // and this suite found that out by mutation rather than by reasoning about it.
 //
 // A mutation that passed `signature` straight into `reasoningMessageContent` SURVIVED: the
-// constructor builds an explicit field literal (`agui.ts:882`), so an unknown key is structurally
+// constructor builds an explicit field literal (in `agui.ts`), so an unknown key is structurally
 // dropped and the leak could never reach the output through that argument at all. The outcome cell
 // below was therefore riding on a barrier it was not testing. `cotal` is the OTHER story — it is
 // passed through by reference, so it is a real channel a key can travel down, and it is the one the
