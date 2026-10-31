@@ -1,5 +1,13 @@
 # @cotal-ai/cli
 
+## 0.132.1
+
+### Patch Changes
+
+- 4f50669: Keep file-based extensions as installed copies when removing another extension or cleaning up a failed pinned-name add. npm removal now uses the same `--install-links` policy as installation, preserving unrelated built-ins instead of replacing them with links to their source or seed store.
+- @cotal-ai/core@0.132.1
+  - @cotal-ai/workspace@0.132.1
+
 ## 0.132.0
 
 ### Patch Changes
