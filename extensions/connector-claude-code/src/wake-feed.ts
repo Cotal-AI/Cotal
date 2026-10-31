@@ -72,6 +72,8 @@ export interface WakeFeed {
   send(id: string, preview: RenderedInboxPreview, session?: string): boolean;
   /** Tell the monitors of one native session what the person decided about its pending request. */
   notifyApproval(session: string, notice: ApprovalNotice): boolean;
+  /** Surface an authorized personal workflow turn through the native session reader. */
+  sendTurn(session: string, id: string, text: string): boolean;
   supportsInline(session: string): boolean;
   inlinePending(session: string): boolean;
   fitsInline(id: string, session: string, payload: InlineDeliveryPayload): boolean;
@@ -176,6 +178,18 @@ export async function openWakeFeed(claudePid: number): Promise<WakeFeed> {
       if (!WAKE_ID.test(session)) throw new Error(`not a native session: ${JSON.stringify(session)}`);
       if (!approvalFrame({ approval: notice })) throw new Error("not an approval notice");
       const frame = JSON.stringify({ approval: notice });
+      let sent = false;
+      for (const [s, owner] of readers) {
+        if (owner.session !== session) continue;
+        s.write(`${frame}\n`);
+        sent = true;
+      }
+      return sent;
+    },
+    sendTurn(session, id, text) {
+      if (!WAKE_ID.test(session) || !WAKE_ID.test(id)) throw new Error("invalid native turn route");
+      const frame = JSON.stringify({ turn: { id, text } });
+      if (frame.length > 12_288) throw new Error("native turn frame is too large");
       let sent = false;
       for (const [s, owner] of readers) {
         if (owner.session !== session) continue;

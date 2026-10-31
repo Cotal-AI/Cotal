@@ -63,6 +63,7 @@ import {
   type RestoreReadyRecord,
   restoreLeftOut,
   restoreLeftOutReason,
+  restoreOtherAccounts,
 } from "../src/maintenance.js";
 import { wfjStreamName } from "@cotal-ai/core";
 
@@ -1271,6 +1272,83 @@ if (process.platform !== "win32") {
   cleanupRestoreFallback(p.lock, "restore-runs", { discardHistory: true });
   check("discardHistory deletes it and retires the journal", !exists(fallback) && sameStoreIdentity(target, readStoreIdentity(p.store)) && readMaintenanceJournal(p.root) === undefined);
   releaseMaintenanceLock(p.lock);
+}
+
+// A store that also held another account's streams, such as an open mesh's beside a static space's,
+// keeps their only copy once a restore of the space sets it aside, so deleting it needs the same
+// consent, and the refused cleanup keeps that account's streams.
+{
+  const p = ready("cleanup-accounts");
+  const fallback = join(p.root, "store.fallback");
+  prepareSamePathRestore(p.lock, { attemptId: "restore-accounts", targetPath: p.store, fallbackPath: fallback, claim: restoreClaim(), selection: "full" });
+  moveSamePathRestoreSource(p.lock);
+  mkdirSync(p.store);
+  bindRestoreTarget(p.lock);
+  const target = readStoreIdentity(p.store);
+  writeRestoreCommitIntent(p.lock, { server: "nats://127.0.0.1:4222", restoredStreams: [wfjStreamName("space-cleanup-accounts")], otherAccounts: ["$G"] });
+  const proof: RestoreListenerProof = {
+    attemptId: "restore-accounts", serverName: "restore-accounts-listener", serverNonce: "restore-accounts-nonce",
+    processOwner: owner("restore-accounts-owner", process.pid), serverEndpoint: normalEndpoint, target,
+  };
+  bindRestoreListener(p.lock, proof);
+  finalizeRestore(p.lock, proof);
+  const streams = join(fallback, "jetstream", "$G", "streams", "CHAT_space-cleanup-accounts");
+  mkdirSync(streams, { recursive: true });
+  const active = readMaintenanceJournal(p.root) as Parameters<typeof restoreLeftOut>[0];
+  check("the restore names the other account in the store it set aside", JSON.stringify(restoreOtherAccounts(active)) === '["$G"]');
+  check("it left out that account's streams, and says why", restoreLeftOut(active) === "streams of account $G"
+    && restoreLeftOutReason(active) === "this restore's artifact held only one of the accounts in the store it replaced");
+  check("with the runs left out too it names both", restoreLeftOut({ ...active, launch: { otherAccounts: ["$G", "AB"] } }) === "workflow runs and the streams of accounts $G, AB");
+  check("a registry restore gives both reasons", restoreLeftOutReason({ ...active, restore: { selection: "registry" } }) === "this restore was registry-only and its artifact held only one of the accounts in the store it replaced");
+  expectCode("its old source is not deleted without discardHistory", "cleanup-forbidden", () => cleanupRestoreFallback(p.lock, "restore-accounts"));
+  check("the refused cleanup keeps the other account's streams and the active journal", existsSync(streams) && exists(fallback) && readMaintenanceJournal(p.root)?.state === "active");
+  releaseMaintenanceLock(p.lock);
+}
+
+// A restore journaled by an earlier release recorded no other accounts. Its old store is read for
+// them while it is still the recorded one, and only the accounts its auth mode rules out are named:
+// `$G` after a static restore, which restored a data account, and every other account after an open
+// restore, which restored `$G`. Which data account a static restore restored is not recorded, so no
+// data account is named for it.
+{
+  const legacy = (name: string, mode: MaintenanceAuthMode) => {
+    const p = ready(name, mode);
+    const fallback = join(p.root, "store.fallback");
+    prepareSamePathRestore(p.lock, { attemptId: `restore-${name}`, targetPath: p.store, fallbackPath: fallback, claim: restoreClaim(), selection: "full" });
+    moveSamePathRestoreSource(p.lock);
+    mkdirSync(p.store);
+    bindRestoreTarget(p.lock);
+    const target = readStoreIdentity(p.store);
+    writeRestoreCommitIntent(p.lock, { server: normalEndpoint, restoredStreams: [wfjStreamName(`space-${name}`)] });
+    const proof: RestoreListenerProof = {
+      attemptId: `restore-${name}`, serverName: `${name}-listener`, serverNonce: `${name}-nonce`,
+      processOwner: owner(`${name}-owner`, process.pid), serverEndpoint: normalEndpoint, target,
+    };
+    bindRestoreListener(p.lock, proof);
+    finalizeRestore(p.lock, proof);
+    for (const account of ["$G", "ADATA", "AOTHER"]) mkdirSync(join(fallback, "jetstream", account, "streams", `CHAT_space-${name}`), { recursive: true });
+    mkdirSync(join(fallback, "jetstream", "AEMPTY"));
+    return { ...p, fallback, active: readMaintenanceJournal(p.root) as Parameters<typeof restoreLeftOut>[0] };
+  };
+  const auth = legacy("cleanup-legacy-auth", "auth");
+  check("a static restore that recorded no other accounts names only $G from its old store", JSON.stringify(restoreOtherAccounts(auth.active)) === '["$G"]'
+    && restoreLeftOut(auth.active) === "streams of account $G");
+  expectCode("its old source is not deleted without discardHistory", "cleanup-forbidden", () => cleanupRestoreFallback(auth.lock, "restore-cleanup-legacy-auth"));
+  const kept = readMaintenanceJournal(auth.root);
+  check("the refused cleanup keeps $G's streams, starts no cleanup and keeps the journal active", existsSync(join(auth.fallback, "jetstream", "$G", "streams"))
+    && kept?.state === "active" && kept.restore.cleanup === undefined);
+  releaseMaintenanceLock(auth.lock);
+  const open = legacy("cleanup-legacy-open", "open");
+  check("an open restore that recorded no other accounts names every other account that holds streams", JSON.stringify(restoreOtherAccounts(open.active)) === '["ADATA","AOTHER"]');
+  renameSync(open.fallback, join(open.root, "fallback-moved"));
+  mkdirSync(open.fallback);
+  expectCode("a folder at the old source's path that is not the recorded store is refused", "identity-mismatch", () => restoreOtherAccounts(open.active));
+  expectCode("so the cleanup refuses before it starts", "identity-mismatch", () => cleanupRestoreFallback(open.lock, "restore-cleanup-legacy-open"));
+  const refused = readMaintenanceJournal(open.root);
+  check("and records no cleanup", refused?.state === "active" && refused.restore.cleanup === undefined && exists(join(open.root, "fallback-moved")));
+  rmSync(open.fallback, { recursive: true });
+  check("with no store at that path, no account is named", JSON.stringify(restoreOtherAccounts(open.active)) === "[]");
+  releaseMaintenanceLock(open.lock);
 }
 
 // A disaster restore retains no old source, so its explicit cleanup only retires the journal.

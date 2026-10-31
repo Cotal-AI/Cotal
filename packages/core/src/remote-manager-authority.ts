@@ -2,11 +2,16 @@ import { fromPublic } from "@nats-io/nkeys";
 import { rawDigest, canonicalJson } from "./canonical.js";
 import { EpEnvelopeError } from "./endpoint-error.js";
 import { isAccountNkey, isUserNkey } from "./identity.js";
-import { assertDerivedOwnerToken, assertLifecycleToken, assertValidChannel, assertValidOwnerToken } from "./subjects.js";
+import { assertDerivedOwnerToken, assertLifecycleToken, assertValidChannel, assertValidOwnerToken, principalKey } from "./subjects.js";
 
 /** The manager-service authority operations. The request type and the host parser both read this
  *  list, so an operation added here is admitted by the parser too. */
 export const REMOTE_MANAGER_AUTHORITY_OPERATIONS = Object.freeze(["prepare", "activate", "renew", "session", "retire", "renewStandingBundle", "renewRunDriver", "transferReader"] as const);
+
+/** The host-owned manager-service maintenance operations. The request type, the host parser, and
+ *  the result check all read this list, so an operation added here is admitted by the parser too
+ *  and cannot fall through another operation's branch. */
+export const REMOTE_MANAGER_MAINTENANCE_OPERATIONS = Object.freeze(["evict-family-principal", "reconcile-registration"] as const);
 
 /**
  * Closed request for one remote manager-service authority lifecycle.
@@ -132,7 +137,7 @@ export interface RemoteManagerAuthorityMaterial {
 export interface RemoteManagerMaintenanceRequest {
   v: 1;
   kind: "manager-service-maintenance";
-  operation: "evict-family-principal" | "reconcile-registration";
+  operation: (typeof REMOTE_MANAGER_MAINTENANCE_OPERATIONS)[number];
   space: string;
   actor: string;
   instanceId: string;
@@ -269,6 +274,63 @@ export interface RemoteManagerAdminAuthorizationResult {
   identities: RemoteManagerAuthorityRequest["identities"];
   caller: RemoteManagerAdminAuthorizationRequest["caller"];
   authorized: boolean;
+}
+
+/** Closed pre-run decision for one exact native personal caller lifecycle. */
+export interface RemoteManagerParticipationAuthorizationRequest {
+  v: 1;
+  kind: "manager-participation-authorization";
+  space: string;
+  actor: string;
+  instanceId: string;
+  managerLifecycleUid: string;
+  requestId: string;
+  registrationProof: string;
+  serveEpoch: number;
+  identities: RemoteManagerAuthorityRequest["identities"];
+  caller: { owner: string; actor: string; lifecycleUid: string };
+}
+
+/** Exact request echo plus the host-derived authorization decision. */
+export interface RemoteManagerParticipationAuthorizationResult extends RemoteManagerParticipationAuthorizationRequest {
+  owner: string;
+  authorized: boolean;
+}
+
+/** Build the closed request a registered manager sends for one native workflow participant. */
+export function remoteManagerParticipationAuthorizationRequest(
+  manager: { space: string; instanceId: string; lifecycleUid: string; identities: RemoteManagerAuthorityRequest["identities"] },
+  actor: string,
+  registrationProof: string,
+  serveEpoch: number,
+  caller: RemoteManagerParticipationAuthorizationRequest["caller"],
+  requestId: string,
+): RemoteManagerParticipationAuthorizationRequest {
+  return { v: 1, kind: "manager-participation-authorization", space: manager.space, actor,
+    instanceId: manager.instanceId, managerLifecycleUid: manager.lifecycleUid, requestId,
+    registrationProof, serveEpoch, identities: manager.identities, caller };
+}
+
+/** Bind an untrusted host decision to the exact request before using its boolean. */
+export function remoteManagerParticipationAuthorized(
+  raw: unknown,
+  request: RemoteManagerParticipationAuthorizationRequest,
+  expectedOwner: string,
+): boolean {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw))
+    throw new Error("manager participation authorization returned a non-object result");
+  const result = raw as Record<string, unknown>;
+  const fields = ["v", "kind", "space", "owner", "actor", "instanceId", "managerLifecycleUid", "requestId", "registrationProof", "serveEpoch", "identities", "caller", "authorized"];
+  if (Object.keys(result).sort().join(",") !== fields.sort().join(",") || result.v !== 1 ||
+      result.kind !== request.kind || result.space !== request.space || result.owner !== expectedOwner ||
+      result.actor !== request.actor || result.instanceId !== request.instanceId ||
+      result.managerLifecycleUid !== request.managerLifecycleUid || result.requestId !== request.requestId ||
+      result.registrationProof !== request.registrationProof || result.serveEpoch !== request.serveEpoch ||
+      canonicalJson(result.identities) !== canonicalJson(request.identities) ||
+      canonicalJson(result.caller) !== canonicalJson(request.caller) ||
+      typeof result.authorized !== "boolean")
+    throw new Error("manager participation authorization returned different manager, caller, owner, or boolean coordinates");
+  return result.authorized;
 }
 
 /**
@@ -442,6 +504,11 @@ export function remoteManagerActors(instanceId: string): RemoteManagerActors {
     goalWriter: `manager_goal_${instanceId}`,
     sessionLedger: `manager_session_${instanceId}`,
   };
+}
+
+/** Serialize a remote manager's serve principal through the shared owner/actor token validator. */
+export function remoteManagerServePrincipal(owner: string, instanceId: string): string {
+  return principalKey(owner, remoteManagerActors(instanceId).serve).key;
 }
 
 /** Deterministic proof binding one remote Manager lifecycle to its owner, identities, and artifacts.

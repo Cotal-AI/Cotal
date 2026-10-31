@@ -50,8 +50,6 @@ import {
   folderSpaceOverSelection,
   meshesForRoot,
   resolveReadsLiveness,
-  MIN_FILE_STORE,
-  capBelowFloor,
   stoppedStack,
   unsettledStackOperation,
   withdrawOperationNote,
@@ -351,8 +349,6 @@ type SelectedResult =
       /** In a copy or a moved folder, the folder its records were recorded at, and `space` the space
        *  they name, which the commands run here refuse on. */
       recordedRoot?: string;
-      /** A stopped stack's recorded file store cap, when it is below {@link MIN_FILE_STORE}. */
-      storeCap?: number;
     }
   | {
       resolved: true;
@@ -1263,7 +1259,6 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
     // selection, and Next gives its repair once.
     const { message, remedy } = workspaceErrorParts({ kind: "target", error: e });
     const d = e.details;
-    const storeCap = e.code === "not-started" ? d.stopped?.storeCap : undefined;
     // A copy or a moved folder is reported under the space its records name, as the commands run here
     // refuse under it, and says what the folder holds; Next gives the step they name.
     const elsewhere = e.code === "not-started" ? recordsElsewhereText(d) : undefined;
@@ -1271,7 +1266,6 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
       resolved: false, code: e.code, message: elsewhere ?? message,
       ...(e.code === "not-started" && d.space !== undefined && d.root !== undefined && !d.rootMissing ? { space: d.space, root: d.root } : {}),
       ...(elsewhere !== undefined ? { space: targetErrorSpace(d)!, recordedRoot: d.recordedRoot! } : {}),
-      ...(capBelowFloor(storeCap) ? { storeCap } : {}),
     };
     // A start in a root whose broker store this account cannot write fails there, so its next step is
     // the store's, as `up` names it.
@@ -1864,7 +1858,6 @@ function selectedOverview(r: StatusResult): Section | undefined {
   // Nothing running or selected is a state to start from, so it does not carry the mark of a live connection.
   if (!s.resolved) return { title, blocks: [
     { kind: "lines", lines: [stateCell(s.message, NOTHING_SELECTED.has(s.code) ? "hint" : "failed")] },
-    ...(s.storeCap !== undefined ? [{ kind: "fields" as const, rows: [["Store cap", cell(`${s.storeCap} bytes recorded, below the ${MIN_FILE_STORE} the space's streams start on`, "failed")] as [string, Cell]] }] : []),
     ...(servedStack(r.folder, s) ? stackLines(r.folder) : []),
   ] };
   // A broker named with `--server` is reported even when nothing on this machine is registered.
@@ -2056,18 +2049,17 @@ function nextActions(r: StatusResult): Section {
     else items.unshift({ command: `${cmd} down`, description: `${first}; then \`${cmd} up\` starts the broker again with the history it kept` });
   }
   // The broker refuses every write while the store is over its cap, so sends store nothing, and a
-  // stopped member starts again only once there is room. Making room purges the space's channel
-  // history. Raising the cap keeps it but needs the broker restarted, so the manager's own process is
-  // ended first where it runs, as a full store refuses its stop. These are the routes up and down name.
+  // stopped member starts again only once there is room. A larger cap makes that room and keeps the
+  // history, but needs the broker restarted, so the manager's own process is ended first where it
+  // runs, as a full store refuses its stop. This is the route up names. A history purge is not named:
+  // it frees only the channel history's bytes, which may leave the store over its cap.
   if (r.store?.state === "full" && r.selected.resolved) {
-    const { space, root } = r.selected;
+    const { root } = r.selected;
     const manager = r.stackManager;
     items.unshift(
-      { command: `${cmd} history clear --space ${space} --yes`, description: `Make room in the full store: this purges the space's channel history; --dms also purges its direct messages` },
-      ...(own && memberGone ? [{ command: `${cmd} up --root ${shellWord(root)}`, description: "Then restart this stack's stopped members from its recorded inputs" }] : []),
-      ...(manager ? [{ command: `kill -TERM ${manager.pid}`, description: "Or keep that history: end the manager on this host, as a full store refuses its stop; it stops its agents by its default policy" }] : []),
+      ...(manager ? [{ command: `kill -TERM ${manager.pid}`, description: "End the manager on this host, as a full store refuses its stop; it stops its agents by its default policy" }] : []),
       // `down` stops only the stack of the folder it runs in.
-      { command: `${cmd} down --yes`, description: `${manager ? "Then stop the other members" : "Or keep that history: stop the stack"}${own ? "" : `; run it in ${root}`}` },
+      { command: `${cmd} down --yes`, description: `${manager ? "Then stop the other members" : "Stop the stack"}${own ? "" : `; run it in ${root}`}` },
       { command: own ? `${cmd} up --max-file-store <bytes>` : `${cmd} up --root ${shellWord(root)} --max-file-store <bytes>`, description: "Then start it again with a larger cap; the store keeps the history" },
     );
   }

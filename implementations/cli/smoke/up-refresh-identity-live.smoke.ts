@@ -14,25 +14,34 @@
  * registry refusal or died as a raw `Invalid URL` on the `--server` mismatch parse. A URL, and a
  * `host:port` spelling, are refused by name pointing at `--server`, and a correct bare host still
  * reaches the registry's own refusal.
+ *
+ * A repair's `reopening the recorded store`, `Started` and `✓ running in the background` lines are
+ * each one stdout line off a terminal, and on an 80-column terminal wrap at spaces, each path whole.
+ * So do a start's selection notes, its `wrote default persona` line and its folder-named space note.
  * Run: pnpm smoke:up-refresh-identity:live
  */
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { delimiter, dirname, join, resolve } from "node:path";
 import { assertEphemeralBroker, scrubAmbientBrokerEnv } from "../../../packages/core/smoke/_ephemeral-only.js";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { assertScratchHeld, makeScratch } from "../../../bin/smoke/_scratch.js";
+import { clean, cotalPty } from "./_console-pty.js";
 import { assertSmokeSandboxDown, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
 
 scrubAmbientBrokerEnv();
 const scratch = makeScratch("cotal-up-refresh-identity-");
 const TSX = join(import.meta.dirname, "..", "..", "..", "node_modules", ".bin", "tsx");
+// The foreground `up` this suite holds and signals runs under Node itself with the tsx loader, so
+// its ChildProcess is the real CLI. `.bin/tsx` would add a wrapper that relays only SIGINT and
+// SIGTERM, and a SIGKILL would end only that wrapper.
+const TSX_LOADER = import.meta.resolve("tsx");
 const CLI = join(import.meta.dirname, "..", "..", "..", "bin", "cotal.ts");
 const rootEnv = { ...process.env };
 for (const key of Object.keys(rootEnv)) if (key.startsWith("COTAL_")) delete rootEnv[key];
 
 let passed = 0;
-const EXPECTED_CHECKS = 29 + 9 + 13 + 5 + 14; // namedSpaceElsewhere + storeRecordRepair + preFieldWarning + foregroundCrashKeepsRecord
+const EXPECTED_CHECKS = 29 + 9 + 13 + 5 + 15 + 2 + 15; // namedSpaceElsewhere + storeRecordRepair + preFieldWarning + foregroundCrashKeepsRecord + storeRecordRepair's off-terminal line checks + detachedLinesWrap
 const check = (name: string, ok: boolean, detail?: unknown): void => {
   if (!ok) throw new Error(`FAIL: ${name}${detail === undefined ? "" : `\n${JSON.stringify(detail, null, 2)}`}`);
   passed++;
@@ -231,6 +240,9 @@ async function storeRecordRepair(): Promise<void> {
     check("(1) a fresh --store-dir start succeeds", started, `${up1.stdout}${up1.stderr}`);
     if (!started) return;
     check("(1) the record carries the resolved --store-dir", findMesh(space)?.storeDir === resolve(storeA), findMesh(space));
+    check("(1) off a terminal its selected note is one stdout line, not on stderr",
+      up1.stdout.replace(/\x1b\[[0-9;]*m/g, "").split("\n").includes(`selected "${space}": a command without --space targets it, except in another space's project folder`) && !/selected "/.test(up1.stderr),
+      { stdout: up1.stdout, stderr: up1.stderr });
 
     let railsUp = false;
     for (let i = 0; i < 6 && !railsUp; i++) {
@@ -254,6 +266,11 @@ async function storeRecordRepair(): Promise<void> {
     const repair = cotal(fixture, ["up", "--detach", "--open", "--server", fixture.server, "--space", space]);
     check("(4) the bare repair exits 0", repair.status === 0, `${repair.stdout}${repair.stderr}`);
     check("(4) the repair output names reopening the recorded store", /reopening the recorded store/.test(`${repair.stdout}${repair.stderr}`), `${repair.stdout}${repair.stderr}`);
+    const repairLines = repair.stdout.replace(/\x1b\[[0-9;]*m/g, "").split("\n");
+    check("(4) off a terminal its reopening, Started and summary lines are each one line on stdout",
+      repairLines.includes(`reopening the recorded store ${resolve(storeA)}`) && repairLines.some((l) => /^Started (bundled )?nats-server \S+ (on PATH )?at .+\.$/.test(l)) &&
+        repairLines.some((l) => /^✓ running in the background: nats-server \(pid \d+\)(, [a-z -]+)* - stop with: `cotal down`$/.test(l)) && !/reopening|Started|running in the background/.test(repair.stderr),
+      { stdout: repair.stdout, stderr: repair.stderr });
     const log = readFileSync(join(fixture.root, ".cotal", "nats.log"), "utf8");
     const lastStoreLine = log.split("\n").filter((l) => l.includes("Store Directory:")).pop() ?? "";
     check("(4) the log's last Store Directory: line names store-a/jetstream", lastStoreLine.includes(join("store-a", "jetstream")), lastStoreLine);
@@ -282,6 +299,115 @@ async function storeRecordRepair(): Promise<void> {
     if (started) await stop(fixture);
     rmSync(fixture.home, { recursive: true, force: true });
     rmSync(fixture.root, { recursive: true, force: true });
+  }
+}
+
+/** On an 80-column terminal a detached start and its repair wrap their `Started`, `✓ running in the
+ *  background` and `reopening the recorded store` lines at spaces. The pty's PATH holds no
+ *  nats-server, so the start names the bundled one, whose path is wider than the line and keeps a
+ *  whole line of its own. The recorded store's path takes the next line. The summary's continuation
+ *  lines start under its text, past the `✓`, with `cotal down` whole. The first start's `selected`
+ *  note wraps too. A second mesh in the same home, started with no --space in a new folder, wraps
+ *  the note that the first stays selected, with its `cotal use` whole, and the folder-named space
+ *  note under its indent. Its `wrote default persona` path keeps a line of its own. Off a terminal
+ *  each of them is one stdout line. */
+async function detachedLinesWrap(): Promise<void> {
+  const fixture = await makeFixture("pty-wrap");
+  process.env.COTAL_HOME = fixture.home;
+  process.env.XDG_CONFIG_HOME = fixture.env.XDG_CONFIG_HOME;
+  const { displayWidth, findMesh } = await import("@cotal-ai/workspace");
+  const space = "pty-wrap";
+  const PATH = (fixture.env.PATH ?? "").split(delimiter).filter((dir) => dir && !existsSync(join(dir, "nats-server"))).join(delimiter);
+  const onTerminal = async (): Promise<{ exit: number; lines: string[] }> => {
+    let shown = "";
+    const pty = cotalPty(["up", "--detach", "--open", "--server", fixture.server, "--space", space], { cwd: fixture.root, env: { ...fixture.env, PATH } as Record<string, string>, cols: 80, rows: 200 });
+    pty.onData((data) => { shown += data; });
+    const exit = await new Promise<number>((done) => pty.onExit((e) => done(e.exitCode)));
+    return { exit, lines: clean(shown).split(/\r?\n/) };
+  };
+  const startedWraps = (lines: string[]): boolean => {
+    const at = lines.findIndex((l) => /^Started bundled nats-server \S+ at$/.test(l));
+    const path = lines[at + 1] ?? "";
+    return at >= 0 && displayWidth(path) > 80 && path.endsWith("/nats-server.") && existsSync(path.slice(0, -1));
+  };
+  const summaryWraps = (lines: string[]): boolean => {
+    const at = lines.findIndex((l) => l.startsWith("✓ running in the background:"));
+    const end = lines.findIndex((l, i) => i > at && !/^ {2}\S/.test(l));
+    const summary = lines.slice(at, end);
+    return at >= 0 && summary.length > 1 && summary.every((l) => displayWidth(l) <= 80) && summary.some((l) => l.includes("`cotal down`")) &&
+      /^✓ running in the background: nats-server \(pid \d+\)(, [a-z -]+)* - stop with: `cotal down`$/.test(summary.map((l, i) => (i ? l.slice(2) : l)).join(" "));
+  };
+  /** The lines, from the one that starts `text`, that read as `text` again, each after `indent`. */
+  const shownAs = (lines: string[], indent: string, text: string): string[] => {
+    const at = lines.findIndex((l) => l.length > indent.length && l.startsWith(indent) && text.startsWith(l.slice(indent.length)));
+    const block: string[] = [];
+    const read = () => block.map((l) => l.slice(indent.length)).join(" ");
+    for (let i = at; at >= 0 && i < lines.length && read().length < text.length; i++) block.push(lines[i]!);
+    return block.every((l) => l.startsWith(indent) && l[indent.length] !== " ") && read() === text ? block : [];
+  };
+  const fits = (block: string[]): boolean => block.length > 1 && block.every((l) => displayWidth(l) <= 80);
+  // The folder-named meshes sit under a folder whose name puts the persona's path past the line.
+  const parent = join(mkdtempSync(join(scratch, "notice-wrap-")), "a-parent-folder-whose-name-puts-the-persona-path-past-80-columns");
+  const folderNamed = async (name: string): Promise<Fixture> => {
+    const root = join(parent, name);
+    const sandbox = recordSmokeSandbox({ root, cotalHome: fixture.home, xdgConfigHome: fixture.env.XDG_CONFIG_HOME! });
+    assertScratchHeld(root, `${name} folder-named fixture`);
+    const server = `nats://127.0.0.1:${await pickFreePort()}`;
+    assertEphemeralBroker(server);
+    return { ...fixture, root, server, sandbox };
+  };
+  const keptNote = (named: string) => `"${named}" up; "${space}" stays selected for commands run outside this folder - \`cotal use ${named}\` to switch`;
+  const folderNote = (named: string) => `This new project's space is named after its folder, "${named}"; pass --space <name> to start another`;
+  const persona = (root: string) => join(realpathSync(root), ".cotal", "agents", "default.md");
+  const running: Fixture[] = [];
+  let started = false;
+  try {
+    const first = await onTerminal();
+    started = first.exit === 0;
+    check("on 80 columns a fresh detached start exits 0", started, first.lines);
+    check("...its Started line breaks before the bundled nats-server's path, which keeps a whole line of its own", startedWraps(first.lines), first.lines);
+    check("...and its summary wraps under its text past the ✓, with `cotal down` whole", summaryWraps(first.lines), first.lines);
+    check("...and its selected note wraps at spaces within 80 columns", fits(shownAs(first.lines, "", `selected "${space}": a command without --space targets it, except in another space's project folder`)), first.lines);
+
+    process.kill(Number(readFileSync(join(fixture.root, ".cotal", "nats.pid"), "utf8").trim()), "SIGKILL");
+    await sleep(1_000);
+    const repair = await onTerminal();
+    const store = findMesh(space)?.storeDir;
+    const at = repair.lines.indexOf("reopening the recorded store");
+    check("the repair on 80 columns exits 0, its Started and summary lines wrapped the same way", repair.exit === 0 && startedWraps(repair.lines) && summaryWraps(repair.lines), repair.lines);
+    check("...and its reopening line breaks before the recorded store, which takes the next line whole", store !== undefined && at >= 0 && repair.lines[at + 1] === store, { store, lines: repair.lines });
+
+    const piped = await folderNamed("notice-pipe");
+    const off = cotal(piped, ["up", "--detach", "--open", "--server", piped.server]);
+    if (off.status === 0) running.push(piped);
+    check("off a terminal a second start with no --space in a new folder exits 0", off.status === 0, `${off.stdout}${off.stderr}`);
+    const offLines = off.stdout.replace(/\x1b\[[0-9;]*m/g, "").split("\n");
+    check("...and its stays-selected, persona and folder notes are each one stdout line, none on stderr",
+      offLines.includes(keptNote("notice-pipe")) && offLines.includes(`  wrote default persona: ${persona(piped.root)}`) && offLines.includes(`  ${folderNote("notice-pipe")}`) &&
+        !/stays selected|wrote default persona|named after its folder/.test(off.stderr),
+      { stdout: off.stdout, stderr: off.stderr });
+
+    const named = await folderNamed("notice-wrap");
+    let shown = "";
+    const pty = cotalPty(["up", "--detach", "--open", "--server", named.server], { cwd: named.root, env: { ...named.env, PATH } as Record<string, string>, cols: 80, rows: 200 });
+    pty.onData((data) => { shown += data; });
+    const second = { exit: await new Promise<number>((done) => pty.onExit((e) => done(e.exitCode))), lines: clean(shown).split(/\r?\n/) };
+    if (second.exit === 0) running.push(named);
+    check("on 80 columns a second start with no --space in a new folder exits 0", second.exit === 0, second.lines);
+    const kept = shownAs(second.lines, "", keptNote("notice-wrap"));
+    check("...its note that the first stays selected wraps within 80 columns, with `cotal use notice-wrap` whole", fits(kept) && kept.some((l) => l.includes("`cotal use notice-wrap`")), second.lines);
+    check("...its wrote default persona line breaks before the path, which takes the next line whole",
+      shownAs(second.lines, "  ", `wrote default persona: ${persona(named.root)}`).join("\n") === `  wrote default persona:\n  ${persona(named.root)}`, second.lines);
+    check("...and its folder-named space note wraps under its indent within 80 columns", fits(shownAs(second.lines, "  ", folderNote("notice-wrap"))), second.lines);
+
+    while (running.length) { await stop(running[0]!); running.shift(); }
+    started = !(await stop(fixture));
+  } finally {
+    for (const mesh of running) await stop(mesh);
+    if (started) await stop(fixture);
+    rmSync(fixture.home, { recursive: true, force: true });
+    rmSync(fixture.root, { recursive: true, force: true });
+    rmSync(dirname(parent), { recursive: true, force: true });
   }
 }
 
@@ -339,7 +465,7 @@ async function foregroundCrashKeepsRecord(): Promise<void> {
   process.env.XDG_CONFIG_HOME = fixture.env.XDG_CONFIG_HOME;
   const { findMesh } = await import("@cotal-ai/workspace");
   const space = "fg-crash";
-  const child = spawn(TSX, [CLI, "up", "--foreground", "--open", "--server", fixture.server, "--space", space], { cwd: fixture.root, env: fixture.env, stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(process.execPath, ["--import", TSX_LOADER, CLI, "up", "--foreground", "--open", "--server", fixture.server, "--space", space], { cwd: fixture.root, env: fixture.env, stdio: ["ignore", "pipe", "pipe"] });
   let stdout = "";
   let stderr = "";
   child.stdout?.setEncoding("utf8");
@@ -373,6 +499,7 @@ async function foregroundCrashKeepsRecord(): Promise<void> {
     check("...stderr names 'exited unexpectedly'", /exited unexpectedly/.test(stderr), stderr);
     check("...and 'stays recorded'", /stays recorded/.test(stderr), stderr);
     check("...and the repair command naming this space", stderr.includes(`cotal up --server ${fixture.server} --space ${space}`), stderr);
+    check("...in the recorded mesh's whole line, with no claim that the exit came before the record", stderr.includes(`✗ nats-server exited unexpectedly (signal SIGKILL); the mesh "${space}" stays recorded (\`cotal meshes\` lists it offline); log: see the terminal output above; repair: \`cotal up --server ${fixture.server} --space ${space}\``) && !stderr.includes("before the mesh"), stderr);
     const meshes = cotal(fixture, ["meshes"]);
     check("`cotal meshes` tags the crashed mesh offline", new RegExp(`${space}[^\n]*offline`).test(`${meshes.stdout}`), meshes.stdout);
 
@@ -388,7 +515,7 @@ async function foregroundCrashKeepsRecord(): Promise<void> {
 
   // CONTROL: the same foreground `up`, ended with SIGINT (the intended stop) instead of SIGKILL,
   // exits 0 and drops the record — proving the crash branch above is the ONLY one that keeps it.
-  const control = spawn(TSX, [CLI, "up", "--foreground", "--open", "--server", fixture.server, "--space", space], { cwd: fixture.root, env: fixture.env, stdio: ["ignore", "pipe", "pipe"] });
+  const control = spawn(process.execPath, ["--import", TSX_LOADER, CLI, "up", "--foreground", "--open", "--server", fixture.server, "--space", space], { cwd: fixture.root, env: fixture.env, stdio: ["ignore", "pipe", "pipe"] });
   try {
     let railsUp = false;
     for (let i = 0; i < 60 && !railsUp; i++) {
@@ -470,13 +597,14 @@ async function hostShapeRefusals(): Promise<void> {
 
 try {
   await hostShapeRefusals();
+  await foregroundCrashKeepsRecord();
   await orderedRefresh("alpha-root", "omega-tenant", ["alpha-root", "omega-tenant"]);
   await orderedRefresh("omega-root", "alpha-tenant", ["alpha-tenant", "omega-root"]);
   await foreignRootRefusal();
   await namedSpaceElsewhere();
   await storeRecordRepair();
+  await detachedLinesWrap();
   await preFieldWarning();
-  await foregroundCrashKeepsRecord();
   if (passed !== EXPECTED_CHECKS)
     throw new Error(`FAIL: expected ${EXPECTED_CHECKS} checks, ran ${passed}`);
   console.log(`\nUP REFRESH IDENTITY LIVE SMOKE OK ✅ (${passed} checks passed)`);

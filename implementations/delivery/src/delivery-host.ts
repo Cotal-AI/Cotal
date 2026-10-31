@@ -75,7 +75,8 @@ export async function runDeliveryHost(args: ParsedArgs): Promise<void> {
   // their opens settled.
   const serving = host.named.filter((space) => host.lanes.has(space));
   const opening = host.named.filter((space) => host.opening.has(space));
-  const waiting = host.named.filter((space) => !host.lanes.has(space) && !host.opening.has(space));
-  console.log(`✓ delivery host up (${serving.length} space(s)${serving.length ? `: ${serving.join(", ")}` : ""}${opening.length ? `; still opening ${opening.join(", ")}` : ""}${waiting.length ? `; retrying ${waiting.join(", ")}` : ""}) - one delivery lane per space on ${server}${tls ? " with TLS required" : ""}`);
+  const queued = host.named.filter((space) => host.queued.has(space));
+  const waiting = host.named.filter((space) => !host.lanes.has(space) && !host.opening.has(space) && !host.queued.has(space));
+  console.log(`✓ delivery host up (${serving.length} space(s)${serving.length ? `: ${serving.join(", ")}` : ""}${opening.length ? `; still opening ${opening.join(", ")}` : ""}${queued.length ? `; queued ${queued.join(", ")}` : ""}${waiting.length ? `; retrying ${waiting.join(", ")}` : ""}) - one delivery lane per space on ${server}${tls ? " with TLS required" : ""}`);
   process.exit(await host.ended);
 }

@@ -138,6 +138,13 @@ console.log("✓ 4 — an unknown page fails loud and lists what is available");
   for (const h of searchDocs("cotal")) perPage.set(h.slug, (perPage.get(h.slug) ?? 0) + 1);
   assert.ok([...perPage.values()].every((n) => n <= 2), "no page contributes more than two sections");
 
+  // Cached term frequencies are corpus data, independent of each query's terms.
+  const cached = searchDocs("cotal_send");
+  assert.ok(cached.length > 0, "the cache control query has real hits");
+  searchDocs("owner actor");
+  assert.deepEqual(searchDocs("cotal_send"), cached, "an intervening query preserves cached frequencies and scores");
+  assert.deepEqual(searchDocs("cotal_send cotal_send"), cached, "repeated query terms do not change corpus frequencies or scores");
+
   const none = await runDocs({ query: "zzzznotawordzzzz" });
   assert.match(none.text, /No matches/);
 }

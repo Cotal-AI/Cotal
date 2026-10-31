@@ -1,5 +1,5 @@
 /** Render the shipped console components and drive their real Ink key handlers. */
-import assert from "node:assert/strict";
+import assertBase from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -10,7 +10,7 @@ import { render, Text, useInput } from "ink";
 import { connect, type NatsConnection } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import type { Presence } from "@cotal-ai/core";
-import { awaitBrokerReady, freePort, killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { awaitBrokerReady, countedAssert, emitSentinel, freePort, killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { useListCursor } from "../dist/console/ui/useListCursor.js";
 import { CommandPalette } from "../dist/console/ui/CommandPalette.js";
 import { Roster } from "../dist/console/ui/Roster.js";
@@ -20,6 +20,9 @@ import { Sequence } from "../dist/console/ui/topo/Sequence.js";
 import { foldTopo } from "../dist/console/ui/topo/model.js";
 import type { FeedEntry, MeshSnapshot } from "../src/view/mesh-view.js";
 
+const counted = countedAssert(assertBase);
+const assert: typeof assertBase = counted.assert as typeof assertBase;
+const cells = counted.cells;
 Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
 const pause = () => new Promise<void>((resolve) => setTimeout(resolve, 40));
 async function until(check: () => boolean, label: string) {
@@ -103,8 +106,9 @@ const peers: Presence[] = ["alice", "bob", "carol"].map((name) => ({
 for (const lens of ["roster", "needs-you"] as const) {
   let selected: Presence | undefined;
   const open = (peer: Presence) => { selected = peer; };
+  const held = { current: { index: 0 } };
   const view = (rows: Presence[]) => lens === "roster"
-    ? <Roster agents={rows} endpoints={[]} query="" boxWidth={100} boxHeight={20} blocked={false}
+    ? <Roster view={held} agents={rows} endpoints={[]} query="" boxWidth={100} boxHeight={20} blocked={false}
       onFocus={() => {}} onOpenDetail={open} />
     : <NeedsYou waiting={rows} boxWidth={100} boxHeight={20} blocked={false}
       onFocus={() => {}} onOpenDetail={open} />;
@@ -212,3 +216,4 @@ try {
   console.log(`Retained cursor broker evidence: ${store}`);
 }
 console.log("CONSOLE CURSOR SMOKE OK");
+emitSentinel({ passed: cells(), failed: 0 });

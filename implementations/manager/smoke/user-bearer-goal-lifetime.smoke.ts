@@ -2,10 +2,12 @@
  * USER-BEARER GOAL LIFETIME & RECONNECT SMOKE SUITE
  *
  * Validates the mediated goal recovery contract across:
- *   1. POSITIVE CONTROL: 60s user bearer follows 4.5s delayed spawn to completion.
+ *   1. POSITIVE CONTROL: 60s user bearer follows a 4.5s delayed spawn after slow submission;
+ *      the native acceptance supplies the manager's readiness budget, not total startup wall time.
  *   2. COMPATIBILITY GATE: Unsupported manager (lacking goal-result) is refused before effects
  *      with failed-precondition, while non-follow commands remain usable. Exactly 0 mutation submits.
- *   3. STOP CLEANUP: ep.stop() cancels owned follow waits promptly with unavailable, clearing timers.
+ *   3. STOP CLEANUP: after observed native acceptance, ep.stop() cancels owned follow waits
+ *      promptly with unavailable, clearing timers; slow submission cannot race a fixed sleep.
  *   4. LOOKUP REFUSAL PROVENANCE: Post-accept goal-result read refusal does NOT copy
  *      outcome:not-executed or EP_BIND_REFUSED onto the spawn outcome; preserves acceptance.
  *   5. FINGERPRINT & DIGEST VALIDATION: Reconciled fact must match accepted goalId and fingerprint.
@@ -15,7 +17,8 @@
  *
  * The Manager, broker, signed bearer verification and expiry are real. The callout's actor-ledger
  * authorizer and permission table are fixture policy; this is not an exchange-policy proof.
- * Compatibility views and several accepted-result inputs are doubles. Instance-bound MeshAgent
+ * The legacy command view is served on the real authenticated native boundary. Several accepted-result
+ * inputs remain doubles. Instance-bound MeshAgent
  * routing is exercised separately by user-manager-transport.smoke.ts.
  */
 import { spawn } from "node:child_process";
@@ -53,6 +56,18 @@ import {
   type EpAttributedReply,
   type GoalResultFact,
   contractDigest,
+  serveEndpoint,
+  type EpCommandDef,
+  type EpServeGrant,
+  type EpServeHandle,
+  holdIssuerSession,
+  type HeldIssuerSession,
+  mintGeneration,
+  connectionAcceptedToken,
+  acceptedReadGrant,
+  importNativeSubjectPermissions,
+  actorLedgerSource,
+  writeAcceptedRow,
 } from "@cotal-ai/core";
 import {
   createCalloutAuth,
@@ -63,6 +78,7 @@ import {
 } from "../../auth/src/index.js";
 import { Manager } from "../src/manager.js";
 import { saveSpaceAuth } from "../../../packages/workspace/src/auth-paths.js";
+import { workspaceSecretStore } from "@cotal-ai/workspace";
 import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal, killAndAwaitExit, emitSentinel } from "@cotal-ai/smoke-kit";
 
 let pass = 0;
@@ -133,13 +149,19 @@ async function main() {
   const releaseBroker = teardownOnSignal(broker, TEST_DIR);
 
   let mgr: InstanceType<typeof Manager> | undefined;
+  let compatManager: InstanceType<typeof Manager> | undefined;
+  let cliIssuer: HeldIssuerSession | undefined;
+  let cliManagerPin: string | undefined;
+  const cliIssuedConnections: Array<{ connId: string; generation: string; actor: string }> = [];
   let calloutNc: NatsConnection | undefined;
   const endpoints: CotalEndpoint[] = [];
   const startEndpoint = async (ep: CotalEndpoint) => { endpoints.push(ep); await ep.start(); };
   const cleanup = async () => {
     const errors: unknown[] = [];
     for (const ep of endpoints) { try { await ep.stop(); } catch (e) { errors.push(e); } }
+    try { await compatManager?.stop({ withAgents: true }); } catch (e) { errors.push(e); }
     try { await mgr?.stop({ withAgents: true }); } catch (e) { errors.push(e); }
+    try { await cliIssuer?.close(); } catch (e) { errors.push(e); }
     try { await calloutNc?.close(); } catch (e) { errors.push(e); }
     try { await killAndAwaitExit(broker); } catch (e) { errors.push(e); }
     if (errors.length === 0) {
@@ -169,6 +191,7 @@ async function main() {
       ...standaloneConnectOpts({ creds: callout.calloutCreds, tls: false }),
     });
 
+    cliIssuer = holdIssuerSession({ servers: SERVERS, space: SPACE, auth, tls: false, name: "lifetime-cli-issuer" });
     startAuthCallout(calloutNc as never, {
       xkeySeed: callout.xkey.seed,
       authAccount: { pub: callout.account.pub, signingSeed: callout.account.signingSeed },
@@ -177,7 +200,31 @@ async function main() {
       token: { key: issuer.localKeySet(), issuer: "https://auth.cotal.test" },
       recordIssuance: async () => {},
       authorizeActor: () => {},
-      permissionsFor: (t, connId) => {
+      permissionsFor: async (t, connId) => {
+        if (t.act.actor === "caller_cli") {
+          if (!cliManagerPin || t.act.managerInstanceId !== cliManagerPin || !t.act.lifecycleUid)
+            throw new Error("CLI fixture requires its actual selected manager and lifecycle");
+          const generation = mintGeneration(t.exp);
+          const acceptedToken = connectionAcceptedToken(connId);
+          const caller = { owner: t.owner, actor: t.act.actor, uid: t.act.lifecycleUid, generation };
+          const rows = epCallerGrantRows(SPACE, ["describe", "status", "spawn", "goal-result"].map((command) => ({
+            endpoint: "manager", command, instanceId: cliManagerPin, instanceOnly: true,
+          })), caller);
+          const permissions = {
+            pub: { allow: [...rows.pub, acceptedReadGrant(SPACE, acceptedToken), `$JS.API.DIRECT.GET.${epcStreamName(SPACE)}.${spacePrefix(SPACE)}.epc.>`] },
+            sub: { allow: [`_INBOX_${connId}.>`, ...rows.sub] },
+          };
+          await cliIssuer!.run(async (session) => {
+            const ref = { space: SPACE, ...caller };
+            const prepared = await session.store.stage({ version: 1, ref,
+              sources: [actorLedgerSource(SPACE, caller.owner, caller.actor, caller.uid)],
+              permissions: importNativeSubjectPermissions(permissions), expiresAt: t.exp });
+            await session.store.release(prepared, async () => {});
+            await writeAcceptedRow(session.accepted, acceptedToken, ref);
+          });
+          cliIssuedConnections.push({ connId, generation, actor: caller.actor });
+          return permissions;
+        }
         const caller = { owner: t.owner, actor: t.act.actor, uid: t.act.lifecycleUid! };
         const rows = epCallerGrantRows(SPACE, [
           { endpoint: "manager", command: "describe" },
@@ -241,7 +288,8 @@ async function main() {
     writeFileSync(join(WS_ROOT, ".cotal", "agents", "stop-user.md"), "---\nname: stop-user\nrole: worker\n---\n");
 
     mgr = new Manager({ space: SPACE, servers: SERVERS, runtime: "pty", workspaceRoot: WS_ROOT });
-    (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = 10_000;
+    const readinessBudgetMs = 10_000;
+    (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = readinessBudgetMs;
     await mgr.start();
     const mgrIid = (mgr as unknown as { managerInstanceId: string }).managerInstanceId;
     check("manager booted and registered instanceId", typeof mgrIid === "string" && mgrIid.length > 0);
@@ -275,21 +323,27 @@ async function main() {
     });
     await startEndpoint(ep1);
 
-    let posGoalId = "";
-    const posStart = Date.now();
+    let posGoalId = "", posReadinessBudget: unknown;
+    let posAcceptedAt = 0;
+    const posStart = performance.now();
     const posReply = await ep1.followServiceGoal(
       BASELINE_LIFECYCLE_ENDPOINT,
       async () => {
+        // Slow preparation is separate from the manager's post-acceptance readiness budget.
+        await new Promise((r) => setTimeout(r, 6000));
         const r = await ep1.invokeService(BASELINE_LIFECYCLE_ENDPOINT, "spawn", { name: "pos-user", agent: "delayed-join", events: false });
+        posAcceptedAt = performance.now();
         posGoalId = (r.reply.data as Record<string, unknown>)?.goalId as string;
+        posReadinessBudget = (r.reply.data as Record<string, unknown>)?.readinessDeadlineMs;
         return r;
       },
       15_000,
     );
-    const posDuration = Date.now() - posStart;
+    const posDuration = performance.now() - posStart;
     check("POSITIVE: followServiceGoal resolves ok: true", posReply.reply.ok === true, posReply.reply);
     check("POSITIVE: followServiceGoal returns allocated identity", (posReply.reply.data as Record<string, unknown>)?.name === "pos-user");
-    check("POSITIVE: resolved in ~5.5s (within deadline window)", posDuration < 10_000, { posDuration });
+    check("POSITIVE: native acceptance carries the manager's readiness budget", posReadinessBudget === readinessBudgetMs, { posReadinessBudget, readinessBudgetMs });
+    check("POSITIVE: slow submission is separate from the readiness budget", posAcceptedAt - posStart >= 6000, { submissionMs: posAcceptedAt - posStart, posDuration });
     await ep1.stop();
 
     // ==================================================================
@@ -308,22 +362,38 @@ async function main() {
     });
     await startEndpoint(epCompat);
 
-    // Keep the real fetched contracts; only the supported-command view is a compatibility double.
-    await epCompat.invokeService(BASELINE_LIFECYCLE_ENDPOINT, "status");
-    const services = (epCompat as unknown as { resolvedServices: Map<string, import("@cotal-ai/core").ResolvedService> }).resolvedServices;
-    const realService = services.get(BASELINE_LIFECYCLE_ENDPOINT)!;
-    const legacyCommands = new Map(realService.commands);
-    legacyCommands.delete("goal-result");
-    services.set(BASELINE_LIFECYCLE_ENDPOINT, { ...realService, commands: legacyCommands });
+    // Serve the legacy view through the public native boundary on the manager's own scoped
+    // connection and grant. No caller cache or resolver result is replaced.
+    const native = mgr as unknown as {
+      serviceServe: { nc: NatsConnection; grant: EpServeGrant; handle: EpServeHandle };
+      managerServiceDefs(): EpCommandDef[];
+    };
+    const state = native.serviceServe;
+    const defs = native.managerServiceDefs();
+    let legacyView = true, hideSpawn = false, admissions = 0;
+    const servedDefs = defs.map((def) => def.command === "spawn" ? {
+      ...def, handler: (...args: Parameters<typeof def.handler>) => { admissions++; return def.handler(...args); },
+    } : def);
+    await state.handle.stop();
+    state.handle = serveEndpoint(state.nc, SPACE, state.grant, servedDefs, {
+      view: () => ({ commands: defs.map((def) => def.command).filter((command) =>
+        !(legacyView && command === "goal-result") && !(hideSpawn && command === "spawn")) }),
+    });
+    await state.nc.flush();
+    const compatStatus = await epCompat.invokeService(BASELINE_LIFECYCLE_ENDPOINT, "status");
+    check("COMPAT: real non-follow status remains usable", compatStatus.reply.ok === true, compatStatus.reply);
+    const realService = await epCompat.describeService(BASELINE_LIFECYCLE_ENDPOINT);
+    check("COMPAT: native descriptor exposes spawn but no goal-result", realService.commands.has("spawn") && !realService.commands.has("goal-result"), [...realService.commands.keys()]);
 
     let mutationSubmits = 0;
     const compatNc = (epCompat as unknown as { nc: NatsConnection }).nc;
     const publish = compatNc.publish.bind(compatNc);
-    compatNc.publish = (subject, data, options) => {
+    const compatPublish: typeof publish = (subject, data, options) => {
       const request = parseEpSubject(subject);
       if (request?.plane === "request" && request.command === "spawn") mutationSubmits++;
       publish(subject, data, options);
     };
+    compatNc.publish = compatPublish;
     const compatError = await outcomeError(epCompat.invokeService(
       BASELINE_LIFECYCLE_ENDPOINT, "spawn", { name: "compat-test", agent: "delayed-join" }, { follow: true },
     )).finally(() => { compatNc.publish = publish; });
@@ -331,6 +401,46 @@ async function main() {
     check("COMPAT: message provides actionable upgrade notice", compatError?.message.includes("does not support \"goal-result\"") === true);
     check("COMPAT: exactly zero mutation submits occurred", mutationSubmits === 0, { mutationSubmits });
     check("COMPAT: preserves not-executed outcome", compatError?.outcome === "not-executed");
+    check("COMPAT: actual native spawn handler admitted nothing", admissions === 0, { admissions });
+
+    // The built CLI control API opens its own signed-bearer connection and reads that
+    // connection's actual accepted row. This is an API probe, not a CLI binary journey.
+    const { askManager } = await import("../../cli/dist/lib/control.js");
+    cliManagerPin = mgrIid;
+    const cliUid = mintLifecycleUid();
+    const cliBearer = await issuer.issue({ owner, space: SPACE, actor: "caller_cli", lifecycleUid: cliUid,
+      scope: ["spawn"], view: "manager-caller", managerInstanceId: mgrIid, ttlSec: 60 });
+    const cliIdentity = { owner, actor: "caller_cli", uid: cliUid };
+    const ncPrototype = Object.getPrototypeOf(compatNc) as { publish: NatsConnection["publish"] };
+    const nativePublish = ncPrototype.publish;
+    let cliSubmits = 0, cliDescribes = 0;
+    ncPrototype.publish = function(this: NatsConnection, subject, data, options) {
+      const parsed = parseEpSubject(subject);
+      if (parsed?.plane === "request" && parsed.caller.actor === "caller_cli") {
+        if (parsed.command === "spawn") cliSubmits++;
+        if (parsed.command === "describe") cliDescribes++;
+      }
+      return nativePublish.call(this, subject, data, options);
+    };
+    const issuedBefore = cliIssuedConnections.length;
+    const cliReply = await askManager(SPACE, SERVERS, "start", { name: "cli-legacy", agent: "delayed-join" },
+      { bearer: cliBearer, sentinelCreds: callout.sentinelCreds, epCaller: cliIdentity, managerInstanceId: mgrIid, tls: false },
+      "owner", 10_000, { instanceId: mgrIid }).finally(() => { ncPrototype.publish = nativePublish; });
+    check("CLI-API: real signed-bearer legacy preflight keeps failed-precondition", cliReply.ok === false && cliReply.code === "failed-precondition", cliReply);
+    check("CLI-API: legacy preflight keeps explicit not-executed", cliReply.nativeOutcome === "not-executed", cliReply);
+    check("CLI-API: legacy preflight provides goal-result upgrade guidance", cliReply.error?.includes('does not support "goal-result"') === true && cliReply.error.includes("upgrade manager"), cliReply);
+    check("CLI-API: observed describe but no spawn request or native handler admission", cliDescribes > 0 && cliSubmits === 0 && admissions === 0, { cliDescribes, cliSubmits, admissions });
+    check("CLI-API: its own connection received fresh accepted-row issuance", cliIssuedConnections.length === issuedBefore + 1 && cliIssuedConnections.at(-1)?.actor === "caller_cli", { issuedBefore, issuedAfter: cliIssuedConnections.length });
+
+    hideSpawn = true;
+    await epCompat.describeService(BASELINE_LIFECYCLE_ENDPOINT, { refresh: true });
+    compatNc.publish = compatPublish;
+    const targetMissing = await outcomeError(epCompat.invokeService(
+      BASELINE_LIFECYCLE_ENDPOINT, "spawn", { name: "missing-target", agent: "delayed-join" }, { follow: true },
+    )).finally(() => { compatNc.publish = publish; });
+    check("COMPAT: target command remains required when goal-result is absent", targetMissing?.code === "not-found" && targetMissing.message.includes('command "spawn"'), targetMissing);
+    check("COMPAT: absent target publishes and admits no mutation", mutationSubmits === 0 && admissions === 0, { mutationSubmits, admissions });
+    hideSpawn = false;
     await epCompat.stop();
     const unhandled: unknown[] = [];
     const onUnhandled = (reason: unknown) => { unhandled.push(reason); };
@@ -363,52 +473,51 @@ async function main() {
     });
     await startEndpoint(epRetryCompat);
 
-    // Candidate 1: Real service commands (with goal-result), but bound to epoch 999 (manager fences before effects)
-    const cand1Service = {
-      ...realService,
-      responder: { instanceId: mgrIid, epoch: 999 },
-    };
-
-    // Candidate 2: Real service commands EXCEPT goal-result removed (simulating 0.53 legacy manager)
-    const cand2Commands = new Map(realService.commands);
-    cand2Commands.delete("goal-result");
-    const cand2Service = {
-      ...realService,
-      commands: cand2Commands,
-      responder: { instanceId: mgrIid, epoch: 0 },
-    };
-
-    const resolvedMap = new Map<string, unknown>();
-    Object.defineProperty(epRetryCompat, "resolvedServices", {
-      get() {
-        return {
-          get(k: string) {
-            return resolvedMap.get(k);
-          },
-          set(k: string, v: unknown) {
-            resolvedMap.set(k, v);
-          },
-          delete(k: string) {
-            resolvedMap.delete(k);
-            resolvedMap.set(k, cand2Service);
-          },
-        };
-      },
+    // Resolve an actual second manager, then remove only its own native serve handle. The
+    // unchanged request reaches the first manager and its real boundary fences the old bind.
+    await state.handle.stop();
+    const compatRoot = join(TEST_DIR, "compat-manager");
+    mkdirSync(join(compatRoot, ".cotal", "agents"), { recursive: true });
+    saveSpaceAuth(join(compatRoot, ".cotal", "auth"), auth);
+    compatManager = new Manager({ space: SPACE, servers: SERVERS, runtime: "pty", workspaceRoot: compatRoot, secretStore: workspaceSecretStore(WS_ROOT) });
+    await compatManager.start();
+    const resolvedCurrent = await epRetryCompat.describeService(BASELINE_LIFECYCLE_ENDPOINT);
+    const second = compatManager as unknown as { serviceServe: { nc: NatsConnection; handle: EpServeHandle }; managerInstanceId: string };
+    if (resolvedCurrent.responder.instanceId !== second.managerInstanceId || !resolvedCurrent.commands.has("goal-result"))
+      throw new Error("retry control did not resolve the actual modern second manager");
+    await second.serviceServe.handle.stop();
+    legacyView = true;
+    state.handle = serveEndpoint(state.nc, SPACE, state.grant, servedDefs, {
+      view: () => ({ commands: defs.map((def) => def.command).filter((command) => command !== "goal-result") }),
     });
-    resolvedMap.set(BASELINE_LIFECYCLE_ENDPOINT, cand1Service);
+    await state.nc.flush();
+    let splits = 0, retrySubmits = 0;
+    epRetryCompat.on("split-recovered", () => { splits++; });
+    const retryNc = (epRetryCompat as unknown as { nc: NatsConnection }).nc;
+    const retryPublish = retryNc.publish.bind(retryNc);
+    retryNc.publish = (subject, data, options) => {
+      const parsed = parseEpSubject(subject);
+      if (parsed?.plane === "request" && parsed.command === "spawn") retrySubmits++;
+      retryPublish(subject, data, options);
+    };
 
     const retryCompatError = await outcomeError(epRetryCompat.invokeService(
       BASELINE_LIFECYCLE_ENDPOINT,
       "spawn",
       { name: "retry-compat", agent: "delayed-join" },
       { follow: true },
-    ));
+    )).finally(() => { retryNc.publish = retryPublish; });
 
     check("COMPAT-RETRY: re-resolved service lacking goal-result refuses with expired or failed-precondition", retryCompatError?.code === "expired" || retryCompatError?.code === "failed-precondition");
     check("COMPAT-RETRY: preserves original not-executed outcome", retryCompatError?.outcome === "not-executed");
     check("COMPAT-RETRY: message explains goal-result requirement", retryCompatError?.message.includes("goal-result") === true);
     check("COMPAT-RETRY: carries bind refusal detail", (retryCompatError?.details ?? []).some((d) => d.kind === EP_BIND_REFUSED));
+    check("COMPAT-RETRY: actual native bind fence caused one re-resolution", splits === 1 && admissions === 0, { splits, admissions });
+    check("COMPAT-RETRY: only the fenced request was published, never a second mutation", retrySubmits === 1, { retrySubmits });
     await epRetryCompat.stop();
+    await state.handle.stop();
+    state.handle = serveEndpoint(state.nc, SPACE, state.grant, defs, { public: true });
+    await state.nc.flush();
 
     // ==================================================================
     // 3. STOP CLEANUP: ep.stop() cancels owned follow waits promptly
@@ -426,14 +535,37 @@ async function main() {
     });
     await startEndpoint(epStop);
 
+    type StopAcceptance = { goalId: string; attributed: EpAttributedReply; at: number };
+    let observeStopAcceptance!: (value: StopAcceptance) => void;
+    const stopAcceptanceP = new Promise<StopAcceptance>((resolve) => { observeStopAcceptance = resolve; });
+    const stopSubmitStart = performance.now();
     const stopFollowP = epStop.followServiceGoal(
       BASELINE_LIFECYCLE_ENDPOINT,
-      async () => epStop.invokeService(BASELINE_LIFECYCLE_ENDPOINT, "spawn", { name: "stop-user", agent: "delayed-join", events: false }),
+      async () => {
+        // Deliberately exceed the old one-second sleep without consuming host CPU.
+        await new Promise((r) => setTimeout(r, 1500));
+        return epStop.invokeService(BASELINE_LIFECYCLE_ENDPOINT, "spawn", { name: "stop-user", agent: "delayed-join", events: false });
+      },
       20_000,
+      {
+        // This public callback runs only after the follower has processed native acceptance.
+        // Supply no terminal fact: this cell must settle by stop, not by reconciliation.
+        reconcile: async (goalId, attributed) => {
+          observeStopAcceptance({ goalId, attributed, at: performance.now() });
+          return undefined;
+        },
+      },
     );
 
-    // Give follow time to submit and arm progress wait
-    await new Promise((r) => setTimeout(r, 1000));
+    const acceptedStop = await Promise.race([
+      stopAcceptanceP,
+      stopFollowP.then(() => { throw new Error("STOP fixture settled before observing native acceptance"); }),
+    ]);
+    check("STOP: observes attributed native goal acceptance before stopping", acceptedStop.attributed.reply.ok === true
+      && acceptedStop.attributed.responder.instanceId === mgrIid
+      && acceptedStop.goalId.length > 0
+      && (acceptedStop.attributed.reply.data as Record<string, unknown>)?.goalId === acceptedStop.goalId);
+    check("STOP: submission exceeded the old fixed sleep", acceptedStop.at - stopSubmitStart >= 1500, { submissionMs: acceptedStop.at - stopSubmitStart });
     const stopT0 = Date.now();
     await epStop.stop();
     const stopResult = await stopFollowP;
@@ -1009,7 +1141,7 @@ async function main() {
     await cleanup();
   }
 
-  if (pass + fail !== 63) throw new Error(`lifetime suite executed ${pass + fail} checks, expected 63`);
+  if (pass + fail !== 78) throw new Error(`lifetime suite executed ${pass + fail} checks, expected 78`);
   console.log(`\nSmoke suite completed: ${pass} passed, ${fail} failed.`);
   emitSentinel({ passed: pass, failed: fail });
   if (fail > 0) process.exitCode = 1;

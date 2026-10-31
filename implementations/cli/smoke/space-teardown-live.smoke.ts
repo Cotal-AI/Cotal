@@ -61,6 +61,11 @@
  * 14. A moved folder. With a stack running, its folder is renamed. `down --space --yes` from another
  *     folder stops it, and its Next names `cotal space create <space> --adopt --root <folder>` before
  *     `cotal space create <space>`. Adopting the renamed folder keeps its history, and `up` starts it there.
+ * 15. A forgotten stack that ran a manager, started again in its own folder without one. While the
+ *     manager runs, `up --no-manager` refuses LIFECYCLE_BLOCKED. After `down --yes`, `space forget`
+ *     removes the three stack definitions, and the journal names none of their instances. `space
+ *     create` there and `up --no-manager` start a new broker and delivery with no manager instance,
+ *     and `down --yes` stops them. Each down leaves no member process.
  *
  * Sandboxes COTAL_HOME and every project root. Run: pnpm smoke:space-teardown:live
  */
@@ -666,6 +671,41 @@ try {
       adopted.status === 0 && restarted.status === 0 && ((kept.env?.result?.items ?? []) as { text?: string }[]).some((m) => m.text === "kept across the move"), { adopt: shown(adopted), up: shown(restarted), history: shown(kept) });
     const last = cli(moved, "down", "--yes", "--json");
     check("down --yes stops it", last.status === 0, shown(last));
+  }
+
+  // 15. A forgotten space whose stack ran a manager starts again in its own folder without one.
+  {
+    const space = "tear15";
+    const root = folder(space);
+    const server = `nats://127.0.0.1:${await freePort()}`;
+    type Row = { role: string; instanceId: string | null; state: string };
+    const rows = (run: Run) => (run.env?.result?.members ?? []) as Row[];
+    const ids = (members: Row[]) => members.flatMap((row) => row.instanceId === null ? [] : [row.instanceId]).sort();
+    const journalRows = () => (JSON.parse(readFileSync(journalOf(root), "utf8")) as { members: Row[] }).members;
+    const pidsOf = () => ((cli(root, "service", "--space", space, "--json").env?.result?.instances as { pid: number | null }[] | undefined) ?? []).map((row) => row.pid);
+    const gone = (pids: (number | null)[]) => pids.every((pid) => { try { process.kill(pid!, 0); return false; } catch { return true; } });
+    const created = cli(home, "space", "create", space, "--root", root, "--json");
+    check("space create prepares a root whose stack runs a manager", created.status === 0, shown(created));
+    anchor(root);
+    const started = cli(root, "up", "--server", server, "--json"), first = rows(started), firstPids = pidsOf();
+    const manager = first.find((row) => row.role === "manager")?.instanceId;
+    check("up starts the broker, delivery and the manager", started.status === 0 && typeof manager === "string" && firstPids.length === 3 && firstPids.every((pid) => typeof pid === "number"), shown(started));
+    const omitted = cli(root, "up", "--server", server, "--no-manager", "--json");
+    check("up --no-manager refuses LIFECYCLE_BLOCKED while that manager runs, and the journal keeps it",
+      omitted.status === 2 && omitted.env?.error?.code === "LIFECYCLE_BLOCKED" && journalRows().find((row) => row.role === "manager")?.instanceId === manager, shown(omitted));
+    const stopped = cli(root, "down", "--yes", "--json");
+    check("down --yes stops every member, and no member process is left", stopped.status === 0 && JSON.stringify(ids(rows(stopped))) === JSON.stringify(ids(first)) && gone(firstPids), shown(stopped));
+    const forgot = cli(home, "space", "forget", space, "--json");
+    check("space forget removes the three stack definitions, and the journal then names none of their instances",
+      forgot.status === 0 && JSON.stringify(forgot.env?.result?.releasedDefinitions) === JSON.stringify(["stack-broker", "stack-delivery", "stack-manager"]) && ids(journalRows()).length === 0, { forget: shown(forgot), journal: journalRows() });
+    const again = cli(home, "space", "create", space, "--root", root, "--json");
+    const restarted = cli(root, "up", "--server", server, "--no-manager", "--json"), second = rows(restarted), secondPids = pidsOf();
+    check("space create there and up --no-manager start a new broker and delivery, and record no manager instance",
+      again.status === 0 && restarted.status === 0 && second.find((row) => row.role === "manager")?.instanceId === null && ids(second).length === 2 && !ids(second).some((id) => ids(first).includes(id)) && secondPids.length === 2,
+      { create: shown(again), up: shown(restarted) });
+    const last = cli(root, "down", "--yes", "--json");
+    check("down --yes then stops them, and no member process is left",
+      last.status === 0 && JSON.stringify(ids(rows(last))) === JSON.stringify(ids(second)) && rows(last).every((row) => row.instanceId === null || row.state === "stopped") && gone(secondPids), shown(last));
   }
 } finally {
   for (const root of roots) if (anchors.has(root)) cli(root, "down", "--yes", "--json");

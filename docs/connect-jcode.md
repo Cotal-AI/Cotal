@@ -16,6 +16,8 @@ are not supported.
 
 The connector is seeded with the Cotal CLI. Jcode's released Harness API bridge is a Unix-socket
 surface, so Windows is not supported. Managed seats run on Linux, macOS, and the BSDs.
+This connector requires Node 22.13 or later; Node 23 installations require 23.4 or later.
+It uses the built-in SQLite reader to inherit Cursor authentication without copying editor state.
 Install Jcode 0.78.1 or later from its GitHub release and make the binary available as `jcode` on `PATH`:
 
 ```bash
@@ -141,6 +143,12 @@ earlier, and a mismatch is refused by name. The working directory is restored on
 including the refusing ones. If neither pin is available, the connector throws a named error and
 mirrors nothing. Once a pin holds, `ENOENT` on a child means the mirror path is absent.
 
+Cursor SQLite mirrors contain only the access token, refresh token and service machine ID read by
+Jcode. The source is opened read-only, including committed WAL updates. Other editor state is omitted.
+The compact database uses the same private path and atomic publication as the other login files.
+Existing full copies are replaced on the next launch of that seat; this does not clean up retired
+seat homes. Provider selection and external-auth consent remain Jcode's responsibility.
+
 There is no credential-free opt-out today because the private instance must reproduce the operator's
 current provider-login state rather than silently start with stale or partial authorization.
 
@@ -162,6 +170,25 @@ first 240 characters, so that field comes before the error of a failed recovery,
 `recovery error: <message>`. An unrecognized Harness SDK error
 code remains transient by default and retries inside the same bounded window; new permanent codes
 must be added to the explicit classifier and its exact-count regression.
+
+An unacknowledged queued message does not prove an attached TUI's native turn has stopped.
+If that turn is busy, the connector tries a new API connection to the same private bridge and
+attaches the same session with its reported native busy state. When both steps succeed within the
+60-second recovery window, the server and running tool are preserved. Messages the native session
+already accepted stay owned by that session rather than being sent again after reattach. A
+soft-interrupt timeout keeps those items reserved through the busy turn, including before recovery;
+it does not prove rejection. A late positive reply for that request records native acceptance, and
+the containing turn's successful boundary still owns acknowledgement. Replies are matched by request
+id on the same API connection. Without positive acceptance, a turn boundary or connection replacement
+releases the hold without acknowledging it, so owed work can be delivered later. If the bridge permanently
+refuses the connection or attach, or the window expires, the host ends with exit code 1 and stops
+the TUI and private server tree. Its terminal diagnostic names the same-bridge refusal or expired
+window and says it is ending the seat and stopping the tree. It does not launch a replacement tree
+on this path. The unacknowledged inbox batch remains owed. If acknowledgement is still ambiguous
+after a successful recovery, queued-turn attempts stop and the connector reports the
+queued depth and age, while the native session stays alive. The connector does not claim those
+messages ran, acknowledge them, or keep submitting copies. A genuine connection close still uses
+the bounded private-instance recovery described above.
 
 Jcode currently supports **stdio** MCP servers. The connector writes only its own `cotal` entry to
 the private `JCODE_HOME/mcp.json`. Jcode starts this package's stdio MCP bridge for that entry, and

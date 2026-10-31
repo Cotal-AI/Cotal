@@ -14,6 +14,7 @@ import { deepFreeze } from "./values.js";
 /** The journalled effect kinds. `channel` is pure and deliberately absent. */
 export const EFFECT_KINDS = [
   "spawn",
+  "participant",
   "turn",
   "ask",
   "checkpoint",
@@ -95,6 +96,18 @@ export interface PrimitiveSpec extends CalleeDoc {
 }
 
 export const PRIMITIVES: Readonly<Record<string, PrimitiveSpec>> = deepFreeze({
+  participant: {
+    kind: "participant",
+    nameRequired: false,
+    options: ["name"],
+    optionsAt: 0,
+    hashedOptions: [],
+    hashesSubject: false,
+    scope: null,
+    signature: "participant({ name? }) -> AgentHandle",
+    doc: "Resolve a native participant handle supplied by the host. It has no spawn or adoption semantics.",
+    example: 'const self = await participant({ name: "self" })',
+  },
   spawn: {
     kind: "spawn",
     nameRequired: false,

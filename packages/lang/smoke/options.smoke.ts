@@ -54,6 +54,7 @@ const capturing = (inner: EffectHandler): { handler: EffectHandler; seen: Map<st
   };
   const handler = {
     now: () => inner.now(),
+    participant: wrap("participant", inner.participant),
     spawn: wrap("spawn", inner.spawn),
     turn: wrap("turn", inner.turn),
     ask: wrap("ask", inner.ask),

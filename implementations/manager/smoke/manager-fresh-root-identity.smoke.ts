@@ -51,7 +51,11 @@ if (process.env.COTAL_I1263_WORKER === "1") {
     process.stdout.write(JSON.stringify({ ok: true, pid: process.pid, instanceId: id }) + "\n");
     await new Promise(() => {});
   } catch (e) {
-    process.stdout.write(JSON.stringify({ ok: false, pid: process.pid, error: (e as Error).message }) + "\n");
+    // The package's own export, looked up at run time so a package without it reports untyped (#3915).
+    const exported = (await import("../src/index.js") as Record<string, unknown>).ManagerInstanceLeaseHeld;
+    const typed = typeof exported === "function" && e instanceof (exported as abstract new (...args: never[]) => Error);
+    const lease = e as { instanceId?: unknown; space?: unknown; sameRoot?: unknown; held?: { pid?: unknown; root?: unknown } };
+    process.stdout.write(JSON.stringify({ ok: false, pid: process.pid, error: (e as Error).message, typed, instanceId: lease.instanceId, space: lease.space, sameRoot: lease.sameRoot, heldPid: lease.held?.pid, heldRoot: lease.held?.root }) + "\n");
     process.exit(2);
   }
 }
@@ -93,7 +97,8 @@ try {
   kids.push(second);
   let stderr = "";
   second.stderr?.on("data", (c: Buffer) => { stderr += c.toString(); });
-  const seqReport = await new Promise<{ ok: boolean; error?: string }>((resolve, reject) => {
+  type SeqReport = { ok: boolean; error?: string; typed?: boolean; instanceId?: unknown; space?: unknown; sameRoot?: unknown; heldPid?: unknown; heldRoot?: unknown };
+  const seqReport = await new Promise<SeqReport>((resolve, reject) => {
     let settled = false;
     const settle = (fn: () => void) => { if (settled) return; settled = true; clearTimeout(timer); fn(); };
     const timer = setTimeout(() => settle(() => reject(new Error("the sequential second start did not report"))), 25_000);
@@ -107,7 +112,7 @@ try {
         try {
           const report = JSON.parse(line) as { ok?: unknown; error?: unknown };
           if (typeof report.ok !== "boolean" || (report.ok === false && typeof report.error !== "string")) throw new Error(`malformed report: ${line}`);
-          resolve(report as { ok: boolean; error?: string });
+          resolve(report as SeqReport);
         } catch (e) { reject(e); }
       });
     });
@@ -117,6 +122,9 @@ try {
   const seqErr = seqReport.ok ? "" : seqReport.error ?? "";
   check("sequential second start REFUSES with already-serves (fence after identity exists)",
     /already serves space/.test(seqErr), seqErr);
+  check("the refusal is the exported ManagerInstanceLeaseHeld naming the held row (this process, this root)",
+    seqReport.typed === true && seqReport.instanceId === firstId && seqReport.space === SPACE && seqReport.sameRoot === true &&
+      seqReport.heldPid === process.pid && seqReport.heldRoot === seqRoot, seqReport);
   check("sequential pair shares the persisted identity",
     loadManagerInstanceIdentity(seqRoot, SPACE)?.instanceId === firstId);
   await first.stop({ withAgents: true }).catch(() => {});

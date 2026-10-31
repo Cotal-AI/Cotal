@@ -28,12 +28,13 @@
  *     refused at a port another program holds names another `--server`, records no broker instance
  *     and pins nothing: `down --yes` stops nothing and the next `up` starts at another address. The
  *     refusal says the stack started no member. A running broker keeps its file store cap; a stopped
- *     one takes a new `--max-file-store`, and a recorded cap too small for the space's streams fails
- *     naming that cap and the flag. A cap equal to the membership bucket's reservation fails that way
- *     too, and one byte more starts. `status` then reads such a stack as stopped, with its last
- *     operation, and names up at the floor while the recorded cap is below it. Once a space holds
+ *     one takes a new `--max-file-store`. With no stream reservations, a recorded one-byte cap lets
+ *     the empty streams start, then delivery's first write fails and keeps the broker as a partial
+ *     start, whose Next, like `status`'s, names only a larger cap; stopping that broker lets a
+ *     replacement cap apply. After replacement, `status` reads the stack as stopped, with its last
+ *     operation, and names bare up. Once a space holds
  *     more than its cap, `send` refuses `DEPENDENCY_UNAVAILABLE` naming the store and the cap,
- *     `status` shows the store full and leads Next with `history clear`, and `down` and `service stop
+ *     `status` shows the store full and names only the larger-cap route, and `down` and `service stop
  *     stack-manager` refuse the same way before any stop, because the manager's stop needs an
  *     issuance record, which down's dry run predicts. Both say that `history clear` purges all channel
  *     history and name the manager's SIGTERM that keeps it. After that clear `send` stores again. When
@@ -42,8 +43,8 @@
  *     cap waits out that lease and starts every member with the history kept. Left over its cap, the
  *     store ends the delivery daemon once its lease lapses: its log quotes the refused create and
  *     names no other daemon, `status` says the full store refuses its lease, and `up` fails naming
- *     the store, quoting that line, and giving `history clear` or the SIGTERM route, after which it
- *     starts the daemon. A store that refused a
+ *     the store, quoting that line, and giving only the SIGTERM and larger-cap route. After
+ *     `history clear` makes room it starts the daemon. A store that refused a
  *     write for permission makes the broker disable JetStream: `down`, `service stop stack-manager`
  *     and `up` refuse `DEPENDENCY_UNAVAILABLE` naming the logged failure and the manager's SIGTERM on
  *     its host, `status` leads with that SIGTERM, and once it ends the manager `down` and `up` work. Damage the broker
@@ -180,12 +181,12 @@
 import { randomUUID } from "node:crypto";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
-import { appendFileSync, chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, watch, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, watch, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { assertSmokeSandboxDown, createSuite, freePort, listenOn, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
 import { CotalEndpoint, mintCreds, mintLifecycleUid, newIdentity } from "@cotal-ai/core";
-import { agentLifecycleSecretFilePaths, canonicalLocalProcessPath, findMesh, getSpaceAuth, isCommandFailure, MIN_FILE_STORE, workspaceSecretStore, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, MANAGER_SHUTDOWN_INTENT, readServiceStopRequest, spaceSegment, stopReservationPath, acquireMaintenanceLock, releaseMaintenanceLock } from "@cotal-ai/workspace";
+import { agentLifecycleSecretFilePaths, canonicalLocalProcessPath, findMesh, getSpaceAuth, isCommandFailure, workspaceSecretStore, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, MANAGER_SHUTDOWN_INTENT, readServiceStopRequest, spaceSegment, stopReservationPath, acquireMaintenanceLock, releaseMaintenanceLock } from "@cotal-ai/workspace";
 
 const WT = resolve(import.meta.dirname, "..", "..", "..");
 const CLI = join(WT, "bin", "cotal.ts");
@@ -357,7 +358,7 @@ try {
     const ps = cli(root, "ps", "--json");
     check("ps on a --no-manager stack refuses TARGET_UNAVAILABLE, exit 2", ps.status === 2 && ps.env?.error?.code === "TARGET_UNAVAILABLE" && !ps.env.error.message.includes("SPEC"), shown(ps));
     check("...and its native detail says the manager has no live instance, with no spec rule in it",
-      ps.env?.error?.cause?.detail === 'failed-precondition: service "manager" has no live registered instances' && ps.env.error.remedy === "start the stack's manager with bare `cotal up`; a stack started with --no-manager has none", shown(ps));
+      ps.env?.error?.cause?.detail === 'failed-precondition: service "manager" has no live registered instances' && ps.env.error.remedy === `start the stack's manager with bare \`cotal up\` in ${realpathSync(root)}; a stack started with --no-manager has none`, shown(ps));
     const noManager = () => (cli(root, "status", "--json").env?.result?.folder as { noManager?: boolean } | undefined)?.noManager;
     check("status on that stack reports that it runs no manager by choice", noManager() === true);
     const added = cli(root, "up", "--json");
@@ -560,7 +561,8 @@ try {
     check("down --yes stops it", stopped.status === 0, shown(stopped));
   }
 
-  // 3c. A recorded file store cap too small for the space's streams, as an earlier release accepted.
+  // 3c. A recorded one-byte file store cap, as an earlier release accepted, starts empty streams
+  // without reservations. Delivery's first write fills it, so the broker is kept until a scoped down.
   {
     const space = "smallcap";
     const root = prepare(space);
@@ -575,44 +577,27 @@ try {
     writeFileSync(path, JSON.stringify({ ...journal, broker: { ...journal.broker, maxFileStore: 1 } }));
     const failed = cli(root, "up", "--no-manager", "--json");
     track(space);
-    check("bare up with a 1-byte recorded cap fails OPERATION_FAILED, exit 5, naming the cap and the flag that replaces it", failed.status === 5 && failed.env?.error?.code === "OPERATION_FAILED" && failed.env.error.message.includes("its JetStream file store cap (--max-file-store 1) has too little room for them") && Boolean(failed.env.error.remedy?.includes(`run \`cotal up --max-file-store <bytes>\` from ${root}`)), shown(failed));
+    check("bare up with a 1-byte recorded cap keeps the broker after delivery's first write fails: OPERATION_PARTIAL, exit 4, naming the full store and only the larger-cap route, as the new space has no history a purge could free",
+      failed.status === 4 && failed.env?.error?.code === "OPERATION_PARTIAL" && failed.env.error.message.includes("started members were kept and nothing was retried") && failed.env.error.message.includes("is full at its --max-file-store cap of 1 bytes")
+        && failed.env.error.remedy === `from ${root}, run \`cotal down --yes\` and \`cotal up --max-file-store <bytes>\` with a larger cap; the store keeps its history`, shown(failed));
+    const capPlain = cli(root, "status", "--plain");
+    const capNext = capPlain.stdout.slice(capPlain.stdout.indexOf("\nNext\n"));
+    check("status's Next on that store names down --yes and a larger cap, and no history clear", capNext.includes("down --yes") && capNext.includes("up --max-file-store <bytes>") && !capNext.includes("history clear"), capPlain.stdout);
+    const partialDown = cli(root, "down", "--yes", "--json");
+    check("down --yes stops the broker kept by the partial startup before its cap is changed", partialDown.status === 0, shown(partialDown));
     const fixed = cli(root, "up", "--no-manager", "--max-file-store", "134217728", "--json");
     track(space);
     check("up with a new cap on the stopped broker records it and starts", fixed.status === 0 && (JSON.parse(readFileSync(path, "utf8")) as { broker: { maxFileStore?: number } }).broker.maxFileStore === 134217728, shown(fixed));
     check("down --yes stops it", cli(root, "down", "--yes", "--json").status === 0);
-    // The membership bucket's reservation alone leaves no byte free, and the broker refuses the next stream.
-    const recorded = JSON.parse(readFileSync(path, "utf8")) as { broker: Record<string, unknown> };
-    writeFileSync(path, JSON.stringify({ ...recorded, broker: { ...recorded.broker, maxFileStore: MIN_FILE_STORE - 1 } }));
-    const reserved = cli(root, "up", "--no-manager", "--json");
-    track(space);
-    check(`a recorded cap of ${MIN_FILE_STORE - 1}, the membership bucket's reservation, fails OPERATION_FAILED, exit 5, naming ${MIN_FILE_STORE} as the least`, reserved.status === 5 && reserved.env?.error?.code === "OPERATION_FAILED" && Boolean(reserved.env.error.remedy?.includes(`with at least ${MIN_FILE_STORE} bytes`)), shown(reserved));
-    // Another space of this suite is selected, and a stopped folder's commands target the selection,
-    // so status names this stack with --space.
-    const capped = cli(root, "status", "--space", space, "--json");
-    const cappedSelected = capped.env?.result?.selected as { message?: string; storeCap?: number } | undefined;
-    check("status then says the stack is stopped after a failed up, shows the recorded cap and names up --max-file-store at the floor, not a bare up",
-      capped.status === 0 && Boolean(cappedSelected?.message?.includes(`"${space}" is stopped; its last operation, \`cotal up\`, failed`)) && cappedSelected?.storeCap === MIN_FILE_STORE - 1
-        && ((capped.env?.result?.hints ?? []) as string[]).some((hint) => hint.startsWith(`start it with \`cotal up --max-file-store ${MIN_FILE_STORE}\` or more in `)), shown(capped));
-    // With another space selected, the note on what this folder holds names the up that starts it.
+    // With another space selected, the note on what this folder holds names the bare up that starts it.
     const folderNote = (run: Run) => run.env?.warnings?.find((warning) => warning.code === "FOLDER_SPACE_NOT_RUNNING" && warning.target?.space === space);
-    const noted = cli(root, "status", "--json");
-    check(`with another space selected, the folder note names up --max-file-store ${MIN_FILE_STORE} or more after the failed up, not a bare up`,
-      noted.status === 0 && noted.env?.target?.space !== space && folderNote(noted)?.message === `this folder holds the stopped space "${space}"; restart it with \`cotal up --max-file-store ${MIN_FILE_STORE}\` or more`, { ...shown(noted), target: noted.env?.target, note: folderNote(noted) });
-    // Bare `cotal` there names the same up in its own line on what the folder holds, and never a bare one.
-    const entry = cli(root);
-    check(`bare cotal there names up --max-file-store ${MIN_FILE_STORE} or more in its folder note, and no bare up as this folder's start`,
-      entry.status === 0 && entry.stdout.includes(`\n${folderNote(noted)?.message}\n`) && !/^ {2}cotal up +Start this folder's space$/m.test(entry.stdout), { ...shown(entry), stdout: entry.stdout.slice(0, 1200) });
-    const floor = cli(root, "up", "--no-manager", "--max-file-store", String(MIN_FILE_STORE), "--json");
-    track(space);
-    check(`up --max-file-store ${MIN_FILE_STORE} starts the stack`, floor.status === 0, shown(floor));
-    check("down --yes stops it", cli(root, "down", "--yes", "--json").status === 0);
     const stoppedStatus = cli(root, "status", "--space", space, "--json");
-    const stoppedSelected = stoppedStatus.env?.result?.selected as { message?: string; storeCap?: number } | undefined;
+    const stoppedSelected = stoppedStatus.env?.result?.selected as { message?: string } | undefined;
     check("status then says the stack is stopped after a completed down, not prepared but not started, and names a bare up",
-      stoppedStatus.status === 0 && Boolean(stoppedSelected?.message?.includes(`"${space}" is stopped; its last operation, \`cotal down\`, completed`)) && stoppedSelected?.storeCap === undefined
+      stoppedStatus.status === 0 && Boolean(stoppedSelected?.message?.includes(`"${space}" is stopped; its last operation, \`cotal down\`, completed`))
         && ((stoppedStatus.env?.result?.hints ?? []) as string[]).some((hint) => hint.startsWith("start it again with `cotal up` in ")), shown(stoppedStatus));
     const notedDown = cli(root, "status", "--json");
-    check("with another space selected, the folder note names a bare up after a completed down whose cap is at the floor",
+    check("with another space selected, the folder note names a bare up after a completed down",
       notedDown.status === 0 && notedDown.env?.target?.space !== space && folderNote(notedDown)?.message === `this folder holds the stopped space "${space}"; restart it with \`cotal up\``, { ...shown(notedDown), target: notedDown.env?.target, note: folderNote(notedDown) });
   }
 
@@ -632,7 +617,8 @@ try {
     const full = status.env?.result?.store as { state?: string; used?: number; cap?: number; path?: string } | undefined;
     check("status --json shows the store full with its bytes, cap and path", status.status === 0 && full?.state === "full" && full.cap === 70000000 && (full.used ?? 0) > 70000000 && full.path === store, { status: status.status, store: full });
     const plain = cli(root, "status", "--plain");
-    check("status shows a full Store row and leads Next with history clear", /Store: +full - \d+ bytes stored, over its --max-file-store cap of 70000000/.test(plain.stdout) && plain.stdout.includes(`history clear --space ${space} --yes`), plain.stdout);
+    const fullNext = plain.stdout.slice(plain.stdout.indexOf("\nNext\n"));
+    check("status shows a full Store row, and its Next names the larger cap and no history clear", /Store: +full - \d+ bytes stored, over its --max-file-store cap of 70000000/.test(plain.stdout) && fullNext.includes("up --max-file-store <bytes>") && !fullNext.includes("history clear"), plain.stdout);
     const stopRefused = `the broker's JetStream store ${store} is full at its --max-file-store cap of 70000000 bytes, and stopping the manager needs a credential whose issuance record the full store cannot take; no member was stopped`;
     const managerStop = cli(root, "service", "stop", "stack-manager", "--space", space, "--yes", "--json");
     const managerPid = pidOf(space, "stack-manager");
@@ -697,17 +683,17 @@ try {
     const plain = cli(root, "status", "--plain");
     check("status says the full store refuses the delivery lease", plain.stdout.includes("the full store refuses its lease"), plain.stdout);
     const managerPid = pidOf(space, "stack-manager");
-    // Its Next names the two routes up names: make room and restart, or keep the history behind a larger cap.
-    const routes = plain.stdout.slice(plain.stdout.indexOf("\nNext\n") + 6).split("\n").slice(0, 5).map((line) => line.trim().split(/ {2,}/)[0] ?? "");
-    const wanted = [`history clear --space ${space} --yes`, `up --root ${root}`, `kill -TERM ${managerPid}`, "down --yes", "up --max-file-store <bytes>"];
-    check("status's Next names history clear then up, or kill -TERM to the manager, down --yes and up with a larger cap",
+    // Its Next names the route up names, which keeps the history behind a larger cap.
+    const routes = plain.stdout.slice(plain.stdout.indexOf("\nNext\n") + 6).split("\n").slice(0, 3).map((line) => line.trim().split(/ {2,}/)[0] ?? "");
+    const wanted = [`kill -TERM ${managerPid}`, "down --yes", "up --max-file-store <bytes>"];
+    check("status's Next names kill -TERM to the manager, down --yes and up with a larger cap",
       managerPid !== null && routes.length === wanted.length && routes.every((route, i) => route.endsWith(wanted[i]!)), { routes, stdout: plain.stdout });
     const restart = cli(root, "up", "--json");
-    check("up fails OPERATION_FAILED, exit 5, quoting the daemon's line and naming the full store, then history clear and the SIGTERM that keeps the history",
+    check("up fails OPERATION_FAILED, exit 5, quoting the daemon's line and naming the full store, then only the SIGTERM and larger-cap route that keeps the history",
       restart.status === 5 && restart.env?.error?.code === "OPERATION_FAILED"
         && restart.env.error.message.includes("the last line it logged is: ✗ delivery: acquiring the lease for shard 0 failed: insufficient resources. Not binding.")
         && restart.env.error.message.includes(`the broker's JetStream store ${store} is full at its --max-file-store cap of 70000000 bytes, so it refuses every write`)
-        && restart.env.error.remedy === `from ${root}, make room with \`cotal history clear --yes\`, which purges all of this space's channel history, then run \`cotal up\` again; to keep that history, end the manager on this host with kill -TERM ${managerPid}, which stops its agents by its default policy, then run \`cotal down --yes\` and \`cotal up --max-file-store <bytes>\` with a larger cap`
+        && restart.env.error.remedy === `from ${root}, end the manager on this host with kill -TERM ${managerPid}, which stops its agents by its default policy, then run \`cotal down --yes\` and \`cotal up --max-file-store <bytes>\` with a larger cap; the store keeps its history`
         && managerPid !== null, shown(restart));
     check("history clear --yes makes room", cli(root, "history", "clear", "--yes", "--json").status === 0);
     const again = cli(root, "up", "--json");

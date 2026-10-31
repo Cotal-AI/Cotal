@@ -11,6 +11,8 @@ import type {
   RemoteManagerGoalIndexScanResult,
   RemoteManagerMaintenanceRequest,
   RemoteManagerMaintenanceResult,
+  RemoteManagerParticipationAuthorizationRequest,
+  RemoteManagerParticipationAuthorizationResult,
   RemoteManagedAgentEnrollmentRequest,
   RemoteManagedAgentEnrollmentResult,
   RemoteManagedAgentPrepareRetirementRequest,
@@ -316,6 +318,12 @@ export interface AuthProvider extends Extension {
     dir: string;
     request: RemoteManagerAdminAuthorizationRequest;
   }): Promise<RemoteManagerAdminAuthorizationResult>;
+  /** Fresh host decision for one exact active native personal caller lifecycle. */
+  authorizeRemoteManagerParticipation?(opts: {
+    store: SecretStore;
+    dir: string;
+    request: RemoteManagerParticipationAuthorizationRequest;
+  }): Promise<RemoteManagerParticipationAuthorizationResult>;
   /**
    * Revalidate one retained remote managed agent at the host that owns the current ledger and auth
    * secrets. This is a read-only lifecycle check, never a mint and never a generic provider hook.
@@ -850,6 +858,8 @@ export interface AuthServiceSpec {
    *  that pid is provably alive, ends the wait AT ONCE when the pid is provably gone (refusing
    *  with the exit), and still refuses at `maxWaitMs` — so a slow-but-healthy start is not
    *  misreported dead, a dead daemon is refused immediately, and a wedged daemon can never hold
-   *  the caller open indefinitely. Either way the caller never invents ad-hoc readiness sleeps. */
+   *  the caller open indefinitely. Either way the caller never invents ad-hoc readiness sleeps.
+   *  A daemon that recorded a typed startup refusal before it exited is refused with that error
+   *  (an `EpEnvelopeError` keeping its code and details), not with the bare exit. */
   ready(opts: { dir: string; timeoutMs?: number; pid?: number; maxWaitMs?: number }): Promise<Record<string, unknown>>;
 }

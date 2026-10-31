@@ -557,6 +557,7 @@ const H = (v: unknown) => digest(v);
   // so a spread wrapper is an object with none of them.
   const watched: EffectHandler = {
     now: () => sim.now(),
+    participant: (req, ctx) => sim.participant(req, ctx),
     spawn: (req, ctx) => sim.spawn(req, ctx),
     turn: async (req, ctx) => {
       order.push("handler:turn");
@@ -601,6 +602,7 @@ const H = (v: unknown) => digest(v);
 /** A handler built method by method, counting the dispatches the interpreter actually made. */
 const counting = (sim: SimHandler, calls: string[]): EffectHandler => ({
   now: () => sim.now(),
+  participant: (req, ctx) => sim.participant(req, ctx),
   spawn: (req, ctx) => sim.spawn(req, ctx),
   turn: (req, ctx) => sim.turn(req, ctx),
   ask: (req, ctx) => sim.ask(req, ctx),

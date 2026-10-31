@@ -12,6 +12,7 @@ const FILES = [
   "pins",
   "scopes",
   "sim",
+  "participant",
   "interpret",
   "dispatch-failure",
   "fuel",
@@ -26,6 +27,7 @@ const FILES = [
   "transform",
   "differential",
   "engine",
+  "worker-errors",
   "root-cancellation",
 ].map((n) => `${n}.smoke.ts`);
 

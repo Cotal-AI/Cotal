@@ -19,6 +19,7 @@ import {
   registryReadFailed,
   noLiveInstances,
   undeclaredArg,
+  undeclaredArgInstance,
   controlReplyFrom,
   controlReplyFromThrown,
   submitAndFollowGoal,
@@ -44,6 +45,7 @@ import { CommandFailure, ConnectRefusal, controlCaller, loadSpaceAuth, oneLine, 
 import { DEV_OWNER, EP_UNANSWERED, type SpaceAuth } from "@cotal-ai/core";
 import { c, staleStoreHint, stderrLine } from "../ui.js";
 import { cliVersion } from "./version.js";
+import { compareSemver } from "../seed/reconcile.js";
 import { DIAL_TIMEOUT_MS, DialNotAdmitted, dialWithRetry, notAdmittedRefusal } from "./dial-retry.js";
 import { nativeEndpointRefusal } from "./endpoint-errors.js";
 
@@ -141,17 +143,18 @@ async function askManagerEp(
   let request: ManagerRequestReceipt | undefined;
   let intent: ManagerRequestIntent | undefined;
   let observationCause: { code?: string; outcome?: string } | undefined;
+  let caller: EpCaller | undefined;
   try {
     // A logged-in user's manager view is issued at the callout (SPEC 13.15): read its generation
     // back from this connection's accepted row; a missing row refuses, never a legacy-rail retry.
-    const caller = auth.bearer !== undefined && auth.managerInstanceId !== undefined
+    caller = auth.bearer !== undefined && auth.managerInstanceId !== undefined
       ? await issuedUserCaller(nc, space, String(connectOpts.name), auth.epCaller!)
       : auth.epCaller!;
     // P2 item 3 `--on <instance>`: pin the resolve to the exact manager instance's `inst` route so a
     // multi-manager space addresses the intended manager, never whichever wins the class anycast.
     const followsGoal = (GOAL_BEARING_COMMANDS as readonly string[]).includes(mapped.command);
     const resolveCommands = [...new Set([mapped.command, ...(mapped.targeted ? ["inspect"] : []), ...(followsGoal ? ["goal-result"] : [])])];
-    const service = await resolveService(nc, space, BASELINE_LIFECYCLE_ENDPOINT, caller, { deadlineMs: 10_000, commands: resolveCommands, ...(instanceId !== undefined ? { instanceId } : {}), ...(pin?.signal ? { signal: pin.signal } : {}) });
+    const service = await resolveService(nc, space, BASELINE_LIFECYCLE_ENDPOINT, caller, { deadlineMs: 10_000, commands: resolveCommands, ...(followsGoal ? { optionalCommands: ["goal-result"] } : {}), ...(instanceId !== undefined ? { instanceId } : {}), ...(pin?.signal ? { signal: pin.signal } : {}) });
     let target: EpVerbTarget | undefined;
     let sendArgs = args;
     if (mapped.self) target = { mode: "self" };
@@ -237,7 +240,11 @@ async function askManagerEp(
     const data = mapped.command === "models" ? (r.reply.data as { catalogs: unknown }).catalogs : r.reply.data;
     return { ok: true, managerInstanceId: r.responder.instanceId, managerEpoch: r.responder.epoch, ...(observationCause ? { observationCause } : {}), ...(intent ? { intent } : {}), ...(request ? { request } : {}), ...(data !== undefined ? { data } : {}) };
   } catch (e) {
-    return { ...epRailFailure(e, instanceId === undefined ? pin : { instanceId }), ...(observationCause ? { observationCause } : {}), ...(intent ? { intent } : {}), ...(request ? { request, managerInstanceId: request.managerInstanceId, managerEpoch: request.managerEpoch } : {}), ...(e instanceof EpEnvelopeError && e.outcome ? { nativeOutcome: e.outcome } : {}) };
+    // A key the manager's contract does not declare: ask the instance that refused it which release
+    // it runs, so the refusal can say which side is older.
+    const refusing = undeclaredArgInstance(e);
+    const managerVersion = refusing !== undefined && caller !== undefined ? await reportedManagerVersion(nc, space, caller, refusing, instanceId !== undefined) : undefined;
+    return { ...epRailFailure(e, instanceId === undefined ? pin : { instanceId }, managerVersion), ...(refusing !== undefined ? { managerInstanceId: refusing } : {}), ...(observationCause ? { observationCause } : {}), ...(intent ? { intent } : {}), ...(request ? { request, managerInstanceId: request.managerInstanceId, managerEpoch: request.managerEpoch } : {}), ...(e instanceof EpEnvelopeError && e.outcome ? { nativeOutcome: e.outcome } : {}) };
   } finally {
     // Drain waits for in-flight NATS work. A dead broker never finishes that, and
     // attach-auth-root hung here after spawn once nats-server exited.
@@ -380,13 +387,14 @@ export function onInstanceId(on: string | undefined, verb: string): string | und
  *    read as an unreachable manager, which is precisely the misreading the refusal was reworded to
  *    stop.
  *  A failure that is not an {@link EpEnvelopeError} carries no answer provenance at all, so no verdict
- *  is stated for it either: its message stands alone. */
-export function epRailFailure(e: unknown, pin?: ManagerPin): ManagerReply {
+ *  is stated for it either: its message stands alone. `managerVersion` is the version the refusing
+ *  manager reported in its own `status`, for a key its contract does not declare. */
+export function epRailFailure(e: unknown, pin?: ManagerPin, managerVersion?: string): ManagerReply {
   if (!(e instanceof EpEnvelopeError)) return { ok: false, unanswered: false, error: e instanceof Error ? e.message : String(e) };
-  return { ...controlReplyFromThrown(e, epRailMessage(e, pin)), unanswered: unansweredRequest(e) };
+  return { ...controlReplyFromThrown(e, epRailMessage(e, pin, managerVersion)), unanswered: unansweredRequest(e) };
 }
 
-function epRailMessage(e: EpEnvelopeError, pin?: ManagerPin): string {
+function epRailMessage(e: EpEnvelopeError, pin?: ManagerPin, managerVersion?: string): string {
   const instanceId = pin?.instanceId;
   const detail = `${e.code}: ${e.message}`;
   if (unansweredRequest(e)) {
@@ -413,10 +421,18 @@ function epRailMessage(e: EpEnvelopeError, pin?: ManagerPin): string {
   if (registryReadFailed(e))
     return `the manager registry could not be read: a broker read on this side, not the managers' silence, and they may all be up. Retry; if it persists, look at the broker's JetStream (${detail})`;
   // This CLI built the args for a manager of its own release, and the two release in lockstep, so a
-  // key the manager's contract does not declare means the manager runs a different release.
+  // key the manager's contract does not declare means the manager runs a different release. The
+  // version the manager reports says which side is older, and so which one to update.
   const undeclared = undeclaredArg(e);
-  if (undeclared !== undefined)
-    return `${detail}. That is version skew: this CLI runs Cotal ${cliVersion()} and sends "${undeclared}", which the manager's contract does not declare. Run the manager at Cotal ${cliVersion()}, or use a CLI at the manager's version`;
+  if (undeclared !== undefined) {
+    const cli = cliVersion();
+    const skew = `${detail}. That is version skew: this CLI runs Cotal ${cli} and sends "${undeclared}", which the manager's contract does not declare.`;
+    const order = managerVersion === undefined ? undefined : compareSemver(cli, managerVersion);
+    if (order === undefined) return `${skew} The manager did not report its version. Run the manager at Cotal ${cli}, or use a CLI at the manager's version`;
+    if (order > 0) return `${skew} The manager runs Cotal ${managerVersion}, so it is the older side: on its host run \`cotal update --self\`, then \`cotal manager restart\`, or use a CLI at Cotal ${managerVersion}`;
+    if (order < 0) return `${skew} The manager runs Cotal ${managerVersion}, so this CLI is the older side: update it with \`cotal update --self\``;
+    return `${skew} The manager also reports Cotal ${cli}, so one side is another build of that version, such as a source checkout: rebuild or reinstall that side`;
+  }
   // The unpinned class-queue split. Core says a call that addresses one instance does not split
   // and stops there (a CLI flag name does not belong in a core error). The flag is named here only
   // when the CALLER declared it has one (`pin` present) and did not pass it: an absent `pin` is a
@@ -675,6 +691,24 @@ async function askReportedHosts(nc: NatsConnection, space: string, service: Reso
       } catch { /* display metadata only: the instance is listed without a host */ }
     }));
   } finally { clearTimeout(timer); }
+}
+
+const VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+
+/** The version manager instance `instanceId` gives in its own `status`, asked on the route the
+ *  refused call rode: its `inst` rail when that call was pinned, else the class rail with only that
+ *  instance's answer accepted. Only a well-formed version from that exact instance is kept; one that
+ *  is not, or no answer inside the bound, leaves it unknown. */
+async function reportedManagerVersion(nc: NatsConnection, space: string, caller: EpCaller, instanceId: string, pinned: boolean): Promise<string | undefined> {
+  const signal = AbortSignal.timeout(REPORTED_HOST_BUDGET_MS);
+  try {
+    const service = await resolveService(nc, space, BASELINE_LIFECYCLE_ENDPOINT, caller, { deadlineMs: REPORTED_HOST_BUDGET_MS, signal, commands: ["status"], ...(pinned ? { instanceId } : { classInstanceId: instanceId }) });
+    const answer = await invokeCommand(nc, space, service, "status", undefined, { deadlineMs: REPORTED_HOST_BUDGET_MS, signal });
+    const version = answer.reply.ok === true ? (answer.reply.data as { version?: unknown } | undefined)?.version : undefined;
+    return answer.responder.instanceId === instanceId && typeof version === "string" && VERSION.test(version) ? version : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**

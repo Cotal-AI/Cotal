@@ -26,8 +26,7 @@ import {
   LEASE_TTL_MS,
   managerBucket,
   MANAGER_LEASE_TTL_MS,
-  membershipBucket,
-  MEMBERSHIP_MAX_BYTES,
+  membershipStoreDefinition,
   PRESENCE_STORAGE,
   presenceBucket,
   recordsBucket,
@@ -61,7 +60,7 @@ import {
   prepareAlternateRestore,
   prepareMissingSourceRestore,
   prepareSamePathRestore,
-  localProcessOwnerStatus, readMaintenanceJournal, restoreLeftOut, restoreReplacedNewerCut, restoreRolledBackRuns,
+  localProcessOwnerStatus, parsePositiveIntegerFlag, readMaintenanceJournal, restoreLeftOut, restoreOtherAccounts, restoreReplacedNewerCut, restoreRolledBackRuns, storeAccounts,
   readMaintenanceResumeDocument,
   recordRestoreAttemptResources,
   recordRestoreManagerCommit,
@@ -109,6 +108,7 @@ export interface RestoreFlags {
   "restore-only"?: string;
   "accept-missing-source"?: boolean;
   "store-dir"?: string;
+  "max-file-store"?: string;
   space?: string;
   server?: string;
   host?: string;
@@ -132,6 +132,8 @@ export interface PreparedRestore {
   host: string;
   runtime: string;
   detached: boolean;
+  /** The JetStream file storage cap the restore started its broker with (`--max-file-store`). */
+  maxFileStore?: number;
   selection: "full" | "registry";
   /** The streams this attempt restored from the artifact. */
   restoredStreams: readonly string[];
@@ -151,6 +153,15 @@ type RecoverableRestoreRecord = CommitIntentRecord | RestoreManagerCommittedReco
 function launchString(launch: Readonly<Record<string, JsonValue>>, key: string): string {
   const value = launch[key];
   if (typeof value !== "string" || !value) throw new Error(`restore launch record is missing ${key}`);
+  return value;
+}
+
+/** The store cap a preserved launch recorded: absent, or a positive integer byte count. Anything
+ *  else is a damaged journal, refused rather than rendered as the dynamic default. */
+export function journaledMaxFileStore(value: unknown): number | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1)
+    throw new Error(`the preserved launch records an invalid maxFileStore (${JSON.stringify(value)}); refusing to guess the broker's store cap`);
   return value;
 }
 
@@ -181,6 +192,7 @@ export function rehydratePreparedRestore(root: string, journal: RecoverableResto
   const serverName = journal.listenerProof?.serverName ??
     (replacementPending ? `${journal.restore.attemptId}-${serverNonce}` : launchString(journal.launch, "serverName"));
   restoreServerIdentity(journal.restore.attemptId, serverName, serverNonce);
+  const maxFileStore = journaledMaxFileStore(journal.launch.maxFileStore);
   return {
     root,
     attemptId: journal.restore.attemptId,
@@ -191,6 +203,7 @@ export function rehydratePreparedRestore(root: string, journal: RecoverableResto
     host: launchString(journal.launch, "host"),
     runtime: launchString(journal.launch, "runtime"),
     detached: journal.launch.detached === true,
+    ...(maxFileStore !== undefined ? { maxFileStore } : {}),
     selection: restoreOnly,
     restoredStreams: journaledRestoredStreams(journal.launch, journal.space, journal.mode),
     inventory: resume.inventory,
@@ -311,7 +324,7 @@ function canonicalServerEndpoint(value: string): string {
   if (!(["nats:", "tls:"] as string[]).includes(endpoint.protocol) || !endpoint.hostname ||
       endpoint.username || endpoint.password || endpoint.search || endpoint.hash ||
       (endpoint.pathname && endpoint.pathname !== "/"))
-    throw new Error(`restore listener endpoint is not canonicalizable: ${value}`);
+    throw new Error("restore listener endpoint is not canonicalizable - use a bare nats:// or tls:// URL without credentials, a query, a fragment or a path");
   return `${endpoint.protocol}//${endpoint.hostname.toLowerCase()}:${endpoint.port || "4222"}`;
 }
 
@@ -372,7 +385,9 @@ function dataStateFingerprint(input: Readonly<Record<string, unknown>>): string 
   return JSON.stringify({
     messages: state.messages,
     bytes: state.bytes,
-    first_seq: state.first_seq,
+    // An empty stream is its last sequence: the validator admits it only as initial (0 and 0) or
+    // exhausted (last_seq + 1), and nats-server 2.15 restores an initial one as exhausted.
+    first_seq: state.messages === 0 ? state.last_seq + 1 : state.first_seq,
     last_seq: state.last_seq,
     deleted: [...(state.deleted ?? [])].sort((a, b) => a - b),
     num_deleted: state.num_deleted ?? 0,
@@ -629,7 +644,8 @@ async function createOmittedInfrastructure(
     for (const stream of create) await jsm.streams.add(canonicalBackupStreamConfig(space, stream));
     const kvm = new Kvm(nc);
     await kvm.create(presenceBucket(space), { ttl: 6_000, storage: PRESENCE_STORAGE });
-    await kvm.create(membershipBucket(space), { history: 1, max_bytes: MEMBERSHIP_MAX_BYTES });
+    const membership = membershipStoreDefinition(space);
+    await kvm.create(membership.bucket, membership.createOptions);
     await kvm.create(deliveryBucket(space), { ttl: LEASE_TTL_MS });
     await kvm.create(managerBucket(space), { ttl: MANAGER_LEASE_TTL_MS });
     // The other endpoint stores are nonportable control state. Recreate them empty, with any workflow
@@ -813,15 +829,15 @@ export function heldClaim(root: string, attemptId: string, claim: { readonly dea
 }
 
 /** What a restore attempt left only in the store it set aside ({@link restoreLeftOut}), whether that
- *  includes what was written after its artifact ({@link restoreReplacedNewerCut}), and that store, as
- *  the root's journal records them. Undefined when it left nothing out or the journal no longer names
- *  the attempt. */
-export function restoreOnlyCopy(root: string, attemptId: string): { leftOut: string; newer: boolean; rolledBack: ReturnType<typeof restoreRolledBackRuns>; previousStore?: string } | undefined {
+ *  includes what was written after its artifact ({@link restoreReplacedNewerCut}) or another
+ *  account's streams ({@link restoreOtherAccounts}), and that store, as the root's journal records
+ *  them. Undefined when it left nothing out or the journal no longer names the attempt. */
+export function restoreOnlyCopy(root: string, attemptId: string): { leftOut: string; newer: boolean; otherAccounts: string[]; rolledBack: ReturnType<typeof restoreRolledBackRuns>; previousStore?: string } | undefined {
   try {
     const journal = readMaintenanceJournal(root);
     if (!journal || !("restore" in journal) || journal.restore.attemptId !== attemptId) return undefined;
     const leftOut = restoreLeftOut(journal);
-    return leftOut ? { leftOut, newer: restoreReplacedNewerCut(journal), rolledBack: restoreRolledBackRuns(journal), ...(journal.restore.previousSource ? { previousStore: journal.restore.previousSource.identity.path } : {}) } : undefined;
+    return leftOut ? { leftOut, newer: restoreReplacedNewerCut(journal), otherAccounts: restoreOtherAccounts(journal), rolledBack: restoreRolledBackRuns(journal), ...(journal.restore.previousSource ? { previousStore: journal.restore.previousSource.identity.path } : {}) } : undefined;
   } catch { return undefined; }
 }
 
@@ -843,13 +859,16 @@ export function rolledBackNotes(rolledBack: ReturnType<typeof restoreRolledBackR
 /** What a restore's receipt says about what it left out. A registry-only restore brings back channel
  *  settings only, and every other stream starts empty; a full restore of an artifact with no runs has
  *  a composition note that says why, and one of an artifact older than the state it replaced says
- *  that what was written after the artifact is not restored. The store it set aside holds the only
+ *  that what was written after the artifact is not restored. One whose replaced store also held
+ *  another account's streams says those are not restored. The store it set aside holds the only
  *  copy, which cleanup-fallback deletes only with `--discard-history`. */
 export function leftOutNotes(attemptId: string, selection: string, onlyCopy: ReturnType<typeof restoreOnlyCopy>): string[] {
   if (!onlyCopy) return [];
-  const kept = onlyCopy.previousStore ? `The previous store at ${onlyCopy.previousStore} holds the only copy of ${selection === "registry" ? "them" : `the ${onlyCopy.leftOut}`}. \`cotal backup cleanup-fallback ${attemptId}\` deletes it only with --discard-history.` : undefined;
-  if (selection !== "registry") return [...(onlyCopy.newer ? ["This backup was made before the state it replaced was preserved, so the chat and DM history and workflow runs written after it are not restored.", ...rolledBackNotes(onlyCopy.rolledBack)] : []), ...(kept ? [kept] : [])];
-  return ["A registry-only restore brings back channel settings only, so chat and DM history and workflow runs start empty.", kept ?? "No previous store was retained."];
+  const accounts = onlyCopy.otherAccounts;
+  const kept = onlyCopy.previousStore ? `The previous store at ${onlyCopy.previousStore} holds the only copy of ${selection === "registry" && !accounts.length ? "them" : `the ${onlyCopy.leftOut}`}. \`cotal backup cleanup-fallback ${attemptId}\` deletes it only with --discard-history.` : undefined;
+  const other = accounts.length ? [`The store this restore replaced also held streams of ${accounts.length === 1 ? "account" : "accounts"} ${accounts.join(", ")}, which this backup does not hold, so they are not restored.`] : [];
+  if (selection !== "registry") return [...(onlyCopy.newer ? ["This backup was made before the state it replaced was preserved, so the chat and DM history and workflow runs written after it are not restored.", ...rolledBackNotes(onlyCopy.rolledBack)] : []), ...other, ...(kept ? [kept] : [])];
+  return ["A registry-only restore brings back channel settings only, so chat and DM history and workflow runs start empty.", ...other, kept ?? "No previous store was retained."];
 }
 
 /** The restore attempt the root's journal holds, with the step that moves it on, so a failure can
@@ -1025,6 +1044,10 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
         throw error;
       }
     })();
+    // The store can also hold another account's streams, such as an open mesh's beside a static
+    // space's. The artifact holds only this space's account, so the store this restore sets aside
+    // keeps their only copy; they are read before it moves.
+    const otherAccounts = sourceExists ? storeAccounts(journal.source.path).filter((account) => account !== currentAuthority.account) : [];
     const stagedStat = lstatSync(artifact.directory, { bigint: true });
     const claim = {
       deadline: deadline.toISOString(),
@@ -1164,6 +1187,8 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
     })();
     // The controller binding journals each member start before it.
     const controllerLaunch = controller ? newControllerAttemptLaunch() : undefined;
+    // The restored broker starts with this cap, so the journal keeps it for a re-entry that adopts it.
+    const maxFileStore = parsePositiveIntegerFlag("--max-file-store", flags["max-file-store"]);
     writeRestoreCommitIntent(lock, {
       attemptId,
       targetPath,
@@ -1173,11 +1198,13 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
       host: effectiveHost,
       runtime: effectiveRuntime,
       detached: Boolean(flags.detach),
+      ...(maxFileStore !== undefined ? { maxFileStore } : {}),
       restoreSource: resolve(flags.restore),
       restoreOnly: flags["restore-only"] ?? artifact.manifest.selection,
       restoredStreams: [...wanted],
       acceptMissingSource: Boolean(flags["accept-missing-source"]),
       ...(previousCutNewer ? { previousCutNewer: true } : {}),
+      ...(otherAccounts.length ? { otherAccounts } : {}),
       ...(rolledBack?.runs.length ? { rolledBackRuns: rolledBack.runs as unknown as JsonValue, ...(rolledBack.more ? { rolledBackRunsMore: rolledBack.more } : {}) } : {}),
       serverName,
       serverNonce,
@@ -1202,6 +1229,7 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
       host: effectiveHost,
       runtime: effectiveRuntime,
       detached: Boolean(flags.detach),
+      ...(maxFileStore !== undefined ? { maxFileStore } : {}),
       selection: onlyRegistry ? "registry" : artifact.manifest.selection,
       restoredStreams: wanted,
       inventory: resume.inventory,

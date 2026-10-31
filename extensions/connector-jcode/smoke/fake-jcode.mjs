@@ -350,7 +350,11 @@ function runTurn(frame, socket) {
   }, Number(process.env.FAKE_JCODE_TURN_DELAY_MS ?? "10"));
 }
 
+let helloCount = 0;
+const liveSockets = new Set();
 const server = createServer((socket) => {
+  liveSockets.add(socket);
+  socket.on("close", () => liveSockets.delete(socket));
   let buffered = "";
   socket.setEncoding("utf8");
   socket.on("data", (chunk) => {
@@ -371,6 +375,16 @@ const server = createServer((socket) => {
       const event = (body) => socket.write(JSON.stringify({ v: 1, ...body }) + "\n");
       switch (frame.req) {
         case "hello":
+          helloCount++;
+          // Failure-path fixtures keep the original daemon busy while the same bridge cannot
+          // complete a new handshake. This opt-in does not change the first connection.
+          if (helloCount > 1 && ["silent", "refusal"].includes(process.env.FAKE_JCODE_RECONNECT_HELLO)) {
+            const mode = process.env.FAKE_JCODE_RECONNECT_HELLO;
+            log({ ev: "reconnect_hello", mode });
+            if (mode === "refusal")
+              reply({ ev: "error", code: "unsupported_version", message: "synthetic permanent reconnect refusal" });
+            break;
+          }
           reply({ ev: "hello_ok", version: 1, server: "fake-jcode/1", capabilities: ["sessions", "streaming"] });
           break;
         // A prior session is offered only when the harness is told to have one, so the same fake
@@ -426,7 +440,7 @@ const server = createServer((socket) => {
           sessionWorkingDir = frame.working_dir ?? storedSession()?.working_dir;
           saveSession({ session_id: frame.session_id, working_dir: sessionWorkingDir, transcript_bytes: 1 });
           writeJournal(frame.session_id);
-          reply({ ev: "attached", session: { session_id: frame.session_id, working_dir: sessionWorkingDir, status: "idle" } });
+          reply({ ev: "attached", session: { session_id: frame.session_id, working_dir: sessionWorkingDir, status: process.env.FAKE_JCODE_REATTACH_BUSY === "1" && turnBusy ? "working" : "idle" } });
           break;
         case "create_session":
           createdFresh = true;
@@ -470,10 +484,39 @@ const server = createServer((socket) => {
           }
           break;
         case "soft_interrupt": {
+          const lateReply = process.env.FAKE_JCODE_STEER_LATE_REPLY_FILE;
+          if (lateReply) {
+            const timer = setInterval(() => {
+              if (!existsSync(lateReply)) return;
+              clearInterval(timer);
+              // An unrelated late ok must never settle this request by event kind alone.
+              socket.write(JSON.stringify({ v: 1, ev: "ok", reply_to: frame.id + 100000 }) + "\n");
+              if (process.env.FAKE_JCODE_STEER_LATE_ERROR === "1")
+                reply({ ev: "error", code: "invalid_request", message: "owned late refusal" });
+              else reply({ ev: "ok" });
+              log({ ev: "late_steer_reply", id: frame.id });
+            }, 10);
+            timer.unref();
+            break;
+          }
+          const refusal = process.env.FAKE_JCODE_STEER_REFUSE;
+          if (refusal && (refusal === "1" || String(frame.content).includes(refusal))
+            && !(process.env.FAKE_JCODE_STEER_REFUSE_EXCEPT && String(frame.content).includes(process.env.FAKE_JCODE_STEER_REFUSE_EXCEPT))) {
+            const refuse = () => reply({ ev: "error", code: "invalid_request", message: "owned fixture refuses soft interrupt" });
+            const delay = Number(process.env.FAKE_JCODE_STEER_REFUSE_DELAY_MS ?? "0");
+            if (delay > 0) setTimeout(refuse, delay);
+            else refuse();
+            break;
+          }
           // #1233: the measured failure is SILENCE, not a refusal and not a close. The bridge takes
           // the frame and never answers it, so the client's request timeout is what ends the wait.
           // A fixture that replied with an error instead would exercise a different code path and
           // would leave the actual production shape ungraded.
+          if (process.env.FAKE_JCODE_ACCEPT_BEFORE_RECOVERY && [process.env.FAKE_JCODE_ACCEPT_BEFORE_RECOVERY, "SECOND_POST_LATCH_WAKE"].some((marker) => String(frame.content).includes(marker))) {
+            log({ ev: "accepted_native_copy", session_id: frame.session_id });
+            reply({ ev: "ok" });
+            break;
+          }
           if (process.env.FAKE_JCODE_STEER_BLACKHOLE === "1") {
             log({ ev: "steer_blackholed", session_id: frame.session_id });
             break;
@@ -557,7 +600,12 @@ const server = createServer((socket) => {
                 const finishBusy = () => {
                   turnBusy = false;
                   log({ ev: "busy_after_readiness_status", status: "idle", session_id: frame.session_id });
-                  event({ ev: "session_status", session_id: frame.session_id, status: "idle" });
+                  if (process.env.FAKE_JCODE_REATTACH_BUSY === "1") {
+                    // The native session outlives the original API socket. Its boundary is visible
+                    // to a reattached observer as well, as in the real preserved-session replay.
+                    for (const observer of liveSockets)
+                      observer.write(JSON.stringify({ v: 1, ev: "session_status", session_id: frame.session_id, status: "idle" }) + "\n");
+                  } else event({ ev: "session_status", session_id: frame.session_id, status: "idle" });
                   const afterBusy = queuedTurns.shift();
                   if (afterBusy) afterBusy();
                 };

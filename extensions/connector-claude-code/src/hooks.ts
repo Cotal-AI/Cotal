@@ -106,6 +106,8 @@ export interface ClaudeHandleDeps {
    *  every session start (startup, resume, fork, clear, compact), so the model has its bearings
    *  without asking for them; a card not ready at the start is owed to the next prompt. */
   orientation?: () => Promise<string | undefined>;
+  /** Allow run-turn lifecycle and exact yield correlation while peer inbox delivery stays disabled. */
+  turns?: boolean;
 }
 
 /** Prefixed to a batch containing anything whose previous delivery went unconfirmed. */
@@ -159,7 +161,7 @@ export interface ClaudeHooks {
  * workflow. Do not "fix" the duplicate by committing optimistically: that is the burial this whole
  * file exists to prevent.
  *
- * Deferring the ack to turn completion (the OpenCode connector's `ackSurfaced` on `session.idle`)
+ * Deferring the ack to turn completion (the OpenCode connector's `SurfacedBatch.ack` on `session.idle`)
  * does NOT substitute for this. `Stop` fires whether or not the reply survived, so it would commit a
  * batch the model never saw — the same loss, later. OpenCode can bind its ack to the turn because
  * `drive()` OWNS delivery; this connector only hands a reply off, so the ack binds to the handoff.
@@ -321,7 +323,7 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
    *  goal ids commit as surfaced (arming the automatic `done`) only when the reply reached the
    *  runtime — a lost frame re-surfaces them instead of yielding for work the model never saw. */
   const surfaceTurns = (agent: MeshAgent, ev: HookEvent): string | undefined => {
-    if (deps.delivery === false) return undefined;
+    if (deps.delivery === false && deps.turns !== true) return undefined;
     const peek = agent.peekPendingTurns();
     if (!peek) return undefined;
     const rec = inFlight.get(ev);

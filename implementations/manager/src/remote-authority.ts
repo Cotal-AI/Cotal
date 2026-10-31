@@ -14,10 +14,14 @@ import {
   parseGoalIndexEntry,
   parseRemoteManagedAgentRuntimeResult,
   remoteManagerActors,
+  remoteManagerParticipationAuthorizationRequest as coreParticipationAuthorizationRequest,
+  remoteManagerParticipationAuthorized as coreParticipationAuthorized,
   REMOTE_MANAGER_IDENTITY_NAMES,
   type Identity,
   type RemoteManagerAdminAuthorizationRequest,
   type RemoteManagerAdminAuthorizationResult,
+  type RemoteManagerParticipationAuthorizationRequest,
+  type RemoteManagerParticipationAuthorizationResult,
   type RemoteManagerAuthorityMaterial,
   type RemoteManagerAuthorityRequest,
   type RemoteManagerGoalIndexScanRequest,
@@ -276,6 +280,31 @@ export function remoteManagerAdminAuthorized(
   return result.authorized;
 }
 
+export function remoteManagerParticipationAuthorizationRequest(
+  state: RemoteManagerIdentityState,
+  actor: string,
+  registrationProof: string,
+  serveEpoch: number,
+  caller: { owner: string; actor: string; lifecycleUid: string },
+): RemoteManagerParticipationAuthorizationRequest {
+  return coreParticipationAuthorizationRequest(
+    { space: state.space, instanceId: state.instanceId, lifecycleUid: state.lifecycleUid, identities: publicIdentities(state) },
+    actor,
+    registrationProof,
+    serveEpoch,
+    caller,
+    `participate${mintLifecycleUid()}`,
+  );
+}
+
+export function remoteManagerParticipationAuthorized(
+  result: RemoteManagerParticipationAuthorizationResult,
+  request: RemoteManagerParticipationAuthorizationRequest,
+  expectedOwner: string,
+): boolean {
+  return coreParticipationAuthorized(result, request, expectedOwner);
+}
+
 function stateFile(root: string, space: string): string {
   return join(root, ".cotal", `remote-manager.${spaceKey(space)}.json`);
 }
@@ -365,10 +394,17 @@ export function remoteManagerMaintenanceResult(
   request: RemoteManagerMaintenanceRequest,
   expectedOwner: string,
 ): RemoteManagerMaintenanceResult {
+  let resultField: "evictions" | "reconciliation";
+  if (request.operation === "evict-family-principal") resultField = "evictions";
+  else if (request.operation === "reconcile-registration") resultField = "reconciliation";
+  else {
+    const unhandled: never = request.operation;
+    throw new Error(`manager maintenance has no result for operation ${unhandled}`);
+  }
   const expectedKeys = [
     "v", "kind", "operation", "space", "owner", "actor", "instanceId", "managerLifecycleUid",
     "requestId", "identities", "targetInstanceId", ...(request.principals ? ["principals"] : []),
-    request.operation === "evict-family-principal" ? "evictions" : "reconciliation",
+    resultField,
   ];
   exactKeys(result, expectedKeys, "manager maintenance");
   if (result.v !== 1 || result.kind !== "manager-service-maintenance" || result.owner !== expectedOwner ||
@@ -391,7 +427,7 @@ export function remoteManagerMaintenanceResult(
       if (e.verifiedGone && (!e.scanComplete || e.remaining !== 0))
         throw new Error("manager maintenance returned contradictory eviction evidence");
     }
-  } else {
+  } else if (request.operation === "reconcile-registration") {
     const r = result.reconciliation;
     const reportKeys = [
       "endpoint", "instanceId", "holderPrincipal", "opId", "freezeToken", "before", "after", "liveness",
@@ -407,6 +443,9 @@ export function remoteManagerMaintenanceResult(
         (report.repairCursorCleanup !== "deleted" && report.repairCursorCleanup !== "retained") ||
         !report.liveness || report.liveness.state !== "gone" || typeof report.liveness.detail !== "string")
       throw new Error("manager maintenance returned no closed matching reconciliation report");
+  } else {
+    const unhandled: never = request.operation;
+    throw new Error(`manager maintenance has no result for operation ${unhandled}`);
   }
   return result;
 }

@@ -152,16 +152,26 @@ export function noLiveInstances(e: unknown): boolean {
  */
 export const EP_UNDECLARED_ARG = "ai.cotal.ep.undeclared-arg";
 
-/** The {@link EP_UNDECLARED_ARG} payload: the key the contract does not declare. */
+/** The {@link EP_UNDECLARED_ARG} payload: the key the contract does not declare, and the instance
+ *  the request was bound to when it binds one. Only that instance may serve the request, so it is
+ *  the responder whose contract refused the key. */
 export interface EpUndeclaredArgDetail extends EpErrorDetail {
   kind: typeof EP_UNDECLARED_ARG;
   property: string;
+  instanceId?: string;
 }
 
 /** The key a caller-side refusal names through {@link EP_UNDECLARED_ARG}, or `undefined`. */
 export function undeclaredArg(e: unknown): string | undefined {
   if (!(e instanceof EpEnvelopeError)) return undefined;
   return (e.details?.find((d) => d.kind === EP_UNDECLARED_ARG) as EpUndeclaredArgDetail | undefined)?.property;
+}
+
+/** The bound instance a caller-side {@link EP_UNDECLARED_ARG} refusal names, or `undefined` when the
+ *  request bound none. A surface naming the version skew asks this instance for its version. */
+export function undeclaredArgInstance(e: unknown): string | undefined {
+  if (!(e instanceof EpEnvelopeError)) return undefined;
+  return (e.details?.find((d) => d.kind === EP_UNDECLARED_ARG) as EpUndeclaredArgDetail | undefined)?.instanceId;
 }
 
 /**

@@ -103,7 +103,12 @@ function main(): void {
         buf = buf.slice(i + 1);
         try {
           if (line.length > INLINE_FRAME_LIMIT) continue;
-          const frame = JSON.parse(line) as { id?: unknown; preview?: unknown };
+          const frame = JSON.parse(line) as { id?: unknown; preview?: unknown; turn?: { id?: unknown; text?: unknown } };
+          if (frame.turn && typeof frame.turn.id === "string" && WAKE_ID.test(frame.turn.id) &&
+              typeof frame.turn.text === "string" && frame.turn.text.startsWith("🎯 Cotal —") && frame.turn.text.length <= 12_000) {
+            process.stdout.write(`${frame.turn.text}\n`);
+            continue;
+          }
           const decided = approvalFrame(frame);
           if (decided) { process.stdout.write(`${approvalEvent(decided)}\n`); continue; }
           if (isNativeInlineFrame(frame)) {

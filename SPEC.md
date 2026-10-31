@@ -722,13 +722,16 @@ KV buckets are also streams and are pre-created:
 | --- | --- | --- |
 | `cotal_presence_<space>` | presence (§6) | 6000 ms |
 | `cotal_channels_<space>` | channel registry (§7) | none |
-| `cotal_membership_<space>` | derived channel-membership feed (below) | none |
+| `cotal_membership_<space>` | derived channel-membership feed (below), history 1 per key, maximum value 262144 bytes, no global byte reservation | none |
 
 **Derived channel-membership feed (observability).** `cotal_membership_<space>` is a per-agent
 (key = `card.id`) derived view of who is subscribed to each channel: the **union** of an agent's
 `live` core-subscriptions (read by a privileged daemon from the broker's connection view) and its
 `durable` memberships (the members registry), each value `{ live: string[], durable: string[],
 observedAt }` with `live` keeping subscription patterns (wildcards) the consumer expands at read time.
+The backing KV keeps one message per agent key and limits each serialized value to 262144 bytes. Its
+global `max_bytes` is unlimited (`-1`), so creating an empty space reserves no file-store capacity;
+the broker's actual file-store limit remains the aggregate storage bound.
 It exists so an observer can show silent readers and `live`-channel membership without a broker-admin
 credential in the dashboard tier; it is written by a scoped privileged daemon and read only by the
 admin/observer profile and by the `deployer` and `teardown` operator credentials, which check a
@@ -2678,6 +2681,13 @@ unchanged. `<pool>` is a single token `[a-z0-9-]{1,32}` (command-token grammar).
 
 Requests, replies, submissions, events, facts, and progress payloads are UTF-8 JSON. The
 envelope is versioned and typed; `ControlRequest`/`ControlReply` are deleted.
+
+Ephemeral endpoint serving MUST discard frames carrying native stored-message provenance
+headers (`Nats-Stream`, `Nats-Subject`, `Nats-Sequence` or `Nats-Time-Stamp`) before envelope
+parsing, authorization, dispatch or a derived reply. Header names are case-insensitive; an
+empty value still carries the marker. This rule covers both endpoint rails and all three
+routes. Other request headers remain permitted. Absence of these markers does not replace
+any of the subject, envelope, grant or application-admission checks below.
 
 `EndpointRequest`:
 
@@ -5943,6 +5953,25 @@ split, mediated, written by the driver's commit path only.
   OUTSIDE the journal, so a replay whose last ordinal is below it has lost records from the
   journal's tail, which nothing inside the journal can see, and the driver MUST refuse to resume it.
   Interior loss is the journal's own ordinal chain's.
+
+**Native personal participation.** An approved personal native lifecycle MAY opt into workflow
+turns through the manager's self-mode `turn-participate` command. The request body is empty. The
+broker-authenticated caller triple is the lifecycle being authorized. The manager MUST fresh-check
+through its issuing host that the caller is a personal `pa_…` actor, its lifecycle is current and
+active, its managed grant has foreground custody and current `run` scope, and its exact presence row
+is live. Success returns the CLOSED value `{ owner, actor, lifecycleUid, name, managerInstanceId,
+expiresAt }` and creates or renews a finite manager-local lease. The lease MUST NOT create a managed
+seat and MUST NOT add stop, attach, input or terminal custody. Missing, expired, foreign, replaced,
+revoked or disconnected lifecycles MUST be refused without fallback to another lifecycle or manager.
+A manager restart loses the lease; the personal lifecycle renews it.
+
+A hosted language `participant` effect (§14.2) binds only the personal caller in that run's immutable
+issued admission. The runtime MUST require one exact live presence row, journal the owner, actor,
+lifecycle, name and manager instance before returning the handle, and rebuild the run roster from
+that settled entry on resume. Program text cannot choose those coordinates. A `turn` to that handle
+is accepted only while the exact lease is current on the admitting manager and only from the run
+derived from the same admitted caller. The ordinary `turn-pending`, `turn-yield`, goal, cancellation
+and deadline protocol below is unchanged.
 
 **Turn notices.** A run's `turn` reaches its seat through the hosting manager, and the seat reads
 it with its own self-mode `turn-pending`. The manager MUST publish a turn notice to the seat

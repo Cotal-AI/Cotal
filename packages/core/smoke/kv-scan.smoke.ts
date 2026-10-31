@@ -25,7 +25,7 @@ import { createServer, connect as tcpConnect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
-import { jetstreamManager, type ConsumerMessages, type PushConsumer } from "@nats-io/jetstream";
+import { jetstreamManager, type ConsumerAPI, type ConsumerMessages, type PushConsumer } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import { IncompleteKvScan, isReachable, liveKvEntries, walkKvEntries } from "../src/index.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
@@ -64,7 +64,8 @@ try {
   for (let i = 0; i < 100; i++) await big.put(`k${i}`, enc(String(i)));
 
   const outBefore1 = nc.stats().outMsgs;
-  const got1 = await liveKvEntries(small);
+  let scanMemory: boolean | undefined;
+  const got1 = await liveKvEntries(small, { onConsumer: (info) => { scanMemory = info.config.mem_storage; } });
   const cost1 = nc.stats().outMsgs - outBefore1;
   const outBefore100 = nc.stats().outMsgs;
   const got100 = await liveKvEntries(big);
@@ -79,6 +80,10 @@ try {
     cost100 <= cost1 + 5 && cost100 < 20,
     { cost1, cost100 },
   );
+
+  const backing = await (await jetstreamManager(nc)).streams.info("KV_shape_small");
+  check("scan keeps its backing KV stream file-backed", backing.config.storage === "file", backing.config.storage);
+  check("temporary scan consumer uses native memory-backed state", scanMemory === true, { mem_storage: scanMemory ?? false });
 
   // ── 2. COLLAPSE WITH TOMBSTONES ────────────────────────────────────────────────────────────────
   const tomb = await kvm.create("tombstones", { history: 1 });
@@ -340,6 +345,7 @@ try {
     const rjs = (k as unknown as { js: { consumers: { getPushConsumer: (...a: unknown[]) => Promise<Record<string, unknown>> } } }).js;
     const victim = Object.create(k) as typeof k;
     let rotatedName: string | undefined;
+    const rotatedMemory: boolean[] = [];
     Object.defineProperty(victim, "js", {
       value: {
         ...rjs,
@@ -347,6 +353,14 @@ try {
           ...rjs.consumers,
           getPushConsumer: async (...a: unknown[]) => {
             const oc = await rjs.consumers.getPushConsumer.apply(rjs.consumers, a);
+            const own = oc as unknown as { api: ConsumerAPI };
+            const nativeApi = own.api;
+            own.api = Object.assign(Object.create(nativeApi) as ConsumerAPI, {
+              add: (...args: Parameters<ConsumerAPI["add"]>) => nativeApi.add(...args).then((info) => {
+                rotatedMemory.push(info.config.mem_storage === true);
+                return info;
+              }),
+            });
             const realConsume = (oc.consume as PushConsumer["consume"]).bind(oc);
             return Object.assign(oc, {
               consume: async () => {
@@ -373,6 +387,7 @@ try {
 
     const entries = await liveKvEntries(victim);
     check("rotation: scan completes and returns all entries", entries.length === 5, entries.length);
+    check("rotation: native recreated consumer keeps memory-backed state", rotatedMemory.length > 0 && rotatedMemory.every(Boolean), rotatedMemory);
     await wait(200);
     const afterRotation = (await jsm.streams.info(stream)).state.consumer_count;
     check("rotation: rotated consumer is deleted in finally (no consumer leaked on broker)", afterRotation === base, { base, afterRotation, rotatedName });

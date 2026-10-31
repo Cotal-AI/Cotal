@@ -107,6 +107,17 @@ export interface MeshAgentOptions {
   withholdProcessCwd?: boolean;
 }
 
+/** Host-authorized participation for one native personal connection. The connector validates the
+ * identity fields against the live connection before arming its existing self-only turn relay. */
+export interface NativeTurnParticipationLease {
+  owner: string;
+  actor: string;
+  lifecycleUid: string;
+  name: string;
+  managerInstanceId: string;
+  expiresAt: number;
+}
+
 /** A message that has arrived for us, normalized for the agent to read. */
 export interface InboxItem {
   id: string;
@@ -2541,7 +2552,68 @@ export class MeshAgent extends EventEmitter {
    *  `delegatedSeatCommand` → `cotal spawn` handoff) sets `COTAL_MANAGER_INSTANCE`
    *  (`config.managerInstanceId`), so a directly connected session has no turn relay to arm. */
   private hasTurnRelay(): boolean {
-    return this.config.managerInstanceId !== undefined;
+    return this.config.managerInstanceId !== undefined && (this.config.turnRelay !== false || this.nativeTurnLeaseValid());
+  }
+
+  private turnRelayAuthorized(): boolean {
+    return this.config.turnRelay !== false || this.nativeTurnLeaseValid();
+  }
+
+  private nativeTurnLease?: NativeTurnParticipationLease;
+
+  /** Arm or renew native personal participation. This grants only the existing self-addressed turn
+   * pull/yield path. It does not make the connection a managed seat or grant stop/attach custody. */
+  authorizeNativeTurnParticipation(lease: NativeTurnParticipationLease): void {
+    const principal = this.ep.principal;
+    const lifecycleUid = this.config.lifecycleUid;
+    if (lease.owner !== principal.owner || lease.actor !== principal.actor || lease.lifecycleUid !== lifecycleUid ||
+        lease.name !== this.config.name)
+      throw new Error("the participation lease does not bind this connection's exact owner, actor, lifecycle and name");
+    const managerInstanceId = assertLifecycleToken(lease.managerInstanceId, "participation manager instance");
+    if (!Number.isFinite(lease.expiresAt) || lease.expiresAt <= Date.now())
+      throw new Error("the participation lease is expired");
+    if (this.nativeTurnLease && this.nativeTurnLease.managerInstanceId !== managerInstanceId)
+      throw new Error("a participation renewal cannot change the launching manager instance");
+    this.nativeTurnLease = { ...lease, managerInstanceId };
+    this.config.managerInstanceId = managerInstanceId;
+    if (this._connected) this.armTurnRelay();
+  }
+
+  /** Ask this identity's selected manager for a finite self-only participation lease, validate the
+   * returned binding locally, then arm the existing turn relay. */
+  async participateInTurns(): Promise<NativeTurnParticipationLease> {
+    await this.requireConnected();
+    if (this.config.turnRelay !== false)
+      throw new Error("turn participation is already managed by this seat's launcher");
+    const reply = await this.managerInvoke("turn-participate", undefined, { target: { mode: "self" } });
+    if (!reply.ok) throw new Error(reply.error ?? "the manager refused workflow turn participation");
+    const data = reply.data as Partial<NativeTurnParticipationLease> | undefined;
+    if (!data || typeof data.owner !== "string" || typeof data.actor !== "string" ||
+        typeof data.lifecycleUid !== "string" || typeof data.name !== "string" ||
+        typeof data.managerInstanceId !== "string" || typeof data.expiresAt !== "number")
+      throw new Error("turn-participate returned an invalid participation lease");
+    const lease = data as NativeTurnParticipationLease;
+    if (!reply.instanceId || lease.managerInstanceId !== reply.instanceId)
+      throw new Error("turn-participate lease does not bind the manager instance that answered");
+    this.authorizeNativeTurnParticipation(lease);
+    // authorizeNativeTurnParticipation may see the relay already armed. A renewal is also the
+    // explicit recovery path after a lost notice, so it always asks for the current self snapshot.
+    this.requestTurnPull();
+    return lease;
+  }
+
+  nativeTurnParticipationExpiresAt(): number | undefined {
+    return this.nativeTurnLeaseValid() ? this.nativeTurnLease!.expiresAt : undefined;
+  }
+
+  /** Number of currently held workflow turns, surfaced or not. Read-only diagnostics for native
+   * ingress and acceptance tests; the manager's next pull remains the settlement authority. */
+  activeTurnCount(): number {
+    return this.activeTurns.size;
+  }
+
+  private nativeTurnLeaseValid(): boolean {
+    return this.nativeTurnLease !== undefined && this.nativeTurnLease.expiresAt > Date.now();
   }
 
   /** Subscribe to the launching manager's turn notices (SPEC 14.3) and pull once. The manager
@@ -2550,7 +2622,7 @@ export class MeshAgent extends EventEmitter {
    *  notice, here at the first bind, and on a reconnect while the seat holds a turn is the only
    *  intake; the subscription exists before the first pull, so a turn accepted in between is not missed. */
   private armTurnRelay(): void {
-    if (this.config.turnRelay === false || !this.hasTurnRelay()) return;
+    if (!this.hasTurnRelay()) return;
     if (!this.turnNoticeArmed) {
       let caller: EpCaller;
       try { caller = this.ep.serviceRailCaller(); }
@@ -2563,7 +2635,7 @@ export class MeshAgent extends EventEmitter {
 
   /** Pull now, or once more after the pull in flight, so notices that arrive together cost one pull. */
   private requestTurnPull(): void {
-    if (this.config.turnRelay === false || this._stopping) return;
+    if (!this.turnRelayAuthorized() || this._stopping) return;
     if (this.turnPollBusy) { this.turnPullAgain = true; return; }
     void this.pollTurns().catch((e: unknown) => this.turnPullFailed((e as Error).message, undefined));
   }
@@ -2574,7 +2646,7 @@ export class MeshAgent extends EventEmitter {
    *  dropped. Only a manager-launched seat (`hasTurnRelay`) pulls; any failure to reach the
    *  launching manager is passed to {@link turnPullFailed}. */
   private async pollTurns(): Promise<void> {
-    if (this.config.turnRelay === false || !this._connected || this._stopping || this.turnPollBusy) return;
+    if (!this.turnRelayAuthorized() || !this._connected || this._stopping || this.turnPollBusy) return;
     this.turnPollBusy = true;
     this.turnPullAgain = false;
     this.yieldedSincePull.clear();
@@ -2659,6 +2731,7 @@ export class MeshAgent extends EventEmitter {
    *  JSON with a string `context`, that rendered context is what the model reads, else the raw
    *  payload is shown. */
   peekPendingTurns(): { text: string; goalIds: string[] } | undefined {
+    if (this.config.turnRelay === false && !this.nativeTurnLeaseValid()) return undefined;
     // A turn past its deadline is already settled at the manager, which refuses its yield, though
     // this cache holds it until the next pull settles it here.
     const now = Date.now();
@@ -2686,6 +2759,7 @@ export class MeshAgent extends EventEmitter {
    *  reached the host. Surfacing is what arms the automatic `done` at the next turn boundary; a
    *  turn never committed re-surfaces on a later frame instead of yielding a lie. */
   commitSurfacedTurns(goalIds: readonly string[]): void {
+    if (this.config.turnRelay === false && !this.nativeTurnLeaseValid()) return;
     for (const id of goalIds) {
       const t = this.activeTurns.get(id);
       if (t) t.surfaced = true;
@@ -2698,6 +2772,8 @@ export class MeshAgent extends EventEmitter {
    *  the run reached first; a refused one stays for the poll to reconcile (the manager's answer,
    *  not a local guess, decides whether it is settled). */
   async yieldTurn(status: "done" | "blocked" | "handoff", opts: { to?: string; note?: string; turn?: string } = {}): Promise<ControlReply> {
+    if (this.config.turnRelay === false && !this.nativeTurnLeaseValid())
+      return { ok: false, error: "this personal connection has no valid workflow turn participation lease; opt in or renew it first" };
     try {
       await this.requireConnected();
     } catch (error) {

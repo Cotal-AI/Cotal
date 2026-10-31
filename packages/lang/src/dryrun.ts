@@ -34,6 +34,7 @@ import type {
   MonitorRequest,
   NotifyRequest,
   ObserveRequest,
+  ParticipantRequest,
   SleepRequest,
   SpawnRequest,
   TurnRequest,
@@ -137,6 +138,10 @@ export class RecordingHandler implements Required<EffectHandler> {
   async spawn(req: SpawnRequest, ctx: EffectContext): Promise<AgentHandleValue> {
     this.spawns.push(req);
     return await this.inner.spawn(req, ctx);
+  }
+
+  async participant(req: ParticipantRequest, ctx: EffectContext): Promise<AgentHandleValue> {
+    return await this.inner.participant(req, ctx);
   }
 
   async checkpoint(req: CheckpointRequest, ctx: EffectContext): Promise<CheckpointRaw> {

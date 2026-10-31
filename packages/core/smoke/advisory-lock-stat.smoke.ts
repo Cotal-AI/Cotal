@@ -1,13 +1,18 @@
-import assert from "node:assert/strict";
+import assertBase from "node:assert/strict";
 import fs from "node:fs";
 import childProcess from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mock } from "node:test";
+import { countedAssert, emitSentinel, skipSuite } from "@cotal-ai/smoke-kit";
+
+const counted = countedAssert(assertBase);
+const assert: typeof assertBase = counted.assert as typeof assertBase;
+const cells = counted.cells;
 
 if (process.platform !== "linux") {
-  console.log("advisory-lock-stat: Linux /proc checks skipped on this platform");
+  skipSuite("advisory-lock-stat requires Linux /proc");
 } else {
   // Exercise the shipped build, with real reads confined to this process's own stat and private locks.
   const { acquireLock, inspectLock, processStartToken } = await import("../dist/advisory-lock.js");
@@ -93,6 +98,7 @@ if (process.platform !== "linux") {
     }
     assert.equal(psCalls, 0, "unavailable Linux identity never falls back to ps");
     console.log("PASS synthetic failures: malformed, mismatched-PID, truncated, denied and absent stat remain active/unknown without ps");
+    emitSentinel({ passed: cells(), failed: 0 });
   } finally {
     reader.mock.restore();
     ps.mock.restore();

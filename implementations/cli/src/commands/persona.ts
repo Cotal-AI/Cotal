@@ -4,12 +4,12 @@ import * as prompts from "../lib/prompts.js";
 import { assertValidChannel, assertValidRole, oneLine, personaDir, resolveReadAcl, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
 import {
   ConfirmationRequired,
-  CommandFailure, jsonFlag, plainFlag, presentationOf, spaceFlag, serverFlag,
+  parseCommaList, CommandFailure, jsonFlag, plainFlag, presentationOf, spaceFlag, serverFlag,
   writeResult, type Presentation, type Report,
   recordOperationSpace,
 } from "@cotal-ai/workspace";
 import { completedFlagValue, completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
-import { catalogFolderProblem, listPersonaNames, readPersonas } from "../lib/personas.js";
+import { catalogFolderProblem, catalogReadRefusal, listPersonaNames, readPersonas } from "../lib/personas.js";
 import {
   assertLabels, commitPersona, editPersona, personaCatalog, personaPath, readPersonaSource,
   requirePersonaSource, reservedPersonaName, serializePersona, validatePersona, type PersonaCatalog, type PersonaEdit,
@@ -150,7 +150,7 @@ async function createSource(name: string, path: string, values: Values): Promise
   if (!body.trim()) throw usage("persona body is empty");
   // Each entry passes the channel rules here, so a refusal names the flag and the entry rather than
   // the private draft the flags are written to.
-  const channels = (flag: string, text: string | undefined) => text?.split(",").map(value => value.trim()).filter(Boolean).map(channel => {
+  const channels = (flag: string, text: string | undefined) => parseCommaList(text)?.map(channel => {
     try { return assertValidChannel(channel); }
     catch (error) {
       throw new CommandFailure("refused", "USAGE_INVALID", `${flag}: ${oneLine((error as Error).message)}`, channel.startsWith("#") ? { remedy: `name the channel without its #, as ${oneLine(channel.slice(1))}` } : {});
@@ -165,7 +165,7 @@ async function createSource(name: string, path: string, values: Values): Promise
 function list(catalog: PersonaCatalog, presentation: Presentation): void {
   let entries: ReturnType<typeof readPersonas>;
   try { entries = readPersonas(catalog.root); }
-  catch { throw catalogFolderProblem(personaDir(catalog.root)) ?? new CommandFailure("refused", "PERMISSION_DENIED", `cannot read persona catalog: ${personaDir(catalog.root)}`); }
+  catch (error) { throw catalogFolderProblem(personaDir(catalog.root)) ?? catalogReadRefusal(personaDir(catalog.root), error); }
   const items = entries.map(entry => ({ name: entry.name, path: entry.path, role: entry.def?.role ?? null, model: entry.def?.model ?? null, description: entry.def?.description ?? null, harness: entry.def?.agent ?? null, valid: !entry.error }));
   const malformed = entries.filter(entry => entry.error);
   // A linked persona still lists and launches, but show, edit and remove refuse it.

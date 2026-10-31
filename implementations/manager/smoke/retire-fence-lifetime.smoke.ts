@@ -440,7 +440,7 @@ try {
   check(`suite ran without throwing: ${(e as Error).stack ?? (e as Error).message}`, false);
 } finally {
   console.log(`end: ${uptime()} elapsedMs=${Date.now() - started}`);
-  await manager?.stop().catch(() => {});
+  await manager?.stop({ withAgents: true }).catch(() => {});
   for (const ep of endpoints) await ep.stop().catch(() => {});
   await writer?.close().catch(() => {});
   for (const d of stale) await d.stop().catch(() => {});

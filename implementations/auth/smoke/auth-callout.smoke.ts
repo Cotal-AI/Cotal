@@ -31,7 +31,7 @@ import {
 import { SignJWT, decodeJwt, generateKeyPair, type CryptoKey } from "jose";
 import { decode, encodeUser, fmtCreds } from "@nats-io/jwt";
 import { fromPublic, fromSeed } from "@nats-io/nkeys";
-import { createSpaceAuth, isReachable, newIdentity, serverConfig } from "@cotal-ai/core";
+import { createSpaceAuth, isReachable, newIdentity, serverConfig, standaloneConnectOpts } from "@cotal-ai/core";
 import { createCalloutAuth, deriveOwnerToken, startAuthCallout, USER_TOKEN_VER } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
@@ -102,10 +102,11 @@ async function tryConnect(token?: string): Promise<{ nc?: NatsConnection; err?: 
     // User-mode contract: the client picks a random inbox nonce and passes it as BOTH the connection
     // `name` (the callout scopes `_INBOX_<nonce>.>` on it) and `inboxPrefix` (so its own request/reply
     // lands on the granted subject). No wide `_INBOX.>` anywhere.
-    const nonce = `ibx${randomUUID().replace(/-/g, "")}`;
-    const authenticators = [credsAuthenticator(enc(callout.sentinelCreds))];
-    if (token) authenticators.push(tokenAuthenticator(token));
-    const nc = await connect({ servers: SERVERS, authenticator: authenticators, maxReconnectAttempts: 0, timeout: 4000, name: nonce, inboxPrefix: `_INBOX_${nonce}` });
+    const options = token
+      ? standaloneConnectOpts({ bearer: token, sentinelCreds: callout.sentinelCreds, tls: false })
+      : standaloneConnectOpts({ creds: callout.sentinelCreds, tls: false });
+    const nonce = options.name as string | undefined;
+    const nc = await connect({ servers: SERVERS, ...options, maxReconnectAttempts: 0, timeout: 4000 });
     conns.push(nc);
     return { nc, nonce };
   } catch (e) {

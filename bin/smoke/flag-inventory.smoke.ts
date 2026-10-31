@@ -31,7 +31,7 @@ import nodeAssert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import { commandUsage, registry, type Command, type Subcommand } from "@cotal-ai/core";
-import { GLOBAL_FLAGS } from "@cotal-ai/workspace";
+import { GLOBAL_FLAGS, parseCommaList } from "@cotal-ai/workspace";
 import "@cotal-ai/cli"; // registers the base CLI commands
 import "@cotal-ai/manager"; // registers supervise/start/stop/ps/attach
 import "@cotal-ai/delivery"; // registers deliver
@@ -44,6 +44,20 @@ const TARGET = ["creds:string", "server:string", "space:string:s"];
 const counted = countedAssert(nodeAssert);
 const assert: typeof nodeAssert = counted.assert;
 const cells = counted.cells;
+// One list rule serves the ACL/persona flags; command-specific validation stays at each caller.
+for (const [input, expected] of [
+  [undefined, undefined], ["", []], ["   ", []], [",", []],
+  [" review , , ops ", ["review", "ops"]], ["none", ["none"]],
+  ["review,review", ["review", "review"]], ["review.>,ops.*", ["review.>", "ops.*"]],
+] as const) assert.deepEqual(parseCommaList(input), expected, `comma-list flag ${JSON.stringify(input)}`);
+
+for (const [file, calls] of [["spawn", 6], ["mint", 2], ["persona", 1], ["persona-remote", 6], ["personas", 1]] as const) {
+  const source = readFileSync(new URL(`../../implementations/cli/src/commands/${file}.ts`, import.meta.url), "utf8");
+  assert.match(source, /import\s*\{[^}]*\bparseCommaList\b[^}]*\}\s*from\s*["']@cotal-ai\/workspace["']/s, `${file} imports the shared list rule`);
+  assert.equal([...source.matchAll(/\bparseCommaList\(/g)].length, calls, `${file} routes its list flags through the shared rule`);
+  assert.doesNotMatch(source, /\.split\(\s*["'],["']\s*\)/, `${file} does not carry another comma splitter`);
+}
+
 const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: boolean }> = {
   // ---- Canonical commands -------------------------------------------------------------------
   // Stage 2b: setup is configure-only; --open's home is `cotal up`, and `go` (a pure alias of setup)

@@ -397,6 +397,7 @@ journal recorded. `channel()` and `run()` are pure primitives: they build a valu
 
 | Primitive | Signature | Journal kind | Name |
 | --- | --- | --- | --- |
+| `participant` | `participant({ name? }) -> AgentHandle` | `participant` | optional |
 | `spawn` | `spawn(persona, { name?, cwd?, placement?, worktree?, join?, role?, permits?, supervise?, onFork?, events?, runtime? }) -> AgentHandle` | `spawn` | `name`, else the persona |
 | `turn` | `turn(agent, { name, deadline? }) -> { status, to?, note?, at }` | `turn` | required |
 | `ask` | `ask(agent, { name, schema, deadline?, attempts? }) -> record` | `ask` | required |
@@ -443,6 +444,7 @@ implementation's option suite edits each one on a resumed run and requires exact
 
 | Effect | Projection |
 | --- | --- |
+| `participant` | `{}` |
 | `spawn` | `{ persona, model, variant, worktree, role, join: [channel names] }`, plus `cwd` when the option bag carries it and `placement: { endpoint, instanceId }` when the option bag carries it |
 | `turn` | `{ agent, deadline }` |
 | `ask` | `{ agent, schema, deadline, attempts }` |
@@ -471,6 +473,13 @@ keys in a placement record are not projected, and key order never matters (§4.4
 
 ### 6.5 Semantics of each primitive
 
+- **`participant`** resolves the personal native session whose exact issued caller admitted the
+  hosted run and returns a handle with `kind: "participant"`. Program text cannot choose its owner,
+  actor, lifecycle or display name. The host reads those from the immutable run admission, requires
+  one exact live presence row, and journals the owner, actor, lifecycle, name and manager instance.
+  Resume rebuilds the run roster from that entry and never selects a successor lifecycle. It creates
+  no seat, worktree, permits or process custody. A host without an issued personal admission refuses
+  it as L4000; an absent exact live presence is L4002.
 - **`spawn`** brings an agent into the run and returns its handle. `permits` are budgets whose
   violation the handler reports as a catchable failure (L4001); `supervise` is a declarative
   restart policy; `onFork` is `"respawn"` (default) or `"adopt"` (§11.3); `events: false` starts the
@@ -997,6 +1006,35 @@ namespace, and every branch of a scope is its own namespace, so two branches cal
 effect never race for a counter. Both counters are allocated synchronously at the call, before any
 await, which is the whole determinism argument: the allocating code is either sequential or already
 inside a deterministic namespace.
+
+#### Reusable helpers
+
+A plain function call does not open a journal scope. Calls to a helper whose turn is named `review`
+use the enclosing occurrence sequence: `/turn:review#0`, `/turn:review#1`, and so on. Inserting
+another call before them shifts their occurrences; naming the turn alone does not give each
+helper instance a stable key.
+
+Instantiate a reusable helper inside a named, single-branch `parallel`. Give each instance a
+distinct scope name and use a record branch key, even though no concurrency is needed:
+
+```js
+const reviewer = await spawn("reviewer")
+async function review(agent) {
+  return await turn(agent, { name: "review" })
+}
+const first = await parallel({ call: () => review(reviewer) }, { name: "panel-one" })
+const second = await parallel({ call: () => review(reviewer) }, { name: "panel-two" })
+log(first.call.status, second.call.status)
+```
+
+The turns now key as `/parallel:panel-one#0/b:call/turn:review#0` and
+`/parallel:panel-two#0/b:call/turn:review#0`. An earlier instance with a different scope name does
+not renumber either. Each wrapper adds one scope entry, and its result is under `.call`.
+Reusing the same scope name still advances that scope's occurrence counter.
+
+Keep required step names literal inside the helper; L3013 is unchanged. This convention gives
+instances separate namespaces, not an exemption from input-hash checks or the migration rules
+(§11.2). `once` is not a general-purpose replacement: it has the effect restrictions in §7.8.
 
 ### 10.3 The digest
 

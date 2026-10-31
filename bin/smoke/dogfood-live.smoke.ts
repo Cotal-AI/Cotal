@@ -17,7 +17,8 @@
  *       /app.js, reads the sent message back through its broker-backed history and activity
  *       routes, and refuses channel delete as read-only;
  *     - a second start is a no-op, `ext remove` refuses while it runs, and `service stop` ends it;
- *     - started again, bare `down` stops it before the stack.
+ *     - the private bootstrap record preserves the listener's bound host and port;
+ *     - started again, it blocks bare `down` until explicitly stopped; the broker stays alive.
  *  D. `ext remove @cotal-ai/web`; the `web` preset refuses again.
  *
  * Needs dist built (the packages install per their `files: ["dist"]`), `nats-server` + npm on
@@ -84,7 +85,7 @@ const serviceLog = (name: string) => {
   return { instanceId: result.instance.instanceId, lines: result.lines };
 };
 
-interface Bootstrap { launchUrl?: unknown; instanceId?: unknown; launchRequestId?: unknown; process?: { pid?: unknown } }
+interface Bootstrap { launchUrl?: unknown; host?: unknown; port?: unknown; instanceId?: unknown; launchRequestId?: unknown; process?: { pid?: unknown } }
 /** Waits for the log to name a bootstrap file this launch has not named before, then reads it. The
  *  file is written once the listener is up, so its appearance is the readiness signal. */
 const bootstrapAfter = async (seen: string[]) => {
@@ -166,6 +167,8 @@ try {
     const { path: sessionPath, session, log } = boot!;
     ok("the bootstrap file is owner-private", (statSync(sessionPath).mode & 0o077) === 0, sessionPath);
     ok("the bootstrap file belongs to this instance and process", session.instanceId === log.instanceId && session.process?.pid === webPid, { session: { instanceId: session.instanceId, pid: session.process?.pid }, log: log.instanceId, webPid });
+    ok("the bootstrap file preserves the bound listener host", session.host === "127.0.0.1", { host: session.host });
+    ok("the bootstrap file preserves the bound listener port", session.port === WEB_PORT, { port: session.port, expected: WEB_PORT });
     const launchUrl = session.launchUrl as string;
     const token = new URL(launchUrl).searchParams.get("k");
     ok("the service log carries the bootstrap path, never the launch token", token !== null && token.length > 0 && !log.lines.some((l) => l.includes(token)));
@@ -224,22 +227,23 @@ try {
     ok("service stop web ends the dashboard process", stop.status === 0 && /Service stopped/.test(stop.stdout) && !alive(webPid), out(stop).slice(-500));
     ok("a confirmed stop removes the private bootstrap file", !existsSync(sessionPath), sessionPath);
 
-    // Running again, the dashboard is stopped by bare down, ahead of the stack.
+    // A running saved service blocks bare down; stop that exact instance before its broker.
     const restart = cotal(["service", "start", "web", "--space", SPACE]);
     const livePid = pidOf(restart);
     if (Number.isFinite(livePid)) ownPids.push(livePid);
     ok("the stopped dashboard starts again", restart.status === 0 && /Owned service process running/.test(restart.stdout) && alive(livePid) && livePid !== webPid, out(restart).slice(-600));
     const liveBoot = await bootstrapAfter([sessionPath]);
     ok("the new launch writes its own bootstrap file", liveBoot !== undefined && liveBoot.session.process?.pid === livePid, liveBoot?.path);
-    const down = cotal(["down"]);
-    const downOut = out(down);
+    const refusedDown = cotal(["down"]);
+    const refusedOut = out(refusedDown);
+    ok("bare down refuses while the saved dashboard service runs", refusedDown.status === 2 && /LIFECYCLE_BLOCKED/.test(refusedOut) && /bare down stopped nothing/.test(refusedOut), refusedOut.slice(-900));
+    ok("the refusal names the exact service stop remedy", liveBoot !== undefined && refusedOut.includes(`cotal service stop web --instance ${liveBoot.log.instanceId} --space ${SPACE} --yes`), refusedOut.slice(-900));
+    ok("the refusal leaves the dashboard, its bootstrap file and the stack alive", alive(livePid) && liveBoot !== undefined && existsSync(liveBoot.path) && meshPids.every(alive));
+    const stopAgain = cotal(["service", "stop", "web", "--instance", liveBoot!.log.instanceId, "--space", SPACE, "--yes"]);
     for (let i = 0; i < 50 && alive(livePid); i++) await sleep(100);
-    ok("bare down marks the running dashboard to stop", down.status === 0 && /^\s*web\s+\S+\s+\S+\s+running\s+stop\s*$/m.test(down.stdout), downOut.slice(0, 900));
-    // Both reports are written to stdout, so their order there is the order they happened in.
-    const serviceStopped = down.stdout.indexOf("Service stopped");
-    ok("bare down stops the dashboard before the stack", serviceStopped >= 0 && serviceStopped < down.stdout.indexOf("stopped manager") && serviceStopped < down.stdout.indexOf("stopped nats-server"), downOut.slice(-900));
-    ok("the dashboard process is gone and its bootstrap file removed", !alive(livePid) && liveBoot !== undefined && !existsSync(liveBoot.path), liveBoot?.path);
-    ok("bare down stops the auth mesh", meshPids.every((pid) => !alive(pid)), downOut.slice(-500));
+    ok("the explicit stop ends the dashboard and removes its bootstrap file before the stack", stopAgain.status === 0 && !alive(livePid) && !existsSync(liveBoot!.path) && meshPids.every(alive), out(stopAgain).slice(-500));
+    const down = cotal(["down"]);
+    ok("bare down then stops the auth mesh", down.status === 0 && meshPids.every((pid) => !alive(pid)), out(down).slice(-500));
   }
 
   // -- D: remove the extension; the preset's provider is gone again ----------------------------------
@@ -251,6 +255,7 @@ try {
 
   console.log(`\nDOGFOOD LIVE SMOKE OK ✅ (${pass} checks)`);
 } finally {
+  cotal(["service", "stop", "web", "--space", SPACE, "--yes"]);
   cotal(["down"]);
   for (const p of ownPids) if (alive(p)) { try { process.kill(p, "SIGTERM"); } catch { /* gone */ } }
   rmSync(sandbox, { recursive: true, force: true });

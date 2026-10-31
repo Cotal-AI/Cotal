@@ -12,6 +12,11 @@ Use the repository guard instead:
 pnpm pr-head-gate <pull-request-number>
 ```
 
+It requires a GitHub token, resolved once per run from `GH_TOKEN`, then `GITHUB_TOKEN`, then
+`gh auth token`. If no token is available, it exits before sending any request and names the
+credential setup options. It never switches to anonymous requests. `pnpm smoke:pr-head-auth`
+checks this with native `gh`, isolated placeholder credentials and an offline HTTP fixture.
+
 It parses `.github/workflows/*.yml` at the exact head with the repository's YAML parser and derives
 the expected named set, including `pull_request` path filters. Valid YAML forms such as flow event
 lists with trailing comments are handled by the parser rather than a line reader. Invalid YAML,
@@ -87,17 +92,49 @@ cell total. It exits non-zero after the full selection and reports the checkout 
 enumerated, examined, graded, refused-with-reason, unparsed, command-failed, recorded, and
 stale-records configs.
 
+Validation reports every independent refusal within each config. Unparseable JSON, an unresolved
+suite, or a missing mutations array ends that config. Malformed mutation fields skip that entry's
+witness checks, not later entries. Invalid command or path-list metadata skips reachability checks;
+other independent checks still run. Refusal and sentinel totals count configs, not reasons.
+`pnpm smoke:mutation-refusals` exercises this reporting without executing config commands.
+
 `pnpm smoke:mutation-metadata` runs that validation in CI. It passes `--gradable-only` with no
 paths, so every tracked config is validated, none is executed, and an unrecorded refusal fails the
 gate. The refusals already on main when the gate was added are listed in `scripts/mutation-coverage.recorded.json`,
-each pinned to the sha256 of its parsed config and the refusal it drew, and a discovered run reports
-them as `RECORDED`. A named run does not read that file. The list only shrinks. An entry fails the
-gate when it is not in the parent commit's copy of the file, or once its config is accepted, changes,
-is refused for another reason, or is no longer tracked: remove the entry, and fix the config if it is
+each pinned to the sha256 of its parsed config and the first refusal it drew. A discovered run
+compares that first refusal for compatibility and prints every reason as `RECORDED`. Additional
+reasons are visible but are not separately pinned. A named run does not read that file. The list
+only shrinks. An entry fails the gate when it is not in the parent commit's copy of the file, or
+once its config is accepted, changes, draws a different first refusal, or is no longer tracked:
+remove the entry, and fix the config if it is
 still refused. On a pull request the parent is the base branch. The commit that adds the file may pin
 only configs its parent already had unchanged. A shallow checkout fetches the parent from `origin`.
 The run ends with the cell-count sentinel the CI shard grades: one cell per config and per stale
 entry.
+
+The coverage reader and fixture census share named workspace-filter selection. Matching quotes,
+`--filter=value`, multiple filters, and dependency (`pkg...`) or dependent (`...pkg`) closures
+are handled alike. Build closures include development, optional and peer dependencies. Each
+reader retains its own command-admission checks. `pnpm smoke:workspace-build-filters` exercises
+these forms through read-only metadata grading; it does not execute fixture commands or mutations.
+
+Built-output witnesses read package tsconfigs through TypeScript, including JSONC and inherited
+options. Missing configs provide no mapping; unreadable or invalid configs fail with their path
+and compiler diagnostic. The effective config must declare `rootDir` and `outDir`, locally or
+through `extends`; unsupported inferred layouts are refused rather than guessed.
+`pnpm smoke:mutation-tsconfig` compares these mappings with `tsc --showConfig` without executing
+fixture commands.
+
+Metadata validation reuses the current TypeScript parse of each normalized file path while its
+source text is unchanged. A changed source replaces that cached parse. Each config reads its
+suites lazily once, preserving validation order; file reads are not memoized across configs.
+`pnpm smoke:mutation-parse-cache` checks native parse/read counts and cache invalidation without
+executing fixture commands.
+
+A native `ETIMEDOUT` result is reported as `command was killed at its timeout`, not as a
+failure to start. Missing executables and permission errors retain the startup diagnosis. Both
+remain unmeasurable; this distinction changes the reason, not the verdict or timeout budget.
+`pnpm smoke:failure-timeout-reason` checks native child results without executing mutations.
 
 `unparsed` means the suite command completed but did not prove how many cells it executed. A zero
 failure count without a total is not enough. The instrument grades only a number the suite printed:

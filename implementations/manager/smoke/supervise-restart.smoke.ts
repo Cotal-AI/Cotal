@@ -184,7 +184,7 @@ try {
   c("the replacement process has a different pid", typeof after?.handle.pid === "number" && after.handle.pid !== firstPid, { firstPid, next: after?.handle.pid });
   c("a restart never replays fork source or initial prompt",
     spawnedOpts.length >= 2 && spawnedOpts[1]?.resume === undefined && spawnedOpts[1]?.prompt === undefined, spawnedOpts[1]);
-  c("a pending turn is not stamped dead across a restart", pendingOf(manager)?.seatDiedAt === undefined, pendingOf(manager));
+  c("a pending turn is not stamped dead across a restart", pendingOf(manager) !== undefined && pendingOf(manager)?.seatDiedAt === undefined, pendingOf(manager));
 
   if (row && after) {
     seatNc = await connect({ servers: broker.servers, ...standaloneConnectOpts({ creds: seatCreds, tls: false }), maxReconnectAttempts: 0 });

@@ -4,7 +4,8 @@
  *
  * The binary must start under the pty and exit cleanly. The node child must see a terminal on both
  * ends, the pty's window size, and raw keystrokes as bytes: the 0x1d detach key and Ctrl+C, which a
- * cooked terminal turns into a signal. A report fits the terminal's own width. A command that would
+ * cooked terminal turns into a signal. A report fits the terminal's own width, and so does a refusal
+ * in the guided `meshes add`, which names the flag form's next step. A command that would
  * prompt on a terminal must not prompt under `--no-input`. With stdout or stderr in a file, color stays
  * on the terminal and off the file. Linux and macOS run it under a pty, Windows under ConPTY.
  *
@@ -13,12 +14,11 @@
  * Run: pnpm smoke:cli-pty
  */
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { createSuite } from "@cotal-ai/smoke-kit";
-import { clean, COTAL, cotalPty, nodePty, repoRoot, wait, type Pty } from "./_console-pty.js";
+import { createSuite, freePort } from "@cotal-ai/smoke-kit";
+import { clean, COTAL, cotalPty, nodePty, repoRoot, screen, wait, type Pty } from "./_console-pty.js";
 
 const home = mkdtempSync(join(tmpdir(), "cotal-cli-pty-"));
 const env: Record<string, string> = {};
@@ -26,30 +26,6 @@ for (const [key, value] of Object.entries(process.env)) if (value !== undefined 
 Object.assign(env, { COTAL_HOME: home, XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1", TERM: "xterm-256color" });
 const { version } = JSON.parse(readFileSync(join(repoRoot, "bin", "package.json"), "utf8")) as { version: string };
 const { check, finish } = createSuite();
-const managerRequire = createRequire(join(repoRoot, "implementations", "manager", "package.json"));
-const { Terminal } = managerRequire("@xterm/headless") as {
-  Terminal: new (options: { cols: number; rows: number; scrollback: number; allowProposedApi: boolean }) => {
-    write(data: string, done: () => void): void;
-    buffer: { active: { length: number; getLine(index: number): { isWrapped: boolean; translateToString(trim: boolean): string } | undefined } };
-    dispose(): void;
-  };
-};
-
-/** ConPTY can encode padding as cursor moves. Read the display, not a CSI-stripped byte stream. */
-async function screen(raw: string, cols: number, rows: number): Promise<string> {
-  const terminal = new Terminal({ cols, rows, scrollback: 1000, allowProposedApi: true });
-  try {
-    await new Promise<void>((done) => terminal.write(raw, done));
-    const lines: string[] = [];
-    for (let i = 0; i < terminal.buffer.active.length; i++) {
-      const line = terminal.buffer.active.getLine(i);
-      const text = line?.translateToString(!terminal.buffer.active.getLine(i + 1)?.isWrapped) ?? "";
-      if (line?.isWrapped && lines.length) lines[lines.length - 1] += text;
-      else lines.push(text);
-    }
-    return lines.join("\n").trimEnd();
-  } finally { terminal.dispose(); }
-}
 
 const exited = new WeakSet<Pty>();
 
@@ -333,6 +309,37 @@ try {
     check(`cotal ${argv.join(" ")} on a terminal prints the usage line and exits 1`, s.exitCode === 1 && s.text().includes("usage: cotal meshes add <space>"), s.text());
     check(`cotal ${argv.join(" ")} opens no prompt`, !s.text().includes("Register a mesh"), s.text());
   }
+
+  // `--tls` reaches the guided form, so a host name the TLS requirement admits goes on to the probe
+  // instead of the host-name refusal.
+  const tlsPty = cotalPty(["meshes", "add", "--server", `nats://localhost:${await freePort()}`, "--tls"], { cwd: home, env });
+  ptys.push(tlsPty);
+  const tlsAdd = session(tlsPty);
+  const probed = await until(() => tlsAdd.text().includes("No broker answered there"));
+  check("meshes add --tls on a terminal takes a host name to the probe", probed && !tlsAdd.text().includes("is a host name"), tlsAdd.text());
+  check("…and a port where nothing listens is reported as no broker, not as an untrusted certificate", probed && !tlsAdd.text().includes("not trusted"), tlsAdd.text());
+  tlsPty.write("\x03");
+  check("…and exits when cancelled", await until(() => tlsAdd.exitCode !== undefined), tlsAdd.exitCode);
+
+  // A host name refused for lacking TLS gets the flag form's next step, the tls:// form of the same
+  // address, wrapped to the terminal, and the question that asks again shows no plaintext example.
+  // Typed at that question, the refusal shows the same step.
+  const hostPort = await freePort();
+  const hostPty = cotalPty(["meshes", "add", "--server", `nats://localhost:${hostPort}`, "--no-color"], { cwd: home, env, cols: 80, rows: 50 });
+  ptys.push(hostPty);
+  const host = session(hostPty);
+  const reasked = await until(() => host.text().includes("Broker URL of the mesh"));
+  const refusal = await screen(host.raw, 80, 50);
+  check("a host name the guided form refuses names its tls:// form, on an 80-column terminal that fits every line",
+    reasked && refusal.includes(`use tls://localhost:${hostPort}, or pass --tls`) && fit(refusal, 80).length === 0, refusal);
+  check("…and the question asks again with no plaintext example address", reasked && !refusal.includes("nats://100.90.12.34:4222"), refusal);
+  if (process.platform !== "win32") check("…with no ANSI color under --no-color", reasked && !/\x1b\[[0-9;]*m/.test(host.raw), JSON.stringify(host.raw.slice(0, 300)));
+  hostPty.write(`nats://localhost:${hostPort}\r`);
+  const typed = await until(() => host.text().split("or pass --tls").length > 2);
+  const typedRefusal = await screen(host.raw, 80, 50);
+  check("typed at that question, the refusal names the same next step and fits the terminal", typed && fit(typedRefusal, 80).length === 0, typedRefusal);
+  hostPty.write("\x03");
+  check("…and the prompt exits when cancelled", await until(() => host.exitCode !== undefined), host.exitCode);
 
   // A dumb terminal gets no color, unless FORCE_COLOR asks for it.
   for (const [label, extra, colored] of [["TERM=dumb", {}, false], ["TERM=dumb with FORCE_COLOR=1", { FORCE_COLOR: "1" }, true]] as const) {

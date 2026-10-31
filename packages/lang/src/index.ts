@@ -105,6 +105,7 @@ export {
   type NotifyFact,
   type NotifyRequest,
   type ObserveRequest,
+  type ParticipantRequest,
   type SleepRequest,
   type SpawnRequest,
   type TurnRequest,

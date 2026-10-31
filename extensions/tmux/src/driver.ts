@@ -51,10 +51,14 @@ function hasSession(session: string): boolean {
  *  to size it, and some tmux builds then treat its window as sizeless — so `split-window` fails
  *  with "size missing". Give it an explicit initial size; tmux resizes to the real client on attach. */
 export function ensureSession(session: string, cwd: string): void {
-  if (!hasSession(session))
+  if (hasSession(session)) return;
+  try {
     execFileSync("tmux", ["-u", "new-session", "-d", "-s", session, "-x", "200", "-y", "50", "-c", cwd], {
-      stdio: "ignore",
+      stdio: ["ignore", "ignore", "pipe"],
     });
+  } catch (err) {
+    throw new Error(`tmux: couldn't create session ${session}: ${failureText(err)}`, { cause: err });
+  }
 }
 
 /** True if a window named `name` exists in `session`. Name-based — fragile under renames; prefer
@@ -277,7 +281,11 @@ export function splitWindow(
 
 /** Focus a window by target (`session:name` or window ID). */
 export function selectWindow(target: string): void {
-  execFileSync("tmux", ["-u", "select-window", "-t", target], { stdio: "ignore" });
+  try {
+    execFileSync("tmux", ["-u", "select-window", "-t", target], { stdio: ["ignore", "ignore", "pipe"] });
+  } catch (err) {
+    throw new Error(`tmux: couldn't select window ${target}: ${failureText(err)}`, { cause: err });
+  }
 }
 
 /** tmux arguments that run command `args` only on the server whose pid is `server`, when one is given.
@@ -401,15 +409,23 @@ export function privateLaunch(commandBody: string): { command: string; dir: stri
 /** Type literal text into a tmux target.
  *  `-l` bypasses tmux's key-name lookup; `--` guards against text starting with `-`. */
 export function send(text: string, target: string): void {
-  execFileSync("tmux", ["-u", "send-keys", "-l", "-t", target, "--", text], { stdio: "ignore" });
+  try {
+    execFileSync("tmux", ["-u", "send-keys", "-l", "-t", target, "--", text], { stdio: ["ignore", "ignore", "pipe"] });
+  } catch (err) {
+    throw new Error(`tmux: couldn't send text to ${target}: ${failureText(err)}`, { cause: err });
+  }
 }
 
 /** Send a named key sequence (e.g. `"Enter"`, `"C-c"`) to a tmux target, on server `opts.server` only
  *  when given. `--` guards against key names starting with `-`. */
 export function sendKey(key: string, target: string, opts: { timeoutMs?: number; server?: string } = {}): void {
-  execFileSync("tmux", ["-u", ...onServer(opts.server, ["send-keys", "-t", target, "--", key])], {
-    stdio: "ignore",
-    timeout: opts.timeoutMs,
-    killSignal: "SIGKILL",
-  });
+  try {
+    execFileSync("tmux", ["-u", ...onServer(opts.server, ["send-keys", "-t", target, "--", key])], {
+      stdio: ["ignore", "ignore", "pipe"],
+      timeout: opts.timeoutMs,
+      killSignal: "SIGKILL",
+    });
+  } catch (err) {
+    throw new Error(`tmux: couldn't send key to ${target}: ${failureText(err)}`, { cause: err });
+  }
 }

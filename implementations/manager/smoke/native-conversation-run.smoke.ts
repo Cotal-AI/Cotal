@@ -41,7 +41,7 @@ async function main(): Promise<void> {
   } = await import("@cotal-ai/core");
   const { connect } = await import("@nats-io/transport-node");
   const { assertUserAuthInfo, authDir, recordMesh, saveSpaceAuth, userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
-  const { cotalAuthProvider, grantActor, loadAuthServiceInfo, loadCalloutAuth, saveIdpSession } = await import("@cotal-ai/auth");
+  const { cotalAuthProvider, findManagedActor, grantActor, grantManagedActor, loadAuthServiceInfo, loadCalloutAuth, revokeManagedActor, saveIdpSession } = await import("@cotal-ai/auth");
   const { startApprovalAuthority, EMPTY } = await import("../../auth/smoke/_approval-authority.js");
   const { NATIVE_GATEWAY_TOOLS, serveGatewayStdio } = await import("@cotal-ai/connector-core");
   const { createAppHost } = await import("../../../extensions/connector-claude-code/src/app-host.js");
@@ -77,6 +77,7 @@ async function main(): Promise<void> {
   let writer: Awaited<ReturnType<typeof hostTimerWriter>> | undefined;
   let manager: InstanceType<typeof Manager> | undefined;
   let host: ReturnType<typeof createAppHost> | undefined;
+  let personalConnection: import("@cotal-ai/connector-core").GatewayConnection | undefined;
   let served: { close(): Promise<void> } | undefined;
   let authority: Awaited<ReturnType<typeof startApprovalAuthority>> | undefined;
   let provisioner: InstanceType<typeof CotalEndpoint> | undefined;
@@ -149,6 +150,10 @@ async function main(): Promise<void> {
         requestRunAdmission: (request) => cotalAuthProvider.requestRemoteRunAdmission!({ ...callArgs, request }),
         requestRunAttempt: (request) => cotalAuthProvider.requestRemoteRunAttempt!({ ...callArgs, request }), call: callAuthority,
       }),
+      authorizeParticipation: async (caller) => {
+        const request = remote.remoteManagerParticipationAuthorizationRequest(state, "cli", proof, registered.processEpoch, caller);
+        return remote.remoteManagerParticipationAuthorized(await cotalAuthProvider.authorizeRemoteManagerParticipation!({ ...callArgs, request }), request, owner);
+      },
       authorizeAdmin: async (caller) => {
         const request = remote.remoteManagerAdminAuthorizationRequest(state, "cli", proof, registered.processEpoch, caller);
         return remote.remoteManagerAdminAuthorized(await cotalAuthProvider.authorizeRemoteManagerAdmin!({ ...callArgs, request }), request, owner);
@@ -184,8 +189,12 @@ async function main(): Promise<void> {
     authority.addMesh({ space, server: servers, root: hostRoot, owner, userAuth: assertUserAuthInfo(prepared.publicAuth),
       sentinelCreds: (await loadCalloutAuth(hostStore, space))!.sentinelCreds, exchange: `${info.publicUrl}/exchange`,
       local: { stateDir: hostDir, provisioner, auth, servers }, selection: true });
+    let deliveredTurn = "";
     host = createAppHost({ cotal: () => [process.execPath, ...process.execArgv, import.meta.filename], cwd: hostRoot,
-      env: { ...process.env, COTAL_HOME: home, NODE_EXTRA_CA_CERTS: authority.caFile } });
+      env: { ...process.env, COTAL_HOME: home, NODE_EXTRA_CA_CERTS: authority.caFile },
+      participate: async (connection) => { personalConnection = connection; return connection.agent.participateInTurns(); },
+      turn: (_session, _id, text) => { deliveredTurn = text; return true; },
+    });
     for (const session of ["native-run", "native-norun"]) {
       const path = join(home, `${session}.jsonl`);
       writeFileSync(path, "");
@@ -231,10 +240,13 @@ async function main(): Promise<void> {
     const norun = idOf(await personApproves({ name: "norun_conv", context: "native-norun" }));
     const refused = await tool("cotal_run", { connection_id: norun, verb: "start", source: 'await sleep("1s", { name: "must-not-run" });' });
     check("a conversation that did not select run cannot start one", norun !== "" && refused.isError && /not available on this connection/.test(refused.text), refused);
+    const refusedParticipation = await tool("cotal_turn_participate", { connection_id: norun });
+    check("a conversation without run scope cannot opt into workflow turns", refusedParticipation.isError && /not available on this connection/.test(refusedParticipation.text), refusedParticipation);
     await tool("cotal_disconnect", { connection_id: norun });
 
     const conn = idOf(await personApproves({ name: "run_conv", context: "native-run", capabilities: ["run"] }));
-    check("a conversation that selected run connects", conn !== "");
+    const participation = await tool("cotal_turn_participate", { connection_id: conn });
+    check("the run-authorized personal lifecycle receives a finite manager participation lease", !participation.isError && participation.text.includes(state.instanceId), participation);
     const started = await tool("cotal_run", { connection_id: conn, verb: "start", source: 'await sleep("2s", { name: "native-nap" });', file: "native-nap.cotal.js" });
     const runId = /run-[0-9a-f]{32}/.exec(started.text)?.[0];
     check("cotal_run start is accepted by the participant Manager under the conversation's own grant", !started.isError && runId !== undefined, started);
@@ -246,6 +258,93 @@ async function main(): Promise<void> {
     check("the sleep-only run completes and its status names the finished step", status.text.includes("native-nap"), status);
     const listed = await tool("cotal_run", { connection_id: conn, verb: "ps" });
     check("cotal_run ps lists the conversation's run", !listed.isError && listed.text.includes(runId!), listed);
+
+    // The normative participant() effect binds only the exact personal lifecycle that admitted the
+    // run. A fresh SessionStart frame is the supported native ingress. Its delivery receipt commits
+    // the turn, and the following Stop boundary automatically yields done.
+    const nativeTurn = await tool("cotal_run", {
+      connection_id: conn,
+      verb: "start",
+      source: 'const session = await participant({ name: "native-session" });\nawait turn(session, { name: "native-turn", deadline: "30s" });',
+      file: "native-turn.cotal.js",
+    });
+    const nativeTurnId = /run-[0-9a-f]{32}/.exec(nativeTurn.text)?.[0];
+    check("the existing authorized native conversation is accepted as a finite workflow turn target", !nativeTurn.isError && nativeTurnId !== undefined, nativeTurn);
+    const renewed = await tool("cotal_turn_participate", { connection_id: conn });
+    check("renewing the exact lease after acceptance is available", !renewed.isError, renewed);
+    await until(async () => {
+      if ((personalConnection?.agent.activeTurnCount() ?? 0) > 0) return true;
+      const retry = await tool("cotal_turn_participate", { connection_id: conn });
+      if (retry.isError) throw new Error(`participation renewal failed while awaiting the turn: ${retry.text}`);
+      return false;
+    }, "the personal connector never pulled the accepted turn", 20_000);
+    const nativePath = join(home, "native-run.jsonl");
+    await until(async () => {
+      await host!.nativeEvent({ hook_event_name: "SessionStart", session_id: "native-run", transcript_path: nativePath, source: "resume", cwd: hostRoot });
+      return deliveredTurn.includes("native-turn");
+    }, `the native turn did not reach the supported ingress: ${deliveredTurn.slice(0, 400)}`, 20_000);
+    check("the exact pending goal reaches the bound native session", /🎯 Cotal/.test(deliveredTurn) && deliveredTurn.includes("native-turn"), deliveredTurn);
+    await host.nativeEvent({ hook_event_name: "UserPromptSubmit", session_id: "native-run", transcript_path: nativePath, cwd: hostRoot });
+    await host.nativeEvent({ hook_event_name: "Stop", session_id: "native-run", transcript_path: nativePath, cwd: hostRoot });
+    let nativeStatus = { text: "", isError: true };
+    await until(async () => {
+      nativeStatus = await tool("cotal_run", { connection_id: conn, verb: "status", runId: nativeTurnId });
+      return !nativeStatus.isError && nativeStatus.text.includes(": completed,");
+    }, `the native turn did not complete: ${nativeStatus.text.slice(0, 600)}`, 60_000);
+    check("the native turn completes through the conversation's supported ingress and yield", nativeStatus.text.includes("native-turn"), nativeStatus);
+
+    // A finite lease is not a five-minute authorization cache. The manager must fresh-check the
+    // issuing host immediately before accepting each personal turn goal. Both attenuation and full
+    // revocation happen while the connection and exact lifecycle presence remain live, then the row
+    // is restored only so this same authorized fixture can read the run's terminal proof.
+    const actor = personalConnection!.config.userAuth!.actor;
+    const original = findManagedActor(hostDir, owner, actor);
+    if (!original?.tokenHash || !original.lifecycleUid || !original.custody)
+      throw new Error("the personal connection has no complete managed grant to attenuate");
+    const { grantedAt: _grantedAt, ...grant } = original;
+    const restoreGrant = () => grantManagedActor(hostDir, { ...grant, scope: original.scope, tokenHash: original.tokenHash!, custody: original.custody! });
+    const startAuthorityCut = async (name: string) => {
+      const started = await tool("cotal_run", {
+        connection_id: conn,
+        verb: "start",
+        source: `const session = await participant({ name: "${name}-session" });\nawait sleep("5s", { name: "${name}-delay" });\nawait turn(session, { name: "${name}-turn", deadline: "5s" });`,
+        file: `${name}.cotal.js`,
+      });
+      const id = /run-[0-9a-f]{32}/.exec(started.text)?.[0];
+      check(`${name}: the run starts before current personal authority is removed`, !started.isError && id !== undefined, started);
+      let status = { text: "", isError: true };
+      await until(async () => {
+        status = await tool("cotal_run", { connection_id: conn, verb: "status", runId: id });
+        return !status.isError && status.text.includes(`${name}-session`);
+      }, `${name}: participant() did not settle before authority removal: ${status.text.slice(0, 600)}`, 20_000);
+      return id!;
+    };
+    const authorityRefusal = async (name: string, runId: string) => {
+      await wait(15_000);
+      const internals = manager as unknown as { pendingTurns: Map<string, unknown>; runHosting: { status(args: { runId: string }): Promise<{ status?: { state?: string; failure?: { code?: string; message?: string } } }> } };
+      const pendingCount = internals.pendingTurns.size;
+      const recorded = await internals.runHosting.status({ runId });
+      check(`${name}: current host authority is rechecked before the personal turn goal is accepted`,
+        recorded.status?.state === "failed" && recorded.status.failure?.code === "L4000" &&
+        recorded.status.failure.message?.includes("foreground-authorized with run scope") === true &&
+        pendingCount === 0 && personalConnection!.agent.activeTurnCount() === 0, { recorded, pendingCount });
+      restoreGrant();
+    };
+
+    const lostRunId = await startAuthorityCut("lost-run");
+    grantManagedActor(hostDir, { ...grant, scope: original.scope.filter((s) => s !== "run"), tokenHash: original.tokenHash, custody: original.custody });
+    check("lost-run: the issuing host now denies the exact lifecycle before its turn begins",
+      !(await remoteAuthority.authorizeParticipation!({ owner, actor, lifecycleUid: original.lifecycleUid })));
+    await authorityRefusal("lost-run", lostRunId);
+
+    const renewedAfterAttenuation = await tool("cotal_turn_participate", { connection_id: conn });
+    check("the restored exact grant can renew participation for the revocation case", !renewedAfterAttenuation.isError, renewedAfterAttenuation);
+    const revokedId = await startAuthorityCut("revoked");
+    check("revoked: the exact managed grant is removed while its lease and presence remain live", revokeManagedActor(hostDir, owner, actor));
+    check("revoked: the issuing host now denies the exact lifecycle before its turn begins",
+      !(await remoteAuthority.authorizeParticipation!({ owner, actor, lifecycleUid: original.lifecycleUid })));
+    await authorityRefusal("revoked", revokedId);
+
     await tool("cotal_disconnect", { connection_id: conn });
     console.log(`native-conversation-run: ${checks} checks passed on a real participant Manager; no hosted acceptance claimed`);
   } finally {

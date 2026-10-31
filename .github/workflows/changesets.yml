@@ -351,9 +351,14 @@ jobs:
           # GitHub refuses a release body over 125000 characters (0.101.0 hit it with 266 merged
           # PRs); the changeset detail gets what the generated PR list leaves, minus a margin.
           budget=$((120000 - $(printf '%s' "$notes" | wc -c)))
+          # Summary failures stay visible but do not block the generated release notes.
+          if ! detail=$(node scripts/release-notes-detail.mjs "$version" "--max-bytes=$budget"); then
+            echo "::warning::Changeset summaries could not be generated for $version; publishing generated release notes only."
+            detail=""
+          fi
           {
             printf 'Install or update: `npm i -g cotal-ai@%s`\n\n' "$version"
-            node scripts/release-notes-detail.mjs "$version" "--max-bytes=$budget"
+            if [ -n "$detail" ]; then printf '%s\n' "$detail"; fi
             printf '\n%s\n' "$notes"
           } > "$RUNNER_TEMP/release-notes.md"
           gh release create "$tag" --target "$GITHUB_SHA" --title "$tag" --latest --notes-file "$RUNNER_TEMP/release-notes.md"

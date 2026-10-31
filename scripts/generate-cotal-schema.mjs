@@ -1,19 +1,15 @@
-import { execFileSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
+import stringify from "safe-stable-stringify";
+import { createGenerator } from "ts-json-schema-generator";
 
-const generate = (type) => JSON.parse(execFileSync(
-  "pnpm",
-  [
-    "exec",
-    "ts-json-schema-generator",
-    "-p",
-    "packages/core/src/types.ts",
-    "-t",
-    type,
-    "--additional-properties",
-  ],
-  { encoding: "utf8" },
-));
+// Parse the source once and reuse the generator for all three roots.
+const generator = createGenerator({
+  path: "packages/core/src/types.ts",
+  tsconfig: "tsconfig.json",
+  additionalProperties: true,
+});
+// Keep the CLI's stable key order and detached schema objects before post-processing.
+const generate = (type) => JSON.parse(stringify(generator.createSchema(type)));
 
 const schema = generate("CotalMessage");
 const definitions = schema.definitions ?? {};

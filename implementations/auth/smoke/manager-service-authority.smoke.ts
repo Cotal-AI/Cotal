@@ -1,10 +1,10 @@
 /** Closed remote manager-service authority policy cells (broker-free). */
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { EpEnvelopeError, REMOTE_MANAGER_AUTHORITY_OPERATIONS, REMOTE_MANAGER_IDENTITY_NAMES, createSpaceAuth, managedRetirementOpId, mintLifecycleUid, mintPublicUserJwt, newIdentity, permissionsFor, remoteManagerActors, type RemoteManagerAuthorityMaterial, type RemoteManagerAuthorityRequest } from "@cotal-ai/core";
+import { EpEnvelopeError, REMOTE_MANAGER_AUTHORITY_OPERATIONS, REMOTE_MANAGER_IDENTITY_NAMES, createSpaceAuth, managedRetirementOpId, mintLifecycleUid, mintPublicUserJwt, newIdentity, permissionsFor, principalKey, remoteManagerActors, remoteManagerServePrincipal, type RemoteManagerAuthorityMaterial, type RemoteManagerAuthorityRequest } from "@cotal-ai/core";
 import { remoteManagerIssuerGrants } from "@cotal-ai/auth";
 import { authorizeRemoteManagerMaintenance, issueRemoteManagerAuthority, parseRemoteManagerAuthorityRequest, USER_TOKEN_VIEWS } from "@cotal-ai/auth";
-import { authorizeRemoteManagerRenewal } from "../src/manager-authority.js";
+import { authorizeRemoteManagerRenewal } from "@cotal-ai/auth";
 import { remoteManagerCurrentRegistrationProof } from "../src/retained-manager-validation.js";
 import { authorizeRemoteManagerRetirement } from "../src/service.js";
 import { authorizeRetirementOperation } from "../src/auth-admin.js";
@@ -26,6 +26,16 @@ async function rejects(name: string, fn: () => unknown | Promise<unknown>, re: R
 
 const instanceId = mintLifecycleUid();
 const lifecycleUid = mintLifecycleUid();
+await cell("serve principal preserves human, platform and local owner serialization", () => {
+  for (const owner of ["u_aaaaaaaaaaaaaaaaaaaaaaaaaa", "p_bbbbbbbbbbbbbbbbbbbbbbbbbb", "local"])
+    assert.equal(remoteManagerServePrincipal(owner, instanceId), principalKey(owner, remoteManagerActors(instanceId).serve).key);
+});
+await cell("serve principal rejects malformed owner tokens", () => {
+  assert.throws(() => remoteManagerServePrincipal("u_bad-owner", instanceId), /invalid owner\/actor token/);
+});
+await cell("serve principal rejects malformed derived actor tokens", () => {
+  assert.throws(() => remoteManagerServePrincipal("local", "bad.instance"), /invalid owner\/actor token/);
+});
 const identities = {
   supervisor: { id: newIdentity().id },
   executor: { id: newIdentity().id },
@@ -85,6 +95,8 @@ await cell("current registration allows the five-identity renewal request", () =
 await rejects("foreign account refuses before signing", () => verifyRenewal(renewWithProof, { accountPublicKey: `A${"B".repeat(55)}` }), /account/);
 await rejects("stale process epoch refuses before signing", () => verifyRenewal(renewWithProof, { gate: { ...gate, processEpoch: 4 } }), /processEpoch/);
 await rejects("foreign owner refuses before signing", () => verifyRenewal(renewWithProof, { owner: "u_bbbbbbbbbbbbbbbbbbbbbbbbbb" }), /owner/);
+await rejects("malformed renewal owner uses the principal token validator", () =>
+  verifyRenewal(renewWithProof, { owner: "u_bad-owner" }), /invalid owner\/actor token/);
 await rejects("missing gate refuses before signing", () => verifyRenewal(renewWithProof, { gate: null }), /open registration gate/);
 await cell("activated run allows same takeover and write fence", () => verifyRenewal(runWithProof));
 await rejects("superseded run holder refuses before signing", () => verifyRenewal(runWithProof, { run: { ...observedRun, holder: "successor" } }), /activated run/);
@@ -403,26 +415,30 @@ await cell("every operation in REMOTE_MANAGER_AUTHORITY_OPERATIONS requires its 
       err.message === "manager-service renewRunDriver returned credentials outside its closed profile set",
   );
 });
-await cell("issueRemoteManagerAuthority maps each operation through a frozen REQUIRED_CREDENTIALS record with no default fallback", () => {
+await cell("issueRemoteManagerAuthority maps each operation through a frozen CREDENTIALS record with no default fallback", () => {
   const built = readFileSync(new URL("../dist/manager-authority.js", import.meta.url), "utf8");
-  const tableMatch = /const REQUIRED_CREDENTIALS = Object\.freeze\(\{([\s\S]*?)\n\}\);/.exec(built);
-  assert.ok(tableMatch, "expected frozen REQUIRED_CREDENTIALS table in built manager-authority.js");
+  const tableMatch = /const CREDENTIALS = Object\.freeze\(\{([\s\S]*?)\n\}\);/.exec(built);
+  assert.ok(tableMatch, "expected frozen CREDENTIALS table in built manager-authority.js");
   const fnStart = built.indexOf("export async function issueRemoteManagerAuthority(");
   const fnEnd = built.indexOf("\n}\n", fnStart);
   assert.ok(fnStart > 0 && fnEnd > fnStart);
   const fnBody = built.slice(fnStart, fnEnd);
-  assert.equal(fnBody.includes("const required = REQUIRED_CREDENTIALS[r.operation];"), true);
+  assert.equal(fnBody.includes("const required = CREDENTIALS[r.operation].required;"), true);
   assert.equal(fnBody.includes(": REMOTE_MANAGER_IDENTITY_NAMES"), false);
   const evaluate = new Function(
     "REMOTE_MANAGER_IDENTITY_NAMES",
-    `${tableMatch[0]}\nreturn REQUIRED_CREDENTIALS;`,
-  ) as (names: readonly string[]) => Record<string, readonly string[] | undefined>;
+    `${tableMatch[0]}\nreturn CREDENTIALS;`,
+  ) as (names: readonly string[]) => Record<string, { readonly required: readonly string[]; readonly closed?: true } | undefined>;
   const table = evaluate(REMOTE_MANAGER_IDENTITY_NAMES);
   assert.equal(Object.isFrozen(table), true);
   assert.deepEqual(Object.keys(table), [...REMOTE_MANAGER_AUTHORITY_OPERATIONS]);
   for (const op of REMOTE_MANAGER_AUTHORITY_OPERATIONS) {
-    assert.equal(Object.isFrozen(table[op]), true);
-    assert.deepEqual(table[op], expectedRequiredByOperation[op]);
+    const row = table[op];
+    assert.ok(row);
+    assert.equal(Object.isFrozen(row), true);
+    assert.equal(Object.isFrozen(row.required), true);
+    assert.deepEqual(row.required, expectedRequiredByOperation[op]);
+    assert.equal(row.closed, op === "renewStandingBundle" || op === "renewRunDriver" ? true : undefined);
   }
   for (const unmapped of ["probeOp", "renewal", "activateX"]) {
     assert.equal(table[unmapped], undefined);
