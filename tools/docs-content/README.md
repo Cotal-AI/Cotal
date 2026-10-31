@@ -20,6 +20,9 @@ The title provides the page's H1, so the authored body starts below that heading
 Classification and audience are metadata, not opening blockquotes.
 A directory cannot contain both `.md` and `.mdx` files with the same basename.
 
+To preserve an existing heading fragment, use the native suffix `[#id]`.
+For example, `## Request routes [#the-ep-rails]` retains `#the-ep-rails`.
+
 Import supported components by their original names from Fumadocs UI:
 
 | Module | Components | Markdown export |

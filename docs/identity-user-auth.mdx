@@ -1,0 +1,283 @@
+---
+title: User-auth lifecycle
+description: Actor grants, delegation, catalogs, enrollment, sessions, views, and remote managers.
+kind: Reference
+audience: operators and implementers
+---
+
+Per-user authentication checks an actor ledger before issuing a bearer and at every broker connect. [Identity](identity-and-auth.mdx#per-user-authentication) explains the model. [Auth service and IdP integration](identity-service-auth.mdx) describes the listeners and proof checks. [SPEC §10](../SPEC.md#10-connection-and-onboarding) defines the wire requirements.
+
+## Account access [#grants]
+
+User authentication is enabled by `cotal up --user-auth --idp <auth base URL>` or manifest `broker.auth: "user"`. The first enable pins the IdP. A different later `--idp` is refused. Concurrent first enables adopt one pin when they name the same IdP and refuse when they differ.
+
+`cotal login --idp <url>` caches a session on that machine. Subsequent connections obtain a fresh IdP proof, exchange it for a short-lived Cotal bearer, and present it to the broker's auth callout. The callout checks the bearer and current ledger before minting scoped connection authority. Fresh proofs carry IdP-side revocation into this path.
+
+The IdP URL, its pinned JWKS URL, and a catalog URL require HTTPS. HTTP is accepted only for loopback IP literals such as `127.0.0.1`. `localhost` is refused because name resolution would choose the trusted keys.
+
+Each bearer names the incarnation's root credential in the space credential ledger. That row is checked live at connect. Revoking it denies the incarnation's bearers at their next connection.
+
+| Grant form | Result |
+| --- | --- |
+| `cotal actor grant <actor> --sub <their id> --full` | All channels, with scope `spawn,role:default`. Permits spawning and delegation of the default role. |
+| `--scope`, `--allow-subscribe`, and `--allow-publish` | A narrow grant. All three are required unless `--full` is present. |
+| No ledger row | No access. |
+
+### Concurrent ledger changes
+
+Managed grants record lifecycle custody supplied by the trusted writer. Custody names a local manager's persisted logical instance, an authorized remote manager instance, or a foreground launch without a manager.
+
+Ledger reads, decisions, and writes share one synchronous transaction. Broker provisioning and retirement happen outside it.
+
+| Concurrent change or failure | Result |
+| --- | --- |
+| A grant first finds no row, but another grant creates that actor while it waits for the ledger lock | `CONFLICT`. |
+| A re-grant or revoke finds that the row changed or disappeared while its retirement ran, and the service confirms this call retired the lifecycle | `partial`, exit 4. The lifecycle stays retired. No row is written or deleted. The error names the retired lifecycle under `changed`. |
+| The same race, but retirement never started or was already complete | `CONFLICT`. |
+| Retirement has no readable result | `unknown`, before any ledger write. |
+
+`cotal actor list` provides the current row before a retry. Old rows without custody remain readable, but operations requiring custody refuse them. Custody does not authorize recovery over another manager's lifecycle or an unknown lifecycle.
+
+The ledger reserves a separate `chat-sessions/` row space. Interactive and managed grants cannot reuse aliases present there. A principal present in both spaces is refused. A pending chat row authorizes nothing.
+
+## Delegation [#delegation]
+
+In ordinary non-admin delegation, a user's grant is the permission envelope for the CLI and descendant agents under that owner. Channel lists and capability scope may narrow along the chain. Delegating role `r` requires `role:<r>` in the spawner's scope.
+
+NATS-pattern containment is checked at grant time and at every bearer exchange. The walk ends at a parentless row or an admin-scoped ancestor. An admin ancestor is a separate authority root. The walk does not enforce ordinary containment at that boundary or inspect ancestors above it.
+
+Within an ordinary delegation chain, narrowing a grant reaches descendants as they refresh within minutes. Revoking an ancestor revokes its descendants, including grandchildren, on their next authority check. A spawn outside the envelope is refused with the widening re-grant the operator would need to authorize.
+
+Scope `spawn` covers launch, `ps`, and stop and attach within the caller's owner. The owner is the administrative boundary for that subtree. Scope `admin` authorizes the separate cross-owner operations. It is neither a default grant nor accepted from a manifest.
+
+## Chat sessions [#chat-sessions]
+
+### User-auth sessions
+
+The auth service can create chat-session identities on its own. A signed-in person opens a session with an IdP proof and the hash of a holder secret kept in client memory.
+
+| Property | Boundary |
+| --- | --- |
+| Actor and lifecycle | Service-selected `chat_` plus 26 base32 characters, and a fresh lifecycle UID. |
+| Parent | The person's own `cli` grant is pinned. The session's read and post lists remain inside that grant. |
+| Session lifetime | At most 8 hours, with no extension. |
+| Bearer lifetime | At most 15 minutes, bounded further by the IdP proof and session expiry. |
+| Connect authority | Plain `agent` with the session's lists. No role, capability, or view. |
+| Release checks | The session, holder index, and pinned grant are checked before and after signing. |
+| Parent change | A change to the pinned `cli` grant refuses the session's next bearer and connect. |
+| Close and sweep | Lifecycle retirement completes before the quota slot is freed. Expired and abandoned sessions are swept. A retired row remains for 24 hours after expiry. |
+| Provider without optional chat methods | Opening a user-mode session is refused. No alternate identity is tried. |
+
+### Static-auth sessions
+
+The local manager admits a static-auth chat session with its own leaf credential and a fresh nkey. The static terminal retires it, but cannot end the copied leaf at the broker before expiry. [Static chat sessions](control-surface.mdx#static-chat-sessions) describes that boundary.
+
+The participant's session identity contains the resolved space. Its human header and connection report display that mesh. A session label does not choose the target.
+
+An output-stream error stops new stdio input and requests closure through the input-close path. Failed stdout cannot deliver an end record. A returned close report records the observed connection status.
+
+## Space catalogs [#catalogs]
+
+A successful authenticated `GET <idp>/token` may advertise one catalog.
+
+```http
+Link: <https://idp.example/spaces>; rel="https://cotal.ai/relations/space-catalog"
+```
+
+The target requires HTTPS and the normalized IdP's origin. Loopback IP literals may use HTTP. A missing, foreign-origin, or insecure link records that the account has no catalog. The client never guesses a catalog path.
+
+The request presents the opaque cached session as a bearer. The response is a complete snapshot.
+
+```json
+{
+  "v": 1,
+  "account": { "idpUrl": "https://idp.example/api/auth", "issuer": "https://idp.example", "sub": "user-id" },
+  "spaces": [
+    { "id": "space-id", "slug": "shared_project", "name": "Shared project", "kind": "hosted", "role": "owner", "registration": {} }
+  ]
+}
+```
+
+Each `registration` passes the same `checkUserBundle` validator as `cotal meshes add`. One invalid entry refuses the entire candidate snapshot.
+
+Conditional refresh uses the catalog's `ETag`. Transport failure, non-success, or an invalid candidate preserves the prior snapshot and reports the refresh error. Only a 401 for the saved session recommends another login. Transport and server failures do not discard the session.
+
+Registry reconciliation holds the provider's catalog lock. An interrupted reconciliation is repeated by the next refresh before the snapshot counts as fresh or not modified.
+
+### Registration pins
+
+A user-auth registration may contain this closed policy object.
+
+```json
+{ "policy": { "events": "required" } }
+```
+
+No other `policy` key or `policy.events` value is accepted. Manual, discovered, and enrollment-created entries preserve it.
+
+A pre-policy manual entry is refreshed from its pinned exchange origin when a consuming command spawns, joins, or starts a manager. The command completes its own local refusal checks first. Returned space, broker, transport, IdP, issuer, audience, and exchange pins must all match before only the policy is added.
+
+An expired refresh failure refuses the operation. Read-only `status` and `meshes` never refresh. The five-second warm window sends no request.
+
+Every registration is bound to the proved account. Its IdP URL must match the account, and its issuer must match the JWT's exact `iss`. Exchange, provisioning, and manager-authority endpoints must share the IdP's origin. A foreign pin or endpoint refuses the whole snapshot.
+
+The `slug` determines `--space`, `use`, registry roots, and name collisions. The `name` is only a display label.
+
+Discovered entries belong to the normalized IdP origin and proved `sub`, stored as an opaque digest. Accounts on one machine do not combine their spaces, and the registry does not persist the subject. Manual and locally started records of the same name are never overwritten.
+
+Logout removes only the entries owned by the account whose session was revoked. Local teardown, cleanup, and liveness pruning do not remove discovered entries.
+
+Explicit `cotal sync` checks an account that previously advertised no catalog again. Ordinary lazy discovery checks again after the five-second capability window. An IdP can therefore enable the catalog Link without another login.
+
+## Enrollment [#enrollment]
+
+An owner can mint a one-time enrollment URL for a remote seat without a browser, TTY, or cached login. The URL is secret-bearing. The client makes one request without an `Authorization` header or body.
+
+```http
+GET <enrollment URL>
+```
+
+The URL requires HTTPS, with the loopback-IP HTTP exception. The raw string must already be canonical and contain none of `\ @ ? #`. Checks run before parsing. Backslash normalization, userinfo removal, case normalization of scheme or host, default-port removal, dot-segment resolution, and short-host canonicalization are refusals.
+
+Redirects are refused. The client never retries, because a successful claim deletes the token row. The token expires five minutes after minting.
+
+Success returns HTTP 200 with these fields.
+
+```text
+space
+brokerAccess { kind, ... }
+owner
+actor
+lifecycleUid
+actorToken
+sentinelCreds
+authServiceUrl
+idp { url, issuer, audience }
+subscribe[]
+allowSubscribe[]
+allowPublish[]
+```
+
+Grant arrays are informational. The broker row is authoritative. Stock-dialable responses also contain `server`, `tlsRequired`, `userAuth`, and optional `policy`. This is the user-bundle superset accepted by `cotal meshes add --user-auth-file`, allowing registration before launch.
+
+For `brokerAccess.kind: "direct"`, `server` must equal `brokerAccess.url` byte for byte or registration is refused. A tunnel kind has no dial address, so its access object is not compared to the operator-asserted stock `server`.
+
+Unknown, expired, revoked, and already-used enrollments all return the same response.
+
+```text
+404 {"error":"unknown, expired, or already-used enrollment"}
+```
+
+The client reports `enrollment refused: unknown, expired, or already-used; ask the owner for a fresh one`. It does not infer which case occurred.
+
+After redemption, the seat stores only normal remote user-mesh and agent material. It exchanges the actor token at `authServiceUrl` through `agent-bearer --exchange-url`. The enrollment URL is never logged, persisted, or forwarded to a child, including bearer preflight and the connector host.
+
+## Managed lifecycle [#retirement]
+
+`cotal spawn` on a user-auth mesh grants an actor under the spawning operator's owner. It launches the agent with a bearer command instead of a credential file. The spawn-time secret exchanges for bearers lasting five minutes or less, refreshed ahead of expiry. Manifest deployment with `up -f` also stamps the logged-in owner into launches.
+
+A local foreground launch refuses an existing actor instead of rotating that actor's secret. Exit and failed-start cleanup revoke only the grant matching that launch's token and lifecycle. Broker-footprint deletion follows a successful owned revoke. Credential files are removed only while they contain that launch's material. Failures are reported without deleting a successor's state.
+
+A crashed launcher can leave a grant requiring operator recovery. A remote foreground launch removes its local material but leaves revocation to the issuer.
+
+### Name reservation
+
+Despawn tears down the lifecycle before freeing the alias. It removes local credentials, revokes the standing actor grant, deletes lifecycle-keyed durables and the read-ACL row, and asks the auth service to settle in-flight work, evict credentials, and record retirement.
+
+The name remains reserved until broker-footprint removal, standing-authority revocation, and lifecycle retirement all complete. A same-name spawn in the gap is refused with a reason and retry hint.
+
+Failure to remove a local file does not stop other teardown work. The broker footprint is still removed, the failure is reported, and the name stays held. Unavailable auth service or failed standing-authority revocation also stops the agent while holding its name.
+
+A same-name `cotal spawn` re-drives the full pending teardown. Repeating despawn against the already-stopped agent has no effect. The recovery instruction names `cotal supervise` when the stack needs recovery.
+
+### Crash recovery
+
+The issuance gate and lifecycle head become terminal in separate durable writes. A crash between them can leave the gate retired and the head `retiring`, blocking both minting and alias reuse.
+
+Auth-service boot recovery inspects both objects and finishes the remaining writes from the durable operation intent. It neither repeats completed revoke and drain work nor changes a completed retirement or successor. A retirement retry converges on the same durable result.
+
+## Views [#views]
+
+A view is a server-authored bearer claim that selects a closed non-agent profile at connect. Every view is reauthorized against the fresh ledger and expires with its bearer, subject to the session exception below. A narrowed or revoked grant therefore reaches later exchanges and connects.
+
+| View | Authority and eligibility | Exchange face |
+| --- | --- | --- |
+| `admin` | Read-only elevated messaging observation. Used by `cotal console` and the older embedded dashboard path. Requires ledger scope `admin`. | Loopback. |
+| `purger` | Space-history purge for `clean history`. Requires `admin`. | Loopback. |
+| `channel-writer` | `channels set/default`. Requires `admin`. | Loopback and public. |
+| `channel-purger` | Per-click channel deletion. Requires `admin`. | Loopback and public. |
+| `deployer` | `up -f`. Requires `spawn`. The manager still refuses a manifest claiming another owner. | Loopback. |
+| `manager-caller` | Pins the existing manager command set to one server-selected live instance. Adds no capability except `status`, `models`, and `resolve-cwd` reads for a `spawn` holder's host-local launch. | Loopback and public. Human or managed-agent exchange. |
+| `session-caller` | One redeemed attach-session grant. Requires no ledger scope. | Loopback and public. Human exchange. |
+| `transfer-writer` | One transcript object in one target manager's transfer bucket. Requires `admin`. | Loopback and public. Human exchange. |
+| `dm-reader` | Reads only the user's own DM durable with a dedicated purpose-bound proof. Requires no ledger scope. | Loopback. |
+| `manager-service` | Typed manager authority, requiring `supervise`. It is not an ordinary selectable bearer view. | Loopback authority exchange only. |
+
+Elevated views are human-only. The managed-secret exchange permits only the narrowing `manager-caller` view. A manager using a delegated runtime refuses host cwd resolution before any filesystem lookup because seats execute outside that host.
+
+The new dashboard service accepts an explicit static credential with read-only intent. It does not substitute the older embedded dashboard's startup admin-login path. Public `channel-purger` support alone does not make that older dashboard available remotely.
+
+### Session caller
+
+`cotal attach` exchanges a session grant with the login proof. The exchange leader-reads `session.<id>` and checks that the row is active and unexpired, its signature matches the grant, and its holder matches this owner, actor, and lifecycle. The endpoint and serving epoch must match, and the manager gate must be open at that epoch.
+
+The callout repeats these checks at connect. The resulting session caller rows and connection expire with the grant rather than the bearer.
+
+### Transfer writer
+
+`cotal spawn --resume <id> --detach --on <instance>` uploads a local transcript using a view naming the target instance and transcript SHA-256. The callout grants writes only to that object in that instance's transfer bucket.
+
+The `admin` requirement matches `transcript-receive`. The bearer and broker connection last at most five minutes, matching static `transfer-writer` credentials, and never outlive the login proof.
+
+### DM reader
+
+An embedding can read the user's own DMs while the application is closed, such as to send a content-free push. The callout grants consumer info, next-message, and acknowledgement publishes for the user's own `dm_` durable, plus the connection inbox. It grants nothing else.
+
+The IdP pin's explicit `dmReaderAudience` must differ from ordinary `audience`. It is never derived automatically. The IdP proof must carry `purpose: "dm-reader"`, `actor`, `lifecycle`, and `space`. It is accepted only for `view: "dm-reader"`, with the requested actor, current lifecycle, and this space.
+
+Ordinary proof verification refuses every token carrying a `purpose` claim. Other proof-taking routes therefore refuse these proofs too, including other exchange forms, manager listing and authority, the three chat-session routes, and the human-proof and consent doors. The bearer and connection cannot outlive the proof. The proof lifetime must cover the embedding's intended grant and session window.
+
+## Remote manager authority [#remote-manager-authority]
+
+Ordinary registration gives an `agent` bearer. A detached remote manager requires ledger scope `supervise` and the separate server-authored `manager-service` authority. Neither `spawn` nor `admin` grants it.
+
+Only a signed-in human can obtain it through the loopback operator exchange. The public and managed-secret exchanges refuse it. The auth service reads the current actor row at exchange and connect. Removing `supervise` denies the next exchange and connection.
+
+A re-grant replaces the whole row. It must retain the intended channel envelope, role, and every wanted scope token alongside `supervise`.
+
+### Instance confinement
+
+Authority covers one opaque manager instance under the derived owner, with a fixed server-selected manager actor. It is confined to that instance's registration, contracts, status, endpoint subjects, gate, and credential family. It cannot access another owner or instance.
+
+No signer, static provisioner credential, owner secret, raw stream, KV, or consumer authority, or generic mint API is exposed. The typed lifecycle-bound protocol supplies public-nkey JWT material through `prepare`, `activate`, and `renew`, with host-owned `evict-family-principal`, `reconcile-registration`, and one-shot `retire` operations.
+
+Requests are idempotent at their lifecycle and instance operation coordinate. The host writes the credential-ledger row and finalizes the gate before releasing usable material.
+
+Retire checks the current manager instance, server-derived serving principal, serving epoch, same-owner target, and lifecycle UID. It returns only a short-lived requester credential pinned to that target. The manager resolves the registered `auth` endpoint and invokes `retire-lifecycle` with the exact target and the operation ID derived from its lifecycle UID.
+
+The endpoint recomputes that operation ID from the broker-pinned target before durable access. Another valid operation identity cannot be substituted. Retries and auth-service boot recovery finish the same terminal barrier. Neither the barrier executor nor a general mint interface is exposed.
+
+### Registration maintenance
+
+Eviction and registration reconciliation remain host operations. One eviction request can name at most 256 holders. A single sealed scan of the caller instance's `epcred.manager.<instanceId>.*` family must find every holder.
+
+Reconciliation can target a foreign manager slot in the same space only after the delivery daemon proves the frozen gate's holder gone with a complete sweep. The participant receives no evictor credential and no authority over another instance's gate or records.
+
+A clean stop refreshes an unhealthy executor before deregistration. Restart verifies eviction of its old family. When a foreign governance slot remains frozen at its holder's stamp, the manager asks the host to reconcile it and retries registration once.
+
+Goal-writer and session-ledger credentials carry a random `issuance:` tag. A restart within the same second creates fresh ledger rows rather than re-signing an earlier revoked credential.
+
+### Failure boundaries
+
+A remote manager can provision only descendants of the same owner. The host checks that relation and the current manager grant for every provision. The user's envelope cannot widen, and a sibling owner's agent cannot be provisioned.
+
+Renewals are bounded. Missing login, missing `supervise`, or unavailable host authority puts the manager into a reported degraded state. New agents, restarts, and replacement credentials are refused. Existing agents run only while their own authority permits. Recovery requires the host service and successful fresh renewal.
+
+The closed protocol refuses unknown request fields. The manager reports the host's reason, its own Cotal version, the refused field, and the need for a host at that version or later. It never removes the field to fit an older host. [Upgrading](UPGRADING.md) requires the host to be upgraded first and promises no rolling upgrade between versions.
+
+A remotely authorized manager mints only through that authority. Local trust records can identify a conflict, but only records for the supervised space count. An unrelated local static space beside a participant login is valid.
+
+## No alternate authentication path [#no-fallback]
+
+User-auth commands never retry through static minting or unauthenticated connect. A missing login or down auth service reports the needed recovery. Static agent, observer, and admin minting is refused.
+
+This denies new static issuance. A static credential signed before the space switched modes can remain broker-valid until its expiry or signing-key rotation. [Credential lifetime](security-boundaries.mdx#credential-lifetime) explains the residual risk.

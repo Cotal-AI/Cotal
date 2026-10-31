@@ -1,0 +1,331 @@
+---
+title: Endpoint discovery
+description: Command contracts, manager instance selection, request outcomes, and service registration.
+kind: Reference
+audience: Client authors and operators
+---
+
+## Request routes [#request-routes]
+
+The `ep` request kind uses a route token to select recipients. The envelope names the verb. `one` is queue-group anycast to one
+class member. `all` scatters to every instance. `inst` addresses one stable instance. The `reply` rail identifies the serving
+instance and its epoch.
+
+Per-goal events, timers, sessions, and a durable journal support composite operations. Every request subject binds the caller's
+`owner`, `actor`, and lifecycle `uid`, plus an unguessable nonce.
+
+The broker enforces those caller coordinates in the subject grammar.
+
+[SPEC §13.2](../SPEC.md#132-grammar) defines the grammar. [§13.5](../SPEC.md#135-verbs) defines `call`, `cast`, `watch`, `claim`,
+and `scatter`.
+
+## Service discovery [#service-discovery]
+
+`cotal describe <endpoint>` resolves a registered endpoint's commands from the wire. Clients do not need to hard-code those
+contracts. The reserved `describe` command returns contract digests. The client fetches schemas from the space's content-addressed
+contract store, recompiles them, and verifies the digests. Each command shows its capability class and target shape.
+
+`cotal invoke <endpoint> <command> --args '<json>'` validates the outgoing arguments against the fetched input schema before
+publishing.
+
+Validation uses the JSON representation, which drops keys whose value is `undefined`. A refusal at this stage is `not-executed`
+and sends nothing.
+
+An endpoint refusal before command execution also states `error.outcome: "not-executed"`. Causes include an unsupported envelope
+version, sender, contract digest, target mode, or an unparseable body. A refusal raised by the command carries only the outcome
+that command states. A refusal that cannot serialize returns `internal`. A refusal too large to publish returns
+`resource-exhausted`.
+
+Both preserve the original outcome.
+
+A signed-in user uses the same endpoint protocol through a bearer. The broker enforces the command's capability grant. A manager
+alias supplied through `--name` resolves through name-keyed `inspect`, without requiring manager-wide `ps` access.
+
+Built-in manager commands use the same verified contracts. The `auth` endpoint is also describable. `cotal describe auth` lists
+`retire-lifecycle` and its exact-mode target shape. See [SPEC §13.7](../SPEC.md#137-contracts-and-discovery) and the
+[CLI](cli.mdx).
+
+## Machine vitals [#machine-vitals]
+
+The manager's `vitals` command reports one invocation-time sample of host CPU count and load, available and total memory, and
+bounded local filesystem capacity. It is untargeted but resolves to one exact Manager instance. The separate `manager.vitals`
+capability is issued only when the actor scope contains `machine-vitals`; `spawn`, `run` and `admin` do not imply it. The response
+contains mount points and aggregate byte counts, never device paths, remote endpoints, process data, command lines, environment
+values or persisted history.
+
+Unsupported measurement refuses without a partial or zero-valued fallback.
+
+## Host directory resolution [#host-directory-resolution]
+
+The manager's `resolve-cwd` command is in the `manager.spawn` capability class. It accepts an absolute path on that manager's host
+and returns its canonical directory plus the host name. It refuses a relative, missing or non-directory path with
+`failed-precondition`; it creates nothing. `spawn` applies the same check at admission, before any credentials or durables are
+minted. A runtime that delegates seats outside the manager's host cannot use a host cwd.
+
+Its manager refuses `resolve-cwd` with `failed-precondition` before any filesystem lookup, with the same execution-mode refusal
+for every path. It returns no host name or canonical path.
+
+## Spawn input resolution [#agent-selection-and-spawn-inputs]
+
+The manager's `resolve-agent` command is minted beside `spawn` in the spawn capability and the operator instruments. It accepts
+the persona fields `spawn` takes (`name`, `config`, `agent`, `defaultAgent`) and returns `{agent}`, the harness `spawn` on that
+manager would launch: the flag, then the persona's `agent:` pin, then the caller's default, then the manager's own default. It
+loads the persona with the same visibility check as `spawn` and launches nothing.
+
+A detached `--resume` without `--agent` asks it before carrying a session, and a manager that does not serve it refuses the call.
+
+On a delegated runtime, both `resolve-agent` and `spawn` refuse an explicit persona `config` before any lookup of that path.
+Absolute, relative and bare-name config overrides receive the same `failed-precondition` refusal. Select a named catalog persona
+through `name` instead. Locally executing managers retain their config-path behavior. A resolved manifest uses its own validated,
+host-materialized persona resource and is not a caller-selected config override.
+
+`spawn` refuses an empty or whitespace-only value in any of its optional string fields, such as `role`, `agent` or `identity`,
+with `bad-request` naming the field. To take the persona file's value, omit the field.
+
+## Instance routing [#instance-routing]
+
+A space can run more than one manager. Each manager persists a stable logical instance id across restarts and advances its process
+epoch when it comes back, so callers address a specific manager without caring which process currently serves it. A start serves
+only at the epoch its own registration committed, never at the epoch of a later start of the same instance. On a static or open
+mesh, an untargeted spawn rides class anycast (any manager may accept, and the acceptance records which one did).
+
+`cotal spawn <persona> --detach --on <instance>` and `cotal_spawn(instance: "<instance>")` pin one instance by its exact id, as
+`--on` does for `cotal ps`, `cotal models` and every hosted `cotal run` verb, and `instance` for `cotal_run`, `cotal_persona` and
+`cotal_personas`. A foreground CLI spawn has no manager to pin and refuses the flag. An MCP pin that does not resolve is refused
+without falling back to class anycast.
+
+There are no ordinal aliases and no short forms: wherever a display names an instance you can address, it prints the whole id,
+because both surfaces take nothing else.
+
+On a user-auth mesh, manager commands obtain a short-lived `manager-caller` view from the exchange. It authorizes one concrete
+manager instance using the caller's current actor grant and the host's registered service records. Discovery and invocation both
+use that instance's `inst` route. This view grants no registry scan or class queue. It adds no command capability except the three
+reads a launch needs: a view whose actor holds `spawn` may call `status`, `models` and `resolve-cwd` on that instance, subject to
+the execution-mode limit above.
+
+A `run`-only or no-scope view may not, and `ps` and `slots` stay with `admin`. A user mesh's co-located manager answers every
+owner's view, so its `status` counts only the caller's own seats, as `ps` would list them, unless the caller holds `admin`. An
+absent, ambiguous or unauthorized selection refuses before the command is sent.
+
+An ambiguous one lists the owner's live manager instance ids and names the caller's way to pick one: `--on <instanceId>` for the
+CLI, `--manager-instance <instanceId>` for `cotal agent-bearer --manager-call`, and the `instance` argument for an agent's tools.
+A pin changes routing, not the caller's grant.
+
+Managed launches carry `COTAL_MANAGER_INSTANCE` so their tools address the manager that launched them; a tool's `instance`
+argument must name that same manager. The `cotal` commands run from their shell select it too, unless `--on` names another
+instance. Existing unbound sessions can use the exchange's unique authorized selection without replacing their actor or
+conversation. The connector uses a separate control connection; the standing message connection and its credential source are
+unchanged.
+
+Accepted spawn goals are followed on that renewing connection, using its existing caller-scoped progress grant, so a long
+readiness budget does not depend on the short-lived control credential. The follower confirms its progress subscription with the
+broker before submitting on the separate connection. A caller still checks the resolved instance and epoch, and never retries an
+ambiguous mutation outcome.
+
+## Goal result reads [#goal-result-reads]
+
+The manager's `goal-result` command accepts `{goalId}` and returns `{goalId, result?}`. It reads only the authenticated caller's
+owner, actor and lifecycle through the manager's separate trusted goal-writer connection. The caller receives an attributed reply,
+never a raw JetStream reader grant. Each read is admitted by the connection's broker-enforced command grant. A live user-auth
+connection remains bounded by its bearer expiry after revocation; a renewed connection is checked against fresh authority. There
+is no separate per-read ledger check.
+
+An absent `result` means no terminal is recorded; it does not prove the goal is running or permit another submission. The existing
+trusted goal-writer's leader-served EPF read is space-wide at the broker; the handler confines it to this endpoint and caller
+triple.
+
+## Goal cancellation [#goal-cancellation]
+
+The manager's reserved `cancel` command accepts `{goalId, mode?}` and returns `{goalId, state}`. It is served for a turn the
+manager relays. The goal is the authenticated caller's own, so a caller withdraws only a turn it submitted. The turn ends
+`cancelled`, its seat is not shown it again, and a later yield of it is answered with that terminal. A goal that already ended is
+refused `failed-precondition` with its cached outcome attached, and a goal this manager does not relay is refused without being
+changed.
+
+So is a second cancel that arrives while a first is still ending the turn; a first that fails leaves the turn pending unless
+something ended it meanwhile. A workflow run sends it for the turn, ask attempt or escalation of a branch it cancelled.
+
+## Request outcomes [#request-outcomes]
+
+A followed mutation requires a manager whose attributed describe includes `goal-result`. Update the manager, issuer and client
+together before using that recovery path. Reloading an issuer alone cannot change an already-running participant manager. Recovery
+re-resolves the accepting instance's epoch, preserves the caller lifecycle and validates the result against the accepted goal and
+any acceptance fingerprint. Stopping the caller ends its observation, not the already accepted goal.
+
+A followed call resolves the endpoint within its deadline before the submission starts, so a refused or unanswered describe
+surfaces as its own error. On a user-auth mesh that preparation also obtains the caller's `manager-caller` view and opens its
+connection, and a failure there surfaces unchanged. A deadline that passes during those steps reports that the request was not
+run. The describe then spends what is left of the deadline, so a describe that draws no reply still reports itself as unanswered.
+
+A describe or command publish that the broker refuses reports `not-executed`. Cancellation before submission reports
+`not-executed`. Once submission starts, cancellation or a lost reply reports an unknown outcome unless an attributed refusal
+proves otherwise. A received refusal remains a refusal even when stop races it. Local failures do not invent responder identities.
+The follower owns its subscription, timers and read cancellation signal.
+
+Reconciliation begins before the wait deadline, and late read completions cannot settle an expired observation. Its read callback
+receives the accepting caller triple, remaining budget and abort signal; borrowed bearer commands and control connections use that
+signal. An in-flight dial that finishes after cancellation closes without publishing. A local reply-subscription failure prevents
+publication and is observed by the same request promise, including when the transport is closing or draining.
+
+Request cancellation does not revoke or resubmit the accepted operation.
+
+## Split topology [#split-topology]
+
+A space can have more than one manager. A topology can keep the broker host manager-free with `cotal up --no-manager` and run a
+manager elsewhere with `cotal supervise --server`. See [Supervise a remote mesh](remote-supervision.mdx).
+
+For a broker host that already runs a manager, the teardown boundary is after `✓ manager up` in `.cotal/manager.<spaceKey>.log`.
+Detach stdout listing `manager` establishes pidfile liveness only. A controller stack stops its manager with `cotal service stop
+stack-manager --space <s> --yes`.
+
+A legacy stack has no command that stops only its manager. Extra live managers remain addressable.
+
+## Discovery deadlines [#discovery-deadlines]
+
+The reserved `describe` bootstrap is the one request the resolver may repeat while waiting: it is read-only, it is re-published
+under the same request binding, and every attempt stays inside the original deadline. This covers the startup window where Core
+NATS discards the first request before the manager has subscribed. If the connection closes while the resolver waits, the describe
+fails cleanly instead of throwing from the retry timer. The resolved command is never repeated by this readiness behavior.
+
+The describe and the contract store reads after it share the resolver's one deadline, so a slow store read fails the resolve with
+`deadline-exceeded` when that deadline expires. Cancelling a resolve settles a store read in flight instead of waiting for it to
+return. When one store read fails, the resolve fails with it and fetches no further command contracts; fetches already under way
+finish on their own.
+
+## Instance mismatch [#instance-mismatch-and-reissue]
+
+Resolve and invoke use separate trips through the class anycast queue. An unpinned invoke can therefore reach a different manager
+from the one that answered discovery. Every call carries the resolved incarnation. A manager with a different incarnation refuses
+before running the command.
+
+Older managers checked the mismatch only after execution. Their refusal says that the check occurred after the fact. Reissuing
+such a mutation can duplicate its effect.
+
+An explicit `--on` still selects a particular manager for `ps`, `stop`, `attach`, or `spawn --detach`.
+
+Automatic reissue requires an explicit `not-executed` outcome. A refusal with no outcome, or with `unknown`, is returned to the
+caller. For an unpinned call, CLI manager commands, `cotal invoke`, `cotal run`, and the manager row of `cotal status` re-describe
+and reissue up to 16 times after eligible refusals. Hosted runs and agent manager tools use the same bound, including the
+`goal-result` read following a spawn.
+
+A pinned call is never reissued.
+
+An unpinned targeted call, such as `cotal_despawn` or a hosted run's turn relay, can also reach a manager that does not host its
+target, because each manager resolves targets against the agents it runs. That manager refuses with `expired` and `not-executed`
+and says it holds no mapping for the target, and the same re-issue repairs it within the same bound. An agent that no manager
+hosts still ends in that refusal once the re-issues run out. A pinned call gets the refusal of the instance it named.
+
+## Manager availability [#status-metadata-and-launch-availability]
+
+A verified Manager `status` reply includes `host`, the answering process's host name, and `version`, the running
+`@cotal-ai/manager` package version captured when its module loaded. These fields are advisory display metadata. They do not
+select a Manager, authorize a caller or determine placement. Use the verified responder's `instanceId` for attribution. Clients
+must accept status payloads that omit either field and leave the missing value unknown. The optional fields advance the Manager
+cluster revision to 28.
+
+A manager whose boot inventory marked every declared connector unavailable does not subscribe `spawn` or `launch` on the class
+`one` rail. Those commands stay on scatter and on this instance's `inst` rail, so a sibling that can launch them can take an
+unpinned spawn, and a caller that pins this instance with `--on` still gets a named harness refusal. `describe` still lists the
+commands: the instance rail serves them, and `describe` itself stays on the class rail (SPEC 13.7).
+
+An unpinned `spawn` can therefore bind-fence: `describe` may land on the skip member while `spawn` lands on a sibling, the command
+was not run, and the caller re-issues or pins `--on`. `status` reports `classSpawn: false` when that skip is in effect. A manager
+that can launch some connectors keeps the class rail. If the queue hands it a harness its inventory marked unavailable, the
+refusal names `--on` because the standing serve credential cannot read sibling inventories. Pin the capable instance (the whole
+id, as `ps` prints it).
+
+## Scatter liveness [#scatter-and-liveness]
+
+`ps` and `status` become a scatter across every registered instance: the caller freezes the expected set from the service
+registry, invokes each under a shared deadline, and merges the results with per-instance attribution. A non-answering instance is
+labelled as registered with no answer within the deadline, never silently omitted. See [SPEC §13.5](../SPEC.md#135-verbs)
+(scatter) and [cli.mdx](cli.mdx).
+
+The expected set comes from the registry, which records registration rather than liveness. An instance that crashes never
+deregisters, so it stays in the set and the gather has nothing left to wait for but an answer that cannot come. It pays the whole
+deadline, on every scatter, indefinitely. A scatter can therefore be given a per-instance liveness probe: when the broker itself
+reports that an instance holds no subscription on its own instance rail, the gather stops waiting for it. Only that affirmative
+report counts.
+
+A lapsed presence entry, a probe that timed out, and a probe that failed are all *absence of evidence*, and treating any of them
+as death would turn a slow correct answer into a fast wrong one, so they leave the full deadline standing. Nothing about the
+outcome changes either way: an instance that did not answer is still unreachable, still surfaced, and the scatter is still not
+complete.
+
+The probe is supplied by the caller, not invented by the scatter. Asking about an instance is a publish on that instance's rail,
+and a credential that holds no row for it is refused by the broker asynchronously, while the publish itself returns normally. The
+probe verb watches for that refusal and raises it as `permission-denied` naming the rail, so it is never mistaken for a quiet
+instance, and it never burns the probe budget waiting out a refusal.
+
+Only the layer that minted the credential knows which ids it may ask about, so that layer asks about those and no others. `cotal
+ps` freezes the class on its first connection, re-mints an instrument pinned only to the frozen ids, and scatters on a second; a
+refusal the broker raises anyway is printed and the instance's row says the probe was refused, which is a fact about the
+credential, not about the instance.
+
+This does not help against an instance that is connected but not answering. A hung manager holds its subscriptions, so it is
+indistinguishable from a slow one, and it still costs the full deadline. That is the correct result, not a gap in the probe.
+
+## Deregistration [#deregistration]
+
+A probe makes a dead registration cheap to skip; it does not remove it. Removal is the registration's own exit, and there are two
+explicit routes to it ([SPEC §13.5](../SPEC.md#135-verbs): a deleted `svc` spec *is* the deregistration).
+
+A manager that stops cleanly removes its own registration, so an ordinary shutdown leaves no stale row. The delete is pinned to
+the registration revision that process wrote. When a successor has registered the same instance since then, the stop logs that and
+leaves the successor's registration alone. It refuses that delete while this instance holds the endpoint governance slot at the
+live issuance-gate generation (a registration still completing its reopen).
+
+A leftover slot whose generation is behind that live generation is not in-flight and does not block the stop. A manager that
+cannot renew or read its lease keeps serving, stays registered, and retries. If another process holds the same instance key, that
+process has taken the instance over, so this one logs the conflict and exits without deregistering, leaving the successor's
+registration alone.
+
+Each manager schedules its own lease-key refresh at one quarter of the key's TTL. A failed lease refresh first triggers a re-read
+of the instance key. If the key is still this process's, the manager adopts the broker's revision and retries renewal. If the key
+expired, the manager tries to recreate it. An unavailable broker leaves the manager serving and retrying without a time limit.
+Lease state changes produce a log line; repeated ticks in the same state do not.
+
+A clean stop fences new renewals, waits for one already in flight, and attempts to release its own key at the broker's current
+revision. Release is best effort; a key that cannot be released remains until the bucket TTL expires. A takeover exit releases
+neither the successor's lease nor its registration.
+
+A restart that died *mid-registration* is a different residue: the issuance gate stays frozen under that op. The successor
+completes the dead registration on boot when the freeze-holder is affirmatively gone under a complete CONNZ sweep (the same
+composition as [`cotal reconcile-gate`](cli-maintenance.mdx#reconcile-gate)). A committed spec write is finished under that same
+freeze; only a definite no-commit abort-reopens and then runs the normal takeover.
+
+Once that reopen commits, the registration has completed: a governance slot it then fails to release is left behind the live
+generation, as on a normal registration, and does not fail the restart. It does not invent a TTL and it does not start a new
+freeze over a still-held one.
+
+That residue has a second half, and it is the endpoint governance slot rather than the gate. Every registration takes the
+endpoint-wide slot before it publishes its spec and holds it until its own gate reopens, which is what serializes registration for
+the endpoint. An instance that stopped between those two points leaves the slot held with no registration behind it, so the
+endpoint refuses new registrations while nothing is actually in flight.
+
+The slot is stamped with the generation of the gate its holder had frozen when it took it, and a slot is promoted only at that
+same generation. So once the holder's gate has reopened past the stamp, the slot can never be promoted by anyone, and the next
+registration for that endpoint replaces it. That reclaim is part of an ordinary start and needs no operator step.
+
+A slot whose holder's gate is still at the stamped generation is a registration that is genuinely in flight, and it keeps
+refusing. The two states read differently only in the holder's gate coordinate, so reopening that gate is what separates them: the
+holder's own restart heals it on boot, and [`cotal reconcile-gate`](cli-maintenance.mdx#reconcile-gate) is the operator's route
+when the boot path cannot run. The registration path is the slot's only writer, and neither repair command writes it.
+
+A registration that cannot read the holder's gate at all refuses, because an unreadable gate does not distinguish the two states
+either. Each of these refusals carries `kind = ai.cotal.ep.foreign-slot-held` in `error.details[]` with the holder's instance id
+and the `condition` that refused: `in-flight` for a holder gate still at the stamp, or `no-seam`, `unreadable`, `garbled` or
+`behind` when the registration could not read that gate or read it below the stamp.
+
+A remote manager asks its host to reconcile the holder only on `in-flight`, the one condition a gate repair can clear.
+
+For the instance that cannot cooperate, an operator names it: `cotal endpoint deregister <endpoint> <full-instance-id>`
+([cli.mdx](cli-endpoints.mdx#endpoint-deregister)). It removes the record only on the same evidence `cotal ps` acts on: the broker
+reporting nothing subscribed on that instance's own rail. It refuses if the instance answers a describe, refuses if the probe
+could not run at all, and refuses if the instance is merely quiet, because a hung process still holds its subscriptions and is
+therefore not affirmed gone.
+
+It also refuses while that instance holds the endpoint governance slot at the live issuance-gate generation (a registration still
+completing); a leftover slot behind that generation is not in-flight and does not block. Nothing sweeps the registry on an age
+threshold or on silence. An instance that is deregistered while it is merely wedged re-registers over the tombstone on its next
+start, which is what makes the operator's decision a recoverable one.

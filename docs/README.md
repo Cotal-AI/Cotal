@@ -32,10 +32,10 @@ Task dispatch:
 | Declare a team + channels in one file | [Define a team](define-a-team.mdx) | `cotal up -f cotal.yaml` |
 | Grant or audit channel access | [Channels & permissions](channels-and-permissions.mdx) | agent-file `allowPublish:` / `allowSubscribe:` |
 | Watch a live mesh | [Watch a mesh](watch-a-mesh.mdx) | configured `service` dashboard / `cotal console` |
-| Mint credentials (static mesh) | [Identity & auth](identity-and-auth.md) | `cotal auth mint <name> --profile agent` |
-| Sign in / grant a user's agents (user-auth mesh) | [Identity & auth](identity-and-auth.md) | `cotal login --idp <url>` · `cotal actor grant` |
+| Mint credentials (static mesh) | [Identity & auth](identity-and-auth.mdx) | `cotal auth mint <name> --profile agent` |
+| Sign in / grant a user's agents (user-auth mesh) | [Identity & auth](identity-and-auth.mdx) | `cotal login --idp <url>` · `cotal actor grant` |
 | Implement the wire in another language | [Build a client](build-a-client.mdx) | validate against [`cotal.schema.json`](../spec/cotal.schema.json) |
-| Write or host a durable workflow | [Workflow runs](workflows.md) | `cotal_run` / `cotal run start --file <program>` |
+| Write or host a durable workflow | [Workflow runs](workflows.mdx) | `cotal_run` / `cotal run start --file <program>` |
 | Check a normative rule | [Spec](../SPEC.md), [Cotal Lang](../spec/cotal-lang.md) | `cotal_docs(page: "spec")` |
 
 ## Start here
@@ -136,15 +136,34 @@ Task dispatch:
 
 | Doc | Answers |
 |---|---|
-| [Identity](identity-and-auth.md) | Who can do what, and how is it enforced? |
-| [Security model](security.md) | What does Cotal protect against, and where are its trust boundaries? |
+| [Identity](identity-and-auth.mdx) | Who can do what, and how is it enforced? |
+| [Security model](security.mdx) | What does Cotal protect against, and where are its trust boundaries? |
+
+#### Security reference
+
+| Reference | Covers |
+|---|---|
+| [Credential authority](identity-authority.mdx) | Credential profiles, issuance, capabilities, and standalone callers. |
+| [User-auth lifecycle](identity-user-auth.mdx) | Account grants, delegation, chat sessions, enrollment, views, and remote managers. |
+| [Auth service integration](identity-service-auth.mdx) | HTTP routes, IdP proofs, bridge wiring, and DM-reader policy. |
+| [Host boundaries](security-boundaries.mdx) | Signer custody, host launch authority, credential exposure, and process limits. |
 
 ### Agent coordination
 
 | Doc | Answers |
 |---|---|
-| [Control surface](control-surface.md) | How do endpoints discover and invoke commands? |
-| [Workflow runs](workflows.md) | How do durable workflows run, resume, migrate, and fork? |
+| [Control surface](control-surface.mdx) | How do endpoints discover and invoke commands? |
+| [Workflow runs](workflows.mdx) | How do durable workflows run, resume, migrate, and fork? |
+
+#### Agent coordination reference
+
+| Reference | Covers |
+|---|---|
+| [Endpoint discovery](control-discovery.mdx) | Contract verification, routing, request results, scatter, and deregistration. |
+| [Manager lifecycle contracts](control-lifecycle.mdx) | Managed names, durable slots, goals, chat sessions, terminal access, and grants. |
+| [Workflow operation contracts](workflow-operations.mdx) | Keyed submission, session entry points, CLI operations, and diagnostic inventory. |
+| [Workflow runtime contracts](workflow-runtime.mdx) | Language behavior, continuation, wire records, host authority, and engine limits. |
+| [Workflow effect contracts](workflow-effects.mdx) | Effect semantics, seat budgets, supervision, turns, cancellation, and placement. |
 
 ## Reference
 

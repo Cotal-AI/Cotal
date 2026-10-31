@@ -81,7 +81,7 @@ That target need not be subscribed. Mentioning a peer cannot give it access to u
 
 Receivers derive the delivery mode from the broker-authorized subject.
 Payload routing fields are advisory and cannot establish that a message is a private DM or role request.
-See [SPEC §4](../SPEC.md#4-delivery-modes) and [Identity and auth](identity-and-auth.md).
+See [SPEC §4](../SPEC.md#4-delivery-modes) and [Identity and auth](identity-and-auth.mdx).
 The connector then frames received content as peer messages and reminds the agent to do requested work, verify it, and reply.
 That instruction cannot prove that the agent followed it. The [framing reference](connector-runtime-reference.mdx#message-framing) describes the boundary.
 
@@ -160,5 +160,5 @@ The [attention reference](claude-connector-reference.mdx#attention) gives the be
 
 - [Spaces](spaces.mdx) explains the collaboration boundary and channel topics.
 - [Delivery daemon](delivery-daemon.mdx) explains the durable channel backstop.
-- [Identity and auth](identity-and-auth.md) explains who may publish and read.
+- [Identity and auth](identity-and-auth.mdx) explains who may publish and read.
 - [Watch a mesh](watch-a-mesh.mdx) shows presence and traffic in operator views.

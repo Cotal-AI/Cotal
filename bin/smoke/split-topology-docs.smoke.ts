@@ -46,7 +46,7 @@ const cli = (await Promise.all([
   "cli-startup", "cli-shutdown", "cli-processes", "cli-services", "cli-selection", "cli-agent-control",
 ].map(async slug => (await readDocument(join(REPO, "docs", `${slug}.mdx`))).markdown))).join("\n\n");
 const config = (await readDocument(join(REPO, "docs/config.mdx"))).markdown;
-const control = read("docs/control-surface.md");
+const control = (await Promise.all(["control-surface", "control-discovery", "control-lifecycle"].map(guide))).join(" ");
 const deliveryServices = await guide("cli-services");
 const pid = read("packages/workspace/src/pid.ts");
 const provision = read("packages/core/src/provision.ts");
@@ -98,7 +98,7 @@ check(
     !cli.includes("`cotal down manager` first") &&
     operationGuideText.includes("cotal supervise --space main --server") &&
     cli.includes("| `--no-manager` | off | Broker-only boot:") &&
-    control.includes("Only one manager per space") &&
+    control.includes("A space can have more than one manager") &&
     control.includes("cotal supervise"),
 );
 check(

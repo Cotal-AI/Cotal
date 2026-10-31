@@ -62,8 +62,14 @@ const navigation = [
     group('Concepts', [
       group('Fundamentals', ['architecture', 'spaces', 'transport'].map(name => page(`docs/${name}.mdx`))),
       group('Messaging', ['presence-and-delivery', 'delivery-daemon'].map(name => page(`docs/${name}.mdx`))),
-      group('Security', ['identity-and-auth', 'security'].map(name => page(`docs/${name}.md`))),
-      group('Agent coordination', ['control-surface', 'workflows'].map(name => page(`docs/${name}.md`))),
+      group('Security', [
+        ...['identity-and-auth', 'security'].map(name => page(`docs/${name}.mdx`)),
+        group('Reference', ['identity-authority', 'identity-user-auth', 'identity-service-auth', 'security-boundaries'].map(name => page(`docs/${name}.mdx`))),
+      ]),
+      group('Agent coordination', [
+        ...['control-surface', 'workflows'].map(name => page(`docs/${name}.mdx`)),
+        group('Reference', ['control-discovery', 'control-lifecycle', 'workflow-operations', 'workflow-runtime', 'workflow-effects'].map(name => page(`docs/${name}.mdx`))),
+      ]),
     ]),
     group('Specification', [page('SPEC.md')]),
     group('Project', ['roadmap', 'release', 'stability', 'setup-internals', 'UPGRADING'].map(name => page(`docs/${name}.md`))),

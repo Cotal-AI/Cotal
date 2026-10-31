@@ -70,13 +70,13 @@ Edit that file to change the persona's instructions, name, or role.
 A fresh default agent joins no channels at boot.
 Its permissions let it join, create, read, and post to channels when needed.
 It also declares `spawn` and `run` capabilities, so it can manage teammates and start workflow runs on a static-auth mesh.
-See [Agent files](agent-files.mdx) for the fields and [Workflow runs](workflows.md#from-an-agent-session) for workflows.
+See [Agent files](agent-files.mdx) for the fields and [Workflow runs](workflows.mdx#from-an-agent-session) for workflows.
 
 <Callout title="Edited personas stay unchanged">
 
 Setup repairs only the byte-for-byte legacy default template with an empty publish ACL.
 It preserves edited personas, including an older default with wildcard publish access and only the `spawn` capability.
-If that persona lacks workflow access, follow the [capability update steps](workflows.md#if-cotal_run-is-missing).
+If that persona lacks workflow access, follow the [capability update steps](workflows.mdx#if-cotal_run-is-missing).
 
 </Callout>
 
@@ -108,7 +108,7 @@ To create another local space, run `cotal space create <name>` in its own projec
 You do not need to repeat machine setup.
 See [Run a mesh](run-a-mesh.mdx) for defaults and space selection.
 Its [startup instructions](run-a-mesh.mdx#start-the-local-stack) also cover unauthenticated development spaces.
-For per-user sign-in and agent grants, follow [Identity](identity-and-auth.md#per-user-authentication).
+For per-user sign-in and agent grants, follow [Identity](identity-and-auth.mdx#per-user-authentication).
 
 If you use `npx` without a global installation, interactive setup can offer to install `cotal-ai` globally.
 Declining keeps subsequent command hints in `npx cotal-ai` form.

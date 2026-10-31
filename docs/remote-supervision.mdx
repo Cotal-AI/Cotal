@@ -66,7 +66,7 @@ Use `--on` to select the one that has the required connector.
 A manager with no available connector skips unpinned launch work, but may still answer discovery.
 An unpinned spawn can therefore refuse when discovery and launch bind to different instances.
 Retry or pin the intended manager rather than treating the broker host as the only manager location.
-See [Instance routing](control-surface.md#instance-routing).
+See [Instance routing](control-surface.mdx#instance-routing).
 
 ### Keep delivery renewal on the broker host
 
@@ -113,7 +113,7 @@ Participants dial the advertised `--server`, unless `--advertised-server` suppli
 Advertise `--agent-provisioning-url <https://…>` when the host operates an endpoint that provisions participants' agents.
 Without it, a participant on another machine needs a one-time enrollment.
 Stop and restart the service to change these listener flags; refreshing a running service does not change its bind or proxy policy.
-See [Per-user authentication](identity-and-auth.md#per-user-authentication) for the trust boundary.
+See [Per-user authentication](identity-and-auth.mdx#per-user-authentication) for the trust boundary.
 
 ## Enroll a remote agent [#remote-supervised-seats-by-enrollment]
 
@@ -135,7 +135,7 @@ The enrollment URL and file path do not enter preflight or the agent application
 A failed or reused enrollment leaves no actor material on disk; request a fresh one.
 When the agent exits, its local credential files are removed.
 The mesh-side grant remains until the operator revokes it, as the launch report explains.
-See [Enrollment redeem](identity-and-auth.md#enrollment-redeem) for the server contract.
+See [Enrollment redeem](identity-and-auth.mdx#enrollment-redeem) for the server contract.
 
 ## Run a participant manager [#remote-supervised-agents]
 
@@ -183,4 +183,4 @@ See the [user-auth run design](design/user-auth-run-start.md) for the detailed p
 If authority, login, or renewal becomes unavailable, the remote manager refuses new agents, restarts, and credential replacement.
 Existing agents remain live only while their own credentials are valid.
 Restore the service and complete renewal before attempting agent recovery.
-See [Remote manager authority](identity-and-auth.md#remote-manager-authority) and the [supervise reference](cli-processes.mdx#supervise).
+See [Remote manager authority](identity-and-auth.mdx#remote-manager-authority) and the [supervise reference](cli-processes.mdx#supervise).

@@ -7,5 +7,5 @@ callout, and the auth service. Importing it registers the `auth-service`, `actor
 **Tier:** `implementations/` (a self-contained surface over core). Depends on core, lang, and
 workspace. Implementations never import each other; they meet at runtime over NATS.
 
-See [docs/identity-and-auth.md](../../docs/identity-and-auth.md) and the
+See [docs/identity-and-auth.md](../../docs/identity-and-auth.mdx) and the
 [root AGENTS.md](../../AGENTS.md) for the tier rules.

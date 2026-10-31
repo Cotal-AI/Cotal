@@ -1,0 +1,218 @@
+---
+title: Workflow runtime contracts
+description: Language replay, recovery, wire authority, durable effects, and engine limits.
+kind: Reference
+audience: Runtime implementers and workflow authors
+---
+
+## Language behavior [#language-and-simulation]
+
+Pure code supports JavaScript loops, records, arrays, closures, template literals, destructuring, `try` and `catch`, arithmetic,
+`switch`, compound assignment, optional chaining, spread, and rest. The language removes constructs that hide effects or depend on
+the host. These include `class`, `this`, `new`, `for...in`, `==`, labels, regex literals, `Math`, `Date`, `JSON`, promises, and
+generators. Each refusal names a code and a corrective edit.
+
+Builtins include `keys`, `map`, `sort`, `json.stringify`, `now()`, and `random()`.
+
+Arrays, strings, and numbers expose only their documented methods, such as `xs.map`, `s.trim()`, and `n.toFixed()`. A branch can
+mutate its own records and arrays until they cross an effect boundary. Writes to unowned members, host prototypes, or another
+branch's values refuse with a code.
+
+Every effect is journalled. A step key is `(scope path, kind, name, occurrence)`, and its inputs are hashed. Reordering source,
+adding a step, or renaming a variable does not itself change an existing step key.
+
+Changing a checkpoint prompt, sleep duration, or turn deadline changes the input hash. Resume then stops with a divergence naming
+the step.
+
+`parallel`, `race`, and `fanOut` create concurrent branches. `conclave` has one body with channel membership, and `once` has one
+body with at-most-once dispatch. Each branch has its own journal namespace. The scope entry records its settlement. A race uses
+recorded completion clocks, then declaration order to break ties.
+
+A scope failure caused by the program retains its language catalog code.
+
+For example, `fanOut` without a stable key records `L3021`, kind `runtime`. An unclassified handler failure records `L4000`, kind
+`scope-fault`. A value thrown by a branch is recorded, so live execution, resume, and a migration dry walk deliver the same value
+to `catch`. A branch cannot write to bindings or values declared outside it. Its return value becomes part of the scope result.
+
+`now()` is the branch run clock at the end of its last awaited effect. `random()` is a seeded stream derived for the scope. Both
+replay identically.
+
+Inputs and results freeze at the effect boundary. Later edits require a new value.
+
+Each journal entry records its key, input hash, outcome, and timing. Errors use the program's coordinates. A scripted handler
+simulates runs, and a dry run records a plan before agent work begins.
+
+The simulator has one virtual clock. Timed effects park until their wake times and complete in wake order. Concurrent branches
+accumulate their declared durations, and simulated races use the live rule of earliest recorded clock, then declaration order.
+
+A `sleep("1m")` branch beats `sleep("1h")` regardless of declaration order. Across the worker bridge, the simulator waits for the
+thread to report its reaction before delivering another wake. The same ordering holds when the dry-run recorder wraps the
+simulator.
+
+Full rules, with every code: [`spec/cotal-lang.md`](../spec/cotal-lang.md).
+
+## Continuing a run [#continuing-a-run]
+
+Resume is re-execution: the driver replays the journal, the program runs from the top, recorded steps return instantly, and the
+first unrecorded step is performed live. It refuses a journal that belongs to another run, a pin that differs from the recorded
+ones, and a different language version.
+
+A failed journal entry replays its error, while a pending entry lets the handler recover the external work it bound before the
+interruption.
+
+A relative `sleep` completes if its duration elapses during authorized arming before a pause is minted. It creates no past-due
+checkpoint. An existing pause keeps its recorded deadline and settlement, and cancellation still rejects the sleep. Checkpoint and
+ask expiry rules are unchanged.
+
+A step that writes to a far side that honors no idempotency key (posting a comment, sending a mail) belongs in `once`. A resume
+that finds a step inside `once` begun and never settled does not dispatch it again: it opens a hold, a checkpoint under a token
+derived from the step's recorded request id, whose prompt names that id. Answer it with `cotal run answer <run> <step-key> --value
+<json>`, and the value becomes the step's result. An expired hold fails the step with the catchable L4027.
+
+Only `ask` runs inside `once`, so wrap just the step that writes: a host restart while it is in flight costs a settle.
+
+```js
+const publisher = await spawn("publisher")
+const res = await once(async () => {
+  return await ask(publisher, { name: "publish", schema: { commentId: "number" } })
+}, { name: "publish-360" })
+```
+
+Migration moves a run to edited source. A dry walk compares that source with the journal and reports changed recorded steps as
+divergences and unreachable recorded steps as orphans.
+
+The orphan policy distinguishes effects. Removing `sleep` needs no action. Removing `turn` cannot undo its work. Removing `spawn`
+requires adoption or release of its live seat. Removing a resolved `checkpoint` requires explicit discard of the human decision.
+
+The runtime's migration-commit operation files a `migration` record with the actor's name.
+The CLI recognizes `--adopt <name>#<uid>` and `--release <name>#<uid>` but refuses these commit-side overrides.
+The following adoption and release behavior belongs to the runtime API.
+
+Adoption assigns an orphaned seat to the edited program's next spawn of that persona. That spawn
+returns the recorded handle without minting another identity, retaining the seat's worktree and turn history. It binds the
+orphaned spawn goal, so resume reads the same seat and cancellation despawns it.
+
+Release despawns the seat when migration commits, using the same discharge as cancellation. The
+record does not claim release before that effect completes. These are runtime migration semantics.
+
+The reachable CLI performs only the read-only admissibility check described in [workflow
+operations](workflow-operations.mdx#operating-a-run). It cannot commit a migration.
+
+Fork starts a new run from a named step of an old one, copying the prefix under the parent's pins (seed included, so the copied
+history's pure draws are the same draws). The child is a new run under a new id whose record names the parent and the cut step
+(`forkedFrom`); the parent is untouched.
+
+A spawn inside the copied prefix is honoured by its `onFork`: `"adopt"` copies it, and the child shares the parent's agent (the
+manager shows that seat one turn at a time across both runs); `"respawn"`, the default, would mint a fresh identity the copied
+turns do not address, so this host refuses that cut (L5019) rather than rewriting the parent's history.
+
+Fork planning and migration inspection use the recorded language version. Version-1 history uses the interpreter. Version-2
+history is inspected inside a locked-down worker with a read-only journal, without a live effect handler or durable store.
+Inspection stops before the fork's cut step or any effect that needs new work. Program catch and finally blocks cannot extend the
+cut. The recorded pins are preserved.
+
+## Wire records [#what-is-on-the-wire]
+
+The run's wire footprint is [SPEC §14](../SPEC.md#14-workflow-runs-v05):
+
+| Thing | Where | What it is |
+| --- | --- | --- |
+| the run | `run.<endpoint>.<runId>` record | the resolved **pins** (seed, logical epoch, budgets, language version) on the immutable half; holder, lease and `journalHigh` on the status half |
+| the program | `program.<endpoint>.<runId>` record | the source the run was started from, verbatim, written once by the driver that pinned the run; what a resume reads and what a migration is measured against |
+| the step journal | `WFJ_<space>` stream, one subject per run | append-only, no age eviction, no Direct Get; every append fenced by the run subject's own sequence; takeover is replay-then-activate |
+| a checkpoint answer | `answer.<endpoint>.<token>.<answerId>` | the payload beside the one-use settle fact; the settle names the answer it accepted |
+| a notice | `notice.<endpoint>.<runId>.<addresseeId>.<noticeId>` | one bounded decision told to one agent, rendered ahead of its next turn |
+| a migration | `migration.<endpoint>.<runId>.<migrationId>` | the report and who applied it, keyed by the report's own digest |
+| the admission | `admission.v1.<endpoint>.<runId>` in `cotal_admission_<space>` | the caller the run was admitted for, its channel ceiling and its provenance; written once before the driver starts, and the store refuses a second write on the key |
+| a revocation | `revoked.v1.<endpoint>.<runId>` in the same store | who revoked the run and why; create-only, idempotent, permanent at the broker, read by every host before its next channel effect |
+
+The driver writes `journalHigh` at activation and again after each journal append, before the program acts on the entry. A
+successor whose replay ends below it refuses the run with `RunJournalTailTruncated`. That holds for records appended since the
+last activation too.
+
+## Host authority [#driver-and-mediator-authority]
+
+A run's driver connects on a `run-driver` credential minted for one run and takeover attempt. It can append to its journal, use
+its replay durable, and write its own `run`, `program`, `notice` and `migration` records. It has no store point reads, checkpoint
+writes, chat consumers, or channel and membership registry grants.
+
+The hosting process keeps a separate `run-mediator` connection for effects and reads. The driver receives methods and data from
+that host; it never receives the mediator credential or connection. The host checks the journal's current activation and step
+identity before dispatch, and checks pause and wait authority again at each operation. Cancellation cleanup also admits losing
+steps named by a settled parent whose `cancel.issued` is still false. That permission allows cleanup; it cannot mint or rearm a
+cancelled pause.
+
+Wait acknowledgements consume host-held delivery receipts. A recorded match can be reread only at its bound sequence and channel.
+A conclave's recorded ownership flag must match its step-derived channel before registry writes or cleanup.
+
+The mediator retains endpoint-wide checkpoint rights and stream-wide leader reads as trusted host authority. Record reads exposed
+to the driver are restricted to its own run's keys. Reads that decide writes remain leader-served. A read of the journal uses the
+run's filtered replay durable, including the diagnostic for a journal with no run record.
+
+That durable is named after the takeover, and an attempt reads it many times, so reads under one takeover run one at a time in the
+hosting process and a replay removes a durable of its own name that an interrupted earlier read left behind. A durable that
+survives a replay's own delete belongs to a reader the process cannot account for, and reading its tail is refused.
+
+A drive handles that refusal as a takeover does: the reads behind its steps, and the diagnostic for a journal with no run record,
+replay up to three times before the refusal is raised. An operator read runs under a takeover minted for that read and reports the
+refusal on its first read.
+
+A served read uses a one-shot `run-operator` credential. An answer uses a read to find the open pause, then a second credential
+pinned to that token for the answer and settlement. `cotal run --local` uses the same driver/mediator split. On an authenticated
+mesh it needs the locally recorded space signer to mint both credentials; a single `--creds` file is refused. Direct library users
+supplying broker clients to `MeshHandler` are constructing a trusted effect host. A hosted driver receives its closed effect
+interface instead.
+
+This split confines broker credentials; it is not process isolation for injected host code. The runtime and its effect host share
+the manager process. A run's channel reach is the admitted ceiling ([SPEC §14.8](../SPEC.md#148-run-admission)): the starting
+caller's issued channel scope, recorded once in `cotal_admission_<space>` under a per-run `run-admitter` credential the driver
+never holds, and re-read by the host before every channel effect.
+
+Spawn and turn keep their own delegated checks; `notify` writes agent-addressed notices and is not channel publication. Treat
+`run` as program-execution authority bounded by that ceiling, not as sandboxing of the program.
+
+A version-1 fork can replay its settled parent history through the host. Inherited checkpoint identifiers carry no authority to
+read, rearm or claim the parent's pauses. New child effects use child-derived identifiers. A fork is a new run and takes a new
+admission under the caller who forks it; the parent's ceiling is not inherited.
+
+## Available implementations [#available-implementations]
+
+`@cotal-ai/lang` (`packages/lang`) provides the language, validator, interpreter, simulator, and dry run without a broker.
+In-process callers first call `validate(src)`. They supply their own effect handler to `run(src, { runId, handler })` and
+`resume(src, journal, { runId, pins, handler })`. The package README demonstrates `SimHandler`. Driver-started runs use the compiled engine instead.
+
+`@cotal-ai/core` implements the §14 wire records, `WFJ_<space>` stream, activation barrier, and per-run grants.
+`@cotal-ai/runtime` (`implementations/runtime`) provides the driver, journal store, migration, and fork.
+
+`cotal run migrate <runId> --local --file <program>` checks migration admissibility. No exposed command commits the migration.
+
+The mesh handler durably implements `sleep`, `checkpoint`, `wait(message(...))`, `wait(idle(...))`, `wait(down(...))`,
+`wait(replied(...))`, `notify`, `spawn`, `conclave`, `ask`, `monitor`, and `turn`.
+
+## Mesh effect support [#mesh-effect-support]
+
+Every effect the language defines performs on the mesh handler. No effect is refused solely because it is not yet durable.
+Environment, authority, option, and runtime limits still apply. The operator interface is `cotal run`, described in the
+[operations reference](workflow-operations.mdx#operating-a-run).
+
+## Engine limits [#engine-versions-and-payload-limits]
+
+Language version `1` uses the tree-walker. Version `2` uses the compiled engine. These are distinct language versions, with
+differences listed in [language reference §8.4](../spec/cotal-lang.md#84-language-version).
+
+Every run the driver starts is stamped `2` and uses the compiled engine. Its program runs in a locked-down worker thread. The
+effect host and durable journal remain in the driver process and communicate through a message port. The worker receives neither
+sockets nor credentials. The program compartment has an empty `globalThis`. Language operations arrive through its execution
+context.
+
+Version-`1` records continue to replay on the walker.
+
+On either engine, an effect's `ok` result is limited to the broker's `max_payload` minus 4096 bytes. An oversized result refuses
+before the settling append with `L5006`. The step stays pending and the run is released.
+
+Each build declares its served language versions. An unsupported recorded version refuses by name with `L5023` and leaves the run
+untouched. Resume never converts a record between versions. Recovery requires a host serving the recorded version, or a fork.
+
+The compiled engine requires Node 22 or newer. Below that floor it refuses with `EngineUnavailable`, an implementation error with
+no language `L` code. Its frame plumbing uses `AsyncLocalStorage`, and Node 22 is the lowest version measured for it. The walker
+has no corresponding engine floor.

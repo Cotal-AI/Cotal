@@ -84,7 +84,7 @@ The mesh is resolved once, and its recorded auth mode picks the admission. No ot
 | Mode | Admission | Lifetime |
 |---|---|---|
 | open | Routing identity only, with no credential | Until you leave |
-| static | The space's manager admits the session and mints its own credential ([Static chat sessions](control-surface.md#static-chat-sessions)) | 15 minutes, never renewed |
+| static | The space's manager admits the session and mints its own credential ([Static chat sessions](control-surface.mdx#static-chat-sessions)) | 15 minutes, never renewed |
 | user | The auth service admits it under your own `cli` grant; sign in with `cotal login` first | Up to 8 hours, never extended |
 
 ### Channel admission
@@ -293,7 +293,7 @@ The command inspects and edits the channel registry: replay and delivery policy,
 semantics (who may read or post) are set at mint / provision time, not here; see
 [Channels and permissions](channels-and-permissions.mdx). On a user-auth mesh, `list` rides your
 own login as is; `set` and `defaults` edit the registry over a short-lived
-channel-writer view, which needs ledger scope `admin` ([Identity & auth](identity-and-auth.md)).
+channel-writer view, which needs ledger scope `admin` ([Identity & auth](identity-and-auth.mdx)).
 On a remote user-auth mesh that view is served by the public exchange; space-history `purger`
 and the read-only admin view are not.
 
@@ -365,7 +365,7 @@ code is the snapshot's.
 `history clear` purges retained history from every channel in the selected space; `--dms` extends
 it to direct-message history. It refuses extra channel names, read filters and `--follow` before
 purging. These inputs cannot narrow a clear operation. It is the same operation as [`clean history`](cli-shutdown.mdx#clean). On a user-auth mesh the purge rides a short-lived
-purger view over your login, which needs ledger scope `admin` ([Identity & auth](identity-and-auth.md)).
+purger view over your login, which needs ledger scope `admin` ([Identity & auth](identity-and-auth.mdx)).
 
 ## pending [#pending]
 

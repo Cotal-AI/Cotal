@@ -93,13 +93,13 @@ and `--plain` rather than claiming structured receipts.
 diagnostic JSON page instead of the full list:
 `--limit` takes 1 to 16 rows (default 8), and `--cursor` continues a scan from a returned
 `nextCursor`. It requires `--on` and refuses `--local`, and a page proves neither absence nor
-ownership ([Diagnostic inventory](workflows.md#diagnostic-inventory)).
+ownership ([Diagnostic inventory](workflows.mdx#diagnostic-inventory)).
 
 ### Revocation
 
 `revoke` writes the run's revocation marker from the project folder. It requires `--local`,
 `--by`, and `--reason`. Revocation is separate from task cancellation.
-See [Workflow admission](workflows.md).
+See [Workflow admission](workflows.mdx).
 
 ### Pause answers
 
@@ -133,7 +133,7 @@ there. A participant's manager started with `cotal supervise` hosts a logged-in 
 its issuing host: the auth callout issues the user's manager connection, and hosted broker commands use
 the versioned rail under that issuance.
 [User-auth run start](design/user-auth-run-start.md)
-records the path. The guide is [workflows](workflows.md).
+records the path. The guide is [workflows](workflows.mdx).
 
 ## Workflow command forms [#workflow-command-forms]
 

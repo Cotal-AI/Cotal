@@ -1,0 +1,82 @@
+---
+title: Security model
+description: Threats, guarantees, and limits for peers sharing a trusted NATS broker.
+kind: Concept
+audience: operators and security reviewers
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+Cotal v0 limits what an authenticated peer can read and publish through a trusted NATS broker. The broker enforces account and channel permissions. Receivers check that each message's claimed sender matches its broker-pinned subject.
+
+[SPEC §9](../SPEC.md#9-nats--jetstream-security-and-authorization) references this threat model and takes precedence if the two disagree. [Appendix B](../SPEC.md#appendix-b-profile-acls) defines the ACLs. [Identity](identity-and-auth.mdx) explains principals and credentials.
+
+## Trust boundary [#trust-boundary]
+
+One space maps to one NATS account. The broker, operator, account signer, and holders of elevated credentials are trusted for the authority they hold. An `admin` credential can read private messaging traffic, but has no application publish grants. Agents are not trusted to report their own identity, channel permissions, or DM access.
+
+Ledger scope `admin` grants operator authority beyond the read-only `admin` credential. It permits elevated views, history and channel purges, registry writes, and cross-owner control. The public exchange serves `channel-writer` and `channel-purger` from these elevated operations. Whole-space observation and space-history purge remain loopback-only.
+
+<Callout type="warn" title="Broker isolation does not isolate the host">
+The default single-host manager and container compositions do not keep a same-uid agent away from the account signer. A process that reads the signer can mint elevated credentials. A hosted composition must isolate the signer when it needs protection from agents with host filesystem or process access.
+</Callout>
+
+[Embedding Cotal](embedding.mdx), [Deploy](deploy.mdx), and the [host-boundary reference](security-boundaries.mdx) describe these deployment limits.
+
+## Adversaries [#adversaries]
+
+The primary adversary is a compromised authenticated peer in the same space. Its credential cannot publish as another owner or sibling actor, post outside its channel allow-list, read another peer's DMs, or consume another role's work queue. These guarantees assume the peer cannot reach the signer through the host.
+
+An authorized writer can still send hostile message content and flood destinations within its grants and account limits.
+
+| Adversary | Boundary |
+| --- | --- |
+| Buggy receiver | Must reject a payload whose `from.id` differs from the subject sender. A client that skips this check accepts spoofed sender claims and violates [SPEC §5](../SPEC.md#5-envelopes) and [§12](../SPEC.md#12-conformance). |
+| On-path attacker | `cotals://` requires TLS and refuses a non-TLS broker. `cotal://` permits plaintext. Even if an honest broker would auto-upgrade, forged plaintext `INFO` can remove that upgrade and expose credentials. Plain links belong only on trusted networks or in development. |
+| Content author targeting a model | Channel descriptions and instructions, presence activity, message bodies, and metadata can carry prompt injection. The reading client must treat the text as untrusted data. |
+| Untrusted broker, relay, or operator | Outside the threat model. A broker or operator can read, drop, replay, or alter plaintext traffic. Signed envelopes and untrusted-relay bindings remain reserved in the [roadmap](roadmap.md). |
+| Untrusted `admin` credential holder | Outside DM confidentiality guarantees because the profile can read DMs and live messaging traffic. The profile remains read-only. |
+
+## What v0 protects [#what-v0-protects]
+
+The following guarantees combine broker enforcement with the required receiver checks.
+
+| Guarantee | Mechanism |
+| --- | --- |
+| Sender authenticity | Sender tokens in subjects are pinned by publish permissions. Receivers reject mismatched `from.id`. |
+| Space containment | NATS accounts isolate each space's subjects, streams, and KV buckets. |
+| Channel posting | The connection posts as itself and only to declared `allowPublish` channels. Posting is default-deny. |
+| Channel content reads | Live subscription grants follow `allowSubscribe`. History uses server-pinned single-channel consumers. |
+| DM and task confidentiality against peers | Per-identity inboxes and provisioner-created bind-only consumers prevent reads of other inboxes and other roles' queues. A trusted reader reauthorizes durable-channel backstop reads. See [Delivery daemon](delivery-daemon.mdx). |
+| Carried resume transcripts | Only the target manager instance's transfer reader can read its transfer bucket. The operator's writer is pinned to one transcript. Seats and peers have no transfer-bucket grant. |
+| Optional transport secrecy | `cotals://` requires TLS for the agent-to-broker hop. The broker still sees plaintext. |
+
+Channel content ACLs do not hide all stream metadata. An agent can enumerate retained CHAT subjects and counts, including channel names and sender IDs outside its read ACL. Channel names are also public in the registry. A role-bearing credential has equivalent TASK metadata access. Neither path grants message bodies or DM-stream metadata. [Stream metadata visibility](security-boundaries.mdx#metadata) gives the precise grants and deferred containment work.
+
+A carried Claude seat uses its own Claude home, so another seat's ordinary Claude listing does not expose the transcript. Same-uid filesystem access can still read that home by path. [Host filesystem access](security-boundaries.mdx#filesystem-access) explains the limit.
+
+## What v0 does not protect [#what-v0-does-not-protect]
+
+DMs are plaintext to the broker and to `admin`. v0 has no end-to-end encryption or portable sender signatures. Sender authenticity does not survive an untrusted relay. Signed envelopes remain reserved by [SPEC §11](../SPEC.md#11-versioning-and-extensibility).
+
+An authenticated peer can flood destinations it may write to. Cotal relies on coarse NATS account limits for connections, subscriptions, payloads, and storage. It adds no per-agent application rate limit. A peer can also resend its own earlier messages. v0 delivery messages define no protocol-level replay nonce or idempotency key, though subject binding prevents replay as another sender.
+
+The deployment also has these limits.
+
+- A copied static credential retains inline data-plane grants until expiry or signing-key rotation. Despawn retires its lifecycle and control authority but cannot add a static auth callout.
+- A host compromise can expose signing authority. Narrow operator profiles reduce individual connection grants but do not protect a copied signer.
+- Static `spawn` can choose a child's channel ACL. Spawn also grants access to connector launch options on the manager host.
+- Spawn environment filtering does not confine files reachable through `HOME` or other supplied roots.
+- Custodied PTY reap trusts the custody record and uses process-group membership for descendants. Same-uid record replacement and PID reuse remain risks.
+
+[Host boundaries and credential limits](security-boundaries.mdx) preserves the exact environment rules, TTLs, key rotation behavior, PTY signal checks, and same-uid caveats.
+
+## Prompt-facing data [#prompt-facing-data]
+
+Channel `description` and `instructions`, presence `activity`, message bodies, and free-form metadata may reach a model. Registry text writers are privileged and their text is length-bounded. Neither property makes the text a trusted system instruction.
+
+Clients must render this text as attributed, advisory data. This is the indirect-prompt-injection risk also present in MCP tool descriptions and A2A agent cards. The reading client is the trust boundary for model-facing text.
+
+## Reporting [#reporting]
+
+Report suspected vulnerabilities privately to the maintainers instead of opening a public issue.

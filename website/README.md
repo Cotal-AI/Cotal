@@ -45,8 +45,8 @@ components. Titles, descriptions, classification, and audience live in frontmatt
 Tutorial headings declare their existing IDs so incoming fragment links still work.
 Fumadocs code blocks provide the setup prompt's copy button.
 
-Other sections remain Markdown until their own review. Generated reference pages
-and the normative specification keep their current sources.
+Reviewed pages use direct MDX. Project pages await their writing pass.
+The normative specification remains Markdown, and the MCP catalog is generated MDX.
 
 The shared build package converts supported components to complete Markdown.
 Card links and descriptions, all tab alternatives, warnings, and code remain in

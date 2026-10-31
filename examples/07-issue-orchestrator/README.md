@@ -5,7 +5,7 @@ worker reproduces it, fixes it and opens a PR, two reviewers from two different 
 grade the PR at an exact sha, and a merger merges that sha. Several lanes run at once, each in its
 own worktrees, and a lane that cannot reproduce its issue stops without a fix.
 
-The coordination is two [cotal-lang](../../docs/workflows.md) programs. The manager hosts them, so a
+The coordination is two [cotal-lang](../../docs/workflows.mdx) programs. The manager hosts them, so a
 run survives a closed terminal and a manager restart, and its step journal shows where every lane
 stands.
 
@@ -156,4 +156,4 @@ What only the personas promise:
 
 On a user-auth mesh, a registered participant manager hosts authorized runs for a managed agent
 whose grant and whose direct parent's grant both carry `run`. Local user-auth runs are unavailable
-([workflows](../../docs/workflows.md)). These steps cover a static-auth mesh only.
+([workflows](../../docs/workflows.mdx)). These steps cover a static-auth mesh only.

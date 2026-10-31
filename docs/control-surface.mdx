@@ -1,0 +1,137 @@
+---
+title: The control surface
+description: How clients discover commands, address service instances, and follow durable actions.
+kind: Concept
+audience: Operators and client authors
+---
+
+import { Cards, Card } from 'fumadocs-ui/components/card';
+
+An endpoint is a service that publishes command contracts and answers requests on the mesh.
+The manager, delivery daemon, a wrapped MCP server, and a third-party service use the same endpoint protocol.
+The manager holds scoped credentials and the capabilities its callers grant it. It has no special authority over the mesh.
+
+Earlier versions used privileged `ctl.*` subjects and fixed service tiers named `self`, `manager`, `admin`, and `delivery`.
+The current protocol replaces that arrangement with endpoints. [SPEC §13](../SPEC.md#13-endpoint-control-surface-v04) defines the contract.
+
+<Cards>
+  <Card title="Discovery and routing reference" href="control-discovery.mdx">
+    Contract verification, instance selection, request outcomes, scatter, and deregistration.
+  </Card>
+  <Card title="Manager lifecycle reference" href="control-lifecycle.mdx">
+    Managed names, durable slots, spawn goals, chat sessions, terminal access, and grants.
+  </Card>
+</Cards>
+
+## Request routes [#the-ep-rails]
+
+All commands use the `ep` request kind. A route selects who receives a request, while the envelope names the command.
+`one` sends to one class member through queue-group anycast. `all` sends to every instance. `inst` addresses one stable instance.
+Replies identify the serving instance and its process epoch.
+
+The request subject also binds the caller's `owner`, `actor`, and lifecycle `uid`, with an unguessable nonce.
+The broker checks that identity in the subject grammar. Events, timers, sessions, and the journal support longer operations.
+See the [route and verb reference](control-discovery.mdx#request-routes).
+
+## Lifecycle identity [#lifecycle-identity]
+
+A principal `owner.actor` is a reusable routing alias. Despawn frees the actor name for later reuse.
+The alias alone cannot identify the agent that previously held it or establish authority over that lifecycle.
+A lifecycle UID is unguessable, identifies one managed lifetime, and is never reused.
+A process epoch identifies the process currently serving that lifetime. At most one live epoch owns the identity.
+Restart or takeover advances the epoch. A superseded process must stop serving.
+
+Credentials and durables use the lifecycle UID, so a supervised restart can retain the same lifecycle.
+See [identity and auth](identity-and-auth.mdx) and [SPEC §13.1](../SPEC.md#131-lifecycle-identity).
+
+## Service discovery [#service-discovery]
+
+`cotal describe <endpoint>` reads the commands a service publishes, fetches their schemas, and verifies their contract digests.
+`cotal invoke <endpoint> <command> --args '<json>'` checks the outgoing JSON against the input schema before publication.
+A local validation refusal means that the command did not run.
+
+Built-in manager commands use this same discovery path. The `auth` endpoint is also describable, including its exact-target `retire-lifecycle` command.
+The [discovery reference](control-discovery.mdx#service-discovery) explains outcome attribution and the manager's `vitals`, `resolve-cwd`, and `resolve-agent` commands.
+
+### Inspecting a managed name [#inspecting-a-managed-name]
+
+`inspect` first checks the manager's live roster. On a static manager, a live miss also checks the durable slot and lifecycle head.
+These reads distinguish an absent name from a lifecycle still being provisioned or retired, a sibling-owned slot, and an unreadable store.
+They are ordered reads, so their diagnostic detail does not claim an atomic snapshot.
+See the [inspection response and error reference](control-lifecycle.mdx#inspecting-a-managed-name).
+
+### Listing the durable slots [#listing-the-durable-slots]
+
+`slots` lists the durable static slot rows owned by one manager, including their lifecycle and cleanup observations.
+Its live-roster flag and durable rows describe different observations. A missing row or an accepted stop does not prove retirement.
+See the [slot list contract](control-lifecycle.mdx#listing-the-durable-slots) for filters, limits, and consistency fields.
+
+### Static chat sessions [#static-chat-sessions]
+
+A static manager can admit a short-lived chat session without launching a seat.
+The manager provisions the session's identity, channel permissions, and durable delivery, then returns a sealed credential.
+Only operator instruments carry the chat-session commands.
+
+Retirement cleans up the session's footprint. A copied static credential can still connect until its expiry because the broker has no credential revocation in this mode.
+See [static chat session contracts](control-lifecycle.mdx#static-chat-sessions).
+
+## Spawn is a goal [#spawn-is-a-goal]
+
+Spawn separates accepting work from observing readiness. The manager records a durable acceptance and returns the allocated identity before the agent finishes booting.
+The caller follows the goal's events to a terminal outcome.
+
+An `uncertain` outcome means that the readiness deadline passed without a decisive signal.
+The caller already has an allocated identity to inspect. Submitting another spawn can create a duplicate.
+The [spawn goal reference](control-lifecycle.mdx#spawn-is-a-goal) describes retries, naming, readiness budgets, and lifecycle-barrier refusals.
+
+## Instance routing [#instance-routing]
+
+A space can have several managers. Each manager keeps a stable instance ID across restarts and advances its process epoch.
+An explicit `--on <instance>` or tool `instance` argument selects that manager. The pin does not grant new authority.
+
+Discovery and invocation must agree on the serving incarnation.
+When an unpinned call reaches a different manager, the client can re-describe and retry only if the refusal proves `not-executed`.
+A lost reply or an `unknown` outcome cannot establish that the mutation is safe to repeat.
+
+Status and roster scans attribute every answer to its instance and report registered instances that do not answer.
+See [instance routing](control-discovery.mdx#instance-routing), [request outcomes](control-discovery.mdx#request-outcomes), and [scatter](control-discovery.mdx#scatter-and-liveness).
+
+### Deregistration [#deregistration]
+
+A registry row records registration, not liveness. A probe can stop waiting for a dead instance without deleting its row.
+A clean manager stop removes its own registration. An operator can remove an abandoned instance only after the broker confirms that its instance rail has no subscribers.
+Silence and age are insufficient evidence.
+
+The [deregistration reference](control-discovery.mdx#deregistration) covers lease refresh, takeover, interrupted registration, and governance-slot recovery.
+
+## Attach sessions [#attach-sessions]
+
+`cotal attach` opens a holder-bound terminal session over the mesh.
+The caller redeems a one-use offer, then exchanges terminal bytes on subjects scoped to the two parties.
+The session has bounded backpressure and reports dropped bytes. A late attach repaints the terminal from a snapshot.
+
+Expiry, target despawn, link loss, and manager restart have distinct outcomes.
+See the [attach session contract](control-lifecycle.mdx#attach-sessions).
+
+## Seat input [#seat-input]
+
+`input` writes text into a running seat's terminal in one request.
+It lets an operator send a command such as `/compact` without maintaining an attach stream.
+This is terminal control, so the command is limited to operator credentials and runtimes that own the input stream.
+
+See the [input authority and outcome reference](control-lifecycle.mdx#seat-input) for the distinction between refusal before delivery and failure after delivery starts.
+
+## Grants [#grants]
+
+A caller receives a capability row for each command it may send.
+Separate credentials serve requests, write goal facts, and write session data. The broker bounds each credential by subject.
+Authorization for an action takes effect at acceptance. A spawn refused at that boundary leaves no reservation or process.
+
+Resume transcripts use a separate transfer path with one-shot credentials.
+See [grants and transcript transfer](control-lifecycle.mdx#grants) and [SPEC §13.9](../SPEC.md#139-authority-boundary).
+
+## Related documentation [#see-also]
+
+- [Architecture](architecture.mdx) places the manager and endpoint protocol in the wider system.
+- [CLI](cli.mdx) documents `describe`, `invoke`, `spawn`, `ps`, `status`, `attach`, and `input`.
+- [SPEC §13](../SPEC.md#13-endpoint-control-surface-v04) defines the normative endpoint contract.

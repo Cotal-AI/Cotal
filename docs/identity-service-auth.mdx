@@ -1,0 +1,159 @@
+---
+title: Auth service integration
+description: Auth-service listeners, pinned IdP proofs, bridge hooks, and owner derivation.
+kind: Reference
+audience: operators and implementers
+---
+
+The auth service hosts the NATS auth callout and Cotal token exchange for one space. [SPEC §9](../SPEC.md#9-nats--jetstream-security-and-authorization), [§10](../SPEC.md#10-connection-and-onboarding), and [§13.13](../SPEC.md#1313-plane-ownership-the-sealed-scanner-claim) define its authority boundaries. [User-auth grants](identity-user-auth.mdx) describes the actor ledger and bearer views.
+
+## Service lifecycle [#service-lifecycle]
+
+The service starts with the broker and stops with `cotal down`. It holds the data-account signing key for the callout. A local manager using the trust bundle also holds that key for its own credential minting. A remote manager using delegated authority receives scoped material instead of the signer. The broker's operator seed does not enter the auth service.
+
+The service creates and owns the lifecycle-record and credential-ledger stores. A connection that cannot be checked against them is refused. There is no alternate authority path.
+
+If the auth service dies while the broker stays live, another `cotal up` repairs it. Boot exits nonzero when auth-service readiness fails. A refresh adopts an already-running service. Changing any public-listener option requires `cotal down` followed by `cotal up` with the new options.
+
+### Exclusive ownership
+
+At boot, the service takes a broker-backed claim for the space. A second service refuses with recovery instructions. A crashed service's claim can be reclaimed only after the broker confirms its connections are gone.
+
+Automatic reclaim trusts that verdict only on a standalone broker. A clustered broker refuses reclaim because a partitioned member might still hold connections. If the claim's connections die while the service runs, the service stops with an error rather than continuing to serve an incomplete authority plane.
+
+### Foreground shutdown
+
+Ctrl-C during foreground `up`, or broker exit, invokes the same auth-service stop operation as bare `cotal down`. That stop holds the reservation used by `down`, so a concurrent `down` auth stop is refused. A service still alive 15 seconds after SIGTERM receives SIGKILL. Legacy stacks have no auth-service-only stop command.
+
+## Listener policy [#listeners]
+
+The default listener is loopback-only. Local exchange and host operations require a per-start capability from owner-only `auth-service.json`.
+
+An operator can enable a second listener with these options.
+
+```text
+cotal up --user-auth ... --exchange-public-port <port> --exchange-public-url https://auth.example
+```
+
+The second listener also binds to `127.0.0.1`. A reverse proxy terminates TLS in front of it. In-process TLS is not a deployment mode because certificate renewal belongs to the proxy deployment.
+
+The public face does not use the loopback capability. Access to a local `0600` file has no remote meaning. Public clients instead prove authority with a pinned EdDSA IdP JWT or a managed actor token whose hash matches a fresh ledger row.
+
+### Public routes
+
+The public listener has a closed route set. Unknown paths return 404.
+
+| Method | Path | Function |
+| --- | --- | --- |
+| `GET` | `/health` | Service health. |
+| `GET` | `/jwks` | Cotal issuer's public keys. |
+| `POST` | `/exchange` | Human-proof or managed-secret exchange, with public-view restrictions. |
+| `POST` | `/manager-service-authority` | Typed authority route. Public policy still refuses `manager-service` issuance. |
+| `POST` | `/manager-instances` | Signed-in owner's manager candidates. |
+| `POST` | `/chat-session/open` | Open a user-auth chat session. |
+| `POST` | `/chat-session/bearer` | Exchange its holder secret for a session bearer. |
+| `POST` | `/chat-session/retire` | Retire the session. |
+| `GET` | `/.well-known/cotal-mesh` | Bootstrap user-auth registration bundle. |
+
+The public exchange serves `channel-writer`, `channel-purger`, `manager-caller`, `session-caller`, and `transfer-writer`. `admin`, space-history `purger`, `deployer`, and `manager-service` remain loopback-only. The managed-secret arm accepts only `manager-caller`. [View authority and limits](identity-user-auth.mdx#views) describes each grant.
+
+The older embedded dashboard requires a startup admin view even if a later channel delete could use `channel-purger`. Public deletion support is not a complete remote channel-management or dashboard-login path. The new dashboard service requires an explicit static credential with read-only intent.
+
+### Host-only routes
+
+These routes are capability-gated and never exposed by the public listener.
+
+| Path | Authority |
+| --- | --- |
+| `/interactive-lifecycle/retire` | Lifecycle retirement used by `cotal actor grant` and `cotal actor revoke`. |
+| `/managed-lifecycle/retire` | Completes a managed lifecycle's terminal retirement after its remote manager is gone. |
+| `/manager-service-authority/verify-enrollment` | Decides whether an authenticated remote manager owner may enroll or release a managed agent, or use the hosted runtime create and status kinds. It performs no platform write. |
+| `/tool-result-human-proof/verify` | Decides the password proof for a host-authenticated session subject without issuing consent or credentials. |
+| `/tool-result-consent/issue` | Opt-in same-owner consent issuance and recording under a host-custodied scoped anchor. Returns no result content, private key, or capability. |
+
+Interactive retirement refusals before the barrier carry `outcome: "not-executed"`. An error without that outcome may follow a started barrier. `cotal actor grant` and `cotal actor revoke` report it as unknown.
+
+`POST /manager-service-authority/verify-enrollment` accepts only `{ owner, request }`. It reads capability scope from this machine's ledger, never the body. A participant cannot supply `supervise` through a forwarded scope.
+
+The service reads the manager gate and verifies the registration proof itself. No signing material reaches the caller. Enrollment authorization returns `{ authorized: true, owner, actor, instanceId, serveEpoch }`. Refusals map to 400, 401, 403, 409, or 412.
+
+This route decides only. An intercepting host owns every write. Stock `dispatchManagerAuthorityRequest` refuses the enrollment and release kinds with `unimplemented` rather than treating an agent-lifecycle request as a manager-lifecycle phase.
+
+For hosted runtime create and status, the route reads the manager actor's ledger row and returns `{ authorized: true, owner, instanceId, actor, target }`. [Embedding Cotal](embedding.mdx) documents the host contracts.
+
+### Proxy attribution
+
+The well-known bundle contains the IdP pins and the actual deny-all sentinel credential needed before bearer-driven auth callout. Its `userAuth` provider name is the same constant used for local registration. A different provider name would register an unresolvable entry.
+
+The sentinel cannot publish or subscribe. The bundle still must come from the intended HTTPS origin with TLS verification.
+
+`--exchange-trusted-proxy` attributes peers by the last `X-Forwarded-For` hop. This option assumes that only an operator-controlled proxy can reach the listener. Otherwise forwarded headers are ignored, and the socket address is the peer key.
+
+Public failure budgets are per-source and separate from loopback budgets. An in-process LRU retains at most 1024 peer buckets. Cycling through more than 1024 trusted-proxy last hops can evict earlier 429 state. Valid credentials are still required. Deployments that need to prevent this throttle escape require upstream reverse-proxy rate limits.
+
+Refusals at `/manager-service-authority` share the same budget as `/exchange` on that face. After 30 refusals in a minute, a further refusal returns 429.
+
+An unpinned `manager-caller` exchange that finds no single live manager refuses only after verifying the credential. This selection refusal does not consume the failure budget and always reports its own reason, because a session not launched by a manager polls for its manager this way.
+
+## IdP compatibility [#idp-compatibility]
+
+The low-level `createIdpBridge` accepts EdDSA/Ed25519 JWTs with configured issuer, audience, and pinned JWKS. RS256 and ES256 tokens need host-side normalization or re-issuance before entering this bridge.
+
+The stock end-to-end flow expects Better Auth conventions. `cotalAuthProvider` pins `<base>/jwks` and issuer and audience to the IdP origin. The login client uses `/device/code`, `/device/token`, and `/token` with an opaque revocable session.
+
+A Better-Auth-shaped EdDSA IdP can use that flow. Another production IdP requires host-provided login and provider wiring around `createIdpBridge` and `createUserTokenIssuer`. It is not a configuration-only change.
+
+Better Auth is a development dependency of `@cotal-ai/auth`. Only `dev-idp.ts` and smoke tests import it, not runtime `src`. The runtime coupling is the generic bridge and auth-provider extension.
+
+Importing `@cotal-ai/auth` self-registers `cotalAuthProvider`. `resolveAuthProvider()` refuses two registered providers. A host using registry resolution cannot also register a competing provider. Issuer, audience, and JWKS pins remain required in every composition.
+
+### Offline secret inventory
+
+A provider participating in reviewed local identity reset exposes `deprovisionSecretKeys(space)`. The stock provider shares that inventory with `deprovisionSecrets`.
+
+The inventory returns key names only. It neither reads nor deletes secrets. A provider without the inventory, or with keys outside the selected space's secret segments, cannot use that reset route. Hosted deprovisioning is a separate composition.
+
+## Bridge contract [#bridge]
+
+The bridge verifies an upstream proof, derives an owner, authorizes an actor, and obtains the incarnation's root credential before issuing a Cotal bearer.
+
+| Check | Requirement |
+| --- | --- |
+| Signature | Offline verification against the pinned JWKS, with algorithm fixed to EdDSA. |
+| Key selection | Only the pinned resolver. Tokens containing `jku`, `jwk`, `x5u`, or `x5c` are refused. |
+| Identity pins | Exact configured issuer and audience. |
+| Bearer lifetime | The earlier of the requested expiry and upstream proof expiry, evaluated at signing. Time in hooks shortens the bearer. An expired proof refuses minting. |
+| Actor authorization | `authorizeActor(owner, actor)` returns an `ActorGrant` or throws. The ledger is the source of `scope` and `parent`. Claims are validated again by the issuer. |
+| Lifecycle | The grant supplies its current lifecycle UID. `mintConnectCredential` ensures and returns that incarnation's live root credential ID. Both hooks are mandatory. |
+
+The following wiring sketch assumes the host supplies the pinned coordinates, signing key, ledger lookup, and lifecycle-aware root-credential function.
+
+```ts
+import { createIdpBridge, pinnedJwksResolver, createUserTokenIssuer } from "@cotal-ai/auth";
+
+const bridge = createIdpBridge({
+	idp: { issuer: idpIssuer, audience, key: pinnedJwksResolver(jwksUri) },
+	space,
+	spaceSecret,
+	issuer: createUserTokenIssuer({ issuer: cotalIssuer, key: signingKey }),
+	authorizeActor: (owner, actor) => grantFromLedger(owner, actor),
+	mintConnectCredential: ({ owner, actor, lifecycleUid }) =>
+		ensureRootCredential({ owner, actor, lifecycleUid }),
+});
+```
+
+`spaceSecret` is an identity-plane owner-derivation secret of at least 32 bytes, held by the auth service at runtime. `grantFromLedger` returns an `ActorGrant`. The host's `ensureRootCredential` must release the incarnation's live root credential ID only after durable authority is finalized. It must not invent a fresh ID on every exchange. The connect arm checks the live root row.
+
+### Owner derivation
+
+The reference bridge uses `deriveOwnerForIdpSubject` on the JSON-array encoding of `[idp issuer, sub]`. The space secret makes the result opaque and space-specific. JSON encoding prevents distinct issuer and subject pairs from colliding through a delimiter.
+
+The normative format is `u_` followed by 26 base32-lower characters ([SPEC §2](../SPEC.md#2-identity)). The wire contract permits an identity adapter to choose derivation. This bridge fixes its derivation and provides no callback for replacing it.
+
+The encoding is frozen. Changing it, or the IdP issuer string, changes every derived owner and requires an identity migration comparable to changing the space secret. Signing in again with the same pins and secret derives the same owner.
+
+### Password proof
+
+`verifyToolResultHumanProof` adds password freshness to the pinned signature check for private-result consent. Signed `auth_time` must be an integer number of seconds, no later than the decision, and at most 300 seconds old. Signed `amr` must contain `pwd`.
+
+A recent JWT `iat` or session creation time does not prove password authentication. Missing, malformed, future, or stale provenance refuses this consent decision without changing ordinary bearer exchange. [Private tool results](embedding-remote-clients.mdx#private-tool-results) documents the host-only proof route and remaining activation limits.

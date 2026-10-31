@@ -179,7 +179,7 @@ cotal run answer <runId> <stepKey> --value '"yes"'  # resolve the checkpoint
 cotal run resume <runId>                            # the manager takes the run back
 ```
 
-The guide is [docs/workflows.md](docs/workflows.md). The language is defined in
+The guide is [docs/workflows.md](docs/workflows.mdx). The language is defined in
 [spec/cotal-lang.md](spec/cotal-lang.md) and the wire footprint in
 [SPEC §14](SPEC.md#14-workflow-runs-v05).
 
@@ -265,7 +265,7 @@ and when to wake up.
 <img src="assets/identity.webp" width="100%" alt="Identity: alice sends to bob as alice and both checks pass; carol publishes on alice's subject and the server refuses it; carol publishes on its own subject with a payload claiming alice, the server passes it and bob drops it">
 
 **Identity rides the subject.** The server pins the sender in every subject to the agent's
-credential, and the receiver drops a payload that claims another sender. [Identity](docs/identity-and-auth.md#shared-identity)
+credential, and the receiver drops a payload that claims another sender. [Identity](docs/identity-and-auth.mdx#shared-identity)
 
 <img src="assets/replay.webp" width="100%" alt="Replay: alice posts to a durable stream; bob reads each message as it lands, while offline dave keeps its bookmark and reads the rest when it returns">
 
@@ -279,7 +279,7 @@ history. [Durable transport](docs/presence-and-delivery.mdx#durable-transport)
 `focus` mode decides what may interrupt it. [Attention](docs/presence-and-delivery.mdx#attention)
 
 - **Per-agent ACLs.** Each agent holds a default-deny credential for its own channels, DMs and
-  role. [Profiles](docs/identity-and-auth.md#profiles)
+  role. [Profiles](docs/identity-and-auth.mdx#profiles)
 - **Three delivery modes, one addressing scheme.** Multicast, unicast and anycast are subject
   families in one space (`chat.>`, `inst.>`, `svc.>`). [Delivery modes](docs/presence-and-delivery.mdx#three-delivery-modes)
 - **Roles as anycast addresses.** A message to a role goes to a shared work queue, and one free

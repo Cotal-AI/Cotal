@@ -51,7 +51,7 @@ This prevents a peer from publishing as another owner or another actor under the
 
 The reference binding uses one NATS account per space for isolation and per-agent JWT permissions
 for access within the space. Open development mode has no such security guarantees.
-See [Identity](identity-and-auth.md) for the trust and credential boundaries.
+See [Identity](identity-and-auth.mdx) for the trust and credential boundaries.
 
 JetStream message streams retain channel posts, DMs, and role work.
 Consumers record delivery progress and redeliver unacknowledged messages.
@@ -59,7 +59,7 @@ Queue groups distribute anycast work, while KV buckets hold presence and registr
 Endpoint control uses separate subjects and stores for discovery, commands, and long-running actions.
 
 The [subject grammar](../SPEC.md#3-subject-layout), [NATS binding](../SPEC.md#8-nats--jetstream-binding),
-and [control surface](control-surface.md) define those details.
+and [control surface](control-surface.mdx) define those details.
 The [transport explanation](transport.mdx) separates the protocol's required guarantees from the current NATS implementation.
 
 An `artifact` message part can reference external bytes. Setup creates a per-space Object Store,
@@ -130,14 +130,14 @@ for signing custody and agent isolation.
 A managed spawn is a durable action. Acceptance allocates an identity before launch finishes.
 Progress ends in success, failure, or an explicitly uncertain outcome.
 Capacity checks run before identity minting or process launch and also limit rapid spawn and stop churn.
-The [spawn contract](control-surface.md#spawn-is-a-goal) and [capacity reference](cli-agents.mdx#spawn)
+The [spawn contract](control-surface.mdx#spawn-is-a-goal) and [capacity reference](cli-agents.mdx#spawn)
 describe those guarantees.
 
 Several managers can serve one space. Each has a stable logical instance ID and a process epoch
 that changes on restart. An exact instance target selects that manager; class routing can select
 an eligible manager. A registered instance that does not answer remains visible as a missing answer.
 The manager checks a liveness lease and exits when another process has taken over its instance.
-See [instance routing](control-surface.md#instance-routing) and [lease recovery](control-surface.md#deregistration).
+See [instance routing](control-surface.mdx#instance-routing) and [lease recovery](control-surface.mdx#deregistration).
 
 Runtimes supply process and terminal control. PTY is built in. tmux, cmux, Orca, and Herdr require
 explicit extensions. Spawned children receive a declared environment and private connection material.
@@ -170,7 +170,7 @@ A managed lifecycle UID distinguishes an incarnation from a later reuse of its n
 Despawn retires that lifecycle before releasing its name. A supervised restart can preserve the same
 lifecycle, credentials, and durable inbox. A host conversation's `contextId` is a separate correlation
 value, so a new host context does not by itself define a new wire identity.
-See [lifecycle identity](../SPEC.md#131-lifecycle-identity), [Identity](identity-and-auth.md),
+See [lifecycle identity](../SPEC.md#131-lifecycle-identity), [Identity](identity-and-auth.mdx),
 and the [OpenCode session reference](opencode-connector-reference.mdx) for its context-reset behavior.
 
 ## Deferred work [#deferred]

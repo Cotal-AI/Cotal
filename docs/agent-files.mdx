@@ -58,7 +58,7 @@ It requires a YAML mapping between `---` fences and a valid `name`.
 | `variant` | string | Connector-defined model variant, listed by `cotal models` where supported. A role's `modelPolicy` variants restrict the value when present. Whitespace-only values are refused when the file loads. |
 | `agent` | string | Connector pinned by the persona, such as `claude` or `jcode`. An explicit `--harness` overrides it; the legacy `--agent` spelling is also accepted. The pin overrides caller and manager defaults. An unregistered connector is refused. See [Persona lookup](#persona-lookup). |
 | `launchOptions` | map | Connector-specific options passed through to the application. Claude uses flags; OpenCode uses agent configuration. Hermes and pi refuse options. `--opt key=value` overrides the same key in the file. A role governed by `modelPolicy` launches without options. See [Launch agents](launch-agents.mdx#spawning-agents). |
-| `capabilities` | string[] | Control permissions. `spawn` grants host-launch authority, named stop, and persona definition. `run` grants workflow start, resume, answer, status, and list, plus the spawn permissions needed by programs; it also exposes `cotal_run`. Missing capabilities grant none. On a user-auth mesh, `role:<r>` permits delegation of role `r`; `admin` is never a persona capability. See [Identity and auth](identity-and-auth.md). |
+| `capabilities` | string[] | Control permissions. `spawn` grants host-launch authority, named stop, and persona definition. `run` grants workflow start, resume, answer, status, and list, plus the spawn permissions needed by programs; it also exposes `cotal_run`. Missing capabilities grant none. On a user-auth mesh, `role:<r>` permits delegation of role `r`; `admin` is never a persona capability. See [Identity and auth](identity-and-auth.mdx). |
 | `owner` | string | Policy set by `definePersona` to the creator's identity. Only that owner or an admin can redefine the file over the wire. An operator-written file without an owner requires admin authority for wire redefinition. This field is not peer-supplied content. |
 | Any other scalar key | string | Stored in `meta` for connector-specific hints. Unmodeled maps and lists are not stored. A saved definition cannot use `meta` to overwrite modeled fields or the renamed `channels` and `publish` fields. The live session overlays connector-owned `connector`, `model`, `variant`, and `host` metadata, so the file cannot misstate its connector or machine. |
 
@@ -69,7 +69,7 @@ See [Attention](connect-claude.mdx#attention).
 
 The broker enforces control capabilities.
 Because `launchOptions` passes native application options through, `spawn` grants authority to launch applications with those options on the manager host.
-See the [Security model](security.md).
+See the [Security model](security.mdx).
 
 ## Persona lookup
 

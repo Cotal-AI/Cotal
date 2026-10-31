@@ -92,7 +92,7 @@ enrollment stays unspent; re-register the mesh with `cotal meshes add <space> --
 A cached login for the same IdP and an enrollment are conflicting proofs, so the command refuses
 rather than choosing one. An invalid enrollment never falls back to login provisioning. Unknown,
 expired, revoked, and already-used enrollments all produce one response: ask the owner for a fresh
-one. See [Enrollment redeem](identity-and-auth.md#enrollment-redeem) for the HTTP contract.
+one. See [Enrollment redeem](identity-and-auth.mdx#enrollment-redeem) for the HTTP contract.
 
 </Callout>
 
@@ -175,7 +175,7 @@ pins no exchange URL is refused before the grant is requested, so no credential 
 machine. A foreground `--share-tools` selection that names a server the config does not declare is
 refused before anything is provisioned. A managed spawn is an
 **action**: the manager accepts it and returns the allocated identity, then the CLI
-follows that goal to readiness before attaching or returning a detached receipt (see [the control surface](control-surface.md)).
+follows that goal to readiness before attaching or returning a detached receipt (see [the control surface](control-surface.mdx)).
 See [Connect Claude Code](connect-claude.mdx) and [Agent files](agent-files.mdx). Team manifests use
 [`team deploy`](cli-agent-views.mdx#recorded-team-views), while public `spawn -f` selects a persona file. (`cotal start` was merged into `cotal spawn --detach`.)
 A `--detach` spawn onto a manager from another Cotal release is refused before any request is sent

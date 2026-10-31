@@ -1,0 +1,131 @@
+---
+title: Credential authority
+description: Credential minting, profile grants, endpoint generations, and capability limits.
+kind: Reference
+audience: operators and implementers
+---
+
+This reference describes credential authority in the reference implementation. [SPEC Appendix B](../SPEC.md#appendix-b-profile-acls) defines profile ACLs. [SPEC §13.15](../SPEC.md#1315-issued-authority) defines issued authority. [Identity](identity-and-auth.mdx) explains the model.
+
+## Provisioning [#provisioning]
+
+The provisioner holds account signing authority. It mints profile-scoped credentials and pre-creates the DM and role-task durables to which agents bind. A manager can host the provisioner, but this privilege belongs to the signer.
+
+The temporary native provisioner may request `$SYS.REQ.USER.INFO` for its own connection. The broker's system account maps the service to that requester. The response identifies the public user, account, and serving server for comparison with local pins. It supplies no permission ceiling, issued generation, lifecycle authority, or apply authorization. An unavailable or denied service causes refusal without another credential or server attempt.
+
+The [CLI](cli.mdx) exposes out-of-band minting through the same library used by spawn.
+
+```text
+cotal auth mint <name> --profile <agent|observer|admin>
+```
+
+| Option or condition | Result |
+| --- | --- |
+| No expiry option | The out-of-band profile has no default TTL. `cotal doctor auth` reports it as unbounded. |
+| `--expires-in <seconds>` or `--expires-at` | Bounds the credential's lifetime. Standing-renewal consumers require a bounded credential. |
+| `--identity <creds>` | Reuses the file's nkey and principal. An agent mint still allocates a fresh lifecycle UID and does not reuse the old bind-only inboxes. The receipt names the new UID, which clients must use when explicitly provisioning it. |
+| User-auth space | Static agent, observer, and admin minting is refused. Agents join under a logged-in owner. |
+| Conflicting mesh root | Agent minting refuses if the current folder's trust names a different space or account. The error names both roots. |
+
+Agent minting selects one mesh root for the persona ACL, account signer, and default credential storage. It cannot sign one root's persona policy with another root's authority.
+
+## Profiles [#profiles]
+
+Profiles are explicit default-deny allow-lists. Subject, stream, and durable names come from the same builders as the wire layout.
+
+| Profile | Authority and limits |
+| --- | --- |
+| `agent` | Publishes as itself to declared channels. Reads within its read ACL and its own DM and task inboxes. Presence and channel-registry watches create and inspect client-managed ordered consumers. The reference credential cannot delete consumers on these watch streams. The broker removes a finished watch's consumer five minutes after its last interest. |
+| `observer` | Reads chat and presence without DM visibility. `cotal console` uses this profile. Consumer-delete grants name only its own CHAT history readers, `hist_<readerId>_<n>`, keyed by its nkey or server-assigned connection identity. History reads remove their readers when complete. It cannot delete another principal's watch or the delivery daemon's fan-out consumer. Finished watches are removed by the broker. |
+| `admin` | Adds read-only messaging observation, including DM and live anycast traffic. It still has no application publish grants. It may delete its own CHAT and DM history readers and no other consumer. It excludes the endpoint control and session rails. |
+| Operator-side profiles | Separate credentials for supervision, provisioning, teardown, delivery, and other machinery. No profile combines reading all DMs with deleting all streams. See [host authority](security-boundaries.mdx#manager-authority). |
+| `run-driver` | One workflow run and takeover attempt. Holds that run's journal subject, replay durable, and run-owned record writes. Store reads and effects go through the host. |
+| `run-mediator` | A separate connection in the trusted hosting process for workflow effects and leader reads. Operations are journal-checked and run-bound. The driver never receives this credential. |
+| `run-operator` | Minted per call for one served run read or one half of an answer. A read holds the records walk, one run's replay, and the admission read. An answering credential holds one checkpoint token's answer record and settle operation. |
+| `issuer` | A short issuance window, minted by the signer for a few minutes. Stages and releases credential evidence, retires issuances after a lifecycle terminal, or resolves evidence carried by a request. |
+| `run-admitter` | One run's admission record and revocation marker. Minted per run for a minute, with two exact keys in the admission store and no other authority. |
+
+An agent's channel scope has three distinct lists.
+
+| Field | Meaning |
+| --- | --- |
+| `subscribe` | Channels read at boot. |
+| `allowSubscribe` | Channels the agent may read. |
+| `allowPublish` | Channels the agent may post to. Default-deny. |
+
+The lists are declared in an [agent file](agent-files.mdx) or [manifest](manifest.mdx) and minted into the credential. [Channels and permissions](channels-and-permissions.mdx) gives the configuration rules.
+
+DM deliveries use per-identity inbox prefixes. DM and task consumers are provisioner-created and bind-only, so a peer cannot create a consumer filtered to another inbox ([SPEC §9](../SPEC.md#9-nats--jetstream-security-and-authorization), items 1–5).
+
+## Issued authority [#issued-authority]
+
+An issued authority binds the caller's principal and lifecycle to the permission ceiling accepted by the issuer. A fresh generation identifies that binding. A mutable grant ledger alone does not establish the ceiling for an effect performed on the caller's behalf, such as a [workflow](workflows.mdx).
+
+Before releasing a static issued credential, the issuer records its final ceiling in `cotal_issued_<space>`, keyed by that generation. The broker makes the evidence store append-only. Resolvers read the first message on the key, so later writes cannot replace the evidence they resolve.
+
+The credential's endpoint rows use `cotal.<space>.ep.v1.…`. The generation is pinned beside the caller triple in the subject. The legacy `ep.` and versioned `ep.v1.` subjects are disjoint. A credential has request rows on one rail, while endpoints serve both.
+
+The client learns its accepted generation by reading a single row in `cotal_accepted_<space>`. The launching party chooses the row's token at mint time. The credential's ceiling contains only that key's read grant. Credential-file claims do not establish the accepted generation.
+
+Renewal preserves a generation only if the ceiling remains byte-identical to the evidence. Changed scope requires a new issuance and generation, adopted through a new connection. Static agent evidence depends on its credential-ledger family. The lifecycle terminal retires that family's issuances too.
+
+### Workflow admission
+
+The manager, `cotal spawn`, and CLI control-caller credentials use an `issuer` session. The deployer credential uses its own lifecycle UID on the legacy rail. It has no default expiry, while a source-free issuance must expire.
+
+These commands require issued-authority binding.
+
+| Command | Legacy-rail result |
+| --- | --- |
+| `run-start` | `permission-denied`, with detail `ai.cotal.ep.unbound-caller-authority` naming the caller. |
+| `run-start-keyed` | The same refusal. |
+| `run-submission-status` | The same refusal. |
+
+Other commands continue to serve both rails.
+
+### User-auth manager callers
+
+The auth callout issues a `manager-caller` view for an interactive row. A managed seat is eligible only if its current persona-derived scope contains `run` and its direct parent's fresh, same-owner grant also contains `run`. An admin parent's containment bypass does not satisfy this test.
+
+The child's own actor row and lifecycle are the issuance source. Evidence records the signed ceiling without adding capabilities. Same-nonce renewal requires the same caller triple and byte-identical ceiling. View policy and the manager-instance gate remain unchanged, with no new request kind.
+
+| Caller state | Result |
+| --- | --- |
+| Either `run` input is absent | Ordinary legacy commands remain available. |
+| Signed `run` is absent | The broker refuses `run-start`. |
+| Signed `run` is present but the parent is ineligible | The manager refuses with `ai.cotal.ep.unbound-caller-authority`. |
+| Issuance fails | No retry on the legacy rail. |
+
+## Capabilities [#capabilities]
+
+Control authority is declared in the [agent file](agent-files.mdx).
+
+| Declaration | Commands and tools |
+| --- | --- |
+| No control capability | Self-despawn, plus pull and yield of run turns addressed to the agent. |
+| `capabilities: [spawn]` | Spawn, stop and despawn of the caller's own children, and persona definition. Injects `cotal_spawn`, `cotal_persona`, and `cotal_personas`. On static and open meshes, children include agents launched with `cotal spawn --detach` from that seat's shell. |
+| `capabilities: [run]` | Workflow start, resume, answer, status, and list, together with the spawn set. Injects `cotal_run`. The manager runs the workflow with its own per-run `run-driver` credential. |
+
+Destructive operator operations, including history purge and cross-agent stop, occupy a separate tier that agent credentials cannot reach.
+
+Persona redefinition accepts only `model` and `persona`. It cannot change capability policy. [Spawn authority](security-boundaries.mdx#spawn-authority) describes the ACL and host-launch implications of a legitimate spawn grant.
+
+## Standalone callers [#standalone-callers]
+
+```text
+auth mint <name> --endpoint <class> --out <private-file>
+```
+
+This static-auth route provisions the ordinary native agent footprint and adds explicit endpoint request rows from a fresh, digest-verified description. It requires the selected local static signer and retains the registered broker TLS policy. Explicit channels enter both the read and post ACLs. It adds no spawn, run, or admin capability and creates no managed seat.
+
+| Supported | Refused |
+| --- | --- |
+| Untargeted synchronous ephemeral commands | Targeted, journaled, and action commands. |
+| Selected local static authority | User-auth issuance and managed launch. |
+| The paired private issuance intent and credential | Arbitrary raw files, other profiles, and issued-generation files. |
+
+A private, create-only issuance intent is written before native footprint work. An interrupted operation cannot be replayed blindly. The intent contains no credential and proves neither submission nor completion.
+
+Endpoint describe and invoke accept the paired intent only after checking native signature, current issuer, user key, time window, permission builder, and principal tag. Broker admission remains separate. The intent selects coordinates but supplies no wire grant, accepted-generation proof, or live lifecycle check.
+
+[CLI endpoint-caller limits](cli-auth.mdx#endpoint-caller-credentials) describe the operator surface.

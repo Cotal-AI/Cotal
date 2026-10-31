@@ -45,7 +45,7 @@ For a terminal or service manager that must own the stack's lifetime, use `cotal
 See [Supervise the stack](supervise-processes.mdx) before creating a systemd unit.
 
 Static authentication is the default.
-For per-user authentication, use `--user-auth --idp <url>` and follow [Identity](identity-and-auth.md).
+For per-user authentication, use `--user-auth --idp <url>` and follow [Identity](identity-and-auth.mdx).
 This also starts the space's auth service. Participants log in, and the operator grants their agents on the actor ledger.
 The `--open` mode is unauthenticated and live-only. It has no delivery daemon.
 Use that mode only for local development experiments.

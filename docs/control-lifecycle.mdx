@@ -1,0 +1,241 @@
+---
+title: Manager lifecycle contracts
+description: Managed identities, static slots, spawn goals, chat sessions, terminal access, and grants.
+kind: Reference
+audience: Operators and client authors
+---
+
+## Inspecting a managed name [#inspecting-a-managed-name]
+
+Manager `inspect` keeps its successful response as the live managed-agent row. A live hit does not read durable lifecycle state,
+so a temporary records-store failure cannot break inspection of an agent the manager currently holds.
+
+On a live miss, a static manager point-reads its durable slot row. A name with no slot, or a slot whose phase is `retired`,
+remains `not-found`. A nonterminal slot returns `failed-precondition` with `error.details[].kind =
+ai.cotal.manager.static-slot-observation`. The detail carries the slot's `slotPhase`, `owner`, `actor`, `slotLifecycleUid`,
+`cleanupComplete` when recorded, and `slotRevision`. It then carries the separate lifecycle head's `headState`, `headOp` when
+present, `headLifecycleUid`, and `headRevision`.
+
+Head fields are absent when provisioning has not written the lifecycle head yet. The error message carries the same diagnostic
+summary so string-only operator paths do not hide the structured detail.
+
+A slot row records the manager instance that owns it. In a space with more than one manager, the class queue can hand `inspect` to
+an instance that does not host the name. When the row names a different instance and is not `retired`, the miss returns
+`failed-precondition` with the same detail plus `ownerInstanceId`, which names the only manager that can act on it. The message
+names both instances, so a caller that reads only the string can tell it from `not-found`. A sibling's `retired` row remains
+`not-found`.
+
+A named `cotal_despawn` resolves its target through this read and has no instance argument. It asks again until the owning instance answers, up to 16 times.
+
+The slot is read before the head. These records do not form one atomic snapshot, so the detail also carries `readOrder: ["slot",
+"head"]` and `consistency: "ordered-not-atomic"`. A head can advance between the reads. The issuance gate is not projected because
+the retirement operation needed for this diagnosis is already recorded on the head, and reading a third record would add another
+non-atomic edge without changing the per-name result.
+
+If either durable read fails or exceeds its bound, the miss returns `unavailable` with `ai.cotal.manager.static-slot-read-failed`
+rather than claiming the name is absent. That detail names the inspected `name`, the failed `record` (`slot`, `head`, or
+`slot-or-head` when the layer cannot distinguish them), and `operation: "read"`. User-auth managers do not own `mgrslot` rows, so
+their inspect misses remain live-map reads.
+
+## Custodied seat retirement [#custodied-seat-retirement]
+
+For Linux custodied seats, retirement requires the runtime's process-exit evidence before freeing the alias or deleting its
+credentials and delivery state. Socket loss alone is not proof of exit. The runtime retains the record captured at launch or
+adoption so a clean custodian exit can unlink its file without losing the recorded boot and process identities. If the file is
+missing, reaping uses that retained record and the existing kernel identity checks. An unknown reference without either record
+refuses cleanup.
+
+Reused process ids are never signalled on the strength of the old record.
+
+## Listing the durable slots [#listing-the-durable-slots]
+
+Manager `slots` (`manager.read`, untargeted) lists the durable static slot rows this manager owns. Only static managers hold these
+rows: a user-mode or open manager answers `failed-precondition`, and a manager whose durable store is not standing answers
+`unavailable`. Each row carries the same `readOrder` and `consistency` fields `inspect` uses, because the list is read the same
+way: torn across rows as well as within each row's slot/head pair. With no arguments, retired rows remain excluded.
+
+From manager cluster revision 32, `{names: ["worker"], includeRetired: true}` point-reads up to 100 distinct aliases and includes
+their retired rows. An absent or sibling-owned slot is omitted, not reported as retired. Each returned row retains its principal,
+lifecycle UID, slot/head revisions, phase and any native cleanup-complete fact. Consumers must match every requested incarnation;
+a missing live row or an accepted stop is not a retirement result. `live` reflects the manager's live roster at render time, not
+the durable row.
+
+A slot row is never deleted, so a row whose latest operation is a DEL or PURGE marker is corruption: the list answers
+`unavailable` naming that row, as `inspect` does for its name.
+
+## Static chat sessions [#static-chat-sessions]
+
+From manager cluster revision 34, a static manager admits chat sessions with `chat-session-open` and ends them with
+`chat-session-retire`. Both are untargeted and in the `manager.chat` class. Only operator instruments carry their rows; the
+`spawn` and `run` capabilities do not. A user-mode or open manager refuses both with `unimplemented`.
+
+`chat-session-open` takes `{subscribe, allowSubscribe, allowPublish, label, ttl, sealTo}`. The three lists are a spawn's, under a
+spawn's rules: `subscribe` is the session's initial channels, `allowSubscribe` its read ceiling (empty means `subscribe`, and
+`subscribe` must lie within it), and `allowPublish` its post list (empty means none). Each may be omitted. A session can join any
+channel under its ceiling, patterns included. A concrete event channel of another principal is refused, as it is for a spawn.
+
+The manager draws a `chat_<26 base32>` alias and a fresh nkey identity, runs the static slot activation, provisions the session's
+DM and DELIVER durables and ACL row, and mints an agent-profile leaf with no role, capabilities, endpoint rows or issuance. The
+leaf expires after `ttl` seconds, at most 900, and is never renewed. Because the leaf is not an issuance, the manager writes its
+credential ledger row itself before the credential leaves the process, and that row is what retirement marks revoked and
+verify-evicts.
+
+`sealTo` is a one-time curve public key (`X…`) the caller mints and keeps the private half of. The reply is `{alias, actor,
+lifecycleUid, expiresAt, sealer, sealed}`: `actor` is the nkey the broker authenticates, `alias` names the slot, and `expiresAt`
+is in epoch milliseconds. The credential is not in the reply in the clear. `sealed` is base64url, sealed to `sealTo` from the
+one-time `sealer` key with the NATS xkey format, and opens to the credential bound to the space, the admitting manager instance
+and every field of the reply.
+
+A generic invoke, an agent or a browser sees only that ciphertext. The chat adapter opens it once, refuses it unless every bound
+field matches, and keeps the credential in memory.
+
+`chat-session-retire` takes `{alias, actor, lifecycleUid}` and runs the static terminal. It refuses before any effect unless the
+alias is a chat alias whose slot this manager instance owns at that uid and actor. It answers `retired`, `alreadyRetired`, or
+`failed` with a `retirement pending:` reason while the slot stays held. Retirement marks the credential's ledger row revoked,
+verifies that the session's principal has no broker connection left, tears down its broker footprint and retires the slot.
+
+A static mesh has no broker-side credential revocation, so a copy of the leaf can still connect with the permissions it carries
+until its expiry. An ordinary spawn refuses any name that starts with `chat_`.
+
+The manager that admitted a session retires it at its expiry when nothing retired it sooner, so a lost reply or an abandoned
+client does not hold the slot. Its stop retires every session it still holds, with or without its agents, and names each one it
+could not retire; a stop that preserves the manager's state leaves them. Its own startup sweep never retires a session it is
+admitting or holds. A session that none of these retired stays held until the next start of that manager instance.
+
+## Spawn is a goal [#spawn-is-a-goal]
+
+Long-running commands are actions ([SPEC §13.6](../SPEC.md#136-composites)): the caller submits with a client-generated `goalId`
+and a request fingerprint, the endpoint records a durable accept or reject decision, progress rides per-goal events, and the work
+ends in one terminal outcome (`succeeded`, `failed`, `cancelled`, `expired`, or `uncertain`). Spawn is the reference case. Rather
+than block the caller for up to 30 seconds while an agent comes up, the manager accepts the goal and returns the allocated
+identity at once:
+
+```json
+{
+  "name": "reviewer_2",
+  "owner": "u_...", "actor": "reviewer_2", "uid": "...",
+  "goalId": "...", "fingerprint": "...",
+  "readinessDeadlineMs": 30000,
+  "executor": { "lifecycleUid": "...", "epoch": 3 }
+}
+```
+
+The `uid` is the lifecycle the agent runs at. On a participant manager whose host enrolls its agents, the host picks that uid, so
+the manager accepts the goal only after the host has answered. A host refusal there refuses the spawn, and no goal is bound.
+
+Resubmitting the same `goalId` returns the same acceptance. A `goalId` belongs to the caller that submitted it, so another
+caller's spawn under the same id is its own goal with its own acceptance. A sibling instance or a restarted one answers it from
+the identity the accepting instance recorded before it replied, owner included. When that record names no owner because an older
+manager wrote it, the resubmission is refused `unavailable`. Once the goal has ended, the accepting manager keeps its acceptance
+for five more minutes.
+
+After that, and at any other instance, the resubmission is answered from the goal's terminal and never accepted again: a
+`succeeded` terminal names the agent, so it returns the same acceptance, and any other outcome refuses it `failed-precondition`
+with that terminal attached.
+
+A persona-derived name collision is auto-numbered, such as `reviewer` followed by `reviewer_2`. A hard-pinned `--name` that
+collides with a live agent refuses at acceptance before minting anything.
+
+Within one manager process, auto-numbering never reissues a numbered name that numbering previously allocated, even after its
+agent exits. This history applies only to auto-numbering. A free hard-pinned name, or a persona whose own name is a numbered
+string, can still be allocated.
+
+Numbering does not skip a string solely because one of those spawns previously held it.
+
+The allocated owner, actor, lifecycle UID, and `goalId` identify progress through connector handoff, process launch, and presence
+join. They also identify the accepting instance for later reconciliation.
+
+Presence within the manager's default 30-second readiness window, or a connector's declared bounded window, settles the goal
+`succeeded`. An early process exit settles it `failed`. A deadline without either signal settles it `uncertain`.
+
+A later `ps` or status read can compare that result with the live roster. The terminal itself remains `uncertain`.
+
+An uncertain launch carries the deadline owner's diagnosis, names the allocated agent, and directs the caller to inspect it.
+Reissuing a spawn after a successful but unobserved launch creates a duplicate. A follower retains acceptance data for every
+terminal other than `succeeded`. `cotal_spawn` therefore returns an uncertain launch as pending, with the agent name, ID, manager,
+and advice to watch the roster.
+
+If the committer supplies no diagnosis, the result uses "the success signal did not arrive within the readiness deadline". The
+agent's eventual state is visible in presence.
+
+The acceptance carries that exact `readinessDeadlineMs`. A synchronous follower treats its own request deadline as a floor and
+waits through the accepted readiness budget plus delivery margin, so a connector-specific slow boot cannot be reported as a caller
+timeout while the manager is still legitimately waiting for its terminal.
+
+A spawn that is refused because a lifecycle barrier already holds the actor (a frozen issuance gate, a retiring alias, a retired
+uid) is not a wait-timeout. The manager already knows the blocked op (`registration` / `retirement` / `activation` / `takeover`),
+the `opId` holding it, and the remedy when one exists (`retry`, `cotal reconcile-gate`). The detail carries `headState` (`active`
+/ `retiring` / `retired`) only when the refusing site read the lifecycle head, and `gateState` (`frozen` / `retired`) only when it
+read the issuance gate.
+
+A gate frozen by a takeover or a registration says nothing about the head, so that refusal carries `gateState=frozen` and no
+`headState`. Those facts ride `error.details[]` as `kind = ai.cotal.ep.lifecycle-blocked` and are also appended to the error
+string, so a caller that only prints `error.message` still sees them. The CLI and the connector tools hand a refusal on in one
+shape, so `cotal spawn -f` keeps the same code, details, rendered facts and acceptance data as `cotal spawn --detach` and
+`cotal_spawn`.
+
+A connector that collapses the refusal to "startup failed (unknown)" or a SPEC 13.6 wait-timeout is hiding a knowable state, not
+reporting a missing one.
+
+## Attach sessions [#attach-sessions]
+
+`cotal attach` no longer returns a `ws://127.0.0.1` URL. It creates a one-use, holder-bound session offer: the manager mints a
+token bound to the caller, the target lifecycle, its own instance id and epoch, and an expiry, and replies with a session id and
+expiry only, no URL and no secret in the reply. The CLI redeems the offer over the mesh (a second redeem is refused).
+
+On a registered open mesh that redeem is a bare connection, the same path other control commands already use; on a static-auth
+mesh it is still a session-caller credential minted from the resolved root's seed. On a user-auth mesh the CLI holds no seed: it
+exchanges its login and the grant for a `session-caller` view bearer, and the callout mints the same caller rails with the grant's
+expiry. Terminal bytes then stream on core-NATS session subjects scoped to the two parties.
+
+Backpressure is a bounded in-flight window with an explicit drop notice, never silent loss; a late attach still repaints the full
+screen from a replayed terminal snapshot. Close, expiry, target despawn, and a manager restart are distinct, surfaced end states:
+a restarted manager's successor refuses the old epoch's sessions. `cotal attach` reconnects when its link dies by asking the
+manager for a new session ([CLI](cli-agent-control.mdx#managed-seats)).
+
+## Seat input [#seat-input]
+
+`input` writes text into a running seat's terminal in one authorized request. It returns the seat and the delivered byte count.
+Unlike `attach`, it does not hold a terminal stream open.
+
+Harness commands such as `/compact`, `/clear`, and `/model` enter through terminal input. The harness handles these slash-prefixed
+lines. They are neither chat messages nor events. Reading turns and sending messages alone does not provide this control.
+
+The op is targeted, rides the `manager.lifecycle` capability, and declares authz modes `owner` and `any`, the row shape `attach`
+and `despawn` already carry, checked by the same authorization. Enter is appended unless the caller suppresses it, and nothing is
+echoed back, since the resulting turns already have somewhere to go.
+
+Only operator credentials receive `input`. A caller with `spawn` receives `despawn` and `attach`, but those rows do not imply
+terminal-write authority. An attach request returns a signed session offer. Redeeming the offer requires a separate session-caller
+credential, which the spawn capability alone cannot mint.
+
+The owner authorization mode covers every seat under an owner, including seats another caller launched. Adding `input` to the
+spawn grant would therefore let an agent type into a peer's harness.
+
+The existing right to stop that peer does not grant terminal control. Operator instruments already hold administrative authority
+for the domain.
+
+Only a runtime that owns the child's input stream can serve it. The `pty` runtime does; the external terminal runtimes attach to a
+process they do not own, and there the command refuses and names the runtime rather than dropping the keystroke. A seat that is
+not running refuses for its own reason, and the two are distinguishable, so a caller can tell "this will never work" from "not
+right now". Both refusals carry `not-executed`, because nothing was typed.
+
+A write the runtime rejects once delivery has started states no outcome, so a caller reads it as `unknown`. The manager's other
+control refusals follow the same rule: one raised before the command's first effect, such as a denied caller, a stale target or a
+missing persona file, carries `not-executed`. See [cli.mdx](cli-agent-control.mdx#input).
+
+## Grants [#grants]
+
+There is no broad control credential. A caller holds one capability row per command it is allowed to send, and minting maps each
+named capability to the request subjects it needs and no others. The manager serves over a scoped serve credential that can answer
+and reply but cannot, for instance, write another endpoint's records or forge a goal terminal; the goal-fact writer and the
+session writer are separate, narrowly scoped credentials the broker fences by subject.
+
+Authorization is checked at the serving boundary, and for actions it linearises at acceptance: a spawn refused there mints no
+reservation and leaves no process. See [SPEC §13.9](../SPEC.md#139-authority-boundary) and [identity &
+auth](identity-and-auth.mdx).
+
+A carried resume transcript never rides the rails. The operator-only `transcript-receive` command answers whether to upload and
+hands back a one-time claim for `spawn`, and the bytes travel through the target instance's own transfer bucket under two one-shot
+credentials: a writer the operator mints for that one transcript, and a reader the target instance mints for its own bucket, or
+that the host issues a remote manager through its `transferReader` authority operation.

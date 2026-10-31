@@ -22,7 +22,7 @@ driver's is — kept in the host with the effect seam bridged over a message por
 The language is defined by [`spec/cotal-lang.md`](../../spec/cotal-lang.md) (normative; every
 `js` block in it is validated by this package's surface suite) and its wire footprint by
 [SPEC.md §14](../../SPEC.md#14-workflow-runs-v05). The guide is
-[docs/workflows.md](../../docs/workflows.md).
+[docs/workflows.md](../../docs/workflows.mdx).
 
 ## Use
 

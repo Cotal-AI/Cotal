@@ -281,7 +281,7 @@ The child does not inherit the manager's full environment. Host-session markers 
 `CLAUDE_CODE_CHILD_SESSION` and `CLAUDECODE`, unrelated service secrets, and environment-only
 capabilities are absent unless explicitly allowed. A seat's transcript and resume behavior does not
 depend on whether an ancestor ran `cotal up` inside another agent. Connection material uses a
-[private file](#launch-material), as described in [Identity and auth](identity-and-auth.md).
+[private file](#launch-material), as described in [Identity and auth](identity-and-auth.mdx).
 
 Enrollment inputs are launcher-only secrets. `spawn` removes `COTAL_ENROLLMENT_FILE` and
 `COTAL_ENROLLMENT_URL` from the connector's child environment. `spawn.env` cannot list them.

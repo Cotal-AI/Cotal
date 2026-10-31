@@ -113,7 +113,7 @@ The per-space directory keyed by principal. Each record reports a participant's 
 
 ## Principal (`owner.actor`)
 
-An instance's wire identity, formed from two routing tokens. The owner identifies the account the instance acts for. The actor is its handle within that owner. Authenticated owners use derived `u_…` tokens. Open mode uses `local`. The connection nkey is a transport credential. See [SPEC §2](../SPEC.md#2-identity) and [Identity and auth](identity-and-auth.md).
+An instance's wire identity, formed from two routing tokens. The owner identifies the account the instance acts for. The actor is its handle within that owner. Authenticated owners use derived `u_…` tokens. Open mode uses `local`. The connection nkey is a transport credential. See [SPEC §2](../SPEC.md#2-identity) and [Identity and auth](identity-and-auth.mdx).
 
 ## Profile
 
@@ -125,7 +125,7 @@ A privileged role that prepares streams, durables, and agent read-ACL records du
 
 ## Retirement
 
-The terminal teardown of a lifecycle when an agent is permanently removed, such as by despawn or terminal supervision escalation. It settles accepted work, revokes and evicts credentials, and records retirement before releasing the name. A supervised restart preserves the lifecycle UID. See [SPEC §13.1](../SPEC.md#131-lifecycle-identity) and [Identity and auth](identity-and-auth.md).
+The terminal teardown of a lifecycle when an agent is permanently removed, such as by despawn or terminal supervision escalation. It settles accepted work, revokes and evicts credentials, and records retirement before releasing the name. A supervised restart preserves the lifecycle UID. See [SPEC §13.1](../SPEC.md#131-lifecycle-identity) and [Identity and auth](identity-and-auth.mdx).
 
 ## Role
 
