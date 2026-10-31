@@ -60,7 +60,7 @@
     "cotal": "tsx bin/cotal.ts",
     "changeset": "changeset",
     "version": "changeset version",
-    "ci:version": "pnpm build && pnpm changeset version && pnpm gen:tooldocs && pnpm --filter @cotal-ai/connector-claude-code build && node scripts/materialize-claude-plugin.mjs",
+    "ci:version": "pnpm build && pnpm changeset version && pnpm gen:tooldocs && pnpm --filter @cotal-ai/connector-claude-code build && node scripts/check-mcp-docs-stamp.test.mjs && node scripts/materialize-claude-plugin.mjs",
     "ci:publish": "pnpm changeset publish",
     "release:cut": "node scripts/release-cut.mjs",
     "smoke": "tsx packages/core/smoke.ts",
