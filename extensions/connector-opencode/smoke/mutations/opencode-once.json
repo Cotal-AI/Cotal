@@ -15,8 +15,9 @@
     "M2 drops the 1.x claim. The release then seals nothing, the task stays offerable, and the error",
     "retry sends it a second time: the duplicate run this feature exists to prevent.",
     "",
-    "M4 drops the 2.x claim. A native prompt typed while the submission is in flight peeks the task as",
-    "still pending and carries it too.",
+    "M4 drops the 2.x claim. A release then seals nothing, so a submission that fails leaves the task",
+    "offerable and the next drive sends it again. A native prompt during the submission no longer peeks",
+    "it, because the shared batch carries nothing while one is open.",
     "",
     "M5 drops the 1.x exit registration, so a once seat whose report cannot land has no teardown to run.",
     "",
@@ -56,7 +57,7 @@
       "file": "extensions/connector-opencode/src/plugin2.ts",
       "find": "    if (turnPeek && agent.claimTurns(turnPeek.goalIds)) {\n      turnIds = turnPeek.goalIds;\n      parts.push(turnPeek.text);",
       "replace": "    if (turnPeek) {\n      turnIds = turnPeek.goalIds;\n      parts.push(turnPeek.text);",
-      "expectRed": "2.x: a native prompt meanwhile does not carry the claimed task"
+      "expectRed": "2.x: a failed submission seals the task it carried"
     },
     {
       "name": "M5 the 1.x plugin registers no once exit",

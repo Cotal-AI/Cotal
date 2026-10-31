@@ -423,21 +423,29 @@ try {
   await until(() => stateOf(uid2, "h2") === "confirmed");
   check("2.x: the landed submission confirms the handoff", stateOf(uid2, "h2") === "confirmed", stateOf(uid2, "h2"));
 
-  offer("Duo", onceRow("h3", "taken by a 2.x native prompt"));
-  await sleep(500);
-  const native2 = { sessionID: SID2, prompt: { text: "native prompt" } };
-  promptHook(native2);
-  check("2.x: a native prompt while a turn runs carries a pending task", native2.prompt.text.includes("taken by a 2.x native prompt"), native2.prompt.text);
-  check("2.x: ...and confirms the handoff", stateOf(uid2, "h3") === "confirmed", stateOf(uid2, "h3"));
-
-  // ── 2.x: a turn that ends before the submission's answer arrives. Each event carries the
-  // session's durable log position, as the server's event stream does.
+  // Each event below carries the session's durable log position, as the server's event stream does.
   let seq = 0;
   const exec2 = (type: string, at = ++seq, session = SID2) =>
     ctx.feed({ type, data: { sessionID: session }, durable: { aggregateID: session, seq: at } } as never);
   const laterTurn2 = async () => { exec2("session.execution.started"); exec2("session.execution.succeeded"); await sleep(300); };
-  // The turn that carried h2 and h3 ends, so the session is free for a submission again.
+  // The turn that carried h2 ends, so the session is free for a submission again.
   await laterTurn2();
+
+  // A turn the host runs holds the session with no batch of this plugin's open, as 1.x's busy turn does.
+  exec2("session.execution.started");
+  await sleep(100);
+  const beforeHost = prompts.length;
+  offer("Duo", onceRow("h3", "taken by a 2.x native prompt"));
+  await sleep(500);
+  check("2.x: a once task offered while a host turn runs is not driven", prompts.length === beforeHost, prompts.slice(beforeHost));
+  const native2 = { sessionID: SID2, prompt: { text: "native prompt" } };
+  promptHook(native2);
+  check("2.x: a native prompt queued meanwhile carries it", native2.prompt.text.includes("taken by a 2.x native prompt"), native2.prompt.text);
+  check("2.x: ...and confirms the handoff", stateOf(uid2, "h3") === "confirmed", stateOf(uid2, "h3"));
+  exec2("session.execution.succeeded");
+  await sleep(300);
+
+  // ── 2.x: a turn that ends before the submission's answer arrives.
 
   for (const [g, end] of [["h4", "succeeded"], ["h5", "failed"], ["h6", "interrupted"]] as const) {
     const open2 = holdAnswer();
