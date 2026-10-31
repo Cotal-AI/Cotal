@@ -284,6 +284,11 @@ absent. The reported path is kept byte for byte, whitespace included; an empty s
 | `createRuntime`, `Runtime` *(type)* | `@cotal-ai/manager` | resolve the spawn backend (pty built in). |
 | `liveKvEntries(kv, filterOrOptions?, options?)`, `LiveKvEntriesOptions` *(type)* | `@cotal-ai/core` | read live KV entries in one finite scan. Pass `{ signal }` as the second argument or after a key filter to cancel. An interrupted scan throws `IncompleteKvScan`; cancellation throws the signal reason, including during an empty-bucket bind. The scan deletes only its owned consumers, including each one nats.js rebuilt from it, after the broker has answered every create those rebuilds sent. A not-found delete counts as gone, a refused one leaves the consumers to broker inactivity expiry (which also covers a crash), and any other delete failure is thrown, as is a not-found delete of a consumer whose create got no reply from the broker before a timeout or a closed connection. A cleanup failure is thrown only when the scan would otherwise return; the scan's own error, its cancellation reason and `IncompleteKvScan` take precedence. |
 
+`remoteManagerServePrincipal(owner, instanceId)` from `@cotal-ai/core` derives the manager's
+serve actor and serializes it through `principalKey`, validating both tokens. Use it when a
+host derives the serve principal from an instance id. APIs that already receive a serve actor
+serialize that supplied actor with `principalKey(owner, serveActor).key`.
+
 The remote manager authority parser accepts `renewStandingBundle` and `renewRunDriver` only with
 an assigned account nkey, the current manager process epoch, and a host-authenticated registration
 proof. A run renewal also names its active holder, takeover, epoch, fencing token, and the two
