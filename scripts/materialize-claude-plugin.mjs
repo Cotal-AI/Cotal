@@ -15,6 +15,7 @@
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { checkMcpDocsStamp } from "./check-mcp-docs-stamp.mjs";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const connector = join(repoRoot, "extensions", "connector-claude-code");
@@ -55,13 +56,8 @@ function verify(name, dir) {
   for (const ref of referencedPaths(dir))
     if (!existsSync(join(dir, ref))) throw new Error(`materialize-claude-plugin: ${name} references ${ref}, which is not in the plugin directory`);
   if (name === "cotal") {
-    // The docs bundle inside mcp.cjs is stamped from bin/package.json at build time, so a bundle
-    // built before `changeset version` carries the previous release under the new manifest version.
-    // The bundle is built with `--minify-whitespace`, which closes the gap after the key, so match
-    // the pair rather than one spelling of it.
-    const stamp = new RegExp(`"version":\\s*${JSON.stringify(version).replace(/\./g, "\\.")}`);
-    if (!stamp.test(readFileSync(join(dir, "dist", "mcp.cjs"), "utf8")))
-      throw new Error(`materialize-claude-plugin: dist/mcp.cjs was not built at ${version}; rebuild @cotal-ai/connector-claude-code first`);
+    // The standalone constant also stamps the MCP server. The payload itself may be compressed.
+    checkMcpDocsStamp(readFileSync(join(dir, "dist", "mcp.cjs"), "utf8"), version);
   }
   if (name === "cotal-skills") {
     const skills = readdirSync(join(dir, "skills"), { withFileTypes: true }).filter((e) => e.isDirectory() && existsSync(join(dir, "skills", e.name, "SKILL.md")));
