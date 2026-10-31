@@ -832,7 +832,6 @@ const REAL_PROCESS_ENV_SCRUB_FILES = new Set([
   "bin/smoke/manager-stop-reaps-agents.smoke.ts",
   "bin/smoke/persona-agent.smoke.ts",
   "extensions/connector-opencode/smoke/events-release.smoke.ts",
-  "implementations/cli/smoke/up-multi-space-render-live.smoke.ts",
   "implementations/cli/smoke/up-per-space-membership-live.smoke.ts",
   "implementations/manager/smoke/_probe-late-delivery.ts",
   "implementations/manager/smoke/_probe-live-socket-gap.ts",
@@ -940,13 +939,13 @@ assert.ok(
 );
 assert.equal(
   realProcessEnvScrubSpreads,
-  15,
-  "the measured module-scope process.env scrub population changed from 11 files / 15 spreads",
+  14,
+  "the measured module-scope process.env scrub population changed from 10 files / 14 spreads",
 );
 assert.equal(
   [...REAL_PROCESS_ENV_SCRUB_FILES].filter((file) => stripped.includes(file)).length,
-  11,
-  "the measured module-scope process.env scrub population no longer has 11 safe files",
+  10,
+  "the measured module-scope process.env scrub population no longer has 10 safe files",
 );
 // Every exemption must correspond to a file that still exists and still spreads; a stale entry is a
 // waiver nobody is checking.
