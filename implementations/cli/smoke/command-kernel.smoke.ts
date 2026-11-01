@@ -1601,7 +1601,8 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
 {
   // A host that granted a managed agent other channels than it asked for: the receipt shows what was
   // granted on one line, and the result `--json` writes carries both lists.
-  const { managedLaunchAcl, managedLaunchView } = await import("../src/commands/spawn.js");
+  const { managedLaunchView } = await import("../src/commands/spawn.js");
+  const { managedLaunchAcl } = await import("@cotal-ai/workspace/launch");
   const { renderReport } = await import("@cotal-ai/workspace");
   const acl = { requested: { allowSubscribe: [">"], allowPublish: [">"] }, effective: { allowSubscribe: ["general"], allowPublish: [] } };
   assert.deepEqual(managedLaunchAcl(acl), acl, "the manager's acl field is carried as it was sent");

@@ -122,6 +122,7 @@ import {
   resolveMeshTarget,
   resolveControlTarget,
 } from "@cotal-ai/workspace";
+import { readManagedLaunch, requestManagedLaunch, type ManagedLaunchResult } from "@cotal-ai/workspace/launch";
 import { c, stderrLine } from "../ui.js";
 import { liveMeshNames } from "../lib/live-names.js";
 import { displayCmd } from "../lib/self-exec.js";
@@ -154,7 +155,7 @@ import {
   verifyUserExchange,
   type UserBundle,
 } from "./meshes-add.js";
-import { askManager, describeUnanswered, liveManagerIds, managerRailGone, refuseUnregisteredManager, refuseWithoutLiveManager, START_TIMEOUT_MS, withControlConnection, type ManagerRequestIntent, type ManagerRequestReceipt } from "@cotal-ai/workspace/control";
+import { askManager, describeUnanswered, liveManagerIds, managerRailGone, refuseUnregisteredManager, refuseWithoutLiveManager, START_TIMEOUT_MS, withControlConnection } from "@cotal-ai/workspace/control";
 
 const ENROLLMENT_URL_ENV = "COTAL_ENROLLMENT_URL";
 const ENROLLMENT_FILE_ENV = "COTAL_ENROLLMENT_FILE";
@@ -559,48 +560,6 @@ async function refuseRuntimeHere(runtime: string, t: { space: string; root?: str
   catch (error) { throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the requested runtime did not pass preflight on this machine, where the selected manager runs; nothing was launched", { target: { space: t.space, managerInstanceId: serving ?? live?.[0] ?? null, runtime }, remedy: error instanceof Error ? error.message : "inspect the selected runtime provider" }); }
 }
 
-export interface ManagedLaunchResult {
-  kind: "managed-launch";
-  name: string;
-  id: string;
-  lifecycleUid: string;
-  space: string;
-  managerInstanceId: string;
-  harness: string;
-  runtime: string;
-  role: string | null;
-  request: ManagerRequestReceipt | null;
-  intent: ManagerRequestIntent | null;
-  readiness: "joined";
-  requestedModel: string | null;
-  detached: boolean;
-  /** Whether this seat's runtime opens a terminal stream, as its manager reports: false means no
-   *  `cotal attach` can open one here and this launch never tried. Null when the manager is too old
-   *  to report it, which is the only case that still finds out by attaching. */
-  streamsTerminal: boolean | null;
-  /** The channels the agent asked to read and post on and the ones its host granted, when the host
-   *  granted other ones. Null when it granted what was asked. */
-  acl: ManagedLaunchAcl | null;
-}
-
-/** A managed agent's read and post channels as asked for and as granted. */
-export interface ManagedLaunchAcl {
-  requested: { allowSubscribe: string[]; allowPublish: string[] };
-  effective: { allowSubscribe: string[]; allowPublish: string[] };
-}
-
-/** The manager's `acl` launch field: null when the manager sent none, undefined when it cannot be read. */
-export function managedLaunchAcl(value: unknown): ManagedLaunchAcl | null | undefined {
-  if (value === undefined) return null;
-  const lists = (raw: unknown) => {
-    const { allowSubscribe, allowPublish } = (raw ?? {}) as { allowSubscribe?: unknown; allowPublish?: unknown };
-    const channels = (list: unknown): list is string[] => Array.isArray(list) && list.every((channel) => typeof channel === "string");
-    return channels(allowSubscribe) && channels(allowPublish) ? { allowSubscribe: [...allowSubscribe], allowPublish: [...allowPublish] } : undefined;
-  };
-  const requested = lists((value as { requested?: unknown } | null)?.requested), effective = lists((value as { effective?: unknown } | null)?.effective);
-  return requested && effective ? { requested, effective } : undefined;
-}
-
 const channelList = (channels: readonly string[]): string => channels.length ? channels.join(", ") : "none";
 
 export interface ManagedLaunchObserver {
@@ -712,20 +671,20 @@ export async function launchManagedPersona(
   const { ref, from: personaFrom } = spawnPersona(values.config, positionals, { space: t.space, preferences: cachedPreferences() });
   const managerConfigRef = values.config ?? (personaFrom !== undefined ? ref : undefined);
   const defaultAgent = callerHarness(t.space);
-  let resumeAgent: string | undefined;
-  let resumeClaim: string | undefined;
+  let resumeClaim: { claim: string; agent: string } | undefined;
   if (values.resume !== undefined) {
     // Without a flag the harness is the persona pin or a default, which only the target manager
     // can read: ask it, so the carry looks with the connector the launch runs (#2899).
-    resumeAgent = values.agent ?? await launchAgentOrExit(t, on, { name: ref, config: managerConfigRef, defaultAgent });
-    resumeClaim = await carryTranscriptOrExit(flags, on, values.resume, resumeAgent);
+    const agent = values.agent ?? await launchAgentOrExit(t, on, { name: ref, config: managerConfigRef, defaultAgent });
+    const claim = await carryTranscriptOrExit(flags, on, values.resume, agent);
+    if (claim !== undefined) resumeClaim = { claim, agent };
   }
   // The report that answers names the mesh in its heading, so this block names it once, in a field.
   const toStdout = !observer && presentationOf(values) !== "json";
   (toStdout ? console.log : console.error)(renderReport({ sections: [{ title: "Managed launch", blocks: [{ kind: "fields", rows: [["Space", t.space], ["Manager selector", on ?? t.auth.managerInstanceId ?? "native class selection"], ["Persona", ref], ["File source", managerConfigRef ? `${managerConfigRef} · manager execution host` : "selected manager's persona catalog"], ["File transfer", "none"]] }, { kind: "lines", lines: [{ text: "The accepting manager validates its own visible file before allocation. No local file is uploaded, and a pin never selects a replacement manager.", tone: "hint" }] }] }] }, presentationOf(values) === "plain" ? "plain" : "rich", toStdout ? process.stdout : process.stderr));
   for (const line of wrapWords("waiting for the manager: it answers when it refuses the launch, or when the agent joins or exits (at most about 30s) …", terminalWidth(process.stderr))) console.error(c.dim(line));
-  const start = () => askManager(cliControl, t.space, t.server, "start", {
-    name: ref,
+  const start = () => requestManagedLaunch({
+    persona: ref,
     identity: values.name,
     role: values.role,
     // #869: keep an explicit `--agent` and the invoking operator's default (COTAL_DEFAULT_AGENT or a
@@ -741,8 +700,8 @@ export async function launchManagedPersona(
     ...(values.restarts !== undefined ? { supervise: { restarts: Number(values.restarts), windowMs: Number(values["restart-window"]) } } : {}),
     launchOptions,
     cwd,
-    resume: values.resume, // host-local session id; the manager preflights connector resume support
-    ...(resumeClaim !== undefined ? { resumeClaim, resumeAgent } : {}),
+    resume: values.resume,
+    resumeClaim,
     prompt: values.prompt,
     shareTools: parseShareSelection(values["share-tools"]),
     subscribe: parseCommaList(values.subscribe),
@@ -756,7 +715,7 @@ export async function launchManagedPersona(
     // #159 B1: the manager replies only on a REAL outcome (presence join / process exit / ~30s
     // readiness backstop) — the start request must outlive that window, not the 5s op default.
     // `--on <instance>` pins the spawn to that exact manager instance (P2 item 3 multi-manager).
-  }, t.auth, "owner", START_TIMEOUT_MS, { instanceId: on });
+  }, (args) => askManager(cliControl, t.space, t.server, "start", args, t.auth, "owner", START_TIMEOUT_MS, { instanceId: on }));
   // A refusal before execution launched nothing, so the launch is sent again once a name held by a
   // lifecycle that is not running is released. A name that runs is not launched a second time.
   let reply: Awaited<ReturnType<typeof start>>;
@@ -829,20 +788,10 @@ export async function launchManagedPersona(
     const unknown = reply.nativeOutcome !== "executed" || reply.unanswered;
     throw new CommandFailure(unknown ? "unknown" : "failed", unknown ? "OPERATION_UNKNOWN" : "OPERATION_FAILED", reply.error ? oneLine(reply.error) : "the manager did not confirm launch readiness", { target, native, remedy: "inspect `cotal ps` and the selected manager before retrying; this launch was not submitted again" });
   }
-  const d = reply.data as { name?: unknown; id?: unknown; lifecycleUid?: unknown; role?: string; agent?: unknown; mode?: unknown; streamsTerminal?: unknown; eventsNotice?: string; acl?: unknown };
-  if (!d || typeof d.name !== "string" || typeof d.id !== "string" || typeof d.lifecycleUid !== "string" || typeof d.agent !== "string" || typeof d.mode !== "string" || !reply.managerInstanceId)
-    throw new CommandFailure("partial", "OPERATION_PARTIAL", "the manager reported a successful launch but did not supply the identity and manager needed for a safe handoff", { target, changed: [{ kind: "managed-launch", readinessReported: true }], remedy: "inspect `cotal ps` before doing anything else; do not relaunch" });
-  const acl = managedLaunchAcl(d.acl);
-  if (acl === undefined)
-    throw new CommandFailure("partial", "OPERATION_PARTIAL", "the agent joined, but the manager's report of the channels its host granted could not be read; no replacement was launched", { target, changed: [{ kind: "managed-launch", readinessReported: true }], remedy: "inspect `cotal ps` before doing anything else; do not relaunch" });
-  // The manager's own answer about the runtime it spawned through. A manager too old to report it
-  // leaves null, and that launch finds out by attaching, as every launch used to: the CLI cannot
-  // know better from here, and reading an absent field as "no stream" would leave a pty foreground
-  // spawn unattached against every manager below this version.
-  const streamsTerminal = typeof d.streamsTerminal === "boolean" ? d.streamsTerminal : null;
-  const result: ManagedLaunchResult = { kind: "managed-launch", name: d.name, id: d.id, lifecycleUid: d.lifecycleUid, space: t.space, managerInstanceId: reply.managerInstanceId, harness: d.agent, runtime: d.mode, role: d.role ?? null, request: reply.request ?? null, intent: reply.intent ?? null, readiness: "joined", requestedModel: values.model ?? null, detached: values.detach === true, streamsTerminal, acl };
+  const { result, eventsNotice } = readManagedLaunch(reply, { space: t.space, requestedModel: values.model ?? null, detached: values.detach === true }, target);
+  const { streamsTerminal } = result;
   const presentation = presentationOf(values);
-  const warnings: OutputWarning[] = d.eventsNotice ? [{ code: "EVENT_PLANE_NOTICE", target, message: d.eventsNotice }] : [];
+  const warnings: OutputWarning[] = eventsNotice ? [{ code: "EVENT_PLANE_NOTICE", target, message: eventsNotice }] : [];
   if (observer) {
     try { observer.ready(result, warnings); }
     catch { throw new CommandFailure("partial", "OPERATION_PARTIAL", "the agent joined, but the composite command could not record its native readiness; no replacement was launched", { target, changed: [result], remedy: "inspect the original agent and manager before another launch" }); }
@@ -856,14 +805,14 @@ export async function launchManagedPersona(
   if (streamsTerminal === false) return;
   // A partial names the step that works on this seat, on the manager that runs it: ps, then attach
   // where the runtime streams a terminal, or its own session where it streams none.
-  const where = `--space ${shellWord(t.space)} --on ${shellWord(reply.managerInstanceId)}`;
+  const where = `--space ${shellWord(t.space)} --on ${shellWord(result.managerInstanceId)}`;
   const ps = `${displayCmd()} ps ${where}`;
   const next = async (): Promise<string> => (streamsTerminal ?? await registeredStreamsTerminal(result.runtime, t.space)) === false
     ? `nothing was relaunched; check the agent with ${codeSpan(ps)} and watch it in the manager's ${result.runtime} session, which has no terminal to attach`
     : `nothing was relaunched; check the agent with ${codeSpan(ps)}, then attach to it with ${codeSpan(`${displayCmd()} attach ${shellWord(result.name)} ${where}`)}`;
   let verdict: Awaited<ReturnType<typeof attachSeat>>;
   try {
-    verdict = await attachSeat({ space: t.space, server: t.server, creds: values.creds, name: d.name, expectedTarget: { id: d.id, lifecycleUid: d.lifecycleUid }, asSeat: seat !== undefined }, { on: reply.managerInstanceId, reconnect: true, onRefusal: "throw" });
+    verdict = await attachSeat({ space: t.space, server: t.server, creds: values.creds, name: result.name, expectedTarget: { id: result.id, lifecycleUid: result.lifecycleUid }, asSeat: seat !== undefined }, { on: result.managerInstanceId, reconnect: true, onRefusal: "throw" });
   } catch (e) {
     throw new CommandFailure("partial", "OPERATION_PARTIAL", "the agent joined, but its terminal could not be attached; it was not relaunched", { target, changed: [result], native: { detail: oneLine((e as Error).message) }, remedy: await next() });
   }
@@ -877,7 +826,7 @@ export async function launchManagedPersona(
   }
   if (verdict.kind === "failed") throw new CommandFailure("partial", "OPERATION_PARTIAL", "the agent joined, but attachment did not complete; no replacement was launched", { target, changed: [result], native: { detail: oneLine(verdict.message) }, remedy: await next() });
   if (verdict.kind === "gone" && observer) throw new CommandFailure("partial", "OPERATION_PARTIAL", "the agent joined, but its exact native terminal was unavailable before setup could open the view; no replacement was launched", { target, changed: [result], remedy: `check the original lifecycle with ${codeSpan(ps)} before another startup` });
-  console.error(renderReport({ sections: [{ title: verdict.kind === "gone" ? "Attach target unavailable" : verdict.reason === "detached" ? "Detached" : "Attach session ended", blocks: [{ kind: "fields", rows: [["Agent", d.name], ["Identity", d.id], ["Manager", reply.managerInstanceId]] }, { kind: "lines", lines: [{ text: "Leaving the view sent no stop request. The original lifecycle was not replaced.", tone: "hint" }] }] }] }, "rich", process.stderr));
+  console.error(renderReport({ sections: [{ title: verdict.kind === "gone" ? "Attach target unavailable" : verdict.reason === "detached" ? "Detached" : "Attach session ended", blocks: [{ kind: "fields", rows: [["Agent", result.name], ["Identity", result.id], ["Manager", result.managerInstanceId]] }, { kind: "lines", lines: [{ text: "Leaving the view sent no stop request. The original lifecycle was not replaced.", tone: "hint" }] }] }] }, "rich", process.stderr));
 }
 
 /** Whether `runtime` streams a terminal, as a provider registered in this CLI or installed as its
