@@ -400,6 +400,8 @@ code. Endpoint, authentication details and provider prose remain private.
 
 During that readiness turn, `provider_auth_refused` names an OpenAI-compatible HTTP 401 response.
 `provider_payment_required` names an HTTP 402 response, such as an exhausted provider balance.
+`provider_forbidden` names an HTTP 403 response. `provider_rate_limited` names an HTTP 429
+response that Jcode's own retries did not outlast.
 `provider_request_failed` means Jcode could not send the OpenAI-compatible request. It does not
 establish whether the cause was a stopped provider, routing, or another transport failure.
 These fixed codes reach the workflow step error and `cotal run show`. Provider URLs,
