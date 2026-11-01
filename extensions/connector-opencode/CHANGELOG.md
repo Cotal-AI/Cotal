@@ -1,5 +1,11 @@
 # @cotal-ai/connector-opencode
 
+## 0.133.7
+
+### Patch Changes
+
+- 1cf7309: A launcher whose agent session never comes up now exits 1 even when the opencode server exits cleanly on SIGTERM, instead of reporting the failed boot as exit 0.
+
 ## 0.133.6
 
 No changes in this release.

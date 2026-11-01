@@ -1,5 +1,16 @@
 # @cotal-ai/auth
 
+## 0.133.7
+
+### Patch Changes
+
+- 55a7597: Rename the private envelope-conflict check in the lifecycle saga and the admission mediator so it no longer shadows core's exported `isCasLoss`. No behaviour change.
+- Updated dependencies [dd729aa]
+- Updated dependencies [55a7597]
+  - @cotal-ai/core@0.133.7
+  - @cotal-ai/workspace@0.133.7
+  - @cotal-ai/lang@0.133.7
+
 ## 0.133.6
 
 ### Patch Changes
