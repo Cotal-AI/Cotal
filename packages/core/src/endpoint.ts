@@ -2718,7 +2718,7 @@ export class CotalEndpoint extends EventEmitter {
         }
         const parsed = parseSubject(m.subject);
         if (decoded !== undefined && (parsed?.kind === "chat" || parsed?.kind === "inst" || parsed?.kind === "svc")) {
-          if (!isRecord(decoded) || !decoded.from || decoded.from.id !== parsed.sender || !isPrincipalOwnerToken(parsed.owner)) continue;
+          if (!isFromSubjectSender(decoded, parsed)) continue;
           decoded = authenticatedMessage(decoded, parsed);
         }
         tap.handler(m.subject, decoded);
@@ -2793,7 +2793,7 @@ export class CotalEndpoint extends EventEmitter {
       // the server policed who could publish; the payload `from` is advisory and must
       // match. Reject before the handler acts on a request claiming a forged sender.
       const parsed = parseSubject(m.subject);
-      if (!parsed || req.from?.id !== parsed.sender || !isPrincipalOwnerToken(parsed.owner)) {
+      if (!parsed || !isFromSubjectSender(req, parsed)) {
         this.emit(
           "error",
           new Error(
@@ -5576,7 +5576,7 @@ export class CotalEndpoint extends EventEmitter {
           let msg: CotalMessage;
           try { msg = m.json<CotalMessage>(); } catch { continue; }
           const parsed = parseSubject(m.subject);
-          if (!isRecord(msg) || !parsed || msg.from?.id !== parsed.sender || !isPrincipalOwnerToken(parsed.owner) || msg.from.id === owner) continue;
+          if (!parsed || !isFromSubjectSender(msg, parsed) || msg.from.id === owner) continue;
           await this.publishDinbox(owner, lifecycleUid, { msg, channel, seq: m.seq, reason: "durable-channel", generation });
           copied++;
         }
@@ -6524,7 +6524,7 @@ export class CotalEndpoint extends EventEmitter {
     const channel = parsed.rest;
     let msg: CotalMessage;
     try { msg = m.json<CotalMessage>(); } catch { m.ack(); return; }
-    if (!isRecord(msg) || !msg.from || msg.from.id !== parsed.sender || !isPrincipalOwnerToken(parsed.owner)) { m.ack(); return; } // authenticity (owner must be a real principal, not an old-shape alias)
+    if (!isFromSubjectSender(msg, parsed)) { m.ack(); return; } // authenticity (SPEC §5)
     const seq = m.seq;
     const normalizedMsg = authenticatedChannelMessage(msg, channel);
     // SECOND FENCE, AT THE COMMIT POINT. The entry check above cannot cover this unit's own awaits:
@@ -7155,7 +7155,7 @@ export class CotalEndpoint extends EventEmitter {
       return undefined;
     }
     const parsed = parseSubject(m.subject);
-    if (!parsed || !msg.from || msg.from.id !== parsed.sender || !isPrincipalOwnerToken(parsed.owner)) {
+    if (!parsed || !isFromSubjectSender(msg, parsed)) {
       m.term();
       this.emit(
         "error",
@@ -7276,7 +7276,7 @@ export class CotalEndpoint extends EventEmitter {
           return;
         }
         if (!isRecord(msg) || !isUsableMessageId(msg.id)) return; // malformed envelope (SPEC sec 5) — live is at-most-once: drop
-        if (!msg.from || msg.from.id !== parsed.sender || !isPrincipalOwnerToken(parsed.owner)) return; // spoof/malformed/old-shape-alias — drop (at-most-once)
+        if (!isFromSubjectSender(msg, parsed)) return; // spoof/malformed/old-shape-alias — drop (at-most-once)
         if (msg.from.id === this.card.id) return; // our own echo
         const delivery: Delivery = { ack: () => {}, nak: () => {}, durable: false }; // live = at-most-once, not acked
         this.emit("message", authenticatedMessage(msg, parsed), delivery, {
@@ -7504,7 +7504,7 @@ export class CotalEndpoint extends EventEmitter {
       // Same authenticity guard as the tail; skip our own echoes in history.
       if (!isRecord(msg) || !isUsableMessageId(msg.id)) continue; // malformed envelope (SPEC sec 5) — history skips
       const parsed = parseSubject(sm.subject);
-      if (!parsed || msg.from?.id !== parsed.sender || !isPrincipalOwnerToken(parsed.owner) || msg.from.id === this.card.id) continue;
+      if (!parsed || !isFromSubjectSender(msg, parsed) || msg.from.id === this.card.id) continue;
       // Backfill only ever reads the chat stream, so the authenticated class is always "channel".
       this.emit("message", authenticatedMessage(msg, parsed), noop, { historical: true, kind: "channel" } satisfies MessageMeta);
       n++;
@@ -7560,7 +7560,7 @@ export class CotalEndpoint extends EventEmitter {
       // Same authenticity guard as the tail/backfill; skip our own echoes.
       if (!isRecord(msg) || !isUsableMessageId(msg.id)) continue; // malformed envelope (SPEC sec 5) — recall skips
       const parsed = parseSubject(sm.subject);
-      if (!parsed || msg.from?.id !== parsed.sender || !isPrincipalOwnerToken(parsed.owner) || msg.from.id === this.card.id) continue;
+      if (!parsed || !isFromSubjectSender(msg, parsed) || msg.from.id === this.card.id) continue;
       collected.push(authenticatedMessage(msg, parsed));
       seqs.push(sm.seq);
     }
@@ -8149,9 +8149,18 @@ function kindFromParsed(kind: ParsedSubject["kind"]): MessageMeta["kind"] {
   }
 }
 
+/** SPEC §5 on receive: a delivery comes from the principal its subject names. The payload is an
+ *  object whose `from.id` is the subject's sender, and the subject's owner is a real principal, not
+ *  an old-shape alias. Every receive path asks this one predicate. What a path does with a refusal
+ *  (drop, skip, ack, term or reject) and its own extra checks (a usable id, its own echo) stay with
+ *  the path. */
+function isFromSubjectSender(msg: unknown, parsed: ParsedSubject): boolean {
+  return isRecord(msg) && isRecord(msg.from) && msg.from.id === parsed.sender && isPrincipalOwnerToken(parsed.owner);
+}
+
 /** Routing fields in the envelope are advisory. The broker forge-locks sender (and for DMs,
- *  recipient) into the subject. Callers MUST already have rejected a missing `from`, an
- *  unparseable subject, or `from.id !== parsed.sender` (SPEC §5). This derives the remaining
+ *  recipient) into the subject. Callers MUST already have passed {@link isFromSubjectSender}
+ *  (SPEC §5). This derives the remaining
  *  routing tokens from the subject for rows that survived — it does not rewrite a mismatched
  *  `from.id`. Live tails, channel backfill, and channel recall skip the mismatch; history
  *  does the same (#388). The row's other fields pass through UNTOUCHED, so what the caller's
@@ -8228,8 +8237,7 @@ function historyMessageFromDelivery(m: { subject: string; json: <T>() => T }): H
   if (!isHistoryDrainEnvelope(raw)) return undefined;
   if (!isVerifiedHistoryRow(raw)) return undefined;
   const parsed = parseSubject(m.subject);
-  if (!parsed || !isPrincipalOwnerToken(parsed.owner)) return undefined;
-  if (raw.from.id !== parsed.sender) return undefined;
+  if (!parsed || !isFromSubjectSender(raw, parsed)) return undefined;
   return authenticatedMessage(raw, parsed);
 }
 
@@ -8279,8 +8287,7 @@ function isReadableMessagePart(value: unknown): boolean {
 
 /**
  * Narrow enough for the type checker and for fail-closed history: object envelope, usable `id`,
- * object `from`. That is what lets `from.id !== parsed.sender` run without throwing, and what
- * lets `authenticatedMessage` take the row without a cast.
+ * object `from`. That is what lets `authenticatedMessage` take the row without a cast.
  *
  * Does NOT verify SPEC §5 message shape. It does not require a string `from.id` (the SPEC §5
  * comparison still rejects a mismatch) or exactly one route key. The members the PUBLIC

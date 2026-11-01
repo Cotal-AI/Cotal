@@ -1,5 +1,54 @@
 # @cotal-ai/manager
 
+## 0.133.4
+
+### Patch Changes
+
+- f20091d: `Manager.startAgent` refuses a `supervise` policy whose `restarts` or `windowMs` is not a positive integer before anything launches, with the same refusal the `spawn` command gives. Before, an in-process caller's bad policy was admitted, the seat launched and joined, and it was then torn down when its seat record refused the policy.
+- Updated dependencies [4b483de]
+  - @cotal-ai/core@0.133.4
+  - @cotal-ai/workspace@0.133.4
+  - @cotal-ai/seat@0.133.4
+
+## 0.133.3
+
+### Patch Changes
+
+- Updated dependencies [22bf7bf]
+  - @cotal-ai/workspace@0.133.3
+  - @cotal-ai/core@0.133.3
+  - @cotal-ai/seat@0.133.3
+
+## 0.133.2
+
+### Patch Changes
+
+- Updated dependencies [3f005b8]
+- Updated dependencies [6ba609a]
+  - @cotal-ai/core@0.133.2
+  - @cotal-ai/workspace@0.133.2
+  - @cotal-ai/seat@0.133.2
+
+## 0.133.1
+
+### Patch Changes
+
+- 1804a8a: A manager stop during a broker outage no longer waits out the outage while retiring its goal-writer and session-ledger connections. These two connections, like the serve connection, now track their transport, and one `retireConnection` helper drains each while it is connected and closes it while the client is reconnecting it. Before, the goal-writer drain waited for the reconnect. The session-ledger stop left the connection's close unawaited after its drain failed.
+- Updated dependencies [ee1b7d4]
+- Updated dependencies [a8f140c]
+- Updated dependencies [b786ccd]
+  - @cotal-ai/core@0.133.1
+  - @cotal-ai/workspace@0.133.1
+  - @cotal-ai/seat@0.133.1
+
+## 0.133.0
+
+### Patch Changes
+
+- @cotal-ai/core@0.133.0
+  - @cotal-ai/seat@0.133.0
+  - @cotal-ai/workspace@0.133.0
+
 ## 0.132.7
 
 ### Patch Changes

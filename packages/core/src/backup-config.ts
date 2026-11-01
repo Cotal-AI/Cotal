@@ -9,6 +9,7 @@ import { nanos } from "@nats-io/transport-node";
 import { endpointAuthorityStoreDefinitions, endpointPlaneStreamNames, recordsKvStreamName, wfjStreamName } from "./endpoint-binding.js";
 import { recordsBucket } from "./endpoint-records.js";
 import { admissionBucket, admissionStoreDefinition } from "./run-admission.js";
+import { spaceDeletionStreams } from "./space-deletion-targets.js";
 import {
   aclBucket,
   anycastBucket,
@@ -60,7 +61,12 @@ export interface SpaceBackupInventory {
  * full artifact; excluded streams are transient, derived, leases, nonportable control state, or the
  * artifact object store. EVERY stream a space owns must appear in one list or the other:
  * {@link validateSpaceBackupInventory} is exact set-equality, so an unenumerated stream fails
- * validation for the WHOLE space, and a missing one fails it the same way. */
+ * validation for the WHOLE space, and a missing one fails it the same way.
+ *
+ * The two lists classify exactly {@link spaceDeletionStreams}, the set `deleteSpace` removes and the
+ * teardown grant names, and this throws when they differ. Without that, a stream added to the
+ * deletion set alone, or classified here alone, would leave backup and teardown disagreeing about
+ * what the space owns, and only the backup side is ever checked against a live space. */
 export function spaceBackupInventory(space: string): SpaceBackupInventory {
   const registry = `KV_${channelBucket(space)}`;
   const backedUp: SpaceBackupStream[] = [
@@ -86,6 +92,16 @@ export function spaceBackupInventory(space: string): SpaceBackupInventory {
     ...endpointPlaneStreamNames(space).filter((name) => !workflow.has(name)).map((name) => ({ name, class: "control" as const })),
     { name: objectStoreStream(artifactBucket(space)), class: "artifact" },
   ];
+  const classified = [...backedUp, ...excluded].map((s) => s.name);
+  const owned = spaceDeletionStreams(space);
+  const unclassified = owned.filter((name) => !classified.includes(name));
+  const unowned = classified.filter((name) => !owned.includes(name));
+  if (unclassified.length || unowned.length || classified.length !== owned.length)
+    throw new Error(
+      `spaceBackupInventory: ${space}'s backup classes and its deletion set disagree ` +
+        `(unclassified: ${unclassified.join(", ") || "none"}; not deleted: ${unowned.join(", ") || "none"}; ` +
+        `${classified.length} classified, ${owned.length} owned)`,
+    );
   return {
     backedUp,
     excluded,

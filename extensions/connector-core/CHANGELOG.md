@@ -1,5 +1,31 @@
 # @cotal-ai/connector-core
 
+## 0.133.4
+
+No changes in this release.
+
+## 0.133.3
+
+### Patch Changes
+
+- Load the MCP SDK's HTTP transport when the HTTP gateway is used, keeping its initialization out of stdio-only startup. Preserve HTTP gateway and fetch-on-use behavior.
+
+## 0.133.2
+
+### Patch Changes
+
+- cb0da93: Exports `MAX_INBOX`, the per-session inbox bound, so the overflow smokes read it instead of restating it.
+
+## 0.133.1
+
+No changes in this release.
+
+## 0.133.0
+
+### Minor Changes
+
+- 1e554e4: Precompute documentation search at build time and load the corpus and compact index only when needed. Search results and scoring are unchanged. Documentation data now lives in two digest-checked files beside each module or bundle; normal packages, plugins and installers include them automatically. Custom integrations that copy or bundle an executable alone must also carry its matching `docs-bundle.bin` and `docs-index.bin` files.
+
 ## 0.132.7
 
 No changes in this release.

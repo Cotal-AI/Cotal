@@ -110,7 +110,7 @@ import { RunHosting } from "./run-hosting.js";
 import { enrolledAcl } from "./remote-authority.js";
 import { rejectionText } from "./rejection-text.js";
 import { controlSession } from "./control-session.js";
-import { MAX_AGENTS, parseResumeCommitArgs, parseResumeControlArgs, parseResumeFinalizeArgs, readSeatRecord, removeSeatRecord, writeSeatRecord, type SeatRecord } from "./resume.js";
+import { MAX_AGENTS, parseResumeCommitArgs, parseResumeControlArgs, parseResumeFinalizeArgs, readSeatRecord, removeSeatRecord, supervisePolicy, writeSeatRecord, type SeatRecord } from "./resume.js";
 import { TranscriptReceiver, type TranscriptClaim, type TranscriptReceiveInput } from "./transcript-receive.js";
 // Unit B (the static §13.1 lifecycle executor): the shared grammar/stores from core plus the
 // manager-side adapter (transport + slot orchestration + the F1 terminal) — see static-lifecycle.ts.
@@ -1484,11 +1484,13 @@ export class Manager {
    *  every (re)connect, so a renewal is adopted without re-registration). Absent on open meshes,
    *  in user mode, and before registration completes. */
   private serviceServe?: { handle: EpServeHandle; nc: NatsConnection; identity: Identity; grant: EpServeGrant; creds?: string };
-  /** #1577: serve connections whose transport is down while the client reconnects them. Such a
-   *  connection is open (`isClosed()` is false under unbounded reconnects) yet the broker holds
-   *  none of its rails, so the liveness responder must not grade it `bound`. Keyed by the
-   *  connection, so a re-dial that swaps in a fresh one starts from its own state. */
-  private readonly serveTransportDown = new WeakSet<NatsConnection>();
+  /** #1577: dedicated connections (serve, goal-writer, session-ledger) whose transport is down while
+   *  the client reconnects them, tracked by {@link trackTransport}. Such a connection is open
+   *  (`isClosed()` is false under unbounded reconnects) yet the broker holds none of its rails, so
+   *  the liveness responder must not grade the serve connection `bound`, and a stop closes rather
+   *  than drains it ({@link retireConnection}). Keyed by the connection, so a re-dial that swaps in a
+   *  fresh one starts from its own state. */
+  private readonly transportDown = new WeakSet<NatsConnection>();
   /** The spawn-as-action SELF-MEDIATED goal-writer connection + ActionContext — a
    *  standing connection DISJOINT from the serve credential, scoped to exactly this endpoint's
    *  goal bind/terminal facts + goal-record writes ({@link goalWriterGrants}). Auth mode mints the
@@ -2266,7 +2268,7 @@ export class Manager {
     // carries the operator's workspace root and pid.
     this.ep.serveLiveness("manager", () => {
       const s = this.serviceServe;
-      return s?.handle && !s.nc.isClosed() && !this.serveTransportDown.has(s.nc) ? "bound" : "unbound";
+      return s?.handle && !s.nc.isClosed() && !this.transportDown.has(s.nc) ? "bound" : "unbound";
     });
     // Unit B (static §13.1): after this instance holds its lease, collect the durable static rows
     // now, but do not let their exact-op terminals make the whole space unreachable. The service
@@ -3634,15 +3636,34 @@ export class Manager {
     const s = this.serviceServe;
     if (!s) return;
     this.serviceServe = undefined;
-    // A drain on a reconnecting connection does not fail: it waits for the reconnect, so the stop
-    // would last as long as the outage. A broker this connection cannot reach has nothing left to
-    // flush, so the retired connection is closed instead.
-    if (this.serveTransportDown.has(s.nc)) {
-      try { await s.nc.close(); } catch { /* best effort */ }
+    await this.retireConnection(s.nc, () => s.handle.stop());
+  }
+
+  /** Retire a dedicated connection on stop: drain it while its transport is up, close it while the
+   *  client is reconnecting it. A drain on a reconnecting connection does not fail, it waits for the
+   *  reconnect, so the stop would last as long as the outage; a broker this connection cannot reach
+   *  has nothing left to flush. `flush` (the serve loop's own drain) runs only while the transport is
+   *  up. Best-effort, so a graceful stop completes its remaining teardown even when the broker is gone. */
+  private async retireConnection(nc: NatsConnection, flush?: () => Promise<unknown>): Promise<void> {
+    if (this.transportDown.has(nc)) {
+      try { await nc.close(); } catch { /* best effort */ }
       return;
     }
-    try { await s.handle.stop(); } catch { /* best effort */ }
-    try { await s.nc.drain(); } catch { try { s.nc.close(); } catch { /* best effort */ } }
+    if (flush) try { await flush(); } catch { /* best effort */ }
+    try { await nc.drain(); } catch { try { await nc.close(); } catch { /* best effort */ } }
+  }
+
+  /** Track a dedicated connection's transport into {@link transportDown} from the first moment:
+   *  nats.js reports `disconnect` when the socket drops and `reconnect` only after it has re-sent the
+   *  connection's subscriptions. If the status stream itself fails, the transport can no longer be
+   *  observed, so it counts as down. */
+  private trackTransport(nc: NatsConnection): void {
+    void (async () => {
+      for await (const st of nc.status()) {
+        if (st.type === "disconnect") this.transportDown.add(nc);
+        else if (st.type === "reconnect") this.transportDown.delete(nc);
+      }
+    })().catch(() => this.transportDown.add(nc));
   }
 
   /** Keep this instance's liveness key fresh, and end the process only when another process holds it.
@@ -6380,7 +6401,14 @@ export class Manager {
     // the lists and the restart policy as admitted.
     opts = ownLists(opts);
     if (opts.resolved) opts.resolved = ownLists(opts.resolved);
-    if (opts.supervise) opts.supervise = { restarts: opts.supervise.restarts, windowMs: opts.supervise.windowMs };
+    if (opts.supervise) {
+      opts.supervise = { restarts: opts.supervise.restarts, windowMs: opts.supervise.windowMs };
+      // The budget is checked here, where it is held, not only at the wire: an in-process caller of
+      // this export is refused before anything launches, rather than getting a seat that joins and is
+      // torn down when its seat record will not take the policy (#3298).
+      const policy = supervisePolicy.safeParse(opts.supervise);
+      if (!policy.success) return { ok: false, error: `supervise.${policy.error.issues[0]?.path.join(".")}: expected a positive integer` };
+    }
     let runtime: Runtime;
     try {
       await this.loadSeatRuntime(opts.runtime);
@@ -8519,15 +8547,7 @@ export class Manager {
       inboxPrefix: `_INBOX_${state.identity.id}`,
       maxReconnectAttempts: -1,
     });
-    // Track the transport from the first moment: nats.js reports `disconnect` when the socket
-    // drops and `reconnect` only after it has re-sent this connection's subscriptions. If the
-    // status stream itself fails, the transport can no longer be observed, so it counts as down.
-    void (async () => {
-      for await (const st of nc.status()) {
-        if (st.type === "disconnect") this.serveTransportDown.add(nc);
-        else if (st.type === "reconnect") this.serveTransportDown.delete(nc);
-      }
-    })().catch(() => this.serveTransportDown.add(nc));
+    this.trackTransport(nc);
     let handle: EpServeHandle;
     try {
       // The typed surface + the derived `describe`. The descriptor stays PUBLIC in static
@@ -8883,6 +8903,7 @@ export class Manager {
       maxReconnectAttempts: -1,
     });
     nc.closed().then((err) => { void this.onGoalWriterConnectionClosed(err ?? undefined); });
+    this.trackTransport(nc);
     gw.nc = nc;
     // The (i) fence resolver (SPEC 13.6): resolve an executing instance's CURRENT gate
     // epoch. This manager reconciles only ITS OWN goals, so it resolves its own
@@ -8956,12 +8977,12 @@ export class Manager {
     console.error(`manager goal-writer standing (endpoint ${MANAGER_ENDPOINT}, ${(this.auth || this.remoteAuthority) ? "scoped cred, §13.1 family-staged" : "open/bare"})`);
   }
 
-  /** Drain the goal-writer connection (best-effort, both exit paths). */
+  /** Retire the goal-writer connection (best-effort, both exit paths). */
   private async stopGoalWriter(): Promise<void> {
     const gw = this.goalWriter;
     if (!gw) return;
     this.goalWriter = undefined;
-    try { await gw.nc.drain(); } catch { try { gw.nc.close(); } catch { /* best effort */ } }
+    await this.retireConnection(gw.nc);
   }
 
   /** Mint the standing `session-ledger` credential and STAGE it into this instance's
@@ -9019,6 +9040,7 @@ export class Manager {
       maxReconnectAttempts: -1,
     });
     nc.closed().then((err) => { void this.onSessionLedgerConnectionClosed(err ?? undefined); });
+    this.trackTransport(nc);
     sw.nc = nc;
   }
 
@@ -9246,7 +9268,8 @@ export class Manager {
 
   /** Tear the session plane down (best-effort, both exit paths): end every live bridge with the
    *  honest `manager-restart` reason (this incarnation is going away; any successor takes a new epoch
-   *  and refuses these grants), then drain each session's own connection and the ledger connection. */
+   *  and refuses these grants), then drain each session's own connection and retire the ledger
+   *  connection ({@link retireConnection}). */
   private async stopSessionPlane(): Promise<void> {
     const plane = this.sessionPlane;
     const sw = this.sessionLedgerConn;
@@ -9255,7 +9278,7 @@ export class Manager {
     // `drain` awaits each session's teardown (connection close, terminal row, credential revoke);
     // `endAll` alone would let the process exit with per-session connections still open.
     try { await plane?.drain("manager-restart"); } catch { /* best effort */ }
-    if (sw) { try { await sw.nc.drain(); } catch { try { sw.nc.close(); } catch { /* best effort */ } } }
+    if (sw) await this.retireConnection(sw.nc);
   }
 
   /** The boot reconcile: a fresh incarnation (a manager restart takes a NEW

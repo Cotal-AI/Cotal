@@ -1,5 +1,42 @@
 # @cotal-ai/workspace
 
+## 0.133.4
+
+### Patch Changes
+
+- Updated dependencies [4b483de]
+  - @cotal-ai/core@0.133.4
+
+## 0.133.3
+
+### Patch Changes
+
+- 22bf7bf: A checked user-auth bundle's type now carries the pinned exchange URL that `checkUserBundle` requires, so callers read `userAuth.endpoints.url` without non-null assertions.
+- @cotal-ai/core@0.133.3
+
+## 0.133.2
+
+### Patch Changes
+
+- 6ba609a: Removing or recording a mesh now fails when a pre-hex registry record of that space cannot be deleted, instead of returning while the record keeps listing the mesh.
+- Updated dependencies [3f005b8]
+  - @cotal-ai/core@0.133.2
+
+## 0.133.1
+
+### Patch Changes
+
+- b786ccd: The comments in `space-segmentation.ts` now name the code they cite. Every one of them cited a line number that had drifted onto unrelated code. The absent-means-mint writer is named as `healMembershipDataCreds` in the CLI's `up` command. The `provisionMembershipCreds` note now says it hardens the per-space directory, which it has done since the kinds moved to per-space resolvers. No behavior changes.
+- Updated dependencies [ee1b7d4]
+- Updated dependencies [a8f140c]
+  - @cotal-ai/core@0.133.1
+
+## 0.133.0
+
+### Patch Changes
+
+- @cotal-ai/core@0.133.0
+
 ## 0.132.7
 
 ### Patch Changes

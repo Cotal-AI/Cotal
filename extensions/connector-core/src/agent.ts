@@ -256,8 +256,8 @@ export function afterRecallMark(a: RecallMark, b: RecallMark): boolean {
 }
 
 /** How many pending messages one session buffers before the overflow valve in
- *  {@link MeshAgent.buffer} evicts. */
-const MAX_INBOX = 200;
+ *  {@link MeshAgent.buffer} evicts. Exported so the overflow smokes read the bound they exercise. */
+export const MAX_INBOX = 200;
 /** How long {@link MeshAgent.takeChosen} waits for the delivery daemon before it lets a caller show
  *  what is already taken. A take not decided by then stays held for a later read. */
 const TAKE_WAIT_MS = 2_000;

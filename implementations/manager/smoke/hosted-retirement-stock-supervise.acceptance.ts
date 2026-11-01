@@ -478,11 +478,13 @@ try {
   grantActor(hostDir, { owner, actor: "admin_requester", scope: ["admin"], allowSubscribe: [], allowPublish: [] });
   const callout = await loadCalloutAuth(hostStore, space);
   if (!callout) throw new Error("host callout material is missing");
+  const participantUserAuth = {
+    provider: "cotal", idp: { url: idpUrl, issuer: origin, audience: origin }, endpoints: { url: secureExchangeUrl },
+  };
+  assertUserAuthInfo(participantUserAuth);
   persistRemoteUserEntry(space, server, participantRoot, {
     space, server, tlsRequired: false,
-    userAuth: assertUserAuthInfo({
-      provider: "cotal", idp: { url: idpUrl, issuer: origin, audience: origin }, endpoints: { url: secureExchangeUrl },
-    }),
+    userAuth: participantUserAuth,
     sentinelCreds: callout.sentinelCreds,
   }, false, false);
   const { findMesh, recordMesh } = await import("@cotal-ai/workspace");
@@ -813,15 +815,17 @@ registry.register({
   process.env.COTAL_HOME = secondHome;
   const secondOwner = await cotalAuthProvider.ownerForLogin({ store: hostStore, dir: hostDir, space });
   grantActor(hostDir, { owner: secondOwner, actor: "cli", scope: ["supervise"], allowSubscribe: [], allowPublish: [] });
+  const secondUserAuth = {
+    provider: "cotal",
+    idp: { url: idpUrl, issuer: origin, audience: origin },
+    endpoints: { url: secureExchangeUrl },
+  };
+  assertUserAuthInfo(secondUserAuth);
   persistRemoteUserEntry(space, server, secondRoot, {
     space,
     server,
     tlsRequired: false,
-    userAuth: assertUserAuthInfo({
-      provider: "cotal",
-      idp: { url: idpUrl, issuer: origin, audience: origin },
-      endpoints: { url: secureExchangeUrl },
-    }),
+    userAuth: secondUserAuth,
     sentinelCreds: callout.sentinelCreds,
   }, false, false);
   const foreignEntry = findMesh(space);

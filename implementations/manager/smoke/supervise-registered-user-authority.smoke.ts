@@ -315,15 +315,18 @@ try {
 
   const callout = await loadCalloutAuth(hostStore, space);
   if (!callout) throw new Error("host callout material is missing after preparation");
+  if (!service.publicUrl) throw new Error("host auth service did not expose a public exchange");
+  const participantUserAuth = {
+    provider: "cotal",
+    idp: { url: idpUrl, issuer: origin, audience: origin },
+    endpoints: { url: service.publicUrl },
+  };
+  assertUserAuthInfo(participantUserAuth);
   persistRemoteUserEntry(space, server, participantRoot, {
     space,
     server,
     tlsRequired: false,
-    userAuth: assertUserAuthInfo({
-      provider: "cotal",
-      idp: { url: idpUrl, issuer: origin, audience: origin },
-      endpoints: { url: service.publicUrl },
-    }),
+    userAuth: participantUserAuth,
     sentinelCreds: callout.sentinelCreds,
   }, false, false);
   check("participant registry entry is remote user mode", existsSync(participantDir));

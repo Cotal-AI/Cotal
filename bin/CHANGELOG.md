@@ -1,5 +1,90 @@
 # cotal-ai
 
+## 0.133.4
+
+### Patch Changes
+
+- Updated dependencies [4b483de]
+- Updated dependencies [f20091d]
+  - @cotal-ai/core@0.133.4
+  - @cotal-ai/manager@0.133.4
+  - @cotal-ai/auth@0.133.4
+  - @cotal-ai/runtime@0.133.4
+  - @cotal-ai/connector-core@0.133.4
+  - @cotal-ai/cli@0.133.4
+  - @cotal-ai/delivery@0.133.4
+  - @cotal-ai/workspace@0.133.4
+  - @cotal-ai/seat@0.133.4
+
+## 0.133.3
+
+### Patch Changes
+
+- Updated dependencies
+- Updated dependencies [ebca602]
+- Updated dependencies [22bf7bf]
+  - @cotal-ai/connector-core@0.133.3
+  - @cotal-ai/cli@0.133.3
+  - @cotal-ai/workspace@0.133.3
+  - @cotal-ai/manager@0.133.3
+  - @cotal-ai/auth@0.133.3
+  - @cotal-ai/delivery@0.133.3
+  - @cotal-ai/runtime@0.133.3
+  - @cotal-ai/core@0.133.3
+  - @cotal-ai/seat@0.133.3
+
+## 0.133.2
+
+### Patch Changes
+
+- Updated dependencies [3f005b8]
+- Updated dependencies [cb0da93]
+- Updated dependencies [6ba609a]
+  - @cotal-ai/core@0.133.2
+  - @cotal-ai/cli@0.133.2
+  - @cotal-ai/connector-core@0.133.2
+  - @cotal-ai/workspace@0.133.2
+  - @cotal-ai/auth@0.133.2
+  - @cotal-ai/delivery@0.133.2
+  - @cotal-ai/manager@0.133.2
+  - @cotal-ai/runtime@0.133.2
+  - @cotal-ai/seat@0.133.2
+
+## 0.133.1
+
+### Patch Changes
+
+- Updated dependencies [ee1b7d4]
+- Updated dependencies [a8f140c]
+- Updated dependencies [58d76e2]
+- Updated dependencies [852ebed]
+- Updated dependencies [1804a8a]
+- Updated dependencies [b786ccd]
+  - @cotal-ai/core@0.133.1
+  - @cotal-ai/cli@0.133.1
+  - @cotal-ai/manager@0.133.1
+  - @cotal-ai/workspace@0.133.1
+  - @cotal-ai/connector-core@0.133.1
+  - @cotal-ai/auth@0.133.1
+  - @cotal-ai/delivery@0.133.1
+  - @cotal-ai/runtime@0.133.1
+  - @cotal-ai/seat@0.133.1
+
+## 0.133.0
+
+### Patch Changes
+
+- Updated dependencies [1e554e4]
+  - @cotal-ai/connector-core@0.133.0
+  - @cotal-ai/manager@0.133.0
+  - @cotal-ai/auth@0.133.0
+  - @cotal-ai/cli@0.133.0
+  - @cotal-ai/delivery@0.133.0
+  - @cotal-ai/runtime@0.133.0
+  - @cotal-ai/core@0.133.0
+  - @cotal-ai/seat@0.133.0
+  - @cotal-ai/workspace@0.133.0
+
 ## 0.132.7
 
 ### Patch Changes
