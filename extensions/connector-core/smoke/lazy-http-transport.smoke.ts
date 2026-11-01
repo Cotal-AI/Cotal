@@ -14,6 +14,9 @@ import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
+// Whatever runs this suite may be a managed agent session; no child gets its connection material.
+for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
+
 const here = (name: string): string => fileURLToPath(new URL(name, import.meta.url));
 const scratch = mkdtempSync(join(tmpdir(), "lazy-http-"));
 let checks = 0;
