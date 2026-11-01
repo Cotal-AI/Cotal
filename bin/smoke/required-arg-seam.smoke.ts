@@ -501,7 +501,11 @@ const SEAMS: Seam[] = [
   // 353/273 -> 354/274: shared-broker account cohorts (112ef8d5a) add one membership-observer
   // connection in manager/smoke/manager-seat-load that reads each cohort account's connz. It dials
   // the plaintext loopback broker its suite starts and states `tls: false`.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 354, untypecheckedSites: 274 },
+  // 354/274 -> 358/277: the endpoints listing (#5499) adds a second manager-call connection that
+  // passes `tls: config.tls` like the first, plus three registry smoke dials (the shared fixture,
+  // the e2e executor and the user-auth reader). The smoke dials reach a plaintext loopback broker
+  // and state `tls: false`.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 358, untypecheckedSites: 277 },
 ];
 
 const SITE_COUNTS = JSON.parse(readFileSync(new URL("./required-arg-sites.json", import.meta.url), "utf8")) as Record<string, number>;
