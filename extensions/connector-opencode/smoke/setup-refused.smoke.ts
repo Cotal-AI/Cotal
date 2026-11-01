@@ -18,6 +18,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CotalEndpoint, isReachable } from "@cotal-ai/core";
+import { killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { setupCotal } from "../src/plugin2.js";
 import { fakeOpenCode2Context, type FakeOpenCode2Context } from "./_boot-plugin.js";
 import { pickFreePort } from "./_free-port.js";
@@ -38,10 +39,11 @@ const check = (name: string, cond: boolean, extra?: unknown): void => {
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 const SPACE = "setuprefused";
 
-const root = mkdtempSync(join(tmpdir(), "oc-setup-refused-"));
+const root = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}oc-setup-refused-`));
 const port = await pickFreePort();
 const servers = `nats://127.0.0.1:${port}`;
-const nats = spawn("nats-server", ["-js", "-p", String(port), "-sd", join(root, "js")], { stdio: "ignore" });
+const nats = spawn("nats-server", ["-js", "-n", SMOKE_BROKER_TOKEN, "-a", "127.0.0.1", "-p", String(port), "-sd", join(root, SMOKE_BROKER_TOKEN)], { stdio: "ignore" });
+const releaseBroker = teardownOnSignal(nats, root);
 const present = new Map<string, string>(); // name -> last presence event type
 let observer: CotalEndpoint | undefined;
 
@@ -105,7 +107,8 @@ try {
   check("the accepted agent's teardown takes it offline", present.get("Accepted") === "offline", [...present]);
 } finally {
   await observer?.stop().catch(() => {});
-  nats.kill("SIGKILL");
+  await killAndAwaitExit(nats);
+  releaseBroker();
   rmSync(root, { recursive: true, force: true });
 }
 console.log(`\n${pass} passed, ${fail} failed`);
