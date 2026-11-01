@@ -1,5 +1,33 @@
 # cotal-ai
 
+## 0.133.12
+
+### Patch Changes
+
+- 13499c0: Preserve documentation bookmarks and offline HTTP reference navigation after the MDX migration. Keep executable documentation checks aligned with the split references, validate generated HTTP content on root builds, preserve complete Card destinations, and improve light-mode navigation contrast.
+- Updated dependencies [13499c0]
+- Updated dependencies [13499c0]
+- Updated dependencies [13499c0]
+- Updated dependencies [13499c0]
+- Updated dependencies [13499c0]
+- Updated dependencies [13499c0]
+- Updated dependencies [13499c0]
+- Updated dependencies [13499c0]
+- Updated dependencies [13499c0]
+- Updated dependencies [13499c0]
+- Updated dependencies [13499c0]
+- Updated dependencies [e7f6b09]
+- Updated dependencies [13499c0]
+  - @cotal-ai/connector-core@0.133.12
+  - @cotal-ai/cli@0.133.12
+  - @cotal-ai/auth@0.133.12
+  - @cotal-ai/manager@0.133.12
+  - @cotal-ai/delivery@0.133.12
+  - @cotal-ai/core@0.133.12
+  - @cotal-ai/runtime@0.133.12
+  - @cotal-ai/seat@0.133.12
+  - @cotal-ai/workspace@0.133.12
+
 ## 0.133.11
 
 ### Patch Changes
