@@ -1,7 +1,7 @@
 /**
  * `cotal down <name>` is a service stop: it resolves a saved service definition in the selected
  * space (registry current mesh first, `--space` to name one) and never falls back to a component's
- * pidfile (docs/cli.md, `down`). A legacy web dashboard recorded in a mesh root's web.pid is
+ * pidfile (docs/cli.mdx, `down`). A legacy web dashboard recorded in a mesh root's web.pid is
  * therefore refused as not found and left running, from any directory and with `--space`.
  *
  * Hermetic (no broker): COTAL_HOME and the temp root are sandboxed, meshes are recorded straight
@@ -218,7 +218,7 @@ async function stopPlantedManager(
   else if (pin === "match") writeIdentityPin(pidPath, child.pid);
   else writeIdentityPin(pidPath, child.pid, () => undefined); // Windows/ps-less host: honest no-pin shape
 
-  // Bare down sweeps only a stack `cotal up` recorded at this root (docs/cli.md, `down`), so the root
+  // Bare down sweeps only a stack `cotal up` recorded at this root (docs/cli.mdx, `down`), so the root
   // is registered that way, on a closed loopback port no other registration names.
   if (target === "stack") recordMesh({ space: "main", server: "nats://127.0.0.1:1", root, mode: "open", origin: "up", ts: "2026-07-27T00:00:00.000Z" });
 

@@ -66,7 +66,7 @@ import { resolve } from "node:path";
 import { credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { Kvm, type KV } from "@nats-io/kv";
-import { VOID_SCHEMA, CotalEndpoint, dialerFor, deprovisionAgent, singleDocumentClosure, dlvDurable, dlvStream, dmDurable, dmStream, isConcreteChannel, provisionAgentDurables, contractDigest, contractRefToHex, contractStoreContext, endpointToken, fetchContractArtifact, verifyClusterManifest, verifyClusterRoot, admissionBucket, admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, authorizeTrustedServeSnapshot, commitSiblingIssuance, credsClaims, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, isReachable, jwtFromCreds, managedRetirementOpId, mintCreds, mintPublicUserJwt, newIdentity, newTakeoverId, observeHostedRunAttempt, openRecordsBucket, parseEndpointGate, parseServiceSpec, credentialIdOf, parseSecretStoreIdentity, readCheckpointStatus, readRunAdmission, readRunRevocation, readRunRecord, readSvcRecordLeader, reconcileEndpointGate, replayRunJournal, sameSecretStoreIdentity, recordSpecKey, RECORD_KINDS, recordsBucket, remoteManagerActors, retirementFrontierStreams, runDriverCaller, serveIssuanceGateKv, standaloneConnectOpts, STANDING_RENEWABLE_TTL_SEC, withIssuerSession, holdIssuerSession, acceptedReadGrant, connectionAcceptedToken, importNativeSubjectPermissions, mintGeneration, parseActorLedgerSource, writeAcceptedRow, type IssuedAuthorityRef, type IssuedSourceRef, type IssuerSession, invokeCommand, resolveService, contractArtifactCanonicalBytes, DEV_OWNER, endpointRegistrationBarrier, mintLifecycleUid, principalKey, provisionEndpointGateOpen, publishContractArtifact, registerServiceInstance, registerServingInstance, type EpAttributedReply, type EpCaller, type EpErrorCode, type EpGateState, type ParsedArgs, type PlatformControlAssignment, type PlatformControlAuthorityRequest, type PlatformControlAuthorityResult, type PlatformControlInnerRequest, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult, type RemoteManagedAgentPrepareRetirementRequest, type RemoteManagedAgentPrepareRetirementResult, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAuthorityRequest, type RemoteManagerMaintenanceRequest, type RemoteRetainedAgentValidationRequest, type SecretStore, type SpaceAuth, type EpServeGrant, type ServiceNameAuthority, parseServiceAuthorityEnvelope, SERVICE_AUTHORITY_MAX_BYTES, epgateKey, isCasLoss, sameManagedGrantCustody, parseServiceRegistrationWitness, serviceWitnessDigest, type ServiceAuthorityRequest, type ServiceRegistrationWitness } from "@cotal-ai/core";
+import { VOID_SCHEMA, CotalEndpoint, dialerFor, deprovisionAgent, singleDocumentClosure, dlvDurable, dlvStream, dmDurable, dmStream, isConcreteChannel, provisionAgentDurables, contractDigest, contractRefToHex, contractStoreContext, endpointToken, fetchContractArtifact, verifyClusterManifest, verifyClusterRoot, admissionBucket, admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, authorizeTrustedServeSnapshot, commitSiblingIssuance, credsClaims, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, isReachable, jwtFromCreds, managedRetirementOpId, mintCreds, mintPublicUserJwt, newIdentity, newTakeoverId, observeHostedRunAttempt, openRecordsBucket, parseEndpointGate, parseServiceSpec, credentialIdOf, parseSecretStoreIdentity, readCheckpointStatus, readRunAdmission, readRunRevocation, readRunRecord, readSvcRecordLeader, reconcileEndpointGate, replayRunJournal, sameSecretStoreIdentity, recordSpecKey, RECORD_KINDS, recordsBucket, remoteManagerActors, remoteManagerServePrincipal, retirementFrontierStreams, runDriverCaller, serveIssuanceGateKv, standaloneConnectOpts, STANDING_RENEWABLE_TTL_SEC, withIssuerSession, holdIssuerSession, acceptedReadGrant, connectionAcceptedToken, importNativeSubjectPermissions, mintGeneration, parseActorLedgerSource, writeAcceptedRow, type IssuedAuthorityRef, type IssuedSourceRef, type IssuerSession, invokeCommand, resolveService, contractArtifactCanonicalBytes, DEV_OWNER, endpointRegistrationBarrier, mintLifecycleUid, principalKey, provisionEndpointGateOpen, publishContractArtifact, registerServiceInstance, registerServingInstance, type EpAttributedReply, type EpCaller, type EpErrorCode, type EpGateState, type ParsedArgs, type PlatformControlAssignment, type PlatformControlAuthorityRequest, type PlatformControlAuthorityResult, type PlatformControlInnerRequest, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult, type RemoteManagedAgentPrepareRetirementRequest, type RemoteManagedAgentPrepareRetirementResult, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAuthorityRequest, type RemoteManagerMaintenanceRequest, type RemoteRetainedAgentValidationRequest, type SecretStore, type SpaceAuth, type EpServeGrant, type ServiceNameAuthority, parseServiceAuthorityEnvelope, SERVICE_AUTHORITY_MAX_BYTES, epgateKey, isCasLoss, sameManagedGrantCustody, parseServiceRegistrationWitness, serviceWitnessDigest, type ServiceAuthorityRequest, type ServiceRegistrationWitness } from "@cotal-ai/core";
 import { findCotalRoot, loadManagerInstanceIdentity, parseSpaceManifest, runSpaceHost, userAuthStateDir, workspaceSecretStore, createAuthInstanceIdentity, type SpaceLane, type SpaceSettings, type SpaceSettingsManifest, loadAuthInstanceIdentity, type HostedContextInputs, type HostedContextKey, type HostedServiceHandle, type HostedServiceState, type ManagerInstanceIdentity } from "@cotal-ai/workspace";
 import type { JournalEntry } from "@cotal-ai/lang";
 import { decodeJwt } from "jose";
@@ -135,6 +135,7 @@ import {
   AUTH_PROVIDER_NAME,
   claimAuthInstanceIdentity,
   clearAuthServiceInfo,
+  clearAuthServiceRefusal,
   dataAccountAuth,
   loadCalloutAuth,
   loadIssuer,
@@ -142,6 +143,7 @@ import {
   loadPinnedIdp,
   loadServiceKeys,
   saveAuthServiceInfo,
+  saveAuthServiceRefusal,
   spaceIssuer,
 } from "./store.js";
 
@@ -410,7 +412,7 @@ export function authorizeRemoteManagerRetirement(args: {
     throw new EpEnvelopeError("permission-denied", `manager-service retirement may target only its authenticated owner ${args.owner}, not ${args.targetOwner}`);
   if (!args.gate || args.gate.state !== "open")
     throw new EpEnvelopeError("failed-precondition", `manager-service retirement found no current open manager gate for instance ${args.instanceId}`);
-  const servePrincipal = `${args.owner}.${args.serveActor}`;
+  const servePrincipal = principalKey(args.owner, args.serveActor).key;
   if (args.gate.principal !== servePrincipal)
     throw new EpEnvelopeError("permission-denied", `manager-service retirement gate belongs to ${args.gate.principal}, not the server-derived serve principal ${servePrincipal}`);
   if (args.gate.processEpoch !== args.serveEpoch)
@@ -974,7 +976,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
       const instanceId = assertLifecycleToken(parts[2], "managerInstanceId");
       const row = parseEndpointGate(raw.data, raw.key);
       if (row.authorityFamily === "environment-manager") continue;
-      if (row.principal === `${owner}.${remoteManagerActors(instanceId).serve}`)
+      if (row.principal === remoteManagerServePrincipal(owner, instanceId))
         instances.push({ instanceId, placement: "remote", state: await managerGate(owner, instanceId) });
       else if (localManager?.instanceId === instanceId && row.principal === `local.${localManager.serveIdentity.id}`)
         instances.push({ instanceId, placement: "local", state: await managerGate(owner, instanceId) });
@@ -1268,7 +1270,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
           const existing = await observeLegacyManagerGate(r.instanceId);
           if (r.operation === "prepare" && existing === null) {
             await provisionEndpointGateOpen(authKv, {
-              endpoint: "manager", instanceId: r.instanceId, principal: `${owner}.${actors.serve}`,
+              endpoint: "manager", instanceId: r.instanceId, principal: remoteManagerServePrincipal(owner, r.instanceId),
             });
           }
           const bounded = (opts: Parameters<typeof mintPublicUserJwt>[3]) => {
@@ -1315,7 +1317,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
             const observed = await gate.observe();
             if (!observed || observed.state !== "open")
               throw new EpEnvelopeError("failed-precondition", "manager-service renewal found no current open manager gate");
-            if (observed.principal !== `${owner}.${actors.serve}`)
+            if (observed.principal !== remoteManagerServePrincipal(owner, r.instanceId))
               throw new EpEnvelopeError("permission-denied", "manager-service renewal gate does not belong to this authenticated owner and instance");
             const expectedProof = remoteManagerCurrentRegistrationProof(dataAccount.signingSeed, owner, r, observed);
             if (r.registrationProof !== expectedProof)
@@ -1538,7 +1540,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
         const entry = await authKv.get(key);
         if (entry === null) {
           // No gate yet: create it retired, so a later registration finds the terminal row.
-          const row = { state: "retired", generation: 0, processEpoch: 0, registrationRevision: 0, nameAuthorityRevision: 0, principal: `${owner}.${remoteManagerActors(instanceId).serve}`, op: { opId, kind: "retirement" } };
+          const row = { state: "retired", generation: 0, processEpoch: 0, registrationRevision: 0, nameAuthorityRevision: 0, principal: remoteManagerServePrincipal(owner, instanceId), op: { opId, kind: "retirement" } };
           parseEndpointGate(new TextEncoder().encode(JSON.stringify(row)), key);
           try { await authKv.create(key, new TextEncoder().encode(JSON.stringify(row))); return; }
           catch (error) { if (isCasLoss(error)) continue; throw error; }
@@ -1548,7 +1550,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
         const row = parseEndpointGate(entry.value, key);
         if (row.authorityFamily === "environment-manager")
           throw new EpEnvelopeError("permission-denied", `manager instance ${instanceId} belongs to the environment-manager authority family`);
-        if (row.principal !== `${owner}.${remoteManagerActors(instanceId).serve}`)
+        if (row.principal !== remoteManagerServePrincipal(owner, instanceId))
           throw new EpEnvelopeError("permission-denied", `the manager gate ${key} belongs to ${row.principal}, not owner ${owner}`);
         if (row.state === "retired") return;
         const { op: _op, ...rest } = row;
@@ -2297,6 +2299,7 @@ export async function runAuthService(args: ParsedArgs, store?: SecretStore, opti
   // Scrub any stale discovery file FIRST — a dead prior daemon's entry must never satisfy a
   // readiness poll for THIS start (the provider's ready() also pid-checks; belt and braces).
   clearAuthServiceInfo(dir);
+  clearAuthServiceRefusal(dir);
   // SMOKE-ONLY startup hold: holds THIS daemon's startup between the discovery scrub and the
   // authority-plane open (before any broker or listener footprint), for the pid-bound readiness
   // cells. A live `up` never sets it; when set, it delays this many ms and a plain integer is
@@ -2331,6 +2334,11 @@ export async function runAuthService(args: ParsedArgs, store?: SecretStore, opti
     ...(interactiveManagerSelection !== undefined ? { interactiveManagerSelection } : {}),
     ...(options.runCancelLimits !== undefined ? { runCancelLimits: options.runCancelLimits } : {}),
     ...(limits !== undefined ? { calloutLimits: limits } : {}),
+  }).catch((e: unknown) => {
+    // The launching `up` sees only this process exit. Leave a typed refusal (a plane-claim
+    // refusal's code and reason, SPEC 13.13) where its readiness wait reads it (#3947).
+    if (e instanceof EpEnvelopeError) saveAuthServiceRefusal(dir, { pid: process.pid, code: e.code, message: e.message, ...(e.details !== undefined ? { details: e.details } : {}) });
+    throw e;
   });
 
   // All planes bound — NOW write the discovery file (its existence is the readiness signal).
@@ -3720,6 +3728,27 @@ function refuseCapability(res: ServerResponse, ctx: Pick<HandlerCtx, "badCaps">,
   send(res, 401, { error: reason, ...extra });
 }
 
+/** Refuse an exchange against the face's refused-exchange budget (see {@link ExchangePolicy}): record
+ *  the failure, audit it, then answer 429 when the peer was already throttled, or else `status` with
+ *  `body`. Every refusal that spends the budget goes through here, so the mask and the audit line
+ *  exist once. `throttledExtra` rides on the 429 for a route whose answers carry a code. */
+function refuseExchange(
+  res: ServerResponse,
+  ctx: Pick<HandlerCtx, "failures">,
+  policy: ExchangePolicy,
+  peer: string,
+  peerThrottled: boolean,
+  audit: string,
+  status: number,
+  body: { error: string; code?: string; outcome?: string },
+  throttledExtra: { code?: string; outcome?: string } = {},
+): void {
+  policy.recordFailure(ctx, peer);
+  console.error(`auth-service: ${audit}`);
+  if (peerThrottled) return send(res, 429, { error: "too many refused exchanges - wait a minute and retry", ...throttledExtra });
+  send(res, status, body);
+}
+
 /** Public-face authenticated manager-selection (#3959): called ONLY after the caller's
  *  credential (IdP JWT or actor secret) and ledger actor grant have verified. On loopback
  *  (`policy.selectionWindow === undefined`), selection runs directly inside the caller's try and
@@ -3802,12 +3831,8 @@ async function handleExchange(req: IncomingMessage, res: ServerResponse, ctx: Ha
   const peerThrottled = policy.throttled(ctx, peer);
   const body = await readJsonBody(req);
   if (body === null || typeof body !== "object" || Array.isArray(body)) {
-    policy.recordFailure(ctx, peer);
     const reason = "exchange body must be a JSON object";
-    console.error(`auth-service: refused an exchange: ${reason}`);
-    if (peerThrottled)
-      return send(res, 429, { error: "too many refused exchanges - wait a minute and retry" });
-    return send(res, 400, { error: reason });
+    return refuseExchange(res, ctx, policy, peer, peerThrottled, `refused an exchange: ${reason}`, 400, { error: reason });
   }
   const { idpToken, actor, actorToken, owner, ttlSec, view, managerInstanceId, sessionGrant, transferWriter } = body as {
     idpToken?: unknown;
@@ -3830,15 +3855,11 @@ async function handleExchange(req: IncomingMessage, res: ServerResponse, ctx: Ha
   if (managerInstanceId !== undefined && view !== "manager-caller") return send(res, 400, { error: 'managerInstanceId is valid only with view "manager-caller"' });
   // Public face: channel-writer / channel-purger and the narrowing manager-caller view.
   // admin, purger, deployer, and manager-service stay loopback-only, whatever the credential.
-  // A refused view is a refused exchange: record, audit, then 429 when the peer is already
-  // throttled, same order as the neighbouring denial sites. A served view stays unthrottled.
+  // A refused view is a refused exchange, answered through refuseExchange like the neighbouring
+  // denial sites. A served view stays unthrottled.
   if (policy.refuseViews && view !== undefined && !(PUBLIC_EXCHANGE_VIEWS as readonly string[]).includes(view)) {
-    policy.recordFailure(ctx, peer);
     const reason = "elevated views are a loopback operator surface - the public exchange never serves them";
-    console.error(`auth-service: refused an exchange: ${reason}`);
-    if (peerThrottled)
-      return send(res, 429, { error: "too many refused exchanges - wait a minute and retry" });
-    return send(res, 403, { error: reason });
+    return refuseExchange(res, ctx, policy, peer, peerThrottled, `refused an exchange: ${reason}`, 403, { error: reason });
   }
   // TWO grant types, disjoint by construction: a HUMAN exchange proves an IdP session
   // (idpToken), an AGENT exchange proves a spawn-time ledger secret (owner + actorToken).
@@ -3895,12 +3916,11 @@ async function handleExchange(req: IncomingMessage, res: ServerResponse, ctx: Ha
     } catch (e) {
       const reason = e instanceof Error ? e.message : String(e);
       if (e instanceof ConnectRateLimited) return sendRateLimited(res, e);
-      console.error(`auth-service: refused an agent exchange: ${reason}`);
-      if (e instanceof ManagerSelectionRefusal) return send(res, 401, { error: reason });
-      policy.recordFailure(ctx, peer);
-      if (peerThrottled)
-        return send(res, 429, { error: "too many refused exchanges - wait a minute and retry" });
-      return send(res, 401, { error: reason });
+      if (e instanceof ManagerSelectionRefusal) {
+        console.error(`auth-service: refused an agent exchange: ${reason}`);
+        return send(res, 401, { error: reason });
+      }
+      return refuseExchange(res, ctx, policy, peer, peerThrottled, `refused an agent exchange: ${reason}`, 401, { error: reason });
     }
   }
   if (typeof idpToken !== "string" || !idpToken || typeof actor !== "string" || !actor)
@@ -3948,12 +3968,11 @@ async function handleExchange(req: IncomingMessage, res: ServerResponse, ctx: Ha
     // denial with the reason — the client shows it to the operator verbatim.
     const reason = e instanceof Error ? e.message : String(e);
     if (e instanceof ConnectRateLimited) return sendRateLimited(res, e);
-    console.error(`auth-service: refused an exchange: ${reason}`);
-    if (e instanceof ManagerSelectionRefusal) return send(res, 401, { error: reason });
-    policy.recordFailure(ctx, peer);
-    if (peerThrottled)
-      return send(res, 429, { error: "too many refused exchanges - wait a minute and retry" });
-    return send(res, 401, { error: reason });
+    if (e instanceof ManagerSelectionRefusal) {
+      console.error(`auth-service: refused an exchange: ${reason}`);
+      return send(res, 401, { error: reason });
+    }
+    return refuseExchange(res, ctx, policy, peer, peerThrottled, `refused an exchange: ${reason}`, 401, { error: reason });
   }
 }
 
@@ -4011,12 +4030,8 @@ async function handleChatSession(req: IncomingMessage, res: ServerResponse, ctx:
   if (op !== "open" && (typeof b.actor !== "string" || typeof b.holderProof !== "string" || (op === "retire" && typeof b.lifecycleUid !== "string")))
     return malformed(op === "bearer" ? "bearer takes { idpToken, actor: string, holderProof: string }" : "retire takes { idpToken, actor: string, lifecycleUid: string, holderProof: string }");
   // A refusal keeps the effect outcome its source stated; one that states none is unknown.
-  const refuse = (status: number, message: string, code: string, outcome: string = "unknown") => {
-    policy.recordFailure(ctx, peer);
-    console.error(`auth-service: refused a chat-session ${op}: ${message}`);
-    if (peerThrottled) return send(res, 429, { error: "too many refused exchanges - wait a minute and retry", code: "resource-exhausted", outcome });
-    return send(res, status, { error: message, code, outcome });
-  };
+  const refuse = (status: number, message: string, code: string, outcome: string = "unknown") =>
+    refuseExchange(res, ctx, policy, peer, peerThrottled, `refused a chat-session ${op}: ${message}`, status, { error: message, code, outcome }, { code: "resource-exhausted", outcome });
   let owner: string;
   let idpExp: number;
   try {
@@ -4065,11 +4080,8 @@ async function handleManagerInstances(req: IncomingMessage, res: ServerResponse,
   try {
     owner = deriveOwnerForIdpSubject(ctx.ownerSecret, ctx.bridgeIdp.issuer, (await verifyIdpToken(body.idpToken, ctx.bridgeIdp)).sub);
   } catch (e) {
-    policy.recordFailure(ctx, peer);
     const reason = e instanceof Error ? e.message : String(e);
-    console.error(`auth-service: refused a manager instance list: ${reason}`);
-    if (peerThrottled) return send(res, 429, { error: "too many refused exchanges - wait a minute and retry" });
-    return send(res, 401, { error: reason });
+    return refuseExchange(res, ctx, policy, peer, peerThrottled, `refused a manager instance list: ${reason}`, 401, { error: reason });
   }
   try {
     return send(res, 200, await ctx.listManagerInstances(owner));
@@ -4133,11 +4145,8 @@ async function handleServiceEndpointHost(req: IncomingMessage, res: ServerRespon
     const verified = await verifyIdpToken(body.idpToken, ctx.bridgeIdp);
     proved = { owner: deriveOwnerForIdpSubject(ctx.ownerSecret, ctx.bridgeIdp.issuer, verified.sub), subject: verified.sub };
   } catch (e) {
-    policy.recordFailure(ctx, peer);
     const reason = e instanceof Error ? e.message : String(e);
-    console.error(`auth-service: refused service endpoint host: ${reason}`);
-    if (peerThrottled) return send(res, 429, { error: "too many refused exchanges - wait a minute and retry" });
-    return send(res, 403, { error: reason });
+    return refuseExchange(res, ctx, policy, peer, peerThrottled, `refused service endpoint host: ${reason}`, 403, { error: reason });
   }
   const granter = serviceHostGranterFor(body.request as { operation: unknown; input: unknown }, proved, policy.requireCapability);
   if (granter === undefined) return send(res, 403, { error: "this host operation is the operator's; it is served on the loopback face under the exchange capability only" });
@@ -4247,13 +4256,9 @@ export async function handleManagerServiceAuthority(req: IncomingMessage, res: S
     const owner = deriveOwnerForIdpSubject(ctx.ownerSecret, ctx.bridgeIdp.issuer, verified.sub);
     return send(res, 200, await dispatchManagerAuthorityRequest(ctx, owner, { request: body.request }));
   } catch (e) {
-    policy.recordFailure(ctx, peer);
     const reason = e instanceof Error ? e.message : String(e);
-    console.error(`auth-service: refused manager-service authority: ${reason}`);
-    if (peerThrottled)
-      return send(res, 429, { error: "too many refused exchanges - wait a minute and retry" });
     // A conflict, such as a name another lifecycle holds or a stale serve epoch, answers 409.
-    return send(res, e instanceof EpEnvelopeError && e.code === "conflict" ? 409 : 403, { error: reason });
+    return refuseExchange(res, ctx, policy, peer, peerThrottled, `refused manager-service authority: ${reason}`, e instanceof EpEnvelopeError && e.code === "conflict" ? 409 : 403, { error: reason });
   }
 }
 

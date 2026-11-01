@@ -1,5 +1,104 @@
 # @cotal-ai/connector-opencode
 
+## 0.133.11
+
+### Patch Changes
+
+- 9182cfc: Restore the tool specs' and gateway's zod namespace import. The by-name imports released in 0.133.9 made the bundled claude, codex, hermes, jcode and opencode connectors throw `Class2 is not a constructor` when imported, so a fresh `cotal setup` failed its first connector seed.
+
+## 0.133.10
+
+### Patch Changes
+
+- 13e667e: An OpenCode 2.x setup that the host refuses no longer leaves its mesh agent joined: the agent start is queued only after the host's hook and tool registrations succeed.
+
+## 0.133.9
+
+### Patch Changes
+
+- 69f469b: The OpenCode 2.x adapter ignores execution events from other sessions before its own session id is known, so another session's turn can no longer leave the adapter permanently busy.
+
+## 0.133.8
+
+### Patch Changes
+
+- 174b09c: In the OpenCode 1.x adapter, a message that arrives while a turn runs now drives its own turn after the user stops that turn, instead of sitting buffered until unrelated traffic arrives.
+- 63aa37e: In the OpenCode 2.x adapter, a focus @mention that arrives while a turn runs is now delivered when that turn ends, instead of being dropped.
+
+## 0.133.7
+
+### Patch Changes
+
+- 1cf7309: A launcher whose agent session never comes up now exits 1 even when the opencode server exits cleanly on SIGTERM, instead of reporting the failed boot as exit 0.
+
+## 0.133.6
+
+No changes in this release.
+
+## 0.133.5
+
+No changes in this release.
+
+## 0.133.4
+
+No changes in this release.
+
+## 0.133.3
+
+No changes in this release.
+
+## 0.133.2
+
+No changes in this release.
+
+## 0.133.1
+
+No changes in this release.
+
+## 0.133.0
+
+### Minor Changes
+
+- 1e554e4: Precompute documentation search at build time and load the corpus and compact index only when needed. Search results and scoring are unchanged. Documentation data now lives in two digest-checked files beside each module or bundle; normal packages, plugins and installers include them automatically. Custom integrations that copy or bundle an executable alone must also carry its matching `docs-bundle.bin` and `docs-index.bin` files.
+
+## 0.132.7
+
+No changes in this release.
+
+## 0.132.6
+
+No changes in this release.
+
+## 0.132.5
+
+No changes in this release.
+
+## 0.132.4
+
+No changes in this release.
+
+## 0.132.3
+
+No changes in this release.
+
+## 0.132.2
+
+### Patch Changes
+
+- d776fcf: Share the OpenCode adapters' surfaced batch so a native prompt cannot replace the messages carried by an active turn. Queued messages remain pending for a later eligible turn. Update the Claude Code connector's comment naming that acknowledgment boundary.
+
+## 0.132.1
+
+No changes in this release.
+
+## 0.132.0
+
+No changes in this release.
+
+## 0.131.6
+
+No changes in this release.
+
 ## 0.131.5
 
 No changes in this release.

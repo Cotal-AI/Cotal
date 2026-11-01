@@ -104,7 +104,7 @@ contract a manager and a seat follow so that is safe, and separates the part the
 gives us from the part that is new.
 
 The scope is one seat's continuity across hosts. It is not broker migration: a space's streams move
-by the offline backup path, and `docs/cli.md` (Backups) records that restore recreates the endpoint
+by the offline backup path, and `docs/cli.mdx` (Backups) records that restore recreates the endpoint
 plane streams empty, so a hosted workflow run does not cross a backup at all. Section 4 takes that as
 a constraint rather than arguing with it.
 
@@ -329,7 +329,7 @@ written into an inventory would become a minted read on another agent's tool inp
 later. Nothing in any of this reads a clock.
 
 `Manager.opCommitResume` and `Manager.commitResumeActivation` are a validation barrier over the same
-facts. `docs/cli.md` (Backups) states it in those terms: `commitResume` is an idempotent validation barrier
+facts. `docs/cli.mdx` (Backups) states it in those terms: `commitResume` is an idempotent validation barrier
 only, success must be `awaitingFinalize` with an attempt-bound 64-hex commit token, and it does not
 release suppression. It revalidates identity, not recency.
 
@@ -364,7 +364,7 @@ refusal is explicit:
   clock reading and the horizon in the message. An operator may override with an explicit flag,
   because a stale checkpoint is sometimes the only checkpoint. The override is recorded in the
   destination's journal, in the way `up --restore` already requires `--accept-missing-source` as
-  explicit disaster consent for a missing canonical source (`docs/cli.md`, up).
+  explicit disaster consent for a missing canonical source (`docs/cli.mdx`, up).
 - **Unreadable `capturedAt`, or a destination clock the destination does not trust.** Refused, with
   no override. A freshness gate that fails open is not a gate. This follows the repository's
   no-fallbacks convention and the shape `makeManagerEndpointEvictionEvidence` in
@@ -585,7 +585,7 @@ stalled append is not. `perform.ts` keeps the handler's dispatch and the settlin
 failure domains for the same reason, with the comment that one `try` around both produces the worst
 bug a journal can have: a `[pending, settled:failed]` sequence for work the world actually did.
 
-**The constraint a cross-host move imposes.** `docs/cli.md` (Backups) records that the endpoint
+**The constraint a cross-host move imposes.** `docs/cli.mdx` (Backups) records that the endpoint
 submissions, facts, events, timers and workflow state streams are nonportable control state, and that
 restore recreates them empty with their canonical configs before exposing the normal listener, so
 active endpoint runs, lifecycles and sessions do not cross a backup. A run's journal therefore does
@@ -602,7 +602,7 @@ A message the seat sent, or was delivered, at the instant of the cut is not a jo
 Delivery is durable at the broker, and the seat's acknowledgement is what decides whether a redelivery
 is a duplicate.
 
-`docs/connect-pi.md` documents the strictest shipped instance. The pi adapter uses three distinct
+`docs/connect-pi.mdx` documents the strictest shipped instance. The pi adapter uses three distinct
 proof points: the matching custom `message_start` proves pi dequeued the batch locally, a `context`
 event containing that exact batch proves it entered one provider request, and a successful
 `after_provider_response` proves acceptance early where the transport exposes an HTTP response, with
@@ -801,11 +801,11 @@ seats are not continuable however plausible their file layout looks.
 
 A procedure an operator runs to distinguish a real continuation from a silent fresh session. pi
 because it is the only connector that declares `exact`. Two hosts of the same architecture, host A
-and host B, each with a Cotal checkout and the pi binary the version pin in `docs/connect-pi.md`
+and host B, each with a Cotal checkout and the pi binary the version pin in `docs/connect-pi.mdx`
 names. The seat's workspace root is `$ROOT` on both.
 
 The commands below are the shipped surface: `cotal up`, `cotal spawn`, `cotal ps`,
-`cotal down --preserve-state`, `cotal backup create` and `cotal up --restore` as `docs/cli.md`
+`cotal down --preserve-state`, `cotal backup create` and `cotal up --restore` as `docs/cli.mdx`
 documents them. The checkpoint components this design adds (the repository bundle, the delta and the
 harness store) have no command yet, so steps 5 and 7 name what an operator copies rather than a flag
 that does not exist. Saying which steps are manual is the point of writing the procedure down.
@@ -841,7 +841,7 @@ cat "$ROOT/.cotal/pi-sessions/"*.json
 ```
 
 `cotal ps --json` prints one JSON object per seat per line, copied unchanged from the manager row
-(`docs/cli.md`, Managed seats). Keep the seat's name and its lifecycle uid.
+(`docs/cli.mdx`, Managed seats). Keep the seat's name and its lifecycle uid.
 
 The state file is what the pi extension wrote through `persistSessionId`. Its content is
 `{"version":1,"sessionId":"…","status":"running"}`, the closed shape
@@ -855,7 +855,7 @@ cd "$ROOT"
 cotal down --preserve-state
 ```
 
-`docs/cli.md` (down) records what this does: it fences the manager, retains principals and durable
+`docs/cli.mdx` (down) records what this does: it fences the manager, retains principals and durable
 state, stops and proves the stack down, then publishes `ready`. It is bare-whole-stack only. Under
 the hood it is `Manager.preparePreservation`, the coordinator's fsync of the inventory, and
 `Manager.commitPreservation`, whose `Manager.runPreservation` stops each child with
@@ -871,7 +871,7 @@ cd "$ROOT"
 cotal backup create "$ROOT/../ckpt-space" --store-dir "$ROOT/.cotal/nats"
 ```
 
-That command produces the space artifact. `docs/cli.md` (Backups) records that it is offline-only and
+That command produces the space artifact. `docs/cli.mdx` (Backups) records that it is offline-only and
 requires the stable `ready` record from the previous step, an exact store match, no live recorded
 process and an unreachable exact endpoint, and that `manifest.json` is written last with exact sizes
 and sha256 values.
@@ -1046,7 +1046,7 @@ cd "$ROOT"
 cotal up --restore "$ROOT/../ckpt-space" --detach
 ```
 
-Two preconditions hold here and neither is created by this command. `docs/cli.md` (Backups) records
+Two preconditions hold here and neither is created by this command. `docs/cli.mdx` (Backups) records
 that restore requires the same space and existing trust state, and states plainly that restore never
 creates fresh auth: an authenticated restore validates the space trust bundle before staging,
 including nkeys, seed matches, JWTs, signers and space binding. So host B must already be a member of
@@ -1056,7 +1056,7 @@ this space's trust chain. And the resume document has to be present, because
 `.cotal/maintenance/v<N>/resume.json` path and verifies it against the descriptor in the journal.
 Both are the operator inputs section 1.2 refuses to move, for the reason given there.
 
-`docs/cli.md` (Backups) records the sequence this drives: after listener readiness the manager starts
+`docs/cli.mdx` (Backups) records the sequence this drives: after listener readiness the manager starts
 attempt-bound, validates retained credentials and tokens without granting or reprovisioning, and
 resumes the exact persisted principals under cleanup suppression; `commitResume` is an idempotent
 validation barrier returning `awaitingFinalize` with an attempt-bound 64-hex token and does not
@@ -1096,7 +1096,7 @@ cd "$ROOT"
 cotal ps --wide
 ```
 
-`docs/cli.md` (Managed seats) records that `--wide` prints the lifecycle uid among the extra
+`docs/cli.mdx` (Managed seats) records that `--wide` prints the lifecycle uid among the extra
 operational facts. It must equal the value from step 3. A new uid means a new incarnation, and the
 durable inbox from before the cut belongs to the old one: `EndpointOptions.lifecycleUid` documents
 the durables as keyed by the uid, and `ManagerResumeIdentity` states that a resume must recover it

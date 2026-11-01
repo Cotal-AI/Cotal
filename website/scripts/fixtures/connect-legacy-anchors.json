@@ -1,0 +1,67 @@
+{
+  "connectors": [],
+  "connect-claude": [
+    "set-up",
+    "enable-channels-for-your-organization",
+    "spawn-a-session",
+    "how-it-binds",
+    "sessions-cotal-did-not-launch",
+    "how-messages-reach-the-session",
+    "attention",
+    "presence-mapping",
+    "event-plane",
+    "resume-a-session",
+    "sharing-your-mcp-servers",
+    "one-cotal-path-per-session",
+    "host-sessions-in-one-process",
+    "feedback"
+  ],
+  "connect-opencode": [
+    "no-install-needed",
+    "spawn-it",
+    "choose-a-model",
+    "how-it-binds",
+    "event-plane",
+    "limits",
+    "see-also"
+  ],
+  "connect-codex": [
+    "install",
+    "spawn-it",
+    "choose-a-model",
+    "how-it-binds",
+    "event-plane",
+    "sandbox-autonomy",
+    "limits",
+    "see-also"
+  ],
+  "connect-hermes": [
+    "prerequisites",
+    "spawn-it",
+    "choose-a-model",
+    "use-a-custom-endpoint",
+    "how-it-binds",
+    "use-your-own-hermes-profile",
+    "resume-a-session",
+    "how-presence-follows-the-turn",
+    "how-an-answer-finds-its-session",
+    "limits",
+    "see-also"
+  ],
+  "connect-jcode": [
+    "install",
+    "spawn-it",
+    "how-it-binds",
+    "event-plane",
+    "model-limits",
+    "security-limits"
+  ],
+  "connect-pi": [
+    "surfaces",
+    "lifecycle",
+    "event-plane",
+    "host-boundaries",
+    "install",
+    "see-also"
+  ]
+}

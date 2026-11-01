@@ -1,0 +1,69 @@
+---
+title: Native service custody
+description: Immutable service reservations, bootstrap, cancellation, and bounded writer guarantees.
+kind: Reference
+audience: integrators
+---
+
+## Native service custody guards
+
+Ordinary lifecycle executors refuse a UID reservation carrying `kind: "native-service-uid"`.
+The reservation has closed `native`, `assignment` and `creation` objects. It is not an ordinary
+`{ owner, actor, mintedBy }` audit, and a reader must not project it into one. Its assignment
+binds the full account, space, owner, endpoint, instance and serve-duty tuple. The actor is derived
+from that tuple, and the creation operation and request digest remain fixed.
+
+These guards run before ordinary root reuse, activation, gate and head changes, mint finalization,
+and native retirement. Ordinary connect and currency reads also refuse service custody, including
+rows whose head or credential mirror is missing. Existing ordinary reservation bytes are unchanged.
+Closed head, gate and credential parsers continue to reject service markers. Without
+`serviceEndpoints`, no product path writes a service reservation or mints a marked root. The service
+access-view contract and the sealed native access/callout composition are shipped; only a context
+opened with `serviceEndpoints` composes them, with the service host's approval and registration
+described in [Service endpoint hosting](embedding-service-host.mdx). Lifecycle retirement and restore remain unwired.
+
+### Internal active-root reader
+
+The package-internal service prerequisite reader is separate from ordinary connect and lifecycle
+currency readers. It leader-reads immutable UID custody, the exact active service head, native
+`gate.<uid>` open at generation1, and the exact active root credential. All three custody mirrors
+must match the full reservation digest. Service head `managerInstance` equals immutable assignment
+`instanceId`, and native `processEpoch` is fixed at1. These are not ordinary enrollment coordinates
+or the separate endpoint gate/witness registration epochs. Creating/cancelling heads and their
+RootPlan recovery obligations remain outside this read-only active path. Missing or malformed
+native gate evidence cannot be replaced by an endpoint gate. This is no writer, bootstrap, root
+mint/abort, rotation, cancellation or terminal-retirement authority, and not an atomic multi-key
+snapshot. Positive fixtures raw-seed synthetic marked records, not production service admission.
+The account is trusted host configuration. Sealed readers do not attest the broker account or
+detect a cross-account pair of legitimately constructed handles. The authority plane constructs the
+service callout's registry, reader and contract reads from its own data account.
+
+### Native custody writer [#dormant-custody-writer]
+
+A package-internal custody writer is not exported; in the product only the service endpoint host's
+decide and revoke reach it, and the proposals they act on come only from the owner-proved public
+authority route of a context opened with `serviceEndpoints`. Bootstrap
+writes the reservation, the pending-root endpoint gate, a creating head, a frozen activation native
+gate opened at generation1, a RootPlan fixed once by head CAS, the planned active root, an
+identical-bytes native gate touch and the active head stamp. It rechecks the endpoint gate at open
+and before the plan, root and stamp writes. Cancellation denies the endpoint gate first, then
+writes the cancelling head and freezes the native gate under the cancel operation. An unstamped
+planned root is fenced by a create of revoked bytes or by CAS of the exact active row. A stamped
+root is retained, and every cancellation result is nonterminal. An absent reservation leaves
+endpoint deny residue and reports unconfirmed; a foreign or deleted reservation refuses without a
+write. Each write is a per-key create or revision CAS under a sealed host whose genuine plane-claim
+hold is re-read before and after the write, plus a fatal latch. That is local readiness control,
+not broker writer exclusion, so a paused writer can still land one late conditional write. Each
+request is bounded by the remaining original deadline. In bootstrap, once the plan step has fixed
+or read the RootPlan, requests are also bounded by its expiry. Cancellation keeps only its own
+deadline, so an accepted cancellation can still proceed after the root expires. At its bound the
+writer stops waiting for a request but does not cancel it at the broker. The writer issues every
+endpoint-gate request itself, so no endpoint-gate request starts after an invocation returns, and
+it re-reads the endpoint gate before every plan, root and stamp write attempt. Bootstrap's final
+active-root proof is several read-only reads behind one bounded wait. If that wait ends at its
+bound, the remaining reads can still run after the invocation returns; none of them writes.
+Bootstrap holds instead of reporting an active root whose expiry its final synchronous check
+observes, with no await between that check and the return. The result can still be stale by the
+time the caller acts on it. The caller supplies that deadline and the
+reservation; nothing here authenticates a host, approves serving, retires terminally, releases an
+alias or rotates a root.

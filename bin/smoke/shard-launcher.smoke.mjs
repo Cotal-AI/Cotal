@@ -16,7 +16,8 @@ const shard = fileURLToPath(new URL("./shard.mjs", import.meta.url));
 const packageManager = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")).packageManager;
 const root = mkdtempSync(join(tmpdir(), "cotal-launcher-sentinel-"));
 const originalCwd = process.cwd();
-const originalEnv = { ...process.env };
+// Restoration-only entries, never a child environment.
+const originalEnv = new Map(Object.entries(process.env));
 const corepackHome = process.env.COREPACK_HOME ?? join(process.env.XDG_CACHE_HOME ?? join(homedir(), ".cache"), "node/corepack");
 let passed = 0, failed = 0;
 function check(name, condition) {
@@ -55,8 +56,10 @@ try {
   for (const suite of ["smoke:silent", "smoke:green"]) {
     const dir = prepare(`serial-${suite.split(":")[1]}`);
     const list = join(dir, "ci-suites.txt"); writeFileSync(list, `${suite}\n`);
+    const childEnv = { ...process.env };
+    for (const key of Object.keys(childEnv)) if (key.startsWith("COTAL_")) delete childEnv[key];
     const result = spawnSync(process.execPath, [shard, "0", "1"], { cwd: dir,
-      env: { ...process.env, COTAL_CI_SUITES: list, SMOKE_CI_JOBS: "1" }, encoding: "utf8", timeout: 60_000 });
+      env: { ...childEnv, COTAL_CI_SUITES: list, SMOKE_CI_JOBS: "1" }, encoding: "utf8", timeout: 60_000 });
     const out = `${result.stdout ?? ""}${result.stderr ?? ""}`;
     console.log(`serial observation ${JSON.stringify({ suite, status: result.status, shardCells: out.match(/passed \(1 smokes, (\d+) cells\)/)?.[1] ?? null, noSentinel: out.includes("(no sentinel)") })}`);
     check(`${suite}: serial runner completed without a timeout`, !result.error && result.signal === null);
@@ -80,8 +83,8 @@ try {
   }
 } finally {
   process.chdir(originalCwd);
-  for (const key of Object.keys(process.env)) if (!(key in originalEnv)) delete process.env[key];
-  Object.assign(process.env, originalEnv);
+  for (const key of Object.keys(process.env)) if (!originalEnv.has(key)) delete process.env[key];
+  for (const [key, value] of originalEnv) process.env[key] = value;
   rmSync(root, { recursive: true, force: true });
 }
 assert.equal(passed + failed, 14, "every launcher cell ran");

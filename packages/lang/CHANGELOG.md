@@ -1,5 +1,94 @@
 # @cotal-ai/lang
 
+## 0.133.11
+
+No changes in this release.
+
+## 0.133.10
+
+No changes in this release.
+
+## 0.133.9
+
+No changes in this release.
+
+## 0.133.8
+
+No changes in this release.
+
+## 0.133.7
+
+No changes in this release.
+
+## 0.133.6
+
+No changes in this release.
+
+## 0.133.5
+
+No changes in this release.
+
+## 0.133.4
+
+### Patch Changes
+
+- 5629f59: L3022 now reads a scope's body from the scope table, as the captured-write check does, instead of naming `parallel`, `race` and `fanOut`. A new scope primitive is judged without being added to the check, and a single-body scope that runs its function once (`once`, `conclave`) is left alone.
+- 60b5c33: The scope runner and the compiled engine's scope helpers dispatch on the typed `ScopeKind` instead of the primitive's name. A scope kind added to the union without its runner arm, or without its calling convention in the engine, now fails the build rather than throwing an interpreter defect the first time a program opens it.
+
+## 0.133.3
+
+No changes in this release.
+
+## 0.133.2
+
+No changes in this release.
+
+## 0.133.1
+
+### Patch Changes
+
+- 28b245f: The shipped conformance corpus (`conformance/corpus.json`) now carries the ninth example in the language reference: the reusable-helper example under §10.2 "Keys", which #5446 added to the spec. That change did not regenerate the corpus, so the corpus held only 8 of the reference's 9 examples. The corpus is regenerated with `pnpm gen:conformance`, and the new case is an accepted program.
+
+## 0.133.0
+
+No changes in this release.
+
+## 0.132.7
+
+No changes in this release.
+
+## 0.132.6
+
+No changes in this release.
+
+## 0.132.5
+
+No changes in this release.
+
+## 0.132.4
+
+No changes in this release.
+
+## 0.132.3
+
+No changes in this release.
+
+## 0.132.2
+
+No changes in this release.
+
+## 0.132.1
+
+No changes in this release.
+
+## 0.132.0
+
+No changes in this release.
+
+## 0.131.6
+
+No changes in this release.
+
 ## 0.131.5
 
 No changes in this release.

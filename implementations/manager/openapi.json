@@ -1,0 +1,422 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Manager console HTTP API",
+    "version": "1",
+    "description": "Operator HTTP interface of the reference manager console. This is separate from the Dashboard HTTP API. The default bind is 127.0.0.1 on an allocated port; an operator can configure the bind host and port. Every data operation requires the per-manager console token, even on loopback. Supply a bearer header or query parameter t. If both are present, t takes precedence. The launch page keeps its token in the URL fragment.\n\nRead routes also accept other bodyless methods; only the documented GET behavior is promised. Query strings are removed for route dispatch. Session establishment mints credentials for a broker WebSocket connection; the console does not expose a WebSocket terminal endpoint. Static HTML, scripts, styles and favicon resources are outside this API reference.",
+    "license": {
+      "name": "Apache-2.0"
+    }
+  },
+  "servers": [
+    {
+      "url": "http://{host}:{port}",
+      "variables": {
+        "host": {
+          "default": "127.0.0.1"
+        },
+        "port": {
+          "default": "12345",
+          "description": "Example only. Replace with the port announced by the running service or its owner-private discovery record."
+        }
+      },
+      "description": "Use the manager console address announced by the running manager."
+    }
+  ],
+  "security": [
+    {
+      "ConsoleBearer": []
+    },
+    {
+      "ConsoleQuery": []
+    }
+  ],
+  "paths": {
+    "/agents": {
+      "get": {
+        "operationId": "list-console-agents",
+        "summary": "List managed console agents",
+        "description": "Return the manager-owned seats with process status, incarnation coordinates and available presence observations. mesh is a verdict only when meshView is current and the observed identity matches the managed seat. Optional facts are absent when not recorded.",
+        "responses": {
+          "200": {
+            "description": "Current managed seats.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ManagedAgent"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The manager console token is missing or invalid.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected request failure.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/feed": {
+      "get": {
+        "operationId": "watch-console-feed",
+        "summary": "Watch the manager console feed",
+        "description": "Open the manager console SSE stream. It begins with retry: 2000, replays the current roster snapshot as a named roster event, and sends a comment heartbeat every 20 seconds. Event data is JSON. The stock manager supplies the initial roster; this reference does not promise continuous roster updates. This feed is distinct from the Dashboard /feed stream.",
+        "responses": {
+          "200": {
+            "description": "Named SSE frames and comment heartbeats.",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-cache"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The manager console token is missing or invalid.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "x-sse-events": {
+          "roster": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RosterPresence"
+            }
+          }
+        }
+      }
+    },
+    "/session/{name}": {
+      "post": {
+        "operationId": "establish-console-session",
+        "summary": "Establish a console mesh session",
+        "description": "Mint a holder-bound mesh session offer and per-session caller credential for a managed agent. No request body is parsed. The agent name is percent-decoded. Token authorization precedes method and name checks. An open mesh or a manager without a session establisher returns 503 before name validation. Treat the returned creds as secret.",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "description": "Percent-encoded managed agent name.",
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Session grant and broker caller connection material.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionEstablishment"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing agent name or malformed percent encoding.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The manager console token is missing or invalid.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Only POST is accepted.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "headers": {
+              "Allow": {
+                "schema": {
+                  "const": "POST"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Session capacity is exhausted; code is resource-exhausted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Session establishment failed; native refusals include code.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Session establishment is not available on this manager.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "ConsoleBearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Per-manager console token."
+      },
+      "ConsoleQuery": {
+        "type": "apiKey",
+        "in": "query",
+        "name": "t",
+        "description": "Per-manager console token. Takes precedence over Authorization when present."
+      }
+    },
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "code": {
+            "type": "string"
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "not-executed",
+              "executed",
+              "unknown"
+            ]
+          },
+          "details": {}
+        },
+        "required": [
+          "error"
+        ]
+      },
+      "ManagedAgent": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          },
+          "agent": {
+            "type": "string"
+          },
+          "space": {
+            "type": "string"
+          },
+          "mode": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "mesh": {
+            "type": "string"
+          },
+          "meshView": {
+            "type": "string"
+          },
+          "lifecycleUid": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "variant": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "cwd": {
+            "type": "string"
+          },
+          "spawner": {
+            "type": "string"
+          },
+          "instanceId": {
+            "type": "string"
+          },
+          "host": {
+            "type": "string"
+          },
+          "authHealth": {
+            "type": "string"
+          },
+          "authReason": {
+            "type": "string"
+          },
+          "uptimeMs": {
+            "type": "integer"
+          },
+          "pid": {
+            "type": "integer"
+          },
+          "activeAt": {
+            "type": "number"
+          },
+          "presenceIdentityVerified": {
+            "type": "boolean"
+          },
+          "presenceObservedAt": {
+            "type": "integer"
+          },
+          "offlineSince": {
+            "type": "integer"
+          },
+          "condition": {
+            "type": "object",
+            "properties": {
+              "code": {
+                "type": "string"
+              },
+              "source": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              },
+              "since": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "code"
+            ]
+          },
+          "joinHealth": {
+            "type": "object",
+            "properties": {
+              "state": {
+                "const": "degraded"
+              },
+              "reason": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "state",
+              "reason"
+            ]
+          },
+          "resume": {
+            "type": "object",
+            "description": "Recorded fork provenance when this seat resumed a prior session."
+          }
+        },
+        "required": [
+          "name",
+          "id",
+          "agent",
+          "space",
+          "mode",
+          "status",
+          "uptimeMs",
+          "mesh",
+          "meshView",
+          "presenceIdentityVerified",
+          "lifecycleUid",
+          "spawner",
+          "instanceId",
+          "host"
+        ]
+      },
+      "RosterPresence": {
+        "$ref": "../../spec/cotal.schema.json#/definitions/Presence"
+      },
+      "SessionEstablishment": {
+        "type": "object",
+        "properties": {
+          "grant": {
+            "type": "object",
+            "description": "Native holder-bound session offer from the manager session plane, defined by SPEC section 13.6. The offer alone is not a bearer credential."
+          },
+          "wsUrl": {
+            "type": "string",
+            "description": "Broker WebSocket URL used for the mesh session."
+          },
+          "creds": {
+            "type": "string",
+            "description": "Per-session rails-only caller credential."
+          }
+        },
+        "required": [
+          "grant",
+          "wsUrl",
+          "creds"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "x-source": "implementations/manager/src/attach-endpoint.ts; production roster and replay injection in manager.ts"
+}

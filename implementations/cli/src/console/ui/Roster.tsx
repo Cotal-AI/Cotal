@@ -1,4 +1,4 @@
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { Box, Text, useFocus, useInput } from "ink";
 import { peerLabel, presenceText, type Presence } from "@cotal-ai/core";
 import { activityAge, presenceFacts } from "../../ui.js";
@@ -90,9 +90,17 @@ function matches(p: Presence, q: string): boolean {
   return [p.card.name, p.card.role ?? "", p.activity ?? ""].join(" ").toLowerCase().includes(q);
 }
 
+/** The roster's selected seat and its row, held by the App across the Roster's unmount while a
+ *  detail or another full-screen view is open. */
+export function useRosterView() {
+  return useRef<{ id?: string; index: number }>({ index: 0 });
+}
+
 /** Always-visible roster: agents (status dot + color + activity + age) then endpoints (dimmed).
- *  A selection cursor (↑/↓) highlights one row; `Enter` opens its detail; `/` filters the list. */
+ *  A selection cursor (↑/↓) highlights one row; `Enter` opens its detail; `/` filters the list.
+ *  `view` keeps the selected seat, and with it the window, while the Roster is unmounted. */
 export function Roster({
+  view,
   agents,
   endpoints,
   query,
@@ -106,6 +114,7 @@ export function Roster({
   harness,
   onCompose,
 }: {
+  view: ReturnType<typeof useRosterView>;
   agents: Presence[];
   endpoints: Presence[];
   query: string;
@@ -129,7 +138,13 @@ export function Roster({
   const q = query.trim().toLowerCase();
   const filt = (l: Presence[]) => (q ? l.filter((p) => matches(p, q)) : l);
   const list = [...filt(agents), ...filt(endpoints)];
-  const { index: selClamped, up, down } = useListCursor(list.length);
+  // Mount on the seat the App last held, wherever it sorts now, or on its row if it has left.
+  const held = list.findIndex((p) => p.card.id === view.current.id);
+  const { index: selClamped, up, down } = useListCursor(list.length, { start: held < 0 ? view.current.index : held });
+  const selectedId = list[selClamped]?.card.id;
+  useEffect(() => {
+    view.current = { id: selectedId, index: selClamped };
+  }, [view, selectedId, selClamped]);
 
   useInput(
     (input, key) => {
@@ -151,12 +166,15 @@ export function Roster({
   const rowWidth = boxWidth - 6; // border (2) + padding (2) + indent (2)
   const heads = list.map((p) => headRows(p, harness?.get(p.card.id), rowWidth));
   const facts = list.map((p) => wrapFacts(statusLine(p), rowWidth));
+  const room = boxHeight - 3; // border (2) + title (1)
   const [start, end] = windowAround(
     list.map((_, i) => heads[i].length + facts[i].length),
     selClamped,
-    boxHeight - 3, // border (2) + title (1)
+    room,
   );
   const visible = list.slice(start, end);
+  // The whole seats the window leaves out, led by the title so a cut keeps them.
+  const left = [start ? "↑" + start : "", list.length - end > 0 ? "↓" + (list.length - end) : ""].filter(Boolean).join(" ");
 
   return (
     <Box
@@ -166,19 +184,24 @@ export function Roster({
       borderStyle="round"
       borderColor={isFocused ? "cyan" : "gray"}
       paddingX={1}
-      // A seat's rows never shrink, so one taller than the box (a short terminal, a long activity or
-      // condition) displaces the title and is then cut at the bottom, keeping its name row, rather than
-      // being squeezed or drawn over the panes below.
+      // A seat's rows never shrink, so one taller than the window (a short terminal, a long activity or
+      // condition) is cut at the bottom under the title rather than being squeezed or drawn over the
+      // panes below. A box with one row inside gives it to the seat's name row instead of the title.
       overflowY="hidden"
     >
-      <Text wrap="truncate-end">
-        <Text bold>roster</Text>
-        <Text dimColor>
-          {" · " + agents.length + " agent" + (agents.length === 1 ? "" : "s")}
-        </Text>
-        {endpoints.length ? <Text dimColor>{" · " + endpoints.length + " ep"}</Text> : null}
-        {q ? <Text color="yellow">{"  /" + query}</Text> : null}
-      </Text>
+      {room > 0 ? (
+        <Box flexShrink={0}>
+          <Text wrap="truncate-end">
+            <Text bold>roster</Text>
+            {left ? <Text color="yellow">{" " + left + " more"}</Text> : null}
+            <Text dimColor>
+              {" · " + agents.length + " agent" + (agents.length === 1 ? "" : "s")}
+            </Text>
+            {endpoints.length ? <Text dimColor>{" · " + endpoints.length + " ep"}</Text> : null}
+            {q ? <Text color="yellow">{"  /" + query}</Text> : null}
+          </Text>
+        </Box>
+      ) : null}
       {visible.length === 0 ? (
         <Text dimColor>{q ? "(no match)" : "(nobody present)"}</Text>
       ) : (

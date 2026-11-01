@@ -1,0 +1,104 @@
+{
+  "concepts": {
+    "identity-and-auth": {
+      "group": "Security",
+      "ids": [
+        "on-by-default",
+        "shared-identity",
+        "provisioner",
+        "profiles",
+        "issued-authority",
+        "declared-capabilities",
+        "per-user-authentication",
+        "enrollment-redeem",
+        "remote-manager-authority",
+        "the-idp-callout-contract",
+        "joining",
+        "honest-limitations-v0",
+        "standalone-endpoint-callers"
+      ]
+    },
+    "security": {
+      "group": "Security",
+      "ids": [
+        "trust-boundary",
+        "adversaries",
+        "what-v0-protects",
+        "what-v0-does-not-protect",
+        "prompt-facing-data",
+        "reporting"
+      ]
+    },
+    "control-surface": {
+      "group": "Agent coordination",
+      "ids": [
+        "the-ep-rails",
+        "lifecycle-identity",
+        "service-discovery",
+        "inspecting-a-managed-name",
+        "listing-the-durable-slots",
+        "static-chat-sessions",
+        "spawn-is-a-goal",
+        "instance-routing",
+        "deregistration",
+        "attach-sessions",
+        "seat-input",
+        "grants",
+        "see-also"
+      ]
+    },
+    "workflows": {
+      "group": "Agent coordination",
+      "ids": [
+        "keyed-submission",
+        "a-first-program",
+        "the-mental-model",
+        "continuing-a-run",
+        "from-an-agent-session",
+        "if-cotal_run-is-missing",
+        "operating-a-run",
+        "diagnostic-inventory",
+        "what-is-on-the-wire",
+        "what-ships-today"
+      ]
+    }
+  },
+  "references": [
+    {
+      "slug": "identity-authority",
+      "group": "Security"
+    },
+    {
+      "slug": "identity-user-auth",
+      "group": "Security"
+    },
+    {
+      "slug": "identity-service-auth",
+      "group": "Security"
+    },
+    {
+      "slug": "security-boundaries",
+      "group": "Security"
+    },
+    {
+      "slug": "control-discovery",
+      "group": "Agent coordination"
+    },
+    {
+      "slug": "control-lifecycle",
+      "group": "Agent coordination"
+    },
+    {
+      "slug": "workflow-operations",
+      "group": "Agent coordination"
+    },
+    {
+      "slug": "workflow-runtime",
+      "group": "Agent coordination"
+    },
+    {
+      "slug": "workflow-effects",
+      "group": "Agent coordination"
+    }
+  ]
+}

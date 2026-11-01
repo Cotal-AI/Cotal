@@ -7,9 +7,9 @@
  * The smallest port that joins, checks the model, creates ONE session, drives turns into it over
  * the authenticated HTTP API (`/api/session/:id/prompt` — 2.x has no `prompt_async`), registers the
  * cotal_* tools and maps the event stream to presence. Reuses `plugin.ts`'s exported seams
- * (env config, `MeshAgent` construction, `modelRefusalSentence`, `computeInjection`,
- * `settleWithin`) rather than duplicating them; the model check and session/turn routes are 2.x's
- * own (`/api/model`, `/api/session`, `/api/session/:id/prompt`) because the 2.x response shapes
+ * (env config, `MeshAgent` construction, `modelRefusalSentence`, `SurfacedBatch`, `settleWithin`)
+ * rather than duplicating them; the model check and session/turn routes are 2.x's own
+ * (`/api/model`, `/api/session`, `/api/session/:id/prompt`) because the 2.x response shapes
  * differ from 1.x's (`{data:...}` wrapping, no `prompt_async`).
  */
 import { loadAgentFile, type PresenceStatus } from "@cotal-ai/core";
@@ -25,7 +25,7 @@ import {
   WORKFLOW_STEER,
   CHANNEL_GUIDANCE,
 } from "@cotal-ai/connector-core";
-import { modelRefusalSentence, computeInjection, settleWithin } from "./plugin.js";
+import { modelRefusalSentence, SurfacedBatch, settleWithin } from "./plugin.js";
 import type { OpenCode2Context, OpenCode2Event } from "./opencode2-types.js";
 import { buildCotalTools2 } from "./tools.js";
 
@@ -48,6 +48,9 @@ const EVENTS_REFUSAL =
  *  provider appears rather than refused on the first read. The wait is bounded: a server that
  *  never lists anything within the deadline is a real refusal, not a hang. */
 export const MODEL_LIST_SETTLE_MS = 10_000;
+
+/** The bare nudge a focus @mention wake submits; the mention itself is read with cotal_inbox. */
+const MENTION_NUDGE = "📨 You were mentioned — read it with cotal_inbox.";
 
 async function verifyServerModel2(
   serverUrl: string,
@@ -113,22 +116,6 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
 
   const agent = new MeshAgent(config);
   const controller = new AbortController(); // aborted when teardown begins
-  // Same non-blocking shape as plugin.ts: awaiting the model check INSIDE setup would deadlock the
-  // server if setup is running while answering the very request the check's fetch targets. Refuse
-  // loud and exit rather than wait forever or join with an unverified model. A teardown that lands
-  // before the check settles owns what is queued here: it must neither start the stopped agent nor
-  // exit the host process over a refusal nobody is waiting for.
-  void modelReady.then(
-    () => {
-      if (controller.signal.aborted) return;
-      return agent.start();
-    },
-    (error: Error) => {
-      if (controller.signal.aborted) return;
-      log(error.message);
-      process.exit(1);
-    },
-  );
 
   async function opencodeApi<T>(path: string, init?: RequestInit, timeoutMs = 10_000): Promise<T> {
     const res = await fetch(`${serverUrl}${path}`, {
@@ -154,13 +141,16 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
   let sessionID: string | undefined;
   // What holds the session, so nothing else is submitted into it (2.x coalesces natively submitted
   // turns): our prompt waiting for its execution to start, or a started execution. Only the end of a
-  // started execution settles `surfaced`; an end seen before it started belongs to an earlier one.
+  // started execution settles the batch; an end seen before it started belongs to an earlier one.
   let execution: "submitted" | "running" | undefined;
   let primed = false; // persona goes out as `system` on the first connector-submitted turn, once
   let briefed = false; // channel briefing goes out once, same rule as 1.x
-  let surfaced: string[] = []; // receive keys surfaced into the current turn, acked on completion
+  const batch = new SurfacedBatch(agent); // the batch the current turn carries, acked on completion
   let ended: OpenCode2Event["durable"]; // log position of the event that ended the last turn
   let started: OpenCode2Event["durable"]; // log position of the running execution's start
+  // A focus @mention wake that `drive` could not submit (a turn was running). Its body was acked at
+  // ingest, so this is all that carries it until a turn end delivers it (#3859).
+  let pendingMention = false;
   let submitting: Promise<void> | undefined; // the prompt POST in flight; what it carries settles when it answers
 
   /** Create the session this agent owns and announce its id to the serve shim, exactly as
@@ -191,28 +181,6 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
     return sessionID ?? (await sessionReady);
   }
 
-  /** Make `ids` the surfaced batch, held in flight so the agent keeps the deliveries owned until the
-   *  turn ends (mirrors `plugin.ts`'s `surface`). */
-  function surface(ids: string[]): boolean {
-    if (!agent.holdInFlight(ids)) return false;
-    agent.releaseInFlight(surfaced);
-    surfaced = ids;
-    return true;
-  }
-
-  /** Ack exactly the surfaced deliveries by their receive keys (mirrors `plugin.ts`'s
-   *  `ackSurfaced`). */
-  function ackSurfaced(): void {
-    if (surfaced.length === 0) return;
-    agent.drainInboxDeliveries(surfaced);
-    abandonSurfaced();
-  }
-
-  function abandonSurfaced(): void {
-    agent.releaseInFlight(surfaced);
-    surfaced = [];
-  }
-
   const safeStatus = async (status: PresenceStatus, activity?: string): Promise<void> => {
     try {
       if (agent.connected) await agent.setStatus(status, activity);
@@ -223,9 +191,9 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
 
   /** Drive a turn carrying the current inbox batch into the owned session, via
    *  `POST /api/session/:id/prompt` (2.x has no `prompt_async` — measured 404). Never prompts into
-   *  a running turn (`execution`), matching 1.x's coalesce-avoidance. `override` is a bare nudge body
-   *  (a focus @mention pull); it surfaces nothing to ack. */
-  async function drive(override?: string): Promise<void> {
+   *  a running turn (`execution`), matching 1.x's coalesce-avoidance. A held `pendingMention` goes
+   *  out as a bare nudge body (a focus @mention pull); it surfaces nothing to ack. */
+  async function drive(): Promise<void> {
     // A turn driven once teardown has begun would outlive the seat, and its batch would never be acked.
     if (execution || submitting || controller.signal.aborted) return;
     const id = await ensureSession();
@@ -234,6 +202,7 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
     // The floor: while boot text exists and its gate is closed, nothing else goes out (the 1.x
     // boot floor in `drive` without the `pendingWake` slot, which 2.x does not have).
     const boot = bootPending() ? bootPrompt : undefined;
+    const override = pendingMention ? MENTION_NUDGE : undefined;
     if (bootPrompt !== undefined && boot === undefined) return;
     const parts: string[] = [];
     let ids: string[] = [];
@@ -261,7 +230,7 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
     if (parts.length === 0) return;
     const text = parts.join("\n\n");
     const system = !primed && persona ? `${persona}\n\n${ORIENTATION_BOOTSTRAP}\n\n${CHANNEL_GUIDANCE}\n\n${MESH_FIRST_STEER}\n\n${WORKFLOW_STEER}` : undefined;
-    if (!surface(ids)) return; // at the in-flight ceiling: the batch stays queued for a later turn
+    if (!batch.surface(ids)) return; // at the in-flight ceiling: the batch stays queued for a later turn
     execution = "submitted";
     briefed = true;
     // The turn can end before this POST answers: the event stream is a separate transport. The boot
@@ -277,10 +246,11 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
         if (turnIds.length) agent.commitSurfacedTurns(turnIds);
         if (system) primed = true;
         if (boot !== undefined) bootPrompt = undefined;
+        else if (override !== undefined) pendingMention = false;
       } catch (e) {
         // An execution that started meanwhile still holds the session: only our submission is released.
         if (execution === "submitted") execution = undefined;
-        abandonSurfaced();
+        batch.abandon();
         log(`drive failed: ${(e as Error).message}`);
       } finally {
         submitting = undefined;
@@ -315,7 +285,7 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
     ended = ev.durable;
     if (execution !== "running") return;
     execution = undefined;
-    const carried = new Set(surfaced);
+    const carried = new Set(batch.keys);
     settle();
     await safeStatus("idle");
     // Not awaited: the event loop must keep consuming while the POST is unanswered, so a turn that
@@ -323,7 +293,7 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
     void (async () => {
       await submitting;
       if (ended !== ev.durable) return; // a later turn ended during the wait: only its task leaves out the batch that turn failed
-      if (bootPending() || agent.pendingWake((item) => carried.has(item.recvKey)) > 0) void drive();
+      if (bootPending() || pendingMention || agent.pendingWake((item) => carried.has(item.recvKey)) > 0) void drive();
     })();
   }
 
@@ -337,20 +307,19 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
     if (automatic && (directed || agent.attention === "open")) void drive();
   });
   agent.on("mention-wake", () => {
-    void drive("📨 You were mentioned — read it with cotal_inbox.");
+    pendingMention = true;
+    void drive();
   });
   agent.on("wake", () => {
     if (!execution) void drive();
   });
 
-  // `e.prompt` is `DeepMutable` (measured) — mutate the text part directly, same composition as
-  // 1.x's `injectIntoPrompt`, via the shared `computeInjection` seam so the two callers can't drift.
+  // `e.prompt` is `DeepMutable` (measured) — mutate the text part directly, as 1.x's
+  // `injectIntoPrompt` does, through the shared batch so the two callers can't drift.
   await ctx.session.hook("prompt", (e) => {
     if (sessionID && e.sessionID !== sessionID) return;
-    const computed = computeInjection(agent);
-    if (!computed || !surface(computed.surfacedIds)) return;
-    e.prompt.text = `${computed.prefix}\n\n${e.prompt.text}`;
-    if (computed.turnIds.length) agent.commitSurfacedTurns(computed.turnIds);
+    const prefix = batch.inject();
+    if (prefix !== undefined) e.prompt.text = `${prefix}\n\n${e.prompt.text}`;
   });
 
   // Measured: `model.request` fires `{model:{id,providerID}, kind:"primary"|"title", agent}` with
@@ -372,6 +341,25 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
   await ctx.tool.transform((ed) => {
     for (const t of buildCotalTools2(agent, config)) ed.add(t);
   });
+
+  // Queued only now, after the last step that can throw: a setup the host refuses returns no
+  // teardown, so an agent started before the refusal would stay joined with nothing to stop it
+  // (#4042). Same non-blocking shape as plugin.ts: awaiting the model check INSIDE setup would
+  // deadlock the server if setup is running while answering the very request the check's fetch
+  // targets. Refuse loud and exit rather than wait forever or join with an unverified model. A
+  // teardown that lands before the check settles owns what is queued here: it must neither start
+  // the stopped agent nor exit the host process over a refusal nobody is waiting for.
+  void modelReady.then(
+    () => {
+      if (controller.signal.aborted) return;
+      return agent.start();
+    },
+    (error: Error) => {
+      if (controller.signal.aborted) return;
+      log(error.message);
+      process.exit(1);
+    },
+  );
 
   // The event stream — a detached loop, never awaited here (setup must return). Maps
   // `session.execution.*`, `permission.asked` and session lifecycle events to presence and
@@ -397,25 +385,28 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
           case "session.execution.started": {
             // A replayed start belongs to a turn whose end already came, so it would hold the session for good.
             // One at or before the last start is a late copy: taking it would let an earlier end pass as this execution's.
-            if ((sessionID && data.sessionID !== sessionID) || replayed(ev) || replayed(ev, started)) break;
+            // Until our own session id is known, no execution can be ours: our turns need it to be
+            // submitted, and a session created before it resolves is adopted above. Taking another
+            // session's start here would set `execution` for an end this guard then drops (#3848).
+            if (data.sessionID !== sessionID || replayed(ev) || replayed(ev, started)) break;
             execution = "running";
             started = ev.durable;
             await safeStatus("working");
             break;
           }
           case "session.execution.succeeded": {
-            if (sessionID && data.sessionID !== sessionID) break;
-            await completeTurn(ev, ackSurfaced); // our driven turn ended cleanly: ack the surfaced batch (the sole ack site)
+            if (data.sessionID !== sessionID) break;
+            await completeTurn(ev, () => batch.ack()); // our driven turn ended cleanly: ack the surfaced batch (the sole ack site)
             break;
           }
           case "session.execution.failed": {
-            if (sessionID && data.sessionID !== sessionID) break;
-            await completeTurn(ev, abandonSurfaced); // leave the inbox unacked so the batch can retry on a later safe turn
+            if (data.sessionID !== sessionID) break;
+            await completeTurn(ev, () => batch.abandon()); // leave the inbox unacked so the batch can retry on a later safe turn
             break;
           }
           case "session.execution.interrupted": {
-            if (sessionID && data.sessionID !== sessionID) break;
-            await completeTurn(ev, ackSurfaced); // explicit user Stop: treat the surfaced batch as dismissed, not failed
+            if (data.sessionID !== sessionID) break;
+            await completeTurn(ev, () => batch.ack()); // explicit user Stop: treat the surfaced batch as dismissed, not failed
             break;
           }
           case "permission.asked": {

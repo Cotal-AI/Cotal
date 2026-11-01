@@ -59,7 +59,7 @@ import {
   type SpaceAuth,
 } from "@cotal-ai/core";
 import {
-  CommandFailure, loadLaunchPersonaFile, personaFileReference, PersonaSourceError, inputDisabledByFlag, jsonFlag, plainFlag, presentationOf, recordOperationWarning, renderReport, terminalWidth, wrapWords, writeResult, type OutputWarning, type RefusalCode, type Report,
+  parseCommaList, CommandFailure, loadLaunchPersonaFile, personaFileReference, PersonaSourceError, inputDisabledByFlag, jsonFlag, plainFlag, presentationOf, recordOperationWarning, renderReport, terminalWidth, wrapWords, writeResult, type OutputWarning, type RefusalCode, type Report,
   agentActorTokenKey,
   agentLifecycleSecretFilePaths,
   agentSecretFilePaths,
@@ -234,7 +234,7 @@ export function checkEnrollmentBundle(raw: unknown, actor: string): { bundle: En
     stock = checked.value;
     if (stock.userAuth.idp.url !== idp.url || stock.userAuth.idp.issuer !== idp.issuer || stock.userAuth.idp.audience !== idp.audience)
       throw new Error("the enrollment bundle's stock userAuth IdP pins do not match its top-level idp pins");
-    if (stock.userAuth.endpoints?.url !== o.authServiceUrl)
+    if (stock.userAuth.endpoints.url !== o.authServiceUrl)
       throw new Error("the enrollment bundle's stock userAuth exchange URL does not match authServiceUrl");
     const access = o.brokerAccess as Record<string, unknown>;
     if (access.kind === "direct" && (typeof access.url !== "string" || !access.url))
@@ -294,7 +294,7 @@ async function registerEnrollmentMesh(stock: UserBundle, root: string, refusals?
   await step("server", () => checkServer(stock.server, "the enrollment bundle's server"));
   const tlsRequired = stock.tlsRequired || tlsIntent(stock.server, false);
   const dial = await step("server", () => checkDialPolicy(stock.server, { tlsRequired, allowUnencryptedOverlay: false }));
-  await step("exchange", () => verifyUserExchange(stock.userAuth.endpoints!.url!, userExchangeIssuer(stock.space)));
+  await step("exchange", () => verifyUserExchange(stock.userAuth.endpoints.url, userExchangeIssuer(stock.space)));
   await step("enforcement", async () => checkEnforcement("user", await probeEnforcement(stock.server), stock.server, stock.space, root));
   await step("registration", () => ({ ok: true, value: persistRemoteUserEntry(stock.space, stock.server, root, stock, tlsRequired, Boolean(dial.residual)) }));
 }
@@ -506,10 +506,6 @@ function missingConnector(name: string, target: object): CommandFailure {
   return new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `no connector "${name}" is installed`, { target,
     remedy: pkg ? `add it with \`cotal ext add ${pkg}\`` : "install its integration with `cotal ext add <npm-package>`, or check the name" });
 }
-
-/** Comma-list flag → string[] (shared by both spawn modes). Only an absent flag is `undefined` and
- *  defers to the persona; an empty value is the empty list, so `--subscribe ""` clears it. */
-const splitFlag = (v?: string) => (v === undefined ? undefined : v.split(",").map((s) => s.trim()).filter(Boolean));
 
 /** #867: the name a spawn sends must already be a mintable identity, and the check must not wait
  *  for the manager's round trip. `spawnNameError` is the SAME predicate the manager applies at its
@@ -731,9 +727,9 @@ export async function launchManagedPersona(
     ...(resumeClaim !== undefined ? { resumeClaim, resumeAgent } : {}),
     prompt: values.prompt,
     shareTools: parseShareSelection(values["share-tools"]),
-    subscribe: splitFlag(values.subscribe),
-    allowSubscribe: splitFlag(values["allow-subscribe"]),
-    allowPublish: splitFlag(values["allow-publish"]),
+    subscribe: parseCommaList(values.subscribe),
+    allowSubscribe: parseCommaList(values["allow-subscribe"]),
+    allowPublish: parseCommaList(values["allow-publish"]),
     // #373: send the bit only when the operator chose it. On an events-required space the
     // policy still forces the plane on (the manager refuses a non-admin caller on such a space
     // anyway, so the operator must hold the admin tier for the spawn to succeed at all).
@@ -1474,15 +1470,15 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // connector (COTAL_SUBSCRIBE / COTAL_ALLOW_*) so the session's runtime read/post set matches its
   // credentials. One source, so a `--subscribe` override can't land in the creds yet be lost at
   // runtime (the connector would otherwise read only the persona file and miss the override).
-  let subscribe = splitFlag(values.subscribe) ?? def.subscribe;
+  let subscribe = parseCommaList(values.subscribe) ?? def.subscribe;
   let allowSubscribe: string[];
   try {
-    allowSubscribe = resolveReadAcl(subscribe ?? [], splitFlag(values["allow-subscribe"]) ?? def.allowSubscribe);
+    allowSubscribe = resolveReadAcl(subscribe ?? [], parseCommaList(values["allow-subscribe"]) ?? def.allowSubscribe);
   } catch (e) {
     stderrLine("✗ ", `${(e as Error).message}`, c.red);
     process.exit(1);
   }
-  let allowPublish = splitFlag(values["allow-publish"]) ?? def.allowPublish;
+  let allowPublish = parseCommaList(values["allow-publish"]) ?? def.allowPublish;
   // The AG-UI event plane, refused HERE for the same reason the manager refuses it before
   // provisioning: a connector that cannot emit must stop the launch while there is still nothing to
   // roll back. The GRANT cannot be derived yet, because it is keyed on the principal and in user

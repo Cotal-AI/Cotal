@@ -253,7 +253,7 @@ function withPin(argv: readonly string[], selector: string): string[] {
 export const rerunOn = (argv: readonly string[], selector: string): string => [displayCmd(), ...withPin(argv, selector).map(shellWord)].join(" ");
 
 /** Hosted `cotal run` verbs take `--on` only as the full instance id `cotal ps` prints
- *  (docs/cli.md). A name or `<host>/<runtime>` that other commands accept is refused
+ *  (docs/cli.mdx). A name or `<host>/<runtime>` that other commands accept is refused
  *  `USAGE_INVALID` there, so a remedy for those verbs must name the instance id.
  *  The command word is the registered name or any alias the registry claims for it
  *  (`r` in implementations/runtime/src/index.ts). Local, offline and seat-only run

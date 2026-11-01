@@ -36,7 +36,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { decodeJwt } from "jose";
 import { isLoopbackLiteral, mkSecretDir, writeSecretFileAtomic, type AuthSpaceCatalogAccount, type AuthSpaceCatalogResult } from "@cotal-ai/core";
-import { CommandFailure, acquireLock, credentialFailure } from "@cotal-ai/workspace";
+import { CommandFailure, acquireLock, credentialFailure, checkIdpUrl } from "@cotal-ai/workspace";
 
 /** A cached IdP login. `token` is the IdP session bearer (Better Auth: `session.token`) — an
  *  opaque revocable handle, never a JWT. `expiresAt` (unix seconds) is advisory for messages;
@@ -103,26 +103,16 @@ export interface DeviceLoginOpts {
  *  query/hash, no trailing slash — the normalized string is also the session-cache key, so
  *  `…/api/auth` and `…/api/auth/` must land on the same entry. */
 export function normalizeIdpUrl(idpUrl: string): string {
-  let u: URL;
-  try {
-    u = new URL(idpUrl);
-  } catch {
-    throw new Error(`idp url "${idpUrl}" is not a valid URL`);
+  const checked = checkIdpUrl(idpUrl);
+  if (!checked.ok) {
+    switch (checked.reason) {
+      case "invalid-url": throw new Error(`idp url "${idpUrl}" is not a valid URL`);
+      case "scheme": throw new Error(`idp url must be https (or http on a loopback IP literal such as 127.0.0.1 for local dev) - got "${idpUrl}"`);
+      case "query-or-fragment": throw new Error(`idp url must not carry a query or fragment - got "${idpUrl}"`);
+      case "credentials": throw new Error(`idp url must not embed credentials before the host - the host it would actually contact is "${checked.host}"`);
+    }
   }
-  // `localhost` gets no exception: this base also derives the pinned JWKS origin, and a hosts
-  // entry would then choose the key the callout trusts.
-  if (u.protocol !== "https:" && !(u.protocol === "http:" && isLoopbackLiteral(u.hostname)))
-    throw new Error(`idp url must be https (or http on a loopback IP literal such as 127.0.0.1 for local dev) - got "${idpUrl}"`);
-  // A query/hash would be silently DROPPED by the normalization below — and a silently altered
-  // auth base is a different IdP than the operator asked for. Refuse instead.
-  if (u.search !== "" || u.hash !== "")
-    throw new Error(`idp url must not carry a query or fragment - got "${idpUrl}"`);
-  // Same class: `--idp https://real-idp.example@evil.example/api/auth` parses to host
-  // evil.example, so an operator who eyeballed "real-idp.example" would sign in against evil.
-  // The normalization below drops the userinfo silently — refuse it (don't echo the password).
-  if (u.username !== "" || u.password !== "")
-    throw new Error(`idp url must not embed credentials before the host - the host it would actually contact is "${u.host}"`);
-  return u.origin + u.pathname.replace(/\/+$/, "");
+  return checked.url.origin + checked.url.pathname.replace(/\/+$/, "");
 }
 
 interface OAuthError {

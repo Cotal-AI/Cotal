@@ -8,7 +8,7 @@ presets. The `deliver` and `feedback-intake` commands are still accepted as depr
 **Tier:** `implementations/` (a self-contained surface over core). Depends on core and workspace.
 Implementations never import each other; they meet at runtime over NATS.
 
-See [docs/delivery-daemon.md](../../docs/delivery-daemon.md) and the
+See [docs/delivery-daemon.mdx](../../docs/delivery-daemon.mdx) and the
 [root AGENTS.md](../../AGENTS.md) for the tier rules.
 
 ## Native transport regression

@@ -8,7 +8,7 @@ import { attachSeat } from "../commands/agents.js";
 import { detachKey } from "../lib/attach-client.js";
 import { Tabs } from "./ui/Tabs.js";
 import { Tiles } from "./ui/Tiles.js";
-import { Roster, harnessTag } from "./ui/Roster.js";
+import { Roster, harnessTag, useRosterView } from "./ui/Roster.js";
 import { sidePaneSize } from "./ui/theme.js";
 import { Feed, useFeedView } from "./ui/Feed.js";
 import { NeedsYou } from "./ui/NeedsYou.js";
@@ -89,8 +89,9 @@ export function App({
   const [compose, setCompose] = useState<ComposeTarget | null>(null);
   const [notice, setNotice] = useState<string | undefined>();
   const [attachTarget, setAttachTarget] = useState<{ name: string } | null>(null);
-  // Held here, not in the Feed, which unmounts while a detail or another full-screen view is open.
+  // Held here, not in the Feed or Roster, which unmount while a detail or another full-screen view is open.
   const feedView = useFeedView();
+  const rosterView = useRosterView();
 
   const overlay = helpOpen || detail !== null;
   const blocked = overlay || search.active || palette.active || newAgent || confirm !== null || compose !== null;
@@ -586,6 +587,7 @@ export function App({
         <Box flexDirection={narrow ? "column" : "row"} height={bodyH}>
           <Box flexDirection={narrow ? "column" : "row"} width={bodyW} height={bodyH}>
             <Roster
+              view={rosterView}
               agents={mesh.agents}
               endpoints={mesh.endpoints}
               query={search.query}

@@ -170,7 +170,7 @@ try {
   check("a non-empty NO_COLOR paints the console with no ANSI color", noColor.painted && !noColor.colored, noColor.tail);
 } catch (e) {
   fail++;
-  console.error("  ✗ threw:", (e as Error).stack ?? (e as Error).message);
+  console.error("  ✗ threw:", e);
 } finally {
   try { await session?.close(); } catch { /* down */ }
   try { await reader?.stop(); } catch { /* down */ }

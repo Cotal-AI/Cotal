@@ -414,6 +414,7 @@ export async function stopDelivery(space: string = folderSpace(), options: { pre
  *  host that wants no manager of its own. */
 export async function ensureControlPlane(
   o: Opts = {},
+  afterDelivery?: () => Promise<void>,
 ): Promise<{
   running: boolean;
   started?: boolean;
@@ -431,6 +432,9 @@ export async function ensureControlPlane(
   // dependency every spawn/retirement/join needs had not come up — the boot line inside
   // `ensureDelivery` was the only trace, and it read as a progress note.
   const delivery = await ensureDelivery({ ...o, space });
+  // User-auth startup needs delivery's claim-liveness oracle, before a manager can connect.
+  // This phase also runs in broker-only mode; it is not a manager-start callback.
+  if (afterDelivery) await afterDelivery();
   const deliveryStarted = { started: delivery.started ?? false, ...(delivery.pid !== undefined ? { pid: delivery.pid } : {}) };
   if (o.noManager) return { running: false, delivery: deliveryStarted, responderBound: delivery.responderBound };
   // `started`/`pid` distinguish a manager `ensureManager` just launched from one it found already
