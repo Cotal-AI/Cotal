@@ -1,5 +1,11 @@
 # @cotal-ai/connector-core
 
+## 0.133.3
+
+### Patch Changes
+
+- Load the MCP SDK's HTTP transport when the HTTP gateway is used, keeping its initialization out of stdio-only startup. Preserve HTTP gateway and fetch-on-use behavior.
+
 ## 0.133.2
 
 ### Patch Changes

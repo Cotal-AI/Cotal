@@ -1,5 +1,15 @@
 # @cotal-ai/cli
 
+## 0.133.3
+
+### Patch Changes
+
+- ebca602: The store cleanup guard keeps one rule for a `--store-dir` inside `.cotal`, instead of also checking a partial list of `.cotal` children that never changed the outcome.
+- 22bf7bf: A checked user-auth bundle's type now carries the pinned exchange URL that `checkUserBundle` requires, so callers read `userAuth.endpoints.url` without non-null assertions.
+- Updated dependencies [22bf7bf]
+  - @cotal-ai/workspace@0.133.3
+  - @cotal-ai/core@0.133.3
+
 ## 0.133.2
 
 ### Patch Changes
