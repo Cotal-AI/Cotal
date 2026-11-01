@@ -12,6 +12,7 @@ export type JcodeConnectorFailureCode =
   | "sessions_enumeration_failed"
   | "sessions_unwritable"
   | "provider_auth_refused"
+  | "provider_payment_required"
   | "provider_request_failed";
 
 /** A bounded connector-owned startup refusal. Only its allow-listed code is rendered publicly. */
@@ -220,6 +221,12 @@ export function classifyReadinessFailure(error: unknown): JcodeConnectorError | 
     /^  status: 401 Unauthorized\r?$/m.test(error.message)
   ) {
     return new JcodeConnectorError("provider_auth_refused", "Jcode provider refused readiness authentication");
+  }
+  if (
+    error.message.startsWith("internal: OpenAI-compatible chat request failed\n") &&
+    /^  status: 402 Payment Required\r?$/m.test(error.message)
+  ) {
+    return new JcodeConnectorError("provider_payment_required", "Jcode provider refused the readiness request for payment");
   }
   return undefined;
 }
