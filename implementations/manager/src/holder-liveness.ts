@@ -4,7 +4,7 @@
  * deliberately shaped like it so the two guards of the same repair read the same way.
  *
  * The `$SYS` CONNZ capability lives with the DELIVERY DAEMON (co-located with the broker), never in
- * a seed-holding process — the same D5 rail-split the evictor obeys. This reaches it with a
+ * a seed-holding process — the same rail split the evictor obeys. This reaches it with a
  * per-call SCOPED `endpoint-evictor` credential: pub the delivery-admin subject + reply +
  * `$JS.API.INFO`, nothing else. That credential names eviction because it is the rail's existing
  * scope; the VERB it calls here is read-only, and the daemon-side executor opens only the CONNZ

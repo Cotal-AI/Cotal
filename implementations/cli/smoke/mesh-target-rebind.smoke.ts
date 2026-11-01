@@ -3,15 +3,15 @@
  *
  * `resolveMeshTarget` answers "which mesh does this command act on". For a local project it looks
  * up the registry entry recorded for THIS root and honours its `server` and `mode`. That lookup
- * (`packages/workspace/src/mesh-target.ts:355`) compared roots with `resolve()`, which normalizes
+ * (in `packages/workspace/src/mesh-target.ts`) compared roots with `resolve()`, which normalizes
  * separators and `..`/`.` but does NOT collapse a symlink — so a project recorded under one
  * spelling of its directory and running under another read as UNRECORDED. The consequences are the
  * two arms this suite drives:
  *
  *   ARM A (SILENT) — the recorded server and mode are discarded and the target is retargeted to
- *     `DEFAULT_SERVER` (`:380`). Nothing warns. A project started on `…:4333` resolves to `…:4222`,
+ *     `DEFAULT_SERVER`. Nothing warns. A project started on `…:4333` resolves to `…:4222`,
  *     and a recorded OPEN mesh mints creds off stale `.cotal/auth`.
- *   ARM B (LOUD) — when the record IS at the default port, the companion test at `:372` reads our
+ *   ARM B (LOUD) — when the record IS at the default port, the companion default-port test reads our
  *     own record as a foreign root and refuses with `default-occupied`: the project is told its own
  *     mesh belongs to someone else.
  *
@@ -69,7 +69,7 @@
  *      pair is `resolve`-equal and `canonicalRoot`-unequal, and on it the two spellings actively
  *      DISAGREE — canonical reads the entry as foreign, resolve reads it as ours.
  *      It is unreachable only because every writer that persists a root stores `resolve()` output
- *      (`meshes-add.ts:128`, `findCotalRoot` at `auth-paths.ts:400`), so the raw `symlink/../`
+ *      (`checkRoot` in `meshes-add.ts`, `findCotalRoot` in `auth-paths.ts`), so the raw `symlink/../`
  *      string is never recorded. This mutant is therefore equivalent ON THE REACHABLE SET, which is
  *      narrower than what TWO SEATS INDEPENDENTLY WROTE DOWN — and the narrower claim is the true
  *      one. Two seats agreeing is precisely when a shared error survives; it took a third seat,

@@ -385,7 +385,9 @@ function dataStateFingerprint(input: Readonly<Record<string, unknown>>): string 
   return JSON.stringify({
     messages: state.messages,
     bytes: state.bytes,
-    first_seq: state.first_seq,
+    // An empty stream is its last sequence: the validator admits it only as initial (0 and 0) or
+    // exhausted (last_seq + 1), and nats-server 2.15 restores an initial one as exhausted.
+    first_seq: state.messages === 0 ? state.last_seq + 1 : state.first_seq,
     last_seq: state.last_seq,
     deleted: [...(state.deleted ?? [])].sort((a, b) => a - b),
     num_deleted: state.num_deleted ?? 0,

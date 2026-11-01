@@ -1134,46 +1134,48 @@ function checkCall(node: AnyNode, v: Validator, scope: Scope): void {
   // working tree, and a literal worktree inside a fanOut's per-item function is that same sharing
   // written once and run by every branch. Sequential reuse within one branch stays legal, and a
   // computed worktree is the runtime guard's to decide.
-  if (name === "parallel" || name === "race") {
-    const branches = args[0];
-    if (branches !== undefined && (branches.type === "ObjectExpression" || branches.type === "ArrayExpression")) {
-      // A branch is a branch however it is spelled: a named function stands in for its body,
-      // resolved the way `branchThunks` resolves it for the walk.
-      const branchNodes = (branches.type === "ObjectExpression"
-        ? (branches.properties as AnyNode[]).filter((prop) => prop.type === "Property").map((prop) => prop.value as AnyNode)
-        : ((branches.elements as (AnyNode | null)[]).filter((el): el is AnyNode => el !== null && isNode(el))))
-        .map((branch) => resolveFunction(branch, v, scope) ?? branch);
-      const holders = new Map<string, AnyNode>();
-      for (const branch of branchNodes) {
-        for (const [wt, site] of literalSpawnWorktrees(branch)) {
-          const prior = holders.get(wt);
-          if (prior !== undefined && prior !== branch) {
-            v.fail(
-              "L3022",
-              site,
-              `Two branches of this \`${name}\` spawn agents into the worktree "${wt}", which runs them in one working tree at the same time. Concurrent writes to one working tree is data loss.`,
-              "Move one spawn out of the concurrent scope, or give it its own worktree.",
-              name,
-            );
-          } else if (prior === undefined) {
-            holders.set(wt, branch);
-          }
+  //
+  // The body is the argument just before the options bag, read from the table as the captured-write
+  // check below reads it, so a new scope primitive is judged without being named here. A record or
+  // array body is its branches. A function body runs once per branch only in a scope that assembles
+  // branch outcomes; `once` and `conclave` run their one function once.
+  const sharedBody = spec.scope === null ? undefined : args[spec.optionsAt - 1];
+  const branchSet = sharedBody !== undefined && (sharedBody.type === "ObjectExpression" || sharedBody.type === "ArrayExpression");
+  if (branchSet) {
+    // A branch is a branch however it is spelled: a named function stands in for its body,
+    // resolved the way `branchThunks` resolves it for the walk.
+    const branchNodes = (sharedBody.type === "ObjectExpression"
+      ? (sharedBody.properties as AnyNode[]).filter((prop) => prop.type === "Property").map((prop) => prop.value as AnyNode)
+      : ((sharedBody.elements as (AnyNode | null)[]).filter((el): el is AnyNode => el !== null && isNode(el))))
+      .map((branch) => resolveFunction(branch, v, scope) ?? branch);
+    const holders = new Map<string, AnyNode>();
+    for (const branch of branchNodes) {
+      for (const [wt, site] of literalSpawnWorktrees(branch)) {
+        const prior = holders.get(wt);
+        if (prior !== undefined && prior !== branch) {
+          v.fail(
+            "L3022",
+            site,
+            `Two branches of this \`${name}\` spawn agents into the worktree "${wt}", which runs them in one working tree at the same time. Concurrent writes to one working tree is data loss.`,
+            "Move one spawn out of the concurrent scope, or give it its own worktree.",
+            name,
+          );
+        } else if (prior === undefined) {
+          holders.set(wt, branch);
         }
       }
     }
   }
-  if (name === "fanOut") {
-    const fn = args[1] !== undefined && isNode(args[1]) ? resolveFunction(args[1], v, scope) ?? args[1] : undefined;
-    if (fn !== undefined && isNode(fn)) {
-      for (const [wt, site] of literalSpawnWorktrees(fn)) {
-        v.fail(
-          "L3022",
-          site,
-          `Every branch of this \`fanOut\` runs this function, so each one spawns an agent into the worktree "${wt}": two agents in one working tree at the same time. Concurrent writes to one working tree is data loss.`,
-          "Derive the worktree from the item (each branch its own tree), or move the spawn out of the fan-out.",
-          "fanOut",
-        );
-      }
+  if (!branchSet && sharedBody !== undefined && isNode(sharedBody) && spec.scope !== null && scopeTraits(spec.scope)?.assembles) {
+    const fn = resolveFunction(sharedBody, v, scope) ?? sharedBody;
+    for (const [wt, site] of literalSpawnWorktrees(fn)) {
+      v.fail(
+        "L3022",
+        site,
+        `Every branch of this \`${name}\` runs this function, so each one spawns an agent into the worktree "${wt}": two agents in one working tree at the same time. Concurrent writes to one working tree is data loss.`,
+        "Derive the worktree from the item (each branch its own tree), or move the spawn out of the fan-out.",
+        name,
+      );
     }
   }
 

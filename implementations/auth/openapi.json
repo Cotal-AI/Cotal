@@ -120,6 +120,26 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/ExchangeRequest"
+              },
+              "examples": {
+                "human": {
+                  "summary": "Human identity",
+                  "description": "Replace the placeholder with a fresh proof from the configured identity provider.",
+                  "value": {
+                    "actor": "worker",
+                    "idpToken": "<idp-token>"
+                  }
+                },
+                "managed": {
+                  "summary": "Managed agent",
+                  "description": "Replace the owner and secret with the managed agent grant.",
+                  "value": {
+                    "owner": "<owner>",
+                    "actor": "worker",
+                    "actorToken": "<managed-agent-secret>",
+                    "view": "manager-caller"
+                  }
+                }
               }
             }
           },
@@ -1119,7 +1139,8 @@
               "required": [
                 "actorToken"
               ]
-            }
+            },
+            "title": "Human identity"
           },
           {
             "required": [
@@ -1130,7 +1151,8 @@
               "required": [
                 "idpToken"
               ]
-            }
+            },
+            "title": "Managed agent"
           }
         ]
       },
