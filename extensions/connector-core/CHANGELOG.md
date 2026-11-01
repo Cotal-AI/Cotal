@@ -1,5 +1,14 @@
 # @cotal-ai/connector-core
 
+## 0.133.13
+
+### Patch Changes
+
+- 8c15963: Keep generated HTTP documentation consistent between root and website installs.
+- c21c940: `MeshView` now reports disconnected while the broker is down. It used to follow only the endpoint's `connection` event, which stays true while the NATS client reconnects on its own, so `cotal console` showed a green dot and `cotal watch` read "live" through the outage. It now also follows the endpoint's `transport` edge, and `cotal watch` reads "Reconnecting" during an outage. Feed entries also carry the wire's `replyTo`, `mentions` and `contextId` when the sender set them, so `cotal watch --json` rows include those fields. A unicast burst coalesces only when those fields match.
+- 67f15b1: Show internal documentation link destinations in terminal output so readers can follow the CLI reference hub. Piped, plain and JSON pages keep their Markdown.
+- 331f050: Move `MeshView`, the live model of a space, from `@cotal-ai/cli` into `@cotal-ai/workspace`, exported as `@cotal-ai/workspace/view`. The same entry adds `openObserver`, which builds the read-only observer endpoint that `cotal console` and `cotal watch` each used to construct inline. Console and watch behave as before. `@cotal-ai/cli` never exported `MeshView` from its package entry, so no public export is removed.
+
 ## 0.133.12
 
 ### Patch Changes
