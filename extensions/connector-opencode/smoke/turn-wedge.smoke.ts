@@ -468,6 +468,27 @@ try {
     await rawNc.close();
   }
 
+  // #3839: a DM that lands while a turn runs is buffered for that turn's end. A user Stop ends the
+  // turn as `session.error` MessageAbortedError, and the buffered DM must then drive its own turn.
+  const beforeStopCell = prompts.length;
+  await pub.unicast(ottoId, "turn the user stops");
+  for (let i = 0; i < 50 && prompts.length === beforeStopCell; i++) await sleep(100);
+  await pub.unicast(ottoId, "dm during the stopped turn");
+  await sleep(500); // buffered: the stopped turn is still running
+  const beforeAbort = prompts.length;
+  await fire(hooks, {
+    type: "session.error",
+    properties: { sessionID: SID, error: { name: "MessageAbortedError", data: { message: "The operation was aborted" } } },
+  });
+  for (let i = 0; i < 30 && prompts.length === beforeAbort; i++) await sleep(100);
+  check(
+    "a DM buffered during a turn the user stops drives its own turn after the stop",
+    beforeAbort === beforeStopCell + 1 && prompts.length === beforeAbort + 1 && promptText(prompts.at(-1)).includes("dm during the stopped turn"),
+    prompts.slice(beforeStopCell).map((p) => promptText(p).slice(0, 80)),
+  );
+  await fire(hooks, { type: "session.idle", properties: { sessionID: SID } });
+  await sleep(300);
+
   // Stop: a retry is now pending (delay back at 2s after this failure). A cooperative stop landing
   // while it is pending must cancel the timer and submit nothing — two guards hold this: the timer
   // clear in dispose's teardown (`clearErrorRetry` in `quiesce`) and the `stopping` refusal in
