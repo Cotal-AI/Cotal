@@ -110,3 +110,8 @@ A bare `>` read grant permits reading all channel chat in the space.
 A wildcard in `subscribe` actively listens to matching channels. The same wildcard in `allowSubscribe` grants read access without creating those subscriptions.
 Manifest channel names must be concrete. Their permission lists contain agent names, not channel patterns.
 The wire rules are in [SPEC §3](../SPEC.md#3-subject-layout) and [§9](../SPEC.md#9-nats--jetstream-security-and-authorization).
+
+One post to a channel that `team.>` matches, such as `team.announce`, reaches the agents that are connected and following `team.>` when you post.
+A pattern follow has no durable backstop, so a follower that is offline then may never see it.
+To reach several channels, post to each by name.
+`cotal_send` refuses a pattern, and its refusal names both ways.

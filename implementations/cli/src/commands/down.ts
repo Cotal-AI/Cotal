@@ -62,6 +62,7 @@ import {
   type SeatCheckpoint,
   type JsonValue,
   restoreLeftOut,
+  resolveControlTarget,
 } from "@cotal-ai/workspace";
 import { jetstreamManager } from "@nats-io/jetstream";
 import {
@@ -98,7 +99,6 @@ import { service, serviceComplete, validateServiceArguments } from "./service-re
 import { stopNamedServiceSet } from "./service-set-stop.js";
 import { readLocalServiceCensus } from "../lib/service-census.js";
 import { assertNoLiveServices, bareDownServicesView, liveServicesRefusal, planBareDownServices, type BareDownService } from "./down-services.js";
-import { askManager, resolveControlTarget } from "../lib/control.js";
 import { connectOrExit, userViewAuthOrExit } from "../lib/connect.js";
 import { waitForEndpointUnreachable } from "../lib/endpoint-cut.js";
 import { captureSeatCheckpoint } from "../lib/seat-capture.js";
@@ -111,6 +111,8 @@ import { goneRootDown, goneRootStackDown, validateGoneRootDownArguments } from "
 import { readStackJournal, recordedProcessLine } from "../lib/stack-journal.js";
 import { restoreNextStep } from "../lib/restore.js";
 import { ownStdoutErrors } from "../lib/stdout-owner.js";
+import { askManager } from "@cotal-ai/workspace/control";
+import { cliControl } from "../lib/control.js";
 
 /** The fields a checkpoint reads off one retained inventory entry. The manager owns
  *  `ManagerResumeAgent`; the CLI never imports it, because implementations do not depend on each
@@ -838,7 +840,7 @@ async function preserveStateDown(storeOverride?: string, sessionStores: readonly
         // Plane-3 fence precedes the re-prepared inventory, exactly as on the fresh path.
         const retryDelivery = all.find((component) => component.name === "delivery");
         if (retryDelivery && mayBeRunning(retryDelivery, context)) await stopLocalProcess(retryDelivery, context); // fence an uncertain delivery too (stopLocalProcess throws loud on unattributable → abort)
-        const reprepared = await askManager(retryTarget.space, retryTarget.server, "preparePreservation", { attemptId }, retryTarget.auth, "any", 60_000);
+        const reprepared = await askManager(cliControl, retryTarget.space, retryTarget.server, "preparePreservation", { attemptId }, retryTarget.auth, "any", 60_000);
         const replan = reprepared.ok ? reprepared.data as { inventory?: unknown; failures?: unknown[]; state?: string } : undefined;
         if (!replan?.inventory || (replan.failures?.length ?? 0) !== 0 || (replan.state !== "prepared" && replan.state !== "preserved"))
           throw new Error(reprepared.error ?? "manager could not re-prepare the recorded preservation attempt");
@@ -852,7 +854,7 @@ async function preserveStateDown(storeOverride?: string, sessionStores: readonly
           // A restarted manager prepared a DIFFERENT inventory: the journaled cut no longer
           // matches reality. Release its fence and abandon the stale intent; a rerun cuts fresh.
           try {
-            await askManager(retryTarget.space, retryTarget.server, "abortPreservation", { attemptId }, retryTarget.auth, "any", 30_000);
+            await askManager(cliControl, retryTarget.space, retryTarget.server, "abortPreservation", { attemptId }, retryTarget.auth, "any", 30_000);
           } catch { /* best effort - the fence dies with the manager */ }
           abortMaintenanceCut(lock);
           clearPreservationPrepareIntent(lock);
@@ -889,6 +891,7 @@ async function preserveStateDown(storeOverride?: string, sessionStores: readonly
       const deliveryFenced = delivery !== undefined && mayBeRunning(delivery, context);
       if (delivery && deliveryFenced) await stopLocalProcess(delivery, context); // fence an uncertain delivery: no MEMBERS mutation may race the inventory
       const prepared = await askManager(
+        cliControl,
         target.space,
         target.server,
         "preparePreservation",
@@ -930,7 +933,7 @@ async function preserveStateDown(storeOverride?: string, sessionStores: readonly
         // attempt (best effort, the same shape as the stale-inventory retry above) and clear the
         // intent, so the operator is left with a running, unfenced mesh and the refusal reason.
         try {
-          await askManager(target.space, target.server, "abortPreservation", { attemptId }, target.auth, "any", 30_000);
+          await askManager(cliControl, target.space, target.server, "abortPreservation", { attemptId }, target.auth, "any", 30_000);
         } catch { /* best effort - the fence dies with the manager */ }
         clearPreservationPrepareIntent(lock);
         // The delivery daemon was stopped above as the Plane 3 fence, and a refusal used to leave
@@ -990,6 +993,7 @@ async function preserveStateDown(storeOverride?: string, sessionStores: readonly
       writePreservationCommitIntent(lock, { attemptId });
       const target = await resolveControlTarget({ space: mesh.space, server: mesh.server }, "control-caller-admin");
       const commit = await askManager(
+        cliControl,
         target.space,
         target.server,
         "commitPreservation",

@@ -1,5 +1,11 @@
 # @cotal-ai/seat
 
+## 0.133.12
+
+### Patch Changes
+
+- 13499c0: Rewrite Security and Agent coordination as focused MDX explanations with complete supporting references. Preserve documentation URLs, Markdown downloads, and offline documentation tools, and update source links and documentation checks for the renamed pages.
+
 ## 0.133.11
 
 No changes in this release.

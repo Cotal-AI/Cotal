@@ -1,5 +1,5 @@
 /**
- * Managed-row fold smoke (no NATS, no test runner): pnpm --filter @cotal-ai/cli test
+ * Managed-row fold smoke (no NATS, no test runner): pnpm --filter @cotal-ai/workspace test
  *
  * The console polls every manager in the space for its managed rows, and a scatter is often
  * PARTIAL: a registered instance whose host died never deregisters, so it stays silent
@@ -13,7 +13,7 @@
  * the seats are still on the roster. Keeping rows per instance is what separates them, and these
  * cells drive the poll sequences where the difference shows.
  */
-import { createManagedPoller, foldManagedRows, managedById, type ManagedRow, type PollOutcome, type PsReply } from "../src/console/control.js";
+import { createManagedPoller, foldManagedRows, managedById, type ManagedRow, type PollOutcome, type PsReply } from "../src/control/actions.js";
 
 let pass = 0, fail = 0;
 function check(label: string, cond: boolean, extra?: unknown): void {

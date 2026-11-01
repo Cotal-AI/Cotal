@@ -1,5 +1,11 @@
 # @cotal-ai/core
 
+## 0.133.12
+
+### Patch Changes
+
+- 13499c0: Rewrite the Messaging concepts as direct MDX and move detailed endpoint and daemon contracts into focused references. Preserve complete Markdown in offline documentation and update source links and documentation checks for the renamed pages.
+
 ## 0.133.11
 
 No changes in this release.

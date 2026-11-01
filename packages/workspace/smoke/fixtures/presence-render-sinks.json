@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 739,
+    "total": 740,
     "honest-text": 38,
     "presence-only-glyph/count": 57,
     "command-ack": 11,
-    "non-render/control": 633
+    "non-render/control": 634
   },
   "renderers": [
     {
@@ -1675,42 +1675,42 @@
       }
     },
     {
-      "path": "implementations/cli/src/view/mesh-view.ts",
+      "path": "packages/workspace/src/view/mesh-view.ts",
       "kind": "indexed-map",
       "anchor": "STATUS_ORDER[a.status]",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
-      "path": "implementations/cli/src/view/mesh-view.ts",
+      "path": "packages/workspace/src/view/mesh-view.ts",
       "kind": "indexed-map",
       "anchor": "STATUS_ORDER[b.status]",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
-      "path": "implementations/cli/src/view/mesh-view.ts",
+      "path": "packages/workspace/src/view/mesh-view.ts",
       "kind": "indexed-map",
       "anchor": "counts[p.status as keyof StatusCounts]",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
-      "path": "implementations/cli/src/view/mesh-view.ts",
+      "path": "packages/workspace/src/view/mesh-view.ts",
       "kind": "status-token",
       "anchor": "\"waiting\"",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
-      "path": "implementations/cli/src/view/mesh-view.ts",
+      "path": "packages/workspace/src/view/mesh-view.ts",
       "kind": "status-token",
       "anchor": "ter((p) => p.status !== \"offline\");\n    return {\n      co",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
-      "path": "implementations/cli/src/view/mesh-view.ts",
+      "path": "packages/workspace/src/view/mesh-view.ts",
       "kind": "status-token",
       "anchor": "d.id === id)?.status ?? \"offline\";\n    const roleOf = (id",
       "class": "non-render/control",
@@ -2656,7 +2656,7 @@
       "rationale": "Persistence payload: serializes the status into a checkpoint file; no terminal or DOM rendering."
     },
     {
-      "path": "implementations/cli/src/view/mesh-view.ts",
+      "path": "packages/workspace/src/view/mesh-view.ts",
       "kind": "derived-output",
       "anchor": "pe.lastTs = Math.max(pe.lastTs, c.last)",
       "class": "non-render/control",
@@ -3276,7 +3276,7 @@
     {
       "path": "implementations/cli/src/chat/static-session.ts",
       "kind": "derived-output",
-      "anchor": "askManager(mesh.space, mesh.server, op, args, auth, \"owner\", timeoutMs, instanceId !== undefined ? { instanceId } : undefined)",
+      "anchor": "askManager(cliControl, mesh.space, mesh.server, op, args, auth, \"owner\", timeoutMs, instanceId !== undefined ? { instanceId } : undefined)",
       "class": "non-render/control",
       "rationale": "Static chat control path: asks the pinned space's manager; no presence is rendered."
     },
@@ -5165,9 +5165,9 @@
       "rationale": "Manager choice: tests whether a live peer holds the name; the status is a filter predicate, not rendered."
     },
     {
-      "path": "implementations/cli/src/lib/manager-choice.ts",
+      "path": "packages/workspace/src/control/seat.ts",
       "kind": "status-token",
-      "anchor": "visor}` && p.status !== \"offline\")));\n  return { managers",
+      "anchor": "\"offline\"",
       "class": "non-render/control",
       "rationale": "Manager choice: skips an offline supervisor presence when reading a manager's host; the status is a filter predicate, not rendered."
     },
@@ -5272,7 +5272,14 @@
     {
       "path": "implementations/cli/src/commands/spawn.ts",
       "kind": "derived-output",
-      "anchor": "`--space ${shellWord(t.space)} --on ${shellWord(reply.managerInstanceId)}`",
+      "anchor": "readManagedLaunch(reply, { space: t.space, requestedModel: values.model ?? null, detached: values.detach === true }, target)",
+      "class": "non-render/control",
+      "rationale": "Reads the manager's launch receipt with caller-held mesh coordinates; this call renders no peer presence or work-progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/spawn.ts",
+      "kind": "derived-output",
+      "anchor": "`--space ${shellWord(t.space)} --on ${shellWord(result.managerInstanceId)}`",
       "class": "non-render/control",
       "rationale": "Spawn remedy shaping: builds the target flags for the ps command; the spawn reply is tainted only through the local `mesh` registry target, no peer presence is rendered."
     },
