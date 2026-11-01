@@ -1,0 +1,3 @@
+# The briefing every connector hands its agent is composed once and rendered per harness; the
+# suite grades the shared paragraphs, the per-harness arrival sentence and the gateway's omission.
+smoke:briefing

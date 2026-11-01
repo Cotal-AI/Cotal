@@ -1,0 +1,3 @@
+# A user-auth mesh end to end: the stock auth service issues an agent connection its listing
+# generation at the callout, bound to its actor-ledger row, and the agent lists through a served registry.
+smoke:registry-listing-user-auth

@@ -46,10 +46,7 @@ import {
   formatInjection,
   fmtFrom,
   fmtChannel,
-  ORIENTATION_BOOTSTRAP,
-  MESH_FIRST_STEER,
-  WORKFLOW_STEER,
-  CHANNEL_GUIDANCE,
+  briefing,
   AguiEmitter,
   AguiEmitterHolder,
   eventPlaneStopped,
@@ -1092,9 +1089,9 @@ export const cotal: Plugin = async () => {
       if (brief) parts.unshift({ type: "text", text: brief });
       if (parts.length === 0) return;
       const body: { parts: typeof parts; system?: string } = { parts };
-      // persona once, as system (no --append-system-prompt). Append the orientation bootstrap so the
-      // agent is told to orient first — gated on persona so we never replace OpenCode's default system.
-      if (!primed && persona) body.system = `${persona}\n\n${ORIENTATION_BOOTSTRAP}\n\n${CHANNEL_GUIDANCE}\n\n${MESH_FIRST_STEER}\n\n${WORKFLOW_STEER}`;
+      // persona once, as system (no --append-system-prompt), with the shared briefing after it —
+      // gated on persona so we never replace OpenCode's default system.
+      if (!primed && persona) body.system = `${persona}\n\n${briefing(config, "opencode")}`;
       // The surface opens the batch, which arms the turn end BEFORE the await: a turn-end signal can
       // land before the server request resolves, and completeTurn bails unless armed — arming after
       // would drop it and wedge the agent.

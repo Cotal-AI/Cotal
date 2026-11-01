@@ -142,6 +142,12 @@ const ANNOTATIONS = {
     notes:
       "Omit `name` to list spawnable names; pass `name` to show one card you own. Role, model, and description ride only on files you own; show of a name you do not own is not-found.",
   },
+  cotal_endpoints: {
+    effect: "none; asks the space's registry which endpoints and commands your recorded grants cover",
+    availability: "always; a credential with no listing binding is told so, and where no registry answers the tool says so and lists nothing",
+    notes:
+      "The answer's `source` says where its rows came from: `recorded-ceiling` (the grants recorded at issuance, source liveness not checked) or `no-permission-system` (an open mesh, every registered endpoint).",
+  },
   cotal_describe: {
     effect: "none; reads an endpoint's registered command surface",
     availability: "any session whose credential carries caller rows for the endpoint (describe rides them)",

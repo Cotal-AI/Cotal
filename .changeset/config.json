@@ -26,7 +26,8 @@
       "@cotal-ai/connector-opencode",
       "@cotal-ai/connector-codex",
       "@cotal-ai/pi",
-      "@cotal-ai/auth"
+      "@cotal-ai/auth",
+      "@cotal-ai/registry"
     ]
   ],
   "linked": [],
