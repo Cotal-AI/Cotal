@@ -103,5 +103,11 @@ check(
   { during, next, quietAgain },
 );
 
+check(
+  "the cotal_inbox description says a reply can carry the notice",
+  inbox.description.includes("If your stored copies reached their limit of 1000, the reply says earlier channel posts may have been dropped"),
+  inbox.description,
+);
+
 console.log(`\nSTORED-COPIES-NOTICE SMOKE ${fail === 0 ? "OK" : "FAILED"}  (${pass} passed, ${fail} failed)`);
 process.exit(fail === 0 ? 0 : 1);
