@@ -1,5 +1,11 @@
 # @cotal-ai/connector-core
 
+## 0.133.9
+
+### Patch Changes
+
+- 2e16657: Import the zod members the tool specs and gateway use by name, so bundles of those two modules no longer reach zod's locale tables through their own `z` namespace import. Tool schemas, tool names and descriptions, argument validation, and error messages are unchanged. Carriers that import zod elsewhere keep their own references.
+
 ## 0.133.8
 
 No changes in this release.

@@ -1,5 +1,16 @@
 # @cotal-ai/cli
 
+## 0.133.9
+
+### Patch Changes
+
+- 4bb984c: `cotal status` grades a manager as not answering through one shared predicate for the manager row and the manager health check, so the two can no longer drift apart. No behaviour change.
+- 2c9a28d: `cotal up` on a running mesh re-creates the memory-backed presence bucket when a broker restart has lost it, and says so, instead of refusing with `stream not found`. A missing file-backed bucket still refuses.
+- 46d7550: `cotal watch` and `cotal console` drop the "Observer reported an error" state once presence is current again after a broker restart, instead of keeping it until they are restarted.
+- Updated dependencies [2c9a28d]
+  - @cotal-ai/core@0.133.9
+  - @cotal-ai/workspace@0.133.9
+
 ## 0.133.8
 
 ### Patch Changes
