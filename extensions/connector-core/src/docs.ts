@@ -246,6 +246,8 @@ export function capSection(text: string, maxLines = 48): string {
 }
 
 function renderSearch(query: string, hits: DocHit[]): string {
+  // Even a query with no tokens still validates the bundled corpus, as page and search replies did before.
+  loadDocsSourceLengths();
   if (!hits.length) {
     return `No matches for "${query}" in the Cotal v${DOCS_VERSION} docs. Call cotal_docs() for the page index, or search an exact identifier (a subject, a cotal_* tool, a field name).`;
   }
