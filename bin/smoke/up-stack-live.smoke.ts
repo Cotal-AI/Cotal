@@ -759,8 +759,11 @@ try {
   const coreDist = resolve(WT, "packages", "core", "dist", "index.js");
   const shimBody = join(fgOut, "claude-shim-body.js");
   // A REAL mesh endpoint as the seat: presence join is what makes the detached spawn's readiness
-  // resolve (a bare keepalive rides the 30s backstop into an uncertain non-success).
+  // resolve (a bare keepalive rides the 30s backstop into an uncertain non-success). It first prints
+  // the claude connector's startup confirmation prompt, as Claude does: the pty runtime stops a seat
+  // whose prompt has not appeared 15s after launch, which on a slow host lands before `ps` (#2462).
   writeFileSync(shimBody, [
+    "process.stdout.write('WARNING: Loading development channels\\n');",
     "const fs=require('node:fs');const {pathToFileURL}=require('node:url');",
     "const p=process.env.COTAL_LAUNCH_MATERIAL;",
     "let m={};try{m=JSON.parse(fs.readFileSync(p,'utf8'))}catch{}",

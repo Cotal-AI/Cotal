@@ -1,0 +1,2 @@
+# Documentation link destinations on real terminals and redirected output.
+smoke:docs-links

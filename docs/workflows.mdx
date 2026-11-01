@@ -1,0 +1,172 @@
+---
+title: Workflow runs
+description: How a program coordinates agents, records progress, and continues after interruption.
+kind: Concept
+audience: Workflow authors and runtime implementers
+---
+
+import { Cards, Card } from 'fumadocs-ui/components/card';
+import { Callout } from 'fumadocs-ui/components/callout';
+
+A workflow run coordinates agents through a program and a durable step journal.
+The journal records each effect before dispatch and records its result afterwards.
+If the host stops, a successor runs the program from the beginning and reuses recorded results until it reaches unfinished work.
+The source and journal hold the recovery state. The runtime does not serialize a running interpreter.
+
+Cotal Lang uses pure JavaScript for calculations and named effects for work outside the program.
+Agents still communicate through their channels. The workflow controls when work proceeds, when a decision is required, and how concurrent branches settle.
+[SPEC §14](../SPEC.md#14-workflow-runs-v05) defines run records and authority. The [language reference](../spec/cotal-lang.md) defines program behavior.
+
+<Cards>
+  <Card title="Workflow operations reference" href="workflow-operations.mdx">
+    Agent tools, hosted and local commands, admission, revocation, inventory, and keyed submission.
+  </Card>
+  <Card title="Workflow runtime reference" href="workflow-runtime.mdx">
+    Replay, migration, forks, wire records, authority, and engine limits.
+  </Card>
+  <Card title="Workflow effect reference" href="workflow-effects.mdx">
+    Seat ownership, budgets, decisions, presence, turns, placement, and cancellation.
+  </Card>
+</Cards>
+
+## Keyed submission [#keyed-submission]
+
+Keyed submission binds one submission ID to one host-minted run.
+It lets a scheduler reconcile an unanswered start without launching replacement work.
+The client must retain the original caller, fingerprint, contracts, manager instance, and epoch.
+An `activated` submission can already have completed or failed, so it is not evidence of a running worker.
+
+<Callout type="warning" title="Under validation">
+  Static native and signerless issuer paths need separate acceptance evidence before release or integration.
+  The process-local client helper does not provide persisted scheduler recovery.
+</Callout>
+
+The [keyed submission reference](workflow-operations.mdx#keyed-submission) retains the binding states, timing rules, retry limits, and uncertainty obligations.
+
+## An example program [#a-first-program]
+
+This program requests a plan, pauses for approval, gives a builder a turn, and waits for a reply.
+It illustrates the language. The [agent-session request](workflow-operations.mdx#from-an-agent-session) shows a single timer and its recorded result.
+
+```js
+const planner = await spawn("planner")
+const builder = await spawn("builder", { worktree: "wt-1" })
+
+const plan = await ask(planner, { name: "plan", schema: { steps: "array" } })
+const ok = await checkpoint("approve-plan", "Approve the plan?", { timeout: "4h", onExpiry: "proceed" })
+if (ok.status !== "resolved") {
+  await notify([planner], { decision: "approve-plan", outcome: "expired" })
+}
+
+const r = await turn(builder, { name: "build", deadline: "30m" })
+if (r.status === "blocked") {
+  await turn(planner, { name: "unblock" })
+}
+
+const outcome = await race({
+  reply: () => wait(replied(builder), { timeout: "20m" }),
+  giveUp: () => sleep("1h"),
+}, { name: "await-or-move-on" })
+log("outcome", outcome.index)
+```
+
+`ask` obtains a structured value from a spawned agent. The language hashes the schema without interpreting it. This repository's handlers enforce the shorthand in language reference §6.5.
+`checkpoint` records a pause that a person can answer, with a durable expiry timer.
+`turn` gives an agent one turn and returns its yield. `race` keeps the branch with the earliest recorded completion clock.
+`notify` carries a bounded decision record for an agent's next turn. It does not send prose into a channel.
+
+### Personal native conversation [#participant]
+
+An approved personal native conversation can join its own run with `participant({ name? })`. The immutable admission pins its exact owner, actor, and lifecycle. `cotal_turn_participate` opts that conversation into a short self-only turn lease, renewed after reconnect or manager restart. The handle grants no stop, attach, or terminal custody. See [personal participants](workflow-effects.mdx#participant).
+
+## The mental model [#the-mental-model]
+
+Pure code calculates values. Effects interact with agents, time, decisions, and messages.
+The language removes JavaScript constructs that hide effects or depend on the host.
+Values remain mutable while your branch owns them, then freeze when they cross an effect boundary.
+
+A step's identity combines its scope path, kind, name, and occurrence.
+Changing a variable name or moving an unrelated step need not invalidate the recorded result.
+Changing an effect's inputs produces a divergence, because the old result answered a different request.
+
+Concurrency has explicit scopes and separate branch journals.
+Race results use recorded clocks and declaration order, so replay does not depend on host scheduling.
+`now()` uses the branch's run clock. `random()` uses a seeded stream for the scope.
+The journal records enough information to explain both results and failures in the program's own coordinates.
+
+A scripted simulator and dry run exercise a program before it reaches agents.
+The [language behavior reference](workflow-runtime.mdx#language-and-simulation) retains the syntax limits, scope error rules, and virtual-clock behavior.
+
+## Reusable helpers [#reusable-helpers]
+
+Helper calls share named-step occurrence counters. Give each helper instance a distinctly named single-branch `parallel` scope to preserve its namespace. See [reusable helpers](workflow-runtime.mdx#reusable-helpers).
+
+## Continuing a run [#continuing-a-run]
+
+Resume replays the same program under the same pins and language version.
+Settled effects return their results. Failed effects replay their errors. Pending effects recover the external work they already bound.
+
+`once` protects an `ask` whose external write cannot honor an idempotency key.
+If the host stops before the result is recorded, recovery asks a person to settle the unknown result instead of dispatching the write again.
+This bounds dispatches. It does not guarantee a single external write.
+
+Migration compares edited source with the journal and reports changed or orphaned steps.
+The CLI exposes this read-only check. It does not commit the proposed migration.
+Fork creates a new run from a recorded prefix, retaining the parent's pins while leaving the parent unchanged.
+
+See [resume, migration, and fork contracts](workflow-runtime.mdx#continuing-a-run), including seat adoption and the `once` example.
+
+## Runs from an agent session [#from-an-agent-session]
+
+A persona with `run` capability can expose `cotal_run` on an authenticated mesh.
+Fresh setup defaults include `spawn` and `run`, but existing personas and credentials can differ.
+The manager must also support hosted execution and accept the caller's issued authority.
+
+The [agent-session request](workflow-operations.mdx#from-an-agent-session) supplies a small start request and the expected journal result.
+
+### Missing `cotal_run` [#if-cotal_run-is-missing]
+
+Tool visibility depends on connector configuration and capability issuance.
+Adding `run` to a file does not update an already issued credential.
+The [tool availability reference](workflow-operations.mdx#if-cotal_run-is-missing) describes orientation, upgrades, overrides, relaunch, and manager support.
+
+## Operating a run [#operating-a-run]
+
+The manager records and drives a hosted run. Your terminal is free after start returns the run ID.
+`ps` lists runs, `journal` shows steps and questions, `answer` settles a pause, and `amend` records a later change of position without changing the answer the run used.
+
+A hosted run inherits the starting caller's issued channel ceiling, recorded at admission.
+The manager's broader permissions do not replace that ceiling.
+A revocation marker prevents the next channel effect and prevents a later resume or takeover.
+
+The [operations reference](workflow-operations.mdx#operating-a-run) covers commands, local execution, user-auth hosting, admission, revocation, and refused steps.
+
+## Diagnostic inventory [#diagnostic-inventory]
+
+Page mode bounds large inventory replies by row count, bytes, storage calls, and read duration.
+The CLI or connector and manager must both support it. Release 0.88.0 and earlier do not.
+
+A diagnostic scan can be incomplete. Its cursor and `endObserved` field cannot prove absence, retirement, ownership release, or worker inactivity.
+See [inventory limits and continuation rules](workflow-operations.mdx#diagnostic-inventory).
+
+## Wire authority [#what-is-on-the-wire]
+
+The wire records separate immutable run pins, status, source, the append-only journal, answers, notices, migrations, admission, and revocation.
+Takeover replays the journal before activation. `journalHigh` detects a truncated tail.
+
+Driver, mediator, and one-shot operator credentials divide broker access.
+The effect host still holds trusted authority, and injected host code shares its process.
+See the [wire record and credential reference](workflow-runtime.mdx#what-is-on-the-wire) for the limits of that separation.
+
+## Available implementations [#what-ships-today]
+
+`@cotal-ai/lang` provides validation, execution, replay, simulation, and dry run without a broker when you supply an effect handler.
+`@cotal-ai/core` implements the wire records and grants. `@cotal-ai/runtime` hosts those effects on the mesh.
+The mesh handler implements the language's effects, including durable agent work and cancellation cleanup.
+
+Driver-started runs use compiled language version `2` in a locked-down worker.
+Recorded version-`1` runs continue on the tree-walker. Records do not switch engines during resume.
+The compiled engine needs Node 22 or newer.
+
+The [effect reference](workflow-effects.mdx) describes ownership, supervision, budgets, asks, presence, turns, placement, and cancellation.
+The [runtime reference](workflow-runtime.mdx#engine-versions-and-payload-limits) covers payload limits and engine refusals.

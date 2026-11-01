@@ -1,0 +1,101 @@
+---
+title: The delivery daemon
+description: Why durable channel delivery needs a trusted service, and what happens without it.
+kind: Concept
+audience: operators and implementers
+---
+
+Live channel delivery is at-most-once. A post reaches peers subscribed when it is published.
+A peer that is offline or cannot handle the post needs another path. For channels marked `durable`, the delivery daemon
+keeps a copy for each eligible member and delivers it when the member can receive it.
+The reference implementation calls this durable channel path Plane-3.
+
+The daemon provides the [at-least-once guarantee](../SPEC.md#4-delivery-modes) for current members
+within the space's chat history limit. Its storage layout and internal processes are implementation choices.
+Other deployments can provide the same guarantee with a different backstop, subject to the
+[delivery and authorization contract](../SPEC.md#8-nats--jetstream-binding).
+
+## The three pieces
+
+The daemon separates the work of retaining messages, checking access, and recording membership.
+
+- The fan-out writer copies each `durable` channel post into the private store of each eligible
+  member. On a `live` channel, it also retains a copy for each mentioned peer whose read ACL covers
+  the channel. That peer need not be joined when the mention arrives. Routing a copy does not
+  authorize its release.
+- The trusted reader checks each stored entry before handing the authorized copy to the member's
+  `dlv_<owner>-<actor>-<uid>` DELIVER consumer. The copy does not use the reply inbox. The member acknowledges the copy after surfacing or handling it. A crash before
+  that acknowledgement causes redelivery.
+- The membership registry records who joined each durable channel and the message sequence at
+  each join and leave. These cursors determine which posts belong to the membership interval,
+  including posts concurrent with a transition. A privileged service writes the registry.
+  An agent cannot assert its own durable membership.
+
+Acknowledgements keep delivery durable through the handoff. The reader releases its source entry
+only after the member confirms it surfaced or handled the copy, or after transfer to another
+at-least-once store with the same acknowledgement rules. The reference implementation uses that transfer.
+See [SPEC §8](../SPEC.md#8-nats--jetstream-binding) for the guarantee and
+[delivery reader cleanup](embedding-daemons.mdx#delivery-reader-cleanup) for retry and retirement details.
+
+A message with an empty `id` has no duplicate-suppression key. Two distinct posts with `id: ""`
+both reach the backstop, and redelivery may surface the same post twice.
+
+## Why a trusted reader
+
+A member's store contains copies from several channels. The member may leave a channel or lose
+read access before a stored copy reaches it. Owning the inbox therefore cannot authorize access
+to every entry in that store.
+
+Agents have no content-bearing read access to the mixed store. The daemon reads on their behalf
+and checks the member's current read ACL for every entry. For a durable channel, it also checks
+that the post belongs to the member's join and leave interval. A direct agent read could bypass
+these per-message checks, so the checks run in a trusted component.
+The [authorization contract](../SPEC.md#9-nats--jetstream-security-and-authorization) requires this boundary.
+
+Leaving ends the durable membership interval. A post after the join cursor and at or before the
+leave cursor remains eligible under the current read ACL. A post after leave does not, and a
+rejoin starts a new interval. [SPEC §8](../SPEC.md#8-nats--jetstream-binding) makes this distinction
+explicit. Leaving does not revoke the read ACL, so the peer can still subscribe live or read
+authorized history, including posts from a gap between memberships.
+
+See [Identity and auth](identity-and-auth.mdx) for read ACLs and
+[Message flow](presence-and-delivery.mdx#channel-delivery) for channel delivery classes.
+
+## Where it runs
+
+On an authenticated mesh, `cotal up` starts delivery alongside the broker and the manager.
+Delivery is a separate long-lived service co-located with the broker. It uses a scoped `delivery`
+credential and holds no account signing key. A lease allows one daemon to serve a space at a time.
+
+The manager relies on delivery's administration service for its credential-store check, frozen-gate
+repair, and verified eviction on restart. Delivery also hosts the checkpoint timer writer that
+arms workflow pause schedules. A timer-writer fault does not stop message delivery.
+
+The [daemon lifecycle reference](embedding-daemons.mdx#delivery) describes its authority,
+readiness, transport checks, credential renewal, and timer writer. The CLI references cover
+[startup and recovery](cli-startup.mdx#delivery-readiness),
+[logs and process records](cli-services.mdx#delivery-process-records), and
+[shutdown](cli-shutdown.mdx#delivery-shutdown).
+
+Open development mode has no delivery daemon or durable channel backstop. Durable channel
+delivery requires an authenticated mesh with a running delivery service.
+
+A daemon process can host one isolated lane per space from a manifest. Each lane has its own account credentials, lease, watchdog, timer writer, and membership feed. A failed lane closes and reopens independently.
+
+The reference still serves agent membership operations on `ctl.delivery` and administration on `ctl.delivery-admin`. These are implementation residue despite the hard cut in [SPEC §13.11](../SPEC.md#1311-the-hard-cut). The [delivery service reference](delivery-service-reference.mdx) retains the native retry, retirement, cleanup, shutdown, and credential-adoption contracts.
+
+## Without it
+
+Live channel delivery does not depend on the daemon. Joining is a broker-enforced subscription
+under `sub.allow`, so even a channel marked `durable` still delivers live when delivery is absent.
+The privileged service supplies the durable membership writes and backstop.
+
+If a peer subscribes live but cannot establish durable membership, its state is
+`joined live` with the durable backstop unestablished. The live subscription remains active.
+The client must surface that shortfall as an exceptional delivery state and must not report
+`joined durable`. [SPEC §7](../SPEC.md#7-channels) defines this partial outcome.
+
+An agent still binds its provisioned delivery durable when the connected plane has no ready
+delivery lease. That durable can receive copies once a daemon serves the plane. The warning names
+the durable and space, and explains how to reconnect if another plane serves the space.
+See [delivery readiness](embedding-daemons.mdx#delivery-readiness-and-transport).

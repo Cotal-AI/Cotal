@@ -1,6 +1,6 @@
 /**
  * CONSOLE PARTICIPANT smoke: the operator becoming a roster peer on its first send, driven through
- * the console's own pieces (`makeObserver` + `makeParticipant` + `MeshView`) against a real open
+ * the console's own pieces (`openObserver` + `makeParticipant` + `MeshView`) against a real open
  * broker. pnpm --filter @cotal-ai/cli smoke:console-participant (needs nats-server on PATH).
  *
  * What it pins:
@@ -20,8 +20,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CotalEndpoint, isReachable, setupSpaceStreams, type CotalMessage, type Presence } from "@cotal-ai/core";
 import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
-import { MeshView } from "../src/view/mesh-view.js";
-import { makeObserver, makeParticipant } from "../src/console/root.js";
+import { MeshView, openObserver } from "@cotal-ai/workspace/view";
+import { makeParticipant } from "../src/console/root.js";
 import { ConsoleSession, clean } from "./_console-pty.js";
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -72,7 +72,7 @@ try {
   stops.push(() => alice.stop(), () => watcher.stop());
 
   // The console's exact observer + model (open mode: no tap narrowing, the god-view).
-  const op = makeObserver(space, OPEN, {}, "operator");
+  const op = openObserver({ space, server: OPEN, name: "operator", operator: true });
   const view = new MeshView(op, {});
   await view.start();
   stops.push(() => view.stop());
@@ -170,7 +170,7 @@ try {
 
 } catch (e) {
   fail++;
-  console.error("  ✗ scenario threw:", (e as Error).stack ?? (e as Error).message);
+  console.error("  ✗ scenario threw:", e);
 } finally {
   for (const s of stops.reverse()) { try { await s(); } catch { /* down */ } }
   srv.kill("SIGKILL");

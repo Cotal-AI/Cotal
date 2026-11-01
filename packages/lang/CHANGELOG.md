@@ -1,5 +1,122 @@
 # @cotal-ai/lang
 
+## 0.133.13
+
+No changes in this release.
+
+## 0.133.12
+
+### Patch Changes
+
+- 13499c0: Preserve documentation bookmarks and offline HTTP reference navigation after the MDX migration. Keep executable documentation checks aligned with the split references, validate generated HTTP content on root builds, preserve complete Card destinations, and improve light-mode navigation contrast.
+- 13499c0: Rewrite the MeshView, cotal-lang card, and glossary references as direct MDX with source-backed definitions and examples. Update the language example check and terminal model source references for the renamed pages. Preserve complete Markdown and existing page calls in the installed release's offline documentation.
+- 13499c0: Rewrite Security and Agent coordination as focused MDX explanations with complete supporting references. Preserve documentation URLs, Markdown downloads, and offline documentation tools, and update source links and documentation checks for the renamed pages.
+
+## 0.133.11
+
+No changes in this release.
+
+## 0.133.10
+
+No changes in this release.
+
+## 0.133.9
+
+No changes in this release.
+
+## 0.133.8
+
+No changes in this release.
+
+## 0.133.7
+
+No changes in this release.
+
+## 0.133.6
+
+No changes in this release.
+
+## 0.133.5
+
+No changes in this release.
+
+## 0.133.4
+
+### Patch Changes
+
+- 5629f59: L3022 now reads a scope's body from the scope table, as the captured-write check does, instead of naming `parallel`, `race` and `fanOut`. A new scope primitive is judged without being added to the check, and a single-body scope that runs its function once (`once`, `conclave`) is left alone.
+- 60b5c33: The scope runner and the compiled engine's scope helpers dispatch on the typed `ScopeKind` instead of the primitive's name. A scope kind added to the union without its runner arm, or without its calling convention in the engine, now fails the build rather than throwing an interpreter defect the first time a program opens it.
+
+## 0.133.3
+
+No changes in this release.
+
+## 0.133.2
+
+No changes in this release.
+
+## 0.133.1
+
+### Patch Changes
+
+- 28b245f: The shipped conformance corpus (`conformance/corpus.json`) now carries the ninth example in the language reference: the reusable-helper example under §10.2 "Keys", which #5446 added to the spec. That change did not regenerate the corpus, so the corpus held only 8 of the reference's 9 examples. The corpus is regenerated with `pnpm gen:conformance`, and the new case is an accepted program.
+
+## 0.133.0
+
+No changes in this release.
+
+## 0.132.7
+
+No changes in this release.
+
+## 0.132.6
+
+No changes in this release.
+
+## 0.132.5
+
+No changes in this release.
+
+## 0.132.4
+
+No changes in this release.
+
+## 0.132.3
+
+No changes in this release.
+
+## 0.132.2
+
+No changes in this release.
+
+## 0.132.1
+
+No changes in this release.
+
+## 0.132.0
+
+No changes in this release.
+
+## 0.131.6
+
+No changes in this release.
+
+## 0.131.5
+
+No changes in this release.
+
+## 0.131.4
+
+No changes in this release.
+
+## 0.131.3
+
+No changes in this release.
+
+## 0.131.2
+
+No changes in this release.
+
 ## 0.131.1
 
 No changes in this release.

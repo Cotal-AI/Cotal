@@ -26,6 +26,8 @@
  * which is itself part of the claim. Run: pnpm smoke:persona-root
  */
 import { strict as assert } from "node:assert";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { CommandFailure } from "@cotal-ai/workspace";
@@ -461,6 +463,44 @@ try {
   check("mint: default credential storage does NOT use the cwd root", !existsSync(cwdStored), cwdStored);
 
 
+
+  // Exercise the built CLI parser and the three local command paths, not just a split helper.
+  const binary = fileURLToPath(new URL("../../../bin/dist/cotal.js", import.meta.url));
+  const cases: [string, string | undefined, string[]][] = [
+    ["absent", undefined, []], ["empty", "", []], ["space", "   ", []],
+    ["comma", ",", []], ["trimmed", " review , , ops ", ["review", "ops"]],
+    ["literal", "none", ["none"]],
+  ];
+  const childEnv: NodeJS.ProcessEnv = { ...process.env, HOME: home, DO_NOT_TRACK: "1" };
+  for (const key of Object.keys(childEnv)) if (key.startsWith("COTAL_")) delete childEnv[key];
+  childEnv.COTAL_HOME = home;
+  const native = (args: string[]) => spawnSync(process.execPath, [binary, ...args], {
+    cwd: MESH, env: childEnv, encoding: "utf8", timeout: 30_000,
+  });
+  for (const [label, raw, expected] of cases) {
+    for (const verb of ["persona", "personas"] as const) {
+      const name = `list-${verb}-${label}`;
+      const args = [verb, verb === "persona" ? "create" : "new", name, "--prompt", "list fixture"];
+      if (raw !== undefined) args.push("--subscribe", raw);
+      const result = native(args);
+      const path = agentFilePath(MESH, name);
+      if (raw === undefined) {
+        check(`${verb}: absent subscribe is refused by the real CLI`, result.status === 1 && !existsSync(path));
+      } else {
+        check(`${verb}: ${label} list reaches the saved definition`, result.status === 0 && existsSync(path));
+        check(`${verb}: ${label} list preserves tokens`, JSON.stringify(loadAgentFile(path).subscribe) === JSON.stringify(expected));
+      }
+    }
+    const name = `list_mint_${label}`;
+    writeFileSync(agentFilePath(MESH, name), `---\nname: ${name}\nsubscribe: []\nallowSubscribe: [default-read]\nallowPublish: [default-post]\n---\n\nlist fixture\n`);
+    const args = ["auth", "mint", name, "--profile", "agent", "--json"];
+    if (raw !== undefined) args.push("--allow-subscribe", raw, "--allow-publish", raw);
+    const result = native(args);
+    check(`mint: ${label} list succeeds through the real CLI`, result.status === 0);
+    const grants = JSON.parse(result.stdout).result.grants as { read: string[]; post: string[] };
+    check(`mint: ${label} read list keeps absence distinct from empty`, JSON.stringify(grants.read) === JSON.stringify(raw === undefined ? ["default-read"] : expected));
+    check(`mint: ${label} post list keeps absence distinct from empty`, JSON.stringify(grants.post) === JSON.stringify(raw === undefined ? ["default-post"] : expected));
+  }
 
   // FAIL CLOSED. A completer must never throw into the operator's interactive shell, and must not
   // guess a root when none resolves. With `--space` naming a mesh that is not registered there is

@@ -85,29 +85,53 @@ export function wrapText(s: string, width: number): string[] {
   return out.length ? out : [""];
 }
 
-/** A row of {@link wrapFacts}: its pieces, each marked when it is a dated fact. */
+// The longest run of whole grapheme clusters from the start of s that fits width terminal columns.
+export function clipText(s: string, width: number): string {
+  let head = "";
+  let used = 0;
+  for (const { segment } of graphemes.segment(s)) {
+    used += displayWidth(segment);
+    if (used > width) break;
+    head += segment;
+  }
+  return head;
+}
+
+/** A row of {@link wrapPieces}: its pieces, each marked when it is a dated fact. */
 export type FactRow = { text: string; dated: boolean }[];
 
-// Wraps a status line to a column width at its fact boundaries, the " (" before a condition and the
-// " · " before each dated fact: facts share a row while they fit, a fact that starts a row drops its
-// separator (a condition its parentheses, which only tie it to the status word on a shared row), and
-// only a fact wider than the column word-wraps, so no fact is ever cut.
-export function wrapFacts(s: string, width: number): FactRow[] {
+/** A piece for {@link wrapPieces}: its text with its separator, for a row it shares, and without,
+ *  for a row it starts. */
+export type Piece = { shared: string; alone: string; dated: boolean };
+
+// Wraps pieces to a column width at their boundaries: pieces share a row while they fit, a piece
+// that starts a row drops its separator, and only a piece wider than the column word-wraps, so no
+// piece is ever cut.
+export function wrapPieces(pieces: Piece[], width: number): FactRow[] {
   const rows: FactRow[] = [];
   let used = 0;
-  for (const piece of s.split(/(?= · | \()/)) {
-    const dated = piece.startsWith(" · ");
-    const size = displayWidth(piece);
+  for (const { shared, alone, dated } of pieces) {
+    const size = displayWidth(shared);
     if (rows.length && used + size <= width) {
-      rows[rows.length - 1].push({ text: piece, dated });
+      rows[rows.length - 1].push({ text: shared, dated });
       used += size;
     } else
-      for (const text of wrapText(piece.replace(/^ · |^ \((.*)\)$/, "$1"), width)) {
+      for (const text of wrapText(alone, width)) {
         rows.push([{ text, dated }]);
         used = displayWidth(text);
       }
   }
   return rows;
+}
+
+// Wraps a status line with wrapPieces at its fact boundaries, the " (" before a condition and the
+// " · " before each dated fact. A condition that starts a row also drops its parentheses, which only
+// tie it to the status word on a shared row.
+export function wrapFacts(s: string, width: number): FactRow[] {
+  return wrapPieces(
+    s.split(/(?= · | \()/).map((shared) => ({ shared, alone: shared.replace(/^ · |^ \((.*)\)$/, "$1"), dated: shared.startsWith(" · ") })),
+    width,
+  );
 }
 
 // The run of whole items, `heights` rows each, that fits `room` rows around `sel`: the items above

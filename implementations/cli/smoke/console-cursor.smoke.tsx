@@ -18,7 +18,7 @@ import { NeedsYou } from "../dist/console/ui/NeedsYou.js";
 import { SpacePicker } from "../dist/console/ui/SpacePicker.js";
 import { Sequence } from "../dist/console/ui/topo/Sequence.js";
 import { foldTopo } from "../dist/console/ui/topo/model.js";
-import type { FeedEntry, MeshSnapshot } from "../src/view/mesh-view.js";
+import type { FeedEntry, MeshSnapshot } from "@cotal-ai/workspace/view";
 
 const counted = countedAssert(assertBase);
 const assert: typeof assertBase = counted.assert as typeof assertBase;
@@ -106,8 +106,9 @@ const peers: Presence[] = ["alice", "bob", "carol"].map((name) => ({
 for (const lens of ["roster", "needs-you"] as const) {
   let selected: Presence | undefined;
   const open = (peer: Presence) => { selected = peer; };
+  const held = { current: { index: 0 } };
   const view = (rows: Presence[]) => lens === "roster"
-    ? <Roster agents={rows} endpoints={[]} query="" boxWidth={100} boxHeight={20} blocked={false}
+    ? <Roster view={held} agents={rows} endpoints={[]} query="" boxWidth={100} boxHeight={20} blocked={false}
       onFocus={() => {}} onOpenDetail={open} />
     : <NeedsYou waiting={rows} boxWidth={100} boxHeight={20} blocked={false}
       onFocus={() => {}} onOpenDetail={open} />;

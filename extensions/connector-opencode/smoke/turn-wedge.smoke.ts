@@ -41,7 +41,7 @@ const SID = "ses_test";
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
-const srv = spawn("nats-server", ["-js", "-p", String(PORT), "-sd", join(dir, "js")], { stdio: "ignore" });
+const srv = spawn("nats-server", ["-js", "-a", "127.0.0.1", "-p", String(PORT), "-sd", join(dir, "js")], { stdio: "ignore" });
 const releaseBroker = teardownOnSignal(srv, dir);
 const auth = `Basic ${Buffer.from("opencode:test-secret").toString("base64")}`;
 let pass = 0;
@@ -227,7 +227,7 @@ try {
   await fire(hooks, { type: "session.idle", properties: { sessionID: SID } });
 
   // A user interrupt after a wake does NOT re-drive it: an explicit Stop is a turn someone ENDED,
-  // not one that failed, so the nudge is dismissed the same way the surfaced batch is (ackSurfaced),
+  // not one that failed, so the nudge is dismissed the same way the surfaced batch is (batch.ack),
   // never re-armed the way a genuine failure re-arms it above.
   await pub.multicast("@Otto second look", { channel: "team", mentions: ["Otto"] });
   await waitForPrompts(7);
@@ -422,7 +422,7 @@ try {
     // with nothing pending, so no drive fires), then hold `busy` across the publish window: the
     // incoming handler buffers while busy, so the pair cannot drive its own prompt_async. The
     // human prompt that follows is the one frame that carries both — `injectIntoPrompt` is gated
-    // on driving/awaitingTurnEnd, not on busy.
+    // on driving and the open batch, not on busy.
     await fire(hooks, { type: "session.idle", properties: { sessionID: SID } });
     await sleep(300);
     await fire(hooks, { type: "session.status", properties: { sessionID: SID, status: { type: "busy" } } });
@@ -468,6 +468,27 @@ try {
     await rawNc.close();
   }
 
+  // #3839: a DM that lands while a turn runs is buffered for that turn's end. A user Stop ends the
+  // turn as `session.error` MessageAbortedError, and the buffered DM must then drive its own turn.
+  const beforeStopCell = prompts.length;
+  await pub.unicast(ottoId, "turn the user stops");
+  for (let i = 0; i < 50 && prompts.length === beforeStopCell; i++) await sleep(100);
+  await pub.unicast(ottoId, "dm during the stopped turn");
+  await sleep(500); // buffered: the stopped turn is still running
+  const beforeAbort = prompts.length;
+  await fire(hooks, {
+    type: "session.error",
+    properties: { sessionID: SID, error: { name: "MessageAbortedError", data: { message: "The operation was aborted" } } },
+  });
+  for (let i = 0; i < 30 && prompts.length === beforeAbort; i++) await sleep(100);
+  check(
+    "a DM buffered during a turn the user stops drives its own turn after the stop",
+    beforeAbort === beforeStopCell + 1 && prompts.length === beforeAbort + 1 && promptText(prompts.at(-1)).includes("dm during the stopped turn"),
+    prompts.slice(beforeStopCell).map((p) => promptText(p).slice(0, 80)),
+  );
+  await fire(hooks, { type: "session.idle", properties: { sessionID: SID } });
+  await sleep(300);
+
   // Stop: a retry is now pending (delay back at 2s after this failure). A cooperative stop landing
   // while it is pending must cancel the timer and submit nothing — two guards hold this: the timer
   // clear in dispose's teardown (`clearErrorRetry` in `quiesce`) and the `stopping` refusal in
@@ -499,12 +520,14 @@ try {
   const space2 = "ocwedge2";
   const SID2 = "ses_test2";
   const dir2 = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
-  const srv2 = spawn("nats-server", ["-js", "-p", String(PORT2), "-sd", join(dir2, "js")], { stdio: "ignore" });
+  const srv2 = spawn("nats-server", ["-js", "-a", "127.0.0.1", "-p", String(PORT2), "-sd", join(dir2, "js")], { stdio: "ignore" });
   const releaseBroker2 = teardownOnSignal(srv2, dir2);
   const auth2 = `Basic ${Buffer.from("opencode:test-secret-2").toString("base64")}`;
   const prompts2: { body: { text?: string } }[] = [];
   let modelListing: Array<{ providerID: string; modelID: string }> = [];
   let modelReads = 0;
+  // Holds the `POST /api/session` answer, so a cell can feed events before the adapter knows its session.
+  let sessionGate: Promise<void> | undefined;
 
   const oc2 = createHttpServer((req, res) => {
     if (req.headers.authorization !== auth2) {
@@ -516,7 +539,9 @@ try {
     req.on("data", (d) => (raw += d));
     req.on("end", () => {
       if (req.method === "POST" && req.url === "/api/session") {
-        res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ data: { id: SID2 } }));
+        void (sessionGate ?? Promise.resolve()).then(() =>
+          res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ data: { id: SID2 } })),
+        );
         return;
       }
       if (req.method === "GET" && req.url === "/api/model") {
@@ -687,12 +712,24 @@ try {
       if (line.includes("[cotal-session]")) sessionLine = line;
       return originalStderrWrite2!.call(process.stderr, chunk, ...(args as [BufferEncoding, (error?: Error | null) => void]));
     }) as typeof process.stderr.write;
-    dispose2 = await bootPlugin2(ctx2);
+    // #3848: another session's execution starts before the adapter's own session id is known and
+    // ends after it is. Neither may touch this adapter's turn state, or `busy` wedges every later drive
+    // (the "one DM drives exactly one prompt POST" cell below goes red).
+    let releaseSession!: () => void;
+    sessionGate = new Promise<void>((r) => (releaseSession = r));
+    const booting = bootPlugin2(ctx2);
+    await sleep(500);
+    ctx2.feed({ type: "session.execution.started", durable: { aggregateID: "ses_foreign", seq: 1 }, data: { sessionID: "ses_foreign" } });
+    await sleep(200);
+    releaseSession();
+    dispose2 = await booting;
 
     for (let i = 0; i < 50; i++) {
       if (sessionLine) break;
       await sleep(100);
     }
+    ctx2.feed({ type: "session.execution.succeeded", durable: { aggregateID: "ses_foreign", seq: 2 }, data: { sessionID: "ses_foreign" } });
+    await sleep(200);
     check("2.x: the session id is printed as [cotal-session]", sessionLine.includes(SID2), sessionLine);
 
     for (let i = 0; i < 50; i++) {
@@ -716,6 +753,66 @@ try {
       prompts2.length === 2 && prompts2[1]?.body.text?.includes("second turn via 2.x") === true,
       prompts2,
     );
+
+    // The second prompt's batch is open, so a native prompt carries nothing (#3507): its DM is still
+    // in the inbox, and the 1.x hook refuses the same way. The DM buffered behind it goes out alone.
+    const prompt2 = ctx2.sessionHooks.get("prompt") as (e: { sessionID: string; prompt: { text: string } }) => void | Promise<void>;
+    await pub2.unicast(otto2Id!, "third turn via 2.x");
+    await sleep(500);
+    const whileOpen = { sessionID: SID2, prompt: { text: "typed while a batch is open" } };
+    await prompt2(whileOpen);
+    check("2.x: a native prompt carries nothing while a driven batch is open", whileOpen.prompt.text === "typed while a batch is open", whileOpen);
+    ctx2.feed({ type: "session.execution.started", durable: { aggregateID: SID2, seq: 3 }, data: { sessionID: SID2 } });
+    ctx2.feed({ type: "session.execution.succeeded", durable: { aggregateID: SID2, seq: 4 }, data: { sessionID: SID2 } });
+    for (let i = 0; i < 50 && prompts2.length < 3; i++) await sleep(100);
+    check(
+      "2.x: the DM buffered behind the open batch is driven as its own prompt once that turn ends",
+      prompts2.length === 3 && prompts2[2]?.body.text?.includes("third turn via 2.x") === true && !prompts2[2]?.body.text?.includes("second turn via 2.x"),
+      prompts2,
+    );
+    ctx2.feed({ type: "session.execution.started", durable: { aggregateID: SID2, seq: 5 }, data: { sessionID: SID2 } });
+    ctx2.feed({ type: "session.execution.succeeded", durable: { aggregateID: SID2, seq: 6 }, data: { sessionID: SID2 } });
+    await sleep(300);
+
+    // A native turn with no batch open: the DM it buffers is carried by the next native prompt, and
+    // that batch is open until the turn ends, so a second native prompt carries it no second time.
+    ctx2.feed({ type: "session.execution.started", durable: { aggregateID: SID2, seq: 7 }, data: { sessionID: SID2 } });
+    await sleep(200);
+    await pub2.unicast(otto2Id!, "fourth via 2.x");
+    await sleep(500);
+    const first = { sessionID: SID2, prompt: { text: "typed with no batch open" } };
+    await prompt2(first);
+    check(
+      "2.x: a native prompt with no batch open carries the buffered DM ahead of its text",
+      first.prompt.text.includes("fourth via 2.x") && first.prompt.text.endsWith("\n\ntyped with no batch open"),
+      first,
+    );
+    const again = { sessionID: SID2, prompt: { text: "typed again" } };
+    await prompt2(again);
+    check("2.x: a second native prompt does not carry the open batch again", again.prompt.text === "typed again" && prompts2.length === 3, { again, prompts2 });
+    ctx2.feed({ type: "session.execution.succeeded", durable: { aggregateID: SID2, seq: 8 }, data: { sessionID: SID2 } });
+    await sleep(300);
+
+    // #3859: a focus @mention wake that fires while a turn runs is acked at ingest, so nothing but
+    // the nudge carries it. The turn's end must deliver that nudge.
+    const focusTool = ctx2.addedTools.find((t) => t.name === "cotal_status");
+    await focusTool?.execute({ attention: "focus" });
+    ctx2.feed({ type: "session.execution.started", durable: { aggregateID: SID2, seq: 9 }, data: { sessionID: SID2 } });
+    await sleep(200);
+    const beforeMention = prompts2.length;
+    await pub2.multicast("@Otto2 look at this mid-turn", { channel: "team", mentions: ["Otto2"] });
+    await sleep(500);
+    const midTurn = prompts2.length;
+    ctx2.feed({ type: "session.execution.succeeded", durable: { aggregateID: SID2, seq: 10 }, data: { sessionID: SID2 } });
+    for (let i = 0; i < 30 && prompts2.length === midTurn; i++) await sleep(100);
+    check(
+      "2.x: a focus @mention wake that fires mid-turn is delivered when the turn ends",
+      midTurn === beforeMention && prompts2.length === midTurn + 1 && String(prompts2.at(-1)?.body.text).includes("You were mentioned"),
+      prompts2.slice(beforeMention).map((p) => String(p.body.text).slice(0, 80)),
+    );
+    ctx2.feed({ type: "session.execution.started", durable: { aggregateID: SID2, seq: 11 }, data: { sessionID: SID2 } });
+    ctx2.feed({ type: "session.execution.succeeded", durable: { aggregateID: SID2, seq: 12 }, data: { sessionID: SID2 } });
+    await sleep(300);
 
     const names1x = cotalToolSpecs(configFromEnv(), "opencode").map((s) => s.name).sort();
     const names2x = ctx2.addedTools.map((t) => t.name).sort();

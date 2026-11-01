@@ -94,7 +94,7 @@ for (const k of PER_SESSION) process.env[k] = `parent-${k}`;
 process.env.COTAL_HOME = "/tmp/operator-cotal-home";
 process.env.COTAL_CODEX_BIN = "/tmp/operator-codex-bin";
 /** The usage telemetry opt-outs, the self-hosted intake and CI cross too, so a seat's own `cotal`
- *  commands report, or stay off, as the run that launched it does (docs/telemetry.md). */
+ *  commands report, or stay off, as the run that launched it does (docs/telemetry.mdx). */
 const TELEMETRY_ENV = { DO_NOT_TRACK: "1", CI: "true", COTAL_TELEMETRY: "off", COTAL_TELEMETRY_DISABLED: "1", COTAL_TELEMETRY_URL: "http://intake.invalid/v1/telemetry" };
 Object.assign(process.env, TELEMETRY_ENV);
 

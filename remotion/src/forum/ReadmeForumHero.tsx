@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { AbsoluteFill, Easing, continueRender, delayRender, interpolate, spring, staticFile, useCurrentFrame } from "remotion";
 import { loadFont as loadDisplay } from "@remotion/google-fonts/BricolageGrotesque";
 import { loadFont as loadSans } from "@remotion/google-fonts/Geist";

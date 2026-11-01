@@ -174,10 +174,15 @@ console.log("web-events-filter smoke");
   const mentions = src.split("chatOnly").length - 1;
   ok("5.1 SOURCE-SHAPE: chatOnly has exactly two call sites", mentions === 3, mentions);
 
+  // The route runs to its own closing brace at the guard's indentation. Both cells require the
+  // window to reach the page the route returns, so a restructured route fails them instead of
+  // shrinking what they read.
   const byName = src.slice(src.indexOf('path.startsWith("/api/channels/")'));
-  const routeBody = byName.slice(0, byName.indexOf("}"));
-  ok("5.2 SOURCE-SHAPE: the by-name history route applies no filter", !routeBody.includes("chatOnly"), routeBody.slice(0, 200));
-  ok("5.3 SOURCE-SHAPE: it still serves whatever channel is named", routeBody.includes("channelHistory"));
+  const routeEnd = byName.indexOf("\n    }\n");
+  const routeBody = routeEnd < 0 ? "" : byName.slice(0, routeEnd);
+  const returnsPage = routeBody.includes("json(res, page)");
+  ok("5.2 SOURCE-SHAPE: the by-name history route applies no filter", returnsPage && !routeBody.includes("chatOnly"), routeBody.slice(-300));
+  ok("5.3 SOURCE-SHAPE: it still serves whatever channel is named", returnsPage && routeBody.includes("channelHistory("));
 
   const tap = src.slice(src.indexOf("ep.tap("), src.indexOf("ep.tap(") + 200);
   ok("5.4 SOURCE-SHAPE: the live tap is not filtered, so frames stay visible", !tap.includes("chatOnly"), tap.slice(0, 120));

@@ -13,7 +13,9 @@ export interface UserBundle {
   space: string;
   server: string;
   tlsRequired: boolean;
-  userAuth: UserAuthInfo;
+  /** The user-auth arm with its exchange endpoint pinned: {@link checkBundleDocument} refuses a
+   *  bundle without `endpoints.url`, so the type carries what the check proved. */
+  userAuth: UserAuthInfo & { endpoints: NonNullable<UserAuthInfo["endpoints"]> & { url: string } };
   /** Closed registration policy. No other key or value is accepted. */
   policy?: { events: "required" };
   /** The sentinel creds blob. IN THE BUNDLE ONLY — registration lands it in a 0600 file under
@@ -80,6 +82,7 @@ export function checkBundleDocument(parsed: unknown): Check<UserBundle> {
   }
   if (!userAuth.endpoints?.url)
     return bad("✗ the user-auth bundle pins no exchange endpoint (userAuth.endpoints.url) - for a remote registration that URL is trust, and it must come from the export, never be guessed");
+  const pinned: UserBundle["userAuth"] = { ...userAuth, endpoints: { ...userAuth.endpoints, url: userAuth.endpoints.url } };
   if (userAuth.endpoints.agentProvisioningUrl !== undefined) {
     // The provisioning endpoint receives the login bearer, so it rides the same pinned-fetch
     // scheme rule as every other trust URL in this bundle: https, or a loopback http LITERAL.
@@ -97,7 +100,7 @@ export function checkBundleDocument(parsed: unknown): Check<UserBundle> {
   }
   if (typeof doc.sentinelCreds !== "string" || !doc.sentinelCreds)
     return bad("✗ the user-auth bundle carries no sentinelCreds - the sentinel identity is part of the export");
-  return good({ space: doc.space, server: doc.server, tlsRequired: doc.tlsRequired, userAuth, ...(policy ? { policy } : {}), sentinelCreds: doc.sentinelCreds });
+  return good({ space: doc.space, server: doc.server, tlsRequired: doc.tlsRequired, userAuth: pinned, ...(policy ? { policy } : {}), sentinelCreds: doc.sentinelCreds });
 }
 
 /** Budget for the exchange trust probe — same posture as the mode probe above: run once, at
@@ -192,7 +195,7 @@ function sameRegistrationTrust(entry: MeshEntry, bundle: UserBundle): boolean {
   return entry.mode === "user" && ua !== undefined &&
     entry.space === bundle.space && entry.server === bundle.server && (entry.tlsRequired === true) === bundle.tlsRequired &&
     ua.idp.url === bundle.userAuth.idp.url && ua.idp.issuer === bundle.userAuth.idp.issuer &&
-    ua.idp.audience === bundle.userAuth.idp.audience && ua.endpoints?.url === bundle.userAuth.endpoints?.url;
+    ua.idp.audience === bundle.userAuth.idp.audience && ua.endpoints?.url === bundle.userAuth.endpoints.url;
 }
 
 /**

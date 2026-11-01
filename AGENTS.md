@@ -29,9 +29,9 @@ concepts leak into `@cotal-ai/core` or the shared layers.
 
 - [README.md](README.md): what Cotal is, for a general audience.
 - [docs/README.md](docs/README.md): the docs index and reading path.
-- [docs/what-is-cotal.md](docs/what-is-cotal.md) (*what* it does) →
-[docs/architecture.md](docs/architecture.md) (*how*) →
-[docs/connect-claude.md](docs/connect-claude.md) (the connector).
+- [docs/what-is-cotal.mdx](docs/what-is-cotal.mdx) (*what* it does) →
+[docs/architecture.mdx](docs/architecture.mdx) (*how*) →
+[docs/connect-claude.mdx](docs/connect-claude.mdx) (the connector).
 - [SPEC.md](SPEC.md): the **normative** wire contract. Where a client disagrees with the spec,
 the spec wins. [spec/cotal-lang.md](spec/cotal-lang.md) is the normative reference for the
 workflow language (SPEC §14); every `js` block in it is validated by `pnpm smoke:lang-surface`.
@@ -52,14 +52,14 @@ pnpm check         # every local check, :live suites included; runs every step a
 
 ESM only (`"type": "module"`); `tsx` runs TS directly, but packages import each other from their
 built `dist/`, so run `pnpm build` after `pnpm install` and after editing a package
-([docs/cli.md](docs/cli.md#running-it)). Node &gt;= 22.10.
+([CLI usage](https://docs.cotal.ai/api-reference/cli-usage/#running-it)). Node &gt;= 22.10.
 
 ## Repository map
 
 
 | Path                                    | What it is                                                                                                                                                                                                                        |
 | --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `packages/*`                            | The standard plus the local workstation layer. `@cotal-ai/core` is the wire protocol (generic; depends on nothing else in the repo); `@cotal-ai/workspace` is machine-local operator tooling over `~/.cotal` and depends on core; `@cotal-ai/lang` is the cotal-lang workflow language and depends on nothing else here; `@cotal-ai/seat` is local PTY seat custody (one detached custodian per seat) and depends on nothing else here; `@cotal-ai/smoke-kit` is private test-only helpers for the smoke suites, never published and never imported by shipped code. |
+| `packages/*`                            | The standard plus the local workstation layer. `@cotal-ai/core` is the wire protocol (generic; depends on nothing else in the repo); `@cotal-ai/workspace` is the machine-local operator and client-surface layer over `~/.cotal` and depends on core; `@cotal-ai/lang` is the cotal-lang workflow language and depends on nothing else here; `@cotal-ai/seat` is local PTY seat custody (one detached custodian per seat) and depends on nothing else here; `@cotal-ai/smoke-kit` is private test-only helpers for the smoke suites, never published and never imported by shipped code. |
 | `extensions/*`                          | Pluggable adapters (connectors, runtimes). Peer-depend core; self-register on import.                                                                                                                                             |
 | `implementations/*`                     | Opinionated surfaces over core (CLI, manager, delivery daemon, the cotal-lang runtime host). Self-contained; never import each other.                                                                                                                          |
 | `examples/*`                            | Use-cases / composition roots. Private, never published. Each self-documents in its README.                                                                                                                                       |
@@ -85,9 +85,11 @@ with no silent fallback.
 - `**@cotal-ai/core**` (`packages/core`): endpoint, subjects, message types; the NATS client
 layer plus the extension contracts (`Connector`, `Command`, `Runtime`) and the `Registry`
 they self-register into. The wire standard — depends on nothing else in the repo.
-- `**@cotal-ai/workspace**` (`packages/workspace`): the machine-local operator/workstation layer
-over `~/.cotal` — the mesh registry, target resolution, preflight, the `.cotal/` auth-path
-helpers, and the command-copy renderer. Depends on core; not part of the wire standard.
+- `**@cotal-ai/workspace**` (`packages/workspace`): the machine-local operator and client-surface
+layer over `~/.cotal` — the mesh registry, target resolution, preflight, the `.cotal/` auth-path
+helpers, the command-copy renderer, and what terminal surfaces share: the live space model
+(`MeshView`, `openObserver`), the manager control calls (`@cotal-ai/workspace/control`), and the
+managed-launch request (`requestManagedLaunch`). Depends on core; not part of the wire standard.
 - `**@cotal-ai/smoke-kit**` (`packages/smoke-kit`): private test-only helpers shared by the smoke
 suites — the broker ownership that kills a spawned `nats-server` when a suite is
 *signalled* rather than only when it returns, and the spawn-site census behind
@@ -128,7 +130,7 @@ peer driven through Jcode's Harness API bridge.
 - `**@cotal-ai/pi**` (`extensions/pi`): the pi adapter — a pi extension (loaded into the
 user's own pi, no bundled runtime) that embeds `MeshAgent` in the session's process and
 drives it off the inbox with true mid-turn steering; also covers agents built on pi's SDK.
-See [docs/connect-pi.md](docs/connect-pi.md).
+See [docs/connect-pi.mdx](docs/connect-pi.mdx).
 - `**@cotal-ai/cmux**` (`extensions/cmux`): the cmux integration: a driver over the cmux CLI
 plus a self-registering `cmux` Runtime and `TerminalLayout` provider.
 - `**@cotal-ai/tmux**` (`extensions/tmux`): the tmux integration: a driver over the tmux CLI
@@ -199,7 +201,7 @@ A published page's relative link to `SPEC.md` or a top-level `docs/*.md` page mu
 the group map in `website/scripts/sync-docs.mjs` publishes. Any other relative link, a design note
 under `docs/design/` included, must name a file that exists and goes to GitHub. A `#anchor` on a
 link to a published page, the same page included, must name a heading there or an explicit
-`<a id>`. The docs index links the same `docs/*.md` pages and `SPEC.md` that the group map publishes.
+`<a id>`. The docs index links the same Markdown and MDX pages and `SPEC.md` that the group map publishes.
 `pnpm check:docs-site` runs that sync and fails otherwise.
 `docs/` describes the **protocol** only; each example documents itself in its own
 `examples/*/README.md`.

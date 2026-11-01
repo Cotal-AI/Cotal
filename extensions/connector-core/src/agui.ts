@@ -199,7 +199,7 @@ export const AGUI_PROTOCOL = "ag-ui/0.0.57";
  * exactly which ones adopted core's shared `partsToText`:
  *
  *   - **3 ADOPTED IT** — `connector-core/src/agent.ts`, `cli/src/commands/join.ts`,
- *     `cli/src/view/mesh-view.ts`. These now render a marker naming the kind.
+ *     `workspace/src/view/mesh-view.ts`. These now render a marker naming the kind.
  *   - **4 DID NOT** — `implementations/web/src/web/app.js`, `.../graph.js`,
  *     `examples/02-self-improving-console/harness/observer.ts`,
  *     `examples/04-frontier-faces/tools/studio.mjs`. The two stringify-form copies still leave a

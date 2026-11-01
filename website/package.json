@@ -3,32 +3,49 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Cotal documentation site \u2014 Astro Starlight, agent-native (llms.txt, per-page Markdown, content negotiation).",
+  "description": "Cotal documentation site powered by Next.js and Fumadocs.",
   "scripts": {
     "sync": "node scripts/generate-openapi-docs.mjs --check && node scripts/sync-docs.mjs",
-    "dev": "npm run sync && astro dev",
-    "build": "npm run sync && npm test && astro build && node scripts/check-dist.mjs && node scripts/check-openapi-dist.mjs",
-    "preview": "astro preview",
-    "astro": "astro",
+    "dev": "npm run sync && next dev --webpack",
+    "build": "npm run sync && npm test && next build --webpack && node scripts/export.mjs && node scripts/check-dist.mjs && node scripts/check-migration.mjs && node scripts/check-start-here.mjs && node scripts/check-operate-mesh.mjs && node scripts/check-connect-agents.mjs && node scripts/check-build-integrations.mjs && node scripts/check-api-reference.mjs && node scripts/check-fundamentals.mjs && node scripts/check-messaging.mjs && node scripts/check-security-coordination.mjs && node scripts/assert-plain-markdown.test.mjs && node scripts/check-openapi-dist.mjs",
+    "typecheck": "npm run sync && fumadocs-mdx && next typegen && tsc --noEmit",
+    "preview": "wrangler pages dev",
+    "postinstall": "fumadocs-mdx",
+    "check:runtime": "node scripts/check-runtime.mjs",
     "gen:api": "node scripts/generate-openapi-docs.mjs",
-    "test": "node --test scripts/http-api.test.mjs"
+    "test": "node scripts/check-http-coverage.mjs && node --test scripts/http-api.test.mjs"
   },
   "dependencies": {
-    "@astrojs/starlight": "^0.41.1",
-    "astro": "^7.0.3",
+    "@cotal-ai/docs-content": "file:../tools/docs-content",
+    "@tailwindcss/postcss": "^4.1.0",
+    "fumadocs-core": "^16.17.9",
+    "fumadocs-mdx": "^15.4.10",
+    "fumadocs-openapi": "12.5.7",
+    "fumadocs-ui": "^16.17.9",
+    "lucide-react": "^1.64.0",
     "marked": "^18.0.6",
+    "mermaid": "^12.2.0",
     "micromark": "^4.0.2",
     "micromark-extension-gfm": "^3.0.0",
     "micromark-extension-mdxjs": "^3.0.0",
     "micromark-util-decode-string": "^2.0.1",
     "micromark-util-sanitize-uri": "^2.0.1",
+    "next": "^16.4.3",
+    "next-themes": "^0.4.6",
     "parse5": "^7.3.0",
-    "sharp": "^0.34.0",
-    "starlight-llms-txt": "^0.11.0",
-    "starlight-openapi": "0.27.0"
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "shiki": "4.5.0",
+    "tailwindcss": "^4.1.0",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@readme/openapi-parser": "4.1.2",
-    "wrangler": "^4.105.0"
+    "@types/mdx": "^2.0.0",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "typescript": "^5.9.0",
+    "wrangler": "^4.156.0"
   }
 }

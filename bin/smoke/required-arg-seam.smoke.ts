@@ -487,12 +487,23 @@ const SEAMS: Seam[] = [
   // one provisioning connection each in delivery/smoke/fanout-load and core/smoke/seat-idle-load,
   // and the recorded program's hash on run-status (2b59b432f) adds a driver and a reader connection
   // in bin/smoke/run-status-program-identity. Each dials a plaintext loopback broker its suite
-  // starts and states `tls: false`. 332/255 -> 338/260: the chat history limit adds the provisioner
+  // starts and states `tls: false`.
+  // 332/255 -> 353/273: review the 21 additional calls by source context and commit provenance:
+  // four conclave issuance calls, five native-signing controls, one multi-space admission read,
+  // two issued-store recreation calls, one issued-store binder, one backup victim check,
+  // two pending-sender connections, three membership-storage controls, one down lease probe,
+  // and one retirement fence. The 18 smoke calls state explicit booleans (including the native
+  // signer's TLS-true control); down uses resolved.tls and the other two source calls state false.
+  // required-arg-sites.json records the 13 reviewed file counts; the reader's rules are unchanged.
+  // 353/273 -> 354/274: shared-broker account cohorts (112ef8d5a) add one membership-observer
+  // connection in manager/smoke/manager-seat-load that reads each cohort account's connz. It dials
+  // the plaintext loopback broker its suite starts and states `tls: false`.
+  // 354/274 -> 360/279: the chat history limit adds the provisioner
   // dial of `cotal history limit` in cli/src/commands/history-limit, which states the mesh's recorded
   // `tlsRequired`, and five smoke-side calls: core/smoke/chat-history-limit four and
   // cli/smoke/history-limit one. Each smoke-side call dials a plaintext loopback broker its suite
   // starts and states `tls: false`.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 338, untypecheckedSites: 260 },
+  { fn: "standaloneConnectOpts", key: "tls", sites: 360, untypecheckedSites: 279 },
 ];
 
 const SITE_COUNTS = JSON.parse(readFileSync(new URL("./required-arg-sites.json", import.meta.url), "utf8")) as Record<string, number>;

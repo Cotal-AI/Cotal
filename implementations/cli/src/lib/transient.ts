@@ -4,7 +4,7 @@ import { c } from "../ui.js";
 import { connectOrExit, connectOrThrow } from "./connect.js";
 import { brokerStoreWrite, storeWriteRepair } from "./broker-store-health.js";
 import { chatStreamGone, streamsAbsent } from "./space-streams.js";
-import { DIAL_TIMEOUT_MS, DialNotAdmitted, dialWithRetry, notAdmittedRefusal } from "./dial-retry.js";
+import { DIAL_TIMEOUT_MS, DialNotAdmitted, dialWithRetry, notAdmittedRefusal } from "@cotal-ai/workspace/control";
 
 /**
  * A one-shot, write-capable connection for the headless commands that touch the live mesh

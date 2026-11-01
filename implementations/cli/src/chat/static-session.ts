@@ -20,9 +20,10 @@ import {
   type SpaceAuth,
 } from "@cotal-ai/core";
 import { CommandFailure, isConnectRefusal, mintControlInstrument, preflightOrThrow, type MeshTarget } from "@cotal-ai/workspace";
-import { askManager, managerFailure, refuseWithoutLiveManager, type ManagerReply } from "../lib/control.js";
 import { NativeChatSession } from "./native-session.js";
 import type { CloseReport, SessionIdentity } from "./session.js";
+import { askManager, managerFailure, refuseWithoutLiveManager, type ManagerReply } from "@cotal-ai/workspace/control";
+import { cliControl } from "../lib/control.js";
 
 /** The leaf's whole life. The manager caps `ttl` here and never renews it. */
 export const STATIC_CHAT_TTL_SEC = 900;
@@ -119,7 +120,7 @@ async function askPinned(mesh: PinnedMesh, op: string, args: Record<string, unkn
   try {
     const auth = { ...await mintControlInstrument(mesh, "privileged", instanceId), tls: mesh.tlsRequired };
     if (purpose !== undefined && instanceId === undefined) await refuseWithoutLiveManager(mesh.space, mesh.server, auth, { space: mesh.space }, purpose);
-    return await askManager(mesh.space, mesh.server, op, args, auth, "owner", timeoutMs, instanceId !== undefined ? { instanceId } : undefined);
+    return await askManager(cliControl, mesh.space, mesh.server, op, args, auth, "owner", timeoutMs, instanceId !== undefined ? { instanceId } : undefined);
   } catch (e) {
     if (e instanceof CommandFailure) throw e;
     await preflightOrThrow(mesh, undefined, true);

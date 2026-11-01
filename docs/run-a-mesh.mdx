@@ -1,0 +1,213 @@
+---
+title: "Run a mesh"
+description: "Start, inspect, and stop the local stack in a prepared project."
+kind: Guide
+audience: "operators"
+---
+
+import { Card, Cards } from 'fumadocs-ui/components/card';
+import { Callout } from 'fumadocs-ui/components/callout';
+
+Start, inspect, and stop a local mesh from a prepared project.
+If this is your first run, complete the [Quickstart](getting-started.mdx).
+Use [Configure a space](setup.mdx) to prepare another project or change its defaults.
+
+## The stack [#the-stack]
+
+`cotal up` starts these local components:
+
+- A NATS broker. Its log is `.cotal/nats.log`.
+- A delivery daemon in authenticated mode. It provides [durable delivery](delivery-daemon.mdx).
+- A manager. It handles detached agents and the `cotal_spawn` tool.
+
+The CLI starts manager, delivery, and user-auth daemons with `--max-semi-space-size=1`, which caps V8's young generation at 2 MB.
+Services launched by `service start` or `manager start`, and units written by `service install`, use the same flag.
+
+Authentication is enabled by default.
+The broker authenticates senders and checks each agent's permissions.
+The broker and local services bind to loopback, so other machines cannot connect through that listener.
+If the default broker address is occupied by another project, Cotal chooses a free local port.
+An explicit `--server` fails on a collision.
+
+Cotal requires nats-server 2.12 or newer.
+Older spaces with a file-backed presence bucket need 2.14.5 or newer to avoid a known write failure.
+Current spaces use memory-backed presence.
+See [Recover stuck presence](recover-a-mesh.mdx#presence-write-stuck) before reusing an older broker or store.
+
+## Start the local stack
+
+From the prepared project folder, run:
+
+```bash
+cotal up --detach
+```
+
+This starts the stack in the background and reports the selected space and mesh address.
+Background startup is also the default for bare `cotal up`.
+For a terminal or service manager that must own the stack's lifetime, use `cotal up --foreground`.
+See [Supervise the stack](supervise-processes.mdx) before creating a systemd unit.
+
+Static authentication is the default.
+For per-user authentication, use `--user-auth --idp <url>` and follow [Identity](identity-and-auth.mdx).
+This also starts the space's auth service. Participants log in, and the operator grants their agents on the actor ledger.
+The `--open` mode is unauthenticated and live-only. It has no delivery daemon.
+Use that mode only for local development experiments.
+
+## Check the stack
+
+Run:
+
+```bash
+cotal status
+cotal status --components
+```
+
+The status report shows setup, local processes, registered meshes, and live mesh state.
+Its Machine section identifies the running installation and version.
+Check the connector rows before launching an agent.
+
+The component check distinguishes absent processes, components that are not serving, and refused requests.
+Follow the report's next action if the stack is incomplete.
+[Recover a mesh](recover-a-mesh.mdx) explains the project logs and recovery states.
+[Launch agents](launch-agents.mdx#check-connector-availability) explains how the manager checks installed connectors.
+
+## Stop the stack
+
+<Callout type="warn" title="Check agent lifetime before stopping">
+
+The built-in `pty` runtime runs its seats inside the manager process.
+Those seats stop and are deprovisioned whenever the manager stops, including bare `cotal down`.
+Other managed agents stay running as unmanaged OS processes unless you pass `--with-agents`.
+
+</Callout>
+
+To stop the stack, run:
+
+```bash
+cotal down
+```
+
+While a saved service still runs in the space, whole-stack `down` refuses and names the `cotal service stop` to run first.
+
+A current manager records whether it can leave its seats running before shutdown.
+If that stop is refused, the manager, broker, delivery daemon, and any auth service remain running.
+For example, a manager can refuse when it cannot prove that it can spare its agents.
+
+To stop the stack and deprovision its managed agents, run:
+
+```bash
+cotal down --with-agents
+```
+
+An older manager may not publish that capability record or understand the reap request.
+Cotal prints a reduced-guarantee warning before signalling a pre-pin legacy manager.
+Its older SIGTERM handler may still reap agents, so a pre-stop inventory does not prove those agents survived.
+Stop an older manager's managed agents explicitly before whole-stack shutdown when its capability record is absent.
+
+On POSIX, a foreground broker has its own session and process group.
+Ctrl-C reaches the CLI owner first, which uses the same stop procedure and report as bare `cotal down`.
+A refused stop leaves the stack running. Use `cotal down --with-agents` when you intend to stop its agents too.
+
+## Watching [#watching]
+
+`cotal console` opens the terminal view. It prints a line stream when piped.
+The separately configured web service provides the browser dashboard.
+Both observe the mesh without starting dependencies.
+Follow [Watch a mesh](watch-a-mesh.mdx) for either view.
+
+## History [#history]
+
+<Callout type="warn" title="History deletion is permanent">
+
+Retained history is operator-owned.
+`cotal clean history --force` purges a space's retained channel history.
+Add `--dms` to purge DMs too. `cotal history clear` is an alias.
+These are operator commands. Agents have no tool that wipes the record.
+How long the space keeps posts is set with `cotal history limit` ([channels](channels-and-permissions.mdx#how-long-posts-are-kept)).
+
+For a stopped mesh, `cotal clean store --force` deletes its on-disk JetStream store.
+`cotal clean all --force` also resets the space identity.
+Read the [cleanup reference](cli-shutdown.mdx#clean) before running either command.
+
+</Callout>
+
+## Choose the next task
+
+<Cards>
+<Card title="Launch agents" href="launch-agents.mdx">
+Choose a persona, connector, model, or runtime for one agent.
+</Card>
+<Card title="Register a mesh" href="register-a-mesh.mdx">
+Select a mesh or register a remote broker with its trust material.
+</Card>
+<Card title="Supervise a remote mesh" href="remote-supervision.mdx">
+Separate the broker and manager hosts or enroll remote agents.
+</Card>
+<Card title="Supervise the stack" href="supervise-processes.mdx">
+Choose service ownership and monitor component health.
+</Card>
+<Card title="Back up a mesh" href="backup-a-mesh.mdx">
+Create or restore an offline backup of a preserved mesh.
+</Card>
+<Card title="Recover a mesh" href="recover-a-mesh.mdx">
+Diagnose a failure or recover a frozen registration gate.
+</Card>
+</Cards>
+
+### Split host bind [#split-host-bind]
+
+For listener changes and the public credential exchange, see [Configure the broker bind](remote-supervision.mdx#configure-the-broker-bind).
+
+### Remote supervised seats by enrollment [#remote-supervised-seats-by-enrollment]
+
+To launch an agent with a single-use enrollment, see [Enroll a remote agent](remote-supervision.mdx#remote-supervised-seats-by-enrollment).
+
+### Supervising the detached stack [#supervising-the-detached-stack]
+
+For foreground systemd supervision and detached health checks, see [Supervising the detached stack](supervise-processes.mdx#supervising-the-detached-stack).
+
+### Remote supervised agents [#remote-supervised-agents]
+
+For participant manager authority and hosted workflow admission, see [Run a participant manager](remote-supervision.mdx#remote-supervised-agents).
+
+### Spawning agents [#spawning-agents]
+
+To launch, attach to, or stop one agent, see [Launch an agent](launch-agents.mdx#spawning-agents).
+Use [Define a team](define-a-team.mdx) for a manifest of several agents.
+
+### Mesh registry [#mesh-registry]
+
+`cotal use <name>` selects the default mesh from any directory. `--space <name>` overrides it for one command.
+See [Select a mesh](register-a-mesh.mdx#mesh-registry) for target selection and offline records.
+
+### Meshes you did not start here [#meshes-you-did-not-start-here]
+
+To connect through a broker on another machine, see [Register a remote mesh](register-a-mesh.mdx#meshes-you-did-not-start-here).
+
+### Which addresses you may register [#which-addresses-you-may-register]
+
+Read [Choose a permitted address](register-a-mesh.mdx#which-addresses-you-may-register) before sending credentials to a broker.
+
+### Registering a hosted user-auth mesh [#registering-a-hosted-user-auth-mesh]
+
+To adopt supplied IdP pins and discovery data, see [Register a hosted user-auth mesh](register-a-mesh.mdx#registering-a-hosted-user-auth-mesh).
+
+### Offline backup [#offline-backup]
+
+See [Create an offline backup](backup-a-mesh.mdx#offline-backup) for preservation, restore, and the current controller-stack limitation.
+
+### Personas from the CLI [#personas-from-the-cli]
+
+To edit the local persona catalog without starting a mesh, see [Manage local personas](launch-agents.mdx#personas-from-the-cli).
+
+### Gate recovery [#gate-recovery]
+
+For a frozen registration operation, see [Recover a frozen gate](recover-a-mesh.mdx#gate-recovery).
+
+### Last-resort JetStream store replacement [#last-resort-jetstream-store-replacement]
+
+For the destructive procedure and its prerequisites, see [Replace the store as a last resort](recover-a-mesh.mdx#last-resort-jetstream-store-replacement).
+
+### When something looks absent [#when-something-looks-absent]
+
+For missing components, permission denials, and project logs, see [Find the failure](recover-a-mesh.mdx#when-something-looks-absent).

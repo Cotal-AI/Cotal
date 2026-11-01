@@ -33,4 +33,4 @@ Standard Cotal agent files (parsed by `loadAgentFile`): frontmatter for mesh
 identity (`name`, `role`, `description`, `tags`) and channel access (`subscribe`,
 `allowSubscribe`, `allowPublish`), Markdown body as the persona prompt. The parser
 refuses the old `channels` key. See the template for the section structure and
-[agent files](../../docs/agent-files.md) for every field.
+[agent files](../../docs/agent-files.mdx) for every field.

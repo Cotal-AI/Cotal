@@ -57,7 +57,7 @@ the stream.
 read through `LaunchSpec.resumeRecordPath` (`packages/core/src/connector.ts:154`), kept on the seat's
 resume document (`implementations/manager/src/resume.ts:90`), returned by `ps` as the `resume` object
 (`implementations/manager/src/manager-service-contract.ts:249-257`, cluster document revision 20),
-and printed as `forked from <id>` (`implementations/cli/src/commands/agents.ts:367`).
+and printed as `forked from <id>` (`implementations/cli/src/commands/agents.ts:387`).
 
 **Resume is an operator surface.** `cotal_spawn` does not expose it to peers
 (`extensions/connector-core/src/tool-specs.ts:1350`). The manager's `spawn` row is in the
@@ -467,7 +467,7 @@ The CLI prints `carried session <id> to <instance>: sha256:<hex>, <sent> of <siz
 | `implementations/cli` | The carry step in `spawnDetached`; provenance in `ps` and `attach` |
 | `extensions/connector-claude-code` | The locator, the seat-home launch, the login and first-run checks |
 | `SPEC.md` | Section 8: the transfer bucket and the chunk chain headers. Section 9 and Appendix B: the two new credentials. Section 13: the new row and the `spawn` and `ps` fields |
-| `docs/` | `connect-claude.md` (resume across hosts, the login requirement), `cli.md`, `control-surface.md`, `security.md` (the boundary in 7.5), `UPGRADING.md` (a carried resume needs a manager and credentials from this release) |
+| `docs/` | `connect-claude.mdx` (resume across hosts, the login requirement), `cli.mdx`, `control-surface.md`, `security.md` (the boundary in 7.5), `UPGRADING.md` (a carried resume needs a manager and credentials from this release) |
 
 The changeset is a minor bump: `spawn` and `ps` contracts change, and a new manager row and two new
 credentials ship.

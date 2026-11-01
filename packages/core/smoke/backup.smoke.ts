@@ -227,8 +227,11 @@ const backupPerms = backupProfilePermissions(space, connId, {
   stream: chatStream(space),
   deliverSubject: `_INBOX_${connId}.snapshot.attempt1`,
 }) as { pub: { allow: string[] }; sub: { allow: string[] } };
+// The snapshot API for this one stream, and the publish grant that ACKs only this stream's snapshot
+// chunks. The ACK grant replaced a response permission, which could answer any reply subject.
 assert.deepEqual(backupPerms.pub.allow, [
   `$JS.API.STREAM.SNAPSHOT.${chatStream(space)}`,
+  `$JS.SNAPSHOT.ACK.${chatStream(space)}.>`,
 ]);
 assert.ok(!backupPerms.pub.allow.some((subject) => subject.includes("RESTORE") || subject === "$JS.>"));
 

@@ -1,8 +1,8 @@
-import { oneLine, peerLabel, presenceText, type CotalEndpoint, type PresenceEvent } from "@cotal-ai/core";
+import { oneLine, peerLabel, type CotalEndpoint, type PresenceEvent } from "@cotal-ai/core";
 import { brokerAddressForDisplay, localeIsUtf8, plainPunctuation, type ConnectRefusal, type Connection } from "@cotal-ai/workspace";
 import { credentialEnded } from "./lib/connect.js";
-import { MeshView, type FeedEntry } from "./view/mesh-view.js";
-import { activityAge, c, color256, presenceDetail, statusBadge } from "./ui.js";
+import { MeshView, type FeedEntry } from "@cotal-ai/workspace/view";
+import { activityDetail, c, color256, presenceDetail, statusBadge } from "./ui.js";
 
 // ---- per-agent color (ANSI) ------------------------------------------------
 
@@ -50,8 +50,7 @@ function presenceLine(ev: PresenceEvent, ascii: boolean): string {
       : ev.type === "offline"
         ? c.dim("offline")
         : c.dim("update ");
-  const activity = ev.presence.activity ? c.dim(" - " + presenceText(ev.presence.activity) + activityAge(ev.presence)) : "";
-  return `${ts(Date.now())} ${label} ${who(ev.presence.card)} ${statusBadge(ev.presence.status, !ascii)}${presenceDetail(ev.presence)}${activity}`;
+  return `${ts(Date.now())} ${label} ${who(ev.presence.card)} ${statusBadge(ev.presence.status, !ascii)}${presenceDetail(ev.presence)}${activityDetail(ev.presence)}`;
 }
 
 // ---- the passive line stream (console --plain / pipes) ---------------------

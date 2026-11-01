@@ -15,6 +15,7 @@ import {
   SEEDED_EXTENSIONS,
   type InstalledExtension,
   targetFlags,
+  resolveControlTarget,
 } from "@cotal-ai/workspace";
 import { EXT_UPDATE_PARENT_ENV } from "./ext.js";
 import { claimExtensionUpdatePass } from "../lib/ext-mutation.js";
@@ -26,7 +27,6 @@ import { operatorInstallDiffers } from "../seed/verify.js";
 import { seedWriterKind } from "../seed/paths.js";
 import { refreshConnectorInstalls } from "./setup.js";
 import { c } from "../ui.js";
-import { askManager, resolveControlTarget } from "../lib/control.js";
 import { assertEndpointUnreachable } from "../lib/endpoint-cut.js";
 import { supervisorMayServe } from "../lib/manager-proc.js";
 import { processGone, readStackJournal, stackScopeRefusals } from "../lib/stack-journal.js";
@@ -45,6 +45,8 @@ import {
 } from "@cotal-ai/workspace";
 import { refreshOwnedCompletions } from "../lib/completion-install.js";
 import { legacyManagerReport, type LegacyManagerReport } from "../lib/legacy-manager-report.js";
+import { askManager } from "@cotal-ai/workspace/control";
+import { cliControl } from "../lib/control.js";
 
 const UPDATE_TARGET_ENV = "COTAL_UPDATE_TARGET_VERSION";
 const UPDATE_PARENT_ENV = "COTAL_UPDATE_PARENT";
@@ -521,7 +523,7 @@ export async function readManagerContinuity(flags: Record<string, unknown>): Pro
     if (isNoMeshRefusal(e)) return "none";
     throw e;
   }
-  const status = await askManager(target.space, target.server, "managerStatus", undefined, target.auth);
+  const status = await askManager(cliControl, target.space, target.server, "managerStatus", undefined, target.auth);
   if (!status.ok) {
     // The MARKER, not the sentence. `unanswered` is the structural fact `epRailFailure` sets from
     // core's answer-provenance marker; the headline beside it is operator prose and is now scoped to
@@ -532,7 +534,7 @@ export async function readManagerContinuity(flags: Record<string, unknown>): Pro
     if (status.unanswered) return "none";
     throw new Error(status.error ?? "manager status request failed");
   }
-  const seats = await askManager(target.space, target.server, "ps", undefined, target.auth);
+  const seats = await askManager(cliControl, target.space, target.server, "ps", undefined, target.auth);
   if (!seats.ok) throw new Error(seats.error ?? "manager seat inventory request failed");
   const report = await legacyManagerReport(
     (status.data ?? {}) as { custody?: unknown },

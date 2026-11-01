@@ -3,6 +3,7 @@ import "./commands.js"; // self-registers the control-plane commands on import
 
 export {
   Manager,
+  ManagerInstanceLeaseHeld,
   READINESS_TIMEOUT_MS,
   type ManagerOptions,
   type ManagerStopOptions,

@@ -1,0 +1,697 @@
+// See docs/mesh-view.mdx.
+
+import { EventEmitter } from "node:events";
+import type { CotalEndpoint, CotalMessage, EndpointRef, MembershipChange, MembershipSnapshot, Presence, PresenceStatus, TransportState } from "@cotal-ai/core";
+import { deliveryOf, chatWildcard, isEventChannel, partsToText } from "@cotal-ai/core";
+
+// ---- the model the surfaces render -----------------------------------------
+
+export type FeedDelivery = "multicast" | "unicast" | "anycast";
+
+/** One feed row. A same-sender/same-text unicast burst coalesces into a single entry with a
+ *  deterministic id (the first message's) and ts (the earliest), so a history prefill and the
+ *  live tap dedupe-by-id and order correctly. `text` is plain — the surface colors it. */
+export interface FeedEntry {
+  id: string;
+  ts: number;
+  from: EndpointRef;
+  delivery: FeedDelivery;
+  channel?: string; // multicast
+  toService?: string; // anycast
+  toIds?: string[]; // unicast targets, authoritative endpoint ids
+  toNames?: string[]; // unicast targets, resolved off the roster
+  count?: number; // burst multiplicity for coalesced unicast
+  /** This row arrived on an agent's structured-event channel rather than a chat channel.
+   *
+   *  DERIVED ONCE, HERE, because the header's rule is that a surface lays this model out and never
+   *  re-derives it. Every surface that wanted to tell event traffic from chat would otherwise
+   *  re-spell the convention locally, and three copies of a classifier is three chances to disagree
+   *  about one channel. Absent on unicast and anycast rows, which carry no channel at all. */
+  events?: boolean;
+  /** Id of the message this one answers, as the wire's `replyTo` carries it. */
+  replyTo?: string;
+  /** Lowercased peer names the sender called out, as the wire's `mentions` carries them. */
+  mentions?: string[];
+  /** The sender's thread or conversation correlation id, as the wire's `contextId` carries it. */
+  contextId?: string;
+  text: string;
+}
+
+type ThreadFields = Pick<FeedEntry, "replyTo" | "mentions" | "contextId">;
+
+export interface StatusCounts {
+  working: number;
+  waiting: number;
+  idle: number;
+  offline: number;
+}
+
+/** One message inside a DM thread (un-coalesced). */
+export interface DmMessage {
+  ts: number;
+  from: string; // display name
+  to: string; // display name
+  text: string;
+}
+
+/** A conversation between a peer and one counterparty. */
+export interface DmThread {
+  with: string;
+  role?: string;
+  status: PresenceStatus;
+  lastTs: number;
+  messages: DmMessage[];
+}
+
+/** A peer's whole DM footprint — every counterparty it has talked to. */
+export interface DmPeer {
+  name: string;
+  role?: string;
+  status: PresenceStatus;
+  lastTs: number;
+  conversations: DmThread[];
+}
+
+/** Derived operator signals — golden-signal counts, who needs attention, the DM roll-up. */
+export interface MeshSignals {
+  counts: StatusCounts;
+  /** Agents blocked / needing input, name-ordered. NOT age-ordered: `statusSince` dates the latest
+   *  status or activity report, not the block, so how long a peer has been blocked is not knowable
+   *  from the wire. */
+  waiting: Presence[];
+  /** Oldest heartbeat among LIVE agents — a liveness signal ("is anyone going quiet?"), NOT a
+   *  blocked-duration. {@link Presence.ts} is republished every heartbeat, so it can never say how
+   *  long an agent has been waiting. Undefined when no agent is live. */
+  stalestLiveTs?: number;
+  dms: DmPeer[]; // per-peer DM roll-up (only populated when DMs are visible)
+}
+
+/** The broker-authoritative membership feed as THIS viewer last saw it. Two facts, kept apart so a
+ *  failed read can never be mistaken for an empty feed: `snapshot` is the last successful read;
+ *  `unreadable` is the reason the most recent read or watch attempt failed (a fact about the
+ *  viewer, cleared by the next successful read). A feed that does not exist (no delivery daemon:
+ *  the bucket is absent, or it was never written) is a snapshot with no `asOf` and no members, which
+ *  renders as traffic-only: a fact about the mesh, and a different one. */
+export interface MembershipView {
+  snapshot?: MembershipSnapshot;
+  unreadable?: string;
+}
+
+export interface MeshSnapshot {
+  agents: Presence[]; // card.kind === "agent", status-sorted then by name
+  endpoints: Presence[]; // everything else
+  /** `messages`: the broker's retained count (capped per sender, so it can stop climbing under
+   *  live traffic). `arrivals`: messages this viewer saw ARRIVE on the live tap since it started,
+   *  monotonic, dropped with the channel: the honest base for an unread badge. */
+  channels: { channel: string; messages: number; arrivals: number }[];
+  feed: FeedEntry[]; // classified + coalesced + windowed
+  /** Broker-authoritative channel membership (the delivery daemon's CONNZ view plus the durable
+   *  registry), as last read; the topology lens overlays it to show silent subscribers. */
+  membership: MembershipView;
+  /** `msgsPerSec`: the rolling 1 s rate. `activity`: a fixed 15-bucket message-volume series over
+   *  the last 60 s (one ~4 s bucket each), oldest→newest, raw counts: the status bar's sparkline. */
+  rates: { msgsPerSec: number; activity: number[] };
+  status: { connected: boolean; space: string; dmVisible: boolean; error?: string; warning?: string };
+  signals: MeshSignals;
+  nameOf: (id: string) => string; // unicast target id → display name
+}
+
+export interface MeshViewOptions {
+  /** Feed cap, in entries. Default 300. */
+  window?: number;
+  /** The read-only tap subject. `chatWildcard(space)` narrows to multicast (auth — DMs/anycast
+   *  stay confidential); `spaceWildcard(space)` or undefined taps the whole space (god-view). */
+  tapSubject?: string;
+}
+
+// ---- internals -------------------------------------------------------------
+
+const STATUS_ORDER: Record<string, number> = { working: 0, waiting: 1, idle: 2, offline: 3 };
+const BURST_MS = 400; // unicast burst-coalescing window
+const TICK_MS = 75; // batch every source into one "change"
+const CHANNELS_MS = 2000; // listChannels() refresh
+const DEFAULT_WINDOW = 300;
+const HISTORY_LIMIT = 50; // per-channel prefill depth
+const DM_LOG_CAP = 1000; // raw DMs retained for the roll-up
+const MEMBERSHIP_DEBOUNCE_MS = 150; // coalesce the watch's replay burst into one re-read (the web's 150 ms)
+const BUCKET_MS = 4000; // activity series bucket width
+const BUCKET_COUNT = 15; // activity series length → 15×4s = 60s window
+
+function bodyText(msg: CotalMessage): string {
+  return partsToText(msg.parts);
+}
+
+/** The wire's reply link, mentions and context id, each present only when the message carries it. */
+function threadFields(msg: CotalMessage): ThreadFields {
+  return {
+    ...(msg.replyTo !== undefined ? { replyTo: msg.replyTo } : {}),
+    ...(msg.mentions?.length ? { mentions: [...msg.mentions] } : {}),
+    ...(msg.contextId !== undefined ? { contextId: msg.contextId } : {}),
+  };
+}
+
+/** Does this error say the membership feed's bucket does not exist (no delivery daemon ever
+ *  provisioned it)? The JetStream "stream not found" answer, by API code and by message; anything
+ *  else (a permission refusal, a timeout, a closed connection) is a failed read, not an absent feed. */
+function feedAbsent(e: unknown): boolean {
+  const err = e as { message?: string; code?: number | string; api_error?: { err_code?: number } } | null;
+  if (err?.api_error?.err_code === 10059) return true;
+  if (err?.code === 404 || err?.code === "404") return true;
+  return /stream not found/i.test(err?.message ?? "");
+}
+
+function sortRoster(r: Presence[]): Presence[] {
+  // getRoster()/the "roster" event sort by name only — re-apply the status order here.
+  return [...r].sort(
+    (a, b) =>
+      (STATUS_ORDER[a.status] ?? 9) - (STATUS_ORDER[b.status] ?? 9) ||
+      a.card.name.localeCompare(b.card.name),
+  );
+}
+
+interface Burst {
+  from: EndpointRef;
+  body: string;
+  thread: ThreadFields;
+  id: string;
+  ts: number;
+  ids: string[];
+  timer: ReturnType<typeof setTimeout>;
+}
+
+interface RawDm {
+  ts: number;
+  from: EndpointRef;
+  toId: string;
+  text: string;
+}
+
+/**
+ * Events:
+ * - `"entry"`  `(e: FeedEntry)` — one live feed row, as it lands (for the stream renderer).
+ * - `"presence"` `(ev: PresenceEvent)` — forwarded presence change (join/update/offline).
+ * - `"warning"` `(e: Error)` — a recoverable endpoint notice for the stream renderer.
+ * - `"change"` `(s: MeshSnapshot)` — a batched snapshot every ~75ms (for dashboards).
+ */
+export class MeshView extends EventEmitter {
+  private roster: Presence[] = [];
+  private byId = new Map<string, string>();
+  private channelCounts = new Map<string, number>();
+  private arrivals = new Map<string, number>();
+  private feed: FeedEntry[] = [];
+  private seen = new Set<string>(); // feed ids, for prefill ∪ live dedupe-by-id
+  private pending = new Map<string, Burst>();
+  private dmLog: RawDm[] = []; // raw unicast for the DM roll-up
+  private recentTs: number[] = []; // tap arrivals in the last 1s → msgs/s
+  private msgsPerSec = 0;
+  private bucketCounts: number[] = new Array(BUCKET_COUNT).fill(0); // 60s volume series, oldest→newest
+  private bucketEpoch = 0; // floor(now/BUCKET_MS) of the newest (last) bucket; 0 = uninitialized
+  /** The endpoint's full Cotal bind (`connection`) and its raw NATS socket edge (`transport`). A
+   *  broker outage that nats.js rides out by reconnecting moves only the second, so the view is
+   *  connected only while both hold. */
+  private bound = false;
+  private transport = false;
+  private error?: string;
+  private presenceCurrent = true;
+  private errorWhilePresenceStale = false;
+  private warning?: string;
+  private dirty = true;
+  private membership: MembershipView = {};
+  private membershipWatch?: { stop(): Promise<void> };
+  private membershipTimer?: ReturnType<typeof setTimeout>;
+
+  private readonly window: number;
+  private readonly tapSubject?: string;
+  private readonly chatOnly: boolean;
+  private timers: ReturnType<typeof setInterval>[] = [];
+
+  private readonly onRoster = (r: Presence[]) => this.setRoster(r);
+  private readonly onPresence = (ev: unknown) => this.emit("presence", ev);
+  private readonly onError = (e: Error) => {
+    this.error = e.message;
+    this.errorWhilePresenceStale = !this.presenceCurrent;
+    this.dirty = true;
+  };
+  /** A broker restart reconnects the transport without a new `connection`, and its errors (the
+   *  presence stream missing until the space is provisioned again) arrive while the presence view
+   *  is stale. When that view is current again the outage is over, so its error clears with it
+   *  (AGENT-2889). An error raised while the view was current stays until the next connection. */
+  private readonly onPresenceView = (v: { state: string }) => {
+    const current = v.state === "current";
+    if (current && !this.presenceCurrent && this.errorWhilePresenceStale) this.error = undefined;
+    this.presenceCurrent = current;
+    this.dirty = true;
+  };
+  /** A rebuilt connection clears the fault that dropped the old one, so the view reports itself
+   *  connected again instead of keeping that error for good. */
+  private readonly onConnection = (s: { connected: boolean }) => {
+    this.bound = s.connected;
+    if (s.connected) this.error = undefined;
+    this.dirty = true;
+  };
+  private readonly onTransport = (s: TransportState) => {
+    this.transport = s.connected;
+    this.dirty = true;
+  };
+  private readonly onWarning = (e: Error) => {
+    this.warning = e.message;
+    this.dirty = true;
+    this.emit("warning", e);
+  };
+
+  constructor(
+    private readonly ep: CotalEndpoint,
+    opts: MeshViewOptions = {},
+  ) {
+    super();
+    this.window = opts.window ?? DEFAULT_WINDOW;
+    this.tapSubject = opts.tapSubject;
+    // DMs are hidden only when the tap is narrowed to the chat subtree.
+    this.chatOnly = opts.tapSubject === chatWildcard(ep.space);
+  }
+
+  async start(): Promise<void> {
+    // The error listener MUST be attached before start() — async faults surface as events.
+    this.ep.on("error", this.onError);
+    this.ep.on("warning", this.onWarning);
+    this.ep.on("connection", this.onConnection);
+    this.ep.on("transport", this.onTransport);
+    this.ep.on("roster", this.onRoster);
+    this.ep.on("presence", this.onPresence);
+    this.ep.on("presence-view", this.onPresenceView);
+    await this.ep.start();
+    this.bound = true;
+    this.setRoster(this.ep.getRoster());
+    this.ep.tap(
+      (subject, msg) => {
+        if (msg) this.ingest(subject, msg);
+      },
+      this.tapSubject ? { subject: this.tapSubject } : undefined,
+    );
+    void this.prefill();
+    void this.refreshChannels();
+    void this.startMembership();
+    this.timers.push(setInterval(() => this.flush(), TICK_MS));
+    this.timers.push(setInterval(() => void this.refreshChannels(), CHANNELS_MS));
+    this.timers.push(setInterval(() => (this.dirty = true), 1000)); // refresh ages + decay rate
+  }
+
+  async stop(): Promise<void> {
+    for (const t of this.timers) clearInterval(t);
+    this.timers = [];
+    for (const b of this.pending.values()) clearTimeout(b.timer); // bursts hold live timers
+    this.pending.clear();
+    this.ep.off("error", this.onError);
+    this.ep.off("warning", this.onWarning);
+    this.ep.off("connection", this.onConnection);
+    this.ep.off("transport", this.onTransport);
+    this.ep.off("roster", this.onRoster);
+    this.ep.off("presence", this.onPresence);
+    this.ep.off("presence-view", this.onPresenceView);
+    clearTimeout(this.membershipTimer);
+    // The endpoint's stop deletes the watch's consumer over a live connection, and it is what settles
+    // the watch's own stop once the connection is closed for good, so it must not wait behind it.
+    const membership = this.membershipWatch?.stop().catch(() => undefined);
+    await this.ep.stop();
+    await membership;
+  }
+
+  /** Read the broker-authoritative membership feed and follow it. A membership fault is never
+   *  a connection fault: it lands on `membership.unreadable` (with its reason), not on
+   *  `status.error`, because the mesh is fine and only this viewer's read of one feed is not. */
+  private async startMembership(): Promise<void> {
+    await this.loadMembership();
+    try {
+      this.membershipWatch = await this.ep.watchMembership(
+        (change) => this.onMembershipChange(change),
+        (e) => { this.membership = { ...this.membership, unreadable: `watch: ${e.message}` }; this.dirty = true; },
+      );
+    } catch (e) {
+      // A feed that does not exist cannot be watched, and that is the traffic-only fact the read
+      // above already recorded; any other failure is this viewer's, named as such.
+      if (!feedAbsent(e)) this.membership = { ...this.membership, unreadable: `watch: ${(e as Error).message}` };
+      this.dirty = true;
+    }
+  }
+
+  /** A heartbeat moves only `asOf`, so it is copied into the last snapshot instead of costing a
+   *  bucket re-read (#4904); a member change is read back in full, and a heartbeat that arrives
+   *  while the last read failed is the retry. */
+  private onMembershipChange(change: MembershipChange): void {
+    if (change.type === "replayed") return;
+    if (change.type === "heartbeat" && change.update && this.membership.snapshot && this.membership.unreadable === undefined) {
+      this.membership = { snapshot: { ...this.membership.snapshot, asOf: change.asOf } };
+      this.dirty = true;
+      return;
+    }
+    this.scheduleMembership();
+  }
+
+  private scheduleMembership(): void {
+    clearTimeout(this.membershipTimer);
+    this.membershipTimer = setTimeout(() => void this.loadMembership(), MEMBERSHIP_DEBOUNCE_MS);
+  }
+
+  /** One read of the feed. Three outcomes, kept distinct: a snapshot (readable, whatever it holds),
+   *  an absent feed (readable in the sense that the mesh has no daemon writing one: an empty
+   *  snapshot, traffic-only), and a failed read (`unreadable`, reason kept, last snapshot kept so
+   *  the reason is shown against what was last known rather than against nothing). */
+  private async loadMembership(): Promise<void> {
+    try {
+      this.membership = { snapshot: await this.ep.readMembership() };
+    } catch (e) {
+      this.membership = feedAbsent(e)
+        ? { snapshot: { asOf: undefined, members: [] } }
+        : { ...this.membership, unreadable: (e as Error).message };
+    }
+    this.dirty = true;
+  }
+
+  snapshot(): MeshSnapshot {
+    const channels = [...this.channelCounts]
+      .map(([channel, messages]) => ({ channel, messages, arrivals: this.arrivals.get(channel) ?? 0 }))
+      .sort((a, b) => a.channel.localeCompare(b.channel));
+    return {
+      agents: this.roster.filter((p) => p.card.kind === "agent"),
+      endpoints: this.roster.filter((p) => p.card.kind !== "agent"),
+      channels,
+      feed: this.feed.slice(),
+      membership: { ...this.membership },
+      rates: { msgsPerSec: this.msgsPerSec, activity: this.bucketCounts.slice() },
+      status: {
+        connected: this.bound && this.transport,
+        space: this.ep.space,
+        dmVisible: !this.chatOnly,
+        error: this.error,
+        warning: this.warning,
+      },
+      signals: this.signals(),
+      nameOf: this.nameOf,
+    };
+  }
+
+  // Stable identity across snapshots; reads the live byId map.
+  nameOf = (id: string): string => this.byId.get(id) ?? id.slice(0, 8);
+
+  // ---- sources -------------------------------------------------------------
+
+  private setRoster(r: Presence[]): void {
+    this.roster = sortRoster(r);
+    for (const p of r) this.byId.set(p.card.id, p.card.name);
+    this.dirty = true;
+  }
+
+  /** Live read-only tap. Drops control/presence/trace frames (deliveryOf → null). A payload
+ *  from.name is sender-chosen display text, not identity (#1399): the roster is the only writer
+ *  of id→name, so a spoofed name can never re-key a thread or a label. */
+  private ingest(subject: string, msg: CotalMessage): void {
+    const kind = deliveryOf(subject);
+    if (!kind) return;
+    const now = Date.now();
+    this.recentTs.push(now);
+    this.roll(now);
+    this.bucketCounts[BUCKET_COUNT - 1]++;
+    if (kind === "unicast") return this.coalesce(msg);
+    this.push({
+      id: msg.id,
+      ts: msg.ts,
+      from: msg.from,
+      delivery: kind === "anycast" ? "anycast" : "multicast", // "chat" → multicast
+      channel: kind === "anycast" ? undefined : msg.channel,
+      toService: kind === "anycast" ? msg.toService : undefined,
+      // MARKED, NEVER DROPPED. The channel-list filter below keeps event channels out of the tab
+      // strip and out of the history prefill, for a cost reason; the live feed is a different
+      // question and the answer here is different on purpose. Dropping an event row would delete
+      // the only traffic this release just taught the console to draw, and it would delete it
+      // silently, which is the failure mode this whole lane exists to remove. A surface that wants
+      // a chat-only feed can filter on this flag and say so in its own UI.
+      events: kind === "anycast" ? undefined : isEventChannel(msg.channel) || undefined,
+      ...threadFields(msg),
+      text: bodyText(msg),
+    });
+  }
+
+  /** Group a unicast burst with one sender, text and thread fields into one feed entry over
+   *  BURST_MS, and retain each raw message for the DM roll-up. */
+  private coalesce(msg: CotalMessage): void {
+    const body = bodyText(msg);
+    const thread = threadFields(msg);
+    if (msg.to) this.recordDm({ ts: msg.ts, from: msg.from, toId: msg.to, text: body });
+    const key = JSON.stringify([msg.from.id, body, thread]);
+    let b = this.pending.get(key);
+    if (!b) {
+      b = {
+        from: msg.from,
+        body,
+        thread,
+        id: msg.id,
+        ts: msg.ts,
+        ids: [],
+        timer: setTimeout(() => this.flushBurst(key), BURST_MS),
+      };
+      this.pending.set(key, b);
+    }
+    b.ts = Math.min(b.ts, msg.ts); // earliest in the burst → deterministic order
+    if (msg.to) b.ids.push(msg.to);
+  }
+
+  private flushBurst(key: string): void {
+    const b = this.pending.get(key);
+    if (!b) return;
+    this.pending.delete(key);
+    this.push({
+      id: b.id,
+      ts: b.ts,
+      from: b.from,
+      delivery: "unicast",
+      toIds: [...b.ids],
+      toNames: b.ids.map((id) => this.nameOf(id)),
+      count: b.ids.length,
+      ...b.thread,
+      text: b.body,
+    });
+  }
+
+  /** Append to the feed, dedupe by id, keep it windowed, and notify stream consumers. */
+  private push(e: FeedEntry): void {
+    if (this.seen.has(e.id)) return;
+    this.seen.add(e.id);
+    this.feed.push(e);
+    this.trim();
+    // Surface a brand-new channel as a tab now, not at the next poll. The third filter site, and it
+    // is not redundant: this one runs on live arrival, so without it an event channel would appear
+    // as a tab the moment a frame landed and then vanish at the next `refreshChannels`, which reads
+    // as a flickering bug rather than as a filter.
+    if (e.delivery === "multicast" && e.channel && !e.events) {
+      if (!this.channelCounts.has(e.channel)) this.channelCounts.set(e.channel, 1);
+      // Counted on ARRIVAL, not read back from the broker: the retained count is capped per sender
+      // and stops climbing under live traffic, so a badge derived from it goes quiet at the cap.
+      this.arrivals.set(e.channel, (this.arrivals.get(e.channel) ?? 0) + 1);
+    }
+    this.dirty = true;
+    this.emit("entry", e);
+  }
+
+  private trim(): void {
+    if (this.feed.length <= this.window) return;
+    for (const d of this.feed.splice(0, this.feed.length - this.window)) this.seen.delete(d.id);
+  }
+
+  private recordDm(d: RawDm): void {
+    this.dmLog.push(d);
+    if (this.dmLog.length > DM_LOG_CAP) this.dmLog.splice(0, this.dmLog.length - DM_LOG_CAP);
+  }
+
+  /** One-shot backlog: prefill each channel's history (multicast), plus the DM backlog when DMs
+   *  are visible (god-view — `dmHistory` needs an admin cred), deduped by id, oldest-first. */
+  private async prefill(): Promise<void> {
+    let chans: { channel: string; messages: number }[];
+    try {
+      chans = await this.ep.listChannels();
+    } catch {
+      return;
+    }
+    // THE FILTER RUNS BEFORE THE HISTORY READ, AND THE ORDER IS THE WHOLE POINT.
+    //
+    // `listChannels()` derives an entry from every RETAINED CONCRETE SUBJECT, and the chat stream
+    // caps per subject rather than by age or count, so a session's last frames are retained
+    // indefinitely and this list grows by one row per agent that has ever run. Filtering after the
+    // fetch would enumerate every one of them, issue a `channelHistory` round trip each, and then
+    // throw the results away: unbounded work to display nothing. That is a performance defect
+    // rather than a cosmetic one, which is why it is filtered here and not in the loop below.
+    const chat = chans.filter((c) => !isEventChannel(c.channel));
+    const batches = await Promise.all(
+      chat.map((c) =>
+        this.ep.channelHistory(c.channel, { limit: HISTORY_LIMIT }).catch(() => [] as CotalMessage[]),
+      ),
+    );
+    const history: FeedEntry[] = [];
+    for (const msgs of batches)
+      for (const msg of msgs) {
+        if (!msg.channel || this.seen.has(msg.id)) continue;
+        this.seen.add(msg.id);
+        history.push({
+          id: msg.id,
+          ts: msg.ts,
+          from: msg.from,
+          delivery: "multicast",
+          channel: msg.channel,
+          ...threadFields(msg),
+          text: bodyText(msg),
+        });
+      }
+    if (history.length) {
+      this.feed = [...history, ...this.feed].sort((a, b) => a.ts - b.ts);
+      this.trim();
+      this.dirty = true;
+    }
+    if (!this.chatOnly) await this.prefillDms();
+  }
+
+  /** Best-effort DM backlog for the roll-up — only meaningful for a god-view cred; a non-admin
+   *  observer's `dmHistory` throws (ACL), which just leaves the DM lens live-only. A history
+   *  row's from.name is payload text, never an id→name source (#1399). */
+  private async prefillDms(): Promise<void> {
+    let msgs: CotalMessage[];
+    try {
+      msgs = await this.ep.dmHistory({ limit: DM_LOG_CAP });
+    } catch {
+      return;
+    }
+    // Merge backlog into the live dmLog, deduped by sender+recipient+ts (a live tap may already
+    // have collected backlog-adjacent messages), then keep it ordered and capped.
+    const key = (d: RawDm) => d.from.id + ">" + d.toId + "@" + d.ts;
+    const have = new Set(this.dmLog.map(key));
+    for (const m of msgs) {
+      if (!m.to) continue;
+      const d: RawDm = { ts: m.ts, from: m.from, toId: m.to, text: bodyText(m) };
+      if (have.has(key(d))) continue;
+      have.add(key(d));
+      this.dmLog.push(d);
+    }
+    this.dmLog.sort((a, b) => a.ts - b.ts);
+    if (this.dmLog.length > DM_LOG_CAP) this.dmLog.splice(0, this.dmLog.length - DM_LOG_CAP);
+    this.dirty = true;
+  }
+
+  private async refreshChannels(): Promise<void> {
+    let chans: { channel: string; messages: number }[];
+    try {
+      chans = await this.ep.listChannels();
+    } catch {
+      return;
+    }
+    // Event channels are not chat tabs: one per agent that has ever run would bury the handful of
+    // channels a human actually talks on. Same classifier as the prefill, so the tab strip and the
+    // backlog cannot disagree about what a channel is. The map is REBUILT, not merged: a channel
+    // the broker no longer lists (deleted, its history purged and its registry entry gone) leaves
+    // the strip on this poll instead of lingering with its last count.
+    const next = new Map<string, number>();
+    for (const { channel, messages } of chans)
+      if (!isEventChannel(channel)) next.set(channel, messages);
+    this.channelCounts = next;
+    for (const channel of this.arrivals.keys()) if (!next.has(channel)) this.arrivals.delete(channel);
+    this.dirty = true;
+  }
+
+  // ---- derived signals -----------------------------------------------------
+
+  private signals(): MeshSignals {
+    const agents = this.roster.filter((p) => p.card.kind === "agent");
+    const counts: StatusCounts = { working: 0, waiting: 0, idle: 0, offline: 0 };
+    for (const p of agents) if (p.status in counts) counts[p.status as keyof StatusCounts]++;
+    // Name-ordered, deliberately not by `ts`: that is the last heartbeat, so sorting by it and
+    // presenting the result as a priority queue would imply an age we cannot compute.
+    const waiting = agents
+      .filter((p) => p.status === "waiting")
+      .sort((a, b) => a.card.name.localeCompare(b.card.name) || a.card.id.localeCompare(b.card.id));
+    const live = agents.filter((p) => p.status !== "offline");
+    return {
+      counts,
+      waiting,
+      stalestLiveTs: live.length ? Math.min(...live.map((p) => p.ts)) : undefined,
+      dms: this.rollupDms(),
+    };
+  }
+
+  /** Group raw DMs into per-peer rows; each peer lists its counterparties (conversations).
+   *  Only pairs that actually talked — never the n² cross-product. Conversations key on the two
+   *  AUTHENTICATED ids; display names, roles and statuses resolve through the roster by id, so a
+   *  payload `from.name` cannot move a line into another peer's thread (#1399). */
+  private rollupDms(): DmPeer[] {
+    const statusOf = (id: string): PresenceStatus =>
+      this.roster.find((p) => p.card.id === id)?.status ?? "offline";
+    const roleOf = (id: string): string | undefined =>
+      this.roster.find((p) => p.card.id === id)?.card.role;
+
+    const conv = new Map<string, { parts: [string, string]; msgs: DmMessage[]; last: number }>();
+    for (const d of this.dmLog) {
+      const a = d.from.id;
+      const b = d.toId;
+      if (!a || !b || a === b) continue;
+      const parts = [a, b].sort() as [string, string];
+      const k = parts.join("\u0000");
+      let c = conv.get(k);
+      if (!c) conv.set(k, (c = { parts, msgs: [], last: 0 }));
+      c.msgs.push({ ts: d.ts, from: this.nameOf(a), to: this.nameOf(b), text: d.text });
+      c.last = Math.max(c.last, d.ts);
+    }
+
+    const peers = new Map<string, DmPeer>();
+    for (const c of conv.values()) {
+      c.msgs.sort((x, y) => x.ts - y.ts);
+      for (const id of c.parts) {
+        const other = c.parts[0] === id ? c.parts[1] : c.parts[0];
+        const name = this.nameOf(id);
+        let pe = peers.get(id);
+        if (!pe)
+          peers.set(id, (pe = { name, role: roleOf(id), status: statusOf(id), lastTs: 0, conversations: [] }));
+        pe.conversations.push({
+          with: this.nameOf(other),
+          role: roleOf(other),
+          status: statusOf(other),
+          lastTs: c.last,
+          messages: c.msgs,
+        });
+        pe.lastTs = Math.max(pe.lastTs, c.last);
+      }
+    }
+    for (const pe of peers.values()) pe.conversations.sort((a, b) => b.lastTs - a.lastTs);
+    return [...peers.values()].sort((a, b) => b.lastTs - a.lastTs);
+  }
+
+  /** Advance the activity ring to `now`: shift past buckets out the left, fill the gap with zeros,
+   *  so idle time decays the series. The newest (last) bucket is always the current ~4s window. */
+  private roll(now: number): void {
+    const epoch = Math.floor(now / BUCKET_MS);
+    if (this.bucketEpoch === 0) {
+      this.bucketEpoch = epoch;
+      return;
+    }
+    const advance = epoch - this.bucketEpoch;
+    if (advance <= 0) return;
+    if (advance >= BUCKET_COUNT) {
+      this.bucketCounts.fill(0);
+    } else {
+      this.bucketCounts.splice(0, advance);
+      while (this.bucketCounts.length < BUCKET_COUNT) this.bucketCounts.push(0);
+    }
+    this.bucketEpoch = epoch;
+    this.dirty = true;
+  }
+
+  /** The single batch point: recompute the rolling rate, then emit one snapshot if dirty. */
+  private flush(): void {
+    const now = Date.now();
+    const cutoff = now - 1000;
+    while (this.recentTs.length && this.recentTs[0] < cutoff) this.recentTs.shift();
+    this.roll(now); // decay the activity window even when no message arrived
+    if (this.recentTs.length !== this.msgsPerSec) {
+      this.msgsPerSec = this.recentTs.length;
+      this.dirty = true;
+    }
+    if (!this.dirty) return;
+    this.dirty = false;
+    this.emit("change", this.snapshot());
+  }
+}

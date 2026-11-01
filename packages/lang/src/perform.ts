@@ -1656,7 +1656,6 @@ function throwIfStackExhausted(settled: readonly PromiseSettledResult<unknown>[]
 
 export async function runScope(
   host: EffectHost,
-  name: string,
   scopeKind: ScopeKind,
   scopeName: string | null,
   occurrence: number,
@@ -1675,7 +1674,7 @@ export async function runScope(
   /** A migration's walk: enter exactly these branches, the ones the recorded run WON with. */
   only?: ReadonlySet<string>,
 ): Promise<ScopeOutcome> {
-  if (name === "parallel" || name === "race") {
+  if (scopeKind === "parallel" || scopeKind === "race") {
     const all: [string, (f: Frame, a: unknown[]) => Promise<unknown>][] = Array.isArray(first)
       ? (first as ((f: Frame, a: unknown[]) => Promise<unknown>)[]).map((fn, i) => [String(i), fn])
       : Object.entries(first as Record<string, (f: Frame, a: unknown[]) => Promise<unknown>>);
@@ -1700,7 +1699,7 @@ export async function runScope(
       const present = new Set(all.map(([k]) => k));
       const missing = [...only].filter((k) => !present.has(k));
       if (missing.length > 0) {
-        throw new ScopeBranchMissing(stepKeyString(ctx.key), name, missing, [...only], [...present]);
+        throw new ScopeBranchMissing(stepKeyString(ctx.key), scopeKind, missing, [...only], [...present]);
       }
       // AND THE EMPTY CASE, which the check above cannot see: with no recorded branches at all,
       // "every recorded branch is present" is vacuously true, so the guard passed and the walk
@@ -1709,7 +1708,7 @@ export async function runScope(
       // exactly that shape, so this refuses them by name instead of hanging on them. It cannot
       // fire on a scope that has no arms in the source either, because `all` is empty then too.
       if (only.size === 0 && all.length > 0) {
-        throw new ScopeBranchMissing(stepKeyString(ctx.key), name, [], [], all.map(([k]) => k));
+        throw new ScopeBranchMissing(stepKeyString(ctx.key), scopeKind, [], [], all.map(([k]) => k));
       }
     }
 
@@ -1718,7 +1717,7 @@ export async function runScope(
 
     const branches = entries.map(([k]) => k);
 
-    if (name === "parallel") {
+    if (scopeKind === "parallel") {
       let failed: string | null = null;
       const tracked = running.map((p, i) =>
         p.catch((e: unknown) => {
@@ -1925,7 +1924,7 @@ export async function runScope(
     };
   }
 
-  if (name === "fanOut") {
+  if (scopeKind === "fanOut") {
     const items = first as unknown[];
     const fn = (await second()) as (f: Frame, a: unknown[]) => Promise<unknown>;
     const keyFn = option(bag, "key") as ((f: Frame, a: unknown[]) => Promise<unknown>) | undefined;
@@ -1990,7 +1989,7 @@ export async function runScope(
     }
   }
 
-  if (name === "conclave") {
+  if (scopeKind === "conclave") {
     // A conclave is a scope AND an effect, and it gets ONE entry, of kind `conclave`, carrying
     // the durable answer to "is this sub-team still live". That answer is the explicit `closed`
     // FACT, not the entry's state: a body that failed after a clean close settles `failed`
@@ -2064,7 +2063,7 @@ export async function runScope(
     return { branches: [branchKey], value, closed: true };
   }
 
-  if (name === "once") {
+  if (scopeKind === "once") {
     // One body, the fixed branch `in`, as `conclave`'s, with no open and no close. `only` is
     // ignored: a migration's walk always enters `in`, because one branch is never a loser.
     const branch = frame.branch(scopeKind, scopeName, occurrence, "in");
@@ -2075,5 +2074,8 @@ export async function runScope(
     }
   }
 
-  throw new InterpreterDefect(`the primitive ${name}`);
+  // Every kind returns from its arm above, so a kind added to `ScopeKind` without one stops the
+  // build here rather than reaching a program as a defect.
+  const unhandled: never = scopeKind;
+  throw new InterpreterDefect(`the primitive ${unhandled}`);
 }

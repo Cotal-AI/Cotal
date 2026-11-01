@@ -1,5 +1,223 @@
 # @cotal-ai/delivery
 
+## 0.133.13
+
+### Patch Changes
+
+- Updated dependencies [c21c940]
+- Updated dependencies [6fcac9f]
+- Updated dependencies [ddd3253]
+- Updated dependencies [331f050]
+  - @cotal-ai/workspace@0.133.13
+  - @cotal-ai/core@0.133.13
+
+## 0.133.12
+
+### Patch Changes
+
+- 13499c0: Support authored MDX documentation in the release bundle. Preserve complete Markdown for offline `cotal_docs` page reads and search. Resolve exported documentation links, including MDX paths and heading references. Expand HTTP references to cover dashboard metadata and deletion, host-only auth, the manager console and feedback intake.
+- 13499c0: Rewrite the Messaging concepts as direct MDX and move detailed endpoint and daemon contracts into focused references. Preserve complete Markdown in offline documentation and update source links and documentation checks for the renamed pages.
+- Updated dependencies [13499c0]
+  - @cotal-ai/core@0.133.12
+  - @cotal-ai/workspace@0.133.12
+
+## 0.133.11
+
+### Patch Changes
+
+- @cotal-ai/core@0.133.11
+  - @cotal-ai/workspace@0.133.11
+
+## 0.133.10
+
+### Patch Changes
+
+- @cotal-ai/core@0.133.10
+  - @cotal-ai/workspace@0.133.10
+
+## 0.133.9
+
+### Patch Changes
+
+- Updated dependencies [2c9a28d]
+  - @cotal-ai/core@0.133.9
+  - @cotal-ai/workspace@0.133.9
+
+## 0.133.8
+
+### Patch Changes
+
+- @cotal-ai/core@0.133.8
+  - @cotal-ai/workspace@0.133.8
+
+## 0.133.7
+
+### Patch Changes
+
+- Updated dependencies [dd729aa]
+- Updated dependencies [55a7597]
+  - @cotal-ai/core@0.133.7
+  - @cotal-ai/workspace@0.133.7
+
+## 0.133.6
+
+### Patch Changes
+
+- @cotal-ai/core@0.133.6
+  - @cotal-ai/workspace@0.133.6
+
+## 0.133.5
+
+### Patch Changes
+
+- b7053ec: The delivery daemon gives its shard back through one release step on every exit path, and a held context's lost lease stops through the same step as its lost broker connection. Behavior is unchanged.
+- Updated dependencies [9dd94c6]
+  - @cotal-ai/core@0.133.5
+  - @cotal-ai/workspace@0.133.5
+
+## 0.133.4
+
+### Patch Changes
+
+- Updated dependencies [4b483de]
+  - @cotal-ai/core@0.133.4
+  - @cotal-ai/workspace@0.133.4
+
+## 0.133.3
+
+### Patch Changes
+
+- Updated dependencies [22bf7bf]
+  - @cotal-ai/workspace@0.133.3
+  - @cotal-ai/core@0.133.3
+
+## 0.133.2
+
+### Patch Changes
+
+- Updated dependencies [3f005b8]
+- Updated dependencies [6ba609a]
+  - @cotal-ai/core@0.133.2
+  - @cotal-ai/workspace@0.133.2
+
+## 0.133.1
+
+### Patch Changes
+
+- Updated dependencies [ee1b7d4]
+- Updated dependencies [a8f140c]
+- Updated dependencies [b786ccd]
+  - @cotal-ai/core@0.133.1
+  - @cotal-ai/workspace@0.133.1
+
+## 0.133.0
+
+### Patch Changes
+
+- @cotal-ai/core@0.133.0
+  - @cotal-ai/workspace@0.133.0
+
+## 0.132.7
+
+### Patch Changes
+
+- Updated dependencies [ad4a37e]
+  - @cotal-ai/core@0.132.7
+  - @cotal-ai/workspace@0.132.7
+
+## 0.132.6
+
+### Patch Changes
+
+- @cotal-ai/core@0.132.6
+  - @cotal-ai/workspace@0.132.6
+
+## 0.132.5
+
+### Patch Changes
+
+- @cotal-ai/core@0.132.5
+  - @cotal-ai/workspace@0.132.5
+
+## 0.132.4
+
+### Patch Changes
+
+- Updated dependencies [c0e9b6f]
+  - @cotal-ai/workspace@0.132.4
+  - @cotal-ai/core@0.132.4
+
+## 0.132.3
+
+### Patch Changes
+
+- Updated dependencies [35eb67a]
+  - @cotal-ai/core@0.132.3
+  - @cotal-ai/workspace@0.132.3
+
+## 0.132.2
+
+### Patch Changes
+
+- Updated dependencies [ebabb1e]
+- Updated dependencies [6e0f8d1]
+  - @cotal-ai/core@0.132.2
+  - @cotal-ai/workspace@0.132.2
+
+## 0.132.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.132.1
+  - @cotal-ai/workspace@0.132.1
+
+## 0.132.0
+
+### Patch Changes
+
+- Updated dependencies [5b197c0]
+- Updated dependencies [7613605]
+- Updated dependencies [2f0e7c8]
+  - @cotal-ai/workspace@0.132.0
+  - @cotal-ai/core@0.132.0
+
+## 0.131.6
+
+### Patch Changes
+
+- @cotal-ai/core@0.131.6
+  - @cotal-ai/workspace@0.131.6
+
+## 0.131.5
+
+### Patch Changes
+
+- Updated dependencies [e78de30]
+  - @cotal-ai/core@0.131.5
+  - @cotal-ai/workspace@0.131.5
+
+## 0.131.4
+
+### Patch Changes
+
+- @cotal-ai/core@0.131.4
+  - @cotal-ai/workspace@0.131.4
+
+## 0.131.3
+
+### Patch Changes
+
+- @cotal-ai/core@0.131.3
+  - @cotal-ai/workspace@0.131.3
+
+## 0.131.2
+
+### Patch Changes
+
+- 48f1646: Name each `cotal pending` candidate's `from` by the sender principal in its stored message subject, which the broker binds to the sender's credential, in both JSON and plain output. The sender ID written inside the message no longer appears there. A candidate whose subject cannot be parsed is withheld as unreadable.
+- @cotal-ai/core@0.131.2
+  - @cotal-ai/workspace@0.131.2
+
 ## 0.131.1
 
 ### Patch Changes

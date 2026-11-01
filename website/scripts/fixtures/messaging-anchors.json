@@ -1,0 +1,18 @@
+{
+  "presence-and-delivery": [
+    "presence",
+    "plane-liveness",
+    "three-delivery-modes",
+    "durable-transport",
+    "reading-only-your-own-dms",
+    "channel-delivery",
+    "attention",
+    "related"
+  ],
+  "delivery-daemon": [
+    "the-three-pieces",
+    "why-a-trusted-reader",
+    "where-it-runs",
+    "without-it"
+  ]
+}

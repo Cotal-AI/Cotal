@@ -1031,7 +1031,7 @@ class Interpreter {
     if (spec === undefined) throw new RuntimeFault("L2001", `${name} is not a primitive`);
 
     const first = await this.evaluate(argNodes[0] as AnyNode, env, frame);
-    if (name === "once" && typeof first !== "function") throw onceBodyNotCallable();
+    if (scopeKind === "once" && typeof first !== "function") throw onceBodyNotCallable();
     const bagNode = argNodes[spec.optionsAt];
     const bag = bagNode === undefined ? undefined : await this.evaluate(bagNode, env, frame);
     const scopeName = (this.option(bag, "name") as string | undefined) ?? null;
@@ -1055,7 +1055,6 @@ class Interpreter {
       async (ctx, only) =>
         await runScope(
           this.effects,
-          name,
           scopeKind,
           scopeName,
           occurrence,
@@ -1072,7 +1071,7 @@ class Interpreter {
       // `race` alone. `parallel` and `fanOut` have no losers — every branch is a winner and the
       // walk enters all of them — and a `conclave` cannot be walked into at all, so a digest there
       // would bind arms nothing was ever going to miss.
-      name === "race" ? this.branchDigester(argNodes[0]) : undefined,
+      scopeKind === "race" ? this.branchDigester(argNodes[0]) : undefined,
     );
   }
 

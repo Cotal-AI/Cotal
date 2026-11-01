@@ -105,6 +105,7 @@ import {
   movedProject,
   spaceStreamsAbsent,
   spaceStreamsExpected,
+  resolveControlTarget,
 } from "@cotal-ai/workspace";
 import { localProcessSurface } from "../ext-loader.js";
 import { cliVersion, cliProvenance, readExtensionVersions, type CliProvenance } from "../lib/version.js";
@@ -125,7 +126,7 @@ import { c } from "../ui.js";
 import { preparedCatalogDiagnostics } from "./sync.js";
 import { agentStatus } from "./agents.js";
 import { invalidEnvironmentValues } from "./config.js";
-import { askManager, onInstance, resolveControlTarget } from "../lib/control.js";
+import { cliControl, onInstance } from "../lib/control.js";
 import { serviceDefinitionProjection, serviceDefinitionStore } from "../lib/service-definitions.js";
 import { instanceProjection, serviceInstances } from "../lib/service-instances.js";
 import { readinessAddressSurvivors } from "../lib/service-process.js";
@@ -149,6 +150,7 @@ import {
 import { cotalLinkHere, homeHoldsStack, linkedCotalRemedy } from "../lib/paths.js";
 import { storeWriteProblem } from "../lib/store-dir.js";
 import { natsServerLabel } from "../lib/nats-bin.js";
+import { askManager } from "@cotal-ai/workspace/control";
 
 /** `--components` is the fail-loud health pass with a machine-readable EXIT DISPOSITION. Bare
  * `status` is a broad, recovery-oriented report: it exits 0, or 4 when it could not read part of what
@@ -1005,7 +1007,7 @@ function processRow(name: string, p: PidfileState, detail: string | null): Proce
  *
  *  Three outcomes:
  *  - answered: `running` with the delivery-aware detail.
- *  - a DEFINITIVE no-answer — the same predicate `managerHealth`'s not-serving branch uses
+ *  - a DEFINITIVE no-answer — `managerNoService`, the predicate `managerHealth`'s not-serving branch also uses
  *    (`unansweredRequest`, or the service-registry-missing text): `not-serving` with
  *    `service endpoint not answering`, plus the marker error when the marker could not be read.
  *  - any other failure (a refused probe, an `unavailable` user-mode credential): `running` with
@@ -1062,6 +1064,7 @@ async function userManagerStatus(target: MeshTarget, instanceId?: string): Promi
     { onRefusal: "throw" },
   );
   const reply = await askManager(
+    cliControl,
     control.space,
     control.server,
     "managerStatus",
@@ -1082,6 +1085,12 @@ async function userManagerStatus(target: MeshTarget, instanceId?: string): Promi
   return reply.data as ManagerServiceStatus;
 }
 
+/** A no-responder service rail or an absent manager registry: the definitive no-service evidence
+ *  that both the manager row and the manager health check grade on, kept in one place (#3046). */
+function managerNoService(e: unknown): boolean {
+  return e instanceof EpEnvelopeError && (unansweredRequest(e) || /service registry.*stream not found/i.test(e.message));
+}
+
 /** One probe of the space's manager service endpoint. Only a definitive no-answer is
  *  `not-answering`; a refused probe or an `unavailable` user-mode credential is `unchecked`, so a
  *  failed probe never reads as a dead rail. The operator's credential calls the class rail, so with
@@ -1099,7 +1108,7 @@ async function managerEndpoint(target: MeshTarget, instanceId?: string): Promise
     }
     return instanceId === undefined || status.instanceId === instanceId ? "answered" : "unchecked";
   } catch (e) {
-    return e instanceof EpEnvelopeError && (unansweredRequest(e) || /service registry.*stream not found/i.test((e as Error).message)) ? "not-answering" : "unchecked";
+    return managerNoService(e) ? "not-answering" : "unchecked";
   }
 }
 
@@ -2471,7 +2480,7 @@ async function managerHealth(target: MeshTarget, context: LocalProcessContext, c
     // A no-responder service rail or an absent manager registry is definitive no-service evidence.
     // The lease and PID answer whether that missing service belongs to an extant component (not
     // serving) or an absent one; any other failed probe remains a refusal.
-    const noService = e instanceof EpEnvelopeError && (unansweredRequest(e) || /service registry.*stream not found/i.test(e.message));
+    const noService = managerNoService(e);
     facts.push(noService ? "serve no answer" : `serve probe refused: ${(e as Error).message}`);
     if (!noService) return { name: "manager", verdict: "refused", facts };
     const liveRecord = record.kind === "live";

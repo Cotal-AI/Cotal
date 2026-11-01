@@ -1,5 +1,117 @@
 # @cotal-ai/pi
 
+## 0.133.13
+
+No changes in this release.
+
+## 0.133.12
+
+### Patch Changes
+
+- e7f6b09: `cotal_send` refuses a channel pattern such as `team.>` before it reads or sends anything. The refusal and the advertised `channel` text say how to reach those agents: one post to a channel the pattern matches reaches the followers connected at the time, or post to each channel by name. A name that breaks the channel grammar, such as `team.**`, is refused too. It used to be rewritten onto another channel while the receipt named what was typed. In pi, `cotal_send` now returns the shared refusal instead of its own line.
+
+## 0.133.11
+
+No changes in this release.
+
+## 0.133.10
+
+No changes in this release.
+
+## 0.133.9
+
+No changes in this release.
+
+## 0.133.8
+
+No changes in this release.
+
+## 0.133.7
+
+No changes in this release.
+
+## 0.133.6
+
+No changes in this release.
+
+## 0.133.5
+
+No changes in this release.
+
+## 0.133.4
+
+No changes in this release.
+
+## 0.133.3
+
+No changes in this release.
+
+## 0.133.2
+
+No changes in this release.
+
+## 0.133.1
+
+No changes in this release.
+
+## 0.133.0
+
+### Minor Changes
+
+- 1e554e4: Precompute documentation search at build time and load the corpus and compact index only when needed. Search results and scoring are unchanged. Documentation data now lives in two digest-checked files beside each module or bundle; normal packages, plugins and installers include them automatically. Custom integrations that copy or bundle an executable alone must also carry its matching `docs-bundle.bin` and `docs-index.bin` files.
+
+## 0.132.7
+
+No changes in this release.
+
+## 0.132.6
+
+No changes in this release.
+
+## 0.132.5
+
+No changes in this release.
+
+## 0.132.4
+
+No changes in this release.
+
+## 0.132.3
+
+No changes in this release.
+
+## 0.132.2
+
+No changes in this release.
+
+## 0.132.1
+
+No changes in this release.
+
+## 0.132.0
+
+No changes in this release.
+
+## 0.131.6
+
+No changes in this release.
+
+## 0.131.5
+
+No changes in this release.
+
+## 0.131.4
+
+No changes in this release.
+
+## 0.131.3
+
+No changes in this release.
+
+## 0.131.2
+
+No changes in this release.
+
 ## 0.131.1
 
 No changes in this release.

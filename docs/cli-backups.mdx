@@ -1,0 +1,537 @@
+---
+title: CLI backups
+description: Offline artifacts, integrity checks, restore recovery, and retained seat checkpoints.
+kind: Reference
+audience: operators
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+Backup artifacts transfer message and registry state from a stopped, preserved space.
+Restore requires the same space and existing trust. It does not create replacement authentication.
+
+
+## Commands [#backups]
+
+```bash
+cotal down --preserve-state [--store-dir <dir>]
+cotal backup create <dir> [--only full|registry] [--store-dir <dir>] [--json|--plain]
+cotal backup inspect <dir> [--json|--plain]
+cotal backup verify <dir> [--json|--plain]
+cotal backup recover <full-attempt-id> [--yes|--dry-run] [--json|--plain]
+cotal backup cleanup-fallback <full-attempt-id> [--yes|--dry-run] [--discard-history] [--json|--plain]
+cotal backup restore <dir> [--only registry] [--store-dir <dir>] [--accept-missing-source] [--json|--plain]
+cotal up --restore <dir> [--restore-only registry] [--accept-missing-source]
+```
+
+On a controller root, one with a stack journal, `backup create`, `backup restore` and
+`up --restore` refuse `UNSUPPORTED` (exit 2) in this release. Each needs a preserved cut, and
+`down --preserve-state` cannot make one there. They refuse while validating their arguments,
+before the connector seed or any write. Plain `down` and `up` keep a controller stack's store,
+channels and history. On a full store `down` refuses first, and [down](cli-shutdown.mdx#down) says how to stop the
+stack there with or without purging that history. Backup and restore of a controller-owned stack
+return in a later release. The
+rest of this section applies to a root without a stack journal.
+
+Backup is offline-only. It requires the stable `ready` record from `down --preserve-state`, an exact
+store match (`--store-dir` defaults to the cut's recorded source store), no recorded process that may still be running (the same test `clean` uses), and an
+unreachable exact endpoint from the recorded cut. That endpoint is probed immediately before cloning, so a live broker with a missing or stale pidfile
+is still refused. `backup restore`, `up --restore` and a bare `up` that resumes the cut probe the
+broker address they will bind before they move or start anything. While another process listens
+there they refuse `CONFLICT` (exit 2), name the address and leave the cut unchanged. It claims the cut, reflink/copies the stopped source to a
+private attempt clone, and opens only that clone on a random loopback bootstrap broker with an
+independent parent/deadline watchdog. A bootstrap broker that does not accept connections within
+15 seconds fails the command. Each maintenance-login reload waits for the broker's acknowledgement
+for up to 15 seconds, bounded by the operation deadline. A rejection, broker exit or missing
+acknowledgement fails the command before the next phase receives its login.
+Creation returns one JSON/plain receipt after cleanup.
+A published artifact plus incomplete cleanup is partial and retains the artifact and original
+attempt; it is not a reason to repeat creation blindly. It validates the canonical stream and pull-consumer inventory,
+writes native snapshots with consumers excluded, and stores conservative contiguous ACK-floor
+checkpoints separately. The presence bucket is memory-backed, so it does not survive the cut and
+the clone may lack it. Every other stream must be present. The original store is never opened by
+the backup broker, and the stack is not restarted implicitly. Artifact destinations must not overlap
+the preserved source or maintenance
+attempt tree. Restore artifacts and targets likewise cannot nest inside or contain each other, the
+preserved source, or the maintenance attempt tree.
+
+`backup create` checks its preconditions before it claims the cut or creates any maintenance state.
+A root with no preserved cut refuses and names `cotal down --preserve-state`. A cut in another state
+refuses and names that state and its space. A create during a restore that still runs refuses
+`LIFECYCLE_BLOCKED` (exit 2), names that restore attempt, its process and when it started, and says
+to wait for it. A create that finds the root's maintenance lock held, such as by another
+`backup create`, names the operation that holds it, its pid and since when it has held the lock.
+Neither refusal journaled anything, so it names no attempt of its own. A destination that already exists is a `CONFLICT`
+refusal, because create writes only a new directory. A destination whose folder does not exist
+refuses `TARGET_NOT_FOUND` (exit 2) and names that folder; create makes only the artifact's own
+folder. A destination check that finds a non-directory parent (`ENOTDIR`) or a symbolic-link loop
+(`ELOOP`) refuses `USAGE_INVALID` (exit 1), naming the destination and its parent. Choose a destination
+with a directory parent; no attempt was started and the preservation journal is unchanged.
+A destination inside the preserved store refuses `USAGE_INVALID` (exit 1). So does one
+inside a path `clean all` removes, such as `.cotal/auth` or the space's `.cotal/space.<hex>`
+folder, because that cleanup would remove the backup with them. One in a
+folder this account cannot write refuses `PERMISSION_DENIED` (exit 2) and names that folder. A `--store-dir` that is not the cut's preserved store, such as an empty folder,
+refuses `CONFLICT` (exit 2) and names both stores. A process that listens at the cut's recorded
+address refuses `CONFLICT` (exit 2), as `backup restore` and a resuming `up` refuse it, and its Next
+says to stop the process that listens there and run the same `backup create` again. Any other
+refusal or failure shows the check's own sentence as its native detail.
+A failure that removed what it wrote leaves the preserved cut ready, and its Next names the same
+`backup create` to run again once that cause is fixed.
+A create that runs out of disk space (`ENOSPC`) or quota (`EDQUOT`) after it claims the cut removes
+what it wrote and fails `OPERATION_FAILED` (exit 5). Its message names the error and where it was
+writing: the store copy under `.cotal/maintenance/attempts`, or the backup in its destination. It
+also says that no backup was published and that the preserved cut is still ready. Its Next frees
+space on that disk and runs the same `backup create` again.
+
+A `backup create` interrupted by SIGINT, SIGTERM or SIGHUP after it claims the cut exits 130, 143
+or 129 and names its attempt, the partial artifact it left and `cotal backup recover <attempt> --yes`.
+That claim follows the restore claim's rule below: it holds the cut until its backup process and
+brokers are proven gone, or for 30 minutes when they cannot be. Until then `up`, another create and
+`backup recover` refuse `LIFECYCLE_BLOCKED` and name the backup process and the deadline, and
+`cotal status` names the attempt and its next step. Once it is stale, `backup recover` removes the
+partial artifact, the clone and the broker files, each matched by inode, and a create to another
+directory does the same before it starts, then backs up the cut's recorded store, a custom
+`--store-dir` one included. A create naming the partial artifact refuses `CONFLICT`
+and names that recovery. The release's receipt names `cotal backup create <directory>` and
+`cotal up` as its next steps.
+
+
+## Artifact inspection
+
+`backup inspect` reads the bounded manifest and exact declared file-name inventory. It does not
+hash snapshot or checkpoint contents. `backup verify` additionally reads each named regular file
+and compares its size and SHA-256. Both are read-only: no staging directory, broker, restore or
+secret upload. A path through a linked folder is read at its real path, as `backup restore` reads
+it, and the report names that path. Reports omit snapshot bytes, configuration bodies and trust
+material. JSON retains
+the declared metadata; terminal file lists are bounded and state their omissions. When a declared
+file is missing, an undeclared file is present, a declared file is not a regular file, such as a
+symbolic link or a FIFO, or a file does not match its declared size and SHA-256, the refusal names
+that file and the fault, and its JSON target carries `file` and `fault`. A declared name that is
+not a plain file name in the folder, such as one with `../` or an absolute path, has the fault
+`invalid-name` and is not printed. A `manifest.json` that is not a regular file, is larger than
+1 MiB or is not a valid manifest has the fault `manifest-not-regular`, `manifest-too-large` or
+`manifest-invalid`. `backup restore` and `up --restore` refuse each of these `SCHEMA_INVALID` with
+the same file and fault, before they stage or change anything.
+A directory with no `manifest.json` that holds files a `backup create` writes is refused as an
+incomplete artifact, the kind an interrupted create leaves, with the fault `manifest-missing`. A
+file, or a directory that holds neither a manifest nor such a file, is not a backup artifact and
+refuses `TARGET_NOT_FOUND` (exit 2), naming it and saying whether it is a file, an empty folder or
+a folder with other files. The folder of a create in this root that was
+interrupted before it wrote a file is still an incomplete artifact. A path that names nothing refuses
+`TARGET_NOT_FOUND` (exit 2) and says in `missing` whether its folder or the artifact is missing, as
+`backup restore` does. A full artifact of an authenticated space
+restores only into a root that still holds the trust state it was taken under, so it cannot move to
+another machine or a fresh root. `backup create`, `backup inspect` and `backup verify` say so in a
+`Restores into` row, and their JSON carries `trustBound`. A registry restore does not check the trust
+state, so `--only registry` still restores such an artifact's channel settings. When a full restore
+refuses `CONFLICT` because the trust state moved, its Next names that `--only registry` restore for an
+artifact that holds the registry.
+
+File integrity is not a signature or a restore proof. Matching a manifest does not authenticate
+its author, verify snapshot semantics or prove existing trust will accept a restore. `backup
+inspect` and `backup verify` do not compare an artifact's trust state with this root's, and their
+`Authority continuity` row says `not checked`. A full artifact taken on this root before `clean all`
+or `up --rotate-sys` still verifies, and restore refuses it `CONFLICT`. The guarded
+read path refuses unsupported file-protection environments rather than using a weaker reader.
+
+`backup recover <full-attempt-id>` uses the original root's pre-commit restore journal, not a
+manifest path or selected-space guess. It rolls the attempt back once it is stale: its restore
+process and every recorded watchdog and broker are proven dead, and either every broker this root
+started is proven gone or the claim's deadline has passed. Commit intent forbids rollback. The
+receipt names `cotal up`, which resumes the space from its preserved state, and
+`cotal backup restore <directory>`, which tries the restore again, as its next steps.
+`backup cleanup-fallback <full-attempt-id>` requires the matching healthy active restore and
+removes only its unchanged retained old-store identity; it never removes the restored target.
+It removes that store by its store entries, as `clean store` does. When the old store also holds
+anything else, such as a file you put in a custom store directory or in the fallback folder, its
+`--dry-run` names those entries, and the cleanup refuses `CONFLICT` (exit 2), names them and deletes
+nothing; move them out and run it again. A restore into the preserved store's own path moves that
+store aside whole, so it refuses `CONFLICT` (exit 2) the same way before anything moves.
+A restore made with `--accept-missing-source` replaced a missing source and retains no old store,
+so its cleanup removes nothing and only retires the journal. A later `down --preserve-state` then
+starts a new backup cycle. A registry restore leaves every other stream out, chat and DM history
+and workflow runs included. A full restore of an artifact with no workflow runs leaves the runs out,
+and a full restore of an artifact made before the state it replaced was preserved leaves out what
+was written after the artifact. A backup holds one account, so any restore also leaves out the
+streams of another account in the store it replaced, such as an open mesh's account beside a static
+space's after both ran in one folder. In each case its old store holds the only copy of them. Its `--dry-run` warns with
+`HISTORY_ONLY_IN_PREVIOUS_STORE` and names what it left out, with those accounts in `otherAccounts`, and the cleanup refuses
+`USAGE_INVALID` (exit 1) and deletes nothing unless `--discard-history` is given.
+That refusal names the flag and does not print the command help.
+Both review full paths and default to Cancel. Scripts need `--yes`; `--dry-run` reads the plan
+without taking a maintenance lock or writing. Apply rechecks the reviewed journal revision under
+the native lock, preserves unknown outcomes and never retries a deletion. No live-owner override
+or process kill is supplied.
+A restore's full attempt id has the form `restore-<uuid>`. `backup recover` also takes an
+interrupted create's `backup-<uuid>`, as described above. `cotal status` shows the attempt a root
+holds under Maintenance, with its state and next step. For a restore that left history or workflow
+runs out that step includes `--discard-history`. A refusal for the wrong state names the next step
+for the recorded one. A completed `cleanup-fallback` retires the journal, so a repeated cleanup
+refuses with `TARGET_NOT_FOUND` and says the root holds no restore attempt.
+
+
+## Restore receipts
+
+`backup restore <dir>` is the canonical restore. It runs the same guarded restore as
+`up --restore <dir>`, with the same lock, claim, trust and space proofs and the same resume, and
+returns one `backup restore` receipt: the restore attempt, space, root, selection, store, broker
+process and whether the manager, delivery and auth service started. The restore follows the
+artifact's own selection, and `--only registry` narrows a full artifact to the registry. Any other
+`--only` value is refused, because the restore could not honor it. The space, broker and runtime
+come from the preserved cut, so no selector can rebind them. An artifact of another space refuses
+`CONFLICT` (exit 2) and names both spaces, and a full artifact taken under another trust state
+refuses `CONFLICT` the same way. An artifact file that is missing, undeclared or not its declared
+size and SHA-256 refuses `SCHEMA_INVALID` (exit 1) and names the file, as `backup verify` does. A
+manifest whose space is longer than 200 characters is invalid, so restore refuses it with the fault
+`manifest-invalid` and does not print that space. In each case the preserved cut is not changed. A
+receipt means the
+active journal was written. Its `seatResume` field says whether retained seats were handed to the
+manager's resume (`requested`) or dropped by a registry restore (`not-requested`). It does not
+confirm that any seat joined. Its `restored` and `recreatedEmpty` fields name the streams the
+restore brought back and the ones it recreated empty. A registry restore brings back channel settings only, so chat and DM
+history and workflow runs start empty. Its receipt says so with a `HISTORY_NOT_RESTORED` warning, and `previousStore`
+names the store the restore set aside, which holds the only copy of them. Its next step says
+that `backup cleanup-fallback` deletes that store only with `--discard-history`. A full restore of
+an artifact made before the state it replaced was preserved, such as a backup taken before a later
+`cotal up` and `down --preserve-state`, leaves out the chat and DM history and workflow runs written
+after the artifact. Its receipt says so with a `NEWER_HISTORY_NOT_RESTORED` warning that names the
+store it set aside, which holds their only copy, and its next step includes `--discard-history` too.
+When the store a restore replaced also held another account's streams, the receipt says they are not
+restored and names the accounts in `otherAccounts`. That is an `OTHER_ACCOUNTS_NOT_RESTORED` warning,
+or the warning above when the restore also left out history or workflow runs, and its next step
+includes `--discard-history` as well. `previousStore` names the store a restore set aside whenever
+that store holds the only copy of something the restore left out, and is null otherwise. A restore
+made by an earlier release recorded no other accounts. For it, `status`, the cleanup preview and
+the cleanup read them from the store it set aside while that store is still the one the restore
+recorded, and name only the accounts the restore's auth mode rules out: every account but `$G` after
+an open restore, and `$G` after a static or user one. Which data account a static or user restore
+brought back is not recorded, so another data account in that store is not named. Before such a
+cleanup, list the previous store's `jetstream` folder: each folder there is one account.
+When that restore brought the workflow runs back, it also names each run it rolled back and each
+step that was answered after the artifact and is open again, and says that answer is only in the
+store it set aside. A reopened step accepts an answer again. `cotal status` and the
+`backup cleanup-fallback` preview name the same runs. To find them, the restore copies the store it
+sets aside and reads its run journals on one more isolated broker, so such a restore takes longer
+and needs disk space for that copy.
+`up --restore --restore-only registry` prints the same two lines. Without `--store-dir`, a restore
+creates its store at `.cotal/nats`, also when the cut's store is elsewhere, as after
+`up --store-dir`; only a controller root restores into its recorded store. The preserved store stays
+where it is until `backup cleanup-fallback` deletes it, so to keep the space on another disk, name a
+new store there with `--store-dir`. `--store-dir` names a store the restore creates, so a path that
+already exists, or whose parent directory does not, refuses `USAGE_INVALID` (exit 1) before anything
+is staged. Restore needs the stopped preserved cut from `down --preserve-state`. A root with no
+maintenance journal refuses before the restore takes its maintenance lock, so the folder keeps no
+state from the attempt, and `up --restore` refuses the same way. An artifact path that names
+nothing refuses `TARGET_NOT_FOUND` (exit 2) at the same point. It names the path, and its JSON
+target says in `missing` whether the folder that should hold the artifact (`folder`) or only the
+artifact (`artifact`) is missing. A path that is not an artifact, or is an incomplete one, refuses
+there too, as `backup verify` refuses it. A path that is, holds or sits inside the preserved store
+or `.cotal/maintenance`, such as `.` in this folder, refuses `USAGE_INVALID` (exit 1) there, naming
+that store or folder. The restore checks the path again once it holds the maintenance lock, because a
+link in it may name another folder by then, and refuses the same way. A restore that fails after it
+began names its attempt in the text and in the JSON target, which also carries `journalState`, and
+its remedy gives the next step for that state. The listener endpoint must be a bare `nats://` or
+`tls://` URL without credentials, a query, a fragment or a path. Its refusal does not repeat the
+endpoint value, including when it came from a preserved launch. `up --restore`
+remains as the equivalent startup form. After its startup lines it names the restore attempt and
+gives the cleanup step that retires it, with `--discard-history` for a restore that left history or
+workflow runs out. Unlike the other
+backup modes, `backup restore` runs the connector seed first, as `up` does, because it resumes seats.
+
+Three commands refuse an active restore. `down --preserve-state`, in each of its forms, refuses
+`LIFECYCLE_BLOCKED` (exit 2) and stops nothing: a new cut begins only after the restore journal is
+retired, so it names the attempt and `backup cleanup-fallback` as the next step, with
+`--discard-history` after a restore that left history or workflow runs out. `team boot`
+resumes only a stopped stack whose manager never launched, and a restored stack's manager already
+ran, so start it with bare `cotal up` instead. `cotal up -f` boots a fresh mesh, so it starts only
+once the restore is retired. While the restored broker runs, it refuses `CONFLICT`, exit 2, naming
+the broker's PID, and its Next is `cotal down`, then `backup cleanup-fallback <attempt> --yes`, then
+`cotal up -f` again. After a restore that left history or workflow runs out, that cleanup step
+includes `--discard-history` and says it deletes the previous store. Once that stack is stopped, it refuses `LIFECYCLE_BLOCKED`, exit 2, and names
+the cleanup. Nothing is started either way. While the restored broker runs, any other `cotal up`,
+bare or with `--server`, refuses `CONFLICT` too, naming its PID, and leaves the restore journal as it
+was. Its Next is `cotal down`, then `cotal up`, which starts the restored stack again.
+
+
+## Artifact contents
+
+Stopped client-managed KV ordered consumers are ephemeral read residue, not backup state. Backup
+ignores only the pinned client's exact stopped shapes: ordinary last-value watchers, a watcher of one
+subtree of its bucket such as the manager's goal index, and the whole-bucket scanner that uses
+all-history delivery to collapse concurrent tombstones. A bound consumer or any lookalike with a
+filter outside its bucket, another inbox, lifetime, or other config is still refused.
+
+`full` is the default and indivisible: channel registry, CHAT/DM/TASK/INBOX/DLV, ACL, MEMBERS, on
+a static-auth or open mesh the workflow run stores (the WFJ step journal, the records store and the
+run admission store), and validated durable checkpoints. `registry` is the sole partial artifact. Presence, derived membership
+feed, leases, native ephemeral/history consumers, credentials, keys, tokens, owner secrets, and actor
+ledger files are excluded. The other endpoint stores are nonportable control state: endpoint
+submissions, facts, events, timer requests and fires, work pools, contract artifacts, and the
+auth, session and issued-authority stores. Restore recreates those streams empty with their
+canonical configs before exposing the normal listener, so endpoint sessions do not cross a backup. A
+workflow run that waited at a checkpoint or a timer at the cut is back after a full restore, and the
+manager takes it over as after a restart. The records store also holds the endpoint authority rows,
+such as lifecycle heads, obligations and policy versions, and a full restore rolls them back to the
+cut with the runs. A user-mode full backup holds no workflow run store, because the records store's
+lifecycle heads name credential rows in the auth store, which a backup does not carry; its restore
+recreates the run stores empty and says so. An artifact in the earlier `cotal-space-backup/v1`
+format still restores; it holds no workflow run, so the run stores come back empty and the restore
+says so. `backup create` says so too when its artifact holds no runs, as a registry or user-mode
+artifact does. After a restore that left the runs out, the store it set aside holds their only copy:
+its receipt says so with a `RUNS_NOT_RESTORED` warning that names that store, and
+`backup cleanup-fallback` deletes it only with `--discard-history`, as for a registry restore. Each
+restore lists what it restored and what it recreated empty. Artifacts are exclusively created `0700`;
+snapshot/checkpoint files and
+the manifest are `0600`; `manifest.json` is written last with exact sizes and SHA-256 values. The
+directory is trusted operator input: hashes detect corruption, not malicious rewriting. So
+`backup verify`, `backup restore` and `up --restore` apply the
+[`space create`](cli-selection.mdx#selecting-a-space) rule for other local writers to the artifact directory, each
+file in it and each directory above it. An artifact another account could write refuses
+`PERMISSION_DENIED`, exit 2, before a restore stages or changes anything, and the refusal names each
+such path and one remedy such as `chmod g-w <paths>`. `backup create` refuses the same way, before it
+writes anything, when a folder that would hold the artifact breaks the rule. `backup inspect` does
+not check this, and a copy that other accounts can only read is accepted.
+
+
+## Store staging
+
+Restore validates and stages the exact allowlisted artifact bytes before moving or creating a store.
+It requires the same space. A full restore also requires the trust state the artifact was taken
+under; a registry restore, `--only registry` of a full artifact included, does not check it. The
+whole pre-commit window holds a journaled
+liveness claim (coordinator, watchdogs, brokers, and a deadline 30 minutes after the restore
+began). While the claim is live, ordinary `up`, a repeated restore, `backup create` and
+`backup recover` refuse `LIFECYCLE_BLOCKED` (exit 2) and name the restore process, when it started
+and the deadline. A command that finds
+the root's maintenance lock held refuses the same way and names the pid that holds it. The attempt
+is stale once the restore process and every recorded owner are proven dead on this host, and
+either the deadline has passed or every broker the root started is proven gone. A broker's
+watchdog stops it when the restore process exits, so a restore stopped by Ctrl-C is stale within
+seconds. A retried restore rolls a stale attempt back and continues; an operator can also roll it
+back with `cotal backup recover <full-attempt-id> --yes`. Nothing ever rolls back a live attempt.
+A restore interrupted by SIGINT, SIGTERM or SIGHUP before it commits exits 130, 143 or 129 and
+prints its attempt id and that recovery command. A registry-only artifact restores as registry-only whether or not
+`--restore-only registry` is passed; omitted infrastructure is always created and the exact
+post-restore stream inventory is asserted before commit intent. Ordinary `up` from a preserved cut
+resumes only the exact recorded source store, file store cap, runtime and broker address. A different
+`--store-dir`, `--max-file-store`, `--runtime` or `--server` refuses `CONFLICT`, exit 2, before
+anything starts, naming the value given and the recorded one. The Next resumes with `cotal up` without that flag, then `cotal down` and
+`cotal up` with it.
+
+
+## Seat checkpoint admission
+
+**Admitting a seat checkpoint.** An ordinary `up` from a preserved cut admits that cut's seat
+checkpoints before it journals the resume attempt and before any process starts, so a refusal costs
+nothing. Three gates run in order, each naming what it saw.
+
+1. *Integrity.* Every file the record names must be present, a regular non-symlink file, the
+   recorded byte size and the recorded sha256, re-stat'd after the read so a file that moved is a
+   refusal. Failure here consults no other gate.
+2. *Identity.* The recorded space must match, the recorded `lifecycleUid` must not belong to a live
+   incarnation, and the profile revision must match this host's or be resumed under deliberately
+   this host's. A differing revision is refused with both digests and the remedy, and there is no
+   override: the checkpoint carries the recorded digest and not the config bytes, so nothing could
+   run the seat under the recorded revision, and the manager re-digests the same file and refuses
+   drift on its own. This gate has no blanket override, which is the only reason the next one may
+   have one.
+3. *Recency.* `capturedAt` is compared to this host's clock against the horizon the record carries.
+   Inside it, the seat resumes. Outside it, `up` refuses and prints the capture instant, the clock
+   reading and the horizon; `--accept-stale-checkpoint` admits it anyway and the exercised consent
+   is printed with the actual age. An unreadable `capturedAt` is refused with no override, because a
+   freshness gate that fails open is not a gate.
+
+Custody transfers only after all three pass. The destination claims the recorded generation plus one
+by exclusive create, before it launches anything. A lost create means another destination is already
+claiming that seat, and it refuses with `seat-writer-generation-create-lost` rather than adopting
+the winner and becoming a second writer. The recorded `lifecycleUid` is reused and never minted, so
+the resumed seat binds the same lifecycle-keyed durables.
+
+Admission is reconciled against the inventory the resume is about to hand the manager, and that
+reconciliation finishes before the restore moves a single tree. A checkpoint whose recorded
+`lifecycleUid` is not the one the retained inventory carries describes a different incarnation of
+that seat, and it refuses with both uids while every live working tree is still untouched and no
+generation is claimed. A retained
+seat with no admitted checkpoint refuses the resume by name: an absent checkpoint directory and an
+absent record are indistinguishable from a seat that was never checkpointed, and a seat that starts
+without passing the gates has claimed no generation. `--accept-stale-checkpoint` is recorded in the
+resume journal with the seat, the capture instant, the admitted age and the horizon, so the consent
+survives the terminal it was typed into.
+
+The whole admission is all or nothing. Coverage is settled first, then every gate runs over every
+checkpoint, and only then is any generation claimed. A refusal at any point leaves every generation
+unclaimed, including a lost exclusive create during the claim itself: the claims that attempt made
+are removed before the refusal is raised, by the exact paths it wrote, so a generation another
+destination holds is never touched. A claim is a create that can never be made again, so a refusal
+that left one behind would consume the retry over the same checkpoint set.
+
+
+## Seat checkpoint restoration
+
+**Restoring a seat checkpoint.** Once every gate has passed over every checkpoint, and before a
+single generation is claimed, `up` puts each admitted seat's captured bytes back. A refusal here
+costs nothing for the same reason a gate failure does: no claim has been made and nothing has
+started.
+
+A restore never moves or replaces the destination's own control directory. A checkpoint excludes
+`.cotal/` by design, so a seat whose `cwd` holds one, which is the layout an operator gets by
+running `up` and `spawn` in a single directory, is refused before anything is staged: promoting a
+tree that cannot contain `.cotal/` over that `cwd` would carry this host's live trust material and
+maintenance state away with the superseded tree. The refusal names the control directory it found
+and the remedy, which is to give the seat a working tree that is not a workspace root.
+
+Each seat is staged beside its own `cwd`, in `<cwd>.incoming`:
+
+1. every recorded digest is verified again over the files as they are now;
+2. the bundle is cloned into `<cwd>.incoming`, which is refused when that path already exists;
+3. the recorded base commit is verified in the clone and checked out detached, so a bundle that does
+   not contain it stops the resume instead of continuing against a different history;
+4. the index diff is applied with `--index` and the worktree diff without it, both `--binary
+   --allow-empty`. That order is what puts staged content back in the index rather than only in the
+   worktree, and `--allow-empty` is why a seat with a clean tree is still restorable;
+5. the untracked archive is extracted.
+
+Every seat stages before any seat is promoted. Promotion moves an existing `cwd` aside to
+`<cwd>.superseded.<timestamp>` and renames the staging directory into place, then puts the session
+pointer and store files where the destination's connector reads them, then re-reads
+`git status --porcelain` in the promoted tree and compares it to the status the checkpoint recorded.
+A restore that applied without error and produced a different index is a refusal, not a warning. The
+two renames are the only steps that touch the path the seat will use, so a failure anywhere leaves
+every seat's live `cwd` as it was.
+
+The rename itself claims the superseded name, and a taken name gets a numeric suffix. The timestamp
+has one-second resolution, so two promotions of the same seat within one second compute the same
+path; a rename onto a name that already holds a tree fails on every platform, and that failure is
+read as taken. Nothing creates the name ahead of the move, because Windows refuses to rename onto an
+existing directory at all. A superseded tree is the thing that rename exists to keep.
+
+`git` and `tar` run as child processes with argument arrays, never a shell string.
+
+A leftover `<cwd>.incoming` refuses the resume by name. A staging directory from a failed run is the
+only record of what failed, so nothing removes one automatically: inspect it, remove it by hand, and
+resume. A pre-existing `cwd` is renamed rather than deleted, so a wrong checkpoint costs a rename
+instead of a tree. When a promotion fails, the renames that attempt made are undone and the staging
+tree is left where it is, as the evidence for what did not verify.
+
+A session pointer whose recorded `sessionId` is not the one the retained inventory reopens is
+refused before anything is cloned. A session file already present at its destination is judged by
+content: bytes equal to the recorded digest are already restored, and different bytes under the path
+the connector is about to read are refused with both digests rather than clobbered.
+
+`up --restore <dir>` reaches the same admission and the same restore, after the store is restored
+and validated and before commit intent is journaled. A registry-only restore resumes no seat, so it
+admits and restores nothing.
+
+The writer generation is claimed by exclusive create inside one workspace root. It fences competing resumes in that root. Separate roots on the same host, or on different hosts, do not share that fence: copying a checkpoint to two roots can let both claim the same successor. A cross-root fence needs a coordinate neither root owns.
+
+
+## Restore commitment
+
+Authenticated restores validate the complete
+space trust bundle before staging, including nkeys, seed matches, JWTs, signers, and space binding;
+full restores commit to the validated operator, system-account, data-account, and active-signer root
+chain in addition to the static/user authority fingerprint. Because the system account is part of that
+commitment, a [`cotal up --rotate-sys`](cli-startup.mdx#up) makes every full artifact taken before it unrestorable
+against this root: take a fresh full backup after each rotation. [`cotal clean all`](cli-shutdown.mdx#clean) removes
+the space trust itself, so it does the same. Such an artifact still restores its registry with
+`--only registry`, and chat and DM history start empty. The composed commitment is revalidated
+immediately before store mutation and never includes secret seeds. Restore never creates fresh auth.
+Same-path restores atomically retain the old
+source at the journaled fallback path; alternate targets retain it in place; a missing canonical
+source needs explicit `--accept-missing-source`. Without it, the restore refuses `TARGET_NOT_FOUND`
+(exit 2), names the missing path and changes nothing. A default `.cotal/nats` that is a symbolic
+link to the recorded source is that source, so the restore runs in place at the real path and the
+link keeps naming it. Quarantine and target restores use current canonical
+configs on isolated random-loopback brokers, never expose native snapshot consumers, and publish a
+commit-intent immediately before the normal listener starts. Archive bytes never instantiate the real
+target: after quarantine validation, every stream is re-snapshotted from the validated quarantine
+state into attempt-owned sanitized files, and the target is restored solely from those. Before that boundary, failure rolls back
+the attempt-owned target; after it, ambiguity preserves both stores and records forward-repair
+recourse. The cooperative maintenance lock excludes Cotal commands, not arbitrary raw NATS processes.
+
+
+## Bootstrap broker authority
+
+Bootstrap brokers in every auth mode, including open, mount the store under a local account with
+random operation-specific logins only, each carrying the exact per-phase subject permission matrix;
+normal static credentials and user-auth sentinel/bearer connections are rejected, and no auth
+service or callout starts. Open mode differs only in its account label, never in authority. Inventory, each stream snapshot,
+restore initiation, exact upload id, validation, and each checkpoint recreation use separate exact
+authorities. Every checkpoint carries the source stream's message/first/last sequence state and must
+match its snapshot record before mutation; core then derives and validates the only allowed start
+policy. TASK is not a CLI exception: the same core checkpoint API recreates its canonical `DeliverAll`
+WorkQueue durable because acknowledged tasks are absent from retention and NATS forbids a
+start-sequence policy there. Registry-only restore creates every omitted canonical stream and transient
+bucket on the isolated target before the normal listener is exposed. It deliberately does not resume
+retained agents or recreate their DM/DLV/TASK/ACL state; their identity material stays retained and
+stopped rather than being reprovisioned into a partial restore.
+
+
+## Manager finalization
+
+After listener readiness, the manager starts attempt-bound, validates retained credentials/tokens
+without granting or reprovisioning, and resumes the exact persisted principals under cleanup
+suppression. Registry-only restore uses the same flow with an empty agent set. On a user-auth mesh
+these manager calls run as the logged-in operator's `cli` actor, the caller the preserve cut used, so
+that actor needs a current `admin` grant. `commitResume` is an
+idempotent validation barrier only: success must be `awaitingFinalize` with an attempt-bound 64-hex
+commit token and does not release suppression. Under the workspace lock, the CLI first fsyncs that
+exact evidence as `manager-committed` (restore) or `resume-committed` (ordinary resume), then calls
+token-bound `finalizeResume`; only an `active` response for the exact token releases suppression. The
+CLI records the same token in finalization evidence before a restore becomes `active`, or before an
+ordinary resume retires and consumes the marker. A new launch hands the token to the next manager as
+a protected file: the CLI journals its path, writes it at mode 0600 in
+`.cotal/maintenance/v1/handoff/`, then journals its inode and digest before the child starts. The
+child reads it once with `--resume-commit-file` and `--resume-commit-sha256` and removes it. The
+token never appears on a new launch's command line. Before retirement or activation the CLI settles
+that file. A file it did not record, or a recorded path that now holds another file, holds the
+attempt and is never deleted. `cotal supervise --resume-commit-token` stays accepted for older
+callers; while such a process runs, its token is visible in its command line. Re-entry from either committed state skips the prior
+idempotent activation/commit phases, retries finalization with the durable token, and finishes the
+workspace transition. Failure before finalization preserves the committed state and cleanup
+suppression; it is not rewritten through a degraded transition. Re-entry between any two earlier
+boundaries reuses the same attempt and may retry the idempotent phases without deleting retained state. A missing or
+changed per-agent dependency is a named fail-closed result; the journal becomes degraded and remains
+available for forward repair. A retry from `resume-intent`,
+`resume-active`, or `resume-degraded` reuses the same attempt and inventory after the prior listener is
+proven stopped. A retained agent the lost manager already launched can still be running, for example
+in a tmux window, while the journal reads `resume-intent`. On a static mesh the replacement manager
+closes that seat through the reference the lost manager recorded on the agent's slot, waits for the
+principal to leave presence, and launches it again. A live principal with no such record, or one that
+stays live after the seat is closed, is refused. Every normal restore listener has an unguessable
+attempt-bound NATS server name. The CLI fsyncs its exact name/nonce, canonical endpoint, process owner, and generation-bound target identity
+immediately after spawn. Re-entry accepts a surviving listener only when its INFO server name, live PID
+record, endpoint, and target identity all match that proof; degraded restore repair then moves through
+the guarded workspace transition only after manager commit. If an uncommitted bound owner is provably
+dead, recovery retires that exact proof under the maintenance lock and binds a fresh listener for the
+same attempt, endpoint, and target with a new nonce and server name. A live foreign/mismatched listener
+or ambiguous owner is preserved and refused, never adopted by reachability alone. Before the
+daemons start, re-entry recreates the memory-only buckets on an adopted restore or resume listener,
+because the interrupted `up` may have stopped before it made them. The mesh record it then writes
+keeps the recorded attach host and session ceiling and the store cap the adopted broker started with.
+A restore journals its `--max-file-store` for this. A reconstructed
+commit/degraded attempt without either the exact bound proof or a durable dead-listener replacement
+record fails closed even when the recorded port is free. A later ordinary startup may pass an `active`
+restore only when its details prove manager commit and its exact recorded listener is dead.
+
+
+### Offline creation [#offline-creation]
+
+See the [current command contract](cli-backups.mdx#backups) for this behavior.
+
+### Restore maintenance [#restore-maintenance]
+
+See the [current command contract](cli-backups.mdx#backups) for this behavior.
+
+### Commit-token handoff [#commit-token-handoff]
+
+See the [current command contract](cli-backups.mdx#backups) for this behavior.
+
+### Resume re-entry [#resume-re-entry]
+
+See the [current command contract](cli-backups.mdx#backups) for this behavior.
+
+### Listener identity [#listener-identity]
+
+See the [current command contract](cli-backups.mdx#backups) for this behavior.

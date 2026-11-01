@@ -1,5 +1,139 @@
 # @cotal-ai/core
 
+## 0.133.13
+
+No changes in this release.
+
+## 0.133.12
+
+### Patch Changes
+
+- 13499c0: Rewrite the Messaging concepts as direct MDX and move detailed endpoint and daemon contracts into focused references. Preserve complete Markdown in offline documentation and update source links and documentation checks for the renamed pages.
+
+## 0.133.11
+
+No changes in this release.
+
+## 0.133.10
+
+No changes in this release.
+
+## 0.133.9
+
+### Patch Changes
+
+- 2c9a28d: `cotal up` on a running mesh re-creates the memory-backed presence bucket when a broker restart has lost it, and says so, instead of refusing with `stream not found`. A missing file-backed bucket still refuses.
+
+## 0.133.8
+
+No changes in this release.
+
+## 0.133.7
+
+### Patch Changes
+
+- dd729aa: Pin ajv's `validateSchema` and `meta` in the contract schema profile, so a malformed keyword value such as `{"type": 5}` keeps refusing as `contract-invalid` even if ajv's defaults change.
+- 55a7597: Rename the private envelope-conflict check in the lifecycle saga and the admission mediator so it no longer shadows core's exported `isCasLoss`. No behaviour change.
+
+## 0.133.6
+
+No changes in this release.
+
+## 0.133.5
+
+### Patch Changes
+
+- 9dd94c6: An endpoint reply refused after its handler returned now states `outcome: "executed"` (SPEC 13.3): an output that fails its schema, and the replacement for a successful reply that does not serialize or that the broker refuses to publish. These replies used to omit the outcome, so callers read a command that had run as `unknown`.
+
+## 0.133.4
+
+### Patch Changes
+
+- 4b483de: Every receive path in the endpoint checks the SPEC §5 sender rule through one predicate: the payload is an object whose `from.id` is the subject's sender, and the subject's owner is a real principal. The paths used to spell it inline in three ways. Behavior is unchanged.
+
+## 0.133.3
+
+No changes in this release.
+
+## 0.133.2
+
+### Patch Changes
+
+- 3f005b8: `clearChannel` no longer reports success when its channel-registry step is refused or fails. Only a missing registry bucket is still a no-op. Any other failure throws `ChannelRegistryRemovalFailed`, which carries the purge count, because the chat purge has already happened. Before, a credential that could purge history but not touch the registry (for example `purger`) resolved with `removed: false` while the channel stayed listed. The web dashboard and console now show that error instead of a successful delete. `cotal channel remove --purge` still reports the partial outcome with the purge count.
+
+## 0.133.1
+
+### Patch Changes
+
+- ee1b7d4: `newAmendmentId` no longer slices its id to 43 characters. 32 random bytes always encode to exactly 43 base64url characters, so the slice never removed anything, and it read as a truncation the id depended on. The doc comment and SPEC now say the length outright. Ids are unchanged.
+- a8f140c: `spaceBackupInventory` now checks that its backed-up and excluded lists classify exactly `spaceDeletionStreams`, the set `deleteSpace` removes and the teardown grant names, and throws when they differ. The backup inventory and the deletion set were two hand-kept lists, and nothing compared them. They agree today, so no inventory changes.
+
+## 0.133.0
+
+No changes in this release.
+
+## 0.132.7
+
+### Patch Changes
+
+- ad4a37e: `CotalEndpoint.tap` now checks messaging frames the way history and live delivery already do. A chat, DM or anycast frame whose payload sender is not the sender in its subject is dropped. A frame that passes carries the channel, recipient or role named by its subject, not the one in its payload.
+  
+  Before this, the console's live feed (`cotal console`, `cotal watch`) and `cotal history --follow` could show a frame under a sender, channel, recipient or role it was never published as, and the dashboard's live feed was handed the payload's recipient and role. Frames outside the messaging planes reach the tap handler unchanged.
+
+## 0.132.6
+
+No changes in this release.
+
+## 0.132.5
+
+No changes in this release.
+
+## 0.132.4
+
+No changes in this release.
+
+## 0.132.3
+
+### Patch Changes
+
+- 35eb67a: Use one persona catalog reader for core and the CLI. Preserve strict CLI directory errors and share its encoding, non-regular-file and symbolic-link metadata. Core's existing forgiving listing remains empty for unreadable catalogs, including directories that cannot be searched; manager replies retain their ownership filtering.
+
+## 0.132.2
+
+### Patch Changes
+
+- ebabb1e: Share remote-manager serve-principal serialization through the existing owner/actor token validator. Auth checks derive principals with the new remoteManagerServePrincipal helper; registration and retirement APIs preserve their supplied serve actor and serialize it with principalKey.
+
+## 0.132.1
+
+No changes in this release.
+
+## 0.132.0
+
+No changes in this release.
+
+## 0.131.6
+
+No changes in this release.
+
+## 0.131.5
+
+### Patch Changes
+
+- e78de30: Use native memory-backed state for temporary KV scan consumers while preserving backing record storage, fresh reads and completeness checks.
+
+## 0.131.4
+
+No changes in this release.
+
+## 0.131.3
+
+No changes in this release.
+
+## 0.131.2
+
+No changes in this release.
+
 ## 0.131.1
 
 No changes in this release.

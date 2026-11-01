@@ -35,6 +35,10 @@ const PACKAGES: ReadonlyArray<readonly [string, number]> = [
 ];
 const EXPECTED_BUNDLES = 19;
 
+/** A step that copies one of connector-core's prebuilt docs data files beside the bundles. It emits
+ *  no JavaScript, so it is neither a bundle nor a way for another bundler to slip in. */
+const DOCS_DATA_COPY = /^node -e "require\('node:fs'\)\.copyFileSync\('\.\.\/connector-core\/src\/docs-(?:index|bundle)\.bin','[^']+\.bin'\)"$/;
+
 /** Every esbuild call in a package's `bundle` script: its `--outfile`, plus what is wrong with it. */
 function bundleCalls(pkgDir: string): { outs: string[]; problems: string[] } {
   const pkg = JSON.parse(readFileSync(join(repoRoot, pkgDir, "package.json"), "utf8")) as { scripts?: Record<string, string> };
@@ -43,6 +47,7 @@ function bundleCalls(pkgDir: string): { outs: string[]; problems: string[] } {
   const outs: string[] = [];
   const problems: string[] = [];
   for (const call of script.split(" && ")) {
+    if (DOCS_DATA_COPY.test(call.trim())) continue;
     if (!call.trimStart().startsWith("esbuild")) problems.push(`${pkgDir}: bundle runs something other than esbuild: ${call}`);
     if (!call.includes(" --minify-whitespace ")) problems.push(`${pkgDir}: esbuild call without --minify-whitespace: ${call}`);
     const out = /--outfile=(\S+)/.exec(call);

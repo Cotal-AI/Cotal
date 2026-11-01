@@ -1,5 +1,195 @@
 # @cotal-ai/workspace
 
+## 0.133.13
+
+### Patch Changes
+
+- c21c940: `MeshView` now reports disconnected while the broker is down. It used to follow only the endpoint's `connection` event, which stays true while the NATS client reconnects on its own, so `cotal console` showed a green dot and `cotal watch` read "live" through the outage. It now also follows the endpoint's `transport` edge, and `cotal watch` reads "Reconnecting" during an outage. Feed entries also carry the wire's `replyTo`, `mentions` and `contextId` when the sender set them, so `cotal watch --json` rows include those fields. A unicast burst coalesces only when those fields match.
+- 6fcac9f: Move the managed launch request from `@cotal-ai/cli` into `@cotal-ai/workspace`, exported as `@cotal-ai/workspace/launch`. `requestManagedLaunch` sends a `ManagedLaunchRequest` as the manager's `start` command, and `readManagedLaunch` reads the joined agent from its reply as a `ManagedLaunchResult`. `cotal spawn --detach` sends the same request and prints the same output as before. `@cotal-ai/cli` never exported these from its package entry, so no public export is removed.
+- ddd3253: Move the manager control calls from `@cotal-ai/cli` into `@cotal-ai/workspace`, exported as `@cotal-ai/workspace/control`: the requests to a space's manager and their typed replies (`askManager`, `scatterManager` and the registry reads beside them), the seat lookup that pins a targeted verb to the manager hosting the seat (`locateSeat`), and the console's control helpers (`control`, `controlPs`, `deleteChannel` and the managed-row poller). A caller passes a `ControlClient` that supplies its own version wording and roster read, so the library never imports CLI code. `staleStoreHint` and `nativeEndpointRefusal` move to the `@cotal-ai/workspace` root with it. Every command that calls the manager behaves as before.
+- 331f050: Move `MeshView`, the live model of a space, from `@cotal-ai/cli` into `@cotal-ai/workspace`, exported as `@cotal-ai/workspace/view`. The same entry adds `openObserver`, which builds the read-only observer endpoint that `cotal console` and `cotal watch` each used to construct inline. Console and watch behave as before. `@cotal-ai/cli` never exported `MeshView` from its package entry, so no public export is removed.
+- @cotal-ai/core@0.133.13
+
+## 0.133.12
+
+### Patch Changes
+
+- Updated dependencies [13499c0]
+  - @cotal-ai/core@0.133.12
+
+## 0.133.11
+
+### Patch Changes
+
+- @cotal-ai/core@0.133.11
+
+## 0.133.10
+
+### Patch Changes
+
+- @cotal-ai/core@0.133.10
+
+## 0.133.9
+
+### Patch Changes
+
+- Updated dependencies [2c9a28d]
+  - @cotal-ai/core@0.133.9
+
+## 0.133.8
+
+### Patch Changes
+
+- @cotal-ai/core@0.133.8
+
+## 0.133.7
+
+### Patch Changes
+
+- Updated dependencies [dd729aa]
+- Updated dependencies [55a7597]
+  - @cotal-ai/core@0.133.7
+
+## 0.133.6
+
+### Patch Changes
+
+- @cotal-ai/core@0.133.6
+
+## 0.133.5
+
+### Patch Changes
+
+- Updated dependencies [9dd94c6]
+  - @cotal-ai/core@0.133.5
+
+## 0.133.4
+
+### Patch Changes
+
+- Updated dependencies [4b483de]
+  - @cotal-ai/core@0.133.4
+
+## 0.133.3
+
+### Patch Changes
+
+- 22bf7bf: A checked user-auth bundle's type now carries the pinned exchange URL that `checkUserBundle` requires, so callers read `userAuth.endpoints.url` without non-null assertions.
+- @cotal-ai/core@0.133.3
+
+## 0.133.2
+
+### Patch Changes
+
+- 6ba609a: Removing or recording a mesh now fails when a pre-hex registry record of that space cannot be deleted, instead of returning while the record keeps listing the mesh.
+- Updated dependencies [3f005b8]
+  - @cotal-ai/core@0.133.2
+
+## 0.133.1
+
+### Patch Changes
+
+- b786ccd: The comments in `space-segmentation.ts` now name the code they cite. Every one of them cited a line number that had drifted onto unrelated code. The absent-means-mint writer is named as `healMembershipDataCreds` in the CLI's `up` command. The `provisionMembershipCreds` note now says it hardens the per-space directory, which it has done since the kinds moved to per-space resolvers. No behavior changes.
+- Updated dependencies [ee1b7d4]
+- Updated dependencies [a8f140c]
+  - @cotal-ai/core@0.133.1
+
+## 0.133.0
+
+### Patch Changes
+
+- @cotal-ai/core@0.133.0
+
+## 0.132.7
+
+### Patch Changes
+
+- Updated dependencies [ad4a37e]
+  - @cotal-ai/core@0.132.7
+
+## 0.132.6
+
+### Patch Changes
+
+- @cotal-ai/core@0.132.6
+
+## 0.132.5
+
+### Patch Changes
+
+- @cotal-ai/core@0.132.5
+
+## 0.132.4
+
+### Patch Changes
+
+- c0e9b6f: Let `cotal ext seed --reset` and `--repair` finish when the extensions manifest records a package whose directory is gone, such as one npm pruned as extraneous. `ext add`, `ext remove` and each seed now warn with the package, its path, the command that reinstalls it and `cotal ext remove <package>`, and keep its manifest entry. For a third-party package that command is `cotal ext add <original-spec>` with the placeholder left in, so the warning does not print a recorded spec that may be a URL carrying a credential. They no longer fail on it. A package directory without a readable `package.json`, a dangling package link and a corrupt `package.json` still fail. A seed that failed this way in an earlier release is finished by `cotal ext seed --repair`, after which `cotal ext remove` drops the entry.
+- @cotal-ai/core@0.132.4
+
+## 0.132.3
+
+### Patch Changes
+
+- Updated dependencies [35eb67a]
+  - @cotal-ai/core@0.132.3
+
+## 0.132.2
+
+### Patch Changes
+
+- 6e0f8d1: Share the IdP URL policy between manifest preflight and auth login while preserving their diagnostics and normalization.
+- Updated dependencies [ebabb1e]
+  - @cotal-ai/core@0.132.2
+
+## 0.132.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.132.1
+
+## 0.132.0
+
+### Minor Changes
+
+- 5b197c0: Remove the deprecated `removeIdentityPin` export. This is a breaking API change: consumers must use `removePidPair(pidfilePath, recorded)` after proving the recorded process is gone, passing the original trimmed record rather than a fresh read. The supported helper locks the record and preserves a different successor record. See `docs/UPGRADING.md` for migration guidance; no on-disk state migration is needed.
+
+### Patch Changes
+
+- 7613605: Share comma-list parsing across spawn, mint and persona commands. Preserve absent flags, explicit empty overrides and each command's validation rules.
+- 2f0e7c8: Share dashboard bound-address formatting between the web service and CLI status, keeping IPv6 brackets, readiness URLs and the branded default unchanged.
+- @cotal-ai/core@0.132.0
+
+## 0.131.6
+
+### Patch Changes
+
+- @cotal-ai/core@0.131.6
+
+## 0.131.5
+
+### Patch Changes
+
+- Updated dependencies [e78de30]
+  - @cotal-ai/core@0.131.5
+
+## 0.131.4
+
+### Patch Changes
+
+- @cotal-ai/core@0.131.4
+
+## 0.131.3
+
+### Patch Changes
+
+- @cotal-ai/core@0.131.3
+
+## 0.131.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.131.2
+
 ## 0.131.1
 
 ### Patch Changes

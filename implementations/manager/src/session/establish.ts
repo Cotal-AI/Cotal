@@ -5,9 +5,9 @@
  * The wired path is the offer mint + the STATIC redeem enforcement (this module) + the PTY bridge
  * + the CLI/console clients + restart termination. The auth-service USER-MODE redemption handler
  * (callout-minted per-session credentials) and the barrier session reconciler (the auth session
- * ledger's `reconcileSessionForTakeover`) are the #29 auth-trigger slice, outside that path. This
+ * ledger's `reconcileSessionForTakeover`) are outside that path and not wired in this build. This
  * module exposes both halves through ONE {@link RedemptionSeam} interface: {@link
- * staticRedemptionSeam} (wired) and {@link userModeRedemptionSeam} (a loud refusal until #29 lands
+ * staticRedemptionSeam} (wired) and {@link userModeRedemptionSeam} (a loud refusal until user mode lands
  * — a user-mode attach must fail, never silently degrade to the static path).
  *
  * TARGET BINDING: the §13.6 grant is a CLOSED schema (holder + serving only), so the attached
@@ -200,7 +200,7 @@ export interface StaticRedemptionDeps {
  *    nor a successor epoch; and once the serving half is revoked and its connection closed there is
  *    no counterparty on those two subjects. What survives is a broker-valid connection, not reach
  *    into another session. Closing it properly means minting the caller half inside redemption,
- *    which needs the user-mode (#29) callout exchange. Until that lands, do not describe any part of
+ *    which needs the user-mode callout exchange. Until that lands, do not describe any part of
  *    this as pair teardown.
  *  - `revokeCredential` is therefore ONE-SIDED by construction: it revokes an id this seam minted
  *    and is an explicit no-op for the caller id, rather than silently appearing to revoke both.
@@ -283,14 +283,14 @@ export function staticRedemptionSeam(deps: StaticRedemptionDeps): RedemptionSeam
   };
 }
 
-/** The USER-MODE redeem seam: UNWIRED (the #29 auth-trigger slice owns the callout-minted
- *  per-session credential path). It REFUSES LOUD, naming the path — a user-mode attach fails rather
+/** The USER-MODE redeem seam: UNWIRED (the callout-minted per-session credential path is not
+ *  built). It REFUSES LOUD, naming the path — a user-mode attach fails rather
  *  than degrading to the static seam (no fallbacks). */
 export function userModeRedemptionSeam(): RedemptionSeam {
   const refuse = (): Promise<never> => Promise.reject(new EpEnvelopeError(
     "unimplemented",
-    "user-mode session redemption (callout-minted per-session credentials) is not wired in this build; " +
-      "it is the #29 auth-trigger slice. A user-mode attach fails loud rather than degrading (SPEC 13.6).",
+    "user-mode session redemption (callout-minted per-session credentials) is not wired in this build. " +
+      "A user-mode attach fails loud rather than degrading (SPEC 13.6).",
   ));
   return { redeem: refuse, serving: refuse };
 }

@@ -1,6 +1,6 @@
 import {
   CotalEndpoint, dialerFor, dmDurable, dmStream, isConsumerNotFound,
-  parsePrincipalKey, standaloneConnectOpts, unicastSubject, type FlagSpec, type ParsedArgs, type Presence,
+  parsePrincipalKey, parseSubject, standaloneConnectOpts, unicastSubject, type FlagSpec, type ParsedArgs, type Presence,
 } from "@cotal-ai/core";
 import { CommandFailure, connectOrThrow, isConnectRefusal, jsonFlag, plainFlag, presentationOf, writeResult, type Report } from "@cotal-ai/workspace";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
@@ -94,8 +94,10 @@ export async function pendingView(args: ParsedArgs): Promise<void> {
             try {
               const row = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(message.data)) as Record<string, unknown>;
               const sender = row.from as { id?: unknown } | null;
-              if (typeof row.id !== "string" || typeof sender?.id !== "string" || typeof row.ts !== "number" || row.id.length > 256 || sender.id.length > 256 || !Number.isFinite(row.ts)) throw new Error();
-              result.candidates.push({ id: row.id, from: sender.id, ts: row.ts });
+              // The broker binds the stored subject to the publishing credential; the card is the sender's own claim.
+              const from = parseSubject(message.subject)?.sender;
+              if (typeof row.id !== "string" || typeof sender?.id !== "string" || typeof row.ts !== "number" || from === undefined || row.id.length > 256 || sender.id.length > 256 || from.length > 256 || !Number.isFinite(row.ts)) throw new Error();
+              result.candidates.push({ id: row.id, from, ts: row.ts });
             } catch {
               if (!warnings.some((warning) => warning.code === "CANDIDATE_UNREADABLE")) warnings.push({ code: "CANDIDATE_UNREADABLE", message: "At least one candidate message could not be decoded safely; its contents were withheld.", target: { space, durable } });
             }

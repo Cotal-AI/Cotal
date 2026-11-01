@@ -174,7 +174,7 @@ fail-loud on collision.
   ([`lib/delivery-proc.ts`](../implementations/cli/src/lib/delivery-proc.ts)) re-execs `cotal
   deliver` detached with a pre-minted scoped `delivery.creds` (auth mode only, the durable
   backstop; open mode has none). Writes `.cotal/delivery.<key>.pid` and `.cotal/delivery.<key>.log`,
-  where `<key>` is the space key ([Config](config.md#project-files)), so a root can serve a space per
+  where `<key>` is the space key ([Config](config.mdx#project-files)), so a root can serve a space per
   daemon.
 - **Manager:** `startManagerDetached` / `ensureManager`
   ([`lib/manager-proc.ts`](../implementations/cli/src/lib/manager-proc.ts)) re-execs `cotal
@@ -183,7 +183,7 @@ fail-loud on collision.
   `managerUp(space)` checks that space's pid record. The **manager itself**
   writes `.cotal/manager.<key>.pid`, so a supervisor started by a container entrypoint, by cron, or
   by hand is recorded the same way a detached `cotal up` is. Readers verify the recorded pid is alive and is a
-  supervisor before trusting it ([Config](config.md#project-files)).
+  supervisor before trusting it ([Config](config.mdx#project-files)).
 
 The **web dashboard** is *not* part of `cotal up`. It ships inside `cotal-ai` as the `@cotal-ai/web`
 extension and is seeded automatically by the boot reconcile, the same durable, version-locked path as
@@ -192,7 +192,7 @@ separate install. Configure its service definition and explicit protected creden
 `cotal service start web`. The native child owns its PID claim and private full-launch bootstrap
 record. The preset is explicitly read-only and retains the registered TLS requirement. Its
 initialization phase does not prove a new authenticated health response; user-auth caller handoff
-and OS installation remain unsupported. See [dashboard setup](watch-a-mesh.md#web-dashboard).
+and OS installation remain unsupported. See [dashboard setup](watch-a-mesh.mdx#web-dashboard).
 
 All recorded local processes self-register `local-process` descriptors. Bare `cotal down` resolves
 the full set and stops it in dependency order. No command selects one descriptor: a named
@@ -260,7 +260,8 @@ source checkout and `<cotal-ai>/seeded-connectors/<name>` in a published install
 that payload into the durable store `seed/store/<version>/<name>`. The version is validated as one safe
 path segment, and the destination is checked to stay inside the store before anything is written. `ext add --install-links` reifies
 the `file:` dep from THAT stable path (a volatile source would fail to re-reify); `ext add` then
-junction-links each `@cotal-ai/*` peer to the binary's own copy. Before the first lazy import in each
+junction-links each `@cotal-ai/*` peer to the binary's own copy and relinks every other installed
+package's peers. It skips, with a warning, a recorded package whose directory is gone. Before the first lazy import in each
 process, materialization rechecks those links by realpath and rebinds stale links under the extension
 lock. This lets the registry-facing imports of a global install, npx, and source worktrees share the
 machine prefix while each process still gets its host's single `@cotal-ai/core` registry instance;
@@ -331,4 +332,4 @@ a SIGKILL mid-run is detected on the next boot (fail loud → `ext seed --repair
 interrupted connector before it clears the evidence). Seed children are authenticated (they carry the
 live lock's nonce + parent PID, not a bare env flag) and record a liveness marker so a post-crash repair
 refuses to race an orphaned installer. `ext seed --reset` quarantines corrupt manifest/authority state
-aside and rebuilds. See [cli.md `ext`](cli.md#ext) for the operator-facing flags.
+aside and rebuilds. See [cli.mdx `ext`](cli-installation.mdx#ext) for the operator-facing flags.

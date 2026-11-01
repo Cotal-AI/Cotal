@@ -1,5 +1,123 @@
 # @cotal-ai/connector-claude-code
 
+## 0.133.13
+
+No changes in this release.
+
+## 0.133.12
+
+### Patch Changes
+
+- 13499c0: Preserve documentation bookmarks and offline HTTP reference navigation after the MDX migration. Keep executable documentation checks aligned with the split references, validate generated HTTP content on root builds, preserve complete Card destinations, and improve light-mode navigation contrast.
+
+## 0.133.11
+
+### Patch Changes
+
+- 9182cfc: Restore the tool specs' and gateway's zod namespace import. The by-name imports released in 0.133.9 made the bundled claude, codex, hermes, jcode and opencode connectors throw `Class2 is not a constructor` when imported, so a fresh `cotal setup` failed its first connector seed.
+
+## 0.133.10
+
+No changes in this release.
+
+## 0.133.9
+
+No changes in this release.
+
+## 0.133.8
+
+No changes in this release.
+
+## 0.133.7
+
+No changes in this release.
+
+## 0.133.6
+
+No changes in this release.
+
+## 0.133.5
+
+No changes in this release.
+
+## 0.133.4
+
+No changes in this release.
+
+## 0.133.3
+
+No changes in this release.
+
+## 0.133.2
+
+No changes in this release.
+
+## 0.133.1
+
+No changes in this release.
+
+## 0.133.0
+
+### Minor Changes
+
+- 1e554e4: Precompute documentation search at build time and load the corpus and compact index only when needed. Search results and scoring are unchanged. Documentation data now lives in two digest-checked files beside each module or bundle; normal packages, plugins and installers include them automatically. Custom integrations that copy or bundle an executable alone must also carry its matching `docs-bundle.bin` and `docs-index.bin` files.
+
+## 0.132.7
+
+No changes in this release.
+
+## 0.132.6
+
+### Patch Changes
+
+- 85fdb96: Keep weighted term frequencies instead of repeated token strings in the lazy documentation search index. Search results and BM25 scores are unchanged. This reduces retained memory after documentation searches in the tested stock connector workload, with extra first-search work to build the frequency maps.
+
+## 0.132.5
+
+No changes in this release.
+
+## 0.132.4
+
+No changes in this release.
+
+## 0.132.3
+
+No changes in this release.
+
+## 0.132.2
+
+### Patch Changes
+
+- d776fcf: Share the OpenCode adapters' surfaced batch so a native prompt cannot replace the messages carried by an active turn. Queued messages remain pending for a later eligible turn. Update the Claude Code connector's comment naming that acknowledgment boundary.
+
+## 0.132.1
+
+No changes in this release.
+
+## 0.132.0
+
+No changes in this release.
+
+## 0.131.6
+
+No changes in this release.
+
+## 0.131.5
+
+No changes in this release.
+
+## 0.131.4
+
+No changes in this release.
+
+## 0.131.3
+
+No changes in this release.
+
+## 0.131.2
+
+No changes in this release.
+
 ## 0.131.1
 
 No changes in this release.

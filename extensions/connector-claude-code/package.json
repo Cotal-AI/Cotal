@@ -1,7 +1,7 @@
 {
   "name": "@cotal-ai/connector-claude-code",
   "description": "Cotal connector for Claude Code: an installed plugin that joins a session to the mesh.",
-  "version": "0.131.1",
+  "version": "0.133.13",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -22,12 +22,12 @@
     }
   },
   "scripts": {
-    "test": "tsx smoke/launch-env.smoke.ts && tsx smoke/app-approval.smoke.ts && tsx smoke/app-approval-resume.smoke.ts && tsx smoke/native-wake.smoke.ts && tsx smoke/native-binding-live.smoke.ts && tsx smoke/wake-preview-frame.smoke.ts && tsx smoke/native-inline-live.smoke.ts",
+    "test": "tsx smoke/launch-env.smoke.ts && tsx smoke/app-approval.smoke.ts && tsx smoke/app-approval-resume.smoke.ts && tsx smoke/native-wake.smoke.ts && tsx smoke/native-binding-live.smoke.ts && tsx smoke/wake-preview-frame.smoke.ts && tsx smoke/native-inline-live.smoke.ts && tsx smoke/cold-stdio-undici.smoke.ts",
     "test:desktop-setup": "tsx smoke/desktop-only-setup-live.smoke.ts",
     "test:upgrade": "tsx smoke/plugin-upgrade-live.smoke.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.smoke.json",
     "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json --emitDeclarationOnly && node -e \"require('node:fs').copyFileSync('dist/mcp.d.ts','dist/mcp.d.cts')\" && pnpm run bundle",
-    "bundle": "esbuild src/index.ts --bundle --minify-whitespace --platform=node --format=esm --target=node20 --outfile=dist/index.js --external:@cotal-ai/core && esbuild src/mcp.ts --bundle --minify-whitespace --platform=node --format=cjs --target=node20 --outfile=dist/mcp.cjs --footer:js=\"module.exports = { serveClaudeSession: module.exports.serveClaudeSession, runClaudeSeat: module.exports.runClaudeSeat };\" && esbuild src/seat.ts --bundle --minify-whitespace --platform=node --format=cjs --target=node20 --outfile=dist/seat.cjs && esbuild src/hook.ts --bundle --minify-whitespace --platform=node --format=cjs --target=node20 --outfile=dist/hook.cjs && esbuild src/monitor.ts --bundle --minify-whitespace --platform=node --format=cjs --target=node20 --outfile=dist/monitor.cjs",
+    "bundle": "esbuild src/index.ts --bundle --minify-whitespace --platform=node --format=esm --target=node20 --outfile=dist/index.js --external:@cotal-ai/core && esbuild src/mcp.ts --bundle --minify-whitespace --platform=node --format=cjs --target=node20 --outfile=dist/mcp.cjs --define:import.meta.dirname=__dirname --footer:js=\"module.exports = { serveClaudeSession: module.exports.serveClaudeSession, runClaudeSeat: module.exports.runClaudeSeat };\" && esbuild src/seat.ts --bundle --minify-whitespace --platform=node --format=cjs --target=node20 --outfile=dist/seat.cjs && esbuild src/hook.ts --bundle --minify-whitespace --platform=node --format=cjs --target=node20 --outfile=dist/hook.cjs && esbuild src/monitor.ts --bundle --minify-whitespace --platform=node --format=cjs --target=node20 --outfile=dist/monitor.cjs && node -e \"require('node:fs').copyFileSync('../connector-core/src/docs-index.bin','dist/docs-index.bin')\" && node -e \"require('node:fs').copyFileSync('../connector-core/src/docs-bundle.bin','dist/docs-bundle.bin')\"",
     "prepublishOnly": "pnpm run build"
   },
   "peerDependencies": {

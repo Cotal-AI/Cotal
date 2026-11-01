@@ -3,14 +3,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, useApp, useFocusManager, useInput, useStdout } from "ink";
 import type { CotalEndpoint, Presence } from "@cotal-ai/core";
 import { useMesh } from "./mesh.js";
-import { control, controlPs, createManagedPoller, deleteChannel, type ControlCtx, type ControlOp } from "./control.js";
 import { attachSeat } from "../commands/agents.js";
 import { detachKey } from "../lib/attach-client.js";
+import { cliControl } from "../lib/control.js";
 import { Tabs } from "./ui/Tabs.js";
 import { Tiles } from "./ui/Tiles.js";
-import { Roster, harnessTag } from "./ui/Roster.js";
+import { Roster, harnessTag, useRosterView } from "./ui/Roster.js";
 import { sidePaneSize } from "./ui/theme.js";
-import { Feed } from "./ui/Feed.js";
+import { Feed, useFeedView } from "./ui/Feed.js";
 import { NeedsYou } from "./ui/NeedsYou.js";
 import { Dm } from "./ui/Dm.js";
 import { Topo, type TopoVariant } from "./ui/topo/Topo.js";
@@ -29,6 +29,7 @@ import { spawnPersona } from "../lib/spawn-defaults.js";
 import { launchAgent } from "./launch.js";
 import { NewAgent } from "./ui/NewAgent.js";
 import type { FeedEntry, FocusId } from "./mesh.js";
+import { control, controlPs, createManagedPoller, deleteChannel, type ControlCtx, type ControlOp } from "@cotal-ai/workspace/control";
 
 /** An in-progress compose: post to a channel, DM a peer, or reply to a feed message. */
 type ComposeTarget =
@@ -89,6 +90,9 @@ export function App({
   const [compose, setCompose] = useState<ComposeTarget | null>(null);
   const [notice, setNotice] = useState<string | undefined>();
   const [attachTarget, setAttachTarget] = useState<{ name: string } | null>(null);
+  // Held here, not in the Feed or Roster, which unmount while a detail or another full-screen view is open.
+  const feedView = useFeedView();
+  const rosterView = useRosterView();
 
   const overlay = helpOpen || detail !== null;
   const blocked = overlay || search.active || palette.active || newAgent || confirm !== null || compose !== null;
@@ -130,7 +134,7 @@ export function App({
   // One control call against the manager of THIS space (console/control.ts): resolve, mint a
   // one-shot instrument, call, drop. The observer endpoint is never involved.
   const ctl = useCallback(
-    (op: ControlOp, args?: Record<string, unknown>) => control({ ...controlCtx, space: ep.space }, op, args),
+    (op: ControlOp, args?: Record<string, unknown>) => control(cliControl, { ...controlCtx, space: ep.space }, op, args),
     [ep.space, controlCtx],
   );
 
@@ -150,7 +154,7 @@ export function App({
     // The poller owns the per-instance rows, the single-flight guard and the announce-once state;
     // a new space or credential builds a new one, so nothing is carried over.
     const poller = createManagedPoller(
-      () => controlPs({ ...controlCtx, space: ep.space }),
+      () => controlPs(cliControl, { ...controlCtx, space: ep.space }),
       {
         rows: (flat) =>
           setManaged((prev) => {
@@ -438,7 +442,7 @@ export function App({
   };
 
   // Run a typed palette line against the live endpoint.
-  const readPaletteAgents = useCallback(() => controlPs({ ...controlCtx, space: ep.space }), [controlCtx, ep.space]);
+  const readPaletteAgents = useCallback(() => controlPs(cliControl, { ...controlCtx, space: ep.space }), [controlCtx, ep.space]);
   const runPaletteLine = (line: string) => {
     setPalette({ active: false, query: "" });
     const ctx: CommandCtx = {
@@ -453,7 +457,7 @@ export function App({
       exit,
       notify: setNotice,
       control: ctl,
-      ps: () => controlPs({ ...controlCtx, space: ep.space }),
+      ps: () => controlPs(cliControl, { ...controlCtx, space: ep.space }),
       confirmPurge: () => setConfirm({ kind: "purge", space: ep.space }),
       confirmDelchan: (channel: string) => setConfirm({ kind: "delchan", channel }),
       startAttach: handleAttach,
@@ -584,6 +588,7 @@ export function App({
         <Box flexDirection={narrow ? "column" : "row"} height={bodyH}>
           <Box flexDirection={narrow ? "column" : "row"} width={bodyW} height={bodyH}>
             <Roster
+              view={rosterView}
               agents={mesh.agents}
               endpoints={mesh.endpoints}
               query={search.query}
@@ -598,6 +603,7 @@ export function App({
               onCompose={canWrite ? rosterCompose : undefined}
             />
             <Feed
+              view={feedView}
               entries={mesh.feed}
               activeChannel={activeChannel}
               query={search.query}

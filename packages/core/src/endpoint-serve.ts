@@ -470,6 +470,7 @@ function encodeReply(reply: EndpointReply): Uint8Array {
     if (!parsed || parsed.plane !== "request") return; // no sender: MUST NOT be handled (§13.2)
     let env: EndpointRequest | undefined;
     let dispatched = false;
+    let returned = false;
     let reply: EndpointReply;
     try {
       const originalEnvelope: unknown = JSON.parse(dec.decode(msg.data));
@@ -551,6 +552,7 @@ function encodeReply(reply: EndpointReply): Uint8Array {
         return; // cast: the responder MUST NOT reply (§13.5)
       }
       const data = await def.handler(ctx);
+      returned = true;
       // §13.7: the reply validates against the output schema BEFORE it is published, under the
       // same fixed budget as args — an invalid reply is a server bug and fails loud, never
       // reaches the caller as success.
@@ -561,16 +563,20 @@ function encodeReply(reply: EndpointReply): Uint8Array {
       const error = err instanceof EpEnvelopeError
         ? err.toEpError()
         : { code: "internal", message: (err as Error)?.message ?? String(err) };
-      // §13.3: a refusal raised before dispatch MUST say nothing ran, and an omitted outcome reads
-      // as `unknown`. Deciding it here, from where the loop stands, covers every check ahead of the
-      // handler, including one added later and a body that never parsed into an envelope.
+      // §13.3: a refusal raised before dispatch MUST say nothing ran, one raised after the handler
+      // returned MUST say it ran, and an omitted outcome reads as `unknown`. Deciding it here, from
+      // where the loop stands, covers every check on either side of the handler, including one
+      // added later and a body that never parsed into an envelope. A handler's own throw keeps
+      // whatever outcome it stated: the loop cannot tell how far it got.
       // The id echoes the request where one parsed; the reply subject is already nonce-scoped
       // to exactly this request's caller, so attribution never rides the echo.
-      reply = { v: 1, id: env?.id ?? "invalid", ok: false, error: dispatched ? error : { ...error, outcome: "not-executed" } };
+      const stated = !dispatched ? "not-executed" : returned ? "executed" : undefined;
+      reply = { v: 1, id: env?.id ?? "invalid", ok: false, error: stated === undefined ? error : { ...error, outcome: stated } };
     }
     // Replacing a reply that cannot be serialized or published changes nothing about whether the
-    // command ran, so each replacement below keeps the outcome the replaced reply stated.
-    const outcome = reply.error?.outcome;
+    // command ran, so each replacement below keeps the outcome the replaced reply stated, and a
+    // success states `executed`.
+    const outcome = reply.ok ? "executed" : reply.error?.outcome;
     let bytes: Uint8Array;
     try {
       bytes = encodeReply(reply);

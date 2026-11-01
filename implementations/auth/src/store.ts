@@ -43,7 +43,7 @@ import {
 } from "./issuer.js";
 import { STORE_VER, parseStoreDoc, readStoreFile } from "./store-file.js";
 
-export { clearAuthServiceInfo, loadAuthServiceInfo, saveAuthServiceInfo, type AuthServiceInfo } from "./store-file.js";
+export { clearAuthServiceInfo, clearAuthServiceRefusal, loadAuthServiceInfo, loadAuthServiceRefusal, saveAuthServiceInfo, saveAuthServiceRefusal, type AuthServiceInfo, type AuthServiceRefusal } from "./store-file.js";
 
 /** The registered auth-provider name, as it appears in a mesh registry entry's `userAuth.provider`
  *  and in the discovery bundle the public face serves. ONE constant, because those two must agree:

@@ -4,10 +4,11 @@
 import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readProcessRecord, type ProcessRecord, type ProcessRecordState } from "@cotal-ai/workspace";
+import * as workspace from "@cotal-ai/workspace";
 
 // This is compiled, never called. Unused @ts-expect-error directives fail the typecheck if a
 // forbidden field becomes readable again; the valid reads must compile without assertions.
@@ -66,10 +67,12 @@ void shapes;
 
 let pass = 0;
 const check = (label: string, actual: unknown, expected: unknown): void => {
-  assert.deepEqual(actual, expected);
+  assert.deepEqual(actual, expected, label);
   pass++;
   console.log(`  ✓ ${label}`);
 };
+check("the supported pair-removal API remains exported", typeof workspace.removePidPair, "function");
+check("the deprecated unlocked pin-removal API is absent", "removeIdentityPin" in workspace, false);
 const root = mkdtempSync(join(tmpdir(), "cotal-process-record-"));
 const path = join(root, "record.pid");
 const unexpected = (): never => { throw new Error("unexpected process probe or argv read"); };
@@ -91,6 +94,9 @@ try {
     writeFileSync(path, content);
     check("malformed record carries only its path and content", readProcessRecord(path, unexpected, unexpected, unexpected), { state: "unattributable", path, content });
   }
+  const pair = join(root, "owned-pair.pid");
+  workspace.writePidPair(pair, pid);
+  check("the public writer pins our live child", workspace.verifyIdentityPin(pair).kind, "match");
   writeFileSync(path, String(pid));
   check("native alive verdict with unreadable argv has a pid", readProcessRecord(path, unexpected, undefined, unreadable), { state: "alive", path, pid });
   check("native alive verdict with gone argv retains its pid", readProcessRecord(path, unexpected, undefined, () => ({ kind: "gone" })), { state: "alive", path, pid });
@@ -102,10 +108,14 @@ try {
   await exited;
   check("reaped native child is dead with its pid", readProcessRecord(path, unexpected, undefined, unexpected), { state: "dead", path, pid });
   check("reads did not alter the pidfile", readFileSync(path, "utf8"), String(pid));
+  workspace.removePidPair(pair, String(pid + 1));
+  check("a different adjudicated record preserves the pair", existsSync(pair) && existsSync(workspace.identityPinPath(pair)), true);
+  workspace.removePidPair(pair, String(pid));
+  check("the matching exited-child record removes both files", existsSync(pair) || existsSync(workspace.identityPinPath(pair)), false);
 } finally {
   if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
   await exited;
   rmSync(root, { recursive: true, force: true });
 }
-assert.equal(pass, 12, "all expected native/shape checks ran");
+assert.equal(pass, 17, "all expected native/shape checks ran");
 console.log(`PROCESS RECORD OK (${pass} checks)`);

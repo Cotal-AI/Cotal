@@ -13,7 +13,8 @@
 import { EventEmitter } from "node:events";
 import type { CotalEndpoint, MembershipChange, MembershipSnapshot, Presence } from "@cotal-ai/core";
 import type { FeedEntry } from "../src/console/mesh.js";
-import { MeshView, type MembershipView } from "../src/view/mesh-view.js";
+// By dist path, the same module the package name resolves to, so a MeshView mutation is graded against the build its command runs.
+import { MeshView, type MembershipView } from "../../../packages/workspace/dist/view/index.js";
 import { foldTopo, membershipFreshness } from "../src/console/ui/topo/model.js";
 
 let failures = 0;
@@ -213,6 +214,27 @@ async function viewOver(stub: StubEndpoint): Promise<{ view: MeshView; m: () => 
   stub.readAnswer = () => Promise.resolve(snapshot);
   const { view, m } = await viewOver(stub);
   check("a readable feed is carried as the snapshot, no reason", m().unreadable === undefined && m().snapshot?.members.length === 5, m());
+  await view.stop();
+}
+
+console.log("6. A broker restart's presence error clears when the presence view is current again (AGENT-2889)");
+{
+  // The endpoint's real order across a broker restart, measured: the transport reconnects with no
+  // new `connection`, the view goes stale, `stream not found` arrives, and the view is current once
+  // the space is provisioned again.
+  const stub = new StubEndpoint();
+  const { view } = await viewOver(stub);
+  stub.emit("connection", { connected: true });
+  stub.emit("presence-view", { state: "stale" });
+  stub.emit("error", new Error("stream not found"));
+  check("the outage error is shown while the presence view is stale", view.snapshot().status.error === "stream not found", view.snapshot().status);
+  stub.emit("presence-view", { state: "current" });
+  check("the outage error clears once the presence view is current again", view.snapshot().status.error === undefined, view.snapshot().status);
+  // Control: an error raised while the view is current is not an outage's, so recovery never clears it.
+  stub.emit("error", new Error("permission denied"));
+  stub.emit("presence-view", { state: "stale" });
+  stub.emit("presence-view", { state: "current" });
+  check("an error raised while the view was current stays until a new connection", view.snapshot().status.error === "permission denied", view.snapshot().status);
   await view.stop();
 }
 

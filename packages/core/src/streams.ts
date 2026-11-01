@@ -680,14 +680,17 @@ export function ttlBuckets(space: string): ReadonlyArray<readonly [string, numbe
  *  it: a `cotal up` against a running mesh now performs a config write, and a write the operator
  *  cannot see is the kind of silent behaviour this change exists to remove. `undefined` means the
  *  bucket already carried the intended TTL and nothing was written. */
-export type TtlReconciled = { stream: string; fromMs: number; toMs: number };
+export type TtlReconciled = { stream: string; fromMs: number; toMs: number; recreated?: true };
 
 /** #286: reconcile all three TTL'd buckets for a space, over a connection of its own.
  *
  *  Exists because `setupSpaceStreams` is only reachable on the CREATE path (`cotal up` starting a
  *  mesh), while the drifted-bucket case this fixes is by definition a mesh that is ALREADY RUNNING —
  *  an old deployment being upgraded in place. That path starts nothing and so must not run the
- *  create-everything routine; it needs exactly the reconcile and nothing else.
+ *  create-everything routine; it needs exactly the reconcile and nothing else. The one exception is
+ *  a MEMORY-backed bucket (presence): a broker restart drops it while the mesh keeps running, so a
+ *  missing one is re-created from the same `ttlBuckets` row and reported `recreated` (AGENT-2889). A
+ *  missing FILE bucket is lost state and still refuses.
  *
  *  Read-first by construction: each bucket is skipped when its `max_age` already matches, so a
  *  steady-state repeat `cotal up` issues three `STREAM.INFO` reads and ZERO writes. Returns only the
@@ -706,8 +709,17 @@ export async function reconcileSpaceTtls(opts: {
     requireBrokerFloor(nc);
     const jsm = await jetstreamManager(nc);
     const js = jetstream(nc);
+    const kvm = new Kvm(nc);
     const reconciled = await Promise.all(
-      ttlBuckets(opts.space).map(([bucket, ttl]) => reconcileBucketTtl(jsm, js, `KV_${bucket}`, bucket, ttl)),
+      ttlBuckets(opts.space).map(async ([bucket, ttl, storage]): Promise<TtlReconciled | undefined> => {
+        try {
+          return await reconcileBucketTtl(jsm, js, `KV_${bucket}`, bucket, ttl);
+        } catch (e) {
+          if (storage !== StorageType.Memory || !isStreamNotFound(e)) throw e;
+          await kvm.create(bucket, { ttl, storage });
+          return { stream: `KV_${bucket}`, fromMs: 0, toMs: ttl, recreated: true };
+        }
+      }),
     );
     return reconciled.filter((done): done is TtlReconciled => done !== undefined);
   } finally {
@@ -919,13 +931,27 @@ export async function clearSpaceHistory(opts: {
   }
 }
 
+/** {@link clearChannel} purged the channel's history but did not remove its registry entry: the
+ *  registry read or delete was refused or failed, so the channel may still be listed. `purged` is
+ *  the count the purge already removed, and `cause` is the registry step's error. */
+export class ChannelRegistryRemovalFailed extends Error {
+  readonly channel: string;
+  readonly purged: number;
+  constructor(channel: string, purged: number, cause: unknown) {
+    super(`purged ${purged} message(s) from #${channel}, but its registry entry was not removed: ${cause instanceof Error ? cause.message : String(cause)}`, { cause });
+    this.channel = channel;
+    this.purged = purged;
+  }
+}
+
 /** Delete one channel and its content: purge every retained message on the channel (across
  *  all senders, via the `*` sender slot) from the chat stream, then drop the channel's
  *  registry config so it stops surfacing as an empty channel. Needs PURGE rights and the
  *  registry key delete: pass a `channel-purger` cred; a bare connection (open mode) has them by default.
  *  Throws on a wildcard channel (a subtree is not a deletable channel). A missing channel
- *  registry bucket/key is a no-op — the purge alone already emptied the channel. `removed` says
- *  whether this call deleted the channel's registry entry. */
+ *  registry bucket/key is a no-op — the purge alone already emptied the channel. Any other
+ *  failure of the registry step throws {@link ChannelRegistryRemovalFailed}, because the purge has
+ *  already happened. `removed` says whether this call deleted the channel's registry entry. */
 export async function clearChannel(opts: {
   servers: string;
   space: string;
@@ -950,8 +976,10 @@ export async function clearChannel(opts: {
         await registry.delete(opts.channel);
         removed = true;
       }
-    } catch {
-      /* no channel registry bucket or no config for this channel — purge already emptied it */
+    } catch (e) {
+      // Only a missing registry bucket is a no-op; a refused or failed read or delete leaves the
+      // channel listed, so it must not read as a removal that found nothing to remove.
+      if (!isStreamNotFound(e)) throw new ChannelRegistryRemovalFailed(opts.channel, purged, e);
     }
     return { channel: opts.channel, purged, removed };
   } finally {

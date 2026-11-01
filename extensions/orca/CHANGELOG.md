@@ -1,5 +1,113 @@
 # @cotal-ai/orca
 
+## 0.133.13
+
+No changes in this release.
+
+## 0.133.12
+
+No changes in this release.
+
+## 0.133.11
+
+No changes in this release.
+
+## 0.133.10
+
+No changes in this release.
+
+## 0.133.9
+
+No changes in this release.
+
+## 0.133.8
+
+No changes in this release.
+
+## 0.133.7
+
+No changes in this release.
+
+## 0.133.6
+
+No changes in this release.
+
+## 0.133.5
+
+No changes in this release.
+
+## 0.133.4
+
+No changes in this release.
+
+## 0.133.3
+
+No changes in this release.
+
+## 0.133.2
+
+No changes in this release.
+
+## 0.133.1
+
+No changes in this release.
+
+## 0.133.0
+
+No changes in this release.
+
+## 0.132.7
+
+No changes in this release.
+
+## 0.132.6
+
+No changes in this release.
+
+## 0.132.5
+
+No changes in this release.
+
+## 0.132.4
+
+No changes in this release.
+
+## 0.132.3
+
+No changes in this release.
+
+## 0.132.2
+
+No changes in this release.
+
+## 0.132.1
+
+No changes in this release.
+
+## 0.132.0
+
+No changes in this release.
+
+## 0.131.6
+
+No changes in this release.
+
+## 0.131.5
+
+No changes in this release.
+
+## 0.131.4
+
+No changes in this release.
+
+## 0.131.3
+
+No changes in this release.
+
+## 0.131.2
+
+No changes in this release.
+
 ## 0.131.1
 
 No changes in this release.

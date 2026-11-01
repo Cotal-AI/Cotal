@@ -11,7 +11,11 @@ export type JcodeConnectorFailureCode =
   | "readiness_timeout"
   | "sessions_enumeration_failed"
   | "sessions_unwritable"
+  | "cursor_state_unreadable"
   | "provider_auth_refused"
+  | "provider_payment_required"
+  | "provider_forbidden"
+  | "provider_rate_limited"
   | "provider_request_failed";
 
 /** A bounded connector-owned startup refusal. Only its allow-listed code is rendered publicly. */
@@ -46,6 +50,31 @@ export class JcodeSessionsUnwritableFailure extends Error {
     readonly errnoCode: string,
   ) {
     super(`stored sessions directory is not writable at ${sessionsPath} (${errnoCode})`);
+  }
+}
+
+export type CursorStateUnreadableReason =
+  | "not_sqlite"
+  | "locked"
+  | "hot_journal"
+  | "corrupt"
+  | "no_item_table"
+  | "value_type"
+  | "value_size"
+  | "sqlite_error";
+
+/** Cursor's state database exists but gave no consistent read of the keys Jcode uses. The reason is
+ * a connector-owned word and the SQLite result code a number, so no SQLite text reaches the public
+ * line. The path is relative to the operator's home. */
+export class JcodeCursorStateUnreadable extends Error {
+  readonly code = "cursor_state_unreadable" as const;
+
+  constructor(
+    readonly sourceRelative: string,
+    readonly reason: CursorStateUnreadableReason,
+    readonly sqliteCode?: number,
+  ) {
+    super(`Cursor's state database ~/${sourceRelative} could not be read (${reason}${sqliteCode === undefined ? "" : `, SQLite code ${sqliteCode}`})`);
   }
 }
 
@@ -220,6 +249,24 @@ export function classifyReadinessFailure(error: unknown): JcodeConnectorError | 
     /^  status: 401 Unauthorized\r?$/m.test(error.message)
   ) {
     return new JcodeConnectorError("provider_auth_refused", "Jcode provider refused readiness authentication");
+  }
+  if (
+    error.message.startsWith("internal: OpenAI-compatible chat request failed\n") &&
+    /^  status: 402 Payment Required\r?$/m.test(error.message)
+  ) {
+    return new JcodeConnectorError("provider_payment_required", "Jcode provider refused the readiness request for payment");
+  }
+  if (
+    error.message.startsWith("internal: OpenAI-compatible chat request failed\n") &&
+    /^  status: 403 Forbidden\r?$/m.test(error.message)
+  ) {
+    return new JcodeConnectorError("provider_forbidden", "Jcode provider refused the readiness request as forbidden");
+  }
+  if (
+    error.message.startsWith("internal: OpenAI-compatible chat request failed\n") &&
+    /^  status: 429 Too Many Requests\r?$/m.test(error.message)
+  ) {
+    return new JcodeConnectorError("provider_rate_limited", "Jcode provider rate-limited the readiness request");
   }
   return undefined;
 }

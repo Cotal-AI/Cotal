@@ -1,5 +1,259 @@
 # @cotal-ai/auth
 
+## 0.133.13
+
+### Patch Changes
+
+- Updated dependencies [c21c940]
+- Updated dependencies [6fcac9f]
+- Updated dependencies [ddd3253]
+- Updated dependencies [331f050]
+  - @cotal-ai/workspace@0.133.13
+  - @cotal-ai/core@0.133.13
+  - @cotal-ai/lang@0.133.13
+
+## 0.133.12
+
+### Patch Changes
+
+- 13499c0: Support authored MDX documentation in the release bundle. Preserve complete Markdown for offline `cotal_docs` page reads and search. Resolve exported documentation links, including MDX paths and heading references. Expand HTTP references to cover dashboard metadata and deletion, host-only auth, the manager console and feedback intake.
+- 13499c0: Rewrite Security and Agent coordination as focused MDX explanations with complete supporting references. Preserve documentation URLs, Markdown downloads, and offline documentation tools, and update source links and documentation checks for the renamed pages.
+- Updated dependencies [13499c0]
+- Updated dependencies [13499c0]
+- Updated dependencies [13499c0]
+- Updated dependencies [13499c0]
+  - @cotal-ai/lang@0.133.12
+  - @cotal-ai/core@0.133.12
+  - @cotal-ai/workspace@0.133.12
+
+## 0.133.11
+
+### Patch Changes
+
+- @cotal-ai/core@0.133.11
+  - @cotal-ai/lang@0.133.11
+  - @cotal-ai/workspace@0.133.11
+
+## 0.133.10
+
+### Patch Changes
+
+- @cotal-ai/core@0.133.10
+  - @cotal-ai/lang@0.133.10
+  - @cotal-ai/workspace@0.133.10
+
+## 0.133.9
+
+### Patch Changes
+
+- Updated dependencies [2c9a28d]
+  - @cotal-ai/core@0.133.9
+  - @cotal-ai/workspace@0.133.9
+  - @cotal-ai/lang@0.133.9
+
+## 0.133.8
+
+### Patch Changes
+
+- @cotal-ai/core@0.133.8
+  - @cotal-ai/lang@0.133.8
+  - @cotal-ai/workspace@0.133.8
+
+## 0.133.7
+
+### Patch Changes
+
+- 55a7597: Rename the private envelope-conflict check in the lifecycle saga and the admission mediator so it no longer shadows core's exported `isCasLoss`. No behaviour change.
+- Updated dependencies [dd729aa]
+- Updated dependencies [55a7597]
+  - @cotal-ai/core@0.133.7
+  - @cotal-ai/workspace@0.133.7
+  - @cotal-ai/lang@0.133.7
+
+## 0.133.6
+
+### Patch Changes
+
+- @cotal-ai/core@0.133.6
+  - @cotal-ai/lang@0.133.6
+  - @cotal-ai/workspace@0.133.6
+
+## 0.133.5
+
+### Patch Changes
+
+- cb6c6c4: Every refused exchange that spends a face's refusal budget answers through one helper. The helper records the failure, writes the audit line, and answers 429 with the mask when the peer is already throttled, or else the route's own status. The routes covered are the exchange body and view refusals, the agent and human exchange catches, chat sessions, the manager instance list, the service endpoint host and manager-service authority. Before, each route spelled the sequence itself. Behavior is unchanged.
+- Updated dependencies [9dd94c6]
+  - @cotal-ai/core@0.133.5
+  - @cotal-ai/workspace@0.133.5
+  - @cotal-ai/lang@0.133.5
+
+## 0.133.4
+
+### Patch Changes
+
+- Updated dependencies [5629f59]
+- Updated dependencies [4b483de]
+- Updated dependencies [60b5c33]
+  - @cotal-ai/lang@0.133.4
+  - @cotal-ai/core@0.133.4
+  - @cotal-ai/workspace@0.133.4
+
+## 0.133.3
+
+### Patch Changes
+
+- Updated dependencies [22bf7bf]
+  - @cotal-ai/workspace@0.133.3
+  - @cotal-ai/core@0.133.3
+  - @cotal-ai/lang@0.133.3
+
+## 0.133.2
+
+### Patch Changes
+
+- Updated dependencies [3f005b8]
+- Updated dependencies [6ba609a]
+  - @cotal-ai/core@0.133.2
+  - @cotal-ai/workspace@0.133.2
+  - @cotal-ai/lang@0.133.2
+
+## 0.133.1
+
+### Patch Changes
+
+- Updated dependencies [ee1b7d4]
+- Updated dependencies [a8f140c]
+- Updated dependencies [28b245f]
+- Updated dependencies [b786ccd]
+  - @cotal-ai/core@0.133.1
+  - @cotal-ai/lang@0.133.1
+  - @cotal-ai/workspace@0.133.1
+
+## 0.133.0
+
+### Patch Changes
+
+- @cotal-ai/core@0.133.0
+  - @cotal-ai/lang@0.133.0
+  - @cotal-ai/workspace@0.133.0
+
+## 0.132.7
+
+### Patch Changes
+
+- Updated dependencies [ad4a37e]
+  - @cotal-ai/core@0.132.7
+  - @cotal-ai/workspace@0.132.7
+  - @cotal-ai/lang@0.132.7
+
+## 0.132.6
+
+### Patch Changes
+
+- @cotal-ai/core@0.132.6
+  - @cotal-ai/lang@0.132.6
+  - @cotal-ai/workspace@0.132.6
+
+## 0.132.5
+
+### Patch Changes
+
+- 75e5b4f: Report the auth daemon's typed startup refusal to `cotal up` instead of a bare exit. A daemon that refuses its start records the refusal beside its discovery file, bound to its pid. The provider's readiness wait throws it as an `EpEnvelopeError`, and `up` names the code and reason, such as `[unavailable; ai.cotal.auth.plane-claim-refused: unknown]`.
+- @cotal-ai/core@0.132.5
+  - @cotal-ai/lang@0.132.5
+  - @cotal-ai/workspace@0.132.5
+
+## 0.132.4
+
+### Patch Changes
+
+- Updated dependencies [c0e9b6f]
+  - @cotal-ai/workspace@0.132.4
+  - @cotal-ai/core@0.132.4
+  - @cotal-ai/lang@0.132.4
+
+## 0.132.3
+
+### Patch Changes
+
+- Updated dependencies [35eb67a]
+  - @cotal-ai/core@0.132.3
+  - @cotal-ai/workspace@0.132.3
+  - @cotal-ai/lang@0.132.3
+
+## 0.132.2
+
+### Patch Changes
+
+- ebabb1e: Share remote-manager serve-principal serialization through the existing owner/actor token validator. Auth checks derive principals with the new remoteManagerServePrincipal helper; registration and retirement APIs preserve their supplied serve actor and serialize it with principalKey.
+- 6e0f8d1: Share the IdP URL policy between manifest preflight and auth login while preserving their diagnostics and normalization.
+- Updated dependencies [ebabb1e]
+- Updated dependencies [6e0f8d1]
+  - @cotal-ai/core@0.132.2
+  - @cotal-ai/workspace@0.132.2
+  - @cotal-ai/lang@0.132.2
+
+## 0.132.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.132.1
+  - @cotal-ai/lang@0.132.1
+  - @cotal-ai/workspace@0.132.1
+
+## 0.132.0
+
+### Patch Changes
+
+- Updated dependencies [5b197c0]
+- Updated dependencies [7613605]
+- Updated dependencies [2f0e7c8]
+  - @cotal-ai/workspace@0.132.0
+  - @cotal-ai/core@0.132.0
+  - @cotal-ai/lang@0.132.0
+
+## 0.131.6
+
+### Patch Changes
+
+- @cotal-ai/core@0.131.6
+  - @cotal-ai/lang@0.131.6
+  - @cotal-ai/workspace@0.131.6
+
+## 0.131.5
+
+### Patch Changes
+
+- Updated dependencies [e78de30]
+  - @cotal-ai/core@0.131.5
+  - @cotal-ai/workspace@0.131.5
+  - @cotal-ai/lang@0.131.5
+
+## 0.131.4
+
+### Patch Changes
+
+- @cotal-ai/core@0.131.4
+  - @cotal-ai/lang@0.131.4
+  - @cotal-ai/workspace@0.131.4
+
+## 0.131.3
+
+### Patch Changes
+
+- @cotal-ai/core@0.131.3
+  - @cotal-ai/lang@0.131.3
+  - @cotal-ai/workspace@0.131.3
+
+## 0.131.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.131.2
+  - @cotal-ai/lang@0.131.2
+  - @cotal-ai/workspace@0.131.2
+
 ## 0.131.1
 
 ### Patch Changes

@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 743,
+    "total": 740,
     "honest-text": 38,
     "presence-only-glyph/count": 57,
     "command-ack": 11,
-    "non-render/control": 637
+    "non-render/control": 634
   },
   "renderers": [
     {
@@ -562,7 +562,7 @@
     {
       "path": "implementations/cli/src/commands/join.ts",
       "kind": "derived-output",
-      "anchor": "`${c.dim(\"•\")} ${who(ev.presence.card)} ${statusBadge(ev.presence.status)}${presenceDetail(ev.presence)}${ev.presence.activity ? c.dim(\" - \" + presenceText(ev.presence.activity) + activityAge(ev.presence)) : \"\"}`",
+      "anchor": "`${c.dim(\"•\")} ${who(ev.presence.card)} ${statusBadge(ev.presence.status)}${presenceDetail(ev.presence)}${activityDetail(ev.presence)}`",
       "class": "honest-text",
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
@@ -631,7 +631,7 @@
     {
       "path": "implementations/cli/src/commands/join.ts",
       "kind": "derived-output",
-      "anchor": "\"  \" +\n              who(p.card) +\n              \" \" +\n              statusBadge(p.status) +\n              presenceDetail(p) +\n              (p.activity ? c.dim(\" - \" + presenceText(p.activity) + activityAge(p)) : \"\") +\n              (p.card.id === me ? c.dim(\" (you)\") : \"\")",
+      "anchor": "\"  \" +\n              who(p.card) +\n              \" \" +\n              statusBadge(p.status) +\n              presenceDetail(p) +\n              activityDetail(p) +\n              (p.card.id === me ? c.dim(\" (you)\") : \"\")",
       "class": "honest-text",
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
@@ -856,7 +856,7 @@
     {
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
-      "anchor": "{mode === \"dm\" ? (\n        <Dm\n          dms={mesh.signals.dms}\n          dmVisible={mesh.status.dmVisible}\n          width={size.cols}\n          height={bodyH}\n          narrow={narrow}\n          blocked={blocked}\n          onFocus={onFocus}\n        />\n      ) : mode === \"topo\" ? (\n        <Topo\n          feed={mesh.feed}\n          agents={mesh.agents}\n          membership={mesh.membership}\n          channels={mesh.channels}\n          nameOf={mesh.nameOf}\n          variant={topoVariant}\n          width={size.cols}\n          height={bodyH}\n          blocked={blocked}\n          onFocus={onFocus}\n          onOpenAgent={openAgent}\n          onOpenMessage={openMessage}\n        />\n      ) : (\n        <Box flexDirection={narrow ? \"column\" : \"row\"} height={bodyH}>\n          <Box flexDirection={narrow ? \"column\" : \"row\"} width={bodyW} height={bodyH}>\n            <Roster\n              agents={mesh.agents}\n              endpoints={mesh.endpoints}\n              query={search.query}\n              boxWidth={roster.w}\n              boxHeight={roster.h}\n              blocked={blocked}\n              onFocus={onFocus}\n              onOpenDetail={openAgent}\n              onKill={canControl ? handleKill : undefined}\n              onAttach={canControl ? (p) => handleAttach(p.card.name) : undefined}\n              harness={harness}\n              onCompose={canWrite ? rosterCompose : undefined}\n            />\n            <Feed\n              entries={mesh.feed}\n              activeChannel={activeChannel}\n              query={search.query}\n              boxWidth={feed.w}\n              boxHeight={feed.h}\n              blocked={blocked}\n              onFocus={onFocus}\n              onOpenDetail={openMessage}\n              onCompose={canWrite ? feedCompose : undefined}\n              onReply={canWrite ? feedReply : undefined}\n            />\n          </Box>\n          {railAsColumn ? (\n            <NeedsYou\n              waiting={mesh.signals.waiting}\n              boxWidth={railW}\n              boxHeight={bodyH}\n              blocked={blocked}\n              onFocus={onFocus}\n              onOpenDetail={openAgent}\n            />\n          ) : null}\n        </Box>\n      )}",
+      "anchor": "{mode === \"dm\" ? (\n        <Dm\n          dms={mesh.signals.dms}\n          dmVisible={mesh.status.dmVisible}\n          width={size.cols}\n          height={bodyH}\n          narrow={narrow}\n          blocked={blocked}\n          onFocus={onFocus}\n        />\n      ) : mode === \"topo\" ? (\n        <Topo\n          feed={mesh.feed}\n          agents={mesh.agents}\n          membership={mesh.membership}\n          channels={mesh.channels}\n          nameOf={mesh.nameOf}\n          variant={topoVariant}\n          width={size.cols}\n          height={bodyH}\n          blocked={blocked}\n          onFocus={onFocus}\n          onOpenAgent={openAgent}\n          onOpenMessage={openMessage}\n        />\n      ) : (\n        <Box flexDirection={narrow ? \"column\" : \"row\"} height={bodyH}>\n          <Box flexDirection={narrow ? \"column\" : \"row\"} width={bodyW} height={bodyH}>\n            <Roster\n              view={rosterView}\n              agents={mesh.agents}\n              endpoints={mesh.endpoints}\n              query={search.query}\n              boxWidth={roster.w}\n              boxHeight={roster.h}\n              blocked={blocked}\n              onFocus={onFocus}\n              onOpenDetail={openAgent}\n              onKill={canControl ? handleKill : undefined}\n              onAttach={canControl ? (p) => handleAttach(p.card.name) : undefined}\n              harness={harness}\n              onCompose={canWrite ? rosterCompose : undefined}\n            />\n            <Feed\n              view={feedView}\n              entries={mesh.feed}\n              activeChannel={activeChannel}\n              query={search.query}\n              boxWidth={feed.w}\n              boxHeight={feed.h}\n              blocked={blocked}\n              onFocus={onFocus}\n              onOpenDetail={openMessage}\n              onCompose={canWrite ? feedCompose : undefined}\n              onReply={canWrite ? feedReply : undefined}\n            />\n          </Box>\n          {railAsColumn ? (\n            <NeedsYou\n              waiting={mesh.signals.waiting}\n              boxWidth={railW}\n              boxHeight={bodyH}\n              blocked={blocked}\n              onFocus={onFocus}\n              onOpenDetail={openAgent}\n            />\n          ) : null}\n        </Box>\n      )}",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
@@ -961,14 +961,14 @@
     {
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
-      "anchor": "  <Roster\n              agents={mesh.agents}\n              endpoints",
+      "anchor": "sterView}\n              agents={mesh.agents}\n              endpoints",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
-      "anchor": "er\n              agents={mesh.agents}\n              endpoints",
+      "anchor": "w}\n              agents={mesh.agents}\n              endpoints",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
@@ -1010,7 +1010,7 @@
     {
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
-      "anchor": "d\n              entries={mesh.feed}\n              activeCha",
+      "anchor": "}\n              entries={mesh.feed}\n              activeCha",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
@@ -1243,56 +1243,28 @@
     {
       "path": "implementations/cli/src/console/ui/Roster.tsx",
       "kind": "indexed-map",
-      "anchor": "== \"agent\";\n  const s = STATUS[p.status];\n  const age = progress",
+      "anchor": "== \"agent\";\n  const s = STATUS[p.status];\n  const mark = { text:",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
       "path": "implementations/cli/src/console/ui/Roster.tsx",
       "kind": "derived-output",
-      "anchor": "(isAgent ? s.dot : \"⚙\") + \" \" + peerLabel(p.card) + (tag ? \" \" + tag : \"\")",
+      "anchor": "(isAgent ? s.dot : \"⚙\") + \" \"",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
       "path": "implementations/cli/src/console/ui/Roster.tsx",
       "kind": "derived-output",
-      "anchor": "color={isAgent ? s.color : \"gray\"}",
+      "anchor": "{head.map((row, r) => line(factRow(row, isAgent ? agentColor(p.card.name) : undefined, selected, r ? undefined : mark), r))}",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
       "path": "implementations/cli/src/console/ui/Roster.tsx",
       "kind": "derived-output",
-      "anchor": "{isAgent ? s.color : \"gray\"}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/cli/src/console/ui/Roster.tsx",
-      "kind": "derived-output",
-      "anchor": "{isAgent ? s.dot : \"⚙\"}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/cli/src/console/ui/Roster.tsx",
-      "kind": "derived-output",
-      "anchor": "{line(<>{head}{tail}</>)}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/cli/src/console/ui/Roster.tsx",
-      "kind": "derived-output",
-      "anchor": "{head}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/cli/src/console/ui/Roster.tsx",
-      "kind": "derived-output",
-      "anchor": "{facts.map((row, r) => line(factRow(row, isAgent ? s.color : undefined, selected), r))}",
+      "anchor": "{facts.map((row, r) => line(factRow(row, isAgent ? s.color : undefined, selected), head.length + r))}",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
@@ -1639,7 +1611,7 @@
     {
       "path": "implementations/cli/src/render.ts",
       "kind": "derived-output",
-      "anchor": "`${ts(Date.now())} ${label} ${who(ev.presence.card)} ${statusBadge(ev.presence.status, !ascii)}${presenceDetail(ev.presence)}${activity}`",
+      "anchor": "`${ts(Date.now())} ${label} ${who(ev.presence.card)} ${statusBadge(ev.presence.status, !ascii)}${presenceDetail(ev.presence)}${activityDetail(ev.presence)}`",
       "class": "honest-text",
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
@@ -1703,42 +1675,42 @@
       }
     },
     {
-      "path": "implementations/cli/src/view/mesh-view.ts",
+      "path": "packages/workspace/src/view/mesh-view.ts",
       "kind": "indexed-map",
       "anchor": "STATUS_ORDER[a.status]",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
-      "path": "implementations/cli/src/view/mesh-view.ts",
+      "path": "packages/workspace/src/view/mesh-view.ts",
       "kind": "indexed-map",
       "anchor": "STATUS_ORDER[b.status]",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
-      "path": "implementations/cli/src/view/mesh-view.ts",
+      "path": "packages/workspace/src/view/mesh-view.ts",
       "kind": "indexed-map",
       "anchor": "counts[p.status as keyof StatusCounts]",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
-      "path": "implementations/cli/src/view/mesh-view.ts",
+      "path": "packages/workspace/src/view/mesh-view.ts",
       "kind": "status-token",
       "anchor": "\"waiting\"",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
-      "path": "implementations/cli/src/view/mesh-view.ts",
+      "path": "packages/workspace/src/view/mesh-view.ts",
       "kind": "status-token",
       "anchor": "ter((p) => p.status !== \"offline\");\n    return {\n      co",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
-      "path": "implementations/cli/src/view/mesh-view.ts",
+      "path": "packages/workspace/src/view/mesh-view.ts",
       "kind": "status-token",
       "anchor": "d.id === id)?.status ?? \"offline\";\n    const roleOf = (id",
       "class": "non-render/control",
@@ -2684,7 +2656,7 @@
       "rationale": "Persistence payload: serializes the status into a checkpoint file; no terminal or DOM rendering."
     },
     {
-      "path": "implementations/cli/src/view/mesh-view.ts",
+      "path": "packages/workspace/src/view/mesh-view.ts",
       "kind": "derived-output",
       "anchor": "pe.lastTs = Math.max(pe.lastTs, c.last)",
       "class": "non-render/control",
@@ -3304,7 +3276,7 @@
     {
       "path": "implementations/cli/src/chat/static-session.ts",
       "kind": "derived-output",
-      "anchor": "askManager(mesh.space, mesh.server, op, args, auth, \"owner\", timeoutMs, instanceId !== undefined ? { instanceId } : undefined)",
+      "anchor": "askManager(cliControl, mesh.space, mesh.server, op, args, auth, \"owner\", timeoutMs, instanceId !== undefined ? { instanceId } : undefined)",
       "class": "non-render/control",
       "rationale": "Static chat control path: asks the pinned space's manager; no presence is rendered."
     },
@@ -5193,9 +5165,9 @@
       "rationale": "Manager choice: tests whether a live peer holds the name; the status is a filter predicate, not rendered."
     },
     {
-      "path": "implementations/cli/src/lib/manager-choice.ts",
+      "path": "packages/workspace/src/control/seat.ts",
       "kind": "status-token",
-      "anchor": "visor}` && p.status !== \"offline\")));\n  return { managers",
+      "anchor": "\"offline\"",
       "class": "non-render/control",
       "rationale": "Manager choice: skips an offline supervisor presence when reading a manager's host; the status is a filter predicate, not rendered."
     },
@@ -5300,7 +5272,14 @@
     {
       "path": "implementations/cli/src/commands/spawn.ts",
       "kind": "derived-output",
-      "anchor": "`--space ${shellWord(t.space)} --on ${shellWord(reply.managerInstanceId)}`",
+      "anchor": "readManagedLaunch(reply, { space: t.space, requestedModel: values.model ?? null, detached: values.detach === true }, target)",
+      "class": "non-render/control",
+      "rationale": "Reads the manager's launch receipt with caller-held mesh coordinates; this call renders no peer presence or work-progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/spawn.ts",
+      "kind": "derived-output",
+      "anchor": "`--space ${shellWord(t.space)} --on ${shellWord(result.managerInstanceId)}`",
       "class": "non-render/control",
       "rationale": "Spawn remedy shaping: builds the target flags for the ps command; the spawn reply is tainted only through the local `mesh` registry target, no peer presence is rendered."
     },
