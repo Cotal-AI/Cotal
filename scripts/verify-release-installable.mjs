@@ -7,7 +7,9 @@
  * so a version can pass the closure gate while `npm i -g cotal-ai@<version>` fails with ETARGET on a
  * pinned sibling. On 0.48.2 that hole stayed open for about five minutes (#1412). Presence is not
  * installability, so this gate installs `cotal-ai@<version>` into a scratch prefix with a fresh cache
- * and runs the installed `cotal --version`.
+ * and runs the installed `cotal --version`. A binary that prints its version can still fail its first
+ * real command: 0.133.9 and 0.133.10 did, because the connector seed could not import the bundled
+ * connectors. So the gate then runs `cotal ext seed` in the same private installation.
  *
  * A failed attempt before the deadline is UNKNOWN, not a failure: the registry may still be
  * converging. The gate polls until an attempt succeeds or the deadline passes, and only a failure
@@ -18,7 +20,7 @@
  *
  * Usage:  node scripts/verify-release-installable.mjs <version>
  *           [--registry=<url>] [--closure] [--poll-interval-ms=<n>] [--deadline-ms=<n>] [--requested-at=<UTC>]
- * Exit:   0 INSTALLABLE      the install succeeded and the binary reported the version
+ * Exit:   0 INSTALLABLE      the install succeeded, the binary reported the version and its seed completed
  *         1 NOT INSTALLABLE  no attempt succeeded before the deadline
  *         64                 usage error
  */
@@ -93,6 +95,8 @@ async function attempt({ version, registry, closure }, deadline) {
       npm_config_userconfig: join(root, "user.npmrc"),
       npm_config_globalconfig: join(root, "global.npmrc"),
       npm_config_cache: join(root, "cache"),
+      // The seed installs connector dependencies with npm, so it reads the same registry.
+      npm_config_registry: `${registry}/`,
       npm_config_update_notifier: "false",
       npm_config_audit: "false",
       npm_config_fund: "false",
@@ -133,6 +137,15 @@ async function attempt({ version, registry, closure }, deadline) {
     if (run.status !== 0 || first !== `cotal-ai ${version}`) {
       return `cotal --version exited ${run.status} and printed ${JSON.stringify(first)}`;
     }
+    const seed = await runPublicationChild(join(prefix, "bin", "cotal"), ["ext", "seed"], bounded());
+    checkSettlement(seed);
+    if (seed.error?.code === "ERR_PUBLICATION_INTERRUPTED") throw seed.error;
+    if (seed.error?.code === "ETIMEDOUT") return "cotal ext seed was killed at the deadline";
+    if (seed.error) return `cotal ext seed could not complete (${seed.error.code})`;
+    if (seed.status !== 0) {
+      const why = `${seed.stderr}${seed.stdout}`.split("\n").map((l) => l.trim()).filter((l) => l.startsWith("✗")).slice(0, 2);
+      return `cotal ext seed exited ${seed.status}${why.length ? `: ${why.join(" | ")}` : ""}`;
+    }
     return null;
   } finally {
     if (settled) rmSync(root, { recursive: true, force: true });
@@ -144,7 +157,7 @@ export async function verifyInstallable(opts, log = (line) => process.stdout.wri
   for (let n = 1; ; n++) {
     const failure = await attempt(opts, deadline);
     if (failure === null && Date.now() <= deadline) {
-      log(`VERDICT: INSTALLABLE: cotal-ai@${opts.version} installed and ran (attempt ${n}).`);
+      log(`VERDICT: INSTALLABLE: cotal-ai@${opts.version} installed, ran and seeded its connectors (attempt ${n}).`);
       return 0;
     }
     log(`attempt ${n}: ${failure ?? "install completed after the deadline"}`);
