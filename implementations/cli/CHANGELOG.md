@@ -1,5 +1,27 @@
 # @cotal-ai/cli
 
+## 0.133.2
+
+### Patch Changes
+
+- 3f005b8: `clearChannel` no longer reports success when its channel-registry step is refused or fails. Only a missing registry bucket is still a no-op. Any other failure throws `ChannelRegistryRemovalFailed`, which carries the purge count, because the chat purge has already happened. Before, a credential that could purge history but not touch the registry (for example `purger`) resolved with `removed: false` while the channel stayed listed. The web dashboard and console now show that error instead of a successful delete. `cotal channel remove --purge` still reports the partial outcome with the purge count.
+- Updated dependencies [3f005b8]
+- Updated dependencies [6ba609a]
+  - @cotal-ai/core@0.133.2
+  - @cotal-ai/workspace@0.133.2
+
+## 0.133.1
+
+### Patch Changes
+
+- 58d76e2: The ANSI presence lines in `cotal console --plain` and `cotal join` (its presence updates and `/who`) now take their activity suffix from one `activityDetail` helper in `ui.ts`, next to `presenceDetail`. Before, each line built the dimmed ` - <activity> (set <age> ago)` inline. The output is unchanged.
+- 852ebed: `cotal invoke manager <command> --name <agent>` resolves its target again. Since invoke fetched only the invoked command's contract, the `inspect` lookup behind `--name` was refused locally with `TARGET_NOT_FOUND` before anything was published. Invoke now fetches `inspect`'s contract with the command's when `--name` names a manager target.
+- Updated dependencies [ee1b7d4]
+- Updated dependencies [a8f140c]
+- Updated dependencies [b786ccd]
+  - @cotal-ai/core@0.133.1
+  - @cotal-ai/workspace@0.133.1
+
 ## 0.133.0
 
 ### Patch Changes

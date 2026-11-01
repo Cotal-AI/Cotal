@@ -51,7 +51,7 @@ import type { KV } from "@nats-io/kv";
 import { idFromCreds } from "./identity.js";
 import { nativeCredsAuthenticator } from "./creds-authenticator.js";
 import { requireBrokerFloor } from "./broker-floor.js";
-import { isConsumerNotFound } from "./jetstream-missing.js";
+import { isConsumerNotFound, isStreamNotFound } from "./jetstream-missing.js";
 import { isCasLoss } from "./endpoint-records.js";
 import { createEndpointStreams } from "./endpoint-binding.js";
 import { openAclRegistry, deleteAcl, fenceAcl } from "./acls.js";
@@ -795,13 +795,27 @@ export async function clearSpaceHistory(opts: {
   }
 }
 
+/** {@link clearChannel} purged the channel's history but did not remove its registry entry: the
+ *  registry read or delete was refused or failed, so the channel may still be listed. `purged` is
+ *  the count the purge already removed, and `cause` is the registry step's error. */
+export class ChannelRegistryRemovalFailed extends Error {
+  readonly channel: string;
+  readonly purged: number;
+  constructor(channel: string, purged: number, cause: unknown) {
+    super(`purged ${purged} message(s) from #${channel}, but its registry entry was not removed: ${cause instanceof Error ? cause.message : String(cause)}`, { cause });
+    this.channel = channel;
+    this.purged = purged;
+  }
+}
+
 /** Delete one channel and its content: purge every retained message on the channel (across
  *  all senders, via the `*` sender slot) from the chat stream, then drop the channel's
  *  registry config so it stops surfacing as an empty channel. Needs PURGE rights and the
  *  registry key delete: pass a `channel-purger` cred; a bare connection (open mode) has them by default.
  *  Throws on a wildcard channel (a subtree is not a deletable channel). A missing channel
- *  registry bucket/key is a no-op — the purge alone already emptied the channel. `removed` says
- *  whether this call deleted the channel's registry entry. */
+ *  registry bucket/key is a no-op — the purge alone already emptied the channel. Any other
+ *  failure of the registry step throws {@link ChannelRegistryRemovalFailed}, because the purge has
+ *  already happened. `removed` says whether this call deleted the channel's registry entry. */
 export async function clearChannel(opts: {
   servers: string;
   space: string;
@@ -826,8 +840,10 @@ export async function clearChannel(opts: {
         await registry.delete(opts.channel);
         removed = true;
       }
-    } catch {
-      /* no channel registry bucket or no config for this channel — purge already emptied it */
+    } catch (e) {
+      // Only a missing registry bucket is a no-op; a refused or failed read or delete leaves the
+      // channel listed, so it must not read as a removal that found nothing to remove.
+      if (!isStreamNotFound(e)) throw new ChannelRegistryRemovalFailed(opts.channel, purged, e);
     }
     return { channel: opts.channel, purged, removed };
   } finally {
