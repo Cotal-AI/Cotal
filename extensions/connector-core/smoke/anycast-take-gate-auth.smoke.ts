@@ -18,13 +18,14 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { connect, credsAuthenticator } from "@nats-io/transport-node";
+import { connect, credsAuthenticator, type Msg } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import {
   ANYCAST_NOTICE_KEY,
+  ANYCAST_TAKES_OP,
   CotalEndpoint,
   DEV_OWNER,
   createSpaceAuth,
@@ -35,6 +36,7 @@ import {
   provisionAgent,
   serverConfig,
   setupSpaceStreams,
+  spacePrefix,
   TAKE_ROUTE,
   takeServeFilter,
   taskStream,
@@ -361,37 +363,47 @@ try {
   await gwRead();
 
   // ── 11. a take still waiting when the link drops ──────────────────────────────────────────
-  // A responder that never answers stands in for the daemon, so the take is still waiting when the
-  // link drops. nats.js does not settle a request whose connection closes before its answer.
+  // A responder that receives the take, or the probe a take falls back to when nothing serves the
+  // take rail, and never answers, keeps the take waiting. The link drops only once it has arrived.
+  // nats.js does not settle a request whose connection closes before its answer.
   console.log("[11] a take still waiting when the link drops ends with that link, and the request is taken again");
+  const stopDaemon = async () => {
+    // Nothing here renews the daemon's lease, so the bucket TTL may have expired it already.
+    await daemon.releaseDeliveryLease(0, lease).catch(async (e) => { if (await daemon.readDeliveryLease(0)) throw e; });
+    await daemon.stop();
+  };
+  const silentResponder = async (subject: string, queue: string, wanted: (m: Msg) => boolean) => {
+    const nc = await connect({ servers, authenticator: credsAuthenticator(new TextEncoder().encode(await mintCreds(auth, newIdentity(), "delivery"))), maxReconnectAttempts: 0 });
+    stops.push(() => nc.close());
+    let arrived!: () => void;
+    const received = new Promise<void>((resolve) => { arrived = resolve; });
+    nc.subscribe(subject, { queue, callback: (_e, m) => { if (wanted(m)) arrived(); } });
+    await nc.flush();
+    return { received: Promise.race([received.then(() => true), sleep(10_000).then(() => false)]), close: () => nc.close() };
+  };
   const dropper = await mkAgent("drop_holder", "droprole");
   await until(() => sender.agent.ep.getRoster().some((p) => p.card.id === dropper.id), 8000);
   const sent11 = await sender.agent.ep.anycastAttributed("droprole", "asked as the link drops");
   const key11 = await until(() => dropper.agent.inboxKeys().find((k) => k === sent11.msg.id));
-  // Nothing here renews the daemon's lease, so the bucket TTL may have expired it already.
-  await daemon.releaseDeliveryLease(0, lease).catch(async (e) => { if (await daemon.readDeliveryLease(0)) throw e; });
-  await daemon.stop();
-  const silentNc = await connect({ servers, authenticator: credsAuthenticator(new TextEncoder().encode(await mintCreds(auth, newIdentity(), "delivery"))), maxReconnectAttempts: 0 });
-  stops.push(() => silentNc.close());
-  silentNc.subscribe(takeServeFilter(space), { queue: TAKE_ROUTE, callback: () => {} });
-  await silentNc.flush();
+  await stopDaemon();
+  const takeRail = await silentResponder(takeServeFilter(space), TAKE_ROUTE, () => true);
   const waitMs11 = 8000;
   const started11 = Date.now();
   const read11 = dropper.agent.takeChosen("all", (preview) => preview.filter((i) => i.recvKey === key11), waitMs11);
-  await sleep(200);
+  const asked11 = await takeRail.received;
   await dropper.agent.reconnect();
   const shown11 = await read11;
   const ended11 = Date.now() - started11;
   check(
     "11a a read waiting on that take ends with the old link, well before its wait runs out, and shows nothing",
-    shown11.length === 0 && ended11 < waitMs11 / 2,
-    { shown: shown11.length, ended11 },
+    asked11 && shown11.length === 0 && ended11 < waitMs11 / 2,
+    { asked11, shown: shown11.length, ended11 },
   );
   await until(() => dropper.agent.connected || undefined, 10_000);
-  const announced11 = dropper.incoming.filter((i) => i.recvKey === key11).length;
-  check("11b the request is announced again, so its host reads it once more", announced11 === 2, { announced11 });
+  const announced11 = await until(() => dropper.incoming.filter((i) => i.recvKey === key11).length === 2 || undefined, 3000);
+  check("11b the request is announced again, so its host reads it once more", announced11 === true, { announced: dropper.incoming.filter((i) => i.recvKey === key11).length });
   check("11c no held reason is reported for it", dropper.agent.heldTakes().detail === undefined, dropper.agent.heldTakes());
-  await silentNc.close();
+  await takeRail.close();
   daemon = await startDaemon();
   const read11d = await dropper.agent.takeChosen("all", (preview) => preview.filter((i) => i.recvKey === key11));
   const status11 = await sender.agent.ep.anycastStatus(sent11.ack.seq);
@@ -399,6 +411,58 @@ try {
     "11d the next read takes it on the new link and shows it",
     read11d.some((i) => i.recvKey === key11) && status11.state === "taken" && status11.taker.id === dropper.id,
     { shown: read11d.length, status11 },
+  );
+
+  const sent11e = await sender.agent.ep.anycastAttributed("droprole", "asked while only the probe can answer");
+  const key11e = await until(() => dropper.agent.inboxKeys().find((k) => k === sent11e.msg.id));
+  await stopDaemon();
+  const probeRail = await silentResponder(`${spacePrefix(space)}.ctl.delivery.*.*`, "delivery", (m) => m.json<{ op?: string }>().op === ANYCAST_TAKES_OP);
+  const started11e = Date.now();
+  const read11e = dropper.agent.takeChosen("all", (preview) => preview.filter((i) => i.recvKey === key11e), waitMs11);
+  const probed11e = await probeRail.received;
+  await dropper.agent.reconnect();
+  const shown11e = await read11e;
+  const ended11e = Date.now() - started11e;
+  check(
+    "11e with nothing serving the take rail, a read waiting on the probe the take falls back to ends with the old link too",
+    probed11e && shown11e.length === 0 && ended11e < waitMs11 / 2,
+    { probed11e, shown: shown11e.length, ended11e },
+  );
+  await until(() => dropper.agent.connected || undefined, 10_000);
+  await probeRail.close();
+  daemon = await startDaemon();
+  const read11f = await dropper.agent.takeChosen("all", (preview) => preview.filter((i) => i.recvKey === key11e));
+  check("11f and the next read takes it on the new link and shows it", read11f.some((i) => i.recvKey === key11e), { shown: read11f.length });
+
+  // A host reads one batch at a time and drops a wake that comes while it reads, as Codex and Jcode
+  // drive. The daemon is back before the drop, so only the announcement decides when it is shown.
+  const driven = await mkAgent("drive_holder", "driverole");
+  await until(() => sender.agent.ep.getRoster().some((p) => p.card.id === driven.id), 8000);
+  const driverShown = new Set<string>();
+  let driving = false;
+  const drive = async () => {
+    if (driving) return;
+    driving = true;
+    try {
+      for (const i of await driven.agent.takeChosen("automatic", (preview) => preview, waitMs11)) driverShown.add(i.recvKey);
+    } finally {
+      driving = false;
+    }
+  };
+  driven.agent.on("incoming", () => void drive());
+  await stopDaemon();
+  const driveRail = await silentResponder(takeServeFilter(space), TAKE_ROUTE, () => true);
+  const sent11g = await sender.agent.ep.anycastAttributed("driverole", "driven across the drop");
+  const asked11g = await driveRail.received;
+  await driveRail.close();
+  daemon = await startDaemon();
+  const drivingAtDrop = driving;
+  await driven.agent.reconnect();
+  const shown11g = await until(() => driverShown.has(sent11g.msg.id) || undefined, 5000);
+  check(
+    "11g a host that drops a wake while it reads is woken once the link is back, and shows it with no other mail",
+    asked11g && drivingAtDrop && shown11g === true,
+    { asked11g, drivingAtDrop, shown: [...driverShown] },
   );
 
   // ── 12. one seq naming two of this session's requests ─────────────────────────────────────

@@ -6828,14 +6828,10 @@ export class CotalEndpoint extends EventEmitter {
    *  request at `seq`, for the copy with `count` deliveries. Never throws; a take the daemon could
    *  not decide is reported as held, with what the operator has to do when that is anything. */
   private async takeAnycast(role: string, seq: number, id: string, count: number, epoch: string): Promise<AnycastTakeOutcome> {
-    const held = (reason: "daemon-busy" | "daemon-down" | "daemon-outdated" | "credential-outdated", detail: string): AnycastTakeOutcome =>
-      ({ taken: false, drop: false, reason, detail });
     const nc = this.nc;
-    if (!nc) return held("daemon-down", this.notLiveMsg());
-    const subject = takeSubject(this.space, role, this.owner, this.actor);
-    const body: AnycastTakeRequest = { from: { id: this.card.id, name: this.card.name }, seq, id, count, epoch };
+    if (!nc) return { taken: false, drop: false, reason: "daemon-down", detail: this.notLiveMsg() };
     // nats.js settles a no-mux request only from its reply subscription, and a connection that
-    // closes first closes that subscription without settling it, so the wait ends with the connection.
+    // closes first closes that subscription without settling it, so the take ends with the connection.
     let awaiting = this.takesAwaitingAnswer.get(nc);
     if (!awaiting) {
       const takes = new Set<() => void>();
@@ -6843,20 +6839,31 @@ export class CotalEndpoint extends EventEmitter {
       this.takesAwaitingAnswer.set(nc, (awaiting = takes));
     }
     let end!: () => void;
-    const closed = new Promise<undefined>((resolve) => { end = () => resolve(undefined); });
+    const closed = new Promise<AnycastTakeOutcome>((resolve) => {
+      end = () => resolve({ taken: false, drop: false, reason: "daemon-down", detail: "the connection closed before the delivery daemon answered the take" });
+    });
     awaiting.add(end);
+    try {
+      return await Promise.race([this.askTake(nc, role, seq, id, count, epoch), closed]);
+    } finally {
+      awaiting.delete(end);
+    }
+  }
+
+  private async askTake(nc: NatsConnection, role: string, seq: number, id: string, count: number, epoch: string): Promise<AnycastTakeOutcome> {
+    const held = (reason: "daemon-busy" | "daemon-down" | "daemon-outdated" | "credential-outdated", detail: string): AnycastTakeOutcome =>
+      ({ taken: false, drop: false, reason, detail });
+    const subject = takeSubject(this.space, role, this.owner, this.actor);
+    const body: AnycastTakeRequest = { from: { id: this.card.id, name: this.card.name }, seq, id, count, epoch };
     let reply: AnycastTakeReply;
     try {
-      const m = await Promise.race([nc.request(subject, JSON.stringify(body), { timeout: ANYCAST_TAKE_TIMEOUT_MS, noMux: true, reply: `${subject}.reply.${randomUUID()}` }), closed]);
-      if (!m) return held("daemon-down", "the connection closed before the delivery daemon answered the take");
+      const m = await nc.request(subject, JSON.stringify(body), { timeout: ANYCAST_TAKE_TIMEOUT_MS, noMux: true, reply: `${subject}.reply.${randomUUID()}` });
       reply = m.json<AnycastTakeReply>();
     } catch (e) {
       if (isPermissionDenied(e))
         return held("credential-outdated", "this seat's credential was minted before anycast takes existed, so it cannot take role requests; respawn the seat to get a current credential");
       if (this.isNoResponders(e)) return this.takeResponderMissing();
       return held("daemon-down", `the delivery daemon did not answer the take: ${(e as Error).message}`);
-    } finally {
-      awaiting.delete(end);
     }
     if (reply.ok) return { taken: true };
     // A mismatch can mean the stream was recreated under this consumer, which resumes on the new

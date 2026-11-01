@@ -2,9 +2,9 @@
   "suite": [
     "extensions/connector-core/smoke/anycast-take-gate-auth.smoke.ts"
   ],
-  "guard": "A take still waiting when its connection closes ends with that connection, so a read waiting on it returns and the request can be taken again on the new link",
+  "guard": "A take still waiting when its connection closes ends with that connection, the probe it falls back to included, so a read waiting on it returns and the request can be taken again on the new link",
   "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:anycast-take-gate:auth",
-  "completionMarker": "COTAL_SMOKE_SENTINEL cells=59",
+  "completionMarker": "COTAL_SMOKE_SENTINEL cells=62",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/anycast-take-gate-core.json",
   "why": [
     "nats.js settles a no-mux request only from its reply subscription, and a connection that closes",
@@ -18,12 +18,22 @@
     {
       "name": "a take waits on its own reply subscription only",
       "file": "packages/core/src/endpoint.ts",
-      "find": "      const m = await Promise.race([nc.request(subject, JSON.stringify(body), { timeout: ANYCAST_TAKE_TIMEOUT_MS, noMux: true, reply: `${subject}.reply.${randomUUID()}` }), closed]);",
-      "replace": "      const m = await nc.request(subject, JSON.stringify(body), { timeout: ANYCAST_TAKE_TIMEOUT_MS, noMux: true, reply: `${subject}.reply.${randomUUID()}` });",
+      "find": "      return await Promise.race([this.askTake(nc, role, seq, id, count, epoch), closed]);",
+      "replace": "      return await this.askTake(nc, role, seq, id, count, epoch);",
       "afterRestore": "pnpm --filter @cotal-ai/core build",
       "expectRed": "11a a read waiting on that take ends with the old link, well before its wait runs out, and shows nothing",
       "cell": "11a a read waiting on that take ends with the old link, well before its wait runs out, and shows nothing",
       "note": "The take never settles once its connection closes, so the read waits out its whole wait and every later read reuses the stuck take."
+    },
+    {
+      "name": "a take that falls back to the probe waits on the probe's reply only",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "      return await Promise.race([this.askTake(nc, role, seq, id, count, epoch), closed]);",
+      "replace": "      return await this.askTake(nc, role, seq, id, count, epoch);",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "expectRed": "11e with nothing serving the take rail, a read waiting on the probe the take falls back to ends with the old link too",
+      "cell": "11e with nothing serving the take rail, a read waiting on the probe the take falls back to ends with the old link too",
+      "note": "With nothing on the take rail the take asks the anycastTakes probe on ctl.delivery, another no-mux request. Unraced, it never settles once its connection closes, and every later read reuses the stuck take."
     }
   ]
 }

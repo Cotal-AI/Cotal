@@ -92,8 +92,9 @@ the task stream, the `cotal_anycast_<space>` bucket and the notice publish.
   A `MeshAgent` has both. A host built on `MeshAgent` shows a role request only from what
   `takeChosen` returns, because `peekInbox` never returns one still held for its take.
   `incoming` fires once when a held request arrives, and again only if its take lands after
-  `takeChosen` stopped waiting. A notice that counts waiting messages without showing them reads
-  `inboxPending`, which includes held requests.
+  `takeChosen` stopped waiting, or if a link drop ended its take, once the link is back up. A
+  notice that counts waiting messages without showing them reads `inboxPending`, which includes
+  held requests.
 
 ## Multi-space host acknowledgments after 0.116.1
 

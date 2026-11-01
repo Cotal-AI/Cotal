@@ -483,6 +483,9 @@ export class MeshAgent extends EventEmitter {
   private heldTake?: { reason: string; detail: string; retryAt: number };
   /** Re-announces the held role requests once {@link heldTake} lets them be asked about again. */
   private takeRetry?: ReturnType<typeof setTimeout>;
+  /** Held role requests whose take ended in a link drop while the link was down, announced again
+   *  when it comes back up (see {@link runTake}). */
+  private retakes = new Set<Pending>();
   /** Ids already SURFACED to the model (handled) — bounded, commit-aware dedup ACROSS a drain. The
    *  live↔durable transition window can deliver the two copies of one message far enough apart that the
    *  first is already drained (removed from {@link inbox}) when the second arrives; the pending-inbox
@@ -705,6 +708,10 @@ export class MeshAgent extends EventEmitter {
         // This reader cannot vouch for a copy across a drop, so a role request taken and not yet
         // handed to a host is taken again before it is shown.
         for (const p of this.inbox.filter((x) => x.take && !this.inFlightIds.has(x.item.recvKey))) this.regate(p);
+      }
+      if (e.connected) {
+        for (const p of this.retakes) if (this.gated.includes(p)) this.emit("incoming", p.item);
+        this.retakes.clear();
       }
       this.emit("transport", e);
       // A notice lost while the transport was down can only matter to a turn this seat holds: the
@@ -1627,10 +1634,12 @@ export class MeshAgent extends EventEmitter {
     const outcome: AnycastTakeOutcome = await take();
     if (!this.gated.includes(p) || p.take !== take) return;
     // An answer that crossed a link drop is the old link's, so the request stays held and a read
-    // waiting on this take shows nothing of it. Its host is told again, so the next read takes it on
-    // the new link.
+    // waiting on this take shows nothing of it. Its host is told again once the link is up, so the
+    // next read takes it on the new link. While the link is down a read could not take it, and the
+    // read that waited on this take may still be running, so the announcement waits for the link.
     if (this.transportDrops !== drops) {
-      this.emit("incoming", p.item);
+      if (this._transportConnected) this.emit("incoming", p.item);
+      else this.retakes.add(p);
       return;
     }
     if (outcome.taken) {

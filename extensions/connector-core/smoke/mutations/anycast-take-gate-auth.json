@@ -3,7 +3,7 @@
     "extensions/connector-core/smoke/anycast-take-gate-auth.smoke.ts"
   ],
   "command": "pnpm smoke:anycast-take-gate:auth",
-  "completionMarker": "COTAL_SMOKE_SENTINEL cells=59",
+  "completionMarker": "COTAL_SMOKE_SENTINEL cells=62",
   "mutations": [
     {
       "file": "extensions/connector-core/src/agent.ts",
@@ -115,7 +115,7 @@
     },
     {
       "file": "extensions/connector-core/src/agent.ts",
-      "find": "    if (this.transportDrops !== drops) {\n      this.emit(\"incoming\", p.item);\n      return;\n    }\n",
+      "find": "    if (this.transportDrops !== drops) {\n      if (this._transportConnected) this.emit(\"incoming\", p.item);\n      else this.retakes.add(p);\n      return;\n    }\n",
       "replace": "",
       "expectRed": "11c no held reason is reported for it",
       "cell": "11c no held reason is reported for it",
@@ -123,11 +123,27 @@
     },
     {
       "file": "extensions/connector-core/src/agent.ts",
-      "find": "    if (this.transportDrops !== drops) {\n      this.emit(\"incoming\", p.item);\n      return;\n    }\n",
+      "find": "    if (this.transportDrops !== drops) {\n      if (this._transportConnected) this.emit(\"incoming\", p.item);\n      else this.retakes.add(p);\n      return;\n    }\n",
       "replace": "    if (this.transportDrops !== drops) {\n      return;\n    }\n",
       "expectRed": "11b the request is announced again, so its host reads it once more",
       "cell": "11b the request is announced again, so its host reads it once more",
-      "note": "The answer is dropped but the host is not told, so a host that read once and got nothing waits for an announcement that never comes."
+      "note": "The answer is dropped but the host is never told, so a host that read once and got nothing waits for an announcement that never comes."
+    },
+    {
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    if (this.transportDrops !== drops) {\n      if (this._transportConnected) this.emit(\"incoming\", p.item);\n      else this.retakes.add(p);\n      return;\n    }\n",
+      "replace": "    if (this.transportDrops !== drops) {\n      this.emit(\"incoming\", p.item);\n      return;\n    }\n",
+      "expectRed": "11g a host that drops a wake while it reads is woken once the link is back, and shows it with no other mail",
+      "cell": "11g a host that drops a wake while it reads is woken once the link is back, and shows it with no other mail",
+      "note": "The request is announced at once, while the link is still down and the read that waited on the take is still running. A host that reads one batch at a time drops that wake, its read returns nothing, and nothing announces the request again until the broker redelivers it."
+    },
+    {
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "      if (e.connected) {\n        for (const p of this.retakes) if (this.gated.includes(p)) this.emit(\"incoming\", p.item);\n        this.retakes.clear();\n      }\n",
+      "replace": "",
+      "expectRed": "11g a host that drops a wake while it reads is woken once the link is back, and shows it with no other mail",
+      "cell": "11g a host that drops a wake while it reads is woken once the link is back, and shows it with no other mail",
+      "note": "A request whose take ended while the link was down is kept for the link's return, but the return announces nothing, so no host hears of it until the broker redelivers it."
     }
   ]
 }
