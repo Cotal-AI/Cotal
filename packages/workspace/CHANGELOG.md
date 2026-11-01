@@ -1,5 +1,13 @@
 # @cotal-ai/workspace
 
+## 0.133.2
+
+### Patch Changes
+
+- 6ba609a: Removing or recording a mesh now fails when a pre-hex registry record of that space cannot be deleted, instead of returning while the record keeps listing the mesh.
+- Updated dependencies [3f005b8]
+  - @cotal-ai/core@0.133.2
+
 ## 0.133.1
 
 ### Patch Changes

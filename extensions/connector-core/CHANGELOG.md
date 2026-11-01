@@ -1,5 +1,11 @@
 # @cotal-ai/connector-core
 
+## 0.133.2
+
+### Patch Changes
+
+- cb0da93: Exports `MAX_INBOX`, the per-session inbox bound, so the overflow smokes read it instead of restating it.
+
 ## 0.133.1
 
 No changes in this release.
