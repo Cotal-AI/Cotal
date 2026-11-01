@@ -51,10 +51,10 @@ check(
   "paths-ignore skips a workflow only when every changed path is ignored",
   JSON.stringify(expectedPullRequestWorkflows({
     "ignore.yml": "name: Ignore\non:\n  pull_request:\n    paths-ignore: ['docs/**']\n",
-  }, ["docs/cli.md"])) === "[]" &&
+  }, ["docs/cli.mdx"])) === "[]" &&
     JSON.stringify(expectedPullRequestWorkflows({
       "ignore.yml": "name: Ignore\non:\n  pull_request:\n    paths-ignore: ['docs/**']\n",
-    }, ["docs/cli.md", "package.json"])) === '["Ignore"]',
+    }, ["docs/cli.mdx", "package.json"])) === '["Ignore"]',
 );
 check(
   "ordinary YAML comments after a flow event list preserve pull_request",
@@ -171,7 +171,7 @@ let unsupportedPatternRefused = false;
 try {
   expectedPullRequestWorkflows({
     "unknown.yml": "name: Unknown\non:\n  pull_request:\n    paths:\n      - 'docs/{api,cli}.md'\n",
-  }, ["docs/cli.md"]);
+  }, ["docs/cli.mdx"]);
 } catch (error) {
   unsupportedPatternRefused = /unsupported workflow path pattern/.test(String(error));
 }

@@ -32,13 +32,13 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import net from "node:net";
-import { fileURLToPath } from "node:url";
 import { CotalEndpoint, isReachable, newIdentity, setupSpaceStreams, type CotalMessage } from "@cotal-ai/core";
-import { PortInUseError, SMOKE_BROKER_TOKEN, freePort, onFreePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import {
   activityBackfill, AGGREGATION_DEADLINE_MS, type ActivitySource,
 } from "../src/web.js";
 import { throttledWriter } from "./slow-link-throttle.js";
+import { bootWeb } from "./boot-web.js";
 
 type ActivityJsonBody = {
   error?: string;
@@ -389,32 +389,13 @@ try {
     const childEnv: NodeJS.ProcessEnv = { ...process.env };
     for (const key of Object.keys(childEnv)) if (key.startsWith("COTAL_")) delete childEnv[key];
     childEnv.COTAL_WEB_SMOKE_REJECT_HISTORY = "1";
-    let launchUrl: string | undefined;
-    const WEB_PORT = await onFreePort(async (port) => {
-      rejectingWebChild = spawn(process.execPath, [
-        "--import", "tsx", fileURLToPath(new URL("./run-web.mts", import.meta.url)),
-        "--server", SERVER, "--space", SPACE, "--port", String(port), "--no-open",
-      ], { stdio: ["ignore", "pipe", "pipe"], env: childEnv });
-      rejectingWebChild.stdout?.on("data", (d: Buffer) => { log += d.toString(); });
-      rejectingWebChild.stderr?.on("data", (d: Buffer) => { log += d.toString(); });
-      const taken = `Port ${port} is in use`;
-      for (let i = 0; i < 200 && launchUrl === undefined && !log.includes(taken); i++) {
-        launchUrl = log.match(/http:\/\/127\.0\.0\.1:\d+\/\?k=[A-Za-z0-9_-]+/)?.[0];
-        await wait(50);
-      }
-      if (launchUrl === undefined && log.includes(taken)) throw new PortInUseError(port, log);
-      return port;
+    const rejecting = await bootWeb({
+      server: SERVER, space: SPACE, env: childEnv,
+      onSpawn: (child) => { rejectingWebChild = child; }, onOutput: (text) => { log += text; },
     });
-    const exchange = launchUrl === undefined
-      ? undefined
-      : await fetch(launchUrl, { redirect: "manual" }).catch(() => undefined);
-    const session = /(?:^|,\s*)cotal_web_session=([^;]+)/.exec(exchange?.headers.get("set-cookie") ?? "")?.[1];
-    const authed = { cookie: `cotal_web_session=${session}` };
-    const ready = session === undefined
-      ? undefined
-      : await fetch(`http://127.0.0.1:${WEB_PORT}/api/roster`, { headers: authed }).catch(() => undefined);
-    ok("5.0 CONTROL: the rejection probe reaches the shipped web entry point",
-      exchange?.status === 302 && session !== undefined && ready?.status === 200, log.slice(-400));
+    const WEB_PORT = rejecting.port;
+    const authed = { cookie: rejecting.cookie ?? "" };
+    ok("5.0 CONTROL: the rejection probe reaches the shipped web entry point", rejecting.served, log.slice(-400));
 
     const dRes = await fetch(`http://127.0.0.1:${WEB_PORT}/api/dms?limit=1`, { headers: authed });
     const dBody = await dRes.json().catch(() => undefined) as ActivityJsonBody | undefined;
@@ -438,32 +419,13 @@ try {
     const hangEnv: NodeJS.ProcessEnv = { ...process.env };
     for (const key of Object.keys(hangEnv)) if (key.startsWith("COTAL_")) delete hangEnv[key];
     hangEnv.COTAL_WEB_SMOKE_HANG_DMS = "1";
-    let hangLaunch: string | undefined;
-    const HANG_PORT = await onFreePort(async (port) => {
-      hangingWebChild = spawn(process.execPath, [
-        "--import", "tsx", fileURLToPath(new URL("./run-web.mts", import.meta.url)),
-        "--server", SERVER, "--space", SPACE, "--port", String(port), "--no-open",
-      ], { stdio: ["ignore", "pipe", "pipe"], env: hangEnv });
-      hangingWebChild.stdout?.on("data", (d: Buffer) => { hangLog += d.toString(); });
-      hangingWebChild.stderr?.on("data", (d: Buffer) => { hangLog += d.toString(); });
-      const taken = `Port ${port} is in use`;
-      for (let i = 0; i < 200 && hangLaunch === undefined && !hangLog.includes(taken); i++) {
-        hangLaunch = hangLog.match(/http:\/\/127\.0\.0\.1:\d+\/\?k=[A-Za-z0-9_-]+/)?.[0];
-        await wait(50);
-      }
-      if (hangLaunch === undefined && hangLog.includes(taken)) throw new PortInUseError(port, hangLog);
-      return port;
+    const hanging = await bootWeb({
+      server: SERVER, space: SPACE, env: hangEnv,
+      onSpawn: (child) => { hangingWebChild = child; }, onOutput: (text) => { hangLog += text; },
     });
-    const hangExchange = hangLaunch === undefined
-      ? undefined
-      : await fetch(hangLaunch, { redirect: "manual" }).catch(() => undefined);
-    const hangSession = /(?:^|,\s*)cotal_web_session=([^;]+)/.exec(hangExchange?.headers.get("set-cookie") ?? "")?.[1];
-    const hangAuthed = { cookie: `cotal_web_session=${hangSession}` };
-    const hangReady = hangSession === undefined
-      ? undefined
-      : await fetch(`http://127.0.0.1:${HANG_PORT}/api/roster`, { headers: hangAuthed }).catch(() => undefined);
-    ok("5.3 CONTROL: the never-ending DM probe reaches the shipped web entry point",
-      hangExchange?.status === 302 && hangSession !== undefined && hangReady?.status === 200, hangLog.slice(-400));
+    const HANG_PORT = hanging.port;
+    const hangAuthed = { cookie: hanging.cookie ?? "" };
+    ok("5.3 CONTROL: the never-ending DM probe reaches the shipped web entry point", hanging.served, hangLog.slice(-400));
 
     const hangStarted = Date.now();
     const hangRes = await fetch(`http://127.0.0.1:${HANG_PORT}/api/dms?limit=1`, {
@@ -503,32 +465,13 @@ try {
 
     // Wait for the launch link, spend it ONCE, then carry the session it mints through every route
     // assertion. Re-presenting the single-use link would test its refusal instead of aggregation.
-    let launchUrl: string | undefined;
-    const WEB_PORT = await onFreePort(async (port) => {
-      webChild = spawn(process.execPath, [
-        "--import", "tsx", fileURLToPath(new URL("./run-web.mts", import.meta.url)),
-        "--server", `nats://127.0.0.1:${SLOWER}`, "--space", SPACE, "--port", String(port), "--no-open",
-      ], { stdio: ["ignore", "pipe", "pipe"] });
-      webChild.stdout?.on("data", (d: Buffer) => { log += d.toString(); });
-      webChild.stderr?.on("data", (d: Buffer) => { log += d.toString(); });
-      const taken = `Port ${port} is in use`;
-      for (let i = 0; i < 200 && launchUrl === undefined && !log.includes(taken); i++) {
-        launchUrl = log.match(/http:\/\/127\.0\.0\.1:\d+\/\?k=[A-Za-z0-9_-]+/)?.[0];
-        await wait(250);
-      }
-      if (launchUrl === undefined && log.includes(taken)) throw new PortInUseError(port, log);
-      return port;
+    const web = await bootWeb({
+      server: `nats://127.0.0.1:${SLOWER}`, space: SPACE,
+      onSpawn: (child) => { webChild = child; }, onOutput: (text) => { log += text; },
     });
-    const exchange = launchUrl === undefined
-      ? undefined
-      : await fetch(launchUrl, { redirect: "manual" }).catch(() => undefined);
-    const session = /(?:^|,\s*)cotal_web_session=([^;]+)/.exec(exchange?.headers.get("set-cookie") ?? "")?.[1];
-    const authed = { cookie: `cotal_web_session=${session}` };
-    const ready = session === undefined
-      ? undefined
-      : await fetch(`http://127.0.0.1:${WEB_PORT}/api/roster`, { headers: authed }).catch(() => undefined);
-    ok("6.0 the shipped `web` entry point serves across the link at all",
-      exchange?.status === 302 && session !== undefined && ready?.status === 200, log.slice(-400));
+    const WEB_PORT = web.port;
+    const authed = { cookie: web.cookie ?? "" };
+    ok("6.0 the shipped `web` entry point serves across the link at all", web.served, log.slice(-400));
 
     // CONTROL FIRST, on an idle link: a small route answers. Everything below is about what happens
     // to a LARGE read on this link, and none of it means anything if the link cannot serve the

@@ -1,5 +1,114 @@
 # @cotal-ai/workspace
 
+## 0.133.11
+
+### Patch Changes
+
+- @cotal-ai/core@0.133.11
+
+## 0.133.10
+
+### Patch Changes
+
+- @cotal-ai/core@0.133.10
+
+## 0.133.9
+
+### Patch Changes
+
+- Updated dependencies [2c9a28d]
+  - @cotal-ai/core@0.133.9
+
+## 0.133.8
+
+### Patch Changes
+
+- @cotal-ai/core@0.133.8
+
+## 0.133.7
+
+### Patch Changes
+
+- Updated dependencies [dd729aa]
+- Updated dependencies [55a7597]
+  - @cotal-ai/core@0.133.7
+
+## 0.133.6
+
+### Patch Changes
+
+- @cotal-ai/core@0.133.6
+
+## 0.133.5
+
+### Patch Changes
+
+- Updated dependencies [9dd94c6]
+  - @cotal-ai/core@0.133.5
+
+## 0.133.4
+
+### Patch Changes
+
+- Updated dependencies [4b483de]
+  - @cotal-ai/core@0.133.4
+
+## 0.133.3
+
+### Patch Changes
+
+- 22bf7bf: A checked user-auth bundle's type now carries the pinned exchange URL that `checkUserBundle` requires, so callers read `userAuth.endpoints.url` without non-null assertions.
+- @cotal-ai/core@0.133.3
+
+## 0.133.2
+
+### Patch Changes
+
+- 6ba609a: Removing or recording a mesh now fails when a pre-hex registry record of that space cannot be deleted, instead of returning while the record keeps listing the mesh.
+- Updated dependencies [3f005b8]
+  - @cotal-ai/core@0.133.2
+
+## 0.133.1
+
+### Patch Changes
+
+- b786ccd: The comments in `space-segmentation.ts` now name the code they cite. Every one of them cited a line number that had drifted onto unrelated code. The absent-means-mint writer is named as `healMembershipDataCreds` in the CLI's `up` command. The `provisionMembershipCreds` note now says it hardens the per-space directory, which it has done since the kinds moved to per-space resolvers. No behavior changes.
+- Updated dependencies [ee1b7d4]
+- Updated dependencies [a8f140c]
+  - @cotal-ai/core@0.133.1
+
+## 0.133.0
+
+### Patch Changes
+
+- @cotal-ai/core@0.133.0
+
+## 0.132.7
+
+### Patch Changes
+
+- Updated dependencies [ad4a37e]
+  - @cotal-ai/core@0.132.7
+
+## 0.132.6
+
+### Patch Changes
+
+- @cotal-ai/core@0.132.6
+
+## 0.132.5
+
+### Patch Changes
+
+- @cotal-ai/core@0.132.5
+
+## 0.132.4
+
+### Patch Changes
+
+- c0e9b6f: Let `cotal ext seed --reset` and `--repair` finish when the extensions manifest records a package whose directory is gone, such as one npm pruned as extraneous. `ext add`, `ext remove` and each seed now warn with the package, its path, the command that reinstalls it and `cotal ext remove <package>`, and keep its manifest entry. For a third-party package that command is `cotal ext add <original-spec>` with the placeholder left in, so the warning does not print a recorded spec that may be a URL carrying a credential. They no longer fail on it. A package directory without a readable `package.json`, a dangling package link and a corrupt `package.json` still fail. A seed that failed this way in an earlier release is finished by `cotal ext seed --repair`, after which `cotal ext remove` drops the entry.
+- @cotal-ai/core@0.132.4
+
 ## 0.132.3
 
 ### Patch Changes

@@ -1,5 +1,78 @@
 # @cotal-ai/connector-codex
 
+## 0.133.11
+
+### Patch Changes
+
+- 9182cfc: Restore the tool specs' and gateway's zod namespace import. The by-name imports released in 0.133.9 made the bundled claude, codex, hermes, jcode and opencode connectors throw `Class2 is not a constructor` when imported, so a fresh `cotal setup` failed its first connector seed.
+
+## 0.133.10
+
+No changes in this release.
+
+## 0.133.9
+
+No changes in this release.
+
+## 0.133.8
+
+### Patch Changes
+
+- 5ab4118: The Codex model catalog no longer rejects a valid `model/list` reply from an app-server that answers and exits at once; the lister now waits for stdout to close before treating the exit as unanswered.
+- 591c0f9: A Codex seat returns to `working` once the host has declined an app-server request, so a turn that ends after one still fires the done boundary and does not leave an approval condition on an idle seat.
+
+## 0.133.7
+
+No changes in this release.
+
+## 0.133.6
+
+No changes in this release.
+
+## 0.133.5
+
+No changes in this release.
+
+## 0.133.4
+
+No changes in this release.
+
+## 0.133.3
+
+No changes in this release.
+
+## 0.133.2
+
+No changes in this release.
+
+## 0.133.1
+
+No changes in this release.
+
+## 0.133.0
+
+### Minor Changes
+
+- 1e554e4: Precompute documentation search at build time and load the corpus and compact index only when needed. Search results and scoring are unchanged. Documentation data now lives in two digest-checked files beside each module or bundle; normal packages, plugins and installers include them automatically. Custom integrations that copy or bundle an executable alone must also carry its matching `docs-bundle.bin` and `docs-index.bin` files.
+
+## 0.132.7
+
+No changes in this release.
+
+## 0.132.6
+
+No changes in this release.
+
+## 0.132.5
+
+No changes in this release.
+
+## 0.132.4
+
+### Patch Changes
+
+- d2126e8: Remove redundant exception handlers around native child cleanup in model discovery and stop escalation. Preserve signal delivery, exit waiting, and the existing cleanup deadlines.
+
 ## 0.132.3
 
 No changes in this release.

@@ -6,5 +6,5 @@ The browser dashboard, as an extension package that adds the `web` service prese
 **Tier:** `implementations/`. Peer-depends [`@cotal-ai/core`](../../packages/core) and
 [`@cotal-ai/workspace`](../../packages/workspace); self-registers on import.
 
-See [docs/watch-a-mesh.md](../../docs/watch-a-mesh.md) and the [root AGENTS.md](../../AGENTS.md)
+See [docs/watch-a-mesh.mdx](../../docs/watch-a-mesh.mdx) and the [root AGENTS.md](../../AGENTS.md)
 for the tier rules.

@@ -705,8 +705,11 @@ async function boundForeignListenerScenario(): Promise<void> {
     const degraded = JSON.parse(readFileSync(journalPath, "utf8")) as {
       listenerProof: { serverNonce: string; processOwner: { pid: number; id: string } };
     };
-    process.kill(degraded.listenerProof.processOwner.pid, "SIGTERM");
-    await waitUntil(async () => !(await probeConnect(server, { timeoutMs: 200 })).ok, "bound listener shutdown");
+    const listenerPid = degraded.listenerProof.processOwner.pid;
+    process.kill(listenerPid, "SIGTERM");
+    // nats-server 2.15 refuses connections before it releases its port, so the port is free for the
+    // foreign listener only once that process has exited.
+    await waitUntil(() => { try { process.kill(listenerPid, 0); return false; } catch { return true; } }, "bound listener exit");
     foreign = await occupy(port);
     const refused = run("up", "--detach", "--server", server, "--space", space);
     assert.notEqual(refused.status, 0);

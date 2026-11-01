@@ -1,5 +1,5 @@
 import { digestIdToken } from "@cotal-ai/core";
-import { holdRequestId, type JournalEntry } from "@cotal-ai/lang";
+import { holdRequestId, type JournalEntry, type WaitRequest } from "@cotal-ai/lang";
 
 /** A second deadline for one step, derived so a resume re-derives it instead of remembering it. */
 function derivedToken(requestId: string, purpose: string): string {
@@ -14,6 +14,21 @@ export function askAttemptToken(requestId: string, attempt: number): string {
 /** An idle `wait`'s outer timeout; the step's own id carries the idle window. */
 export function waitTimeoutToken(requestId: string): string {
   return derivedToken(requestId, "wait-timeout");
+}
+
+/**
+ * The deadlines a `wait` arms, each by its pause token, decided here and nowhere else. The step's
+ * own id carries the deadline that DEFINES the wait, the idle window where there is one and the
+ * timeout otherwise, and {@link waitTimeoutToken} an idle wait's outer timeout. The binding records
+ * exactly these and the run authority mints no wait timer it did not record, so every arm site arms
+ * what this returns rather than deciding again.
+ */
+export function waitTimers(req: WaitRequest, requestId: string): { readonly primary?: string; readonly outer?: string } {
+  const idle = req.event.event === "idle";
+  return {
+    ...(idle || req.timeout !== undefined ? { primary: requestId } : {}),
+    ...(idle && req.timeout !== undefined ? { outer: waitTimeoutToken(requestId) } : {}),
+  };
 }
 
 /** A `waitUntil` observation's cadence pause, one per observation the step parks on. */
