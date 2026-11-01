@@ -55,7 +55,11 @@ try {
       });
       const page = docs.runDocs({ page: "architecture" });
       if (pageWorks) assert.match((await page).text, /^\(bundled v/, `${label}: page works`);
-      else await assert.rejects(page, message, `${label}: page throws`);
+      else {
+        await assert.rejects(page, message, `${label}: page throws`);
+        await assert.rejects(docs.runDocs({ query: "☃" }), message, `${label}: a query with no tokens still checks the corpus`);
+        checks++;
+      }
       // A second call throws again: a failed read leaves nothing cached that would search wrong bytes.
       assert.throws(() => docs.searchDocs("channel permissions"), message, `${label}: search throws`);
       assert.throws(() => docs.searchDocs("channel permissions"), message, `${label}: search keeps throwing`);

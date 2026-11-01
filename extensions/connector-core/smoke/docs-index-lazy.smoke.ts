@@ -1,5 +1,5 @@
 /** Cold index paths use generated metadata, not the full corpus. Precise coverage counts
- *  actual loader calls; a later page or search in each child proves the instrument sees it.
+ *  actual source-body decoder calls; a later page or search proves the instrument sees it.
  *  No network, mocks, forced GC, or timing/memory assertions. */
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -32,7 +32,8 @@ if (!mode) {
   let indexCalls = 0;
   const calls = (coverage: Profiler.TakePreciseCoverageReturnType): number => {
     indexCalls = callsOf(coverage, "loadDocsIndex");
-    return callsOf(coverage, "loadDocsBundle");
+    assert.equal(callsOf(coverage, "loadDocsBundle"), 0, "normal docs paths do not materialize the full corpus");
+    return callsOf(coverage, "decodeDocsSource");
   };
   let checks = 0;
   const check = (label: string, run: () => void): void => { run(); checks++; console.log(`✓ ${mode}: ${label}`); };
@@ -90,12 +91,16 @@ if (!mode) {
     }
     if (mode === "structured") search(); else await page();
     const laterCalls = calls(await session.post("Profiler.takePreciseCoverage"));
-    check("later content call positively witnesses the full loader", () => assert.equal(laterCalls, 1));
+    check("later content decodes requested sources, not the whole corpus", () => { assert.ok(laterCalls > 0); assert.ok(laterCalls < structured.pages.length + 3); });
     check("only a search decodes the search index", () => assert.equal(indexCalls, mode === "structured" ? 1 : 0));
     if (mode === "structured") await page(); else search();
-    const cachedCalls = calls(await session.post("Profiler.takePreciseCoverage"));
-    check("page and search share the existing full-corpus cache", () => assert.equal(cachedCalls, 0));
+    const additionalCalls = calls(await session.post("Profiler.takePreciseCoverage"));
+    check("additional content stays within selected source bodies", () => assert.ok(additionalCalls < structured.pages.length + 3));
     check("the search index is decoded once, by the search", () => assert.equal(indexCalls, mode === "structured" ? 0 : 1));
+    await page();
+    search();
+    const cachedCalls = calls(await session.post("Profiler.takePreciseCoverage"));
+    check("repeated page and search reuse source caches", () => { assert.equal(cachedCalls, 0); assert.equal(indexCalls, 0); });
 
     const { loadDocsBundle, loadDocsMetadata } = await import("../dist/docs-bundle.generated.js");
     const bundle = loadDocsBundle();
@@ -112,6 +117,19 @@ if (!mode) {
       const pages = bundle.pages.map(({ body: _body, ...entry }) => entry).sort((a, b) =>
         docs.DOCS_CATEGORIES.indexOf(a.category as typeof docs.DOCS_CATEGORIES[number]) - docs.DOCS_CATEGORIES.indexOf(b.category as typeof docs.DOCS_CATEGORIES[number]));
       assert.deepEqual(structured.pages, pages);
+    });
+    const mutable = await docs.readDocsPage("architecture");
+    assert.ok(mutable);
+    mutable.page.slug = "caller-architecture";
+    mutable.page.title = "caller title";
+    const renamed = await docs.readDocsPage("caller-architecture");
+    check("returned page edits keep their existing lookup identity", () => {
+      assert.equal(renamed?.page, mutable.page);
+    });
+    check("returned page edits keep their existing search metadata", () => {
+      const hits = docs.searchDocs("architecture", 1000).filter(hit => hit.slug === "caller-architecture");
+      assert.ok(hits.length > 0);
+      assert.ok(hits.every(hit => hit.pageTitle === "caller title"));
     });
     console.log(`docs-index-lazy ${mode}: ${checks} checks passed`);
   } finally {

@@ -5,7 +5,7 @@
 // `pnpm gen:docsbundle`.
 //
 // Emits extensions/connector-core/src/docs-bundle.generated.ts, which holds the version stamp and the
-// metadata inline, and two gzip data files written beside it: docs-bundle.bin, the full corpus, and
+// metadata inline, and two gzip data files written beside it: docs-bundle.bin, the corpus as independently zipped source records, and
 // docs-index.bin, the search index precomputed here with the same tokenizer and section rules the
 // runtime imports (extensions/connector-core/src/docs-index-core.js). Each loader reads its file from
 // `import.meta.dirname` only when it is called, after checking the file's length and SHA-256 recorded
@@ -161,7 +161,18 @@ const metadata = {
 // The two data files sit beside the generated module, so `--out` elsewhere carries them along.
 const CORPUS_FILE = "docs-bundle.bin";
 const INDEX_FILE = "docs-index.bin";
-const corpus = gzipSync(Buffer.from(JSON.stringify(bundle, null, 2)));
+// Independent gzip members keep the existing corpus file while allowing one source to be decoded.
+// Each member is one ordinary JSON string record; source order is the search index's order.
+const bodies = [...bundle.pages.map(page => page.body), bundle.spec.body, bundle.lang.body, bundle.schema.body];
+let position = 0;
+const bounds = [];
+const members = bodies.map(body => {
+  const member = gzipSync(Buffer.from(JSON.stringify(body) + "\n"));
+  bounds.push([position, position + member.length]);
+  position += member.length;
+  return member;
+});
+const corpus = Buffer.concat(members);
 const index = gzipSync(encodeIndex(bundle));
 writeFileSync(join(dirname(out), CORPUS_FILE), corpus);
 writeFileSync(join(dirname(out), INDEX_FILE), index);
@@ -189,9 +200,36 @@ writeFileSync(
     "/** The installed Cotal version, for stamping the orientation card and other surfaces. */\n" +
     `export const DOCS_VERSION = ${JSON.stringify(version)};\n\n` +
     `export function loadDocsMetadata(): DocsMetadata {\n  return ${JSON.stringify(metadata, null, 2)};\n}\n\n` +
-    "/** The full corpus: the sibling file " + CORPUS_FILE + ", read, checked against its digest and unzipped. Throws when the file\n" +
-    " *  is missing, replaced or corrupt. */\n" +
-    loader("loadDocsBundle", CORPUS_FILE, corpus, "DocsBundle", 'JSON.parse(gunzipSync(packed).toString("utf8")) as DocsBundle') +
+    "/** Read and check the corpus once, without decoding its source bodies. */\n" +
+    "let corpusPacked: Buffer | undefined;\n" +
+    "function corpusData(): Buffer {\n" +
+    "  if (corpusPacked) return corpusPacked;\n" +
+    `  const packed = readFileSync(join(import.meta.dirname, ${JSON.stringify(CORPUS_FILE)}));\n` +
+    `  if (packed.length !== ${corpus.length} || createHash("sha256").update(packed).digest("hex") !== ${JSON.stringify(createHash("sha256").update(corpus).digest("hex"))})\n` +
+    `    throw new Error("docs data file ${CORPUS_FILE} beside this module is not the one built with it");\n` +
+    "  return (corpusPacked = packed);\n}\n\n" +
+    `const sourceBounds: [number, number][] = ${JSON.stringify(bounds)};\n` +
+    `const sourceLengths: number[] = ${JSON.stringify(bodies.map(body => body.length))};\n` +
+    "const decodedBodies: (string | undefined)[] = [];\n\n" +
+    "/** Validate the coupled corpus before the index uses its UTF-16 source bounds. No body is decoded. */\n" +
+    "export function loadDocsSourceLengths(): number[] {\n  corpusData();\n  return sourceLengths.slice();\n}\n\n" +
+    "function decodeDocsSource(source: number): string {\n" +
+    "  const bounds = sourceBounds[source];\n" +
+    '  if (!Number.isInteger(source) || !bounds) throw new Error("docs source index is out of bounds");\n' +
+    '  const body: unknown = JSON.parse(gunzipSync(corpusData().subarray(bounds[0], bounds[1])).toString("utf8"));\n' +
+    '  if (typeof body !== "string" || body.length !== sourceLengths[source]) throw new Error("docs source body does not match its generated bounds");\n' +
+    "  return body;\n}\n\n" +
+    "/** Decode only a requested source; later page and search reads share that body. */\n" +
+    "export function loadDocsSource(source: number): string {\n  return (decodedBodies[source] ??= decodeDocsSource(source));\n}\n\n" +
+    "/** Full materialization for build tooling and callers that explicitly request the complete corpus. */\n" +
+    "export function loadDocsBundle(): DocsBundle {\n" +
+    "  const meta = loadDocsMetadata();\n" +
+    "  const count = meta.pages.length;\n" +
+    `  return { version: DOCS_VERSION, generatedFrom: ${JSON.stringify(bundle.generatedFrom)},\n` +
+    "    pages: meta.pages.map((page, source) => ({ ...page, body: loadDocsSource(source) })),\n" +
+    "    spec: { ...meta.spec, body: loadDocsSource(count) },\n" +
+    "    lang: { ...meta.lang, body: loadDocsSource(count + 1) },\n" +
+    "    schema: { ...meta.schema, body: loadDocsSource(count + 2) } };\n}\n" +
     "\n/** The compact search index of that bundle: the sibling file " + INDEX_FILE + ", read, checked and unzipped on the first search. */\n" +
     loader("loadDocsIndex", INDEX_FILE, index, "Buffer", "gunzipSync(packed)"),
 );
