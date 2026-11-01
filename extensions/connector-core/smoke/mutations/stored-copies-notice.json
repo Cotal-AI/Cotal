@@ -2,7 +2,7 @@
   "suite": [
     "extensions/connector-core/smoke/stored-copies-notice.smoke.ts"
   ],
-  "guard": "after the endpoint says this session's stored copies reached their limit (#5404), the next cotal_inbox reply carries one notice in either attention mode, a peek keeps it, and the read that carries it clears it",
+  "guard": "after the endpoint says this session's stored copies reached their limit (#5404), the next cotal_inbox reply carries one notice in either attention mode, a peek keeps it, the read whose reply carries it clears it, and a read that throws, a caller that goes and a limit seen mid-read keep it for the next read",
   "command": "pnpm smoke:stored-copies-notice",
   "completionMarker": "STORED-COPIES-NOTICE SMOKE",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/stored-copies-notice.json",
@@ -15,28 +15,32 @@
     "",
     "S4 and S5 drop it from the reply outside and inside focus mode.",
     "",
+    "S6 clears the notice when the read starts, as before the fix, so a recall that throws loses it.",
+    "",
+    "S7 clears every limit the session saw, so one seen while a reply was built is never said.",
+    "",
     "NO BUILD STEP: the suite imports ../src."
   ],
   "mutations": [
     {
       "name": "S1 the agent ignores the endpoint's event",
       "file": "extensions/connector-core/src/agent.ts",
-      "find": "    this.ep.on(\"stored-copies-full\", () => { this._storedCopiesFull = true; });\n",
+      "find": "    this.ep.on(\"stored-copies-full\", () => { this._storedCopiesFull++; });\n",
       "replace": "",
       "expectRed": "the endpoint's stored-copies-full event marks the session"
     },
     {
       "name": "S2 the notice is never cleared",
       "file": "extensions/connector-core/src/tool-specs.ts",
-      "find": "        if (storedNote && !keeps()) agent.clearStoredCopiesFull();\n",
+      "find": "          if (storedSeen && !keeps()) agent.clearStoredCopiesFull(storedSeen);\n",
       "replace": "",
       "expectRed": "the read after it does not repeat it"
     },
     {
       "name": "S3 a peek clears the notice",
       "file": "extensions/connector-core/src/tool-specs.ts",
-      "find": "if (storedNote && !keeps())",
-      "replace": "if (storedNote)",
+      "find": "if (storedSeen && !keeps())",
+      "replace": "if (storedSeen)",
       "expectRed": "a peek carries the notice once and keeps it"
     },
     {
@@ -52,6 +56,20 @@
       "find": "[connectionWarning, storedNote, scope",
       "replace": "[connectionWarning, scope",
       "expectRed": "in focus mode the next read carries the notice once"
+    },
+    {
+      "name": "S6 the notice clears before the reply exists",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "const storedNote = storedSeen ? STORED_COPIES_NOTE : \"\";",
+      "replace": "const storedNote = storedSeen ? STORED_COPIES_NOTE : \"\"; if (storedSeen && !keeps()) agent.clearStoredCopiesFull(storedSeen);",
+      "expectRed": "in focus mode a read whose recall throws keeps the notice for the next read"
+    },
+    {
+      "name": "S7 clearing forgets a limit seen while the reply was built",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "this._storedCopiesFull = Math.max(0, this._storedCopiesFull - seen);",
+      "replace": "this._storedCopiesFull = 0;",
+      "expectRed": "a limit seen while a reply is built is said by the next read, and then not again"
     }
   ]
 }

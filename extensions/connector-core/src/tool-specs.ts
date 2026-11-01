@@ -984,9 +984,14 @@ export function cotalToolSpecs(
         // evicted and lost. That is the buffer's documented bounded local loss (see
         // MeshAgent.buffer), unchanged by this path; an evicted directed message is never acked.
         const automaticPending = scope ? agent.inboxCount("automatic") : 0;
-        // Every reply below carries the stored-copy notice, so a read that clears is the one that says it.
-        const storedNote = agent.storedCopiesFull ? STORED_COPIES_NOTE : "";
-        if (storedNote && !keeps()) agent.clearStoredCopiesFull();
+        // Every reply below carries the stored-copy notice, and it clears as the messages do: once the
+        // reply exists and its caller is still there. A recall that throws or a caller that goes keeps it.
+        const storedSeen = agent.storedCopiesFull;
+        const storedNote = storedSeen ? STORED_COPIES_NOTE : "";
+        const reply = (text: string): ToolResult => {
+          if (storedSeen && !keeps()) agent.clearStoredCopiesFull(storedSeen);
+          return ok(text);
+        };
         if (agent.attention !== "focus") {
           const connectionWarning = inboxConnectionWarning(agent);
           const warning = [connectionWarning, storedNote].filter(Boolean).join("\n");
@@ -1001,7 +1006,7 @@ export function cotalToolSpecs(
                 : `${s.length} message${s.length === 1 ? "" : "s"}${peek ? " (peek: nothing cleared)" : ""}:`,
           });
           if (!buffered.length)
-            return ok(
+            return reply(
               [warning, scope
                 ? `No pull-only messages.${automaticPending ? ` ${automaticPending} connector-managed automatic message${automaticPending === 1 ? " is" : "s are"} still queued.` : ""}`
                 // A hook receipt never masks an unavailable connection, even with a live transport.
@@ -1018,14 +1023,14 @@ export function cotalToolSpecs(
               warning,
               last: (i) => agent.drainInboxDeliveries([i.recvKey]),
             });
-            if (part) return ok(part);
+            if (part) return reply(part);
           }
           // The response exists before anything is acked: an ack is a claim that these messages were
           // handed over, so nothing may be cleared while the handing-over is still hypothetical. And
           // it is the ASSEMBLED response that decides, so what is acked is what a caller was handed.
           if (!keeps()) agent.drainInboxDeliveries(shown.map((i) => i.recvKey));
           void held;
-          return ok(text);
+          return reply(text);
         }
         // Focus: the live buffer holds only DMs/anycast; the channel ambient + @mentions were
         // acked-and-dropped at ingest, so pull them back from the channel stream here (replay-gated,
@@ -1094,7 +1099,7 @@ export function cotalToolSpecs(
               : `${s.length} message${s.length === 1 ? "" : "s"}${peek ? " (peek: live buffer not cleared)" : ""} in focus mode; channel items are recall since you focused:`,
         });
         if (!buffered.length && !fresh.length && !recall.droppedChannels.length && !aheadWithheld.length)
-          return ok(
+          return reply(
             [connectionWarning, storedNote, scope
               ? `No pull-only messages and no normal focus recall.${automaticPending ? ` ${automaticPending} connector-managed automatic message${automaticPending === 1 ? " is" : "s are"} still queued.` : ""}`
               : connectionWarning ? "Local inbox buffer and available focus recall are empty." : "Inbox empty, no new messages, and no channel chatter since you entered focus."].filter(Boolean).join("\n\n"),
@@ -1120,7 +1125,7 @@ export function cotalToolSpecs(
               else agent.noteRecalled({ ts: i.ts, id: i.recvKey });
             },
           });
-          if (part) return ok(part);
+          if (part) return reply(part);
         }
         // Render first, ack second, and only ever ids from the buffered lane: acking a recall id
         // would mark it handled, so a later live copy of that channel message would be dropped.
@@ -1144,7 +1149,7 @@ export function cotalToolSpecs(
           if (last) agent.noteRecalled({ ts: last.ts, id: last.recvKey });
           void stuck;
         }
-        return ok(text);
+        return reply(text);
       }),
     },
     {
