@@ -75,7 +75,7 @@ A successful full restore recreates conservative consumer checkpoints bound to t
 Retained agents resume under their original principals.
 A role request that a holder had taken and not yet acked when the backup was made is on its queue again, even if that holder finished it afterwards.
 The broker delivers it again at delivery count 1, as it redelivers any unacked request, so any holder of the role may take it and do the work again.
-Its sender reads it as waiting until that take ([SPEC §8.1](../SPEC.md#81-anycast-request-status)).
+On an authenticated mesh its sender reads it as waiting until that take ([SPEC §8.1](../SPEC.md#81-anycast-request-status)).
 In every auth mode, including open mode, maintenance uses isolated, operation-specific logins.
 Ordinary agent credentials cannot enter that listener.
 

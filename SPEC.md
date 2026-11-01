@@ -809,12 +809,13 @@ request is queued. It checks every row when it starts and every ten minutes afte
 
 **Restore.** A backup does not hold `cotal_anycast_<space>`: it is control state and comes back
 empty. A restore recreates `TASK_<space>` with a new creation time, so no row written before it
-could match a restored request. The restore puts the queue and its consumers back as they were when
-the backup was made. A request a holder had taken and not yet acked by then is on the queue again,
-including one that holder finished and acked after the backup. The broker delivers it again at
-delivery count 1, as it redelivers any request left unacked, and any holder of the role may take it
-and do the work again. Its status reads `waiting` until that take. The redelivery is the work
-queue's own behavior, and the records change only what the sender reads.
+could match a restored request. The restore brings back the requests the queue held when the backup
+was made and recreates its consumers from checkpoints, so their delivery counts start over. A
+request a holder had taken and not yet acked by then is on the queue again, including one that
+holder finished and acked after the backup. The broker delivers it again at delivery count 1, as it
+redelivers any request left unacked, and any holder of the role may take it and do the work again.
+Its status reads `waiting` until that take. The redelivery is the work queue's own behavior, and the
+records change only what the sender reads.
 
 **Status and cancel.** A sender reads or cancels one of its own requests with the `anycastStatus`
 and `anycastCancel` ops of the `delivery` control service. The arguments are `{ seq, id? }`: `seq`
