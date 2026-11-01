@@ -3390,6 +3390,10 @@ export class Manager {
         else a.handle.stop({ graceful: false });
       } catch (e) {
         failures.push(`${a.name}: stop failed: ${rejectionText(e)}`);
+        // A refused hard stop never reached the child, so waiting for its exit could only time out
+        // and restate this failure; the cut path reports it the same way. A delegated seat's
+        // deprovision can fail after its retirement already closed the seat, so that wait stays.
+        if (!a.handedOff) return;
       }
       try {
         await this.awaitHandleExit(a.handle);
