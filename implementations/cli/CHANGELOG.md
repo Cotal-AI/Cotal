@@ -1,5 +1,17 @@
 # @cotal-ai/cli
 
+## 0.133.12
+
+### Patch Changes
+
+- 13499c0: Split mesh operation documentation into focused guides. Keep existing documentation links and offline page calls available, and point the supervision warning at the stable published guide.
+- 13499c0: Preserve documentation bookmarks and offline HTTP reference navigation after the MDX migration. Keep executable documentation checks aligned with the split references, validate generated HTTP content on root builds, preserve complete Card destinations, and improve light-mode navigation contrast.
+- 13499c0: Rewrite the Fundamentals concepts as direct MDX and separate Architecture's detailed contracts into their reference pages. Include complete Markdown and schema inspection content in offline documentation. Update documentation pointers and offline checks for the renamed sources.
+- 13499c0: Rewrite the MeshView, cotal-lang card, and glossary references as direct MDX with source-backed definitions and examples. Update the language example check and terminal model source references for the renamed pages. Preserve complete Markdown and existing page calls in the installed release's offline documentation.
+- Updated dependencies [13499c0]
+  - @cotal-ai/core@0.133.12
+  - @cotal-ai/workspace@0.133.12
+
 ## 0.133.11
 
 ### Patch Changes

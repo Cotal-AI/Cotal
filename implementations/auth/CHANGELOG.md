@@ -1,5 +1,19 @@
 # @cotal-ai/auth
 
+## 0.133.12
+
+### Patch Changes
+
+- 13499c0: Support authored MDX documentation in the release bundle. Preserve complete Markdown for offline `cotal_docs` page reads and search. Resolve exported documentation links, including MDX paths and heading references. Expand HTTP references to cover dashboard metadata and deletion, host-only auth, the manager console and feedback intake.
+- 13499c0: Rewrite Security and Agent coordination as focused MDX explanations with complete supporting references. Preserve documentation URLs, Markdown downloads, and offline documentation tools, and update source links and documentation checks for the renamed pages.
+- Updated dependencies [13499c0]
+- Updated dependencies [13499c0]
+- Updated dependencies [13499c0]
+- Updated dependencies [13499c0]
+  - @cotal-ai/lang@0.133.12
+  - @cotal-ai/core@0.133.12
+  - @cotal-ai/workspace@0.133.12
+
 ## 0.133.11
 
 ### Patch Changes

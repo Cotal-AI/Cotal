@@ -57,7 +57,7 @@ the stream.
 read through `LaunchSpec.resumeRecordPath` (`packages/core/src/connector.ts:154`), kept on the seat's
 resume document (`implementations/manager/src/resume.ts:90`), returned by `ps` as the `resume` object
 (`implementations/manager/src/manager-service-contract.ts:249-257`, cluster document revision 20),
-and printed as `forked from <id>` (`implementations/cli/src/commands/agents.ts:367`).
+and printed as `forked from <id>` (`implementations/cli/src/commands/agents.ts:387`).
 
 **Resume is an operator surface.** `cotal_spawn` does not expose it to peers
 (`extensions/connector-core/src/tool-specs.ts:1350`). The manager's `spawn` row is in the

@@ -875,6 +875,12 @@ importers:
       '@cotal-ai/core':
         specifier: workspace:*
         version: link:../core
+      '@nats-io/jetstream':
+        specifier: ^3.4.0
+        version: 3.4.0
+      '@nats-io/transport-node':
+        specifier: ^3.4.0
+        version: 3.4.0
       ajv:
         specifier: ^8.20.0
         version: 8.20.0
