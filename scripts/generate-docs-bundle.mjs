@@ -9,8 +9,9 @@
 // docs-index.bin, the search index precomputed here with the same tokenizer and section rules the
 // runtime imports (extensions/connector-core/src/docs-index-core.js). Each loader reads its file from
 // `import.meta.dirname` only when it is called, after checking the file's length and SHA-256 recorded
-// in the loader, and unzips it; nothing keeps the compressed bytes. A missing, replaced or corrupt
-// file throws. Importing the module, DOCS_VERSION and loadDocsMetadata() read neither file; a page
+// in the loader, then decodes it. The corpus loader retains verified compressed bytes and decoded
+// source bodies; the docs runtime caches the decoded index. A missing, replaced or corrupt file
+// throws when read. Importing the module, DOCS_VERSION and loadDocsMetadata() read neither file; a page
 // read needs only the corpus; a search needs both. Each bundle build copies both files beside its
 // output (the CJS bundles compile `import.meta.dirname` to `__dirname`). The caller owns first-use
 // retention. Missing or empty sources fail generation.
