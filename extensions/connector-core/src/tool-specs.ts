@@ -9,7 +9,7 @@
  */
 import { execFileSync } from "node:child_process";
 import { z } from "zod";
-import { isConcreteChannel, isChannelFamily, assertValidChannel, MAX_CHANNEL_LENGTH, channelInAllow, patternInAllow, AmbiguousPeerError, peerLabel, assertLifecycleToken, isPermissionDenied, renderLifecycleBlocked, EpEnvelopeError, LANG_PROBLEM_DETAIL_KIND, formatAge, presenceAges, presenceText, type ControlReply, type PresenceStatus } from "@cotal-ai/core";
+import { isConcreteChannel, isChannelFamily, assertValidChannel, MAX_CHANNEL_LENGTH, BACKUP_MAX_MSGS_PER_SUBJECT, channelInAllow, patternInAllow, AmbiguousPeerError, peerLabel, assertLifecycleToken, isPermissionDenied, renderLifecycleBlocked, EpEnvelopeError, LANG_PROBLEM_DETAIL_KIND, formatAge, presenceAges, presenceText, type ControlReply, type PresenceStatus } from "@cotal-ai/core";
 import { afterRecallMark, type MeshAgent, type InboxItem } from "./agent.js";
 // The neutralization and the per-item rendering live in `framing.ts`, one convention shared with
 // the auto-injected block, and are used here rather than restated. See that file for the rule.
@@ -581,6 +581,10 @@ function droppedNote(channels: readonly string[]): string {
   return `⚠ Some earlier chatter could not be recalled completely on ${named}${rest ? `, and ${rest} more channel${rest === 1 ? "" : "s"}` : ""} (retention or local safety bounds were reached).`;
 }
 
+/** Said once after this session's stored copies reached their limit (#5404). NATS reports no discard,
+ *  so it says "may". */
+const STORED_COPIES_NOTE = `⚠ Your stored copies reached their limit of ${BACKUP_MAX_MSGS_PER_SUBJECT}, so earlier channel posts may have been dropped before they reached you. Channel history may still hold them: \`cotal history <channel>\` reads it, and it keeps the newest ${BACKUP_MAX_MSGS_PER_SUBJECT} posts per sender on each channel.`;
+
 /** How many channels the recall warning names before it starts counting them instead. */
 const NAMED_DROPPED = 5;
 
@@ -980,8 +984,12 @@ export function cotalToolSpecs(
         // evicted and lost. That is the buffer's documented bounded local loss (see
         // MeshAgent.buffer), unchanged by this path; an evicted directed message is never acked.
         const automaticPending = scope ? agent.inboxCount("automatic") : 0;
+        // Every reply below carries the stored-copy notice, so a read that clears is the one that says it.
+        const storedNote = agent.storedCopiesFull ? STORED_COPIES_NOTE : "";
+        if (storedNote && !keeps()) agent.clearStoredCopiesFull();
         if (agent.attention !== "focus") {
-          const warning = inboxConnectionWarning(agent);
+          const connectionWarning = inboxConnectionWarning(agent);
+          const warning = [connectionWarning, storedNote].filter(Boolean).join("\n");
           const buffered = agent.peekInbox(inboxScope);
           const { text, shown, held, stuck } = renderInbox({
             items: buffered,
@@ -997,7 +1005,7 @@ export function cotalToolSpecs(
               [warning, scope
                 ? `No pull-only messages.${automaticPending ? ` ${automaticPending} connector-managed automatic message${automaticPending === 1 ? " is" : "s are"} still queued.` : ""}`
                 // A hook receipt never masks an unavailable connection, even with a live transport.
-                : warning ? "Local inbox buffer is empty."
+                : connectionWarning ? "Local inbox buffer is empty."
                   : (agent.connectionState === "ready" ? emptyInboxNote?.() : undefined) ?? "Inbox empty, no new messages."].filter(Boolean).join("\n\n"),
             );
           if (!shown.length) {
@@ -1072,7 +1080,7 @@ export function cotalToolSpecs(
         const fresh = [...clocked, ...aheadFresh];
         const aheadIds = new Set(aheadFresh.map((i) => i.recvKey));
         const connectionWarning = inboxConnectionWarning(agent);
-        const warning = [connectionWarning, droppedNote(recall.droppedChannels), aheadNote(aheadWithheld)]
+        const warning = [connectionWarning, storedNote, droppedNote(recall.droppedChannels), aheadNote(aheadWithheld)]
           .filter(Boolean)
           .join(" ");
         const { text, shown: all, stuck } = renderInbox({
@@ -1087,7 +1095,7 @@ export function cotalToolSpecs(
         });
         if (!buffered.length && !fresh.length && !recall.droppedChannels.length && !aheadWithheld.length)
           return ok(
-            [connectionWarning, scope
+            [connectionWarning, storedNote, scope
               ? `No pull-only messages and no normal focus recall.${automaticPending ? ` ${automaticPending} connector-managed automatic message${automaticPending === 1 ? " is" : "s are"} still queued.` : ""}`
               : connectionWarning ? "Local inbox buffer and available focus recall are empty." : "Inbox empty, no new messages, and no channel chatter since you entered focus."].filter(Boolean).join("\n\n"),
           );

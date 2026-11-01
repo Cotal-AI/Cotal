@@ -56,6 +56,9 @@ import {
   readMember,
   tombstoneMember,
   chatStream,
+  dlvStream,
+  dlvSubject,
+  MAX_MSGS_PER_SUBJECT,
   DEV_OWNER,
   type MembershipRecord,
   type CotalMessage,
@@ -137,6 +140,7 @@ try {
   const alice = await enrol("alice", ["review.>"]);
   const carol = await enrol("carol", ["team.>", "ops.>", "dev.>", "perm.*"]);
   const dave = await enrol("dave", ["bulk.>", "bulk2.>", "bulk3.>"]);
+  const fred = await enrol("fred", ["flood.>"]);
   const erin = await enrol("erin", ["team.>"], ["team.>"]);
   const uidA = alice.uid, aPrincipal = alice.principal;
   const dlvId = newIdentity();
@@ -336,6 +340,53 @@ try {
   let erinRow: Awaited<ReturnType<typeof readMember>> = undefined;
   for (let i = 0; i < 40 && (erinRow = await readMember(kv, "team.>", erin.principal, erin.uid))?.record.activated !== true; i++) await wait(200);
   check("an agent booted on team.> with a live default holds its family row", erinRow?.record.activated === true, erinRow);
+
+  // ───────────── (11) a full store says so once (decision 3) ─────────────
+  // fred follows flood.> and is away while 1100 posts land on the durable flood.x, so his store holds
+  // its limit of 1000 and older copies are gone. On connect the endpoint says so, and the post after
+  // the store drained says nothing more. Away again for 5 posts, his next connect says nothing.
+  await writeChannelConfig(channelKv, "flood.x", { deliveryClass: "durable" });
+  await commitMember(kv, { ...pendingRow(fred, "flood.>", 1, await frontier()), activated: true });
+  for (let i = 0; i < 1100; i++) await post(`flood-${i}`, "flood.x");
+  const fredSubject = dlvSubject(space, DEV_OWNER, fred.id.id, fred.uid);
+  const stored = async (): Promise<number> =>
+    (await jsm.streams.info(dlvStream(space), { subjects_filter: fredSubject })).state.subjects?.[fredSubject] ?? 0;
+  let held = 0;
+  for (let i = 0; i < 300 && (held = await stored()) < MAX_MSGS_PER_SUBJECT; i++) await wait(200);
+  let notices = 0;
+  const fredEp = new CotalEndpoint({
+    space, servers: SERVERS, creds: fred.creds, card: { id: fred.id.id, name: fred.name, kind: "agent" },
+    channels: [], lifecycleUid: fred.uid, heartbeatMs: 500, ttlMs: 2000,
+  });
+  const gotF: string[] = [];
+  fredEp.on("error", () => {});
+  fredEp.on("stored-copies-full", () => notices++);
+  fredEp.on("message", (m: CotalMessage, d: Delivery) => { gotF.push(m.parts.map((p) => (p.kind === "text" ? p.text : "")).join("")); d.ack(); });
+  await fredEp.start();
+  await until(() => gotF.includes("flood-1099"), 60_000);
+  const drained = notices;
+  await post("after-drain", "flood.x");
+  await until(() => gotF.includes("after-drain"), 10_000);
+  // The reader may still be moving copies when fred connects, so he can read more than 1000, never all 1100.
+  const floods = gotF.filter((t) => t.startsWith("flood-")).length;
+  check(`fred's store held its limit of ${MAX_MSGS_PER_SUBJECT}, older copies were gone, and he read the newest post`,
+    held === MAX_MSGS_PER_SUBJECT && floods < 1100 && gotF.includes("flood-1099"), { held, floods });
+  check("the endpoint said the store was full, and nothing more for the post after it drained", drained >= 1 && notices === drained && gotF.includes("after-drain"), { drained, notices });
+  await fredEp.stop();
+  for (let i = 0; i < 5; i++) await post(`small-${i}`, "flood.x");
+  let smallNotices = 0;
+  const fredAgain = new CotalEndpoint({
+    space, servers: SERVERS, creds: fred.creds, card: { id: fred.id.id, name: fred.name, kind: "agent" },
+    channels: [], lifecycleUid: fred.uid, heartbeatMs: 500, ttlMs: 2000,
+  });
+  const gotAgain: string[] = [];
+  fredAgain.on("error", () => {});
+  fredAgain.on("stored-copies-full", () => smallNotices++);
+  fredAgain.on("message", (m: CotalMessage, d: Delivery) => { gotAgain.push(m.parts.map((p) => (p.kind === "text" ? p.text : "")).join("")); d.ack(); });
+  await fredAgain.start();
+  await until(() => gotAgain.includes("small-4"), 15_000);
+  check("a store of 5 copies gives no notice on the next connect", gotAgain.includes("small-4") && smallNotices === 0, { smallNotices, got: gotAgain.length });
+  await fredAgain.stop();
 
   await writerNc.close();
   await kvNc.close();

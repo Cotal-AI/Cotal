@@ -470,6 +470,9 @@ export class MeshAgent extends EventEmitter {
   private protectedPullOnlyIds = new Set<string>();
   private protectedDropIds = new Set<string>();
   private dropUnsafe = false;
+  /** Set when the endpoint saw this session's stored copies at their limit (#5404); cleared once a
+   *  cotal_inbox reply carries the notice. */
+  private _storedCopiesFull = false;
   private _connected = false;
   /** Raw NATS transport liveness, separate from `_connected` (the full Cotal bind/readiness). */
   private _transportConnected = false;
@@ -650,6 +653,7 @@ export class MeshAgent extends EventEmitter {
     // A warning is a condition the endpoint is already surviving. Log it through the same bounded
     // operator sink, but never turn it into connectionIssue: readiness is still true.
     this.ep.on("warning", (e: Error) => this.handleEndpointWarning(e));
+    this.ep.on("stored-copies-full", () => { this._storedCopiesFull = true; });
     // Two guards, and the comments sit out here so neither anchors a mutation on prose. An
     // in-flight initial bind or rebuild can finish after stop() cleared local state, and shutdown is
     // terminal for this MeshAgent, so a late endpoint edge must not resurrect transport. Separately,
@@ -795,6 +799,17 @@ export class MeshAgent extends EventEmitter {
    *  `stop()` clears readiness and transport together, so those two read identically in both cases. */
   get stopping(): boolean {
     return this._stopping;
+  }
+
+  /** Whether this session's stored copies reached their limit since a cotal_inbox reply last said so,
+   *  so older channel posts may have been dropped before they reached it (#5404). */
+  get storedCopiesFull(): boolean {
+    return this._storedCopiesFull;
+  }
+
+  /** The stored-copy notice went out: clear it until the endpoint sees the limit again. */
+  clearStoredCopiesFull(): void {
+    this._storedCopiesFull = false;
   }
 
   /** Session-local channel degradation, independent of transport liveness. */

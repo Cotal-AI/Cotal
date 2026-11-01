@@ -541,6 +541,7 @@
     "smoke:frozen-exports": "tsx packages/core/smoke/frozen-exports.smoke.ts",
     "smoke:tool-list-announce": "tsx packages/core/smoke/tool-list-announce.smoke.ts",
     "smoke:send-channel-receipt": "tsx extensions/connector-core/smoke/send-channel-receipt.smoke.ts",
+    "smoke:stored-copies-notice": "tsx extensions/connector-core/smoke/stored-copies-notice.smoke.ts",
     "smoke:read-history:auth": "tsx packages/core/smoke/read-history-auth.smoke.ts",
     "smoke:history-reader-consumers:auth": "tsx packages/core/smoke/history-reader-consumers-auth.smoke.ts",
     "smoke:dm-only-consume:auth": "tsx packages/core/smoke/dm-only-consume-auth.smoke.ts",

@@ -1,0 +1,57 @@
+{
+  "suite": [
+    "extensions/connector-core/smoke/stored-copies-notice.smoke.ts"
+  ],
+  "guard": "after the endpoint says this session's stored copies reached their limit (#5404), the next cotal_inbox reply carries one notice in either attention mode, a peek keeps it, and the read that carries it clears it",
+  "command": "pnpm smoke:stored-copies-notice",
+  "completionMarker": "STORED-COPIES-NOTICE SMOKE",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/stored-copies-notice.json",
+  "why": [
+    "S1 drops the agent's listener, so the event marks nothing.",
+    "",
+    "S2 never clears the notice, so every read repeats it.",
+    "",
+    "S3 clears it on a peek, so the read after the peek loses it.",
+    "",
+    "S4 and S5 drop it from the reply outside and inside focus mode.",
+    "",
+    "NO BUILD STEP: the suite imports ../src."
+  ],
+  "mutations": [
+    {
+      "name": "S1 the agent ignores the endpoint's event",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    this.ep.on(\"stored-copies-full\", () => { this._storedCopiesFull = true; });\n",
+      "replace": "",
+      "expectRed": "the endpoint's stored-copies-full event marks the session"
+    },
+    {
+      "name": "S2 the notice is never cleared",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "        if (storedNote && !keeps()) agent.clearStoredCopiesFull();\n",
+      "replace": "",
+      "expectRed": "the read after it does not repeat it"
+    },
+    {
+      "name": "S3 a peek clears the notice",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "if (storedNote && !keeps())",
+      "replace": "if (storedNote)",
+      "expectRed": "a peek carries the notice once and keeps it"
+    },
+    {
+      "name": "S4 the reply outside focus mode drops the notice",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "const warning = [connectionWarning, storedNote].filter(Boolean).join(\"\\n\");",
+      "replace": "const warning = connectionWarning;",
+      "expectRed": "a peek carries the notice once and keeps it"
+    },
+    {
+      "name": "S5 the empty focus reply drops the notice",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "[connectionWarning, storedNote, scope",
+      "replace": "[connectionWarning, scope",
+      "expectRed": "in focus mode the next read carries the notice once"
+    }
+  ]
+}

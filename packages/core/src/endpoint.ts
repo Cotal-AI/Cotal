@@ -487,7 +487,9 @@ export interface TransportState {
  * terminal close). Lets an in-process agent track connectedness off the endpoint's own (re)binds
  * instead of an imperative flag the self-heal path can't reach; "transport" ({ connected, server? })
  * is the lower-level NATS socket edge, true before the full bind finishes and false during an internal
- * nats.js reconnect without changing `connection` readiness.
+ * nats.js reconnect without changing `connection` readiness. "stored-copies-full" (no payload): a stored
+ * copy arrived with the store at its {@link MAX_MSGS_PER_SUBJECT}-copy limit, so the limit may have
+ * discarded older copies before this session read them; emitted for each such copy.
  *
  * Callers MUST attach an "error" listener before `start()`: async faults (incl. NATS
  * permission denials, surfaced via `watchStatus`) are emitted as "error", and Node throws
@@ -6617,6 +6619,11 @@ export class CotalEndpoint extends EventEmitter {
     this.streamMsgs.push(msgs);
     void (async () => {
       for await (const m of msgs) {
+        // A copy with a full store behind it means the store held its limit, so older copies may have
+        // been discarded unread (#5404); NATS gives no notice of the discard itself. Checked on every
+        // delivery, ahead of the checks below and the connector's id dedupe, so a copy the agent also
+        // got live cannot hide it. The connector folds repeats into one notice.
+        if (m.info.pending >= MAX_MSGS_PER_SUBJECT - 1) this.emit("stored-copies-full");
         // The header is minted only by the trusted DLV writer. A body-only discriminator is
         // insufficient because old Cotal envelopes permit unknown fields and could imitate it.
         if (m.headers?.get(PLANE3_FRAME_HEADER) !== "1") {

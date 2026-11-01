@@ -172,6 +172,24 @@
       "expectRed": "channelMembers leaves alice off the live-class review.quiet, where review.> stores nothing",
       "afterRestore": "pnpm --filter @cotal-ai/core build",
       "note": "The family stores no copies on a live-class channel, so its follower is no durable member there."
+    },
+    {
+      "name": "the full-store check fires on any stored copy",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "if (m.info.pending >= MAX_MSGS_PER_SUBJECT - 1) this.emit(\"stored-copies-full\");",
+      "replace": "if (m.info.pending >= 0) this.emit(\"stored-copies-full\");",
+      "expectRed": "a store of 5 copies gives no notice on the next connect",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "note": "Every reconnect with any stored copy would tell the agent posts may be missing."
+    },
+    {
+      "name": "the full-store check waits for one copy more than the store can hold",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "if (m.info.pending >= MAX_MSGS_PER_SUBJECT - 1) this.emit(\"stored-copies-full\");",
+      "replace": "if (m.info.pending >= MAX_MSGS_PER_SUBJECT) this.emit(\"stored-copies-full\");",
+      "expectRed": "the endpoint said the store was full, and nothing more for the post after it drained",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "note": "A full store delivers its first copy with 999 behind it, so the notice would never fire."
     }
   ]
 }
