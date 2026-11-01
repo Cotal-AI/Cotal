@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 739,
+    "total": 740,
     "honest-text": 38,
     "presence-only-glyph/count": 57,
     "command-ack": 11,
-    "non-render/control": 633
+    "non-render/control": 634
   },
   "renderers": [
     {
@@ -5268,6 +5268,13 @@
       "anchor": "iginal lifecycle with ${codeSpan(ps)} before another startup",
       "class": "non-render/control",
       "rationale": "Spawn partial remedy: names the ps command for the original lifecycle in a code span; no peer presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/spawn.ts",
+      "kind": "derived-output",
+      "anchor": "readManagedLaunch(reply, { space: t.space, requestedModel: values.model ?? null, detached: values.detach === true }, target)",
+      "class": "non-render/control",
+      "rationale": "Reads the manager's launch receipt with caller-held mesh coordinates; this call renders no peer presence or work-progress claim."
     },
     {
       "path": "implementations/cli/src/commands/spawn.ts",
